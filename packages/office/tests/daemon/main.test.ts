@@ -1,5 +1,5 @@
 /** The daemon process: a 0600 socket, one daemon per home, clean shutdown. */
-import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process"
+import { type ChildProcess, spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import http, { type IncomingMessage, type ServerResponse } from "node:http"
 import net from "node:net"
@@ -25,7 +25,7 @@ import { args, killGroup, sameProcess, startTime } from "../../src/install/proc.
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { Store } from "../../src/store/store.ts"
 import { company, recordingGit } from "../company/helpers.ts"
-import { isGone, ps, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
+import { cwdOf, envNames, isGone, ps, reexecMarks, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { makeOffice, request, served } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -750,47 +750,6 @@ process.exit(await main(["--home", process.argv[2]!], {
   },
   120_000,
 )
-
-/** The names in the env `pid` was started with (or re-exec'd into): Linux `/proc/<pid>/environ`; macOS what
- *  `ps -E` prints after the command. */
-function envNames(pid: number): string[] {
-  if (process.platform === "linux")
-    return fs
-      .readFileSync(`/proc/${pid}/environ`, "utf8")
-      .split("\0")
-      .filter((entry) => entry !== "")
-      .map((entry) => entry.slice(0, entry.indexOf("=")))
-  const read = (flags: string[]) =>
-    execFileSync(ps(), [...flags, "-ww", "-o", "command=", "-p", String(pid)], {
-      env: { LC_ALL: "C.UTF-8" },
-      encoding: "utf8",
-      timeout: 5000,
-    }).trimEnd()
-  const command = read([])
-  const withEnv = read(["-E"])
-  if (!withEnv.startsWith(command)) throw new Error(`ps -E of ${pid} doesn't start with its command`)
-  return [...withEnv.slice(command.length).matchAll(/(?:^| )([A-Za-z_][A-Za-z0-9_]*)=/g)].map((m) => m[1]!)
-}
-
-/** The cwd of `pid`: Linux `/proc/<pid>/cwd`; macOS lsof's `n` line. */
-function cwdOf(pid: number): string {
-  if (process.platform === "linux") return fs.readlinkSync(`/proc/${pid}/cwd`)
-  const out = execFileSync("/usr/sbin/lsof", ["-a", "-d", "cwd", "-p", String(pid), "-Fn"], {
-    env: { LC_ALL: "C.UTF-8" },
-    encoding: "utf8",
-    timeout: 10_000,
-  })
-  const line = out.split("\n").find((l) => l.startsWith("n"))
-  if (line === undefined) throw new Error(`lsof shows no cwd for ${pid}`)
-  return line.slice(1)
-}
-
-/** How many times `--reexeced` is an argument of `pid`. */
-function reexecMarks(pid: number): number {
-  const line = args(pid, ps())
-  if (line === null) throw new Error(`can't read the arguments of ${pid}`)
-  return line.split(" ").filter((arg) => arg === "--reexeced").length
-}
 
 const NOT_A_KEY = "sk-test-not-a-key-0000"
 

@@ -1,0 +1,19 @@
+[Unit]
+Description=OpenCorp office at /Users/owner/.opencorp
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+LimitNOFILE=4096
+WorkingDirectory=/Users/owner/.opencorp/office
+Environment="HOME=/Users/owner"
+Environment="PATH=/usr/bin:/bin"
+ExecStart=/opt/opencorp/bin/opencorp daemon --home /Users/owner/.opencorp
+StandardOutput=append:/Users/owner/.opencorp/office/office.log
+StandardError=append:/Users/owner/.opencorp/office/office.log
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

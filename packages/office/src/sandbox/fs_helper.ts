@@ -53,15 +53,28 @@ const STRERROR: Record<string, string> = {
   ENOMEM: "Cannot allocate memory",
 }
 
-/** `error` as the reply Python's `OSError` branch gave (`<strerror>: <filename>`), or undefined when it
- *  isn't an OS error. `path` names the file when the error doesn't. */
-function osError(error: unknown, path: string): OpError | undefined {
+/** `error`'s errno and its text as Python's `OSError.strerror` gives it (C's `strerror` on macOS), or undefined
+ *  when it isn't an OS error. A code the table lacks gets the runtime's text, capitalised as C's is. */
+function systemError(error: unknown): { errno: number; text: string } | undefined {
   const code = (error as NodeJS.ErrnoException | null)?.code
   const errnos: Record<string, number> = os.constants.errno
   if (!(error instanceof Error) || typeof code !== "string" || !Object.hasOwn(errnos, code)) return undefined
   const errno = errnos[code]!
   const libuv = util.getSystemErrorMessage(-errno)
-  const text = STRERROR[code] ?? libuv.charAt(0).toUpperCase() + libuv.slice(1)
+  return { errno, text: STRERROR[code] ?? libuv.charAt(0).toUpperCase() + libuv.slice(1) }
+}
+
+/** `error`'s text as Python's `OSError.strerror` gives it, or undefined when it isn't an OS error. */
+export function strerror(error: unknown): string | undefined {
+  return systemError(error)?.text
+}
+
+/** `error` as the reply Python's `OSError` branch gave (`<strerror>: <filename>`), or undefined when it
+ *  isn't an OS error. `path` names the file when the error doesn't. */
+function osError(error: unknown, path: string): OpError | undefined {
+  const known = systemError(error)
+  if (!known) return undefined
+  const { errno, text } = known
   // The runtime's errors for "" and for reading a folder carry no path.
   const filename = (error as NodeJS.ErrnoException).path ?? path
   return new OpError(filename ? `${text}: ${filename}` : `[Errno ${errno}] ${text}: ''`)

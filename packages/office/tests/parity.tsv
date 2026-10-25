@@ -197,14 +197,19 @@ hq/test_version.py	ported	packages/app/test/build.test.ts,packages/office/tests/
 hq/test_version.py::test_a_pyproject_that_isnt_opencorps_with_a_version_falls_back_to_the_installed_version	dropped	—	design §5.4, O0-6: the key is apiId() (the CLI package's version, built in), with no checkout or installed-version form	O2-7
 hq/test_version.py::test_without_a_checkout_the_key_is_the_installed_version	dropped	—	design §5.4, O0-6: apiId() has no installed-version form; the key is the same with or without a checkout	O2-7
 install/test_doctor.py	open	—	—	O2-18a
-install/test_fallback.py	open	—	—	O2-12
+install/test_fallback.py	ported	packages/office/tests/install/fallback.test.ts	—	O2-12
+install/test_fallback.py::test_background_detaches_the_daemon_with_its_output_in_a_private_log	changed	packages/office/tests/install/fallback.test.ts::background detaches the daemon with its output in a private log	design §9.3 (background through /bin/sh with ulimit -n 4096)	O2-12
+install/test_fallback.py::test_background_without_the_venv_is_a_service_error	changed	packages/office/tests/install/fallback.test.ts::background without the office program is a service error	design §9.3 (no venv: the program is checked before /bin/sh hides it)	O2-12
+install/test_fallback.py::test_the_tmux_command_runs_the_daemon_with_only_its_env_its_output_to_the_log_and_its_stdin_on_the_pane	changed	packages/office/tests/install/fallback.test.ts::the tmux command runs the daemon with only its env its output to the log and its stdin on the pane	design §9.3 (tmux: env -i by absolute path, ulimit -n 4096)	O2-12
+install/test_fallback.py::test_tmux_starts_a_detached_session_in_the_repo	changed	packages/office/tests/install/fallback.test.ts::tmux starts a detached session in the office folder	design §9.3 (tmux -c is the office dir, the daemon's cwd)	O2-12
 install/test_init.py	open	—	—	O2-17
 install/test_interview.py	open	—	—	O2-17
 install/test_json_prompts.py	ported	packages/office/tests/install/json_prompts.test.ts	—	O2-13a
 install/test_launch.py	ported	packages/office/tests/install/launch.test.ts,packages/office/tests/install/tools.test.ts	—	O2-11b
 install/test_launch.py::test_repo_is_this_checkout	changed	packages/office/tests/install/tools.test.ts::repo is this checkout	design §6.1 (no REPO: the install path, the checkout root in a checkout)	O2-11b
 install/test_launch.py::test_the_launch_command_is_the_daemons_with_absolute_paths	changed	packages/office/tests/install/launch.test.ts::the launch command is the daemons with absolute paths	design §9.3 (selfCommand() + daemon --home H, cwd the office dir)	O2-11b
-install/test_launchd.py	open	—	—	O2-12
+install/test_launchd.py	ported	packages/office/tests/install/launchd.test.ts	—	O2-12
+install/test_launchd.py::test_xml_special_characters_and_newlines_survive_the_plist	changed	packages/office/tests/install/launchd.test.ts::xml special characters and newlines survive the plist	design §9.3 (hand-written plist; checked as text and with plutil, not plistlib)	O2-12
 install/test_legacy.py	dropped	—	legacy.py goes; no migration (D24, D4)	O0-9
 install/test_main.py	open	—	—	O2-13b
 install/test_offboard.py	open	—	—	O2-18b
@@ -218,8 +223,9 @@ install/test_provider_setup.py::test_azure_deployments_waits_fifteen_seconds_and
 install/test_provider_setup.py::test_on_a_terminal_a_secret_is_marked_like_the_other_questions	changed	packages/office/tests/install/provider_setup.test.ts::on a terminal a secret is read masked by clack	design §9.1: clack's password() replaces getpass	O2-13a
 install/test_provider_setup.py::test_provider_models_waits_fifteen_seconds_and_says_why_it_cant_list_them	changed	packages/office/tests/install/provider_setup.test.ts::provider models waits fifteen seconds and says why it cant list them	design §10.1: ESM modules cant be monkeypatched; a fake AuthRequest drives chat/models and yian's listModels	O2-14
 install/test_provider_setup.py::test_the_key_is_asked_without_echo_and_written_private	changed	packages/office/tests/install/provider_setup.test.ts::the key is asked without echo and written private	D13/P3: office/connections keeps its .lock beside office.json	O2-14
-install/test_service.py	open	—	—	O2-12
-install/test_systemd.py	open	—	—	O2-12
+install/test_service.py	ported	packages/office/tests/install/service.test.ts	—	O2-12
+install/test_systemd.py	ported	packages/office/tests/install/systemd.test.ts	—	O2-12
+install/test_systemd.py::test_spaces_percents_and_dollars_reach_the_daemon_unchanged	changed	packages/office/tests/install/systemd.test.ts::spaces percents and dollars reach the daemon unchanged	design §9.3 (argv selfCommand() + daemon --home H, cwd the office dir)	O2-12
 perm/test_frames.py	open	—	—	O3-4
 perm/test_monitor.py	ported	packages/office/tests/perm/monitor.test.ts	—	O3-2
 perm/test_monitor.py::test_where_matches_type_as_well_as_value	changed	packages/office/tests/perm/monitor.test.ts::where matches type as well as value	D15: 1 equals 1.0 (JSON numbers are one type; a bigint equals the same number); true, "1" and [1] still differ	O1-13
@@ -648,6 +654,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/hq/static.test.ts::a path with a doubled slash is not a file of the app	design §6 static rules: //index.html resolves as an absolute path outside app_dir (Python's app_dir / rel), so it is a 404	O2-7
 —	new	packages/office/tests/hq/static.test.ts::the not built page escapes the checkout path	design §6.4 (static): the checkout path is HTML-escaped in the not-built page, as Python's html.escape	O2-7
 —	new	packages/office/tests/hq/version.test.ts::build json that is a fifo is invalid without blocking	design §6: build.json is opened O_NONBLOCK and fstat-checked, so a FIFO never blocks	O2-7
+—	new	packages/office/tests/install/fallback.test.ts::a spawn that fails is a service error and closes the log	design §9.3 (background: a failed spawn is a ServiceError; the log fd never leaks)	O2-12
+—	new	packages/office/tests/install/fallback.test.ts::stop process stops the office daemon and nothing else	design §9.4 (process identity: start time before args, --home pair on a word boundary)	O2-12
+—	new	packages/office/tests/install/fallback.test.ts::the daemon is found only by its pid start time and home	design §9.4 (process identity: start time before args, --home pair on a word boundary)	O2-12
 —	new	packages/office/tests/install/files.test.ts::a new file is written with its folders and mode 0644	design §9.3 (service files written atomically; install/files.py has no test file of its own)	O2-11b
 —	new	packages/office/tests/install/files.test.ts::a planted temp path is never followed	design §9.3 (service files written atomically; install/files.py has no test file of its own)	O2-11b
 —	new	packages/office/tests/install/files.test.ts::an unwritable folder throws and leaves no temp file	design §9.3 (service files written atomically; install/files.py has no test file of its own)	O2-11b
@@ -675,6 +684,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/launch.test.ts::the install test host runs nothing real and its clock moves only when it sleeps	design §9.3 (install tests run on a stand-in host)	O2-11b
 —	new	packages/office/tests/install/launch.test.ts::the pre re-exec check imports only node builtins platform and sockets	design §6.5 (before any import beyond platform.ts)	O2-11b
 —	new	packages/office/tests/install/launch.test.ts::which finds a runnable program on the absolute path entries only	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
+—	new	packages/office/tests/install/launchd.test.ts::a control character in a value is a service error	design §9.3 (hand-written plist refuses what plistlib refuses, CR included)	O2-12
+—	new	packages/office/tests/install/launchd.test.ts::a plist that cant be written is a service error and only the probe ran	design §9.3 (service files: a failed write is a ServiceError with the system's text)	O2-12
 —	new	packages/office/tests/install/proc.test.ts::args of an exited process is null	design §9.4: ps replaces psutil cmdline	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args refuses a ps that is not an absolute path	design §6 rule 5: tools by absolute path	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args shows the command line of a process	design §9.4: ps replaces psutil cmdline	O2-11a
@@ -699,6 +710,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/provider_setup.test.ts::a symlinked connections folder is an onboard error and its target keeps its mode	design §6 rule 6 (#409); onboarding reports it as an OnboardError	O2-21
 —	new	packages/office/tests/install/provider_setup.test.ts::on a real dumb terminal a numbered list after a secret gets its answer	design §9.1: Bun's tty stream stops feeding a paused reader once clack has used it, so line reads flow	O2-13a
 —	new	packages/office/tests/install/provider_setup.test.ts::the setup connection is made 0700 and read as the office connection	P3: the setup connection is office/connections/office.json	O2-14
+—	new	packages/office/tests/install/service.test.ts::background mode starts the daemon in the office env and folder from a poisoned caller	design §6.5 (background mode, R2 I1; O2-11b handoff)	O2-12
 —	new	packages/office/tests/install/tools.test.ts::a compiled binary installs as its package and its shim package	design §6.1 (install refused, RS C3)	O2-11b
 —	new	packages/office/tests/install/tools.test.ts::each tool is resolved on the daemon path to its realpath	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
 —	new	packages/office/tests/install/tools.test.ts::relative entries directories and files that cant run are skipped	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
