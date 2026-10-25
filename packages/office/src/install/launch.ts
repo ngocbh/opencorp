@@ -6,7 +6,9 @@ import { createHash } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { selfCommand } from "../platform.ts"
+import { parseArgs } from "node:util"
+import { makeOfficeDir } from "../daemon/sockets.ts"
+import { reexec, selfCommand } from "../platform.ts"
 
 /** A service manager refused to install or start the office; the message says why. */
 export class ServiceError extends Error {
@@ -102,6 +104,116 @@ export function resolveHome(value: string): string {
       dir = parent
     }
   }
+}
+
+/** The daemon's arguments: `--home <path>` and the re-exec's `--reexeced` mark, nothing else; throws on any other
+ *  argument and on an empty home. The daemon's one parser, used before and after the re-exec, so the two can't
+ *  disagree. */
+export function daemonArgs(argv: readonly string[]): { home: string | undefined; reexeced: boolean } {
+  const { values } = parseArgs({
+    args: [...argv],
+    options: { home: { type: "string" }, reexeced: { type: "boolean" } },
+    strict: true,
+    allowPositionals: false,
+  })
+  // An empty home would resolve to the cwd.
+  if (values.home === "") throw new Error("the home can't be empty")
+  return { home: values.home, reexeced: values.reexeced ?? false }
+}
+
+/** What `pinDaemon` reads and runs; tests pass stand-ins. */
+export interface PinOptions {
+  /** The env the daemon was started with (default `process.env`). */
+  environ?: Env
+  /** The daemon's cwd (default `process.cwd`). */
+  cwd?: () => string
+  /** The argv prefix that runs the office's own code (default `selfCommand()`). */
+  command?: readonly string[]
+  /** Replaces this process with `argv` in `cwd` with exactly `env` (default `platform.ts`'s `reexec`). */
+  exec?: (argv: [string, ...string[]], env: Record<string, string>, cwd: string) => never
+  /** Where the refusal goes (default a synchronous write to stderr). */
+  write?: (text: string) => void
+}
+
+/** Writes `text` to stderr synchronously, dropping it if the write fails. */
+function writeStderr(text: string): void {
+  try {
+    fs.writeSync(2, text)
+  } catch {
+    // A broken stderr must not turn a refusal into a crash.
+  }
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Pins a starting daemon to the office's env and folder: unless it already runs with `daemonEnv` of its env, in the
+ * realpath of `office/` (made first), it re-execs itself there with `--reexeced`, same pid; one started with
+ * `--reexeced` that still differs exits instead. A service's added variables (launchd's `XPC_*`, systemd's
+ * `INVOCATION_ID`) cause one re-exec too.
+ *
+ * Resolves to `undefined` when the daemon may run on, else the exit code: 2 for bad arguments, 1 for a home or
+ * office dir that can't be used, a check still failing after the re-exec, or a re-exec that failed. Messages name
+ * variables, never their values, and a failed re-exec only by its error's code or type.
+ */
+export function pinDaemon(argv: readonly string[], options: PinOptions = {}): number | undefined {
+  const { environ = process.env, cwd = () => process.cwd(), command = selfCommand(), exec = reexec } = options
+  const write = options.write ?? writeStderr
+  let args: ReturnType<typeof daemonArgs>
+  try {
+    args = daemonArgs(argv)
+  } catch (error) {
+    write(`opencorp office: ${messageOf(error)}\n`)
+    return 2
+  }
+  const wanted = args.home ?? path.join(os.homedir(), ".opencorp")
+  let home: string
+  try {
+    home = resolveHome(wanted)
+  } catch (error) {
+    // The path is the caller's own argument (or the default), never a value from the env.
+    write(`opencorp office: can't resolve the home ${wanted}: ${messageOf(error)}\n`)
+    return 1
+  }
+  const office = path.join(home, "office")
+  let officeReal: string
+  try {
+    makeOfficeDir(office)
+    officeReal = fs.realpathSync(office)
+  } catch (error) {
+    write(`opencorp office: ${messageOf(error)}\n`)
+    return 1
+  }
+  const want = daemonEnv(environ)
+  const names = [...new Set([...Object.keys(environ), ...Object.keys(want)])]
+    .filter((name) => environ[name] !== want[name])
+    .sort()
+  let cwdDiffers: boolean
+  try {
+    cwdDiffers = fs.realpathSync(cwd()) !== officeReal
+  } catch {
+    // A cwd that was removed can't be read: it isn't the office.
+    cwdDiffers = true
+  }
+  if (names.length === 0 && !cwdDiffers) return undefined
+  if (args.reexeced) {
+    const differing = cwdDiffers ? [...names, "cwd"] : names
+    write(`opencorp office: still not in the office's env after a re-exec: ${differing.join(", ")}\n`)
+    return 1
+  }
+  const next: string[] = [...command, "daemon", "--home", home, "--reexeced"]
+  let reason = "returned"
+  try {
+    exec(next as [string, ...string[]], want, officeReal)
+  } catch (error) {
+    // An error's message could quote the env; its code or type can't.
+    const code = (error as { code?: unknown } | null)?.code
+    reason = typeof code === "string" ? code : error instanceof Error ? error.constructor.name : typeof error
+  }
+  write(`opencorp office: can't re-exec into the office's env: ${reason}\n`)
+  return 1
 }
 
 /**

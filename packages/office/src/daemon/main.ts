@@ -4,12 +4,11 @@ import fs from "node:fs"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import os from "node:os"
 import path from "node:path"
-import { parseArgs } from "node:util"
 import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform"
 import { CompanyGit } from "../company/git.ts"
 import { HeadWatcher } from "../company/watch.ts"
 import { EXTENSIONS, type Extension, ExtensionError, loadExtensions } from "../extensions/index.ts"
-import { daemonEnv, resolveHome } from "../install/launch.ts"
+import { daemonArgs, daemonEnv, resolveHome } from "../install/launch.ts"
 import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { Store } from "../store/store.ts"
@@ -390,13 +389,8 @@ export async function main(
 ): Promise<number> {
   let value: string | undefined
   try {
-    const { values } = parseArgs({
-      args: argv,
-      options: { home: { type: "string" } },
-      strict: true,
-      allowPositionals: false,
-    })
-    value = values.home
+    // `--reexeced` marks the re-exec `pinDaemon` already checked; nothing here reads it.
+    value = daemonArgs(argv).home
   } catch (error) {
     write(`opencorp office: ${messageOf(error)}\n`)
     return 2

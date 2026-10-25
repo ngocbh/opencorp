@@ -1,5 +1,5 @@
 /** The daemon process: a 0600 socket, one daemon per home, clean shutdown. */
-import { type ChildProcess, spawn, spawnSync } from "node:child_process"
+import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import http, { type IncomingMessage, type ServerResponse } from "node:http"
 import net from "node:net"
@@ -18,14 +18,14 @@ import {
   trackRequests,
 } from "../../src/daemon/main.ts"
 import { OfficePaths } from "../../src/daemon/office.ts"
-import { OfficeStartError, listenUnix } from "../../src/daemon/sockets.ts"
+import { OfficeStartError, listenUnix, makeOfficeDir } from "../../src/daemon/sockets.ts"
 import type { Extension } from "../../src/extensions/index.ts"
-import { resolveHome } from "../../src/install/launch.ts"
-import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
+import { launch as officeLaunch, resolveHome } from "../../src/install/launch.ts"
+import { args, killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { Store } from "../../src/store/store.ts"
 import { company, recordingGit } from "../company/helpers.ts"
-import { isGone, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
+import { isGone, ps, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { makeOffice, request, served } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -472,16 +472,20 @@ function daemonHome(): string {
   return dir
 }
 
-/** Runs `argv` detached (its own group) in `<home>/office` with the self-spawn env and HOME set to `home`, its
- *  output in `<home>/daemon.log`, and records it for the cleanup. */
-function launch(home: string, [bin, ...args]: [string, ...string[]]): Daemon {
+/** Runs `argv` detached (its own group) in `cwd` (default `<home>/office`) with `env` (default the self-spawn env
+ *  with HOME set to `home`), its output in `<home>/daemon.log`, and records it for the cleanup. */
+function launch(
+  home: string,
+  [bin, ...args]: [string, ...string[]],
+  { env, cwd }: { env?: Record<string, string>; cwd?: string } = {},
+): Daemon {
   // A file: an unread pipe fills up and blocks the daemon's writes.
   const fd = fs.openSync(path.join(home, "daemon.log"), "w")
   let child: ChildProcess
   try {
     child = spawn(bin, args, {
-      cwd: path.join(home, "office"),
-      env: selfSpawnEnv({ ...process.env, HOME: home }),
+      cwd: cwd ?? path.join(home, "office"),
+      env: env ?? selfSpawnEnv({ ...process.env, HOME: home }),
       detached: true,
       stdio: ["ignore", fd, fd],
     })
@@ -714,6 +718,135 @@ process.exit(await main(["--home", process.argv[2]!], {
     expect(fs.existsSync(paths.pidfile)).toBe(false)
     expect(isLocked(paths.lock)).toBe(false)
     expect(daemonLog(dir)).toContain(`office serving on ${paths.socket}`)
+  },
+  120_000,
+)
+
+/** The names in the env `pid` was started with (or re-exec'd into): Linux `/proc/<pid>/environ`; macOS what
+ *  `ps -E` prints after the command. */
+function envNames(pid: number): string[] {
+  if (process.platform === "linux")
+    return fs
+      .readFileSync(`/proc/${pid}/environ`, "utf8")
+      .split("\0")
+      .filter((entry) => entry !== "")
+      .map((entry) => entry.slice(0, entry.indexOf("=")))
+  const read = (flags: string[]) =>
+    execFileSync(ps(), [...flags, "-ww", "-o", "command=", "-p", String(pid)], {
+      env: { LC_ALL: "C.UTF-8" },
+      encoding: "utf8",
+      timeout: 5000,
+    }).trimEnd()
+  const command = read([])
+  const withEnv = read(["-E"])
+  if (!withEnv.startsWith(command)) throw new Error(`ps -E of ${pid} doesn't start with its command`)
+  return [...withEnv.slice(command.length).matchAll(/(?:^| )([A-Za-z_][A-Za-z0-9_]*)=/g)].map((m) => m[1]!)
+}
+
+/** The cwd of `pid`: Linux `/proc/<pid>/cwd`; macOS lsof's `n` line. */
+function cwdOf(pid: number): string {
+  if (process.platform === "linux") return fs.readlinkSync(`/proc/${pid}/cwd`)
+  const out = execFileSync("/usr/sbin/lsof", ["-a", "-d", "cwd", "-p", String(pid), "-Fn"], {
+    env: { LC_ALL: "C.UTF-8" },
+    encoding: "utf8",
+    timeout: 10_000,
+  })
+  const line = out.split("\n").find((l) => l.startsWith("n"))
+  if (line === undefined) throw new Error(`lsof shows no cwd for ${pid}`)
+  return line.slice(1)
+}
+
+/** How many times `--reexeced` is an argument of `pid`. */
+function reexecMarks(pid: number): number {
+  const line = args(pid, ps())
+  if (line === null) throw new Error(`can't read the arguments of ${pid}`)
+  return line.split(" ").filter((arg) => arg === "--reexeced").length
+}
+
+const NOT_A_KEY = "sk-test-not-a-key-0000"
+
+test(
+  "opencorp daemon from a shell re-execs into the office env and folder",
+  async () => {
+    const dir = daemonHome()
+    const paths = new OfficePaths(dir)
+    const proj = tempDir()
+    // What a project folder could plant: a `.env`, a bunfig preload, and the user's own BUN_OPTIONS preload.
+    fs.writeFileSync(path.join(proj, ".env"), "PLANTED=1\n")
+    fs.writeFileSync(path.join(proj, "bunfig.toml"), 'preload = ["./mark.ts"]\n')
+    const append = (file: string) =>
+      `import { appendFileSync } from "node:fs"\nappendFileSync(${JSON.stringify(path.join(proj, file))}, "ran\\n")\n`
+    fs.writeFileSync(path.join(proj, "mark.ts"), append("MARKS"))
+    fs.writeFileSync(path.join(proj, "opt.ts"), append("OPTS"))
+    const env = {
+      ...selfSpawnEnv({ ...process.env, HOME: dir }),
+      OPENAI_API_KEY: NOT_A_KEY,
+      BUN_OPTIONS: `--preload ${path.join(proj, "opt.ts")}`,
+      PWD: proj,
+    }
+    const d = launch(dir, daemonCommand(dir), { env, cwd: proj })
+    await waitUntilServing(dir, d)
+    const names = envNames(d.pid)
+    expect(names).toContain("PATH")
+    expect(names).toContain("HOME")
+    for (const name of ["OPENAI_API_KEY", "BUN_OPTIONS", "PLANTED", "PWD"]) expect(names).not.toContain(name)
+    expect(cwdOf(d.pid)).toBe(fs.realpathSync(paths.office))
+    expect(args(d.pid, ps())).toEndWith(" --reexeced")
+    expect(reexecMarks(d.pid)).toBe(1)
+    expect(fs.readFileSync(paths.pidfile, "utf8")).toBe(`${d.pid}\n`)
+    expect(fs.existsSync(path.join(proj, "MARKS"))).toBe(false)
+    // The first image ran the user's own preload; the re-exec'd one didn't.
+    expect(fs.readFileSync(path.join(proj, "OPTS"), "utf8")).toBe("ran\n")
+    await stopDaemon(dir, d)
+  },
+  120_000,
+)
+
+test(
+  "background mode starts the daemon in the office env from a poisoned caller",
+  async () => {
+    const dir = daemonHome()
+    const proj = tempDir()
+    const l = officeLaunch(dir, {
+      environ: {
+        ...selfSpawnEnv(process.env),
+        HOME: dir,
+        OPENAI_API_KEY: NOT_A_KEY,
+        BUN_OPTIONS: "--preload /nonexistent.ts",
+        PWD: proj,
+      },
+    })
+    for (const name of ["OPENAI_API_KEY", "BUN_OPTIONS", "PWD"]) expect(Object.keys(l.env)).not.toContain(name)
+    makeOfficeDir(l.office)
+    const d = launch(dir, l.argv as [string, ...string[]], { env: { ...l.env }, cwd: l.cwd })
+    await waitUntilServing(dir, d)
+    expect(reexecMarks(d.pid)).toBe(0)
+    const names = envNames(d.pid)
+    expect(names).toContain("PATH")
+    expect(names).toContain("HOME")
+    expect(new Set(names)).toEqual(new Set(Object.keys(l.env)))
+    expect(cwdOf(d.pid)).toBe(fs.realpathSync(l.office))
+    await stopDaemon(dir, d)
+  },
+  120_000,
+)
+
+test(
+  "under a service the daemon re-execs once",
+  async () => {
+    const dir = daemonHome()
+    const l = officeLaunch(dir, { environ: { ...selfSpawnEnv(process.env), HOME: dir } })
+    // What launchd and systemd add to a service's env.
+    const env = { ...l.env, XPC_SERVICE_NAME: "com.opencorp.test", INVOCATION_ID: "0123" }
+    const d = launch(dir, l.argv as [string, ...string[]], { env, cwd: l.cwd })
+    await waitUntilServing(dir, d)
+    expect(reexecMarks(d.pid)).toBe(1)
+    const names = envNames(d.pid)
+    expect(names).toContain("PATH")
+    expect(names).toContain("HOME")
+    expect(names).not.toContain("XPC_SERVICE_NAME")
+    expect(names).not.toContain("INVOCATION_ID")
+    await stopDaemon(dir, d)
   },
   120_000,
 )

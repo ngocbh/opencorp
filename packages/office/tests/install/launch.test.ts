@@ -7,9 +7,12 @@ import path from "node:path"
 import { expect, onTestFinished, test } from "bun:test"
 import {
   Launch,
+  type PinOptions,
+  daemonArgs,
   daemonEnv,
   launch,
   officeAnswers,
+  pinDaemon,
   resolveHome,
   runCommand,
   which,
@@ -138,6 +141,158 @@ test("the daemon env leaves out every name a self spawn may not carry", () => {
   const env = daemonEnv(environ)
   expect(env).toEqual({ PATH: "/usr/bin" })
   for (const key of Object.keys(env)) expect(unsafeEnvName(key)).toBe(false)
+})
+
+test("the daemon parser takes home and reexeced and nothing else", () => {
+  expect(daemonArgs(["--home", "/h", "--reexeced"])).toEqual({ home: "/h", reexeced: true })
+  expect(daemonArgs([])).toEqual({ home: undefined, reexeced: false })
+  for (const argv of [["--reexeced=x"], ["--bogus"], ["pos"]]) expect(() => daemonArgs(argv)).toThrow()
+  // An empty home would resolve to the cwd.
+  expect(() => daemonArgs(["--home="])).toThrow("the home can't be empty")
+})
+
+const COMMAND = ["/opt/opencorp/bin/opencorp"]
+
+/** A `pinDaemon` run on `argv` with a stub re-exec that records its calls and returns, and a `write` that keeps
+ *  the text. */
+function pin(argv: string[], options: Omit<PinOptions, "exec" | "write" | "command"> = {}, exec?: PinOptions["exec"]) {
+  const calls: { argv: string[]; env: Record<string, string>; cwd: string }[] = []
+  let text = ""
+  const code = pinDaemon(argv, {
+    command: COMMAND,
+    exec:
+      exec ??
+      ((argv, env, cwd) => {
+        calls.push({ argv, env, cwd })
+        return undefined as never
+      }),
+    write: (t) => void (text += t),
+    ...options,
+  })
+  return { code, calls, text }
+}
+
+/** A clean caller env for `home`. */
+function clean(home: string): Record<string, string> {
+  return { PATH: "/usr/bin:/bin", HOME: home, LANG: "en_US.UTF-8" }
+}
+
+test("a daemon already in the office env and folder runs on", () => {
+  const home = tempDir()
+  const office = path.join(home, "office")
+  const got = pin(["--home", home], { environ: daemonEnv(clean(home)), cwd: () => office })
+  expect(got.code).toBeUndefined()
+  expect(got.calls).toEqual([])
+  expect(got.text).toBe("")
+  expect(fs.statSync(office).mode & 0o777).toBe(0o700)
+})
+
+test("a daemon with another env re-execs into the office env and folder", () => {
+  const home = tempDir()
+  const office = path.join(home, "office")
+  const argv = [...COMMAND, "daemon", "--home", home, "--reexeced"]
+  const reexec = (env: Record<string, string>) => ({ argv, env, cwd: office })
+  const poisoned = { ...clean(home), OPENAI_API_KEY: "sk-live-0000", BUN_OPTIONS: "--preload x" }
+  const shell = pin(["--home", home], { environ: poisoned, cwd: () => office })
+  expect(shell.code).toBe(1)
+  expect(shell.calls).toEqual([reexec(daemonEnv(poisoned))])
+  expect(shell.calls[0]!.env).toEqual(clean(home))
+  expect(shell.text).toBe("opencorp office: can't re-exec into the office's env: returned\n")
+  const elsewhere = pin(["--home", home], { environ: clean(home), cwd: () => tempDir() })
+  expect(elsewhere.code).toBe(1)
+  expect(elsewhere.calls).toEqual([reexec(clean(home))])
+  const link = path.join(tempDir(), "link")
+  fs.symlinkSync(home, link)
+  const linked = pin(["--home", link], { environ: { ...poisoned, HOME: link }, cwd: () => office })
+  expect(linked.code).toBe(1)
+  expect(linked.calls.map((c) => [c.argv, c.cwd])).toEqual([[argv, office]])
+})
+
+test("a daemon that still differs after its re-exec exits 1 naming variables not values", () => {
+  const home = tempDir()
+  const environ = { ...clean(home), OPENAI_API_KEY: "sk-live-0000" }
+  const got = pin(["--home", home, "--reexeced"], { environ, cwd: () => tempDir() })
+  expect(got.code).toBe(1)
+  expect(got.text).toBe("opencorp office: still not in the office's env after a re-exec: OPENAI_API_KEY, cwd\n")
+  expect(got.text).not.toContain("sk-live-0000")
+  expect(got.calls).toEqual([])
+})
+
+test("bad arguments exit 2 before any re-exec", () => {
+  const home = path.join(tempDir(), "h")
+  for (const argv of [["--bogus"], ["--home", home, "--bogus"]]) {
+    const got = pin(argv, { environ: { OPENAI_API_KEY: "sk-live-0000" } })
+    expect(got.code).toBe(2)
+    expect(got.text).toStartWith("opencorp office: ")
+    expect(got.calls).toEqual([])
+  }
+  expect(fs.existsSync(home)).toBe(false)
+})
+
+test("a refused office dir exits 1 before any re-exec", () => {
+  const home = tempDir()
+  const office = path.join(home, "office")
+  fs.symlinkSync(tempDir(), office)
+  const got = pin(["--home", home], { environ: clean(home), cwd: () => tempDir() })
+  expect(got.code).toBe(1)
+  expect(got.text).toBe(`opencorp office: the office directory ${office} is a symlink\n`)
+  expect(got.calls).toEqual([])
+})
+
+test("a failed re-exec exits 1 with the errors code and never its message", () => {
+  const home = tempDir()
+  const options = { environ: { ...clean(home), OPENAI_API_KEY: "sk-live-0000" }, cwd: () => tempDir() }
+  const coded = pin(["--home", home], options, () => {
+    throw Object.assign(new Error("boom sk-live-0000"), { code: "ENOENT" })
+  })
+  expect(coded.code).toBe(1)
+  expect(coded.text).toBe("opencorp office: can't re-exec into the office's env: ENOENT\n")
+  const typed = pin(["--home", home], options, () => {
+    throw new RangeError("boom sk-live-0000")
+  })
+  expect(typed.code).toBe(1)
+  expect(typed.text).toBe("opencorp office: can't re-exec into the office's env: RangeError\n")
+})
+
+const SRC = path.join(import.meta.dir, "../../src")
+
+/** Every module `file` names: static and bare imports, re-exports, `import()` and `require()`, comments left out;
+ *  `import type` and `export type` are kept unless `values` is set. */
+function specifiers(file: string, { values = false } = {}): string[] {
+  const code = fs
+    .readFileSync(path.join(SRC, file), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|\s)\/\/.*$/gm, "$1")
+  const found: string[] = []
+  const patterns = [
+    /\b(?:import|export)\s+(type\s+)?[^"'`;]*?\bfrom\s*["']([^"']+)["']/g,
+    /\bimport\s*()["']([^"']+)["']/g,
+    /\b(?:import|require)\s*\(\s*()["']([^"']+)["']/g,
+  ]
+  for (const pattern of patterns) {
+    for (const [, type, name] of code.matchAll(pattern)) if (!(values && type)) found.push(name!)
+  }
+  return found
+}
+
+test("the pre re-exec check imports only node builtins platform and sockets", () => {
+  const launchImports = specifiers("install/launch.ts")
+  expect(launchImports).toContain("../platform.ts")
+  expect(launchImports).toContain("../daemon/sockets.ts")
+  for (const name of launchImports) expect(name).toMatch(/^(node:.+|\.\.\/platform\.ts|\.\.\/daemon\/sockets\.ts)$/)
+  const socketImports = specifiers("daemon/sockets.ts")
+  expect(socketImports.length).toBeGreaterThan(0)
+  for (const name of socketImports) expect(name).toMatch(/^node:/)
+  const platformImports = specifiers("platform.ts", { values: true })
+  expect(platformImports.length).toBeGreaterThan(0)
+  for (const name of platformImports) expect(name).toMatch(/^(node|bun):/)
+  const main = fs.readFileSync(path.join(SRC, "main.ts"), "utf8")
+  const start = main.indexOf("export const daemonMain")
+  const body = main.slice(start, main.indexOf("\n}\n", start))
+  const pinAt = body.indexOf('import("./install/launch.ts")')
+  expect(start).toBeGreaterThanOrEqual(0)
+  expect(pinAt).toBeGreaterThanOrEqual(0)
+  expect(body.indexOf('import("./daemon/main.ts")')).toBeGreaterThan(pinAt)
 })
 
 test("a missing program is exit 127 not an exception", async () => {
