@@ -1,25 +1,22 @@
-/** The office side of a run's ask_user: the handler, and storing then waiting for answers. */
-import { expect, onTestFinished, spyOn, test } from "bun:test"
-import { ToolSet } from "@ngocbh/yian/tools"
+/** The office side of a run's ask_user: the handler, and storing each call's question once until it is answered. */
+import { expect, setDefaultTimeout, test } from "bun:test"
+import { isPending, ToolSet } from "@ngocbh/yian/tools"
 import { Question } from "@opencorp/protocol"
-import { Answers, AnswersClosed, QuestionExpired, makeAskUser, type OnQuestion } from "../../src/questions/ask.ts"
-import {
-  DuplicateKey,
-  NotFound,
-  Store,
-  StoreError,
-  newId,
-  type QuestionRecord,
-  type WorkItemRecord,
-} from "../../src/store/store.ts"
+import { Answers, makeAskUser, type OnQuestion } from "../../src/questions/ask.ts"
+import { INTERRUPTED } from "../../src/questions/format.ts"
+import { DuplicateKey, NotFound, StoreError, newId, type QuestionRecord } from "../../src/store/store.ts"
 import { ASK_KEYS, type AskRequest, askUserStub, BaseHandlers } from "../../src/worker/rpc.ts"
 import { openStore, question, session, workItem } from "../store/helpers.ts"
-import { officeEnd } from "../worker/helpers.ts"
+import { base, inProcessWorker, makeJob, officeEnd, Recorder, writeFiles } from "../worker/helpers.ts"
+
+setDefaultTimeout(30_000)
 
 const PAGES = [
   { question: "Which db?", header: "DB", options: [{ label: "sqlite", description: "local" }], multi_select: false },
 ]
 const SCHEMA = [{ name: "DB", type: "str", required: true }]
+const CALL = "run-1/reply/1/0"
+const NODE_CALL = "run-1/sop#0/ask"
 
 function modelCall(over?: Partial<AskRequest>): AskRequest {
   return {
@@ -45,7 +42,7 @@ function askNodeCall(over?: Partial<AskRequest>): AskRequest {
   }
 }
 
-/** An `OnQuestion` that records the question and answers it at once. */
+/** An `OnQuestion` that records the question and returns it answered at once. */
 class Desk {
   asked: QuestionRecord[] = []
   answer: unknown
@@ -56,7 +53,7 @@ class Desk {
     this.kind = kind
   }
 
-  call: OnQuestion = async (q) => {
+  call: OnQuestion = (q) => {
     this.asked.push(q)
     return { ...q, status: "answered", answer: this.answer, answer_kind: this.kind }
   }
@@ -68,75 +65,102 @@ test("the handler passes composers check and takes its calls", async () => {
   // Yian's ask slot hands the request with camelCase fields, adapted to an AskRequest as askUserStub does.
   const tools = new ToolSet({
     ask: (r) =>
-      handler({
-        question: r.question ?? null,
-        questions: r.questions ?? null,
-        answer_schema: r.answerSchema ?? null,
-        title: r.title ?? null,
-        node_id: r.nodeId ?? null,
-        options: r.options ?? null,
-      }),
+      handler(
+        {
+          question: r.question ?? null,
+          questions: r.questions ?? null,
+          answer_schema: r.answerSchema ?? null,
+          title: r.title ?? null,
+          node_id: r.nodeId ?? null,
+          options: r.options ?? null,
+        },
+        r.callId,
+      ),
   })
-  expect(await tools.invoke("ask_user", { question: "A or B?", options: '["A","B"]' })).toBe(
+  expect(await tools.invoke("ask_user", { question: "A or B?", options: '["A","B"]' }, { callId: CALL })).toBe(
     'The user chose "B" (option 2 of the 2 shown).',
   )
   desk.answer = { DB: "sqlite" }
   const call = askNodeCall()
   expect(
-    await tools.invokeTrusted("ask", {
-      prompt: call.question,
-      questions: call.questions,
-      answerSchema: call.answer_schema,
-      title: call.title,
-      nodeId: call.node_id,
-    }),
+    await tools.invokeTrusted(
+      "ask",
+      {
+        prompt: call.question,
+        questions: call.questions,
+        answerSchema: call.answer_schema,
+        title: call.title,
+        nodeId: call.node_id,
+      },
+      { callId: NODE_CALL },
+    ),
   ).toEqual({ DB: "sqlite" })
-  expect(desk.asked.map((q) => q.source)).toEqual(["ask_user", "ask"])
+  expect(desk.asked.map((q) => [q.source, q.call_id])).toEqual([
+    ["ask_user", CALL],
+    ["ask", NODE_CALL],
+  ])
   expect(new Set<string>(ASK_KEYS)).toEqual(new Set(Object.keys(modelCall())))
 })
 
 test("the handler answers through the workers stub", async () => {
-  const desk = new Desk("B")
-  const handler = makeAskUser(session(), "run-1", desk.call)
+  const store = openStore()
+  const s = store.createSession(session())
+  const answers = new Answers(store)
+  const handler = makeAskUser(s, "r1", (q, o) => answers.ask(q, o))
   const rpc = await officeEnd(
     new (class extends BaseHandlers {
-      override askUser(_w: unknown, r: AskRequest, _callId: string) {
-        return handler(r)
+      override askUser(_w: unknown, r: AskRequest, callId: string) {
+        return handler(r, callId)
       }
     })(),
     { concurrent: true },
   )
   const tools = new ToolSet({ ask: askUserStub(rpc) })
-  const got = await tools.invoke("ask_user", { question: "A or B?", options: ["A", "B"] }, { callId: "r1/n/1/0" })
-  expect(got).toBe('The user chose "B" (option 2 of the 2 shown).')
-  expect(desk.asked[0]!.options).toEqual(["A", "B"])
+  const ask = () => tools.invoke("ask_user", { question: "A or B?", options: ["A", "B"] }, { callId: "r1/reply/1/0" })
+  expect(isPending(await ask())).toBe(true)
+  const stored = store.listQuestions({ sessionId: s.id })
+  expect(stored.map((q) => [q.status, q.call_id, q.options])).toEqual([["open", "r1/reply/1/0", ["A", "B"]]])
+  store.answerQuestion(stored[0]!.id, "B", "option")
+  const chosen = 'The user chose "B" (option 2 of the 2 shown).'
+  expect(await ask()).toBe(chosen)
+  expect(store.getQuestion(stored[0]!.id)!.status).toBe("consumed")
+  // A call whose reply was lost is invoked again and still gets the answer.
+  expect(await ask()).toBe(chosen)
+  expect(store.listQuestions({ sessionId: s.id })).toHaveLength(1)
 })
 
 test("a model call stores a flat question and returns the formatted answer", async () => {
   const s = session({ work_item_id: "01J9ZZZZZZZZZZZZZZZZZZZZZZ" })
   const desk = new Desk("Back off")
-  const got = await makeAskUser(s, "run-1", desk.call, { names: ["minh"] })(modelCall())
+  const got = await makeAskUser(s, "run-1", desk.call, { names: ["minh"] })(modelCall(), CALL)
   expect(got).toBe('The user chose "Back off" (option 2 of the 2 shown).')
   expect(desk.asked.length).toBe(1)
   const q = desk.asked[0]!
-  expect([q.source, q.node_id, q.asker, q.session_id, q.run_id, q.work_item_id]).toEqual([
+  expect([q.source, q.node_id, q.asker, q.session_id, q.run_id, q.work_item_id, q.call_id]).toEqual([
     "ask_user",
     null,
     "minh",
     s.id,
     "run-1",
     s.work_item_id,
+    CALL,
   ])
   expect(q.options).toEqual(["Retry", "Back off"])
   expect(q.questions).toBeNull()
   expect(q.answer_schema).toEqual([])
   expect(q.status).toBe("open")
   expect(Question.parse(q)).toEqual(q)
+
+  const { store, sid, answers } = setup()
+  const stored = store.getSession(sid)!
+  const open = await makeAskUser(stored, "run-1", (question, o) => answers.ask(question, o))(modelCall(), CALL)
+  expect(isPending(open)).toBe(true)
+  expect(store.listQuestions({ sessionId: sid }).map((x) => x.status)).toEqual(["open"])
 })
 
 test("a model call with bad options still asks", async () => {
   const desk = new Desk("fine", "text")
-  expect(await makeAskUser(session(), "run-1", desk.call)(modelCall({ options: { x: 1 } }))).toBe(
+  expect(await makeAskUser(session(), "run-1", desk.call)(modelCall({ options: { x: 1 } }), CALL)).toBe(
     "The user answered: fine",
   )
   expect(desk.asked[0]!.options).toEqual([])
@@ -144,21 +168,58 @@ test("a model call with bad options still asks", async () => {
 
 test("an ask node call keeps its node pages and schema", async () => {
   const desk = new Desk({ DB: "sqlite" })
-  const got = await makeAskUser(session(), "run-1", desk.call)(askNodeCall())
+  const got = await makeAskUser(session(), "run-1", desk.call)(askNodeCall(), NODE_CALL)
   expect(got).toEqual({ DB: "sqlite" })
   expect(desk.asked.length).toBe(1)
   const q = desk.asked[0]!
-  expect([q.source, q.node_id, q.title, q.question]).toEqual(["ask", "sop#0/ask", "Setup", ""])
+  expect([q.source, q.node_id, q.title, q.question, q.call_id]).toEqual(["ask", "sop#0/ask", "Setup", "", NODE_CALL])
   expect(q.questions![0]!.options[0]!.description).toBe("local")
   expect(q.answer_schema[0]!.name).toBe("DB")
   expect(q.options).toEqual([])
+})
+
+const PAGED =
+  "id: paged\nname: paged\nnodes:\n  asked:\n    kind: tool\n    tool_id: ask\n    input:\n" +
+  '      prompt: "Setup"\n      questions:\n        - question: "Which db?"\n          header: DB\n' +
+  "          options:\n            - label: sqlite\n          multi_select: true\n" +
+  '        - question: "Why?"\n          header: Why\noutput: ${asked.output}\n'
+
+test("an ask node from a real flow stores its pages", async () => {
+  const store = openStore()
+  const s = store.createSession(session())
+  const answers = new Answers(store)
+  const b = base()
+  writeFiles(b.pin, { "flows/paged.yaml": PAGED })
+  const job = makeJob(b, "flows/paged.yaml", { inputs: {} })
+  const ask = makeAskUser(s, job.run_id, (q, o) => answers.ask(q, o))
+  const handlers = new (class extends Recorder {
+    override askUser(_w: unknown, request: AskRequest, callId?: string): unknown {
+      this.asked.push(request)
+      return ask(request, String(callId))
+    }
+  })()
+  const worker = await inProcessWorker(job, handlers)
+  expect(await worker.wait()).not.toBeNull()
+  expect(handlers.outcome?.status, String(handlers.outcome?.message)).toBe("waiting")
+  const stored = store.listQuestions({ sessionId: s.id })
+  expect(stored.map((q) => [q.source, q.call_id, q.status])).toEqual([["ask", `${job.run_id}/asked`, "open"]])
+  expect(stored[0]!.questions).toEqual([
+    {
+      question: "Which db?",
+      header: "DB",
+      options: [{ label: "sqlite", description: "" }],
+      multi_select: true,
+      secret: false,
+    },
+    { question: "Why?", header: "Why", options: [], multi_select: false, secret: false },
+  ])
 })
 
 test("a carried discussion reaches the answer", async () => {
   const handler = makeAskUser(session(), "run-1", new Desk("x", "text").call, {
     carried: () => [{ role: "user", text: "before" }],
   })
-  expect(await handler(modelCall())).toEndWith(
+  expect(await handler(modelCall(), CALL)).toEndWith(
     '[{"role":"note","text":"from an earlier, expired question"},{"role":"user","text":"before"}]',
   )
 })
@@ -169,7 +230,7 @@ test("a malformed request is refused without its values", async () => {
     questions: [{ question: "sk-SECRET", header: 7, options: [] }],
     title: { sk: "nested" },
   })
-  const error = await makeAskUser(session(), "run-1", desk.call)(request).then(
+  const error = await makeAskUser(session(), "run-1", desk.call)(request, NODE_CALL).then(
     () => undefined,
     (e: unknown) => e,
   )
@@ -180,228 +241,128 @@ test("a malformed request is refused without its values", async () => {
   expect(desk.asked).toEqual([])
 })
 
-/** A store with one session, and `Answers` on it whose log lines go to `lines`; closed when the test finishes. */
+/** A store with one session, and `Answers` on it whose log lines go to `lines`. */
 function setup() {
   const store = openStore()
   const sid = store.createSession(session()).id
   const lines: string[] = []
   const answers = new Answers(store, { log: (line) => lines.push(line) })
-  onTestFinished(() => answers.close())
   return { store, sid, answers, lines }
 }
 
-/** Call `answers.ask(q, options)`; `out` gets its result or its error, and `done` (which never rejects) settles
- *  once it has one. */
-function asking(answers: Answers, q: QuestionRecord, options?: { workItem?: WorkItemRecord; signal?: AbortSignal }) {
-  const out: { result?: QuestionRecord; error?: unknown } = {}
-  const done = answers.ask(q, options).then(
-    (result) => {
-      out.result = result
-    },
-    (error: unknown) => {
-      out.error = error
-    },
-  )
-  return { done, out }
+/** An `ask_manager` question of session `sid` and its work item. */
+function managerQuestion(sid: string, callId = CALL) {
+  const item = workItem({ kind: "question" })
+  const q = question(sid, { source: "ask_manager", work_item_id: item.id, call_id: callId })
+  return { item, q }
 }
 
-function tick(): Promise<void> {
-  return new Promise((r) => setTimeout(r, 0))
-}
-
-test("ask stores then blocks until answered and marks consumed", async () => {
+test("ask stores then blocks until answered and marks consumed", () => {
   const { store, sid, answers } = setup()
-  const q = question(sid)
-  const { done, out } = asking(answers, q)
+  const q = question(sid, { call_id: CALL })
+  const first = answers.ask(q)
+  expect([first.id, first.status]).toEqual([q.id, "open"])
   expect(store.listQuestions({ sessionId: sid, status: "open" }).map((s) => s.id)).toEqual([q.id])
-  await tick()
-  expect(out).toEqual({})
   store.answerQuestion(q.id, "pg", "text", "ngocbh")
-  await done
-  expect(out.result!.answer).toBe("pg")
-  expect(out.result!.status).toBe("consumed")
+  const got = answers.ask(question(sid, { call_id: CALL }))
+  expect([got.id, got.answer, got.status]).toEqual([q.id, "pg", "consumed"])
   expect(store.getQuestion(q.id)!.status).toBe("consumed")
-  expect(answers.waiting).toBe(0)
 })
 
 test("a question that goes stale raises", async () => {
   const { store, sid, answers } = setup()
-  const q = question(sid)
-  const { done, out } = asking(answers, q)
-  store.setQuestionStatus(q.id, "stale")
-  await done
-  expect(out.error).toBeInstanceOf(QuestionExpired)
-  expect((out.error as Error).message).toBe(`question ${q.id} expired before it was answered`)
-  expect(answers.waiting).toBe(0)
+  const ask = makeAskUser(store.getSession(sid)!, "run-1", (q, o) => answers.ask(q, o))
+  expect(isPending(await ask(modelCall(), CALL))).toBe(true)
+  const q = store.getQuestionByCall(CALL)!
+  answers.closedCall("run-1", CALL, "cancelled")
+  expect(store.getQuestion(q.id)!.status).toBe("stale")
+  const error = await ask(modelCall(), CALL).then(
+    () => undefined,
+    (e: unknown) => e,
+  )
+  expect(error).toBeInstanceOf(Error)
+  expect((error as Error).message).toBe(`question ${q.id} expired before it was answered`)
 })
 
-test("an ask node asked again finds its stored question", async () => {
+test("an ask node asked again finds its stored question", () => {
   const { store, sid, answers } = setup()
-  const first = store.addQuestion(question(sid, { source: "ask", node_id: "sop#0/ask" }))
+  const first = store.addQuestion(question(sid, { source: "ask", node_id: "sop#0/ask", call_id: NODE_CALL }))
   store.answerQuestion(first.id, "kept", "text")
-  const again = question(sid, { source: "ask", node_id: "sop#0/ask" })
-  const got = await answers.ask(again)
+  const got = answers.ask(question(sid, { source: "ask", node_id: "sop#0/ask", call_id: NODE_CALL }))
   expect(got.id).toBe(first.id)
   expect(got.answer).toBe("kept")
   expect(store.listQuestions({ sessionId: sid }).length).toBe(1)
 })
 
-test("a work item is stored with its question", async () => {
+test("a work item is stored with its question", () => {
   const { store, sid, answers } = setup()
-  const item = workItem({ kind: "question" })
-  const q = question(sid, { work_item_id: item.id })
-  const { done, out } = asking(answers, q, { workItem: item })
+  const { item, q } = managerQuestion(sid)
+  answers.ask(q, { workItem: item })
   const stored = store.listQuestions({ sessionId: sid, status: "open" })
   expect(stored.map((s) => s.work_item_id)).toEqual([item.id])
   expect(store.getWorkItem(item.id)!.status).toBe("open")
-  store.answerQuestion(q.id, "pg", "text")
-  await done
-  expect(out.result!.status).toBe("consumed")
 })
 
-test("a question that cannot be stored leaves no work item", async () => {
+test("a question that cannot be stored leaves no work item", () => {
   const { store, answers } = setup()
-  const item = workItem({ kind: "question" })
-  const q = question("01J9ZZZZZZZZZZZZZZZZZZZZZZ", { work_item_id: item.id })
-  await expect(answers.ask(q, { workItem: item })).rejects.toBeInstanceOf(NotFound)
+  const { item, q } = managerQuestion("01J9ZZZZZZZZZZZZZZZZZZZZZZ")
+  expect(() => answers.ask(q, { workItem: item })).toThrow(NotFound)
   expect(store.getWorkItem(item.id)).toBeUndefined()
 })
 
-test("a question that goes stale cancels its work item", async () => {
+test("a question that goes stale cancels its work item", () => {
   const { store, sid, answers, lines } = setup()
-  const item = workItem({ kind: "question" })
-  const q = question(sid, { work_item_id: item.id })
-  const { done, out } = asking(answers, q, { workItem: item })
-  store.setQuestionStatus(q.id, "stale")
-  await done
-  expect(out.error).toBeInstanceOf(QuestionExpired)
+  const { item, q } = managerQuestion(sid)
+  answers.ask(q, { workItem: item })
+  answers.closedCall("run-1", CALL, "timed_out")
+  expect(store.getQuestion(q.id)!.status).toBe("stale")
   expect(store.getWorkItem(item.id)!.status).toBe("cancelled")
   expect(lines).toEqual([])
 })
 
-test("an answer that lands between the check and the wait still wakes ask", async () => {
+test("a store error after the answer does not cancel the work item", () => {
   const { store, sid, answers } = setup()
-  const q = question(sid)
-  const getQuestion = store.getQuestion.bind(store)
-  store.getQuestion = (qid) => {
-    // ask sees the question open, then the answer lands before ask starts waiting.
-    const seen = getQuestion(qid)
-    if (seen?.status === "open") {
-      store.getQuestion = getQuestion
-      store.answerQuestion(qid, "pg", "text")
-    }
-    return seen
-  }
-  const { done, out } = asking(answers, q)
-  await done
-  expect(out.result!.answer).toBe("pg")
-  expect(answers.waiting).toBe(0)
-})
-
-test("close wakes every waiting ask", async () => {
-  const { sid, answers } = setup()
-  const waiting = [asking(answers, question(sid)), asking(answers, question(sid))]
-  await tick()
-  answers.close()
-  await Promise.all(waiting.map((w) => w.done))
-  for (const { out } of waiting) expect(out.error).toBeInstanceOf(AnswersClosed)
-  expect(answers.waiting).toBe(0)
-})
-
-test("ask after close raises and stores nothing", async () => {
-  const { store, sid, answers } = setup()
-  answers.close()
-  await expect(answers.ask(question(sid))).rejects.toBeInstanceOf(AnswersClosed)
-  expect(store.listQuestions({ sessionId: sid })).toEqual([])
-})
-
-test("close leaves the open question and its work item as they are", async () => {
-  const { store, sid, answers } = setup()
-  const item = workItem({ kind: "question" })
-  const q = question(sid, { work_item_id: item.id })
-  const { done, out } = asking(answers, q, { workItem: item })
-  await tick()
-  answers.close()
-  await done
-  // Stopping the office is not the question expiring: the run resumes after a restart.
-  expect(out.error).toBeInstanceOf(AnswersClosed)
-  expect(store.getQuestion(q.id)!.status).toBe("open")
-  expect(store.getWorkItem(item.id)!.status).toBe("open")
-})
-
-test("an answer committed just before close is returned", async () => {
-  const { store, sid, answers } = setup()
-  const item = workItem({ kind: "question" })
-  const q = question(sid, { work_item_id: item.id })
-  const { done, out } = asking(answers, q, { workItem: item })
-  await tick()
-  // Answered through another connection, so no event wakes the waiter before close does.
-  const other = new Store(store.path)
-  try {
-    other.answerQuestion(q.id, "pg", "text")
-  } finally {
-    other.close()
-  }
-  await tick()
-  expect(out).toEqual({})
-  answers.close()
-  await done
-  expect(out.result!.answer).toBe("pg")
-  expect(out.result!.status).toBe("consumed")
-  expect(store.getWorkItem(item.id)!.status).toBe("open")
-})
-
-test("a store error after the answer does not cancel the work item", async () => {
-  const { store, sid, answers } = setup()
-  const item = workItem({ kind: "question" })
-  const q = question(sid, { work_item_id: item.id })
+  const { item, q } = managerQuestion(sid)
+  answers.ask(q, { workItem: item })
+  store.answerQuestion(q.id, "pg", "text", "ngocbh")
+  expect(store.getWorkItem(item.id)!.status).toBe("done")
   const setQuestionStatus = store.setQuestionStatus.bind(store)
   store.setQuestionStatus = () => {
     throw new StoreError("disk full")
   }
   try {
-    const { done, out } = asking(answers, q, { workItem: item })
-    store.answerQuestion(q.id, "pg", "text")
-    await done
-    expect(out.error).toBeInstanceOf(StoreError)
-    expect(store.getWorkItem(item.id)!.status).toBe("open")
+    expect(() => answers.ask(managerQuestion(sid).q)).toThrow(StoreError)
   } finally {
     store.setQuestionStatus = setQuestionStatus
   }
+  expect(store.getWorkItem(item.id)!.status).toBe("done")
 })
 
-test("a work item that cannot be cancelled is logged by its error name", async () => {
+test("a work item that cannot be cancelled is logged by its error name", () => {
   const { store, sid, answers, lines } = setup()
-  const item = workItem({ kind: "question" })
-  const q = question(sid, { work_item_id: item.id })
+  const { item, q } = managerQuestion(sid)
+  answers.ask(q, { workItem: item })
   const updateWorkItem = store.updateWorkItem.bind(store)
   store.updateWorkItem = () => {
     throw new StoreError("secret /path")
   }
   try {
-    const { done, out } = asking(answers, q, { workItem: item })
     store.setQuestionStatus(q.id, "stale")
-    await done
-    expect(out.error).toBeInstanceOf(QuestionExpired)
   } finally {
     store.updateWorkItem = updateWorkItem
   }
-  expect(lines).toEqual([`could not cancel the work item of expired question ${q.id}: StoreError`])
+  expect(lines).toEqual([`could not settle the work item of question ${q.id}: StoreError`])
   expect(lines.some((line) => line.includes("secret"))).toBe(false)
   expect(store.getWorkItem(item.id)!.status).toBe("open")
 })
 
-test("a repeated question id is refused", async () => {
+test("a repeated question id is refused", () => {
   const { store, sid, answers } = setup()
-  const q = question(sid)
-  const first = asking(answers, q)
-  const again = asking(answers, question(sid, { id: q.id, node_id: null, question: "Which cache?" }))
-  await again.done
-  expect(again.out.error).toBeInstanceOf(DuplicateKey)
-  expect(store.listQuestions({ sessionId: sid }).map((s) => s.question)).toEqual(["Which db?"])
-  store.answerQuestion(q.id, "pg", "text")
-  await first.done
-  expect(first.out.result!.answer).toBe("pg")
+  const q = question(sid, { call_id: CALL })
+  answers.ask(q)
+  const again = question(sid, { id: q.id, question: "Which cache?", call_id: "run-1/reply/2/0" })
+  expect(() => answers.ask(again)).toThrow(DuplicateKey)
+  expect(store.listQuestions({ sessionId: sid }).map((s) => [s.question, s.call_id])).toEqual([["Which db?", CALL]])
 })
 
 test("carried returns the expired questions discussion or nothing", () => {
@@ -413,84 +374,60 @@ test("carried returns the expired questions discussion or nothing", () => {
   expect(answers.carried(question(sid))).toEqual([])
 })
 
-test("an aborted ask rejects and leaves its question and work item", async () => {
+test("a handler called twice with one call id stores one question", async () => {
   const { store, sid, answers } = setup()
-  const item = workItem({ kind: "question" })
-  const q = question(sid, { work_item_id: item.id })
-  const controller = new AbortController()
-  const { done, out } = asking(answers, q, { workItem: item, signal: controller.signal })
-  await tick()
-  expect(out).toEqual({})
-  controller.abort(new Error("the call stopped"))
-  await done
-  expect(out.error).toBe(controller.signal.reason)
-  expect(store.getQuestion(q.id)!.status).toBe("open")
-  expect(store.getWorkItem(item.id)!.status).toBe("open")
-  expect(answers.waiting).toBe(0)
-  store.answerQuestion(q.id, "pg", "text")
-  await tick()
-  expect(store.getQuestion(q.id)!.status).toBe("answered")
+  const ask = makeAskUser(store.getSession(sid)!, "run-1", (q, o) => answers.ask(q, o))
+  expect(isPending(await ask(modelCall(), CALL))).toBe(true)
+  expect(isPending(await ask(modelCall(), CALL))).toBe(true)
+  expect(store.listQuestions({ sessionId: sid }).map((q) => q.call_id)).toEqual([CALL])
 })
 
-test("an ask whose signal is already aborted stores nothing", async () => {
+test("a call id from another run is refused", () => {
   const { store, sid, answers } = setup()
-  const item = workItem({ kind: "question" })
-  const signal = AbortSignal.abort(new Error("the call stopped"))
-  await expect(answers.ask(question(sid, { work_item_id: item.id }), { workItem: item, signal })).rejects.toBe(
-    signal.reason,
-  )
+  for (const callId of ["run-2/reply/1/0", "run-1", null]) {
+    expect(() => answers.ask(question(sid, { call_id: callId }))).toThrow(TypeError)
+  }
   expect(store.listQuestions({ sessionId: sid })).toEqual([])
-  expect(store.getWorkItem(item.id)).toBeUndefined()
-  expect(answers.waiting).toBe(0)
 })
 
-test("an answer that lands just before the abort is left answered", async () => {
+test.each(["interrupted", "timed_out", "cancelled", "crashed", "failed"])(
+  "a closed call answers interrupted or goes stale [%s]",
+  (reason) => {
+    const { store, sid, answers } = setup()
+    const q = answers.ask(question(sid, { call_id: CALL }))
+    const got = answers.closedCall("run-1", CALL, reason)!
+    expect(got.id).toBe(q.id)
+    const stored = store.getQuestion(q.id)!
+    if (reason === "interrupted") {
+      expect([stored.answer, stored.answer_kind, stored.answered_by, stored.status]).toEqual([
+        INTERRUPTED,
+        "interrupted",
+        null,
+        "consumed",
+      ])
+    } else {
+      expect([stored.status, stored.answer_kind]).toEqual(["stale", null])
+    }
+    expect(got).toEqual(stored)
+  },
+)
+
+test("a closed call on a flow question goes stale", () => {
   const { store, sid, answers } = setup()
-  // The abort comes in the same synchronous block as the answer (caught before the read) or a microtask after it
-  // (after ask has read the answer but before it marks it consumed).
-  const aborts: ((abort: () => void) => void)[] = [(abort) => abort(), (abort) => queueMicrotask(abort)]
-  for (const later of aborts) {
-    const item = workItem({ kind: "question" })
-    const q = question(sid, { work_item_id: item.id })
-    const controller = new AbortController()
-    const { done, out } = asking(answers, q, { workItem: item, signal: controller.signal })
-    await tick()
-    store.answerQuestion(q.id, "pg", "text")
-    later(() => controller.abort(new Error("the call stopped")))
-    await done
-    expect(out.error).toBe(controller.signal.reason)
-    expect(store.getQuestion(q.id)!.status).toBe("answered")
-    expect(store.getWorkItem(item.id)!.status).toBe("open")
-    expect(answers.waiting).toBe(0)
-  }
+  const q = answers.ask(question(sid, { source: "ask", node_id: "sop#0/ask", call_id: NODE_CALL }))
+  answers.closedCall("run-1", NODE_CALL, "interrupted")
+  expect([store.getQuestion(q.id)!.status, store.getQuestion(q.id)!.answer_kind]).toEqual(["stale", null])
 })
 
-test("waiters that stop leave no listeners", async () => {
+test("a closed call of another run or an answered question changes nothing", () => {
   const { store, sid, answers } = setup()
-  const controller = new AbortController()
-  const { signal } = controller
-  const added = spyOn(signal, "addEventListener")
-  const removed = spyOn(signal, "removeEventListener")
-  const answered = Array.from({ length: 50 }, () => question(sid))
-  const runs = answered.map((q) => asking(answers, q, { signal }))
-  await tick()
-  for (const q of answered) store.answerQuestion(q.id, "pg", "text")
-  await Promise.all(runs.map((r) => r.done))
-  expect(runs.every((r) => r.out.result?.status === "consumed")).toBe(true)
-  const aborted = Array.from({ length: 50 }, () => asking(answers, question(sid), { signal }))
-  await tick()
-  controller.abort(new Error("the call stopped"))
-  await Promise.all(aborted.map((r) => r.done))
-  expect(aborted.every((r) => r.out.error === signal.reason)).toBe(true)
-  const counts = (calls: unknown[][]) => {
-    const found = new Map<unknown, number>()
-    for (const call of calls) found.set(call[1], (found.get(call[1]) ?? 0) + 1)
-    return found
-  }
-  const adds = counts(added.mock.calls)
-  const removes = counts(removed.mock.calls)
-  expect(added.mock.calls.length).toBeGreaterThan(0)
-  expect(removes.size).toBe(adds.size)
-  for (const [listener, n] of adds) expect(removes.get(listener)).toBe(n)
-  expect(answers.waiting).toBe(0)
+  const open = answers.ask(question(sid, { call_id: CALL }))
+  const other = store.addQuestion(question(sid, { run_id: "run-2", call_id: "run-2/reply/1/0" }))
+  expect(answers.closedCall("run-2", CALL, "cancelled")).toBeUndefined()
+  expect(answers.closedCall("run-1", "run-2/reply/1/0", "cancelled")).toBeUndefined()
+  expect(store.getQuestion(open.id)!.status).toBe("open")
+  expect(store.getQuestion(other.id)!.status).toBe("open")
+  store.answerQuestion(open.id, "pg", "text")
+  expect(answers.closedCall("run-1", CALL, "interrupted")!.status).toBe("answered")
+  expect([store.getQuestion(open.id)!.status, store.getQuestion(open.id)!.answer]).toEqual(["answered", "pg"])
 })
