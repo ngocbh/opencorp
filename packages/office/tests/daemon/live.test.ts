@@ -1,13 +1,16 @@
 /** The live relay: one LiveView per running worker, built from its snapshot and fed its frames; gaps followed again;
  *  bus events from the transcript's projection. */
+import fs from "node:fs"
 import path from "node:path"
 import { iterRunRecords, type LiveFrame, type LiveSnapshot, LiveView, type RunLogEntry } from "@ngocbh/yian/run"
 import { pending } from "@ngocbh/yian/tools"
 import type { LiveEvent, Message, Part } from "@opencorp/protocol"
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { MAIN_CHAT } from "../../src/chat/turns.ts"
-import { LiveRelay, type LiveWorker } from "../../src/daemon/live.ts"
+import { PING } from "../../src/daemon/bus.ts"
+import { type LiveJoin, LiveRelay, type LiveViewer, type LiveWorker, type ViewerFrame } from "../../src/daemon/live.ts"
+import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
 import type { Job } from "../../src/worker/job.ts"
 import { advance, fakeLlm, logPrefix, send, TemplateOffice, waitingAt, waitingChat } from "../chat/helpers.ts"
@@ -18,12 +21,16 @@ setDefaultTimeout(30_000)
 
 const REPLY = "chat#0/reply"
 
-/** A finished template chat turn answering `content`, run as `runId` (`r1` by default) under `runs` (a temp folder by
- *  default): its job and the live frames its advance's worker sent (the template office, a `Recorder`, keeps them as
- *  `streams`). */
-async function recordedTurn(content: string, runId = "r1", runs?: string): Promise<{ job: Job; frames: Frame[] }> {
+/** A finished template chat turn answering `content` (or the model's `replies`), run as `runId` (`r1` by default)
+ *  under `runs` (a temp folder by default): its job and the live frames its advance's worker sent (the template office,
+ *  a `Recorder`, keeps them as `streams`). */
+async function recordedTurn(
+  content: string | ScriptedReply[],
+  runId = "r1",
+  runs?: string,
+): Promise<{ job: Job; frames: Frame[] }> {
   const fake = await fakeLlm()
-  fake.script({ content })
+  fake.script(...(typeof content === "string" ? [{ content }] : content))
   const job = await waitingChat(fake, "chat", {}, { runId, runs })
   const rec = await run(advanceJob(job, { deliver: [send("s1", "hi")] }), new TemplateOffice(), { env: fake.env() })
   expect(rec.outcome?.status).toBe("waiting")
@@ -63,7 +70,10 @@ class StubWorker implements LiveWorker {
 
 /** A relay over a transcript of the runs folder `runs` (with none, one that shows nothing), whose bus events and log
  *  lines are collected. */
-function makeRelay(runs?: string): {
+function makeRelay(
+  runs?: string,
+  queueSize?: number,
+): {
   relay: LiveRelay
   events: LiveEvent[]
   lines: string[]
@@ -76,6 +86,7 @@ function makeRelay(runs?: string): {
     bus: { publishLive: (event) => void events.push(event) },
     transcript,
     log: (line) => void lines.push(line),
+    queueSize,
   })
   return { relay, events, lines, transcript }
 }
@@ -639,4 +650,223 @@ test("a forgotten run is shown from its floor again", async () => {
   events.length = 0
   relay.frame(new StubWorker(job), snapshot(lastSeq(job.log)))
   expect(events.map((event) => [event.type, event.data.id])).toEqual([["message.updated", replyIds(job.log)[0]]])
+})
+
+// Viewers: a run's frames as its view applied them, for a client following the run.
+
+/** `relay`'s join of `runId`, whose viewer closes when the test finishes; fails on `"rebuilding"` or null. */
+function joinOf(relay: LiveRelay, runId = "r1"): LiveJoin {
+  const joined = relay.join(runId)
+  if (joined === null || joined === "rebuilding") throw new Error(`no join of ${runId}: ${joined}`)
+  onTestFinished(() => joined.viewer.close())
+  return joined
+}
+
+/** Every item `viewer` holds until it ends; fails on a `PING`. */
+async function drain(viewer: LiveViewer): Promise<ViewerFrame[]> {
+  const items: ViewerFrame[] = []
+  for (;;) {
+    const item = await viewer.next(1000)
+    if (item === null) return items
+    if (item === PING) throw new Error("the viewer went idle before it ended")
+    items.push(item)
+  }
+}
+
+/** The lines of the run log `log` by seq, without their newlines. */
+function logLines(log: string): string[] {
+  const bytes = fs.readFileSync(log)
+  return [...iterRunRecords(log, { payloads: false })].map((entry) =>
+    bytes.subarray(entry.offset, entry.end - 1).toString("utf8"),
+  )
+}
+
+/** The key of a call's step: `node:n`. */
+function callKey(call: { node?: unknown; n?: unknown }): string {
+  return `${call.node}:${call.n}`
+}
+
+test("joining mid run gives no gap and no duplicate", async () => {
+  const { job, frames } = await recordedTurn([
+    { content: "Let me check that", tool_calls: [{ id: "c1", name: "toolbox_stub" }] },
+    { content: "All done now friend" },
+  ])
+  const lines = logLines(job.log)
+  const full = new Map<string, string>()
+  for (const frame of frames) {
+    if (frame.type === "chunk") full.set(callKey(frame), (full.get(callKey(frame)) ?? "") + frame.text)
+  }
+  expect([...full.values()]).toEqual(["Let me check that", "All done now friend"])
+  expect(frames.filter((frame) => frame.type === "chunk").length).toBeGreaterThan(4)
+  let midCall = false
+  for (let j = 0; j <= frames.length; j++) {
+    const { relay, lines: logged } = makeRelay()
+    const worker = new StubWorker(job)
+    for (const frame of frames.slice(0, j)) relay.frame(worker, frame)
+    if (j === 0) {
+      expect(relay.join("r1")).toBeNull()
+      continue
+    }
+    const joined = joinOf(relay)
+    for (const frame of frames.slice(j)) relay.frame(worker, frame)
+    relay.detach(worker)
+    const items = await drain(joined.viewer)
+    const seqs = [...iterRunRecords(job.log, { payloads: false })]
+      .filter((entry) => entry.seq <= joined.lastSeq)
+      .map((entry) => entry.seq)
+    const texts = new Map(joined.calls.map((call) => [callKey(call), call.text]))
+    if (joined.calls.some((call) => call.text !== "")) midCall = true
+    for (const item of items) {
+      if (item.type === "record") {
+        seqs.push(item.seq)
+        expect(item.line).toBe(lines[item.seq]!)
+      } else if (item.type === "chunk") {
+        texts.set(callKey(item), (texts.get(callKey(item)) ?? "") + item.text)
+      }
+    }
+    expect(seqs).toEqual(lines.map((_, seq) => seq))
+    for (const [key, text] of texts) expect(text).toBe(full.get(key)!)
+    expect(items.at(-1)).toEqual({ type: "run_end" })
+    expect(logged).toEqual([])
+  }
+  expect(midCall).toBe(true)
+})
+
+test("a lagging viewers chunks of one call merge into one", async () => {
+  const job = await waitingRun()
+  const lines = logLines(job.log)
+  const from = lines.length - 5
+  expect(from).toBeGreaterThanOrEqual(0)
+  const chunk = (node: string, index: number, text: string) => ({ type: "chunk" as const, node, n: 1, index, text })
+  const record = (seq: number) => ({ type: "record" as const, seq, line: lines[seq]! })
+  /** A relay whose view is at record `from` with calls `a` and `b` in flight, its worker and a viewer of the run. */
+  const viewed = (queueSize?: number) => {
+    const { relay } = makeRelay(undefined, queueSize)
+    const worker = new StubWorker(job)
+    const calls = ["a", "b"].map((node) => ({ node, n: 1, chunks: [], next_index: 0 }))
+    relay.frame(worker, snapshot(from, calls))
+    return { relay, worker, viewer: joinOf(relay).viewer }
+  }
+
+  const one = viewed()
+  const words = Array.from({ length: 50 }, (_, i) => `w${i} `)
+  words.forEach((text, i) => one.relay.frame(one.worker, chunk("a", i, text)))
+  expect(one.viewer.queued).toBe(1)
+  expect(await one.viewer.next(1000)).toEqual(chunk("a", 49, words.join("")))
+
+  const two = viewed()
+  for (const [node, index] of [["a", 0], ["b", 0], ["a", 1], ["b", 1]] as const) {
+    two.relay.frame(two.worker, chunk(node, index, `${node}${index}`))
+  }
+  expect(two.viewer.queued).toBe(2)
+  expect(await drainQueued(two.viewer)).toEqual([chunk("a", 1, "a0a1"), chunk("b", 1, "b0b1")])
+
+  const apart = viewed()
+  apart.relay.frame(apart.worker, chunk("a", 0, "one"))
+  apart.relay.frame(apart.worker, record(from + 1))
+  apart.relay.frame(apart.worker, chunk("a", 1, "two"))
+  expect(await drainQueued(apart.viewer)).toEqual([chunk("a", 0, "one"), record(from + 1), chunk("a", 1, "two")])
+
+  const capped = viewed(3)
+  for (let i = 0; i < 100; i++) capped.relay.frame(capped.worker, chunk("a", i, "x"))
+  expect(capped.viewer.dropped).toBe(false)
+  expect(capped.viewer.queued).toBe(1)
+  expect(await capped.viewer.next(1000)).toEqual(chunk("a", 99, "x".repeat(100)))
+  for (let seq = from + 1; seq <= from + 3; seq++) capped.relay.frame(capped.worker, record(seq))
+  expect(capped.viewer.dropped).toBe(false)
+  expect(capped.viewer.queued).toBe(3)
+  capped.relay.frame(capped.worker, record(from + 4))
+  expect(capped.viewer.dropped).toBe(true)
+  expect(capped.viewer.queued).toBe(1) // only its end: the backlog is gone
+  expect(await capped.viewer.next(1000)).toBeNull()
+})
+
+/** The items `viewer` holds now, without waiting for more. */
+async function drainQueued(viewer: LiveViewer): Promise<(ViewerFrame | typeof PING | null)[]> {
+  const items: (ViewerFrame | typeof PING | null)[] = []
+  while (viewer.queued > 0) items.push(await viewer.next(1000))
+  return items
+}
+
+test("a gap drops the runs viewers", async () => {
+  const { job, frames } = await recordedTurn("Hello there my good friend")
+  const { relay, lines } = makeRelay()
+  const worker = new StubWorker(job)
+  relay.frame(worker, frames[0])
+  const { viewer } = joinOf(relay)
+  relay.frame(worker, frames[1])
+  expect(viewer.queued).toBe(1)
+  const { last_seq: last } = frames[0]!.snapshot as LiveSnapshot
+  relay.frame(worker, { type: "record", seq: last + 100, line: "" })
+  expect(lines).toEqual([gapLine("record")])
+  expect(viewer.dropped).toBe(true)
+  expect(viewer.queued).toBe(1) // only its end: the backlog is gone
+  expect(await viewer.next(1000)).toBeNull()
+  // Frames after the next snapshot reach a new viewer only.
+  relay.frame(worker, frames[0])
+  const again = joinOf(relay)
+  relay.frame(worker, frames[1])
+  expect(again.viewer.queued).toBe(1)
+  expect(await viewer.next(1000)).toBeNull()
+})
+
+test("a viewer gets run end when its worker exits", async () => {
+  const job = await waitingRun()
+  const last = lastSeq(job.log)
+  const { relay } = makeRelay()
+  const a = new StubWorker(job)
+  const b = new StubWorker(job)
+  relay.frame(a, snapshot(last))
+  const first = joinOf(relay).viewer
+  // A frame of a new worker for the run replaces the old one.
+  relay.frame(b, snapshot(last))
+  expect(await drain(first)).toEqual([{ type: "run_end" }])
+  expect(first.dropped).toBe(false)
+  const second = joinOf(relay).viewer
+  relay.detach(a)
+  expect(await second.next(10)).toBe(PING)
+  relay.detach(b)
+  expect(await drain(second)).toEqual([{ type: "run_end" }])
+  expect(second.dropped).toBe(false)
+  expect(relay.join("r1")).toBeNull()
+})
+
+test("join while the view is rebuilt says so", async () => {
+  const job = await waitingRun()
+  const last = lastSeq(job.log)
+  const { relay } = makeRelay()
+  const worker = new StubWorker(job)
+  expect(relay.join("r1")).toBeNull()
+  // A worker's frames before its snapshot build nothing.
+  relay.frame(worker, { type: "end", node: REPLY, n: 1, error: null })
+  expect(relay.join("r1")).toBe("rebuilding")
+  relay.frame(worker, snapshot(last))
+  expect(joinOf(relay)).toMatchObject({ lastSeq: last, calls: [] })
+  relay.frame(worker, { type: "record", seq: last + 5, line: "" })
+  expect(relay.join("r1")).toBe("rebuilding")
+  relay.frame(worker, snapshot(last, [{ node: REPLY, n: 2, chunks: ["Hel", "lo"], next_index: 2 }]))
+  expect(joinOf(relay)).toMatchObject({ lastSeq: last, calls: [{ node: REPLY, n: 2, text: "Hello", nextIndex: 2 }] })
+})
+
+test("close ends every viewer", async () => {
+  const r1 = await waitingRun("r1")
+  const r2 = await waitingRun("r2")
+  const { relay } = makeRelay()
+  const w2 = new StubWorker(r2)
+  relay.frame(new StubWorker(r1), snapshot(lastSeq(r1.log)))
+  relay.frame(w2, snapshot(lastSeq(r2.log)))
+  const one = joinOf(relay, "r1").viewer
+  const two = joinOf(relay, "r2").viewer
+  const closed = joinOf(relay, "r1").viewer
+  closed.close()
+  // A run's frames reach only that run's viewers.
+  relay.frame(w2, { type: "start", node: REPLY, n: 2, model: null, purpose: "reply", started_at: "2026-01-01T00:00:00Z" })
+  expect(one.queued).toBe(0)
+  expect(two.queued).toBe(1)
+  const waiting = one.next(5000)
+  relay.close()
+  expect(await waiting).toBeNull()
+  expect(await drain(two)).toHaveLength(1)
+  expect(await closed.next(1000)).toBeNull()
+  expect([one.dropped, two.dropped]).toEqual([false, false])
 })

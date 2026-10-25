@@ -1,12 +1,19 @@
-/** The live relay: one yian `LiveView` per running worker, built from its snapshot and fed its live frames, and the
- *  bus events that show its run's replies as they change. */
+/** The live relay: one yian `LiveView` per running worker, built from its snapshot and fed its live frames, the bus
+ *  events that show its run's replies as they change, and the viewers that follow the run's frames. */
 import fs from "node:fs"
-import { iterRunRecords, type LiveFollowFrame, type LiveSnapshot, LiveView, type LiveViewCall } from "@ngocbh/yian/run"
+import {
+  iterRunRecords,
+  type LiveFollowFrame,
+  type LiveFrame,
+  type LiveSnapshot,
+  LiveView,
+  type LiveViewCall,
+} from "@ngocbh/yian/run"
 import type { LiveEvent, Message, Part } from "@opencorp/protocol"
 import type { LiveCalls, Transcript } from "../chat/transcript.ts"
 import type { Job } from "../worker/job.ts"
 import { errorName } from "../worker/rpc.ts"
-import type { Bus } from "./bus.ts"
+import { type Bus, PING } from "./bus.ts"
 
 /** What the relay uses of a worker: its job's run, session and log, and a way to ask for a fresh snapshot. `Worker`
  *  fits. */
@@ -21,6 +28,121 @@ const TYPES: ReadonlySet<string> = new Set<WorkerFrame["type"]>(["record", "star
 
 /** How many snapshot builds in a row may fail before the relay stops following a worker. */
 const MAX_FAILED_BUILDS = 3
+
+/** What a viewer gets: a frame the run's view applied (a record always with its line), or the end of the worker. */
+export type ViewerFrame = LiveFrame | { type: "run_end" }
+
+/** One viewer's queue, with the bus subscription's rules, and a lagging viewer's chunks of one call merged. */
+export class LiveViewer {
+  readonly #remove: (viewer: LiveViewer) => void
+  readonly #queueSize: number
+  // null marks the end: a waiting reader gets it after every frame queued before it.
+  readonly #queue: (ViewerFrame | null)[] = []
+  #done = false
+  #dropped = false
+  #reading = false
+  #wake: (() => void) | null = null
+
+  constructor(remove: (viewer: LiveViewer) => void, queueSize: number) {
+    this.#remove = remove
+    this.#queueSize = queueSize
+  }
+
+  /** Whether the relay dropped this viewer: it fell behind, or its run's view had a gap. */
+  get dropped(): boolean {
+    return this.#dropped
+  }
+
+  /** How many items wait in the queue. */
+  get queued(): number {
+    return this.#queue.length
+  }
+
+  /** The next item, `PING` after `timeoutMs` idle, or null once ended (and forever after). One reader at a time. */
+  async next(timeoutMs: number): Promise<ViewerFrame | typeof PING | null> {
+    if (this.#reading) throw new Error("a viewer has one reader at a time")
+    if (this.#done) return null
+    this.#reading = true
+    try {
+      if (this.#queue.length === 0) {
+        const woken = await new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => {
+            this.#wake = null
+            resolve(false)
+          }, timeoutMs)
+          this.#wake = () => {
+            clearTimeout(timer)
+            this.#wake = null
+            resolve(true)
+          }
+        })
+        if (!woken) return PING
+      }
+      // Never empty here: a wake follows a push, and no other reader can take that item first.
+      const item = this.#queue.shift()!
+      if (item === null) this.#done = true
+      return item
+    } finally {
+      this.#reading = false
+    }
+  }
+
+  /** Stop receiving frames. A waiting `next()` is not woken; it returns `PING` at its timeout. */
+  close(): void {
+    this.#done = true
+    this.#remove(this)
+  }
+
+  /** Queue `frame`, or merge a chunk into the latest queued chunk of its call while only chunks were queued after it;
+   *  a viewer that would pass its cap is dropped instead. Called by the relay. */
+  push(frame: LiveFrame): void {
+    if (frame.type === "chunk") {
+      for (let at = this.#queue.length - 1; at >= 0; at--) {
+        const queued = this.#queue[at]
+        if (queued?.type !== "chunk") break
+        if (queued.node !== frame.node || queued.n !== frame.n) continue
+        // A new frame, since every viewer of the run queues the same one. The newer index keeps a reader's next
+        // index (index + 1) right.
+        this.#queue[at] = { ...queued, index: frame.index, text: queued.text + frame.text }
+        return
+      }
+    }
+    if (this.#queue.length >= this.#queueSize) {
+      this.drop()
+      return
+    }
+    this.#add(frame)
+  }
+
+  /** End it after every queued frame, with `run_end` first when `runEnd`. Called by the relay. */
+  end(runEnd: boolean): void {
+    this.#remove(this)
+    if (runEnd) this.#queue.push({ type: "run_end" })
+    this.#add(null)
+  }
+
+  /** Mark it dropped, discard its backlog and end it. Called by the relay. */
+  drop(): void {
+    // The backlog is discarded: a dropped client joins again and reads the log anyway.
+    this.#remove(this)
+    this.#dropped = true
+    this.#queue.length = 0
+    this.#add(null)
+  }
+
+  #add(item: ViewerFrame | null): void {
+    this.#queue.push(item)
+    // The reader takes from the queue when it runs: a burst before then stays queued and can overflow it.
+    this.#wake?.()
+  }
+}
+
+/** A viewer's start: the run's view's last seq and calls in flight, then every later frame from `viewer`. */
+export interface LiveJoin {
+  lastSeq: number
+  calls: readonly LiveViewCall[]
+  viewer: LiveViewer
+}
 
 /** What the relay has published of a run: each assistant message from `floor` on, with its parts by id as shown. */
 interface Shown {
@@ -38,6 +160,8 @@ interface Entry {
   view: LiveView | null
   /** The snapshot builds that failed in a row; at `MAX_FAILED_BUILDS` the worker's frames are ignored. */
   failedBuilds: number
+  /** The run's viewers, joined while this view stood. */
+  readonly viewers: Set<LiveViewer>
 }
 
 /**
@@ -48,6 +172,11 @@ interface Entry {
  * After each snapshot that builds and each `start` or `record` it applies, it renders the worker's run with the
  * transcript and publishes, on the worker's session, what changed among its assistant messages since the run was last
  * shown; a `chunk` of a shown live part is published as a `part.delta`. What was shown is kept per run until `forget`.
+ *
+ * A viewer `join`s a run's view and gets every frame the view applies after it; a duplicate record or chunk the view
+ * ignored isn't passed on. Each viewer queues at most `queueSize` items (a lagging viewer's chunks of one call merge
+ * and don't count) and is dropped past it. A gap drops the run's viewers (they join again once the view is rebuilt);
+ * the worker's exit or its replacement by a new worker ends them with `run_end`.
  */
 export class LiveRelay implements LiveCalls {
   readonly #bus: Pick<Bus, "publishLive">
@@ -77,7 +206,8 @@ export class LiveRelay implements LiveCalls {
       let entry = this.#runs.get(runId)
       if (entry?.worker !== worker) {
         // One view per running worker: a new worker's view is built from its own snapshot, with nothing of the old.
-        entry = { runId, worker, view: null, failedBuilds: 0 }
+        if (entry !== undefined) for (const viewer of [...entry.viewers]) viewer.end(true)
+        entry = { runId, worker, view: null, failedBuilds: 0, viewers: new Set() }
         this.#runs.set(runId, entry)
       }
       if (entry.failedBuilds >= MAX_FAILED_BUILDS) return
@@ -101,9 +231,10 @@ export class LiveRelay implements LiveCalls {
   detach(worker: LiveWorker): void {
     try {
       const runId = worker.job.run_id
-      if (this.#runs.get(runId)?.worker === worker) {
+      const entry = this.#runs.get(runId)
+      if (entry?.worker === worker) {
         this.#runs.delete(runId)
-        // The run's viewers end here.
+        for (const viewer of [...entry.viewers]) viewer.end(true)
       }
       // Shows what the worker appended outside the live channel (offline deliveries, the linger) and the tool calls it
       // left without a result as interrupted.
@@ -125,9 +256,27 @@ export class LiveRelay implements LiveCalls {
     return entry.view?.calls() ?? []
   }
 
+  /** In one synchronous step: the view's last seq and calls, and a viewer for every later frame. `"rebuilding"` while
+   *  a worker feeds the run but its view isn't built; null when no worker feeds it. */
+  join(runId: string): LiveJoin | "rebuilding" | null {
+    const entry = this.#runs.get(runId)
+    if (entry === undefined) return null
+    if (entry.view === null) return "rebuilding"
+    const viewer = new LiveViewer((v) => entry.viewers.delete(v), this.#queueSize)
+    entry.viewers.add(viewer)
+    return { lastSeq: entry.view.lastSeq, calls: entry.view.calls(), viewer }
+  }
+
+  /** Ends every viewer (office stop). */
+  close(): void {
+    for (const entry of this.#runs.values()) for (const viewer of [...entry.viewers]) viewer.end(false)
+  }
+
   /** Builds `entry`'s view from its run log and `snapshot`; a failure counts toward the build cap. Returns whether it
    *  built. */
   #build(entry: Entry, snapshot: LiveSnapshot): boolean {
+    // Frames between the old view and this snapshot never reach the viewers, so they join again.
+    this.#dropViewers(entry)
     let view: LiveView
     try {
       view = LiveView.from(iterRunRecords(entry.worker.job.log, { payloads: false }), snapshot)
@@ -140,28 +289,33 @@ export class LiveRelay implements LiveCalls {
     return true
   }
 
-  /** Applies `frame` to `view`, `entry`'s, and publishes what it changed; a frame it can't apply is a gap. */
+  /** Applies `frame` to `view`, `entry`'s, passes it to the run's viewers unless the view ignored it as a duplicate
+   *  record or chunk, and publishes what it changed; a frame it can't apply is a gap. */
   #apply(entry: Entry, view: LiveView, frame: Exclude<WorkerFrame, { type: "snapshot" }>): void {
     // The call's text before a chunk that is its next one; a duplicate chunk changes nothing.
     const before =
       frame.type === "chunk"
         ? view.calls().find((call) => call.node === frame.node && call.n === frame.n && call.nextIndex === frame.index)
         : undefined
-    let applied: boolean
+    // A duplicate record or chunk changes nothing, so viewers don't get it; and apply drops a duplicate or a gap
+    // before decoding a record's line, so only the next record's line is worth a read.
+    const fresh = frame.type === "record" ? frame.seq === view.lastSeq + 1 : frame.type !== "chunk" || !!before
+    let applied: LiveFrame | null
     try {
-      if (frame.type === "record") {
-        // apply drops a duplicate or a gap before decoding the line, so only the next record's line is worth a read.
-        const next = frame.seq === view.lastSeq + 1
-        const line = frame.line ?? (next ? readLine(entry.worker.job.log, frame.seq) : "")
-        applied = view.apply({ ...frame, line })
-      } else {
-        applied = view.apply(frame)
-      }
+      applied =
+        frame.type === "record"
+          ? { ...frame, line: frame.line ?? (fresh ? readLine(entry.worker.job.log, frame.seq) : "") }
+          : frame
+      if (!view.apply(applied)) applied = null
     } catch {
-      applied = false
+      applied = null
     }
-    if (!applied) this.#gap(entry, frame.type)
-    else if (frame.type === "chunk") {
+    if (applied === null) {
+      this.#gap(entry, frame.type)
+      return
+    }
+    if (fresh) for (const viewer of [...entry.viewers]) viewer.push(applied)
+    if (frame.type === "chunk") {
       if (before !== undefined) this.#delta(entry.worker, frame.node, frame.n, before.text, frame.text)
     } else if (frame.type !== "end") this.#show(entry.worker)
   }
@@ -249,13 +403,19 @@ export class LiveRelay implements LiveCalls {
     this.#log(`run ${entry.runId}: live view can't be built; not following`)
   }
 
-  /** Drops `entry`'s view and asks its worker for a fresh snapshot; `type` names the frame that broke it. */
+  /** Drops `entry`'s view and viewers and asks its worker for a fresh snapshot; `type` names the frame that broke it. */
   #gap(entry: Entry, type: string): void {
     entry.view = null
+    this.#dropViewers(entry)
     this.#log(`run ${entry.runId}: live frames have a gap (${type}); following again`)
     entry.worker.follow().catch((error: unknown) => {
       this.#log(`run ${entry.runId}: live follow failed (${errorName(error)})`)
     })
+  }
+
+  /** Drops `entry`'s viewers, which would miss frames: they join again once its view is built. */
+  #dropViewers(entry: Entry): void {
+    for (const viewer of [...entry.viewers]) viewer.drop()
   }
 }
 
