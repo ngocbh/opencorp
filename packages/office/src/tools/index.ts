@@ -13,7 +13,7 @@ export type { ToolContext } from "./context.ts"
 const GROUPS: Record<string, (ctx: ToolContext) => Record<string, OfficeTool>> = {
   toolbox: toolbox.tools,
   workspace: workspace.tools,
-  // The company group is the company topics' tools; only work has a group.
+  // The company group is its topics' tools; only work's are in it (draft's are in no group).
   company: work.tools,
   work_items: workItems.tools,
 }
