@@ -1118,6 +1118,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/rpc.test.ts::a remote tool sends its call id	yian #1088: a tool_call frame carries the call id the office answers a pending call by	O4a-0a
 —	new	packages/office/tests/worker/rpc.test.ts::a reply that cannot be sent becomes a failed reply	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::a request ends when its signal aborts	P1: a stop ends a node waiting on the office	O3-3
+—	new	packages/office/tests/worker/rpc.test.ts::a request whose call id is another runs is refused	§6 rule 9: a worker can't name another run's call (O4a-0a final review m4)	O4a-0b
 —	new	packages/office/tests/worker/rpc.test.ts::a thrown non error value is a failed reply	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::an error whose name or message cannot be read is a failed reply	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::ask user passes the handler only the six keys	design §2.4 (RS I6), §6 rule 9	O3-2
@@ -1125,6 +1126,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/rpc.test.ts::object arguments keep a proto key	design §2.4: a model-written argument reaches the office as written (Python's dict kept the key)	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::object method names are never tools or stores	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::reply to never rejects	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::the office handlers get the call id	yian #1076: host handlers are idempotent by call_id, so the office handlers get it (4a-revision §1)	O4a-0b
 —	new	packages/office/tests/worker/spawn.test.ts::a closed registry refuses new workers	O2-5 handoff: the worker registry refuses new starts once closed (a request handler can still run during the stop's 5 s handler wait)	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::a deliver reply frame without its fields is a bad frame	design §2.4: a frame the office can't read closes the channel, as Python's reader did	O4a-0a
 —	new	packages/office/tests/worker/spawn.test.ts::a fifo planted as the worker log is refused at once	design §2.4, §6 rule 6: the worker log is a regular file opened without blocking	O3-4

@@ -187,15 +187,17 @@ test("composer accepts the tool functions", async () => {
     shell: new Set(["command", "timeout"]),
   })
   expect(resolved.map((t) => t.description)).toEqual(TOOL_NAMES.map((n) => fns[n]!.description))
-  expect(await toolset.invoke("list", {})).toBe("ok")
+  expect(await toolset.invoke("list", {}, { callId: "r1/n/1/0" })).toBe("ok")
   expect(seen).toEqual([["list", { path: "." }]])
 })
 
 test.skipIf(!sandboxAvailable())("tool functions drive workspace tools", async () => {
   const { tools: t } = tools()
   const toolset = await workerToolSet(async (n, a, o) => (await t.call(n, a, o)).output)
-  expect(await toolset.invoke("write_file", { path: "n.txt", content: "hi" })).toBe("wrote 2 bytes to n.txt")
-  expect(await toolset.invoke("shell", { command: "cat n.txt" })).toBe("hi\n[exit 0]")
+  expect(await toolset.invoke("write_file", { path: "n.txt", content: "hi" }, { callId: "r1/n/1/0" })).toBe(
+    "wrote 2 bytes to n.txt",
+  )
+  expect(await toolset.invoke("shell", { command: "cat n.txt" }, { callId: "r1/n/1/1" })).toBe("hi\n[exit 0]")
 })
 
 test.skipIf(!sandboxAvailable())("a call aborted by its signal ends as interrupted", async () => {

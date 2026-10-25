@@ -55,9 +55,9 @@ const throwingLog: RpcLog = () => {
 const READ = { type: "store_read", id: 1, store: "profile" }
 const WRITE = { type: "store_write", id: 2, store: "profile", text: "t", base_version: "v1" }
 
-/** A `tool_call` frame for tool `name` of group `g`. */
+/** A `tool_call` frame for tool `name` of group `g`, with a call id of the job's run. */
 function call(name: string, args: Record<string, unknown> = { text: "x" }): Frame {
-  return { type: "tool_call", id: 3, group: "g", name, args }
+  return { type: "tool_call", id: 3, group: "g", name, args, call_id: "r1/n/1/0" }
 }
 
 type Served = { tools?: Record<string, OfficeTool>; stores?: Record<string, MarkdownStore>; log?: RpcLog }
@@ -99,7 +99,7 @@ test("answer request error codes", async () => {
   })
   const reply = await answerRequest(WRITE, handlers, worker)
   expect([reply.error, reply.expected, reply.current]).toEqual(["mismatch", "v1", "v2"])
-  const frame = { type: "tool_call", id: 3, group: "g", name: "lookup", args: { key: "k" } }
+  const frame = { type: "tool_call", id: 3, group: "g", name: "lookup", args: { key: "k" }, call_id: "r1/n/1/0" }
   expect(await answerRequest(frame, handlers, worker)).toEqual({
     type: "tool_result",
     id: 3,
@@ -175,7 +175,7 @@ test("a forged tool call for a group the job was not given is refused", async ()
   const admin = { wipe: tool(() => ran.push("wipe"), []) }
   const handlers = new BaseHandlers({ tools: { toolbox, admin } })
   const worker = workerFor(handlers, { groups: groupSpecs({ toolbox: { shout: toolbox.shout } }) })
-  const wipe = { type: "tool_call", id: 9, group: "admin", name: "wipe", args: {} }
+  const wipe = { type: "tool_call", id: 9, group: "admin", name: "wipe", args: {}, call_id: "r1/n/1/0" }
   const forged = await answerRequest(wipe, handlers, worker)
   expect(forged).toEqual({ type: "tool_result", id: 9, error: "failed", message: "no tool 'wipe' in group 'admin'" })
   const unlisted = await answerRequest({ ...wipe, group: "toolbox" }, handlers, worker)
@@ -237,7 +237,7 @@ test("object method names are never tools or stores", async () => {
     memory: { profile: { store: "profile" } },
   })
   for (const key of keys) {
-    const shout = { type: "tool_call", id: 1, group: "toolbox", name: "shout", args: {} }
+    const shout = { type: "tool_call", id: 1, group: "toolbox", name: "shout", args: {}, call_id: "r1/n/1/0" }
     const group = await answerRequest({ ...shout, group: key }, handlers, worker)
     expect([group.error, group.message]).toEqual(["failed", `no tool 'shout' in group '${key}'`])
     const name = await answerRequest({ ...shout, name: key }, handlers, worker)
@@ -273,7 +273,7 @@ test("ask user passes the handler only the six keys", async () => {
   const handlers = new Asking()
   const worker = workerFor(handlers)
   const request = { question: "Go?", title: "T", options: ["yes", "no"], session_id: "other", run_id: "x" }
-  const reply = await answerRequest({ type: "ask_user", id: 4, request }, handlers, worker)
+  const reply = await answerRequest({ type: "ask_user", id: 4, request, call_id: "r1/n/1/0" }, handlers, worker)
   expect(reply).toEqual({ type: "answer", id: 4, answer: "yes" })
   expect(seen).toHaveLength(1)
   expect(seen[0]!.request).toEqual({
@@ -367,7 +367,7 @@ test("an error whose name or message cannot be read is a failed reply", async ()
 test("reply to never rejects", async () => {
   const handlers = new BaseHandlers({ tools: { g: { shout: tool((args) => String(args.text).toUpperCase()) } } })
   const worker = workerFor(handlers)
-  const frame = { type: "tool_call", id: 7, group: "g", name: "shout", args: { text: "hi" } }
+  const frame = { type: "tool_call", id: 7, group: "g", name: "shout", args: { text: "hi" }, call_id: "r1/n/1/0" }
 
   /** A channel whose `send` rejects with each of `errors` in turn, then resolves; it records the frames sent. */
   function channel(...errors: Error[]): { sent: Frame[]; channel: Pick<Channel, "send"> } {
@@ -436,7 +436,7 @@ test("a remote tool runs in the office", async () => {
   const rpc = await officeEnd(new BaseHandlers({ tools: { toolbox: { shout } } }))
   const remote = remoteTool(rpc, "toolbox", toolSpec("shout", shout))
   expect([remote.name, remote.description]).toEqual(["shout", "Return text in capitals."])
-  expect(await new ToolSet({ toolbox: [remote] }).invoke("shout", { text: "hi" })).toBe("HI")
+  expect(await new ToolSet({ toolbox: [remote] }).invoke("shout", { text: "hi" }, { callId: "r1/n/1/0" })).toBe("HI")
 })
 
 test("a remote tool sends validated args with defaults", async () => {
@@ -459,7 +459,7 @@ test("a remote tool sends validated args with defaults", async () => {
   }
   const rpc = await officeEnd(new BaseHandlers({ tools: { workspace: { read_file: readFile } } }))
   const tools = new ToolSet({ workspace: [remoteTool(rpc, "workspace", toolSpec("read_file", readFile))] })
-  expect(await tools.invoke("read_file", { path: "a.txt", limit: 3 })).toBe("ok")
+  expect(await tools.invoke("read_file", { path: "a.txt", limit: 3 }, { callId: "r1/n/1/0" })).toBe("ok")
   const error = await rejection(tools.invoke("read_file", { offset: 1 }))
   expect(error).toBeInstanceOf(RangeError)
   expect((error as Error).message).toContain("path")
@@ -481,10 +481,10 @@ test("an office tool error is the tool result", async () => {
   const tools = new ToolSet({
     toolbox: [remoteTool(rpc, "toolbox", toolSpec("boom", boom)), remoteTool(rpc, "toolbox", toolSpec("shout", shout))],
   })
-  const failed = await rejection(tools.invoke("boom", { text: "x" }))
+  const failed = await rejection(tools.invoke("boom", { text: "x" }, { callId: "r1/n/1/0" }))
   expect(isReportedToolError(failed)).toBe(true)
   expect((failed as Error).message).toBe("error: no grant for boom")
-  const missing = await rejection(tools.invoke("shout", { text: "x" }))
+  const missing = await rejection(tools.invoke("shout", { text: "x" }, { callId: "r1/n/1/1" }))
   expect(isReportedToolError(missing)).toBe(true)
   expect((missing as Error).message).toBe("error: no tool 'shout' in group 'toolbox'")
 })
@@ -519,7 +519,7 @@ test("ask user sends the six keys and returns the answer", async () => {
     options: ["Paris", "Rome"],
   })
   const nobody = new ToolSet({ ask_user: askUserStub(await officeEnd(new BaseHandlers())) })
-  await expect(nobody.invoke("ask_user", { question: "Hello?" })).rejects.toThrow(
+  await expect(nobody.invoke("ask_user", { question: "Hello?" }, { callId: "r1/n/1/0" })).rejects.toThrow(
     "ask_user failed: nobody is here to answer",
   )
 })
@@ -543,8 +543,8 @@ test("a pending reply becomes the yian pending marker", async () => {
     ask_user: askUserStub(rpc),
     toolbox: [remoteTool(rpc, "toolbox", toolSpec("shout", shout))],
   })
-  expect(isPending(await tools.invoke("ask_user", { question: "Which city?" }))).toBe(true)
-  expect(isPending(await tools.invoke("shout", { text: "hi" }))).toBe(true)
+  expect(isPending(await tools.invoke("ask_user", { question: "Which city?" }, { callId: "r1/n/1/0" }))).toBe(true)
+  expect(isPending(await tools.invoke("shout", { text: "hi" }, { callId: "r1/n/1/1" }))).toBe(true)
 })
 
 test("a remote tool sends its call id", async () => {
@@ -566,7 +566,11 @@ test("a remote tool sends its call id", async () => {
 test("a pending handler result is a pending reply", async () => {
   const handlers = new Later()
   const worker = workerFor(handlers, { groups: groupSpecs({ toolbox: { shout } }) })
-  const asked = await answerRequest({ type: "ask_user", id: 5, request: { question: "Go?" } }, handlers, worker)
+  const asked = await answerRequest(
+    { type: "ask_user", id: 5, request: { question: "Go?" }, call_id: "r1/n/1/0" },
+    handlers,
+    worker,
+  )
   expect(asked).toEqual({ type: "answer", id: 5, pending: true })
   const called = await answerRequest(
     { type: "tool_call", id: 6, group: "toolbox", name: "shout", args: { text: "x" }, call_id: "r1/t" },
@@ -574,6 +578,80 @@ test("a pending handler result is a pending reply", async () => {
     worker,
   )
   expect(called).toEqual({ type: "tool_result", id: 6, pending: true })
+})
+
+test("the office handlers get the call id", async () => {
+  const seen: [string, string][] = []
+  class Recording extends BaseHandlers {
+    override askUser(_worker: unknown, _request: AskRequest, callId: string): unknown {
+      seen.push(["ask_user", callId])
+      return "yes"
+    }
+
+    override async toolCall(
+      worker: unknown,
+      group: string,
+      name: string,
+      args: Record<string, unknown>,
+      callId: string,
+    ): Promise<unknown> {
+      seen.push(["tool_call", callId])
+      return await super.toolCall(worker, group, name, args, callId)
+    }
+  }
+  const options: unknown[] = []
+  const echo: OfficeTool = {
+    ...shout,
+    call: (_args, given) => {
+      options.push(given)
+      return "ok"
+    },
+  }
+  const handlers = new Recording({ tools: { toolbox: { echo } } })
+  const worker = workerFor(handlers)
+  const request = { question: "Go?" }
+  const asked = await answerRequest({ type: "ask_user", id: 1, request, call_id: "r1/reply/1/0" }, handlers, worker)
+  expect(asked).toEqual({ type: "answer", id: 1, answer: "yes" })
+  const frame = { type: "tool_call", id: 2, group: "toolbox", name: "echo", args: { text: "x" } }
+  const called = await answerRequest({ ...frame, call_id: "r1/reply/1/1" }, handlers, worker)
+  expect(called).toEqual({ type: "tool_result", id: 2, result: "ok" })
+  expect(seen).toEqual([
+    ["ask_user", "r1/reply/1/0"],
+    ["tool_call", "r1/reply/1/1"],
+  ])
+  expect(options).toEqual([{ callId: "r1/reply/1/1" }])
+})
+
+test("a request whose call id is another runs is refused", async () => {
+  const ran: string[] = []
+  class Recording extends BaseHandlers {
+    override askUser(): unknown {
+      ran.push("ask_user")
+      return "yes"
+    }
+
+    override async toolCall(): Promise<unknown> {
+      ran.push("tool_call")
+      return "ok"
+    }
+  }
+  const handlers = new Recording({ tools: { toolbox: { shout } } })
+  const worker = workerFor(handlers)
+  expect(worker.job.run_id).toBe("r1")
+  const frames: Record<string, Frame> = {
+    ask_user: { type: "ask_user", id: 1, request: { question: "Go?" } },
+    tool_call: { type: "tool_call", id: 2, group: "toolbox", name: "shout", args: { text: "x" } },
+  }
+  for (const [kind, frame] of Object.entries(frames)) {
+    for (const callId of ["r2/reply/1/0", "r1", "r10/x"]) {
+      const reply = await answerRequest({ ...frame, call_id: callId }, handlers, worker)
+      expect([reply.error, reply.message]).toEqual(["failed", `${kind} request's call_id is not this run's`])
+      expect(String(reply.message)).not.toContain(callId)
+    }
+    const missing = await answerRequest(frame, handlers, worker)
+    expect([missing.error, missing.message]).toEqual(["failed", `${kind} request is missing 'call_id'`])
+  }
+  expect(ran).toEqual([])
 })
 
 test("model from schema covers the json types", () => {
@@ -626,7 +704,7 @@ test("concurrent requests get their own replies", async () => {
   const tools = new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("slow", slow))] })
   const order: string[] = []
   const run = async (text: string, delay: number) => {
-    const result = await tools.invoke("slow", { text, delay })
+    const result = await tools.invoke("slow", { text, delay }, { callId: `r1/${text}/1/0` })
     order.push(text)
     return [text, result] as const
   }
@@ -640,7 +718,8 @@ test("a forged frame through the channel is refused", async () => {
   const handlers = new BaseHandlers({ tools: { toolbox: { shout }, admin: { wipe } } })
   const worker = workerFor(handlers, { groups: groupSpecs({ toolbox: { shout } }) })
   const rpc = await officeEnd(handlers, { worker })
-  const error = await rejection(rpc.request("tool_call", { group: "admin", name: "wipe", args: {} }))
+  const forged = { group: "admin", name: "wipe", args: {}, call_id: "r1/n/1/0" }
+  const error = await rejection(rpc.request("tool_call", forged))
   expect(error).toBeInstanceOf(RemoteError)
   expect([(error as RemoteError).code, (error as RemoteError).message]).toEqual([
     "failed",
@@ -661,7 +740,7 @@ test("a reply that cannot be sent becomes a failed reply", async () => {
   const { calls, log } = recorder()
   const rpc = await officeEnd(new BaseHandlers({ tools: { g: { cyclic } } }), { log })
   const tools = new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("cyclic", cyclic))] })
-  const error = await rejection(tools.invoke("cyclic", {}))
+  const error = await rejection(tools.invoke("cyclic", {}, { callId: "r1/n/1/0" }))
   expect(isReportedToolError(error)).toBe(true)
   expect((error as Error).message).toBe("error: the reply could not be sent (TypeError)")
   expect(calls).toEqual([["WARNING", "worker could not answer a tool_call request: TypeError"]])
@@ -670,7 +749,8 @@ test("a reply that cannot be sent becomes a failed reply", async () => {
 test("bigint arguments reach the office tool", async () => {
   const { seen, tool: receive } = taking("n", { type: "integer" })
   const rpc = await officeEnd(new BaseHandlers({ tools: { g: { receive } } }))
-  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("receive", receive))] }).invoke("receive", { n: 2n ** 64n })
+  const tools = new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("receive", receive))] })
+  await tools.invoke("receive", { n: 2n ** 64n }, { callId: "r1/n/1/0" })
   expect(seen).toEqual([2n ** 64n])
 })
 
@@ -678,7 +758,8 @@ test("a model written $v key reaches the office tool", async () => {
   const { seen, tool: receive } = taking("payload", { type: "object" })
   const rpc = await officeEnd(new BaseHandlers({ tools: { g: { receive } } }))
   const payload = { $v: "x", value: 1 }
-  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("receive", receive))] }).invoke("receive", { payload })
+  const tools = new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("receive", receive))] })
+  await tools.invoke("receive", { payload }, { callId: "r1/n/1/0" })
   expect(seen).toEqual([payload])
 })
 
@@ -686,7 +767,8 @@ test("object arguments keep a proto key", async () => {
   const { seen, tool: receive } = taking("obj", { type: "object" })
   const rpc = await officeEnd(new BaseHandlers({ tools: { g: { receive } } }))
   const obj = JSON.parse('{"__proto__": {"x": 1}, "a": 2}')
-  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("receive", receive))] }).invoke("receive", { obj })
+  const tools = new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("receive", receive))] })
+  await tools.invoke("receive", { obj }, { callId: "r1/n/1/0" })
   expect(seen).toHaveLength(1)
   expect(Object.keys(seen[0] as object)).toEqual(["__proto__", "a"])
   expect(Object.getPrototypeOf(seen[0])).toBe(Object.prototype)

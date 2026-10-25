@@ -100,14 +100,14 @@ test("the handler answers through the workers stub", async () => {
   const handler = makeAskUser(session(), "run-1", desk.call)
   const rpc = await officeEnd(
     new (class extends BaseHandlers {
-      override askUser(_w: unknown, r: AskRequest) {
+      override askUser(_w: unknown, r: AskRequest, _callId: string) {
         return handler(r)
       }
     })(),
     { concurrent: true },
   )
   const tools = new ToolSet({ ask: askUserStub(rpc) })
-  const got = await tools.invoke("ask_user", { question: "A or B?", options: ["A", "B"] })
+  const got = await tools.invoke("ask_user", { question: "A or B?", options: ["A", "B"] }, { callId: "r1/n/1/0" })
   expect(got).toBe('The user chose "B" (option 2 of the 2 shown).')
   expect(desk.asked[0]!.options).toEqual(["A", "B"])
 })

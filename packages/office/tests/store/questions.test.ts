@@ -75,10 +75,9 @@ test("a second question with one call id is refused", () => {
 test("a questions call id cannot be changed", () => {
   const { store, sid } = withSession()
   const q = store.addQuestion(question(sid, { call_id: "run-1/reply/1/0" }))
-  const nodeChange = thrown(() => store.updateQuestion(q.id, { node_id: "other" }))
   const callChange = thrown(() => store.updateQuestion(q.id, { call_id: "run-1/other" }))
   expect(callChange).toBeInstanceOf(StoreError)
-  expect((callChange as Error).constructor).toBe((nodeChange as Error).constructor)
+  expect((callChange as Error).message).toBe('cannot change ["call_id"] this way')
   expect(store.getQuestion(q.id)!.call_id).toBe("run-1/reply/1/0")
 })
 
