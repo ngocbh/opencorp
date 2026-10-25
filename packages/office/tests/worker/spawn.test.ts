@@ -740,7 +740,7 @@ test("a closed registry refuses new workers", async () => {
   expect(fs.existsSync(path.join(sessionDir, "worker.log"))).toBe(false)
 })
 
-test("the worker log is private and never followed through a link", async () => {
+test("the worker log is never followed through a link", async () => {
   const where = base()
   const store = openStore()
   const registry = makeRegistry(store)
@@ -791,7 +791,10 @@ test("a grandchild of a spawned worker does not hold the channel open", async ()
   }
   onTestFinished(() => {
     for (const { pid, started } of grand) {
-      if (started !== null && sameProcess(pid, started)) process.kill(pid, "SIGKILL")
+      // The probe can exit between the check and the kill.
+      try {
+        if (started !== null && sameProcess(pid, started)) process.kill(pid, "SIGKILL")
+      } catch {}
     }
   })
   const job = makeJob(where, "flows/probe.yaml", { inputs: { dir: sessionDir } })
