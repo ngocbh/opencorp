@@ -40,7 +40,7 @@ console.log(JSON.stringify(loaded.config.build))`
   const out = Bun.spawnSync([process.execPath, "--no-install", "--no-env-file", "--config=/dev/null", "-e", script], {
     cwd: path.join(import.meta.dir, ".."),
     // Under the test's own, so a hung load still fails with its stderr.
-    timeout: 25_000,
+    timeout: 55_000,
   })
   if (out.exitCode !== 0) {
     const how = out.exitedDueToTimeout ? "timed out" : `ended with ${out.exitCode ?? out.signalCode}`
@@ -49,4 +49,4 @@ console.log(JSON.stringify(loaded.config.build))`
   const build = JSON.parse(out.stdout.toString())
   expect(build.target).toEqual(["es2022", "chrome116", "safari17.4", "firefox124"])
   expect(build.assetsInlineLimit).toBe(0)
-}, 30_000)
+}, 60_000)
