@@ -302,7 +302,10 @@ function tail(file: string): string {
     const start = Math.max(0, stat.size - LOG_TAIL_BYTES)
     const buf = Buffer.alloc(LOG_TAIL_BYTES)
     const text = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, start)).toString("utf8")
-    return start === 0 ? text : text.slice(text.indexOf("\n") + 1)
+    if (start === 0) return text
+    // A window that falls inside one long line holds only part of it.
+    const nl = text.indexOf("\n")
+    return nl < 0 ? "" : text.slice(nl + 1)
   } finally {
     fs.closeSync(fd)
   }

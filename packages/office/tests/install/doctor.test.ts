@@ -417,7 +417,16 @@ test("a crash marker never shows more than the error type", async () => {
   const log = `${logLine("ERROR", "opencorp.daemon.main", "office crashed: TypeError token=abc")}\n    at f (x.ts:1:1)\n`
   fs.writeFileSync(path.join(paths.office, "office.log"), log)
   const got = byName(await runChecks(dir, paths))
+  expect(got.office!.status).toBe("warn")
   expect(got.office!.detail).not.toContain("token=abc")
+})
+
+test("an office log that isnt a regular file is no crash", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  fs.mkdirSync(path.join(paths.office, "office.log"))
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office!.status).toBe("warn")
 })
 
 test("the crash marker is found at the end of a long log", async () => {
