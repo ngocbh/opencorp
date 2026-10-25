@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
@@ -837,6 +837,8 @@ describe("the built binary", () => {
   test("the binary starts the run index thread at the daemon start", async () => {
     // A short folder: macOS caps a socket path at 104 bytes.
     const short = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
+    // Outside `built`, so afterAll's removal doesn't cover it.
+    cleanups.push(() => fs.rmSync(short, { recursive: true, force: true }))
     const files = {
       "company.yaml": "name: test-corp\nceo: ngocbh\ndefaults:\n  cost_cap_usd: 5\n  max_turns: 500\n",
       "people/ngocbh/person.yaml": "handle: ngocbh\nname: Hong Ngoc Bui\nkind: human\ntitle: CEO\nmanager: null\n",
@@ -884,17 +886,15 @@ describe("the built binary", () => {
       child.once("error", reject)
       child.once("exit", (code) => resolve(code))
     })
+    // An `error` while the test waits below must not be an unhandled rejection; the waits check the exit themselves.
+    exited.catch(() => {})
     const pid = child.pid
-    const started = pid === undefined ? "" : lstart(pid)
-    onTestFinished(() => {
-      // The daemon re-execs itself with the same pid, so the group is still the one spawned while its start matches.
-      if (pid !== undefined && started !== "" && lstart(pid) === started) killGroup(pid)
-      fs.rmSync(short, { recursive: true, force: true })
-    })
     if (pid === undefined) {
       await exited
       throw new Error("the daemon did not start")
     }
+    // The daemon re-execs itself with the same pid and start time, so the group stays the one spawned here.
+    leaders.push({ pid, started: lstart(pid) })
     const stderr = () => fs.readFileSync(errFile, "utf8")
 
     /** Whether the office socket answers `GET /health` with 200. */
@@ -907,19 +907,33 @@ describe("the built binary", () => {
         req.on("timeout", () => req.destroy())
         req.on("error", () => resolve(false))
       })
-    const deadline = Date.now() + 60_000
+    // Longer than the daemon's own bound on the start's index update, so a slow update that succeeds still passes.
+    const deadline = Date.now() + 90_000
     while (!(await healthy())) {
       if (child.exitCode !== null || child.signalCode !== null)
         throw new Error(`the daemon exited before it served:\n${stderr()}`)
-      if (Date.now() > deadline) throw new Error(`the daemon did not serve within 60 s:\n${stderr()}`)
+      if (Date.now() > deadline) throw new Error(`the daemon did not serve within 90 s:\n${stderr()}`)
       await new Promise((resolve) => setTimeout(resolve, 250))
     }
     // The socket listens only after the start's index update, and yian makes the index before it reads the folder.
     expect(fs.existsSync(path.join(office, "runs/index.sqlite")), stderr()).toBe(true)
     expect(stderr()).not.toContain("run index thread stopped")
     process.kill(pid, "SIGTERM")
-    await exited
-  }, 120_000)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const stopped = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`the daemon did not stop within 30 s of SIGTERM:\n${stderr()}`)),
+        30_000,
+      )
+    })
+    try {
+      await Promise.race([exited, stopped])
+    } finally {
+      clearTimeout(timer)
+    }
+    // Once the leader is reaped the cleanup can't match its start, so anything left in its group goes now.
+    killGroup(pid)
+  }, 150_000)
 
   test("the binary loads the TUI assets from beside it and extracts nothing to TMPDIR", async () => {
     const result = await runTui(bin)
