@@ -1,9 +1,14 @@
-/** `opencorp onboard`: this machine's office for a company: the model provider it runs on. */
+/** `opencorp onboard`: this machine's office for a company: the home, the company repo, this device, the model, the
+ *  service. */
+import { type ExecFileSyncOptionsWithStringEncoding, execFileSync } from "node:child_process"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import type { Readable } from "node:stream"
 import { buffer } from "node:stream/consumers"
 import { isDeepStrictEqual } from "node:util"
+import type { Device } from "@opencorp/protocol"
+import { type ComposedFlow, loadFlow, runFlow } from "@ngocbh/yian"
 import {
   type AuthRequest,
   type Issue,
@@ -12,12 +17,22 @@ import {
   SUPPORTED_LLM_PROVIDERS,
   ValidationError,
 } from "@ngocbh/yian/llm_clients"
-import { FileLockError } from "@ngocbh/yian/platform"
+import { FileLockError, withWarnings } from "@ngocbh/yian/platform"
+import type { RunFlowOptions, RunResult } from "@ngocbh/yian/run"
+import { deviceName, Identity, identityPath, writeIdentity } from "../auth/identity.ts"
+import { newToken, tokenSha256 } from "../auth/tokens.ts"
 import { azureBaseUrl, Connections } from "../chat/connections.ts"
 import * as models from "../chat/models.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
+import type { Owner } from "../company_template/index.ts"
+import { makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
 import { repr } from "../perm/redact.ts"
+import { embedded } from "../platform.ts"
+import { strerror } from "../sandbox/fs_helper.ts"
 import { PrivateFileError, writePrivate } from "../secrets.ts"
+import { workerEnv } from "../worker/spawn.ts"
+import checkModelYaml from "./flows/check_model.yaml" with { type: "file" }
+import { type Completed, type Env, runCommand } from "./launch.ts"
 import { NoTerminal, OnboardError, type Prompter, TRIES } from "./prompts.ts"
 
 /** What to do when a home has no company. */
@@ -495,4 +510,170 @@ export async function ensureProvider(office: string, prompter: Prompter, options
   if (problem !== null) throw new OnboardError(`the model didn't answer: ${problem}`)
   await saveProvider(office, provider)
   return true
+}
+
+/** `text` as a handle: lowercase letters, digits and single '-', at most 32 characters. */
+export function slug(text: string): string {
+  const dashed = text.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-")
+  return dashed.replace(/^-+|-+$/g, "").slice(0, 32).replace(/^-+|-+$/g, "")
+}
+
+/** The owner's default name and handle: the account's full name and a slug of the login. */
+export function ownerDefaults(login: string, gecos: string): [name: string, handle: string] {
+  return [gecos.split(",")[0]!.trim() || login, slug(login) || "owner"]
+}
+
+/** The account's full name (its GECOS field's), or "" when it can't be read. */
+function fullName(uid: number): string {
+  try {
+    const options: ExecFileSyncOptionsWithStringEncoding = {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+    }
+    if (process.platform === "darwin") return execFileSync("/usr/bin/id", ["-F"], options).trim()
+    return execFileSync("getent", ["passwd", String(uid)], options).trim().split(":")[4] ?? ""
+  } catch {
+    return ""
+  }
+}
+
+/** `ownerDefaults` for the account running this. Throws `OnboardError` when the user id has no account. */
+export function loginDefaults(): [name: string, handle: string] {
+  const uid = process.getuid!()
+  let login: string
+  try {
+    login = os.userInfo().username
+  } catch {
+    throw new OnboardError(`user id ${uid} has no account in the password database`)
+  }
+  return ownerDefaults(login, fullName(uid))
+}
+
+/**
+ * Makes this device's token for `owner` and saves the identity; resolves `owner` listing the device.
+ *
+ * The identity is written before the company, so the device the first commit lists always has its token here. A
+ * new company replaces an identity from an earlier one. Throws `OnboardError` when the identity file can't be
+ * written.
+ */
+export async function makeDevice(home: string, owner: Owner): Promise<Owner> {
+  const me = new Identity(owner.handle, deviceName(), newToken())
+  await saveIdentity(home, me)
+  const device: Device = { name: me.device, token_sha256: tokenSha256(me.token) }
+  return { ...owner, devices: [device] }
+}
+
+async function saveIdentity(home: string, me: Identity): Promise<void> {
+  const file = identityPath(home)
+  try {
+    await writeIdentity(file, me)
+  } catch (error) {
+    // Their messages hold paths, never the token.
+    if (error instanceof PrivateFileError || error instanceof FileLockError) {
+      throw new OnboardError(`can't write ${file}: ${error.message}`)
+    }
+    const text = strerror(error)
+    if (text === undefined) throw error
+    throw new OnboardError(`can't write ${file}: ${text}`)
+  }
+}
+
+/** Makes the home and office dirs, both 0700. Throws `OnboardError` when they can't be made, or the office dir
+ *  isn't this user's. */
+export function makeHome(home: string): void {
+  try {
+    fs.mkdirSync(home, { recursive: true, mode: 0o700 })
+    // mkdir leaves an existing home's mode alone; the home holds the company and the office.
+    fs.chmodSync(home, 0o700)
+    makeOfficeDir(path.join(home, "office"))
+  } catch (error) {
+    if (error instanceof OfficeStartError) throw new OnboardError(error.message)
+    if (errnoCode(error) === undefined) throw error
+    throw new OnboardError(`can't set up the office home ${home}: ${strerror(error) ?? (error as Error).message}`)
+  }
+}
+
+/** `text` with the user and password taken out of any URL in it, since a remote URL can carry a token. */
+export function redact(text: string): string {
+  return text.replace(/(?<=:\/\/)[^/@\s]+@/g, "***@")
+}
+
+/** Runs git as the user would, in `env` (this process's by default), so their credentials and ssh setup reach a
+ *  remote; never throws: git that can't start is exit 127, and one still running after 300 s exit 124. */
+export async function userGit(args: readonly string[], { env = process.env }: { env?: Env } = {}): Promise<Completed> {
+  const vars: Record<string, string> = {}
+  for (const [name, value] of Object.entries(env)) if (value !== undefined) vars[name] = value
+  const done = await runCommand(["git", ...args], { env: vars, timeoutMs: 300_000 })
+  return done.code === 127 ? { ...done, stderr: `can't run git: ${done.stderr}` } : done
+}
+
+/** What to do when a clone or push fails: under `opencorp`'s setup screen git has no terminal to ask on. */
+export const GIT_ACCESS =
+  "if git needs a login or a new host key, set that up in a terminal first (`gh auth login`, or `ssh -T git@HOST` once)"
+
+/** Where onboarding clones a company before this device is added to it; renamed to `company` once done, so a
+ *  stopped onboarding leaves no company that lacks this device. */
+export const CLONE = ".company-clone"
+
+/** The questions, by which command-line flags preset their answers. */
+export const REPO_URL = "Company repo URL (empty if there's none yet)"
+/** The questions, by which command-line flags preset their answers. */
+export const WHO = "Which of them are you?"
+
+/** Removes `file`, whether a dir, a file, or a symlink (never what it points to); nothing if it's gone. */
+export function removePath(file: string): void {
+  const st = fs.lstatSync(file, { throwIfNoEntry: false })
+  if (st === undefined) return
+  if (st.isDirectory()) fs.rmSync(file, { recursive: true, force: true })
+  else fs.rmSync(file, { force: true })
+}
+
+/** Onboarding's steps: the company, this device, the model, and the office. */
+export const STEPS = 4
+
+/**
+ * Runs `flow` with `provider`'s model as an office run would; resolves its result (null when the run threw), and
+ * why it failed (null when it didn't), without the key or URL credentials.
+ */
+export async function runSetup(
+  flow: ComposedFlow,
+  inputs: Readonly<Record<string, unknown>>,
+  provider: Provider,
+  { tools, context }: { tools: NonNullable<RunFlowOptions["tools"]>; context?: unknown },
+): Promise<{ result: RunResult | null; message: string | null }> {
+  // The run gets the environment office runs get, so it authenticates the way they will: a shell variable the
+  // office never sees can't make it work.
+  const vars: Record<string, string> = { ...workerEnv(process.env), ...provider.env }
+  const env = (name: string) => (Object.hasOwn(vars, name) ? vars[name] : undefined)
+  // An Azure deployment or a gateway's model is never in yian's list; the owner chose it on purpose.
+  const handler = (message: string, type: string | undefined) => {
+    if (!/^Model .* is not in the known model list/s.test(message)) process.emitWarning(message, type)
+  }
+  let result: RunResult | null = null
+  let message: string | null = null
+  try {
+    // No workers: the code nodes, and so the terminal, stay in this process.
+    result = await withWarnings(handler, () =>
+      runFlow(flow, inputs, { llmConfig: provider.llm_config, tools, numWorkers: 0, context, env }),
+    )
+    if (result.status === "failed") message = result.failure?.message ?? "the run failed"
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error)
+  }
+  if (message !== null) {
+    const key = provider.llm_config?.api_key
+    if (typeof key === "string" && key) message = message.replaceAll(key, "***")
+    message = redact(message).replace(/\.+$/, "")
+  }
+  return { result, message }
+}
+
+/** Why `provider`'s model doesn't answer a one-word request made as an office run makes it, or null when it
+ *  answers. */
+export async function modelProblem(provider: Provider): Promise<string | null> {
+  const flow = await loadFlow(embedded(checkModelYaml).toString("utf8"), {
+    sourceLabel: "install/flows/check_model.yaml",
+  })
+  return (await runSetup(flow, {}, provider, { tools: {} })).message
 }
