@@ -1,5 +1,6 @@
 /** A session's transcript, read from its runs' logs (Python's `tests/chat/test_transcript.py`). */
 import { expect, setDefaultTimeout, test } from "bun:test"
+import fs from "node:fs"
 import { iterRunRecords, type PoolCommitRecord, type RunLogEntry } from "@ngocbh/yian/run"
 import { pending } from "@ngocbh/yian/tools"
 import { Message, type ToolPart } from "@opencorp/protocol"
@@ -15,6 +16,7 @@ import {
   fakeLlm,
   interruptMidReply,
   logPrefix,
+  PERSON,
   send,
   TemplateOffice,
   templateJob,
@@ -24,10 +26,13 @@ import {
 
 setDefaultTimeout(30_000)
 
-/** The messages of the runs `runIds` under `runs`, each checked against the protocol's `Message`. */
+/** The messages of the runs `runIds` under `runs`, each checked against the protocol's `Message`, their ids checked
+ *  to sort in transcript order. */
 function messages(runs: string, sessionId: string, runIds: string[]): Message[] {
   const read = new Transcript(runs).messages(sessionId, runIds)
   for (const message of read) Message.parse(message)
+  const ids = read.map((m) => m.id)
+  expect(ids).toEqual([...ids].sort())
   return read
 }
 
@@ -389,4 +394,47 @@ test("a reply interrupted before it streamed text shows its cut call and the mar
   expect(reply.role).toBe("assistant")
   expect(tools([reply])).toEqual([["c1", "interrupted", {}, "Not run: interrupted by the user."]])
   expect(shown([reply])).toEqual([["assistant", ["interrupted", "[interrupted]"]]])
+})
+
+test("the transcript shows nothing of the runs inputs or other nodes", async () => {
+  const hidden = "NOT-IN-THE-TRANSCRIPT"
+  const fake = await fakeLlm()
+  fake.script({ content: `${hidden} 0` }, { content: "Hello." }, { content: `${hidden} 1` })
+  const history = [0, 1, 2, 3, 4].map((k) => [
+    { role: "user", parts: [{ type: "text", text: `${hidden} u${k}`.padEnd(8000, "u") }] },
+    { role: "assistant", parts: [{ type: "text", text: `${hidden} a${k}`.padEnd(8000, "a") }] },
+  ])
+  const runs = tempDir()
+  const inputs = { person: { ...PERSON, title: hidden }, summary: hidden, history }
+  const job = await waitingChat(fake, "chat", inputs, { runs })
+  await advance(job, fake, [send("s1", "next")])
+  expect(fake.requests().length).toBe(3)
+  const log = fs.readFileSync(job.log, "utf8")
+  expect(log).toContain(`${hidden} 0`) // the summariser's reply
+  expect(log.split(hidden).length).toBeGreaterThan(10)
+  const read = messages(runs, newId(), ["r1"])
+  expect(JSON.stringify(read)).not.toContain(hidden)
+  expect(texts(read)).toEqual([
+    ["user", ["next"]],
+    ["assistant", ["Hello."]],
+  ])
+})
+
+test("messages of every run come in run order and their ids sort in that order", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "First." }, { content: "Second." })
+  const runs = tempDir()
+  const runIds = [newId(), newId()]
+  for (const [i, runId] of runIds.entries()) {
+    const job = await waitingChat(fake, "chat", {}, { runs, runId })
+    await advance(job, fake, [send(`s${i}`, `message ${i}`)])
+  }
+  const read = messages(runs, newId(), runIds)
+  expect(texts(read)).toEqual([
+    ["user", ["message 0"]],
+    ["assistant", ["First."]],
+    ["user", ["message 1"]],
+    ["assistant", ["Second."]],
+  ])
+  expect(read.map((m) => m.id.split(":")[0])).toEqual([runIds[0], runIds[0], runIds[1], runIds[1]])
 })
