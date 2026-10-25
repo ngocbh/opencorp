@@ -1,7 +1,7 @@
 /** How the office starts a session's runs: the run specs of a main chat, a side chat and the profile manager, and
  *  the worker job built from one. */
 import type { MarkdownStore } from "@ngocbh/yian"
-import { CompanyDefaults } from "@opencorp/protocol"
+import { CompanyDefaults, type Person as PersonSchema } from "@opencorp/protocol"
 import type { z } from "zod"
 import type { CompanyGit } from "../company/git.ts"
 import type { CompanyRepo } from "../company/loader.ts"
@@ -22,7 +22,7 @@ const MANAGER_FLOW = "shared/flows/profile_manager.yaml"
 // Room in a side chat's history beyond its seed, so compaction doesn't fold the seed.
 const SIDE_HISTORY_CHARS = 32000
 
-type Person = NonNullable<ReturnType<CompanyRepo["people"]["get"]>>
+type Person = z.output<typeof PersonSchema>
 type Workspace = Pick<WorkspaceTools, "call">
 
 /** What a run's tool groups are built for: the session, the run, and how its tools ask questions. */
@@ -168,18 +168,16 @@ export function sideSpec({
 }
 
 /**
- * The run spec of a profile-manager session over `session.person`'s profile, `repo` being the session's pinned
- * commit.
+ * The run spec of a profile-manager session, `repo` being the session's pinned commit.
  *
- * Its only group is `profile`, the given profile tools. It has no memory: it edits the profile rather than
- * learning from it.
+ * Its only group is `profile`, the given profile tools, which already carry the person whose profile they edit and
+ * the session. It has no memory: it edits the profile rather than learning from it.
  */
 export function managerSpec({
   repo,
   tools,
 }: {
   repo: CompanyRepo
-  session: SessionRecord
   tools: Record<string, OfficeTool>
 }): RunSpec {
   return {

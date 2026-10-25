@@ -17,7 +17,7 @@ import { READ_TOOLS } from "../../src/tools/workspace.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
 import { groupSpecs, JobError, personFlow } from "../../src/worker/job.ts"
 import { tempDir } from "../helpers.ts"
-import { openStore, session } from "../store/helpers.ts"
+import { openStore, question, session, workItem } from "../store/helpers.ts"
 import { advanceJob, Recorder, run, waitsOf } from "../worker/helpers.ts"
 import { fakeLlm } from "./helpers.ts"
 
@@ -75,6 +75,17 @@ async function office() {
 
 type Office = Awaited<ReturnType<typeof office>>
 
+/** The status and code of the `HarnessError` `call` throws. */
+function refusal(call: () => unknown): [number, string] {
+  try {
+    call()
+  } catch (error) {
+    if (error instanceof HarnessError) return [error.status, error.code]
+    throw error
+  }
+  throw new Error("no HarnessError was thrown")
+}
+
 /** minh's main spec in `o`. */
 function main(o: Office) {
   return mainSpec({ ...o, workspace: NO_WORKSPACE, carried: () => [] })
@@ -115,19 +126,24 @@ test("the main spec runs the persons main flow with their tools memory and skill
   })
   expect(spec.workspace).toBe(NO_WORKSPACE)
   const owner = o.store.createSession(session({ person: "ngocbh" }))
-  expect(() => mainSpec({ ...o, session: owner, workspace: NO_WORKSPACE, carried: () => [] })).toThrow(
-    "ngocbh has no main flow to chat with",
-  )
+  const ownerSpec = () => mainSpec({ ...o, session: owner, workspace: NO_WORKSPACE, carried: () => [] })
+  expect(ownerSpec).toThrow("ngocbh has no main flow to chat with")
+  expect(refusal(ownerSpec)).toEqual([422, "not_an_agent"])
 })
 
 test("the side spec has read only lookups and room for its seed", async () => {
   const o = await office()
-  const spec = sideSpec({ ...o, workspace: NO_WORKSPACE, question: undefined })
+  // A question about someone else's work item: the side chat's work items show it only through the question.
+  const item = o.store.createWorkItem(workItem({ title: "Ship v2", requester: "ngocbh", assignee: "lan" }))
+  const asked = o.store.addQuestion(question(o.session.id, { work_item_id: item.id }))
+  const spec = sideSpec({ ...o, workspace: NO_WORKSPACE, question: asked })
   expect(spec.flow).toBe("shared/flows/side_chat.yaml")
   expect(spec.chat).toBe(MAIN_CHAT)
   const groups = spec.groups({ session: o.session, runId: "r1" })
   expect(Object.keys(groups)).toEqual(["workspace", "work_items"])
   expect(Object.keys(groups.workspace!)).toEqual([...READ_TOOLS])
+  const listed = JSON.parse(groups.work_items!.list_work_items!.call({}) as string) as { title: string }[]
+  expect(listed.map((i) => i.title)).toEqual(["Ship v2"])
   expect(spec.skills).toEqual([])
   expect(spec.memory).toEqual({
     profile: { kind: "profile", store: "profile", max_chars: o.defaults.profile_max_chars, llm_config: null },
@@ -143,17 +159,13 @@ test("the side spec has read only lookups and room for its seed", async () => {
   const nobody = o.store.createSession(session({ person: "nobody" }))
   const missing = () => sideSpec({ ...o, session: nobody, workspace: NO_WORKSPACE, question: undefined })
   expect(missing).toThrow(HarnessError)
-  try {
-    missing()
-  } catch (error) {
-    expect([(error as HarnessError).status, (error as HarnessError).code]).toEqual([422, "not_found"])
-  }
+  expect(refusal(missing)).toEqual([422, "not_found"])
 })
 
 test("the manager spec has only the profile tools", async () => {
   const o = await office()
   const profile: Record<string, OfficeTool> = { read_profile: { description: "Reads.", call: () => "" } }
-  const spec = managerSpec({ repo: o.repo, session: o.session, tools: profile })
+  const spec = managerSpec({ repo: o.repo, tools: profile })
   expect(spec.flow).toBe("shared/flows/profile_manager.yaml")
   expect(spec.chat).toBe(MAIN_CHAT)
   expect(spec.groups({ session: o.session, runId: "r1" })).toEqual({ profile })
