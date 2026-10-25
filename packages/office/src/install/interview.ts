@@ -1,9 +1,14 @@
-/** `opencorp init`'s interview: what the model is told, the draft without a terminal, the summary the owner
- *  confirms, the model's questions to the owner, and the password and remote steps. */
+/** `opencorp init`'s flow (an interview that asks on the terminal, the owner's confirmation, a password and a
+ *  remote), and the draft without a terminal. */
+import { type FunctionTool, loadFlow, type ToolContext, tool } from "@ngocbh/yian"
 import { hashPassword, passwordProblem } from "../auth/passwords.ts"
+import { loadProvider, Provider } from "../chat/provider.ts"
 import { type Draft, type InitOutput, draftFromOutput, draftProblems, fieldProblems } from "../company/draft.ts"
 import { pyJson, strip } from "../perm/redact.ts"
-import { type LoginDefaults, loginDefaults, slug } from "./onboard.ts"
+import { embedded } from "../platform.ts"
+import { checkCompanyTool } from "../tools/company/draft.ts"
+import initYaml from "./flows/init.yaml" with { type: "file" }
+import { type LoginDefaults, loginDefaults, runSetup, slug } from "./onboard.ts"
 import { KeyboardInterrupt, NoTerminal, OnboardError, type Prompter, TRIES } from "./prompts.ts"
 
 /** What the owner is asked after the summary. */
@@ -41,7 +46,8 @@ export interface Known {
   readonly remote?: string
 }
 
-/** `Known`'s fields in the order the model is told them. */
+/** `Known`'s fields in the order the model is told them. Not `remote`: a remote URL can hold credentials, so it
+ *  never reaches the model. */
 const FIELDS = ["company", "name", "handle", "title", "agent", "agent_handle"] as const
 
 /** What the interview is told about `known`: `given`, the fields that are set, and `suggested` defaults for the
@@ -51,7 +57,6 @@ export function facts(
   defaults: LoginDefaults = loginDefaults,
 ): { given: Record<string, string>; suggested: { name: string; handle: string; title: string } } {
   const [name, handle] = defaults()
-  // A remote URL can hold credentials, so it never reaches the model.
   const given: Record<string, string> = {}
   for (const field of FIELDS) if (known[field]) given[field] = known[field]
   return { given, suggested: { name, handle, title: "CEO" } }
@@ -70,9 +75,10 @@ export function fallbackDraft(known: Known, defaults: LoginDefaults = loginDefau
   }
   const problems = fieldProblems(draft)
   if (problems.length > 0) {
-    throw new OnboardError("can't set up the company without a terminal: " + problems
+    const hints = problems
       .map(([field, why]) => (field !== null && Object.hasOwn(FLAGS, field) ? `${why}; pass ${FLAGS[field]}` : why))
-      .join("; "))
+      .join("; ")
+    throw new OnboardError(`can't set up the company without a terminal: ${hints}`)
   }
   return draft
 }
@@ -104,7 +110,7 @@ export function summary(draft: Draft): string[] {
 /** The owner's terminal for one init flow run, and the error that stopped it, if one did. */
 export class Asking {
   /** The `OnboardError` or `KeyboardInterrupt` that stopped the run. */
-  stopped: Error | null = null
+  stopped: OnboardError | KeyboardInterrupt | null = null
 
   constructor(readonly prompter: Prompter) {}
 }
@@ -116,6 +122,8 @@ export async function withOwner<T>(state: Asking, fn: (prompter: Prompter) => Pr
   try {
     return await fn(state.prompter)
   } catch (error) {
+    // In TS a throw inside a yian tool becomes the run's failure, so an interrupt is kept for the caller to
+    // rethrow (Python's KeyboardInterrupt escaped run_flow on its own).
     if (error instanceof OnboardError || error instanceof KeyboardInterrupt) state.stopped = error
     throw error
   }
@@ -208,9 +216,98 @@ export async function passwordStep(prompter: Prompter): Promise<string | null> {
 /** Shows the remote step and resolves to the git remote URL: `given` (from `--remote`), or the one the owner
  *  types; empty when they pick none. */
 export async function remoteStep(prompter: Prompter, given: string): Promise<string> {
-  prompter.step(4, STEPS, "Remote", "A git remote, such as a private GitHub repo, lets other machines join the"
-    + " company with `opencorp onboard --from URL`.")
+  prompter.step(4, STEPS, "Remote", "A git remote, such as a private GitHub repo, lets other machines join the " +
+    "company with `opencorp onboard --from URL`.")
   if (given) return given
   const picked = await prompter.choose(REMOTE, [NO_REMOTE], NO_REMOTE, true)
   return picked === NO_REMOTE ? "" : strip(picked)
+}
+
+/** The running init flow's terminal state: a tool's `ctx.context`. Throws when the run was given another
+ *  context. */
+function asking(ctx: ToolContext<unknown>): Asking {
+  if (!(ctx.context instanceof Asking)) throw new Error("the init flow's tools need its Asking context")
+  return ctx.context
+}
+
+/** The init flow's `confirm_company` TOOL node: `confirm` on the owner's terminal. */
+export const confirmCompanyTool: FunctionTool = tool({
+  name: "confirm_company",
+  description: "Check the drafted company and, if it has no problems, ask the owner to create it.",
+  parameters: { type: "object", properties: { answers: { type: "object" } }, required: ["answers"] },
+  execute: (args, ctx) => confirm(args as { answers: InitOutput }, asking(ctx)),
+})
+
+/** The init flow's `ask_password` TOOL node: `passwordStep` on the owner's terminal; the hash or null, never the
+ *  password. */
+export const askPasswordTool: FunctionTool = tool({
+  name: "ask_password",
+  description: "Ask the owner for a new password; returns its hash, or null when there's no terminal.",
+  parameters: { type: "object", properties: {} },
+  execute: (_args, ctx) => withOwner(asking(ctx), passwordStep),
+})
+
+/** The init flow's `ask_remote` TOOL node: `remoteStep` on the owner's terminal, given `given` from `--remote`. */
+export const askRemoteTool: FunctionTool = tool({
+  name: "ask_remote",
+  description: "Ask the owner for a git remote URL unless one was given; returns it, or empty for none.",
+  parameters: { type: "object", properties: { given: { type: "string" } }, required: ["given"] },
+  execute: (args, ctx) => withOwner(asking(ctx), (prompter) => remoteStep(prompter, args.given as string)),
+})
+
+/** The model couldn't run the init flow. */
+export class ModelError extends OnboardError {
+  override name = "ModelError"
+}
+
+/**
+ * Runs the init flow with `provider`'s model, asking the owner with `prompter`; resolves to its output.
+ *
+ * Rejects with `ModelError` when the run failed; `OnboardError` when the owner's input ended or no password worked
+ * (the error thrown), the interview didn't settle on a company, or the user id has no account; and the
+ * `KeyboardInterrupt` the owner gave.
+ */
+export async function runInitFlow(
+  provider: Provider,
+  prompter: Prompter,
+  known: Known,
+  defaults: LoginDefaults = loginDefaults,
+): Promise<InitOutput & { readonly remote: string }> {
+  const flow = await loadFlow(embedded(initYaml).toString("utf8"), { sourceLabel: "install/flows/init.yaml" })
+  const inputs = { known: pyJson(facts(known, defaults), true), remote: known.remote ?? "" }
+  const state = new Asking(prompter)
+  const { result, message } = await runSetup(flow, inputs, provider, {
+    tools: {
+      check_company: checkCompanyTool,
+      confirm_company: confirmCompanyTool,
+      ask_password: askPasswordTool,
+      ask_remote: askRemoteTool,
+      ask: (request, ctx) => askUser(request, asking(ctx)),
+    },
+    context: state,
+  })
+  if (state.stopped) throw state.stopped
+  if (result?.status === "failed" && result.failure?.code === "loop.max_exceeded") {
+    throw new OnboardError("the interview didn't settle on a company; run `opencorp init` again")
+  }
+  if (message !== null) throw new ModelError(`the model couldn't run the interview: ${message}`)
+  return result!.output as InitOutput & { readonly remote: string }
+}
+
+/**
+ * The new company with its CEO's password hash, and the git remote URL (empty for none), from the init flow run
+ * with the model in the provider file `file`, starting from `known`.
+ *
+ * Rejects as `runInitFlow` does, and with `ProviderError` or the `ENOENT` error when the provider file can't be
+ * used.
+ */
+export async function initFlow(
+  file: string,
+  prompter: Prompter,
+  known: Known,
+  defaults: LoginDefaults = loginDefaults,
+): Promise<[Draft, string]> {
+  const provider = await loadProvider(file, Provider.parse, { missingOk: false })
+  const output = await runInitFlow(provider, prompter, known, defaults)
+  return [draftFromOutput(output), output.remote]
 }

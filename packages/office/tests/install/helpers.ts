@@ -1,14 +1,17 @@
-/** The install tests' helpers (Python's `tests/install/conftest.py`, and `Script` from `test_provider_setup.py`).
+/** The install tests' helpers (Python's `tests/install/conftest.py`, `Script` from `test_provider_setup.py`, and
+ *  `flowReplies` from `test_interview.py`).
  *  Tests never run a real service tool: every install test passes a `makeHost` host, whose `run` is a `Runner`. */
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { onTestFinished } from "bun:test"
+import type { InitOutput } from "../../src/company/draft.ts"
 import { type Completed, type Host, type Launch, launch, officeAnswers } from "../../src/install/launch.ts"
 import type { Listers } from "../../src/install/onboard.ts"
 import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { type Prompter, stepLines } from "../../src/install/prompts.ts"
 import { repr } from "../../src/perm/redact.ts"
+import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
 
 /** Records commands and answers each from a table of `[argv prefix, code, stderr, stdout?]`: the first matching
  *  prefix answers, else code 0 with empty output. */
@@ -129,6 +132,22 @@ export class Script implements Prompter {
   step(number: number, total: number, title: string, why: string): void {
     this.seen.push(...stepLines(number, total, title, why))
   }
+}
+
+/** One interview round from the model: ask `question`, check `output`, then return it. */
+export function flowReplies(
+  question: string,
+  output: InitOutput,
+  options?: readonly string[],
+): ScriptedReply[] {
+  const args = { question, ...(options?.length ? { options } : {}) }
+  const check = { company: output.company, owner: output.owner, teammates: output.teammates }
+  return [
+    { tool_calls: [{ name: "ask_user", arguments: args }] },
+    { tool_calls: [{ name: "check_company", arguments: check }] },
+    { content: "That's everything." }, // ends the tool loop
+    { tool_calls: [{ name: "Record", arguments: output }] }, // forced structured output
+  ]
 }
 
 /** Listers that list nothing, so no test reaches a provider: the model or deployment is typed. */
