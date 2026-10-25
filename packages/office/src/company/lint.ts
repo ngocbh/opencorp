@@ -195,6 +195,11 @@ interface Compiled {
   wiring: ReadonlyMap<string, ReadonlyMap<string, { source: unknown }>>
 }
 
+/** Whether a wiring binding's source reads `${input.<name>}`; yian accepts spaces inside the braces. */
+function readsInput(binding: { source: unknown } | undefined, name: string): boolean {
+  return typeof binding?.source === "string" && binding.source.replace(/\s/g, "") === `\${input.${name}}`
+}
+
 /** What's wrong with a main flow's chat shape, each with its fix; empty when it has the template's shape. */
 function chatShapeProblems(ref: string, flow: ComposedFlow): string[] {
   const like = "as the template's shared/flows/chat.yaml does"
@@ -211,17 +216,24 @@ function chatShapeProblems(ref: string, flow: ComposedFlow): string[] {
   const compiled = flow.compiled as unknown as Compiled
   const loop = compiled.nodes.get(loopName)
   if (loop?.child === undefined || loop.predicateKind === undefined
-    || compiled.wiring.get(loopName)?.get(MAIN_CHAT.inbox)?.source !== inbox) {
+    || !readsInput(compiled.wiring.get(loopName)?.get(MAIN_CHAT.inbox), MAIN_CHAT.inbox)) {
     problems.push(`${ref} has no LOOP node ${loopName} that passes ${MAIN_CHAT.inbox}: ${inbox} to its turn; the`
       + ` office reads each turn there, so loop a turn def as ${loopName} ${like}`)
     return problems
   }
   const reply = loop.child.nodes.get(replyName)
-  if (reply?.steerInbox !== true || loop.child.wiring.get(replyName)?.get("__steer_inbox")?.source !== inbox) {
+  if (reply?.kind !== "agent") {
+    problems.push(`${ref}'s turn has no AGENT node ${MAIN_CHAT.reply}; the office reads each reply there, so name`
+      + ` the turn's agent ${replyName} ${like}`)
+    return problems
+  }
+  // "__steer_inbox" is yian's STEER_INBOX_KEY, which yian doesn't export.
+  const steer = loop.child.wiring.get(replyName)?.get("__steer_inbox")
+  if (reply.steerInbox !== true || !readsInput(steer, MAIN_CHAT.inbox)) {
     problems.push(`${ref}'s ${MAIN_CHAT.reply} doesn't read the ${MAIN_CHAT.inbox} inbox as its steer inbox, so`
       + ` messages sent while it works never reach it; set \`steer_inbox: ${inbox}\` on it ${like}`)
   }
-  if (reply !== undefined && reply.outputContract?.type?.nullable !== true) {
+  if (reply.outputContract?.type?.nullable !== true) {
     problems.push(`${ref}'s ${MAIN_CHAT.reply} output isn't optional; an interrupt cuts the reply and fails a strict`
       + ` output, so declare it as Optional(...), such as \`output: Optional(str)\`, ${like}`)
   }

@@ -291,6 +291,8 @@ test("a main flow whose messages input is not an inbox of messages is a lint err
 })
 
 test("a main flow whose reply does not steer from the messages inbox is a lint error", async () => {
+  const spaced = MAIN.replaceAll("${input.messages}", "${ input.messages }")
+  expect(await codes(makeCompany({ "shared/flows/chat.yaml": spaced }))).toEqual(new Set())
   const unsteered = MAIN.replace("        steer_inbox: ${input.messages}\n", "")
   expect((await chatShapeIssue(unsteered)).message).toContain("steer_inbox: ${input.messages}")
   // A second inbox, declared and carried into the turn beside messages, that the reply steers from instead.
