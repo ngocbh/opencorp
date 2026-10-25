@@ -1,10 +1,15 @@
 /** Python's `tests/install/test_doctor.py`. */
 import fs from "node:fs"
+import http from "node:http"
 import path from "node:path"
-import { expect, test } from "bun:test"
+import type { HqStatus } from "@opencorp/protocol"
+import { expect, onTestFinished, test } from "bun:test"
+import { Identity, identityPath, readIdentity, writeIdentity } from "../../src/auth/identity.ts"
+import { newToken } from "../../src/auth/tokens.ts"
 import { writeCompany } from "../../src/company_template/index.ts"
 import { logLine } from "../../src/daemon/http.ts"
 import { OfficePaths } from "../../src/daemon/office.ts"
+import { attach } from "../../src/hq/core.ts"
 import * as doctor from "../../src/install/doctor.ts"
 import type { Check } from "../../src/install/doctor.ts"
 import { INHERITED_ENV, launch } from "../../src/install/launch.ts"
@@ -13,7 +18,8 @@ import { SET_UP, setupConnectionFile } from "../../src/install/onboard.ts"
 import * as systemd from "../../src/install/systemd.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { git } from "../company/helpers.ts"
-import { tempDir } from "../helpers.ts"
+import { CEO, giveDevice, makeOffice, served } from "../daemon/helpers.ts"
+import { shortDir, tempDir } from "../helpers.ts"
 import { makeHost, Runner } from "./helpers.ts"
 
 const KEY = "sk-ant-test-0123456789"
@@ -768,4 +774,191 @@ test("a codex that says nothing is still described", async () => {
     status: "ok",
     detail: `${codex} (no version printed), signed in`,
   })
+})
+
+test("hq status is read with this devices token", async () => {
+  const office = makeOffice()
+  const home = tempDir()
+  const token = newToken()
+  giveDevice(office.paths.company, CEO, "mac", token) // enforced from now on
+  await writeIdentity(identityPath(home), new Identity(CEO, "mac", token))
+  attach(office, { log: () => {}, listen: false })
+  const { sock } = await served(office, { tokens: true })
+  const status = await doctor.hqStatus(sock, await readIdentity(identityPath(home)))
+  if (typeof status === "string") throw new Error(`unread: ${status}`)
+  expect(status.socket.endsWith("hq.sock")).toBe(true)
+  expect(doctor.report(doctor.hqChecks(status, home, home))).not.toContain(token)
+  fs.unlinkSync(identityPath(home))
+  const gone = await readIdentity(identityPath(home))
+  expect(gone).toBeUndefined()
+  expect(await doctor.hqStatus(sock, gone)).toBe("refused") // 401
+})
+
+test("an office without hq or no office at all is unreachable", async () => {
+  const { sock } = await served(makeOffice()) // HQ not attached: 501
+  expect(await doctor.hqStatus(sock, undefined)).toBe("unreachable")
+  expect(await doctor.hqStatus(path.join(shortDir(), "nothing.sock"), undefined)).toBe("unreachable")
+})
+
+/** A stand-in office on a unix socket answering every request with `status` and `body`, or never when `body` is
+ *  undefined; closed when the test finishes. */
+async function answering(status: number, body?: string): Promise<string> {
+  const server = http.createServer((_req, res) => {
+    if (body !== undefined) res.writeHead(status, { "content-type": "application/json" }).end(body)
+  })
+  // Registered before shortDir's removal, so the server is closed first.
+  onTestFinished(async () => {
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  })
+  const sock = path.join(shortDir(), "o.sock")
+  await new Promise<void>((resolve) => server.listen(sock, resolve))
+  return sock
+}
+
+test("an office from before hq is unreachable", async () => {
+  const sock = await answering(404, JSON.stringify({ error: "no_route" }))
+  expect(await doctor.hqStatus(sock, undefined)).toBe("unreachable")
+})
+
+test("an office that doesnt answer in time is unreachable", async () => {
+  const sock = await answering(200)
+  expect(await doctor.hqStatus(sock, undefined, 200)).toBe("unreachable")
+})
+
+/** An HQ status listening on its web port with a current app, with `tcp` over its TCP fields. */
+function status(tcp: Partial<HqStatus["tcp"]> = {}): HqStatus {
+  return {
+    socket: "/h/office/hq.sock",
+    tcp: { enabled: true, port: 49380, listening: true, error: null, next_retry_at: null, ...tcp },
+    url: "http://127.0.0.1:49380/",
+    health: { ok: true, office: { api: "0.0.1+aaa" }, app: { build: "b", api: "0.0.1+aaa" } },
+    warnings: [],
+  }
+}
+
+test("hq listening and a current app", () => {
+  const dir = tempDir()
+  const got = byName(doctor.hqChecks(status(), dir, path.join(dir, "repo")))
+  expect(got.hq!.status).toBe("ok")
+  expect(got.hq!.detail).toContain("http://127.0.0.1:49380/")
+  expect(got["web app"]!.status).toBe("ok")
+})
+
+test("a taken port names the fix", () => {
+  const dir = tempDir()
+  const got = byName(doctor.hqChecks(status({ listening: false, error: "Address already in use" }), dir, dir))
+  expect(got.hq!.status).toBe("warn")
+  expect(got.hq!.detail).toContain("Address already in use")
+  expect(got.hq!.detail).toContain("hq.json")
+})
+
+test("a port not bound yet says so without a fix", () => {
+  const dir = tempDir()
+  const got = byName(doctor.hqChecks(status({ listening: false }), dir, dir)).hq!
+  expect(got.status).toBe("warn")
+  expect(got.detail).toContain("isn't listening yet (HQ is binding it)")
+  expect(got.detail).not.toContain("hq.json")
+  expect(got.detail).not.toContain("restart")
+})
+
+test("a web port server that ended is told to restart", () => {
+  const dir = tempDir()
+  const s = status({ listening: false, error: "its server ended (it stopped)" })
+  const got = byName(doctor.hqChecks(s, dir, dir)).hq!
+  expect(got.status).toBe("warn")
+  expect(got.detail).toContain("server ended (it stopped)")
+  expect(got.detail).toContain("`opencorp restart`")
+  expect(got.detail).not.toContain("hq.json")
+  expect(got.detail).not.toContain("isn't free")
+})
+
+test("tcp off points at pair", () => {
+  const dir = tempDir()
+  const got = byName(doctor.hqChecks(status({ enabled: false, listening: false }), dir, dir))
+  expect(got.hq!.status).toBe("ok")
+  expect(got.hq!.detail).toContain("opencorp pair")
+})
+
+test("an unbuilt or stale app warns", () => {
+  const dir = tempDir()
+  fs.mkdirSync(path.join(dir, "packages", "app"), { recursive: true })
+  const s = status()
+  s.health.app = null
+  expect(byName(doctor.hqChecks(s, dir, dir))["web app"]!.detail).toContain("bun run build")
+  s.health.app = { build: "b", api: "0.0.1+bbb" }
+  expect(byName(doctor.hqChecks(s, dir, dir))["web app"]!.detail).toContain("doesn't match")
+})
+
+test("an install without the apps sources says it has no web app", () => {
+  const dir = tempDir()
+  const s = status()
+  s.health.app = null
+  const got = byName(doctor.hqChecks(s, dir, path.join(dir, "site-packages")))["web app"]!
+  expect(got.status).toBe("warn")
+  expect(got.detail).toContain("this install has no web app")
+  expect(got.detail).not.toContain("bun")
+})
+
+for (const enabled of [true, false]) {
+  test(`hq sock not listening warns and says to restart [${enabled}]`, () => {
+    const dir = tempDir()
+    const s = { ...status({ enabled, listening: enabled }), socket_error: "AF_UNIX path too long" }
+    const got = byName(doctor.hqChecks(s, dir, dir))
+    expect(got.hq!.status).toBe("warn")
+    expect(got.hq!.detail.startsWith("not listening on /h/office/hq.sock: AF_UNIX")).toBe(true)
+    expect(got.hq!.detail).toContain("`opencorp restart`")
+    if (enabled) {
+      // The web port is a separate line, so its own state isn't lost.
+      expect(got["hq port"]!.status).toBe("ok")
+      expect(got["hq port"]!.detail).toContain("http://127.0.0.1:49380/")
+    } else {
+      expect(got).not.toHaveProperty("hq port")
+    }
+  })
+}
+
+test("hq sock and a taken port are two warnings", () => {
+  const dir = tempDir()
+  const s = { ...status({ listening: false, error: "Address already in use" }), socket_error: "Permission denied" }
+  const got = byName(doctor.hqChecks(s, dir, dir))
+  expect(got.hq!.status).toBe("warn")
+  expect(got.hq!.detail).toContain("Permission denied")
+  expect(got["hq port"]!.status).toBe("warn")
+  expect(got["hq port"]!.detail).toContain("Address already in use")
+})
+
+test("the offices warnings are shown", () => {
+  const dir = tempDir()
+  const s = { ...status(), warnings: ["the web port is on and this host has other users (ann): ..."] }
+  const shown = doctor.hqChecks(s, dir, dir).filter((c) => c.name === "hq warning")
+  expect(shown.map((c) => c.detail)).toEqual(s.warnings)
+  expect(shown.every((c) => c.status === "warn")).toBe(true)
+})
+
+test("an answer that isnt an hq status is unreadable", async () => {
+  for (const body of ["<html>", '{"ok": true}', '{"socket": "/s", "tcp": [], "url": null, "health": {}}', "[1]"]) {
+    const sock = await answering(200, body)
+    expect(await doctor.hqStatus(sock, undefined), body).toBe("unreadable")
+  }
+  const sock = await answering(200, JSON.stringify(status()))
+  expect(await doctor.hqStatus(sock, undefined)).toEqual(status())
+})
+
+test("a refused device is told to log in", () => {
+  const dir = tempDir()
+  const [got, ...rest] = doctor.hqChecks("refused", dir, dir)
+  expect(rest).toEqual([])
+  expect(got!.status).toBe("warn")
+  expect(got!.detail).toContain("`opencorp login`")
+  expect(got!.detail).not.toContain("restart")
+})
+
+test("an unreachable hq is told to restart", () => {
+  const dir = tempDir()
+  const [got, ...rest] = doctor.hqChecks("unreachable", dir, dir)
+  expect(rest).toEqual([])
+  expect(got!.status).toBe("warn")
+  expect(got!.detail).toContain("`opencorp restart`")
+  expect(got!.detail).not.toContain("login")
 })
