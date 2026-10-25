@@ -74,7 +74,7 @@ export function cardModel(q: Question): CardModel | undefined {
         }
       }),
     }
-  if (q.source === "human_input" && schema.length) {
+  if (q.source === "ask" && schema.length) {
     const page = schema.length === 1 && schema[0].name === "answer" ? fieldPage(q, schema[0]) : undefined
     return page && { record: false, pages: [page] }
   }

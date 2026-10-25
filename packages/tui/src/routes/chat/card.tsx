@@ -51,8 +51,8 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
     const id = question().carried_from
     return id ? (office.state.questions[id] ?? earlierFetched()) : undefined
   })
-  // A human_input is never interrupted, so its card has no stop.
-  const stoppable = createMemo(() => question().source !== "human_input")
+  // An ask node is never interrupted, so its card has no stop.
+  const stoppable = createMemo(() => question().source !== "ask")
   const context = createMemo(() => {
     const item = workItem()
     return item ? `${asker()} asks · work item "${item.title}"` : `${asker()} asks`

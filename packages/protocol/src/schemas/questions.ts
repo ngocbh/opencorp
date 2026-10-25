@@ -46,11 +46,11 @@ export const Question = z.strictObject({
   /** Null for a model ask_user call. */
   node_id: z.string().nullable(),
   /**
-   * Where the question comes from. `harness`: a request from the session's harness (a Codex approval or
-   * question). It takes only an `option` or `text` answer; no side chat, send back or stop. It goes `stale`
-   * when the harness stops waiting.
+   * Where the question comes from. `ask`: a flow's TOOL `ask` node. `harness`: a request from the session's
+   * harness (a Codex approval or question). It takes only an `option` or `text` answer; no side chat, send back
+   * or stop. It goes `stale` when the harness stops waiting.
    */
-  source: z.enum(["ask_user", "human_input", "ask_manager", "harness"]),
+  source: z.enum(["ask_user", "ask", "ask_manager", "harness"]),
   asker: Handle,
   work_item_id: Ulid.nullable().default(null),
   title: z.string().nullable().default(null),

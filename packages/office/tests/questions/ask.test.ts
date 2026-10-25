@@ -31,7 +31,7 @@ function modelCall(over?: Partial<AskRequest>): AskRequest {
   }
 }
 
-function humanInputCall(over?: Partial<AskRequest>): AskRequest {
+function askNodeCall(over?: Partial<AskRequest>): AskRequest {
   return {
     question: "",
     questions: PAGES,
@@ -90,13 +90,13 @@ test("a model call with bad options still asks", async () => {
   expect(desk.asked[0]!.options).toEqual([])
 })
 
-test("a human input call keeps its node pages and schema", async () => {
+test("an ask node call keeps its node pages and schema", async () => {
   const desk = new Desk({ DB: "sqlite" })
-  const got = await makeAskUser(session(), "run-1", desk.call)(humanInputCall())
+  const got = await makeAskUser(session(), "run-1", desk.call)(askNodeCall())
   expect(got).toEqual({ DB: "sqlite" })
   expect(desk.asked.length).toBe(1)
   const q = desk.asked[0]!
-  expect([q.source, q.node_id, q.title, q.question]).toEqual(["human_input", "sop#0/ask", "Setup", ""])
+  expect([q.source, q.node_id, q.title, q.question]).toEqual(["ask", "sop#0/ask", "Setup", ""])
   expect(q.questions![0]!.options[0]!.description).toBe("local")
   expect(q.answer_schema[0]!.name).toBe("DB")
   expect(q.options).toEqual([])
@@ -113,7 +113,7 @@ test("a carried discussion reaches the answer", async () => {
 
 test("a malformed request is refused without its values", async () => {
   const desk = new Desk("x")
-  const request = humanInputCall({
+  const request = askNodeCall({
     questions: [{ question: "sk-SECRET", header: 7, options: [] }],
     title: { sk: "nested" },
   })
@@ -183,11 +183,11 @@ test("a question that goes stale raises", async () => {
   expect(answers.waiting).toBe(0)
 })
 
-test("a re asked human input finds its stored question", async () => {
+test("an ask node asked again finds its stored question", async () => {
   const { store, sid, answers } = setup()
-  const first = store.addQuestion(question(sid, { source: "human_input", node_id: "sop#0/ask" }))
+  const first = store.addQuestion(question(sid, { source: "ask", node_id: "sop#0/ask" }))
   store.answerQuestion(first.id, "kept", "text")
-  const again = question(sid, { source: "human_input", node_id: "sop#0/ask" })
+  const again = question(sid, { source: "ask", node_id: "sop#0/ask" })
   const got = await answers.ask(again)
   expect(got.id).toBe(first.id)
   expect(got.answer).toBe("kept")

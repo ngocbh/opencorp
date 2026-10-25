@@ -16,6 +16,7 @@ typedefs:
     role: Literal(user, assistant)
     text: str
 input:
+  steers: !Inbox(str)  # what people send while the reply works; the office sends it
   person: !Person  # who the reply speaks as; the office passes it
   talking_to: !str  # "You're talking with <Name> (@<handle>), <roles>." or ""; the office passes it
   history: !list(Msg)  # the conversation so far; the office passes [] for a new chat
@@ -23,16 +24,20 @@ input:
 defs:
   turn:
     input:
+      steers: !Inbox(str)
       person: !Person
       talking_to: !str
       history: !list(Msg)
       exited: !bool
       reply: !str
     nodes:
-      # The turn's one input: what the person sent. Every node below reads it from here.
+      # The turn's message: what the person sent. Every node below reads it from here; what they send
+      # while the reply works arrives through `steers`.
       ask:
-        kind: human_input
-        prompt: "You:"
+        kind: tool
+        tool_id: ask
+        input:
+          prompt: "You:"
         output: str
       route:
         kind: case
@@ -49,7 +54,7 @@ defs:
           return {exited: true}
       reply:
         kind: agent
-        steerable: true
+        steer_inbox: ${input.steers}
         env:
           max_tool_iterations: 100
         tools: [toolbox, workspace, company, ask_user]
@@ -81,7 +86,8 @@ defs:
         code: |
           return [...inputs.history, {role: "user", text: inputs.message}, {role: "assistant", text: inputs.reply}]
     # A LOOP body maps its carried record to the next one, so the person and who they talk with ride along
-    # unchanged, and an exit turn leaves the history as it was.
+    # unchanged, and an exit turn leaves the history as it was. The loop carries the steers inbox itself,
+    # so the output leaves it out.
     output:
       person: ${input.person}
       talking_to: ${input.talking_to}
@@ -94,6 +100,7 @@ nodes:
     kind: loop
     call: turn
     input:
+      steers: ${input.steers}
       person: ${input.person}
       talking_to: ${input.talking_to}
       history: ${input.history}

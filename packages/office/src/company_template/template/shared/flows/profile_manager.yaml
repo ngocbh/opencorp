@@ -10,19 +10,24 @@ typedefs:
     role: Literal(user, assistant)
     text: str
 input:
+  steers: !Inbox(str)  # what the owner sends while the reply works; the office sends it
   history: !list(Msg)  # the conversation so far; the office passes [] for a new chat
 
 defs:
   turn:
     input:
+      steers: !Inbox(str)
       history: !list(Msg)
       exited: !bool
       reply: !str
     nodes:
-      # The turn's one input: what the owner sent. Every node below reads it from here.
+      # The turn's message: what the owner sent. Every node below reads it from here; what they send
+      # while the reply works arrives through `steers`.
       ask:
-        kind: human_input
-        prompt: "You:"
+        kind: tool
+        tool_id: ask
+        input:
+          prompt: "You:"
         output: str
       route:
         kind: case
@@ -39,7 +44,7 @@ defs:
           return {exited: true}
       reply:
         kind: agent
-        steerable: true
+        steer_inbox: ${input.steers}
         env:
           max_tool_iterations: 20
         tools: [profile]
@@ -67,7 +72,8 @@ defs:
         output: list(Msg)
         code: |
           return [...inputs.history, {role: "user", text: inputs.message}, {role: "assistant", text: inputs.reply}]
-    # An exit turn leaves the history as it was.
+    # An exit turn leaves the history as it was. The loop carries the steers inbox itself, so the output
+    # leaves it out.
     output:
       history: ${remember.output :- input.history}
       exited: ${exit_turn.output.exited == true}
@@ -78,6 +84,7 @@ nodes:
     kind: loop
     call: turn
     input:
+      steers: ${input.steers}
       history: ${input.history}
       exited: false
       reply: ""

@@ -39,10 +39,10 @@ test("Esc on a card asks 'Stop @minh? y/N'; Enter and n cancel, only y stops", a
   }
 })
 
-test("a human_input card offers no stop", async () => {
+test("an ask node card offers no stop", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
-  office.addQuestion({ session_id: s.id, source: "human_input", node_id: "review", question: "Ship it?" })
+  office.addQuestion({ session_id: s.id, source: "ask", node_id: "review", question: "Ship it?" })
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
     const f = await app.until((f) => f.includes("Ship it?") && f.includes("enter submit"))
@@ -327,7 +327,7 @@ test("an empty typed answer keeps the option picked on that page", async () => {
   const s = office.state.sessions[0]
   const q = office.addQuestion({
     session_id: s.id,
-    source: "human_input",
+    source: "ask",
     node_id: "release",
     question: "Set up the release",
     questions: [
@@ -485,7 +485,7 @@ test("each typed page keeps its own text when paging, across a page with no type
   const s = office.state.sessions[0]
   office.addQuestion({
     session_id: s.id,
-    source: "human_input",
+    source: "ask",
     node_id: "release",
     question: "Set up the release",
     questions: [
@@ -529,7 +529,7 @@ test("on a multi-select page, Enter on the empty box confirms the ticked options
   const s = office.state.sessions[0]
   const q = office.addQuestion({
     session_id: s.id,
-    source: "human_input",
+    source: "ask",
     node_id: "tags",
     question: "Tag it",
     questions: [
@@ -560,7 +560,7 @@ test("text typed on a multi-select page stays in its box while options are ticke
   const s = office.state.sessions[0]
   const q = office.addQuestion({
     session_id: s.id,
-    source: "human_input",
+    source: "ask",
     node_id: "tags",
     question: "Tag it",
     questions: [
@@ -636,7 +636,7 @@ test("options sit on consecutive rows; a description takes the row under its opt
   const s = office.state.sessions[0]
   office.addQuestion({
     session_id: s.id,
-    source: "human_input",
+    source: "ask",
     node_id: "setup",
     question: "Which database?",
     questions: [

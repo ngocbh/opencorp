@@ -45,6 +45,7 @@ test("bad jobs are refused", () => {
     [{ log: "r1.jsonl" }, "log"],
     [{ flow: "/etc/flow.yaml" }, "flow"],
     [{ groups: { ask_user: [] } }, "groups"],
+    [{ groups: { ask: [] } }, "groups"],
     [{ extra: 1 }, "an extra field"],
     [{ kind: "debrief" }, "kind"],
     [{ kind: "backward" }, "kind"],

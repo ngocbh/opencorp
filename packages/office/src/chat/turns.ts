@@ -7,7 +7,7 @@ function splitLast(s: string): [string, string] {
   return lastSlash === -1 ? ["", s] : [s.slice(0, lastSlash), s.slice(lastSlash + 1)]
 }
 
-/** A conversation flow's shape: its turn node, its steerable reply node, and its exit command. */
+/** A conversation flow's shape: its turn node, its reply node (which reads the steer inbox), and its exit command. */
 export class ChatFlow {
   readonly turn: string
   readonly reply: string

@@ -22,7 +22,7 @@ test("the seeded idle session has an open turn; a prompt answers it; while busy 
   const turns: string[] = []
   office.onPrompt((_, req) => turns.push(req.text))
   const [turn] = await client().questions.list({ session: id, status: ["open"] })
-  expect([turn.source, turn.node_id]).toEqual(["human_input", "chat#1/ask"])
+  expect([turn.source, turn.node_id]).toEqual(["ask", "chat#1/ask"])
   await client().sessions.prompt(id, { text: "fix it" })
   expect(office.state.questions[turn.id]).toMatchObject({ status: "answered", answer: "fix it", answer_kind: "text" })
   expect(await status(id)).toBe("busy")
@@ -40,7 +40,7 @@ test("a new session is starting; it goes idle when its first turn opens", async 
   expect(s.status).toBe("starting")
   await until(() => office.state.sessions.find((x) => x.id === s.id)?.status === "idle")
   const turns = await client().questions.list({ session: s.id, status: ["open"] })
-  expect(turns.map((q) => [q.source, q.node_id])).toEqual([["human_input", "chat#1/ask"]])
+  expect(turns.map((q) => [q.source, q.node_id])).toEqual([["ask", "chat#1/ask"]])
 })
 
 test("interrupt answers the open ask_user questions; the session stays busy until its next turn opens", async () => {
@@ -89,7 +89,7 @@ test("an answer the question doesn't take is 422 invalid_answer", async () => {
   expect(await invalid(asked.id, { answer: " ", answer_kind: "text" })).toEqual([422, "invalid_answer"])
   expect(await invalid(asked.id, { answer: { a: 1 }, answer_kind: "text" })).toEqual([422, "invalid_answer"])
   const pages = office.addQuestion({
-    source: "human_input",
+    source: "ask",
     node_id: "release",
     questions: [
       { question: "Which channel?", header: "Channel", options: [{ label: "beta" }, { label: "stable" }] },
@@ -159,7 +159,7 @@ test("a chat turn is not a card, so it has no side chat", async () => {
   expect([e.status, e.code]).toEqual([422, "not_a_card"])
 })
 
-test("send back needs a discussion; neither send back nor stop is offered on human_input", async () => {
+test("send back needs a discussion; neither send back nor stop is offered on an ask node question", async () => {
   office = createFakeOffice()
   const plain = office.addQuestion({ question: "Retry?" })
   const none = await failure(client().questions.sendBack(plain.id, { note: "" }))
@@ -177,7 +177,7 @@ test("send back needs a discussion; neither send back nor stop is offered on hum
   const carried = office.addQuestion({ carried_from: plain.id })
   expect((await client().questions.sendBack(carried.id, { note: "" })).answer_kind).toBe("sent_back")
   const gate = office.addQuestion({
-    source: "human_input",
+    source: "ask",
     node_id: "review",
     discussion: [{ role: "user", text: "?" }],
   })

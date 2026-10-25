@@ -1,12 +1,12 @@
 /** The run worker: read one job from the office, run it with Yian, report, exit. */
 import fs from "node:fs"
 import path from "node:path"
-import { ProfileMemory, runFlow } from "@ngocbh/yian"
+import { ProfileMemory, runFlow, send } from "@ngocbh/yian"
 import { type EventHook, runLogPath } from "@ngocbh/yian/run"
 import { loadSkills, type Skill } from "@ngocbh/yian/skills"
 import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
-import { Inbox } from "./inbox.ts"
+import { Interrupts } from "./inbox.ts"
 import { type Job, parseJob } from "./job.ts"
 import { RemoteMarkdownStore } from "./remote_store.ts"
 import { askUserStub, errorMessage, errorName, remoteTool, REPLY_TYPES, Rpc } from "./rpc.ts"
@@ -31,13 +31,14 @@ export function pickSkills(pin: string, handle: string, names: string[]): Map<st
   return new Map(names.filter((name) => found.has(name)).map((name) => [name, found.get(name)!]))
 }
 
-/** Yian's `tools`: each office group as remote tools, plus the `ask_user` stub. */
+/** Yian's `tools`: each office group as remote tools, plus the question stub under yian's `ask` slot, which serves
+ *  the agent tool `ask_user` and a flow's `ask` node. */
 export function jobTools(job: Job, rpc: Rpc) {
   return {
     ...Object.fromEntries(
       Object.entries(job.groups).map(([group, specs]) => [group, specs.map((spec) => remoteTool(rpc, group, spec))]),
     ),
-    ask_user: askUserStub(rpc),
+    ask: askUserStub(rpc),
   }
 }
 
@@ -56,13 +57,21 @@ export function jobMemory(job: Job, rpc: Rpc, env: Env): Map<string, ProfileMemo
   return memory.size > 0 ? memory : null
 }
 
+/** What `serve`, `runJob` and `readFrames` share: whether the job finished, and how to forward a steer once the
+ *  run's log is known. */
+interface WorkerState {
+  finished: boolean
+  steer?: (inbox: string, text: string) => Promise<unknown>
+}
+
 /**
  * Runs the job the office sends on `channel`; returns the exit code.
  *
- * The last frames are a `steer_left` for every steer the run never read, then `result` (or `error`). After them the
- * worker keeps answering steers with `steer_left` until the office closes its side (or `linger` ms pass), so a steer
- * the office sent as the run ended is never lost. If the office closes the channel before the job finished, `exit`
- * is called with `EXIT_ORPHANED`: nobody can answer a question or read the result.
+ * A steer is forwarded to yian's steer inbox of the run; a steer yian refuses or fails to take comes back, as
+ * `steer_left`. The last frame is `result` (or `error`). After it the worker answers steers with `steer_left` until
+ * the office closes its side (or `linger` ms pass), so every steer the office sent is applied, kept in the run's steer
+ * inbox (in the log), or returned. If the office closes the channel before the job finished, `exit` is called with
+ * `EXIT_ORPHANED`: nobody can answer a question or read the result.
  */
 export async function serve(
   channel: Channel,
@@ -78,10 +87,11 @@ export async function serve(
     }
   }
   const rpc = new Rpc(channel)
-  const inbox = new Inbox()
+  const interrupts = new Interrupts()
   const stopper = new AbortController()
-  const state = { finished: false }
-  const officeClosed = readFrames(channel, rpc, inbox, stopper, state, exit)
+  const state: WorkerState = { finished: false }
+  const forwards = new Set<Promise<void>>()
+  const officeClosed = readFrames(channel, rpc, interrupts, stopper, state, forwards, exit)
   let last: Frame
   let code: number
   try {
@@ -89,15 +99,17 @@ export async function serve(
     const start = await started
     if (start.type !== "start") throw new TypeError("expected a start frame")
     const job = parseJob(start.job)
-    last = { type: "result", ...(await runJob(job, channel, rpc, inbox, { env, signal: stopper.signal })) }
+    last = { type: "result", ...(await runJob(job, channel, rpc, interrupts, state, { env, signal: stopper.signal })) }
     code = EXIT_OK
   } catch (error) {
     last = { type: "error", message: `${errorName(error)}: ${errorMessage(error)}`, traceback: stackFrames(error) }
     code = EXIT_FAILED
   }
-  const left = [...inbox.close()].map(([nodeId, texts]) => ({ type: "steer_left", node_id: nodeId, texts }))
+  interrupts.close()
   state.finished = true
-  code = await report(channel, [...left, last], code)
+  // A refused forward sends its steer_left before the last frame.
+  await Promise.all(forwards)
+  code = await report(channel, [last], code)
   let timer: ReturnType<typeof setTimeout> | undefined
   await Promise.race([officeClosed, new Promise<void>((resolve) => (timer = setTimeout(resolve, linger)))])
   clearTimeout(timer)
@@ -105,12 +117,14 @@ export async function serve(
   return code
 }
 
-/** Runs `job`, sending its event, stream and `steer_left` frames; returns the result frame's fields. */
+/** Runs `job`, sending its event and stream frames, and sets `state.steer` once the log is known; returns the result
+ *  frame's fields. */
 async function runJob(
   job: Job,
   channel: Channel,
   rpc: Rpc,
-  inbox: Inbox,
+  interrupts: Interrupts,
+  state: WorkerState,
   { env, signal }: { env: WorkerEnv; signal: AbortSignal },
 ): Promise<Frame> {
   if (job.kind === "resume") throw new Error("this worker can't resume a run yet")
@@ -122,23 +136,20 @@ async function runJob(
   }
   // Makes the run's folder, and throws EEXIST if it is already there: each launch gets a fresh one.
   const log = runLogPath(runs, job.run_id)
+  // An off-engine delivery recompiles the recorded flow, so it is confined to the pin as the run is.
+  state.steer = (inbox, text) => send(log, inbox, text, { env: read, codeRoot: job.pin })
   const onEvent: EventHook = (event) => {
-    const name = event.type
     const data: Record<string, unknown> = { ...event.toJSON() }
-    let id: string | null = null
-    let texts: string[] = []
     if (event.type === "NodeSucceeded" || event.type === "NodeSkipped" || event.type === "NodeFailed") {
-      id = event.type === "NodeFailed" ? event.failure.nodeId : event.nodeId
+      const id = event.type === "NodeFailed" ? event.failure.nodeId : event.nodeId
       if (id) {
-        if (inbox.cut(id)) data.interrupted = true
-        // Finished before the office sees the event, so a steer it sends afterwards is refused.
-        texts = inbox.finish(id)
+        if (interrupts.cut(id)) data.interrupted = true
+        // Finished before the office sees the event, so an interrupt it sends afterwards is refused.
+        interrupts.finish(id)
       }
     }
-    const sends = [channel.send({ type: "event", name, data })]
-    if (texts.length > 0) sends.push(channel.send({ type: "steer_left", node_id: id, texts }))
     // A send that fails rejects the run.
-    return Promise.all(sends)
+    return channel.send({ type: "event", name: event.type, data })
   }
   const result = await runFlow(flow, job.inputs, {
     log,
@@ -150,7 +161,7 @@ async function runJob(
     memory: jobMemory(job, rpc, read),
     tools: jobTools(job, rpc),
     skills: pickSkills(job.pin, job.person, job.skills),
-    steering: inbox,
+    steering: interrupts,
     signal,
     env: read,
   })
@@ -159,32 +170,47 @@ async function runJob(
 
 /**
  * Routes office frames until the channel closes or a frame can't be read; then rejects pending and later requests
- * and, unless the job has finished, stops the run and calls `exit(EXIT_ORPHANED)`. Never rejects.
+ * and, unless the job has finished, stops the run and calls `exit(EXIT_ORPHANED)`. Each steer forwarded to yian
+ * stays in `forwards` until it settles. Never rejects.
  */
 async function readFrames(
   channel: Channel,
   rpc: Rpc,
-  inbox: Inbox,
+  interrupts: Interrupts,
   stopper: AbortController,
-  state: { finished: boolean },
+  state: WorkerState,
+  forwards: Set<Promise<void>>,
   exit: (code: number) => void,
 ): Promise<void> {
   try {
     for (;;) {
       const frame = await channel.recv()
       if (frame.type === "steer") {
-        const { node_id: nodeId, text } = frame
-        if (typeof nodeId !== "string" || typeof text !== "string") {
-          throw new TypeError("a steer needs a node_id and text")
+        const { inbox, text } = frame
+        if (typeof inbox !== "string" || typeof text !== "string") {
+          throw new TypeError("a steer needs an inbox and text")
         }
-        // Sent before the next read, so a steer refused as the run ends goes out before `serve` closes the channel.
-        // The office's reader never waits on sending to the worker, so this can't deadlock.
-        if (!inbox.steer(nodeId, text)) {
-          await channel.send({ type: "steer_left", node_id: nodeId, texts: [text] }).catch(() => {})
+        const left = () => channel.send({ type: "steer_left", inbox, texts: [text] }).catch(() => {})
+        if (state.finished || !state.steer) {
+          // Sent before the next read, so a steer refused as the run ends goes out before `serve` closes the
+          // channel. The office's reader never waits on sending to the worker, so this can't deadlock.
+          await left()
+          continue
         }
+        // Called now, with no await first: a send to the live run commits in this tick, before the next frame
+        // (such as a tool reply) is read, so steers keep their order. Awaited off this loop, since a send can wait
+        // for the run to close, and closing profile memory needs store replies only this loop delivers. Every
+        // rejection returns the steer: only DeliveryRefused promises nothing was appended, so another error may
+        // duplicate a steer, which beats losing one. Nothing is logged: a yian error can quote the text.
+        const forward = state.steer(inbox, text).then(
+          () => {},
+          () => left(),
+        )
+        forwards.add(forward)
+        void forward.finally(() => forwards.delete(forward))
       } else if (frame.type === "interrupt") {
         if (typeof frame.node_id !== "string") throw new TypeError("an interrupt needs a node_id")
-        inbox.interrupt(frame.node_id)
+        interrupts.interrupt(frame.node_id)
       } else if (frame.type === "stop") {
         if (!state.finished) stopper.abort(new Error("the office stopped the run"))
       } else if (typeof frame.type === "string" && REPLY_TYPES.has(frame.type)) {

@@ -45,6 +45,18 @@ test.each([
   expect((await loadConfined(ROOT, file)).name).toBe(flow.name)
 })
 
+test("every chat template reads steers from its steers inbox", () => {
+  for (const file of [CHAT, SIDE, MANAGER]) {
+    const flow = read(file)
+    expect([
+      flow.input.steers,
+      flow.defs.turn.input.steers,
+      flow.nodes.chat.input.steers,
+      flow.defs.turn.nodes.reply.steer_inbox,
+    ]).toEqual(["!Inbox(str)", "!Inbox(str)", "${input.steers}", "${input.steers}"])
+  }
+})
+
 test("the template ends no session by time and its chats have no loop cap", () => {
   expect(fs.readFileSync(path.join(ROOT, "company.yaml"), "utf8")).not.toContain("idle_end")
   for (const file of [CHAT, SIDE, MANAGER]) expect(fs.readFileSync(file, "utf8")).not.toContain("max:")

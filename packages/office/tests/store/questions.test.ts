@@ -1,4 +1,4 @@
-/** Questions: round-trips, the human_input key, status moves, first answer wins. */
+/** Questions: round-trips, the ask node key, status moves, first answer wins. */
 import { expect, test } from "bun:test"
 import { DuplicateKey, InvalidTransition, StoreError, type QuestionRecord, type Store } from "../../src/store/store.ts"
 import { openStore, question, recordEvents, session, thrown } from "./helpers.ts"
@@ -44,12 +44,12 @@ test("two page question round trips", () => {
   expect(events.at(-1)!.type).toBe("question.created")
 })
 
-test("human input key is unique", () => {
+test("an ask node key is unique", () => {
   const { store, sid } = withSession()
-  store.addQuestion(question(sid, { node_id: "chat#0/ask", source: "human_input" }))
-  const again = thrown(() => store.addQuestion(question(sid, { node_id: "chat#0/ask", source: "human_input" })))
+  store.addQuestion(question(sid, { node_id: "chat#0/ask", source: "ask" }))
+  const again = thrown(() => store.addQuestion(question(sid, { node_id: "chat#0/ask", source: "ask" })))
   expect(again).toBeInstanceOf(DuplicateKey)
-  store.addQuestion(question(sid, { node_id: "chat#0/ask", source: "human_input", run_id: "run-2" }))
+  store.addQuestion(question(sid, { node_id: "chat#0/ask", source: "ask", run_id: "run-2" }))
   expect(store.getQuestionByNode("run-1", "chat#0/ask")!.node_id).toBe("chat#0/ask")
   expect(store.getQuestionByNode("run-1", "other")).toBeUndefined()
 })
@@ -151,7 +151,7 @@ test("update question fields", () => {
 test("list questions filters", () => {
   const { store, sid } = withSession()
   const a = store.addQuestion(question(sid))
-  const b = store.addQuestion(question(sid, { source: "human_input", node_id: "n" }))
+  const b = store.addQuestion(question(sid, { source: "ask", node_id: "n" }))
   store.answerQuestion(b.id, "x", "text")
   const open = store.listQuestions({ sessionId: sid, status: "open", source: "ask_user" })
   expect(open.map((q) => q.id)).toEqual([a.id])
