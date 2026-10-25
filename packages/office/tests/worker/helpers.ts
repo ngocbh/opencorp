@@ -3,11 +3,13 @@ import { spawn } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
-import { onTestFinished } from "bun:test"
+import { onTestFinished, spyOn } from "bun:test"
 import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
+import type { Store } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
-import { type Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
+import { Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
+import { encode } from "../../src/worker/codec.ts"
 import { Job, groupSpecs, type JobInput } from "../../src/worker/job.ts"
 import { EXIT_FAILED, serve, type WorkerEnv } from "../../src/worker/main.ts"
 import {
@@ -21,8 +23,31 @@ import {
   type RpcLog,
   type WorkerHandlers,
 } from "../../src/worker/rpc.ts"
+import { spawnProcess, type Worker, WorkerRegistry } from "../../src/worker/spawn.ts"
 import { CHAT } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
+import { openStore } from "../store/helpers.ts"
+
+/** Records, in the wire form the codec's `encode` writes, every frame this process's channels send and receive until
+ *  the test finishes: for a spawned worker, both directions of the office's end. */
+export function recordFrames(): string[] {
+  const frames: string[] = []
+  const { send, recv } = Channel.prototype
+  const sending = spyOn(Channel.prototype, "send").mockImplementation(function (this: Channel, frame: Frame) {
+    frames.push(encode(frame))
+    return send.call(this, frame)
+  })
+  const receiving = spyOn(Channel.prototype, "recv").mockImplementation(async function (this: Channel) {
+    const frame = await recv.call(this)
+    frames.push(encode(frame))
+    return frame
+  })
+  onTestFinished(() => {
+    sending.mockRestore()
+    receiving.mockRestore()
+  })
+  return frames
+}
 
 /** A one-agent flow: input `message`, output the agent's reply. `node` adds lines to the agent node, `top` to the
  *  flow, `inputs` to its inputs. */
@@ -44,6 +69,10 @@ export const STEERABLE = agentFlow("steerable", {
 })
 export const PROFILED = agentFlow("profiled", { top: "long_term_memory: profile\n" })
 export const SKILLED = agentFlow("skilled", { node: "    skills: all\n" })
+// A run whose one node sleeps an hour, so it quiesces as waiting.
+export const NAP =
+  "id: nap\nname: nap\nnodes:\n  nap:\n    kind: tool\n    tool_id: sleep\n    input:\n      for: 1h\n" +
+  "output: ${nap.output}\n"
 
 /** Writes each of `files` (relative path -> text) under `root`, making parent directories; returns `root`. */
 export function writeFiles(root: string, files: Record<string, string>): string {
@@ -65,6 +94,7 @@ export function writePin(root: string): string {
     "flows/steerable.yaml": STEERABLE,
     "flows/profiled.yaml": PROFILED,
     "flows/skilled.yaml": SKILLED,
+    "flows/nap.yaml": NAP,
   })
 }
 
@@ -153,13 +183,22 @@ export function base(): { root: string; pin: string; runs: string } {
   return { root, pin: writePin(path.join(root, "pin")), runs: path.join(root, "runs") }
 }
 
-/** A chat job running `flow` from `base.pin`, logging to `<base.runs>/<run_id>/log.jsonl`; `over` replaces fields. */
+/** A chat job running `flow` from `base.pin`, logging to `<base.runs>/<run_id>/log.jsonl`; `over` replaces fields.
+ *  With `handlers`, its groups are the handlers' tools and its memory names each of their stores, unless `over` sets
+ *  them. */
 export function makeJob(
   base: { pin: string; runs: string },
   flow = "flows/echo.yaml",
   over: Partial<JobInput> = {},
+  handlers?: BaseHandlers,
 ): Job {
   const runId = over.run_id ?? "r1"
+  const granted = handlers
+    ? {
+        groups: groupSpecs(handlers.tools),
+        memory: Object.fromEntries(Object.keys(handlers.stores).map((name) => [name, { store: name }])),
+      }
+    : {}
   return Job.parse({
     kind: "chat",
     session_id: "s1",
@@ -170,8 +209,51 @@ export function makeJob(
     log: path.join(base.runs, runId, "log.jsonl"),
     inputs: { message: "hi" },
     llm_config: LLM_CONFIG,
+    ...granted,
     ...over,
   })
+}
+
+/**
+ * A `WorkerRegistry` over `store` with `options` (its `log` a no-op unless given). Each child it spawns, through
+ * `options.spawn` or `spawnProcess`, is noted with its start time. At test end the registry closes all its workers,
+ * then the group of each noted child still running with its start time is killed. Tests that made their temp root
+ * or store first have lost both by then: the registry logs the store failures, and the kills still run.
+ */
+export function makeRegistry(
+  store: Store = openStore(),
+  options: NonNullable<ConstructorParameters<typeof WorkerRegistry>[1]> = {},
+): WorkerRegistry {
+  const spawned: { pid: number; started: number | null }[] = []
+  const spawnChild = options.spawn ?? spawnProcess
+  const registry = new WorkerRegistry(store, {
+    log: () => {},
+    ...options,
+    spawn: (...args) => {
+      const out = spawnChild(...args)
+      if (out.child.pid !== undefined) spawned.push({ pid: out.child.pid, started: startTime(out.child.pid) })
+      return out
+    },
+  })
+  onTestFinished(async () => {
+    await registry.closeAll(5000)
+    for (const { pid, started } of spawned) if (started !== null && sameProcess(pid, started)) killGroup(pid)
+  })
+  return registry
+}
+
+/** Spawns `job` through `registry` in `sessionDir`, with the provider `env`, and waits for its worker to exit;
+ *  returns `handlers`. */
+export async function runWorker<H extends WorkerHandlers<Worker>>(
+  registry: WorkerRegistry,
+  job: Job,
+  handlers: H,
+  sessionDir: string,
+  { env, timeout = 30_000 }: { env?: Record<string, string>; timeout?: number } = {},
+): Promise<H> {
+  const worker = await registry.spawn(job, sessionDir, handlers, { env })
+  if ((await worker.wait(timeout)) === null) throw new Error("the worker did not exit")
+  return handlers
 }
 
 /** What an in-process worker did: the first code it asked to `exit` with, and the code `serve` returned. */

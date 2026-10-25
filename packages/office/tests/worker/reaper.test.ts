@@ -1,10 +1,13 @@
 /** The reaper: leftover process groups are killed by pid and start time, and every record looked at is removed. */
+import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { killGroup, startTime } from "../../src/install/proc.ts"
 import type { Store } from "../../src/store/store.ts"
 import { reap } from "../../src/worker/reaper.ts"
+import { fakeLlm } from "../chat/helpers.ts"
 import { type Group, isGone, NO_GROUP, startGroup, waitFor } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
+import { base, makeJob, makeRegistry, Recorder, runWorker } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -93,4 +96,18 @@ test("reap kills leftover sandboxed calls and harness processes too", async () =
   expect((await call.exited).signal).toBe("SIGKILL")
   expect((await harness.exited).signal).toBe("SIGKILL")
   expect(store.listWorkers()).toEqual([])
+})
+
+test("spawn reaps a leftover worker of the session", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const stale = startGroup("exec /bin/sleep 61")
+  record(store, "s1", stale)
+  fake.script({ content: "fresh" })
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const rec = await runWorker(registry, makeJob(where), new Recorder(), sessionDir, { env: fake.env() })
+  expect(await waitFor(() => stale.child.signalCode, { timeout: 5000, what: "the leftover killed" })).toBe("SIGKILL")
+  expect(rec.outcome?.output).toBe("fresh")
 })

@@ -44,7 +44,8 @@ chat/test_logins.py::test_the_sign_in_is_saved_before_the_connection	changed	pac
 chat/test_models.py	ported	packages/office/tests/chat/models.test.ts	—	O2-20
 chat/test_models.py::test_a_host_that_times_out_in_composer_makes_offers_time_out	changed	packages/office/tests/chat/models.test.ts::a host that times out in composer makes offers time out	Y1: yian's transport ProviderError isn't public, so the timeout comes from a local server that never answers	O2-20
 chat/test_models.py::test_a_request_that_fails_says_why_in_composers_words	changed	packages/office/tests/chat/models.test.ts::a request that fails says why in composers words [%s]	Y1: yian's transport ProviderError isn't public, so the cases come from a throwing sender, a malformed reply and a local server that never answers	O2-20
-chat/test_provider.py	open	—	split: O2-19 → O3-4	O3-4
+chat/test_provider.py	ported	packages/office/tests/chat/provider.test.ts	—	O3-4
+chat/test_provider.py::test_a_key_in_llm_config_reaches_the_model_and_nothing_else	changed	packages/office/tests/chat/provider.test.ts::a key in llm config reaches the model and nothing else	#1001: no session memory; design §6.5's scan: frames other than start, worker.log, the run log, the log lines office.log gets, the worker env; a 401 turn too; the live relay's frames come with #997, §2.6, not built here	O3-4
 chat/test_restart.py	open	—	split: O4a-6 → O4b-1	O4b-1
 chat/test_run_records.py	open	—	—	O4a-5
 chat/test_sandbox.py	open	—	—	O4a-4
@@ -235,7 +236,7 @@ install/test_provider_setup.py::test_the_key_is_asked_without_echo_and_written_p
 install/test_service.py	ported	packages/office/tests/install/service.test.ts	—	O2-12
 install/test_systemd.py	ported	packages/office/tests/install/systemd.test.ts	—	O2-12
 install/test_systemd.py::test_spaces_percents_and_dollars_reach_the_daemon_unchanged	changed	packages/office/tests/install/systemd.test.ts::spaces percents and dollars reach the daemon unchanged	design §9.3 (argv selfCommand() + daemon --home H, cwd the office dir)	O2-12
-perm/test_frames.py	open	—	—	O3-4
+perm/test_frames.py	ported	packages/office/tests/perm/frames.test.ts	—	O3-4
 perm/test_monitor.py	ported	packages/office/tests/perm/monitor.test.ts	—	O3-2
 perm/test_monitor.py::test_where_matches_type_as_well_as_value	changed	packages/office/tests/perm/monitor.test.ts::where matches type as well as value	D15: 1 equals 1.0 (JSON numbers are one type; a bigint equals the same number); true, "1" and [1] still differ	O1-13
 perm/test_office.py	ported	packages/office/tests/perm/office.test.ts	—	O1-13
@@ -269,10 +270,11 @@ protocol/test_invalid.py::test_model_rejects	dropped	—	one schema now; schema 
 protocol/test_now.py	ported	packages/protocol/test/time.test.ts	§5.4	O0-6
 protocol/test_schema.py	ported	packages/protocol/test/schemas.test.ts	zod schemas (D6, §5.4)	O0-6
 protocol/test_schema.py::test_schema_is_valid	changed	packages/protocol/test/schemas.test.ts::schema is valid	zod is the source; checks every schema converts to JSON Schema (D6)	O0-6
-questions/test_ask.py	open	—	split: O3-8a → O3-4	O3-4
+questions/test_ask.py	ported	packages/office/tests/questions/ask.test.ts	—	O3-4
 questions/test_ask.py::test_a_human_input_call_keeps_its_node_pages_and_schema	changed	packages/office/tests/questions/ask.test.ts::an ask node call keeps its node pages and schema	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask	O3-17
 questions/test_ask.py::test_a_re_asked_human_input_finds_its_stored_question	changed	packages/office/tests/questions/ask.test.ts::an ask node asked again finds its stored question	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask	O3-17
 questions/test_ask.py::test_an_answer_from_another_process_is_found_by_polling	dropped	—	design §3.3: only the daemon writes the store; the 30 s poll goes and waiters wake on its after-commit events	O3-8a
+questions/test_ask.py::test_the_handler_passes_composers_check_and_takes_its_calls	changed	packages/office/tests/questions/ask.test.ts::the handler passes composers check and takes its calls	yian #1078: yian's ToolSet hands the ask slot camelCase fields, adapted to an AskRequest as askUserStub does; the flow side is a TOOL ask node, so the source is ask	O3-4
 questions/test_cards.py	open	—	split: O3-9 → O4a-4 → O4a-9; O3-9's tests are in packages/office/tests/questions/cards.test.ts	O4a-9
 questions/test_checker.py	ported	packages/office/tests/questions/checker.test.ts	—	O3-7
 questions/test_checker.py::test_a_single_answer_that_does_not_fit_is_refused[entry4-2.0-a whole number]	changed	packages/office/tests/questions/checker.test.ts::a whole float is a whole number	plain JSON numbers (D15's rule applied to answers; design §1.4): JS can't tell 2.0 from 2, so a whole float is a whole number; 2.5 is still refused	O3-7
@@ -399,7 +401,7 @@ worker/test_job_loading.py::test_a_missing_group_fails_before_any_model_call	cha
 worker/test_job_loading.py::test_a_planted_json_module_is_not_imported	changed	packages/office/tests/worker/job_loading.test.ts::a planted env file or bunfig preload in the worker cwd is not loaded	§6 rule 2: the TS worker's cwd risk is Bun's .env/bunfig, not a Python module	O3-3
 worker/test_main.py	ported	packages/office/tests/worker/main.test.ts	—	O3-3
 worker/test_main.py::test_after_its_last_frame_a_worker_answers_steers_until_the_office_closes	changed	packages/office/tests/worker/main.test.ts::after its last frame a worker answers steers until the office closes	O0-10 P1: Bun passes no fd past stdio to children; the inheritable-fd assert goes, O3-1's grandchild test keeps the rule; yian #1089: the steer names an inbox	O3-17
-worker/test_reaper.py	open	—	split: O2-11a → O3-4	O3-4
+worker/test_reaper.py	ported	packages/office/tests/worker/reaper.test.ts	—	O3-4
 worker/test_remote_store.py	ported	packages/office/tests/worker/remote_store.test.ts	—	O3-2
 worker/test_remote_store.py::test_an_undecodable_document_is_a_value_error	changed	packages/office/tests/worker/remote_store.test.ts::an undecodable document is a range error	design §4.1, Y3: yian's MarkdownStore throws RangeError for both	O3-2
 worker/test_remote_store.py::test_an_unknown_version_is_a_lookup_error	changed	packages/office/tests/worker/remote_store.test.ts::an unknown version is a range error	design §4.1, Y3: yian's MarkdownStore throws RangeError for both	O3-2
@@ -413,7 +415,19 @@ worker/test_rpc.py::test_a_remote_tool_sends_validated_args_with_defaults	change
 worker/test_rpc.py::test_an_office_tool_error_is_the_tool_result	changed	packages/office/tests/worker/rpc.test.ts::an office tool error is the tool result	design §2.4: an error reply throws ReportedToolError; the AGENT loop gives the model its message as the result	O3-2
 worker/test_rpc.py::test_store_replies_are_plain_json	changed	packages/office/tests/worker/rpc.test.ts::store replies are plain json	design §2.4: TS has no Path; a store's synchronous tuple is the reply	O3-2
 worker/test_rpc.py::test_store_value_and_os_errors_keep_their_codes	changed	packages/office/tests/worker/rpc.test.ts::store value and os errors keep their codes	design §4.1, Y3: a TS store throws RangeError for an unknown version and bad text alike: unknown_version from a read, invalid from a write or for a TypeError	O3-2
-worker/test_spawn.py	open	—	split: O2-11b → O3-4; the two worker_env tests are in packages/office/tests/worker/spawn.test.ts	O3-4
+worker/test_spawn.py	ported	packages/office/tests/worker/spawn.test.ts	—	O3-4
+worker/test_spawn.py::test_a_chat_job_streams_events_and_a_result	changed	packages/office/tests/worker/spawn.test.ts::a chat job streams events and a result	D32: no backward field; the stream frame carries yian's chunk fields	O3-4
+worker/test_spawn.py::test_a_human_input_node_asks_through_the_same_stub	changed	packages/office/tests/worker/spawn.test.ts::an ask node asks through the same stub	yian #1078: an ask node replaces human_input; the question and node id are Python's	O3-4
+worker/test_spawn.py::test_a_job_that_raises_sends_an_error_frame	changed	packages/office/tests/worker/spawn.test.ts::a job that raises sends an error frame	§6 rule 13: the traceback is stack frames only; the error is the runtime's (Error: ENOENT)	O3-4
+worker/test_spawn.py::test_a_running_worker_is_recorded_and_isolated	changed	packages/office/tests/worker/spawn.test.ts::a running worker is recorded and isolated	design §2.4: the provider env rides in the spawn env, argv is selfCommand() + __worker; the office env is passed in (no process.env change)	O3-4
+worker/test_spawn.py::test_a_start_frame_that_cannot_be_sent_leaves_nothing_behind	changed	packages/office/tests/worker/spawn.test.ts::a start frame that cannot be sent leaves nothing behind	plan decision 3: maxFrame and spawn are registry options, not module patches; the fds are counted from /proc/self/fd or /dev/fd; the second try runs on a default registry	O3-4
+worker/test_spawn.py::test_a_worker_exiting_during_a_store_transaction_does_not_deadlock	dropped	—	design §3.3: a transaction is a sync callback, so no exit step can run inside one	O3-4
+worker/test_spawn.py::test_a_worker_exits_when_the_office_closes_its_channel	changed	packages/office/tests/worker/spawn.test.ts::a worker exits when the office closes its channel	P1: close sends stop first, so the channel close is tested through closeChannel()	O3-4
+worker/test_spawn.py::test_close_during_a_failing_start_returns_promptly	changed	packages/office/tests/worker/spawn.test.ts::close during a failing start returns promptly	plan decision 3: maxFrame is a registry option, so the failing start is the send and close lands while the spawn is pending (no thread to slow)	O3-4
+worker/test_spawn.py::test_every_job_kind_gets_the_ask_user_stub[backward]	dropped	—	D32: no backward job	O3-4
+worker/test_spawn.py::test_every_job_kind_gets_the_ask_user_stub[chat]	changed	packages/office/tests/worker/spawn.test.ts::every job kind gets the ask user stub [%s]	yian #1078: the stub fills the ask slot (key ask); the group's tool declares its schema (D20)	O3-4
+worker/test_spawn.py::test_every_job_kind_gets_the_ask_user_stub[resume]	changed	packages/office/tests/worker/spawn.test.ts::every job kind gets the ask user stub [%s]	yian #1078: the stub fills the ask slot (key ask); the group's tool declares its schema (D20)	O3-4
+worker/test_spawn.py::test_waiting_for_an_exit_gives_up_on_a_process_it_cannot_read	dropped	—	design §6.6: the runtime reports the leader's exit; nothing polls psutil	O3-4
 worker/test_steering.py	ported	packages/office/tests/worker/steering.test.ts	—	O3-3
 worker/test_steering.py::test_a_finished_node_refuses_steers_and_interrupts	changed	packages/office/tests/worker/steering.test.ts::a finished node refuses interrupts	design §2.4, D33: yian's Steering takes an AbortSignal; interrupted is the signal's aborted; yian #1089: steers go to the agent's steer inbox through yian's send; unread steers stay in the inbox, so only interrupts are refused	O3-17
 worker/test_steering.py::test_a_node_is_cut_once_it_reads_its_interrupt	changed	packages/office/tests/worker/steering.test.ts::a node is cut once it reads its interrupt	design §2.4, D33: yian's Steering takes an AbortSignal; reading the interrupt is taking the signal	O3-3
@@ -594,6 +608,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/main.test.ts::a symlinked office dir stops the daemon start [%s]	design §2.3, §6 rule 6: the office dir is checked through main(), as Python's test_a_symlinked_office_dir_is_refused did	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::an uncaught error in the daemon is logged as office crashed [%s]	design §2.3, §6 rule 13: an uncaught exception or rejection writes the crash marker (type and frames, never the message) and exits 1	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::bad arguments exit 2	argparse's exit 2 for bad arguments, kept	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::build office gives the office a worker registry that stops with it	design §2.4; O2-5 handoff: the registry on the office, closed when it stops (refuses new starts)	O3-4
 —	new	packages/office/tests/daemon/main.test.ts::build office lists models on start and cancels sign ins on stop	design §2.3 and Python main.py:218-224: the model warm-up (not awaited) and Logins.closeAll are office hooks; one cache and one Logins per Connections; O4a-4 folds it into test_build_office_runs_the_chat_harness	O2-21
 —	new	packages/office/tests/daemon/main.test.ts::build office reaps workers left by an earlier office	design §6.6 and O2-11a: the workers an earlier office left are reaped at start	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::opencorp daemon from a shell re-execs into the office env and folder	design §6.5 (R2 I1)	O2-11b
@@ -948,7 +963,24 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/rpc.test.ts::object arguments keep a proto key	design §2.4: a model-written argument reaches the office as written (Python's dict kept the key)	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::object method names are never tools or stores	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::reply to never rejects	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/spawn.test.ts::a closed registry refuses new workers	O2-5 handoff: the worker registry refuses new starts once closed (a request handler can still run during the stop's 5 s handler wait)	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a fifo planted as the worker log is refused at once	design §2.4, §6 rule 6: the worker log is a regular file opened without blocking	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a grandchild of a spawned worker does not hold the channel open	design §2.4; O0-10 P1: the grandchild rule at spawn level, through a company CODE node; by fd identity with a positive control, as channel.test.ts's grandchild test	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a record that cannot be written leaves no worker behind	design §2.4: a spawn that fails before the worker is registered kills its group and closes its channel	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a steer left frame without its fields is a bad frame	design §2.4: a frame the office can't read closes the channel, as Python's reader did	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a waiting run ends its worker normally	O3-3 handoff: a run that quiesces as waiting exits 0 and leaves no entry or record	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a worker env drops runtime and loader variables from the provider env	design §6.5, §6 rule 3: selfSpawnEnv drops BUN_*, NODE_OPTIONS, LD_* and DYLD_* from the provider env too	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a worker shows no job when inspected or serialized	design §6.5, §6 rule 1: the worker holds the job and its provider key	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a worker starts only once	design §2.4: one start frame and one reader per worker, so the exit steps run once	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a worker that keeps running after its channel closes is killed after the grace	design §6.6: a worker still running after its channel closed is killed after the grace, before the office awaits it	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a workers group is killed as soon as its leader exits	design §6.6: the group is killed as soon as the runtime reports the leader's exit, so the reap window stays one loop turn	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a workers group is killed at its leaders exit while a detached child holds the channel	design §6.6: the group is killed as soon as the runtime reports the leader's exit, so the reap window stays one loop turn, whatever holds the channel	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::an async handler that rejects does not stop the reader	§6 rule 13; design §2.4: a failing handler never stops the reader	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::close does not wait on a worker that stopped reading	P1, design §6.6: the stop is never awaited, so a worker that stopped reading is killed after the deadline	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::close stops the run first	P1, O3-3 handoff: close sends stop first, so the run ends as stopped	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::the worker env names are the launch allowlist	design §6.5 (one allowlist for daemon and worker)	O2-11b
+—	new	packages/office/tests/worker/spawn.test.ts::the worker log gets the workers output and keeps it across spawns	design §2.4: the worker's stdout and stderr are appended to the session's worker.log (0600, no symlink), kept across spawns	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::the worker log is never followed through a link	design §2.4: worker.log is opened 0600 with O_NOFOLLOW, so a planted link is refused (ELOOP) and its target untouched	O3-4
 —	new	packages/office/tests/worker/steering.test.ts::after close a node gets a signal that never aborts	design §2.4, D33: an AbortSignal per node replaces the polled flag	O3-3
 —	new	packages/office/tests/worker/steering.test.ts::an interrupt aborts the signal a running node already took	design §2.4, D33: an AbortSignal per node replaces the polled flag	O3-3
 —	new	packages/protocol/test/errors.test.ts::422 text names the field and a fixed phrase	§5.4	O0-6

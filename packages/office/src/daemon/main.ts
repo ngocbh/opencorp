@@ -14,6 +14,7 @@ import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { Store } from "../store/store.ts"
 import { reap } from "../worker/reaper.ts"
+import { WorkerRegistry } from "../worker/spawn.ts"
 import { DeviceTokens } from "./auth.ts"
 import { Bus } from "./bus.ts"
 import { HANDLER_WAIT_MS, type Level, createServer, logLine, requestListener, trackRequests } from "./http.ts"
@@ -209,9 +210,10 @@ export function exitOnCrash(write: Write = writeStderr): void {
 const NO_GIT = "no git on the office's PATH"
 
 /** Opens the store and the company clone (run by `tools.git`), kills the processes an earlier office left, and
- *  assembles the office with its tools, its workspace guards, its HEAD watcher (started and stopped with the
- *  office), a model warm-up on start (not awaited) and the cancelling of sign-ins still waiting on stop.
- *  `OfficeStartError` when `tools` has no git. */
+ *  assembles the office with its tools, its workspace guards, its worker registry (closed when the office stops,
+ *  refusing new workers from then on; the chat harness will be built around it here), its HEAD watcher (started
+ *  and stopped with the office), a model warm-up on start (not awaited) and the cancelling of sign-ins still
+ *  waiting on stop. `OfficeStartError` when `tools` has no git. */
 export function buildOffice(
   paths: OfficePaths,
   { tools, guards, write }: { tools: Tools; guards: SandboxOfficePaths; write: Write },
@@ -222,6 +224,7 @@ export function buildOffice(
   try {
     const companyGit = new CompanyGit(paths.company, paths.worktrees, { git: tools.git })
     reap(store)
+    const workers = new WorkerRegistry(store, { log: (level, line) => log(level, "opencorp.worker.spawn")(line) })
     const office = new Office({
       paths,
       store,
@@ -229,6 +232,7 @@ export function buildOffice(
       bus: new Bus(),
       tools,
       guards,
+      workers,
       log: log("ERROR", "opencorp.daemon.office"),
       connections: { log: log("WARNING", "opencorp.chat.connections") },
       models: { log: log("WARNING", "opencorp.chat.models") },

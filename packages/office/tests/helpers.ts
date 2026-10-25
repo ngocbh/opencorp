@@ -143,25 +143,43 @@ export function startGroup(script: string): Group {
   }
 }
 
-/** The names in the env `pid` was started with (or re-exec'd into): Linux `/proc/<pid>/environ`; macOS what
- *  `ps -E` prints after the command. */
+/** The env `pid` was started with (or re-exec'd into), as written: Linux the bytes of `/proc/<pid>/environ`
+ *  (entries split by NUL); macOS the line `ps -E -ww` prints, the command then the entries. */
+export function envText(pid: number): string {
+  if (process.platform === "linux") return fs.readFileSync(`/proc/${pid}/environ`, "utf8")
+  return psCommand(pid, ["-E"])
+}
+
+/** The entries of the env `pid` was started with (or re-exec'd into), as name and value: Linux
+ *  `/proc/<pid>/environ`; macOS what `ps -E` prints after the command, split before each ` NAME=`. On macOS a
+ *  value holding ` NAME=` splits wrongly, so leak scans search `envText` instead. */
+export function envEntries(pid: number): [string, string][] {
+  let entries: string[]
+  if (process.platform === "linux") {
+    entries = envText(pid).split("\0")
+  } else {
+    const command = psCommand(pid, [])
+    const withEnv = envText(pid)
+    if (!withEnv.startsWith(command)) throw new Error(`ps -E of ${pid} doesn't start with its command`)
+    entries = withEnv.slice(command.length).split(/(?:^| )(?=[A-Za-z_][A-Za-z0-9_]*=)/)
+  }
+  return entries
+    .filter((entry) => entry.includes("="))
+    .map((entry) => [entry.slice(0, entry.indexOf("=")), entry.slice(entry.indexOf("=") + 1)])
+}
+
+/** The names in the env `pid` was started with (or re-exec'd into), as `envEntries` reads them. */
 export function envNames(pid: number): string[] {
-  if (process.platform === "linux")
-    return fs
-      .readFileSync(`/proc/${pid}/environ`, "utf8")
-      .split("\0")
-      .filter((entry) => entry !== "")
-      .map((entry) => entry.slice(0, entry.indexOf("=")))
-  const read = (flags: string[]) =>
-    execFileSync(ps(), [...flags, "-ww", "-o", "command=", "-p", String(pid)], {
-      env: { LC_ALL: "C.UTF-8" },
-      encoding: "utf8",
-      timeout: 5000,
-    }).trimEnd()
-  const command = read([])
-  const withEnv = read(["-E"])
-  if (!withEnv.startsWith(command)) throw new Error(`ps -E of ${pid} doesn't start with its command`)
-  return [...withEnv.slice(command.length).matchAll(/(?:^| )([A-Za-z_][A-Za-z0-9_]*)=/g)].map((m) => m[1]!)
+  return envEntries(pid).map(([name]) => name)
+}
+
+/** What `ps -ww -o command=` with `flags` prints for `pid`, trailing space trimmed. */
+function psCommand(pid: number, flags: string[]): string {
+  return execFileSync(ps(), [...flags, "-ww", "-o", "command=", "-p", String(pid)], {
+    env: { LC_ALL: "C.UTF-8" },
+    encoding: "utf8",
+    timeout: 5000,
+  }).trimEnd()
 }
 
 /** The cwd of `pid`: Linux `/proc/<pid>/cwd`; macOS lsof's `n` line. */
