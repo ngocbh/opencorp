@@ -14,6 +14,7 @@ import type { ModelCheck } from "../install/onboard.ts"
 import type { Tools } from "../install/tools.ts"
 import { GitProfileStore } from "../profile/store.ts"
 import type { CardActor, Cards } from "../questions/cards.ts"
+import { RunIndexer } from "../runs/indexer.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { SecretStore } from "../secrets.ts"
 import type { SessionRecord, Store } from "../store/store.ts"
@@ -135,6 +136,8 @@ export class Office {
   readonly logins: Logins
   /** The one-reply model check; `buildOffice`'s runs it as a worker job of its registry. */
   readonly checkModel: ModelCheck
+  /** yian's run index over `paths.runs`, kept up to date from here; closed on stop. */
+  readonly runIndex: RunIndexer
   workers: WorkerPool | undefined
   /** HQ, once `attach` put it here. */
   hq: Hq | undefined
@@ -168,6 +171,7 @@ export class Office {
     models,
     logins,
     checkModel = () => Promise.reject(new Error("this office has no model check")),
+    runIndex,
     log = console.error,
   }: {
     paths: OfficePaths
@@ -183,6 +187,7 @@ export class Office {
     models?: ModelCacheOptions
     logins?: Omit<LoginsOptions, "models">
     checkModel?: ModelCheck
+    runIndex?: ConstructorParameters<typeof RunIndexer>[1]
     /** Gets raw log messages. */
     log?: (message: string) => void
   }) {
@@ -197,6 +202,7 @@ export class Office {
     this.models = new ModelCache(this.connections, { log, ...models })
     this.logins = new Logins(this.connections, { log, ...logins, models: this.models })
     this.checkModel = checkModel
+    this.runIndex = new RunIndexer(paths.runs, { log, ...runIndex })
     this.workers = workers
     this.profileStore = profileStore === undefined ? (handle) => new GitProfileStore(git, handle) : profileStore
     this.tools = tools
@@ -221,7 +227,7 @@ export class Office {
   }
 
   /**
-   * End SSE streams, stop the workers, and run `onStop` in reverse order.
+   * End SSE streams, stop the workers, run `onStop` in reverse order, and close the run index.
    *
    * Every `onStop` callback runs: one that throws is logged and the rest still run. `stop` also runs after a failed
    * `start`, so an `onStop` callback must cope with its `onStart` never having run. It is not idempotent: a second
@@ -241,5 +247,6 @@ export class Office {
         this.#log(`office on_stop callback failed: ${type}`)
       }
     }
+    await this.runIndex.close()
   }
 }

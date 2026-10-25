@@ -14,6 +14,7 @@ import { CodexSessions } from "../harness/sessions.ts"
 import { attach } from "../hq/core.ts"
 import { daemonArgs, daemonEnv, resolveHome } from "../install/launch.ts"
 import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
+import { Inspections, YianRuns, readIndex, sweep } from "../runs/records.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { Store } from "../store/store.ts"
 import { reap } from "../worker/reaper.ts"
@@ -212,13 +213,36 @@ export function exitOnCrash(write: Write = writeStderr): void {
 // Names PATH, never its value (no env value in errors).
 const NO_GIT = "no git on the office's PATH"
 
+/** How long the start waits for the run index to be brought up to date before the sweep runs on what it has. */
+const START_INDEX_MS = 60_000
+
+/** Brings the run index up to date, waiting at most `START_INDEX_MS` (the update goes on past that), then sweeps
+ *  the runs an earlier office left open. A failure is logged by its type: a broken index never stops the start. */
+async function sweepOnStart(office: Office, log: ReturnType<typeof officeLogger>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const waited = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, START_INDEX_MS)
+      timer.unref()
+    })
+    await Promise.race([office.runIndex.update(), waited])
+    const runs = office.paths.runs
+    sweep(office.store, new YianRuns(readIndex(runs, log("WARNING", "opencorp.runs.records")), new Inspections(runs)))
+  } catch (error) {
+    log("ERROR", "opencorp.daemon.main")(`the start sweep failed: ${typeOf(error)}`)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** Opens the store and the company clone (run by `tools.git`), kills the processes an earlier office left, and
  *  assembles the office with its tools, its workspace guards, its worker registry (closed when the office stops,
  *  refusing new workers from then on; the chat harness will be built around it here, and the one-reply model
- *  check runs over it), its Codex sessions (on the chat hooks, the office's card actor until the chat harness,
- *  restored on start before the extensions' start callbacks, closed on stop), its HEAD watcher (started and
- *  stopped with the office), a model warm-up on start (not awaited) and the cancelling of sign-ins still waiting on
- *  stop. `OfficeStartError` when `tools` has no git. */
+ *  check runs over it; each worker's exit updates the run index), the run index brought up to date on start and
+ *  the start sweep after it, its Codex sessions (on the chat hooks, the office's card actor until the chat harness,
+ *  restored on start after the start sweep and before the extensions' start callbacks, closed on stop), its HEAD
+ *  watcher (started and stopped with the office), a model warm-up on start (not awaited) and the cancelling of
+ *  sign-ins still waiting on stop. `OfficeStartError` when `tools` has no git. */
 export function buildOffice(
   paths: OfficePaths,
   { tools, guards, write }: { tools: Tools; guards: SandboxOfficePaths; write: Write },
@@ -229,7 +253,11 @@ export function buildOffice(
   try {
     const companyGit = new CompanyGit(paths.company, paths.worktrees, { git: tools.git })
     reap(store)
-    const workers = new WorkerRegistry(store, { log: (level, line) => log(level, "opencorp.worker.spawn")(line) })
+    const workers = new WorkerRegistry(store, {
+      log: (level, line) => log(level, "opencorp.worker.spawn")(line),
+      // update never rejects.
+      onExit: () => void office.runIndex.update(),
+    })
     const office = new Office({
       paths,
       store,
@@ -243,6 +271,7 @@ export function buildOffice(
       models: { log: log("WARNING", "opencorp.chat.models") },
       logins: { log: log("WARNING", "opencorp.chat.logins") },
       checkModel: (provider) => oneReplyProblem(workers, provider, { log: log("WARNING", "opencorp.chat.check") }),
+      runIndex: { log: log("WARNING", "opencorp.runs.indexer") },
     })
     // Not awaited: a slow provider must not hold up the start. warm never rejects.
     office.onStart.push(() => void office.models.warm())
@@ -253,6 +282,8 @@ export function buildOffice(
     // No chat harness yet: the Codex sessions are the office's harness (card actions and session routes), on the
     // same hooks.
     office.harness = codex
+    // Before the restore, which settles the sessions whose current runs the sweep leaves open.
+    office.onStart.push(() => sweepOnStart(office, log))
     // Before loadExtensions adds the cards' sweep, so the sweep sees the statuses restore settled.
     office.onStart.push(() => codex.restore())
     // Bounded: the sessions close in parallel, each kill waiting at most 5 s and each queue at most stopWaitMs.

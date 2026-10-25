@@ -7,6 +7,7 @@ import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { isLocked } from "@ngocbh/yian/platform"
+import { readRunIndex } from "@ngocbh/yian/run"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { Provider } from "../../src/chat/provider.ts"
@@ -28,13 +29,15 @@ import { CodexSessions } from "../../src/harness/sessions.ts"
 import { launch as officeLaunch, resolveHome } from "../../src/install/launch.ts"
 import { args, killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
-import { Store } from "../../src/store/store.ts"
+import { OFFICE_STOPPED } from "../../src/runs/outcomes.ts"
+import { Store, newId } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { RegistryClosed, WorkerRegistry } from "../../src/worker/spawn.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { company, recordingGit } from "../company/helpers.ts"
 import { cwdOf, envNames, isGone, ps, reexecMarks, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { freePort } from "../hq/helpers.ts"
+import { RUN, committed, runStarted, started, succeeded } from "../runs/helpers.ts"
 import { question, session } from "../store/helpers.ts"
 import { Recorder, base, makeJob } from "../worker/helpers.ts"
 import { frames, makeOffice, request, served, take, within } from "./helpers.ts"
@@ -672,6 +675,65 @@ test("build office checks a model in a worker of its registry", async () => {
     await office.stop()
     office.store.close()
   }
+})
+
+test("build office brings the run index up to date and sweeps on start", async () => {
+  let office: Office | undefined
+  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const paths = new OfficePaths(home())
+  const log = path.join(paths.runs, RUN, "log.jsonl")
+  fs.mkdirSync(path.dirname(log), { recursive: true })
+  fs.writeFileSync(log, Buffer.concat([runStarted(0), started(1, "a"), committed(2, "a", {}), succeeded(3, "a", 2)]))
+  const rec = recordingGit(tempDir())
+  office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write: collect().write })
+  spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
+  const open = newId()
+  const ended = office.store.createSession(session({ status: "ended", run_ids: [open] }))
+  office.store.addRun({
+    runId: open,
+    sessionId: ended.id,
+    driver: "minh",
+    flow: "chat",
+    flowPath: "shared/flows/chat.yaml",
+    connection: null,
+    model: null,
+    configSha256: null,
+    replacesRunId: null,
+    createdAt: ended.created_at,
+  })
+  await office.start()
+  expect(readRunIndex(paths.runs).map((row) => row.runId)).toEqual([RUN])
+  const got = office.store.getRun(open)!
+  expect([got.endReason, got.endedAt]).toEqual([OFFICE_STOPPED, null])
+})
+
+test("build office updates the run index when a worker exits", async () => {
+  const fake = await fakeLlm()
+  let office: Office | undefined
+  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const rec = recordingGit(tempDir())
+  office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  await office.start()
+  // After the start, so its own update isn't counted.
+  const update = spyOn(office.runIndex, "update")
+  const provider = Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: "sk-test-index-0b7e" }, env: fake.env() })
+  fake.script({ content: "OK" })
+  expect(await office.checkModel(provider)).toBeNull()
+  await waitFor(() => update.mock.calls.length > 0, { what: "a run index update on the worker's exit" })
 })
 
 /** How a process exited. */
