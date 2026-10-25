@@ -46,7 +46,11 @@ export function getQuestion(ctx: RequestContext, params: Params) {
 }
 
 /** Answer an open question as the request's person; the first answer wins, a second gets 409 `not_open`. It goes
- *  through the cards when the office has them, else through the session actor, else straight to the store. */
+ *  through the cards when the office has them, else through the session actor, else straight to the store.
+ *
+ *  On a Codex card the answer is Codex's reply. An answer Codex no longer waits for, or that no reply can be made
+ *  from, gets 200 with the question `stale`, and Codex gets nothing from it. That covers a resolved request, an
+ *  ended turn, a dead app-server, an office stop and a reply that waited too long. */
 export async function answerQuestion(ctx: RequestContext, params: Params, body: unknown) {
   const { answer, answer_kind: kind } = body as z.output<typeof AnswerRequest>
   const { office } = ctx

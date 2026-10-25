@@ -9,7 +9,8 @@ import { Ajv } from "ajv"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { type CodexSessionsOptions, CodexSessions } from "../../src/harness/sessions.ts"
 import { killGroup, sameProcess } from "../../src/install/proc.ts"
-import type { SessionRecord, Store } from "../../src/store/store.ts"
+import type { QuestionRecord, SessionRecord, Store } from "../../src/store/store.ts"
+import * as fc from "../../src/testing/fake_codex.ts"
 import { person } from "../company/helpers.ts"
 import { CEO, makeOffice } from "../daemon/helpers.ts"
 import { isGone, tempDir, waitFor } from "../helpers.ts"
@@ -141,11 +142,35 @@ export function makeCodex({ files = {}, ...options }: { files?: Record<string, u
     ...options,
   })
   office.onStop.push(() => sessions.closeAll())
-  return { office, store, hooks, sessions, fake, workspace: tempDir(), lines, events, storeEvents }
+  return { office, store, hooks, sessions, fake, workspace: tempDir(), lines, events, storeEvents, home }
 }
 
 /** What `makeCodex` returns. */
 export type Codex = ReturnType<typeof makeCodex>
+
+/** A second `CodexSessions` over `h`'s office, as a restarted office builds it: new hooks, the same fake, environment
+ *  and log, plus `options`. The office's stop closes it too. */
+export function reopened(h: Codex, options: CodexSessionsOptions = {}): Codex {
+  const log = (line: string) => h.lines.push(line)
+  const hooks = new Hooks({ log })
+  const sessions = new CodexSessions(h.office, hooks, {
+    command: () => h.fake.command(),
+    env: () => ({ PATH: "/usr/bin:/bin", HOME: h.home }),
+    closeGraceMs: 500,
+    log,
+    ...options,
+  })
+  h.office.onStop.push(() => sessions.closeAll())
+  return { ...h, hooks, sessions }
+}
+
+/** Stops `h`'s sessions, then restores them in a `reopened` one (Python's `restarted`). */
+export async function restarted(h: Codex, options: CodexSessionsOptions = {}): Promise<Codex> {
+  await h.sessions.closeAll()
+  const r = reopened(h, options)
+  await r.sessions.restore()
+  return r
+}
 
 /** Stores `handle`'s Codex session in `cwd` (starting, with its work item in progress, at the company's head) and
  *  starts it, as the chat harness's `startSession` does; returns the stored row. `openedBy` null makes the sessions
@@ -180,6 +205,21 @@ export async function start(h: Codex, workspace: string, by = "ngocbh"): Promise
   const { id } = await startSession(h, "minh", workspace, { openedBy: by })
   await waitFor(() => status(h, id) === "idle", { what: "the Codex session to load" })
   return id
+}
+
+/** A turn with a command Codex asks to run (request `requestId`, waiting for the reply unless `wait` is false) and
+ *  then runs. */
+export function approvalTurn(requestId = 1, { wait = true }: { wait?: boolean } = {}): Record<string, any>[] {
+  return [
+    fc.commandStarted("c1", "touch a"),
+    fc.commandApproval(requestId, "c1", "touch a", { wait }),
+    fc.command("c1", "touch a")[1]!,
+  ]
+}
+
+/** The session's first open card, once there is one. */
+export function openCard(h: Codex, sid: string): Promise<QuestionRecord> {
+  return waitFor(() => h.store.listQuestions({ sessionId: sid, status: "open" })[0], { what: "a card" })
 }
 
 /** The session's stored status. */

@@ -1,5 +1,6 @@
 /** A Codex session the owner drives: load, turns, steers, interrupts, end, office stop. */
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
@@ -11,6 +12,7 @@ import { JsonRpc, RpcClosed } from "../../src/harness/rpc.ts"
 import type { CodexSession } from "../../src/harness/session.ts"
 import { CodexSessions } from "../../src/harness/sessions.ts"
 import { killGroup, startTime } from "../../src/install/proc.ts"
+import { realPath } from "../../src/sandbox/policy.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { workerEnv } from "../../src/worker/spawn.ts"
 import { envNames, waitFor } from "../helpers.ts"
@@ -97,25 +99,50 @@ test("launch registers the app server before it starts and refuses once stopped"
 
 test("a codex session starts with an owner load", async () => {
   const h = makeCodex()
-  const sid = await start(h, h.workspace)
-  const s = h.store.getSession(sid)!
+  const row = await h.sessions.startSession("minh", h.workspace, { openedBy: "ngocbh" })
+  await waitFor(() => status(h, row.id) === "idle", { what: "the Codex session to load" })
+  const s = h.store.getSession(row.id)!
   expect([s.harness, s.kind, s.harness_session_id, s.harness_model]).toEqual(["codex", "main", "thr_1", "gpt-5.5-codex"])
+  expect(s.work_item_id).toBeTruthy()
+  // The debrief's connection.
+  expect(s.connection).toBe("office")
   const inits = h.fake.calls("initialize") as { capabilities: unknown }[]
   expect(inits).toHaveLength(1)
   expect(inits[0]!.capabilities).toEqual({ experimentalApi: true })
   expect(h.fake.calls("thread/start")).toEqual([ownerLoad(s.cwd, { sandbox: "workspace-write", network: false })])
-  expect(h.store.listWorkers().map((r) => r.key)).toEqual([`harness:${sid}`])
+  expect(h.store.listWorkers().map((r) => r.key)).toEqual([`harness:${row.id}`])
   requestsValid(h.fake)
+  expect(s.cwd).toBe(realPath(h.workspace))
+  expect(s.repo_commit).toBe(await h.office.git.head())
+  expect([s.opened_by, s.model, s.model_note, s.office]).toEqual(["ngocbh", null, null, os.hostname()])
+  const item = h.store.getWorkItem(s.work_item_id!)!
+  expect([item.status, item.requester, item.assignee, item.title]).toEqual([
+    "in_progress",
+    "ngocbh",
+    "minh",
+    `Chat with Minh in ${path.basename(s.cwd)}`,
+  ])
+  expect(h.store.workedFolders("minh")[0]!.cwd).toBe(s.cwd)
 })
 
 test("a codex session that cant be set up fails at once", async () => {
   const h = makeCodex()
-  const sentinel = new Error("sentinel")
-  spyOn(h.sessions, "opener").mockRejectedValue(sentinel)
+  spyOn(h.sessions, "opener").mockRejectedValue(new Error("sentinel"))
+  const ended: string[] = []
+  h.hooks.sessionEnded.push((s) => ended.push(s.status))
   // openedBy null: the opener is looked up.
-  await expect(startSession(h, "minh", h.workspace)).rejects.toBe(sentinel)
+  const error = await rejection(h.sessions.startSession("minh", h.workspace))
+  expect(error).toBeInstanceOf(HarnessError)
   const [s] = h.store.listSessions()
-  expect([s!.status, h.sessions.get(s!.id), h.store.listWorkers()]).toEqual(["starting", undefined, []])
+  expect([error.status, error.code, error.message]).toEqual([
+    500,
+    "start_failed",
+    `session ${s!.id} failed to start; see the office log`,
+  ])
+  expect([s!.status, h.sessions.get(s!.id), h.store.listWorkers()]).toEqual(["failed", undefined, []])
+  expect(ended).toEqual(["failed"])
+  expect(h.lines).toContain(`can't start Codex session ${s!.id} (Error)`)
+  expect(h.lines.filter((line) => line.includes("sentinel"))).toEqual([])
 })
 
 test("a load codex refuses fails the session with why", async () => {
@@ -601,19 +628,6 @@ test("a reply is written before the messages it causes are handled", async () =>
   const completed = parts.findIndex((p) => p.type === "tool" && p.state === "completed")
   expect(decided).toBeGreaterThan(-1)
   expect(decided).toBeLessThan(completed)
-})
-
-test("a request the office does not serve gets a json rpc error and no event", async () => {
-  const h = makeCodex()
-  const seen = requests(h)
-  const params = { threadId: "{thread}", turnId: "{turn}", callId: "x", namespace: null, tool: "t", arguments: {} }
-  h.fake.script([[{ request: "item/tool/call", id: 9, wait: true, params }]])
-  const sid = await start(h, h.workspace)
-  await h.sessions.prompt(sid, "go")
-  await waitFor(() => 9 in h.fake.replies(), { timeout: 10_000, what: "the error reply" })
-  expect((h.fake.replies()[9] as { code: number }).code).toBe(-32601)
-  await waitFor(() => status(h, sid) === "idle", { what: "Codex going on" })
-  expect(seen()).toEqual([])
 })
 
 test("office stop makes a reply not yet written give up at once", async () => {

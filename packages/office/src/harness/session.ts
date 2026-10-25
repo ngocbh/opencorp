@@ -1,5 +1,6 @@
 /** One Codex session the owner drives: its app-server, its thread, its transcript and its turns. */
 import path from "node:path"
+import type { Message } from "@opencorp/protocol"
 import { HarnessError, notWaiting, runState, writeState } from "../chat/state.ts"
 import { type SessionRecord, type Store, newId } from "../store/store.ts"
 import { type CodexProcess, CodexStartError, ownerLoad } from "./codex.ts"
@@ -110,6 +111,9 @@ export class CodexSession {
   loading = false
   turnId: string | null = null
   pending: string[] = []
+  /** The current turn's messages as the live events built them: the turn in progress, or the last one until
+   *  the next message starts one; nothing is kept after the session or the office ends. */
+  turn: Message[] = []
   /** Question id -> the request Codex waits on. */
   readonly requests = new Map<string, Pending>()
   /** String(request id) -> question id. */
@@ -574,8 +578,8 @@ export class CodexSession {
       if (error instanceof RpcClosed) return false
       throw error
     }
-    // Codex has the reply, so the answer stands whatever is left to write; a failure is logged, not thrown. The
-    // question cards mark the stored question consumed once `reply` returns true.
+    // Codex has the reply, so the answer stands whatever is left to write; a failure is logged, not thrown.
+    // `CodexSessions.answer` marks the stored question consumed once `reply` returns true.
     try {
       this.translator.decided(pending.issued, decision, by || this.author)
     } catch (error) {

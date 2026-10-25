@@ -215,7 +215,8 @@ const NO_GIT = "no git on the office's PATH"
 /** Opens the store and the company clone (run by `tools.git`), kills the processes an earlier office left, and
  *  assembles the office with its tools, its workspace guards, its worker registry (closed when the office stops,
  *  refusing new workers from then on; the chat harness will be built around it here, and the one-reply model
- *  check runs over it), its Codex sessions (on the chat hooks, closed on stop), its HEAD watcher (started and
+ *  check runs over it), its Codex sessions (on the chat hooks, the office's card actor until the chat harness,
+ *  restored on start before the extensions' start callbacks, closed on stop), its HEAD watcher (started and
  *  stopped with the office), a model warm-up on start (not awaited) and the cancelling of sign-ins still waiting on
  *  stop. `OfficeStartError` when `tools` has no git. */
 export function buildOffice(
@@ -249,6 +250,10 @@ export function buildOffice(
     office.onStop.push(() => office.logins.closeAll())
     const hooks = new Hooks({ log: log("ERROR", "opencorp.chat.hooks") })
     const codex = (office.codex = new CodexSessions(office, hooks, { log: log("WARNING", "opencorp.harness.session") }))
+    // No chat harness yet: the Codex sessions are the card actor, on the same hooks.
+    office.harness = codex
+    // Before loadExtensions adds the cards' sweep, so the sweep sees the statuses restore settled.
+    office.onStart.push(() => codex.restore())
     // Bounded: the sessions close in parallel, each kill waiting at most 5 s and each queue at most stopWaitMs.
     office.onStop.push(() => codex.closeAll())
     const watcher = new HeadWatcher(office, { log: log("ERROR", "opencorp.company.watch") })
