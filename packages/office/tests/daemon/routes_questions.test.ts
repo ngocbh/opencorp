@@ -11,7 +11,18 @@ import type { AnswerKind, CardActor, Cards } from "../../src/questions/cards.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { InvalidTransition, type QuestionRecord, type Store } from "../../src/store/store.ts"
 import { question, recordEvents, session } from "../store/helpers.ts"
-import { CEO, type Reply, addHuman, bearer, giveDevice, makeOffice, request, served, standInHarness, ULID } from "./helpers.ts"
+import {
+  CEO,
+  type Reply,
+  addHuman,
+  bearer,
+  giveDevice,
+  makeOffice,
+  request,
+  served,
+  standInHarness,
+  ULID,
+} from "./helpers.ts"
 
 // The same stand-in for the session harness as tests/questions/cards.test.ts, less the knobs these tests leave unused;
 // no test here interrupts a session.
