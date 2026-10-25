@@ -56,6 +56,9 @@ function tools(read: Message[]): [string, string, unknown, string | null | undef
   ) as [string, string, unknown, string | null | undefined][]
 }
 
+/** A step as the log holds it. */
+type Step = Record<string, unknown>
+
 /** The step of each `node_step` record in the log `log`. */
 function steps(log: string): Record<string, unknown>[] {
   return [...iterRunRecords(log, { kinds: ["node_step"] })].map(
@@ -168,7 +171,10 @@ async function toolRun(runs: string): Promise<Job> {
     description: "Runs a command.",
     parameters: { type: "object", properties: { command: { type: "string" }, count: { type: "integer" } } },
     call: async (args: Record<string, unknown>) => {
-      if (args.command === "sleep 9") await Bun.sleep(100)
+      if (args.command === "sleep 9") {
+        const results = () => steps(job.log).filter((step) => step.kind === "tool_result").length
+        await waitFor(() => results() === 2, { timeout: 10_000, what: "c1 and c2 results" })
+      }
       return "a.txt"
     },
   }
@@ -287,6 +293,8 @@ test("a waiting ask user call shows running while the session sleeps", async () 
   const rec = await run(advanceJob(job, { deliver: [send("s1", "pick one")] }), new Asking(), { env: fake.env() })
   expect(waitingAt(rec)).toEqual(["chat#0/reply"])
   expect(tools(messages(runs, newId(), ["r1"]))).toEqual([["q1", "running", {}, null]])
+  await apply(job, fake, [{ id: "x", op: "cancel" }])
+  expect(tools(messages(runs, newId(), ["r1"]))).toEqual([["q1", "interrupted", {}, null]])
   await waitingChat(fake, "chat", {}, { runs, runId: "r2" })
   expect(tools(messages(runs, newId(), ["r1", "r2"]))).toEqual([["q1", "interrupted", {}, null]])
 })
@@ -321,6 +329,19 @@ test("a user message mid reply comes before what the model says after reading it
   ])
   const times = read.map((m) => m.created_at)
   expect(times).toEqual([...times].sort())
+  const reply = (entry: RunLogEntry) => entry.nodeId === "chat#0/reply"
+  const started = [...iterRunRecords(job.log, { kinds: ["node_started"] })].find(reply)!
+  const replySteps = [...iterRunRecords(job.log, { kinds: ["node_step"] })].filter(reply)
+  const record = (entry: RunLogEntry) => entry.envelope.record as unknown as { n: number; step: Step }
+  const call = replySteps.find((entry) => record(entry).step.kind === "model_call")!
+  const steer = replySteps.find((entry) => record(entry).step.kind === "steer")!
+  expect(read[1]!.id).toBe(`r1:${String(started.seq).padStart(12, "0")}`)
+  expect(read[3]!.id).toBe(`r1:${String(steer.seq).padStart(12, "0")}`)
+  expect(read[3]!.created_at).toBe(steer.at)
+  expect(read[1]!.parts.map((part) => part.id)).toEqual([
+    `r1:chat#0/reply:${record(call).n}`,
+    `r1:chat#0/reply:${record(call).n}:0`,
+  ])
 })
 
 test("a reply that streams nothing after a user message gets its output after it", async () => {
@@ -380,10 +401,15 @@ test("a reply interrupted after a tool call ends with the marker after it", asyn
   const office = new DeliverDuringTool({ id: "cut", op: "interrupt", inbox: "messages" })
   const rec = await run(advanceJob(job, { deliver: [send("s1", "Plan the trip.")] }), office, { env: fake.env() })
   expect(waitingAt(rec)).toEqual(["chat#1/heard"])
-  expect(shown(messages(runs, newId(), ["r1"]))).toEqual([
+  const read = messages(runs, newId(), ["r1"])
+  expect(shown(read)).toEqual([
     ["user", ["Plan the trip."]],
     ["assistant", ["Working", "completed", "[interrupted]"]],
   ])
+  const cut = [...iterRunRecords(job.log, { kinds: ["node_step"] })].find(
+    (entry) => (entry.envelope.record as unknown as { step: Step }).step.kind === "interrupted",
+  )!
+  expect(read[1]!.parts.at(-1)!.id).toBe(`r1:chat#0/reply:${(cut.envelope.record as unknown as { n: number }).n}`)
 })
 
 test("a reply interrupted before it streamed text shows its cut call and the marker", async () => {
