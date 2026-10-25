@@ -96,7 +96,7 @@ test("a bootstrap that keeps failing removes the plist and says why", async () =
   await expect(done).rejects.toThrow(ServiceError)
   await expect(done).rejects.toThrow("Input/output error")
   expect(fs.existsSync(plistAt(home))).toBe(false)
-  expect(runner.calls.filter((call) => call[1] === "bootstrap")).toHaveLength(3)
+  expect(runner.calls.filter((call) => call[1] === "bootstrap")).toHaveLength(launchd.BOOTSTRAP_TRIES)
 })
 
 test("a bootstrap outside a gui login says to use terminal or tmux", async () => {

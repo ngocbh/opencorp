@@ -33,6 +33,7 @@ type PlistValue = string | number | boolean | PlistValue[] | { [key: string]: Pl
 const CONTROL = /[\u0000-\u0008\u000b-\u001f]/
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/
 
+/** `text` escaped for XML as plistlib escapes it; throws `ServiceError` on what plistlib can't write. */
 function escape(text: string): string {
   const bad = CONTROL.exec(text) ?? LONE_SURROGATE.exec(text)
   if (bad) {
@@ -46,18 +47,29 @@ function escape(text: string): string {
 /** `value` as plistlib's XML writer lays it out at `depth` tabs, one line per element. */
 function element(value: PlistValue, depth: number, lines: string[]): void {
   const tabs = "\t".repeat(depth)
-  if (typeof value === "string") lines.push(`${tabs}<string>${escape(value)}</string>`)
-  else if (typeof value === "boolean") lines.push(`${tabs}<${value}/>`)
-  else if (typeof value === "number") lines.push(`${tabs}<integer>${value}</integer>`)
-  else if (Array.isArray(value)) {
-    if (!value.length) return void lines.push(`${tabs}<array/>`)
+  if (typeof value === "string") {
+    lines.push(`${tabs}<string>${escape(value)}</string>`)
+  } else if (typeof value === "boolean") {
+    lines.push(`${tabs}<${value}/>`)
+  } else if (typeof value === "number") {
+    // plistlib writes a float as <real>, which this writer has no need for.
+    if (!Number.isInteger(value)) throw new ServiceError(`a launchd plist number must be an integer, not ${value}`)
+    lines.push(`${tabs}<integer>${value}</integer>`)
+  } else if (Array.isArray(value)) {
+    if (!value.length) {
+      lines.push(`${tabs}<array/>`)
+      return
+    }
     lines.push(`${tabs}<array>`)
     for (const item of value) element(item, depth + 1, lines)
     lines.push(`${tabs}</array>`)
   } else {
     // plistlib sorts by code point; UTF-8 bytes order the same way, UTF-16 units don't.
     const keys = Object.keys(value).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
-    if (!keys.length) return void lines.push(`${tabs}<dict/>`)
+    if (!keys.length) {
+      lines.push(`${tabs}<dict/>`)
+      return
+    }
     lines.push(`${tabs}<dict>`)
     for (const key of keys) {
       lines.push(`${tabs}\t<key>${escape(key)}</key>`)
@@ -81,7 +93,8 @@ function dumps(value: PlistValue): Buffer {
 
 /**
  * The launch agent: the daemon, restarted only when it fails (at most every 10 s), output appended to the log, with
- * room for 4096 open files. Throws `ServiceError` if a value holds a control character other than tab and newline.
+ * room for 4096 open files. Throws `ServiceError` if a value holds a control character other than tab and newline,
+ * or a lone surrogate.
  */
 export function plist(launch: Launch): Buffer {
   return dumps({
@@ -123,8 +136,8 @@ export async function install(launch: Launch, host: Host): Promise<void> {
   try {
     changed = writeIfChanged(file, data)
   } catch (error) {
-    // Python's `exc.strerror or exc`.
-    const reason = strerror(error) ?? (error instanceof Error ? error.message : String(error))
+    const reason = strerror(error)
+    if (reason === undefined) throw error
     throw new ServiceError(`can't write ${file}: ${reason}`)
   }
   if (loaded && !changed) return start(launch, host)
