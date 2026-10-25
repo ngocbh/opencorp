@@ -1,10 +1,11 @@
 /** Run one command in the sandbox, in its own process group. */
-import { spawn } from "node:child_process"
+import { spawn, type StdioOptions } from "node:child_process"
+import fs from "node:fs"
 import os from "node:os"
 import type { Readable } from "node:stream"
 import * as bwrap from "./bwrap.ts"
 import { Canary, killEscaped } from "./escapees.ts"
-import { helperCommand } from "../platform.ts"
+import { helperCommand, pipe } from "../platform.ts"
 import { type Helper, helperFiles, isInside, type SandboxPolicy } from "./policy.ts"
 import { profile } from "./seatbelt.ts"
 
@@ -134,14 +135,26 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
       reason ??= why
       wake()
     }
-    const child = spawn(file!, args, {
-      cwd: policy.workspace,
-      env: scrubbedEnv(policy),
-      detached: true,
-      stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    })
-    const outPipe = child.stdout!
-    const errPipe = child.stderr!
+    const own = process.platform === "linux" ? ownPipes(stdin !== undefined) : undefined
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(file!, args, {
+        cwd: policy.workspace,
+        env: scrubbedEnv(policy),
+        detached: true,
+        stdio: own?.stdio ?? [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+      })
+    } catch (error) {
+      own?.stdin?.destroy()
+      own?.stdout.destroy()
+      own?.stderr.destroy()
+      throw error
+    } finally {
+      own?.closeChildEnds()
+    }
+    const outPipe = own?.stdout ?? child.stdout!
+    const errPipe = own?.stderr ?? child.stderr!
+    const input = own ? own.stdin : child.stdin
     const exit = new Promise<void>((resolve) =>
       child.once("exit", (code, sig) => {
         exited = { code, signal: sig }
@@ -155,6 +168,7 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
       // A spawn that fails emits only `error`, never `exit`.
       outPipe.destroy()
       errPipe.destroy()
+      input?.destroy()
       throw await failed
     }
     const out = capture(outPipe, maxOutput)
@@ -164,10 +178,10 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
     let untrack: (() => void) | undefined
     try {
       try {
-        if (child.stdin) {
+        if (input) {
           // The call may exit without reading its input.
-          child.stdin.on("error", () => {})
-          child.stdin.end(stdin)
+          input.on("error", () => {})
+          input.end(stdin)
         }
         untrack = track?.(pid)
         if (signal?.aborted) settle("abort")
@@ -194,6 +208,7 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
     } catch (error) {
       outPipe.destroy()
       errPipe.destroy()
+      input?.destroy()
       throw error
     }
     // Every writer should be dead now, but an escapee that wasn't found could still hold
@@ -206,6 +221,7 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
     clearTimeout(grace)
     outPipe.destroy()
     errPipe.destroy()
+    input?.destroy()
     const stopped = reason === "timeout" || reason === "abort"
     const status = stopped ? null : (exited!.code ?? -os.constants.signals[exited!.signal!])
     const stderr = Buffer.concat(err.chunks)
@@ -221,6 +237,34 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
     }
   } finally {
     canary?.close()
+  }
+}
+
+/** Real pipes for a call's stdio, for Linux, where the runtime's "pipe" is a socketpair and opening /dev/stdout,
+ *  /dev/stderr or /dev/fd/N on a socket fails (ENXIO), unlike Python's pipes. `stdio` holds the child's ends,
+ *  which `closeChildEnds()` closes here once the child holds its copies; each stream closes its own fd. */
+function ownPipes(withStdin: boolean) {
+  const pipes: [number, number][] = []
+  try {
+    for (let i = withStdin ? 3 : 2; i > 0; i--) pipes.push(pipe())
+  } catch (error) {
+    for (const fd of pipes.flat()) fs.closeSync(fd)
+    throw error
+  }
+  const [out, err, input] = pipes as [[number, number], [number, number], [number, number]?]
+  const childEnds = [out[1], err[1], ...(input ? [input[0]] : [])]
+  // A file stream closes its fd at its end or on destroy.
+  const stdin = input && fs.createWriteStream("", { fd: input[1] })
+  // A child that never reads its input makes the write fail with EPIPE.
+  stdin?.on("error", () => {})
+  return {
+    stdio: [input ? input[0] : "ignore", out[1], err[1]] as StdioOptions,
+    stdin,
+    stdout: fs.createReadStream("", { fd: out[0] }),
+    stderr: fs.createReadStream("", { fd: err[0] }),
+    closeChildEnds: () => {
+      for (const fd of childEnds) fs.closeSync(fd)
+    },
   }
 }
 

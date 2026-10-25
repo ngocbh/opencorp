@@ -10,6 +10,7 @@ import {
   embedded,
   helperCommand,
   listAllPids,
+  pipe,
   procStartTime,
   sandboxCheck,
   selfCommand,
@@ -336,6 +337,26 @@ test.skipIf(process.platform !== "darwin")("listAllPids includes this process an
   const pids = listAllPids()
   expect(pids).toContain(process.pid)
   expect(pids).toContain(child.pid!)
+})
+
+test.skipIf(process.platform !== "linux")("pipe gives a close-on-exec fifo pair", () => {
+  const [r, w] = pipe()
+  try {
+    for (const fd of [r, w]) {
+      expect(fs.fstatSync(fd).isFIFO()).toBe(true)
+      const flags = fs.readFileSync(`/proc/self/fdinfo/${fd}`, "utf8").match(/^flags:\s*([0-7]+)$/m)
+      expect(flags).not.toBeNull()
+      // O_CLOEXEC on Linux.
+      expect(Number.parseInt(flags![1]!, 8) & 0o2000000).toBe(0o2000000)
+    }
+    expect(fs.writeSync(w, "x")).toBe(1)
+    const read = Buffer.alloc(1)
+    expect(fs.readSync(r, read)).toBe(1)
+    expect(read.toString()).toBe("x")
+  } finally {
+    fs.closeSync(r)
+    fs.closeSync(w)
+  }
 })
 
 test.skipIf(process.platform !== "darwin")("procStartTime reads a running child and is null for an exited one", async () => {

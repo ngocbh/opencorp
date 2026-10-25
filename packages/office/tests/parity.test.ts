@@ -12,7 +12,7 @@ const HEADER = "python\tstatus\tts\treason\titem"
 const STATUSES = new Set(["open", "ported", "changed", "dropped", "deferred: learning", "new"])
 const FILE_STATUSES = new Set(["open", "ported", "dropped", "deferred: learning"])
 const ID_STATUSES = new Set(["changed", "dropped", "deferred: learning"])
-const ITEM = /^(?:O[0-5][ab]?-\d+[ab]?|Y\d[a-c]?)$/
+const ITEM = /^(?:O[0-5][ab]?-\d+[abL]?|Y\d[a-c]?)$/
 // The snapshot is of a frozen tree, so a change to these counts is on purpose.
 const PYTHON_IDS = 3513
 const PYTHON_FILES = 179

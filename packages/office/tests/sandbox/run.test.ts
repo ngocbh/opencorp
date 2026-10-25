@@ -111,6 +111,67 @@ test.skipIf(!sandboxAvailable())("std streams by path", async () => {
   expect(result.stderr.toString()).toBe("err\n")
 })
 
+test.skipIf(!sandboxAvailable())("a call leaves no fd open", async () => {
+  const policy = makePolicy().make()
+  // Runtime fds opened lazily on the first spawn aren't the call's.
+  await sh(policy, "true")
+  const count = () => fs.readdirSync("/dev/fd").length
+  const before = count()
+  const done = await sh(policy, "echo out; echo err >&2; cat", { stdin: "in" })
+  expect(done.stdout.toString()).toBe("out\nin")
+  expect(done.stderr.toString()).toBe("err\n")
+  // Three at once, so a blocked thread pool would show; the child never reads its stdin.
+  const start = performance.now()
+  const timedOut = await Promise.all(
+    [1, 2, 3].map(() => sh(policy, "sleep 30", { stdin: Buffer.alloc(1 << 20), timeout: 0.5 })),
+  )
+  for (const result of timedOut) expect(result.timedOut).toBe(true)
+  expect(performance.now() - start).toBeLessThan(10_000)
+  expect((await sh(policy, "sleep 30", { stdin: "in", signal: AbortSignal.timeout(300) })).interrupted).toBe(true)
+  // The spawn throws at once.
+  await expect(run(policy, ["/bin/sh", "-c", "a\0b"], { stdin: "in" })).rejects.toMatchObject({
+    code: "ERR_INVALID_ARG_VALUE",
+  })
+  // The spawn emits `error` and has no pid.
+  const removed = makePolicy()
+  const noWorkspace = removed.make()
+  fs.rmSync(removed.ws, { recursive: true })
+  await expect(sh(noWorkspace, "exit 0", { stdin: "in" })).rejects.toMatchObject({ code: "ENOENT" })
+  const tracked = sh(policy, "sleep 30", {
+    stdin: "in",
+    track: () => {
+      throw new Error("tracking failed")
+    },
+  })
+  await expect(tracked).rejects.toThrow("tracking failed")
+  // `<=`: every test file shares this process, and an fd an earlier test left may close meanwhile.
+  await waitFor(() => count() <= before, { timeout: 5_000, what: "the call's fds to close" })
+})
+
+test.skipIf(process.platform !== "linux" || !sandboxAvailable())("a call sees no pipe of another call", async () => {
+  const policy = makePolicy().make()
+  let leader = 0
+  const first = sh(policy, "cat; sleep 2", {
+    stdin: "a",
+    track: (pid) => {
+      leader = pid
+      return () => {}
+    },
+  })
+  await waitFor(() => leader, { timeout: 10_000, what: "the first call to start" })
+  const second = await sh(policy, "ls -l /proc/self/fd")
+  const listing = second.stdout.toString()
+  expect(second.exit, second.stderr.toString()).toBe(0)
+  // Each line ends `<fd> -> <target>`. On Misha (RHEL 8, bwrap) the listing was 0 -> /dev/null, 1 and 2 -> pipe:[…],
+  // and 3 -> /proc/2/fd (ls's own directory), nothing else.
+  const leaked = listing
+    .split("\n")
+    .map((line) => line.match(/\s(\d+) -> (.*)$/))
+    .filter((m) => m !== null && !["0", "1", "2"].includes(m[1]!) && /^(pipe|socket):/.test(m[2]!))
+  expect(leaked, listing).toEqual([])
+  expect((await first).stdout.toString()).toBe("a")
+})
+
 test.skipIf(!sandboxAvailable())("the group is killed after a leader that exits by itself", async () => {
   // The runtime reaps the leader before the group kill, so its pid (the group id) could in
   // theory be reused by then: the documented window.

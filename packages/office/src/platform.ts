@@ -80,6 +80,21 @@ export function embedded(file: string): Buffer {
   return fs.readFileSync(file)
 }
 
+// O_CLOEXEC on Linux: the same value on x64 and arm64 (asm-generic).
+const O_CLOEXEC = 0o2000000
+let linuxLibc: { pipe2: (fds: Int32Array, flags: number) => number } | undefined
+
+/** A new pipe as `[readFd, writeFd]`, both close-on-exec (libc's `pipe2`; musl's loader maps `libc.so.6` to
+ *  itself). Linux only: there the runtime's `"pipe"` stdio is a socketpair, and opening `/dev/stdout` or
+ *  `/dev/fd/N` on a socket fails with ENXIO. */
+export function pipe(): [number, number] {
+  // pipe2 isn't variadic: one call form on every arch.
+  linuxLibc ??= dlopen("libc.so.6", { pipe2: { args: [FFIType.ptr, FFIType.i32], returns: FFIType.i32 } }).symbols
+  const fds = new Int32Array(2)
+  if (linuxLibc.pipe2(fds, O_CLOEXEC) !== 0) throw new Error("pipe2 failed (out of file descriptors?)")
+  return [fds[0]!, fds[1]!]
+}
+
 const SANDBOX_FILTER_NONE = 0
 const SANDBOX_FILTER_PATH = 1
 
