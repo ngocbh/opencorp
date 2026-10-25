@@ -554,7 +554,9 @@ test("onboard imports no daemon module but sockets", () => {
     if (seen.has(file)) return
     seen.add(file)
     if (!file.endsWith(".ts")) return
-    for (const name of specifiers(file)) {
+    // Runtime imports only: a type-only import (worker/spawn.ts names daemon/office.ts's WorkerPool) is erased, so
+    // it can't make a cycle with the connection routes that import onboard.ts.
+    for (const name of specifiers(file, { values: true })) {
       if (name.startsWith(".")) walk(path.join(path.dirname(file), name))
     }
   }
