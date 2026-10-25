@@ -4,10 +4,12 @@ import type { ChildProcess, SpawnOptions } from "node:child_process"
 import { EventEmitter } from "node:events"
 import fs from "node:fs"
 import path from "node:path"
-import { expect, test } from "bun:test"
+import { expect, onTestFinished, test } from "bun:test"
+import { makeOfficeDir } from "../../src/daemon/sockets.ts"
 import * as fallback from "../../src/install/fallback.ts"
-import { type Launch, ServiceError, launch } from "../../src/install/launch.ts"
-import { isGone, ps, startGroup, tempDir } from "../helpers.ts"
+import { type Completed, type Launch, ServiceError, launch, runCommand, which } from "../../src/install/launch.ts"
+import { selfSpawnEnv } from "../../src/platform.ts"
+import { isGone, ps, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { Runner, makeHost, ownerLaunch } from "./helpers.ts"
 
 const SESSION = "opencorp-office"
@@ -43,24 +45,96 @@ test("the tmux command runs the daemon with only its env its output to the log a
 })
 
 test("tmux starts a detached session in the office folder", async () => {
-  const run = new Runner([[["tmux", "has-session"], 1, "can't find session"]])
+  const SOCKET = fallback.socket(ownerLaunch())
+  const run = new Runner([[["tmux", "-L", SOCKET, "has-session"], 1, "can't find session"]])
   await fallback.startTmux(ownerLaunch(), makeHost(tempDir(), run))
   expect(run.calls).toEqual([
-    ["tmux", "has-session", "-t", `=${SESSION}`],
-    ["tmux", "new-session", "-d", "-s", SESSION, "-c", ownerLaunch().cwd, fallback.shellCommand(ownerLaunch())],
+    ["tmux", "-L", SOCKET, "has-session", "-t", `=${SESSION}`],
+    [
+      "tmux",
+      "-L",
+      SOCKET,
+      "new-session",
+      "-d",
+      "-s",
+      SESSION,
+      "-c",
+      ownerLaunch().cwd,
+      fallback.shellCommand(ownerLaunch()),
+    ],
   ])
+  const env = ownerLaunch().env
+  expect(run.envs).toEqual([env, env])
 })
 
 test("a live tmux session is left alone", async () => {
+  const SOCKET = fallback.socket(ownerLaunch())
   const run = new Runner()
   await fallback.startTmux(ownerLaunch(), makeHost(tempDir(), run))
-  expect(run.calls).toEqual([["tmux", "has-session", "-t", `=${SESSION}`]])
+  expect(run.calls).toEqual([["tmux", "-L", SOCKET, "has-session", "-t", `=${SESSION}`]])
 })
 
+test("the tmux server is the offices own named by a hash of its home", () => {
+  const dir = tempDir()
+  const one = fallback.socket(officeAt(dir, "/opt/opencorp/bin/opencorp"))
+  expect(one).toMatch(/^opencorp-[0-9a-f]{8}$/)
+  expect(fallback.socket(officeAt(dir, "/elsewhere/opencorp", { PATH: "/usr/bin" }))).toBe(one)
+  expect(fallback.socket(officeAt(tempDir(), "/opt/opencorp/bin/opencorp"))).not.toBe(one)
+  expect(one).not.toBe("default")
+})
+
+test.skipIf(which("tmux", process.env.PATH) === null)(
+  "a variable planted in setups env reaches neither the tmux server nor the daemon",
+  async () => {
+    let one: Launch | undefined
+    // Registered before the dir is made, so the server is killed before the dir is removed. Only this test's own
+    // server: never the default one. tmux leaves its socket file behind, in `/tmp` since `TMUX_TMPDIR` isn't set.
+    onTestFinished(async () => {
+      if (!one) return
+      await runCommand(["tmux", "-L", fallback.socket(one), "kill-server"], { env: one.env })
+      fs.rmSync(path.join("/tmp", `tmux-${process.getuid!()}`, fallback.socket(one)), { force: true })
+    })
+    const dir = shortDir()
+    const daemon = path.join(dir, "opencorp")
+    fs.writeFileSync(daemon, '#!/bin/sh\n/usr/bin/env > "$3/office/daemon.env"\nexec sleep 60\n', { mode: 0o700 })
+    one = launch(path.join(dir, "home"), {
+      command: [daemon],
+      environ: { PATH: process.env.PATH!, HOME: dir },
+      userHome: dir,
+    })
+    makeOfficeDir(one.office)
+    const socket = fallback.socket(one)
+    const planted = { ...selfSpawnEnv(process.env), OPENCORP_PLANTED: "planted-0000" }
+    // Nothing reaches a tmux server other than this test's own.
+    const refused: Completed = { code: 1, stdout: "", stderr: "the test refuses another tmux server" }
+    const host = makeHost(dir, {
+      run: async (argv, o) =>
+        argv[0] === "tmux" && (argv[1] !== "-L" || argv[2] !== socket)
+          ? refused
+          : runCommand(argv, { env: o?.env ?? planted }),
+    })
+    await fallback.startTmux(one, host)
+    const written = path.join(one.office, "daemon.env")
+    const text = await waitFor(
+      () => {
+        const got = fs.existsSync(written) ? fs.readFileSync(written, "utf8") : ""
+        return got.includes("PATH=") ? got : null
+      },
+      { timeout: 10_000, what: "the daemon's env" },
+    )
+    expect(text).not.toContain("OPENCORP_PLANTED")
+    const server = await runCommand(["tmux", "-L", socket, "show-environment", "-g"], { env: one.env })
+    expect(server.stdout).toContain("PATH=")
+    expect(server.stdout).not.toContain("OPENCORP_PLANTED")
+  },
+  30_000,
+)
+
 test("a tmux that refuses is a service error", async () => {
+  const SOCKET = fallback.socket(ownerLaunch())
   const run = new Runner([
-    [["tmux", "has-session"], 1, ""],
-    [["tmux", "new-session"], 1, "no server running"],
+    [["tmux", "-L", SOCKET, "has-session"], 1, ""],
+    [["tmux", "-L", SOCKET, "new-session"], 1, "no server running"],
   ])
   const done = fallback.startTmux(ownerLaunch(), makeHost(tempDir(), run))
   await expect(done).rejects.toThrow(ServiceError)

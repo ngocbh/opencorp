@@ -86,12 +86,12 @@ test("a failing launchctl falls back to tmux", async () => {
   const run = new Runner([
     [["launchctl", "print"], 113, ""],
     [["launchctl", "bootstrap"], 5, "Input/output error"],
-    [["tmux", "has-session"], 1, ""],
+    [["tmux", "-L", fallback.socket(one), "has-session"], 1, ""],
   ])
   const got = await service.install(one, makeHost(dir, run, { which: found }))
   expect(got.mode).toBe("tmux")
   expect(got.notes[0]).toContain("Input/output error")
-  expect(run.calls.at(-1)!.slice(0, 2)).toEqual(["tmux", "new-session"])
+  expect(run.calls.at(-1)!.slice(0, 4)).toEqual(["tmux", "-L", fallback.socket(one), "new-session"])
   expect(recorded(one).mode).toBe("tmux")
 })
 
@@ -100,7 +100,7 @@ test("a loaded agent that wont kickstart is removed before falling back", async 
   await service.install(one, makeHost(dir, new Runner()))
   const run = new Runner([
     [["launchctl", "kickstart"], 1, "Operation not permitted"],
-    [["tmux", "has-session"], 1, ""],
+    [["tmux", "-L", fallback.socket(one), "has-session"], 1, ""],
   ])
   const got = await service.install(one, makeHost(dir, run, { which: found }))
   expect(got.mode).toBe("tmux")
@@ -119,7 +119,7 @@ test.each([
   fs.chmodSync(locked, 0o500)
   const run = new Runner([
     [["launchctl", "print"], 113, ""],
-    [["tmux", "has-session"], 1, ""],
+    [["tmux", "-L", fallback.socket(one), "has-session"], 1, ""],
   ])
   const got = await service.install(one, makeHost(dir, run, { platform, which: found }))
   expect(got.mode).toBe("tmux")
@@ -141,13 +141,14 @@ test("linux without a user bus or tmux runs it in the background", async () => {
 test("a newline in the home falls back from systemd to tmux", async () => {
   const dir = tempDir()
   const odd = launch(path.join(dir, "a\nb"), { command: [program(dir)], environ: { PATH: "/usr/bin" }, userHome: dir })
-  const run = new Runner([[["tmux", "has-session"], 1, ""]])
+  const socket = fallback.socket(odd)
+  const run = new Runner([[["tmux", "-L", socket, "has-session"], 1, ""]])
   const got = await service.install(odd, makeHost(dir, run, { platform: "linux", which: found }))
   expect(got.mode).toBe("tmux")
   expect(got.notes[0]).toContain("newline")
-  expect(run.calls.map((c) => c.slice(0, 2))).toEqual([
-    ["tmux", "has-session"],
-    ["tmux", "new-session"],
+  expect(run.calls.map((c) => c.slice(0, 4))).toEqual([
+    ["tmux", "-L", socket, "has-session"],
+    ["tmux", "-L", socket, "new-session"],
   ])
 })
 
@@ -211,7 +212,8 @@ test("a running office in tmux or the background is not started twice", async ()
 
 test("a running office is not moved to another service", async () => {
   const { dir, one } = fixture()
-  await service.install(one, makeHost(dir, new Runner([[["tmux", "has-session"], 1, ""]])), "tmux")
+  const run = new Runner([[["tmux", "-L", fallback.socket(one), "has-session"], 1, ""]])
+  await service.install(one, makeHost(dir, run), "tmux")
   const running = makeHost(dir, new Runner(), { answers: async () => true })
   const error = await refusal(service.install(one, running, "launchd"))
   expect(error).toBeInstanceOf(ServiceError)
@@ -393,9 +395,10 @@ test("uninstalling a tmux office kills its session", async () => {
   const run = new Runner()
   const done = await service.uninstall(one, makeHost(dir, run, { which: found }))
   const session = fallback.session(one)
+  const socket = fallback.socket(one)
   expect(run.calls).toEqual([
-    ["tmux", "has-session", "-t", `=${session}`],
-    ["tmux", "kill-session", "-t", `=${session}`],
+    ["tmux", "-L", socket, "has-session", "-t", `=${session}`],
+    ["tmux", "-L", socket, "kill-session", "-t", `=${session}`],
   ])
   expect(done).toEqual([`tmux: killed the session ${session}`])
 })
@@ -403,9 +406,10 @@ test("uninstalling a tmux office kills its session", async () => {
 test("a tmux office whose session is gone has nothing to kill", async () => {
   const { dir, one } = fixture()
   installedAs(one, "tmux")
-  const run = new Runner([[["tmux", "has-session"], 1, "can't find session"]])
+  const socket = fallback.socket(one)
+  const run = new Runner([[["tmux", "-L", socket, "has-session"], 1, "can't find session"]])
   expect(await service.uninstall(one, makeHost(dir, run, { which: found }))).toEqual([])
-  expect(run.calls).toEqual([["tmux", "has-session", "-t", `=${fallback.session(one)}`]])
+  expect(run.calls).toEqual([["tmux", "-L", socket, "has-session", "-t", `=${fallback.session(one)}`]])
 })
 
 test("uninstalling removes another managers leftover file too", async () => {
@@ -586,9 +590,13 @@ function answersOnceStarted(run: Runner): () => Promise<boolean> {
   const starts = [
     ["launchctl", "kickstart"],
     ["systemctl", "--user"],
-    ["tmux", "new-session"],
   ]
-  return async () => run.calls.some((argv) => starts.some(([a, b]) => argv[0] === a && argv[1] === b))
+  return async () =>
+    run.calls.some(
+      (argv) =>
+        (argv[0] === "tmux" && argv[3] === "new-session") ||
+        starts.some(([a, b]) => argv[0] === a && argv[1] === b),
+    )
 }
 
 test("restarting a launchd office kickstarts its agent", async () => {
@@ -617,18 +625,19 @@ test("restarting a tmux office kills a lingering session before starting a new o
   const runner = {
     run: async (argv: readonly [string, ...string[]]): Promise<Completed> => {
       const done = await run.run(argv)
-      if (argv[1] === "kill-session") alive = false
-      if (argv[1] === "has-session" && !alive) return { code: 1, stdout: "", stderr: "can't find session" }
+      if (argv[3] === "kill-session") alive = false
+      if (argv[3] === "has-session" && !alive) return { code: 1, stdout: "", stderr: "can't find session" }
       return done
     },
   }
   const host = makeHost(dir, runner, { which: found, answers: answersOnceStarted(run) })
   expect((await service.restart(one, host)).mode).toBe("tmux")
-  expect(run.calls.map((argv) => argv.slice(0, 2))).toEqual([
-    ["tmux", "has-session"],
-    ["tmux", "kill-session"],
-    ["tmux", "has-session"],
-    ["tmux", "new-session"],
+  const socket = fallback.socket(one)
+  expect(run.calls.map((argv) => argv.slice(0, 4))).toEqual([
+    ["tmux", "-L", socket, "has-session"],
+    ["tmux", "-L", socket, "kill-session"],
+    ["tmux", "-L", socket, "has-session"],
+    ["tmux", "-L", socket, "new-session"],
   ])
 })
 

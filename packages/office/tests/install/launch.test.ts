@@ -315,6 +315,12 @@ test("a missing program is exit 127 not an exception", async () => {
   expect(out.stderr).toContain("nonexistent")
 })
 
+test("run command runs with exactly the env it is given", async () => {
+  const out = await runCommand(["/usr/bin/env"], { env: { PATH: "/usr/bin:/bin", OPENCORP_X: "1" } })
+  expect(out.code).toBe(0)
+  expect(out.stdout.split("\n").filter(Boolean).sort()).toEqual(["OPENCORP_X=1", "PATH=/usr/bin:/bin"])
+})
+
 /** Whether a child of this process is still running `args`. Reads only. */
 function childRuns(args: string): boolean {
   const lines = execFileSync(ps(), ["-A", "-o", "ppid=,args="], { env: {}, timeout: 5000 }).toString().split("\n")

@@ -1,16 +1,36 @@
 /** Running the office without a service manager: in a detached tmux session, or as a detached process. */
 import type { ChildProcess } from "node:child_process"
+import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { makeOfficeDir } from "../daemon/sockets.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
-import { type Host, type Launch, ServiceError, daemonEnv, which } from "./launch.ts"
+import { type Completed, type Host, type Launch, ServiceError, daemonEnv, which } from "./launch.ts"
 import { args, startTime, stopProcess as stopPid } from "./proc.ts"
 import { resolveTools } from "./tools.ts"
 
 /** The office's tmux session, `opencorp-<name>`. */
 export function session(launch: Launch): string {
   return `opencorp-${launch.name}`
+}
+
+/**
+ * The office's own tmux server, `opencorp-<first 8 hex of sha256(home)>`, so the owner's servers are never
+ * touched and two offices never share one.
+ */
+export function socket(launch: Launch): string {
+  return `opencorp-${createHash("sha256").update(launch.home, "utf8").digest("hex").slice(0, 8)}`
+}
+
+/**
+ * Runs `tmux <args>` on the office's own server, in the daemon's env, so a server it starts never holds setup's
+ * shell env. `TMUX_TMPDIR` isn't in that env, so every call finds the same socket.
+ *
+ * `service` checks for tmux with `host.which`, on setup's `PATH`, while this call resolves `tmux` on the daemon's;
+ * when they differ, tmux exits 127 and `auto` falls back to the background with a note.
+ */
+function tmux(launch: Launch, host: Host, ...args: string[]): Promise<Completed> {
+  return host.run(["tmux", "-L", socket(launch), ...args], { env: { ...launch.env } })
 }
 
 /** `word` for a POSIX shell, as Python's `shlex.quote` writes it: unchanged when it holds only safe characters,
@@ -34,8 +54,9 @@ export function shellCommand(launch: Launch): string {
   const argv = launch.argv.map(shQuote)
   // stdin holds the pane's pty open: tmux 2.7 closes a pane once nothing has its pty open, even
   // while its process runs, and the kernel then hangs up the daemon. The daemon never reads stdin,
-  // and every child it starts gets its own. `-S` sets only the soft limit, as Python did: no hard cap. `;`, not
-  // `&&`: when the hard limit is below 4096 `ulimit` fails, says why in the log, and the daemon still starts.
+  // and every child it starts gets its own. `-S` sets only the soft limit, as Python's daemon did: no hard cap.
+  // `;`, not `&&`: when the hard limit is below 4096 `ulimit` fails, says why in the log, and the daemon still
+  // starts.
   return `ulimit -Sn 4096; exec /usr/bin/env -i ${[...env, ...argv].join(" ")} >>${shQuote(launch.log)} 2>&1`
 }
 
@@ -46,8 +67,8 @@ export function shellCommand(launch: Launch): string {
  */
 export async function startTmux(launch: Launch, host: Host): Promise<void> {
   const name = session(launch)
-  if ((await host.run(["tmux", "has-session", "-t", `=${name}`])).code === 0) return
-  const done = await host.run(["tmux", "new-session", "-d", "-s", name, "-c", launch.cwd, shellCommand(launch)])
+  if ((await tmux(launch, host, "has-session", "-t", `=${name}`)).code === 0) return
+  const done = await tmux(launch, host, "new-session", "-d", "-s", name, "-c", launch.cwd, shellCommand(launch))
   if (done.code !== 0) throw new ServiceError(`tmux new-session failed: ${done.stderr.trim()}`)
 }
 
@@ -82,8 +103,8 @@ export function startBackground(launch: Launch, host: Host): void {
   try {
     let child: ChildProcess
     try {
-      // `-S` sets only the soft limit, as Python did: no hard cap. `;`, not `&&`: when the hard limit is below
-      // 4096 `ulimit` fails, says why in the log, and the daemon still starts.
+      // `-S` sets only the soft limit, as Python's daemon did: no hard cap. `;`, not `&&`: when the hard limit is
+      // below 4096 `ulimit` fails, says why in the log, and the daemon still starts.
       child = host.spawn(["/bin/sh", "-c", 'ulimit -Sn 4096; exec "$@"', "sh", ...launch.argv], {
         cwd: launch.cwd,
         env: { ...launch.env },
@@ -106,8 +127,8 @@ export function startBackground(launch: Launch, host: Host): void {
 /** Kills the office's tmux session; says what was done, or null if there was no session. */
 export async function stopTmux(launch: Launch, host: Host): Promise<string | null> {
   const name = session(launch)
-  if ((await host.run(["tmux", "has-session", "-t", `=${name}`])).code !== 0) return null
-  await host.run(["tmux", "kill-session", "-t", `=${name}`])
+  if ((await tmux(launch, host, "has-session", "-t", `=${name}`)).code !== 0) return null
+  await tmux(launch, host, "kill-session", "-t", `=${name}`)
   return `tmux: killed the session ${name}`
 }
 

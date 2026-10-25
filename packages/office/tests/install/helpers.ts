@@ -7,11 +7,17 @@ import { type Completed, type Host, type Launch, launch } from "../../src/instal
  *  prefix answers, else code 0 with empty output. */
 export class Runner {
   readonly calls: string[][] = []
+  /** Each call's `env` option, parallel to `calls`. */
+  readonly envs: (Record<string, string> | undefined)[] = []
 
   constructor(private readonly answers: [prefix: string[], code: number, stderr: string, stdout?: string][] = []) {}
 
-  readonly run = async (argv: readonly [string, ...string[]]): Promise<Completed> => {
+  readonly run = async (
+    argv: readonly [string, ...string[]],
+    options?: { env?: Record<string, string> },
+  ): Promise<Completed> => {
     this.calls.push([...argv])
+    this.envs.push(options?.env)
     for (const [prefix, code, stderr, stdout = ""] of this.answers) {
       if (prefix.every((part, i) => argv[i] === part)) return { code, stdout, stderr }
     }
@@ -43,7 +49,7 @@ export function makeHost(
     platform,
     userHome: dir,
     uid: 501,
-    run: (argv) => runner.run(argv),
+    run: (argv, options) => runner.run(argv, options),
     spawn,
     which,
     sleep: async (ms) => {
