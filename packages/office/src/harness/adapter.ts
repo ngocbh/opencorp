@@ -62,11 +62,10 @@ export interface HarnessProcess {
   readonly harnessSessionId: string
   /** The harness process's pid. */
   readonly pid: number
-  /** Starts a turn with the message `text`; `author` is the human who sent it (the opener when the caller named
-   *  nobody). */
+  /** Starts a turn with the message `text`; `author` is the human who sent it, or null when no human is known. */
   turn(text: string, author: string | null): Promise<void>
   /** Adds `text` to the running turn; "queued" where the harness has no mid-turn input. `author` is the human who
-   *  sent it (the opener when the caller named nobody). */
+   *  sent it, or null when no human is known. */
   steer(text: string, author: string | null): Promise<"steered" | "queued">
   /** Stops the running turn. */
   interrupt(): Promise<void>
