@@ -5,27 +5,41 @@ import os from "node:os"
 import path from "node:path"
 import { Readable, Writable } from "node:stream"
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
+import { ToolContext } from "@ngocbh/yian"
 import { parse } from "yaml"
 import { deviceName, readIdentity } from "../../src/auth/identity.ts"
 import { checkPassword } from "../../src/auth/passwords.ts"
 import { tokenSha256 } from "../../src/auth/tokens.ts"
-import type { Draft } from "../../src/company/draft.ts"
+import type { Draft, InitOutput } from "../../src/company/draft.ts"
 import { CompanyGit, CompanyGitError } from "../../src/company/git.ts"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { isNew, missingFiles, writeCompany } from "../../src/company_template/index.ts"
 import { type InitOptions, init } from "../../src/install/init.ts"
-import { CONFIRM, type Known, passwordStep, REMOTE, remoteStep } from "../../src/install/interview.ts"
-import { GIT_ACCESS, redact } from "../../src/install/onboard.ts"
+import {
+  Asking,
+  askPasswordTool,
+  askRemoteTool,
+  CONFIRM,
+  type Known,
+  ModelError,
+  NO_REMOTE,
+  passwordStep,
+  REMOTE,
+  remoteStep,
+} from "../../src/install/interview.ts"
+import { GIT_ACCESS, redact, SET_UP_AGAIN, setupConnectionFile, TRY_AGAIN } from "../../src/install/onboard.ts"
 import { KeyboardInterrupt, NoTerminal, OnboardError, TtyPrompter } from "../../src/install/prompts.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import { fakeLlm } from "../chat/helpers.ts"
 import { git, gitEnv } from "../company/helpers.ts"
 import { tempDir } from "../helpers.ts"
-import { makeHost, NO_LISTING, Runner, Script } from "./helpers.ts"
+import { flowReplies, makeHost, NO_LISTING, Runner, Script } from "./helpers.ts"
 
 // Hashing the password with scrypt and the company's git take a while.
 setDefaultTimeout(30_000)
 
+const KEY = "sk-ant-sentinel-1c9e04b7a2d6"
 const PASSWORD = "pw-sentinel-5d1f"
 const FLAGS: Known = { company: "Acme", name: "Me", handle: "me" }
 
@@ -74,6 +88,19 @@ function interviewed(draft: Draft): Pick<InitOptions, "interview"> {
       await remoteStep(prompter, known.remote ?? ""),
     ],
   }
+}
+
+/** An interview that fails with a `ModelError` for its first `failures` calls, then returns `draft` as
+ *  `interviewed` does; `calls` gets each call's arguments. */
+function failingInterview(draft: Draft, failures = 1) {
+  const real = interviewed(draft).interview!
+  const calls: unknown[][] = []
+  const interview: typeof real = async (...args) => {
+    calls.push(args)
+    if (calls.length <= failures) throw new ModelError("the model couldn't run the interview: Connection error")
+    return real(...args)
+  }
+  return { interview, calls }
 }
 
 /** A bare repo at `target` whose default branch is main. */
@@ -132,6 +159,76 @@ test("init makes the company its ceo and seeded teammates in one commit", async 
   ])
 })
 
+test("the model is asked first", async () => {
+  const dir = tempDir()
+  const ask = new Script(["openai", "", "", PASSWORD, PASSWORD, "1"])
+  await expect(init(path.join(dir, "home"), ask, { ...base(dir), ...interviewed(ACME) })).rejects.toThrow("stop")
+  expect(ask.seen.slice(0, 3)).toEqual([
+    "Step 1 of 5: Model",
+    "Your agents think with this model; its key stays in this office, readable only by you.",
+    "Model provider",
+  ])
+  const file = setupConnectionFile(path.join(dir, "home", "office"))
+  expect(ask.seen).toContain(`Model provider: saved to ${file}`)
+  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ llm_config: { provider: "openai" } })
+})
+
+test("the provider from the first step is kept by the last", async () => {
+  const dir = tempDir()
+  const ask = new Script(["openai", "", "", PASSWORD, PASSWORD, "1"])
+  const host = makeHost(dir, new Runner())
+  // The stand-in office never starts.
+  await expect(init(path.join(dir, "home"), ask, { ...base(dir), ...interviewed(ACME), host })).rejects.toThrow(
+    "did not answer",
+  )
+  const file = setupConnectionFile(path.join(dir, "home", "office"))
+  expect(ask.seen).toContain(`Model provider: saved to ${file}`)
+  expect(ask.seen).toContain(`Model provider: up to date at ${file}`)
+  expect(ask.seen.filter((line) => line === "Model provider")).toHaveLength(1)
+  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ llm_config: { provider: "openai" } })
+})
+
+test("the flow with a model makes the company and never sends a secret", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const company = path.join(home, "company")
+  const remote = bare(path.join(dir, "remote-sentinel-3b8e.git"))
+  const out: InitOutput = {
+    company: "Acme",
+    owner: { name: "Hong Ngoc Bui", handle: "ngocbh", title: "CEO" },
+    teammates: [{ name: "Lan", handle: "lan", title: "QA", about: "Tests every release." }],
+  }
+  const fake = await fakeLlm()
+  fake.script(...flowReplies("Tell me about the company.", out))
+  const ask = new Script(["Acme; I'm ngocbh; hire Lan for QA", "1", PASSWORD, PASSWORD, remote])
+  const provider = { llm_config: { ...LLM_CONFIG, api_key: KEY }, env: fake.env() }
+  const stdin = Readable.from([JSON.stringify(provider)])
+  await expect(init(home, ask, { ...base(dir), stdin })).rejects.toThrow("stop")
+  const sent = JSON.stringify(fake.requests())
+  const repo = loadRepo(company)
+  expect([repo.company?.name, repo.company?.ceo]).toEqual(["Acme", "ngocbh"])
+  expect(Object.fromEntries([...repo.people].map(([h, p]) => [h, [p.kind, p.title]]))).toEqual({
+    ngocbh: ["human", "CEO"],
+    lan: ["agent", "QA"],
+  })
+  expect(fs.readFileSync(path.join(company, "people/lan/profile.md"), "utf8")).toBe(
+    "# Lan, QA\n\nTests every release.\n",
+  )
+  expect(ask.seen).toContain("Tell me about the company.")
+  expect(ask.seen).toContain(CONFIRM)
+  expect(sent).toContain("Acme; I'm ngocbh; hire Lan for QA")
+  const hashed = parse(git(company, "show", "HEAD:people/ngocbh/person.yaml")).password_hash
+  for (const secret of [PASSWORD, KEY, "remote-sentinel-3b8e", hashed]) expect(sent).not.toContain(secret)
+  expect(git(remote, "rev-parse", "main")).toBe(git(company, "rev-parse", "HEAD"))
+  expect(ask.seen.filter((line) => line.startsWith("Step "))).toEqual([
+    "Step 1 of 5: Model",
+    "Step 2 of 5: Company",
+    "Step 3 of 5: Password",
+    "Step 4 of 5: Remote",
+    "Step 5 of 5: This machine",
+  ])
+})
+
 test("without a terminal the flags make the company without asking to confirm", async () => {
   const dir = tempDir()
   const ask = scripted()
@@ -144,6 +241,53 @@ test("without a terminal the flags make the company without asking to confirm", 
   expect(repo.company?.name).toBe("Acme")
   expect(new Set(repo.people.keys())).toEqual(new Set(["bo", "lan"]))
   expect(ask.seen).not.toContain(CONFIRM)
+})
+
+test("a failed interview can be tried again with the same model", async () => {
+  const dir = tempDir()
+  const { interview, calls } = failingInterview(ACME)
+  const ask = new Script(["openai", "", "", "1", PASSWORD, PASSWORD, "1"])
+  await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow("stop")
+  expect(calls).toHaveLength(2)
+  expect(ask.seen).toContain("The model couldn't run the interview: Connection error")
+  expect(ask.offered).toContainEqual([TRY_AGAIN, SET_UP_AGAIN])
+  expect(loadRepo(path.join(dir, "home", "company")).company?.name).toBe("Acme")
+})
+
+test("a failed interview can set up the model again", async () => {
+  const dir = tempDir()
+  const { interview } = failingInterview(ACME)
+  const ask = new Script(["openai", "", "", "2", "anthropic", KEY, "", PASSWORD, PASSWORD, "1"])
+  await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow("stop")
+  const file = setupConnectionFile(path.join(dir, "home", "office"))
+  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({
+    llm_config: { provider: "anthropic", api_key: KEY, model: "claude-sonnet-4-5" },
+  })
+  expect(ask.seen.filter((line) => line.includes(KEY))).toEqual([])
+})
+
+test("setting the model up again starts from step ones answers", async () => {
+  const dir = tempDir()
+  const { interview } = failingInterview(ACME)
+  const ask = new Script(["openai", KEY, "gpt-x", "2", "", "", "", PASSWORD, PASSWORD, "1"])
+  await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow("stop")
+  const file = setupConnectionFile(path.join(dir, "home", "office"))
+  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({
+    llm_config: { provider: "openai", api_key: KEY, model: "gpt-x" },
+  })
+  expect(ask.seen).toContain("openai API key (empty keeps the one you just typed; not shown)")
+})
+
+test("the model is checked before it is saved", async () => {
+  const dir = tempDir()
+  const problems: (string | null)[] = ["Connection error", null]
+  const checkModel = async () => problems.shift() ?? null
+  const ask = new Script(["openai", "", "", "1", PASSWORD, PASSWORD, "1"])
+  await expect(init(path.join(dir, "home"), ask, { ...base(dir), ...interviewed(ACME), checkModel })).rejects.toThrow(
+    "stop",
+  )
+  expect(ask.seen).toContain("The model didn't answer: Connection error")
+  expect(problems).toEqual([])
 })
 
 test("flags that clash without a terminal stop before the company is made", async () => {
@@ -367,6 +511,33 @@ test("a token in the remote url is never shown", async () => {
   expect(ask.seen.some((line) => line.startsWith("Warning: couldn't push"))).toBe(true)
   expect(ask.seen.filter((line) => line.includes("ghp_sentinel42"))).toEqual([])
   expect(redact(url)).toBe("http://***@127.0.0.1:9/acme.git")
+})
+
+/** The context of a call to the tool `toolName`, outside a run, with the owner's terminal `prompter`. */
+function toolContext(toolName: string, prompter: Script): ToolContext {
+  const [context, signal] = [new Asking(prompter), new AbortController().signal]
+  return new ToolContext({ callId: "t", attempt: 1, toolName, runId: "", node: "", context, signal })
+}
+
+test("the password node shows step 3 and returns the hash", async () => {
+  const prompter = new Script([PASSWORD, PASSWORD])
+  const hash = await askPasswordTool.execute({}, toolContext("ask_password", prompter))
+  expect(typeof hash).toBe("string")
+  expect(hash).not.toBe(PASSWORD)
+  expect(await checkPassword(PASSWORD, hash as string)).toBe(true)
+  expect(prompter.seen[0]).toBe("Step 3 of 5: Password")
+})
+
+test("the remote node uses the flag or asks", async () => {
+  const [flagged, none, typed] = [new Script(), new Script(["1"]), new Script(["git@example.com:a.git"])]
+  expect(await askRemoteTool.execute({ given: "u" }, toolContext("ask_remote", flagged))).toBe("u")
+  expect(await askRemoteTool.execute({ given: "" }, toolContext("ask_remote", none))).toBe("")
+  expect(await askRemoteTool.execute({ given: "" }, toolContext("ask_remote", typed))).toBe("git@example.com:a.git")
+  expect(flagged.seen).not.toContain(REMOTE)
+  expect(none.seen.at(-1)).toBe(REMOTE)
+  expect(typed.seen.at(-1)).toBe(REMOTE)
+  expect(typed.offered).toEqual([[NO_REMOTE]])
+  expect(typed.typed).toEqual([true])
 })
 
 test("the remote is asked before the company is written", async () => {
