@@ -373,6 +373,7 @@ test("a secret answer reaches codex and never the store", async () => {
   expect(codexLog(h, sid)).not.toContain(SENTINEL)
   expect(JSON.stringify(h.storeEvents)).not.toContain(SENTINEL)
   expect(JSON.stringify(h.events)).not.toContain(SENTINEL)
+  expect(JSON.stringify(h.sessions.currentTurn(sid))).not.toContain(SENTINEL)
   expect(h.lines.join("\n")).not.toContain(SENTINEL)
 })
 

@@ -1,5 +1,6 @@
 /** One Codex session the owner drives: its app-server, its thread, its transcript and its turns. */
 import path from "node:path"
+import type { Message } from "@opencorp/protocol"
 import { HarnessError, notWaiting, runState, writeState } from "../chat/state.ts"
 import { type SessionRecord, type Store, newId } from "../store/store.ts"
 import { type CodexProcess, CodexStartError, ownerLoad } from "./codex.ts"
@@ -110,6 +111,9 @@ export class CodexSession {
   loading = false
   turnId: string | null = null
   pending: string[] = []
+  /** The current turn's messages as the live events built them (P12): the turn in progress, or the last one until
+   *  the next message starts one; nothing is kept after the session or the office ends. */
+  turn: Message[] = []
   /** Question id -> the request Codex waits on. */
   readonly requests = new Map<string, Pending>()
   /** String(request id) -> question id. */

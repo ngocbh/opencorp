@@ -1,7 +1,7 @@
 /** The office's live Codex sessions, each with its own app-server. */
 import fs from "node:fs"
 import path from "node:path"
-import { type HarnessPolicy, Question, now } from "@opencorp/protocol"
+import { type HarnessPolicy, type Message, Question, now } from "@opencorp/protocol"
 import type { Hooks } from "../chat/hooks.ts"
 import { HarnessError, notWaiting } from "../chat/state.ts"
 import { loadRepo } from "../company/loader.ts"
@@ -176,13 +176,21 @@ export class CodexSessions implements CardActor {
     return repo.company?.ceo ?? null
   }
 
-  /** Handles what `live`'s translator writes: messages, parts and deltas go on the bus as live events; a request's
-   *  card is stored as an open question (`questionStored` fires), and a resolved one goes stale.
+  /** A copy of the live session's current turn (P12); empty when it isn't live. */
+  currentTurn(sessionId: string): Message[] {
+    const live = this.#live.get(sessionId)
+    return live ? structuredClone(live.turn) : []
+  }
+
+  /** Handles what `live`'s translator writes: messages, parts and deltas go on the bus as live events, and are kept
+   *  in the session's current turn; a request's card is stored as an open question (`questionStored` fires), and a
+   *  resolved one goes stale.
    *
    *  Synchronous: it runs inside a session job, or synchronously from `prompt`. A card the store refuses throws, so
    *  the request gets a JSON-RPC error. */
   event(live: CodexSession, e: HarnessEvent): void {
     const session_id = live.sessionId
+    remember(live, e)
     if (e.type === "message") this.office.bus.publishLive({ type: "message.updated", session_id, data: e.message })
     else if (e.type === "part")
       this.office.bus.publishLive({ type: "part.updated", session_id, data: { message_id: e.messageId, part: e.part } })
@@ -262,6 +270,30 @@ export class CodexSessions implements CardActor {
     if (this.store.getSession(sessionId) === undefined)
       throw new HarnessError(404, "not_found", `no session ${sessionId}`)
     throw new HarnessError(409, "not_live", `session ${sessionId} has no live Codex app-server`)
+  }
+}
+
+/** Folds a message, part or delta into `live`'s current turn, as a client folds the live events: a user message that
+ *  comes while no turn runs, after the assistant answered, starts a new turn. Clones, since the translator keeps
+ *  changing its parts. */
+function remember(live: CodexSession, e: HarnessEvent): void {
+  if (e.type === "message") {
+    const message = e.message
+    // A message queued during a load or a steer joins the turn; a load's error or restore marker stays until then.
+    if (message.role === "user" && live.turnId === null && live.turn.some((m) => m.role === "assistant"))
+      live.turn = []
+    const at = live.turn.findIndex((m) => m.id === message.id)
+    if (at === -1) live.turn.push(structuredClone(message))
+    else live.turn[at] = structuredClone(message)
+  } else if (e.type === "part") {
+    const message = live.turn.find((m) => m.id === e.messageId)
+    if (message === undefined) return
+    const at = message.parts.findIndex((p) => p.id === e.part.id)
+    if (at === -1) message.parts.push(structuredClone(e.part))
+    else message.parts[at] = structuredClone(e.part)
+  } else if (e.type === "delta") {
+    const part = live.turn.find((m) => m.id === e.messageId)?.parts.find((p) => p.id === e.partId)
+    if (part?.type === "text") part.text += e.text
   }
 }
 
