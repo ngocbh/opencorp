@@ -4,7 +4,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { selfCommand } from "@opencorp/office/platform"
-import { type InstallSpawn, installSpawn } from "../src/office"
+import { type InstallSpec, installSpawn } from "../src/office"
 import { type SetupDeps, drawable, setUp } from "../src/setup"
 
 const WRAPPER = path.resolve(import.meta.dir, "../bin/opencorp")
@@ -23,7 +23,7 @@ function fake(
   opts: { code?: number; terminal?: boolean; screenCode?: number; screenThrows?: Error; spawnCwd?: () => string } = {},
 ) {
   const calls: { argv: string[]; cwd: string }[] = []
-  const screens: InstallSpawn[] = []
+  const screens: InstallSpec[] = []
   const offices: (string | undefined)[] = []
   const errors: string[] = []
   const deps: SetupDeps = {
@@ -182,7 +182,13 @@ test(
         for (const end = Date.now() + 20_000; ; await Bun.sleep(10)) {
           const lines = out.split("\n").slice(0, -1)
           while (read < lines.length) {
-            const prompt = JSON.parse(lines[read++]!)
+            const line = lines[read++]!
+            let prompt
+            try {
+              prompt = JSON.parse(line)
+            } catch {
+              throw new Error(`not a JSON line: ${line}\nstdout:\n${out}\nstderr:\n${err}`)
+            }
             if (prompt.type !== "say") return prompt
           }
           if (Date.now() > end) throw new Error(`no prompt within 20 s; stdout:\n${out}\nstderr:\n${err}`)

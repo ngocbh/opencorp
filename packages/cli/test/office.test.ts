@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { spawnSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -18,6 +18,30 @@ const saved = { ...process.env }
 afterEach(() => {
   process.env = { ...saved }
 })
+
+/**
+ * Runs the wrapper with `args` in `cwd` with exactly `env` and stdin closed, leading its own process group; resolves
+ * to its exit code and output, or fails after 20 s showing what it wrote. The group is killed after, so the install
+ * never outlives the test.
+ */
+async function runWrapper(args: string[], cwd: string, env: Record<string, string>) {
+  const proc = spawn(WRAPPER, args, { cwd, env, stdio: "pipe", detached: true })
+  let stdout = ""
+  let stderr = ""
+  proc.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d))
+  proc.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d))
+  proc.stdin.end()
+  try {
+    const exited = new Promise<number | null>((resolve) => proc.on("close", (code) => resolve(code)))
+    const code = await Promise.race([exited, Bun.sleep(20_000).then(() => "timed out" as const)])
+    if (code === "timed out") throw new Error(`no exit within 20 s; stdout:\n${stdout}\nstderr:\n${stderr}`)
+    return { code, stdout, stderr }
+  } finally {
+    try {
+      process.kill(-proc.pid!, "SIGKILL")
+    } catch {}
+  }
+}
 
 /** Deps whose spawn records each call and resolves to `code`, run in the real home dir. */
 function fake(code = 0, spawnCwd = () => fs.realpathSync(os.homedir())) {
@@ -142,24 +166,22 @@ test("what the CLI passes reaches the programs it runs", async () => {
 
 test(
   "`opencorp start` on a home with no office exits 3 with the setup hint from the TS install",
-  () => {
+  async () => {
     const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-start-")))
     try {
       const home = path.join(tmp, "oh")
       fs.mkdirSync(home)
       fs.mkdirSync(path.join(tmp, "h"))
-      const result = spawnSync(WRAPPER, ["start"], {
-        cwd: tmp,
-        env: { HOME: path.join(tmp, "h"), PATH: "/usr/bin:/bin", OPENCORP_BUN: process.execPath, OPENCORP_HOME: home },
-        input: "",
-        encoding: "utf8",
-        timeout: 20_000,
+      const result = await runWrapper(["start"], tmp, {
+        HOME: path.join(tmp, "h"),
+        PATH: "/usr/bin:/bin",
+        OPENCORP_BUN: process.execPath,
+        OPENCORP_HOME: home,
       })
-      expect(result.error).toBeUndefined()
       expect(result.stderr).toContain(
         `opencorp: no office at ${home} yet; run \`opencorp init\` to create one, or \`opencorp onboard --from URL\` to join one`,
       )
-      expect(result.status).toBe(3)
+      expect(result.code).toBe(3)
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true })
     }
@@ -169,7 +191,7 @@ test(
 
 test(
   "a relative --home names the folder it was typed in, and setup never reads that folders or HOMEs .env or bunfig.toml",
-  () => {
+  async () => {
     const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-rel-")))
     try {
       const work = path.join(tmp, "w")
@@ -183,16 +205,15 @@ test(
         )
         fs.writeFileSync(path.join(dir, ".env"), "OPENCORP_HOME=/nonexistent\n")
       }
-      const result = spawnSync(WRAPPER, ["start", "--home", "rel"], {
-        cwd: work,
-        env: { HOME: home, PATH: "/usr/bin:/bin", OPENCORP_BUN: process.execPath },
-        input: "",
-        encoding: "utf8",
-        timeout: 20_000,
-      })
-      expect(result.error).toBeUndefined()
-      expect(result.stderr).toContain(`no office at ${path.join(work, "rel")} yet`)
-      expect(result.status).toBe(3)
+      const env = { HOME: home, PATH: "/usr/bin:/bin", OPENCORP_BUN: process.execPath }
+      const relative = await runWrapper(["start", "--home", "rel"], work, env)
+      expect(relative.stderr).toContain(`no office at ${path.join(work, "rel")} yet`)
+      expect(relative.code).toBe(3)
+      // Without --home or OPENCORP_HOME, a planted .env that loaded would name /nonexistent.
+      const plain = await runWrapper(["start"], work, env)
+      expect(plain.stderr).toContain(`no office at ${path.join(home, ".opencorp")} yet`)
+      expect(plain.stderr).not.toContain("/nonexistent")
+      expect(plain.code).toBe(3)
       expect(fs.existsSync(path.join(work, "MARKER"))).toBe(false)
       expect(fs.existsSync(path.join(home, "MARKER"))).toBe(false)
     } finally {

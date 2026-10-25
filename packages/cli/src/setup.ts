@@ -1,13 +1,13 @@
 // `opencorp init` and `opencorp onboard`: the install asks its questions on the TUI's setup screen, and the
 // office opens once it's done. Without a terminal to draw on, the install runs on this terminal's stdin and stdout.
-import { type Deps, type InstallSpawn, absoluteArgs, install, installSpec, realDeps } from "./office"
+import { type Deps, type InstallSpec, install, installSpec, realDeps } from "./office"
 
 /** What setting up touches beyond running the install; tests pass fakes. */
 export interface SetupDeps extends Deps {
   /** Whether there is a terminal the setup screen can draw on. */
   terminal(): boolean
   /** Runs the install `spec` behind the setup screen; resolves to its exit code once the screen is gone. */
-  screen(spec: InstallSpawn): Promise<number>
+  screen(spec: InstallSpec): Promise<number>
   /** Opens the office as `opencorp` with no arguments does; resolves to its exit code. */
   openOffice(): Promise<number>
   /** Says what went wrong on stderr. */
@@ -54,12 +54,11 @@ export async function setUp(
 ): Promise<number> {
   const plain = argv.some((a) => a === "--provider-stdin" || a === "-h" || a === "--help")
   if (plain || !deps.terminal()) return install(command, argv, deps)
-  const args = absoluteArgs(command, argv)
-  const spec = installSpec(command, ["--json-prompts", ...args], deps)
+  const spec = installSpec(command, ["--json-prompts", ...argv], deps)
   if (!spec) return 1
-  // The office that opens after must be the one the install set up, which --home names. The install runs in the
-  // home dir, so a relative --home is made absolute here, where it was typed; `~` the TUI expands as the install does.
-  const home = homeFlag(args)
+  // The office that opens after must be the one the install set up, which --home names: the spec's, already made
+  // absolute where it was typed (the install runs in the home dir); `~` the TUI expands as the install does.
+  const home = homeFlag(spec.argv)
   if (home) process.env.OPENCORP_HOME = home
   let code: number
   try {

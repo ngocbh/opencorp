@@ -27,7 +27,7 @@ export const realDeps: Deps = {
 }
 
 /** How to run one install command: its argv, env and folder. */
-export interface InstallSpawn {
+export interface InstallSpec {
   argv: string[]
   env: Record<string, string>
   cwd: string
@@ -59,7 +59,7 @@ function localFrom(value: string, cwd: () => string): string {
  * caller's folder, which `cwd` reads only when one is: the install runs in the home dir, so a relative path typed
  * here must keep naming the folder it was typed in.
  */
-export function absoluteArgs(command: string, args: string[], cwd: () => string = () => process.cwd()): string[] {
+function absoluteArgs(command: string, args: string[], cwd: () => string): string[] {
   const fixes: Record<string, (value: string, cwd: () => string) => string> = { "--home": absolute }
   if (command === "onboard") fixes["--from"] = localFrom
   const out = [...args]
@@ -78,27 +78,27 @@ export function absoluteArgs(command: string, args: string[], cwd: () => string 
 /**
  * How to run `opencorp install <command> ...args` in this binary: relative `--home`, `--from` (onboard) and
  * `$OPENCORP_HOME` made absolute against `cwd`, the env `environ` without the names that change how Bun starts,
- * and the home dir as its folder. Throws when the home folder doesn't exist.
+ * and `home` (by default the home dir, which throws when it doesn't exist) as its folder.
  */
 export function installSpawn(
   command: string,
   args: string[],
   environ: Record<string, string | undefined> = process.env,
   cwd: () => string = () => process.cwd(),
-  spawnCwd: () => string = selfSpawnCwd,
-): InstallSpawn {
+  home: string = selfSpawnCwd(),
+): InstallSpec {
   const env = { ...environ }
   if (env.OPENCORP_HOME !== undefined) env.OPENCORP_HOME = absolute(env.OPENCORP_HOME, cwd)
   return {
     argv: [...selfCommand(), "install", command, ...absoluteArgs(command, args, cwd)],
     env: selfSpawnEnv(env),
-    cwd: spawnCwd(),
+    cwd: home,
   }
 }
 
 /** `installSpawn(command, args)` in `deps.spawnCwd()`, or undefined after saying on stderr that the home folder
  *  doesn't exist. */
-export function installSpec(command: string, args: string[], deps: Deps): InstallSpawn | undefined {
+export function installSpec(command: string, args: string[], deps: Deps): InstallSpec | undefined {
   let home: string
   try {
     home = deps.spawnCwd()
@@ -106,7 +106,7 @@ export function installSpec(command: string, args: string[], deps: Deps): Instal
     console.error(`opencorp ${command}: your home folder ${os.homedir()} doesn't exist`)
     return undefined
   }
-  return installSpawn(command, args, process.env, () => process.cwd(), () => home)
+  return installSpawn(command, args, process.env, () => process.cwd(), home)
 }
 
 /** Runs `opencorp install <command> ...args` and resolves to its exit code; 1 when the home folder doesn't exist. */
