@@ -211,7 +211,7 @@ test("offboard cleans up a half made office", async () => {
   fs.mkdirSync(path.join(home, ".company-clone"))
   await offboard(home, new Script(), { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
   expect(fs.existsSync(home)).toBe(false)
-}, 30_000)
+})
 
 test("offboard with an identity the company doesnt list skips the device", async () => {
   const dir = tempDir()
@@ -271,6 +271,7 @@ test(
       await service.wait(run, host)
       const me = (await readIdentity(path.join(paths.home, "identity.json")))!
       const ask = new Script()
+      // The user's git must run, and no launcher of this checkout may be found on PATH.
       await offboard(paths.home, ask, { yes: true, host, environ: { ...environ, PATH: gitOnly(dir).PATH } })
       expect(devices(paths)).toEqual([])
       expect(subjects(paths.company)[0]).toBe(`devices(@me): remove ${me.device}`)

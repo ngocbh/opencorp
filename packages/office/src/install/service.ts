@@ -20,10 +20,6 @@ export const MODES = ["launchd", "systemd", "tmux", "background"] as const
 /** One of `MODES`. */
 export type Mode = (typeof MODES)[number]
 
-/** How long a stop waits after SIGTERM before SIGKILL: the daemon's worst-case stop is about 20 s, and its store
- *  must close cleanly. */
-export const STOP_TIMEOUT_MS = 25_000
-
 type Step = (launch: Launch, host: Host) => Promise<void> | void
 /** Why the manager doesn't have the office's service, or null if it does. */
 type Check = (launch: Launch, host: Host) => Promise<string | null>
@@ -212,7 +208,7 @@ export async function wait(launch: Launch, host: Host, timeoutMs = 20_000): Prom
  *
  * Throws `ServiceError` if the office still answers afterwards.
  */
-export async function uninstall(launch: Launch, host: Host, timeoutMs = STOP_TIMEOUT_MS): Promise<string[]> {
+export async function uninstall(launch: Launch, host: Host, timeoutMs = fallback.STOP_TIMEOUT_MS): Promise<string[]> {
   const recorded = recordedMode(launch)
   const done = [
     await launchd.uninstall(launch, host, recorded === "launchd"),
@@ -248,7 +244,7 @@ async function waitStopped(launch: Launch, host: Host, timeoutMs = 5000): Promis
  *
  * Throws `ServiceError` if the office still answers after it was stopped, or it can't be started.
  */
-export async function restart(launch: Launch, host: Host, timeoutMs = STOP_TIMEOUT_MS): Promise<Installed> {
+export async function restart(launch: Launch, host: Host, timeoutMs = fallback.STOP_TIMEOUT_MS): Promise<Installed> {
   await fallback.stopProcess(launch, { timeoutMs })
   if (recordedMode(launch) === "tmux") await fallback.stopTmux(launch, host)
   await waitStopped(launch, host)

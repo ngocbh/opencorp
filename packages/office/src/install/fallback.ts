@@ -172,11 +172,18 @@ export function daemon(launch: Launch, ps: string | undefined): { pid: number; s
   return line.endsWith(tail) || line.endsWith(`${tail} --reexeced`) ? { pid, started } : null
 }
 
+/** How long a stop waits after SIGTERM before SIGKILL: the daemon's worst-case stop is about 20 s, and its store
+ *  must close cleanly. */
+export const STOP_TIMEOUT_MS = 25_000
+
 /** Stops the office's daemon with SIGTERM, then SIGKILL after `timeoutMs`; says what was done, or null if none
  *  runs. Nothing is signalled unless the pid's start time and args are this office's daemon's. */
 export async function stopProcess(
   launch: Launch,
-  { timeoutMs = 15_000, ps = resolveTools(daemonEnv(process.env)).ps }: { timeoutMs?: number; ps?: string } = {},
+  {
+    timeoutMs = STOP_TIMEOUT_MS,
+    ps = resolveTools(daemonEnv(process.env)).ps,
+  }: { timeoutMs?: number; ps?: string } = {},
 ): Promise<string | null> {
   const found = daemon(launch, ps)
   if (found === null) return null

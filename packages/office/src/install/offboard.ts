@@ -68,10 +68,21 @@ export function launchers(
       if (stat.isSymbolicLink()) {
         // A dangling link throws here, so it isn't ours.
         runsRepo = inside(fs.realpathSync(file), realRepo)
-      } else if (stat.isFile() && stat.size < 4096) {
-        // A launcher script is small; a binary isn't read. Invalid bytes become U+FFFD.
-        const text = fs.readFileSync(file, "utf8")
-        runsRepo = entries.some((e) => text.includes(path.join(repo, e)) || text.includes(path.join(realRepo, e)))
+      } else {
+        // Opened without following a link or blocking, and checked on the fd: a file swapped in after the lstat (a
+        // FIFO, or a link to a huge file) can't hang or flood the read.
+        const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
+        try {
+          const opened = fs.fstatSync(fd)
+          // A launcher script is small; a binary isn't read. Invalid bytes become U+FFFD.
+          if (opened.isFile() && opened.size < 4096) {
+            const buf = Buffer.alloc(4096)
+            const text = buf.toString("utf8", 0, fs.readSync(fd, buf, 0, buf.length, 0))
+            runsRepo = entries.some((e) => text.includes(path.join(repo, e)) || text.includes(path.join(realRepo, e)))
+          }
+        } finally {
+          fs.closeSync(fd)
+        }
       }
     } catch {
       // A file we can't read isn't ours.
