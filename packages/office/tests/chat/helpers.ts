@@ -24,7 +24,7 @@ import { FakeLLM, LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_
 import { type Delivery, Job, type JobInput } from "../../src/worker/job.ts"
 import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
 import type { Worker, WorkerRegistry } from "../../src/worker/spawn.ts"
-import { baseFiles, MAIN_INPUTS, person } from "../company/helpers.ts"
+import { baseFiles, person } from "../company/helpers.ts"
 import { CEO, makeOffice } from "../daemon/helpers.ts"
 import { NO_GROUP, tempDir, waitFor } from "../helpers.ts"
 import { advanceJob, inProcessWorker, makeJob, makeRegistry, Recorder, run, waitsOf } from "../worker/helpers.ts"
@@ -279,6 +279,16 @@ export const ASK_USER: ScriptedReply = {
   tool_calls: [{ name: "ask_user", arguments: { question: "Which?", options: ["A", "B"] } }],
 }
 
+/** A model question's `ask_user` request, as a worker sends it. */
+export const ASKED = {
+  question: "Which?",
+  questions: null,
+  answer_schema: null,
+  title: null,
+  node_id: null,
+  options: null,
+}
+
 /** A model turn that asks the person's manager. */
 export const ASK_MANAGER: ScriptedReply = { tool_calls: [{ name: "ask_manager", arguments: { question: "Budget?" } }] }
 
@@ -297,7 +307,21 @@ export const KAI = {
  *  the inbox, which a flow must read. */
 export const GATE = `id: gate
 name: gate
-${MAIN_INPUTS.replace("  messages: !Inbox(Message)\n", "")}nodes:
+typedefs:
+  Person:
+    name: str
+    handle: str
+    title: str
+    company: str
+    reports_to: str
+input:
+  person: !Person
+  talking_to: !str
+  summary: !str
+  history: !list(list(Message))
+  turns: !int
+  max_turns: !int
+nodes:
   setup:
     kind: tool
     tool_id: ask
@@ -314,7 +338,10 @@ output: \${setup.output}
 `
 
 /** minh's main flow is the gate. */
-export const GATE_FILES = { "people/minh/gate.yaml": GATE, "people/minh/person.yaml": person("minh", { main: "gate.yaml" }) }
+export const GATE_FILES = {
+  "people/minh/gate.yaml": GATE,
+  "people/minh/person.yaml": person("minh", { main: "gate.yaml" }),
+}
 
 /** An answer to the gate's pages. */
 export const GATE_ANSWER = { db: "Postgres", features: ["auth"] }
@@ -373,8 +400,8 @@ export interface ChatOffice {
  * An office over the base company with the template's chat flow (and `files` on top), its `office` connection on
  * `fake` (`llmConfig`, the fake's env, `prices`), the company `defaults` merged in, and a registry whose `spawn` is
  * wrapped to record, hold, fail or follow each spawn. Its actors share one `Hooks`, `Answers` and `Transcript`, and a
- * run spec from `mainSpec` over a workspace stand-in, with the tools of `groups` merged into its groups. At test end the actors close, then the workers stop, before
- * the office's store closes.
+ * run spec from `mainSpec` over a workspace stand-in, with the tools of `groups` merged into its groups. At test end
+ * the actors close, then the workers stop, before the office's store closes.
  */
 export async function chatOffice(
   fake: FakeLLM,
@@ -453,7 +480,8 @@ export async function chatOffice(
     transcript,
     spec: async (session) => {
       const repo = loadRepo(await git.pin(session.repo_commit))
-      const spec = mainSpec({ store, git, repo, session, workspace: standIn, monitor, carried: (q) => answers.carried(q) })
+      const carried = (q: QuestionRecord) => answers.carried(q)
+      const spec = mainSpec({ store, git, repo, session, workspace: standIn, monitor, carried })
       return {
         ...spec,
         groups: (c) => {
@@ -497,7 +525,10 @@ export async function chatOffice(
 
 /** Stores a `starting` main chat of minh's in a fresh folder, with its work item, as a start opens one; `openedBy`
  *  is the human who opened it. Returns its id. */
-export async function newSession(o: ChatOffice, { openedBy = null }: { openedBy?: string | null } = {}): Promise<string> {
+export async function newSession(
+  o: ChatOffice,
+  { openedBy = null }: { openedBy?: string | null } = {},
+): Promise<string> {
   const { store, git } = o.office
   const cwd = tempDir()
   const t = now()

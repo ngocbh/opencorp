@@ -11,6 +11,7 @@ import type { Bus } from "../daemon/bus.ts"
 import type { OfficePaths } from "../daemon/office.ts"
 import type { Env } from "../install/launch.ts"
 import { type Answers, makeAskUser, type OnQuestion } from "../questions/ask.ts"
+import type { AnswerKind } from "../questions/cards.ts"
 import { formatAnswer } from "../questions/format.ts"
 import { COULDNT_START, flowLabel, OFFICE as OFFICE_DRIVER } from "../runs/outcomes.ts"
 import { InvalidTransition, newId, type QuestionRecord, type SessionRecord, type Store } from "../store/store.ts"
@@ -94,16 +95,23 @@ class Pending {
   /** Whether the caller has its answer. */
   done = false
   /** The question a `complete` answers, marked consumed once the run takes it. */
-  readonly question: string | null
+  readonly questionId: string | null
+  /** The `send` a message's `complete` falls back on when its call settled first. */
+  readonly fallback: Delivery | null
   /** Settles with the caller's answer: `acked`, or the `HarnessError` the delivery is refused with. */
   readonly answer: Promise<unknown>
   #resolve!: (value: unknown) => void
   #reject!: (error: unknown) => void
 
-  constructor(delivery: Delivery, acked: unknown = undefined, question: string | null = null) {
+  constructor(
+    delivery: Delivery,
+    acked: unknown = undefined,
+    { questionId = null, fallback = null }: { questionId?: string | null; fallback?: Delivery | null } = {},
+  ) {
     this.delivery = delivery
     this.acked = acked
-    this.question = question
+    this.questionId = questionId
+    this.fallback = fallback
     this.answer = new Promise((resolve, reject) => {
       this.#resolve = resolve
       this.#reject = reject
@@ -271,40 +279,52 @@ export class SessionActor implements LiveCalls {
       for (const refusal of this.#ctx.hooks.fire("promptCheck", session, text)) {
         if (refusal) throw new HarnessError(422, "refused", String(refusal))
       }
-      return (await this.#answerAsked(session, text, by)) ?? (await this.#send(session, text, by))
+      const { delivery, reply } = await this.#message(session, text, by)
+      return (await this.#answerAsked(session, text, by, delivery)) ?? (await this.#send(delivery, reply))
     })
+    const fallback = pending.fallback
     try {
       return (await pending.answer) as MessageReply
     } catch (error) {
       const refused = pending.reply?.refused
-      if (pending.delivery.op !== "complete" || (refused !== "call_settled" && refused !== "unknown_call")) throw error
+      if (fallback === null || (refused !== "call_settled" && refused !== "unknown_call")) throw error
     }
     // The call settled before the answer reached it (a card's answer came first): the text is the next message.
-    const sent = await this.#command(async () => this.#send(this.#live(), text, by))
+    const sent = await this.#command(async () => this.#send(fallback, this.#replyNow(this.#live())))
     return (await sent.answer) as MessageReply
   }
 
-  /** Answers the run's open `ask_user` question with `text` and delivers the answer by `complete`; null when none is
-   *  open, or a card answered it first. */
-  async #answerAsked(session: SessionRecord, text: string, by: string | null): Promise<Pending | null> {
+  /** Answers the run's open `ask_user` question with `text` and delivers the answer by `complete`, which falls back
+   *  on `fallback`; null when none is open, or a card answered it first. */
+  async #answerAsked(
+    session: SessionRecord,
+    text: string,
+    by: string | null,
+    fallback: Delivery,
+  ): Promise<Pending | null> {
     const { store } = this.#ctx
     const asked = store.listQuestions({ runId: this.#runId!, status: "open", source: "ask_user" })[0]
     if (asked === undefined || asked.call_id === null) return null
-    const owner = await this.#owner(session)
+    const answerer = by ?? (await this.#owner(session))
     let answered: QuestionRecord
     try {
-      answered = store.answerQuestion(asked.id, text, "text", by ?? owner)
+      answered = store.answerQuestion(asked.id, text, "text", answerer)
     } catch (error) {
       if (error instanceof InvalidTransition) return null
       throw error
     }
-    const p = this.#complete(answered, "answer")
+    const p = this.#complete(answered, "answer", fallback)
     await this.#deliver(p)
     return p
   }
 
-  /** Sends `text` from `by` to the run's inbox, after the `turnContext` part unless the reply runs. */
-  async #send(session: SessionRecord, text: string, by: string | null): Promise<Pending> {
+  /** The `send` of `text` from `by` to the run's inbox, after the `turnContext` part unless the reply runs, and the
+   *  reply it gets if queued now. */
+  async #message(
+    session: SessionRecord,
+    text: string,
+    by: string | null,
+  ): Promise<{ delivery: Delivery; reply: MessageReply }> {
     const spec = await this.#specOf(session)
     const author = by ?? (await this.#owner(session))
     const reply = this.#replyNow(session)
@@ -315,17 +335,22 @@ export class SessionActor implements LiveCalls {
       if (typeof context === "string") parts.unshift({ type: "text", text: context })
     }
     const event = { role: "user", parts, ...(author ? { author } : {}) }
-    const delivery: Delivery = { id: newId(), op: "send", inbox: spec.chat.inbox, event }
+    return { delivery: { id: newId(), op: "send", inbox: spec.chat.inbox, event }, reply }
+  }
+
+  /** Delivers the `send` `delivery`, answering its caller with `reply` once the run has it. */
+  async #send(delivery: Delivery, reply: MessageReply): Promise<Pending> {
     const p = new Pending(delivery, reply)
     await this.#deliver(p)
     return p
   }
 
-  /** The `complete` of the answered `question`'s call, answering its caller with `acked`. */
-  #complete(question: QuestionRecord, acked: unknown): Pending {
+  /** The `complete` of the answered `question`'s call, answering its caller with `acked`; a message's falls back on
+   *  the `send` `fallback`. */
+  #complete(question: QuestionRecord, acked: unknown, fallback: Delivery | null = null): Pending {
     const output = formatAnswer(question, this.#ctx.answers.carried(question))
     const delivery: Delivery = { id: newId(), op: "complete", call_id: question.call_id!, result: { output } }
-    return new Pending(delivery, acked, question.id)
+    return new Pending(delivery, acked, { questionId: question.id, fallback })
   }
 
   /**
@@ -337,7 +362,7 @@ export class SessionActor implements LiveCalls {
   answer(
     questionId: string,
     value: unknown,
-    kind: NonNullable<QuestionRecord["answer_kind"]>,
+    kind: AnswerKind,
     { by = null }: { by?: string | null } = {},
   ): Promise<QuestionRecord> {
     return this.#command(async () => {
@@ -352,10 +377,10 @@ export class SessionActor implements LiveCalls {
       for (const refusal of hooks.fire("answerCheck", question, value, kind)) {
         if (refusal) throw new HarnessError(422, "invalid_answer", String(refusal))
       }
-      const owner = await this.#owner(this.#session())
+      const answerer = by ?? (await this.#owner(this.#session()))
       let stored: QuestionRecord
       try {
-        stored = store.answerQuestion(questionId, value, kind, by ?? owner)
+        stored = store.answerQuestion(questionId, value, kind, answerer)
       } catch (error) {
         if (error instanceof InvalidTransition) {
           throw new HarnessError(409, "not_open", `question ${questionId} is no longer open`)
@@ -412,7 +437,8 @@ export class SessionActor implements LiveCalls {
    * (on the `ask_manager` item's assignee, else on the owner); else busy while a worker is being spawned or is sure
    * to be (a re-advance, or a message held for the next job), or while a worker runs the run and it isn't at its
    * turn; else idle. `writeState` leaves ending and finished sessions alone.
-   * Called inside queue jobs, after a spawn or a command has read the pinned company.
+   * Called inside queue jobs. Every command reads the pinned company first, so it throws for missing pins only
+   * before any command; tests may call it directly when nothing else runs.
    */
   settle(): void {
     const { store } = this.#ctx
@@ -426,8 +452,7 @@ export class SessionActor implements LiveCalls {
       const run = this.#run
       const spawning = this.#starting !== null || this.#readvance || this.#next.some((p) => p.delivery.op === "send")
       const running = spawning || (run !== null && run.outcome === null && !this.#runAtTurn(run))
-      // The cost cap's hold joins the waiting here, with its own person.
-      writeState(store, this.sessionId, runState({ waiting: asks.length > 0, running }), who, { capped: false })
+      writeState(store, this.sessionId, runState({ waiting: asks.length > 0, running }), who)
     })
   }
 
@@ -467,12 +492,17 @@ export class SessionActor implements LiveCalls {
     })
   }
 
-  /** Runs `job` on the queue and settles with what it returns or throws; refused `503 stopping` after `close`. */
+  /** Runs `job` on the queue, after reading the pinned company, and settles with what it returns or throws; refused
+   *  `503 stopping` after `close`. */
   #command<T>(job: () => Promise<T>): Promise<T> {
     if (this.#closed) return Promise.reject(stopping())
     return new Promise<T>((resolve, reject) => {
       this.#tail = this.#tail.then(async () => {
         if (this.#closed) return reject(stopping())
+        try {
+          // Read first, so no settle after a command lacks the owner; a failure surfaces where the job reads them.
+          await this.#pinsOf(this.#session())
+        } catch {}
         try {
           resolve(await job())
         } catch (error) {
@@ -508,7 +538,7 @@ export class SessionActor implements LiveCalls {
       // The worker read its last frame meanwhile; its exit decides the next spawn.
       run.given.splice(run.given.indexOf(p), 1)
       // The office stopped meanwhile and `close` answered it: it stays out of the next job.
-      if (this.#closed) return p.reject(stopping())
+      if (this.#closed) return
     }
     this.#next.push(p)
     if (this.#run === null) await this.#spawnQuietly("advance")
@@ -557,7 +587,7 @@ export class SessionActor implements LiveCalls {
     const { store, connections, paths } = this.#ctx
     const sid = this.sessionId
     const runId = this.#runId!
-    const pendings = this.#next
+    const pendings = kind === "advance" ? [...this.#storedAnswers(this.#next), ...this.#next] : this.#next
     this.#next = []
     // This spawn is the re-advance; one that fails leaves nothing to wait for.
     this.#readvance = false
@@ -605,6 +635,23 @@ export class SessionActor implements LiveCalls {
     } finally {
       if (this.#starting === run) this.#starting = null
     }
+  }
+
+  /** A `complete` for each answer stored on a call of the current run that never reached it (its spawn failed, or
+   *  the office stopped first) and that `next` doesn't deliver: only calls the last result waits on unsettled, or
+   *  every one when those waits are unknown. */
+  #storedAnswers(next: readonly Pending[]): Pending[] {
+    const delivered = new Set(next.flatMap((p) => (p.delivery.op === "complete" ? [p.delivery.call_id] : [])))
+    const waits = this.#waits
+    return this.#ctx.store
+      .listQuestions({ runId: this.#runId!, status: "answered" })
+      .filter(
+        (q) =>
+          q.call_id !== null &&
+          !delivered.has(q.call_id) &&
+          (waits === null || waits.some((wait) => wait.call_id === q.call_id && !wait.settled)),
+      )
+      .map((q) => this.#complete(q, undefined))
   }
 
   /** Stores a question of the run's calls through `Answers.ask`; a newly stored one fires `questionStored` and
@@ -797,20 +844,12 @@ export class SessionActor implements LiveCalls {
     const op = p.delivery.op
     if (Object.hasOwn(reply, "seq")) {
       const closed = Array.isArray(reply.closed) ? reply.closed.map(String) : []
-      if (closed.length > 0) {
-        for (const callId of closed) this.#closedCall(run.runId, callId, op === "cancel" ? "cancelled" : "interrupted")
-        this.#trySettle("after closed calls")
-      }
+      for (const callId of closed) this.#closedCall(run.runId, callId, op === "cancel" ? "cancelled" : "interrupted")
       if (p.late && (op === "send" || op === "complete" || op === "close" || closed.length > 0)) this.#readvance = true
-      if (p.question !== null) {
-        this.#consume(p.question)
-        this.#trySettle("after an answer")
-      }
-      if (op === "send") {
-        // The stored status is busy, and the message shown, before the caller hears back.
-        this.#trySettle("after a message")
-        this.#publishMessage(run.runId, reply.seq as number, p.delivery.event)
-      }
+      if (p.questionId !== null) this.#consume(p.questionId)
+      // The stored status is busy, and a message shown, before the caller hears back.
+      this.#trySettle("after a reply")
+      if (op === "send") this.#publishMessage(run.runId, reply.seq as number, p.delivery.event)
       p.resolve(p.acked)
     } else if (typeof reply.refused === "string") {
       // The reason only: a delivery never names the message's text.
@@ -878,8 +917,9 @@ export class SessionActor implements LiveCalls {
 
   /**
    * The closing rule: answers each of `pendings` that has no answer yet and isn't carried. A held `not_started` or
-   * failure is `503 cant_wake`; a lost `interrupt` or `cancel`, or a dropped `complete`, is resolved; any other
-   * delivery with no reply gets `fallback`.
+   * failure is `503 cant_wake`; a lost `interrupt` or `cancel`, or a dropped `complete` of a card's answer (its
+   * question stays answered), is resolved; any other delivery with no reply, a message's `complete` included, gets
+   * `fallback`.
    */
   #answerRest(pendings: readonly Pending[], fallback: HarnessError): void {
     for (const p of pendings) {
@@ -887,7 +927,7 @@ export class SessionActor implements LiveCalls {
       const reply = p.reply
       const op = p.delivery.op
       if (reply === null) {
-        if (op === "interrupt" || op === "cancel" || op === "complete") p.resolve(undefined)
+        if (op === "interrupt" || op === "cancel" || (op === "complete" && p.fallback === null)) p.resolve(undefined)
         else p.reject(fallback)
       } else if (Object.hasOwn(reply, "seq")) {
         p.resolve(p.acked)

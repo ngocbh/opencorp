@@ -10,6 +10,7 @@ import { waitFor } from "../helpers.ts"
 import {
   ASK_MANAGER,
   ASK_USER,
+  ASKED,
   card,
   type ChatOffice,
   chatOffice,
@@ -168,8 +169,7 @@ test("a question beside the open turn is waiting", async () => {
   handlers.event(worker, { type: "event", name: "NodeWaiting", data: { node_id: "chat#0/heard", call_ids: ["c1"] } })
   await waitFor(() => status(o, sid) === "idle", { what: "idle at the turn" })
   // The run asks beside the open turn: stored through the actor, which settles.
-  const request = { question: "Which db?", questions: null, answer_schema: null, title: null, node_id: null, options: null }
-  await handlers.askUser(worker, request, `${actor.runId}/c2`)
+  await handlers.askUser(worker, { ...ASKED, question: "Which db?" }, `${actor.runId}/c2`)
   await waitFor(() => JSON.stringify(waits(o, sid)) === JSON.stringify(["waiting", [CEO]]), { what: "waiting" })
 })
 
@@ -195,7 +195,8 @@ test("a session waiting at a question node sleeps and an answer wakes it to the 
   await waitFor(() => o.office.store.getQuestion(q.id)!.status === "consumed", { what: "the answer taken" })
   await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
   expect(o.kinds.slice(before)).toEqual(["advance"])
-  expect(o.jobs.at(-1)!.deliver).toMatchObject([{ op: "complete", call_id: q.call_id, result: { output: GATE_ANSWER } }])
+  const complete = { op: "complete", call_id: q.call_id, result: { output: GATE_ANSWER } }
+  expect(o.jobs.at(-1)!.deliver).toMatchObject([complete])
   expect(status(o, sid)).not.toBe("waiting")
 })
 
@@ -212,8 +213,7 @@ test("esc answers an ask manager card interrupted and closes its item", async ()
   await actor.interrupt()
   // Answered by the closed call before Esc returns.
   const got = o.office.store.getQuestion(q.id)!
-  expect(["answered", "consumed"]).toContain(got.status)
-  expect([got.answer, got.answer_kind]).toEqual([INTERRUPTED, "interrupted"])
+  expect([got.status, got.answer, got.answer_kind]).toEqual(["consumed", INTERRUPTED, "interrupted"])
   // Answered, not stale, so the cards carry none of its discussion into a later card.
   await waitFor(() => o.office.store.getWorkItem(q.work_item_id!)!.status === "done", { what: "the item closed" })
   await waitFor(() => status(o, sid) !== "waiting", { what: "no longer waiting" })

@@ -4,6 +4,7 @@ import { SessionActor } from "../../src/chat/session_actor.ts"
 import { makeRegistry } from "../worker/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import {
+  ASKED,
   asleep,
   chatOffice,
   fakeLlm,
@@ -45,8 +46,7 @@ test("a call after close all is refused as the office stopping", async () => {
   actor.close()
   await o.registry.closeAll()
   const { worker, handlers } = workers[0]!
-  const request = { question: "Which?", questions: null, answer_schema: null, title: null, node_id: null, options: null }
-  await expect(Promise.resolve().then(() => handlers.askUser(worker, request, "c1"))).rejects.toThrow(
+  await expect(Promise.resolve().then(() => handlers.askUser(worker, ASKED, "c1"))).rejects.toThrow(
     "the office is stopping",
   )
   await expect(
@@ -168,9 +168,8 @@ test("wakes racing close all leave the session to wake again", async () => {
   // It still wakes.
   const last = makeActor(o, sid)
   await last.prompt("last")
-  await waitFor(() => JSON.stringify(fake.requests().at(-1)?.messages ?? []).includes("last") && status(o, sid) === "idle", {
-    what: "the last message",
-  })
+  const heard = () => JSON.stringify(fake.requests().at(-1)?.messages ?? []).includes("last")
+  await waitFor(() => heard() && status(o, sid) === "idle", { what: "the last message" })
 })
 
 test("interrupt on a sleeping session spawns nothing", async () => {
@@ -178,7 +177,7 @@ test("interrupt on a sleeping session spawns nothing", async () => {
   const o = await chatOffice(fake)
   const { actor, sid } = await asleep(o)
   const before = o.kinds.length
-  expect(await actor.interrupt()).toBeUndefined()
+  await actor.interrupt()
   expect(o.kinds.length).toBe(before)
   expect(actor.hasWorker).toBe(false)
   expect(status(o, sid)).toBe("idle")

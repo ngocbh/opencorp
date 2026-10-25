@@ -8,6 +8,7 @@ import { CEO } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import {
   ASK_USER,
+  ASKED,
   asleep,
   card,
   chatOffice,
@@ -27,9 +28,6 @@ import {
 
 setDefaultTimeout(60_000)
 afterAll(noWorkersLeft)
-
-/** A model question's request, as the worker sends it. */
-const ASKED = { question: "Which?", questions: null, answer_schema: null, title: null, node_id: null, options: null }
 
 test("turns count finished replies once", async () => {
   const fake = await fakeLlm()
@@ -70,7 +68,8 @@ test("the status is busy when a message is accepted after the result", async () 
   const sent = actor.prompt("hi")
   await waitFor(() => deliveries.length === 1, { what: "the send" })
   const take = { node: "chat#0/heard", call_id: "c1", tool: "take", inbox: "messages", deadline: null, settled: false }
-  handlers.result(worker, { type: "result", status: "waiting", run_id: runId, output: null, failure: null, waits: [take] })
+  const waiting = { type: "result", status: "waiting", run_id: runId, output: null, failure: null, waits: [take] }
+  handlers.result(worker, waiting)
   handlers.deliverReply(worker, { type: "deliver_reply", id: deliveries[0]!.id, seq: 7 })
   expect(await sent).toBe("turn")
   // The worker's exit spawns the advance that reads it.
@@ -143,14 +142,15 @@ test("live calls is empty while a worker runs the run and null otherwise", async
   expect(actor.calls("another-run")).toBeNull()
   const { worker, handlers } = workers[0]!
   const take = { node: "chat#0/heard", call_id: "c1", tool: "take", inbox: "messages", deadline: null, settled: false }
-  handlers.result(worker, { type: "result", status: "waiting", run_id: runId, output: null, failure: null, waits: [take] })
+  const waiting = { type: "result", status: "waiting", run_id: runId, output: null, failure: null, waits: [take] }
+  handlers.result(worker, waiting)
   handlers.exited(worker, 0)
   await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
   expect(actor.calls(runId)).toBeNull()
   expect(o.kinds).toEqual(["chat"])
 })
 
-test("turn context goes before the message and not in the transcript", async () => {
+test("turn text changes what the turn gets but not the transcript", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "one" }, { content: "two" })
   const o = await chatOffice(fake)
@@ -192,14 +192,15 @@ test("esc on a session asleep while its agent waits on a call spawns one advance
   expect(o.kinds.slice(before)).toEqual(["advance"])
 })
 
-test("a message while ask user is open answers it by complete", async () => {
+test("a message answers the models open question", async () => {
   const fake = await fakeLlm()
   fake.script(ASK_USER, { content: "A it is." })
   const o = await chatOffice(fake)
   const { actor, sid } = await startActor(o)
   await actor.prompt("hi")
   const q = await card(o, sid, "ask_user")
-  await waitFor(() => status(o, sid) === "waiting", { what: "waiting on the question" })
+  // The worker exits after its waiting result, so the answer goes to the next job.
+  await waitFor(() => status(o, sid) === "waiting" && !actor.hasWorker, { what: "asleep on the question" })
   expect(await actor.prompt("A")).toBe("answer")
   const got = o.office.store.getQuestion(q.id)!
   expect([got.status, got.answer, got.answer_kind, got.answered_by]).toEqual(["consumed", "A", "text", CEO])
@@ -210,7 +211,7 @@ test("a message while ask user is open answers it by complete", async () => {
   expect(texts(o, sid, "user")).toEqual(["hi"])
 })
 
-test("a message whose question a card settled first is sent as a message", async () => {
+test("a message that loses the question to a card answer is the next message", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
   const workers = scriptedWorker(o)
@@ -238,7 +239,8 @@ test("a card answer is completed and consumed", async () => {
   const { actor, sid } = await startActor(o)
   await actor.prompt("hi")
   const q = await card(o, sid, "ask_user")
-  await waitFor(() => status(o, sid) === "waiting", { what: "waiting on the question" })
+  // The worker exits after its waiting result, so the answer goes to the next job.
+  await waitFor(() => status(o, sid) === "waiting" && !actor.hasWorker, { what: "asleep on the question" })
   const before = o.kinds.length
   const stored = await actor.answer(q.id, "B", "option", { by: CEO })
   expect([stored.status, stored.answer, stored.answered_by]).toEqual(["answered", "B", CEO])
@@ -250,7 +252,45 @@ test("a card answer is completed and consumed", async () => {
   ])
 })
 
-test("esc answers an office call in flight interrupted", async () => {
+test("a message whose answer is unanswered at close is refused as stopping", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const { worker, handlers, deliveries } = workers[0]!
+  await handlers.askUser(worker, { ...ASKED, options: ["A", "B"] }, `${actor.runId}/c1`)
+  const sent = actor.prompt("A")
+  await waitFor(() => deliveries.length === 1, { what: "the answer" })
+  expect(deliveries[0]).toMatchObject({ op: "complete" })
+  actor.close()
+  await expect(sent).rejects.toMatchObject({ status: 503, code: "stopping" })
+})
+
+test("an answer whose spawn failed goes with the next advance and is consumed", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_USER, { content: "B it is." }, { content: "spare" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("hi")
+  const q = await card(o, sid, "ask_user")
+  await waitFor(() => status(o, sid) === "waiting" && !actor.hasWorker, { what: "asleep on the question" })
+  o.failNextSpawn()
+  await actor.answer(q.id, "B", "option", { by: CEO })
+  expect(actor.hasWorker).toBe(false)
+  expect(o.office.store.getQuestion(q.id)!.status).toBe("answered")
+  await actor.prompt("next")
+  expect(o.jobs.at(-1)!.deliver).toMatchObject([
+    { op: "complete", call_id: q.call_id, result: { output: expect.stringContaining('The user chose "B"') } },
+    { op: "send", event: { parts: [{ type: "text", text: "next" }] } },
+  ])
+  await waitFor(() => o.office.store.getQuestion(q.id)!.status === "consumed", { what: "the answer taken" })
+  await waitFor(() => texts(o, sid).includes("B it is.") && status(o, sid) === "idle", { what: "the reply" })
+  expect(texts(o, sid, "user")).toEqual(["hi", "next"])
+})
+
+test("esc answers an office call in flight", async () => {
   const fake = await fakeLlm()
   fake.script({ tool_calls: [{ name: "slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
   let entered!: () => void
