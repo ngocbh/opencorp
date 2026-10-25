@@ -105,7 +105,7 @@ test("a codex session can not continue without the codex sessions", async () => 
 })
 
 test.each(["setCostCap", "setModel"] as const)(
-  "a codex sessions %s is not supported without the codex sessions",
+  "a codex sessions cost cap and model are not supported without the codex sessions [%s]",
   async (call) => {
     const h = makeHarness()
     const stored = h.store.createSession(session({ harness: "codex", harness_session_id: "thr_1" }))
@@ -118,9 +118,11 @@ test.each(["setCostCap", "setModel"] as const)(
 
 test("close closes the workers even when the codex sessions fail to close", async () => {
   const h = makeHarness({ codex: true })
-  spyOn(h.codex!.sessions, "closeAll").mockRejectedValue(new Error("sentinel"))
+  spyOn(h.codex!.sessions, "closeAll").mockRejectedValueOnce(new Error("sentinel"))
   const workers = spyOn(h.harness.registry, "closeAll")
   await expect(h.harness.closeAll()).rejects.toThrow("sentinel")
   await expect(h.harness.closeAll()).rejects.toThrow("sentinel")
   expect(workers).toHaveBeenCalledTimes(1)
+  // The office's last stop step closes this harness again, which would only report the same rejection.
+  h.office.onStop.pop()
 })
