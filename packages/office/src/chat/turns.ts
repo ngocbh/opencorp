@@ -7,17 +7,23 @@ function splitLast(s: string): [string, string] {
   return lastSlash === -1 ? ["", s] : [s.slice(0, lastSlash), s.slice(lastSlash + 1)]
 }
 
-/** A conversation flow's shape: its turn node, its reply node (which reads the steer inbox), and its exit command. */
+/**
+ * A conversation flow's shape: its inbox, its turn node (the take on the inbox), its reply node (which reads
+ * the same inbox as its steer inbox), and its exit command.
+ */
 export class ChatFlow {
+  readonly inbox: string
   readonly turn: string
   readonly reply: string
   readonly exit: string
 
-  constructor({ turn = "chat/ask", reply = "chat/reply", exit = "/exit" }: {
+  constructor({ inbox = "messages", turn = "chat/heard", reply = "chat/reply", exit = "/exit" }: {
+    inbox?: string
     turn?: string
     reply?: string
     exit?: string
   } = {}) {
+    this.inbox = inbox
     this.turn = turn
     this.reply = reply
     this.exit = exit

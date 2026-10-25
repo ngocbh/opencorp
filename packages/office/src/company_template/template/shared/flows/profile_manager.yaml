@@ -1,92 +1,108 @@
 # The profile manager: the owner chats with it to edit one person's profile.md. It reads the
 # profile and proposes edits; the owner applies them from the profile view. It has the same
-# turn and reply node names as chat.yaml, so the office drives it like a chat.
+# turn and reply node names and the same messages inbox as chat.yaml, so the office drives it
+# like a chat.
 id: profile_manager
 name: profile_manager
 description: Edit a person's profile with the owner.
 
-typedefs:
-  Msg:
-    role: Literal(user, assistant)
-    text: str
+uses:
+  compact_history: compact_history  # shared/flows/compact_history.yaml, yian's example
+
 input:
-  steers: !Inbox(str)  # what the owner sends while the reply works; the office sends it
-  history: !list(Msg)  # the conversation so far; the office passes [] for a new chat
+  messages: !Inbox(Message)  # what the owner sends; read by each turn's take and, while the reply works, as steers
+  summary: !str  # older turns folded by compact_history; "" for a new chat
+  history: !list(list(Message))  # the kept turns, one list of messages each; [] for a new chat
+  turns: !int  # the session's turns so far
+  max_turns: !int  # the run ends once turns reaches it
 
 defs:
+  # The history so far, compacted, plus its kept turns as one list: a prompt splice must be a lone
+  # `${name}`, so the flattening sits in this derived binding rather than on the reply.
+  context:
+    input:
+      summary: !str
+      history: !list(list(Message))
+    nodes:
+      compacted:
+        kind: call
+        call: compact_history
+        input:
+          summary: ${input.summary}
+          history: ${input.history}
+    output:
+      summary: ${compacted.output.summary}
+      history: ${compacted.output.history}
+      messages: ${[m for t in compacted.output.history for m in t]}
   turn:
     input:
-      steers: !Inbox(str)
-      history: !list(Msg)
-      exited: !bool
-      reply: !str
+      messages: !Inbox(Message)
+      summary: !str
+      history: !list(list(Message))
+      closed: !bool
+      turns: !int
+      max_turns: !int
     nodes:
-      # The turn's message: what the owner sent. Every node below reads it from here; what they send
-      # while the reply works arrives through `steers`.
-      ask:
-        kind: tool
-        tool_id: ask
+      context:
+        kind: call
+        call: context
         input:
-          prompt: "You:"
-        output: str
+          summary: ${input.summary}
+          history: ${input.history}
+      # The turn: everything sent since the last one. Messages read along with a close aren't answered.
+      heard:
+        kind: tool
+        tool_id: take
+        input:
+          from: ${input.messages}
+          take: all
       route:
         kind: case
-        on: ${ask.output}
         cases:
-          - when: /exit
-            then: exit_turn
-        else: reply
-      exit_turn:
-        kind: code
-        output:
-          exited: bool
-        code: |
-          return {exited: true}
+          - when: ${heard.output.events != [] and not heard.output.closed}
+            then: reply
       reply:
         kind: agent
-        steer_inbox: ${input.steers}
+        steer_inbox: ${input.messages}
         env:
           max_tool_iterations: 20
         tools: [profile]
         input:
-          history: ${input.history}
-          message: ${ask.output}
-        output: str
+          summary: ${context.output.summary}
+          history: ${context.output.messages}
+          said: ${heard.output.events}
+        output: Optional(str)  # null only after an interrupt
         system_prompt: |-
           You help the company's owner edit one person's profile (their profile.md), the
           document that person's agent reads in every run. Call `read` for the current text
           and its version. To change the profile, call `propose_edit` with the complete new
           text and the version you read, then summarise the change. The owner reviews the
           diff and applies it; nothing changes until then.
+          A summary of this conversation's older turns (empty while it is short): ${summary}
         prompt:
           - ${history}
-          - user: ${message}
-      # Code, not an output expression: yian evaluates both sides of an expression, so appending the
-      # reply there fails the exit turn, where reply never ran.
-      remember:
-        kind: code
-        input:
-          history: ${input.history}
-          message: ${ask.output}
-          reply: ${reply.output}
-        output: list(Msg)
-        code: |
-          return [...inputs.history, {role: "user", text: inputs.message}, {role: "assistant", text: inputs.reply}]
-    # An exit turn leaves the history as it was. The loop carries the steers inbox itself, so the output
-    # leaves it out.
+          - ${said}
+    # The loop carries the messages inbox itself, so the output leaves it out. A close with nothing
+    # queued appends an empty turn; the run ends right after.
     output:
-      history: ${remember.output :- input.history}
-      exited: ${exit_turn.output.exited == true}
-      reply: '${reply.output:-""}'
+      summary: ${context.output.summary}
+      history: ${context.output.history + [heard.output.events + (reply.new_messages :- [])]}
+      closed: ${heard.output.closed}
+      turns: ${input.turns + 1}
+      max_turns: ${input.max_turns}
 
 nodes:
   chat:
     kind: loop
     call: turn
     input:
-      steers: ${input.steers}
+      messages: ${input.messages}
+      summary: ${input.summary}
       history: ${input.history}
-      exited: false
-      reply: ""
-    while: not exited
-output: ${chat.output.reply}
+      closed: false
+      turns: ${input.turns}
+      max_turns: ${input.max_turns}
+    while: not closed and turns < max_turns
+output:
+  summary: ${chat.output.summary}
+  history: ${[m for t in chat.output.history for m in t]}

@@ -178,7 +178,17 @@ agrees to be bound by the terms and conditions of this License
 Agreement.
 ```
 
+## Yian
+
+- **What:** `shared/flows/compact_history.yaml` in the company template is Yian's
+  `examples/compact_history.yaml`, copied unchanged.
+- **Upstream:** https://github.com/ngocbh/yian at commit `0fa15307`.
+- **Ours:** `packages/office/src/company_template/template/shared/flows/compact_history.yaml`.
+- **License:** Apache-2.0; the full text is in `packages/yian/LICENSE`. Yian's NOTICE
+  (`packages/yian/ts/NOTICE`) says "yian, Copyright 2026 Ngoc Bui".
+
 ## Dependencies
 
 Yian (`packages/yian`, Apache-2.0) and the packages in `uv.lock` and `bun.lock` are dependencies
-installed alongside OpenCorp, under their own licenses; none of their code is copied here.
+installed alongside OpenCorp, under their own licenses. Apart from the Yian file listed above, none
+of their code is copied here.

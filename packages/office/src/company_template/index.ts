@@ -16,6 +16,7 @@ import { embedded } from "../platform.ts"
 import companyYaml from "./template/company.yaml" with { type: "file" }
 import ownerYaml from "./template/people/{owner}/person.yaml" with { type: "file" }
 import chatYaml from "./template/shared/flows/chat.yaml" with { type: "file" }
+import compactHistoryYaml from "./template/shared/flows/compact_history.yaml" with { type: "file" }
 import profileManagerYaml from "./template/shared/flows/profile_manager.yaml" with { type: "file" }
 import sideChatYaml from "./template/shared/flows/side_chat.yaml" with { type: "file" }
 
@@ -30,6 +31,7 @@ const TEMPLATE: ReadonlyMap<string, string> = new Map<string, string>([
   [`${OWNER_DIR}/person.yaml`, ownerYaml],
   ["company.yaml", companyYaml],
   ["shared/flows/chat.yaml", chatYaml],
+  ["shared/flows/compact_history.yaml", compactHistoryYaml],
   ["shared/flows/profile_manager.yaml", profileManagerYaml],
   ["shared/flows/side_chat.yaml", sideChatYaml],
 ])

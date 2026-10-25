@@ -57,9 +57,11 @@ chat/test_sandbox.py	open	—	—	O4a-4
 chat/test_session_model.py	open	—	—	O4a-5
 chat/test_state.py	ported	packages/office/tests/chat/state.test.ts	—	O3-8b
 chat/test_state.py::test_write_state_waits_for_a_finish_in_flight_and_then_leaves_it	changed	packages/office/tests/chat/state.test.ts::write state waits for a finish in flight and then leaves it	design §3.3: transactions are sync callbacks on one connection, so nothing interleaves with a finish; checked inside the finish's transaction and after it commits	O3-8b
-chat/test_template.py	open	—	split: O2-16a → O4a-1	O4a-1
+chat/test_template.py	ported	packages/office/tests/chat/template.test.ts	—	O4a-1
 chat/test_transcript.py	open	—	split: O4a-7a → O4b-1	O4b-1
 chat/test_turns.py	ported	packages/office/tests/chat/turns.test.ts	—	O3-8b
+chat/test_turns.py::test_the_main_chat_names_its_turn_and_reply	changed	packages/office/tests/chat/turns.test.ts::the main chat names its turn and reply	4a-revision §1: the turn is the take chat/heard on the messages inbox	O4a-1
+chat/test_turns.py::test_the_reply_after_a_turn_is_in_the_same_occurrence	changed	packages/office/tests/chat/turns.test.ts::the reply after a turn is in the same occurrence	4a-revision §1: the turn is the take chat/heard on the messages inbox	O4a-1
 chat/test_turns.py::test_turn_path_strips_each_occurrence_suffix[chat~1-chat~1]	changed	packages/office/tests/chat/turns.test.ts::turn path strips each occurrence suffix	design §3.2: turns.ts matches through yian's staticPathOf, which also drops a LOOP driver clone's ~k (TS yian ids: body L#k/…, driver L~k)	O3-8b
 chat/test_waiting.py	open	—	—	O4a-3
 chat/test_wake.py	open	—	—	O4a-3
@@ -67,6 +69,8 @@ company/test_draft.py	ported	packages/office/tests/company/draft.test.ts	—	O2-
 company/test_flows.py	ported	packages/office/tests/company/flows.test.ts	—	O1-8
 company/test_git.py	ported	packages/office/tests/company/git.test.ts	—	O1-6
 company/test_lint.py	ported	packages/office/tests/company/lint.test.ts	—	O2-16a
+company/test_lint.py::test_a_main_flow_must_declare_person_and_talking_to	changed	packages/office/tests/company/lint.test.ts::a main flow must declare person and talking_to	4a-revision §1, plan O4a-1: a main chat now takes the messages inbox, summary, history, turns and max_turns too	O4a-1
+company/test_lint.py::test_child_flow_inside_repo_is_fine	changed	packages/office/tests/company/lint.test.ts::child flow inside repo is fine	plan O4a-1: a main flow must be chat-shaped, so the parent that imports the child is a SOP	O4a-1
 company/test_lint.py::test_unexpected_flow_error_names_its_type	changed	packages/office/tests/company/lint.test.ts::unexpected flow error names its type	design §10.1: ESM modules cant be monkeypatched; a natural TypeError (a non-UTF-8 flow) stands in	O1-8
 company/test_loader.py	ported	packages/office/tests/company/loader.test.ts	—	O1-7
 company/test_naming.py	ported	packages/office/tests/company/naming.test.ts	—	O1-5
@@ -346,7 +350,8 @@ questions/test_format.py::test_human_input_gets_its_value_unchanged	changed	pack
 questions/test_normalize.py	ported	packages/office/tests/questions/normalize.test.ts	—	O3-7
 questions/test_seed.py	open	—	—	O4a-8
 questions/test_side.py	open	—	—	O4a-8
-questions/test_side_chat_flow.py	open	—	—	O4a-9
+questions/test_side_chat_flow.py	ported	packages/office/tests/questions/side_chat_flow.test.ts	—	O4a-1
+questions/test_side_chat_flow.py::test_side_chat_template_loads_and_has_the_chat_shape	changed	packages/office/tests/questions/side_chat_flow.test.ts::side chat template loads and has the chat shape	4a-revision §1: a take on the messages inbox and an Optional reply with steer_inbox replace human_input, the exit case and session memory; the profile memory moved from the flow onto the reply, so the summariser doesn't recall the profile	O4a-1
 runs/test_as_stored.py	open	—	—	O4b-7
 runs/test_debriefs.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 runs/test_detail.py	open	—	—	O4b-7
@@ -564,9 +569,24 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/provider.test.ts::a runtime or loader variable in env is refused [%s]	design §6.5 (R2 m5): names that change how the worker's runtime or loader starts	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::an env name or value a spawn cant pass is refused [%s]	design §6.5: a spawn can't pass an empty name or one holding = or NUL, or a value holding NUL, as given (= sets another variable; NUL makes the spawn throw with the value in its message)	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::runtime settings that arent loader variables are kept	design §6.5 (R2 m5): the refusal stops at runtime and loader names	O2-19
+—	new	packages/office/tests/chat/run_spec.test.ts::a job built from a spec runs its flow in a worker	plan O4a-1: chat/run_spec.ts	O4a-1
+—	new	packages/office/tests/chat/run_spec.test.ts::a new chats job starts with an empty history	plan O4a-1: chat/run_spec.ts	O4a-1
+—	new	packages/office/tests/chat/run_spec.test.ts::the main spec runs the persons main flow with their tools memory and skills	plan O4a-1: chat/run_spec.ts	O4a-1
+—	new	packages/office/tests/chat/run_spec.test.ts::the manager spec has only the profile tools	plan O4a-1: chat/run_spec.ts	O4a-1
+—	new	packages/office/tests/chat/run_spec.test.ts::the side spec has read only lookups and room for its seed	plan O4a-1: chat/run_spec.ts	O4a-1
 —	new	packages/office/tests/chat/state.test.ts::write state with nothing new writes nothing	design §3.2 (mirror): Python's equality check before writing (state.py:56) had no test; it keeps a no-op status write from emitting session.updated	O3-8b
-—	new	packages/office/tests/chat/template.test.ts::a template chat carries its history in the prompt list and ends on exit [%s]	design §9.2, §8.8: the chat flows' first TS form (history input, prompt list, TS exit_turn)	O2-16a
-—	new	packages/office/tests/chat/template.test.ts::every chat template reads steers from its steers inbox	yian #1089: steer_inbox; the steers inbox is the contract O3-4 and O4a send to	O3-17
+—	new	packages/office/tests/chat/template.test.ts::a long history is folded into the summary before the reply	design §8.8; Python's session memory summarised past 32,000 characters keeping 4 turns: the template folds them with yian's compact_history	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::a message read along with the close is kept unanswered	4a-revision §1: messages read along with the close aren't answered	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::a message sent after the replys last model call is the next turn at once	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::a message sent during the reply reaches its next model call and the history	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::a template chat ends when its inbox closes [%s]	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::an interrupt mid reply gives a null reply and the run waits at the next turn with the queued message	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::an interrupted reply with no text adds no empty assistant message to the next request	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::every chat template takes its turns and steers from its messages inbox	4a-revision §1, design §8.5: one messages inbox for the turn and the steers	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::one turn below max turns answers one turn with two messages queued then succeeds	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::the author of a message reaches the request	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::the template compacts history with yians compact history flow	design §8.8; Python's session memory summarised past 32,000 characters keeping 4 turns: yian's example does it in the flow	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::two messages sent before an advance are one turn	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
 —	new	packages/office/tests/company/flow_yaml.test.ts::a company file refuses a tag outside the core schema	D8: YAML 1.2 core schema for company files	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::a leading zero int is decimal and 0o and 0x are octal and hex	D8, design §9.5: YAML 1.2 core readings	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::a lone cr is a line break	design §9.5: read as TS yian reads flows	O1-5
@@ -616,6 +636,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/company/lint.test.ts::a code reference outside the repo in a child flow is a lint error	design §6 rule 10, Y6a: every nested load is confined	O1-8
 —	new	packages/office/tests/company/lint.test.ts::a code reference outside the repo is a lint error	design §6 rule 10, Y6a: CODE references stay inside the repo	O1-8
 —	new	packages/office/tests/company/lint.test.ts::a file in a skills folder is skipped	Python's is_file/is_dir never raise on odd paths	O1-8
+—	new	packages/office/tests/company/lint.test.ts::a main flow whose messages input is not an inbox of messages is a lint error	plan O4a-1: lint requires the messages inbox, the reply reading it as steer_inbox and an Optional reply	O4a-1
+—	new	packages/office/tests/company/lint.test.ts::a main flow whose reply does not steer from the messages inbox is a lint error	plan O4a-1: lint requires the messages inbox, the reply reading it as steer_inbox and an Optional reply	O4a-1
+—	new	packages/office/tests/company/lint.test.ts::a main flow whose reply output is not optional is a lint error	plan O4a-1: lint requires the messages inbox, the reply reading it as steer_inbox and an Optional reply	O4a-1
 —	new	packages/office/tests/company/lint.test.ts::a symlinked code file pointing out of the repo is a lint error	design §6 rule 10, Y6a: symlinks resolved	O1-8
 —	new	packages/office/tests/company/loader.test.ts::a file that cant be read is unreadable without its path or text	design §5.4, §6 rule 1: path-only messages	O1-7
 —	new	packages/office/tests/company/loader.test.ts::a person file named in another case is not a person file	design §5.4: the loader and the git snapshot read the same files	O1-7

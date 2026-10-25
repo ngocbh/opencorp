@@ -137,7 +137,7 @@ test("a typed card gives the actor the converted values", async () => {
 test("a turn question is no card", async () => {
   const office = makeOffice()
   const { cards } = wire(office)
-  const turn = card(office, { source: "ask", node_id: "chat#1/ask", created_at: at(1) })
+  const turn = card(office, { source: "ask", node_id: "chat#1/heard", created_at: at(1) })
   expect(cards.check(turn, 42, "text")).toBeNull()
   const node = card(office, { source: "ask", node_id: "setup" })
   expect(cards.check(node, 42, "text")).toBe("the answer must be text")
@@ -351,7 +351,7 @@ test("an expired questions discussion is carried into the next card", async () =
 
   const s3 = office.store.createSession(session())
   const old3 = expired(s3.id, 1, said)
-  office.store.addQuestion(question(s3.id, { source: "ask", node_id: "chat#1/ask", created_at: at(2) }))
+  office.store.addQuestion(question(s3.id, { source: "ask", node_id: "chat#1/heard", created_at: at(2) }))
   const next3 = office.store.addQuestion(question(s3.id, { created_at: at(3) }))
   cards.stored(next3)
   expect(carried(next3.id)).toBe(old3.id)

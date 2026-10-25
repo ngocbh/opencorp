@@ -199,7 +199,7 @@ export class Cards {
   }
 
   #isTurn(question: QuestionRecord): boolean {
-    // Both chat flows the office runs share the turn path chat/ask.
+    // Both chat flows the office runs share the turn path chat/heard.
     return question.source === "ask" && MAIN_CHAT.isTurn(question.node_id)
   }
 }

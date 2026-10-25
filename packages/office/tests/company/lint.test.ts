@@ -8,7 +8,7 @@ import { loadRepo } from "../../src/company/loader.ts"
 import { assetToolName } from "../../src/company/naming.ts"
 import { writeCompany } from "../../src/company_template/index.ts"
 import { tempDir } from "../helpers.ts"
-import { baseFiles, CHAT, CHILD, company, MAIN_INPUTS, makeCompany, parentFlow, person } from "./helpers.ts"
+import { baseFiles, CHAT, CHILD, company, MAIN, makeCompany, parentFlow, person } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -172,8 +172,10 @@ test("flow cycle message is repo relative", async () => {
 })
 
 test("child flow inside repo is fine", async () => {
+  // A main flow must be chat-shaped, so the parent that imports the child is a SOP.
   const root = makeCompany({
-    "shared/flows/chat.yaml": parentFlow("echo") + MAIN_INPUTS,
+    "people/minh/person.yaml": person("minh", { sops: [{ flow: "../../shared/flows/parent.yaml" }] }),
+    "shared/flows/parent.yaml": parentFlow("echo"),
     "shared/flows/echo.yaml": CHILD,
   })
   expect(await codes(root)).toEqual(new Set())
@@ -232,15 +234,14 @@ test("a main flow must declare person and talking_to", async () => {
   expect(rest).toEqual([])
   expect([issue!.path, issue!.severity]).toEqual(["people/minh/person.yaml", "error"])
   expect(issue!.message).toBe(
-    "../../shared/flows/chat.yaml doesn't declare the person and talking_to inputs; the office"
-      + " passes both to a main flow and Yian refuses inputs a flow doesn't declare, so declare"
-      + " `person: !Person` (name, handle, title, company, reports_to) and `talking_to: !str`"
-      + " under input: (as the template's shared/flows/chat.yaml does)",
+    "../../shared/flows/chat.yaml doesn't declare the messages, person, talking_to, summary, history, turns"
+      + " and max_turns inputs; the office passes them to a main flow and Yian refuses inputs a flow doesn't"
+      + " declare, so declare them under input: as the template's shared/flows/chat.yaml does",
   )
 })
 
 test("a main flow missing one input names only that one", async () => {
-  const flow = CHAT.replace("name: chat\n", "name: chat\ninput:\n  person: !str\n")
+  const flow = MAIN.replace("  talking_to: !str\n", "")
   const root = makeCompany({ "shared/flows/chat.yaml": flow })
   const [issue] = await withCode(root, "person.main_inputs_missing")
   expect(issue!.message).toStartWith("../../shared/flows/chat.yaml doesn't declare the talking_to input;")
@@ -268,6 +269,44 @@ test("the template flows pass lint", async () => {
   fs.writeFileSync(path.join(root, "people/minh/person.yaml"), writeYaml(agent))
   fs.writeFileSync(path.join(root, "people/minh/profile.md"), "# Minh, Engineer\n")
   expect(await lint(loadRepo(root))).toEqual([])
+})
+
+/** The single `person.main_chat_shape` finding when minh's main flow is `flow`. */
+async function chatShapeIssue(flow: string) {
+  const root = makeCompany({ "shared/flows/chat.yaml": flow })
+  expect(await codes(root)).toEqual(new Set(["person.main_chat_shape"]))
+  const [issue, ...rest] = await withCode(root, "person.main_chat_shape")
+  expect(rest).toEqual([])
+  expect([issue!.path, issue!.severity]).toEqual(["people/minh/person.yaml", "error"])
+  expect(issue!.message).toStartWith("../../shared/flows/chat.yaml")
+  expect(issue!.message).toContain("as the template's shared/flows/chat.yaml does")
+  return issue!
+}
+
+test("a main flow whose messages input is not an inbox of messages is a lint error", async () => {
+  // The turn takes the same inbox, and a prompt can't splice strings as messages.
+  const flow = MAIN.replaceAll("messages: !Inbox(Message)", "messages: !Inbox(str)")
+    .replace("        prompt:\n          - ${said}\n", "        prompt: \"${said}\"\n")
+  expect((await chatShapeIssue(flow)).message).toContain("messages: !Inbox(Message)")
+})
+
+test("a main flow whose reply does not steer from the messages inbox is a lint error", async () => {
+  const spaced = MAIN.replaceAll("${input.messages}", "${ input.messages }")
+  expect(await codes(makeCompany({ "shared/flows/chat.yaml": spaced }))).toEqual(new Set())
+  const unsteered = MAIN.replace("        steer_inbox: ${input.messages}\n", "")
+  expect((await chatShapeIssue(unsteered)).message).toContain("steer_inbox: ${input.messages}")
+  // A second inbox, declared and carried into the turn beside messages, that the reply steers from instead.
+  const other = MAIN.replace(/^( +)messages: (.+)$/gm,
+    (line, indent: string, value: string) => `${line}\n${indent}other: ${value.replace("messages", "other")}`)
+    .replace("steer_inbox: ${input.messages}", "steer_inbox: ${input.other}")
+  expect(other).toContain("steer_inbox: ${input.other}")
+  expect((await chatShapeIssue(other)).message).toContain("steer_inbox: ${input.messages}")
+})
+
+test("a main flow whose reply output is not optional is a lint error", async () => {
+  const message = (await chatShapeIssue(MAIN.replace("output: Optional(str)", "output: str"))).message
+  expect(message).toContain("interrupt")
+  expect(message).toContain("Optional(")
 })
 
 /** A flow `id` whose one CODE node calls `fn` in the file `file` with its `text` input. */
