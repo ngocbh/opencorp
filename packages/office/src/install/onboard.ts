@@ -455,7 +455,7 @@ export async function askProvider(
 }
 
 /** Whether `file` exists, a symlink included; one that can't be looked at counts as missing (Python's `lexists`). */
-function lexists(file: string): boolean {
+export function lexists(file: string): boolean {
   try {
     return fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined
   } catch (error) {
@@ -665,7 +665,7 @@ function loginHandle(defaults: LoginDefaults): string {
 
 /** The identity saved at `home`, or undefined when there is none. Looked for first, since reading takes the
  *  home's `.lock`, which a failed onboarding must not leave behind. */
-async function knownIdentity(home: string): Promise<Identity | undefined> {
+export async function knownIdentity(home: string): Promise<Identity | undefined> {
   const file = identityPath(home)
   return lexists(file) ? await readIdentity(file) : undefined
 }

@@ -262,7 +262,7 @@ install/test_launchd.py	ported	packages/office/tests/install/launchd.test.ts	—
 install/test_launchd.py::test_xml_special_characters_and_newlines_survive_the_plist	changed	packages/office/tests/install/launchd.test.ts::xml special characters and newlines survive the plist	design §9.3 (hand-written plist; checked as text and with plutil, not plistlib)	O2-12
 install/test_legacy.py	dropped	—	legacy.py goes; no migration (D24, D4)	O0-9
 install/test_main.py	open	—	—	O2-13b
-install/test_offboard.py	open	—	—	O2-18b
+install/test_offboard.py	ported	packages/office/tests/install/offboard.test.ts	—	O2-18b
 install/test_onboard.py	ported	packages/office/tests/install/onboard.test.ts	—	O2-15
 install/test_onboard.py::test_a_running_office_is_not_topped_up_behind_its_back	changed	packages/office/tests/install/onboard.test.ts::a running office is not topped up behind its back	D32: no debrief flow in the template; side_chat and profile_manager are the two dropped flows	O2-15
 install/test_onboard.py::test_lint_errors_stop_onboarding_before_anything_runs	changed	packages/office/tests/install/onboard.test.ts::lint errors stop onboarding before anything runs	D13/P3: the setup connection is office/connections/office.json	O2-15
@@ -787,6 +787,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/launch.test.ts::which finds a runnable program on the absolute path entries only	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
 —	new	packages/office/tests/install/launchd.test.ts::a control character in a value is a service error	design §9.3 (hand-written plist refuses what plistlib refuses, CR included)	O2-12
 —	new	packages/office/tests/install/launchd.test.ts::a plist that cant be written is a service error and only the probe ran	design §9.3 (service files: a failed write is a ServiceError with the system's text)	O2-12
+—	new	packages/office/tests/install/offboard.test.ts::launchers finds a link to the checkout wrapper and a script naming it	O0-5 handoff: packages/cli/bin/opencorp is the checkout's launcher; a link's hint names its target	O2-18b
+—	new	packages/office/tests/install/offboard.test.ts::offboard outside a checkout reports no launchers	design §2.1/O2-26: the compiled binary has no checkout, so there is no launcher to report	O2-18b
 —	new	packages/office/tests/install/onboard.test.ts::a model check given an env runs in that env	P2 and Decision 1 (o3-5 plan): the check job runs modelProblem in the worker's own env, which holds the provider env	O3-5
 —	new	packages/office/tests/install/onboard.test.ts::a repo url with credentials is never shown	design §9.1: errors are scrubbed of the key and URL userinfo (a clone error names the repo URL)	O2-15
 —	new	packages/office/tests/install/onboard.test.ts::an existing home is made private	design §6 rule 6: the home is 0700, an existing one chmodded as Python's make_home does	O2-15

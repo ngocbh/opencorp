@@ -208,7 +208,7 @@ export async function wait(launch: Launch, host: Host, timeoutMs = 20_000): Prom
  *
  * Throws `ServiceError` if the office still answers afterwards.
  */
-export async function uninstall(launch: Launch, host: Host, timeoutMs = 15_000): Promise<string[]> {
+export async function uninstall(launch: Launch, host: Host, timeoutMs = fallback.STOP_TIMEOUT_MS): Promise<string[]> {
   const recorded = recordedMode(launch)
   const done = [
     await launchd.uninstall(launch, host, recorded === "launchd"),
@@ -244,7 +244,7 @@ async function waitStopped(launch: Launch, host: Host, timeoutMs = 5000): Promis
  *
  * Throws `ServiceError` if the office still answers after it was stopped, or it can't be started.
  */
-export async function restart(launch: Launch, host: Host, timeoutMs = 15_000): Promise<Installed> {
+export async function restart(launch: Launch, host: Host, timeoutMs = fallback.STOP_TIMEOUT_MS): Promise<Installed> {
   await fallback.stopProcess(launch, { timeoutMs })
   if (recordedMode(launch) === "tmux") await fallback.stopTmux(launch, host)
   await waitStopped(launch, host)
