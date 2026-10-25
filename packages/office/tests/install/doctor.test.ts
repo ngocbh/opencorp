@@ -2,6 +2,7 @@
 import fs from "node:fs"
 import http from "node:http"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
 import { expect, onTestFinished, test } from "bun:test"
@@ -17,10 +18,13 @@ import { INHERITED_ENV, launch } from "../../src/install/launch.ts"
 import * as launchd from "../../src/install/launchd.ts"
 import { SET_UP, setupConnectionFile } from "../../src/install/onboard.ts"
 import * as systemd from "../../src/install/systemd.ts"
+import { helperCommand } from "../../src/platform.ts"
 import { writePrivate } from "../../src/secrets.ts"
+import { Store } from "../../src/store/store.ts"
 import { git } from "../company/helpers.ts"
 import { CEO, giveDevice, makeOffice, served } from "../daemon/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
+import { sandboxAvailable } from "../sandbox/helpers.ts"
 import { makeHost, Runner } from "./helpers.ts"
 
 const KEY = "sk-ant-test-0123456789"
@@ -67,22 +71,26 @@ function runChecks(
     probe = async () => null,
     platform = "darwin",
     lstat,
+    command = COMMAND,
+    environ = {},
   }: {
     runner?: Runner
     answers?: boolean
     probe?: (officeHome: string) => Promise<string | null>
     platform?: NodeJS.Platform
     lstat?: (p: string) => fs.Stats
+    command?: readonly [string, ...string[]]
+    environ?: Record<string, string>
   } = {},
 ): Promise<Check[]> {
   const host = makeHost(dir, runner, { answers: async () => answers, platform })
   return doctor.checks(paths.home, {
     host,
-    command: COMMAND,
+    command,
     repo: path.join(dir, "repo"),
     probe,
     codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
-    environ: {},
+    environ,
     hq: async () => "unreachable",
     office: async () => "unreachable",
     ...(lstat ? { lstat } : {}),
@@ -984,15 +992,21 @@ function info(home: string, over: Partial<OfficeInfo> = {}): OfficeInfo {
   }
 }
 
-/** `checks` on a running office at `paths`, whose `GET /hq` answers `status()` and `GET /office` answers `office`. */
-function runningChecks(dir: string, paths: OfficePaths, office: OfficeInfo | doctor.Unread): Promise<Check[]> {
+/** `checks` on a running office at `paths`, whose `GET /hq` answers `status()` and `GET /office` answers `office`, with
+ *  `environ` as the shell's environment. */
+function runningChecks(
+  dir: string,
+  paths: OfficePaths,
+  office: OfficeInfo | doctor.Unread,
+  environ: Record<string, string> = {},
+): Promise<Check[]> {
   return doctor.checks(paths.home, {
     host: makeHost(dir, new Runner(), { answers: async () => true }),
     command: COMMAND,
     repo: path.join(dir, "repo"),
     probe: async () => null,
     codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
-    environ: {},
+    environ,
     hq: async () => status(),
     office: async () => office,
   })
@@ -1127,4 +1141,138 @@ test("a pinned tool that vanished is told to restart the office", () => {
   const noPs = doctor.toolsCheck(info("/h", { tools: { git: program(), ps: gone } }))
   expect(noPs.status).toBe("warn")
   expect(noPs.detail).toContain(`\`ps\` at ${gone} is gone`)
+})
+
+test.skipIf(!sandboxAvailable())("the sandbox probe runs the file helper under its profile", async () => {
+  expect(await doctor.sandboxProblem(path.join(tempDir(), "home"))).toBeNull()
+})
+
+test("a helper inside the office home fails the sandbox check", async () => {
+  // The checkout root holds the helper's source, so no sandboxed call is ever made.
+  const root = fs.realpathSync(fileURLToPath(new URL("../../../..", import.meta.url)))
+  const { helper } = helperCommand()
+  const file = "entry" in helper ? helper.entry : helper.binary
+  const found = await doctor.checks(root, {
+    host: makeHost(tempDir(), new Runner()),
+    command: COMMAND,
+    repo: root,
+    codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
+    environ: {},
+    hq: async () => "unreachable",
+    office: async () => "unreachable",
+  })
+  expect(byName(found).sandbox).toEqual({
+    name: "sandbox",
+    status: "fail",
+    detail: `the file helper ${file} lies inside the office home ${root}`,
+  })
+})
+
+/** The office's store at `paths` made by the daemon's own code, holding a worked folder for each of `cwds`. */
+function storeWith(paths: OfficePaths, ...cwds: string[]): void {
+  const store = new Store(paths.store)
+  try {
+    for (const cwd of cwds) store.touchWorkedFolder(CEO, cwd)
+  } finally {
+    store.close()
+  }
+}
+
+/** `dir`'s folders `names` made, each as its realpath. */
+function folders(dir: string, ...names: string[]): string[] {
+  return names.map((name) => {
+    fs.mkdirSync(path.join(dir, name), { recursive: true })
+    return fs.realpathSync(path.join(dir, name))
+  })
+}
+
+test("a worked folder holding the install fails the folders check", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const [work] = folders(dir, "work")
+  const entry = path.join(dir, "work/checkout/packages/cli/src/main.ts")
+  fs.mkdirSync(path.dirname(entry), { recursive: true })
+  fs.writeFileSync(entry, "")
+  storeWith(paths, path.join(dir, "work"))
+  const found = await runChecks(dir, paths, { command: [process.execPath, entry] })
+  expect(byName(found).folders).toEqual({
+    name: "folders",
+    status: "fail",
+    detail: `workspace ${work} contains the office install at ${work}/checkout; use a project folder`,
+  })
+  expect(found.map((c) => c.name).slice(-3)).toEqual(["sandbox", "folders", "codex"])
+  expect(doctor.exitCode(found)).toBe(1)
+})
+
+test("a worked folder holding a pinned tool or a path entry fails the folders check", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const [work, other] = folders(dir, "work/bin", "other/bin").map((bin) => path.dirname(bin))
+  fs.writeFileSync(path.join(dir, "work/bin/git"), "#!/bin/sh\n", { mode: 0o755 })
+  storeWith(paths, path.join(dir, "other"), path.join(dir, "work"), path.join(dir, "gone"))
+  const environ = { PATH: `${dir}/work/bin:${dir}/other/bin` }
+  expect(byName(await runChecks(dir, paths, { environ })).folders).toEqual({
+    name: "folders",
+    status: "fail",
+    detail:
+      `workspace ${other} contains ${other}/bin, a folder on the office's PATH; use a project folder; ` +
+      `workspace ${work} contains ${work}/bin/git, a program the office runs; use a project folder`,
+  })
+})
+
+test("the folders check uses the tools the daemon pinned", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const [work] = folders(dir, "work/bin").map((bin) => path.dirname(bin))
+  fs.writeFileSync(path.join(dir, "work/bin/git"), "#!/bin/sh\n", { mode: 0o755 })
+  storeWith(paths, path.join(dir, "work"))
+  const environ = { PATH: "/usr/bin:/bin" }
+  const office = info(launchFor(dir, paths).home, {
+    guards: { install: [], tools: [path.join(dir, "work/bin/git")], path: [] },
+  })
+  expect(byName(await runningChecks(dir, paths, office, environ)).folders).toEqual({
+    name: "folders",
+    status: "fail",
+    detail: `workspace ${work} contains ${work}/bin/git, a program the office runs; use a project folder`,
+  })
+  // The caller's view finds nothing wrong there.
+  expect(byName(await runChecks(dir, paths, { environ })).folders).toEqual({
+    name: "folders",
+    status: "ok",
+    detail: "no worked folder holds the office install, a program it runs or a folder on its PATH",
+  })
+})
+
+test("an office without a store has no folders line", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  expect(byName(await runChecks(dir, paths)).folders).toBeUndefined()
+})
+
+test("a stopped offices store is read without its wal files", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const [work] = folders(dir, "work")
+  storeWith(paths, path.join(dir, "work"))
+  const environ = { PATH: `${dir}/work` }
+  const expected: Check = {
+    name: "folders",
+    status: "fail",
+    detail: `workspace ${work} contains ${work}, a folder on the office's PATH; use a project folder`,
+  }
+  expect(byName(await runChecks(dir, paths, { environ })).folders).toEqual(expected)
+  for (const sidecar of ["-wal", "-shm"]) fs.rmSync(paths.store + sidecar, { force: true })
+  expect(byName(await runChecks(dir, paths, { environ })).folders).toEqual(expected)
+})
+
+test("a store doctor cant read warns on the folders line", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  fs.writeFileSync(paths.store, "not a database ".repeat(100))
+  const store = new OfficePaths(launchFor(dir, paths).home).store
+  expect(byName(await runChecks(dir, paths)).folders).toEqual({
+    name: "folders",
+    status: "warn",
+    detail: `can't read the worked folders in ${store}: SQLITE_NOTADB`,
+  })
 })

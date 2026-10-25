@@ -1,10 +1,11 @@
 /** `opencorp doctor`: check the office home (there and private), company repo, provider and connections, service,
- *  daemon, HQ, sandbox, and Codex. */
+ *  daemon, HQ, sandbox, worked folders, and Codex. */
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { type HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
-import { FileLockError } from "@ngocbh/yian/platform"
+import { FileLockError, openSqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
 import { type Identity, identityPath, readIdentity } from "../auth/identity.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
 import type { RepoIssue } from "../company/issues.ts"
@@ -16,6 +17,8 @@ import { CodexMissing, codexCommand } from "../harness/codex.ts"
 import { RETRY_MS } from "../hq/servers.ts"
 import { CHECKOUT } from "../hq/version.ts"
 import { selfCommand } from "../platform.ts"
+import { checkWorkspace, type OfficePaths as Guards, SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
+import { fsHelper, run } from "../sandbox/run.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, runCommand, which } from "./launch.ts"
 import * as launchd from "./launchd.ts"
@@ -23,7 +26,7 @@ import { checkProvider, SET_UP, setupConnectionFile, stopToTopUp, withDefaultMod
 import { OnboardError } from "./prompts.ts"
 import * as service from "./service.ts"
 import * as systemd from "./systemd.ts"
-import { installPaths } from "./tools.ts"
+import { installPaths, resolveTools, workspaceGuards } from "./tools.ts"
 
 /** How the daemon prefixes the one line it prints when it can't start. */
 const START_ERROR = "opencorp office: "
@@ -45,6 +48,12 @@ const SIGNED_OUT = "not logged in"
 
 /** The most of a line from `codex --version` or `codex login status` the report shows. */
 const LINE_CAP = 200
+
+/** Seconds each sandboxed call of the sandbox probe may take. */
+const PROBE_TIMEOUT = 30
+
+/** SQLite's primary result code for a file it can't open. */
+const SQLITE_CANTOPEN = 14
 
 /** An ANSI color code, which Codex may print around a line. */
 const COLOR = /\x1b\[[0-9;]*m/g
@@ -74,6 +83,10 @@ function errnoCode(error: unknown): string | undefined {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function nameOf(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error
 }
 
 /** `mode`'s permission bits as four octal digits. */
@@ -722,6 +735,103 @@ export function toolsCheck(info: OfficeInfo): Check {
   }
 }
 
+/**
+ * Why a sandboxed command or the file helper can't run for the office at `officeHome`, or null if both do. The helper
+ * is built first (one with a file inside the office home is refused); then, in a fresh temp folder, `/bin/sh -c
+ * "exit 0"` runs under a read-only policy, and the helper lists that folder under the same policy with the helper.
+ */
+export async function sandboxProblem(officeHome: string): Promise<string | null> {
+  let root: string | undefined
+  try {
+    const { argv, helper } = fsHelper(officeHome)
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-doctor-"))
+    const workspace = path.join(root, "ws")
+    const tmpdir = path.join(root, "tmp")
+    fs.mkdirSync(workspace)
+    fs.mkdirSync(tmpdir)
+    const policy = new SandboxPolicy({ workspace, writable: false, network: false, tmpdir })
+    const shell = await run(policy, ["/bin/sh", "-c", "exit 0"], { timeout: PROBE_TIMEOUT })
+    if (shell.timedOut) return `a sandboxed command didn't finish in ${PROBE_TIMEOUT} s`
+    if (shell.exit !== 0) return shell.stderr.toString("utf8").trim() || `exit ${shell.exit}`
+    const listed = await run(new SandboxPolicy({ ...policy, helper }), argv, {
+      stdin: JSON.stringify({ op: "list", path: "." }),
+      timeout: PROBE_TIMEOUT,
+    })
+    if (listed.timedOut) return `the file helper didn't finish in ${PROBE_TIMEOUT} s`
+    let reply: unknown
+    try {
+      reply = JSON.parse(listed.stdout.toString("utf8"))
+    } catch {
+      reply = undefined
+    }
+    if (isRecord(reply) && reply.ok === true && typeof reply.output === "string") return null
+    const error = isRecord(reply) && typeof reply.error === "string" ? reply.error : ""
+    return `the file helper failed: ${error || listed.stderr.toString("utf8").trim() || `exit ${listed.exit}`}`
+  } catch (error) {
+    return messageOf(error)
+  } finally {
+    if (root !== undefined) fs.rmSync(root, { recursive: true, force: true })
+  }
+}
+
+/** Every folder in the `worked_folders` table of the store at `store`, sorted, read without writing. */
+function workedFolders(store: string): string[] {
+  const read = (readonly: boolean) => {
+    const db = openSqlite(store, { readonly })
+    try {
+      return db
+        .prepare("SELECT DISTINCT cwd FROM worked_folders ORDER BY cwd")
+        .all()
+        .map((row) => String(row.cwd))
+    } finally {
+      db.close()
+    }
+  }
+  try {
+    return read(true)
+  } catch (error) {
+    if (((sqliteErrorCode(error) ?? 0) & 0xff) !== SQLITE_CANTOPEN) throw error
+    // A WAL store can't be read read-only without its -wal and -shm files, which SQLite deletes when the office
+    // closes it. A read-write open on the existing file makes them again; the query still only reads, and the store
+    // is never migrated: a doctor newer than the daemon must not change its schema under it.
+    return read(false)
+  }
+}
+
+/**
+ * Whether any folder someone worked in (the store's `worked_folders`) is one `checkWorkspace` refuses with `guards`
+ * and the user's `home`: one holding the office install, a program it runs or a folder on its PATH. Sessions there are
+ * refused until the install, the program or the folder moves. Null when the office has no store, or a store without
+ * the table; a folder that no longer exists is skipped.
+ */
+export function foldersCheck(store: string, guards: Guards, home: string): Check | null {
+  if (!fs.existsSync(store)) return null
+  let cwds: string[]
+  try {
+    cwds = workedFolders(store)
+  } catch (error) {
+    // A store from before the table.
+    if (messageOf(error).includes("no such table")) return null
+    const why = errnoCode(error) ?? nameOf(error)
+    return { name: "folders", status: "warn", detail: `can't read the worked folders in ${store}: ${why}` }
+  }
+  const refused: string[] = []
+  for (const cwd of cwds) {
+    if (!fs.existsSync(cwd)) continue
+    try {
+      checkWorkspace(cwd, { ...guards, home })
+    } catch (error) {
+      refused.push(error instanceof UnsafeWorkspace ? error.message : `${cwd}: can't be checked (${nameOf(error)})`)
+    }
+  }
+  if (refused.length) return { name: "folders", status: "fail", detail: refused.join("; ") }
+  return {
+    name: "folders",
+    status: "ok",
+    detail: "no worked folder holds the office install, a program it runs or a folder on its PATH",
+  }
+}
+
 /** What `checks` reads and runs; tests pass stand-ins. */
 export interface CheckOptions {
   /** The machine (default `defaultHost()`). */
@@ -730,8 +840,9 @@ export interface CheckOptions {
   command?: readonly [string, ...string[]]
   /** The OpenCorp checkout the office runs from (default `hq/version.ts`'s `CHECKOUT`). */
   repo?: string
-  /** Why a sandboxed command can't run for the office at the given home, or null if one does. */
-  probe: (officeHome: string) => Promise<string | null>
+  /** Why a sandboxed command can't run for the office at the given home, or null if one does (default
+   *  `sandboxProblem`). */
+  probe?: (officeHome: string) => Promise<string | null>
   /** The Codex check, given the worker env, the office's env and its recorded service mode (default
    *  `codexCheck`). */
   codex?: (env: Record<string, string>, environ: Env, mode: string | null) => Promise<Check>
@@ -750,15 +861,20 @@ export interface CheckOptions {
 /**
  * Every check for the office at `home`, in the order onboarding sets things up. A running office is asked what it
  * runs and where HQ listens with this device's identity, read once; that read can wait on a busy `<home>/.lock`.
+ *
+ * Worked folders are checked against the guards the running daemon pinned (`GET /office`); when the office wasn't
+ * read, against the ones an office started from this shell with `command` would pin, which can differ from a running
+ * daemon's.
  */
 export async function checks(home: string, options: CheckOptions): Promise<Check[]> {
   const { host = defaultHost(), command = selfCommand(), repo = CHECKOUT, environ = process.env } = options
-  const { codex = codexCheck, hq = hqStatus, office = officeInfo } = options
+  const { codex = codexCheck, hq = hqStatus, office = officeInfo, probe = sandboxProblem } = options
   const lstat = options.lstat ?? ((p: string) => fs.lstatSync(p))
   const run = launch(home, { command, environ, userHome: host.userHome })
   const paths = new OfficePaths(run.home)
   const running = await host.answers(run.socket)
   const found: Check[] = []
+  let guards: Guards | undefined
   found.push(homeCheck(paths))
   found.push(await companyCheck(paths, running))
   found.push(await providerCheck(paths))
@@ -770,7 +886,10 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
     const identity = await readIdentity(identityPath(run.home))
     const info = await office(run.socket, identity)
     if (typeof info === "string") found.push({ name: "version", status: "warn", detail: VERSION_UNREAD[info] })
-    else found.push(versionCheck(run, info, newestSource(command)), toolsCheck(info))
+    else {
+      found.push(versionCheck(run, info, newestSource(command)), toolsCheck(info))
+      guards = info.guards
+    }
     found.push(...hqChecks(await hq(run.socket, identity), paths.office, repo))
   } else {
     const error = crash(run.log)
@@ -781,8 +900,14 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
       detail: `not answering on ${run.socket}${why} (log: ${run.log}). ${nextStep(run, host)}`,
     })
   }
-  const problem = await options.probe(paths.home)
+  const problem = await probe(paths.home)
   found.push({ name: "sandbox", status: problem ? "fail" : "ok", detail: problem || "sandboxed commands run" })
+  const folders = foldersCheck(
+    paths.store,
+    guards ?? workspaceGuards(resolveTools(run.env), run.env, command),
+    host.userHome,
+  )
+  if (folders !== null) found.push(folders)
   // run.env is the environment an office set up or started from this shell gets, which can differ from the running
   // daemon's (a launchd or systemd office keeps the one `opencorp onboard` wrote into its service file).
   found.push(await codex(workerEnv(run.env), run.env, service.recordedMode(run)))
