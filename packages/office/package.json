@@ -4,7 +4,7 @@
   "license": "MIT",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/main.ts", "./platform": "./src/platform.ts", "./hq/guard": "./src/hq/guard.ts", "./hq/version": "./src/hq/version.ts" },
+  "exports": { ".": "./src/main.ts", "./platform": "./src/platform.ts", "./hq/guard": "./src/hq/guard.ts", "./hq/version": "./src/hq/version.ts", "./runs/index_thread": "./src/runs/index_thread.ts" },
   "scripts": { "test": "bun test", "typecheck": "tsc -p ." },
   "dependencies": {
     "@clack/prompts": "1.8.1",

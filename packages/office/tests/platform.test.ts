@@ -286,8 +286,8 @@ test(
         "",
       ].join("\n"),
     )
-    // A one-line thread stands in for the CLI's runs_indexer shim, which isn't built yet; the real build's second
-    // entry is nodes/code/worker.ts.
+    // A one-line thread stands in for the CLI's runs_indexer shim, so this checks threadEntry() in a compiled layout
+    // on its own, apart from the office's thread module.
     fs.writeFileSync(
       path.join(dir, "probe/runs_indexer.ts"),
       `import { parentPort } from "node:worker_threads"\nparentPort.postMessage("thread ok")\n`,

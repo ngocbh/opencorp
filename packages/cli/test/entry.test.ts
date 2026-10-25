@@ -312,6 +312,17 @@ test("the CODE worker shim only imports the code-worker entry of yian", () => {
   expect(fs.realpathSync(resolved)).toBe(path.join(CHECKOUT, "packages/yian/ts/src/nodes/code/worker.ts"))
 })
 
+test("the runs indexer shim only imports the run index thread of the office", () => {
+  const shim = path.join(CHECKOUT, "packages/cli/src/runs_indexer.ts")
+  expect(fs.existsSync(shim)).toBe(true)
+  const transpiler = new Bun.Transpiler({ loader: "ts" })
+  expect(transpiler.scanImports(fs.readFileSync(shim, "utf8")).map((entry) => entry.path)).toEqual([
+    "@opencorp/office/runs/index_thread",
+  ])
+  const resolved = Bun.resolveSync("@opencorp/office/runs/index_thread", path.join(CHECKOUT, "packages/cli"))
+  expect(fs.realpathSync(resolved)).toBe(path.join(CHECKOUT, "packages/office/src/runs/index_thread.ts"))
+})
+
 test(
   "opencorp __worker and __fs-helper reach the office's modes",
   () => {
