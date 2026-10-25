@@ -772,7 +772,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/doctor.test.ts::a lock file in connections is private	P3, design §6.8 rule 6	O2-18a
 —	new	packages/office/tests/install/doctor.test.ts::a pinned tool that vanished is told to restart the office	design §6.1 (O3-12)	O2-18a
 —	new	packages/office/tests/install/doctor.test.ts::a provider whose folder lock isnt private fails	design §6.8 rule 6	O2-18a
-—	new	packages/office/tests/install/doctor.test.ts::a stopped offices store is read without its wal files	design §9.4	O2-18a
+—	new	packages/office/tests/install/doctor.test.ts::a stopped offices store is read without its wal files	O2-18a plan choice 6, design §9.4	O2-18a
 —	new	packages/office/tests/install/doctor.test.ts::a store doctor cant read warns on the folders line	design §9.4	O2-18a
 —	new	packages/office/tests/install/doctor.test.ts::a worked folder holding a pinned tool or a path entry fails the folders check	design §6.1	O2-18a
 —	new	packages/office/tests/install/doctor.test.ts::a worked folder holding the install fails the folders check	design §6.1, §9.4	O2-18a

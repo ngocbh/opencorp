@@ -752,7 +752,9 @@ export async function sandboxProblem(officeHome: string): Promise<string | null>
     const policy = new SandboxPolicy({ workspace, writable: false, network: false, tmpdir })
     const shell = await run(policy, ["/bin/sh", "-c", "exit 0"], { timeout: PROBE_TIMEOUT })
     if (shell.timedOut) return `a sandboxed command didn't finish in ${PROBE_TIMEOUT} s`
-    if (shell.exit !== 0) return shell.stderr.toString("utf8").trim() || `exit ${shell.exit}`
+    if (shell.exit !== 0) {
+      return shell.stderr.toString("utf8").replace(COLOR, "").trim().slice(0, LINE_CAP) || `exit ${shell.exit}`
+    }
     const listed = await run(new SandboxPolicy({ ...policy, helper }), argv, {
       stdin: JSON.stringify({ op: "list", path: "." }),
       timeout: PROBE_TIMEOUT,
@@ -766,7 +768,8 @@ export async function sandboxProblem(officeHome: string): Promise<string | null>
     }
     if (isRecord(reply) && reply.ok === true && typeof reply.output === "string") return null
     const error = isRecord(reply) && typeof reply.error === "string" ? reply.error : ""
-    return `the file helper failed: ${error || listed.stderr.toString("utf8").trim() || `exit ${listed.exit}`}`
+    const stderr = listed.stderr.toString("utf8").replace(COLOR, "").trim().slice(0, LINE_CAP)
+    return `the file helper failed: ${error || stderr || `exit ${listed.exit}`}`
   } catch (error) {
     return messageOf(error)
   } finally {
@@ -800,9 +803,10 @@ function workedFolders(store: string): string[] {
 
 /**
  * Whether any folder someone worked in (the store's `worked_folders`) is one `checkWorkspace` refuses with `guards`
- * and the user's `home`: one holding the office install, a program it runs or a folder on its PATH. Sessions there are
- * refused until the install, the program or the folder moves. Null when the office has no store, or a store without
- * the table; a folder that no longer exists is skipped.
+ * and the user's `home`: one holding the office install, a program it runs or a folder on its PATH, one holding the
+ * home directory, or one inside a sensitive home path. Sessions there are refused until the install, the program or
+ * the folder moves. Null when the office has no store, or a store without the table; a folder that no longer exists is
+ * skipped.
  */
 export function foldersCheck(store: string, guards: Guards, home: string): Check | null {
   if (!fs.existsSync(store)) return null
@@ -821,7 +825,8 @@ export function foldersCheck(store: string, guards: Guards, home: string): Check
     try {
       checkWorkspace(cwd, { ...guards, home })
     } catch (error) {
-      refused.push(error instanceof UnsafeWorkspace ? error.message : `${cwd}: can't be checked (${nameOf(error)})`)
+      const why = errnoCode(error) ?? nameOf(error)
+      refused.push(error instanceof UnsafeWorkspace ? error.message : `${cwd}: can't be checked (${why})`)
     }
   }
   if (refused.length) return { name: "folders", status: "fail", detail: refused.join("; ") }
