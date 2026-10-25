@@ -8,7 +8,7 @@ import { HttpResponse } from "@ngocbh/yian/llm_clients"
 import type { Scheduler } from "@ngocbh/yian/platform"
 import { iterRunRecords, type RunLogEntry } from "@ngocbh/yian/run"
 import { FakeLLM, type ScriptedReply } from "../../src/testing/fake_llm.ts"
-import type { Delivery, Job, JobInput } from "../../src/worker/job.ts"
+import { type Delivery, Job, type JobInput } from "../../src/worker/job.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
 import { tempDir, waitFor } from "../helpers.ts"
 import { advanceJob, inProcessWorker, makeJob, Recorder, run, waitsOf } from "../worker/helpers.ts"
@@ -140,23 +140,48 @@ export class TemplateOffice extends Recorder {
   }
 }
 
-/** A chat job running the template flow `name` from a temp copy of the template; `inputs` replace the defaults. It
- *  logs under `runs` (a temp folder by default) as `runId` (`r1` by default). */
+/** A chat job running the template flow `name` from a temp copy of the template, or, with `base`, from `base.pin`
+ *  (which holds the flow at `shared/flows/<name>.yaml`) logging under `base.runs`; `inputs` replace the defaults. It
+ *  logs under `runs` (a temp folder by default) as `runId` (`r1` by default); `over` replaces the job's fields. */
 export function templateJob(
   name: string,
   handlers: Recorder,
   inputs: Record<string, unknown> = {},
-  { runs, runId }: { runs?: string; runId?: string } = {},
+  {
+    runs,
+    runId,
+    base,
+    ...over
+  }: { runs?: string; runId?: string; base?: { pin: string; runs: string } } & Partial<JobInput> = {},
 ): Job {
-  const root = tempDir()
-  const pin = path.join(root, "pin")
-  fs.cpSync(ROOT, pin, { recursive: true })
+  let where = base
+  if (where === undefined) {
+    const root = tempDir()
+    where = { pin: path.join(root, "pin"), runs: runs ?? path.join(root, "runs") }
+    fs.cpSync(ROOT, where.pin, { recursive: true })
+  }
   const who = name === "profile_manager" ? {} : { person: PERSON, talking_to: "" }
-  const over: Partial<JobInput> = {
+  const fields: Partial<JobInput> = {
     inputs: { ...who, summary: "", history: [], turns: 0, max_turns: 500, ...inputs },
     ...(runId === undefined ? {} : { run_id: runId }),
+    ...over,
   }
-  return makeJob({ pin, runs: runs ?? path.join(root, "runs") }, `shared/flows/${name}.yaml`, over, handlers)
+  return makeJob(where, `shared/flows/${name}.yaml`, fields, handlers)
+}
+
+/** A fresh chat job after `job`: run `r2` in the same runs folder, same pin, flow, inputs and grants, with no
+ *  deliveries and no seed; `over` replaces fields. */
+export function nextRun(job: Job, over: Partial<JobInput> = {}): Job {
+  const runs = path.dirname(path.dirname(job.log))
+  return Job.parse({
+    ...job,
+    kind: "chat",
+    run_id: "r2",
+    log: path.join(runs, "r2", "log.jsonl"),
+    deliver: [],
+    seed: null,
+    ...over,
+  })
 }
 
 /** Advances the run `chat` started, applying `deliver` first; returns its recorder. */

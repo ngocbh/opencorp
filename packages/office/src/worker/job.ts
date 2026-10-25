@@ -43,6 +43,10 @@ export const Delivery = z.discriminatedUnion("op", [
 ])
 export type Delivery = z.output<typeof Delivery>
 
+/** The run of the same session a fresh `chat` run replaces: its log, the env that run had, whether to cancel it. */
+export const Seed = z.strictObject({ log: absolute, env: z.record(z.string(), z.string()), cancel: z.boolean() })
+export type Seed = z.output<typeof Seed>
+
 /**
  * What one worker runs: a flow from a pinned company worktree, and how to run it.
  *
@@ -50,7 +54,9 @@ export type Delivery = z.output<typeof Delivery>
  * `advance`, which uses the recorded flow, inputs and worker bound, so `flow`, `inputs` and `num_workers` are
  * ignored), or `check` (runs the office's one-reply model check (`install/flows/check_model.yaml`) on
  * `llm_config`, and reads no other field but `session_id`). `flow` is relative to `pin`. `deliver` lists host calls applied to the run in order, each answered by
- * one `deliver_reply`; `advance: false` applies them without moving the run. A `Job` holds the provider key in
+ * one `deliver_reply`; `advance: false` applies them without moving the run. `seed` names the run of the same
+ * session a fresh `chat` run replaces (its log, the env that run had, whether to cancel it); the worker seeds the
+ * flow's `summary` and `history` inputs from it and moves its unread messages. A `Job` holds the provider key in
  * `llm_config`, so it is never logged.
  */
 export const Job = z
@@ -76,11 +82,13 @@ export const Job = z
     memory: z.record(z.string(), ProfileMemorySpec).default(() => ({})),
     deliver: z.array(Delivery).default(() => []),
     advance: z.boolean().default(true),
+    seed: Seed.nullable().default(null),
   })
   .refine((job) => job.advance || job.kind === "advance", {
     message: "advance false needs kind advance",
     path: ["advance"],
   })
+  .refine((job) => job.seed === null || job.kind === "chat", { message: "a seed needs kind chat", path: ["seed"] })
 export type Job = z.output<typeof Job>
 export type JobInput = z.input<typeof Job>
 

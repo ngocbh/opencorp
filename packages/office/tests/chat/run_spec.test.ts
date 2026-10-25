@@ -215,6 +215,27 @@ test("a new chats job starts with an empty history", async () => {
   expect((thrown as JobError).message).not.toContain(SECRET)
 })
 
+test("a job built with a seed carries it and an empty history", async () => {
+  const o = await office()
+  const spec = main(o)
+  const tools = spec.groups({ session: o.session, runId: "r1" })
+  const args = {
+    kind: "chat" as const,
+    session: o.session,
+    runId: "r1",
+    pin: o.root,
+    log: path.join(o.dir, "runs", "r1", "log.jsonl"),
+    llmConfig: { ...LLM_CONFIG },
+    turns: 2,
+  }
+  const seed = { log: path.join(o.dir, "runs", "r0", "log.jsonl"), env: { PATH: "/bin" }, cancel: true }
+  const built = chatJob(spec, tools, { ...args, seed })
+  expect(built.seed).toEqual(seed)
+  expect(built.inputs.history).toEqual([])
+  expect(built.inputs.summary).toBe("")
+  expect(chatJob(spec, tools, args).seed).toBeNull()
+})
+
 test("a job built from a spec runs its flow in a worker", async () => {
   const o = await office()
   const fake = await fakeLlm()
