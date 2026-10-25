@@ -119,6 +119,7 @@ test("open questions a work item and costs", async () => {
   const q = office.store.addQuestion(question(s.id))
   const item = office.store.createWorkItem(workItem({ assignee: CEO }))
   const open = await client.get("/api/questions", { query: { status: "open" } })
+  expect(open.status).toBe(200)
   expect((open.json() as Body[]).map((x) => x.id)).toEqual([q.id])
   expect(((await client.get(`/api/work-items/${item.id}`)).json() as Body).assignee).toBe(CEO)
   const r = await client.get("/api/costs", { query: { since: "2026-10-19T00:00:00.000Z" } })

@@ -172,7 +172,7 @@ harness/test_translate.py::test_recorded_sessions_translate_as_their_golden_file
 harness/test_translate.py::test_the_recorded_steer_keeps_the_running_command_in_the_message_it_started_in	changed	packages/office/tests/harness/translate.test.ts::the recorded steer keeps the running command in the message it started in	D9, design §7.3: no stored transcript; the parts are read from the translator's live events	O3-11
 harness/test_translate.py::test_two_steers_around_a_running_command_keep_it_in_its_message	changed	packages/office/tests/harness/translate.test.ts::two steers around a running command keep it in its message	D9, design §7.3: no stored transcript; the parts are read from the translator's live events	O3-11
 harness/test_waiting.py	open	—	—	O3-14
-hq/test_api.py	open	—	split: O2-9 → O3-9 → O3-15 → O4b-7; O2-9's tests are in packages/office/tests/hq/api.test.ts	O4b-7
+hq/test_api.py	open	—	split: O2-9 → O3-9 → O3-15 → O4b-7; O2-9's and O3-9's tests are in packages/office/tests/hq/api.test.ts	O4b-7
 hq/test_app_fixture.py	ported	packages/office/tests/hq/app_fixture.test.ts	—	O2-7
 hq/test_auth.py	ported	packages/office/tests/hq/auth.test.ts	—	O2-9
 hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7
