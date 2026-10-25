@@ -61,6 +61,7 @@ function guardStdout(): TextOut {
   const out = process.stdout.write.bind(process.stdout)
   // Python pointed fd 1 at stderr, so nothing else printed could land inside a prompt line. Here fd 1 stays, and
   // Bun's console writes natively rather than through process.stdout, so both writers are rebound.
+  // Bun's global console type has members node:console's Console instance lacks.
   globalThis.console = new Console({ stdout: process.stderr, stderr: process.stderr }) as typeof globalThis.console
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write
   return { write: out }
@@ -88,7 +89,7 @@ function defaults(given: Partial<Setup>): Setup {
 interface Args {
   home?: string
   help?: boolean
-  service?: string
+  service?: service.Mode | "auto"
   "provider-stdin"?: boolean
   "json-prompts"?: boolean
   company?: string
@@ -210,17 +211,24 @@ function usage(command?: string): string {
   return `usage: opencorp install ${command} ${parts.join(" ")}\n`
 }
 
-/** The help of `command`, or of `opencorp install` itself, laid out as argparse lays it out. */
+/** The column help text starts at: argparse's `max_help_position`. */
+const HELP_COLUMN = 24
+
+/** The help of `command`, or of `opencorp install` itself, argparse-like. */
 function help(command?: string): string {
+  // Names too wide to leave two spaces before the column go on their own line, as argparse puts them.
   const line = (names: string, text: string) =>
-    names.length <= 20 ? `  ${names.padEnd(22)}${text}\n` : `  ${names}\n${" ".repeat(24)}${text}\n`
+    names.length + 4 <= HELP_COLUMN
+      ? `  ${names.padEnd(HELP_COLUMN - 2)}${text}\n`
+      : `  ${names}\n${" ".repeat(HELP_COLUMN)}${text}\n`
   if (command === undefined) {
     const lines = Object.entries(COMMANDS).map(([name, c]) => line(`  ${name}`, c.about))
     return `${usage()}\npositional arguments:\n  {${Object.keys(COMMANDS).join(",")}}\n${lines.join("")}`
   }
-  const { about, flags } = COMMANDS[command]!
-  const lines = Object.entries(flags).flatMap(([name, flag]) => (flag.help ? [line(shown(name, flag), flag.help)] : []))
-  return `${usage(command)}\n${about}\n\noptions:\n${lines.join("")}`
+  const lines = Object.entries(COMMANDS[command]!.flags).flatMap(([name, flag]) =>
+    flag.help ? [line(shown(name, flag), flag.help)] : [],
+  )
+  return `${usage(command)}\noptions:\n${lines.join("")}`
 }
 
 /** Says on stderr how `command` (or `opencorp install`) is used and what was wrong; exit code 2. */
@@ -231,15 +239,16 @@ function usageError(s: Setup, message: string, command?: string): number {
 
 /** The flags in `argv` for `command`, or a usage error's message. */
 function parse(command: string, argv: string[]): Args | string {
-  const options: Record<string, { type: "string" | "boolean"; short?: string; default?: string }> = {}
-  for (const [name, { type, short, default: value }] of Object.entries(COMMANDS[command]!.flags)) {
-    options[name] = { type, ...(short ? { short } : {}), ...(value !== undefined ? { default: value } : {}) }
-  }
+  const options = Object.fromEntries(
+    Object.entries(COMMANDS[command]!.flags).map(([name, { metavar, help, ...option }]) => [name, option]),
+  )
   let parsed
   try {
     parsed = parseArgs({ args: argv, options, strict: true, allowPositionals: false, tokens: true })
   } catch (error) {
-    if (String((error as { code?: unknown }).code).startsWith("ERR_PARSE_ARGS_")) return (error as Error).message
+    if (error instanceof Error && "code" in error && String(error.code).startsWith("ERR_PARSE_ARGS_")) {
+      return error.message
+    }
     throw error
   }
   const args = parsed.values as Args
@@ -283,10 +292,10 @@ function home(value: string | undefined, s: Setup): string {
 }
 
 /** The prompter for init and onboard: the setup screen's with `--json-prompts`, else the terminal's, which asks
- *  no one when the provider comes on stdin. */
-function prompter(args: Args, stdin: Readable | undefined, s: Setup, preset: Record<string, string> = {}): Prompter {
+ *  only when `asking` (no provider on stdin). */
+function prompter(args: Args, asking: boolean, s: Setup, preset: Record<string, string> = {}): Prompter {
   if (args["json-prompts"]) return new JsonPrompter(s.guardStdout(), s.stdin, preset)
-  return new TtyPrompter({ preset, interactive: stdin === undefined, input: s.stdin, output: s.stdout, env: s.environ })
+  return new TtyPrompter({ preset, interactive: asking, input: s.stdin, output: s.stdout, env: s.environ })
 }
 
 /** The exit code for `run` as `opencorp <command>`: 1 with the reason for an `OnboardError`, 130 for Ctrl-C. */
@@ -336,11 +345,11 @@ async function initCommand(args: Args, s: Setup): Promise<number> {
   // With the provider on stdin nothing is asked, and questions without a flag take their defaults.
   const stdin = args["provider-stdin"] ? s.stdin : undefined
   return setupRun("init", s, () =>
-    s.init(home(args.home, s), prompter(args, stdin, s), {
+    s.init(home(args.home, s), prompter(args, stdin === undefined, s), {
       listers: s.listers,
       checkModel: s.checkModel,
       known,
-      mode: args.service as service.Mode | "auto",
+      mode: args.service,
       stdin,
       device: !args["no-device"],
       host: s.host,
@@ -352,10 +361,10 @@ async function initCommand(args: Args, s: Setup): Promise<number> {
 async function onboardCommand(args: Args, s: Setup): Promise<number> {
   const stdin = args["provider-stdin"] ? s.stdin : undefined
   return setupRun("onboard", s, () =>
-    s.onboard(home(args.home, s), prompter(args, stdin, s, { [WHO]: args.handle ?? "" }), {
+    s.onboard(home(args.home, s), prompter(args, stdin === undefined, s, { [WHO]: args.handle ?? "" }), {
       listers: s.listers,
       checkModel: s.checkModel,
-      mode: args.service as service.Mode | "auto",
+      mode: args.service,
       stdin,
       source: args.from,
       host: s.host,

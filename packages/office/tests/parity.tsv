@@ -944,8 +944,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/launch.test.ts::which finds a runnable program on the absolute path entries only	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
 —	new	packages/office/tests/install/launchd.test.ts::a control character in a value is a service error	design §9.3 (hand-written plist refuses what plistlib refuses, CR included)	O2-12
 —	new	packages/office/tests/install/launchd.test.ts::a plist that cant be written is a service error and only the probe ran	design §9.3 (service files: a failed write is a ServiceError with the system's text)	O2-12
+—	new	packages/office/tests/install/main.test.ts::a missing or unknown command or flag is a usage error	design §9.1: exit 2 for usage, as argparse	O2-13b
 —	new	packages/office/tests/install/main.test.ts::a service mode that isnt one is a usage error	design §9.1: the service modes are auto plus service.MODES (O2-12)	O2-13b
-—	new	packages/office/tests/install/main.test.ts::an unknown command is a usage error	design §9.1: exit 2 for usage, as argparse	O2-13b
 —	new	packages/office/tests/install/offboard.test.ts::launchers finds a link to the checkout wrapper and a script naming it	O0-5 handoff: packages/cli/bin/opencorp is the checkout's launcher; a link's hint names its target	O2-18b
 —	new	packages/office/tests/install/offboard.test.ts::offboard outside a checkout reports no launchers	design §2.1/O2-26: the compiled binary has no checkout, so there is no launcher to report	O2-18b
 —	new	packages/office/tests/install/onboard.test.ts::a model check given an env runs in that env	P2 and Decision 1 (o3-5 plan): the check job runs modelProblem in the worker's own env, which holds the provider env	O3-5

@@ -76,13 +76,18 @@ test("a service mode that isnt one is a usage error", async () => {
   )
 })
 
-test("an unknown command is a usage error", async () => {
+test("a missing or unknown command or flag is a usage error", async () => {
   const dir = tempDir()
-  for (const argv of [["nope"], [], ["start", "--bogus"]]) {
-    const s = standIns(dir)
-    expect(await main(argv, s)).toBe(2)
-    expect(s.err()).toStartWith("usage: opencorp install")
-  }
+  let s = standIns(dir)
+  expect(await main(["nope"], s)).toBe(2)
+  expect(s.err()).toContain("invalid choice: 'nope'")
+  s = standIns(dir)
+  expect(await main([], s)).toBe(2)
+  expect(s.err()).toContain("the following arguments are required: command")
+  s = standIns(dir)
+  expect(await main(["start", "--bogus"], s)).toBe(2)
+  expect(s.err()).toStartWith("usage: opencorp install start")
+  expect(s.err()).toContain("--bogus")
 })
 
 test("doctor runs the codex check doctor has when it runs", async () => {
@@ -103,7 +108,7 @@ test("the home defaults to opencorp home", async () => {
   const dir = tempDir()
   const s = { ...standIns(dir), environ: { OPENCORP_HOME: path.join(dir, "elsewhere") } }
   await main(["doctor"], s)
-  expect(s.out()).toContain(`no company repo at ${fs.realpathSync(dir)}/elsewhere/company`)
+  expect(s.out()).toContain(`no company repo at ${dir}/elsewhere/company`)
 })
 
 test("an empty opencorp home means the default", async () => {

@@ -93,9 +93,8 @@ function dumps(value: PlistValue): Buffer {
 
 /**
  * The launch agent: the daemon, restarted only when it fails (at most every 10 s), output appended to the log, with
- * room for 4096 open files. launchd SIGKILLs a stopping agent after `ExitTimeOut` (20 s by default), so the daemon
- * gets 30 s, more than the 25 s the office's own stop waits (`fallback.STOP_TIMEOUT_MS`). Throws `ServiceError` if a
- * value holds a control character other than tab and newline, or a lone surrogate.
+ * room for 4096 open files, and 30 s to stop before launchd kills it. Throws `ServiceError` if a value holds a
+ * control character other than tab and newline, or a lone surrogate.
  */
 export function plist(launch: Launch): Buffer {
   return dumps({
@@ -103,8 +102,9 @@ export function plist(launch: Launch): Buffer {
     ProgramArguments: [...launch.argv],
     WorkingDirectory: launch.cwd,
     EnvironmentVariables: { ...launch.env },
-    // The daemon's worst-case stop is about 20 s, launchd's default; 30 s also outlasts the office's own 25 s wait,
-    // so launchd doesn't kill a daemon that wait would let finish.
+    // launchd SIGKILLs a stopping agent after 20 s by default, about the daemon's worst-case stop; 30 s also outlasts
+    // the office's own 25 s wait (`fallback.STOP_TIMEOUT_MS`), so launchd doesn't kill a daemon that wait would let
+    // finish.
     ExitTimeOut: 30,
     StandardOutPath: launch.log,
     StandardErrorPath: launch.log,
