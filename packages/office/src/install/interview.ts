@@ -1,0 +1,216 @@
+/** `opencorp init`'s interview: what the model is told, the draft without a terminal, the summary the owner
+ *  confirms, the model's questions to the owner, and the password and remote steps. */
+import { hashPassword, passwordProblem } from "../auth/passwords.ts"
+import { type Draft, type InitOutput, draftFromOutput, draftProblems, fieldProblems } from "../company/draft.ts"
+import { pyJson, strip } from "../perm/redact.ts"
+import { type LoginDefaults, loginDefaults, slug } from "./onboard.ts"
+import { KeyboardInterrupt, NoTerminal, OnboardError, type Prompter, TRIES } from "./prompts.ts"
+
+/** What the owner is asked after the summary. */
+export const CONFIRM = "Create this company?"
+/** The answer to `CONFIRM` that creates the company. */
+export const CREATE = "Yes, create it"
+/** The answer to `CONFIRM` that asks for changes. */
+export const CHANGE = "No, change something"
+/** What the owner is asked after picking `CHANGE`. */
+export const WHAT_TO_CHANGE = "What should change? (empty to talk it over)"
+
+/** The `opencorp init` flag that sets each draft field a problem can be about. */
+export const FLAGS: Readonly<Record<string, string>> = {
+  company: "--company",
+  "owner.name": "--name",
+  "owner.handle": "--handle",
+  "teammate.name": "--agent",
+  "teammate.handle": "--agent-handle",
+}
+
+/** What the owner gave as command-line flags; a field is set when it is a non-empty string. */
+export interface Known {
+  readonly company?: string
+  /** The owner's name. */
+  readonly name?: string
+  /** The owner's handle. */
+  readonly handle?: string
+  /** The owner's title. */
+  readonly title?: string
+  /** The first teammate's name. */
+  readonly agent?: string
+  /** The first teammate's handle; snake case, as the model is told it. */
+  readonly agent_handle?: string
+  /** The git remote URL. */
+  readonly remote?: string
+}
+
+/** `Known`'s fields in the order the model is told them. */
+const FIELDS = ["company", "name", "handle", "title", "agent", "agent_handle"] as const
+
+/** What the interview is told about `known`: `given`, the fields that are set, and `suggested` defaults for the
+ *  owner from `defaults`. Throws `OnboardError` when the user id has no account. */
+export function facts(
+  known: Known,
+  defaults: LoginDefaults = loginDefaults,
+): { given: Record<string, string>; suggested: { name: string; handle: string; title: string } } {
+  const [name, handle] = defaults()
+  // A remote URL can hold credentials, so it never reaches the model.
+  const given: Record<string, string> = {}
+  for (const field of FIELDS) if (known[field]) given[field] = known[field]
+  return { given, suggested: { name, handle, title: "CEO" } }
+}
+
+/** The draft without an interview: `known`, with defaults for the rest and one teammate. Throws `OnboardError`
+ *  when the draft has problems, the message naming the flag to pass for each, or when the user id has no
+ *  account. */
+export function fallbackDraft(known: Known, defaults: LoginDefaults = loginDefaults): Draft {
+  const [name, handle] = defaults()
+  const agent = known.agent || "Minh"
+  const draft: Draft = {
+    company: known.company || "My company",
+    owner: { handle: known.handle || handle, name: known.name || name, title: known.title || "CEO" },
+    team: [{ name: agent, handle: known.agent_handle || slug(agent) || "agent", title: "Engineer", about: "" }],
+  }
+  const problems = fieldProblems(draft)
+  if (problems.length > 0) {
+    throw new OnboardError("can't set up the company without a terminal: " + problems
+      .map(([field, why]) => (field !== null && Object.hasOwn(FLAGS, field) ? `${why}; pass ${FLAGS[field]}` : why))
+      .join("; "))
+  }
+  return draft
+}
+
+/** `text` safe to print: line breaks and tabs become spaces and other control characters are dropped, so model
+ *  text can't move the cursor or send escapes. */
+export function clean(text: string): string {
+  // C1 controls (0x80-0x9f) go too: some terminals read 0x9b as the start of an escape sequence.
+  return text.replace(/[\x00-\x1f\x7f-\x9f]/g, (c) => (c === "\n" || c === "\r" || c === "\t" ? " " : ""))
+}
+
+function who(name: string, handle: string, title: string): string {
+  return clean(`${name} (@${handle})` + (title ? `, ${title}` : ""))
+}
+
+/** `draft` as shown to the owner to confirm: the company, the owner, and a line for each teammate. */
+export function summary(draft: Draft): string[] {
+  const { owner } = draft
+  const lines = [`Company: ${clean(draft.company)}`, `You: ${who(owner.name, owner.handle, owner.title ?? "CEO")}`]
+  if (draft.team.length === 0) return [...lines, "Teammates: none yet"]
+  lines.push("Teammates:")
+  for (const t of draft.team) {
+    const about = strip(clean(t.about))
+    lines.push(`  ${who(t.name, t.handle, t.title)}` + (about ? `: ${about}` : ""))
+  }
+  return lines
+}
+
+/** The owner's terminal for one init flow run, and the error that stopped it, if one did. */
+export class Asking {
+  /** The `OnboardError` or `KeyboardInterrupt` that stopped the run. */
+  stopped: Error | null = null
+
+  constructor(readonly prompter: Prompter) {}
+}
+
+/** What `fn` resolves to, asking the owner with `state`'s prompter. An `OnboardError` or `KeyboardInterrupt`
+ *  it throws is kept in `state.stopped` and rethrown, so the run's caller throws it rather than the run's
+ *  failure. */
+export async function withOwner<T>(state: Asking, fn: (prompter: Prompter) => Promise<T>): Promise<T> {
+  try {
+    return await fn(state.prompter)
+  } catch (error) {
+    if (error instanceof OnboardError || error instanceof KeyboardInterrupt) state.stopped = error
+    throw error
+  }
+}
+
+/**
+ * The init flow's `confirm` node: check the draft in `inputs.answers` and, if it has no problems, show it and ask
+ * the owner to create the company.
+ *
+ * Resolves to the round's `draft` (as JSON), its `changes` (the problems, or what the owner wants changed) and
+ * whether the owner `accepted`.
+ */
+export async function confirm(
+  inputs: { answers: InitOutput },
+  state: Asking,
+): Promise<{ draft: string; changes: string; accepted: boolean }> {
+  const text = pyJson(inputs.answers, true)
+  const draft = draftFromOutput(inputs.answers)
+  const problems = draftProblems(draft)
+  if (problems.length > 0) return { draft: text, changes: problems.join("\n"), accepted: false }
+  const reply = await withOwner(state, async (prompter) => {
+    for (const line of summary(draft)) prompter.say(line)
+    if ((await prompter.choose(CONFIRM, [CREATE, CHANGE], CREATE)) !== CHANGE) return null
+    return strip(await prompter.ask(WHAT_TO_CHANGE))
+  })
+  if (reply === null) return { draft: text, changes: "", accepted: true }
+  const changes = reply ? `The owner wants changes: ${reply}` : "The owner wants changes; ask what to change"
+  return { draft: text, changes, accepted: false }
+}
+
+/** Asks the owner `request.question`; with `request.options`, they pick one or type their own answer. A picked
+ *  option goes back as the model wrote it, not as it was shown. */
+export async function askUser(
+  request: { question: string; options?: readonly string[] | null },
+  state: Asking,
+): Promise<string> {
+  const options = request.options ?? []
+  const question = clean(request.question)
+  return withOwner(state, async (prompter) => {
+    if (options.length === 0) return prompter.ask(question)
+    const shown = options.map(clean)
+    const picked = await prompter.choose(question, shown, "", true)
+    // A typed answer, or an empty one with no option picked, goes back as it is.
+    const at = shown.indexOf(picked)
+    return at === -1 ? picked : options[at]!
+  })
+}
+
+// The password and remote steps live here rather than in init.ts: the init flow's tools call them, and init.ts
+// imports this module.
+
+/** The steps: the model, the company, your password, the remote, and this machine. */
+export const STEPS = 5
+
+/** The question for a new password. */
+export const YOUR_PASSWORD =
+  "Your password, to log in new devices with (at least 12 characters, one you use nowhere else; not shown)"
+/** The question that repeats the password. */
+export const PASSWORD_AGAIN = "Your password again"
+/** The question for the git remote. */
+export const REMOTE = "Git remote URL (type it, or pick None for now)"
+/** `REMOTE`'s one option. */
+export const NO_REMOTE = "None for now"
+
+/** Shows the password step and resolves to the hash of a new password, asked twice without echo; null when
+ *  there's no terminal to ask on. Rejects with `OnboardError` when no password worked. */
+export async function passwordStep(prompter: Prompter): Promise<string | null> {
+  prompter.step(3, STEPS, "Password", "Your password logs in your new devices; only its hash is kept.")
+  for (let i = 0; i < TRIES; i++) {
+    let password: string
+    try {
+      password = await prompter.secret(YOUR_PASSWORD)
+    } catch (error) {
+      if (!(error instanceof NoTerminal)) throw error
+      prompter.say("Password: none, since there's no terminal to ask on; set one later with `opencorp password`")
+      return null
+    }
+    const why = passwordProblem(password)
+    if (why) {
+      prompter.say(`That doesn't work: ${why}`)
+    } else if ((await prompter.secret(PASSWORD_AGAIN)) !== password) {
+      prompter.say("That doesn't work: the two passwords differ")
+    } else {
+      return hashPassword(password)
+    }
+  }
+  throw new OnboardError("no usable password")
+}
+
+/** Shows the remote step and resolves to the git remote URL: `given` (from `--remote`), or the one the owner
+ *  types; empty when they pick none. */
+export async function remoteStep(prompter: Prompter, given: string): Promise<string> {
+  prompter.step(4, STEPS, "Remote", "A git remote, such as a private GitHub repo, lets other machines join the"
+    + " company with `opencorp onboard --from URL`.")
+  if (given) return given
+  const picked = await prompter.choose(REMOTE, [NO_REMOTE], NO_REMOTE, true)
+  return picked === NO_REMOTE ? "" : strip(picked)
+}
