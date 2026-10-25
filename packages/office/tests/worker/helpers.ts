@@ -6,6 +6,7 @@ import path from "node:path"
 import { onTestFinished } from "bun:test"
 import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
+import type { Store } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
 import { Job, groupSpecs, type JobInput } from "../../src/worker/job.ts"
@@ -21,8 +22,10 @@ import {
   type RpcLog,
   type WorkerHandlers,
 } from "../../src/worker/rpc.ts"
+import { spawnProcess, type Worker, WorkerRegistry } from "../../src/worker/spawn.ts"
 import { CHAT } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
+import { openStore } from "../store/helpers.ts"
 
 /** A one-agent flow: input `message`, output the agent's reply. `node` adds lines to the agent node, `top` to the
  *  flow, `inputs` to its inputs. */
@@ -44,6 +47,10 @@ export const STEERABLE = agentFlow("steerable", {
 })
 export const PROFILED = agentFlow("profiled", { top: "long_term_memory: profile\n" })
 export const SKILLED = agentFlow("skilled", { node: "    skills: all\n" })
+// A run whose one node sleeps an hour, so it quiesces as waiting.
+export const NAP =
+  "id: nap\nname: nap\nnodes:\n  nap:\n    kind: tool\n    tool_id: sleep\n    input:\n      for: 1h\n" +
+  "output: ${nap.output}\n"
 
 /** Writes each of `files` (relative path -> text) under `root`, making parent directories; returns `root`. */
 export function writeFiles(root: string, files: Record<string, string>): string {
@@ -65,6 +72,7 @@ export function writePin(root: string): string {
     "flows/steerable.yaml": STEERABLE,
     "flows/profiled.yaml": PROFILED,
     "flows/skilled.yaml": SKILLED,
+    "flows/nap.yaml": NAP,
   })
 }
 
@@ -182,6 +190,48 @@ export function makeJob(
     ...granted,
     ...over,
   })
+}
+
+/**
+ * A `WorkerRegistry` over `store` with `options` (its `log` a no-op unless given). Each child it spawns, through
+ * `options.spawn` or `spawnProcess`, is noted with its start time. At test end the registry closes all its workers,
+ * then the group of each noted child still running with its start time is killed. Tests that made their temp root
+ * or store first have lost both by then: the registry logs the store failures, and the kills still run.
+ */
+export function makeRegistry(
+  store: Store = openStore(),
+  options: NonNullable<ConstructorParameters<typeof WorkerRegistry>[1]> = {},
+): WorkerRegistry {
+  const spawned: { pid: number; started: number | null }[] = []
+  const spawnChild = options.spawn ?? spawnProcess
+  const registry = new WorkerRegistry(store, {
+    log: () => {},
+    ...options,
+    spawn: (...args) => {
+      const out = spawnChild(...args)
+      if (out.child.pid !== undefined) spawned.push({ pid: out.child.pid, started: startTime(out.child.pid) })
+      return out
+    },
+  })
+  onTestFinished(async () => {
+    await registry.closeAll(5000)
+    for (const { pid, started } of spawned) if (started !== null && sameProcess(pid, started)) killGroup(pid)
+  })
+  return registry
+}
+
+/** Spawns `job` through `registry` in `sessionDir`, with the provider `env`, and waits for its worker to exit;
+ *  returns `handlers`. */
+export async function runWorker<H extends WorkerHandlers<Worker>>(
+  registry: WorkerRegistry,
+  job: Job,
+  handlers: H,
+  sessionDir: string,
+  { env, timeout = 30_000 }: { env?: Record<string, string>; timeout?: number } = {},
+): Promise<H> {
+  const worker = await registry.spawn(job, sessionDir, handlers, { env })
+  if ((await worker.wait(timeout)) === null) throw new Error("the worker did not exit")
+  return handlers
 }
 
 /** What an in-process worker did: the first code it asked to `exit` with, and the code `serve` returned. */

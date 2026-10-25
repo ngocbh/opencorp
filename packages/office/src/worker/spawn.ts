@@ -5,11 +5,14 @@ import type net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { inspect } from "node:util"
+import type { WorkerPool } from "../daemon/office.ts"
 import { type Env, INHERITED_ENV } from "../install/launch.ts"
-import { killGroup } from "../install/proc.ts"
+import { killGroup, startTime } from "../install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../platform.ts"
+import type { Store } from "../store/store.ts"
 import { type Channel, ChannelClosed, type Frame, socketChannel } from "./channel.ts"
 import type { Job } from "./job.ts"
+import { reap } from "./reaper.ts"
 import { errorName, isRequest, type JobWorker, replyTo, type WorkerHandlers } from "./rpc.ts"
 
 // Defined in launch.ts so the daemon's pre-re-exec check doesn't load this module's later imports.
@@ -295,6 +298,127 @@ export class Worker implements JobWorker {
       step()
     } catch (error) {
       this.#log("ERROR", `worker ${this.sessionId}: an exit step failed (${errorName(error)})`)
+    }
+  }
+}
+
+/** The office's live workers, at most one per session, each recorded in the store for `reap`. */
+export class WorkerRegistry implements WorkerPool {
+  readonly #store: Store
+  readonly #log: SpawnLog
+  readonly #environ: Env
+  readonly #maxFrame: number | undefined
+  readonly #spawn: typeof spawnProcess
+  readonly #workers = new Map<string, Worker>()
+  #closed = false
+
+  /** A registry recording its workers in `store`. Workers start with `workerEnv(environ)`, frames capped at
+   *  `maxFrame`, through `spawn`; `log` gets the spawn code's lines. */
+  constructor(
+    store: Store,
+    {
+      log = noLog,
+      environ = process.env,
+      maxFrame,
+      spawn = spawnProcess,
+    }: { log?: SpawnLog; environ?: Env; maxFrame?: number; spawn?: typeof spawnProcess } = {},
+  ) {
+    this.#store = store
+    this.#log = (level, line) => {
+      try {
+        log(level, line)
+      } catch {}
+    }
+    this.#environ = environ
+    this.#maxFrame = maxFrame
+    this.#spawn = spawn
+  }
+
+  /**
+   * Starts a worker for `job.session_id` in `sessionDir` running `job`, with the provider's `env` added to the
+   * worker env. Rejects with `RegistryClosed` once `closeAll` ran, and `WorkerExists` if the session has a live
+   * worker. A worker of the session left by an earlier office is reaped first. If the worker can't be started (a
+   * start frame over `maxFrame`, say), nothing is left behind: no process, entry, store record or socket.
+   */
+  async spawn(
+    job: Job,
+    sessionDir: string,
+    handlers: WorkerHandlers<Worker>,
+    { env = {} }: { env?: Record<string, string> } = {},
+  ): Promise<Worker> {
+    // Everything up to the registration runs in one tick, so two spawns for a session can't both pass the check.
+    const sessionId = job.session_id
+    if (this.#closed) throw new RegistryClosed()
+    if (this.#workers.has(sessionId)) throw new WorkerExists(sessionId)
+    reap(this.#store, sessionId)
+    const spawnEnv = { ...workerEnv(this.#environ), ...env }
+    const { child, channel } = this.#spawn(sessionDir, spawnEnv, { maxFrame: this.#maxFrame })
+    let worker: Worker
+    try {
+      worker = new Worker(job, child, channel, handlers, (exited) => this.#exited(exited), { log: this.#log })
+      this.#store.recordWorker(sessionId, { pid: worker.pid, pgid: worker.pgid, startTime: startTime(worker.pid) ?? 0 })
+      this.#workers.set(sessionId, worker)
+    } catch (error) {
+      if (child.pid !== undefined) killGroup(child.pid)
+      channel.close()
+      throw error
+    }
+    try {
+      await worker.start()
+    } catch (error) {
+      await worker.abandon()
+      if (this.#workers.get(sessionId) === worker) this.#workers.delete(sessionId)
+      this.#forget(worker)
+      throw error
+    }
+    return worker
+  }
+
+  /** The session's live worker, if any. */
+  get(sessionId: string): Worker | undefined {
+    return this.#workers.get(sessionId)
+  }
+
+  /** Stops the session's worker: asks its run to stop, and after `ms` closes its channel and kills its group, then
+   *  waits up to `ms` again. Returns its return code (null if it outlived both waits, or the session has none). */
+  async close(sessionId: string, ms = 5000): Promise<number | null> {
+    const worker = this.#workers.get(sessionId)
+    if (worker === undefined) return null
+    await this.#stop([worker], ms)
+    return worker.returncode
+  }
+
+  /** Stops every live worker, as `close` does, all at once; later spawns are refused. */
+  async closeAll(ms = 5000): Promise<void> {
+    this.#closed = true
+    await this.#stop([...this.#workers.values()], ms)
+  }
+
+  async #stop(workers: Worker[], ms: number): Promise<void> {
+    // Not awaited: a worker that stopped reading never takes the frame, and must not hold up the others.
+    for (const worker of workers) void worker.stop().catch(() => {})
+    const codes = await Promise.all(workers.map((worker) => worker.wait(ms)))
+    const running = workers.filter((_, i) => codes[i] === null)
+    for (const worker of running) {
+      worker.closeChannel()
+      worker.kill()
+    }
+    await Promise.all(running.map((worker) => worker.wait(ms)))
+  }
+
+  #exited(worker: Worker): void {
+    if (this.#workers.get(worker.sessionId) !== worker) return
+    // The record goes first, while the entry still refuses a new spawn, so a new worker's record is never the one
+    // removed.
+    this.#forget(worker)
+    this.#workers.delete(worker.sessionId)
+  }
+
+  #forget(worker: Worker): void {
+    try {
+      this.#store.removeWorker(worker.sessionId, worker.pid)
+    } catch (error) {
+      this.#log("ERROR", `could not remove the record of worker ${worker.sessionId} (${errorName(error)})`)
     }
   }
 }

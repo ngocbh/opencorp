@@ -1,21 +1,33 @@
 /** Run worker processes: the environment they start with, and the office's reader of their frames. */
-import { type ChildProcess, spawn } from "node:child_process"
+import { type ChildProcess, execFileSync, spawn } from "node:child_process"
 import { EventEmitter } from "node:events"
 import fs from "node:fs"
 import type net from "node:net"
 import path from "node:path"
 import { inspect } from "node:util"
+import { inspectRun } from "@ngocbh/yian/run"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { INHERITED_ENV as LAUNCH_ENV } from "../../src/install/launch.ts"
+import { args, killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
+import { selfCommand } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
-import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { type Channel, ChannelClosed, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
 import type { Job } from "../../src/worker/job.ts"
+import { EXIT_FAILED, EXIT_ORPHANED } from "../../src/worker/main.ts"
 import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
-import { INHERITED_ENV, type SpawnLog, Worker, workerEnv } from "../../src/worker/spawn.ts"
-import { isGone, startGroup, tempDir, waitFor } from "../helpers.ts"
-import { base, channelPair, makeJob, Recorder } from "./helpers.ts"
+import {
+  INHERITED_ENV,
+  type SpawnLog,
+  spawnProcess,
+  Worker,
+  WorkerExists,
+  workerEnv,
+} from "../../src/worker/spawn.ts"
+import { fakeLlm } from "../chat/helpers.ts"
+import { cwdOf, envEntries, envNames, isGone, ps, startGroup, tempDir, waitFor } from "../helpers.ts"
+import { openStore } from "../store/helpers.ts"
+import { base, channelPair, makeJob, makeRegistry, Recorder, runWorker } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -246,4 +258,294 @@ test("a worker shows no job when inspected or serialized", async () => {
   const worker = workerOver(exitedChild(), office, new Recorder(), job)
   expect(inspect(worker)).not.toContain("sk-sentinel-0123456789")
   expect(JSON.stringify(worker)).not.toContain("sk-sentinel-0123456789")
+})
+
+test("a chat job streams events and a result", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fake.script({ content: "hello there" })
+  const rec = await runWorker(registry, makeJob(where), new Recorder(), sessionDir, { env: fake.env() })
+  expect(rec.returncode).toBe(0)
+  expect(rec.outcome).toEqual({
+    type: "result",
+    status: "succeeded",
+    run_id: "r1",
+    output: "hello there",
+    failure: null,
+  })
+  const names = rec.names()
+  expect(names[0]).toBe("RunStarted")
+  expect(names.at(-1)).toBe("RunSucceeded")
+  const reply = rec.frames.filter(
+    (frame) => (frame.data as { node_id?: unknown } | undefined)?.node_id === "reply" || frame.node_id === "reply",
+  )
+  const kinds = reply.map((frame) => String(frame.name ?? "stream"))
+  expect(kinds[0]).toBe("NodeStarted")
+  expect(kinds.at(-1)).toBe("NodeSucceeded")
+  expect(kinds).toContain("stream")
+  const chunks = rec.frames.filter((frame) => frame.type === "stream").map((frame) => frame.chunk)
+  expect(chunks.join("")).toBe("hello there")
+  expect(registry.get("s1")).toBeUndefined()
+  expect(store.listWorkers()).toEqual([])
+  expect(fs.statSync(path.join(sessionDir, "worker.log")).mode & 0o777).toBe(0o600)
+})
+
+test("the worker log gets the workers output and keeps it across spawns", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  let child: ChildProcess | undefined
+  const registry = makeRegistry(store, {
+    spawn: (...given) => {
+      const out = spawnProcess(...given)
+      child = out.child
+      return out
+    },
+  })
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fake.script({ content: "never", hold: true })
+  const worker = await registry.spawn(makeJob(where), sessionDir, new Recorder(), { env: fake.env() })
+  await fake.waitForRequests(1, 30_000)
+  // A frame whose body is `[]`: the worker can't read it, so it treats the office as gone.
+  ;(child!.stdio[3] as net.Socket).write(Buffer.from([0, 0, 0, 2, 0x5b, 0x5d]))
+  expect(await worker.wait(10_000)).toBe(3)
+  fake.release()
+  const line = "opencorp __worker: bad office frame (TypeError)\n"
+  const log = path.join(sessionDir, "worker.log")
+  expect(fs.readFileSync(log, "utf8")).toContain(line)
+  fake.script({ content: "again" })
+  const rec = await runWorker(registry, makeJob(where, undefined, { run_id: "r2" }), new Recorder(), sessionDir, {
+    env: fake.env(),
+  })
+  expect(rec.outcome?.status).toBe("succeeded")
+  expect(fs.readFileSync(log, "utf8").startsWith(line)).toBe(true)
+})
+
+test("a running worker is recorded and isolated", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const registry = makeRegistry(store, {
+    environ: { ...process.env, OFFICE_SECRET: "office-env-secret", LC_CTYPE: "UTF-8", BUN_OPTIONS: "--preload /nope" },
+  })
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fake.script({ content: "slow", hold: true })
+  const rec = new Recorder()
+  const worker = await registry.spawn(makeJob(where), sessionDir, rec, { env: fake.env() })
+  await fake.waitForRequests(1, 30_000)
+  const pid = worker.pid
+  const [record, ...more] = store.listWorkers()
+  expect(more).toEqual([])
+  expect([record!.key, record!.pid, record!.pgid]).toEqual(["s1", pid, pid])
+  expect(Math.abs(record!.startTime - startTime(pid)!)).toBeLessThan(0.01)
+  const pgid = execFileSync(ps(), ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8", timeout: 5000 }).trim()
+  expect(pgid).toBe(String(pid))
+  expect(fs.realpathSync(cwdOf(pid))).toBe(fs.realpathSync(sessionDir))
+  expect(args(pid, ps())).toBe([...selfCommand(), "__worker"].join(" "))
+  const env = new Map(envEntries(pid))
+  expect(env.get("LC_CTYPE")).toBe("UTF-8")
+  expect(env.get("PATH")).toBe(process.env.PATH!)
+  // The provider env rides in the spawn env.
+  expect(env.has("VLLM_BASE_URL")).toBe(true)
+  expect(env.has("OFFICE_SECRET")).toBe(false)
+  expect([...env.keys()].filter((name) => name.startsWith("BUN_"))).toEqual([])
+  fake.release()
+  expect(await worker.wait(30_000)).toBe(0)
+  expect(rec.outcome?.output).toBe("slow")
+})
+
+test("a worker env drops runtime and loader variables from the provider env", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const dropped = {
+    BUN_OPTIONS: "--preload /nope",
+    BUN_CONFIG_NO_CLEAR_TERMINAL_ON_RELOAD: "1",
+    NODE_OPTIONS: "--require /nope",
+    DYLD_INSERT_LIBRARIES: "/nope",
+    LD_PRELOAD: "/nope",
+  }
+  fake.script({ content: "kept", hold: true })
+  const rec = new Recorder()
+  const worker = await registry.spawn(makeJob(where), sessionDir, rec, { env: { ...fake.env(), ...dropped } })
+  await fake.waitForRequests(1, 30_000)
+  const names = envNames(worker.pid)
+  expect(Object.keys(dropped).filter((name) => names.includes(name))).toEqual([])
+  fake.release()
+  expect(await worker.wait(30_000)).toBe(0)
+  expect(rec.outcome?.status).toBe("succeeded")
+})
+
+test("one live worker per session", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const env = fake.env()
+  fake.script({ content: "one", hold: true }, { content: "two" }, { content: "three" })
+  const first = await registry.spawn(makeJob(where), sessionDir, new Recorder(), { env })
+  // So the first worker takes the held reply.
+  await fake.waitForRequests(1, 30_000)
+  await expect(
+    registry.spawn(makeJob(where, undefined, { run_id: "r2" }), sessionDir, new Recorder(), { env }),
+  ).rejects.toBeInstanceOf(WorkerExists)
+  const other = await registry.spawn(
+    makeJob(where, undefined, { session_id: "s2", run_id: "r3" }),
+    path.join(where.root, "sessions", "s2"),
+    new Recorder(),
+    { env },
+  )
+  expect(await other.wait(30_000)).toBe(0)
+  fake.release()
+  expect(await first.wait(30_000)).toBe(0)
+  const rec = await runWorker(registry, makeJob(where, undefined, { run_id: "r4" }), new Recorder(), sessionDir, {
+    env,
+  })
+  expect(rec.returncode).toBe(0)
+})
+
+test("a job that raises sends an error frame", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const rec = await runWorker(registry, makeJob(where, "flows/missing.yaml"), new Recorder(), sessionDir, {
+    env: fake.env(),
+  })
+  expect(rec.returncode).toBe(1)
+  expect(rec.outcome?.type).toBe("error")
+  expect(String(rec.outcome?.message).startsWith("Error: ENOENT")).toBe(true)
+  for (const line of String(rec.outcome?.traceback).split("\n")) expect(line).toMatch(/^\s+at /)
+  expect(fake.requests()).toEqual([])
+})
+
+test("a failed run is a result", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fake.script({ error: 500 })
+  const rec = await runWorker(registry, makeJob(where), new Recorder(), sessionDir, { env: fake.env() })
+  expect(rec.returncode).toBe(0)
+  expect(rec.outcome?.status).toBe("failed")
+  expect((rec.outcome?.failure as { node_id?: unknown } | null)?.node_id).toBe("reply")
+})
+
+test("a failing handler does not stop the reader", async () => {
+  class Broken extends Recorder {
+    override event(): void {
+      throw new Error("handler bug")
+    }
+  }
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const { lines, log } = recordingLog()
+  const registry = makeRegistry(store, { log })
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fake.script({ content: "fine" })
+  const rec = await runWorker(registry, makeJob(where), new Broken(), sessionDir, { env: fake.env() })
+  expect(rec.returncode).toBe(0)
+  expect(rec.outcome?.output).toBe("fine")
+  expect(lines).toContainEqual(["ERROR", "worker s1 handler event failed (Error)"])
+  expect(lines.filter(([, line]) => line.includes("handler bug"))).toEqual([])
+})
+
+test("a worker exits when the office closes its channel", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fake.script({ content: "never", hold: true })
+  const worker = await registry.spawn(makeJob(where), sessionDir, new Recorder(), { env: fake.env() })
+  await fake.waitForRequests(1, 30_000)
+  worker.closeChannel()
+  expect(await worker.wait(10_000)).toBe(EXIT_ORPHANED)
+})
+
+test("close stops the run first", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fake.script({ content: "never", hold: true })
+  const job = makeJob(where)
+  const rec = new Recorder()
+  await registry.spawn(job, sessionDir, rec, { env: fake.env() })
+  await fake.waitForRequests(1, 30_000)
+  expect(await registry.close("s1", 10_000)).toBe(EXIT_FAILED)
+  expect(rec.outcome?.type).toBe("error")
+  expect(String(rec.outcome?.message)).toContain("the office stopped the run")
+  expect(inspectRun(job.log).status).toBe("stopped")
+})
+
+test("close kills a worker that does not exit", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fake.script({ content: "never", hold: true })
+  const worker = await registry.spawn(makeJob(where), sessionDir, new Recorder(), { env: fake.env() })
+  await fake.waitForRequests(1, 30_000)
+  // It can't see the stop or the channel close.
+  process.kill(worker.pid, "SIGSTOP")
+  expect(await registry.close("s1", 1000)).toBe(-9)
+})
+
+test("close does not wait on a worker that stopped reading", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fake.script({ content: "never", hold: true })
+  const worker = await registry.spawn(makeJob(where), sessionDir, new Recorder(), { env: fake.env() })
+  await fake.waitForRequests(1, 30_000)
+  process.kill(worker.pid, "SIGSTOP")
+  // A frame the stopped worker never reads, queued ahead of the stop.
+  void worker.channel.send({ type: "pad", pad: "x".repeat(16 << 20) }).catch(() => {})
+  const began = performance.now()
+  expect(await registry.close("s1", 1000)).toBe(-9)
+  expect(performance.now() - began).toBeLessThan(3500)
+})
+
+test("a waiting run ends its worker normally", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const job = makeJob(where, "flows/nap.yaml", { inputs: {} })
+  const rec = await runWorker(registry, job, new Recorder(), sessionDir, { env: fake.env() })
+  expect(rec.returncode).toBe(0)
+  expect(rec.outcome?.status).toBe("waiting")
+  expect(registry.get("s1")).toBeUndefined()
+  expect(store.listWorkers()).toEqual([])
+})
+
+test("a failing exit step still finishes the worker", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const removeWorker = spyOn(store, "removeWorker").mockImplementation(() => {
+    throw new Error("database is locked")
+  })
+  onTestFinished(() => removeWorker.mockRestore())
+  fake.script({ content: "fine" })
+  const rec = await runWorker(registry, makeJob(where), new Recorder(), sessionDir, { env: fake.env() })
+  expect(rec.returncode).toBe(0)
+  expect(rec.outcome?.output).toBe("fine")
 })

@@ -414,6 +414,10 @@ worker/test_rpc.py::test_an_office_tool_error_is_the_tool_result	changed	package
 worker/test_rpc.py::test_store_replies_are_plain_json	changed	packages/office/tests/worker/rpc.test.ts::store replies are plain json	design §2.4: TS has no Path; a store's synchronous tuple is the reply	O3-2
 worker/test_rpc.py::test_store_value_and_os_errors_keep_their_codes	changed	packages/office/tests/worker/rpc.test.ts::store value and os errors keep their codes	design §4.1, Y3: a TS store throws RangeError for an unknown version and bad text alike: unknown_version from a read, invalid from a write or for a TypeError	O3-2
 worker/test_spawn.py	open	—	split: O2-11b → O3-4; the two worker_env tests are in packages/office/tests/worker/spawn.test.ts	O3-4
+worker/test_spawn.py::test_a_chat_job_streams_events_and_a_result	changed	packages/office/tests/worker/spawn.test.ts::a chat job streams events and a result	D32: no backward field; the stream frame carries yian's chunk fields	O3-4
+worker/test_spawn.py::test_a_job_that_raises_sends_an_error_frame	changed	packages/office/tests/worker/spawn.test.ts::a job that raises sends an error frame	§6 rule 13: the traceback is stack frames only; the error is the runtime's (Error: ENOENT)	O3-4
+worker/test_spawn.py::test_a_running_worker_is_recorded_and_isolated	changed	packages/office/tests/worker/spawn.test.ts::a running worker is recorded and isolated	design §2.4: the provider env rides in the spawn env, argv is selfCommand() + __worker; the office env is passed in (no process.env change)	O3-4
+worker/test_spawn.py::test_a_worker_exits_when_the_office_closes_its_channel	changed	packages/office/tests/worker/spawn.test.ts::a worker exits when the office closes its channel	P1: close sends stop first, so the channel close is tested through closeChannel()	O3-4
 worker/test_steering.py	ported	packages/office/tests/worker/steering.test.ts	—	O3-3
 worker/test_steering.py::test_a_finished_node_refuses_steers_and_interrupts	changed	packages/office/tests/worker/steering.test.ts::a finished node refuses interrupts	design §2.4, D33: yian's Steering takes an AbortSignal; interrupted is the signal's aborted; yian #1089: steers go to the agent's steer inbox through yian's send; unread steers stay in the inbox, so only interrupts are refused	O3-17
 worker/test_steering.py::test_a_node_is_cut_once_it_reads_its_interrupt	changed	packages/office/tests/worker/steering.test.ts::a node is cut once it reads its interrupt	design §2.4, D33: yian's Steering takes an AbortSignal; reading the interrupt is taking the signal	O3-3
@@ -949,10 +953,15 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/rpc.test.ts::object method names are never tools or stores	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::reply to never rejects	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/spawn.test.ts::a steer left frame without its fields is a bad frame	design §2.4: a frame the office can't read closes the channel, as Python's reader did	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a waiting run ends its worker normally	O3-3 handoff: a run that quiesces as waiting exits 0 and leaves no entry or record	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a worker env drops runtime and loader variables from the provider env	design §6.5, §6 rule 3: selfSpawnEnv drops BUN_*, NODE_OPTIONS, LD_* and DYLD_* from the provider env too	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::a worker shows no job when inspected or serialized	design §6.5, §6 rule 1: the worker holds the job and its provider key	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::a worker starts only once	design §2.4: one start frame and one reader per worker, so the exit steps run once	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::a worker that keeps running after its channel closes is killed after the grace	design §6.6: a worker still running after its channel closed is killed after the grace, before the office awaits it	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::close does not wait on a worker that stopped reading	P1, design §6.6: the stop is never awaited, so a worker that stopped reading is killed after the deadline	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::close stops the run first	P1, O3-3 handoff: close sends stop first, so the run ends as stopped	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::the worker env names are the launch allowlist	design §6.5 (one allowlist for daemon and worker)	O2-11b
+—	new	packages/office/tests/worker/spawn.test.ts::the worker log gets the workers output and keeps it across spawns	design §2.4: the worker's stdout and stderr are appended to the session's worker.log (0600, no symlink), kept across spawns	O3-4
 —	new	packages/office/tests/worker/steering.test.ts::after close a node gets a signal that never aborts	design §2.4, D33: an AbortSignal per node replaces the polled flag	O3-3
 —	new	packages/office/tests/worker/steering.test.ts::an interrupt aborts the signal a running node already took	design §2.4, D33: an AbortSignal per node replaces the polled flag	O3-3
 —	new	packages/protocol/test/errors.test.ts::422 text names the field and a fixed phrase	§5.4	O0-6

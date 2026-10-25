@@ -23,15 +23,10 @@ import {
   spawnWorker,
   startWorker,
   type TestWorker,
-  writeFiles,
 } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
-// A run whose one node sleeps an hour, so it quiesces as waiting.
-const NAP =
-  "id: nap\nname: nap\nnodes:\n  nap:\n    kind: tool\n    tool_id: sleep\n    input:\n      for: 1h\n" +
-  "output: ${nap.output}\n"
 const STOPPED = "Error: the office stopped the run"
 
 const shout: OfficeTool = {
@@ -123,7 +118,6 @@ test("a frame other than start is an error", async () => {
 test("a waiting run ends normally with its status", async () => {
   const fake = await fakeLlm()
   const where = base()
-  writeFiles(where.pin, { "flows/nap.yaml": NAP })
   const rec = await run(makeJob(where, "flows/nap.yaml", { inputs: {} }), new Recorder(), { env: fake.env() })
   expect(rec.order).toEqual(["result"])
   expect(rec.outcome?.status).toBe("waiting")
