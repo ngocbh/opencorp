@@ -937,8 +937,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/profile/store.test.ts::a lone surrogate is a range error and writes nothing	design §3 yian table: Buffer.from replaces a lone surrogate, where Python's encode refused it	O2-23
 —	new	packages/office/tests/profile/store.test.ts::python whitespace collapses and blanks like python	design §6 rule 12: the subject collapses Python's whitespace set, which JS \s and trim() don't match	O2-23
 —	new	packages/office/tests/profile/store.test.ts::write refuses a person folder that resolves elsewhere	design §6 (writes never through a symlink): the realpath check, which Python's test reached only by either error	O2-23
-—	new	packages/office/tests/questions/ask.test.ts::a call id from another run is refused	§6 rule 9; O4a-0a final review m4	O4a-0b
+—	new	packages/office/tests/questions/ask.test.ts::a call id from another run is refused	§6 rule 9; O4a-0a security handoff	O4a-0b
 —	new	packages/office/tests/questions/ask.test.ts::a closed call answers interrupted or goes stale [%s]	4a-revision §1 closed calls; D38 for timed_out	O4a-0b
+—	new	packages/office/tests/questions/ask.test.ts::a closed call interrupts an ask manager question and closes its item	4a-revision §1: an Esc closes the agent's call; ask_manager's item is closed as Python did	O4a-0b
 —	new	packages/office/tests/questions/ask.test.ts::a closed call of another run or an answered question changes nothing	§6 rule 9	O4a-0b
 —	new	packages/office/tests/questions/ask.test.ts::a closed call on a flow question goes stale	4a-revision §1	O4a-0b
 —	new	packages/office/tests/questions/ask.test.ts::a handler called twice with one call id stores one question	4a-revision §1: yian requires idempotent handlers by call_id	O4a-0b
@@ -1139,7 +1140,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/rpc.test.ts::a remote tool sends its call id	yian #1088: a tool_call frame carries the call id the office answers a pending call by	O4a-0a
 —	new	packages/office/tests/worker/rpc.test.ts::a reply that cannot be sent becomes a failed reply	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::a request ends when its signal aborts	P1: a stop ends a node waiting on the office	O3-3
-—	new	packages/office/tests/worker/rpc.test.ts::a request whose call id is another runs is refused	§6 rule 9: a worker can't name another run's call (O4a-0a final review m4)	O4a-0b
+—	new	packages/office/tests/worker/rpc.test.ts::a request whose call id is another runs is refused	§6 rule 9: a worker can't name another run's call (O4a-0a security handoff)	O4a-0b
 —	new	packages/office/tests/worker/rpc.test.ts::a thrown non error value is a failed reply	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::an error whose name or message cannot be read is a failed reply	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::ask user passes the handler only the six keys	design §2.4 (RS I6), §6 rule 9	O3-2

@@ -648,6 +648,10 @@ test("a request whose call id is another runs is refused", async () => {
       expect([reply.error, reply.message]).toEqual(["failed", `${kind} request's call_id is not this run's`])
       expect(String(reply.message)).not.toContain(callId)
     }
+    for (const callId of [5, ["r1/x"]]) {
+      const reply = await answerRequest({ ...frame, call_id: callId }, handlers, worker)
+      expect([reply.error, reply.message]).toEqual(["failed", `${kind} request has a bad 'call_id'`])
+    }
     const missing = await answerRequest(frame, handlers, worker)
     expect([missing.error, missing.message]).toEqual(["failed", `${kind} request is missing 'call_id'`])
   }

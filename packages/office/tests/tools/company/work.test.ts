@@ -135,8 +135,8 @@ test("create work item and comment", async () => {
   const { store, item: parent, tools } = setup()
   const out = String(
     await tools.create_work_item!.call({
-    title: "Fix the flaky test",
-    summary: "retry() flakes",
+      title: "Fix the flaky test",
+      summary: "retry() flakes",
       assignee: "minh",
     }),
   )

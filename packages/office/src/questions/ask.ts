@@ -134,7 +134,7 @@ export class Answers {
    * marked `consumed` if it was `answered` (its answer goes back inline), and don't store `workItem`.
    *
    * `workItem`, if given, is stored in the same transaction as the question. Throws a `TypeError` unless the call id
-   * is of the question's own run (it starts with `${run_id}/`).
+   * is of the question's own run (it starts with `${run_id}/`), or if the question stored for it is another run's.
    */
   ask(question: QuestionRecord, { workItem }: { workItem?: WorkItemRecord } = {}): QuestionRecord {
     const callId = question.call_id
@@ -143,6 +143,7 @@ export class Answers {
     }
     return this.store.transaction(() => {
       const stored = this.store.getQuestionByCall(callId)
+      if (stored && stored.run_id !== question.run_id) throw new TypeError("a question's call id must name its run")
       if (stored) return stored.status === "answered" ? this.store.setQuestionStatus(stored.id, "consumed") : stored
       if (workItem) this.store.createWorkItem(workItem)
       return this.store.addQuestion(question)

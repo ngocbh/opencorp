@@ -5,6 +5,7 @@ import { Question } from "@opencorp/protocol"
 import { Answers, makeAskUser, type OnQuestion } from "../../src/questions/ask.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { DuplicateKey, NotFound, StoreError, newId, type QuestionRecord } from "../../src/store/store.ts"
+import { EXIT_OK } from "../../src/worker/main.ts"
 import { ASK_KEYS, type AskRequest, askUserStub, BaseHandlers } from "../../src/worker/rpc.ts"
 import { openStore, question, session, workItem } from "../store/helpers.ts"
 import { base, inProcessWorker, makeJob, officeEnd, Recorder, writeFiles } from "../worker/helpers.ts"
@@ -195,11 +196,12 @@ test("an ask node from a real flow stores its pages", async () => {
   const handlers = new (class extends Recorder {
     override askUser(_w: unknown, request: AskRequest, callId?: string): unknown {
       this.asked.push(request)
-      return ask(request, String(callId))
+      expect(callId).toBeDefined()
+      return ask(request, callId!)
     }
   })()
   const worker = await inProcessWorker(job, handlers)
-  expect(await worker.wait()).not.toBeNull()
+  expect(await worker.wait()).toBe(EXIT_OK)
   expect(handlers.outcome?.status, String(handlers.outcome?.message)).toBe("waiting")
   const stored = store.listQuestions({ sessionId: s.id })
   expect(stored.map((q) => [q.source, q.call_id, q.status])).toEqual([["ask", `${job.run_id}/asked`, "open"]])
@@ -388,6 +390,9 @@ test("a call id from another run is refused", () => {
     expect(() => answers.ask(question(sid, { call_id: callId }))).toThrow(TypeError)
   }
   expect(store.listQuestions({ sessionId: sid })).toEqual([])
+  const other = store.addQuestion(question(sid, { run_id: "run-2", call_id: "run-1/reply/9/0" }))
+  expect(() => answers.ask(question(sid, { call_id: "run-1/reply/9/0" }))).toThrow(TypeError)
+  expect(store.listQuestions({ sessionId: sid })).toEqual([other])
 })
 
 test.each(["interrupted", "timed_out", "cancelled", "crashed", "failed"])(
@@ -419,14 +424,34 @@ test("a closed call on a flow question goes stale", () => {
   expect([store.getQuestion(q.id)!.status, store.getQuestion(q.id)!.answer_kind]).toEqual(["stale", null])
 })
 
+test("a closed call interrupts an ask manager question and closes its item", () => {
+  const { store, sid, answers, lines } = setup()
+  const { item, q } = managerQuestion(sid)
+  answers.ask(q, { workItem: item })
+  answers.closedCall("run-1", CALL, "interrupted")
+  const stored = store.getQuestion(q.id)!
+  expect([stored.status, stored.answer, stored.answer_kind, stored.answered_by]).toEqual([
+    "consumed",
+    INTERRUPTED,
+    "interrupted",
+    null,
+  ])
+  const closed = store.getWorkItem(item.id)!
+  expect([closed.status, closed.resolved_by]).toEqual(["done", null])
+  expect(lines).toEqual([])
+})
+
 test("a closed call of another run or an answered question changes nothing", () => {
   const { store, sid, answers } = setup()
   const open = answers.ask(question(sid, { call_id: CALL }))
   const other = store.addQuestion(question(sid, { run_id: "run-2", call_id: "run-2/reply/1/0" }))
   expect(answers.closedCall("run-2", CALL, "cancelled")).toBeUndefined()
   expect(answers.closedCall("run-1", "run-2/reply/1/0", "cancelled")).toBeUndefined()
+  const misnamed = store.addQuestion(question(sid, { run_id: "run-2", call_id: "run-1/reply/9/0" }))
+  expect(answers.closedCall("run-1", "run-1/reply/9/0", "cancelled")).toBeUndefined()
   expect(store.getQuestion(open.id)!.status).toBe("open")
   expect(store.getQuestion(other.id)!.status).toBe("open")
+  expect(store.getQuestion(misnamed.id)!.status).toBe("open")
   store.answerQuestion(open.id, "pg", "text")
   expect(answers.closedCall("run-1", CALL, "interrupted")!.status).toBe("answered")
   expect([store.getQuestion(open.id)!.status, store.getQuestion(open.id)!.answer]).toEqual(["answered", "pg"])
