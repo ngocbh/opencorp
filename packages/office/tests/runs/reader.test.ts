@@ -17,6 +17,7 @@ import {
   LRU_LOGS,
   nodePage,
   PAGE_BYTES,
+  PAGE_SCAN,
   readEvent,
   readEvents,
   type ReadOn,
@@ -24,6 +25,7 @@ import {
   refresh,
   RunLogReader,
   SCHEMA,
+  SPARSE_BYTES,
   UnreadableLog,
   UnsupportedSchema,
 } from "../../src/runs/reader.ts"
@@ -131,6 +133,14 @@ test("a line over the line cap makes the log unreadable before yian reads it", a
   expect((again as Error).message).toBe("This log has a record too large to read (line 3)")
 })
 
+test("an unterminated tail over the line cap is left unread", async () => {
+  const file = chatLog(path.join(tempDir(), "r.jsonl"))
+  const whole = fs.readFileSync(file)
+  fs.appendFileSync(file, Buffer.alloc(LINE_CAP + 1024, "x"))
+  const index = await refresh(file, null)
+  expect([index.lastSeq, index.offset]).toEqual([19, whole.length])
+})
+
 test("a torn last line is left for later", async () => {
   const file = chatLog(path.join(tempDir(), "r.jsonl"))
   const whole = fs.readFileSync(file)
@@ -158,6 +168,9 @@ test("a node error is kept up to error kept its cut marked", async () => {
   const index = await refresh(logOf(runStarted(0), started(1, "a"), failed(2, "a", "x".repeat(5000))), null)
   const error = index.nodes[0]!.error!
   expect([ERROR_KEPT, error.length, error.endsWith("x…")]).toEqual([256, ERROR_KEPT, true])
+  // Cut by code points: 257 astral characters keep 255 and the mark.
+  const astral = await refresh(logOf(runStarted(0), started(1, "a"), failed(2, "a", "😀".repeat(257))), null)
+  expect(astral.nodes[0]!.error).toBe("😀".repeat(255) + "…")
 })
 
 test("a resume restarts the open starts and only the latest start is open", async () => {
@@ -362,13 +375,19 @@ test("a log unreadable twice in a row says so", async () => {
 })
 
 test("the cost counts the ids errors and retried ids it holds", async () => {
-  const short = logOf(runStarted(0), started(1, "a"), failed(2, "a", "x"), resumed(3, ["b"]))
-  const long = logOf(
-    runStarted(0), started(1, "a".repeat(5000)), failed(2, "a".repeat(5000), "x".repeat(5000)),
-    resumed(3, ["b".repeat(3000)]),
+  const short = logOf(
+    runStarted(0), started(1, "a"), failed(2, "a", "x"), resumed(3, ["b"]), started(4, "c"), routed(5, "c", "r"),
   )
-  const grown = cost(await refresh(long, null)) - cost(await refresh(short, null))
-  expect(grown).toBe(4999 + ERROR_KEPT - 1 + 2999)
+  const long = logOf(
+    runStarted(0, { model: "m".repeat(5000) }), started(1, "a".repeat(5000)),
+    failed(2, "a".repeat(5000), "x".repeat(5000)), resumed(3, ["b".repeat(3000)]), started(4, "c"),
+    routed(5, "c", "r".repeat(5000)),
+  )
+  const index = await refresh(long, null)
+  const grown = cost(index) - cost(await refresh(short, null))
+  // The model "stub" grows by 4996; the error and the handle are kept cut to ERROR_KEPT.
+  expect(grown).toBe(4999 + ERROR_KEPT - 1 + 2999 + 4996 + ERROR_KEPT - 1)
+  expect(index.nodes[1]!.handle).toBe("r".repeat(ERROR_KEPT - 1) + "…")
   const many = logOf(runStarted(0), ...Array.from({ length: 100 }, (_, i) => {
     const n = i + 1
     return started(n, String(n).padStart(4, "0") + "n".repeat(996))
@@ -392,7 +411,34 @@ test("record pages seek by seq and stop at the count", async () => {
   expect([page.events.map((e) => e.seq), page.next_after, page.cut]).toEqual([seqs, 109, false])
   const last = readEvents(file, index, { after: 240, limit: 10 })
   expect([last.events.map((e) => e.seq), last.next_after]).toEqual([[241, 242, 243], null])
+  // An after that isn't a seq reads from the first record; a fractional limit is floored.
+  const odd = readEvents(file, index, { after: 0.5, limit: 2.7 })
+  expect([odd.events.map((e) => e.seq), odd.next_after]).toEqual([[0, 1], 1])
 })
+
+test("a page stops after its scan budget", async () => {
+  const stubs = Array.from({ length: 4 }, (_, i) => commitOfSize(i + 1, `s${i + 1}`, BIG_LINE + 10, "s"))
+  const file = logOf(runStarted(0), ...stubs, started(5, "next"))
+  const index = await refresh(file, null)
+  const page = readEvents(file, index, { after: 0, limit: 500, pageScan: 2 * BIG_LINE })
+  expect([PAGE_SCAN, page.events.map((e) => e.size), page.next_after, page.cut]).toEqual([
+    64 << 20, [BIG_LINE + 10, BIG_LINE + 10], 2, true,
+  ])
+  const rest = readEvents(file, index, { after: 4, limit: 500, pageScan: 2 * BIG_LINE })
+  expect([rest.events.map((e) => e.seq), rest.next_after, rest.cut]).toEqual([[5], null, false])
+}, 60_000)
+
+test("a sparse entry marks every few mib of records", async () => {
+  const head = runStarted(0)
+  const commits = Array.from({ length: 7 }, (_, i) => commitOfSize(i + 1, `c${i + 1}`, 3 << 20, "c"))
+  const file = logOf(head, ...commits)
+  const index = await refresh(file, null)
+  // Commit k starts at head + (k - 1) * 3 MiB: commits 4 and 7 are the first 8 MiB or more past the last entry.
+  expect([SPARSE_BYTES, index.sparse]).toEqual([
+    8 << 20, [[0, 0], [4, head.length + (9 << 20)], [7, head.length + (18 << 20)]],
+  ])
+  expect(readEvent(file, index, 6)!.node_id).toBe("c6")
+}, 60_000)
 
 test("long strings are cut and the page stops at its bytes", async () => {
   const commits = Array.from({ length: 100 }, (_, i) => committed(i + 1, `n${i + 1}`, { output: "x".repeat(10_000) }))
@@ -424,6 +470,7 @@ test("one record by seq is whole and is capped", async () => {
   const big = readEvent(file, index, 3)!
   expect([big.cut, big.payload!.value]).toEqual([["/value/output"], { output: "w".repeat(FIELD_CHARS) + "…" }])
   expect(readEvent(file, index, 7)).toBeNull()
+  expect([readEvent(file, index, 1.5), readEvent(file, index, -1)]).toEqual([null, null])
 })
 
 test("a file changed under a page stops it there", async () => {
@@ -440,7 +487,7 @@ test("the download is every complete line as stored", async () => {
   const file = logOf(runStarted(0), started(1, "a"), committed(2, "a", { output: "d".repeat(3 << 20) }))
   const whole = fs.readFileSync(file)
   fs.appendFileSync(file, '{"torn')
-  const stream = logStream(file)
+  const stream = await logStream(file)
   fs.unlinkSync(file) // opened when called, so a log removed before it streams still streams whole
   const chunks: Buffer[] = []
   for await (const chunk of stream) chunks.push(chunk as Buffer)
@@ -448,14 +495,14 @@ test("the download is every complete line as stored", async () => {
   expect([chunks.length > 1, chunks.every((chunk) => chunk.length <= CHUNK)]).toEqual([true, true])
   let code: unknown
   try {
-    logStream(file)
+    await logStream(file)
   } catch (error) {
     code = (error as NodeJS.ErrnoException).code
   }
   expect(code).toBe("ENOENT")
   fs.writeFileSync(file, '{"torn')
   const torn: unknown[] = []
-  for await (const chunk of logStream(file)) torn.push(chunk)
+  for await (const chunk of await logStream(file)) torn.push(chunk)
   expect(torn).toEqual([])
 })
 

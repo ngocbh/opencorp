@@ -31,6 +31,9 @@ import { recordedKinds } from "./nodes.ts"
 export const SCHEMA = 22
 /** Every this-many records, the index keeps the record's byte offset, so a page seeks near its first record. */
 export const SPARSE_EVERY = 64
+/** The index also keeps the offset of a record that starts this many bytes or more past its last kept one, so a seek
+ *  skips at most this many bytes of lines. */
+export const SPARSE_BYTES = 8 << 20
 /** The most open attempts the index keeps: a run's open nodes are bounded by its widest map. */
 export const OPEN_CAP = 256
 /** The most resume dividers the index keeps. */
@@ -45,6 +48,9 @@ export const BIG_LINE = 2 << 20
 export const FIELD_CHARS = 4 << 10
 /** The most JSON a record page holds. */
 export const PAGE_BYTES = 256 << 10
+/** The most bytes of lines a record page scans past its first record (a bounded read window, as DeepSeek's
+ *  `readWindowMax`): its reads are synchronous, so this bounds how long one page holds the event loop. */
+export const PAGE_SCAN = 64 << 20
 /** The most JSON one opened record shows. */
 export const EVENT_BYTES = 2 << 20
 /** The deepest a payload is shown: a container nested deeper shows as "…", so showing and serializing it recurse a
@@ -56,7 +62,8 @@ export const CUT_CHARS = 64 << 10
  *  (parsing a record takes several times its size in memory). The download has it whole. */
 export const HUGE_LINE = 16 << 20
 /** The longest complete line the index reads: yian's reader holds a line whole and parses it, so a longer one makes
- *  the log unreadable before yian sees it. */
+ *  the log unreadable before yian sees it. Until yian's reader takes a line cap, a build's peak memory is several
+ *  times this: yian holds the line, its string and its parse. */
 export const LINE_CAP = 64 << 20
 /** The longest log whose derived values are shown: rebuilding one replays the whole log, held in memory. */
 export const FOLD_BYTES = 16 << 20
@@ -68,8 +75,8 @@ export const LRU_BYTES = 128 << 20
 export const LRU_LOGS = 128
 /** How much of a node's error is shown. */
 export const ERROR_CHARS = 200
-/** How much of a node's error the index keeps, to bound a log with many failed nodes; a longer error is cut with
- *  "…". */
+/** How much of a node's error and route handle the index keeps, to bound a log with many nodes; a longer one is cut
+ *  with "…". */
 export const ERROR_KEPT = 256
 
 /** A complete line of the log isn't a run-log record this office can read: the index stops for that log, with a
@@ -132,13 +139,15 @@ export interface Index {
   open: Map<string, Attempt>
   /** (seq, the node ids it retried) of each resume. */
   dividers: [number, string[]][]
-  /** (seq, byte offset) of every SPARSE_EVERY-th record. */
+  /** (seq, byte offset) of every SPARSE_EVERY-th record, and of each record SPARSE_BYTES or more past the last
+   *  entry. */
   sparse: [number, number][]
   /** Every attempt by start, the newest `nodeCap`. */
   nodes: Attempt[]
   /** Whether older attempts were trimmed from `nodes`. */
   dropped: boolean
-  /** The characters of the node ids, errors and retried ids it keeps, and an estimate of its node kinds' size. */
+  /** The characters of the run id, models, node ids, handles, errors and retried ids it keeps, and an estimate of its
+   *  node kinds' size. */
   held: number
   /** The node kinds of the flow the log recorded, once asked for (see `RunLogReader.kinds`). */
   kinds?: Promise<Map<string, string> | null>
@@ -276,7 +285,9 @@ function pacer(): () => Promise<void> {
 
 /**
  * The end of the last complete line of `path` from `index.offset` on, scanned CHUNK at a time for newlines only, so
- * nothing but one chunk is held. Throws UnreadableLog for a complete line over LINE_CAP.
+ * nothing but one chunk is held. Throws UnreadableLog for a complete line over LINE_CAP. A line still without a newline
+ * once it is past LINE_CAP ends the scan before it, so at most LINE_CAP and a chunk of it is read (a complete line
+ * whose newline is more than a chunk past LINE_CAP is then left unread rather than refused).
  */
 async function scan(path: string, index: Index, pace: () => Promise<void>): Promise<number> {
   const fd = fs.openSync(path, "r")
@@ -296,6 +307,8 @@ async function scan(path: string, index: Index, pace: () => Promise<void>): Prom
         lineStart = pos + nl + 1
         line += 1
       }
+      // A line already past LINE_CAP can never be read, so the rest of it isn't read on every refresh.
+      if (pos + count - lineStart > LINE_CAP) return lineStart
       pos += count
       await pace()
     }
@@ -308,9 +321,10 @@ async function scan(path: string, index: Index, pace: () => Promise<void>): Prom
  * Folds each complete record of `path` from `index.offset` on into `index` (the default `ReadOn`). The office scans
  * the new bytes first, so a line over LINE_CAP is refused before yian's reader holds it, and yian's reader is stopped
  * at the last complete line the scan saw, so it never reads a tail being written. Yields to the event loop about every
- * 10 ms. The last line read is hashed after the loop: a writer that rewrites that line between the read and the hash
- * makes the next refresh rebuild once. A writer that replaces or rewrites the scanned bytes between the scan and
- * yian's read can still make yian hold a line over LINE_CAP: only a line cap in yian's reader closes that.
+ * 10 ms, checked every 256 records and every CHUNK bytes of records, so at most one record (up to LINE_CAP) is read
+ * past that between yields. The last line read is hashed after the loop: a writer that rewrites that line between the
+ * read and the hash makes the next refresh rebuild once. A writer that replaces or rewrites the scanned bytes between
+ * the scan and yian's read can still make yian hold a line over LINE_CAP: only a line cap in yian's reader closes that.
  */
 export async function readOn(path: string, index: Index, resumed: boolean, nodeCap: number): Promise<void> {
   const pace = pacer()
@@ -320,6 +334,7 @@ export async function readOn(path: string, index: Index, resumed: boolean, nodeC
     ? { afterOffset: index.offset, runId: index.runId, afterSeq: index.lastSeq }
     : {}
   let count = 0
+  let pacedAt = index.offset
   for (const entry of iterRunRecords(path, from)) {
     // A record past the scanned end means the line at that end was rewritten since the scan.
     if (entry.end > scanEnd) throw new RunLogChangedError("the run log changed under its read")
@@ -327,10 +342,16 @@ export async function readOn(path: string, index: Index, resumed: boolean, nodeC
     index.offset = entry.end
     index.lastStart = entry.offset
     index.lastSeq = entry.seq
-    if (index.runId !== entry.runId) index.runId = own(entry.runId)
+    if (index.runId !== entry.runId) {
+      index.held += entry.runId.length - (index.runId?.length ?? 0)
+      index.runId = own(entry.runId)
+    }
     if (entry.seq === 0) index.startEnd = entry.end
     if (entry.end === scanEnd) break
-    if (++count % 256 === 0) await pace()
+    if (++count % 256 === 0 || entry.end - pacedAt >= CHUNK) {
+      await pace()
+      pacedAt = entry.end
+    }
   }
   index.lastSha = sha256(path, index.lastStart, index.offset)
 }
@@ -339,7 +360,9 @@ export async function readOn(path: string, index: Index, resumed: boolean, nodeC
 function apply(index: Index, entry: RunLogEntry, nodeCap: number): void {
   const { seq, kind, nodeId } = entry
   const record = entry.envelope.record
-  if (seq % SPARSE_EVERY === 0) index.sparse.push([seq, entry.offset])
+  if (seq % SPARSE_EVERY === 0 || entry.offset - (index.sparse.at(-1)?.[1] ?? 0) >= SPARSE_BYTES) {
+    index.sparse.push([seq, entry.offset])
+  }
   if (kind === "run_started") {
     const start = record as unknown as {
       flowFingerprint: string
@@ -348,12 +371,14 @@ function apply(index: Index, entry: RunLogEntry, nodeCap: number): void {
     }
     index.fingerprint = own(start.flowFingerprint)
     index.learnable = start.learnable
+    index.held -= modelChars(index.models)
     // Built with fromEntries, so a static path named like an Object member is an own key.
     index.models = Object.fromEntries(
       Object.entries(start.effectiveLlmByStaticPath)
         .filter(([, llm]) => typeof llm.model === "string" && llm.model !== "")
         .map(([staticPath, llm]) => [own(staticPath), own(llm.model as string)]),
     )
+    index.held += modelChars(index.models)
   } else if (kind === "node_started") {
     started(index, seq, nodeId!, nodeCap)
   } else if (OUTCOMES.has(kind)) {
@@ -378,6 +403,11 @@ function apply(index: Index, entry: RunLogEntry, nodeCap: number): void {
   }
 }
 
+/** The characters of the static paths and models in `models`. */
+function modelChars(models: Record<string, string>): number {
+  return Object.entries(models).reduce((sum, [staticPath, model]) => sum + staticPath.length + model.length, 0)
+}
+
 /** A copy of `s` that shares no memory with the line it was parsed from: JSC keeps a substring's parent string alive,
  *  so a kept id or error would pin its whole (maybe multi-MiB) line in every cached index. A structured clone copies
  *  the code units as they are, a lone surrogate included. */
@@ -397,7 +427,7 @@ function started(index: Index, seq: number, id: string, nodeCap: number): void {
   // Trimmed in batches: one removal per append would be quadratic.
   if (index.nodes.length > Math.floor(nodeCap * 11 / 10)) {
     const gone = index.nodes.splice(0, index.nodes.length - nodeCap)
-    for (const old of gone) index.held -= old.nodeId.length + (old.error?.length ?? 0)
+    for (const old of gone) index.held -= old.nodeId.length + (old.handle?.length ?? 0) + (old.error?.length ?? 0)
     index.dropped = true
   }
 }
@@ -412,14 +442,15 @@ function ended(index: Index, seq: number, kind: string, nodeId: string, record: 
   let failure: Failure | null = null
   if (kind === "node_routed") {
     const route = record as { handle: string; terminalFailure: Failure | null }
-    attempt.handle = own(route.handle)
+    attempt.handle = own(cutReason(route.handle.slice(0, 2 * ERROR_KEPT + 1), ERROR_KEPT))
+    index.held += attempt.handle.length
     failure = route.terminalFailure
   } else if (kind === "node_failed") {
     failure = (record as { failure: Failure }).failure
   }
   if (failure !== null) {
     // The slice keeps cutReason from splitting a huge message; the cut is the same.
-    attempt.error = own(cutReason((failure.message || failure.code).slice(0, 2 * ERROR_KEPT), ERROR_KEPT)) || null
+    attempt.error = own(cutReason((failure.message || failure.code).slice(0, 2 * ERROR_KEPT + 1), ERROR_KEPT)) || null
     index.held += attempt.error?.length ?? 0
   }
 }
@@ -469,11 +500,13 @@ function window(index: Index, first: number): [number, number, number] {
   return [seq, start, index.offset]
 }
 
-/** One complete line: its bytes, or null when it is longer than the caller's cap; its first 256 bytes; its size. */
+/** One complete line: its bytes, or null when it is longer than the caller's cap; its first 256 bytes; its size; the
+ *  byte after it. */
 interface Line {
   bytes: Buffer | null
   head: Buffer
   size: number
+  end: number
 }
 
 /**
@@ -506,7 +539,7 @@ function* lines(fd: number, start: number, stop: number, cap: number, skip: numb
           bytes = Buffer.allocUnsafe(size)
           bytes = bytes.subarray(0, fs.readSync(fd, bytes, 0, size, at))
         }
-        yield { bytes, head, size }
+        yield { bytes, head, size, end: pos + end }
         head = Buffer.alloc(0)
       }
       at = pos + end
@@ -652,8 +685,12 @@ function decode(bytes: Buffer, seq: number, whole: boolean, derived: TypedValue 
   if (!isRecord(record) || record.seq !== BigInt(seq)) return null
   const kind = typeof record.kind === "string" && record.kind !== "" ? record.kind : "unknown"
   const raw = isRecord(record.payload) ? record.payload : null
-  if (raw === null) return { seq, kind, node_id: null, payload: null, cut: [] }
-  return fitted(seq, kind, raw, bytes.length, whole, (cuts, cutting) => shownPayload(raw, kind, cuts, cutting, derived))
+  const event: RunEvent = raw === null
+    ? { seq, kind, node_id: null, payload: null, cut: [] }
+    : fitted(seq, kind, raw, bytes.length, whole, (cuts, cutting) => shownPayload(raw, kind, cuts, cutting, derived))
+  // yian's parser makes its strings as slices of the line (or of the replayed log, for a derived value), and JSC keeps
+  // a slice's parent alive: a copy keeps only what is shown, not every line a page read (see `own`).
+  return structuredClone(event)
 }
 
 /**
@@ -689,33 +726,39 @@ function fitted(
 }
 
 /**
- * Records after seq `after` (from the first when null), up to `limit` or PAGE_BYTES of JSON (always its first record);
- * a line over BIG_LINE is a stub with its size. A line's seq is its line number, counted from a sparse entry; a line
- * that no longer reads as its seq ends the page there.
+ * Records after seq `after` (from the first when null), up to `limit` records, PAGE_BYTES of JSON, or `pageScan` bytes
+ * of lines scanned past its first record (always its first record); a page cut by bytes says `cut`. A line over
+ * BIG_LINE is a stub with its size. A line's seq is its line number, counted from a sparse entry; a line that no
+ * longer reads as its seq ends the page there. `after` is a seq, a non-negative safe integer: anything else reads from
+ * the first record. `limit` is at least 1: a fraction is floored. Tests pass a small `pageScan`.
  */
 export function readEvents(
   path: string,
   index: Index,
-  { after, limit }: { after: number | null; limit: number },
+  { after, limit, pageScan = PAGE_SCAN }: { after: number | null; limit: number; pageScan?: number },
 ): RunEventPage {
-  const first = Math.max(0, after === null ? 0 : after + 1)
+  const from = after !== null && Number.isSafeInteger(after) && after >= 0 ? after : null
+  const most = Math.max(1, Math.floor(limit) || 1)
+  const first = from === null ? 0 : from + 1
   const [base, start, stop] = window(index, first)
   const events: RunEvent[] = []
   let used = 0
+  let begin = 0
   let nextAfter: number | null = null
   let cut = false
   const fd = fs.openSync(path, "r")
   try {
     let seq = first
     for (const line of lines(fd, start, stop, BIG_LINE, first - base)) {
-      if (events.length > 0 && events.length >= limit) {
+      if (events.length === 0) begin = line.end - line.size
+      if (events.length >= most) {
         nextAfter = events.at(-1)!.seq
         break
       }
       const event = line.bytes === null ? stub(line.head, seq, line.size) : decode(line.bytes, seq, false)
       if (event === null) {
         // Rewritten since it was indexed: the next request's refresh rebuilds.
-        nextAfter = events.at(-1)?.seq ?? after
+        nextAfter = events.at(-1)?.seq ?? from
         break
       }
       const size = Buffer.byteLength(JSON.stringify(event))
@@ -727,6 +770,11 @@ export function readEvents(
       events.push(event)
       used += size
       seq += 1
+      if (line.end - begin >= pageScan && line.end < stop) {
+        nextAfter = event.seq
+        cut = true
+        break
+      }
     }
   } finally {
     fs.closeSync(fd)
@@ -736,9 +784,11 @@ export function readEvents(
 
 /**
  * The record with `seq`: its strings cut only when its payload is over EVENT_BYTES, and a stub with its size when it
- * is still over after that, or when its line is over HUGE_LINE (never held or parsed). Null if there is none.
+ * is still over after that, or when its line is over HUGE_LINE (never held or parsed). Null if there is none, and
+ * when `seq` isn't a non-negative safe integer.
  */
 export function readEvent(path: string, index: Index, seq: number): RunEvent | null {
+  if (!Number.isSafeInteger(seq) || seq < 0) return null
   return eventAt(path, index, seq, null)
 }
 
@@ -759,15 +809,15 @@ function eventAt(path: string, index: Index, seq: number, derived: TypedValue | 
 
 /**
  * The download: every complete line of `path` as it is when called, as stored, streamed CHUNK at a time, so no line
- * is ever held whole. The file is opened now (its `fs` error, `ENOENT`, is thrown here, not mid-stream). It needs no
- * index, so a log this office can't read still downloads. The caller consumes or destroys the stream, which closes
- * the file.
+ * is ever held whole. The file is opened when called (its `fs` error, `ENOENT`, rejects the promise, not the stream).
+ * It needs no index, so a log this office can't read still downloads. The caller consumes or destroys the stream,
+ * which closes the file.
  */
-export function logStream(path: string): Readable {
+export async function logStream(path: string): Promise<Readable> {
   const fd = fs.openSync(path, "r")
   let end: number
   try {
-    end = lastLineEnd(fd, fs.fstatSync(fd).size)
+    end = await lastLineEnd(fd, fs.fstatSync(fd).size)
   } catch (error) {
     fs.closeSync(fd)
     throw error
@@ -779,15 +829,18 @@ export function logStream(path: string): Readable {
   return fs.createReadStream(path, { fd, start: 0, end: end - 1, highWaterMark: CHUNK })
 }
 
-/** The end of the last complete line of `fd` before byte `size`, scanned backward 64 KiB at a time; 0 when none. */
-function lastLineEnd(fd: number, size: number): number {
-  const piece = Buffer.allocUnsafe(64 << 10)
+/** The end of the last complete line of `fd` before byte `size`, scanned backward CHUNK at a time, yielding to the
+ *  event loop about every 10 ms; 0 when none. */
+async function lastLineEnd(fd: number, size: number): Promise<number> {
+  const pace = pacer()
+  const piece = Buffer.allocUnsafe(CHUNK)
   for (let stop = size; stop > 0;) {
     const start = Math.max(0, stop - piece.length)
     const count = fs.readSync(fd, piece, 0, stop - start, start)
     const nl = piece.subarray(0, count).lastIndexOf(0x0a)
     if (nl !== -1) return start + nl + 1
     stop = start
+    await pace()
   }
   return 0
 }
@@ -840,10 +893,12 @@ export class RunLogReader {
   }
 
   /**
-   * The record with `seq`, as the module's `readEvent` reads it. With `fold`, a derived commit (one that names its
-   * value by `from`, `take` or `steps`) of a log no longer than `foldBytes` when indexed shows the value it accepted,
-   * rebuilt by replaying the log as it is now through `foldRunLog`, one replay at a time; it stays as written when
-   * the replay fails (a CODE reference outside `fold.codeRoot`, other `YIAN_*` values, a log yian refuses).
+   * The record with `seq`, as the module's `readEvent` reads it (null when `seq` isn't a non-negative safe integer).
+   * With `fold`, a derived commit (one that names its value by `from`, `take` or `steps`) of a log no longer than
+   * `foldBytes` when indexed and when its replay starts shows the value it accepted, rebuilt by replaying the log as it
+   * is now through `foldRunLog`, one replay at a time; it stays as written when the replay fails (a CODE reference
+   * outside `fold.codeRoot`, other `YIAN_*` values, a log yian refuses). Each opened derived commit queues one replay,
+   * and the routes' request limits bound the queue.
    */
   async readEvent(
     path: string,

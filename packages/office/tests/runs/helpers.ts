@@ -20,15 +20,19 @@ export function line(
   return Buffer.from(logJson({ at, kind, payload, run_id: RUN, schema, seq: BigInt(seq), ...extra }) + "\n")
 }
 
-/** A `run_started` with every field yian requires. */
+/** A `run_started` with every field yian requires, its one static path `chat/reply` on `model`. */
 export function runStarted(
   seq = 0,
-  { learnable = true, yianVersion = "0.0.0" }: { learnable?: boolean; yianVersion?: string } = {},
+  { learnable = true, yianVersion = "0.0.0", model = "stub" }: {
+    learnable?: boolean
+    yianVersion?: string
+    model?: string
+  } = {},
 ): Buffer {
   return line(seq, "run_started", {
     flow_fingerprint: FP,
     start_wiring_override: {},
-    effective_llm_by_static_path: { "chat/reply": { provider: "vllm", model: "stub" } },
+    effective_llm_by_static_path: { "chat/reply": { provider: "vllm", model } },
     num_workers: 0n,
     memory_snapshots: null,
     memories: null,

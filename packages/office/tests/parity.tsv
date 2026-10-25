@@ -1115,9 +1115,12 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/reader.test.ts::a derived commit shows its value when opened	#362 PR 8b, §5.5	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a line over the line cap makes the log unreadable before yian reads it	security review: a log must not exhaust memory; yian's reader joins whole lines	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a log over the fold cap shows no derived value	security review: the fold holds the whole log	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a page stops after its scan budget	security review: a page's synchronous reads are bounded (Python read pages in a thread)	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a payload whose cuts would name too much is a size stub	security review: bounded output	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a real log is in the schema this office reads	§5.5	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a sparse entry marks every few mib of records	security review: a page's synchronous reads are bounded (Python read pages in a thread)	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a waiting node stays open through a resume and a woken one runs on	yian #1057, #1064: a waiting node is non-terminal and a resume doesn't retry it	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::an unterminated tail over the line cap is left unread	security review: a torn tail is never read whole	O4b-5
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv equals the Python argv	§6.1 golden argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::the checkout helper binds bun and its entry read only	§2.5, O0-10 P7	O1-9
