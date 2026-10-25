@@ -35,7 +35,7 @@ function tmux(launch: Launch, host: Host, ...args: string[]): Promise<Completed>
 
 /** `word` for a POSIX shell, as Python's `shlex.quote` writes it: unchanged when it holds only safe characters,
  *  else single-quoted with each `'` as `'"'"'`. */
-function shQuote(word: string): string {
+export function shQuote(word: string): string {
   if (word === "") return "''"
   if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(word)) return word
   return `'${word.split("'").join(`'"'"'`)}'`
