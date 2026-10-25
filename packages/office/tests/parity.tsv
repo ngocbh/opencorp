@@ -813,6 +813,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/sandbox/run.test.ts::a checkout helper call leaves no transpiled copy under HOME	design §2.5 (helper transpiler cache, settled 2026-10-24)	O2-22a
 —	new	packages/office/tests/sandbox/run.test.ts::a sandbox refusal is labelled	D18	O1-10
 —	new	packages/office/tests/sandbox/run.test.ts::a throwing tracking hook still kills the call	§6.1: any error kills and cleans up	O1-10
+—	new	packages/office/tests/sandbox/run.test.ts::quiet calls leave the others their output	design §6.1: the call's pipes are read on the event loop, not the fs thread pool, so concurrent calls can't starve it	O2-28L
 —	new	packages/office/tests/sandbox/run.test.ts::scrubbed env is pinned and only the checkout helper adds the transpiler cache switch	design §2.5 (helper transpiler cache, settled 2026-10-24)	O2-22a
 —	new	packages/office/tests/sandbox/run.test.ts::stdin is ignored unless given	§6.1	O1-10
 —	new	packages/office/tests/sandbox/run.test.ts::the group is killed after a leader that exits by itself	D12: the documented window	O1-10

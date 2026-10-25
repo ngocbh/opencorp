@@ -120,13 +120,8 @@ test.skipIf(!sandboxAvailable())("a call leaves no fd open", async () => {
   const done = await sh(policy, "echo out; echo err >&2; cat", { stdin: "in" })
   expect(done.stdout.toString()).toBe("out\nin")
   expect(done.stderr.toString()).toBe("err\n")
-  // Three at once, so a blocked thread pool would show; the child never reads its stdin.
-  const start = performance.now()
-  const timedOut = await Promise.all(
-    [1, 2, 3].map(() => sh(policy, "sleep 30", { stdin: Buffer.alloc(1 << 20), timeout: 0.5 })),
-  )
-  for (const result of timedOut) expect(result.timedOut).toBe(true)
-  expect(performance.now() - start).toBeLessThan(10_000)
+  // The child never reads its stdin.
+  expect((await sh(policy, "sleep 30", { stdin: Buffer.alloc(1 << 20), timeout: 0.5 })).timedOut).toBe(true)
   expect((await sh(policy, "sleep 30", { stdin: "in", signal: AbortSignal.timeout(300) })).interrupted).toBe(true)
   // The spawn throws at once.
   await expect(run(policy, ["/bin/sh", "-c", "a\0b"], { stdin: "in" })).rejects.toMatchObject({
@@ -146,6 +141,53 @@ test.skipIf(!sandboxAvailable())("a call leaves no fd open", async () => {
   await expect(tracked).rejects.toThrow("tracking failed")
   // `<=`: every test file shares this process, and an fd an earlier test left may close meanwhile.
   await waitFor(() => count() <= before, { timeout: 5_000, what: "the call's fds to close" })
+})
+
+test.skipIf(!sandboxAvailable())("quiet calls leave the others their output", async () => {
+  const policy = makePolicy().make()
+  const small = path.join(tempDir(), "small")
+  fs.writeFileSync(small, "small")
+  const stop = new AbortController()
+  onTestFinished(() => stop.abort())
+  // More quiet calls than the runtime's fs thread pool has threads (one per core); half also have stdin
+  // they never read, so its write stays pending.
+  const count = os.availableParallelism() + 2
+  let started = 0
+  const quiet = Array.from({ length: count }, (_, i) =>
+    sh(policy, "sleep 30", {
+      ...(i % 2 === 0 ? { stdin: Buffer.alloc(1 << 20) } : {}),
+      signal: stop.signal,
+      track: () => {
+        started++
+        return () => {}
+      },
+    }),
+  )
+  await waitFor(() => started === count, { timeout: 10_000, what: "the quiet calls to start" })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  const start = performance.now()
+  // More than a pipe buffer, so a writer nobody reads blocks until the timeout.
+  const busy = await sh(policy, "head -c 200000 /dev/zero | wc -c; head -c 200000 /dev/zero; echo err >&2", {
+    timeout: 10,
+  })
+  expect(performance.now() - start).toBeLessThan(5_000)
+  expect(busy.exit, busy.stderr.toString()).toBe(0)
+  // macOS's wc pads the count.
+  const head = busy.stdout.subarray(0, Math.max(0, busy.stdout.length - 200_000))
+  expect(head.toString().trim()).toBe("200000")
+  expect(busy.stdout.subarray(head.length).equals(Buffer.alloc(200_000))).toBe(true)
+  expect(busy.stderr.toString()).toBe("err\n")
+  const read = performance.now()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const content = await Promise.race([
+    fs.promises.readFile(small, "utf8"),
+    new Promise((resolve) => (timer = setTimeout(() => resolve("still reading after 1 s"), 1_000))),
+  ])
+  clearTimeout(timer)
+  expect(content).toBe("small")
+  expect(performance.now() - read).toBeLessThan(1_000)
+  stop.abort()
+  for (const result of await Promise.all(quiet)) expect(result.interrupted).toBe(true)
 })
 
 test.skipIf(process.platform !== "linux" || !sandboxAvailable())("a call sees no pipe of another call", async () => {
