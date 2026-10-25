@@ -369,8 +369,9 @@ test("a log unreadable twice in a row says so", async () => {
     try {
       return await readOn(p, index, resumedRead, nodeCap)
     } finally {
-      // Still changing, still unreadable.
-      fs.writeFileSync(file, Buffer.concat([runStarted(0), started(calls + 2, "a")]))
+      // Still changing, still unreadable. A new size each time: Linux file times tick at the kernel's coarse
+      // clock, so a same-size rewrite in one tick looks unchanged.
+      fs.writeFileSync(file, Buffer.concat([runStarted(0), started(calls + 2, "a".repeat(calls + 1))]))
     }
   }
   await expect(refresh(file, null, { readOn: seam })).rejects.toBeInstanceOf(UnreadableLog)
