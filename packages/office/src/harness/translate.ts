@@ -562,9 +562,9 @@ const APPROVAL_TITLES: ReadonlyMap<unknown, string> = new Map([
 const MAX_PAGES = 4
 const NUMBERS: ReadonlyMap<unknown, AnswerField["type"]> = new Map([["integer", "int"], ["number", "float"]])
 /** What an answer that makes no reply throws; it never echoes the answer. */
-const NOT_AN_OPTION = "the answer isn't one of the card's options"
+export const NOT_AN_OPTION = "the answer isn't one of the card's options"
 /** What a form answer that isn't the number its field wants throws; it never echoes the answer. */
-const NOT_A_NUMBER = "the answer isn't a number"
+export const NOT_A_NUMBER = "the answer isn't a number"
 /** The fields of a Question a card shows, checked as Python's `Question.model_validate` checks them. */
 const CARD = Question.pick({ title: true, question: true, options: true, questions: true, answer_schema: true })
 

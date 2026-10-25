@@ -4,7 +4,7 @@ import { HarnessError, notWaiting, runState, writeState } from "../chat/state.ts
 import { type SessionRecord, type Store, newId } from "../store/store.ts"
 import { type CodexProcess, CodexStartError, ownerLoad } from "./codex.ts"
 import { RpcClosed, RpcError, nameOf } from "./rpc.ts"
-import { type Issued, TURNLESS, Translator, Unserved } from "./translate.ts"
+import { type Issued, NOT_AN_OPTION, NOT_A_NUMBER, TURNLESS, Translator, Unserved } from "./translate.ts"
 import type { CodexSessions } from "./sessions.ts"
 
 /** Milliseconds office stop waits for the session to finish the job it is in. */
@@ -550,6 +550,7 @@ export class CodexSession {
     return [pending, proc]
   }
 
+  /** Writes the reply to card `questionId` and its decision; false if Codex no longer waits on it. */
   async #writeReply(questionId: string, answer: unknown, by: string | null): Promise<boolean> {
     const [pending, proc] = this.#take(questionId)
     if (pending === undefined || proc === null || !proc.alive) return false
@@ -558,9 +559,11 @@ export class CodexSession {
     try {
       ;[result, decision] = pending.issued.reply(answer)
     } catch (error) {
-      // Codex treats an error reply as a refusal and goes on; with no reply it would wait until Esc. A RangeError's
-      // text is the translator's fixed one; anything else is named by its type, since its text could quote the answer.
-      const said = error instanceof RangeError ? error.message : nameOf(error)
+      // Codex treats an error reply as a refusal and goes on; with no reply it would wait until Esc. Only the
+      // translator's fixed texts are passed on; anything else is named by its type, since its text could quote the
+      // answer.
+      const fixed = error instanceof RangeError && (error.message === NOT_AN_OPTION || error.message === NOT_A_NUMBER)
+      const said = fixed ? error.message : nameOf(error)
       this.owner.log(`codex session ${this.sessionId}: no reply can be made from the answer to ${questionId}: ${said}`)
       await this.#refuse(proc, pending.requestId, -32602, `OpenCorp couldn't use the answer: ${said}`)
       return false
