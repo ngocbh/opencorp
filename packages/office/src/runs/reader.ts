@@ -1,11 +1,27 @@
 /**
  * Read-only access to yian run logs that workers may still be appending to: a lazy, bounded index per log folded from
  * yian's `iterRunRecords`, and pages of node attempts and records. Plain reads only: no lock, no write, no `advance`.
+ *
+ * Record pages and one opened record read raw lines and parse each with yian's codec (`parseJson`), as
+ * `iterRunRecords` can neither skip nor cap a line and yian has no record-to-wire encoder. Values are shown in a
+ * display form any client reads as plain JSON.
  */
 import crypto from "node:crypto"
 import fs from "node:fs"
+import { Readable } from "node:stream"
 import type { Failure } from "@ngocbh/yian"
-import { iterRunRecords, RunLogChangedError, type RunLogEntry, RunLogSchemaError } from "@ngocbh/yian/run"
+import {
+  FileRef,
+  InboxRef,
+  iterRunRecords,
+  JSONDecodeError,
+  parseJson,
+  RunLogChangedError,
+  type RunLogEntry,
+  RunLogSchemaError,
+  TypedValue,
+} from "@ngocbh/yian/run"
+import type { RunEvent, RunEventPage } from "@opencorp/protocol"
 import { cutReason } from "../store/store.ts"
 
 /** The run-log schema this office reads: yian's SCHEMA_VERSION at the submodule pin. */
@@ -22,12 +38,15 @@ export const NODE_CAP = 100_000
 export const CHUNK = 1 << 20
 /** A record line longer than this is a stub with its size on a record page. */
 export const BIG_LINE = 2 << 20
-/** The longest string a record page shows whole; a longer one is cut with "…". */
+/** The most code points of a string a record page shows; a longer one is cut there with "…". */
 export const FIELD_CHARS = 4 << 10
 /** The most JSON a record page holds. */
 export const PAGE_BYTES = 256 << 10
 /** The most JSON one opened record shows. */
 export const EVENT_BYTES = 2 << 20
+/** The deepest a payload is shown: a container nested deeper shows as "…", so showing and serializing it recurse a
+ *  bounded depth. */
+export const DEPTH_CAP = 128
 /** The longest record one opened record parses; a longer one is a stub with its size, read without holding its line
  *  (parsing a record takes several times its size in memory). The download has it whole. */
 export const HUGE_LINE = 16 << 20
@@ -419,6 +438,295 @@ export function nodePage(index: Index, { before, limit }: { before: number | nul
     .filter(([seq]) => low <= seq && seq < high)
     .map(([seq, retried]): [number, string[]] => [seq, [...retried]])
   return { nodes, dividers, nextBefore: start > 0 ? low : null, dropped: index.dropped }
+}
+
+/** The seq and byte offset of the last sparse entry at or before seq `first`, and the offset after the last complete
+ *  line indexed. */
+function window(index: Index, first: number): [number, number, number] {
+  let low = 0
+  let high = index.sparse.length
+  while (low < high) {
+    const mid = (low + high) >> 1
+    if (index.sparse[mid]![0] <= first) low = mid + 1
+    else high = mid
+  }
+  const [seq, start] = low > 0 ? index.sparse[low - 1]! : [0, 0]
+  return [seq, start, index.offset]
+}
+
+/** One complete line: its bytes, or null when it is longer than the caller's cap; its first 256 bytes; its size. */
+interface Line {
+  bytes: Buffer | null
+  head: Buffer
+  size: number
+}
+
+/**
+ * The complete lines of `fd` between byte `start` and byte `stop`, one at a time, after skipping `skip` of them. Lines
+ * are scanned CHUNK at a time: a skipped line is only counted, and a line longer than `cap` is never held, only its
+ * first 256 bytes and its size.
+ */
+function* lines(fd: number, start: number, stop: number, cap: number, skip: number): Generator<Line> {
+  let parts: Buffer[] = []
+  let head = Buffer.alloc(0)
+  let size = 0
+  for (let pos = start; pos < stop;) {
+    // A fresh buffer per read, so the parts of a line kept from the last read stay as they were.
+    const chunk = Buffer.allocUnsafe(Math.min(CHUNK, stop - pos))
+    const count = fs.readSync(fd, chunk, 0, chunk.length, pos)
+    if (count === 0) return
+    pos += count
+    const data = chunk.subarray(0, count)
+    for (let from = 0; from < count;) {
+      const nl = data.indexOf(0x0a, from)
+      const end = nl === -1 ? count : nl + 1
+      if (skip === 0) {
+        if (head.length < 256) {
+          head = Buffer.concat([head, data.subarray(from, Math.min(end, from + 256 - head.length))])
+        }
+        size += end - from
+        if (size <= cap) parts.push(data.subarray(from, end))
+        else parts = []
+      }
+      from = end
+      if (nl === -1) break
+      if (skip > 0) {
+        skip -= 1
+        continue
+      }
+      yield { bytes: size <= cap ? Buffer.concat(parts, size) : null, head, size }
+      parts = []
+      head = Buffer.alloc(0)
+      size = 0
+    }
+  }
+}
+
+/** `key` as a JSON pointer segment. */
+function escape(key: string): string {
+  return key.replaceAll("~", "~0").replaceAll("/", "~1")
+}
+
+/** `text` cut to FIELD_CHARS code points and "…" when it is longer, its pointer added to `cut`. */
+function cutText(text: string, pointer: string, cut: string[]): string {
+  if (text.length <= FIELD_CHARS) return text
+  // Walked a code point at a time, so a surrogate pair is never split and no copy of the whole string is made.
+  let end = 0
+  for (let n = 0; n < FIELD_CHARS && end < text.length; n++) {
+    const unit = text.charCodeAt(end)
+    const pair = unit >= 0xd800 && unit <= 0xdbff && (text.charCodeAt(end + 1) & 0xfc00) === 0xdc00
+    end += pair ? 2 : 1
+  }
+  if (end >= text.length) return text
+  cut.push(pointer)
+  return text.slice(0, end) + "…"
+}
+
+/**
+ * `value` at JSON pointer `pointer`, `depth` containers deep, in its display form: an int as a JSON number when it is
+ * a safe integer, else its decimal string; an infinite float as "Infinity" or "-Infinity"; a file as `{uri, mime,
+ * name}`; an inbox handle as its name. Strings longer than FIELD_CHARS code points are cut when `cutting`, and a
+ * container DEPTH_CAP deep is "…"; each pointer is added to `cut`.
+ */
+function shown(value: unknown, pointer: string, cut: string[], depth: number, cutting: boolean): unknown {
+  if (typeof value === "string") return cutting ? cutText(value, pointer, cut) : value
+  if (typeof value === "bigint") {
+    return value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER ? Number(value) : value.toString()
+  }
+  if (value === Infinity) return "Infinity"
+  if (value === -Infinity) return "-Infinity"
+  if (FileRef.isFileRef(value)) {
+    return shown({ uri: value.uri, mime: value.mime, name: value.name }, pointer, cut, depth, cutting)
+  }
+  if (InboxRef.isInboxRef(value)) return shown(value.inbox, pointer, cut, depth, cutting)
+  if (typeof value !== "object" || value === null) return value
+  if (depth >= DEPTH_CAP) {
+    cut.push(pointer)
+    return "…"
+  }
+  if (Array.isArray(value)) return value.map((item, i) => shown(item, `${pointer}/${i}`, cut, depth + 1, cutting))
+  // Built with fromEntries, so a key named like an Object member (`__proto__`) stays a plain data key.
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      shown(item, `${pointer}/${escape(key)}`, cut, depth + 1, cutting),
+    ]),
+  )
+}
+
+/** The payload of a record of kind `kind` in its display form; a commit's value is decoded from its typed-value wire
+ *  first, and shown as parsed when that wire doesn't decode. */
+function shownPayload(
+  payload: Record<string, unknown>,
+  kind: string,
+  cut: string[],
+  cutting: boolean,
+): Record<string, unknown> {
+  const { value } = payload
+  if (kind !== "pool_commit" || !Object.hasOwn(payload, "kind") || value === null || value === undefined) {
+    return shown(payload, "", cut, 0, cutting) as Record<string, unknown>
+  }
+  let decoded: unknown = value
+  try {
+    decoded = TypedValue.fromWire({ kind: payload.kind, value }).toObject()
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error
+  }
+  return shown({ ...payload, value: decoded }, "", cut, 0, cutting) as Record<string, unknown>
+}
+
+/** The node a payload names: its `node_id`, else its `spawner_id`, else its failure's `node_id`. */
+function nodeOf(payload: Record<string, unknown> | null): string | null {
+  if (payload === null) return null
+  const failure = isRecord(payload.failure) ? payload.failure : {}
+  const found = payload.node_id || payload.spawner_id || failure.node_id
+  return typeof found === "string" ? found : null
+}
+
+/** Whether `value` is a JSON object (not an array). */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+// yian writes sorted-key JSON, so a record starts with "at" then "kind": an oversized line's kind can be read without
+// parsing it. Its seq is its line number, so no line's seq is ever read from its text.
+const HEAD = /^\{(?:"at":"[^"]{0,64}",)?"kind":"([a-z_]{1,64})"/
+
+/** Decodes UTF-8, throwing a TypeError on bytes that aren't UTF-8. */
+const UTF8 = new TextDecoder("utf-8", { fatal: true })
+
+/** Record `seq`, `size` bytes long, as its size and the kind its first bytes `head` name: it isn't parsed. */
+function stub(head: Buffer, seq: number, size: number): RunEvent {
+  const found = HEAD.exec(head.subarray(0, 256).toString("latin1"))
+  return { seq, kind: found?.[1] ?? "unknown", size }
+}
+
+/**
+ * Line `seq` (`bytes`) as a page shows it, or as one opened record shows it when `whole`: its strings cut only when its
+ * payload is over EVENT_BYTES, and a stub with its size when it is still over. Null when it no longer reads as record
+ * `seq` (the file changed since it was indexed).
+ */
+function decode(bytes: Buffer, seq: number, whole: boolean): RunEvent | null {
+  let record: unknown
+  try {
+    record = parseJson(UTF8.decode(bytes), "codec")
+  } catch (error) {
+    if (error instanceof TypeError || error instanceof JSONDecodeError) return null
+    throw error
+  }
+  if (!isRecord(record) || record.seq !== BigInt(seq)) return null
+  const kind = typeof record.kind === "string" && record.kind !== "" ? record.kind : "unknown"
+  const raw = isRecord(record.payload) ? record.payload : null
+  let cut: string[] = []
+  let payload = raw === null ? null : shownPayload(raw, kind, cut, !whole)
+  if (raw !== null && whole && Buffer.byteLength(JSON.stringify(payload)) > EVENT_BYTES) {
+    cut = []
+    payload = shownPayload(raw, kind, cut, true)
+    // Many short strings: cutting each can't bring it under.
+    if (Buffer.byteLength(JSON.stringify(payload)) > EVENT_BYTES) {
+      return { seq, kind, node_id: nodeOf(payload), size: bytes.length }
+    }
+  }
+  return { seq, kind, node_id: nodeOf(payload), payload, cut }
+}
+
+/**
+ * Records after seq `after` (from the first when null), up to `limit` or PAGE_BYTES of JSON (always its first record);
+ * a line over BIG_LINE is a stub with its size. A line's seq is its line number, counted from a sparse entry; a line
+ * that no longer reads as its seq ends the page there.
+ */
+export function readEvents(
+  path: string,
+  index: Index,
+  { after, limit }: { after: number | null; limit: number },
+): RunEventPage {
+  const first = Math.max(0, after === null ? 0 : after + 1)
+  const [base, start, stop] = window(index, first)
+  const events: RunEvent[] = []
+  let used = 0
+  let nextAfter: number | null = null
+  let cut = false
+  const fd = fs.openSync(path, "r")
+  try {
+    let seq = first
+    for (const line of lines(fd, start, stop, BIG_LINE, first - base)) {
+      if (events.length > 0 && events.length >= limit) {
+        nextAfter = events.at(-1)!.seq
+        break
+      }
+      const event = line.bytes === null ? stub(line.head, seq, line.size) : decode(line.bytes, seq, false)
+      if (event === null) {
+        // Rewritten since it was indexed: the next request's refresh rebuilds.
+        nextAfter = events.at(-1)?.seq ?? after
+        break
+      }
+      const size = Buffer.byteLength(JSON.stringify(event))
+      if (events.length > 0 && used + size > PAGE_BYTES) {
+        nextAfter = events.at(-1)!.seq
+        cut = true
+        break
+      }
+      events.push(event)
+      used += size
+      seq += 1
+    }
+  } finally {
+    fs.closeSync(fd)
+  }
+  return { events, next_after: nextAfter, cut }
+}
+
+/**
+ * The record with `seq`: its strings cut only when its payload is over EVENT_BYTES, and a stub with its size when it
+ * is still over after that, or when its line is over HUGE_LINE (never held or parsed). Null if there is none.
+ */
+export function readEvent(path: string, index: Index, seq: number): RunEvent | null {
+  const [base, start, stop] = window(index, seq)
+  if (seq < base) return null
+  const fd = fs.openSync(path, "r")
+  try {
+    for (const line of lines(fd, start, stop, HUGE_LINE, seq - base)) {
+      return line.bytes === null ? stub(line.head, seq, line.size) : decode(line.bytes, seq, true)
+    }
+    return null
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+/**
+ * The download: every complete line of `path` as it is when called, as stored, streamed CHUNK at a time, so no line
+ * is ever held whole. The file is opened now (its `fs` error, `ENOENT`, is thrown here, not mid-stream). It needs no
+ * index, so a log this office can't read still downloads. The caller consumes or destroys the stream, which closes
+ * the file.
+ */
+export function logStream(path: string): Readable {
+  const fd = fs.openSync(path, "r")
+  let end: number
+  try {
+    end = lastLineEnd(fd, fs.fstatSync(fd).size)
+  } catch (error) {
+    fs.closeSync(fd)
+    throw error
+  }
+  if (end === 0) {
+    fs.closeSync(fd)
+    return Readable.from([])
+  }
+  return fs.createReadStream(path, { fd, start: 0, end: end - 1, highWaterMark: CHUNK })
+}
+
+/** The end of the last complete line of `fd` before byte `size`, scanned backward 64 KiB at a time; 0 when none. */
+function lastLineEnd(fd: number, size: number): number {
+  const piece = Buffer.allocUnsafe(64 << 10)
+  for (let stop = size; stop > 0;) {
+    const start = Math.max(0, stop - piece.length)
+    const count = fs.readSync(fd, piece, 0, stop - start, start)
+    const nl = piece.subarray(0, count).lastIndexOf(0x0a)
+    if (nl !== -1) return start + nl + 1
+    stop = start
+  }
+  return 0
 }
 
 /** A file's identity, size and modification time, as text. */

@@ -1,13 +1,23 @@
-/** The run-log reader: a lazy, bounded index per log with its node table; node pages; plain reads only. */
+/** The run-log reader: a lazy, bounded index per log with its node table; node and record pages; plain reads only. */
 import { expect, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import {
+  BIG_LINE,
+  CHUNK,
   cost,
+  DEPTH_CAP,
   ERROR_KEPT,
+  EVENT_BYTES,
+  FIELD_CHARS,
+  HUGE_LINE,
   LINE_CAP,
+  logStream,
   LRU_LOGS,
   nodePage,
+  PAGE_BYTES,
+  readEvent,
+  readEvents,
   type ReadOn,
   readOn,
   refresh,
@@ -37,6 +47,23 @@ function logOf(...parts: Buffer[]): string {
   const file = path.join(tempDir(), "r.jsonl")
   fs.writeFileSync(file, Buffer.concat(parts))
   return file
+}
+
+/** `data` split into its lines, each with its newline. */
+function linesOf(data: Buffer): Buffer[] {
+  const out: Buffer[] = []
+  for (let start = 0; start < data.length;) {
+    const end = data.indexOf(0x0a, start) + 1 || data.length
+    out.push(data.subarray(start, end))
+    start = end
+  }
+  return out
+}
+
+/** A commit by `nodeId` whose line is exactly `size` bytes, its value `{output}` padded with `fill`. */
+function commitOfSize(seq: number, nodeId: string, size: number, fill: string): Buffer {
+  const bare = committed(seq, nodeId, { output: "" })
+  return committed(seq, nodeId, { output: fill.repeat(size - bare.length) })
 }
 
 /** What `refresh(file, null)` throws. */
@@ -348,4 +375,158 @@ test("the lru keeps at most 128 logs", async () => {
   const reader = new RunLogReader()
   for (const file of paths) await reader.index(file)
   expect([LRU_LOGS, reader.cached()]).toEqual([128, paths.slice(1)])
+})
+
+test("record pages seek by seq and stop at the count", async () => {
+  const file = chatLog(path.join(tempDir(), "r.jsonl"), 30) // seqs 0..243
+  const index = await refresh(file, null)
+  const page = readEvents(file, index, { after: 99, limit: 10 })
+  const seqs = Array.from({ length: 10 }, (_, i) => 100 + i)
+  expect([page.events.map((e) => e.seq), page.next_after, page.cut]).toEqual([seqs, 109, false])
+  const last = readEvents(file, index, { after: 240, limit: 10 })
+  expect([last.events.map((e) => e.seq), last.next_after]).toEqual([[241, 242, 243], null])
+})
+
+test("long strings are cut and the page stops at its bytes", async () => {
+  const commits = Array.from({ length: 100 }, (_, i) => committed(i + 1, `n${i + 1}`, { output: "x".repeat(10_000) }))
+  const file = logOf(runStarted(0), ...commits)
+  const page = readEvents(file, await refresh(file, null), { after: 0, limit: 500 })
+  const first = page.events[0]!
+  expect([first.cut, first.node_id]).toEqual([["/value/output"], "n1"])
+  expect((first.payload!.value as { output: string }).output).toBe("x".repeat(FIELD_CHARS) + "…")
+  expect([page.cut, page.events.length < 100, page.next_after]).toEqual([true, true, page.events.at(-1)!.seq])
+  expect(Buffer.byteLength(JSON.stringify(page.events))).toBeLessThanOrEqual(PAGE_BYTES)
+})
+
+test("a line over 2 mib is a stub with its kind seq and size", async () => {
+  const huge = committed(1, "big", { output: "y".repeat(BIG_LINE + 10) })
+  const file = logOf(runStarted(0), huge, started(2, "next"))
+  const page = readEvents(file, await refresh(file, null), { after: 0, limit: 10 })
+  expect(page.events[0]).toEqual({ seq: 1, kind: "pool_commit", size: huge.length })
+  expect(page.events[1]!.seq).toBe(2)
+})
+
+test("one record by seq is whole and is capped", async () => {
+  const file = logOf(
+    runStarted(0), started(1, "a"), committed(2, "a", { output: "z".repeat(9000) }),
+    committed(3, "a", { output: "w".repeat(EVENT_BYTES) }),
+  )
+  const index = await refresh(file, null)
+  const event = readEvent(file, index, 2)!
+  expect([event.payload!.value, event.cut]).toEqual([{ output: "z".repeat(9000) }, []])
+  const big = readEvent(file, index, 3)!
+  expect([big.cut, big.payload!.value]).toEqual([["/value/output"], { output: "w".repeat(FIELD_CHARS) + "…" }])
+  expect(readEvent(file, index, 7)).toBeNull()
+})
+
+test("a file changed under a page stops it there", async () => {
+  const file = chatLog(path.join(tempDir(), "r.jsonl"), 1)
+  const index = await refresh(file, null)
+  const data = linesOf(fs.readFileSync(file))
+  // Line 4 is no longer seq 4.
+  fs.writeFileSync(file, Buffer.concat([...data.slice(0, 4), started(9, "rewritten"), ...data.slice(5)]))
+  const page = readEvents(file, index, { after: null, limit: 100 })
+  expect([page.events.map((e) => e.seq), page.next_after]).toEqual([[0, 1, 2, 3], 3])
+})
+
+test("the download is every complete line as stored", async () => {
+  const file = logOf(runStarted(0), started(1, "a"), committed(2, "a", { output: "d".repeat(3 << 20) }))
+  const whole = fs.readFileSync(file)
+  fs.appendFileSync(file, '{"torn')
+  const stream = logStream(file)
+  fs.unlinkSync(file) // opened when called, so a log removed before it streams still streams whole
+  const chunks: Buffer[] = []
+  for await (const chunk of stream) chunks.push(chunk as Buffer)
+  expect(Buffer.concat(chunks).equals(whole)).toBe(true)
+  expect([chunks.length > 1, chunks.every((chunk) => chunk.length <= CHUNK)]).toEqual([true, true])
+  let code: unknown
+  try {
+    logStream(file)
+  } catch (error) {
+    code = (error as NodeJS.ErrnoException).code
+  }
+  expect(code).toBe("ENOENT")
+  fs.writeFileSync(file, '{"torn')
+  const torn: unknown[] = []
+  for await (const chunk of logStream(file)) torn.push(chunk)
+  expect(torn).toEqual([])
+})
+
+test("one record is capped in bytes and a payload still too large is a size stub", async () => {
+  const wide = committed(1, "wide", { output: "ü".repeat(1 << 20) }) // 1 Mi characters, 2 MiB of UTF-8
+  const keys = Array.from({ length: 1500 }, (_, i) => [`k${i}`, "s".repeat(3000)])
+  const many = committed(2, "many", Object.fromEntries(keys)) // every string under FIELD_CHARS
+  const file = logOf(runStarted(0), wide, many)
+  const index = await refresh(file, null)
+  expect(readEvent(file, index, 1)!.cut).toEqual(["/value/output"])
+  const stub = readEvent(file, index, 2)!
+  expect(stub).toEqual({ seq: 2, kind: "pool_commit", node_id: "many", size: many.length })
+  expect(Buffer.byteLength(JSON.stringify(stub))).toBeLessThanOrEqual(EVENT_BYTES)
+})
+
+test("one record over huge line is a size stub never parsed", async () => {
+  const exact = commitOfSize(1, "big", HUGE_LINE, "b")
+  const over = commitOfSize(2, "big", HUGE_LINE + 1, "b")
+  const head = runStarted(0)
+  const file = logOf(head, exact, over, started(3, "next"))
+  const index = await refresh(file, null)
+  const whole = readEvent(file, index, 1)! // at the size: still read whole, its string cut to fit EVENT_BYTES
+  expect([whole.size, whole.cut]).toEqual([undefined, ["/value/output"]])
+  // A quote in the middle of a value ends its string early: a line that is parsed no longer reads as a record.
+  const fd = fs.openSync(file, "r+")
+  fs.writeSync(fd, '"', head.length + (exact.length >> 1))
+  fs.writeSync(fd, '"', head.length + exact.length + (over.length >> 1))
+  fs.closeSync(fd)
+  expect(readEvent(file, index, 1)).toBeNull()
+  expect(readEvent(file, index, 2)).toEqual({ seq: 2, kind: "pool_commit", size: HUGE_LINE + 1 })
+  expect(readEvent(file, index, 4)).toBeNull()
+}, 60_000)
+
+test("one huge record is read without holding its line", async () => {
+  const huge = committed(1, "huge", { output: "h".repeat(HUGE_LINE + (4 << 20)) })
+  const file = logOf(runStarted(0), huge, started(2, "next"))
+  const index = await refresh(file, null)
+  expect(readEvent(file, index, 1)).toEqual({ seq: 1, kind: "pool_commit", size: huge.length })
+  expect(readEvent(file, index, 2)!.node_id).toBe("next") // past the huge line, skipped without holding it
+}, 60_000)
+
+test("a record written as utf8 reads back on pages and by seq", async () => {
+  const file = logOf(
+    runStarted(0), started(1, "世界🚀"), committed(2, "世界🚀", { output: "é".repeat(10) }),
+    succeeded(3, "世界🚀", 2),
+  )
+  expect(fs.readFileSync(file).includes(Buffer.from("世界🚀"))).toBe(true) // as yian writes it, not \u escapes
+  const index = await refresh(file, null)
+  const page = readEvents(file, index, { after: 0, limit: 10 })
+  expect([page.events.map((e) => e.node_id), index.open.size]).toEqual([["世界🚀", "世界🚀", "世界🚀"], 0])
+  expect(readEvent(file, index, 2)!.payload!.value).toEqual({ output: "é".repeat(10) })
+})
+
+test("a commit value shows in its display form", async () => {
+  const ref = { uri: "file:///tmp/a.txt", mime: "text/plain", name: "a.txt" }
+  const file = logOf(
+    runStarted(0), started(1, "a"), committed(2, "a", 2n ** 60n, "int"), committed(3, "a", 5n, "int"),
+    committed(4, "a", 1.5, "float"), committed(5, "a", Infinity, "float"), committed(6, "a", -Infinity, "float"),
+    committed(7, "a", { inbox: "messages" }, "inbox"), committed(8, "a", ref, "file"),
+  )
+  const index = await refresh(file, null)
+  const values = readEvents(file, index, { after: 1, limit: 10 }).events.map((e) => e.payload!.value)
+  expect(values).toEqual(["1152921504606846976", 5, 1.5, "Infinity", "-Infinity", "messages", ref])
+  expect(readEvent(file, index, 2)!.payload!.value).toBe("1152921504606846976")
+  expect(readEvent(file, index, 8)!.payload!.value).toEqual(ref)
+  expect(readEvent(file, index, 1)!.payload).toEqual({ node_id: "a" })
+})
+
+test("a deeply nested payload is cut at its depth", async () => {
+  let deep: unknown = "end"
+  for (let i = 0; i < 10_000; i++) deep = [deep]
+  const file = logOf(runStarted(0), started(1, "a"), committed(2, "a", deep, "list[Any]"))
+  const index = await refresh(file, null)
+  const pointer = "/value" + "/0".repeat(DEPTH_CAP - 1)
+  for (const event of [readEvents(file, index, { after: 1, limit: 10 }).events[0]!, readEvent(file, index, 2)!]) {
+    expect([DEPTH_CAP, event.cut]).toEqual([128, [pointer]])
+    let at = event.payload!.value
+    for (let depth = 1; depth < DEPTH_CAP; depth++) at = (at as unknown[])[0]
+    expect(at).toBe("…")
+  }
 })
