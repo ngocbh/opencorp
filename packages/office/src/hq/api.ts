@@ -13,6 +13,7 @@ import {
   PairRequest,
   Person,
   Question,
+  Session,
   WorkItem,
 } from "@opencorp/protocol"
 import { z } from "zod"
@@ -25,6 +26,7 @@ import { costs } from "../daemon/routes/costs.ts"
 import { whoami } from "../daemon/routes/devices.ts"
 import { RESET, frame } from "../daemon/routes/events.ts"
 import { listQuestions } from "../daemon/routes/questions.ts"
+import { listSessions } from "../daemon/routes/sessions.ts"
 import { getWorkItem } from "../daemon/routes/work_items.ts"
 import { browserAuth, cookieName, cookieValue } from "./auth.ts"
 import type { Hq } from "./core.ts"
@@ -185,7 +187,7 @@ export const ROUTES: readonly Route<HqContext>[] = [
       }
     },
   },
-  // The sessions list, ported later, goes here, in Python's order.
+  { method: "GET", path: "/api/sessions", reply: z.array(Session), handler: listSessions },
   { method: "GET", path: "/api/questions", reply: z.array(Question), handler: listQuestions },
   // The runs, ported later, go here.
   { method: "GET", path: "/api/work-items/:id", reply: WorkItem, handler: getWorkItem },

@@ -11,9 +11,20 @@ import type { AnswerKind, CardActor, Cards } from "../../src/questions/cards.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { InvalidTransition, type QuestionRecord, type Store } from "../../src/store/store.ts"
 import { question, recordEvents, session } from "../store/helpers.ts"
-import { CEO, type Reply, addHuman, bearer, giveDevice, makeOffice, request, served, ULID } from "./helpers.ts"
+import {
+  CEO,
+  type Reply,
+  addHuman,
+  bearer,
+  giveDevice,
+  makeOffice,
+  request,
+  served,
+  standInHarness,
+  ULID,
+} from "./helpers.ts"
 
-// The same stand-in for the session actor as tests/questions/cards.test.ts, less the knobs these tests leave unused;
+// The same stand-in for the session harness as tests/questions/cards.test.ts, less the knobs these tests leave unused;
 // no test here interrupts a session.
 class StandIn implements CardActor {
   readonly hooks: Hooks
@@ -49,7 +60,11 @@ class StandIn implements CardActor {
 /** The office with the stand-in as its harness and the questions extension registered (Python's `cards`). */
 function wire(office: Office, log?: (line: string) => void): { cards: Cards; actor: StandIn } {
   const actor = new StandIn(office.store, log)
-  office.harness = actor
+  office.harness = standInHarness({
+    hooks: actor.hooks,
+    answer: actor.answer.bind(actor),
+    interrupt: actor.interrupt.bind(actor),
+  })
   register(office)
   return { cards: office.cards!, actor }
 }
@@ -243,7 +258,11 @@ test("an answer goes through the cards and is credited to the verified person", 
 test("an answer goes to the harness when there are no cards", async () => {
   const office = makeOffice()
   const actor = new StandIn(office.store)
-  office.harness = actor
+  office.harness = standInHarness({
+    hooks: actor.hooks,
+    answer: actor.answer.bind(actor),
+    interrupt: actor.interrupt.bind(actor),
+  })
   const { sock } = await served(office)
   const q = openQuestion(office)
   const r = await post(sock, `/questions/${q.id}/answer`, { answer: "Postgres", answer_kind: "text" })

@@ -250,7 +250,8 @@ export function buildOffice(
     office.onStop.push(() => office.logins.closeAll())
     const hooks = new Hooks({ log: log("ERROR", "opencorp.chat.hooks") })
     const codex = (office.codex = new CodexSessions(office, hooks, { log: log("WARNING", "opencorp.harness.session") }))
-    // No chat harness yet: the Codex sessions are the card actor, on the same hooks.
+    // No chat harness yet: the Codex sessions are the office's harness (card actions and session routes), on the
+    // same hooks.
     office.harness = codex
     // Before loadExtensions adds the cards' sweep, so the sweep sees the statuses restore settled.
     office.onStart.push(() => codex.restore())

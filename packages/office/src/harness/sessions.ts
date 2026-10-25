@@ -7,8 +7,8 @@ import type { Hooks } from "../chat/hooks.ts"
 import { ProviderError } from "../chat/provider.ts"
 import { HarnessError, LIVE, notWaiting } from "../chat/state.ts"
 import { loadRepo } from "../company/loader.ts"
-import type { Office } from "../daemon/office.ts"
-import type { AnswerKind, CardActor } from "../questions/cards.ts"
+import type { Office, SessionHarness } from "../daemon/office.ts"
+import type { AnswerKind } from "../questions/cards.ts"
 import { UnsafeWorkspace, checkWorkspace, isInside, realPath } from "../sandbox/policy.ts"
 import {
   InvalidTransition,
@@ -24,6 +24,9 @@ import { CLOSE_GRACE_MS, CodexProcess, CodexStartError, appServerCommand } from 
 import { nameOf } from "./rpc.ts"
 import { CodexSession, END_WAIT_MS, REPLY_WAIT_MS, STOP_WAIT_MS } from "./session.ts"
 import { TURNLESS } from "./translate.ts"
+
+/** What a yian chat's session calls answer, until the chat harness serves them. */
+const NOT_SERVED = "yian chats are not served yet"
 
 /** What `CodexSessions.launch` needs of a session. */
 export type Launchable = Pick<CodexSession, "sessionId" | "cwd" | "launchingAs" | "notified" | "requested" | "exited">
@@ -43,13 +46,13 @@ export type CodexSessionsOptions = {
 }
 
 /** Each live Codex session of the office, with its own app-server. Until the chat harness takes over, it is also the
- *  office's card actor: an answer or Esc for a session on another harness is handled here as the chat harness
- *  handles one with no live run; the Codex calls stay here after that.
+ *  office's session harness: a yian chat's answer and Esc are handled here as the chat harness handles them with no
+ *  live run, and its other session calls answer 501; the Codex calls stay here after that.
  *
  *  `hooks` are the chat harness's: Codex sessions fire `promptCheck` on a message, `answerCheck` on an answer,
  *  `questionStored` when a Codex request becomes a card, and `endStatus` and `sessionEnded` when a session ends (never
  *  the run hooks: Codex turns are not office runs). */
-export class CodexSessions implements CardActor {
+export class CodexSessions implements SessionHarness {
   readonly office: Office
   readonly store: Store
   readonly hooks: Hooks
@@ -89,12 +92,25 @@ export class CodexSessions implements CardActor {
    *  `openedBy` is the human who opened it; the work item is theirs (the CEO's when null). `connection` is their
    *  pick for the session's debrief. A start that fails before anything is live leaves the session `failed` and
    *  rejects with the start's `HarnessError`, or 500 `start_failed` naming it for anything else; a load that fails
-   *  later fails the session with why. */
+   *  later fails the session with why. `harness` must be `codex`: a yian chat is 501 and any other harness 422.
+   *  `model` is ignored, since a Codex session runs on Codex's own model; the connection serves only its debrief. */
   async startSession(
     handle: string,
     cwd: string,
-    { openedBy = null, connection = null }: { openedBy?: string | null; connection?: string | null } = {},
+    {
+      harness = "codex",
+      openedBy = null,
+      connection = null,
+    }: {
+      harness?: SessionRecord["harness"]
+      openedBy?: string | null
+      connection?: string | null
+      model?: string | null
+    } = {},
   ): Promise<SessionRecord> {
+    if (harness === "composer") throw new HarnessError(501, "not_implemented", NOT_SERVED)
+    if (harness !== "codex")
+      throw new HarnessError(422, "unsupported_harness", `the ${harness} harness is not supported yet`)
     const session = await this.#open(handle, cwd, { openedBy, connection })
     try {
       await this.start(session)
@@ -159,10 +175,16 @@ export class CodexSessions implements CardActor {
 
   /** A message: `turn`, `steer` (a turn was running), or `queued` (until the thread is loaded). */
   async prompt(sessionId: string, text: string, { by = null }: { by?: string | null } = {}) {
+    const session = this.#codexSession(sessionId)
     const live = this.#must(sessionId)
-    for (const refusal of this.hooks.fire("promptCheck", this.store.getSession(sessionId), text))
+    for (const refusal of this.hooks.fire("promptCheck", session, text))
       if (refusal) throw new HarnessError(422, "refused", String(refusal))
     return live.prompt(text, { by })
+  }
+
+  /** A steer is a `prompt`: Codex steers a running turn by itself. */
+  async steer(sessionId: string, text: string, { by = null }: { by?: string | null } = {}) {
+    return this.prompt(sessionId, text, { by })
   }
 
   /** Esc. A Codex session interrupts its turn. Any other session has no live run here: a live one is left as it is
@@ -230,7 +252,25 @@ export class CodexSessions implements CardActor {
 
   /** Ends the session `sessionId`. */
   async end(sessionId: string): Promise<void> {
+    this.#codexSession(sessionId)
     await this.#must(sessionId).end()
+  }
+
+  /** Not supported on a Codex session (see `#notSupported`). */
+  setCostCap(sessionId: string, _usd: number): Promise<SessionRecord> {
+    return this.#notSupported(sessionId)
+  }
+
+  /** Not supported on a Codex session (see `#notSupported`). */
+  setModel(sessionId: string, _connection: string, _model: string): Promise<SessionRecord> {
+    return this.#notSupported(sessionId)
+  }
+
+  /** The Codex session's current turn, what a client reads before following its live events: empty when it isn't
+   *  live. */
+  messages(sessionId: string): Message[] {
+    this.#codexSession(sessionId)
+    return this.currentTurn(sessionId)
   }
 
   /** Office stop: kills every app-server and skips every session's later jobs; sessions keep their status for
@@ -538,6 +578,21 @@ export class CodexSessions implements CardActor {
       fallback = OFFICE
     }
     return requested && names.includes(requested) ? requested : fallback
+  }
+
+  /** The stored session `sessionId` if it is a Codex session: 404 when there is none, 501 for a yian chat. */
+  #codexSession(sessionId: string): SessionRecord {
+    const session = this.store.getSession(sessionId)
+    if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
+    if (session.harness !== "codex") throw new HarnessError(501, "not_implemented", NOT_SERVED)
+    return session
+  }
+
+  /** 404 for no session, 501 for a yian chat, and 422 not_supported for a Codex session, which runs on Codex's own
+   *  model and login. */
+  async #notSupported(sessionId: string): Promise<never> {
+    this.#codexSession(sessionId)
+    throw new HarnessError(422, "not_supported", "a Codex session runs on Codex's own model and login")
   }
 
   #must(sessionId: string): CodexSession {

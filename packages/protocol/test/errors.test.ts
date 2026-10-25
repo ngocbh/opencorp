@@ -102,6 +102,7 @@ test("the codex session codes are protocol error codes", () => {
     "not_an_agent",
     "not_continuable",
     "not_live",
+    "not_supported",
     "refused",
     "start_failed",
     "unsafe_workspace",

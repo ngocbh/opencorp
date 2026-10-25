@@ -8,13 +8,14 @@ import type { JsonObject } from "@ngocbh/yian/run"
 import { onTestFinished } from "bun:test"
 import { parse as parseYaml, stringify } from "yaml"
 import { tokenSha256 } from "../../src/auth/tokens.ts"
+import { Hooks } from "../../src/chat/hooks.ts"
 import type { LoginsOptions } from "../../src/chat/logins.ts"
 import { type ModelCacheOptions, ownModels } from "../../src/chat/models.ts"
 import { CompanyGit } from "../../src/company/git.ts"
 import { DeviceTokens } from "../../src/daemon/auth.ts"
 import { Bus } from "../../src/daemon/bus.ts"
 import { type Limits, type RequestInfo, type Route, createServer, requestListener } from "../../src/daemon/http.ts"
-import { Office, OfficePaths, type RequestContext } from "../../src/daemon/office.ts"
+import { Office, OfficePaths, type RequestContext, type SessionHarness } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
 import type { ModelCheck } from "../../src/install/onboard.ts"
@@ -118,6 +119,26 @@ export class BlobFileStore implements MarkdownStore {
     fs.writeFileSync(this.path, data)
     this.provenance.push(provenance)
     return blobId(data)
+  }
+}
+
+/** A session harness for route tests (Python's per-test `FakeHarness`): every call `over` doesn't give rejects, as
+ *  no test should reach it. */
+export function standInHarness(over: Partial<SessionHarness> = {}): SessionHarness {
+  const unused = (name: string) => () => Promise.reject(new Error(`${name} is not used by this test`))
+  return {
+    hooks: new Hooks({ log: () => {} }),
+    answer: unused("answer"),
+    interrupt: unused("interrupt"),
+    startSession: unused("startSession"),
+    prompt: unused("prompt"),
+    steer: unused("steer"),
+    end: unused("end"),
+    continueSession: unused("continueSession"),
+    setCostCap: unused("setCostCap"),
+    setModel: unused("setModel"),
+    messages: unused("messages"),
+    ...over,
   }
 }
 

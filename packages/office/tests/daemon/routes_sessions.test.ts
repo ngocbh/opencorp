@@ -1,0 +1,406 @@
+/** Session routes. */
+import http from "node:http"
+import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { type LiveEvent, Message } from "@opencorp/protocol"
+import { z } from "zod"
+import { newToken } from "../../src/auth/tokens.ts"
+import { HarnessError } from "../../src/chat/state.ts"
+import type { Office } from "../../src/daemon/office.ts"
+import { register } from "../../src/extensions/questions.ts"
+import * as fc from "../../src/testing/fake_codex.ts"
+import { allGone, approvalTurn, makeCodex, openCard, requestsValid, start, status, texts } from "../harness/helpers.ts"
+import { waitFor } from "../helpers.ts"
+import { session } from "../store/helpers.ts"
+import {
+  addHuman,
+  bearer,
+  CEO,
+  frames,
+  giveDevice,
+  makeOffice,
+  parse,
+  raw,
+  type Reply,
+  request,
+  served,
+  standInHarness,
+  take,
+  ULID,
+  within,
+} from "./helpers.ts"
+
+setDefaultTimeout(30_000)
+afterAll(allGone)
+
+/** POSTs `body` as JSON, or nothing when it is null. */
+function post(sock: string, target: string, body: unknown, headers: Record<string, string> = {}): Promise<Reply> {
+  if (body === null) return request(sock, "POST", target, { headers })
+  return request(sock, "POST", target, {
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  })
+}
+
+/** GETs `target`. */
+function get(sock: string, target: string): Promise<Reply> {
+  return request(sock, "GET", target)
+}
+
+/** The reply's error code. */
+function errorOf(r: Reply): string {
+  return (r.json() as { error: string }).error
+}
+
+/** The ids of the sessions in the reply. */
+function ids(r: Reply): string[] {
+  return (r.json() as { id: string }[]).map((s) => s.id)
+}
+
+/** Opens `target` with a `node:http` request; resolves with the response, whose data events stream. The request
+ *  is destroyed when the test finishes. */
+function openEvents(sock: string, target: string): Promise<http.IncomingMessage> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: sock, path: target, agent: false }, (res) => {
+      // The cleanup's destroy cuts an unfinished response, which then errors with nobody reading it.
+      res.on("error", () => {})
+      resolve(res)
+    })
+    onTestFinished(() => req.destroy())
+    req.on("error", reject)
+    req.end()
+  })
+}
+
+/** Hires ava with a device and returns its token; from then on a tokenless request needs a token. */
+function withToken(office: Office): string {
+  addHuman(office.paths.company, "ava")
+  const token = newToken()
+  giveDevice(office.paths.company, "ava", "pc", token)
+  return token
+}
+
+/** `pairs` as a query string, encoded. */
+function query(pairs: [string, string][]): string {
+  return "?" + new URLSearchParams(pairs)
+}
+
+test("list sessions filters and limits", async () => {
+  const office = makeOffice()
+  const a = office.store.createSession(session({ person: "minh" }))
+  office.store.createSession(session({ person: "ngocbh" }))
+  const b = office.store.createSession(session({ person: "minh" }))
+  const { sock } = await served(office)
+  expect(ids(await get(sock, "/sessions" + query([["person", "minh"]])))).toEqual([b.id, a.id])
+  expect(ids(await get(sock, "/sessions" + query([["limit", "1"]])))).toHaveLength(1)
+})
+
+const STATUS_PARAMS: [string, [string, string][]][] = [
+  ["repeated", [["status", "busy"], ["status", "idle"]]],
+  ["comma separated", [["status", "busy, idle"]]],
+]
+
+test.each(STATUS_PARAMS)("list sessions filters by status repeated or comma separated [%s]", async (_case, params) => {
+  const office = makeOffice()
+  const busy = office.store.createSession(session({ status: "busy" }))
+  const idle = office.store.createSession(session({ status: "idle" }))
+  office.store.createSession(session({ status: "ended" }))
+  const { sock } = await served(office)
+  const r = await get(sock, "/sessions" + query(params))
+  expect(r.status).toBe(200)
+  expect(new Set(ids(r))).toEqual(new Set([busy.id, idle.id]))
+})
+
+test("list sessions filters by kind and folder", async () => {
+  const office = makeOffice()
+  const here = office.store.createSession(session({ cwd: "/w/app" }))
+  office.store.createSession(session({ cwd: "/w/app", kind: "side" }))
+  office.store.createSession(session({ cwd: "/w/other" }))
+  const { sock } = await served(office)
+  const r = await get(sock, "/sessions" + query([["kind", "main"], ["cwd", "/w/app"], ["limit", "500"]]))
+  expect(r.status).toBe(200)
+  expect(ids(r)).toEqual([here.id])
+})
+
+test("list sessions defaults to fifty", async () => {
+  const office = makeOffice()
+  for (let i = 0; i < 51; i++) office.store.createSession(session())
+  const { sock } = await served(office)
+  expect(ids(await get(sock, "/sessions"))).toHaveLength(50)
+})
+
+// "²".isdigit() is true, but neither Python's int() nor the route takes it.
+test.each(["0", "501", "x", "²"])("bad limit is 422 [%s]", async (limit) => {
+  const { sock } = await served(makeOffice())
+  const r = await get(sock, "/sessions" + query([["limit", limit]]))
+  expect(r.status).toBe(422)
+  // The fixed text: it echoes nothing of the request.
+  expect(r.json()).toEqual({ error: "invalid_body", message: "limit must be an integer from 1 to 500" })
+})
+
+test("get session", async () => {
+  const office = makeOffice()
+  const s = office.store.createSession(session())
+  const { sock } = await served(office)
+  const r = await get(sock, `/sessions/${s.id}`)
+  expect(r.status).toBe(200)
+  expect(r.json()).toEqual(s)
+})
+
+test("missing session is 404", async () => {
+  // No harness: a missing session's 404 comes before the 501.
+  const { sock } = await served(makeOffice())
+  for (const target of [`/sessions/${ULID}`, `/sessions/${ULID}/messages`]) {
+    const r = await get(sock, target)
+    expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
+  }
+})
+
+test("messages are a live codex sessions current turn then empty", async () => {
+  const h = makeCodex()
+  h.office.harness = h.sessions
+  const { sock } = await served(h.office)
+  h.fake.script([fc.agentMessage("m1", "Hi")])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "hello")
+  await waitFor(() => texts(h, sid).join() === "Hi" && status(h, sid) === "idle")
+  const r = await get(sock, `/sessions/${sid}/messages`)
+  expect(r.status).toBe(200)
+  expect(r.json()).toEqual(JSON.parse(JSON.stringify(z.array(Message).parse(h.sessions.currentTurn(sid)))))
+  expect((r.json() as { role: string }[]).map((m) => m.role)).toEqual(["user", "assistant"])
+  await h.sessions.end(sid)
+  await waitFor(() => status(h, sid) === "ended")
+  expect((await get(sock, `/sessions/${sid}/messages`)).json()).toEqual([])
+})
+
+const NEED_A_HARNESS: [string, string, unknown][] = [
+  ["create", "/sessions", { person: "minh", cwd: "/w/app" }],
+  ["prompt", `/sessions/${ULID}/prompt`, { text: "hi" }],
+  ["steer", `/sessions/${ULID}/steer`, { text: "hi" }],
+  ["interrupt", `/sessions/${ULID}/interrupt`, null],
+  ["end", `/sessions/${ULID}/end`, null],
+  ["continue", `/sessions/${ULID}/continue`, null],
+  ["cost-cap", `/sessions/${ULID}/cost-cap`, { cost_cap_usd: 10 }],
+  ["model", `/sessions/${ULID}/model`, { connection: "office", model: "stub" }],
+]
+
+test.each(NEED_A_HARNESS)("session actions need a harness [%s]", async (_case, target, body) => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const r = await post(sock, target, body)
+  expect([r.status, errorOf(r)]).toEqual([501, "not_implemented"])
+})
+
+test("continue answers with the new session opened by the caller", async () => {
+  const office = makeOffice()
+  const calls: [string, string | null][] = []
+  office.harness = standInHarness({
+    continueSession: async (id, { by = null } = {}) => {
+      calls.push([id, by])
+      return session({ harness: "codex", parent_session_id: id, opened_by: by })
+    },
+  })
+  const token = withToken(office)
+  const { sock } = await served(office, { tokens: true })
+  const r = await post(sock, `/sessions/${ULID}/continue`, null, bearer(token))
+  expect(r.status).toBe(200)
+  expect((r.json() as { parent_session_id: string }).parent_session_id).toBe(ULID)
+  expect(calls).toEqual([[ULID, "ava"]])
+})
+
+test("a refused continue is its api error", async () => {
+  const office = makeOffice()
+  office.harness = standInHarness({
+    continueSession: async (id) => {
+      throw new HarnessError(409, "live", `session ${id} is still open`)
+    },
+  })
+  const { sock } = await served(office)
+  const r = await post(sock, `/sessions/${ULID}/continue`, null)
+  expect([r.status, errorOf(r)]).toEqual([409, "live"])
+})
+
+test("a codex session over the routes", async () => {
+  const h = makeCodex()
+  h.office.harness = h.sessions
+  // Before served, so the office's start runs the cards' sweep.
+  register(h.office)
+  const { sock } = await served(h.office)
+  h.fake.script([approvalTurn()])
+  const r = await post(sock, "/sessions", { person: "minh", cwd: h.workspace, harness: "codex" })
+  expect(r.status).toBe(200)
+  const created = r.json() as { id: string }
+  expect(created).toMatchObject({ person: "minh", harness: "codex", opened_by: CEO })
+  const sid = created.id
+  await waitFor(() => status(h, sid) === "idle", { what: "the Codex session to load" })
+  const it = frames(await openEvents(sock, `/events?session=${sid}`))
+  expect(await take(it, 1)).toEqual([["comment", null, "connected"]])
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "make a" })).json()).toEqual({ ok: true })
+  const live = await within(
+    (async () => {
+      for (;;) {
+        const step = await it.next()
+        if (step.done) throw new Error("the stream ended")
+        const [kind, , data] = step.value
+        if (kind === "live" && ["part.updated", "part.delta"].includes((data as LiveEvent).type))
+          return data as LiveEvent
+      }
+    })(),
+  )
+  expect(live.session_id).toBe(sid)
+  const card = await openCard(h, sid)
+  const answered = await post(sock, `/questions/${card.id}/answer`, { answer: "Approve", answer_kind: "option" })
+  expect(answered.status).toBe(200)
+  expect(answered.json()).toMatchObject({ status: "consumed", answered_by: CEO })
+  await waitFor(() => JSON.stringify(h.fake.replies()[1]) === JSON.stringify({ decision: "accept" }), {
+    what: "the reply",
+  })
+  await waitFor(() => status(h, sid) === "idle", { what: "the turn to end" })
+  expect((await post(sock, `/sessions/${sid}/interrupt`, null)).json()).toEqual({ ok: true })
+  expect((await post(sock, `/sessions/${sid}/end`, null)).json()).toEqual({ ok: true })
+  await waitFor(() => status(h, sid) === "ended", { what: "the session to end" })
+  const late = await post(sock, `/sessions/${sid}/prompt`, { text: "late" })
+  expect([late.status, errorOf(late)]).toEqual([409, "not_live"])
+  requestsValid(h.fake)
+})
+
+test("a codex prompt or steer a prompt check refuses is 422 and echoes nothing", async () => {
+  const h = makeCodex()
+  h.office.harness = h.sessions
+  const { sock } = await served(h.office)
+  h.hooks.promptCheck.push((_s, text) => (text === "nope" ? "not that" : null))
+  h.fake.script([fc.agentMessage("m1", "Done")])
+  const sid = await start(h, h.workspace)
+  for (const action of ["prompt", "steer"]) {
+    const r = await post(sock, `/sessions/${sid}/${action}`, { text: "nope" })
+    expect([r.status, r.json()]).toEqual([422, { error: "refused", message: "not that" }])
+    expect(r.text).not.toContain("nope")
+  }
+  expect((await post(sock, `/sessions/${sid}/steer`, { text: "Also Rome." })).json()).toEqual({ ok: true })
+  const inputs = () => (h.fake.calls("turn/start") as { input: { text: string }[] }[]).map((c) => c.input[0]!.text)
+  await waitFor(() => inputs().includes("Also Rome."), { what: "the steer's turn" })
+  expect(inputs()).not.toContain("nope")
+})
+
+test("a cost cap or a model on a codex session is 422 not supported", async () => {
+  const h = makeCodex()
+  h.office.harness = h.sessions
+  const { sock } = await served(h.office)
+  h.fake.script([])
+  const sid = await start(h, h.workspace)
+  const bodies: [string, unknown][] = [
+    ["cost-cap", { cost_cap_usd: 50 }],
+    ["model", { connection: "office", model: "gpt-4o" }],
+  ]
+  for (const [action, body] of bodies) {
+    const r = await post(sock, `/sessions/${sid}/${action}`, body)
+    expect([r.status, errorOf(r)]).toEqual([422, "not_supported"])
+    const missing = await post(sock, `/sessions/${ULID}/${action}`, body)
+    expect([missing.status, errorOf(missing)]).toEqual([404, "not_found"])
+  }
+})
+
+/** [label, method, the target for a session id, the body for a workspace]. */
+const YIAN_CHAT_ACTIONS: [string, "GET" | "POST", (id: string) => string, (workspace: string) => unknown][] = [
+  // The schema defaults a create's harness to composer.
+  ["create", "POST", () => "/sessions", (cwd) => ({ person: "minh", cwd })],
+  ["prompt", "POST", (id) => `/sessions/${id}/prompt`, () => ({ text: "sk-sentinel" })],
+  ["steer", "POST", (id) => `/sessions/${id}/steer`, () => ({ text: "sk-sentinel" })],
+  ["end", "POST", (id) => `/sessions/${id}/end`, () => null],
+  ["cost-cap", "POST", (id) => `/sessions/${id}/cost-cap`, () => ({ cost_cap_usd: 10 })],
+  ["model", "POST", (id) => `/sessions/${id}/model`, () => ({ connection: "office", model: "sk-sentinel" })],
+  ["messages", "GET", (id) => `/sessions/${id}/messages`, () => null],
+]
+
+test.each(YIAN_CHAT_ACTIONS)(
+  "a yian chat answers 501 until the chat harness serves it [%s]",
+  async (_case, method, target, body) => {
+    // No app-server starts.
+    const h = makeCodex()
+    h.office.harness = h.sessions
+    const { sock } = await served(h.office)
+    const s = h.store.createSession(session({ harness: "composer", status: "idle" }))
+    const r = method === "GET" ? await get(sock, target(s.id)) : await post(sock, target(s.id), body(h.workspace))
+    expect([r.status, errorOf(r)]).toEqual([501, "not_implemented"])
+    expect(r.text).not.toContain("sk-sentinel")
+    // The create's 501 comes before anything is written.
+    expect(h.store.listSessions()).toEqual([s])
+    expect(h.store.listWorkItems()).toEqual([])
+  },
+)
+
+/** [label, target, raw JSON body, the 422's message]. */
+const REFUSED_BODIES: [string, string, string, string][] = [
+  [
+    "unknown key",
+    "/sessions",
+    JSON.stringify({ person: "minh", cwd: "/w", "sk-sentinel-key": "sk-sentinel-value" }),
+    "an extra field: isn't allowed",
+  ],
+  [
+    "bad type",
+    "/sessions",
+    JSON.stringify({ person: "minh", cwd: { "sk-sentinel-key": 1 } }),
+    "cwd: has the wrong type",
+  ],
+  ["empty text", `/sessions/${ULID}/prompt`, JSON.stringify({ text: "" }), "text: is too short"],
+  [
+    "too deep",
+    `/sessions/${ULID}/prompt`,
+    '{"text":' + "[".repeat(65) + '"sk-sentinel"' + "]".repeat(65) + "}",
+    "the body is nested too deeply",
+  ],
+]
+
+test.each(REFUSED_BODIES)(
+  "session bodies a schema refuses are 422 and echo nothing [%s]",
+  async (_case, target, text, message) => {
+    const office = makeOffice()
+    const { sock } = await served(office)
+    const r = await request(sock, "POST", target, { headers: { "content-type": "application/json" }, body: text })
+    // The body is parsed before the harness is looked up, so no harness still gives 422.
+    expect([r.status, r.json()]).toEqual([422, { error: "invalid_body", message }])
+    expect(r.text).not.toContain("sk-sentinel")
+  },
+)
+
+/** A prompt's head declaring a 2 MiB body; no body byte follows. */
+const BIG_HEAD =
+  `POST /sessions/${ULID}/prompt HTTP/1.1\r\nhost: office\r\ncontent-type: application/json\r\n` +
+  "content-length: 2097152\r\n\r\n"
+
+test("session writes are refused before their body is read", async () => {
+  const office = makeOffice()
+  withToken(office)
+  const { sock } = await served(office, { tokens: true })
+  const got = await raw(sock, BIG_HEAD, { until: "close" })
+  const res = parse(got.text)
+  expect([res.status, JSON.parse(res.body).error]).toEqual([401, "unauthenticated"])
+  expect(res.head.toLowerCase()).toContain("\r\nconnection: close")
+  expect(got.closed).toBe(true)
+})
+
+test("the body cap holds on session routes", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const got = await raw(sock, BIG_HEAD, { until: "close" })
+  const res = parse(got.text)
+  expect([res.status, JSON.parse(res.body).error]).toEqual([413, "body_too_large"])
+  expect(res.head.toLowerCase()).toContain("\r\nconnection: close")
+  expect(got.closed).toBe(true)
+})
+
+test("an unexpected harness error is a 500 that logs its type only", async () => {
+  const office = makeOffice()
+  const lines: string[] = []
+  office.harness = standInHarness({
+    continueSession: async () => {
+      throw new Error("sk-sentinel")
+    },
+  })
+  const { sock } = await served(office, { log: (l) => lines.push(l) })
+  const r = await post(sock, `/sessions/${ULID}/continue`, null)
+  expect([r.status, errorOf(r)]).toEqual([500, "internal_error"])
+  expect(lines.some((l) => l.includes("internal error on POST /sessions/:id/continue: Error"))).toBe(true)
+  expect(lines.join("\n")).not.toContain("sk-sentinel")
+  expect(r.text).not.toContain("sk-sentinel")
+})

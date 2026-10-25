@@ -9,7 +9,7 @@ import { register } from "../../src/extensions/questions.ts"
 import type { AnswerKind, CardActor, Cards } from "../../src/questions/cards.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { InvalidTransition, type QuestionRecord, type Store } from "../../src/store/store.ts"
-import { makeOffice } from "../daemon/helpers.ts"
+import { makeOffice, standInHarness } from "../daemon/helpers.ts"
 import { question, session } from "../store/helpers.ts"
 
 class StandIn implements CardActor {
@@ -60,7 +60,11 @@ class StandIn implements CardActor {
 /** The office with the stand-in as its harness and the questions extension registered (Python's `wire`). */
 function wire(office: Office, log?: (line: string) => void): { cards: Cards; actor: StandIn } {
   const actor = new StandIn(office.store, log)
-  office.harness = actor
+  office.harness = standInHarness({
+    hooks: actor.hooks,
+    answer: actor.answer.bind(actor),
+    interrupt: actor.interrupt.bind(actor),
+  })
   register(office)
   return { cards: office.cards!, actor }
 }

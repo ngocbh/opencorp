@@ -49,6 +49,7 @@ export const ERROR_CODES = [
   "not_implemented",
   "not_live",
   "not_open",
+  "not_supported",
   "origin_not_allowed",
   "pair_code_invalid",
   "password_changed",
