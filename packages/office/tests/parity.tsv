@@ -464,6 +464,11 @@ runs/test_reader.py::test_progress_and_size_never_say_less_than_was_read	dropped
 runs/test_reader.py::test_unknown_envelope_fields_before_or_after_seq_and_at_are_ignored	changed	packages/office/tests/runs/reader.test.ts::an unknown envelope field makes the log unreadable	§5.5, design §3.2: the index reads through yian's iterRunRecords, which refuses envelope fields other than its six	O4b-5
 runs/test_reason_cut.py	open	—	—	O4b-7
 runs/test_records.py	open	—	—	O4b-6
+runs/test_records.py::test_a_busy_sessions_current_run_runs_only_with_its_live_run_or_wake	changed	packages/office/tests/runs/records.test.ts::a busy sessions current run runs only with its live run or wake	§5.1 rule 2: the actor's memory, not the stored session status	O4b-6
+runs/test_records.py::test_a_debrief_in_flight_runs_and_a_backward_job_leaves_a_finished_run_finished	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-6
+runs/test_records.py::test_a_starting_sessions_current_run_is_running	changed	packages/office/tests/runs/records.test.ts::a starting sessions current run is running	§5.1 rule 2: the actor's memory, not the stored session status	O4b-6
+runs/test_records.py::test_a_waiting_or_idle_sessions_current_run_has_its_status_awake_or_asleep	changed	packages/office/tests/runs/records.test.ts::a waiting or idle sessions current run has its status awake or asleep	§5.1 rule 2: the actor's memory, not the stored session status	O4b-6
+runs/test_records.py::test_current_nodes_by_status	changed	packages/office/tests/runs/records.test.ts::current nodes by status	O4a-1: turns are takes, not questions; nodes from the actor or the index's waits (O4b-5 handoff)	O4b-6
 runs/test_sweep.py	open	—	—	O4b-6
 sandbox/test_bwrap.py	ported	packages/office/tests/sandbox/bwrap.test.ts	—	O1-9
 sandbox/test_escape.py	ported	packages/office/tests/sandbox/escape.test.ts	rule 1: through run.ts; file tools through the real __fs-helper under its profile, shell stand-ins for the rest; Bun for the interpreter	O1-10
@@ -1201,6 +1206,16 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/reader.test.ts::a sparse entry marks every few mib of records	security review: a page's synchronous reads are bounded (Python read pages in a thread)	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a waiting node stays open through a resume and a woken one runs on	yian #1057, #1064: a waiting node is non-terminal and a resume doesn't retry it	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::an unterminated tail over the line cap makes the log unreadable	security review: a line over the cap is refused before it is read whole	O4b-5
+—	new	packages/office/tests/runs/records.test.ts::a cancelled run shows interrupted with the office reason	§5.1 status mapping	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a crashed running or missing index row asks the log and else has no outcome	§5.1 status mapping; rules 4 and 5	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a failed run shows failed with yians failure and node	§5.1 status mapping	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a run with no outcome is warned about once	§5.1 rule 5: logged once per run	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a stale waiting or stopped row asks the log	§5.1 index lag: a row whose offset is not its log size is stale and goes to rule 4	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a stopped run shows interrupted stopped	§5.1 status mapping	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a succeeded run shows finished	§5.1 status mapping	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a waiting run shows idle when only its turn waits and waiting otherwise	§5.1 status mapping	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::an ended runs inspection is read once	§5.1 rule 4: the answer is cached per run, since an ended log does not change	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::reading the index logs its warnings by path and an unreadable index is empty	§5.1 readRunIndex on the main thread; §6 rule 13: paths and error type names only	O4b-6
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv equals the Python argv	§6.1 golden argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::the checkout helper binds bun and its entry read only	§2.5, O0-10 P7	O1-9
