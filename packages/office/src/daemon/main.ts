@@ -8,6 +8,7 @@ import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform
 import { CompanyGit } from "../company/git.ts"
 import { HeadWatcher } from "../company/watch.ts"
 import { EXTENSIONS, type Extension, ExtensionError, loadExtensions } from "../extensions/index.ts"
+import { attach } from "../hq/core.ts"
 import { daemonArgs, daemonEnv, resolveHome } from "../install/launch.ts"
 import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
@@ -262,8 +263,8 @@ function close(server: Server): Promise<void> {
  * The start: the office dir, the lock and pidfile, the stop signals (installed before anything opens, so a signal
  * during the start stops the office once it has started instead of killing the process mid-start), the company
  * repo and socket path checks, the tools (git required), the office (store, company clone, reaped workers), the
- * extensions, the office's start, and last the socket: it listens only once everything is ready. A failed start
- * undoes what it did, in reverse.
+ * extensions, HQ (attached last, so its listeners start after everything else and stop first), the office's start,
+ * and last the socket: it listens only once everything is ready. A failed start undoes what it did, in reverse.
  *
  * The stop: the office stops first (its bus closes before anything else, because SSE responses never end on their
  * own, so the server's close isn't held by them), then the connections and the server close, the socket file goes,
@@ -297,6 +298,8 @@ async function run(
           if (error instanceof ExtensionError) throw new OfficeStartError(error.message)
           throw error
         }
+        // Last, so HQ starts after everything else and stops first.
+        attach(office, { log: (line) => write(line + "\n") })
         removeStaleSocket(paths.socket) // we hold the lock, so no live daemon owns it
         try {
           await office.start()

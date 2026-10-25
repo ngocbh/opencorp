@@ -26,7 +26,8 @@ import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { Store } from "../../src/store/store.ts"
 import { company, recordingGit } from "../company/helpers.ts"
 import { cwdOf, envNames, isGone, ps, reexecMarks, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
-import { makeOffice, request, served } from "./helpers.ts"
+import { freePort } from "../hq/helpers.ts"
+import { frames, makeOffice, request, served, take, within } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -671,15 +672,108 @@ test(
   120_000,
 )
 
+/** GET /hq on the office socket of `home`: HQ's status. */
+async function hqStatus(home: string): Promise<{ tcp: { enabled: boolean; listening: boolean } }> {
+  return (await request(new OfficePaths(home).socket, "GET", "/hq")).json() as never
+}
+
+/** POST /hq/pair `{}` on the office socket of `home`: the one-time link's path. */
+async function pairPath(home: string): Promise<string> {
+  const headers = { "content-type": "application/json" }
+  const r = await request(new OfficePaths(home).socket, "POST", "/hq/pair", { headers, body: "{}" })
+  expect(r.status, r.text).toBe(200)
+  return (r.json() as { path: string }).path
+}
+
+test(
+  "the daemon attaches hq after the extensions",
+  async () => {
+    const dir = daemonHome()
+    const d = startDaemon(dir)
+    await waitUntilServing(dir, d)
+    expect((await hqStatus(dir)).tcp.enabled).toBe(false)
+    expect(await pairPath(dir)).toStartWith("/pair#")
+    await stopDaemon(dir, d)
+  },
+  120_000,
+)
+
 test(
   "the daemons info lines reach its log in the office format",
   async () => {
     const dir = daemonHome()
     const d = startDaemon(dir)
     await waitUntilServing(dir, d)
+    const code = (await pairPath(dir)).split("#")[1]!
     await stopDaemon(dir, d)
+    const log = daemonLog(dir)
     const sock = new OfficePaths(dir).socket.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    expect(daemonLog(dir)).toMatch(new RegExp(`^\\S+Z INFO opencorp\\.daemon\\.main: office serving on ${sock}$`, "m"))
+    expect(log).toMatch(new RegExp(`^\\S+Z INFO opencorp\\.daemon\\.main: office serving on ${sock}$`, "m"))
+    expect(log).toMatch(/^\S+Z INFO opencorp\.hq\.pairing: pairing code minted for @/m)
+    expect(log).not.toContain(code)
+  },
+  120_000,
+)
+
+/** A request to 127.0.0.1:`port` on a fresh connection; resolves with the response, whose data events stream.
+ *  The request is destroyed when the test finishes. */
+function overTcp(
+  port: number,
+  method: string,
+  target: string,
+  headers: Record<string, string>,
+  body?: string,
+): Promise<IncomingMessage> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: "127.0.0.1", port, method, path: target, headers, agent: false }, (res) => {
+      // The cleanup's destroy cuts an unfinished response, which then errors with nobody reading it.
+      res.on("error", () => {})
+      resolve(res)
+    })
+    onTestFinished(() => req.destroy())
+    req.on("error", reject)
+    req.end(body)
+  })
+}
+
+test(
+  "a restart with an open web stream rebinds the port at once",
+  async () => {
+    const dir = daemonHome()
+    const port = await freePort()
+    fs.writeFileSync(path.join(dir, "office", "hq.json"), JSON.stringify({ tcp: true, port }))
+    const listening = async (ms: number) => {
+      const deadline = performance.now() + ms
+      while (performance.now() < deadline) {
+        if ((await hqStatus(dir)).tcp.listening) return true
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      return false
+    }
+
+    let d = startDaemon(dir)
+    await waitUntilServing(dir, d)
+    expect(await listening(3000)).toBe(true)
+    const code = (await pairPath(dir)).split("#")[1]!
+    const origin = `http://127.0.0.1:${port}`
+    const json = { origin, "content-type": "application/json" }
+    const paired = await overTcp(port, "POST", "/api/pair", json, JSON.stringify({ code }))
+    paired.resume()
+    expect(paired.statusCode).toBe(200)
+    const cookie = paired.headers["set-cookie"]![0]!.split(";")[0]!
+    const stream = frames(await overTcp(port, "GET", "/api/events", { origin, cookie }))
+    expect(await take(stream, 1)).toEqual([["comment", null, "connected"]])
+    await stopDaemon(dir, d) // SIGTERM with the stream open: the server side closes first, into TIME_WAIT
+    // Read to EOF, so closing sends a FIN, not a RST that clears TIME_WAIT. The stop cuts the response short, so
+    // the client reports it aborted once the connection has closed.
+    await within(Array.fromAsync(stream).catch((error: Error) => expect(error.message).toBe("aborted")))
+
+    // Unlike Python's, this never skips: node:net always sets SO_REUSEADDR, so it can't probe TIME_WAIT with a
+    // plain socket, and the assertion holds either way.
+    d = startDaemon(dir)
+    await waitUntilServing(dir, d)
+    expect(await listening(1500)).toBe(true) // well before the first retry at 5 s: the first bind worked
+    await stopDaemon(dir, d)
   },
   120_000,
 )
