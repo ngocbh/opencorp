@@ -637,6 +637,31 @@ export function state(o: ChatOffice, sid: string): Pick<SessionRecord, "status" 
   return { status, waiting_on, capped }
 }
 
+/** A call a waiting run waits on, as a `result` frame lists it. */
+export interface WaitFrame {
+  node: string
+  call_id: string
+  tool: string
+  inbox: string | null
+  deadline: string | null
+  settled: boolean
+}
+
+/** The turn's unsettled take on the messages inbox. */
+export const TAKE: WaitFrame = {
+  node: "chat#0/heard",
+  call_id: "c1",
+  tool: "take",
+  inbox: "messages",
+  deadline: null,
+  settled: false,
+}
+
+/** A `waiting` result frame of run `runId` waiting on `waits`. */
+export function waitingResult(runId: string, waits: WaitFrame[] = [TAKE]): Record<string, unknown> {
+  return { type: "result", status: "waiting", run_id: runId, output: null, failure: null, waits }
+}
+
 /** A worker a test drives in place of a process: its job, the handlers the actor gave it, each delivery sent to it,
  *  and what its `deliver` answers for a delivery (true by default). */
 export interface ScriptedWorker {
@@ -645,6 +670,8 @@ export interface ScriptedWorker {
   readonly handlers: WorkerHandlers<ActorWorker>
   readonly deliveries: Delivery[]
   accept: (delivery: Delivery) => boolean | Promise<boolean>
+  /** Every delivery it got: its job's, then each one sent to it. */
+  given(): Delivery[]
 }
 
 /** Makes `o`'s spawns return scripted workers (still recording each kind and job) whose `deliver` records the
@@ -664,7 +691,14 @@ export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
       },
       stop: async () => true,
     }
-    const scripted: ScriptedWorker = { worker, job, handlers, deliveries, accept: () => true }
+    const scripted: ScriptedWorker = {
+      worker,
+      job,
+      handlers,
+      deliveries,
+      accept: () => true,
+      given: () => [...job.deliver, ...deliveries],
+    }
     spawned.push(scripted)
     return worker as Worker
   }

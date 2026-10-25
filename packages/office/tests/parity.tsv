@@ -83,6 +83,7 @@ chat/test_waiting.py::test_settle_waits_on_the_ceo_for_a_question_beside_the_tur
 chat/test_wake.py	open	—	—	O4a-6
 chat/test_wake.py::test_a_call_after_close_all_is_refused_as_the_office_stopping	changed	packages/office/tests/chat/wake.test.ts::a call after close all is refused as the office stopping	design §8.2: the actor refuses a worker request after close (a scripted worker's handler), not the harness's call counter	O4a-3
 chat/test_wake.py::test_a_wake_never_resumes_a_session_whose_finish_is_in_flight	changed	packages/office/tests/chat/wake.test.ts::a wake never resumes a session whose finish is in flight	design §8.2: the queue orders the prompt after the finish (409, nothing spawned); end_status is a synchronous check (P13)	O4a-3
+chat/test_wake.py::test_many_callers_on_a_sleeping_session_spawn_one_worker_and_every_message_arrives	changed	packages/office/tests/chat/wake.test.ts::many callers on a sleeping session spawn one worker and every message arrives [%s]	4a revision §1: no turn question to answer; prompts, steers and Esc	O4a-3
 company/test_draft.py	ported	packages/office/tests/company/draft.test.ts	—	O2-16b
 company/test_flows.py	ported	packages/office/tests/company/flows.test.ts	—	O1-8
 company/test_git.py	ported	packages/office/tests/company/git.test.ts	—	O1-6
@@ -692,11 +693,17 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/run_spec.test.ts::the main spec runs the persons main flow with their tools memory and skills	plan O4a-1: chat/run_spec.ts	O4a-1
 —	new	packages/office/tests/chat/run_spec.test.ts::the manager spec has only the profile tools	plan O4a-1: chat/run_spec.ts	O4a-1
 —	new	packages/office/tests/chat/run_spec.test.ts::the side spec has read only lookups and room for its seed	plan O4a-1: chat/run_spec.ts	O4a-1
+—	new	packages/office/tests/chat/session_actor.test.ts::a busy run is retried once then answered run busy	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a card answer is completed and consumed	4a revision §1	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a delivery acked after result is advanced	O4a-0a	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a lost ack is resent and a lost interrupt is dropped	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a message after end is refused as ending	4a revision §1	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a settled wait is re-advanced once without progress	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a stored question fires question stored once	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::esc on a session asleep while its agent waits on a call spawns one advance that cuts it	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::exit typed ends the session	4a revision §1	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::the wake at timer advances a timed out question once	D38	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::the wake at timer is armed in chunks and never advances early	D38	O4a-3
 —	new	packages/office/tests/chat/state.test.ts::write state with nothing new writes nothing	design §3.2 (mirror): Python's equality check before writing (state.py:56) had no test; it keeps a no-op status write from emitting session.updated	O3-8b
 —	new	packages/office/tests/chat/template.test.ts::a long history is folded into the summary before the reply	design §8.8; Python's session memory summarised past 32,000 characters keeping 4 turns: the template folds them with yian's compact_history	O4a-1
 —	new	packages/office/tests/chat/template.test.ts::a message read along with the close is kept unanswered	4a-revision §1: messages read along with the close aren't answered	O4a-1

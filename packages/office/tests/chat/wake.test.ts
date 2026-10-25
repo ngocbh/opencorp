@@ -143,6 +143,46 @@ test("close all during a wake answers 503 and leaves the status", async () => {
   expect(o.registry.get(sid)).toBeUndefined()
 })
 
+test.each([true, false])(
+  "many callers on a sleeping session spawn one worker and every message arrives [%s]",
+  async (held) => {
+    const fake = await fakeLlm()
+    fake.script(...Array.from({ length: 30 }, (_, i) => ({ content: `r${i}` })))
+    const o = await chatOffice(fake)
+    const { actor, sid } = await asleep(o)
+    const ended: string[] = []
+    o.hooks.sessionEnded.push((s) => void ended.push(s.id))
+    const before = o.kinds.length
+    const hold = held ? o.hold() : null
+    const calls: [string, Promise<unknown>][] = [
+      ...[0, 1, 2, 3, 4, 5].map((i): [string, Promise<unknown>] => [`prompt-${i}`, actor.prompt(`prompt-${i}`)]),
+      ...[0, 1, 2].map((i): [string, Promise<unknown>] => [`steer-${i}`, actor.steer(`steer-${i}`)]),
+      ["interrupt", actor.interrupt()],
+    ]
+    if (hold !== null) {
+      await hold.entered
+      await pause(300)
+      hold.release()
+    }
+    const out = await Promise.all(calls.map(async ([name, call]) => [name, await call] as const))
+    expect(o.kinds.slice(before)).toEqual(["advance"])
+    expect(o.logs.filter((line) => line.includes("WorkerExists"))).toEqual([])
+    const sent = out.filter(([name]) => name !== "interrupt")
+    for (const [, got] of sent) expect(["turn", "queued", "steer"]).toContain(got as string)
+    const accepted = sent.map(([name]) => name)
+    await waitFor(
+      () => {
+        const asked = JSON.stringify(fake.requests())
+        return accepted.every((text) => asked.includes(text)) && status(o, sid) === "idle"
+      },
+      { what: "every accepted message" },
+    )
+    const user = texts(o, sid, "user").join(" ")
+    for (const text of accepted) expect(user).toContain(text)
+    expect(ended).toEqual([])
+  },
+)
+
 test("wakes racing close all leave the session to wake again", async () => {
   const fake = await fakeLlm()
   fake.script(...Array.from({ length: 30 }, (_, i) => ({ content: `r${i}` })))

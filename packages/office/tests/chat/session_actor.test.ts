@@ -2,6 +2,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveEvent } from "@opencorp/protocol"
 import { INTERRUPTED_CALL, SessionActor } from "../../src/chat/session_actor.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
@@ -29,10 +30,17 @@ import {
   startActor,
   status,
   texts,
+  type WaitFrame,
+  waitingResult,
 } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 afterAll(noWorkersLeft)
+
+/** What a command settled with: its value, or the status and code of the error it was refused with. */
+function outcome(promise: Promise<unknown>): Promise<string> {
+  return promise.then(String, (error) => `${error.status} ${error.code}`)
+}
 
 test("turns count finished replies once", async () => {
   const fake = await fakeLlm()
@@ -495,6 +503,14 @@ test("a hard stop waits for the lingering worker and skips a run with no log", a
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
   const workers = scriptedWorker(o)
+  // The stop job reads the session's connection right after its log check, inside the exit's job.
+  const { connections } = o.ctx
+  const choice = connections.choice.bind(connections)
+  let choices = 0
+  connections.choice = (...args) => {
+    choices += 1
+    return choice(...args)
+  }
   // One session whose run has a log, then one whose run has none.
   for (const logged of [true, false]) {
     const sid = await newSession(o)
@@ -508,14 +524,209 @@ test("a hard stop waits for the lingering worker and skips a run with no log", a
     await actor.fail()
     await waitFor(() => scripted.deliveries.length === 1, { what: "the cancel" })
     expect(o.kinds.length).toBe(before)
+    const read = choices
     scripted.handlers.exited(scripted.worker, 0)
     // Queued after the exit: the exit job has run when it answers.
     await expect(actor.end()).rejects.toMatchObject({ status: 409, code: "not_live" })
     if (logged) {
+      expect(choices).toBe(read + 1)
       await waitFor(() => o.kinds.length === before + 1, { what: "the cancel job" })
       expect(o.jobs.at(-1)).toMatchObject({ kind: "advance", advance: false, deliver: [{ op: "cancel" }] })
     } else {
+      expect(choices).toBe(read)
       expect(o.kinds.length).toBe(before)
     }
   }
+})
+
+test("a delivery acked after result is advanced", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const { worker, handlers, deliveries } = workers[0]!
+  const sent = actor.prompt("hi")
+  await waitFor(() => deliveries.length === 1, { what: "the send" })
+  handlers.result(worker, waitingResult(runId))
+  // The run took the send after its result: nobody would move it now.
+  handlers.deliverReply(worker, { type: "deliver_reply", id: deliveries[0]!.id, seq: 4 })
+  await sent
+  handlers.exited(worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the re-advance" })
+  expect(o.jobs[1]).toMatchObject({ kind: "advance", advance: true, deliver: [] })
+  expect(status(o, sid)).toBe("busy")
+})
+
+test("a lost ack is resent and a lost interrupt is dropped", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const first = workers[0]!
+  const sent = actor.prompt("hi")
+  await waitFor(() => first.deliveries.length === 1, { what: "the send" })
+  const cut = actor.interrupt()
+  await waitFor(() => first.deliveries.length === 2, { what: "the interrupt" })
+  expect(first.deliveries.map((d) => d.op)).toEqual(["send", "interrupt"])
+  // The worker ends without answering either.
+  first.handlers.result(first.worker, waitingResult(runId))
+  first.handlers.exited(first.worker, 0)
+  await cut
+  await waitFor(() => workers.length === 2, { what: "the next worker" })
+  const second = workers[1]!
+  // The send goes again, under its own id; the interrupt would cut the next reply, so it doesn't.
+  expect(second.job.deliver).toEqual([first.deliveries[0]!])
+  second.handlers.deliverReply(second.worker, { type: "deliver_reply", id: first.deliveries[0]!.id, seq: 5 })
+  expect(await sent).toBe("queued")
+})
+
+test("a settled wait is re-advanced once without progress", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const asked = { node: "chat#0/reply", call_id: "q1", tool: "ask_user", inbox: null, deadline: null, settled: true }
+  const later = { ...asked, call_id: "q2" }
+  /** Ends worker `n` waiting on `waits`. */
+  const waitOn = (n: number, waits: WaitFrame[]) => {
+    const { worker, handlers } = workers[n]!
+    handlers.result(worker, waitingResult(runId, waits))
+    handlers.exited(worker, 0)
+  }
+  waitOn(0, [asked])
+  await waitFor(() => workers.length === 2, { what: "the re-advance" })
+  // It moved on to another settled wait: that's progress, so once more.
+  waitOn(1, [later])
+  await waitFor(() => workers.length === 3, { what: "the second re-advance" })
+  waitOn(2, [later])
+  await waitFor(() => o.logs.some((line) => line.includes("WARNING")), { what: "the warning" })
+  expect(o.kinds).toEqual(["chat", "advance", "advance"])
+  expect(o.jobs.slice(1).map((job) => job.deliver)).toEqual([[], []])
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  // The next command moves it again.
+  const sent = actor.prompt("hi")
+  await waitFor(() => workers.length === 4, { what: "the message's advance" })
+  expect(workers[3]!.job.deliver.map((d) => d.op)).toEqual(["send"])
+  const { worker, handlers, job } = workers[3]!
+  handlers.deliverReply(worker, { type: "deliver_reply", id: job.deliver[0]!.id, seq: 6 })
+  await sent
+})
+
+test("a busy run is retried once then answered run busy", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  workers[0]!.handlers.result(workers[0]!.worker, waitingResult(runId))
+  workers[0]!.handlers.exited(workers[0]!.worker, 0)
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "asleep at the turn" })
+  const a = outcome(actor.prompt("a"))
+  await waitFor(() => workers.length === 2, { what: "the advance" })
+  const b = outcome(actor.prompt("b"))
+  await waitFor(() => workers[1]!.deliveries.length === 1, { what: "the second send" })
+  const cut = actor.interrupt()
+  await waitFor(() => workers[1]!.deliveries.length === 2, { what: "the interrupt" })
+  /** Worker `n` finds the run held by another process: each send fails, then its advance. */
+  const busy = (n: number) => {
+    const { worker, handlers, job, deliveries } = workers[n]!
+    for (const d of [...job.deliver, ...deliveries]) {
+      if (d.op === "send") handlers.deliverReply(worker, { type: "deliver_reply", id: d.id, failed: "RunBusyError" })
+    }
+    handlers.error(worker, { type: "error", message: `RunBusyError: run ${runId} is running`, traceback: "" })
+    handlers.exited(worker, 1)
+  }
+  busy(1)
+  await cut
+  await waitFor(() => workers.length === 3, { what: "the retry" })
+  const sends = workers[1]!.given().filter((d) => d.op === "send")
+  expect(o.jobs[2]).toMatchObject({ kind: "advance", deliver: sends })
+  busy(2)
+  expect(await a).toBe("503 run_busy")
+  expect(await b).toBe("503 run_busy")
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  // The session stays as it was.
+  expect(o.kinds).toEqual(["chat", "advance", "advance"])
+  expect(status(o, sid)).toBe("idle")
+})
+
+test("the wake at timer advances a timed out question once", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    { tool_calls: [{ name: "ask_user", arguments: { question: "Which?", timeout: "1s" } }] },
+    { content: "No answer, so A." },
+    { content: "spare" },
+  )
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("hi")
+  // The message's advance has its worker once the prompt returns.
+  const before = o.kinds.length
+  await waitFor(() => texts(o, sid).includes("No answer, so A.") && status(o, sid) === "idle", {
+    what: "the reply after the timeout",
+  })
+  expect(o.kinds.slice(before)).toEqual(["advance"])
+  const asked = o.office.store.listQuestions({ sessionId: sid, source: "ask_user" })
+  expect(asked.map((q) => q.status)).toEqual(["stale"])
+  expect(JSON.stringify(fake.requests().at(-1)!.messages)).toContain("timed out: no answer")
+  await new Promise((resolve) => setTimeout(resolve, 3000))
+  expect(o.kinds.slice(before)).toEqual(["advance"])
+})
+
+/** A scheduler whose clock the test sets and whose sleeps the test ends, one at a time. */
+function steppedScheduler(start: number) {
+  const sleeps: { ms: number; wake: () => void }[] = []
+  const clock = { now: start }
+  const scheduler: Scheduler = {
+    now: () => clock.now,
+    sleep: (ms, signal) =>
+      new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) return reject(signal.reason)
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+        sleeps.push({ ms, wake: resolve })
+      }),
+  }
+  return { scheduler, sleeps, clock }
+}
+
+test("the wake at timer is armed in chunks and never advances early", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const start = Date.parse("2026-10-25T00:00:00.000Z")
+  const { scheduler, sleeps, clock } = steppedScheduler(start)
+  const sid = await newSession(o)
+  const actor = new SessionActor({ ...o.ctx, scheduler }, sid)
+  o.actors.push(actor)
+  await actor.start()
+  const deadline = new Date(start + 30 * 86_400_000).toISOString()
+  const asked = { node: "chat#0/reply", call_id: "q1", tool: "ask_user", inbox: null, deadline, settled: false }
+  workers[0]!.handlers.result(workers[0]!.worker, waitingResult(actor.runId!, [asked]))
+  workers[0]!.handlers.exited(workers[0]!.worker, 0)
+  await waitFor(() => sleeps.length === 1, { what: "the timer" })
+  // An early wake (a chunk ended, or the laptop slept less than the deadline) sleeps again.
+  for (const step of [SLEEP_CHUNK_MS, 7 * 86_400_000]) {
+    clock.now += step
+    const n = sleeps.length
+    sleeps.at(-1)!.wake()
+    await waitFor(() => sleeps.length === n + 1, { what: "the next chunk" })
+  }
+  expect(sleeps.every(({ ms }) => ms > 0 && ms <= SLEEP_CHUNK_MS)).toBe(true)
+  expect(o.kinds).toEqual(["chat"])
+  clock.now = Date.parse(deadline)
+  sleeps.at(-1)!.wake()
+  await waitFor(() => workers.length === 2, { what: "the advance at the deadline" })
+  expect(o.jobs[1]).toMatchObject({ kind: "advance", advance: true, deliver: [] })
+  expect(status(o, sid)).toBe("busy")
 })

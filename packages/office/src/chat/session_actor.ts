@@ -2,7 +2,7 @@
  *  call, the way `yian chat` does (deliver, then `advance`, again while the run waits). */
 import fs from "node:fs"
 import path from "node:path"
-import type { Scheduler } from "@ngocbh/yian/platform"
+import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { Message as RunMessage } from "@ngocbh/yian/run"
 import { CompanyDefaults, now } from "@opencorp/protocol"
 import type { z } from "zod"
@@ -139,6 +139,8 @@ class Pending {
 class WorkerRun {
   /** The run it runs. */
   readonly runId: string
+  /** Its job's kind. */
+  readonly kind: "chat" | "advance"
   worker: ActorWorker | null = null
   /** The provider it was spawned with, whose key no hook or reason may show. */
   provider: Provider | null = null
@@ -155,12 +157,14 @@ class WorkerRun {
   /** Whether a message was given to it since a turn node last started waiting: the take will read it. */
   turnPending: boolean
 
-  /** A worker of run `runId` given `given`, over a run that waits at `waits`. */
-  constructor(runId: string, given: Pending[], waits: readonly Wait[]) {
+  /** A `kind` worker of run `runId` given `given`, over a run that waits at `waits`; `sent` says a message reached
+   *  the run since its turn last waited. */
+  constructor(runId: string, kind: "chat" | "advance", given: Pending[], waits: readonly Wait[], sent: boolean) {
     this.runId = runId
+    this.kind = kind
     this.given = given
     for (const wait of waits) this.waiting.set(wait.node, [...(this.waiting.get(wait.node) ?? []), wait.call_id])
-    this.turnPending = given.some((p) => p.delivery.op === "send")
+    this.turnPending = sent || given.some((p) => p.delivery.op === "send")
   }
 }
 
@@ -187,6 +191,16 @@ export class SessionActor implements LiveCalls {
   #next: Pending[] = []
   /** Whether a worker accepted a delivery after its `result`, so the run needs another `advance`. */
   #readvance = false
+  /** Whether a worker accepted a message after its `result`: the next worker's take will read it. */
+  #lateSend = false
+  /** The waits the last spawn started from when it was a plain re-advance for a settled wait, else null. */
+  #readvancedFrom: Wait[] | null = null
+  /** How many workers in a row found the run held by another process (`RunBusyError`). */
+  #busy = 0
+  /** The wake-at timer's sleep, aborted at finish, close, a new result or a spawn. */
+  #timer: AbortController | null = null
+  /** The deadline the timer last advanced the run at, which it never arms for again. */
+  #spent: string | null = null
   #finished = false
   #closed = false
   #ending = false
@@ -531,6 +545,7 @@ export class SessionActor implements LiveCalls {
   close(): void {
     if (this.#closed) return
     this.#closed = true
+    this.#disarm()
     this.#interruptWorkspace()
     this.#answerCalls()
     const given = [...(this.#starting?.given ?? []), ...(this.#run?.given ?? []), ...this.#next.splice(0)]
@@ -651,9 +666,9 @@ export class SessionActor implements LiveCalls {
    * `complete` for each stored answer that never reached the run. The provider is resolved first (a removed
    * connection moves the session to the default); a `chat` job records what its run starts on. On failure,
    * the job's deliveries are answered with the error (`503 cant_wake`, `503 stopping`, or a `HarnessError` as it
-   * is) and dropped, and the error is thrown.
+   * is) and dropped, and the error is thrown. `plain` marks a re-advance only for a settled wait.
    */
-  async #spawn(kind: "chat" | "advance"): Promise<void> {
+  async #spawn(kind: "chat" | "advance", { plain = false }: { plain?: boolean } = {}): Promise<void> {
     const { store, connections, paths } = this.#ctx
     const sid = this.sessionId
     const runId = this.#runId!
@@ -661,7 +676,10 @@ export class SessionActor implements LiveCalls {
     this.#next = []
     // This spawn is the re-advance; one that fails leaves nothing to wait for.
     this.#readvance = false
-    const run = new WorkerRun(runId, pendings, kind === "advance" ? (this.#waits ?? []) : [])
+    this.#readvancedFrom = plain ? this.#waits : null
+    const waits = kind === "advance" ? (this.#waits ?? []) : []
+    const run = new WorkerRun(runId, kind, pendings, waits, this.#lateSend)
+    this.#lateSend = false
     this.#starting = run
     try {
       // Inside the try: a store read that throws still answers every delivery.
@@ -698,6 +716,8 @@ export class SessionActor implements LiveCalls {
       run.worker = await this.#ctx.workers.spawn(job, paths.sessionDir(sid), handlers, { env: provider.env })
       this.#run = run
       this.#starting = null
+      // The worker's result arms it again.
+      this.#disarm()
       void this.#ctx.hooks.notify("runStarted", session, runId)
       // Busy before any caller hears back: the run isn't at its turn until it shows it.
       if (!this.#closed) this.#trySettle("after a spawn")
@@ -757,9 +777,9 @@ export class SessionActor implements LiveCalls {
   }
 
   /** `#spawn`, logging its failure, which it already answered. */
-  async #spawnQuietly(kind: "chat" | "advance"): Promise<void> {
+  async #spawnQuietly(kind: "chat" | "advance", options: { plain?: boolean } = {}): Promise<void> {
     try {
-      await this.#spawn(kind)
+      await this.#spawn(kind, options)
     } catch (error) {
       this.#log(`session ${this.sessionId}: a worker can't start (${errorName(error)})`)
     }
@@ -919,6 +939,7 @@ export class SessionActor implements LiveCalls {
       const closed = Array.isArray(reply.closed) ? reply.closed.map(String) : []
       for (const callId of closed) this.#closedCall(run.runId, callId, op === "cancel" ? "cancelled" : "interrupted")
       if (p.late && (op === "send" || op === "complete" || op === "close" || closed.length > 0)) this.#readvance = true
+      if (p.late && op === "send") this.#lateSend = true
       if (p.questionId !== null) this.#consume(p.questionId)
       // The stored status is busy, and a message shown, before the caller hears back.
       this.#trySettle("after a reply")
@@ -949,18 +970,18 @@ export class SessionActor implements LiveCalls {
   /** A `result` or `error`: a waiting run's waits become the actor's. Acted on at the worker's exit. */
   #result(run: WorkerRun, frame: Frame): void {
     if (run !== this.#run || this.#finished) return
+    this.#disarm()
     if (frame.type === "result" && frame.status === "waiting") this.#waits = waitsOf(frame)
     run.turnPending = false
     this.#trySettle("after a result")
   }
 
   /**
-   * The worker is gone; its outcome decides what comes next. After a `waiting` result, the deliveries it never
-   * answered (but an `interrupt`) and those it refused `not_started` are carried into the next worker, which is
-   * spawned when there are any, when `#next` holds some, or when a delivery came after the result. A succeeded run
-   * ends the session; a worker gone with no outcome, or a `stopped` or `crashed` run, is replaced once (`#died`);
-   * any other outcome fails the session. Every delivery not carried is answered. A finished actor only starts its
-   * run's hard stop that waited for this exit.
+   * The worker is gone; its outcome decides what comes next. After a `waiting` result, see `#waited`. A succeeded
+   * run ends the session; a worker gone with no outcome, or a `stopped` or `crashed` run, is replaced once
+   * (`#died`); a run another process holds is tried once more (`#runBusy`); any other outcome fails the session.
+   * Every delivery not carried is answered. A finished actor only starts its run's hard stop that waited for this
+   * exit.
    */
   async #exited(run: WorkerRun, returncode: number | null): Promise<void> {
     if (run !== this.#run) return
@@ -982,12 +1003,15 @@ export class SessionActor implements LiveCalls {
     this.#readvance = false
     const outcome = run.outcome
     const status = outcome === null ? null : outcome.type === "result" ? String(outcome.status) : "error"
+    const busy = status === "error" && String(outcome!.message ?? "").startsWith("RunBusyError:")
     if (status === "waiting" || status === "succeeded") this.#deaths = 0
+    if (!busy) this.#busy = 0
     if (status === null || status === "stopped" || status === "crashed") {
       await this.#died(run, status)
+    } else if (busy) {
+      await this.#runBusy(run)
     } else if (status === "waiting") {
-      this.#carry(run)
-      if (readvance || this.#next.length > 0) await this.#spawnQuietly("advance")
+      await this.#waited(run, waitsOf(outcome!), readvance)
     } else if (status === "succeeded") {
       this.#finish("ended", outcome, null, run)
     } else {
@@ -997,12 +1021,53 @@ export class SessionActor implements LiveCalls {
     this.#trySettle("after a worker exit")
   }
 
-  /** Moves the deliveries `run`'s worker never answered (but an `interrupt`), and those it refused `not_started`,
-   *  to the front of `#next`; answers the rest it was given. */
-  #carry(run: WorkerRun): void {
-    const carry = run.given.filter(
-      (p) => !p.done && (p.reply === null ? p.delivery.op !== "interrupt" : p.reply.refused === "not_started"),
-    )
+  /**
+   * `run`'s worker ended with a `waiting` result whose run waits on `waits`. What it never answered (but an
+   * `interrupt`) and what it refused `not_started` go to the next worker, which is spawned when there is any, when
+   * `#next` holds some, or when a delivery came after the result (`readvance`). A settled wait alone is advanced
+   * too, but not again when the last spawn was such a plain re-advance and the run still waits on the same calls:
+   * it made no progress, so it waits for the next command. With no worker started, the timer waits for the earliest
+   * deadline.
+   */
+  async #waited(run: WorkerRun, waits: Wait[], readvance: boolean): Promise<void> {
+    const from = this.#readvancedFrom
+    this.#carry(run)
+    // Armed before the spawn, which disarms it once its worker starts: a spawn that fails leaves the timer.
+    this.#arm(waits)
+    if (readvance || this.#next.length > 0) return this.#spawnQuietly("advance")
+    if (!waits.some((wait) => wait.settled)) return
+    if (from !== null && JSON.stringify(from) === JSON.stringify(waits)) {
+      const why = "its run made no progress on a settled wait; it waits for the next command"
+      this.#log(`session ${this.sessionId}: WARNING: ${why}`)
+      return
+    }
+    await this.#spawnQuietly("advance", { plain: true })
+  }
+
+  /** `run`'s worker found the run held by another process (`RunBusyError`): the first time, the same spawn goes
+   *  again with what it never applied (but an `interrupt`); the second time, every delivery left, `#next`'s
+   *  included, is answered `503 run_busy` and the session stays as it was. */
+  async #runBusy(run: WorkerRun): Promise<void> {
+    this.#log(`session ${this.sessionId}: its run is held by another process (RunBusyError)`)
+    if (this.#busy >= 1) {
+      this.#busy = 0
+      this.#answerRest([...run.given, ...this.#next.splice(0)], runBusy(), runBusy())
+      return
+    }
+    this.#busy += 1
+    this.#carry(run, { failed: true })
+    // The registry reaps a leftover worker of the session before it spawns.
+    await this.#spawnQuietly(run.kind)
+  }
+
+  /** Moves the deliveries `run`'s worker never answered (but an `interrupt`), those it refused `not_started` and,
+   *  with `failed`, those that failed (but an `interrupt`), to the front of `#next`; answers the rest it was given. */
+  #carry(run: WorkerRun, { failed = false }: { failed?: boolean } = {}): void {
+    const carry = run.given.filter((p) => {
+      if (p.done) return false
+      if (p.reply === null || (failed && typeof p.reply.failed === "string")) return p.delivery.op !== "interrupt"
+      return p.reply.refused === "not_started"
+    })
     this.#answerRest(
       run.given.filter((p) => !carry.includes(p)),
       this.#cantWake(),
@@ -1043,9 +1108,12 @@ export class SessionActor implements LiveCalls {
     if (this.#finished) return
     this.#finished = true
     const { store, hooks } = this.#ctx
+    this.#disarm()
     const runId = this.#runId
-    outcome ??= run?.outcome ?? null
-    const ended = outcome?.type === "result" && ["succeeded", "failed", "cancelled"].includes(String(outcome.status))
+    const recorded = outcome ?? run?.outcome ?? null
+    const ended = recorded?.type === "result" && ["succeeded", "failed", "cancelled"].includes(String(recorded.status))
+    // A worker's lingering `waiting` result isn't how the run ended.
+    const reported = outcome ?? (ended ? recorded : null)
     try {
       const session = this.#session()
       let final: SessionRecord["status"] = status
@@ -1059,7 +1127,7 @@ export class SessionActor implements LiveCalls {
         if (why !== null && !ended && runId !== null) store.endRun(runId, why)
         return updated
       })
-      const frame = outcome?.type === "result" ? (redactKey(outcome, run?.provider ?? null) as Frame) : null
+      const frame = reported?.type === "result" ? (redactKey(reported, run?.provider ?? null) as Frame) : null
       // In order, outside the queue: a slow hook never holds the session's next step.
       void (async () => {
         if (runId !== null) await hooks.notify("runFinished", finished, runId, frame)
@@ -1068,7 +1136,7 @@ export class SessionActor implements LiveCalls {
       this.#ctx.transcript.forget(finished.run_ids)
     } catch (error) {
       if (error instanceof HarnessError) throw error
-      this.#log(`session ${this.sessionId} can't store the end (${errorName(error)})`)
+      this.#log(`session ${this.sessionId}: can't store the end (${errorName(error)})`)
     } finally {
       const given = [...(run?.given ?? []), ...(this.#run?.given ?? []), ...this.#next.splice(0)]
       this.#answerRest(given, new HarnessError(409, "not_live", `session ${this.sessionId} has no live run`))
@@ -1134,12 +1202,12 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * The closing rule: answers each of `pendings` that has no answer yet and isn't carried. A held `not_started` or
-   * failure is `503 cant_wake`; a lost `interrupt` or `cancel`, or a dropped `complete` of a card's answer (its
-   * question stays answered), is resolved; any other delivery with no reply, a message's `complete` included, gets
-   * `fallback`.
+   * The closing rule: answers each of `pendings` that has no answer yet and isn't carried. A held `not_started` is
+   * `503 cant_wake`, a held failure `failure` (by default `503 cant_wake` naming its type); a lost `interrupt` or
+   * `cancel`, or a dropped `complete` of a card's answer (its question stays answered), is resolved; any other
+   * delivery with no reply, a message's `complete` included, gets `fallback`.
    */
-  #answerRest(pendings: readonly Pending[], fallback: HarnessError): void {
+  #answerRest(pendings: readonly Pending[], fallback: HarnessError, failure?: HarnessError): void {
     for (const p of pendings) {
       if (p.done) continue
       const reply = p.reply
@@ -1150,11 +1218,46 @@ export class SessionActor implements LiveCalls {
       } else if (Object.hasOwn(reply, "seq")) {
         p.resolve(p.acked)
       } else if (typeof reply.failed === "string") {
-        p.reject(this.#cantWake(reply.failed))
+        p.reject(failure ?? this.#cantWake(reply.failed))
       } else {
         p.reject(reply.refused === "not_started" ? this.#cantWake() : refusalOf(reply.refused as string))
       }
     }
+  }
+
+  // --- the wake-at timer -------------------------------------------------------------------
+
+  /** Arms the timer for the earliest deadline of an unsettled call in `waits`, unless it already advanced the run
+   *  at that deadline or there is none. */
+  #arm(waits: readonly Wait[]): void {
+    this.#disarm()
+    const at = wakeAt(waits)
+    if (at === null || at === this.#spent || this.#finished || this.#closed) return
+    const timer = new AbortController()
+    this.#timer = timer
+    sleepUntil(this.#ctx.scheduler, Date.parse(at), timer.signal).then(
+      () => this.#post("wake-at timer", () => this.#wake(timer, at)),
+      () => {},
+    )
+  }
+
+  #disarm(): void {
+    this.#timer?.abort()
+    this.#timer = null
+  }
+
+  /** The deadline `at` of `timer` has come: with no worker, a plain `advance` times its calls out. */
+  async #wake(timer: AbortController, at: string): Promise<void> {
+    if (timer !== this.#timer) return
+    this.#timer = null
+    if (this.#finished || this.hasWorker) return
+    try {
+      await this.#spawn("advance")
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a worker can't start (${errorName(error)})`)
+      return
+    }
+    this.#spent = at
   }
 
   // --- the session --------------------------------------------------------------------------
@@ -1262,6 +1365,25 @@ function redactKey(value: unknown, provider: Pick<Provider, "llm_config"> | null
   return typeof key === "string" && key !== "" ? redact(value, [], [key]) : value
 }
 
+/** The earliest deadline of an unsettled call in `waits`, or null (yian's `wakeAt`; record times compare as text). */
+function wakeAt(waits: readonly Wait[]): string | null {
+  let earliest: string | null = null
+  for (const wait of waits) {
+    if (!wait.settled && wait.deadline !== null && (earliest === null || wait.deadline < earliest)) {
+      earliest = wait.deadline
+    }
+  }
+  return earliest
+}
+
+/** Resolves once `scheduler`'s clock reaches `at` (epoch ms), sleeping at most `SLEEP_CHUNK_MS` at a time and
+ *  reading the clock again after each, so a machine that slept still wakes on time; rejects once `signal` aborts. */
+async function sleepUntil(scheduler: Scheduler, at: number, signal: AbortSignal): Promise<void> {
+  for (let left = at - scheduler.now(); left > 0; left = at - scheduler.now()) {
+    await scheduler.sleep(Math.min(left, SLEEP_CHUNK_MS), signal)
+  }
+}
+
 /** The calls a `result` frame says its run waits on. */
 function waitsOf(frame: Frame): Wait[] {
   return Array.isArray(frame.waits) ? (frame.waits as Wait[]) : []
@@ -1277,6 +1399,10 @@ function refusalOf(reason: string): HarnessError {
 
 function tooLarge(): HarnessError {
   return new HarnessError(422, "too_large", "the message is too large")
+}
+
+function runBusy(): HarnessError {
+  return new HarnessError(503, "run_busy", "another process holds the session's run; try again")
 }
 
 function stopping(): HarnessError {
