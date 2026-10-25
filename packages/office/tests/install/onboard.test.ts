@@ -1,4 +1,5 @@
-/** Onboarding this machine: the owner's defaults, the in-process model check, and the helpers it uses. */
+/** Onboarding this machine: the home, the company clone and join, this device, the model check and the service
+ *  start. */
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
@@ -62,9 +63,9 @@ function provider(): Readable {
   return Readable.from([PROVIDER_JSON])
 }
 
-/** The options every test passes: listers and a model check that reach no provider, git without the user's
- *  config, a stand-in host, so no test can reach the real service tools, and a login no company lists, so no
- *  test reads the account database. */
+/** The options every test passes: listers and a model check that reach no provider; git without the user's
+ *  config; a stand-in host, so no test reaches the real service tools; and a login no company lists, so no test
+ *  reads the account database. */
 function base(dir: string): OnboardOptions {
   return {
     listers: NO_LISTING,
