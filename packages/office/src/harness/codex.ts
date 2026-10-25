@@ -1,10 +1,11 @@
-/** One `codex app-server --listen stdio://`: its command. */
-import fs from "node:fs"
+/** One `codex app-server --listen stdio://`: its command, owner-load params, process group and worker record. */
+import type { HarnessPolicy } from "@opencorp/protocol"
+import { which } from "../install/launch.ts"
 
 export const APP_SERVER_ARGS = ["app-server", "--listen", "stdio://"] as const
-
-/** macOS's `CS_PATH`: where Python's `shutil.which` looks when no PATH is set at all. */
-const CS_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+/** Milliseconds an app-server has to exit after stdin closes, before its group is killed. */
+export const CLOSE_GRACE_MS = 5_000
+export const START_TIMEOUT_MS = 30_000
 
 /** Codex couldn't be run, didn't start, refused the handshake, or died loading the thread. The message says what
  *  went wrong and what to do; it never holds Codex's stderr, which stays in the session's codex.log. */
@@ -17,49 +18,52 @@ export class CodexMissing extends CodexStartError {
   override name = "CodexMissing"
 }
 
-/** `codex app-server --listen stdio://` with `codex` found on `env`'s PATH (the office's own).
+/** Codex runs but has no account signed in. */
+export class CodexSignedOut extends CodexStartError {
+  override name = "CodexSignedOut"
+}
+
+/** `codex app-server --listen stdio://` run by `codex`, or `CodexMissing` when there is none.
  *
- *  `OPENCORP_CODEX_BIN` in the office's `environ` names another binary (a path, or a name on that PATH). */
+ *  The daemon passes `office.tools.codex` and its (pinned) `process.env.OPENCORP_CODEX_BIN` as `override`, which
+ *  only words the error. */
+export function appServerCommand(codex: string | undefined, override?: string): string[] {
+  if (codex === undefined && override)
+    throw new CodexMissing(
+      `OPENCORP_CODEX_BIN names ${override}, which isn't an executable the office can find; ` +
+        "fix or unset it, then run `opencorp doctor`.",
+    )
+  if (codex === undefined)
+    throw new CodexMissing(
+      "Codex isn't installed where the office can find it (on its PATH). Install it " +
+        "(npm install -g @openai/codex), sign in with `codex login`, then run `opencorp doctor`.",
+    )
+  return [codex, ...APP_SERVER_ARGS]
+}
+
+/** `codex app-server --listen stdio://` with `codex` found on the absolute entries of `env`'s PATH (the office's
+ *  own), as the daemon's tools are.
+ *
+ *  `OPENCORP_CODEX_BIN` in the office's `environ` names another binary (an absolute path, or a name on that PATH). */
 export function codexCommand(
   env: Record<string, string | undefined>,
   environ: Record<string, string | undefined> = process.env,
 ): string[] {
   const override = environ.OPENCORP_CODEX_BIN
   // `||`, as Python's `or`: an empty override means `codex`.
-  const found = which(override || "codex", env.PATH)
-  if (found === null && override)
-    throw new CodexMissing(
-      `OPENCORP_CODEX_BIN names ${override}, which isn't an executable the office can find; ` +
-        "fix or unset it, then run `opencorp doctor`.",
-    )
-  if (found === null)
-    throw new CodexMissing(
-      "Codex isn't installed where the office can find it (on its PATH). Install it " +
-        "(npm install -g @openai/codex), sign in with `codex login`, then run `opencorp doctor`.",
-    )
-  return [found, ...APP_SERVER_ARGS]
+  return appServerCommand(which(override || "codex", env.PATH) ?? undefined, override)
 }
 
-/** `name` as Python 3.12's `shutil.which(name, path=searchPath)` finds it on POSIX: as found, not resolved. */
-function which(name: string, searchPath: string | undefined): string | null {
-  if (name.includes("/")) return runnable(name) ? name : null
-  const dirs = searchPath ?? process.env.PATH ?? CS_PATH
-  if (!dirs) return null
-  for (const dir of dirs.split(":")) {
-    // Python's os.path.join: no separator added after an empty or slash-ended entry, nothing normalised.
-    const file = dir === "" || dir.endsWith("/") ? dir + name : `${dir}/${name}`
-    if (runnable(file)) return file
-  }
-  return null
-}
-
-/** `file` exists, isn't a directory, and this process may execute it. */
-function runnable(file: string): boolean {
-  try {
-    if (fs.statSync(file).isDirectory()) return false
-    fs.accessSync(file, fs.constants.X_OK)
-    return true
-  } catch {
-    return false
+/** The params of every owner load (thread/start, thread/resume): the person's sandbox and network, and approvals
+ *  that always come to the office's cards whatever the owner's config.toml says.
+ *
+ *  `config` values are nested objects, never dotted keys: Codex splits override keys on every dot. */
+export function ownerLoad(cwd: string, policy: HarnessPolicy | null) {
+  return {
+    cwd,
+    sandbox: policy?.sandbox ?? "read-only",
+    approvalPolicy: "on-request",
+    approvalsReviewer: "user",
+    config: { sandbox_workspace_write: { network_access: Boolean(policy?.network) } },
   }
 }

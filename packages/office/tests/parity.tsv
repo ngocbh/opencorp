@@ -613,7 +613,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/routes_questions.test.ts::an answer goes to the harness when there are no cards	routes/questions.py's "harness" in office.extras branch (an actor without the cards extension), through the stand-in (rule 1)	O3-9
 —	new	packages/office/tests/daemon/routes_questions.test.ts::stop is credited to the verified person	through the stand-in (rule 1): the chat run that test_stopping_a_manager_question_is_credited_to_the_verified_person needs is O4a-9's	O3-9
 —	new	packages/office/tests/daemon/routes_runs.test.ts::every runs route answers 501 not implemented	design §4.3: GET /runs* answers 501 until the run views (O4b-3, O4b-7 replace it)	O2-6
-—	new	packages/office/tests/harness/codex.test.ts::a directory, a file that isnt executable or an empty path is not codex	design §6.8 rule 3: codex is looked up as shutil.which does	O3-10
+—	new	packages/office/tests/harness/codex.test.ts::a directory, a file that isnt executable or an empty path is not codex	design §6.1, §6.8 rule 3: codex is looked up on the absolute PATH entries, as resolveTools	O3-10
+—	new	packages/office/tests/harness/codex.test.ts::a relative override or path entry is not codex	design §6.1: codex is looked up on the absolute PATH entries only, as resolveTools	O3-12
+—	new	packages/office/tests/harness/codex.test.ts::the pinned codex makes the app server command	design §6.8 rule 3: the app-server runs the codex binary pinned at start	O3-12
 —	new	packages/office/tests/harness/rpc.test.ts::a broken stdin fails requests notifications and replies as rpc closed	design §7.2: write errors (EPIPE) become RpcClosed	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a character split across two writes arrives whole and a last line without a newline is read at the end	design §7.2: lines split as bytes, the last line read at the end	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a kill or closed handler that throws still fails the pending requests	design §7.2: a protocol failure never crashes the office	O3-10
@@ -725,9 +727,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/provider_setup.test.ts::the setup connection is made 0700 and read as the office connection	P3: the setup connection is office/connections/office.json	O2-14
 —	new	packages/office/tests/install/service.test.ts::background mode starts the daemon in the office env and folder from a poisoned caller	design §6.5 (background mode, R2 I1; O2-11b handoff)	O2-12
 —	new	packages/office/tests/install/tools.test.ts::a compiled binary installs as its package and its shim package	design §6.1 (install refused, RS C3)	O2-11b
-—	new	packages/office/tests/install/tools.test.ts::a linked tool still runs after its target is replaced	owner 2026-10-25, design §6.1 tool pinning (pending fix): tools spawned by the path found on PATH; it, its realpath and every link refused	O3-12
-—	new	packages/office/tests/install/tools.test.ts::a multi call tool sees the name it was found by	owner 2026-10-25, design §6.1 tool pinning (pending fix): tools spawned by the path found on PATH; it, its realpath and every link refused	O3-12
-—	new	packages/office/tests/install/tools.test.ts::a workspace containing the tool path or its realpath is refused	owner 2026-10-25, design §6.1 tool pinning (pending fix): tools spawned by the path found on PATH; it, its realpath and every link refused	O3-12
+—	new	packages/office/tests/install/tools.test.ts::a linked tool still runs after its target is replaced	owner 2026-10-25, design §6.1 tool pinning (pending fix): tools spawned by the path found on PATH; it, its realpath and every folder or link it walks through refused	O3-12
+—	new	packages/office/tests/install/tools.test.ts::a multi call tool sees the name it was found by	owner 2026-10-25, design §6.1 tool pinning (pending fix): tools spawned by the path found on PATH; it, its realpath and every folder or link it walks through refused	O3-12
+—	new	packages/office/tests/install/tools.test.ts::a workspace containing the tool path or its realpath is refused	owner 2026-10-25, design §6.1 tool pinning (pending fix): tools spawned by the path found on PATH; it, its realpath and every folder or link it walks through refused	O3-12
 —	new	packages/office/tests/install/tools.test.ts::each tool is the absolute path found on the daemon path	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
 —	new	packages/office/tests/install/tools.test.ts::relative entries directories and files that cant run are skipped	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
 —	new	packages/office/tests/install/tools.test.ts::the codex override is a path or a name on the path	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
@@ -826,9 +828,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/sandbox/policy.test.ts::a folder beside the office paths is fine	§6.1	O1-9
 —	new	packages/office/tests/sandbox/policy.test.ts::a policy rebuilt with a helper keeps its office paths and checks	§2.5, §6.1	O1-9
 —	new	packages/office/tests/sandbox/policy.test.ts::a relative office path refuses every workspace	§6.1 (fail closed)	O1-9
-—	new	packages/office/tests/sandbox/policy.test.ts::a workspace holding a link in a tools chain is refused	owner 2026-10-25, design §6.1 tool pinning (pending fix): tools spawned by the path found on PATH; it, its realpath and every link refused	O3-12
-—	new	packages/office/tests/sandbox/policy.test.ts::a workspace holding a link to a tool elsewhere is refused	owner 2026-10-25, design §6.1 tool pinning (pending fix): tools spawned by the path found on PATH; it, its realpath and every link refused	O3-12
-—	new	packages/office/tests/sandbox/policy.test.ts::a workspace holding a linked folder on the way to a tool is refused	owner 2026-10-25, design §6.1 tool pinning (pending fix): tools spawned by the path found on PATH; it, its realpath and every link refused	O3-12
+—	new	packages/office/tests/sandbox/policy.test.ts::a workspace holding a link in a tools chain is refused	owner 2026-10-25, design §6.1 tool pinning (pending fix): tools spawned by the path found on PATH; it, its realpath and every folder or link it walks through refused	O3-12
+—	new	packages/office/tests/sandbox/policy.test.ts::a workspace holding a link to a tool elsewhere is refused	owner 2026-10-25, design §6.1 tool pinning (pending fix): tools spawned by the path found on PATH; it, its realpath and every folder or link it walks through refused	O3-12
+—	new	packages/office/tests/sandbox/policy.test.ts::a workspace holding a linked folder on the way to a tool is refused	owner 2026-10-25, design §6.1 tool pinning (pending fix): tools spawned by the path found on PATH; it, its realpath and every folder or link it walks through refused	O3-12
 —	new	packages/office/tests/sandbox/policy.test.ts::a workspace inside the office install is refused	§6.1, D35	O1-9
 —	new	packages/office/tests/sandbox/policy.test.ts::a workspace that contains a folder on the office PATH is refused	§6.1	O1-9
 —	new	packages/office/tests/sandbox/policy.test.ts::a workspace that contains a program the office runs is refused	§6.1	O1-9

@@ -1,9 +1,14 @@
-/** Starting and stopping one app-server: its command. */
+/** Starting and stopping one app-server: its command and owner-load params. */
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
-import { CodexMissing, codexCommand } from "../../src/harness/codex.ts"
+import { Ajv } from "ajv"
+import { CodexMissing, appServerCommand, codexCommand, ownerLoad } from "../../src/harness/codex.ts"
 import { tempDir } from "../helpers.ts"
+
+const CLIENT = new Ajv({ strict: false, validateFormats: false }).compile(
+  JSON.parse(fs.readFileSync(path.join(import.meta.dir, "../fixtures/codex/schema/ClientRequest.json"), "utf8")),
+)
 
 /** Writes an empty shell script at `file` with `mode`. */
 function script(file: string, mode = 0o755) {
@@ -20,6 +25,24 @@ function thrown(fn: () => unknown): Error {
   }
   throw new Error("did not throw")
 }
+
+test("owner load takes the persons policy", () => {
+  expect(ownerLoad("/w", { sandbox: "workspace-write", network: true })).toEqual({
+    cwd: "/w",
+    sandbox: "workspace-write",
+    approvalPolicy: "on-request",
+    approvalsReviewer: "user",
+    config: { sandbox_workspace_write: { network_access: true } },
+  })
+  expect(ownerLoad("/w", null).sandbox).toBe("read-only")
+  expect(ownerLoad("/w", null).config).toEqual({ sandbox_workspace_write: { network_access: false } })
+  // Loads Codex takes.
+  for (const policy of [null, { sandbox: "workspace-write" as const, network: true }]) {
+    const params = ownerLoad("/w", policy)
+    expect(CLIENT({ id: 1, method: "thread/start", params })).toBe(true)
+    expect(CLIENT({ id: 2, method: "thread/resume", params: { threadId: "t", ...params } })).toBe(true)
+  }
+})
 
 test("codex command finds codex on the office path", () => {
   const dir = tempDir()
@@ -52,4 +75,24 @@ test("a directory, a file that isnt executable or an empty path is not codex", (
   script(path.join(files, "codex"), 0o644)
   for (const env of [{ PATH: dirs }, { PATH: files }, { PATH: "" }])
     expect(thrown(() => codexCommand(env, {}))).toBeInstanceOf(CodexMissing)
+})
+
+test("the pinned codex makes the app server command", () => {
+  expect(appServerCommand("/x/codex")).toEqual(["/x/codex", "app-server", "--listen", "stdio://"])
+  const missing = thrown(() => appServerCommand(undefined))
+  expect(missing).toBeInstanceOf(CodexMissing)
+  expect(missing.message).toContain("isn't installed")
+  const override = thrown(() => appServerCommand(undefined, "codex-dev"))
+  expect(override).toBeInstanceOf(CodexMissing)
+  expect(override.message).toContain("OPENCORP_CODEX_BIN names codex-dev")
+})
+
+test("a relative override or path entry is not codex", () => {
+  const dir = tempDir()
+  const bin = path.join(dir, "bin")
+  fs.mkdirSync(bin)
+  script(path.join(bin, "codex"))
+  expect(thrown(() => codexCommand({ PATH: bin }, { OPENCORP_CODEX_BIN: "./codex" }))).toBeInstanceOf(CodexMissing)
+  expect(thrown(() => codexCommand({ PATH: "rel" }, {}))).toBeInstanceOf(CodexMissing)
+  expect(thrown(() => codexCommand({}, {}))).toBeInstanceOf(CodexMissing)
 })
