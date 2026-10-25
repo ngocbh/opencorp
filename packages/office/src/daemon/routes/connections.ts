@@ -153,11 +153,10 @@ async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
     llm.model = fallback
   }
   if (needsCheck) {
-    // Not through checkProvider again: it passed this config, and only the model changed since.
-    const provider = Provider.parse({ llm_config: llm })
     let problem: string | null
     try {
-      problem = await office.checkModel(provider)
+      // Not through checkProvider again: it passed this config, and only the model changed since.
+      problem = await office.checkModel(Provider.parse({ llm_config: llm }))
     } catch (error) {
       if (error instanceof RegistryClosed) throw new HttpError(503, "stopping", error.message)
       throw error

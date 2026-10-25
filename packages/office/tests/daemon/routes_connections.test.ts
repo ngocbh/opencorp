@@ -299,10 +299,10 @@ test("a custom endpoint that refuses its list gets a one reply check", async () 
 test("a default model that doesnt answer is named", async () => {
   const { office, sock, checks } = await setup()
   const owner = await asOwner(office)
-  const lists = LISTS.openai!
+  const before = LISTS.openai!
   LISTS.openai = ["o3"]
   onTestFinished(() => {
-    LISTS.openai = lists
+    LISTS.openai = before
   })
   checks.problems.push(...Array(2).fill("Error code: 404 - model not found"))
   for (const [body, model] of [
