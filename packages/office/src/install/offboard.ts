@@ -59,20 +59,21 @@ export function launchers(
   for (const folder of (environ.PATH ?? "").split(":")) {
     if (!folder) continue
     const file = path.join(folder, name)
-    let ours = false
+    let runsRepo = false
     try {
       const stat = fs.lstatSync(file)
       if (stat.isSymbolicLink()) {
         // A dangling link throws here, so it isn't ours.
-        ours = inside(fs.realpathSync(file), realRepo)
+        runsRepo = inside(fs.realpathSync(file), realRepo)
       } else if (stat.isFile() && stat.size < 4096) {
-        const text = new TextDecoder().decode(fs.readFileSync(file))
-        ours = entries.some((e) => text.includes(path.join(repo, e)) || text.includes(path.join(realRepo, e)))
+        // A launcher script is small; a binary isn't read. Invalid bytes become U+FFFD.
+        const text = fs.readFileSync(file, "utf8")
+        runsRepo = entries.some((e) => text.includes(path.join(repo, e)) || text.includes(path.join(realRepo, e)))
       }
     } catch {
-      ours = false
+      // A file we can't read isn't ours.
     }
-    if (ours && !found.includes(file)) found.push(file)
+    if (runsRepo && !found.includes(file)) found.push(file)
   }
   return found
 }
@@ -89,7 +90,7 @@ export interface Plan {
 }
 
 /** The subjects of this device's own commits, which removing the device makes moot. */
-function ours(me: Identity | undefined): Set<string> {
+function ownSubjects(me: Identity | undefined): Set<string> {
   if (me === undefined) return new Set()
   return new Set(["add", "remove"].map((verb) => `devices(@${me.handle}): ${verb} ${me.device}`))
 }
@@ -114,13 +115,15 @@ export async function unpushed(
   const refs = await run("for-each-ref", "--format=%(refname:short) %(upstream)", "refs/heads")
   for (const line of refs.stdout.split("\n")) {
     if (!line) continue
-    const space = line.indexOf(" ")
-    const [branch, upstream] = space < 0 ? [line, ""] : [line.slice(0, space), line.slice(space + 1)]
+    // Refnames hold no spaces.
+    const [branch, upstream = ""] = line.split(" ")
     if (!upstream) return `its branch ${branch} isn't pushed anywhere`
   }
   const log = await run("log", "--format=%s", "--branches", "--not", "--remotes")
   if (log.code !== 0) return "git can't tell what is pushed"
-  const count = log.stdout.split("\n").filter((subject) => subject && !ours.has(subject)).length
+  // Only the trailing newline goes: a commit with an empty subject still counts.
+  const lines = log.stdout ? log.stdout.replace(/\n$/, "").split("\n") : []
+  const count = lines.filter((subject) => !ours.has(subject)).length
   if (count) return `it has ${count} commit${count !== 1 ? "s" : ""} not pushed to its remote`
   return null
 }
@@ -179,7 +182,7 @@ export async function plan(
   }
   if (found.company !== null) {
     found.keepWhy = fs.existsSync(path.join(company, ".git"))
-      ? await unpushed(company, ours(me), environ)
+      ? await unpushed(company, ownSubjects(me), environ)
       : "it isn't a git repo"
   }
   if (found.listed && me) found.lines.push(`this device (${me.device}) from @${me.handle} in the company repo`)

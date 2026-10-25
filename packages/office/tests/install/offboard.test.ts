@@ -6,7 +6,7 @@ import { deviceName } from "../../src/auth/identity.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { type Owner, writeCompany } from "../../src/company_template/index.ts"
 import { type Env, which } from "../../src/install/launch.ts"
-import { CONFIRM, KEEP, launchers, OffboardError, offboard, REMOVE } from "../../src/install/offboard.ts"
+import { CONFIRM, Declined, KEEP, launchers, OffboardError, offboard, REMOVE } from "../../src/install/offboard.ts"
 import { makeDevice, makeHome } from "../../src/install/onboard.ts"
 import { git, gitEnv } from "../company/helpers.ts"
 import { tempDir } from "../helpers.ts"
@@ -49,10 +49,12 @@ function publish(paths: Paths, dir: string): string {
   return remote
 }
 
+/** The names of @me's devices in the company repo. */
 function devices(paths: Paths): string[] {
   return loadRepo(paths.company).people.get("me")!.devices.map((d) => d.name)
 }
 
+/** The subjects of `repo`'s commits, newest first. */
 function subjects(repo: string): string[] {
   return git(repo, "log", "--format=%s").split("\n")
 }
@@ -74,14 +76,15 @@ test("offboard says what it will remove and no keeps everything", async () => {
   const ask = new Script([""])
   const done = offboard(paths.home, ask, { host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
   await expect(done).rejects.toThrow(OffboardError)
+  await expect(done).rejects.toThrow(Declined)
   await expect(done).rejects.toThrow("nothing was removed")
   const said = ask.seen.join("\n")
   expect(said).toContain(`this device (${deviceName()}) from @me in the company repo`)
   expect(said).toContain(
     `${paths.office} (the office's store, provider.json, connections and sign-ins, logs, and worktrees)`,
   )
-  expect(said).toContain(path.join(paths.home, "identity.json"))
-  expect(said).toContain(path.join(paths.home, "tui"))
+  expect(said).toContain(`${path.join(paths.home, "identity.json")} (this device's identity and token)`)
+  expect(said).toContain(`${path.join(paths.home, "tui")} (opencorp's own state)`)
   expect(said).toContain(`Keeping the company repo at ${paths.company}: it has no remote, so this is its only copy`)
   expect(ask.seen.at(-1)).toBe(CONFIRM)
   expect(ask.offered).toEqual([[KEEP, REMOVE]])
@@ -97,11 +100,9 @@ test("offboard reports how opencorp was put on path and keeps the checkout", asy
   const main = path.join(repo, "packages", "cli", "src", "main.ts")
   fs.mkdirSync(path.dirname(main), { recursive: true })
   fs.writeFileSync(main, "")
-  const [wrapper, linked, other] = ["local", "bun", "sbin"].map((name) => path.join(dir, name)) as [
-    string,
-    string,
-    string,
-  ]
+  const wrapper = path.join(dir, "local")
+  const linked = path.join(dir, "bun")
+  const other = path.join(dir, "sbin")
   for (const folder of [wrapper, linked, other]) fs.mkdirSync(folder)
   fs.writeFileSync(path.join(wrapper, "opencorp"), `#!/bin/bash\nexec bun ${repo}/packages/cli/src/main.ts "$@"\n`)
   fs.symlinkSync(main, path.join(linked, "opencorp"))
@@ -146,7 +147,10 @@ test("launchers finds a link to the checkout wrapper and a script naming it", as
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, "#!/bin/sh\n")
   }
-  const [a, b, c, d] = ["a", "b", "c", "d"].map((name) => path.join(dir, name)) as [string, string, string, string]
+  const a = path.join(dir, "a")
+  const b = path.join(dir, "b")
+  const c = path.join(dir, "c")
+  const d = path.join(dir, "d")
   for (const folder of [a, b, c, d]) fs.mkdirSync(folder)
   fs.symlinkSync(wrapper, path.join(a, "opencorp"))
   fs.writeFileSync(path.join(b, "opencorp"), `#!/bin/sh\nexec ${repo}/packages/cli/bin/opencorp "$@"\n`)
@@ -167,10 +171,5 @@ test("offboard outside a checkout reports no launchers", async () => {
   fs.mkdirSync(repo)
   const ask = new Script()
   await offboard(path.join(dir, "nowhere"), ask, { host: makeHost(dir, new Runner()), repo, environ: gitOnly(dir) })
-  for (const line of ask.seen) {
-    expect(line.startsWith("No `opencorp` launcher")).toBe(false)
-    expect(line).not.toContain("`opencorp` is on your PATH")
-    expect(line).not.toContain("The checkout at")
-  }
   expect(ask.seen).toEqual([`Nothing of this office to remove at ${path.join(dir, "nowhere")}.`])
 })
