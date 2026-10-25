@@ -398,8 +398,8 @@ export interface TestWorker extends JobWorker {
  * `result` or `error` the office stops sending. A throwing notification handler doesn't end the read loop; `wait`
  * rethrows the first such error. Once the office read loop has ended and the worker's code is known, the office end
  * closes and `handlers.exited` runs; a `serve` that rejects is `EXIT_FAILED`. At test end the office end closes and
- * the test fails if `serve` hasn't returned within 10 s. Each of `early` goes as a `deliver` frame right after the
- * start frame, both written before the worker reads anything.
+ * the test fails if `serve` hasn't returned within 10 s. Each of `early` goes as a `deliver` frame sent right after the
+ * start frame, before `serve` starts.
  */
 export async function inProcessWorker(
   job: Job,
@@ -407,13 +407,18 @@ export async function inProcessWorker(
   { env = {}, linger, early = [] }: { env?: WorkerEnv; linger?: number; early?: Delivery[] } = {},
 ): Promise<TestWorker> {
   const { office, worker: workerSide } = await channelPair()
-  await office.send({ type: "start", job })
-  for (const delivery of early) await office.send({ type: "deliver", ...delivery })
+  // Not awaited before `serve` starts: a job larger than the socket buffers would wait for a reader. The bytes still
+  // go out in call order.
+  const sent = [
+    office.send({ type: "start", job }),
+    ...early.map((delivery) => office.send({ type: "deliver", ...delivery })),
+  ]
   let settle!: (code: number) => void
   // Resolving twice does nothing, so the first of `exit` and the return value wins.
   const code = new Promise<number>((resolve) => (settle = resolve))
   const served = serve(workerSide, { env, linger, exit: settle })
   served.then(settle, () => settle(EXIT_FAILED))
+  await Promise.all(sent)
   let failure: { error: unknown } | undefined
   // A handler's error is kept, never thrown into the read loop or left unobserved.
   const notify = (call: () => void) => {

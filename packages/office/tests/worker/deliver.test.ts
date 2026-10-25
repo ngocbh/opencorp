@@ -428,8 +428,8 @@ test("an interrupt frame for a crashed run waits for RunResumed", async () => {
   const chat = await crashedRun(fake)
   fake.script({ content: "late", hold: true })
   const rec = new ResumeOrder()
-  // The frame is buffered with the start frame, so it is queued behind the job's send before the run is inspected:
-  // the send applies offline, and the frame waits for RunResumed rather than following the send straight away.
+  // The worker reads the frame while the job's send applies offline; it stays held until RunResumed instead of
+  // following the send straight away.
   const job = advanceJob(chat, { deliver: [{ id: "s1", op: "send", inbox: "steers", event: "x" }] })
   const worker = await inProcessWorker(job, rec, {
     env: fake.env(),
