@@ -10,6 +10,7 @@ import { ROUTES as peopleRoutes } from "./people.ts"
 import { ROUTES as profileRoutes } from "./profiles.ts"
 import { ROUTES as questionRoutes } from "./questions.ts"
 import { ROUTES as runRoutes } from "./runs.ts"
+import { ROUTES as sessionRoutes } from "./sessions.ts"
 import { ROUTES as workItemRoutes } from "./work_items.ts"
 
 /** Every route the office socket serves; each route area adds its module. `pingMs` sets the event stream's idle
@@ -19,6 +20,7 @@ export function allRoutes({ pingMs }: { pingMs?: number } = {}): Route<RequestCo
     ...eventRoutes(pingMs),
     ...deviceRoutes,
     ...peopleRoutes,
+    ...sessionRoutes,
     ...workItemRoutes,
     ...questionRoutes,
     ...profileRoutes,

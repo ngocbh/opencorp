@@ -150,7 +150,7 @@ daemon/test_routes_people.py::test_hiring_needs_a_hiring_desk	dropped	—	design
 daemon/test_routes_profiles.py	ported	packages/office/tests/daemon/routes_profiles.test.ts	—	O2-23
 daemon/test_routes_questions.py	open	—	split: O3-9 → O4a-9; O3-9's tests are in packages/office/tests/daemon/routes_questions.test.ts	O4a-9
 daemon/test_routes_runs.py	open	—	—	O4b-7
-daemon/test_routes_sessions.py	open	—	split: O3-15 → O4a-7b	O4a-7b
+daemon/test_routes_sessions.py	open	—	split: O3-15 → O4a-7b; O3-15's tests are in packages/office/tests/daemon/routes_sessions.test.ts	O4a-7b
 daemon/test_routes_work_items.py	ported	packages/office/tests/daemon/routes_work_items.test.ts	—	O2-6
 e2e/test_devices.py	open	—	—	O5-1
 e2e/test_failures.py	open	—	—	O5-1
@@ -255,7 +255,7 @@ harness/test_translate.py::test_two_steers_around_a_running_command_keep_it_in_i
 harness/test_waiting.py	ported	packages/office/tests/harness/waiting.test.ts	—	O3-14
 harness/test_waiting.py::test_a_session_waiting_only_on_turnless_cards_restores_idle_without_the_marker	changed	packages/office/tests/harness/waiting.test.ts::a session waiting only on turnless cards restores idle without the marker	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
 harness/test_waiting.py::test_a_waiting_session_with_a_turn_card_restores_idle_with_the_marker	changed	packages/office/tests/harness/waiting.test.ts::a waiting session with a turn card restores idle with the marker	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
-hq/test_api.py	open	—	split: O2-9 → O3-9 → O3-15 → O4b-7; O2-9's and O3-9's tests are in packages/office/tests/hq/api.test.ts	O4b-7
+hq/test_api.py	open	—	split: O2-9 → O3-9 → O3-15 → O4b-7; O2-9's, O3-9's and O3-15's tests are in packages/office/tests/hq/api.test.ts	O4b-7
 hq/test_app_fixture.py	ported	packages/office/tests/hq/app_fixture.test.ts	—	O2-7
 hq/test_auth.py	ported	packages/office/tests/hq/auth.test.ts	—	O2-9
 hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7
@@ -831,6 +831,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/routes_questions.test.ts::an answer to a codex card codex no longer waits on is 200 and stale	design §7.1: daemon/routes/questions.py's answer contract for Codex cards	O3-14
 —	new	packages/office/tests/daemon/routes_questions.test.ts::stop is credited to the verified person	through the stand-in (rule 1): the chat run that test_stopping_a_manager_question_is_credited_to_the_verified_person needs is O4a-9's	O3-9
 —	new	packages/office/tests/daemon/routes_runs.test.ts::every runs route answers 501 not implemented	design §4.3: GET /runs* answers 501 until the run views (O4b-3, O4b-7 replace it)	O2-6
+—	new	packages/office/tests/daemon/routes_sessions.test.ts::messages are a live codex sessions current turn then empty	P12, design §7.3: GET /sessions/:id/messages reads a Codex session's current turn from memory, empty once it isn't live (Decision 2, o3-15 plan)	O3-15
 —	new	packages/office/tests/harness/approvals.test.ts::a secret answer no reply can be made from is in no log error or reply	design §6 rules 1, 7 and 11: the raw answer reaches only Codex	O3-14
 —	new	packages/office/tests/harness/codex.test.ts::a directory, a file that isnt executable or an empty path is not codex	design §6.1, §6.8 rule 3: codex is looked up on the absolute PATH entries, as resolveTools	O3-10
 —	new	packages/office/tests/harness/codex.test.ts::a line over the cap signals the group once	design §6.6 (only the first kill signals a group), §6.8 rule 13 (the line cap kills the app-server)	O3-12

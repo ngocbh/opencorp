@@ -111,6 +111,19 @@ test("company blanks by secret keys", async () => {
   }
 })
 
+test.each([
+  ["repeated", ["busy", "idle"]],
+  ["comma separated", ["busy,idle"]],
+] as const)("sessions filter by status [%s]", async (_case, status) => {
+  const office = makeOffice()
+  const client = await signedIn(await makeHq(office))
+  const a = office.store.createSession(session({ status: "busy" }))
+  const b = office.store.createSession(session({ status: "idle" }))
+  office.store.createSession(session({ status: "ended" }))
+  const r = await client.get("/api/sessions", { query: status.map((s) => ["status", s] as [string, string]) })
+  expect(new Set((r.json() as Body[]).map((x) => x.id))).toEqual(new Set([a.id, b.id]))
+})
+
 test("open questions a work item and costs", async () => {
   const office = makeOffice()
   const hq = await makeHq(office)

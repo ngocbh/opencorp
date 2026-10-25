@@ -96,8 +96,8 @@ const STREAMS: [string, string][] = [["GET", "/events"]]
 
 // [method, route pattern, concrete path, body] for every other route; null is no body. Python's table
 // (tests/daemon/test_app.py) also covered these routes; each is added here when its route area is ported:
-// - sessions: GET and POST /sessions, GET /sessions/:id, GET /sessions/:id/messages, and POST /sessions/:id/
-//   prompt, steer, interrupt, end, continue, cost-cap and model.
+// - sessions: POST /sessions, and POST /sessions/:id/ prompt, steer, interrupt, end, continue, cost-cap and
+//   model.
 // GET /health, GET /office, GET /whoami, the device routes, GET /costs, the GET /runs* stubs, the connection
 // routes and HQ's socket routes (/hq*) weren't in Python's table.
 const TABLE: [string, string, string, unknown][] = [
@@ -111,6 +111,9 @@ const TABLE: [string, string, string, unknown][] = [
   ["GET", "/people", "/people", null],
   ["POST", "/people", "/people", { name: "Ava", handle: "ava", title: "R", manager: "ngocbh" }],
   ["GET", "/folders/*cwd/people", "/folders/%2Fw%2Fapp/people", null],
+  ["GET", "/sessions", "/sessions", null],
+  ["GET", "/sessions/:id", `/sessions/${ULID}`, null],
+  ["GET", "/sessions/:id/messages", `/sessions/${ULID}/messages`, null],
   ["GET", "/work-items/:id", `/work-items/${ULID}`, null],
   ["GET", "/work-items/:id/comments", `/work-items/${ULID}/comments`, null],
   ["GET", "/questions", "/questions", null],
