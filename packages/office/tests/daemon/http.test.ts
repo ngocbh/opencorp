@@ -870,6 +870,51 @@ function connect(sock: string): net.Socket {
   return socket
 }
 
+/** The bytes a unix-socket server can write to a client that never reads before writes stop being taken: it writes
+ *  `chunk` until `write()` returns false, waits up to 200 ms for `drain`, and repeats until no `drain` comes. */
+async function socketCapacity(chunk: Buffer): Promise<number> {
+  const where = path.join(shortDir(), "s")
+  const server = net.createServer()
+  await new Promise<void>((resolve) => server.listen(where, resolve))
+  const accepted = new Promise<net.Socket>((resolve) => server.once("connection", resolve))
+  const client = net.connect(where)
+  client.pause()
+  let writer: net.Socket | undefined
+  try {
+    writer = await accepted
+    let written = 0
+    for (;;) {
+      let more = true
+      while (more) {
+        if (written > 2 ** 30) throw new Error("a paused client took over 1 GiB")
+        more = writer.write(chunk)
+        written += chunk.length
+      }
+      const socket = writer
+      const drained = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => {
+          socket.off("drain", onDrain)
+          resolve(false)
+        }, 200)
+        const onDrain = () => {
+          clearTimeout(timer)
+          resolve(true)
+        }
+        socket.once("drain", onDrain)
+      })
+      if (!drained) return written
+    }
+  } finally {
+    writer?.destroy()
+    client.destroy()
+    server.close()
+  }
+}
+
+// Socket buffers differ by host (8 KiB on macOS, 16 MiB on some Linux hosts), so the backpressure tests size from this,
+// measured once for the file.
+let pausedCapacity: Promise<number> | undefined
+
 describe("raw replies", () => {
   test("a raw reply sends its own status headers and text", async () => {
     const json: Route<Ctx> = {
@@ -940,6 +985,7 @@ describe("raw replies", () => {
     let pulls = 0
     let finished = false
     const chunk = "x".repeat(64 * 1024)
+    const capacity = await (pausedCapacity ??= socketCapacity(Buffer.from(chunk)))
     const forever: Route<Ctx> = {
       method: "GET",
       path: "/s",
@@ -979,14 +1025,17 @@ describe("raw replies", () => {
       { timeout: 9000, what: "the body to stop being pulled" },
     )
     expect(pulls).toBeGreaterThan(0)
-    expect(pulls).toBeLessThanOrEqual(64)
+    // Past what the paused socket takes, 64 chunks of slack for the server's own buffers.
+    expect(pulls).toBeLessThanOrEqual(Math.ceil(capacity / chunk.length) + 64)
     socket.destroy()
     await waitFor(() => finished, { timeout: 9000, what: "the body to finish" })
   })
 
   test("a streamed reply resumes when a paused client reads again", async () => {
-    const chunks = 64
     const chunk = "x".repeat(64 * 1024)
+    const capacity = await (pausedCapacity ??= socketCapacity(Buffer.from(chunk)))
+    // Well past what the buffers up to the paused socket hold, so the pulls stop short of the end.
+    const chunks = Math.ceil(capacity / chunk.length) + 128
     let pulls = 0
     let ran = false
     const finite: Route<Ctx> = {
