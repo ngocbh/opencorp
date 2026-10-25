@@ -19,12 +19,12 @@ import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { Monitor } from "../../src/perm/monitor.ts"
 import { Answers } from "../../src/questions/ask.ts"
 import { SecretStore, writePrivate } from "../../src/secrets.ts"
-import { newId, type SessionRecord } from "../../src/store/store.ts"
+import { newId, type QuestionRecord, type SessionRecord } from "../../src/store/store.ts"
 import { FakeLLM, LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { type Delivery, Job, type JobInput } from "../../src/worker/job.ts"
 import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
 import type { Worker, WorkerRegistry } from "../../src/worker/spawn.ts"
-import { baseFiles } from "../company/helpers.ts"
+import { baseFiles, MAIN_INPUTS, person } from "../company/helpers.ts"
 import { CEO, makeOffice } from "../daemon/helpers.ts"
 import { NO_GROUP, tempDir, waitFor } from "../helpers.ts"
 import { advanceJob, inProcessWorker, makeJob, makeRegistry, Recorder, run, waitsOf } from "../worker/helpers.ts"
@@ -274,6 +274,51 @@ export function logPrefix(log: string, keep: (entry: RunLogEntry) => boolean, ru
 
 // The session actor over an office, real worker processes and the fake LLM (Python's `make_harness` and friends).
 
+/** A model turn that asks the user to pick A or B. */
+export const ASK_USER: ScriptedReply = {
+  tool_calls: [{ name: "ask_user", arguments: { question: "Which?", options: ["A", "B"] } }],
+}
+
+/** A model turn that asks the person's manager. */
+export const ASK_MANAGER: ScriptedReply = { tool_calls: [{ name: "ask_manager", arguments: { question: "Budget?" } }] }
+
+/** A human designer, lan, managed by the CEO. */
+export const LAN = {
+  "people/lan/person.yaml": { handle: "lan", name: "Lan", kind: "human", title: "Designer", manager: CEO },
+}
+
+/** An agent, kai, who manages minh. */
+export const KAI = {
+  "people/kai/person.yaml": person("minh", { handle: "kai", name: "Kai" }),
+  "people/minh/person.yaml": person("minh", { manager: "kai" }),
+}
+
+/** A main flow that only asks its `setup` pages at its node (a flow `ask`), declaring what the office passes but
+ *  the inbox, which a flow must read. */
+export const GATE = `id: gate
+name: gate
+${MAIN_INPUTS.replace("  messages: !Inbox(Message)\n", "")}nodes:
+  setup:
+    kind: tool
+    tool_id: ask
+    input:
+      questions:
+        - question: Which database?
+          header: db
+          options: [{label: Postgres}, {label: SQLite}]
+        - question: Which features?
+          header: features
+          multi_select: true
+          options: [{label: auth}, {label: search}]
+output: \${setup.output}
+`
+
+/** minh's main flow is the gate. */
+export const GATE_FILES = { "people/minh/gate.yaml": GATE, "people/minh/person.yaml": person("minh", { main: "gate.yaml" }) }
+
+/** An answer to the gate's pages. */
+export const GATE_ANSWER = { db: "Postgres", features: ["auth"] }
+
 /** Each worker a chat office spawned: its pid and start time. */
 const spawnedWorkers: { pid: number; started: number | null }[] = []
 
@@ -328,7 +373,7 @@ export interface ChatOffice {
  * An office over the base company with the template's chat flow (and `files` on top), its `office` connection on
  * `fake` (`llmConfig`, the fake's env, `prices`), the company `defaults` merged in, and a registry whose `spawn` is
  * wrapped to record, hold, fail or follow each spawn. Its actors share one `Hooks`, `Answers` and `Transcript`, and a
- * run spec from `mainSpec` over a workspace stand-in. At test end the actors close, then the workers stop, before
+ * run spec from `mainSpec` over a workspace stand-in, with the tools of `groups` merged into its groups. At test end the actors close, then the workers stop, before
  * the office's store closes.
  */
 export async function chatOffice(
@@ -338,11 +383,13 @@ export async function chatOffice(
     prices = {},
     llmConfig = LLM_CONFIG,
     defaults = {},
+    groups = {},
   }: {
     files?: Record<string, unknown>
     prices?: Record<string, unknown>
     llmConfig?: Record<string, unknown>
     defaults?: Record<string, unknown>
+    groups?: Record<string, Record<string, OfficeTool>>
   } = {},
 ): Promise<ChatOffice> {
   const actors: SessionActor[] = []
@@ -406,7 +453,15 @@ export async function chatOffice(
     transcript,
     spec: async (session) => {
       const repo = loadRepo(await git.pin(session.repo_commit))
-      return mainSpec({ store, git, repo, session, workspace: standIn, monitor, carried: (q) => answers.carried(q) })
+      const spec = mainSpec({ store, git, repo, session, workspace: standIn, monitor, carried: (q) => answers.carried(q) })
+      return {
+        ...spec,
+        groups: (c) => {
+          const built = spec.groups(c)
+          for (const [group, named] of Object.entries(groups)) built[group] = { ...built[group], ...named }
+          return built
+        },
+      }
     },
     scheduler: realScheduler,
     log,
@@ -518,6 +573,13 @@ export async function say(o: ChatOffice, actor: SessionActor, sid: string, text:
   await actor.prompt(text)
   await waitFor(() => texts(o, sid).length > n && status(o, sid) === "idle", { what: `the reply to ${text}` })
   return texts(o, sid).at(-1)!
+}
+
+/** Waits for session `sid`'s open question from `source`; returns it. */
+export async function card(o: ChatOffice, sid: string, source: string): Promise<QuestionRecord> {
+  const open = () => o.office.store.listQuestions({ sessionId: sid, status: "open", source })
+  await waitFor(() => open().length > 0, { what: `the ${source} card` })
+  return open()[0]!
 }
 
 /** The text parts of session `sid`'s messages with `role`, in order. */

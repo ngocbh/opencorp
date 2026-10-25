@@ -172,3 +172,14 @@ test("wakes racing close all leave the session to wake again", async () => {
     what: "the last message",
   })
 })
+
+test("interrupt on a sleeping session spawns nothing", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const { actor, sid } = await asleep(o)
+  const before = o.kinds.length
+  expect(await actor.interrupt()).toBeUndefined()
+  expect(o.kinds.length).toBe(before)
+  expect(actor.hasWorker).toBe(false)
+  expect(status(o, sid)).toBe("idle")
+})
