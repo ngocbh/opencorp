@@ -186,10 +186,10 @@ export class Listeners {
     })
   }
 
-  /** Stops binding, refuses new connections, gives every server's running handlers up to HANDLER_WAIT_MS to finish
-   *  (their streams already ended with the office's bus), then closes every server and its connections, and
-   *  removes hq.sock. What goes wrong on the way is logged: the office's other stop hooks still run. Never
-   *  rejects. */
+  /** Stops binding, refuses new connections and closes idle ones, gives every server's running handlers up to
+   *  HANDLER_WAIT_MS to finish (their streams already ended with the office's bus), then closes every server and its
+   *  connections, and removes hq.sock. What goes wrong on the way is logged: the office's other stop hooks still
+   *  run. Never rejects. */
   async stop(): Promise<void> {
     const hq = this.#hq
     this.#stopping = true
@@ -198,9 +198,14 @@ export class Listeners {
     await this.#binding
     this.#binding = null
     const servers = this.#servers
-    // No new connections while running handlers finish, as uvicorn's graceful shutdown stopped accepting first.
-    // Not close(): on this runtime a close() before closeAllConnections() leaves the open connections open.
-    for (const served of servers) served.server.maxConnections = 0
+    // No new connections while running handlers finish, as uvicorn's graceful shutdown stopped accepting and
+    // closed idle connections first: a request on an idle keep-alive connection would start a handler that the
+    // closing below cuts. Not close(): on this runtime a close() before closeAllConnections() leaves the open
+    // connections open.
+    for (const served of servers) {
+      served.server.maxConnections = 0
+      served.server.closeIdleConnections()
+    }
     // Settled before closing, so a stream that is writing its end isn't cut short.
     await Promise.all(servers.map((served) => served.requests.settled(HANDLER_WAIT_MS)))
     await Promise.all(servers.map((served) => close(served.server)))

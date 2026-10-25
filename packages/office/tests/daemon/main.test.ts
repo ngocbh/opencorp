@@ -673,8 +673,9 @@ test(
 )
 
 /** GET /hq on the office socket of `home`: HQ's status. */
-async function hqStatus(home: string): Promise<{ tcp: { enabled: boolean; listening: boolean } }> {
-  return (await request(new OfficePaths(home).socket, "GET", "/hq")).json() as never
+async function hqStatus(home: string) {
+  const reply = await request(new OfficePaths(home).socket, "GET", "/hq")
+  return reply.json() as { tcp: { enabled: boolean; listening: boolean } }
 }
 
 /** POST /hq/pair `{}` on the office socket of `home`: the one-time link's path. */
