@@ -4,8 +4,10 @@ import { EventEmitter } from "node:events"
 import fs from "node:fs"
 import type net from "node:net"
 import path from "node:path"
+import { inspect } from "node:util"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { INHERITED_ENV as LAUNCH_ENV } from "../../src/install/launch.ts"
+import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { type Channel, ChannelClosed, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
@@ -64,6 +66,7 @@ function script(body: string): { child: ChildProcess; channel: Channel } {
   if (child.pid === undefined) {
     // The spawn error is also emitted as an event; a listener keeps it from becoming an uncaught exception.
     child.on("error", () => {})
+    child.stdio[3]?.destroy()
     throw new Error("script: spawn failed")
   }
   const pid = child.pid
@@ -141,7 +144,7 @@ test("a reply that cannot be sent becomes a failed reply", async () => {
   const { office, worker: far } = await channelPair({ maxFrame: 2000 })
   const handlers = bigTool()
   const job = makeJob(base(), "flows/echo.yaml", { inputs: {} }, handlers)
-  expect(encode({ type: "start", job }).length).toBeLessThan(2000)
+  expect(Buffer.byteLength(encode({ type: "start", job }))).toBeLessThan(2000)
   const worker = workerOver(exitedChild(), office, handlers, job)
   await worker.start()
   expect((await far.recv()).type).toBe("start")
@@ -223,4 +226,24 @@ test("a worker that keeps running after its channel closes is killed after the g
   expect(await worker.wait(15_000)).toBe(-9)
   expect(performance.now() - began).toBeGreaterThanOrEqual(4500)
   expect(lines).toEqual([["WARNING", BAD_FRAME_LINE]])
+})
+
+test("a worker starts only once", async () => {
+  const { office, worker: far } = await channelPair()
+  const worker = workerOver(exitedChild(), office, new Recorder())
+  await worker.start()
+  await expect(worker.start()).rejects.toThrow("the worker was already started")
+  expect((await far.recv()).type).toBe("start")
+  // A frame the office can't read makes it close the channel: the stream ends with no second start frame.
+  await far.send({ type: "steer_left", inbox: 3 })
+  await expect(far.recv()).rejects.toBeInstanceOf(ChannelClosed)
+  expect(await worker.wait(10_000)).toBe(0)
+})
+
+test("a worker shows no job when inspected or serialized", async () => {
+  const { office } = await channelPair()
+  const job = makeJob(base(), undefined, { llm_config: { ...LLM_CONFIG, api_key: "sk-sentinel-0123456789" } })
+  const worker = workerOver(exitedChild(), office, new Recorder(), job)
+  expect(inspect(worker)).not.toContain("sk-sentinel-0123456789")
+  expect(JSON.stringify(worker)).not.toContain("sk-sentinel-0123456789")
 })

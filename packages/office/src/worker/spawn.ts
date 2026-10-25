@@ -4,6 +4,7 @@ import fs from "node:fs"
 import type net from "node:net"
 import os from "node:os"
 import path from "node:path"
+import { inspect } from "node:util"
 import { type Env, INHERITED_ENV } from "../install/launch.ts"
 import { killGroup } from "../install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../platform.ts"
@@ -103,6 +104,7 @@ export class Worker implements JobWorker {
   readonly #done: Promise<number | null>
   #settle!: (returncode: number | null) => void
   #killed = false
+  #started = false
 
   /** A worker over `child`, a process `spawnProcess` started, and the office's `channel` to it. Build it in the
    *  spawn's tick, before the child's `exit` can be emitted: an `exit` listener added after the event never fires.
@@ -137,8 +139,12 @@ export class Worker implements JobWorker {
   }
 
   /** Sends the `start` frame and begins reading the worker's frames. Rejects with `FrameTooLarge` or
-   *  `ChannelClosed` if the frame can't be sent; nothing is read then. */
+   *  `ChannelClosed` if the frame can't be sent; nothing is read then. A worker starts once: a second call throws
+   *  before sending anything. */
   async start(): Promise<void> {
+    // A second reader would run the exit steps twice.
+    if (this.#started) throw new Error("the worker was already started")
+    this.#started = true
     await this.channel.send({ type: "start", job: this.job })
     void this.#read()
   }
@@ -163,7 +169,10 @@ export class Worker implements JobWorker {
     killGroup(this.pgid)
   }
 
-  /** Sends `text` to the run's steer inbox `inbox`; false if the channel is closed. */
+  /** Sends `text` to the run's steer inbox `inbox`; false if the channel is closed or the run is over.
+   *
+   *  Once this returns true, the run either reads the steer or hands it back through `handlers.steerLeft` (before or
+   *  after `result`). Call it off the read loop: a notification handler must not await it. */
   steer(inbox: string, text: string): Promise<boolean> {
     return this.#send({ type: "steer", inbox, text })
   }
@@ -193,6 +202,16 @@ export class Worker implements JobWorker {
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  /** What logging or inspecting a worker shows: never the job, which holds the provider key. */
+  [inspect.custom](): { sessionId: string; pid: number } {
+    return { sessionId: this.sessionId, pid: this.pid }
+  }
+
+  /** What `JSON.stringify` shows of a worker: never the job, which holds the provider key. */
+  toJSON(): { sessionId: string; pid: number } {
+    return { sessionId: this.sessionId, pid: this.pid }
   }
 
   async #send(frame: Frame): Promise<boolean> {
