@@ -12,9 +12,21 @@ import { loadRepo } from "../company/loader.ts"
 import { isNew, missingFiles } from "../company_template/index.ts"
 import { OfficePaths } from "../daemon/office.ts"
 import { selfCommand } from "../platform.ts"
-import { defaultHost, type Env, type Host, launch } from "./launch.ts"
+import { defaultHost, type Env, type Host, type Launch, launch } from "./launch.ts"
+import * as launchd from "./launchd.ts"
 import { checkProvider, SET_UP, setupConnectionFile, stopToTopUp, withDefaultModel } from "./onboard.ts"
 import { OnboardError } from "./prompts.ts"
+import * as service from "./service.ts"
+import * as systemd from "./systemd.ts"
+
+/** How the daemon prefixes the one line it prints when it can't start. */
+const START_ERROR = "opencorp office: "
+
+/** The crash marker's line (`logLine` from the daemon's `crashReport`), capturing `office crashed: <type>`. */
+const CRASH_MARKER = /^\S+ ERROR opencorp\.daemon\.main: (office crashed: .*)$/
+
+/** A stack frame line under the crash marker. */
+const FRAME = /^\s+at /
 
 /** One line of the report: `fail` needs fixing, `warn` is worth knowing. */
 export interface Check {
@@ -208,6 +220,94 @@ function connectionsCheck(paths: OfficePaths, lstat: (p: string) => fs.Stats): C
   return { name: "connections", status: "ok", detail: `${folder} is private` }
 }
 
+/** Whether systemd keeps this user's services running after logout; null if `loginctl` can't say. */
+async function linger(host: Host): Promise<boolean | null> {
+  const done = await host.run(["loginctl", "show-user", String(host.uid), "--property=Linger"])
+  if (done.code !== 0) return null
+  return done.stdout.trim() === "Linger=yes"
+}
+
+async function serviceCheck(run: Launch, host: Host): Promise<Check> {
+  const mode = service.recordedMode(run)
+  if (mode === "launchd") {
+    const name = launchd.label(run)
+    const problem = await launchd.notLoaded(run, host)
+    if (problem === null) return { name: "service", status: "ok", detail: `launchd: ${name} is loaded` }
+    return {
+      name: "service",
+      status: "fail",
+      detail: `launchd: ${name} is not loaded (${problem}); run \`opencorp onboard\``,
+    }
+  }
+  if (mode === "systemd") {
+    const name = systemd.unitName(run)
+    const problem = await systemd.notEnabled(run, host)
+    if (problem !== null) {
+      return {
+        name: "service",
+        status: "fail",
+        detail: `systemd: ${name} is not enabled (${problem}); run \`opencorp onboard\``,
+      }
+    }
+    if ((await linger(host)) === false) {
+      return {
+        name: "service",
+        status: "warn",
+        detail: `systemd: ${name} is enabled, but stops when you log out; \`loginctl enable-linger\` keeps it running`,
+      }
+    }
+    return { name: "service", status: "ok", detail: `systemd: ${name} is enabled` }
+  }
+  if (mode === null) return { name: "service", status: "warn", detail: "not installed; run `opencorp onboard`" }
+  return {
+    name: "service",
+    status: "warn",
+    detail: `${mode}: no service manager, so the office won't start again after a reboot`,
+  }
+}
+
+/** What to do about an office that isn't answering: `opencorp start`, and where its service's status is. */
+function nextStep(run: Launch, host: Host): string {
+  const mode = service.recordedMode(run)
+  if (mode === "launchd") {
+    const name = launchd.label(run)
+    return (
+      `Run \`opencorp start\`. launchd runs it as ${name}: ` +
+      `\`launchctl print gui/${host.uid}/${name}\` shows its status.`
+    )
+  }
+  if (mode === "systemd") {
+    const name = systemd.unitName(run)
+    return `Run \`opencorp start\`. systemd runs it as ${name}: \`systemctl --user status ${name}\` shows its status.`
+  }
+  return "Run `opencorp start`."
+}
+
+/**
+ * Why the daemon's last start failed, from the office log, or null if it didn't: the line it printed when it
+ * couldn't start, or `office crashed: <type>` when the log ends with the crash marker and its frames (the frames
+ * stay in the log). A marker with other lines after it belongs to an earlier start.
+ */
+function crash(log: string): string | null {
+  let text: string
+  try {
+    text = fs.readFileSync(log, "utf8")
+  } catch (error) {
+    if (errnoCode(error) === undefined) throw error
+    return null
+  }
+  const lines = text
+    .split(/\r?\n/)
+    .filter((line) => line.trim())
+    .slice(-40)
+  const last = lines.at(-1)
+  if (last === undefined) return null
+  // A duplicate start exits 0 and is no crash.
+  if (last.startsWith(START_ERROR) && !last.includes("office already running")) return last
+  const marker = lines.findLast((line) => !FRAME.test(line))
+  return marker?.match(CRASH_MARKER)?.[1] ?? null
+}
+
 /** What `checks` reads and runs; tests pass stand-ins. */
 export interface CheckOptions {
   /** The machine (default `defaultHost()`). */
@@ -243,6 +343,20 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   found.push(await providerCheck(paths))
   const added = connectionsCheck(paths, lstat)
   if (added !== null) found.push(added)
+  found.push(await serviceCheck(run, host))
+  if (running) {
+    found.push({ name: "office", status: "ok", detail: `answering on ${run.socket} (pid ${service.pid(run)})` })
+  } else {
+    const error = crash(run.log)
+    const why = error === null ? "" : `; its last start failed: ${error}`
+    found.push({
+      name: "office",
+      status: error === null ? "warn" : "fail",
+      detail: `not answering on ${run.socket}${why} (log: ${run.log}). ${nextStep(run, host)}`,
+    })
+  }
+  const problem = await options.probe(paths.home)
+  found.push({ name: "sandbox", status: problem ? "fail" : "ok", detail: problem || "sandboxed commands run" })
   return found
 }
 

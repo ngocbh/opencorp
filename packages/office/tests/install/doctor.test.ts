@@ -3,10 +3,14 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
 import { writeCompany } from "../../src/company_template/index.ts"
+import { logLine } from "../../src/daemon/http.ts"
 import { OfficePaths } from "../../src/daemon/office.ts"
 import * as doctor from "../../src/install/doctor.ts"
 import type { Check } from "../../src/install/doctor.ts"
+import { launch } from "../../src/install/launch.ts"
+import * as launchd from "../../src/install/launchd.ts"
 import { SET_UP, setupConnectionFile } from "../../src/install/onboard.ts"
+import * as systemd from "../../src/install/systemd.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { git } from "../company/helpers.ts"
 import { tempDir } from "../helpers.ts"
@@ -40,6 +44,13 @@ function byName(found: Check[]): Record<string, Check> {
   return Object.fromEntries(found.map((c) => [c.name, c]))
 }
 
+const COMMAND = ["/opt/opencorp/bin/opencorp"] as const
+
+/** The launch `checks` makes for the office at `paths`. */
+function launchFor(dir: string, paths: OfficePaths) {
+  return launch(paths.home, { command: COMMAND, environ: {}, userHome: dir })
+}
+
 function runChecks(
   dir: string,
   paths: OfficePaths,
@@ -60,7 +71,7 @@ function runChecks(
   const host = makeHost(dir, runner, { answers: async () => answers, platform })
   return doctor.checks(paths.home, {
     host,
-    command: ["/opt/opencorp/bin/opencorp"],
+    command: COMMAND,
     repo: path.join(dir, "repo"),
     probe,
     codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
@@ -120,6 +131,24 @@ test("a fresh machine is told to onboard", async () => {
   expect(doctor.exitCode(found)).toBe(1)
 })
 
+test("an onboarded office that isnt running is only a warning", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, { llm_config: { provider: "openai" } })
+  const found = await runChecks(dir, paths)
+  const got = byName(found)
+  expect(got.company!.status).toBe("ok")
+  expect(got.provider).toEqual({ name: "provider", status: "ok", detail: "openai, yian's own login" })
+  const label = launchd.label(launchFor(dir, paths))
+  expect(got.service).toEqual({ name: "service", status: "ok", detail: `launchd: ${label} is loaded` })
+  expect(got.home).toEqual({ name: "home", status: "ok", detail: paths.home })
+  expect(got.office!.status).toBe("warn")
+  expect(got.office!.detail).toContain("not answering")
+  expect(got.office!.detail).toContain("Run `opencorp start`.")
+  expect(got.office!.detail).toContain(`\`launchctl print gui/501/${label}\` shows its status`)
+  expect(got.sandbox).toEqual({ name: "sandbox", status: "ok", detail: "sandboxed commands run" })
+  expect(doctor.exitCode(found)).toBe(0)
+})
+
 test("a home others can read warns", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)
@@ -127,6 +156,25 @@ test("a home others can read warns", async () => {
   const got = byName(await runChecks(dir, paths))
   expect(got.home!.status).toBe("warn")
   expect(got.home!.detail).toContain("0755, not 0700")
+})
+
+test("a stopped systemd office names the next step and the unit", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, undefined, "systemd")
+  const unit = systemd.unitName(launchFor(dir, paths))
+  const runner = new Runner([[["loginctl"], 0, "", "Linger=yes\n"]])
+  const got = byName(await runChecks(dir, paths, { runner, platform: "linux" }))
+  expect(got.office!.detail).toContain("Run `opencorp start`.")
+  expect(got.office!.detail).toContain(`\`systemctl --user status ${unit}\` shows its status`)
+})
+
+test("a disabled systemd unit shows what systemctl said", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, undefined, "systemd")
+  const runner = new Runner([[["systemctl", "--user", "is-enabled"], 1, "Failed to connect to bus: No medium found"]])
+  const got = byName(await runChecks(dir, paths, { runner, platform: "linux" }))
+  expect(got.service!.status).toBe("fail")
+  expect(got.service!.detail).toContain("Failed to connect to bus: No medium found")
 })
 
 test("lint errors fail", async () => {
@@ -302,4 +350,89 @@ test("a key for an endpoint of your own with no model fails", async () => {
       " run `opencorp onboard`",
   })
   expect(keyShown(got)).toBe(false)
+})
+
+test("an unloaded launch agent fails", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const got = byName(await runChecks(dir, paths, { runner: new Runner([[["launchctl", "print"], 113, ""]]) }))
+  expect(got.service!.status).toBe("fail")
+  expect(got.service!.detail).toContain("run `opencorp onboard`")
+})
+
+test("a systemd service without linger warns that it stops at logout", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, undefined, "systemd")
+  const unit = systemd.unitName(launchFor(dir, paths))
+  const runner = new Runner([[["loginctl"], 0, "", "Linger=no\n"]])
+  const got = byName(await runChecks(dir, paths, { runner, platform: "linux" }))
+  expect(got.service!.status).toBe("warn")
+  expect(got.service!.detail).toContain("loginctl enable-linger")
+  expect(got.service!.detail).toContain(unit)
+  expect(runner.calls).toContainEqual(["loginctl", "show-user", "501", "--property=Linger"])
+})
+
+test("a systemd service with linger is ok", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, undefined, "systemd")
+  const unit = systemd.unitName(launchFor(dir, paths))
+  const runner = new Runner([[["loginctl"], 0, "", "Linger=yes\n"]])
+  const got = byName(await runChecks(dir, paths, { runner, platform: "linux" }))
+  expect(got.service).toEqual({ name: "service", status: "ok", detail: `systemd: ${unit} is enabled` })
+})
+
+test("an office that keeps failing to start is a crash loop", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  fs.writeFileSync(path.join(paths.office, "office.log"), "starting\nopencorp office: the company repo has no .git\n\n")
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office!.status).toBe("fail")
+  expect(got.office!.detail).toContain("opencorp office: the company repo has no .git")
+  expect(got.office!.detail).toContain("Run `opencorp start`.")
+})
+
+/** A log of a start, then the crash marker with two frames. */
+function crashedLog(): string {
+  return (
+    `${logLine("INFO", "opencorp.daemon.main", "office listening")}\n` +
+    `${logLine("ERROR", "opencorp.daemon.main", "office crashed: TypeError")}\n` +
+    "    at f (x.ts:1:1)\n    at g (y.ts:2:2)\n"
+  )
+}
+
+test("an office that crashed with the crash marker fails", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  fs.writeFileSync(path.join(paths.office, "office.log"), crashedLog())
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office!.status).toBe("fail")
+  expect(got.office!.detail).toContain("its last start failed: office crashed: TypeError")
+  expect(got.office!.detail).not.toContain("x.ts")
+  expect(got.office!.detail).not.toContain("y.ts")
+})
+
+test("a crash marker followed by a later start is not a crash", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const later = `${logLine("INFO", "opencorp.daemon.main", "office listening")}\n`
+  fs.writeFileSync(path.join(paths.office, "office.log"), crashedLog() + later)
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office!.status).toBe("warn")
+  expect(got.office!.detail).not.toContain("office crashed")
+})
+
+test("a duplicate start is not a failed start", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  fs.writeFileSync(path.join(paths.office, "office.log"), "starting\nopencorp office: office already running (pid 7)\n")
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office!.status).toBe("warn")
+  expect(got.office!.detail).not.toContain("already running")
+})
+
+test("a sandbox that cant start fails", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const got = byName(await runChecks(dir, paths, { probe: async () => "sandbox-exec: Operation not permitted" }))
+  expect(got.sandbox).toEqual({ name: "sandbox", status: "fail", detail: "sandbox-exec: Operation not permitted" })
 })
