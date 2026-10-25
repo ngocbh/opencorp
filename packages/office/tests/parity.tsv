@@ -850,6 +850,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/routes_sessions.test.ts::session bodies a schema refuses are 422 and echo nothing [%s]	design §6 rule 7: a 422 never echoes an input value or an unknown key's name, and JSON deeper than 64 is refused	O3-15
 —	new	packages/office/tests/daemon/routes_sessions.test.ts::session writes are refused before their body is read	design §6 rule 7: the route guard (here the token check) answers before any byte of the body is read	O3-15
 —	new	packages/office/tests/daemon/routes_sessions.test.ts::the body cap holds on session routes	design §6 rule 7: the 1 MiB body cap (413 on the declared length)	O3-15
+—	new	packages/office/tests/e2e/codex_session.test.ts::a codex session on a wrapper started office streams a part takes a card answer and ends	design §11: phase 3's milestone; joins the cut-over gate (§10.4)	O3-16
 —	new	packages/office/tests/harness/approvals.test.ts::a secret answer no reply can be made from is in no log error or reply	design §6 rules 1, 7 and 11: the raw answer reaches only Codex	O3-14
 —	new	packages/office/tests/harness/codex.test.ts::a directory, a file that isnt executable or an empty path is not codex	design §6.1, §6.8 rule 3: codex is looked up on the absolute PATH entries, as resolveTools	O3-10
 —	new	packages/office/tests/harness/codex.test.ts::a line over the cap signals the group once	design §6.6 (only the first kill signals a group), §6.8 rule 13 (the line cap kills the app-server)	O3-12
