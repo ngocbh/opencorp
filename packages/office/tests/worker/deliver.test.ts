@@ -74,6 +74,15 @@ function logPayloads(job: Job, kind: string): Record<string, unknown>[] {
     .map((record) => record.payload)
 }
 
+/** The kinds of `job`'s run log records, in order. */
+function logKinds(job: Job): string[] {
+  return fs
+    .readFileSync(job.log, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => (JSON.parse(line) as { kind: string }).kind)
+}
+
 /** The values the run log of `job` commits to the flow input `inbox`, in order. */
 function sent(job: Job, inbox: string): unknown[] {
   return logPayloads(job, "pool_commit")
@@ -404,6 +413,24 @@ test("an advance job with advance false only delivers", async () => {
   expect(rec.order).toEqual(["deliver_reply", "result"])
   expect(sent(chat, "messages")).toEqual(["hi"])
   expect(logPayloads(chat, "node_woken")).toEqual([])
+})
+
+test("a stop before the advance reports the run as its log says", async () => {
+  const chat = makeJob(base(), "flows/inbox.yaml", { inputs: {} })
+  expect((await run(chat, new Recorder())).outcome?.status).toBe("waiting")
+  const before = logKinds(chat)
+  const send = { id: "s1", op: "send", inbox: "messages", event: "hi" } as const
+  const rec = new Recorder()
+  const worker = await inProcessWorker(advanceJob(chat, { deliver: [send] }), rec)
+  // The worker reads the stop while the send applies, before it would call advance.
+  expect(await worker.stop()).toBe(true)
+  expect(await worker.wait()).toBe(EXIT_OK)
+  expect(rec.outcome).toMatchObject({ type: "result", status: "waiting", run_id: "r1", output: null, failure: null })
+  expect(waitsOf(rec)[0]!.settled).toBe(true)
+  expect(rec.order).toEqual(["deliver_reply", "result"])
+  // Only the send's commit was appended: advance never ran.
+  expect(logKinds(chat)).toEqual([...before, "pool_commit"])
+  expect(sent(chat, "messages")).toEqual(["hi"])
 })
 
 test("an interrupt for a crashed run takes effect after RunResumed", async () => {

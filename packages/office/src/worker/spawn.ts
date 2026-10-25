@@ -11,7 +11,7 @@ import { killGroup, startTime } from "../install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../platform.ts"
 import type { Store } from "../store/store.ts"
 import { type Channel, ChannelClosed, type Frame, socketChannel } from "./channel.ts"
-import type { Delivery, Job } from "./job.ts"
+import { Delivery, type Job } from "./job.ts"
 import { reap } from "./reaper.ts"
 import { errorName, isRequest, type JobWorker, replyTo, type WorkerHandlers } from "./rpc.ts"
 
@@ -184,12 +184,17 @@ export class Worker implements JobWorker {
     killGroup(this.pgid)
   }
 
-  /** Sends `delivery` to the worker as a `deliver` frame; false if the channel is closed.
+  /** Sends `delivery` to the worker as a `deliver` frame.
    *
-   *  Once this returns true, the worker answers it with one `deliver_reply`, before or after `result`. Call it off
-   *  the read loop: a notification handler must not await it. */
-  deliver(delivery: Delivery): Promise<boolean> {
-    return this.#send({ type: "deliver", ...delivery })
+   *  Once this returns true, the worker answers it with one `deliver_reply` (before or after `result`) unless it
+   *  exits first, in which case the caller resends it per its lost-ack rule; rejects for a malformed delivery or a
+   *  frame over the limit (`FrameTooLarge`); false once the channel is closed. Call it off the read loop: a
+   *  notification handler must not await it. */
+  async deliver(delivery: Delivery): Promise<boolean> {
+    // Checked here, so an actor's bug fails at its call instead of making the worker drop the channel and orphan
+    // the run.
+    const parsed = Delivery.parse(delivery)
+    return this.#send({ ...parsed, type: "deliver" })
   }
 
   /** Asks the run to stop; false if the channel is closed. */
@@ -435,15 +440,16 @@ export class WorkerRegistry implements WorkerPool {
   }
 }
 
-/** Whether `frame` is a well-formed `deliver_reply`: a non-empty `id` and exactly one of `seq` (a number or null,
- *  with `closed` absent or a list of call ids), `refused` or `failed` (strings). */
+/** Whether `frame` is a well-formed `deliver_reply`: a non-empty `id` and exactly one of `seq` (a non-negative
+ *  safe integer or null, with `closed` absent or a list of call ids), `refused` or `failed` (strings). */
 function isDeliverReply(frame: Frame): boolean {
   if (typeof frame.id !== "string" || frame.id === "") return false
   const has = (key: string) => Object.hasOwn(frame, key)
   if (has("seq")) {
     const { seq, closed } = frame
+    // The codec revives NaN and the infinities, so a number alone is not enough.
     return (
-      (seq === null || typeof seq === "number") &&
+      (seq === null || (Number.isSafeInteger(seq) && (seq as number) >= 0)) &&
       (!has("closed") || (Array.isArray(closed) && closed.every((id) => typeof id === "string"))) &&
       !has("refused") &&
       !has("failed")

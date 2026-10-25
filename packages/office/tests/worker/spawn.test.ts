@@ -13,7 +13,7 @@ import { selfCommand } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
-import type { Job } from "../../src/worker/job.ts"
+import type { Delivery, Job } from "../../src/worker/job.ts"
 import { EXIT_FAILED, EXIT_ORPHANED, jobTools } from "../../src/worker/main.ts"
 import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
 import {
@@ -312,9 +312,12 @@ const BAD_REPLIES: Frame[] = [
   { id: "a", seq: "1" },
   { id: "a", seq: 1, closed: [1] },
   { id: "a", failed: 3 },
+  { id: "a", seq: -1 },
+  { id: "a", seq: 1.5 },
+  { id: "a", seq: NaN },
 ]
 
-test.each(BAD_REPLIES.map((fields) => [JSON.stringify(fields), fields] as const))(
+test.each(BAD_REPLIES.map((fields) => [inspect(fields, { breakLength: Infinity }), fields] as const))(
   "a deliver reply frame without its fields is a bad frame [%s]",
   async (_shape, fields) => {
     const { office, worker: far } = await channelPair()
@@ -426,6 +429,17 @@ test("a worker sends a delivery as a deliver frame", async () => {
   expect(rec.replies).toEqual([{ type: "deliver_reply", id: "d1", seq: 4 }])
   office.close()
   expect(await worker.deliver({ id: "d2", op: "close", inbox: "steers" })).toBe(false)
+})
+
+test("a malformed delivery rejects and sends nothing", async () => {
+  const { office, worker: far } = await channelPair()
+  const worker = workerOver(exitedChild(), office, new Recorder())
+  await worker.start()
+  expect((await far.recv()).type).toBe("start")
+  const bad = { id: "d1", op: "send", event: "hi" } as unknown as Delivery
+  await expect(worker.deliver(bad)).rejects.toThrow()
+  expect(await worker.deliver({ id: "d2", op: "close", inbox: "steers" })).toBe(true)
+  expect(await far.recv()).toEqual({ type: "deliver", id: "d2", op: "close", inbox: "steers" })
 })
 
 test("a worker shows no job when inspected or serialized", async () => {

@@ -364,6 +364,9 @@ async function runJob(
       deliveries.open()
       await deliveries.drained()
     }
+    // A stop that came while the deliveries applied would make `advance` throw though it appended nothing; the run
+    // is then as its log says, as after a job that only delivers.
+    if (signal.aborted) return { run_id: job.run_id, output: null, ...waitingFields(log) }
     const config = job.llm_config ?? {}
     result = await advance({
       ...common,
