@@ -147,11 +147,12 @@ e2e/test_failures.py::test_two_feedbacks_learned_at_once_both_land_in_the_profil
 e2e/test_hq.py	open	—	—	O5-1
 e2e/test_journey.py	open	—	—	O5-1
 e2e/test_run_logs.py	open	—	—	O5-1
-harness/test_approvals.py	open	—	—	O3-14
+harness/test_approvals.py	ported	packages/office/tests/harness/approvals.test.ts	—	O3-14
 harness/test_approvals.py::test_a_card_that_cant_be_marked_consumed_after_the_reply_still_answers	changed	packages/office/tests/harness/approvals.test.ts::a card that cant be marked consumed after the reply still answers	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
 harness/test_approvals.py::test_an_answer_no_reply_can_be_made_from_tells_codex_it_failed	changed	packages/office/tests/harness/approvals.test.ts::an answer no reply can be made from tells codex it failed	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
 harness/test_approvals.py::test_an_answer_that_codex_resolved_first_goes_stale_with_no_reply	changed	packages/office/tests/harness/approvals.test.ts::an answer that codex resolved first goes stale with no reply	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
 harness/test_approvals.py::test_an_answer_with_no_named_sender_is_the_openers	changed	packages/office/tests/harness/approvals.test.ts::an answer with no named sender is the openers	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
+harness/test_approvals.py::test_an_approval_answered_after_a_steer_lands_on_the_commands_part	changed	packages/office/tests/harness/approvals.test.ts::an approval answered after a steer lands on the commands part	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
 harness/test_approvals.py::test_an_approvals_answer_is_codexs_reply_and_its_resolved_leaves_the_card_consumed	changed	packages/office/tests/harness/approvals.test.ts::an approvals answer is codexs reply and its resolved leaves the card consumed	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
 harness/test_codex.py	ported	packages/office/tests/harness/codex.test.ts	—	O3-12
 harness/test_codex.py::test_a_closed_app_server_leaves_no_open_pipes	changed	packages/office/tests/harness/codex.test.ts::a closed app server leaves no open pipes	design §7.2 (no ResourceWarning or gc in Bun: every pipe destroyed and the rpc closed after close)	O3-12
@@ -741,6 +742,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/routes_questions.test.ts::an answer goes to the harness when there are no cards	routes/questions.py's "harness" in office.extras branch (an actor without the cards extension), through the stand-in (rule 1)	O3-9
 —	new	packages/office/tests/daemon/routes_questions.test.ts::stop is credited to the verified person	through the stand-in (rule 1): the chat run that test_stopping_a_manager_question_is_credited_to_the_verified_person needs is O4a-9's	O3-9
 —	new	packages/office/tests/daemon/routes_runs.test.ts::every runs route answers 501 not implemented	design §4.3: GET /runs* answers 501 until the run views (O4b-3, O4b-7 replace it)	O2-6
+—	new	packages/office/tests/harness/approvals.test.ts::a secret answer no reply can be made from is in no log error or reply	design §6 rules 1, 7 and 11: the raw answer reaches only Codex	O3-14
 —	new	packages/office/tests/harness/codex.test.ts::a directory, a file that isnt executable or an empty path is not codex	design §6.1, §6.8 rule 3: codex is looked up on the absolute PATH entries, as resolveTools	O3-10
 —	new	packages/office/tests/harness/codex.test.ts::a line over the cap signals the group once	design §6.6 (only the first kill signals a group), §6.8 rule 13 (the line cap kills the app-server)	O3-12
 —	new	packages/office/tests/harness/codex.test.ts::a linked codex log refuses to start	design §6.5, security rule 6 (codex.log opened O_NOFOLLOW, 0600)	O3-12

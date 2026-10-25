@@ -1,15 +1,28 @@
 /** Codex requests as cards: store, then reply; first answer wins; stale when Codex no longer waits. */
+import fs from "node:fs"
+import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { type Part, QuestionPage } from "@opencorp/protocol"
 import { HarnessError } from "../../src/chat/state.ts"
 import type { CodexProcess } from "../../src/harness/codex.ts"
 import { masked } from "../../src/harness/sessions.ts"
+import { register } from "../../src/extensions/questions.ts"
 import { killGroup, sameProcess } from "../../src/install/proc.ts"
-import { DuplicateKey, StoreError } from "../../src/store/store.ts"
+import { DuplicateKey, type QuestionRecord, StoreError } from "../../src/store/store.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { waitFor } from "../helpers.ts"
 import { question } from "../store/helpers.ts"
-import { type Codex, allGone, approvalTurn, makeCodex, messages, openCard, start, status } from "./helpers.ts"
+import {
+  type Codex,
+  allGone,
+  approvalTurn,
+  codexLog,
+  makeCodex,
+  messages,
+  openCard,
+  start,
+  status,
+} from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 afterAll(allGone)
@@ -120,6 +133,20 @@ test("an approvals answer is codexs reply and its resolved leaves the card consu
   expect(part!.state).toBe("completed")
 })
 
+test("an approval answered after a steer lands on the commands part", async () => {
+  const h = makeCodex()
+  h.fake.script([approvalTurn()])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "make a", { by: "ngocbh" })
+  const q = await openCard(h, sid)
+  expect(await h.sessions.prompt(sid, "and b", { by: "ngocbh" })).toBe("steer")
+  await h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })
+  await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
+  expect(toolParts(h, sid).map((p) => [p.state, (p.input.approval as { decision: string }).decision])).toEqual([
+    ["completed", "accept"],
+  ])
+})
+
 test("an answer no reply can be made from tells codex it failed", async () => {
   const h = makeCodex()
   h.fake.script([approvalTurn()])
@@ -145,6 +172,31 @@ test("an answer with no named sender is the openers", async () => {
   const [part, ...more] = toolParts(h, sid)
   expect(more).toEqual([])
   expect((part!.input.approval as { by: string }).by).toBe("ngocbh")
+})
+
+test("office stop makes an answer waiting for its reply give up at once", async () => {
+  const h = makeCodex({ stopWaitMs: 200 })
+  h.fake.script([approvalTurn()])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "make a")
+  const q = await openCard(h, sid)
+  const live = h.sessions.get(sid)!
+  let begin!: () => void
+  let release!: () => void
+  const began = new Promise<void>((resolve) => (begin = resolve))
+  const released = new Promise<void>((resolve) => (release = resolve))
+  // A job the stop can't wait out, with the reply's job queued behind it.
+  void live.post("hold", async () => {
+    begin()
+    await released
+  })
+  await began
+  // No await comes between the answer's store write and its reply job's post, so the job is queued now.
+  const answering = h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })
+  await h.sessions.closeAll()
+  expect((await answering).status).toBe("stale")
+  release()
+  expect(1 in h.fake.replies()).toBe(false)
 })
 
 test("two answerers make one reply", async () => {
@@ -196,7 +248,8 @@ test("an answer after the app server died goes stale", async () => {
   const q = await openCard(h, sid)
   const live = h.sessions.get(sid)!
   const w = h.store.listWorkers()[0]!
-  if (sameProcess(w.pid, w.startTime)) killGroup(w.pgid)
+  expect(sameProcess(w.pid, w.startTime)).toBe(true)
+  killGroup(w.pgid)
   await waitFor(() => !live.process || !live.process.alive, { what: "death" })
   try {
     expect((await h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })).status).toBe("stale")
@@ -232,6 +285,133 @@ test("a card codex left waiting at its turns end goes stale", async () => {
   await waitFor(() => h.store.getQuestion(q.id)?.status === "stale", { what: "stale" })
 })
 
+/** The session's open cards by node id. */
+function openByNode(h: Codex, sid: string): Record<string, QuestionRecord> {
+  return Object.fromEntries(h.store.listQuestions({ sessionId: sid, status: "open" }).map((q) => [q.node_id, q]))
+}
+
+test("two cards open and close independently and a message leaves them alone", async () => {
+  const h = makeCodex()
+  h.fake.script([
+    [
+      fc.commandApproval(1, "c1", "touch a", { wait: false }),
+      fc.permissionsApproval(2, "p1", { wait: false }),
+      { wait_reply: 1 },
+      { wait_reply: 2 },
+    ],
+  ])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "go")
+  await waitFor(() => h.store.listQuestions({ sessionId: sid, status: "open" }).length === 2, { what: "two cards" })
+  expect(await h.sessions.prompt(sid, "also do b")).toBe("steer")
+  const byNode = openByNode(h, sid)
+  const second = await h.sessions.answer(byNode["2"]!.id, "Approve for this session", "option", { by: "ngocbh" })
+  expect(second.status).toBe("consumed")
+  expect(h.store.getQuestion(byNode["1"]!.id)!.status).toBe("open")
+  expect((await h.sessions.answer(byNode["1"]!.id, "Approve", "option", { by: "ngocbh" })).status).toBe("consumed")
+  await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
+  expect((h.fake.replies()[2] as { scope: string }).scope).toBe("session")
+  expect(h.fake.replies()[1]).toEqual({ decision: "accept" })
+})
+
+test("esc makes open cards stale though codex never resolves them", async () => {
+  const h = makeCodex()
+  h.fake.script([approvalTurn()])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "make a")
+  const q = await openCard(h, sid)
+  const live = h.sessions.get(sid)!
+  const notified = live.notified.bind(live)
+  // Real Codex sends no serverRequest/resolved for a request an interrupt leaves waiting; the fake does.
+  spyOn(live, "notified").mockImplementation((p, m, params) => {
+    if (m !== "serverRequest/resolved") notified(p, m, params)
+  })
+  await h.sessions.interrupt(sid)
+  await waitFor(() => h.store.getQuestion(q.id)!.status === "stale" && status(h, sid) === "idle", {
+    what: "stale card, idle session",
+  })
+  const refused = await h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" }).catch((error) => error)
+  expect(refused).toBeInstanceOf(HarnessError)
+  expect(refused.code).toBe("not_open")
+  expect(1 in h.fake.replies()).toBe(false)
+})
+
+/** The secret test's two pages: a secret token and a plain choice. */
+const PAGES = [
+  fc.question("token", "Token", "Paste it", { secret: true }),
+  fc.question("env", "Env", "Where?", { options: ["prod", "dev"] }),
+]
+
+/** Throws unless no store file (the WAL included) holds SENTINEL; there are at least two of them. */
+function storeLacksSentinel(h: Codex): void {
+  const store = h.office.paths.store
+  const dir = path.dirname(store)
+  // The store runs in WAL mode: the secret could sit in the -wal file before a checkpoint.
+  const files = fs.readdirSync(dir).filter((name) => name.startsWith(path.basename(store)))
+  expect(files.length).toBeGreaterThanOrEqual(2)
+  for (const name of files) expect(fs.readFileSync(path.join(dir, name)).includes(SENTINEL)).toBe(false)
+}
+
+test("a secret answer reaches codex and never the store", async () => {
+  const h = makeCodex()
+  h.fake.script([[fc.userInput(4, "u1", PAGES)]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "deploy")
+  const q = await openCard(h, sid)
+  expect(q.questions!.map((p) => p.secret)).toEqual([true, false])
+  const got = await h.sessions.answer(q.id, { Token: SENTINEL, Env: "dev" }, "text", { by: "ngocbh" })
+  expect([got.status, got.answer]).toEqual(["consumed", { Token: "[secret]", Env: "dev" }])
+  const reply = { answers: { token: { answers: [SENTINEL] }, env: { answers: ["dev"] } } }
+  await waitFor(() => Bun.deepEquals(h.fake.replies()[4], reply), { what: "the reply" })
+  await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
+  expect(h.store.getQuestion(q.id)!.answer).toEqual({ Token: "[secret]", Env: "dev" })
+  storeLacksSentinel(h)
+  expect(codexLog(h, sid)).not.toContain(SENTINEL)
+  expect(JSON.stringify(h.storeEvents)).not.toContain(SENTINEL)
+  expect(JSON.stringify(h.events)).not.toContain(SENTINEL)
+  expect(h.lines.join("\n")).not.toContain(SENTINEL)
+})
+
+test("a secret answer no reply can be made from is in no log error or reply", async () => {
+  const h = makeCodex()
+  h.fake.script([
+    [
+      fc.userInput(4, "u1", PAGES, { wait: false }),
+      fc.userInput(5, "u2", PAGES, { wait: false }),
+      { wait_reply: 4 },
+      { wait_reply: 5 },
+    ],
+  ])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "deploy")
+  await waitFor(() => h.store.listQuestions({ sessionId: sid, status: "open" }).length === 2, { what: "two cards" })
+  const byNode = openByNode(h, sid)
+  // No cards to check it first: a string isn't a record, so no reply can be made from it.
+  const got = await h.sessions.answer(byNode["4"]!.id, SENTINEL, "text", { by: "ngocbh" })
+  expect([got.status, got.answer]).toEqual(["stale", null])
+  await waitFor(() => 4 in h.fake.replies(), { what: "the error reply" })
+  expect(code(h.fake.replies()[4])).toBe(-32602)
+  expect(JSON.stringify(h.fake.replies()[4])).not.toContain(SENTINEL)
+  h.office.harness = h.sessions
+  register(h.office)
+  const cards = h.office.cards!
+  try {
+    const refused = await cards
+      .answer(byNode["5"]!.id, { Token: SENTINEL, Env: "nope" }, "text", { by: "ngocbh" })
+      .catch((error) => error)
+    expect(refused).toBeInstanceOf(HarnessError)
+    expect([refused.status, refused.code]).toEqual([422, "invalid_answer"])
+    expect(refused.message).not.toContain(SENTINEL)
+    expect(h.store.getQuestion(byNode["5"]!.id)!.status).toBe("open")
+  } finally {
+    await cards.close()
+  }
+  expect(h.lines.join("\n")).not.toContain(SENTINEL)
+  expect(JSON.stringify(h.storeEvents)).not.toContain(SENTINEL)
+  expect(JSON.stringify(h.events)).not.toContain(SENTINEL)
+  storeLacksSentinel(h)
+})
+
 test("an unserved request gets a json rpc error", async () => {
   const h = makeCodex()
   const params = { threadId: "{thread}", turnId: "{turn}", callId: "x", namespace: null, tool: "t", arguments: {} }
@@ -242,6 +422,35 @@ test("an unserved request gets a json rpc error", async () => {
   expect(code(h.fake.replies()[9])).toBe(-32601)
   await waitFor(() => status(h, sid) === "idle", { what: "Codex going on" })
   expect(h.store.listQuestions({ sessionId: sid })).toEqual([])
+})
+
+test("cards answer a codex card and refuse its other actions", async () => {
+  const h = makeCodex()
+  h.office.harness = h.sessions
+  register(h.office)
+  const cards = h.office.cards!
+  try {
+    h.fake.script([approvalTurn()])
+    const sid = await start(h, h.workspace)
+    await h.sessions.prompt(sid, "make a")
+    const q = await openCard(h, sid)
+    // An approval takes an option.
+    await expect(cards.answer(q.id, "approve it please", "text", { by: "ngocbh" })).rejects.toBeInstanceOf(HarnessError)
+    for (const refused of [
+      () => cards.openSide(q.id, "why?", { by: "ngocbh" }),
+      () => cards.sendBack(q.id, "", { by: "ngocbh" }),
+      () => cards.stop(q.id, { by: "ngocbh" }),
+    ]) {
+      const error = await refused().catch((e) => e)
+      expect(error).toBeInstanceOf(HarnessError)
+      expect(error.code).toBe("harness_card")
+    }
+    expect(h.store.getQuestion(q.id)!.status).toBe("open")
+    expect((await cards.answer(q.id, "Approve", "option", { by: "ngocbh" })).status).toBe("consumed")
+    await waitFor(() => Bun.deepEquals(h.fake.replies()[1], { decision: "accept" }), { what: "the reply" })
+  } finally {
+    await cards.close()
+  }
 })
 
 test("an answer that waited too long for its reply tells codex it came too late", async () => {

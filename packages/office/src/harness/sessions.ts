@@ -219,7 +219,8 @@ export class CodexSessions implements CardActor {
       try {
         this.store.setQuestionStatus(e.key, "stale")
       } catch (error) {
-        if (error instanceof InvalidTransition) return // answered meanwhile: its reply finds no request and loses it
+        // Answered meanwhile: its reply finds no request and loses the answer.
+        if (error instanceof InvalidTransition) return
         if (!(error instanceof NotFound)) throw error
         this.log(`codex session ${session_id}: card ${e.key} is gone`)
       }
