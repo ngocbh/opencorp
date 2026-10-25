@@ -1,6 +1,7 @@
 /** The session actor's host loop rules that have no Python test of their own. */
 import fs from "node:fs"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveEvent } from "@opencorp/protocol"
@@ -9,8 +10,7 @@ import { INTERRUPTED } from "../../src/questions/format.ts"
 import { COULDNT_RESUME, COULDNT_START, ENDED_OVER_CAP, NEW_MODEL, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
-import type { Delivery } from "../../src/worker/job.ts"
-import { STOP_REASON } from "../../src/worker/main.ts"
+import { type Delivery, STOP_REASON } from "../../src/worker/job.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
 import { CEO } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
@@ -1331,4 +1331,63 @@ test("a model call with no token counts is logged unpriced", async () => {
   first.handlers.event(first.worker, { type: "event", name: "ModelCallFinished", data: { model: "stub", usage } })
   await waitFor(() => o.logs.some((line) => line.includes("unpriced")), { what: "the log line" })
   expect(session(o, sid).cost).toBe(0)
+})
+
+const SRC = fileURLToPath(new URL("../../src/", import.meta.url))
+// The yian functions that drive a run: only a worker calls them, on the run it hosts.
+const HOST_CALLS = new Set(["send", "complete", "close", "interrupt", "cancel", "advance"])
+const HOST_MODULES = new Set(["@ngocbh/yian", "@ngocbh/yian/run"])
+// A static import's clause runs from `import` to `from`, across lines; a side-effect import names nothing.
+const STATIC_IMPORT = /^[ \t]*import\s+(type\s+)?([^;"'`]*?)\s+from\s+["']([^"']+)["']/gm
+const DYNAMIC_IMPORT = /\bimport\(\s*["'`]([^"'`]+)["'`]\s*\)/g
+
+/** The yian host functions `text` imports, and its loads of the worker's main module; `file` is relative to src. */
+function hostImports(file: string, text: string): string[] {
+  const workerMain = (spec: string) =>
+    spec.startsWith(".") && path.posix.join(path.posix.dirname(file), spec) === "worker/main.ts"
+  const found: string[] = []
+  for (const [, typeOnly, clause, spec] of text.matchAll(STATIC_IMPORT)) {
+    if (typeOnly) continue
+    if (workerMain(spec!)) found.push(`${file}: worker/main.ts`)
+    if (!HOST_MODULES.has(spec!)) continue
+    if (/\*\s*as\b/.test(clause!)) found.push(`${file}: * from ${spec}`)
+    for (const specifier of (clause!.match(/\{([^}]*)\}/)?.[1] ?? "").split(",")) {
+      const words = specifier.trim().split(/\s+/)
+      if (words.length > 1 && words[0] === "type") continue
+      if (HOST_CALLS.has(words[0]!)) found.push(`${file}: ${words[0]} from ${spec}`)
+    }
+  }
+  for (const [, spec] of text.matchAll(DYNAMIC_IMPORT)) {
+    // The office's own entry point loads the worker's main for the `__worker` mode.
+    if (workerMain(spec!) && !(file === "main.ts" && spec === "./worker/main.ts")) found.push(`${file}: worker/main.ts`)
+    if (HOST_MODULES.has(spec!)) found.push(`${file}: import(${spec})`)
+  }
+  return found
+}
+
+test("no office code outside the worker calls a yian host function", () => {
+  expect(hostImports("a/b.ts", 'import {\n  loadFlow,\n  send as deliver,\n} from "@ngocbh/yian"')).toEqual([
+    "a/b.ts: send from @ngocbh/yian",
+  ])
+  expect(hostImports("a/b.ts", 'import yian, { advance } from "@ngocbh/yian/run"')).toEqual([
+    "a/b.ts: advance from @ngocbh/yian/run",
+  ])
+  expect(hostImports("a/b.ts", 'import * as run from "@ngocbh/yian/run"')).toEqual(["a/b.ts: * from @ngocbh/yian/run"])
+  expect(hostImports("a/b.ts", 'const y = await import("@ngocbh/yian")')).toEqual(["a/b.ts: import(@ngocbh/yian)"])
+  expect(hostImports("a/b.ts", 'import { STOP } from "../worker/main.ts"')).toEqual(["a/b.ts: worker/main.ts"])
+  expect(hostImports("a/b.ts", 'await import("../worker/main.ts")')).toEqual(["a/b.ts: worker/main.ts"])
+  for (const allowed of [
+    'import type { send } from "@ngocbh/yian"',
+    'import { type cancel, loadFlow } from "@ngocbh/yian"',
+    'import { sendMessage } from "@ngocbh/yian"',
+    'import { send } from "@ngocbh/yian/tools"',
+    'import type { WorkerEnv } from "../worker/main.ts"',
+  ])
+    expect(hostImports("a/b.ts", allowed)).toEqual([])
+  expect(hostImports("main.ts", 'await import("./worker/main.ts")')).toEqual([])
+  const files = fs
+    .readdirSync(SRC, { recursive: true, encoding: "utf8" })
+    .filter((file) => file.endsWith(".ts") && !file.startsWith("worker/") && file !== "chat/history.ts")
+  expect(files).toContain("chat/session_actor.ts")
+  expect(files.flatMap((file) => hostImports(file, fs.readFileSync(path.join(SRC, file), "utf8")))).toEqual([])
 })

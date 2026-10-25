@@ -27,7 +27,7 @@ import { cancelReplaced, readSeed } from "../chat/history.ts"
 import { MAIN_CHAT } from "../chat/turns.ts"
 import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
-import { Delivery, type Job, parseJob } from "./job.ts"
+import { Delivery, type Job, parseJob, STOP_REASON } from "./job.ts"
 import { RemoteMarkdownStore } from "./remote_store.ts"
 import { askUserStub, errorMessage, errorName, remoteTool, REPLY_TYPES, Rpc } from "./rpc.ts"
 
@@ -36,8 +36,6 @@ export const EXIT_FAILED = 1
 export const EXIT_ORPHANED = 3
 /** How long, in ms, a worker keeps answering deliveries after its last frame, waiting for the office to close. */
 export const LINGER_MS = 5000
-/** The reason a `stop` frame stops the run with; the worker's `error` frame then reads `Error: <reason>`. */
-export const STOP_REASON = "the office stopped the run"
 
 /** The worker's environment, passed in explicitly. */
 export type WorkerEnv = Readonly<Record<string, string | undefined>>

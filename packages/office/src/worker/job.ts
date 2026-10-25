@@ -3,6 +3,9 @@ import path from "node:path"
 import { validationMessage } from "@opencorp/protocol"
 import { z } from "zod"
 
+/** The reason a `stop` frame stops the run with; the worker's `error` frame then reads `Error: <reason>`. */
+export const STOP_REASON = "the office stopped the run"
+
 const emptyParameters = (): Record<string, unknown> => ({ type: "object", properties: {} })
 
 /** A tool the office serves over the channel, as the model sees it. */

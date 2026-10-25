@@ -33,9 +33,8 @@ import {
   type WorkItemRecord,
 } from "../store/store.ts"
 import { type Frame, FrameTooLarge } from "../worker/channel.ts"
-import type { Delivery, Job, Seed } from "../worker/job.ts"
+import { type Delivery, type Job, type Seed, STOP_REASON } from "../worker/job.ts"
 import { type AskRequest, BaseHandlers, errorName, type OfficeTool, type WorkerHandlers } from "../worker/rpc.ts"
-import { STOP_REASON } from "../worker/main.ts"
 import { RegistryClosed, type Worker, workerEnv } from "../worker/spawn.ts"
 import { type Connections, runRecord } from "./connections.ts"
 import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "./cost.ts"
