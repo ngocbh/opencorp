@@ -105,8 +105,14 @@ export class LiveRelay implements LiveCalls {
   #apply(entry: Entry, view: LiveView, frame: Exclude<WorkerFrame, { type: "snapshot" }>): void {
     let applied: boolean
     try {
-      const log = entry.worker.job.log
-      applied = view.apply(frame.type === "record" ? { ...frame, line: frame.line ?? readLine(log, frame.seq) } : frame)
+      if (frame.type === "record") {
+        // apply drops a duplicate or a gap before decoding the line, so only the next record's line is worth a read.
+        const next = frame.seq === view.lastSeq + 1
+        const line = frame.line ?? (next ? readLine(entry.worker.job.log, frame.seq) : "")
+        applied = view.apply({ ...frame, line })
+      } else {
+        applied = view.apply(frame)
+      }
     } catch {
       applied = false
     }
@@ -152,7 +158,10 @@ function check(frame: unknown): WorkerFrame | null {
     case "record":
       return isCount(f.seq) && (f.line === undefined || typeof f.line === "string") ? (f as WorkerFrame) : null
     case "start":
-      return isStep(f) && typeof f.purpose === "string" && (f.model === null || typeof f.model === "string")
+      return isStep(f) &&
+        typeof f.purpose === "string" &&
+        (f.model === null || typeof f.model === "string") &&
+        typeof f.started_at === "string"
         ? (f as WorkerFrame)
         : null
     case "chunk":

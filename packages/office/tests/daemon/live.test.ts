@@ -161,6 +161,33 @@ test("an over cap record is read from the log", async () => {
   expect(worker.follows).toBe(0)
 })
 
+test("an over cap record the log doesnt hold is a gap", async () => {
+  const job = await waitingRun()
+  const last = lastSeq(job.log)
+  const { relay, lines } = makeRelay()
+  const worker = new StubWorker(job)
+  relay.frame(worker, snapshot(last, [{ node: REPLY, n: 1, chunks: ["Hi"], next_index: 1 }]))
+  relay.frame(worker, { type: "record", seq: last + 1 })
+  expect(lines).toEqual([gapLine("record")])
+  expect(worker.follows).toBe(1)
+  expect(relay.calls("r1")).toEqual([])
+})
+
+test("a follow that fails is logged by its type", async () => {
+  const job = await waitingRun()
+  const { relay, lines } = makeRelay()
+  const worker = new StubWorker(job)
+  worker.follow = () => {
+    worker.follows++
+    return Promise.reject(new TypeError("secret text"))
+  }
+  expect(() => relay.frame(worker, { type: "nope" })).not.toThrow()
+  await Promise.resolve()
+  expect(lines).toEqual([gapLine("unknown"), "run r1: live follow failed (TypeError)"])
+  expect(lines.some((line) => line.includes("secret text"))).toBe(false)
+  expect(worker.follows).toBe(1)
+})
+
 test("a new worker starts with no live calls of the old one", async () => {
   const job = await waitingRun()
   const last = lastSeq(job.log)
@@ -233,6 +260,7 @@ test("a malformed frame is logged and ignored", async () => {
     [{ type: "chunk", node: REPLY, n: 1, index: 1, text: 5 }, "chunk"],
     [{ type: "record", seq: -1, line: "{}" }, "record"],
     [{ type: "start", node: REPLY, n: 2, purpose: "reply", model: 7 }, "start"],
+    [{ type: "start", node: REPLY, n: 2, purpose: "reply", model: null }, "start"],
     [{ type: "end", node: REPLY, n: Number.MAX_SAFE_INTEGER + 1, error: null }, "end"],
     [snapshot(last, [{ node: REPLY, n: 1, chunks: [1 as unknown as string], next_index: 1 }]), "snapshot"],
   ]
