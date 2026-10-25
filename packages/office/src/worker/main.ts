@@ -69,9 +69,9 @@ interface WorkerState {
  *
  * A steer is forwarded to yian's steer inbox of the run; a steer yian refuses or fails to take comes back, as
  * `steer_left`. The last frame is `result` (or `error`). After it the worker answers steers with `steer_left` until
- * the office closes its side (or `linger` ms pass), so a steer the office sent as the run ended is never lost. If the
- * office closes the channel before the job finished, `exit` is called with `EXIT_ORPHANED`: nobody can answer a
- * question or read the result.
+ * the office closes its side (or `linger` ms pass), so every steer the office sent is applied, kept in the run's steer
+ * inbox (in the log), or returned. If the office closes the channel before the job finished, `exit` is called with
+ * `EXIT_ORPHANED`: nobody can answer a question or read the result.
  */
 export async function serve(
   channel: Channel,
