@@ -5,7 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { createInterface } from "node:readline"
 import { onTestFinished } from "bun:test"
-import { sameProcess, startTime } from "../src/install/proc.ts"
+import { args, sameProcess, startTime } from "../src/install/proc.ts"
 
 /** Polls `predicate` every 20 ms until it returns something truthy, and returns that; throws
  *  `timed out waiting for <what>` after `timeout` ms (Python's `wait_for`). */
@@ -141,4 +141,45 @@ export function startGroup(script: string): Group {
       tracked.push({ pid: other, started: otherStarted })
     },
   }
+}
+
+/** The names in the env `pid` was started with (or re-exec'd into): Linux `/proc/<pid>/environ`; macOS what
+ *  `ps -E` prints after the command. */
+export function envNames(pid: number): string[] {
+  if (process.platform === "linux")
+    return fs
+      .readFileSync(`/proc/${pid}/environ`, "utf8")
+      .split("\0")
+      .filter((entry) => entry !== "")
+      .map((entry) => entry.slice(0, entry.indexOf("=")))
+  const read = (flags: string[]) =>
+    execFileSync(ps(), [...flags, "-ww", "-o", "command=", "-p", String(pid)], {
+      env: { LC_ALL: "C.UTF-8" },
+      encoding: "utf8",
+      timeout: 5000,
+    }).trimEnd()
+  const command = read([])
+  const withEnv = read(["-E"])
+  if (!withEnv.startsWith(command)) throw new Error(`ps -E of ${pid} doesn't start with its command`)
+  return [...withEnv.slice(command.length).matchAll(/(?:^| )([A-Za-z_][A-Za-z0-9_]*)=/g)].map((m) => m[1]!)
+}
+
+/** The cwd of `pid`: Linux `/proc/<pid>/cwd`; macOS lsof's `n` line. */
+export function cwdOf(pid: number): string {
+  if (process.platform === "linux") return fs.readlinkSync(`/proc/${pid}/cwd`)
+  const out = execFileSync("/usr/sbin/lsof", ["-a", "-d", "cwd", "-p", String(pid), "-Fn"], {
+    env: { LC_ALL: "C.UTF-8" },
+    encoding: "utf8",
+    timeout: 10_000,
+  })
+  const line = out.split("\n").find((l) => l.startsWith("n"))
+  if (line === undefined) throw new Error(`lsof shows no cwd for ${pid}`)
+  return line.slice(1)
+}
+
+/** How many times `--reexeced` is an argument of `pid`. */
+export function reexecMarks(pid: number): number {
+  const line = args(pid, ps())
+  if (line === null) throw new Error(`can't read the arguments of ${pid}`)
+  return line.split(" ").filter((arg) => arg === "--reexeced").length
 }

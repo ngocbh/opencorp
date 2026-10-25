@@ -163,7 +163,8 @@ export async function start(launch: Launch, host: Host): Promise<Installed> {
 
 function tail(file: string, lines = 20): string {
   try {
-    const text = fs.readFileSync(file, "utf8")
+    // Python read the log with universal newlines, so a `\r\n` or lone `\r` ends a line too.
+    const text = fs.readFileSync(file, "utf8").replace(/\r\n?/g, "\n")
     return text
       .split(/(?<=\n)/)
       .filter(Boolean)

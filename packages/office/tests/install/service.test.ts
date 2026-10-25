@@ -1,16 +1,28 @@
 /** Installing, starting, waiting on, stopping and restarting the office under the best service manager that
- *  works here. Every host is a stand-in: nothing real is installed, started or signalled. */
-import type { ChildProcess } from "node:child_process"
+ *  works here. Every host's `run` is a stand-in, so no service tool runs; the background-daemon tests start real
+ *  daemons on temp homes and kill them by pid and start time when they finish. */
+import { type ChildProcess, spawn } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
-import { expect, test } from "bun:test"
+import { expect, onTestFinished, test } from "bun:test"
 import * as fallback from "../../src/install/fallback.ts"
-import { type Completed, type Launch, ServiceError, defaultHost, launch } from "../../src/install/launch.ts"
+import {
+  type Completed,
+  type Host,
+  type Launch,
+  ServiceError,
+  defaultHost,
+  launch,
+  officeAnswers,
+} from "../../src/install/launch.ts"
 import * as launchd from "../../src/install/launchd.ts"
+import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import * as service from "../../src/install/service.ts"
 import * as systemd from "../../src/install/systemd.ts"
-import { shortDir, tempDir } from "../helpers.ts"
+import { selfSpawnEnv } from "../../src/platform.ts"
+import { company } from "../company/helpers.ts"
+import { cwdOf, envNames, isGone, reexecMarks, shortDir, tempDir } from "../helpers.ts"
 import { Runner, makeHost } from "./helpers.ts"
 
 /** A `which` that finds every program in `/usr/bin`. */
@@ -417,6 +429,121 @@ test("uninstalling nothing runs nothing", async () => {
   expect(run.calls).toEqual([])
 })
 
+/** A process the test host started: its pid and the start time read right after the spawn. */
+interface Spawned {
+  pid: number
+  started: number
+}
+
+/**
+ * The list a `daemonHost` records its processes in; when the test finishes, each one's group is SIGKILLed if it
+ * still has its start time, never by name or pattern. Call before making the test's temp dirs: onTestFinished
+ * runs callbacks in registration order, so the daemons go before their homes are removed.
+ */
+function killedAtEnd(): Spawned[] {
+  const spawned: Spawned[] = []
+  onTestFinished(() => {
+    for (const d of spawned) if (sameProcess(d.pid, d.started)) killGroup(d.pid)
+  })
+  return spawned
+}
+
+/** A host that really starts processes, recording each in `spawned` at once, waits in real time and asks the
+ *  real socket. Its commands still go to a `Runner` and it finds no program, so no service tool runs. */
+function daemonHost(dir: string, spawned: Spawned[]): Host {
+  return {
+    ...makeHost(dir, new Runner()),
+    clock: () => performance.now(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    answers: officeAnswers,
+    which: () => null,
+    spawn: (argv, options) => {
+      const child = spawn(argv[0], argv.slice(1), options)
+      if (child.pid !== undefined) {
+        const started = startTime(child.pid)
+        if (started === null) {
+          // Without a start time the cleanup could not tell it from a reused pid, so it must not run on.
+          child.kill("SIGKILL")
+          throw new Error(`can't read the start time of ${argv[0]} (pid ${child.pid})`)
+        }
+        spawned.push({ pid: child.pid, started })
+      }
+      return child
+    },
+  }
+}
+
+/** A home in `dir` with the base company, and HQ kept off its TCP port (Python's `no_web_port`), which the
+ *  owner's own office holds. */
+function companyHome(dir: string): string {
+  const home = path.join(dir, "home")
+  company(home)
+  fs.mkdirSync(path.join(home, "office"), { mode: 0o700 })
+  fs.writeFileSync(path.join(home, "office", "hq.json"), '{"tcp": false}')
+  return home
+}
+
+/** The pid in the office's pidfile. */
+function pidfile(one: Launch): number {
+  return Number(fs.readFileSync(path.join(one.office, "office.pid"), "utf8"))
+}
+
+test(
+  "uninstalling a background office stops its daemon",
+  async () => {
+    const spawned = killedAtEnd()
+    const dir = shortDir()
+    const home = companyHome(dir)
+    const one = launch(home, { environ: { ...selfSpawnEnv(process.env), HOME: tempDir() } })
+    const host = daemonHost(dir, spawned)
+    await service.install(one, host, "background")
+    await service.wait(one, host)
+    const pid = pidfile(one)
+    // `/bin/sh` execs the daemon and the daemon re-execs itself, both in place, so the spawned pid is its pid.
+    expect(spawned.map((d) => d.pid)).toEqual([pid])
+    const done = await service.uninstall(one, host)
+    expect(done).toEqual([`background: stopped the office (pid ${pid})`])
+    expect(isGone(pid, spawned[0]!.started)).toBe(true)
+    expect(await officeAnswers(one.socket)).toBe(false)
+    expect(await service.uninstall(one, host)).toEqual([])
+  },
+  120_000,
+)
+
+test(
+  "background mode starts the daemon in the office env and folder from a poisoned caller",
+  async () => {
+    const spawned = killedAtEnd()
+    const dir = shortDir()
+    const home = companyHome(dir)
+    const project = tempDir()
+    const one = launch(home, {
+      environ: {
+        ...selfSpawnEnv(process.env),
+        HOME: home,
+        OPENAI_API_KEY: "sk-test-not-a-key-0000",
+        BUN_OPTIONS: "--preload /nonexistent.ts",
+        PWD: project,
+      },
+    })
+    const host = daemonHost(dir, spawned)
+    await service.install(one, host, "background")
+    await service.wait(one, host)
+    const pid = pidfile(one)
+    expect(spawned.map((d) => d.pid)).toEqual([pid])
+    const names = envNames(pid)
+    expect(names).toContain("PATH")
+    expect(names).toContain("HOME")
+    // Nothing of the caller's, and nothing `/bin/sh` adds (PWD, SHLVL, _), reaches the daemon.
+    expect(new Set(names)).toEqual(new Set(Object.keys(one.env)))
+    expect(cwdOf(pid)).toBe(fs.realpathSync(one.office))
+    // What `/bin/sh` adds makes the daemon re-exec once.
+    expect(reexecMarks(pid)).toBe(1)
+    expect(await service.uninstall(one, host)).toEqual([`background: stopped the office (pid ${pid})`])
+  },
+  120_000,
+)
+
 test("a pidfile naming some other process is left alone", async () => {
   const { dir, one } = fixture()
   installedAs(one, "background")
@@ -430,6 +557,32 @@ test("an office that still answers after uninstalling is an error", async () => 
   expect(error).toBeInstanceOf(ServiceError)
   expect(error.message).toContain("still answers")
 })
+
+test(
+  "restarting a background office runs a new daemon",
+  async () => {
+    const spawned = killedAtEnd()
+    const dir = shortDir()
+    const home = companyHome(dir)
+    const one = launch(home, { environ: { ...selfSpawnEnv(process.env), HOME: tempDir() } })
+    const host = daemonHost(dir, spawned)
+    await service.install(one, host, "background")
+    await service.wait(one, host)
+    const old = pidfile(one)
+    try {
+      expect((await service.restart(one, host)).mode).toBe("background")
+      await service.wait(one, host)
+      const now = pidfile(one)
+      expect(now).not.toBe(old)
+      expect(await officeAnswers(one.socket)).toBe(true)
+      expect(spawned.map((d) => d.pid)).toEqual([old, now])
+      expect(isGone(old, spawned[0]!.started)).toBe(true)
+    } finally {
+      await service.uninstall(one, host)
+    }
+  },
+  120_000,
+)
 
 /** An office that answers only after a start command ran, so its old daemon counts as stopped. */
 function answersOnceStarted(run: Runner): () => Promise<boolean> {
