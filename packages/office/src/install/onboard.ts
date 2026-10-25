@@ -394,6 +394,8 @@ async function saveProvider(office: string, provider: Provider): Promise<void> {
   try {
     connections.ensureDir()
   } catch (error) {
+    // Its message is value-free and names the folder.
+    if (error instanceof ProviderError) throw new OnboardError(error.message)
     const code = errnoCode(error)
     if (code === undefined) throw error
     throw new OnboardError(`can't set up ${connections.dir}: ${code}`)

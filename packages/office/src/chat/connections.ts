@@ -235,7 +235,8 @@ export class Connections {
     return [await this.default(), null, true]
   }
 
-  /** Makes `name` the default; rejects with `ConnectionGone` if there is no such connection. */
+  /** Makes `name` the default; rejects with `ConnectionGone` if there is no such connection, and `ProviderError` when
+   *  office/connections isn't a private directory of this user. */
   async setDefault(name: string): Promise<void> {
     if (name !== OFFICE) checkName(name)
     return this.#queued(async () => {
@@ -247,14 +248,35 @@ export class Connections {
     })
   }
 
-  /** office/connections, made 0700 (yian's auth store refuses a directory others can open). */
+  /** office/connections, made 0700 (yian's auth store refuses a directory others can open). Throws `ProviderError`
+   *  when it is a symlink, not a directory, another user's or unreadable, before any mode change. */
   ensureDir(): string {
     try {
       fs.mkdirSync(this.dir, { mode: 0o700 })
     } catch (error) {
       if (errnoCode(error) !== "EEXIST") throw error
     }
-    fs.chmodSync(this.dir, 0o700) // the umask may have narrowed it, or it was made by hand
+    const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW } = fs.constants
+    let fd: number
+    try {
+      // Through the fd: a chmod by path would follow a symlink planted there and change its target's mode.
+      fd = fs.openSync(this.dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+    } catch (error) {
+      const code = errnoCode(error)
+      // A symlink or a file gives ENOTDIR (O_DIRECTORY is checked first), else ELOOP; FreeBSD says EMLINK.
+      if (code === "ENOTDIR" || code === "ELOOP" || code === "EMLINK") {
+        throw new ProviderError(`${this.dir} must be a directory of its own, not a file or a symlink`)
+      }
+      // A folder this process can't read, its own or another user's: refused with a fix, not repaired through a path.
+      if (code === "EACCES") throw new ProviderError(`can't open ${this.dir}; it must be this user's folder, mode 0700`)
+      throw error
+    }
+    try {
+      if (fs.fstatSync(fd).uid !== process.geteuid!()) throw new ProviderError(`${this.dir} belongs to another user`)
+      fs.fchmodSync(fd, 0o700) // the umask may have narrowed it, or it was made by hand
+    } finally {
+      fs.closeSync(fd)
+    }
     return this.dir
   }
 
@@ -273,7 +295,8 @@ export class Connections {
    * `setDefault` on this `Connections`: the queue isn't re-entrant, so the call would wait forever.
    *
    * Rejects with `RangeError` when `base` can't make a free connection name, `ProviderError` when `_removed.json`
-   * can't be read, and otherwise with the error that stopped `signIn` or the write.
+   * can't be read or office/connections isn't a private directory of this user, and otherwise with the error that
+   * stopped `signIn` or the write.
    */
   async add(
     base: string,
@@ -305,8 +328,8 @@ export class Connections {
 
   /**
    * Removes connection `name` and its sign-in. Rejects with `RangeError` for `office`, `ConnectionGone` when
-   * neither exists, and `ProviderError` when the sign-in can't be removed, such as when yian holds its lock for
-   * longer than `signInLockTimeoutMs`.
+   * neither exists, and `ProviderError` when office/connections isn't a private directory of this user or the
+   * sign-in can't be removed, such as when yian holds its lock for longer than `signInLockTimeoutMs`.
    *
    * A running reply keeps the key it has, but one on a subscription may fail once it next reads or refreshes the
    * sign-in, which is gone.

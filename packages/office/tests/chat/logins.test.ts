@@ -10,7 +10,6 @@ import {
   HttpResponse,
   OpenAIAuth,
 } from "@ngocbh/yian/llm_clients"
-import type { Scheduler } from "@ngocbh/yian/platform"
 import { AUTH_FILE_ENV, ConnectionFile, Connections } from "../../src/chat/connections.ts"
 import {
   FORGET_MS,
@@ -23,35 +22,10 @@ import {
 import { ProviderError } from "../../src/chat/provider.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { tempDir, waitFor } from "../helpers.ts"
+import { ACCESS, APPROVED, CATALOG, PENDING, REFRESH, SIGNATURE, TOKENS, USERCODE, testScheduler } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
-const SIGNATURE = "fake-signature-6e2a90d4"
-const REFRESH = "fake-refresh-b81c5f37"
-
-/** A token shaped like OpenAI's, naming `account`; its signature part is a fake secret. */
-function jwt(account = "account-test"): string {
-  const claims = { "https://api.openai.com/auth": { chatgpt_account_id: account } }
-  return `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.${SIGNATURE}`
-}
-
-const ACCESS = jwt()
-
-const USERCODE = new HttpResponse(200, { device_auth_id: "device-1", user_code: "ABCD-EFGH", interval: 1n })
-const PENDING = new HttpResponse(403, { error: "pending" })
-const APPROVED = new HttpResponse(200, { authorization_code: "auth-code", code_verifier: "verifier" })
-const TOKENS = new HttpResponse(200, {
-  access_token: ACCESS,
-  refresh_token: REFRESH,
-  id_token: ACCESS,
-  expires_in: 3600n,
-})
-const CATALOG = new HttpResponse(200, {
-  models: [
-    { slug: "gpt-5.5-codex", visibility: "list", priority: 2n },
-    { slug: "gpt-5.5", visibility: "list", priority: 1n },
-  ],
-})
 const FLOW = [USERCODE, PENDING, APPROVED, TOKENS, CATALOG]
 
 type Reply = HttpResponse | ((url: string) => HttpResponse | Promise<HttpResponse>)
@@ -102,33 +76,6 @@ function held(response: HttpResponse, released: Promise<void>): Reply {
 /** A sign-in that shows its code and then waits for the human forever. */
 function waiting(url: string): HttpResponse {
   return url.endsWith("/usercode") ? USERCODE : PENDING
-}
-
-/** A scheduler that moves its clock by each sleep, giving way for ~5 real ms; `now` starts at real time, so a token's
- *  expiry stays real. A sleep of a minute or more (the login's deadline) only ends by its abort, so it never fires
- *  while a test holds a request. */
-function testScheduler(): Scheduler {
-  let slept = 0
-  return {
-    now: () => Date.now() + slept,
-    sleep: (ms, signal) =>
-      new Promise<void>((resolve, reject) => {
-        if (signal?.aborted) return reject(signal.reason)
-        let timer: ReturnType<typeof setTimeout> | undefined
-        const abort = () => {
-          clearTimeout(timer)
-          reject(signal!.reason)
-        }
-        signal?.addEventListener("abort", abort, { once: true })
-        if (ms < 60_000) {
-          timer = setTimeout(() => {
-            signal?.removeEventListener("abort", abort)
-            slept += ms
-            resolve()
-          }, 5)
-        }
-      }),
-  }
 }
 
 /** Every log line of the current test, from both the `Connections` and the `Logins` (Python's caplog). */

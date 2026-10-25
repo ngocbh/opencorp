@@ -2,7 +2,10 @@
 import path from "node:path"
 import type { MarkdownStore } from "@ngocbh/yian"
 import { now } from "@opencorp/protocol"
+import { Connections, type ConnectionsOptions } from "../chat/connections.ts"
 import { Hiring } from "../chat/hire.ts"
+import { Logins, type LoginsOptions } from "../chat/logins.ts"
+import { ModelCache, type ModelCacheOptions } from "../chat/models.ts"
 import type { CompanyGit } from "../company/git.ts"
 import { CompanySnapshots } from "../company/snapshot.ts"
 import type { Hq } from "../hq/core.ts"
@@ -66,7 +69,8 @@ export interface RequestContext {
   query: URLSearchParams
 }
 
-/** Everything the routes and services share: store, company git, bus, hiring, workers, and start and stop hooks. */
+/** Everything the routes and services share: store, company git, bus, hiring, connections, models and sign-ins,
+ *  workers, and start and stop hooks. */
 export class Office {
   readonly paths: OfficePaths
   readonly store: Store
@@ -82,6 +86,12 @@ export class Office {
   readonly tools: Tools
   /** What every workspace must stay clear of; pass as `office` to `SandboxPolicy`/`checkWorkspace`. */
   readonly guards: SandboxOfficePaths
+  /** The office's model connections; the one `Connections` of `office/` (two could both take a free name). */
+  readonly connections: Connections
+  /** Each connection's models; `buildOffice`'s office lists them ahead of time on start. */
+  readonly models: ModelCache
+  /** Subscription sign-ins; `buildOffice`'s office cancels those still waiting on stop. */
+  readonly logins: Logins
   workers: WorkerPool | undefined
   /** HQ, once `attach` put it here. */
   hq: Hq | undefined
@@ -105,6 +115,9 @@ export class Office {
     profileStore,
     tools = {},
     guards = {},
+    connections,
+    models,
+    logins,
     log = console.error,
   }: {
     paths: OfficePaths
@@ -116,6 +129,9 @@ export class Office {
     profileStore?: ((handle: string) => MarkdownStore) | null
     tools?: Tools
     guards?: SandboxOfficePaths
+    connections?: ConnectionsOptions
+    models?: ModelCacheOptions
+    logins?: Omit<LoginsOptions, "models">
     /** Gets raw log messages. */
     log?: (message: string) => void
   }) {
@@ -126,6 +142,9 @@ export class Office {
     this.hiring = new Hiring(git)
     this.snapshots = new CompanySnapshots(git)
     this.secrets = new SecretStore(paths.secrets)
+    this.connections = new Connections(paths.office, { log, ...connections })
+    this.models = new ModelCache(this.connections, { log, ...models })
+    this.logins = new Logins(this.connections, { log, ...logins, models: this.models })
     this.workers = workers
     this.profileStore = profileStore === undefined ? (handle) => new GitProfileStore(git, handle) : profileStore
     this.tools = tools

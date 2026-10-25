@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url"
 import { afterEach, expect, test } from "bun:test"
 import { type AuthRequest, HttpResponse, SUPPORTED_LLM_PROVIDERS } from "@ngocbh/yian/llm_clients"
 import { Connections } from "../../src/chat/connections.ts"
-import { loadProvider, Provider } from "../../src/chat/provider.ts"
+import { loadProvider, Provider, ProviderError } from "../../src/chat/provider.ts"
 import {
   askDeployment,
   askModel,
@@ -784,6 +784,22 @@ test("a directory where the provider goes is an onboard error", async () => {
   error = await rejection(ensure(office, new Script()))
   expect(error).toBeInstanceOf(OnboardError)
   expect(error.message).toContain("office.json")
+})
+
+test("a symlinked connections folder is an onboard error and its target keeps its mode", async () => {
+  const office = newOffice()
+  const target = newOffice()
+  chmodSync(target, 0o755)
+  symlinkSync(target, join(office, "connections"))
+  const error = await rejection(
+    ensure(office, new Script(), { stdin: stdin({ llm_config: { provider: "anthropic", api_key: KEY } }) }),
+  )
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error).not.toBeInstanceOf(ProviderError)
+  expect(error.message).toContain("connections")
+  expect(error.message).not.toContain(KEY)
+  expect(mode(target)).toBe(0o755)
+  expect(readdirSync(target)).toEqual([])
 })
 
 test("without a terminal a model that doesnt answer is an error", async () => {
