@@ -3,7 +3,9 @@ import fs from "node:fs"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import type { Part } from "@opencorp/protocol"
 import { HarnessError } from "../../src/chat/state.ts"
+import type { HarnessEvent } from "../../src/harness/adapter.ts"
 import { type CodexProcess, CodexStartError, ownerLoad } from "../../src/harness/codex.ts"
 import { JsonRpc, RpcClosed } from "../../src/harness/rpc.ts"
 import type { CodexSession } from "../../src/harness/session.ts"
@@ -13,6 +15,7 @@ import * as fc from "../../src/testing/fake_codex.ts"
 import { workerEnv } from "../../src/worker/spawn.ts"
 import { envNames, waitFor } from "../helpers.ts"
 import {
+  type Codex,
   allGone,
   codexLog,
   deltas,
@@ -548,4 +551,88 @@ test("an idle codex session arms no timer", async () => {
   expect("idleSeconds" in h.sessions).toBe(false)
   expect("idleEnd" in live).toBe(false)
   expect("idleEndAfterRestore" in live).toBe(false)
+})
+
+/** The `request` events of every Codex session, as `sessions.event` gets them from now on. */
+function requests(h: Codex): () => Extract<HarnessEvent, { type: "request" }>[] {
+  const spy = spyOn(h.sessions, "event")
+  return () => spy.mock.calls.flatMap(([, e]) => (e.type === "request" ? [e] : []))
+}
+
+/** A turn with a command Codex asks to run (request 7) and then runs. */
+function approvalTurn() {
+  const cmd = "rm -rf build"
+  return [fc.commandStarted("c1", cmd), fc.commandApproval(7, "c1", cmd), fc.command("c1", cmd)[1]]
+}
+
+/** Starts a session whose turn asks to run a command, and returns its id, its live session and the card. */
+async function waitingCard(h: Codex) {
+  const seen = requests(h)
+  h.fake.script([approvalTurn()])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "clean up", { by: "ngocbh" })
+  const [card] = await waitFor(() => (seen().length ? seen() : null), { timeout: 10_000, what: "the request" })
+  await waitFor(() => status(h, sid) === "waiting", { what: "waiting on the card" })
+  return { sid, live: h.sessions.get(sid)!, card: card!, seen }
+}
+
+test("a server request is a request event and the session waits on its card", async () => {
+  const h = makeCodex()
+  const { sid, card, seen } = await waitingCard(h)
+  expect(seen()).toHaveLength(1)
+  expect([card.runId, card.nodeId, card.card.kind]).toEqual(["turn_1", "7", "command"])
+  const s = h.store.getSession(sid)!
+  expect([s.status, s.waiting_on]).toEqual(["waiting", ["ngocbh"]])
+})
+
+test("a reply is written before the messages it causes are handled", async () => {
+  const h = makeCodex()
+  const { sid, live, card } = await waitingCard(h)
+  // The first option of a command approval approves it.
+  expect(await live.reply(card.key, card.card.options[0], "ngocbh")).toBe(true)
+  // The fake logs what it read once it reads it.
+  await waitFor(() => 7 in h.fake.replies(), { what: "the reply" })
+  expect(h.fake.replies()[7]).toEqual({ decision: "accept" })
+  await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
+  const parts = h.events.flatMap((e) => (e.type === "part.updated" ? [e.data.part as Part] : []))
+  const decided = parts.findIndex(
+    (p) => p.type === "tool" && (p.input as Record<string, any>).approval?.decision === "accept",
+  )
+  const completed = parts.findIndex((p) => p.type === "tool" && p.state === "completed")
+  expect(decided).toBeGreaterThan(-1)
+  expect(decided).toBeLessThan(completed)
+})
+
+test("a request the office does not serve gets a json rpc error and no event", async () => {
+  const h = makeCodex()
+  const seen = requests(h)
+  const params = { threadId: "{thread}", turnId: "{turn}", callId: "x", namespace: null, tool: "t", arguments: {} }
+  h.fake.script([[{ request: "item/tool/call", id: 9, wait: true, params }]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "go")
+  await waitFor(() => 9 in h.fake.replies(), { timeout: 10_000, what: "the error reply" })
+  expect((h.fake.replies()[9] as { code: number }).code).toBe(-32601)
+  await waitFor(() => status(h, sid) === "idle", { what: "Codex going on" })
+  expect(seen()).toEqual([])
+})
+
+test("office stop makes a reply not yet written give up at once", async () => {
+  const h = makeCodex({ stopWaitMs: 5000 })
+  const { live, card } = await waitingCard(h)
+  let begin!: () => void
+  let release!: () => void
+  const began = new Promise<void>((resolve) => (begin = resolve))
+  const released = new Promise<void>((resolve) => (release = resolve))
+  // A job the stop can't wait out, with the reply's job queued behind it.
+  void live.post("hold", async () => {
+    begin()
+    await released
+  })
+  await began
+  const replying = live.reply(card.key, card.card.options[0], "ngocbh")
+  const closing = h.sessions.closeAll()
+  expect(await Promise.race([replying, sleep(1000).then(() => "late")])).toBe(false)
+  release()
+  await closing
+  expect(7 in h.fake.replies()).toBe(false)
 })

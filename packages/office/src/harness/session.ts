@@ -1,10 +1,10 @@
 /** One Codex session the owner drives: its app-server, its thread, its transcript and its turns. */
 import path from "node:path"
 import { HarnessError, notWaiting, runState, writeState } from "../chat/state.ts"
-import type { SessionRecord, Store } from "../store/store.ts"
+import { type SessionRecord, type Store, newId } from "../store/store.ts"
 import { type CodexProcess, CodexStartError, ownerLoad } from "./codex.ts"
 import { RpcClosed, RpcError, nameOf } from "./rpc.ts"
-import { type Issued, Translator } from "./translate.ts"
+import { type Issued, TURNLESS, Translator, Unserved } from "./translate.ts"
 import type { CodexSessions } from "./sessions.ts"
 
 /** Milliseconds office stop waits for the session to finish the job it is in. */
@@ -72,14 +72,23 @@ type Obj = Record<string, any>
 /** A server request Codex waits on: its JSON-RPC id and its card. */
 export type Pending = { requestId: unknown; issued: Issued }
 
+/** An answer waiting for its reply to be written: `started` once its job runs, `givenUp` once the answerer stopped
+ *  waiting before that. `settle` resolves with what the job made of it, or rejects with its error. */
+type Waiter = {
+  started: boolean
+  givenUp: boolean
+  settle: { resolve(written: boolean): void; reject(error: unknown): void }
+}
+
 /** What `thread/start` and `thread/resume` answer, as far as a load reads it. */
 type Loaded = { thread: { id: string }; model?: string | null }
 
 /** One Codex session's app-server, thread, transcript and turns.
  *
- *  Callers (`prompt`, `end`, `shutdown`) change its fields synchronously and await Codex outside any job; loads,
- *  app-server messages and process exits run as jobs on the session's own queue, one at a time, in order. A
- *  synchronous stretch is what Python's lock was: no `await` comes between a check and the write it guards. */
+ *  Callers (`prompt`, `interrupt`, `end`, `reply`, `shutdown`) change its fields synchronously and await Codex outside
+ *  any job; loads, app-server messages and process exits run as jobs on the session's own queue, one at a time, in
+ *  order. A synchronous stretch is what Python's lock was: no `await` comes between a check and the write it
+ *  guards. */
 export class CodexSession {
   readonly owner: CodexSessions
   readonly store: Store
@@ -112,6 +121,10 @@ export class CodexSession {
   stopped = false
   #tail: Promise<void> = Promise.resolve()
   #running: Promise<void> | null = null
+  /** An app-server and the run id of its requests with no turn. */
+  #turnless: { proc: CodexProcess; runId: string } | null = null
+  /** Answers waiting for their reply to be written. */
+  readonly #replies = new Set<Waiter>()
 
   constructor(owner: CodexSessions, session: SessionRecord, { author }: { author: string | null }) {
     this.owner = owner
@@ -196,6 +209,49 @@ export class CodexSession {
     await this.interrupt()
   }
 
+  /** Writes Codex's reply to the answer to card `questionId` while Codex still waits for it; false if it doesn't any
+   *  more, or if the reply wasn't written within `replyWaitMs` (Codex then hears the answer came too late).
+   *
+   *  The reply is written as a job of the session's queue, so the decision is on the tool part before any message the
+   *  reply causes (the item's end, the turn's end) is handled. */
+  async reply(questionId: string, answer: unknown, by: string | null): Promise<boolean> {
+    if (this.stopped || this.closed) return false
+    let settle!: Waiter["settle"]
+    const done = new Promise<boolean>((resolve, reject) => (settle = { resolve, reject }))
+    const waiter: Waiter = { started: false, givenUp: false, settle }
+    this.#replies.add(waiter)
+    // Skipped once the office stops or the session closes; #giveUpReplies resolves it false then.
+    void this.post("reply", async () => {
+      if (waiter.givenUp) {
+        // The answerer gave up waiting and expired the card, so no answer can come: tell Codex now.
+        const [pending, proc] = this.#take(questionId)
+        if (pending !== undefined && proc !== null)
+          await this.#refuse(proc, pending.requestId, -32603, "the answer came too late")
+        return
+      }
+      waiter.started = true
+      try {
+        settle.resolve(await this.#writeReply(questionId, answer, by))
+      } catch (error) {
+        settle.reject(error) // the answerer waits on it: it must hear of the failure
+      }
+    })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), this.owner.replyWaitMs)))
+    try {
+      const written = await Promise.race([done, late])
+      if (written !== "late") return written
+      if (!waiter.started) {
+        waiter.givenUp = true
+        return false
+      }
+      return await done // being written now: Codex may have it already
+    } finally {
+      clearTimeout(timer)
+      this.#replies.delete(waiter)
+    }
+  }
+
   /** Office stop: kills the app-server (or the one still starting or closing) and skips every job after the one in
    *  progress; the stored status stays for `restore`. Text still streaming and tools still running are stored as
    *  interrupted. Answers still waiting for their reply give up at once.
@@ -244,7 +300,9 @@ export class CodexSession {
   }
 
   /** A server request from `proc`, which waits for the reply to `id`. */
-  requested(_proc: CodexProcess, _id: unknown, _method: string, _params: unknown): void {}
+  requested(proc: CodexProcess, id: unknown, method: string, params: unknown): void {
+    void this.post("request", () => this.#request(proc, id, method, params as Obj))
+  }
 
   /** `proc` exited. */
   exited(proc: CodexProcess): void {
@@ -441,6 +499,88 @@ export class CodexSession {
     this.store.updateSession(this.sessionId, { harness_usage: usage })
   }
 
+  /** A server request: a card the owner answers, or a JSON-RPC error for a method the office doesn't serve. */
+  async #request(proc: CodexProcess, id: unknown, method: string, params: Obj): Promise<void> {
+    if (proc !== this.process) return // its app-server is gone: no one would read the reply
+    const runId: string = params.turnId || this.#turnlessRun(proc)
+    let issued: Issued
+    try {
+      issued = this.translator.card(method, params, { runId, nodeId: String(id) })
+    } catch (error) {
+      if (error instanceof Unserved) {
+        await this.#refuse(proc, id, -32601, `OpenCorp doesn't serve ${method}`)
+        return
+      }
+      // A request shaped other than the pinned schema says: Codex would wait on it until Esc.
+      this.owner.log(`codex session ${this.sessionId}: no card can be made for ${method} (${nameOf(error)})`)
+      await this.#refuse(proc, id, -32603, `OpenCorp couldn't read ${method}`)
+      return
+    }
+    const key = newId()
+    try {
+      this.owner.event(this, { type: "request", key, card: issued.card, runId: issued.runId, nodeId: issued.nodeId })
+    } catch (error) {
+      // No card to answer: Codex hears so now rather than waiting until Esc.
+      this.owner.log(`codex session ${this.sessionId}: the card for ${method} wasn't shown (${nameOf(error)})`)
+      await this.#refuse(proc, id, -32603, `OpenCorp couldn't show ${method}`)
+      return
+    }
+    // Registered once the card is out; an answer to it is a later job, so it can't come before this.
+    this.requests.set(key, { requestId: id, issued })
+    this.byRequest.set(String(id), key)
+    this.#settle()
+  }
+
+  /** The run id of `proc`'s requests with no turn. Request ids restart with each app-server and a pid can come back,
+   *  so each app-server gets one of its own. */
+  #turnlessRun(proc: CodexProcess): string {
+    if (this.#turnless?.proc !== proc) this.#turnless = { proc, runId: `${TURNLESS}${proc.pid}-${newId()}` }
+    return this.#turnless.runId
+  }
+
+  /** Takes the request card `questionId` stands for off the waiting ones, with the app-server to answer it on. */
+  #take(questionId: string): [Pending | undefined, CodexProcess | null] {
+    const pending = this.requests.get(questionId)
+    const proc = this.process
+    if (pending !== undefined) {
+      this.requests.delete(questionId)
+      this.byRequest.delete(String(pending.requestId))
+      this.#settle()
+    }
+    return [pending, proc]
+  }
+
+  async #writeReply(questionId: string, answer: unknown, by: string | null): Promise<boolean> {
+    const [pending, proc] = this.#take(questionId)
+    if (pending === undefined || proc === null || !proc.alive) return false
+    let result: Record<string, unknown>
+    let decision: string
+    try {
+      ;[result, decision] = pending.issued.reply(answer)
+    } catch (error) {
+      // Codex treats an error reply as a refusal and goes on; with no reply it would wait until Esc. A RangeError's
+      // text is the translator's fixed one; anything else is named by its type, since its text could quote the answer.
+      const said = error instanceof RangeError ? error.message : nameOf(error)
+      this.owner.log(`codex session ${this.sessionId}: no reply can be made from the answer to ${questionId}: ${said}`)
+      await this.#refuse(proc, pending.requestId, -32602, `OpenCorp couldn't use the answer: ${said}`)
+      return false
+    }
+    try {
+      await proc.rpc!.reply(pending.requestId, result)
+    } catch (error) {
+      if (error instanceof RpcClosed) return false
+      throw error
+    }
+    // Codex has the reply, so the answer stands whatever is left to write; a failure is logged, not thrown. The
+    // question cards mark the stored question consumed once `reply` returns true.
+    try {
+      this.translator.decided(pending.issued, decision, by || this.author)
+    } catch (error) {
+      this.owner.log(`codex session ${this.sessionId}: the decision on ${questionId} wasn't written (${nameOf(error)})`)
+    }
+    return true
+  }
+
   /** Codex no longer waits on `requestId`: an open card goes stale; an answer stored meanwhile is lost by `reply`
    *  resolving false. */
   #resolved(requestId: unknown): void {
@@ -467,6 +607,15 @@ export class CodexSession {
   /** The card `questionId` goes stale. */
   #expire(questionId: string): void {
     this.owner.event(this, { type: "request_resolved", key: questionId })
+  }
+
+  /** Answers request `id` with a JSON-RPC error. */
+  async #refuse(proc: CodexProcess, id: unknown, code: number, message: string): Promise<void> {
+    try {
+      await proc.rpc!.replyError(id, code, message)
+    } catch (error) {
+      if (!(error instanceof RpcClosed)) throw error // closed: the app-server is gone, so nothing waits on the answer
+    }
   }
 
   async #exited(proc: CodexProcess): Promise<void> {
@@ -536,8 +685,10 @@ export class CodexSession {
     )
   }
 
-  /** Every answer still waiting for its reply to be written gives up at once. */
-  #giveUpReplies(): void {}
+  /** Every answer whose reply isn't being written yet gives up at once: office stop or the close skips its job. */
+  #giveUpReplies(): void {
+    for (const waiter of this.#replies) if (!waiter.started) waiter.settle.resolve(false)
+  }
 
   /** Cancels the end timer. */
   #stopTimer(): void {
