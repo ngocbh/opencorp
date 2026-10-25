@@ -153,13 +153,22 @@ export function base(): { root: string; pin: string; runs: string } {
   return { root, pin: writePin(path.join(root, "pin")), runs: path.join(root, "runs") }
 }
 
-/** A chat job running `flow` from `base.pin`, logging to `<base.runs>/<run_id>/log.jsonl`; `over` replaces fields. */
+/** A chat job running `flow` from `base.pin`, logging to `<base.runs>/<run_id>/log.jsonl`; `over` replaces fields.
+ *  With `handlers`, its groups are the handlers' tools and its memory names each of their stores, unless `over` sets
+ *  them. */
 export function makeJob(
   base: { pin: string; runs: string },
   flow = "flows/echo.yaml",
   over: Partial<JobInput> = {},
+  handlers?: BaseHandlers,
 ): Job {
   const runId = over.run_id ?? "r1"
+  const granted = handlers
+    ? {
+        groups: groupSpecs(handlers.tools),
+        memory: Object.fromEntries(Object.keys(handlers.stores).map((name) => [name, { store: name }])),
+      }
+    : {}
   return Job.parse({
     kind: "chat",
     session_id: "s1",
@@ -170,6 +179,7 @@ export function makeJob(
     log: path.join(base.runs, runId, "log.jsonl"),
     inputs: { message: "hi" },
     llm_config: LLM_CONFIG,
+    ...granted,
     ...over,
   })
 }
