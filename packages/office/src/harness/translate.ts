@@ -571,6 +571,8 @@ const CARD = Question.pick({ title: true, question: true, options: true, questio
 /** The card checked and parsed, with the reply each answer makes. */
 function issue(kind: Card["kind"], callId: string, { runId, nodeId }: Asked, shown: z.input<typeof CARD>,
   reply: Issued["reply"]): Issued {
+  // A request with no itemId has no tool part to land on, as Python's `params["itemId"]` refuses it.
+  if (callId === undefined) throw new Error("the request has no item")
   const parsed = CARD.safeParse(shown)
   // The parse error quotes what Codex sent, so only a fixed text leaves.
   if (!parsed.success) throw new Error("the request can't be shown as a card")

@@ -9,7 +9,8 @@ import { Ajv } from "ajv"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { type CodexSessionsOptions, CodexSessions } from "../../src/harness/sessions.ts"
 import { killGroup, sameProcess } from "../../src/install/proc.ts"
-import type { SessionRecord, Store } from "../../src/store/store.ts"
+import type { QuestionRecord, SessionRecord, Store } from "../../src/store/store.ts"
+import * as fc from "../../src/testing/fake_codex.ts"
 import { person } from "../company/helpers.ts"
 import { CEO, makeOffice } from "../daemon/helpers.ts"
 import { isGone, tempDir, waitFor } from "../helpers.ts"
@@ -180,6 +181,21 @@ export async function start(h: Codex, workspace: string, by = "ngocbh"): Promise
   const { id } = await startSession(h, "minh", workspace, { openedBy: by })
   await waitFor(() => status(h, id) === "idle", { what: "the Codex session to load" })
   return id
+}
+
+/** A turn with a command Codex asks to run (request `requestId`, waiting for the reply unless `wait` is false) and
+ *  then runs. */
+export function approvalTurn(requestId = 1, { wait = true }: { wait?: boolean } = {}): Record<string, any>[] {
+  return [
+    fc.commandStarted("c1", "touch a"),
+    fc.commandApproval(requestId, "c1", "touch a", { wait }),
+    fc.command("c1", "touch a")[1]!,
+  ]
+}
+
+/** The session's first open card, once there is one. */
+export function openCard(h: Codex, sid: string): Promise<QuestionRecord> {
+  return waitFor(() => h.store.listQuestions({ sessionId: sid, status: "open" })[0], { what: "a card" })
 }
 
 /** The session's stored status. */

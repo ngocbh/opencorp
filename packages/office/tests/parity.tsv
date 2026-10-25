@@ -752,7 +752,6 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/harness/rpc.test.ts::a request handler that raises when stdin is broken leaves the connection reading	design §6.8 rule 6 and §7.2: a failed answer to Codex never crashes the office	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a write to an app server that closed its stdin fails as rpc closed	design §7.2: write errors (EPIPE) become RpcClosed	O3-10
 —	new	packages/office/tests/harness/session.test.ts::a reply is written before the messages it causes are handled	design §7.1, §7.2: the request half of session.ts, which O3-14's test_approvals.py port drives through answers	O3-13
-—	new	packages/office/tests/harness/session.test.ts::a request the office does not serve gets a json rpc error and no event	design §7.1, §7.2: the request half of session.ts, which O3-14's test_approvals.py port drives through answers	O3-13
 —	new	packages/office/tests/harness/session.test.ts::a server request is a request event and the session waits on its card	design §7.1, §7.2: the request half of session.ts, which O3-14's test_approvals.py port drives through answers	O3-13
 —	new	packages/office/tests/harness/session.test.ts::every load of the thread carries the owner load	security rule 11 (design §6.8): owner-load params on every thread/resume	O3-13
 —	new	packages/office/tests/harness/session.test.ts::office stop makes a reply not yet written give up at once	design §7.2: answers settle once the office stops (O3-9's settle-on-stop duty)	O3-13
@@ -1176,6 +1175,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/protocol/test/errors.test.ts::422 text names the field and a fixed phrase	§5.4	O0-6
 —	new	packages/protocol/test/errors.test.ts::422 text never holds an input value or an unknown key	§5.4, §6 rule 7	O0-6
 —	new	packages/protocol/test/errors.test.ts::every code a client branches on is a protocol error code	§5.4	O0-6
+—	new	packages/protocol/test/errors.test.ts::the codex session codes are protocol error codes	design §7.1: harness/sessions.ts answers its refusals with these codes	O3-14
 —	new	packages/protocol/test/errors.test.ts::the shared constants keep their values	§5.4	O0-6
 —	new	packages/protocol/test/schemas.test.ts::each pattern is checked against the fixtures	§5.4	O0-6
 —	new	packages/protocol/test/schemas.test.ts::every def has a zod schema of the same name	today's names (§5.4)	O0-6

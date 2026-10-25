@@ -1,12 +1,12 @@
 /** The office's live Codex sessions, each with its own app-server. */
 import fs from "node:fs"
 import path from "node:path"
-import type { HarnessPolicy } from "@opencorp/protocol"
+import { type HarnessPolicy, Question, now } from "@opencorp/protocol"
 import type { Hooks } from "../chat/hooks.ts"
 import { HarnessError, notWaiting } from "../chat/state.ts"
 import { loadRepo } from "../company/loader.ts"
 import type { Office } from "../daemon/office.ts"
-import type { SessionRecord, Store } from "../store/store.ts"
+import { InvalidTransition, NotFound, type QuestionRecord, type SessionRecord, type Store } from "../store/store.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import type { HarnessEvent } from "./adapter.ts"
 import { CLOSE_GRACE_MS, CodexProcess, CodexStartError, appServerCommand } from "./codex.ts"
@@ -133,10 +133,11 @@ export class CodexSessions {
     return repo.company?.ceo ?? null
   }
 
-  /** Publishes what `live`'s translator writes on the bus, as live events.
+  /** Handles what `live`'s translator writes: messages, parts and deltas go on the bus as live events; a request's
+   *  card is stored as an open question (`questionStored` fires), and a resolved one goes stale.
    *
-   *  Requests and their resolutions are not handled yet: the question cards will store the question and mark it
-   *  stale. */
+   *  Synchronous: it runs inside a session job, or synchronously from `prompt`. A card the store refuses throws, so
+   *  the request gets a JSON-RPC error. */
   event(live: CodexSession, e: HarnessEvent): void {
     const session_id = live.sessionId
     if (e.type === "message") this.office.bus.publishLive({ type: "message.updated", session_id, data: e.message })
@@ -148,6 +149,39 @@ export class CodexSessions {
         session_id,
         data: { message_id: e.messageId, part_id: e.partId, text: e.text },
       })
+    else if (e.type === "request") {
+      const session = this.store.getSession(session_id)!
+      const t = now()
+      const stored = this.store.addQuestion(
+        Question.parse({
+          id: e.key,
+          session_id,
+          run_id: e.runId,
+          node_id: e.nodeId,
+          source: "harness",
+          asker: session.person,
+          work_item_id: session.work_item_id,
+          title: e.card.title,
+          question: e.card.question,
+          options: e.card.options,
+          questions: e.card.questions,
+          answer_schema: e.card.answer_schema,
+          status: "open",
+          created_at: t,
+          updated_at: t,
+        }),
+      )
+      void this.hooks.notify("questionStored", stored)
+    } else if (e.type === "request_resolved") {
+      try {
+        this.store.setQuestionStatus(e.key, "stale")
+      } catch (error) {
+        // Answered meanwhile: its reply finds no pending request and loses the answer.
+        if (error instanceof InvalidTransition) return
+        if (!(error instanceof NotFound)) throw error
+        this.log(`codex session ${session_id}: card ${e.key} is gone`)
+      }
+    }
   }
 
   /** A started, initialized app-server for `live`, in its cwd, with the worker environment; rejects with
@@ -186,4 +220,14 @@ export class CodexSessions {
       throw new HarnessError(404, "not_found", `no session ${sessionId}`)
     throw new HarnessError(409, "not_live", `session ${sessionId} has no live Codex app-server`)
   }
+}
+
+/** `answer` as stored: on a card with a secret page, only the values of its other pages are kept, and anything else
+ *  (a secret page's value, an unknown key, an answer that isn't a record) is `[secret]`. */
+export function masked(question: QuestionRecord, answer: unknown): unknown {
+  const pages = question.questions ?? []
+  if (!pages.some((p) => p.secret)) return answer
+  if (typeof answer !== "object" || answer === null || Array.isArray(answer)) return "[secret]"
+  const safe = new Set(pages.filter((p) => !p.secret).map((p) => p.header))
+  return Object.fromEntries(Object.entries(answer).map(([k, v]) => [k, safe.has(k) ? v : "[secret]"]))
 }

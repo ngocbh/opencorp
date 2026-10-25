@@ -603,19 +603,6 @@ test("a reply is written before the messages it causes are handled", async () =>
   expect(decided).toBeLessThan(completed)
 })
 
-test("a request the office does not serve gets a json rpc error and no event", async () => {
-  const h = makeCodex()
-  const seen = requests(h)
-  const params = { threadId: "{thread}", turnId: "{turn}", callId: "x", namespace: null, tool: "t", arguments: {} }
-  h.fake.script([[{ request: "item/tool/call", id: 9, wait: true, params }]])
-  const sid = await start(h, h.workspace)
-  await h.sessions.prompt(sid, "go")
-  await waitFor(() => 9 in h.fake.replies(), { timeout: 10_000, what: "the error reply" })
-  expect((h.fake.replies()[9] as { code: number }).code).toBe(-32601)
-  await waitFor(() => status(h, sid) === "idle", { what: "Codex going on" })
-  expect(seen()).toEqual([])
-})
-
 test("office stop makes a reply not yet written give up at once", async () => {
   const h = makeCodex({ stopWaitMs: 5000 })
   const { live, card } = await waitingCard(h)
