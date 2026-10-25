@@ -5,9 +5,11 @@ import type { Server } from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform"
+import { Hooks } from "../chat/hooks.ts"
 import { CompanyGit } from "../company/git.ts"
 import { HeadWatcher } from "../company/watch.ts"
 import { EXTENSIONS, type Extension, ExtensionError, loadExtensions } from "../extensions/index.ts"
+import { CodexSessions } from "../harness/sessions.ts"
 import { attach } from "../hq/core.ts"
 import { daemonArgs, daemonEnv, resolveHome } from "../install/launch.ts"
 import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
@@ -211,9 +213,9 @@ const NO_GIT = "no git on the office's PATH"
 
 /** Opens the store and the company clone (run by `tools.git`), kills the processes an earlier office left, and
  *  assembles the office with its tools, its workspace guards, its worker registry (closed when the office stops,
- *  refusing new workers from then on; the chat harness will be built around it here), its HEAD watcher (started
- *  and stopped with the office), a model warm-up on start (not awaited) and the cancelling of sign-ins still
- *  waiting on stop. `OfficeStartError` when `tools` has no git. */
+ *  refusing new workers from then on; the chat harness will be built around it here), its Codex sessions (on the
+ *  chat hooks, closed on stop), its HEAD watcher (started and stopped with the office), a model warm-up on start
+ *  (not awaited) and the cancelling of sign-ins still waiting on stop. `OfficeStartError` when `tools` has no git. */
 export function buildOffice(
   paths: OfficePaths,
   { tools, guards, write }: { tools: Tools; guards: SandboxOfficePaths; write: Write },
@@ -242,6 +244,10 @@ export function buildOffice(
     office.onStart.push(() => void office.models.warm())
     // Bounded: closeAll waits at most STOP_WAIT_MS for the sign-ins to stop.
     office.onStop.push(() => office.logins.closeAll())
+    const hooks = new Hooks({ log: log("ERROR", "opencorp.chat.hooks") })
+    const codex = (office.codex = new CodexSessions(office, hooks, { log: log("WARNING", "opencorp.harness.session") }))
+    // Bounded: the sessions close in parallel, each kill waiting at most 5 s and each queue at most stopWaitMs.
+    office.onStop.push(() => codex.closeAll())
     const watcher = new HeadWatcher(office, { log: log("ERROR", "opencorp.company.watch") })
     office.onStart.push(() => watcher.start())
     office.onStop.push(() => watcher.stop())
