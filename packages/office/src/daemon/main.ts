@@ -205,7 +205,7 @@ export function exitOnCrash(write: Write = writeStderr): void {
   process.on("unhandledRejection", onCrash)
 }
 
-// Names the variable, never its value.
+// Names PATH, never its value (no env value in errors).
 const NO_GIT = "no git on the office's PATH"
 
 /** Opens the store and the company clone (run by `tools.git`), kills the processes an earlier office left, and
@@ -213,7 +213,7 @@ const NO_GIT = "no git on the office's PATH"
  *  office). `OfficeStartError` when `tools` has no git. */
 export function buildOffice(
   paths: OfficePaths,
-  { tools, guards = {}, write }: { tools: Tools; guards?: SandboxOfficePaths; write: Write },
+  { tools, guards, write }: { tools: Tools; guards: SandboxOfficePaths; write: Write },
 ): Office {
   if (tools.git === undefined) throw new OfficeStartError(NO_GIT)
   const log = officeLogger(write)
@@ -308,9 +308,10 @@ async function run(
       if (!fs.existsSync(path.join(paths.company, ".git")))
         throw new OfficeStartError(`no company repo at ${paths.company}`)
       checkSocketPath(paths.socket)
+      // A foreground start may not have a filtered env yet (it is pinned by the re-exec), so the tools are
+      // resolved on the daemon env, not the raw one.
       const env = daemonEnv(process.env)
       const tools = given ?? resolveTools(env)
-      if (tools.git === undefined) throw new OfficeStartError(NO_GIT)
       const office = buildOffice(paths, { tools, guards: workspaceGuards(tools, env), write })
       try {
         try {

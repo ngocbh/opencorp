@@ -336,7 +336,7 @@ test("build office reaps workers left by an earlier office", async () => {
     store.close()
   }
   const rec = recordingGit(tempDir())
-  const office = buildOffice(paths, { tools: { git: rec.git }, write: collect().write })
+  const office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write: collect().write })
   try {
     await waitFor(() => isGone(group.pid, group.started), { what: "the left worker to be killed" })
     expect(office.store.listWorkers()).toEqual([])
