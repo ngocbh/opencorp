@@ -1,7 +1,10 @@
 /** Synthetic yian run logs for the run tests: one record per line as yian writes them, each record's seq its line
- *  number. Every int in a payload is a `bigint`, which yian's writer writes as an int. */
+ *  number. Every int in a payload is a `bigint`, which yian's writer writes as an int. And real logs of flows that run
+ *  without a model. */
 import fs from "node:fs"
-import { logJson } from "@ngocbh/yian/run"
+import path from "node:path"
+import { loadFlow } from "@ngocbh/yian"
+import { logJson, runFlow, runLogPath } from "@ngocbh/yian/run"
 
 export const RUN = "01JA1H000000000000000000R1"
 export const FP = "f".repeat(64)
@@ -18,7 +21,10 @@ export function line(
 }
 
 /** A `run_started` with every field yian requires. */
-export function runStarted(seq = 0, { learnable = true }: { learnable?: boolean } = {}): Buffer {
+export function runStarted(
+  seq = 0,
+  { learnable = true, yianVersion = "0.0.0" }: { learnable?: boolean; yianVersion?: string } = {},
+): Buffer {
   return line(seq, "run_started", {
     flow_fingerprint: FP,
     start_wiring_override: {},
@@ -34,7 +40,7 @@ export function runStarted(seq = 0, { learnable = true }: { learnable?: boolean 
     skills: {},
     tools: {},
     tool_groups: {},
-    yian_version: "0.0.0",
+    yian_version: yianVersion,
     parent: null,
   })
 }
@@ -115,4 +121,69 @@ export function chatLog(file: string, turns = 2): string {
   add((s) => started(s, `chat#${turns}/ask`))
   fs.writeFileSync(file, Buffer.concat(out))
   return file
+}
+
+// A LOOP of two turns whose def's output is an expression of its input: each iteration's `l#k/__end__` and the loop's
+// end are commits that name their value by `from`.
+export const LOOP_FLOW = `id: loop
+name: loop
+defs:
+  step:
+    input:
+      n: !int
+    nodes: {}
+    output:
+      n: \${input.n + 1}
+nodes:
+  l:
+    kind: loop
+    call: step
+    times: 2
+    input:
+      n: 0
+output: \${l.output.n}
+`
+// LOOP_FLOW with a CODE node in the def, its function in `helpers.ts` beside the flow (CODED_LOOP_HELPERS).
+export const CODED_LOOP_FLOW = `id: coded_loop
+name: coded_loop
+defs:
+  step:
+    input:
+      n: !int
+    nodes:
+      prep:
+        kind: code
+        code: ./helpers.ts:fn
+        output: str
+    output:
+      n: \${input.n + 1}
+nodes:
+  l:
+    kind: loop
+    call: step
+    times: 2
+    input:
+      n: 0
+output: \${l.output.n}
+`
+export const CODED_LOOP_HELPERS = 'export function fn(): string {\n  return "ready"\n}\n'
+
+/**
+ * Runs `flow` to its end in this process, with no model: writes it as `flow.yaml` and each of `files` (name -> text)
+ * in `dir`, loads it with its CODE references kept inside `dir`, and runs it as run `r1` to a log under `dir/runs`.
+ * Returns the log and the code root.
+ */
+export async function realRun(
+  dir: string,
+  flow: string,
+  files: Record<string, string> = {},
+): Promise<{ log: string; codeRoot: string }> {
+  for (const [name, text] of Object.entries({ "flow.yaml": flow, ...files })) {
+    fs.writeFileSync(path.join(dir, name), text)
+  }
+  const loaded = await loadFlow(flow, { sourceLabel: "flow.yaml", baseDir: dir, codeRoot: dir })
+  const log = runLogPath(path.join(dir, "runs"), "r1")
+  const result = await runFlow(loaded, {}, { log, runId: "r1", numWorkers: 0, env: () => undefined })
+  if (result.status !== "succeeded") throw new Error(`the run ended ${result.status}`)
+  return { log, codeRoot: dir }
 }

@@ -4,7 +4,8 @@
  *
  * Record pages and one opened record read raw lines and parse each with yian's codec (`parseJson`), as
  * `iterRunRecords` can neither skip nor cap a line and yian has no record-to-wire encoder. Values are shown in a
- * display form any client reads as plain JSON.
+ * display form any client reads as plain JSON. A derived commit's value is rebuilt only when one record is opened,
+ * by replaying the whole log through yian's `foldRunLog`; node kinds come from the flow the log recorded.
  */
 import crypto from "node:crypto"
 import fs from "node:fs"
@@ -12,6 +13,7 @@ import { Readable } from "node:stream"
 import type { Failure } from "@ngocbh/yian"
 import {
   FileRef,
+  foldRunLog,
   InboxRef,
   iterRunRecords,
   JSONDecodeError,
@@ -23,6 +25,7 @@ import {
 } from "@ngocbh/yian/run"
 import type { RunEvent, RunEventPage } from "@opencorp/protocol"
 import { cutReason } from "../store/store.ts"
+import { recordedKinds } from "./nodes.ts"
 
 /** The run-log schema this office reads: yian's SCHEMA_VERSION at the submodule pin. */
 export const SCHEMA = 22
@@ -55,6 +58,10 @@ export const HUGE_LINE = 16 << 20
 /** The longest complete line the index reads: yian's reader holds a line whole and parses it, so a longer one makes
  *  the log unreadable before yian sees it. */
 export const LINE_CAP = 64 << 20
+/** The longest log whose derived values are shown: rebuilding one replays the whole log, held in memory. */
+export const FOLD_BYTES = 16 << 20
+/** The longest run start whose recorded flow is compiled for node kinds. */
+export const FLOW_BYTES = 4 << 20
 /** The most bytes of indexes the reader keeps. */
 export const LRU_BYTES = 128 << 20
 /** The most indexes the reader keeps. */
@@ -131,9 +138,15 @@ export interface Index {
   nodes: Attempt[]
   /** Whether older attempts were trimmed from `nodes`. */
   dropped: boolean
-  /** The characters of the node ids, errors and retried ids it keeps. */
+  /** The characters of the node ids, errors and retried ids it keeps, and an estimate of its node kinds' size. */
   held: number
+  /** The node kinds of the flow the log recorded, once asked for (see `RunLogReader.kinds`). */
+  kinds?: Promise<Map<string, string> | null>
 }
+
+/** What replaying a log or compiling its recorded flow reads: the run's environment, for its `YIAN_*` values, and
+ *  the folder every CODE reference must stay inside. */
+export type FoldOptions = { env: (name: string) => string | undefined; codeRoot: string }
 
 /** An estimate of the bytes `index` holds, for the LRU. */
 export function cost(index: Index): number {
@@ -571,13 +584,19 @@ function shown(value: unknown, pointer: string, cuts: Cuts, depth: number, cutti
 }
 
 /** The payload of a record of kind `kind` in its display form; a commit's value is decoded from its typed-value wire
- *  first, and shown as parsed when that wire doesn't decode. */
+ *  first, and shown as parsed when that wire doesn't decode. A derived commit's rebuilt value `derived` is shown with
+ *  its kind beside what the record holds. */
 function shownPayload(
   payload: Record<string, unknown>,
   kind: string,
   cuts: Cuts,
   cutting: boolean,
+  derived: TypedValue | null,
 ): Record<string, unknown> {
+  if (derived !== null) {
+    const rebuilt = { ...payload, kind: derived.kind, value: derived.toObject() }
+    return shown(rebuilt, "", cuts, 0, cutting) as Record<string, unknown>
+  }
   const { value } = payload
   if (kind !== "pool_commit" || !Object.hasOwn(payload, "kind") || value === null || value === undefined) {
     return shown(payload, "", cuts, 0, cutting) as Record<string, unknown>
@@ -618,10 +637,11 @@ function stub(head: Buffer, seq: number, size: number): RunEvent {
 }
 
 /**
- * Line `seq` (`bytes`) as a page shows it, or as one opened record shows it when `whole` (see `fitted`). Null when it
- * no longer reads as record `seq` (the file changed since it was indexed).
+ * Line `seq` (`bytes`) as a page shows it, or as one opened record shows it when `whole` (see `fitted`), with a
+ * derived commit's rebuilt value `derived`. Null when it no longer reads as record `seq` (the file changed since it
+ * was indexed).
  */
-function decode(bytes: Buffer, seq: number, whole: boolean): RunEvent | null {
+function decode(bytes: Buffer, seq: number, whole: boolean, derived: TypedValue | null = null): RunEvent | null {
   let record: unknown
   try {
     record = parseJson(UTF8.decode(bytes), "codec")
@@ -633,7 +653,7 @@ function decode(bytes: Buffer, seq: number, whole: boolean): RunEvent | null {
   const kind = typeof record.kind === "string" && record.kind !== "" ? record.kind : "unknown"
   const raw = isRecord(record.payload) ? record.payload : null
   if (raw === null) return { seq, kind, node_id: null, payload: null, cut: [] }
-  return fitted(seq, kind, raw, bytes.length, whole, (cuts, cutting) => shownPayload(raw, kind, cuts, cutting))
+  return fitted(seq, kind, raw, bytes.length, whole, (cuts, cutting) => shownPayload(raw, kind, cuts, cutting, derived))
 }
 
 /**
@@ -719,12 +739,17 @@ export function readEvents(
  * is still over after that, or when its line is over HUGE_LINE (never held or parsed). Null if there is none.
  */
 export function readEvent(path: string, index: Index, seq: number): RunEvent | null {
+  return eventAt(path, index, seq, null)
+}
+
+/** `readEvent`, a derived commit shown with its rebuilt value `derived`. */
+function eventAt(path: string, index: Index, seq: number, derived: TypedValue | null): RunEvent | null {
   const [base, start, stop] = window(index, seq)
   if (seq < base) return null
   const fd = fs.openSync(path, "r")
   try {
     for (const line of lines(fd, start, stop, HUGE_LINE, seq - base)) {
-      return line.bytes === null ? stub(line.head, seq, line.size) : decode(line.bytes, seq, true)
+      return line.bytes === null ? stub(line.head, seq, line.size) : decode(line.bytes, seq, true, derived)
     }
     return null
   } finally {
@@ -767,6 +792,15 @@ function lastLineEnd(fd: number, size: number): number {
   return 0
 }
 
+/** `recordedKinds` of `path`, copied so they don't pin the recorded flow's text, their size added to `index.held`. */
+async function keptKinds(path: string, index: Index, options: FoldOptions): Promise<Map<string, string> | null> {
+  const kinds = await recordedKinds(path, options)
+  if (kinds === null) return null
+  const kept = new Map([...kinds].map(([nodePath, kind]) => [own(nodePath), own(kind)]))
+  for (const nodePath of kept.keys()) index.held += 64 + nodePath.length
+  return kept
+}
+
 /** A file's identity, size and modification time, as text. */
 function stamp(st: Stat): string {
   return `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}`
@@ -775,30 +809,74 @@ function stamp(st: Stat): string {
 /**
  * The office's run-log indexes: built lazily per log on its first request, one build per log at a time; kept, node
  * table and all, in an LRU capped in bytes and logs, so a log is read whole once unless it is evicted. A log that
- * can't be read isn't read again until its file changes.
+ * can't be read isn't read again until its file changes. Derived values are rebuilt one log replay at a time.
  */
 export class RunLogReader {
   private readonly budget: number
   private readonly logs: number
   private readonly nodeCap: number
+  private readonly foldBytes: number
   private readonly build: typeof refresh
   private readonly lru = new Map<string, Index>()
   private readonly building = new Map<string, Promise<Index>>()
   private readonly failed = new Map<string, { stamp: string; error: UnreadableLog }>()
+  private folding: Promise<void> = Promise.resolve()
 
   /** `refresh` builds each index; tests pass their own to act around a build. */
   constructor(
-    { budget = LRU_BYTES, logs = LRU_LOGS, nodeCap = NODE_CAP, refresh: build = refresh }: {
+    { budget = LRU_BYTES, logs = LRU_LOGS, nodeCap = NODE_CAP, foldBytes = FOLD_BYTES, refresh: build = refresh }: {
       budget?: number
       logs?: number
       nodeCap?: number
+      foldBytes?: number
       refresh?: typeof refresh
     } = {},
   ) {
     this.budget = budget
     this.logs = logs
     this.nodeCap = nodeCap
+    this.foldBytes = foldBytes
     this.build = build
+  }
+
+  /**
+   * The record with `seq`, as the module's `readEvent` reads it. With `fold`, a derived commit (one that names its
+   * value by `from`, `take` or `steps`) of a log no longer than `foldBytes` when indexed shows the value it accepted,
+   * rebuilt by replaying the log as it is now through `foldRunLog`, one replay at a time; it stays as written when
+   * the replay fails (a CODE reference outside `fold.codeRoot`, other `YIAN_*` values, a log yian refuses).
+   */
+  async readEvent(
+    path: string,
+    index: Index,
+    seq: number,
+    { fold }: { fold?: FoldOptions } = {},
+  ): Promise<RunEvent | null> {
+    const event = readEvent(path, index, seq)
+    const payload = event?.payload
+    const derived = event?.kind === "pool_commit" && isRecord(payload) && (payload.value ?? null) === null
+      && ["from", "take", "steps"].some((form) => (payload[form] ?? null) !== null)
+    if (fold === undefined || !derived || index.offset > this.foldBytes) return event
+    const replay = this.folding.then(() => foldRunLog(path, fold))
+    // The chain keeps neither the replayed log nor its error.
+    this.folding = replay.then(() => {}, () => {})
+    let value: TypedValue | null
+    try {
+      value = (await replay).records[seq]?.value ?? null
+    } catch {
+      return event
+    }
+    return value === null ? event : eventAt(path, index, seq, value) ?? event
+  }
+
+  /**
+   * The node kinds of the flow `path`'s log recorded (`recordedKinds`), compiled once per index and kept on it, a
+   * null result too; null without compiling when the run start is over FLOW_BYTES.
+   */
+  kinds(path: string, index: Index, options: FoldOptions): Promise<Map<string, string> | null> {
+    index.kinds ??= index.startEnd !== null && index.startEnd <= FLOW_BYTES
+      ? keptKinds(path, index, options)
+      : Promise.resolve(null)
+    return index.kinds
   }
 
   /** `path`'s index, brought up to date; concurrent callers share one build. Throws UnreadableLog (or

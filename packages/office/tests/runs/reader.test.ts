@@ -23,17 +23,23 @@ import {
   readOn,
   refresh,
   RunLogReader,
+  SCHEMA,
   UnreadableLog,
   UnsupportedSchema,
 } from "../../src/runs/reader.ts"
+import { kindOf, recordedKinds } from "../../src/runs/nodes.ts"
 import { tempDir } from "../helpers.ts"
 import {
   chatLog,
+  CODED_LOOP_FLOW,
+  CODED_LOOP_HELPERS,
   committed,
   expanded,
   failed,
   FP,
   line,
+  LOOP_FLOW,
+  realRun,
   resumed,
   routed,
   runStarted,
@@ -579,4 +585,55 @@ test("a payload whose cuts would name too much is a size stub", async () => {
     const size = records[seq - 1]!.length
     expect(readEvent(file, index, seq)).toEqual({ seq, kind: "pool_commit", node_id: seq === 1 ? "fan" : "many", size })
   }
+})
+
+/** The first commit on `log`'s page that names its value by `from`, for node `nodeId`. */
+async function derivedOf(log: string, nodeId: string) {
+  const index = await refresh(log, null)
+  const event = readEvents(log, index, { after: null, limit: 500 }).events.find(
+    (e) => e.kind === "pool_commit" && e.node_id === nodeId && e.payload?.from !== undefined,
+  )!
+  return { index, event }
+}
+
+const NO_ENV = () => undefined
+
+test("a derived commit shows its value when opened", async () => {
+  const { log, codeRoot } = await realRun(tempDir(), LOOP_FLOW)
+  const { index, event } = await derivedOf(log, "l#0/__end__")
+  expect([event.payload!.key, event.payload!.value]).toEqual(["l#0/__end__", undefined])
+  const reader = new RunLogReader()
+  const opened = await reader.readEvent(log, index, event.seq, { fold: { env: NO_ENV, codeRoot } })
+  expect(opened).toEqual({ ...event, payload: { ...event.payload, kind: "object", value: { n: 1 } } })
+  expect(await reader.readEvent(log, index, event.seq)).toEqual(event)
+  expect(readEvent(log, index, event.seq)).toEqual(event)
+  // The loop's end commits under the loop's own key.
+  const end = await derivedOf(log, "l~2")
+  const loopEnd = await reader.readEvent(log, end.index, end.event.seq, { fold: { env: NO_ENV, codeRoot } })
+  expect([loopEnd!.payload!.key, loopEnd!.payload!.value]).toEqual(["l", { n: 2 }])
+})
+
+test("a log over the fold cap shows no derived value", async () => {
+  const { log, codeRoot } = await realRun(tempDir(), LOOP_FLOW)
+  const { index, event } = await derivedOf(log, "l#0/__end__")
+  const reader = new RunLogReader({ foldBytes: 1 })
+  expect(await reader.readEvent(log, index, event.seq, { fold: { env: NO_ENV, codeRoot } })).toEqual(event)
+})
+
+test("a code reference outside the code root shows no derived value and no kinds", async () => {
+  const { log, codeRoot } = await realRun(tempDir(), CODED_LOOP_FLOW, { "helpers.ts": CODED_LOOP_HELPERS })
+  const { index, event } = await derivedOf(log, "l#0/__end__")
+  const reader = new RunLogReader()
+  const outside = { env: NO_ENV, codeRoot: tempDir() }
+  expect(await reader.readEvent(log, index, event.seq, { fold: outside })).toEqual(event)
+  expect(await recordedKinds(log, outside)).toBeNull()
+  const inside = { env: NO_ENV, codeRoot }
+  expect((await reader.readEvent(log, index, event.seq, { fold: inside }))!.payload!.value).toEqual({ n: 1 })
+  expect(kindOf(await reader.kinds(log, index, inside), "l#0/prep")).toBe("code")
+})
+
+test("a real log is in the schema this office reads", async () => {
+  const { log } = await realRun(tempDir(), LOOP_FLOW)
+  const first = fs.readFileSync(log, "utf8").split("\n")[0]!
+  expect(first).toContain(`"schema":${SCHEMA},`)
 })

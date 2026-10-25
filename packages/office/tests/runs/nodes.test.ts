@@ -1,8 +1,13 @@
 /** A run's open nodes from its worker's frames: every outcome frame ends a node, and only the deepest show;
  *  node kinds come from a flow's static nodes. */
 import { expect, test } from "bun:test"
+import fs from "node:fs"
+import path from "node:path"
 import { loadFlow } from "@ngocbh/yian"
-import { kindOf, nodeKinds, OpenNodes } from "../../src/runs/nodes.ts"
+import { kindOf, nodeKinds, OpenNodes, recordedKinds } from "../../src/runs/nodes.ts"
+import { FLOW_BYTES, refresh, RunLogReader } from "../../src/runs/reader.ts"
+import { tempDir } from "../helpers.ts"
+import { LOOP_FLOW, realRun, runStarted, started } from "./helpers.ts"
 
 /** Folds each `[name, data]` frame into `open`; returns whether each changed the open nodes. */
 function frames(open: OpenNodes, ...pairs: [string, Record<string, unknown>][]): boolean[] {
@@ -67,7 +72,7 @@ test("a woken node opens again after a clear", () => {
   expect(n.current()).toEqual([])
 })
 
-const LOOP_FLOW = `id: kinds
+const CHAT_FLOW = `id: kinds
 name: kinds
 defs:
   turn:
@@ -98,10 +103,29 @@ output: \${chat.output.n}
 `
 
 test("node kinds come from the flows static nodes", async () => {
-  const kinds = nodeKinds(await loadFlow(LOOP_FLOW, { sourceLabel: "kinds.yaml" }))
+  const kinds = nodeKinds(await loadFlow(CHAT_FLOW, { sourceLabel: "kinds.yaml" }))
   expect(kindOf(kinds, "chat#12/reply")).toBe("agent")
   expect(kindOf(kinds, "chat~3")).toBe("loop")
   expect(kindOf(kinds, "chat#0/route")).toBe("case")
   expect(kindOf(kinds, "nope")).toBeNull()
   expect(kindOf(null, "chat")).toBeNull()
+})
+
+test("a recorded run names its node kinds", async () => {
+  const { log, codeRoot } = await realRun(tempDir(), LOOP_FLOW)
+  const options = { env: () => undefined, codeRoot }
+  const kinds = await recordedKinds(log, options)
+  expect([kindOf(kinds, "l"), kindOf(kinds, "l#1/__end__")]).toEqual(["loop", "end"])
+  const reader = new RunLogReader()
+  const index = await reader.index(log)
+  const held = index.held
+  const once = await reader.kinds(log, index, options)
+  expect(once).toEqual(kinds)
+  expect(await reader.kinds(log, index, options)).toBe(once!)
+  expect(index.held - held).toBe([...once!.keys()].reduce((sum, nodePath) => sum + 64 + nodePath.length, 0))
+  // A run start over FLOW_BYTES isn't compiled.
+  const big = path.join(tempDir(), "big.jsonl")
+  fs.writeFileSync(big, Buffer.concat([runStarted(0, { yianVersion: "0".repeat(FLOW_BYTES) }), started(1, "a")]))
+  const bigIndex = await refresh(big, null)
+  expect([bigIndex.startEnd! > FLOW_BYTES, await reader.kinds(big, bigIndex, options)]).toEqual([true, null])
 })

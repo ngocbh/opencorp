@@ -1,7 +1,7 @@
 /** The nodes a run is executing now, from its worker's event frames: what the list and run.updated show, with no
- *  log read; and node kinds from a flow's static nodes. */
+ *  log read; and node kinds from a flow's static nodes, or from the flow a run log recorded. */
 import type { ComposedFlow } from "@ngocbh/yian"
-import { staticNodes, staticPathOf } from "@ngocbh/yian/run"
+import { loadRecordedFlow, staticNodes, staticPathOf } from "@ngocbh/yian/run"
 
 // A woken node runs again, and a new worker advancing a waiting run emits NodeWoken, not NodeStarted.
 export const STARTED: ReadonlySet<string> = new Set(["NodeStarted", "NodeWoken"])
@@ -60,6 +60,23 @@ export class OpenNodes {
 /** Each of `flow`'s static node paths, with its node's kind. */
 export function nodeKinds(flow: ComposedFlow): Map<string, string> {
   return new Map(staticNodes(flow).map(([path, node]) => [path, node.kind]))
+}
+
+/**
+ * Each static node path of the flow the run log `log` recorded, with its node's kind, for display only: the flow is
+ * compiled as yian resumes it, under `env`'s `YIAN_*` values, its CODE references kept inside `codeRoot`. An empty map
+ * for a flow built in code; null when the recorded flow doesn't load (kinds unknown).
+ */
+export async function recordedKinds(
+  log: string,
+  options: { env: (name: string) => string | undefined; codeRoot: string },
+): Promise<Map<string, string> | null> {
+  try {
+    const flow = await loadRecordedFlow(log, options)
+    return flow === null ? new Map() : nodeKinds(flow)
+  } catch {
+    return null
+  }
 }
 
 /** The kind of the node `nodeId` (a run's id, with any `#i` or `~i` growth suffixes), or null when unknown. */
