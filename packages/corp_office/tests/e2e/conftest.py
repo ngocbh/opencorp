@@ -56,7 +56,7 @@ def cli_ready():
             pytest.fail("OPENCORP_SKIP_E2E=1 is set on CI")
         pytest.skip("OPENCORP_SKIP_E2E=1 is set")
     problem = None
-    if not os.environ.get("OPENCORP_BUN") and shutil.which("bun") is None:
+    if shutil.which("bun") is None:
         problem = "bun is not on PATH"
     elif not (REPO / "packages" / "cli" / "node_modules" / "@opencorp" / "tui").exists():
         problem = "the TS packages aren't installed; run `bun install --frozen-lockfile`"
