@@ -7,7 +7,7 @@ import { hashPassword } from "../../src/auth/passwords.ts"
 import { SECRET_KEYS } from "../../src/company/secret_keys.ts"
 import { git } from "../company/helpers.ts"
 import { CEO, makeOffice, parse as parseReply, raw } from "../daemon/helpers.ts"
-import { workItem } from "../store/helpers.ts"
+import { question, session, workItem } from "../store/helpers.ts"
 import { HOST, ORIGIN, PORT, dist, makeHq, signedIn, web } from "./helpers.ts"
 
 type Body = Record<string, unknown>
@@ -111,11 +111,16 @@ test("company blanks by secret keys", async () => {
   }
 })
 
-test("a work item and costs are on the allowlist", async () => {
+test("open questions a work item and costs", async () => {
   const office = makeOffice()
   const hq = await makeHq(office)
   const client = await signedIn(hq)
+  const s = office.store.createSession(session())
+  const q = office.store.addQuestion(question(s.id))
   const item = office.store.createWorkItem(workItem({ assignee: CEO }))
+  const open = await client.get("/api/questions", { query: { status: "open" } })
+  expect(open.status).toBe(200)
+  expect((open.json() as Body[]).map((x) => x.id)).toEqual([q.id])
   expect(((await client.get(`/api/work-items/${item.id}`)).json() as Body).assignee).toBe(CEO)
   const r = await client.get("/api/costs", { query: { since: "2026-10-19T00:00:00.000Z" } })
   expect(r.status).toBe(200)

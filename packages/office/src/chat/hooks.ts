@@ -9,7 +9,11 @@ export interface HookFns {
   /** A question was stored (turn questions included). */
   questionStored: (question: QuestionRecord) => unknown
   /** Return a message to refuse an answer (`422 invalid_answer`); nothing accepts it. */
-  answerCheck: (question: QuestionRecord, answer: unknown, kind: "option" | "text") => string | null | undefined
+  answerCheck: (
+    question: QuestionRecord,
+    answer: unknown,
+    kind: NonNullable<QuestionRecord["answer_kind"]>,
+  ) => string | null | undefined
   /** Return a message to refuse a person's message to the session (prompt, steer or turn answer; `422 refused`);
    *  `session` is undefined for a session being opened. */
   promptCheck: (session: SessionRecord | undefined, text: string) => string | null | undefined
