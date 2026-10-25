@@ -7,6 +7,8 @@
 import { dlopen, FFIType, read, type Pointer } from "bun:ffi"
 import fs from "node:fs"
 import os from "node:os"
+import { Readable } from "node:stream"
+import type { ReadableStream } from "node:stream/web"
 import { fileURLToPath } from "node:url"
 import type { Helper } from "./sandbox/policy.ts"
 
@@ -78,6 +80,46 @@ export function threadEntry(name: "runs_indexer"): URL {
  *  path that import gave (on disk in a checkout, under `/$bunfs/` in the binary). */
 export function embedded(file: string): Buffer {
   return fs.readFileSync(file)
+}
+
+// O_CLOEXEC on Linux: the same value on x64 and arm64 (asm-generic).
+const O_CLOEXEC = 0o2000000
+let linuxLibc: { pipe2: (fds: Int32Array, flags: number) => number } | undefined
+
+/** A new pipe as `[readFd, writeFd]`, both close-on-exec (libc's `pipe2`; musl's loader maps `libc.so.6` to
+ *  itself). Linux only: there the runtime's `"pipe"` stdio is a socketpair, and opening `/dev/stdout` or
+ *  `/dev/fd/N` on a socket fails with ENXIO. */
+export function pipe(): [number, number] {
+  // pipe2 isn't variadic: one call form on every arch.
+  linuxLibc ??= dlopen("libc.so.6", { pipe2: { args: [FFIType.ptr, FFIType.i32], returns: FFIType.i32 } }).symbols
+  const fds = new Int32Array(2)
+  if (linuxLibc.pipe2(fds, O_CLOEXEC) !== 0) throw new Error("pipe2 failed (out of file descriptors?)")
+  return [fds[0]!, fds[1]!]
+}
+
+/** A stream of what arrives on pipe `fd`, read through the runtime's event loop, not the fs thread pool (where
+ *  each pending read on a blocking pipe holds one of its threads, one per core). Owns `fd`: closes it once the
+ *  stream closes (end, destroy or error). */
+export function pipeReadable(fd: number): Readable {
+  // Through unknown: the packages that also typecheck this file (the app, the CLI) give the runtime's stream the
+  // DOM's type, which doesn't overlap Node's web-stream type.
+  const stream = Readable.fromWeb(Bun.file(fd).stream() as unknown as ReadableStream<Uint8Array>)
+  // The runtime's stream never closes the fd itself.
+  stream.once("close", () => fs.closeSync(fd))
+  return stream
+}
+
+/** Writes `data` to pipe `fd` through the runtime's event loop, not the fs thread pool, ends it and closes `fd`.
+ *  May reject with the write's error (EPIPE when the reader is gone). */
+export async function endPipe(fd: number, data: string | Buffer): Promise<void> {
+  try {
+    const sink = Bun.file(fd).writer()
+    sink.write(data)
+    await sink.end()
+  } finally {
+    // The runtime's sink never closes the fd itself.
+    fs.closeSync(fd)
+  }
 }
 
 const SANDBOX_FILTER_NONE = 0

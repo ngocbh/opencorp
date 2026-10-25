@@ -1,5 +1,5 @@
 /** Running one command in the sandbox, in its own process group. */
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -111,6 +111,115 @@ test.skipIf(!sandboxAvailable())("std streams by path", async () => {
   expect(result.stderr.toString()).toBe("err\n")
 })
 
+test.skipIf(!sandboxAvailable())("a call leaves no fd open", async () => {
+  const policy = makePolicy().make()
+  // Runtime fds opened lazily on the first spawn aren't the call's.
+  await sh(policy, "true")
+  const count = () => fs.readdirSync("/dev/fd").length
+  const before = count()
+  const done = await sh(policy, "echo out; echo err >&2; cat", { stdin: "in" })
+  expect(done.stdout.toString()).toBe("out\nin")
+  expect(done.stderr.toString()).toBe("err\n")
+  // The child never reads its stdin.
+  expect((await sh(policy, "sleep 30", { stdin: Buffer.alloc(1 << 20), timeout: 0.5 })).timedOut).toBe(true)
+  expect((await sh(policy, "sleep 30", { stdin: "in", signal: AbortSignal.timeout(300) })).interrupted).toBe(true)
+  // The spawn throws at once.
+  await expect(run(policy, ["/bin/sh", "-c", "a\0b"], { stdin: "in" })).rejects.toMatchObject({
+    code: "ERR_INVALID_ARG_VALUE",
+  })
+  // The spawn emits `error` and has no pid.
+  const removed = makePolicy()
+  const noWorkspace = removed.make()
+  fs.rmSync(removed.ws, { recursive: true })
+  await expect(sh(noWorkspace, "exit 0", { stdin: "in" })).rejects.toMatchObject({ code: "ENOENT" })
+  const tracked = sh(policy, "sleep 30", {
+    stdin: "in",
+    track: () => {
+      throw new Error("tracking failed")
+    },
+  })
+  await expect(tracked).rejects.toThrow("tracking failed")
+  // `<=`: every test file shares this process, and an fd an earlier test left may close meanwhile.
+  await waitFor(() => count() <= before, { timeout: 5_000, what: "the call's fds to close" })
+})
+
+test.skipIf(!sandboxAvailable())("quiet calls leave the others their output", async () => {
+  const policy = makePolicy().make()
+  const small = path.join(tempDir(), "small")
+  fs.writeFileSync(small, "small")
+  const stop = new AbortController()
+  onTestFinished(() => stop.abort())
+  // More quiet calls than the runtime's fs thread pool has threads (one per core), each with stdin it never
+  // reads, so the reads and the writes each would use up the pool on their own.
+  const count = os.availableParallelism() + 2
+  let started = 0
+  const quiet = Array.from({ length: count }, () =>
+    sh(policy, "sleep 30", {
+      stdin: Buffer.alloc(1 << 20),
+      signal: stop.signal,
+      track: () => {
+        started++
+        return () => {}
+      },
+    }),
+  )
+  await waitFor(() => started === count, { timeout: 10_000, what: "the quiet calls to start" })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  const start = performance.now()
+  // More than a pipe buffer, so a writer nobody reads blocks until the timeout.
+  const busy = await sh(policy, "head -c 200000 /dev/zero | wc -c; head -c 200000 /dev/zero; echo err >&2", {
+    timeout: 10,
+  })
+  expect(performance.now() - start).toBeLessThan(5_000)
+  expect(busy.exit, busy.stderr.toString()).toBe(0)
+  // macOS's wc pads the count.
+  const head = busy.stdout.subarray(0, Math.max(0, busy.stdout.length - 200_000))
+  expect(head.toString().trim()).toBe("200000")
+  expect(busy.stdout.subarray(head.length).equals(Buffer.alloc(200_000))).toBe(true)
+  expect(busy.stderr.toString()).toBe("err\n")
+  const read = performance.now()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const content = await Promise.race([
+    fs.promises.readFile(small, "utf8"),
+    new Promise((resolve) => (timer = setTimeout(() => resolve("still reading after 1 s"), 1_000))),
+  ])
+  clearTimeout(timer)
+  expect(content).toBe("small")
+  expect(performance.now() - read).toBeLessThan(1_000)
+  stop.abort()
+  for (const result of await Promise.all(quiet)) expect(result.interrupted).toBe(true)
+})
+
+test.skipIf(process.platform !== "linux" || !sandboxAvailable())("a call sees no pipe of another call", async () => {
+  const policy = makePolicy().make()
+  let leader = 0
+  const stop = new AbortController()
+  onTestFinished(() => stop.abort())
+  const first = sh(policy, "cat; sleep 30", {
+    stdin: "a",
+    signal: stop.signal,
+    track: (pid) => {
+      leader = pid
+      return () => {}
+    },
+  })
+  await waitFor(() => leader, { timeout: 10_000, what: "the first call to start" })
+  const second = await sh(policy, "ls -l /proc/self/fd")
+  const listing = second.stdout.toString()
+  expect(second.exit, second.stderr.toString()).toBe(0)
+  // Each line ends `<fd> -> <target>`. On Misha (RHEL 8, bwrap) the listing was 0 -> /dev/null, 1 and 2 -> pipe:[…],
+  // and 3 -> /proc/2/fd (ls's own directory), nothing else.
+  const leaked = listing
+    .split("\n")
+    .map((line) => line.match(/\s(\d+) -> (.*)$/))
+    .filter((m) => m !== null && !["0", "1", "2"].includes(m[1]!) && /^(pipe|socket):/.test(m[2]!))
+  expect(leaked, listing).toEqual([])
+  stop.abort()
+  const done = await first
+  expect(done.stdout.toString()).toBe("a")
+  expect(done.interrupted).toBe(true)
+})
+
 test.skipIf(!sandboxAvailable())("the group is killed after a leader that exits by itself", async () => {
   // The runtime reaps the leader before the group kill, so its pid (the group id) could in
   // theory be reused by then: the documented window.
@@ -133,21 +242,39 @@ test.skipIf(!sandboxAvailable())("the group is killed after a leader that exits 
   expect(reaped).toBe("ESRCH")
 })
 
+/** Whether this runtime leaves a killed child it hasn't awaited as a zombie. Bun reaps on its own thread where
+ *  the kernel has no pidfd_open (RHEL 8), so there a killed child is gone at once. */
+async function zombiesLinger(): Promise<boolean> {
+  const child = spawn("/bin/sleep", ["30"], { stdio: "ignore" })
+  const exited = new Promise((resolve) => child.once("exit", resolve))
+  process.kill(child.pid!, "SIGKILL")
+  // Blocks the loop, so only a runtime that reaps on its own thread can reap meanwhile.
+  const until = performance.now() + 300
+  while (performance.now() < until);
+  const stat = psField("stat", child.pid!)
+  await exited
+  // A runtime that reaps on its own thread may show Z for an instant, never after 300 ms.
+  return stat.startsWith("Z")
+}
+
 test.skipIf(!sandboxAvailable())("on timeout the leader is killed before it is reaped", async () => {
-  // The cleanup runs after the kill and before the leader is awaited. `sleep 30` can't exit
-  // by itself, so a zombie leader there was killed before it was reaped; blocking the loop is
-  // safe, since nothing reaps meanwhile.
+  // The cleanup runs after the kill and before the leader is awaited. `sleep 30` can't exit by itself, so a
+  // leader dead at cleanup was killed while alive; one still alive fails. Where the runtime reaps on its own
+  // thread, the test can't tell kill, await, cleanup from kill, cleanup, await: the macOS run pins that order.
+  const lingers = await zombiesLinger()
   let stat = ""
   const result = await sh(makePolicy().make(), "sleep 30", {
     timeout: 0.5,
     track: (pid) => () => {
+      // Where the runtime reaps on its own thread, polls through a brief Z until the leader is gone.
       const deadline = performance.now() + 1_000
       do stat = psField("stat", pid)
-      while (!stat.startsWith("Z") && performance.now() < deadline)
+      while ((lingers ? !stat.startsWith("Z") : stat !== "") && performance.now() < deadline)
     },
   })
   expect(result.timedOut).toBe(true)
-  expect(stat).toStartWith("Z")
+  if (lingers) expect(stat).toStartWith("Z")
+  else expect(stat).toBe("")
 })
 
 test.skipIf(!sandboxAvailable())("setsid child dies with the call", async () => {

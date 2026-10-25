@@ -302,7 +302,7 @@ sandbox/test_escapees.py	ported	packages/office/tests/sandbox/escapees.test.ts	�
 sandbox/test_fileops.py	ported	packages/office/tests/sandbox/fs_helper.test.ts	D11: JS RegExp after a Python-forms pre-pass (ASCII \w \d \s \b); fixed texts for request, argument and decode errors; NUL and surrogate checks before each op's own; FIFOs skipped; real bounds in the cap tests; JS engine regex limits (backtracking cap, UTF-16 `.`, `x{,3}`); Linux invalid-UTF-8 names as U+FFFD; an ill-formed `new` leaves the file intact (Python truncated it); a leading // collapsed	O1-11
 sandbox/test_policy.py	ported	packages/office/tests/sandbox/policy.test.ts	the two pre-rename home cases dropped (D24)	O1-9
 sandbox/test_run.py	ported	packages/office/tests/sandbox/run.test.ts	setsid bound 3 s → 10 s: the 2 s reader grace can't tell a missed sweep apart; gone() carries the test	O1-10
-sandbox/test_run.py::test_group_is_killed_before_the_leader_is_reaped	changed	packages/office/tests/sandbox/run.test.ts::on timeout the leader is killed before it is reaped	D12: kill before awaiting; both paths tested	O1-10
+sandbox/test_run.py::test_group_is_killed_before_the_leader_is_reaped	changed	packages/office/tests/sandbox/run.test.ts::on timeout the leader is killed before it is reaped	D12: kill before awaiting; both paths tested; where the runtime reaps on its own thread (no pidfd_open, RHEL 8) the leader must be gone at cleanup instead of a zombie	O1-10
 sandbox/test_seatbelt.py	ported	packages/office/tests/sandbox/seatbelt.test.ts	—	O1-9
 sandbox/test_workspace_tools.py	ported	packages/office/tests/sandbox/workspace_tools.test.ts	—	O2-22a
 store/test_bookkeeping.py	ported	packages/office/tests/store/bookkeeping.test.ts	—	O1-2
@@ -564,9 +564,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/http.test.ts::a store not found is 404 not found	design §2.3: the store's NotFound is 404 not_found, as Python's handler	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a streamed body ends when the client leaves	design §2.3: SSE needs a streamed reply (O2-1 handoff)	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::a streamed body that fails after the client left logs nothing	design §2.3: a request the client left is neither answered nor logged (O2-1)	O2-2
-—	new	packages/office/tests/daemon/http.test.ts::a streamed reply resumes when a paused client reads again	design §2.3: a slow client is waited for, not cut	O2-2
+—	new	packages/office/tests/daemon/http.test.ts::a streamed reply resumes when a paused client reads again	design §2.3: a slow client is waited for, not cut; sized from the measured socket capacity (16 MiB on Misha)	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::a streamed reply sends each chunk as it is made	design §2.3: SSE needs a streamed reply (O2-1 handoff)	O2-2
-—	new	packages/office/tests/daemon/http.test.ts::a streamed reply waits while the client is not reading	design §2.3: a stuck client fills its bus queue and gets reset	O2-2
+—	new	packages/office/tests/daemon/http.test.ts::a streamed reply waits while the client is not reading	design §2.3: a stuck client fills its bus queue and gets reset; sized from the measured socket capacity (16 MiB on Misha)	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::a wildcard param is decoded once	design §2.3: *cwd params get the same care	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::an error in a streamed reply closes the connection and logs its type	design §6 rule 13: a 500 logs the error type only	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::an http error is its status code and message	design §2.3: HttpError is Python's HTTPError	O2-1
@@ -753,6 +753,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/perm/workspace_audit.test.ts::killed reasons and raised details are capped	security rule 13 and design §6.3 (audit caps); plan decision 9	O2-22a
 —	new	packages/office/tests/platform.test.ts::helperCommand in a checkout runs fs_helper.ts with the no-autoload flags	§2.5 checkout form, 2026-10-23 design fix	O1-11
 —	new	packages/office/tests/platform.test.ts::listAllPids includes this process and a child	§2.2, D17	O1-10
+—	new	packages/office/tests/platform.test.ts::pipe gives a close-on-exec fifo pair	design §2.2: platform.ts holds the bun:ffi pipe2 for Linux stdio	O2-28L
 —	new	packages/office/tests/platform.test.ts::procStartTime reads a running child and is null for an exited one	§2.2, O0-10 P6	O2-11a
 —	new	packages/office/tests/platform.test.ts::sandboxCheck answers for this process	§2.2, D17	O1-10
 —	new	packages/office/tests/platform.test.ts::selfCommand, helperCommand, threadEntry and embedded work in a compiled binary	O0-4 handoff; a probe stands in for the real binary until O3-3/O4b-6	O2-26
@@ -806,10 +807,13 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/sandbox/policy.test.ts::a workspace that contains the office install is refused	§6.1, D35	O1-9
 —	new	packages/office/tests/sandbox/policy.test.ts::office paths are compared resolved	§6.1	O1-9
 —	new	packages/office/tests/sandbox/policy.test.ts::the policy keeps the office and helper paths resolved	§6.1	O1-9
+—	new	packages/office/tests/sandbox/run.test.ts::a call leaves no fd open	design §6.1: real pipes on Linux (the runtime's "pipe" is a socketpair there); every fd closed on every path	O2-28L
+—	new	packages/office/tests/sandbox/run.test.ts::a call sees no pipe of another call	design §6.1: no call gets another call's fds (Bun's spawn closes fds above stdio; the platform test pins close-on-exec)	O2-28L
 —	new	packages/office/tests/sandbox/run.test.ts::a call that cannot start rejects at once	§6.1: any error kills and cleans up	O1-10
 —	new	packages/office/tests/sandbox/run.test.ts::a checkout helper call leaves no transpiled copy under HOME	design §2.5 (helper transpiler cache, settled 2026-10-24)	O2-22a
 —	new	packages/office/tests/sandbox/run.test.ts::a sandbox refusal is labelled	D18	O1-10
 —	new	packages/office/tests/sandbox/run.test.ts::a throwing tracking hook still kills the call	§6.1: any error kills and cleans up	O1-10
+—	new	packages/office/tests/sandbox/run.test.ts::quiet calls leave the others their output	design §6.1: the call's pipes are read on the event loop, not the fs thread pool, so concurrent calls can't starve it	O2-28L
 —	new	packages/office/tests/sandbox/run.test.ts::scrubbed env is pinned and only the checkout helper adds the transpiler cache switch	design §2.5 (helper transpiler cache, settled 2026-10-24)	O2-22a
 —	new	packages/office/tests/sandbox/run.test.ts::stdin is ignored unless given	§6.1	O1-10
 —	new	packages/office/tests/sandbox/run.test.ts::the group is killed after a leader that exits by itself	D12: the documented window	O1-10
@@ -858,8 +862,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/channel.test.ts::a broken transport closes the channel with a fixed message	design §2.4, §6 rule 1	O3-1
 —	new	packages/office/tests/worker/channel.test.ts::a channel shows no frame bytes when inspected	design §2.4: buffered bytes can hold the start frame's provider key	O3-1
 —	new	packages/office/tests/worker/channel.test.ts::a frame that is not json is refused with a fixed message	design §2.4, §6 rule 1	O3-1
-—	new	packages/office/tests/worker/channel.test.ts::a grandchild of the worker does not hold the channel open	design §2.4; O0-10 P1: no setCloexec, the regression test stays	O3-1
-—	new	packages/office/tests/worker/channel.test.ts::a worker close stops its queued sends	design §2.4: queued frames stop at close() or a failed write, as Python shutdown does	O3-1
+—	new	packages/office/tests/worker/channel.test.ts::a grandchild of the worker does not hold the channel open	design §2.4; O0-10 P1: no setCloexec, the regression test stays; by fd identity with a positive control (a shell's own fds aren't the channel)	O3-1
+—	new	packages/office/tests/worker/channel.test.ts::a worker close stops its queued sends	design §2.4: queued frames stop at close() or a failed write, as Python shutdown does; fills the socket first (buffers differ by host, 16 MiB on Misha)	O3-1
 —	new	packages/office/tests/worker/channel.test.ts::a worker send after the office closed the channel raises channel closed	design §2.4	O3-1
 —	new	packages/office/tests/worker/channel.test.ts::frames buffered before a reset still arrive	design §2.4: frames already received are never dropped	O3-1
 —	new	packages/office/tests/worker/channel.test.ts::frames sent just before the worker exits still arrive	design §2.4	O3-1

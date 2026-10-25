@@ -350,17 +350,44 @@ test(
       import fs from "node:fs"
       const channel = fdChannel(3)
       const pad = "q".repeat(4 * 2 ** 20)
-      // The office isn't reading yet, so the first frame blocks part way and the others wait their turn.
-      const sends = [1, 2, 3].map((n) => channel.send({ n, pad }).then(() => undefined, (error) => error))
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      // The office isn't reading yet. Socket buffers differ by host (8 KiB on macOS, 16 MiB on some Linux hosts), so
+      // frames go out until one stays unsent for 200 ms: that write is blocked on a full socket.
+      let blocked = -1
+      for (let n = 0; n < 64 && blocked < 0; n++) {
+        const sent = channel.send({ n, pad }).then(
+          () => false,
+          (error) => {
+            // Only while filling: close() rejects the blocked send on purpose.
+            if (blocked >= 0) return
+            fs.writeFileSync("closed", "send failed: " + String(error?.name))
+            process.exit(1)
+          },
+        )
+        const late = new Promise((resolve) => setTimeout(resolve, 200, true))
+        if (await Promise.race([sent, late])) blocked = n
+      }
+      if (blocked < 0) {
+        fs.writeFileSync("closed", "never blocked")
+        process.exit(1)
+      }
+      const queued = [blocked + 1, blocked + 2].map((n) =>
+        channel.send({ n, pad }).then(() => undefined, (error) => error),
+      )
       channel.close()
-      const ok = (await Promise.all(sends)).every((error) => error instanceof ChannelClosed)
-      fs.writeFileSync("closed", ok ? "ok" : "bad")
+      // The blocked send isn't checked: under load it may only have been slow and resolved.
+      const ok = (await Promise.all(queued)).every((error) => error instanceof ChannelClosed)
+      fs.writeFileSync("closed", ok ? String(blocked) : "bad")
       // Time for the office to drain the frame being written, and for any queued frame to follow if one wrongly did.
       await new Promise((resolve) => setTimeout(resolve, 2_000))
       process.exit(ok ? 0 : 1)
     `)
-    await waitFor(() => fs.existsSync(path.join(dir, "closed")), { timeout: 30_000, what: "the worker's close" })
+    const closed = path.join(dir, "closed")
+    const result = await waitFor(() => fs.existsSync(closed) && fs.readFileSync(closed, "utf8"), {
+      timeout: 30_000,
+      what: "the worker's close",
+    })
+    expect(result).toMatch(/^\d+$/)
+    const blocked = Number(result)
     const got: Frame[] = []
     let error: unknown
     while (error === undefined) {
@@ -372,10 +399,11 @@ test(
       )
     }
     expect(error).toBeInstanceOf(ChannelClosed)
-    // Only the frame already being written at close() may arrive, and only whole; checked by length, so a failure
-    // doesn't print 4 MiB.
-    expect(got.length).toBeLessThanOrEqual(1)
-    for (const frame of got) expect([frame.n, (frame.pad as string).length]).toEqual([1, 4 * 2 ** 20])
+    // The frames before the blocked one, then at most the one being written at close(), each whole; checked by
+    // length, so a failure doesn't print 4 MiB.
+    expect(got.map((frame) => frame.n)).toEqual(Array.from({ length: got.length }, (_, n) => n))
+    expect([blocked, blocked + 1]).toContain(got.length)
+    for (const frame of got) expect((frame.pad as string).length).toBe(4 * 2 ** 20)
     expect(await exited).toEqual({ code: 0, signal: null })
   },
   CHILD_TIMEOUT,
@@ -409,31 +437,52 @@ test(
 test(
   "a grandchild of the worker does not hold the channel open",
   async () => {
-    // The grandchild lists which of fds 3-9 it holds, in the worker's directory, then sleeps.
-    const probe =
-      'for f in 3 4 5 6 7 8 9; do if { true >&$f; } 2>/dev/null; then printf "fd$f "; fi; done > fds; ' +
-      "echo end >> fds; exec sleep 60"
+    // The probe writes the identity (`dev:ino`) of each fd 3-63 it holds to the file named by its first argument,
+    // then stays alive for its second argument's milliseconds. Compared by identity rather than by fd number: a shell
+    // keeps fds of its own (bash opens the SSSD user caches when `USER` is unset), which a listing of fd numbers takes
+    // for the channel.
+    const probe = `
+      import fs from "node:fs"
+      const [file, stay] = process.argv.slice(-2)
+      const held = []
+      for (let fd = 3; fd < 64; fd++) {
+        try {
+          const { dev, ino } = fs.fstatSync(fd, { bigint: true })
+          held.push(dev + ":" + ino)
+        } catch {}
+      }
+      fs.writeFileSync(file, [...held, "end"].join(" "))
+      setTimeout(() => {}, Number(stay))
+    `
     const { office, exited, dir } = worker(`
       import { spawn } from "node:child_process"
+      import fs from "node:fs"
       const channel = fdChannel(3)
-      const grandchild = spawn("/bin/sh", ["-c", ${JSON.stringify(probe)}], { stdio: "ignore" })
-      await channel.send({ pid: grandchild.pid })
+      const { dev, ino } = fs.fstatSync(3, { bigint: true })
+      const run = (file, stay, stdio) =>
+        spawn(process.execPath, [...${JSON.stringify(BUN_FLAGS)}, "-e", ${JSON.stringify(probe)}, file, stay], { stdio })
+      // A positive control: handed the channel on purpose, the probe must list it.
+      const control = run("fds-control", "0", ["ignore", "ignore", "ignore", 3])
+      await new Promise((resolve) => control.once("exit", resolve).once("error", resolve))
+      const grandchild = run("fds", "60000", "ignore")
+      await channel.send({ pid: grandchild.pid, channel: dev + ":" + ino })
       process.exit(0)
     `)
-    const { pid } = (await office.recv()) as { pid: number }
+    const { pid, channel } = (await office.recv()) as { pid: number; channel: string }
     expect(await within(office.recv().catch((error: unknown) => error), 15_000)).toBeInstanceOf(ChannelClosed)
     expect(await exited).toEqual({ code: 0, signal: null })
     // Still in the worker's process group, which the cleanup kills.
     expect(() => process.kill(pid, 0)).not.toThrow()
+    expect(fs.readFileSync(path.join(dir, "fds-control"), "utf8").split(" ")).toContain(channel)
     const fds = path.join(dir, "fds")
     const listed = await waitFor(
       () => {
         const text = fs.existsSync(fds) ? fs.readFileSync(fds, "utf8") : ""
-        return text.includes("end") && text
+        return text.endsWith("end") ? text : ""
       },
       { timeout: 15_000, what: "the grandchild's fd list" },
     )
-    expect(listed).not.toContain("fd3")
+    expect(listed.split(" ")).not.toContain(channel)
   },
   CHILD_TIMEOUT,
 )

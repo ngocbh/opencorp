@@ -1,10 +1,11 @@
 /** Run one command in the sandbox, in its own process group. */
-import { spawn } from "node:child_process"
+import { spawn, type StdioOptions } from "node:child_process"
+import fs from "node:fs"
 import os from "node:os"
 import type { Readable } from "node:stream"
 import * as bwrap from "./bwrap.ts"
 import { Canary, killEscaped } from "./escapees.ts"
-import { helperCommand } from "../platform.ts"
+import { endPipe, helperCommand, pipe, pipeReadable } from "../platform.ts"
 import { type Helper, helperFiles, isInside, type SandboxPolicy } from "./policy.ts"
 import { profile } from "./seatbelt.ts"
 
@@ -134,14 +135,33 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
       reason ??= why
       wake()
     }
-    const child = spawn(file!, args, {
-      cwd: policy.workspace,
-      env: scrubbedEnv(policy),
-      detached: true,
-      stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    })
-    const outPipe = child.stdout!
-    const errPipe = child.stderr!
+    const own = process.platform === "linux" ? ownPipes(stdin !== undefined) : undefined
+    // The stdin write end, closed here until it is handed to `endPipe`, which closes it.
+    let stdinFd = own?.stdin
+    const closeStdin = () => {
+      if (stdinFd !== undefined) fs.closeSync(stdinFd)
+      stdinFd = undefined
+    }
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(file!, args, {
+        cwd: policy.workspace,
+        env: scrubbedEnv(policy),
+        detached: true,
+        stdio: own?.stdio ?? [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+      })
+    } catch (error) {
+      own?.stdout.destroy()
+      own?.stderr.destroy()
+      closeStdin()
+      own?.closeChildEnds()
+      throw error
+    }
+    const outPipe = own?.stdout ?? child.stdout!
+    const errPipe = own?.stderr ?? child.stderr!
+    const input = own ? undefined : child.stdin
+    // EPIPE when the call exits without reading its input.
+    input?.on("error", () => {})
     const exit = new Promise<void>((resolve) =>
       child.once("exit", (code, sig) => {
         exited = { code, signal: sig }
@@ -155,6 +175,9 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
       // A spawn that fails emits only `error`, never `exit`.
       outPipe.destroy()
       errPipe.destroy()
+      input?.destroy()
+      closeStdin()
+      own?.closeChildEnds()
       throw await failed
     }
     const out = capture(outPipe, maxOutput)
@@ -164,10 +187,15 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
     let untrack: (() => void) | undefined
     try {
       try {
-        if (child.stdin) {
-          // The call may exit without reading its input.
-          child.stdin.on("error", () => {})
-          child.stdin.end(stdin)
+        // Inside the kill path, so a close that throws still has the call killed and its streams destroyed.
+        own?.closeChildEnds()
+        if (stdinFd !== undefined) {
+          const fd = stdinFd
+          stdinFd = undefined
+          // EPIPE when the call exits without reading its input.
+          endPipe(fd, stdin!).catch(() => {})
+        } else {
+          input?.end(stdin)
         }
         untrack = track?.(pid)
         if (signal?.aborted) settle("abort")
@@ -177,8 +205,10 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
       } finally {
         try {
           // On a natural exit the runtime has already reaped the leader, so in theory its pid (the
-          // group id) could be reused before this kill; on timeout, cancel or error the leader isn't
-          // reaped yet, so the kill can't reach an unrelated group.
+          // group id) could be reused before this kill. On timeout, cancel or error the leader is
+          // normally still running, so the kill can't reach an unrelated group; where the runtime
+          // reaps on its own thread, a leader that exits by itself just as the timeout fires is
+          // already reaped, the same window as a natural exit.
           killGroup(pid)
           if (canary) killEscaped(canary)
         } finally {
@@ -194,6 +224,8 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
     } catch (error) {
       outPipe.destroy()
       errPipe.destroy()
+      input?.destroy()
+      closeStdin()
       throw error
     }
     // Every writer should be dead now, but an escapee that wasn't found could still hold
@@ -206,6 +238,7 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
     clearTimeout(grace)
     outPipe.destroy()
     errPipe.destroy()
+    input?.destroy()
     const stopped = reason === "timeout" || reason === "abort"
     const status = stopped ? null : (exited!.code ?? -os.constants.signals[exited!.signal!])
     const stderr = Buffer.concat(err.chunks)
@@ -221,6 +254,46 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
     }
   } finally {
     canary?.close()
+  }
+}
+
+/** Real pipes for a call's stdio, for Linux, where the runtime's "pipe" is a socketpair and opening /dev/stdout,
+ *  /dev/stderr or /dev/fd/N on a socket fails (ENXIO), unlike Python's pipes. `stdio` holds the child's ends,
+ *  which `closeChildEnds()` closes here once the child holds its copies; each output stream closes its own fd,
+ *  and `stdin` is the input's write end, for the caller to close. */
+function ownPipes(withStdin: boolean) {
+  let out: [number, number] | undefined
+  let err: [number, number] | undefined
+  let input: [number, number] | undefined
+  try {
+    out = pipe()
+    err = pipe()
+    if (withStdin) input = pipe()
+  } catch (error) {
+    for (const fd of [...(out ?? []), ...(err ?? [])]) fs.closeSync(fd)
+    throw error
+  }
+  const childEnds = [out[1], err[1], ...(input ? [input[0]] : [])]
+  // The runtime's pipe streams poll on the event loop; node:fs streams would hold an fs pool thread (one per
+  // core) per pending read or write on a blocking pipe, so a few quiet calls would stall every other call's
+  // output and every fs call in the office.
+  return {
+    stdio: [input ? input[0] : "ignore", out[1], err[1]] as StdioOptions,
+    stdin: input?.[1],
+    stdout: pipeReadable(out[0]),
+    stderr: pipeReadable(err[0]),
+    /** Closes every child end, then throws the first error: a runtime that closed one itself shows as EBADF. */
+    closeChildEnds: () => {
+      let first: unknown
+      for (const fd of childEnds) {
+        try {
+          fs.closeSync(fd)
+        } catch (error) {
+          first ??= error
+        }
+      }
+      if (first !== undefined) throw first
+    },
   }
 }
 
