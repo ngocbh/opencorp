@@ -121,7 +121,12 @@ for (const { name, os, cpu, target } of builds) {
   const dir = path.join(outdir, `opencorp-${name}`)
   fs.rmSync(dir, { recursive: true, force: true })
   const result = await Bun.build({
-    entrypoints: [path.join(CLI, "src/main.ts"), path.join(CLI, "src/nodes/code/worker.ts")],
+    // The CODE worker and the run index thread start from their own files beside the main bundle.
+    entrypoints: [
+      path.join(CLI, "src/main.ts"),
+      path.join(CLI, "src/nodes/code/worker.ts"),
+      path.join(CLI, "src/runs_indexer.ts"),
+    ],
     plugins: [solidPlugin],
     compile: {
       ...(target ? { target } : {}),

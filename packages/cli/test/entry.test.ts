@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, describe, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
@@ -832,6 +832,93 @@ describe("the built binary", () => {
     office.end()
     expect(await exited, stderr).toBe(0)
     expect(stderr).not.toContain("Cannot find module")
+  }, 120_000)
+
+  test("the binary starts the run index thread at the daemon start", async () => {
+    // A short folder: macOS caps a socket path at 104 bytes.
+    const short = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
+    const files = {
+      "company.yaml": "name: test-corp\nceo: ngocbh\ndefaults:\n  cost_cap_usd: 5\n  max_turns: 500\n",
+      "people/ngocbh/person.yaml": "handle: ngocbh\nname: Hong Ngoc Bui\nkind: human\ntitle: CEO\nmanager: null\n",
+    }
+    const company = path.join(short, "company")
+    for (const [rel, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(company, rel)), { recursive: true })
+      fs.writeFileSync(path.join(company, rel), text)
+    }
+    const gitEnv = {
+      PATH: "/usr/bin:/bin",
+      HOME: home,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_AUTHOR_NAME: "t",
+      GIT_AUTHOR_EMAIL: "t@t",
+      GIT_COMMITTER_NAME: "t",
+      GIT_COMMITTER_EMAIL: "t@t",
+    }
+    for (const args of [["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "init"]]) {
+      const git = spawnSync("git", ["-C", company, "-c", "commit.gpgsign=false", ...args], {
+        env: gitEnv,
+        encoding: "utf8",
+        timeout: 30_000,
+      })
+      expect(git.status, `git ${args[0]}: ${git.stderr}`).toBe(0)
+    }
+    const office = path.join(short, "office")
+    fs.mkdirSync(path.join(office, "runs"), { recursive: true, mode: 0o700 })
+    fs.chmodSync(office, 0o700)
+    fs.writeFileSync(path.join(office, "hq.json"), '{"tcp": false}')
+
+    const errFile = path.join(built, `daemon-${path.basename(short)}.err`)
+    const errFd = fs.openSync(errFile, "w")
+    const tmpdir = freshTmp()
+    const child = spawn(bin, ["daemon", "--home", short], {
+      cwd: fs.mkdtempSync(path.join(built, "cwd-")),
+      env: { HOME: home, PATH: "/usr/bin:/bin", TMPDIR: tmpdir, BUN_TMPDIR: tmpdir },
+      detached: true,
+      stdio: ["ignore", "ignore", errFd],
+    })
+    fs.closeSync(errFd)
+    const exited = new Promise<number | null>((resolve, reject) => {
+      // A spawn that failed emits `error` instead of `exit`; with no listener it would crash the runner.
+      child.once("error", reject)
+      child.once("exit", (code) => resolve(code))
+    })
+    const pid = child.pid
+    const started = pid === undefined ? "" : lstart(pid)
+    onTestFinished(() => {
+      // The daemon re-execs itself with the same pid, so the group is still the one spawned while its start matches.
+      if (pid !== undefined && started !== "" && lstart(pid) === started) killGroup(pid)
+      fs.rmSync(short, { recursive: true, force: true })
+    })
+    if (pid === undefined) {
+      await exited
+      throw new Error("the daemon did not start")
+    }
+    const stderr = () => fs.readFileSync(errFile, "utf8")
+
+    /** Whether the office socket answers `GET /health` with 200. */
+    const healthy = () =>
+      new Promise<boolean>((resolve) => {
+        const req = http.get({ socketPath: path.join(office, "office.sock"), path: "/health", timeout: 2000 }, (res) => {
+          res.resume()
+          resolve(res.statusCode === 200)
+        })
+        req.on("timeout", () => req.destroy())
+        req.on("error", () => resolve(false))
+      })
+    const deadline = Date.now() + 60_000
+    while (!(await healthy())) {
+      if (child.exitCode !== null || child.signalCode !== null)
+        throw new Error(`the daemon exited before it served:\n${stderr()}`)
+      if (Date.now() > deadline) throw new Error(`the daemon did not serve within 60 s:\n${stderr()}`)
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    // The socket listens only after the start's index update, and yian makes the index before it reads the folder.
+    expect(fs.existsSync(path.join(office, "runs/index.sqlite")), stderr()).toBe(true)
+    expect(stderr()).not.toContain("run index thread stopped")
+    process.kill(pid, "SIGTERM")
+    await exited
   }, 120_000)
 
   test("the binary loads the TUI assets from beside it and extracts nothing to TMPDIR", async () => {

@@ -631,6 +631,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/cli/test/entry.test.ts::the binary from a folder holding .env and a bunfig.toml preload sees neither	§2.7, §6.2	O2-26
 —	new	packages/cli/test/entry.test.ts::the binary loads the TUI assets from beside it and extracts nothing to TMPDIR	O0-10 P4	O2-26
 —	new	packages/cli/test/entry.test.ts::the binary runs the fs helper in its compiled form	§2.5, O1-11	O2-26
+—	new	packages/cli/test/entry.test.ts::the binary starts the run index thread at the daemon start	§2.7: the thread's file is a compile entry	O4b-6
 —	new	packages/cli/test/entry.test.ts::the build refuses to replace a folder it did not write	§2.7 (the build only replaces its own output)	O2-26
 —	new	packages/cli/test/entry.test.ts::the build writes the opencorp package with the npm shim and the platform package with the binary and every TUI asset	§2.7, O0-10 P4	O2-26
 —	new	packages/cli/test/entry.test.ts::the built binary worker runs a company CODE node that imports a sibling file	§2.7, O0-10 P2	O3-3
