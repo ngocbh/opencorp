@@ -2,16 +2,32 @@
  *  sign-in, faked. */
 import { expect, onTestFinished } from "bun:test"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { HttpResponse } from "@ngocbh/yian/llm_clients"
-import type { Scheduler } from "@ngocbh/yian/platform"
+import { realScheduler, type Scheduler } from "@ngocbh/yian/platform"
 import { iterRunRecords, type RunLogEntry } from "@ngocbh/yian/run"
-import { FakeLLM, type ScriptedReply } from "../../src/testing/fake_llm.ts"
+import { now, OFFICE, Session, WorkItem } from "@opencorp/protocol"
+import { Hooks } from "../../src/chat/hooks.ts"
+import { mainSpec } from "../../src/chat/run_spec.ts"
+import { type ActorContext, SessionActor } from "../../src/chat/session_actor.ts"
+import { Transcript } from "../../src/chat/transcript.ts"
+import { loadRepo } from "../../src/company/loader.ts"
+import type { Office } from "../../src/daemon/office.ts"
+import { sameProcess, startTime } from "../../src/install/proc.ts"
+import { Monitor } from "../../src/perm/monitor.ts"
+import { Answers } from "../../src/questions/ask.ts"
+import { SecretStore, writePrivate } from "../../src/secrets.ts"
+import { newId, type SessionRecord } from "../../src/store/store.ts"
+import { FakeLLM, LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { type Delivery, Job, type JobInput } from "../../src/worker/job.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
+import type { Worker, WorkerRegistry } from "../../src/worker/spawn.ts"
+import { baseFiles } from "../company/helpers.ts"
+import { CEO, makeOffice } from "../daemon/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
-import { advanceJob, inProcessWorker, makeJob, Recorder, run, waitsOf } from "../worker/helpers.ts"
+import { advanceJob, inProcessWorker, makeJob, makeRegistry, Recorder, run, waitsOf } from "../worker/helpers.ts"
 
 /** The template's chat flow, as a hire's main points at it. */
 export const CHAT_FLOW = fs.readFileSync(
@@ -254,4 +270,266 @@ export function logPrefix(log: string, keep: (entry: RunLogEntry) => boolean, ru
   fs.mkdirSync(path.dirname(out), { recursive: true })
   fs.writeFileSync(out, fs.readFileSync(log).subarray(0, end))
   return out
+}
+
+// The session actor over an office, real worker processes and the fake LLM (Python's `make_harness` and friends).
+
+/** Each worker a chat office spawned: its pid and start time. */
+const spawnedWorkers: { pid: number; started: number | null }[] = []
+
+/** The workers the chat offices spawned that still run. */
+export function livingWorkers(): { pid: number; started: number | null }[] {
+  return spawnedWorkers.filter(({ pid, started }) => started !== null && sameProcess(pid, started))
+}
+
+/** Waits up to 10 s for every worker the chat offices spawned to be gone; each actor test file's `afterAll`. */
+export async function noWorkersLeft(): Promise<void> {
+  await waitFor(() => livingWorkers().length === 0, { timeout: 10_000, what: "the workers to exit" })
+}
+
+/** An office for session actors: its registry, the context its actors share, and what its spawns did. */
+export interface ChatOffice {
+  readonly office: Office
+  readonly registry: WorkerRegistry
+  readonly ctx: ActorContext
+  /** Each spawned job's kind, in order. */
+  readonly kinds: string[]
+  /** Each spawned job, in order. */
+  readonly jobs: Job[]
+  readonly transcript: Transcript
+  readonly hooks: Hooks
+  readonly answers: Answers
+  /** The lines the actors, hooks and answers logged. */
+  readonly logs: string[]
+  /** How often the workspace stand-in was interrupted. */
+  readonly workspace: { interrupts: number }
+  /** The actors made through these helpers; each is closed when the test finishes. */
+  readonly actors: SessionActor[]
+  /** Holds the next spawn before it starts a worker; `entered` resolves once it is held. */
+  hold(): { entered: Promise<void>; release: () => void }
+  /** Makes the next spawn throw before it starts a worker. */
+  failNextSpawn(): void
+  /** Runs `fn` with the next spawned worker once its spawn has resolved. */
+  afterSpawn(fn: (worker: Worker) => void): void
+}
+
+/**
+ * An office over the base company with the template's chat flow (and `files` on top), its `office` connection on
+ * `fake` (`llmConfig`, the fake's env, `prices`), the company `defaults` merged in, and a registry whose `spawn` is
+ * wrapped to record, hold, fail or follow each spawn. Its actors share one `Hooks`, `Answers` and `Transcript`, and a
+ * run spec from `mainSpec` over a workspace stand-in. At test end the actors close, then the workers stop, before
+ * the office's store closes.
+ */
+export async function chatOffice(
+  fake: FakeLLM,
+  {
+    files = {},
+    prices = {},
+    llmConfig = LLM_CONFIG,
+    defaults = {},
+  }: {
+    files?: Record<string, unknown>
+    prices?: Record<string, unknown>
+    llmConfig?: Record<string, unknown>
+    defaults?: Record<string, unknown>
+  } = {},
+): Promise<ChatOffice> {
+  const actors: SessionActor[] = []
+  let registry: WorkerRegistry | undefined
+  // Registered before makeOffice's, so it runs first.
+  onTestFinished(async () => {
+    for (const actor of actors) actor.close()
+    await registry?.closeAll(5000)
+  })
+  const company = baseFiles()["company.yaml"] as { defaults: Record<string, unknown> }
+  const office = makeOffice({
+    files: { ...CHAT_FILES, "company.yaml": { ...company, defaults: { ...company.defaults, ...defaults } }, ...files },
+  })
+  office.connections.ensureDir()
+  const provider = { llm_config: { ...llmConfig }, env: fake.env(), prices }
+  await writePrivate(path.join(office.connections.dir, "office.json"), JSON.stringify(provider))
+  registry = makeRegistry(office.store)
+  const kinds: string[] = []
+  const jobs: Job[] = []
+  const holds: { entered: () => void; released: Promise<void> }[] = []
+  const afters: ((worker: Worker) => void)[] = []
+  let failNext = false
+  const spawn = registry.spawn.bind(registry)
+  registry.spawn = async (job, sessionDir, handlers, options) => {
+    kinds.push(job.kind)
+    jobs.push(job)
+    const held = holds.shift()
+    if (held !== undefined) {
+      held.entered()
+      await held.released
+    }
+    if (failNext) {
+      failNext = false
+      throw new Error("the spawn failed")
+    }
+    const worker = await spawn(job, sessionDir, handlers, options)
+    spawnedWorkers.push({ pid: worker.pid, started: startTime(worker.pid) })
+    afters.shift()?.(worker)
+    return worker
+  }
+  const logs: string[] = []
+  const log = (line: string) => void logs.push(line)
+  const hooks = new Hooks({ log })
+  const answers = new Answers(office.store, { log })
+  const transcript = new Transcript(office.paths.runs)
+  const monitor = new Monitor(office.paths.company, office.store, new SecretStore(office.paths.secrets))
+  const workspace = { interrupts: 0 }
+  const standIn = {
+    call: async (tool: string) => ({ output: "ok", audit: { tool, argsSummary: "", exit: 0, duration: 0 } }),
+    interrupt: () => void (workspace.interrupts += 1),
+  }
+  const { store, git } = office
+  const ctx: ActorContext = {
+    store,
+    git,
+    paths: office.paths,
+    bus: office.bus,
+    connections: office.connections,
+    workers: registry,
+    hooks,
+    answers,
+    transcript,
+    spec: async (session) => {
+      const repo = loadRepo(await git.pin(session.repo_commit))
+      return mainSpec({ store, git, repo, session, workspace: standIn, monitor, carried: (q) => answers.carried(q) })
+    },
+    scheduler: realScheduler,
+    log,
+  }
+  return {
+    office,
+    registry,
+    ctx,
+    kinds,
+    jobs,
+    transcript,
+    hooks,
+    answers,
+    logs,
+    workspace,
+    actors,
+    hold() {
+      let release!: () => void
+      let entered!: () => void
+      const released = new Promise<void>((resolve) => (release = resolve))
+      const enteredP = new Promise<void>((resolve) => (entered = resolve))
+      holds.push({ entered, released })
+      return { entered: enteredP, release }
+    },
+    failNextSpawn() {
+      failNext = true
+    },
+    afterSpawn(fn) {
+      afters.push(fn)
+    },
+  }
+}
+
+/** Stores a `starting` main chat of minh's in a fresh folder, with its work item, as a start opens one; `openedBy`
+ *  is the human who opened it. Returns its id. */
+export async function newSession(o: ChatOffice, { openedBy = null }: { openedBy?: string | null } = {}): Promise<string> {
+  const { store, git } = o.office
+  const cwd = tempDir()
+  const t = now()
+  const item = store.createWorkItem(
+    WorkItem.parse({
+      id: newId(),
+      title: `Chat with Minh in ${path.basename(cwd)}`,
+      kind: "task",
+      status: "in_progress",
+      requester: openedBy ?? CEO,
+      assignee: "minh",
+      created_at: t,
+      updated_at: t,
+    }),
+  )
+  const session = store.createSession(
+    Session.parse({
+      id: newId(),
+      person: "minh",
+      harness: "composer",
+      office: os.hostname(),
+      cwd,
+      repo_commit: await git.head(),
+      status: "starting",
+      kind: "main",
+      work_item_id: item.id,
+      opened_by: openedBy,
+      connection: OFFICE,
+      model: null,
+      created_at: t,
+      updated_at: t,
+    }),
+  )
+  return session.id
+}
+
+/** A new actor over session `sid`, closed when the test finishes. */
+export function makeActor(o: ChatOffice, sid: string): SessionActor {
+  const actor = new SessionActor(o.ctx, sid)
+  o.actors.push(actor)
+  return actor
+}
+
+/** A new session (`newSession`'s options) and its actor, started; resolves once the session is idle. */
+export async function startActor(
+  o: ChatOffice,
+  options: { openedBy?: string | null } = {},
+): Promise<{ actor: SessionActor; sid: string }> {
+  const sid = await newSession(o, options)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
+  return { actor, sid }
+}
+
+/** Waits until `actor` has no worker, closes it, and returns a new actor over its session: the session asleep, as an
+ *  office that stopped and started again would find it. */
+export async function reopen(o: ChatOffice, actor: SessionActor): Promise<SessionActor> {
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  actor.close()
+  return makeActor(o, actor.sessionId)
+}
+
+/** A started session, asleep under a new actor (Python's `asleep`). */
+export async function asleep(o: ChatOffice): Promise<{ actor: SessionActor; sid: string }> {
+  const { actor, sid } = await startActor(o)
+  return { actor: await reopen(o, actor), sid }
+}
+
+/** Sends `text` and waits for one more assistant text and the session idle; returns that text. */
+export async function say(o: ChatOffice, actor: SessionActor, sid: string, text: string): Promise<string> {
+  const n = texts(o, sid).length
+  await actor.prompt(text)
+  await waitFor(() => texts(o, sid).length > n && status(o, sid) === "idle", { what: `the reply to ${text}` })
+  return texts(o, sid).at(-1)!
+}
+
+/** The text parts of session `sid`'s messages with `role`, in order. */
+export function texts(o: ChatOffice, sid: string, role = "assistant"): string[] {
+  return o.transcript
+    .messages(sid, session(o, sid).run_ids)
+    .filter((message) => message.role === role)
+    .flatMap((message) => message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])))
+}
+
+/** Session `sid` as stored. */
+export function session(o: ChatOffice, sid: string): SessionRecord {
+  return o.office.store.getSession(sid)!
+}
+
+/** Session `sid`'s status. */
+export function status(o: ChatOffice, sid: string): string {
+  return session(o, sid).status
+}
+
+/** Session `sid`'s run state: its status, who it waits on and whether its cap holds it. */
+export function state(o: ChatOffice, sid: string): Pick<SessionRecord, "status" | "waiting_on" | "capped"> {
+  const { status, waiting_on, capped } = session(o, sid)
+  return { status, waiting_on, capped }
 }
