@@ -37,15 +37,28 @@ async function refusable(change: Promise<Person>): Promise<Person> {
 export const ROUTES: readonly Route<RequestContext>[] = [
   // `{"ok": true}`, exactly: the office is answering. Served without a token.
   { method: "GET", path: "/health", handler: () => ({ ok: true }) },
-  // The office's pid, home, start time and version, behind the token check. Served on `office.sock` only, never on
-  // HQ's allowlist; `/health` stays `{"ok": true}` because the home path must not be on an unauthenticated route.
+  // The office's pid, home, start time, version, pinned tools and workspace guards, behind the token check. Served
+  // on `office.sock` only, never on HQ's allowlist; `/health` stays `{"ok": true}` because the home path must not
+  // be on an unauthenticated route. `doctor` can't recompute the tools and guards from its own env, so they are
+  // sent; the guards' `home` (the user's home dir) is not.
   {
     method: "GET",
     path: "/office",
     reply: OfficeInfo,
     handler: (ctx): OfficeInfo => {
       actingPerson(ctx)
-      return { pid: process.pid, home: ctx.office.paths.home, started_at: ctx.office.startedAt, version: VERSION }
+      const { office } = ctx
+      const tools: Record<string, string> = {}
+      for (const [name, found] of Object.entries(office.tools)) if (found !== undefined) tools[name] = found
+      const g = office.guards
+      return {
+        pid: process.pid,
+        home: office.paths.home,
+        started_at: office.startedAt,
+        version: VERSION,
+        tools,
+        guards: { install: [...(g.install ?? [])], tools: [...(g.tools ?? [])], path: [...(g.path ?? [])] },
+      }
     },
   },
   { method: "GET", path: "/whoami", handler: whoami },

@@ -89,12 +89,22 @@ export const SetPasswordRequest = z.strictObject({
 export type SetPasswordRequest = z.input<typeof SetPasswordRequest>
 
 /** The reply of GET /office on the office socket (never on HQ): the running daemon's process id, OpenCorp
- *  home, start time and release version, for `doctor` and `stop`. Needs a device token once tokens are
- *  enforced. */
+ *  home, start time, release version, pinned programs and workspace guards, for `doctor` and `stop`. Needs a
+ *  device token once tokens are enforced. */
 export const OfficeInfo = z.strictObject({
   pid: z.int().min(1),
   home: z.string().min(1),
   started_at: Timestamp,
   version: z.string().min(1),
+  /** Each program the office runs, by name, as the absolute path it found on its PATH at start; a program it
+   *  didn't find is absent. */
+  tools: z.record(z.string(), z.string()),
+  /** What the office refuses a workspace for: its install folders, the programs it runs (found paths and
+   *  realpaths) and its PATH entries. */
+  guards: z.strictObject({
+    install: z.array(z.string()),
+    tools: z.array(z.string()),
+    path: z.array(z.string()),
+  }),
 })
 export type OfficeInfo = z.input<typeof OfficeInfo>
