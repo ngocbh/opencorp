@@ -3,6 +3,7 @@ import { spawn } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
+import { pending } from "@ngocbh/yian/tools"
 import { onTestFinished, spyOn } from "bun:test"
 import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
@@ -89,7 +90,7 @@ export const CODED =
   "    code: ./helpers.ts:fn\n    output: str\n  heard:\n    kind: tool\n    tool_id: take\n" +
   "    depends_on: [prep]\n    input:\n      from: ${input.messages}\n      take: all\noutput: ${heard.output}\n"
 export const CODED_HELPERS = 'export function fn(): string {\n  return "ready"\n}\n'
-// One turn: a TOOL ask and a take on the `messages` inbox, both waiting, then an agent that answers both.
+// One turn: a TOOL ask and a take on the `messages` inbox, both waiting, then an agent that uses both outputs.
 export const TURN =
   "id: turn\nname: turn\ninput:\n  messages: !Inbox(str)\nnodes:\n  asked:\n    kind: tool\n    tool_id: ask\n" +
   '    input:\n      prompt: "Where to?"\n  heard:\n    kind: tool\n    tool_id: take\n    input:\n' +
@@ -392,6 +393,24 @@ export class Recorder extends BaseHandlers {
   names(): string[] {
     return this.frames.map((frame) => String(frame.name ?? frame.type))
   }
+}
+
+/** A `Recorder` whose questions all answer later: it records each and returns yian's pending marker. */
+export class Pending extends Recorder {
+  override askUser(_worker: unknown, request: AskRequest): unknown {
+    this.asked.push(request)
+    return pending()
+  }
+}
+
+/** The waits of the result `rec` recorded. */
+export function waitsOf(rec: Recorder): Record<string, unknown>[] {
+  return rec.outcome?.waits as Record<string, unknown>[]
+}
+
+/** An advance job of the run `chat` started: same run, log, pin, grants and model config; `over` replaces fields. */
+export function advanceJob(chat: Job, over: Partial<JobInput> = {}): Job {
+  return Job.parse({ ...chat, kind: "advance", deliver: [], ...over })
 }
 
 /** The office's handle on an in-process worker, as handlers receive it. */

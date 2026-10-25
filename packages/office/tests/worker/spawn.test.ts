@@ -6,7 +6,6 @@ import type net from "node:net"
 import path from "node:path"
 import { inspect } from "node:util"
 import { inspectRun } from "@ngocbh/yian/run"
-import { pending } from "@ngocbh/yian/tools"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { INHERITED_ENV as LAUNCH_ENV } from "../../src/install/launch.ts"
 import { args, killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
@@ -14,9 +13,9 @@ import { selfCommand } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
-import { Job } from "../../src/worker/job.ts"
+import type { Job } from "../../src/worker/job.ts"
 import { EXIT_FAILED, EXIT_ORPHANED, jobTools } from "../../src/worker/main.ts"
-import type { AskRequest, OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
+import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
 import {
   INHERITED_ENV,
   RegistryClosed,
@@ -29,7 +28,19 @@ import {
 import { fakeLlm } from "../chat/helpers.ts"
 import { cwdOf, envEntries, envNames, isGone, ps, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
-import { base, channelPair, makeJob, makeRegistry, officeEnd, Recorder, runWorker, writeFiles } from "./helpers.ts"
+import {
+  advanceJob,
+  base,
+  channelPair,
+  makeJob,
+  makeRegistry,
+  officeEnd,
+  Pending,
+  Recorder,
+  runWorker,
+  waitsOf,
+  writeFiles,
+} from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -174,28 +185,6 @@ export async function run(inputs: { dir: string }) {
 `
 
 /** Handlers granting group `g`, whose tool `big` returns 5,000 characters. */
-/** A `Recorder` whose questions all answer later: it records each and returns yian's pending marker. */
-class Pending extends Recorder {
-  override askUser(_worker: unknown, request: AskRequest): unknown {
-    this.asked.push(request)
-    return pending()
-  }
-}
-
-/** The waits of the result `rec` recorded. */
-function waitsOf(rec: Recorder): Record<string, unknown>[] {
-  return rec.outcome?.waits as Record<string, unknown>[]
-}
-
-/** An advance job of the run `chat` started that completes the pending call `callId` with `output`. */
-function completing(chat: Job, callId: unknown, output: unknown): Job {
-  return Job.parse({
-    ...chat,
-    kind: "advance",
-    deliver: [{ id: "c1", op: "complete", call_id: callId, result: { output } }],
-  })
-}
-
 function bigTool(): Recorder {
   const big: OfficeTool = {
     description: "Big.",
@@ -810,7 +799,10 @@ test("a model ask user call reaches the office", async () => {
   expect([asked!.question, asked!.node_id, asked!.options]).toEqual(["Which city?", null, ["Paris", "Rome"]])
   expect(rec.outcome?.status).toBe("waiting")
   expect(waitsOf(rec)).toEqual([expect.objectContaining({ node: "reply", tool: "ask_user", settled: false })])
-  const answered = completing(chat, waitsOf(rec)[0]!.call_id, "Paris")
+  const callId = String(waitsOf(rec)[0]!.call_id)
+  const answered = advanceJob(chat, {
+    deliver: [{ id: "c1", op: "complete", call_id: callId, result: { output: "Paris" } }],
+  })
   const done = await runWorker(registry, answered, new Recorder(), sessionDir, { env: fake.env() })
   expect(done.replies).toEqual([{ type: "deliver_reply", id: "c1", seq: expect.any(Number) }])
   expect([done.outcome?.status, done.outcome?.output]).toEqual(["succeeded", "Booked Paris."])
@@ -831,7 +823,10 @@ test("an ask node asks through the same stub", async () => {
   expect(rec.outcome?.status).toBe("waiting")
   expect(waitsOf(rec)).toEqual([expect.objectContaining({ node: "ask", tool: "ask", settled: false })])
   expect(fake.requests()).toEqual([])
-  const answered = completing(chat, waitsOf(rec)[0]!.call_id, "hi there")
+  const callId = String(waitsOf(rec)[0]!.call_id)
+  const answered = advanceJob(chat, {
+    deliver: [{ id: "c1", op: "complete", call_id: callId, result: { output: "hi there" } }],
+  })
   const done = await runWorker(registry, answered, new Recorder(), sessionDir, { env: fake.env() })
   expect(done.replies).toEqual([{ type: "deliver_reply", id: "c1", seq: expect.any(Number) }])
   expect([done.outcome?.status, done.outcome?.output]).toEqual(["succeeded", "hello"])

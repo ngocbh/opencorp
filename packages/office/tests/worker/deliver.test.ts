@@ -2,26 +2,27 @@
 import fs from "node:fs"
 import path from "node:path"
 import { foldRunLog, inspectRun, PoolCommitRecord } from "@ngocbh/yian/run"
-import { pending } from "@ngocbh/yian/tools"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { type FakeLLM, LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { ChannelClosed, type Frame } from "../../src/worker/channel.ts"
-import { Job, type JobInput } from "../../src/worker/job.ts"
+import type { Job, JobInput } from "../../src/worker/job.ts"
 import { EXIT_FAILED, EXIT_OK } from "../../src/worker/main.ts"
-import type { AskRequest } from "../../src/worker/rpc.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
 import {
+  advanceJob,
   base,
   inProcessWorker,
   lastFrame,
   makeJob,
   makeRegistry,
+  Pending,
   Recorder,
   recordFrames,
   run,
   startWorker,
   type TestWorker,
+  waitsOf,
 } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -345,11 +346,6 @@ test("a refused delivery reply holds only the reason", async () => {
   expect(await office.recv()).toEqual({ type: "deliver_reply", id: "c1", refused: "unknown_call" })
 })
 
-/** An advance job of the run `chat` started: same run, log, pin, grants and model config; `over` replaces fields. */
-function advanceJob(chat: Job, over: Partial<JobInput> = {}): Job {
-  return Job.parse({ ...chat, kind: "advance", deliver: [], ...over })
-}
-
 /** A `Recorder` that also lists, in arrival order, the RunResumed event and each reply's id. */
 class ResumeOrder extends Recorder {
   readonly seen: string[] = []
@@ -404,7 +400,7 @@ test("an advance job with advance false only delivers", async () => {
   const send = { id: "s1", op: "send", inbox: "messages", event: "hi" } as const
   const rec = await run(advanceJob(chat, { advance: false, deliver: [send] }), new Recorder())
   expect(rec.outcome).toMatchObject({ type: "result", status: "waiting", run_id: "r1", output: null, failure: null })
-  expect((rec.outcome?.waits as Record<string, unknown>[])[0]!.settled).toBe(true)
+  expect(waitsOf(rec)[0]!.settled).toBe(true)
   expect(rec.order).toEqual(["deliver_reply", "result"])
   expect(sent(chat, "messages")).toEqual(["hi"])
   expect(logPayloads(chat, "node_woken")).toEqual([])
@@ -544,14 +540,6 @@ test("an advance job sends the key only to the model", async () => {
   expect(fs.readFileSync(chat.log, "utf8")).not.toContain(key)
 })
 
-/** A `Recorder` whose questions all answer later: it records each and returns yian's pending marker. */
-class Pending extends Recorder {
-  override askUser(_worker: unknown, request: AskRequest): unknown {
-    this.asked.push(request)
-    return pending()
-  }
-}
-
 test("one advance job with send and complete deliveries runs a turn", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Off we go." })
@@ -559,7 +547,7 @@ test("one advance job with send and complete deliveries runs a turn", async () =
   const asking = await run(chat, new Pending(), { env: fake.env() })
   expect(asking.outcome?.status, String(asking.outcome?.message)).toBe("waiting")
   expect(asking.asked.map((request) => [request.question, request.node_id])).toEqual([["Where to?", "asked"]])
-  const waits = asking.outcome?.waits as Record<string, unknown>[]
+  const waits = waitsOf(asking)
   expect(waits.map((wait) => [wait.node, wait.tool]).sort()).toEqual([
     ["asked", "ask"],
     ["heard", "take"],
@@ -593,7 +581,7 @@ test("an offline interrupt reply lists the closed calls", async () => {
   const asking = await run(chat, new Pending(), { env: fake.env() })
   expect(asking.outcome?.status, String(asking.outcome?.message)).toBe("waiting")
   expect(asking.asked.map((request) => request.question)).toEqual(["Which city?"])
-  const waits = asking.outcome?.waits as Record<string, unknown>[]
+  const waits = waitsOf(asking)
   expect(waits).toEqual([expect.objectContaining({ node: "reply", tool: "ask_user", settled: false })])
   const job = advanceJob(chat, { deliver: [{ id: "i1", op: "interrupt", inbox: "steers" }] })
   const rec = await run(job, new Recorder(), { env: fake.env() })

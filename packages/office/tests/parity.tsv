@@ -434,7 +434,7 @@ worker/test_channel.py::test_jsonable_unpacks_observer_values	changed	packages/o
 worker/test_fake_llm.py	ported	packages/office/tests/worker/fake_llm.test.ts	—	O2-20
 worker/test_job.py	ported	packages/office/tests/worker/job.test.ts	—	O2-22b
 worker/test_job.py::test_a_job_round_trips_through_json	changed	packages/office/tests/worker/job.test.ts::a job round trips through json	design §2.4: no session memory (#1001), env (R2 m5) or feedback (D32)	O3-1
-worker/test_job.py::test_bad_jobs_are_refused	changed	packages/office/tests/worker/job.test.ts::bad jobs are refused	design §2.4: also refuses backward, feedback, learnable (D32), session memory (#1001), env (R2 m5); yian #1078: a group named ask (the ask slot) too; 4a revision: also refuses kind resume, advance false on chat, malformed deliveries	O3-17
+worker/test_job.py::test_bad_jobs_are_refused	changed	packages/office/tests/worker/job.test.ts::bad jobs are refused	design §2.4: also refuses backward, feedback, learnable (D32), session memory (#1001), env (R2 m5); yian #1078: a group named ask (the ask slot) too; 4a revision: also refuses kind resume, advance false on chat, malformed deliveries	O4a-0a
 worker/test_job.py::test_tool_spec_of_a_base_tool_uses_the_given_name	changed	packages/office/tests/worker/job.test.ts::tool spec uses the given name	D20: explicit schemas, no langchain tools	O3-1
 worker/test_job.py::test_tool_spec_of_a_function	changed	packages/office/tests/worker/job.test.ts::tool spec takes the description and parameters the tool declares	D20: explicit schemas, no introspection	O3-1
 worker/test_job_loading.py	open	—	split: O3-3 → O4a-2	O4a-2

@@ -237,9 +237,16 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
   error(worker: W, frame: Frame): void
   /** The worker process is gone; called once, last. */
   exited(worker: W, returncode: number | null): void
-  /** Answers a question for `worker.job.session_id`, or returns Yian's `pending()` to answer it later. */
+  /**
+   * Answers a question for `worker.job.session_id`. It may return Yian's `pending()` instead: the reply is then
+   * `{pending: true}`, and the office answers the call later by its `call_id` from the run's `waits`.
+   */
   askUser(worker: W, request: AskRequest): unknown
-  /** Runs tool `name` of `group` with `args`; the result must be JSON data, or Yian's `pending()` to answer later. */
+  /**
+   * Runs tool `name` of `group` with `args`; the result must be JSON data. It may return Yian's `pending()` instead:
+   * the reply is then `{pending: true}`, and the office answers the call later by its `call_id` from the run's
+   * `waits`.
+   */
   toolCall(worker: W, group: string, name: string, args: Record<string, unknown>): unknown
   /** `MarkdownStore.read` on the office store named `store`. */
   storeRead(

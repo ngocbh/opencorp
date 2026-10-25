@@ -489,6 +489,11 @@ test("an office tool error is the tool result", async () => {
   expect((missing as Error).message).toBe("error: no tool 'shout' in group 'toolbox'")
 })
 
+/** The frames of `type` among the `recorded` ones, decoded. */
+function sentFrames(recorded: string[], type: string): Frame[] {
+  return recorded.map((text) => JSON.parse(text) as Frame).filter((frame) => frame.type === type)
+}
+
 test("ask user sends the six keys and returns the answer", async () => {
   class Answering extends BaseHandlers {
     request: AskRequest | undefined
@@ -518,11 +523,6 @@ test("ask user sends the six keys and returns the answer", async () => {
     "ask_user failed: nobody is here to answer",
   )
 })
-
-/** The frames of `type` among the `recorded` ones, decoded. */
-function sentFrames(recorded: string[], type: string): Frame[] {
-  return recorded.map((text) => JSON.parse(text) as Frame).filter((frame) => frame.type === type)
-}
 
 /** Handlers whose questions and tools all answer later: each returns yian's pending marker. */
 class Later extends BaseHandlers {
