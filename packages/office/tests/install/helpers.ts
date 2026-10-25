@@ -19,11 +19,11 @@ export class Runner {
   }
 }
 
-/** A host whose home is `dir` and whose commands go to `runner`; nothing real runs. Its clock moves only when it
- *  sleeps, so waiting takes no real time. */
+/** A host whose home is `dir` and whose commands go to `runner` (a `Runner`, or any stand-in with its `run`);
+ *  nothing real runs. Its clock moves only when it sleeps, so waiting takes no real time. */
 export function makeHost(
   dir: string,
-  runner: Runner,
+  runner: Pick<Host, "run">,
   {
     platform = "darwin",
     which = () => null,
@@ -43,7 +43,7 @@ export function makeHost(
     platform,
     userHome: dir,
     uid: 501,
-    run: runner.run,
+    run: (argv) => runner.run(argv),
     spawn,
     which,
     sleep: async (ms) => {

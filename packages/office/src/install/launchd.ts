@@ -1,0 +1,185 @@
+/** The office as a macOS launch agent: a plist in `~/Library/LaunchAgents` loaded with `launchctl`. */
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import util from "node:util"
+import { writeIfChanged } from "./files.ts"
+import { type Completed, type Host, type Launch, ServiceError } from "./launch.ts"
+
+/** How many times `launchctl bootstrap` is tried: straight after `bootout` it can fail with EIO while launchd is
+ *  still tearing the old job down, and a few short retries cover it. */
+export const BOOTSTRAP_TRIES = 3
+
+/** What `launchctl bootstrap` exits with when it keeps failing with EIO, as it does for a `gui/<uid>` domain from
+ *  a session outside the GUI login. */
+export const EIO = 5
+
+/** The agent's launchd label, `com.opencorp.<name>`. */
+export function label(launch: Launch): string {
+  return `com.opencorp.${launch.name}`
+}
+
+/** Where the agent's plist goes: `~/Library/LaunchAgents/<label>.plist`. */
+export function plistPath(launch: Launch, host: Host): string {
+  return path.join(host.userHome, "Library", "LaunchAgents", `${label(launch)}.plist`)
+}
+
+type PlistValue = string | number | boolean | PlistValue[] | { [key: string]: PlistValue }
+
+// plistlib refuses these; it rewrites CR as a newline, which would change the value, so CR is refused too.
+const CONTROL = /[\u0000-\u0008\u000b-\u001f]/
+
+function escape(text: string): string {
+  const bad = CONTROL.exec(text)
+  if (bad) {
+    const code = bad[0].charCodeAt(0).toString(16).padStart(4, "0")
+    throw new ServiceError(`a launchd plist can't hold the control character U+${code}`)
+  }
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+}
+
+/** `value` as plistlib's XML writer lays it out at `depth` tabs, one line per element. */
+function element(value: PlistValue, depth: number, lines: string[]): void {
+  const tabs = "\t".repeat(depth)
+  if (typeof value === "string") lines.push(`${tabs}<string>${escape(value)}</string>`)
+  else if (typeof value === "boolean") lines.push(`${tabs}<${value}/>`)
+  else if (typeof value === "number") lines.push(`${tabs}<integer>${value}</integer>`)
+  else if (Array.isArray(value)) {
+    if (!value.length) return void lines.push(`${tabs}<array/>`)
+    lines.push(`${tabs}<array>`)
+    for (const item of value) element(item, depth + 1, lines)
+    lines.push(`${tabs}</array>`)
+  } else {
+    const keys = Object.keys(value).sort()
+    if (!keys.length) return void lines.push(`${tabs}<dict/>`)
+    lines.push(`${tabs}<dict>`)
+    for (const key of keys) {
+      lines.push(`${tabs}\t<key>${escape(key)}</key>`)
+      element(value[key]!, depth + 1, lines)
+    }
+    lines.push(`${tabs}</dict>`)
+  }
+}
+
+/** `value` as an XML property list, byte for byte what Python's `plistlib.dumps` writes (keys sorted). */
+function dumps(value: PlistValue): Buffer {
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+  ]
+  element(value, 0, lines)
+  lines.push("</plist>", "")
+  return Buffer.from(lines.join("\n"), "utf8")
+}
+
+/**
+ * The launch agent: the daemon, restarted only when it fails (at most every 10 s), output appended to the log, with
+ * room for 4096 open files. Throws `ServiceError` if a value holds a control character other than tab and newline.
+ */
+export function plist(launch: Launch): Buffer {
+  return dumps({
+    Label: label(launch),
+    ProgramArguments: [...launch.argv],
+    WorkingDirectory: launch.cwd,
+    EnvironmentVariables: { ...launch.env },
+    StandardOutPath: launch.log,
+    StandardErrorPath: launch.log,
+    RunAtLoad: true,
+    KeepAlive: { SuccessfulExit: false },
+    ThrottleInterval: 10,
+    SoftResourceLimits: { NumberOfFiles: 4096 },
+  })
+}
+
+/** Why launchd doesn't have this office's agent loaded, or null if it does. */
+export async function notLoaded(launch: Launch, host: Host): Promise<string | null> {
+  const done = await host.run(["launchctl", "print", `gui/${host.uid}/${label(launch)}`])
+  return done.code === 0 ? null : done.stderr.trim() || `launchctl print exited ${done.code}`
+}
+
+/** A system error's text as C's `strerror` (and Python's `OSError.strerror`) words it, capitalised; the
+ *  runtime's own text is lower-case. Anything else is its message. */
+function strerror(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | null)?.code
+  const errnos: Record<string, number> = os.constants.errno
+  if (typeof code === "string" && Object.hasOwn(errnos, code)) {
+    const text = util.getSystemErrorMessage(-errnos[code]!)
+    return text.charAt(0).toUpperCase() + text.slice(1)
+  }
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Writes the plist and loads it, or kickstarts it if it is already loaded and unchanged.
+ *
+ * Throws `ServiceError` if the plist can't be made or written, or if `launchctl` is missing or refuses; in the
+ * latter case the agent is booted out and its plist removed, so the next login doesn't start a service onboarding
+ * gave up on.
+ */
+export async function install(launch: Launch, host: Host): Promise<void> {
+  const file = plistPath(launch, host)
+  const domain = `gui/${host.uid}`
+  const service = `${domain}/${label(launch)}`
+  const probe = await host.run(["launchctl", "print", service])
+  if (probe.code === 127) throw new ServiceError(`launchctl: ${probe.stderr.trim()}`)
+  const loaded = probe.code === 0
+  const data = plist(launch)
+  let changed: boolean
+  try {
+    changed = writeIfChanged(file, data)
+  } catch (error) {
+    throw new ServiceError(`can't write ${file}: ${strerror(error)}`)
+  }
+  if (loaded && !changed) return start(launch, host)
+  if (loaded) await host.run(["launchctl", "bootout", service])
+  let done!: Completed
+  for (let attempt = 0; attempt < BOOTSTRAP_TRIES; attempt++) {
+    done = await host.run(["launchctl", "bootstrap", domain, file])
+    if (done.code === 0) return
+    await host.sleep(500 * (attempt + 1))
+  }
+  fs.rmSync(file, { force: true })
+  const stderr = done.stderr.trim()
+  if (done.code === EIO) {
+    // launchctl suggests re-running as root, but the agent belongs in the GUI login's session.
+    const reason = stderr ? stderr.split(/\r\n|\r|\n/)[0] : "Input/output error"
+    throw new ServiceError(
+      `launchctl bootstrap ${domain} failed: ${reason}; this happens outside a GUI login` +
+        " (over SSH or in a detached tmux): run `opencorp onboard` from Terminal in your GUI login," +
+        " or pass `--service tmux`",
+    )
+  }
+  throw new ServiceError(`launchctl bootstrap ${domain} failed: ${stderr}`)
+}
+
+/**
+ * Starts the installed launch agent if it isn't running.
+ *
+ * Throws `ServiceError` if `launchctl kickstart` refuses; the agent is then booted out and its plist removed, so
+ * the next login doesn't start a service the caller moved off.
+ */
+export async function start(launch: Launch, host: Host): Promise<void> {
+  const service = `gui/${host.uid}/${label(launch)}`
+  const done = await host.run(["launchctl", "kickstart", service])
+  if (done.code !== 0) {
+    await host.run(["launchctl", "bootout", service])
+    fs.rmSync(plistPath(launch, host), { force: true })
+    throw new ServiceError(`launchctl kickstart failed: ${done.stderr.trim()}`)
+  }
+}
+
+/**
+ * Boots the launch agent out and removes its plist; says what was done, or null if there was nothing.
+ *
+ * With `recorded` (launchd is the recorded mode) the agent is booted out even without its plist, since a loaded
+ * agent outlives its file until logout.
+ */
+export async function uninstall(launch: Launch, host: Host, recorded = false): Promise<string | null> {
+  const file = plistPath(launch, host)
+  if (!fs.existsSync(file) && !recorded) return null
+  // Not loaded (exit 3) or no launchctl at all both leave only the file to remove.
+  await host.run(["launchctl", "bootout", `gui/${host.uid}/${label(launch)}`])
+  fs.rmSync(file, { force: true })
+  return `launchd: booted out ${label(launch)} and removed ${file}`
+}
