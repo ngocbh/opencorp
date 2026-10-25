@@ -68,8 +68,10 @@ The office is being ported to TypeScript on TS Yian (#302). Until the cut-over:
   TS office. It gets bug fixes only, each through its own issue. Its code and tests are the spec
   the port is checked against. Nobody runs the office itself during the port, so `main`'s TUI, CLI
   and HQ app may stop working with it as soon as the protocol changes. Run its tests
-  (`uv run pytest -q`) in any PR that touches it. Touch `packages/corp_office`, `pyproject.toml` or
-  `uv.lock` only for such a fix or when a port issue names them. The cut-over deletes it, with no
+  (`uv run pytest -q packages/corp_office/tests --ignore=packages/corp_office/tests/e2e`) in any PR
+  that touches it; the CLI now runs the TS install, so its e2e suite runs only per milestone.
+  Touch `packages/corp_office`, `pyproject.toml` or `uv.lock` only for such a fix or when a port
+  issue names them. The cut-over deletes it, with no
   migration of its data.
 - **The TS office** lives in `packages/office` (`@opencorp/office`) and mirrors the Python
   packages: `opencorp/<pkg>/<mod>.py` becomes `packages/office/src/<pkg>/<mod>.ts`, and
@@ -116,7 +118,7 @@ the shared record of the design decisions.
 
 ```
 git clone --recurse-submodules https://github.com/ngocbh/opencorp.git && cd opencorp
-uv sync        # uses a uv-managed Python 3.12
+uv sync        # the frozen Python office's tests; uses a uv-managed Python 3.12
 bun install
 ```
 
@@ -135,7 +137,8 @@ a model-written project could then shadow `bun` or `opencorp` itself.
 
 ## Tests
 
-- Python: `uv run pytest -q packages/corp_office/tests/<path>` (all: `uv run pytest -q`).
+- Python: `uv run pytest -q packages/corp_office/tests/<path>` (all:
+  `uv run pytest -q packages/corp_office/tests --ignore=packages/corp_office/tests/e2e`).
 - TS: `(cd packages/<pkg> && bun test)`; from the root, `bun run test` and `bun run typecheck`
   run each package's own `test` and `typecheck` scripts, except yian's (`@ngocbh/yian` in
   `packages/yian/ts`), which the yian repo tests.

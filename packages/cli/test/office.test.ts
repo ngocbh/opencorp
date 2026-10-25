@@ -1,81 +1,125 @@
 import { afterEach, expect, test } from "bun:test"
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { selfCommand } from "@opencorp/office/platform"
 import { doctor } from "../src/commands/doctor"
 import { offboard } from "../src/commands/offboard"
 import { restart } from "../src/commands/restart"
 import { start } from "../src/commands/start"
 import { main } from "../src/main"
-import { type Deps, REPO, officeAnswers, realDeps, syncThenInstall, venvPython } from "../src/office"
+import { type Deps, install, installSpawn, officeAnswers, realDeps } from "../src/office"
 import { createFakeOffice } from "@opencorp/tui/stub"
+
+const WRAPPER = path.resolve(import.meta.dir, "../bin/opencorp")
 
 const saved = { ...process.env }
 afterEach(() => {
   process.env = { ...saved }
 })
 
-/** Deps whose programs all exist and exit `codes[program]` (0 if absent), recording each call. */
-function fake(codes: Record<string, number> = {}, missing: string[] = []) {
-  const calls: { argv: string[]; cwd?: string }[] = []
-  const errors: string[] = []
+/** Deps whose spawn records each call and resolves to `code`, run in the real home dir. */
+function fake(code = 0, spawnCwd = () => fs.realpathSync(os.homedir())) {
+  const calls: { argv: string[]; cwd: string; env: Record<string, string> }[] = []
   const deps: Deps = {
-    exists: (p) => !missing.includes(p),
-    which: (cmd) => (missing.includes(cmd) ? null : `/bin/${cmd}`),
-    spawn: async (argv, cwd) => {
-      calls.push({ argv, cwd })
-      return codes[path.basename(argv[0])] ?? 0
+    spawn: async (argv, { cwd, env }) => {
+      calls.push({ argv, cwd, env })
+      return code
     },
-    error: (m) => void errors.push(m),
+    spawnCwd,
   }
-  return { deps, calls, errors }
+  return { deps, calls }
 }
 
-test("the repo is this checkout, and its venv's python runs the install", () => {
-  expect(fs.existsSync(path.join(REPO, "pyproject.toml"))).toBe(true)
-  expect(venvPython()).toBe(path.join(REPO, ".venv", "bin", "python"))
+/** The arguments `installSpawn` passes the install for `command` and `args`, run from `/somewhere`. */
+function passed(command: string, args: string[]) {
+  return installSpawn(command, args, {}, () => "/somewhere").argv.slice(selfCommand().length + 2)
+}
+
+test("installSpawn runs the office install entry in this binary with the setup env and the home dir as cwd", () => {
+  const spec = installSpawn(
+    "doctor",
+    ["--home", "/h"],
+    { PATH: "/bin", BUN_OPTIONS: "x", NODE_OPTIONS: "y", LD_PRELOAD: "z", SSH_AUTH_SOCK: "s" },
+    () => "/somewhere",
+  )
+  expect(spec.argv).toEqual([...selfCommand(), "install", "doctor", "--home", "/h"])
+  expect(spec.env).toEqual({ PATH: "/bin", SSH_AUTH_SOCK: "s" })
+  expect(spec.cwd).toBe(fs.realpathSync(os.homedir()))
 })
 
-test("syncThenInstall syncs the venv, then runs the Python onboarding with the flags it was given", async () => {
-  const { deps, calls } = fake({ python: 5 })
-  expect(await syncThenInstall("onboard", ["--service", "tmux", "--from", "git@example.com:acme.git"], deps)).toBe(5)
-  expect(calls).toEqual([
-    { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO },
-    {
-      argv: [venvPython(), "-m", "opencorp.install", "onboard", "--service", "tmux", "--from", "git@example.com:acme.git"],
-      cwd: undefined,
-    },
-  ])
+test("a relative home is made absolute against the callers folder; ~ and empty values pass unchanged", () => {
+  expect(passed("start", ["--home", "rel"])).toEqual(["--home", "/somewhere/rel"])
+  expect(passed("start", ["--home=rel"])).toEqual(["--home=/somewhere/rel"])
+  expect(passed("start", ["--home", "~x"])).toEqual(["--home", "/somewhere/~x"])
+  for (const args of [["--home", "~/x"], ["--home=~"], ["--home="], ["--home", "-x"], ["--home", "/abs"], ["--home"]])
+    expect(passed("start", args)).toEqual(args)
+  expect(passed("doctor", ["--home", "a", "--home=b"])).toEqual(["--home", "/somewhere/a", "--home=/somewhere/b"])
+  const env = (value: string) => installSpawn("start", [], { OPENCORP_HOME: value }, () => "/somewhere").env
+  expect(env("rel")).toEqual({ OPENCORP_HOME: "/somewhere/rel" })
+  for (const value of ["~/o", "", "/abs"]) expect(env(value)).toEqual({ OPENCORP_HOME: value })
 })
 
-test("syncThenInstall syncs the venv, then runs the Python init with the flags it was given", async () => {
-  const { deps, calls } = fake({ python: 4 })
-  expect(await syncThenInstall("init", ["--company", "Acme", "--remote", "git@example.com:acme.git"], deps)).toBe(4)
-  expect(calls).toEqual([
-    { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO },
-    {
-      argv: [venvPython(), "-m", "opencorp.install", "init", "--company", "Acme", "--remote", "git@example.com:acme.git"],
-      cwd: undefined,
-    },
-  ])
+test("a relative local from path is made absolute; urls and scp paths pass unchanged", () => {
+  const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-from-")))
+  try {
+    fs.mkdirSync(path.join(work, "acme"))
+    const from = (command: string, args: string[]) =>
+      installSpawn(command, args, {}, () => work).argv.slice(selfCommand().length + 2)
+    expect(from("onboard", ["--from", "acme"])).toEqual(["--from", path.join(work, "acme")])
+    expect(from("onboard", ["--from=acme"])).toEqual([`--from=${path.join(work, "acme")}`])
+    for (const value of ["missing", "https://x/y.git", "git@host:acme.git", "~/acme", "/abs"])
+      expect(from("onboard", ["--from", value])).toEqual(["--from", value])
+    expect(from("init", ["--from", "acme", "--from=acme"])).toEqual(["--from", "acme", "--from=acme"])
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true })
+  }
 })
 
-test("syncThenInstall stops when uv is missing, naming the command", async () => {
-  const noUv = fake({}, ["uv", path.join(os.homedir(), ".local", "bin", "uv")])
-  expect(await syncThenInstall("init", [], noUv.deps)).toBe(1)
-  expect(noUv.calls).toEqual([])
-  expect(noUv.errors.join("\n")).toContain("opencorp init: uv not found")
+test("the callers folder is read only when a relative value needs it", () => {
+  const gone = () => {
+    throw Object.assign(new Error("no cwd"), { code: "ENOENT" })
+  }
+  expect(installSpawn("start", ["--home", "/abs"], {}, gone).argv.slice(-2)).toEqual(["--home", "/abs"])
+  expect(installSpawn("start", [], { OPENCORP_HOME: "~/o" }, gone).argv.at(-1)).toBe("start")
+  expect(installSpawn("start", ["--home", "rel"], {}, gone).argv.slice(-2)).toEqual(["--home", "rel"])
+  expect(installSpawn("start", [], { OPENCORP_HOME: "rel" }, gone).env).toEqual({ OPENCORP_HOME: "rel" })
 })
 
-test("offboard runs the Python offboarding with its flags and never syncs the venv", async () => {
-  const { deps, calls } = fake({ python: 1 })
-  expect(await offboard(["--yes", "--delete-company", "--home", "/h"], deps)).toBe(1)
-  expect(calls).toEqual([
-    { argv: [venvPython(), "-m", "opencorp.install", "offboard", "--yes", "--delete-company", "--home", "/h"], cwd: undefined },
-  ])
-  const bare = fake({}, [venvPython()])
-  expect(await offboard([], bare.deps)).toBe(1)
-  expect(bare.calls).toEqual([])
+test("a missing home folder is one line and exit 1", async () => {
+  const { deps, calls } = fake(0, () => {
+    throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" })
+  })
+  const err: string[] = []
+  const error = console.error
+  console.error = (...a: unknown[]) => void err.push(a.join(" "))
+  try {
+    expect(await install("start", [], deps)).toBe(1)
+  } finally {
+    console.error = error
+  }
+  expect(err).toEqual([`opencorp start: your home folder ${os.homedir()} doesn't exist`])
+  expect(calls).toEqual([])
+})
+
+test("start, restart, doctor and offboard run the install with their flags and return its exit code", async () => {
+  const runs = [
+    { cmd: "start", run: start, code: 3, flags: ["--home", "/h"] },
+    { cmd: "restart", run: restart, code: 1, flags: ["--home", "/h"] },
+    { cmd: "doctor", run: doctor, code: 1, flags: ["--home", "/h"] },
+    { cmd: "offboard", run: offboard, code: 1, flags: ["--yes", "--delete-company", "--home", "/h"] },
+  ]
+  for (const { cmd, run, code, flags } of runs) {
+    const { deps, calls } = fake(code)
+    expect(await run(flags, deps)).toBe(code)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].argv).toEqual([...selfCommand(), "install", cmd, ...flags])
+    expect(calls[0].cwd).toBe(fs.realpathSync(os.homedir()))
+    expect(calls[0].env.BUN_OPTIONS).toBeUndefined()
+  }
+  const { commands } = await import("../src/main")
+  expect(commands.restart.summary).toBe("Stop the office and start it again")
 })
 
 test("init and offboard are commands with their own summaries", async () => {
@@ -86,86 +130,76 @@ test("init and offboard are commands with their own summaries", async () => {
   expect((await commands.offboard.load()).run).toBeFunction()
 })
 
-test("syncThenInstall finds uv in ~/.local/bin when it isn't on PATH", async () => {
-  const { deps, calls } = fake({}, ["uv"])
-  expect(await syncThenInstall("onboard", [], deps)).toBe(0)
-  expect(calls[0].argv).toEqual([path.join(os.homedir(), ".local", "bin", "uv"), "sync", "--frozen", "--quiet"])
-})
-
-test("syncThenInstall stops when uv is missing or the sync fails", async () => {
-  const noUv = fake({}, ["uv", path.join(os.homedir(), ".local", "bin", "uv")])
-  expect(await syncThenInstall("onboard", [], noUv.deps)).toBe(1)
-  expect(noUv.calls).toEqual([])
-  expect(noUv.errors.join("\n")).toContain("uv not found")
-  const failing = fake({ uv: 2 })
-  expect(await syncThenInstall("onboard", [], failing.deps)).toBe(2)
-  expect(failing.calls).toHaveLength(1)
-})
-
-test("doctor runs the Python checks with its flags, or says to onboard when there is no venv", async () => {
-  const { deps, calls } = fake({ python: 1 })
-  expect(await doctor(["--home", "/h"], deps)).toBe(1)
-  expect(calls).toEqual([{ argv: [venvPython(), "-m", "opencorp.install", "doctor", "--home", "/h"], cwd: undefined }])
-  const bare = fake({}, [venvPython()])
-  expect(await doctor([], bare.deps)).toBe(1)
-  expect(bare.calls).toEqual([])
-  expect(bare.errors.join("\n")).toContain("run `opencorp onboard`")
-})
-
-test("what the CLI sets in process.env reaches the programs it runs", async () => {
-  process.env.OPENCORP_SPAWN_TEST = "set"
-  expect(await realDeps.spawn(["/bin/sh", "-c", 'test "$OPENCORP_SPAWN_TEST" = set'])).toBe(0)
-})
-
-test("doctor tells the Python checks which bun runs it, for the commands it prints", async () => {
-  delete process.env.OPENCORP_BUN
-  let seen: string | undefined
-  const { deps } = fake()
-  deps.spawn = async () => {
-    seen = process.env.OPENCORP_BUN
-    return 0
+test("what the CLI passes reaches the programs it runs", async () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-spawn-")))
+  try {
+    const argv = ["/bin/sh", "-c", 'test "$X" = set && test "$(pwd -P)" = "$D"']
+    expect(await realDeps.spawn(argv, { cwd: dir, env: { X: "set", D: dir, PATH: "/usr/bin:/bin" } })).toBe(0)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
   }
-  expect(await doctor([], deps)).toBe(0)
-  expect(seen).toBe(process.execPath)
 })
 
-test("start runs the Python start with its flags", async () => {
-  const { deps, calls } = fake({ python: 3 })
-  expect(await start(["--home", "/h"], deps)).toBe(3)
-  expect(calls).toEqual([{ argv: [venvPython(), "-m", "opencorp.install", "start", "--home", "/h"], cwd: undefined }])
-})
-
-test("restart syncs the venv, then runs the Python restart with its flags", async () => {
-  const { deps, calls } = fake({ python: 1 })
-  expect(await restart(["--home", "/h"], deps)).toBe(1)
-  expect(calls).toEqual([
-    { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO },
-    { argv: [venvPython(), "-m", "opencorp.install", "restart", "--home", "/h"], cwd: undefined },
-  ])
-  const { commands } = await import("../src/main")
-  expect(commands.restart.summary).toBe("Stop the office and start it again")
-})
-
-// CI's ts job has no venv; the office job tests `start` itself.
-test.skipIf(!fs.existsSync(venvPython()))(
-  "`opencorp start` on an OPENCORP_HOME with no office exits 3 with the onboarding hint from the real Python",
-  async () => {
-    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-home-")))
+test(
+  "`opencorp start` on a home with no office exits 3 with the setup hint from the TS install",
+  () => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-start-")))
     try {
-      const proc = Bun.spawn([process.execPath, path.join(REPO, "packages", "cli", "src", "main.ts"), "start"], {
-        env: { ...process.env, OPENCORP_HOME: home },
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "pipe",
+      const home = path.join(tmp, "oh")
+      fs.mkdirSync(home)
+      fs.mkdirSync(path.join(tmp, "h"))
+      const result = spawnSync(WRAPPER, ["start"], {
+        cwd: tmp,
+        env: { HOME: path.join(tmp, "h"), PATH: "/usr/bin:/bin", OPENCORP_BUN: process.execPath, OPENCORP_HOME: home },
+        input: "",
+        encoding: "utf8",
+        timeout: 20_000,
       })
-      const stderr = await new Response(proc.stderr).text()
-      expect(await proc.exited).toBe(3)
-      expect(stderr).toContain(`no office at ${home} yet; run \`opencorp init\` to create one, or \`opencorp onboard --from URL\``)
+      expect(result.error).toBeUndefined()
+      expect(result.stderr).toContain(
+        `opencorp: no office at ${home} yet; run \`opencorp init\` to create one, or \`opencorp onboard --from URL\` to join one`,
+      )
+      expect(result.status).toBe(3)
     } finally {
-      fs.rmSync(home, { recursive: true, force: true })
+      fs.rmSync(tmp, { recursive: true, force: true })
     }
   },
-  30_000,
+  60_000,
+)
+
+test(
+  "a relative --home names the folder it was typed in, and setup never reads that folders or HOMEs .env or bunfig.toml",
+  () => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-rel-")))
+    try {
+      const work = path.join(tmp, "w")
+      const home = path.join(tmp, "h")
+      for (const dir of [work, home]) {
+        fs.mkdirSync(dir)
+        fs.writeFileSync(path.join(dir, "bunfig.toml"), 'preload = ["./p.ts"]\n')
+        fs.writeFileSync(
+          path.join(dir, "p.ts"),
+          `import { writeFileSync } from "node:fs"\nwriteFileSync(${JSON.stringify(path.join(dir, "MARKER"))}, "")\n`,
+        )
+        fs.writeFileSync(path.join(dir, ".env"), "OPENCORP_HOME=/nonexistent\n")
+      }
+      const result = spawnSync(WRAPPER, ["start", "--home", "rel"], {
+        cwd: work,
+        env: { HOME: home, PATH: "/usr/bin:/bin", OPENCORP_BUN: process.execPath },
+        input: "",
+        encoding: "utf8",
+        timeout: 20_000,
+      })
+      expect(result.error).toBeUndefined()
+      expect(result.stderr).toContain(`no office at ${path.join(work, "rel")} yet`)
+      expect(result.status).toBe(3)
+      expect(fs.existsSync(path.join(work, "MARKER"))).toBe(false)
+      expect(fs.existsSync(path.join(home, "MARKER"))).toBe(false)
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  },
+  60_000,
 )
 
 test("a running office answers the probe with one request; no socket is no office", async () => {

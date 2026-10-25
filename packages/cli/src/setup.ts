@@ -1,6 +1,6 @@
 // `opencorp init` and `opencorp onboard`: the install asks its questions on the TUI's setup screen, and the
 // office opens once it's done. Without a terminal to draw on, the install runs as it always did.
-import { type Deps, realDeps, syncThenInstall, syncVenv, venvPython } from "./office"
+import { type Deps, install, installSpawn, realDeps } from "./office"
 
 /** What setting up touches beyond running the Python side; tests pass fakes. */
 export interface SetupDeps extends Deps {
@@ -10,6 +10,8 @@ export interface SetupDeps extends Deps {
   screen(argv: string[]): Promise<number>
   /** Opens the office as `opencorp` with no arguments does; resolves to its exit code. */
   openOffice(): Promise<number>
+  /** Says what went wrong on stderr. */
+  error(message: string): void
 }
 
 /** Whether the setup screen can draw here: stdin and stdout are terminals, and TERM names one that moves the cursor. */
@@ -28,6 +30,7 @@ export const realSetupDeps: SetupDeps = {
   },
   // With no office answering, this says so and exits 3, so setUp needs no check of its own.
   openOffice: async () => (await import("./commands/tui")).run([]),
+  error: (message) => console.error(message),
 }
 
 /** The value of the last `--home X` or `--home=X` in `argv`, as Python's argparse takes it. */
@@ -50,16 +53,14 @@ export async function setUp(
   deps: SetupDeps = realSetupDeps,
 ): Promise<number> {
   const plain = argv.some((a) => a === "--provider-stdin" || a === "-h" || a === "--help")
-  if (plain || !deps.terminal()) return syncThenInstall(command, argv, deps)
+  if (plain || !deps.terminal()) return install(command, argv, deps)
   // The office that opens after must be the one the install set up, which --home names. The value is kept as
   // given: Python and the TUI's paths both expand a leading `~` and resolve it against the cwd they share.
   const home = homeFlag(argv)
   if (home) process.env.OPENCORP_HOME = home
-  const synced = await syncVenv(command, deps)
-  if (synced !== 0) return synced
   let code: number
   try {
-    code = await deps.screen([venvPython(), "-m", "opencorp.install", command, "--json-prompts", ...argv])
+    code = await deps.screen(installSpawn(command, ["--json-prompts", ...argv]).argv)
   } catch (e) {
     deps.error(
       `opencorp ${command}: can't show the setup screen: ${e instanceof Error ? e.message : e}; pass the provider with --provider-stdin instead`,
