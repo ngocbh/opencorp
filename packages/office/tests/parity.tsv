@@ -964,6 +964,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/rpc.test.ts::object method names are never tools or stores	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::reply to never rejects	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/spawn.test.ts::a closed registry refuses new workers	O2-5 handoff: the worker registry refuses new starts once closed (a request handler can still run during the stop's 5 s handler wait)	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a fifo planted as the worker log is refused at once	design §2.4, §6 rule 6: the worker log is a regular file opened without blocking	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::a grandchild of a spawned worker does not hold the channel open	design §2.4; O0-10 P1: the grandchild rule at spawn level, through a company CODE node; by fd identity with a positive control, as channel.test.ts's grandchild test	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::a record that cannot be written leaves no worker behind	design §2.4: a spawn that fails before the worker is registered kills its group and closes its channel	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::a steer left frame without its fields is a bad frame	design §2.4: a frame the office can't read closes the channel, as Python's reader did	O3-4
@@ -972,6 +973,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/spawn.test.ts::a worker shows no job when inspected or serialized	design §6.5, §6 rule 1: the worker holds the job and its provider key	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::a worker starts only once	design §2.4: one start frame and one reader per worker, so the exit steps run once	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::a worker that keeps running after its channel closes is killed after the grace	design §6.6: a worker still running after its channel closed is killed after the grace, before the office awaits it	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a workers group is killed as soon as its leader exits	design §6.6: the group is killed as soon as the runtime reports the leader's exit, so the reap window stays one loop turn	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::a workers group is killed at its leaders exit while a detached child holds the channel	design §6.6: the group is killed as soon as the runtime reports the leader's exit, so the reap window stays one loop turn, whatever holds the channel	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::an async handler that rejects does not stop the reader	§6 rule 13; design §2.4: a failing handler never stops the reader	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::close does not wait on a worker that stopped reading	P1, design §6.6: the stop is never awaited, so a worker that stopped reading is killed after the deadline	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::close stops the run first	P1, O3-3 handoff: close sends stop first, so the run ends as stopped	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::the worker env names are the launch allowlist	design §6.5 (one allowlist for daemon and worker)	O2-11b

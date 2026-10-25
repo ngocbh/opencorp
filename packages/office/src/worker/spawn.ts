@@ -56,8 +56,9 @@ export type SpawnLog = (level: "INFO" | "WARNING" | "ERROR", line: string) => vo
  *
  * The worker runs in `sessionDir` (made 0700 if missing; never a workspace, so nothing a model wrote is in its cwd)
  * as the leader of a new process group, with `selfSpawnEnv(env)` as its environment and its stdout and stderr
- * appended to `sessionDir/worker.log` (0600, never through a symlink). Returns the process and the office's channel,
- * whose frames are capped at `maxFrame`. Throws if the process can't be started.
+ * appended to `sessionDir/worker.log` (0600, never through a symlink, and only a regular file: the open never blocks,
+ * so a FIFO there is refused). Returns the process and the office's channel, whose frames are capped at `maxFrame`.
+ * Throws if the log can't be opened or the process can't be started.
  */
 export function spawnProcess(
   sessionDir: string,
@@ -65,10 +66,13 @@ export function spawnProcess(
   { maxFrame }: { maxFrame?: number } = {},
 ): { child: ChildProcess; channel: Channel } {
   fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 })
-  const { O_WRONLY, O_APPEND, O_CREAT, O_NOFOLLOW } = fs.constants
-  const fd = fs.openSync(path.join(sessionDir, "worker.log"), O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
+  const { O_WRONLY, O_APPEND, O_CREAT, O_NOFOLLOW, O_NONBLOCK } = fs.constants
+  // O_NONBLOCK: opening a FIFO with no reader would otherwise block the office's loop; it fails with ENXIO instead.
+  const flags = O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK
+  const fd = fs.openSync(path.join(sessionDir, "worker.log"), flags, 0o600)
   let child: ChildProcess
   try {
+    if (!fs.fstatSync(fd).isFile()) throw new Error("the worker log is not a regular file")
     const [command, ...args] = selfCommand()
     child = spawn(command, [...args, "__worker"], {
       cwd: sessionDir,
@@ -111,7 +115,8 @@ export class Worker implements JobWorker {
 
   /** A worker over `child`, a process `spawnProcess` started, and the office's `channel` to it. Build it in the
    *  spawn's tick, before the child's `exit` can be emitted: an `exit` listener added after the event never fires.
-   *  `onExit` runs once the worker is gone, before `handlers.exited`. */
+   *  The worker's group is killed as soon as its leader exits. `onExit` runs once the worker is gone, before
+   *  `handlers.exited`. */
   constructor(
     job: Job,
     child: ChildProcess,
@@ -134,10 +139,17 @@ export class Worker implements JobWorker {
         log(level, line)
       } catch {}
     }
-    this.#exit =
-      child.exitCode !== null || child.signalCode !== null
-        ? Promise.resolve(returncodeOf(child.exitCode, child.signalCode))
-        : new Promise((resolve) => child.once("exit", (code, signal) => resolve(returncodeOf(code, signal))))
+    if (child.exitCode !== null || child.signalCode !== null) {
+      this.#exit = Promise.resolve(returncodeOf(child.exitCode, child.signalCode))
+      this.#leaderExited()
+    } else {
+      this.#exit = new Promise((resolve) =>
+        child.once("exit", (code, signal) => {
+          this.#leaderExited()
+          resolve(returncodeOf(code, signal))
+        }),
+      )
+    }
     this.#done = new Promise((resolve) => (this.#settle = resolve))
   }
 
@@ -269,14 +281,7 @@ export class Worker implements JobWorker {
         new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), EXIT_GRACE_MS))),
       ])
       clearTimeout(timer)
-      if (!exited) {
-        this.kill()
-      } else if (!this.#killed) {
-        // Kills what the worker left in its group (a subprocess of the run, say). The runtime has already reaped the
-        // leader, so in theory its pid (the group id) could be reused before this kill if the group was empty by
-        // then; every path the office starts (timeout, stop, abandon) kills before awaiting the exit.
-        killGroup(this.pgid)
-      }
+      if (!exited) this.kill()
       this.returncode = await this.#exit
       this.#attempt(() => this.#onExit(this))
       this.#notify("exited", () => this.handlers.exited(this, this.returncode))
@@ -285,11 +290,25 @@ export class Worker implements JobWorker {
     }
   }
 
-  #notify(name: string, call: () => void): void {
-    try {
-      call()
-    } catch (error) {
+  // Kills what the worker left in its group (a subprocess of the run, say), whatever the channel does: a holder of
+  // fd 3 outside the group can keep it open long after the leader is gone.
+  #leaderExited(): void {
+    if (this.#killed) return
+    this.#killed = true
+    // The runtime has just reaped the leader, so in theory its pid (the group id) could be reused before this kill
+    // if the group was empty by then; running in the exit listener keeps that window to one turn of the loop.
+    killGroup(this.pgid)
+  }
+
+  // An async handler's rejection is caught too: unhandled, it would take the office down.
+  #notify(name: string, call: () => unknown): void {
+    const failed = (error: unknown) =>
       this.#log("ERROR", `worker ${this.sessionId} handler ${name} failed (${errorName(error)})`)
+    try {
+      const out = call()
+      if (typeof (out as PromiseLike<unknown> | null)?.then === "function") Promise.resolve(out).catch(failed)
+    } catch (error) {
+      failed(error)
     }
   }
 

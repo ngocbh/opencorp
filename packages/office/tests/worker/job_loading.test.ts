@@ -8,7 +8,8 @@ import { pickSkills } from "../../src/worker/main.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { tempDir } from "../helpers.ts"
-import { base, lastFrame, makeJob, Recorder, run, spawnWorker, writeFiles } from "./helpers.ts"
+import { openStore } from "../store/helpers.ts"
+import { base, makeJob, makeRegistry, Recorder, run, runWorker, writeFiles } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -110,29 +111,33 @@ test("profile memory reads through the office", async () => {
 
 test("a planted env file or bunfig preload in the worker cwd is not loaded", async () => {
   const fake = await fakeLlm()
-  /** Runs the planted flow in a worker process in `cwd` with `env` added; returns its last frame and exit. */
-  const peek = async (cwd: string, env: Record<string, string>) => {
+  /** Spawns a worker running the planted flow through the registry, in a session dir holding `files`, with `env`
+   *  added; returns its last frame, its exit and the session dir. */
+  const peek = async (files: Record<string, string>, env: Record<string, string>) => {
     const where = base()
     writeFiles(where.pin, { "flows/planted.yaml": PLANTED })
-    const { office, exited } = spawnWorker({ cwd, env: { ...fake.env(), ...env } })
-    await office!.send({ type: "start", job: makeJob(where, "flows/planted.yaml", { inputs: {} }) })
-    const frame = await lastFrame(office!)
-    office!.closeSend()
-    return { frame, exit: await exited }
+    const sessionDir = writeFiles(path.join(where.root, "sessions", "s1"), files)
+    const job = makeJob(where, "flows/planted.yaml", { inputs: {} })
+    const rec = await runWorker(makeRegistry(openStore()), job, new Recorder(), sessionDir, {
+      env: { ...fake.env(), ...env },
+    })
+    return { frame: rec.outcome!, exit: rec.returncode, sessionDir }
   }
   // The control: PLANTED in the worker's environment does reach the node.
-  const control = await peek(tempDir(), { PLANTED: "from the env" })
+  const control = await peek({}, { PLANTED: "from the env" })
   expect(control.frame.output, String(control.frame.message)).toBe("from the env")
-  const cwd = writeFiles(tempDir(), {
-    ".env": "PLANTED=1\n",
-    "bunfig.toml": 'preload = ["./evil.ts"]\n',
-    "evil.ts": 'import { writeFileSync } from "node:fs"\nwriteFileSync("MARKER", "")\n',
-  })
-  const { frame, exit } = await peek(cwd, {})
+  const { frame, exit, sessionDir } = await peek(
+    {
+      ".env": "PLANTED=1\n",
+      "bunfig.toml": 'preload = ["./evil.ts"]\n',
+      "evil.ts": 'import { writeFileSync } from "node:fs"\nwriteFileSync("MARKER", "")\n',
+    },
+    {},
+  )
   expect(frame.type, String(frame.message)).toBe("result")
   expect(frame.status).toBe("succeeded")
   expect(frame.output).toBeNull()
-  expect(exit).toEqual({ code: 0, signal: null })
-  expect(fs.existsSync(path.join(cwd, "MARKER"))).toBe(false)
+  expect(exit).toBe(0)
+  expect(fs.existsSync(path.join(sessionDir, "MARKER"))).toBe(false)
   expect(fake.requests()).toEqual([])
 })

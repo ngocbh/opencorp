@@ -92,6 +92,34 @@ function script(body: string): { child: ChildProcess; channel: Channel } {
   return { child, channel }
 }
 
+/** A script leader that starts a child holding its fd 3 (in the leader's group, or its own if `detached`), writes the
+ *  child's pid to `file`, and exits 0 half a second later. */
+function holdingLeader(file: string, { detached }: { detached: boolean }): { child: ChildProcess; channel: Channel } {
+  return script(`
+    import { spawn } from "node:child_process"
+    const holder = spawn(process.execPath, [...${JSON.stringify(BUN_FLAGS)}, "-e", "setTimeout(() => {}, 60000)"], {
+      detached: ${detached},
+      stdio: ["ignore", "ignore", "ignore", 3],
+    })
+    fs.writeFileSync(${JSON.stringify(file)}, String(holder.pid))
+    setTimeout(() => process.exit(0), 500)
+  `)
+}
+
+/** The pid and start time of the holder `holdingLeader` wrote to `file`, read while its leader still runs; the
+ *  holder is killed at test end if it is still that process. */
+async function holderOf(file: string): Promise<{ pid: number; started: number | null }> {
+  const pid = Number(await waitFor(() => fs.existsSync(file) && fs.readFileSync(file, "utf8"), { what: "the pid" }))
+  const started = startTime(pid)
+  onTestFinished(() => {
+    // The holder can exit between the check and the kill.
+    try {
+      if (started !== null && sameProcess(pid, started)) process.kill(pid, "SIGKILL")
+    } catch {}
+  })
+  return { pid, started }
+}
+
 /** How many fds this process has open. */
 function fdCount(): number {
   return fs.readdirSync(process.platform === "linux" ? "/proc/self/fd" : "/dev/fd").length
@@ -278,7 +306,7 @@ test("a steer left frame without its fields is a bad frame", async () => {
 })
 
 test("a worker that keeps running after its channel closes is killed after the grace", async () => {
-  // Never reads or closes fd 3: on Linux the worker also holds fd 4, so closing fd 3 wouldn't end the channel.
+  // Neither reads nor ends the channel, so only the grace kill can end it.
   const { child, channel } = script(`
     fs.writeSync(3, ${BAD_FRAME})
     setTimeout(() => {}, 60_000)
@@ -291,6 +319,46 @@ test("a worker that keeps running after its channel closes is killed after the g
   expect(await worker.wait(15_000)).toBe(-9)
   expect(performance.now() - began).toBeGreaterThanOrEqual(4500)
   expect(lines).toEqual([["WARNING", BAD_FRAME_LINE]])
+})
+
+test("a workers group is killed as soon as its leader exits", async () => {
+  const file = path.join(tempDir(), "holder")
+  const { child, channel } = holdingLeader(file, { detached: false })
+  const worker = workerOver(child, channel, new Recorder())
+  await worker.start()
+  const began = performance.now()
+  const holder = await holderOf(file)
+  expect(holder.started).not.toBeNull()
+  // The holder keeps the channel open, so only the group kill at the leader's exit lets the worker finish.
+  expect(await worker.wait(15_000)).toBe(0)
+  expect(performance.now() - began).toBeLessThan(4000)
+  expect(isGone(holder.pid, holder.started)).toBe(true)
+})
+
+test("a workers group is killed at its leaders exit while a detached child holds the channel", async () => {
+  const kill = process.kill.bind(process)
+  const groupKills: number[] = []
+  let pgid = 0
+  const spy = spyOn(process, "kill").mockImplementation((pid, signal) => {
+    if (pid === -pgid) groupKills.push(performance.now())
+    return kill(pid, signal)
+  })
+  onTestFinished(() => spy.mockRestore())
+  const file = path.join(tempDir(), "holder")
+  const { child, channel } = holdingLeader(file, { detached: true })
+  pgid = child.pid!
+  const worker = workerOver(child, channel, new Recorder())
+  let exitedAt = 0
+  child.once("exit", () => (exitedAt = performance.now()))
+  await worker.start()
+  const holder = await holderOf(file)
+  expect(holder.started).not.toBeNull()
+  await waitFor(() => groupKills.length > 0, { timeout: 5000, what: "the group kill" })
+  expect(exitedAt).toBeGreaterThan(0)
+  expect(Math.abs(groupKills[0]! - exitedAt)).toBeLessThan(1000)
+  // The holder, in its own group, still holds the channel: the kill didn't wait for the channel to end.
+  expect(isGone(holder.pid, holder.started)).toBe(false)
+  expect(groupKills).toHaveLength(1)
 })
 
 test("a worker starts only once", async () => {
@@ -495,6 +563,26 @@ test("a failed run is a result", async () => {
 test("a failing handler does not stop the reader", async () => {
   class Broken extends Recorder {
     override event(): void {
+      throw new Error("handler bug")
+    }
+  }
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const { lines, log } = recordingLog()
+  const registry = makeRegistry(store, { log })
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fake.script({ content: "fine" })
+  const rec = await runWorker(registry, makeJob(where), new Broken(), sessionDir, { env: fake.env() })
+  expect(rec.returncode).toBe(0)
+  expect(rec.outcome?.output).toBe("fine")
+  expect(lines).toContainEqual(["ERROR", "worker s1 handler event failed (Error)"])
+  expect(lines.filter(([, line]) => line.includes("handler bug"))).toEqual([])
+})
+
+test("an async handler that rejects does not stop the reader", async () => {
+  class Broken extends Recorder {
+    override async event(): Promise<void> {
       throw new Error("handler bug")
     }
   }
@@ -751,6 +839,20 @@ test("the worker log is never followed through a link", async () => {
   fs.symlinkSync(target, path.join(sessionDir, "worker.log"))
   await expect(registry.spawn(makeJob(where), sessionDir, new Recorder())).rejects.toMatchObject({ code: "ELOOP" })
   expect(fs.readFileSync(target, "utf8")).toBe("untouched\n")
+  expect(registry.get("s1")).toBeUndefined()
+  expect(store.listWorkers()).toEqual([])
+})
+
+test("a fifo planted as the worker log is refused at once", async () => {
+  const where = base()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 })
+  execFileSync("/usr/bin/mkfifo", [path.join(sessionDir, "worker.log")], { timeout: 5000 })
+  const began = performance.now()
+  await expect(registry.spawn(makeJob(where), sessionDir, new Recorder())).rejects.toMatchObject({ code: "ENXIO" })
+  expect(performance.now() - began).toBeLessThan(2000)
   expect(registry.get("s1")).toBeUndefined()
   expect(store.listWorkers()).toEqual([])
 })
