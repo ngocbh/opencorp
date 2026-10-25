@@ -152,6 +152,7 @@ test.skipIf(process.platform !== "linux" || !sandboxAvailable())("a call sees no
   const policy = makePolicy().make()
   let leader = 0
   const stop = new AbortController()
+  onTestFinished(() => stop.abort())
   const first = sh(policy, "cat; sleep 30", {
     stdin: "a",
     signal: stop.signal,
