@@ -472,7 +472,9 @@ runs/test_records.py::test_a_waiting_or_idle_sessions_current_run_has_its_status
 runs/test_records.py::test_current_nodes_by_status	changed	packages/office/tests/runs/records.test.ts::current nodes by status	O4a-1: turns are takes, not questions; nodes from the actor or the index's waits (O4b-5 handoff)	O4b-6
 runs/test_records.py::test_participants_come_from_answers_and_side_chat_openers	changed	packages/office/tests/runs/records.test.ts::participants come from answers and side chat openers	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask; the side chat's parent comes from yian's index (§5.1)	O4b-6
 runs/test_records.py::test_two_live_reads_merge_so_a_run_live_in_either_is_live	changed	packages/office/tests/runs/records.test.ts::two live reads merge so a run live in either is live	the actor's memory is one map by run id; no waking or debrief sets (D32)	O4b-6
-runs/test_sweep.py	open	—	—	O4b-6
+runs/test_sweep.py	ported	packages/office/tests/runs/sweep.test.ts	—	O4b-6
+runs/test_sweep.py::test_the_start_sweep_interrupts_what_an_earlier_office_left_open	changed	packages/office/tests/runs/sweep.test.ts::the start sweep interrupts what an earlier office left open	rule 1 stand-in: the store and a yian lookup instead of the harness; debriefs return with learning (D32)	O4b-6
+runs/test_sweep.py::test_the_start_sweep_leaves_a_resumed_sessions_current_run_to_restore	changed	packages/office/tests/runs/sweep.test.ts::the start sweep leaves a resumed sessions current run to restore	the resume under the same run is O4a-6's restore; here the current run is left open	O4b-6
 sandbox/test_bwrap.py	ported	packages/office/tests/sandbox/bwrap.test.ts	—	O1-9
 sandbox/test_escape.py	ported	packages/office/tests/sandbox/escape.test.ts	rule 1: through run.ts; file tools through the real __fs-helper under its profile, shell stand-ins for the rest; Bun for the interpreter	O1-10
 sandbox/test_escape.py::test_macos_other_process_environ_is_hidden	changed	packages/office/tests/sandbox/escape.test.ts::macos other process environ is readable	§6.1: Seatbelt doesn't gate KERN_PROCARGS2; the Python xfail pinned as the known leak	O1-10
@@ -1220,6 +1222,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/records.test.ts::a waiting run shows idle when only its turn waits and waiting otherwise	§5.1 status mapping	O4b-6
 —	new	packages/office/tests/runs/records.test.ts::an ended runs inspection is read once	§5.1 rule 4: the answer is cached per run, since an ended log does not change	O4b-6
 —	new	packages/office/tests/runs/records.test.ts::reading the index logs its warnings by path and an unreadable index is empty	§5.1 readRunIndex on the main thread; §6 rule 13: paths and error type names only	O4b-6
+—	new	packages/office/tests/runs/sweep.test.ts::the start sweep leaves a run yian ended to its outcome	§5.1 rule 1: the office end never hides yian's outcome (O1-3 handoff)	O4b-6
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv equals the Python argv	§6.1 golden argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::the checkout helper binds bun and its entry read only	§2.5, O0-10 P7	O1-9
@@ -1307,6 +1310,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/store/questions.test.ts::questions are read by a long run id list in one statement	one json_each bind (O1-3's getRuns); Python's chunked read was pinned by store/test_runs.py	O1-4
 —	new	packages/office/tests/store/runs.test.ts::a runs config is recorded at spawn	resume or fresh run reads it (§5.1, §8.4)	O1-3
 —	new	packages/office/tests/store/runs.test.ts::an end time needs an end reason	§5.1	O1-3
+—	new	packages/office/tests/store/runs.test.ts::open runs are the rows with no end reason	§5.1: the start sweep's office-row query	O4b-6
 —	new	packages/office/tests/store/sessions.test.ts::a field with no column needs a store migration	CLAUDE.md's store-migration rule (§5.1)	O1-3
 —	new	packages/office/tests/store/sessions.test.ts::a session counts its turns from zero	design §5.1, 4a-revision §1: sessions.turns counts finished replies (0002)	O4a-0b
 —	new	packages/office/tests/tools/build.test.ts::the office tool specs equal the saved copy	D20 (Python's compare-only tools/test_spec_dump.py: all four groups through groupSpecs equal tests/fixtures/tool_specs.json)	O2-22b

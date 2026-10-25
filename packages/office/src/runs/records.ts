@@ -12,6 +12,7 @@ import {
   type RunStatus,
   type WaitInfo,
 } from "@ngocbh/yian/run"
+import { LIVE } from "../chat/state.ts"
 import { MAIN_CHAT } from "../chat/turns.ts"
 import {
   REASON_CHARS,
@@ -22,7 +23,7 @@ import {
   type Store,
 } from "../store/store.ts"
 import { errorName } from "../worker/rpc.ts"
-import { COULDNT_RESUME, COULDNT_START, DEBRIEF, FLOWS, WORKER_STOPPED } from "./outcomes.ts"
+import { COULDNT_RESUME, COULDNT_START, DEBRIEF, FLOWS, OFFICE_STOPPED, WORKER_STOPPED } from "./outcomes.ts"
 
 export const NO_OUTCOME = "ended without a recorded outcome"
 /** The most children a run's page shows with it (the newest). */
@@ -157,6 +158,15 @@ export class YianRuns {
     return out
   }
 
+  /** Whether yian ended the run (succeeded, failed or cancelled): its index row says so, else its log does. */
+  ended(runId: string): boolean {
+    const status = this.#index.get(runId)?.status
+    if (status && ENDED.has(status)) return true
+    // A row from before the run ended (an update that failed) must not hide its end, so the log is asked too.
+    const seen = this.#inspections.get(runId)?.status
+    return !!seen && ENDED.has(seen)
+  }
+
   /** What yian says about the run: its index row, with a failed run's failure from its log; the log's answer for a
    *  run the index has no end for or whose row is stale; `null` when neither knows the run. */
   ofRun(runId: string): YianRun | null {
@@ -201,6 +211,22 @@ export function readIndex(runsDir: string, log: (line: string) => void = () => {
     log(`run index read failed (${errorName(error)})`)
     return new Map()
   }
+}
+
+/** Ends, as the office stopped and with no end time, each run an earlier office left open: the office rows with no
+ *  end reason, but each live composer session's current run (restore resumes, replaces or fails it, or it sleeps)
+ *  and the runs yian ended. Returns the run ids it wrote, in run-id order.
+ *
+ *  The office end goes only on runs yian didn't end: in the run status rule an office end reason wins over yian's
+ *  status, so it would hide yian's outcome. */
+export function sweep(store: Store, yian: YianRuns): string[] {
+  const keep = new Set(
+    store
+      .listSessions({ status: [...LIVE] })
+      .flatMap((s) => (s.harness === "composer" && s.run_ids.length > 0 ? [s.run_ids.at(-1)!] : [])),
+  )
+  const rest = store.openRuns().flatMap((r) => (keep.has(r.runId) || yian.ended(r.runId) ? [] : [r.runId]))
+  return store.sweepRuns(rest, OFFICE_STOPPED)
 }
 
 /** A run's status, reason and failed node; the first rule that matches wins. */

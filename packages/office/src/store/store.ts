@@ -1087,6 +1087,11 @@ export class Store {
     return new Map(rows.map((r) => [r.run_id as string, runRow(r)]))
   }
 
+  /** The rows with no end reason, by run id. */
+  openRuns(): RunRow[] {
+    return this.db.prepare("SELECT * FROM runs WHERE end_reason IS NULL ORDER BY run_id").all().map(runRow)
+  }
+
   /** A session's rows, oldest first. */
   runsOfSession(sessionId: string): RunRow[] {
     return this.db
