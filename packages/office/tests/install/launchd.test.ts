@@ -143,8 +143,9 @@ test("start kickstarts the loaded agent", async () => {
 })
 
 test("a control character in a value is a service error", async () => {
-  // plistlib refuses these and rewrites CR as a newline; the plist refuses CR too.
-  for (const value of ["a\u0001b", "a\rb"]) {
+  // plistlib refuses these and rewrites CR as a newline; the plist refuses CR too, and a lone surrogate, which
+  // can't be encoded.
+  for (const value of ["a\u0001b", "a\rb", "a\ud800b"]) {
     const bad = launch("/Users/owner/.opencorp", {
       command: ["/opt/opencorp/bin/opencorp"],
       environ: { PATH: "/usr/bin:/bin", HOME: "/Users/owner", LANG: value },
@@ -157,4 +158,15 @@ test("a control character in a value is a service error", async () => {
     expect(fs.existsSync(plistAt(home))).toBe(false)
     expect(runner.calls).toEqual([["launchctl", "print", SERVICE]])
   }
+})
+
+test("a plist that cant be written is a service error and only the probe ran", async () => {
+  const home = tempDir()
+  fs.mkdirSync(path.join(home, "Library"))
+  fs.writeFileSync(path.join(home, "Library", "LaunchAgents"), "")
+  const runner = new Runner([[["launchctl", "print"], 113, "Could not find service"]])
+  const done = launchd.install(ownerLaunch(), makeHost(home, runner))
+  await expect(done).rejects.toThrow(ServiceError)
+  await expect(done).rejects.toThrow(`can't write ${plistAt(home)}: Not a directory`)
+  expect(runner.calls).toEqual([["launchctl", "print", SERVICE]])
 })

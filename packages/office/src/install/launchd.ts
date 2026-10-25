@@ -1,8 +1,7 @@
 /** The office as a macOS launch agent: a plist in `~/Library/LaunchAgents` loaded with `launchctl`. */
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
-import util from "node:util"
+import { strerror } from "../sandbox/fs_helper.ts"
 import { writeIfChanged } from "./files.ts"
 import { type Completed, type Host, type Launch, ServiceError } from "./launch.ts"
 
@@ -13,6 +12,9 @@ export const BOOTSTRAP_TRIES = 3
 /** What `launchctl bootstrap` exits with when it keeps failing with EIO, as it does for a `gui/<uid>` domain from
  *  a session outside the GUI login. */
 export const EIO = 5
+
+// The line breaks Python's `str.splitlines` splits on.
+const LINE_BREAK = /\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/
 
 /** The agent's launchd label, `com.opencorp.<name>`. */
 export function label(launch: Launch): string {
@@ -26,14 +28,17 @@ export function plistPath(launch: Launch, host: Host): string {
 
 type PlistValue = string | number | boolean | PlistValue[] | { [key: string]: PlistValue }
 
-// plistlib refuses these; it rewrites CR as a newline, which would change the value, so CR is refused too.
+// plistlib refuses these; it rewrites CR as a newline, which would change the value, so CR is refused too. A lone
+// surrogate can't be encoded as UTF-8 (Python raises; Buffer.from would put U+FFFD in its place).
 const CONTROL = /[\u0000-\u0008\u000b-\u001f]/
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/
 
 function escape(text: string): string {
-  const bad = CONTROL.exec(text)
+  const bad = CONTROL.exec(text) ?? LONE_SURROGATE.exec(text)
   if (bad) {
     const code = bad[0].charCodeAt(0).toString(16).padStart(4, "0")
-    throw new ServiceError(`a launchd plist can't hold the control character U+${code}`)
+    const what = CONTROL.test(bad[0]) ? "the control character" : "a lone surrogate"
+    throw new ServiceError(`a launchd plist can't hold ${what} U+${code}`)
   }
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
 }
@@ -50,7 +55,8 @@ function element(value: PlistValue, depth: number, lines: string[]): void {
     for (const item of value) element(item, depth + 1, lines)
     lines.push(`${tabs}</array>`)
   } else {
-    const keys = Object.keys(value).sort()
+    // plistlib sorts by code point; UTF-8 bytes order the same way, UTF-16 units don't.
+    const keys = Object.keys(value).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
     if (!keys.length) return void lines.push(`${tabs}<dict/>`)
     lines.push(`${tabs}<dict>`)
     for (const key of keys) {
@@ -98,18 +104,6 @@ export async function notLoaded(launch: Launch, host: Host): Promise<string | nu
   return done.code === 0 ? null : done.stderr.trim() || `launchctl print exited ${done.code}`
 }
 
-/** A system error's text as C's `strerror` (and Python's `OSError.strerror`) words it, capitalised; the
- *  runtime's own text is lower-case. Anything else is its message. */
-function strerror(error: unknown): string {
-  const code = (error as NodeJS.ErrnoException | null)?.code
-  const errnos: Record<string, number> = os.constants.errno
-  if (typeof code === "string" && Object.hasOwn(errnos, code)) {
-    const text = util.getSystemErrorMessage(-errnos[code]!)
-    return text.charAt(0).toUpperCase() + text.slice(1)
-  }
-  return error instanceof Error ? error.message : String(error)
-}
-
 /**
  * Writes the plist and loads it, or kickstarts it if it is already loaded and unchanged.
  *
@@ -129,7 +123,9 @@ export async function install(launch: Launch, host: Host): Promise<void> {
   try {
     changed = writeIfChanged(file, data)
   } catch (error) {
-    throw new ServiceError(`can't write ${file}: ${strerror(error)}`)
+    // Python's `exc.strerror or exc`.
+    const reason = strerror(error) ?? (error instanceof Error ? error.message : String(error))
+    throw new ServiceError(`can't write ${file}: ${reason}`)
   }
   if (loaded && !changed) return start(launch, host)
   if (loaded) await host.run(["launchctl", "bootout", service])
@@ -143,7 +139,7 @@ export async function install(launch: Launch, host: Host): Promise<void> {
   const stderr = done.stderr.trim()
   if (done.code === EIO) {
     // launchctl suggests re-running as root, but the agent belongs in the GUI login's session.
-    const reason = stderr ? stderr.split(/\r\n|\r|\n/)[0] : "Input/output error"
+    const reason = stderr ? stderr.split(LINE_BREAK)[0] : "Input/output error"
     throw new ServiceError(
       `launchctl bootstrap ${domain} failed: ${reason}; this happens outside a GUI login` +
         " (over SSH or in a detached tmux): run `opencorp onboard` from Terminal in your GUI login," +
