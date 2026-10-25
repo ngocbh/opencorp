@@ -15,7 +15,10 @@ function notBuilt(mode: string): number {
 /** The office daemon, one per home. It exits as soon as `main` returns, so a live handle (a git child, a timer)
  *  can't keep an old daemon running after it released the lock, and at once on a crash. */
 export const daemonMain: ModeMain = async (argv) => {
-  // A daemon started from a shell will re-exec itself here, into the office's env and cwd.
+  // A shell's or a service manager's env and cwd never reach the daemon: it re-execs once into the office's
+  // (same pid), or exits; design §6.5.
+  const pinned = (await import("./install/launch.ts")).pinDaemon(argv)
+  if (pinned !== undefined) process.exit(pinned)
   const daemon = await import("./daemon/main.ts")
   daemon.exitOnCrash()
   process.exit(await daemon.main(argv))

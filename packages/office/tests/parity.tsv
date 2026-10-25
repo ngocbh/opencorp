@@ -83,7 +83,7 @@ daemon/test_app.py::test_every_table_route_is_served[POST-/feedback-body28]	defe
 daemon/test_app.py::test_every_table_route_is_served[POST-/profile-proposals/01JA1H0000000000000000000A/apply-None]	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O2-2
 daemon/test_app.py::test_every_table_route_is_served[POST-/profiles/minh/manager-body25]	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O2-2
 daemon/test_app.py::test_lifespan_starts_and_stops_the_office	dropped	—	design §2.3: no app lifespan; daemon/main.ts calls start and stop around serving (O2-5, test_main.py)	O2-2
-daemon/test_auth.py	open	—	split: O2-3 → O2-11b; O2-3's tests are in packages/office/tests/daemon/auth.test.ts	O2-11b
+daemon/test_auth.py	ported	packages/office/tests/daemon/auth.test.ts	—	O2-11b
 daemon/test_bus.py	ported	packages/office/tests/daemon/bus.test.ts	—	O2-2
 daemon/test_bus.py::test_publish_and_close_racing_a_closing_loop_are_dropped	dropped	—	design §3.3: one thread; publishes fan out synchronously, so there is no loop to attach and no cross-thread order	O2-2
 daemon/test_bus.py::test_publish_before_attach_is_dropped	dropped	—	design §3.3: one thread; publishes fan out synchronously, so there is no loop to attach and no cross-thread order	O2-2
@@ -191,7 +191,9 @@ install/test_fallback.py	open	—	—	O2-12
 install/test_init.py	open	—	—	O2-17
 install/test_interview.py	open	—	—	O2-17
 install/test_json_prompts.py	ported	packages/office/tests/install/json_prompts.test.ts	—	O2-13a
-install/test_launch.py	open	—	—	O2-11b
+install/test_launch.py	ported	packages/office/tests/install/launch.test.ts,packages/office/tests/install/tools.test.ts	—	O2-11b
+install/test_launch.py::test_repo_is_this_checkout	changed	packages/office/tests/install/tools.test.ts::repo is this checkout	design §6.1 (no REPO: the install path, the checkout root in a checkout)	O2-11b
+install/test_launch.py::test_the_launch_command_is_the_daemons_with_absolute_paths	changed	packages/office/tests/install/launch.test.ts::the launch command is the daemons with absolute paths	design §9.3 (selfCommand() + daemon --home H, cwd the office dir)	O2-11b
 install/test_launchd.py	open	—	—	O2-12
 install/test_legacy.py	dropped	—	legacy.py goes; no migration (D24, D4)	O0-9
 install/test_main.py	open	—	—	O2-13b
@@ -386,7 +388,7 @@ worker/test_rpc.py::test_a_remote_tool_sends_validated_args_with_defaults	change
 worker/test_rpc.py::test_an_office_tool_error_is_the_tool_result	changed	packages/office/tests/worker/rpc.test.ts::an office tool error is the tool result	design §2.4: an error reply throws ReportedToolError; the AGENT loop gives the model its message as the result	O3-2
 worker/test_rpc.py::test_store_replies_are_plain_json	changed	packages/office/tests/worker/rpc.test.ts::store replies are plain json	design §2.4: TS has no Path; a store's synchronous tuple is the reply	O3-2
 worker/test_rpc.py::test_store_value_and_os_errors_keep_their_codes	changed	packages/office/tests/worker/rpc.test.ts::store value and os errors keep their codes	design §4.1, Y3: a TS store throws RangeError for an unknown version and bad text alike: unknown_version from a read, invalid from a write or for a TypeError	O3-2
-worker/test_spawn.py	open	—	—	O3-4
+worker/test_spawn.py	open	—	split: O2-11b → O3-4; the two worker_env tests are in packages/office/tests/worker/spawn.test.ts	O3-4
 worker/test_steering.py	ported	packages/office/tests/worker/steering.test.ts	—	O3-3
 worker/test_steering.py::test_a_finished_node_refuses_steers_and_interrupts	changed	packages/office/tests/worker/steering.test.ts::a finished node refuses interrupts	design §2.4, D33: yian's Steering takes an AbortSignal; interrupted is the signal's aborted; yian #1089: steers go to the agent's steer inbox through yian's send; unread steers stay in the inbox, so only interrupts are refused	O3-17
 worker/test_steering.py::test_a_node_is_cut_once_it_reads_its_interrupt	changed	packages/office/tests/worker/steering.test.ts::a node is cut once it reads its interrupt	design §2.4, D33: yian's Steering takes an AbortSignal; reading the interrupt is taking the signal	O3-3
@@ -565,10 +567,15 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/main.test.ts::an uncaught error in the daemon is logged as office crashed [%s]	design §2.3, §6 rule 13: an uncaught exception or rejection writes the crash marker (type and frames, never the message) and exits 1	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::bad arguments exit 2	argparse's exit 2 for bad arguments, kept	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::build office reaps workers left by an earlier office	design §6.6 and O2-11a: the workers an earlier office left are reaped at start	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::opencorp daemon from a shell re-execs into the office env and folder	design §6.5 (R2 I1)	O2-11b
 —	new	packages/office/tests/daemon/main.test.ts::release removes the pidfile and frees the lock	design §2.3: the pidfile is removed on stop	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::the crash report names the error type and its frames never its message	design §6 rule 13: the crash marker logs the error type and stack frames, never the message	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::the daemon refuses to start without git on its path	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
+—	new	packages/office/tests/daemon/main.test.ts::the launch command env and folder start the daemon without a re-exec from a poisoned caller	design §9.3 (background mode, daemonEnv and office cwd)	O2-11b
+—	new	packages/office/tests/daemon/main.test.ts::the office gets the tools the daemon resolved and its company git runs that git	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
 —	new	packages/office/tests/daemon/main.test.ts::the office holds the company snapshots and the secret store	design §2.3: typed Office fields replace Python's extras	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::the stop waits for running handlers but not for ever	Python's 5 s graceful wait (uvicorn timeout_graceful_shutdown)	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::under a service the daemon re-execs once	design §6.5 (under a service the daemon re-execs once, R3 m2)	O2-11b
 —	new	packages/office/tests/daemon/routes_costs.test.ts::since keeps milliseconds and python iso forms	design §5 (fixed-width Timestamp); the TS parser is narrower than fromisoformat (no week dates, basic form or other separators), so its accepted forms are pinned; also refused: mixed basic forms, a space before the offset, fractional hours or minutes, offset seconds, offset minutes 60, an empty fraction	O2-6
 —	new	packages/office/tests/daemon/routes_profiles.test.ts::over budget counts code points	design §10.2: Python's behaviour kept; its len counts code points where JS length counts UTF-16 units	O2-23
 —	new	packages/office/tests/daemon/routes_profiles.test.ts::the office profile store defaults to the git store	design §3.2: Office builds the profile store itself (Python's daemon/main.py passed it)	O2-23
@@ -626,6 +633,11 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/hq/static.test.ts::a path with a doubled slash is not a file of the app	design §6 static rules: //index.html resolves as an absolute path outside app_dir (Python's app_dir / rel), so it is a 404	O2-7
 —	new	packages/office/tests/hq/static.test.ts::the not built page escapes the checkout path	design §6.4 (static): the checkout path is HTML-escaped in the not-built page, as Python's html.escape	O2-7
 —	new	packages/office/tests/hq/version.test.ts::build json that is a fifo is invalid without blocking	design §6: build.json is opened O_NONBLOCK and fstat-checked, so a FIFO never blocks	O2-7
+—	new	packages/office/tests/install/files.test.ts::a new file is written with its folders and mode 0644	design §9.3 (service files written atomically; install/files.py has no test file of its own)	O2-11b
+—	new	packages/office/tests/install/files.test.ts::a planted temp path is never followed	design §9.3 (service files written atomically; install/files.py has no test file of its own)	O2-11b
+—	new	packages/office/tests/install/files.test.ts::an unwritable folder throws and leaves no temp file	design §9.3 (service files written atomically; install/files.py has no test file of its own)	O2-11b
+—	new	packages/office/tests/install/files.test.ts::changed bytes replace the file whole and report true	design §9.3 (service files written atomically; install/files.py has no test file of its own)	O2-11b
+—	new	packages/office/tests/install/files.test.ts::unchanged bytes leave the file alone and report false	design §9.3 (service files written atomically; install/files.py has no test file of its own)	O2-11b
 —	new	packages/office/tests/install/flows.test.ts::both setup flows load on ts yian [%s]	design §9.2: the setup flows load and run on TS yian with init's TOOL nodes (row exit)	O2-16b
 —	new	packages/office/tests/install/flows.test.ts::check model asks for one word and returns it	design §9.2: the setup flows load and run on TS yian with init's TOOL nodes (row exit)	O2-16b
 —	new	packages/office/tests/install/flows.test.ts::init runs its interview then asks for the password and the remote through the office tools	design §9.2: the setup flows load and run on TS yian with init's TOOL nodes (row exit)	O2-16b
@@ -634,6 +646,20 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/json_prompts.test.ts::a stdin destroyed before an answer is an onboard error	design §9.1: a closed or broken stdin is closed input, not a hang	O2-13a
 —	new	packages/office/tests/install/json_prompts.test.ts::an empty choice list is refused before anything is sent	design §9.1: SetupChoose needs an option; the TUI would wait forever	O2-13a
 —	new	packages/office/tests/install/json_prompts.test.ts::read line leaves the rest of the stream for the next read and lets the process exit	design §9.1: the TUI keeps the setup's stdin open, so a read must not hold the process	O2-13a
+—	new	packages/office/tests/install/launch.test.ts::a daemon already in the office env and folder runs on	design §6.5 (opencorp daemon from a shell, R2 I1)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::a daemon that still differs after its re-exec exits 1 naming variables not values	design §6.5 (--reexeced loop guard, R3 m2)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::a daemon with another env re-execs into the office env and folder	design §6.5 (opencorp daemon from a shell, R2 I1)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::a failed re-exec exits 1 with the errors code and never its message	design §6.5 (opencorp daemon from a shell, R2 I1)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::a program that outlives the timeout is exit 124	design §9.3 (runCommand kills a program that outlives its timeout)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::a refused office dir exits 1 before any re-exec	design §6.5 (opencorp daemon from a shell, R2 I1)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::bad arguments exit 2 before any re-exec	design §6.5 (opencorp daemon from a shell, R2 I1)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::office answers is false without a server, for a non 200 and for one that never replies	design §9.4 (officeAnswers probes /health over the socket with a timeout)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::the daemon env leaves out every name a self spawn may not carry	design §6.5 (no BUN_*/NODE_OPTIONS/LD_*/DYLD_* in any office env)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::the daemon parser takes home and reexeced and nothing else	design §6.5 (--reexeced loop guard, R3 m2)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::the daemon path keeps only absolute entries	design §6.5 (daemonEnv drops relative PATH entries; O1-9 handoff)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::the install test host runs nothing real and its clock moves only when it sleeps	design §9.3 (install tests run on a stand-in host)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::the pre re-exec check imports only node builtins platform and sockets	design §6.5 (before any import beyond platform.ts)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::which finds a runnable program on the absolute path entries only	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
 —	new	packages/office/tests/install/proc.test.ts::args of an exited process is null	design §9.4: ps replaces psutil cmdline	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args refuses a ps that is not an absolute path	design §6 rule 5: tools by absolute path	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args shows the command line of a process	design §9.4: ps replaces psutil cmdline	O2-11a
@@ -657,6 +683,11 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/provider_setup.test.ts::a secret on a dumb terminal is still read masked	design §9.1: clack's password() on any TTY; the key stays masked	O2-13a
 —	new	packages/office/tests/install/provider_setup.test.ts::on a real dumb terminal a numbered list after a secret gets its answer	design §9.1: Bun's tty stream stops feeding a paused reader once clack has used it, so line reads flow	O2-13a
 —	new	packages/office/tests/install/provider_setup.test.ts::the setup connection is made 0700 and read as the office connection	P3: the setup connection is office/connections/office.json	O2-14
+—	new	packages/office/tests/install/tools.test.ts::a compiled binary installs as its package and its shim package	design §6.1 (install refused, RS C3)	O2-11b
+—	new	packages/office/tests/install/tools.test.ts::each tool is resolved on the daemon path to its realpath	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
+—	new	packages/office/tests/install/tools.test.ts::relative entries directories and files that cant run are skipped	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
+—	new	packages/office/tests/install/tools.test.ts::the codex override is a path or a name on the path	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
+—	new	packages/office/tests/install/tools.test.ts::the workspace guards refuse a tool folder a path entry and the install	design §6.1 (tools pinned to absolute paths, R2 I5; install refused, RS C3)	O2-11b
 —	new	packages/office/tests/perm/monitor.test.ts::a bigint result holding a digit secret is redacted	design §6.3 and O1-12's handoff: results keep bigint through JSON so redact sees every digit	O1-13
 —	new	packages/office/tests/perm/monitor.test.ts::a grant whose where holds an integer past the safe range grants nothing	#358, D15: a grant the schema can't read exactly grants nothing	O1-15
 —	new	packages/office/tests/perm/monitor.test.ts::a grant whose where key is proto grants nothing	#358, D15: a grant the schema can't read exactly grants nothing	O1-15
@@ -841,6 +872,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/rpc.test.ts::object arguments keep a proto key	design §2.4: a model-written argument reaches the office as written (Python's dict kept the key)	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::object method names are never tools or stores	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::reply to never rejects	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/spawn.test.ts::the worker env names are the launch allowlist	design §6.5 (one allowlist for daemon and worker)	O2-11b
 —	new	packages/office/tests/worker/steering.test.ts::after close a node gets a signal that never aborts	design §2.4, D33: an AbortSignal per node replaces the polled flag	O3-3
 —	new	packages/office/tests/worker/steering.test.ts::an interrupt aborts the signal a running node already took	design §2.4, D33: an AbortSignal per node replaces the polled flag	O3-3
 —	new	packages/protocol/test/errors.test.ts::422 text names the field and a fixed phrase	§5.4	O0-6

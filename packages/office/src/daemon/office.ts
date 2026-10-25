@@ -6,7 +6,9 @@ import { Hiring } from "../chat/hire.ts"
 import type { CompanyGit } from "../company/git.ts"
 import { CompanySnapshots } from "../company/snapshot.ts"
 import type { Hq } from "../hq/core.ts"
+import type { Tools } from "../install/tools.ts"
 import { GitProfileStore } from "../profile/store.ts"
+import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { SecretStore } from "../secrets.ts"
 import type { Store } from "../store/store.ts"
 import type { Bus } from "./bus.ts"
@@ -76,6 +78,10 @@ export class Office {
   readonly snapshots: CompanySnapshots
   /** Asset secrets under `office/secrets`, read per call. */
   readonly secrets: SecretStore
+  /** The programs the daemon resolved at start; spawn only these. */
+  readonly tools: Tools
+  /** What every workspace must stay clear of; pass as `office` to `SandboxPolicy`/`checkWorkspace`. */
+  readonly guards: SandboxOfficePaths
   workers: WorkerPool | undefined
   /** HQ, once `attach` put it here. */
   hq: Hq | undefined
@@ -97,6 +103,8 @@ export class Office {
     bus,
     workers,
     profileStore,
+    tools = {},
+    guards = {},
     log = console.error,
   }: {
     paths: OfficePaths
@@ -106,6 +114,8 @@ export class Office {
     workers?: WorkerPool
     /** Builds a person's profile store; defaults to their `profile.md` in `git`'s clone, null for none. */
     profileStore?: ((handle: string) => MarkdownStore) | null
+    tools?: Tools
+    guards?: SandboxOfficePaths
     /** Gets raw log messages. */
     log?: (message: string) => void
   }) {
@@ -118,6 +128,8 @@ export class Office {
     this.secrets = new SecretStore(paths.secrets)
     this.workers = workers
     this.profileStore = profileStore === undefined ? (handle) => new GitProfileStore(git, handle) : profileStore
+    this.tools = tools
+    this.guards = guards
     this.#log = log
   }
 

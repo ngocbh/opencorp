@@ -12,6 +12,7 @@ import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
 import { OPEN, actingPerson } from "../../src/daemon/auth.ts"
 import type { Route } from "../../src/daemon/http.ts"
 import type { RequestContext } from "../../src/daemon/office.ts"
+import { officeAnswers } from "../../src/install/launch.ts"
 import { git } from "../company/helpers.ts"
 import {
   Conn,
@@ -454,6 +455,13 @@ test("removing the last device turns enforcement off", async () => {
   expect(r.status).toBe(200)
   expect(devices(company, "ngocbh")).toBeUndefined()
   expect((await request(sock, "GET", "/whoami")).json()).toEqual({ person: "ngocbh", device: null })
+})
+
+test("the liveness probe works once tokens are needed", async () => {
+  const office = makeOffice()
+  giveDevice(office.paths.company, "ngocbh", "mac", newToken())
+  const { sock } = await served(office, { tokens: true })
+  expect(await officeAnswers(sock)).toBe(true)
 })
 
 // Logging in with a password, and setting one.
