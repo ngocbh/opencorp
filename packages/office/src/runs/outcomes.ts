@@ -21,6 +21,8 @@ export const WORKER_REPLACED = "its worker stopped; a fresh run replaced it"
 export const NEW_MODEL = "replaced by a fresh run on the new model"
 export const CARD_CLOSED = "its card closed while it wasn't running"
 export const BAD_OUTPUT = "bad output"
+/** A session ended by End while its reply was stopped by the cost cap. */
+export const ENDED_OVER_CAP = "ended over its cost cap"
 
 /** How a run ended, as its outcome is written. */
 export class RunEnd {

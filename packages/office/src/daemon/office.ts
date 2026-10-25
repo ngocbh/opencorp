@@ -31,6 +31,7 @@ export class OfficePaths {
   readonly lock: string
   readonly worktrees: string
   readonly runs: string
+  readonly sessions: string
   readonly memory: string
   readonly secrets: string
 
@@ -44,6 +45,7 @@ export class OfficePaths {
     this.lock = path.join(this.office, "office.lock")
     this.worktrees = path.join(this.office, "worktrees")
     this.runs = path.join(this.office, "runs")
+    this.sessions = path.join(this.office, "sessions")
     this.memory = path.join(this.office, "memory")
     this.secrets = path.join(this.office, "secrets")
   }
@@ -51,6 +53,11 @@ export class OfficePaths {
   /** The directory a session's worker runs in. */
   runDir(sessionId: string): string {
     return path.join(this.runs, sessionId)
+  }
+
+  /** The directory a chat session's workers run in. */
+  sessionDir(sessionId: string): string {
+    return path.join(this.sessions, sessionId)
   }
 }
 

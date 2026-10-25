@@ -6,7 +6,7 @@ type Status = SessionRecord["status"]
 
 /** Every hook's signature. Notifications return `unknown`: a returned promise is awaited, any other value ignored. */
 export interface HookFns {
-  /** A question was stored (turn questions included). */
+  /** A question was stored. */
   questionStored: (question: QuestionRecord) => unknown
   /** Return a message to refuse an answer (`422 invalid_answer`); nothing accepts it. */
   answerCheck: (
@@ -17,9 +17,9 @@ export interface HookFns {
   /** Return a message to refuse a person's message to the session (prompt, steer or turn answer; `422 refused`);
    *  `session` is undefined for a session being opened. */
   promptCheck: (session: SessionRecord | undefined, text: string) => string | null | undefined
-  /** Text for the turn input's `context`, which the flow puts before the person's messages; the transcript shows only
-   *  the messages. The first string wins; other results are ignored. The exit command skips it. */
-  turnContext: (session: SessionRecord, question: QuestionRecord, text: string) => string | null | undefined
+  /** The context part put before a message not sent while the reply runs; the transcript shows only the message.
+   *  `first` is `session.turns === 0`. The first string wins; other results are ignored. The exit command skips it. */
+  turnContext: (session: SessionRecord, text: string, options: { first: boolean }) => string | null | undefined
   /** A worker started a run or a resume of one. */
   runStarted: (session: SessionRecord, runId: string) => unknown
   /** A run ended; `result` is the worker's result frame (`status`, `output`, `failure`) with the model key redacted,

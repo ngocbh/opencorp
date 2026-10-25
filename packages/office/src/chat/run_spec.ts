@@ -11,7 +11,7 @@ import type { Carried, OnQuestion } from "../questions/ask.ts"
 import type { QuestionRecord, SessionRecord, Store } from "../store/store.ts"
 import { build } from "../tools/index.ts"
 import type { WorkspaceTools } from "../tools/workspace.ts"
-import { groupSpecs, type Job, parseJob, personFlow, type ProfileMemorySpec, type Seed } from "../worker/job.ts"
+import { type Delivery, groupSpecs, type Job, parseJob, personFlow, type ProfileMemorySpec, type Seed } from "../worker/job.ts"
 import type { OfficeTool } from "../worker/rpc.ts"
 import { personInputs, talkingTo } from "./identity.ts"
 import { HarnessError } from "./state.ts"
@@ -23,7 +23,7 @@ const MANAGER_FLOW = "shared/flows/profile_manager.yaml"
 const SIDE_HISTORY_CHARS = 32000
 
 type Person = z.output<typeof PersonSchema>
-type Workspace = Pick<WorkspaceTools, "call">
+type Workspace = Pick<WorkspaceTools, "call" | "interrupt">
 
 /** What a run's tool groups are built for: the session, the run, and how its tools ask questions. */
 export interface GroupContext {
@@ -212,6 +212,8 @@ export function chatJob(
     llmConfig,
     turns,
     seed = null,
+    deliver = [],
+    advance = true,
   }: {
     kind: "chat" | "advance"
     session: SessionRecord
@@ -221,6 +223,8 @@ export function chatJob(
     llmConfig: Record<string, unknown> | null
     turns: number
     seed?: Seed | null
+    deliver?: Delivery[]
+    advance?: boolean
   },
 ): Job {
   const memory = Object.fromEntries(
@@ -240,5 +244,7 @@ export function chatJob(
     groups: groupSpecs(tools),
     memory,
     seed,
+    deliver,
+    advance,
   })
 }
