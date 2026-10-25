@@ -11,8 +11,8 @@ import { listenUnix } from "../../src/daemon/sockets.ts"
 import type { Hq } from "../../src/hq/core.ts"
 import { HQ_LIMITS, Listeners, MAX_OPEN } from "../../src/hq/servers.ts"
 import { shortDir, waitFor } from "../helpers.ts"
-import { CEO, Conn, type Reply, makeOffice, request, serve } from "../daemon/helpers.ts"
-import { freePort, hqClient, makeHq, pairCode } from "./helpers.ts"
+import { CEO, Conn, type Reply, ends, frames, makeOffice, request, serve, take, within } from "../daemon/helpers.ts"
+import { HqClient, freePort, hqClient, makeHq, pairCode } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -397,6 +397,32 @@ test.skipIf(process.getuid?.() === 0)("stop logs what went wrong instead of rais
   }
   expect(logs.some((line) => line.includes("HQ can't listen on 127.0.0.1:70000"))).toBe(true)
   expect(logs.some((line) => line.includes("couldn't remove"))).toBe(true)
+})
+
+test("stop refuses new connections while running handlers finish", async () => {
+  const { office, hq } = await setup()
+  shortOffice(office)
+  hq.config = { ...hq.config, tcp: false }
+  const listeners = new Listeners(hq)
+  await listeners.start()
+  let stopping: Promise<void> | undefined
+  try {
+    const client = new HqClient(hq.socket, { host: "127.0.0.1:5555", origin: "http://127.0.0.1:5555" })
+    expect((await client.post("/api/pair", { code: await pairCode(hq) })).status).toBe(200)
+    const it = frames(await client.stream("/api/events"))
+    expect(await take(it, 1)).toEqual([["comment", null, "connected"]])
+    // The bus is still open, so the stream keeps its handler running through stop's wait.
+    stopping = listeners.stop()
+    expect(await attempt(hq.socket, REQUEST)).toEqual({ text: "", closed: true })
+    // As the office's stop does before HQ's stop hook.
+    office.bus.close()
+    expect(await ends(it)).toBe(true)
+    await within(stopping)
+  } finally {
+    office.bus.close()
+    await (stopping ?? listeners.stop())
+  }
+  expect(fs.existsSync(hq.socket)).toBe(false)
 })
 
 test("an hq server leaves the signal handlers to the office", async () => {
