@@ -28,9 +28,9 @@ const absolute = z.string().refine((p) => path.posix.isAbsolute(p), "must be an 
 /**
  * What one worker runs: a flow from a pinned company worktree, and how to run it.
  *
- * `kind` is `chat` (runs the flow afresh) or `resume` (resumes the run `run_id` from its log). `check` runs the
+ * `kind` is `chat` (runs the flow afresh), `resume` (resumes the run `run_id` from its log), or `check` (runs the
  * office's one-reply model check (`install/flows/check_model.yaml`) on `llm_config`, and reads no other field but
- * `session_id`. `flow` is relative to `pin`. A `Job` holds the provider key in `llm_config`, so it is never logged.
+ * `session_id`). `flow` is relative to `pin`. A `Job` holds the provider key in `llm_config`, so it is never logged.
  */
 export const Job = z.strictObject({
   kind: z.enum(["chat", "resume", "check"]),

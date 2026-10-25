@@ -10,7 +10,9 @@ import type { Provider } from "./provider.ts"
 
 /** How long, in ms, the check may take: one short reply from the model. */
 export const TIMEOUT_MS = 90_000
+/** The problem when the check ended without a usable result frame. */
 export const NO_RESULT = "the check didn't give a result"
+/** The problem when the check outlived its timeout. */
 export const NOT_FINISHED = "the check didn't finish"
 /** How long, in ms, a hung check gets to stop before its group is killed. */
 export const CLOSE_MS = 1000

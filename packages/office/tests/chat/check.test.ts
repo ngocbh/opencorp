@@ -71,7 +71,9 @@ test("one reply check runs isolated in a temp cwd", async () => {
   const [call] = fake.spawned
   expect(call!.job.kind).toBe("check")
   expect(call!.job.llm_config).toEqual(PROVIDER.llm_config)
-  expect(call!.existed && call!.files.length === 0 && !fs.existsSync(call!.dir)).toBe(true)
+  expect(call!.existed).toBe(true)
+  expect(call!.files).toEqual([])
+  expect(fs.existsSync(call!.dir)).toBe(false)
   expect(call!.real).not.toBe(fs.realpathSync(process.cwd()))
   expect(call!.real.startsWith(fs.realpathSync(os.tmpdir()) + "/")).toBe(true)
   expect(call!.env).toEqual({})
