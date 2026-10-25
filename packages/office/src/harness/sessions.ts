@@ -42,7 +42,9 @@ export type CodexSessionsOptions = {
   log?: (line: string) => void
 }
 
-/** Each live Codex session of the office, with its own app-server.
+/** Each live Codex session of the office, with its own app-server. Until the chat harness takes over, it is also the
+ *  office's card actor: an answer or Esc for a session on another harness is handled here as the chat harness
+ *  handles one with no live run; the Codex calls stay here after that.
  *
  *  `hooks` are the chat harness's: Codex sessions fire `promptCheck`, `endStatus` and `sessionEnded` (never the run
  *  hooks: Codex turns are not office runs). */
@@ -162,14 +164,20 @@ export class CodexSessions implements CardActor {
     return live.prompt(text, { by })
   }
 
-  /** Esc on the session `sessionId`: interrupts its running turn. */
+  /** Esc. A Codex session interrupts its turn. Any other session has no live run here: a live one is left as it is
+   *  (asleep, as the chat harness leaves a session with no run); one that isn't live is 409. */
   async interrupt(sessionId: string): Promise<void> {
-    await this.#must(sessionId).interrupt()
+    const session = this.store.getSession(sessionId)
+    if (session === undefined || session.harness === "codex") return void (await this.#must(sessionId).interrupt())
+    if (!LIVE.includes(session.status))
+      throw new HarnessError(409, "not_live", `session ${sessionId} has no live run`)
+    // Asleep, waking or finishing: nothing runs to stop.
   }
 
   /** Answers question `questionId` as `by` (the session's opener when null) after the `answerCheck` hooks: stores
    *  the answer (secret pages as `[secret]`), then replies if Codex still waits. The store's open → answered move
-   *  picks the one answer that replies, and a second answer is 409 `not_open`; a replied card is `consumed`.
+   *  picks the one answer that replies, and a second answer is 409 `not_open`; a replied card is `consumed`. A
+   *  question of a session on another harness is only stored, as given.
    *
    *  An answer Codex no longer waits for, or that no reply can be made from, is returned with the card `stale` and no
    *  decision: Codex resolved the request first, its turn ended, the app-server died, the office stopped, the reply
@@ -187,8 +195,19 @@ export class CodexSessions implements CardActor {
       throw new HarnessError(409, "not_open", `question ${questionId} is ${question.status}`)
     for (const refusal of this.hooks.fire("answerCheck", question, value, kind))
       if (refusal) throw new HarnessError(422, "invalid_answer", String(refusal))
+    const session = this.store.getSession(question.session_id)
+    if (session?.harness !== "codex") {
+      // Not a Codex card: stored as the chat harness stores an answer with no live run to hand it to.
+      const owner = by || (session ? await this.opener(session) : null)
+      try {
+        return this.store.answerQuestion(questionId, value, kind, owner)
+      } catch (error) {
+        if (error instanceof InvalidTransition) throw new HarnessError(409, "not_open", error.message)
+        throw error
+      }
+    }
     const live = this.#live.get(question.session_id)
-    const who = by || (live ? live.author : await this.opener(this.store.getSession(question.session_id)!))
+    const who = by || (live ? live.author : await this.opener(session))
     try {
       this.store.answerQuestion(questionId, masked(question, value), kind, who)
     } catch (error) {

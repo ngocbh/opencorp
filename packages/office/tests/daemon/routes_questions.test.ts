@@ -6,6 +6,7 @@ import { Hooks } from "../../src/chat/hooks.ts"
 import { HarnessError } from "../../src/chat/state.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { register } from "../../src/extensions/questions.ts"
+import { CodexSessions } from "../../src/harness/sessions.ts"
 import type { AnswerKind, CardActor, Cards } from "../../src/questions/cards.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { InvalidTransition, type QuestionRecord, type Store } from "../../src/store/store.ts"
@@ -248,6 +249,22 @@ test("an answer goes to the harness when there are no cards", async () => {
   const r = await post(sock, `/questions/${q.id}/answer`, { answer: "Postgres", answer_kind: "text" })
   expect(r.status).toBe(200)
   expect(actor.answered).toEqual([[q.id, "Postgres", "text", CEO]])
+})
+
+test("an answer to a codex card codex no longer waits on is 200 and stale", async () => {
+  const office = makeOffice()
+  office.harness = new CodexSessions(office, new Hooks({ log: () => {} }), {
+    command: () => {
+      throw new Error("no app-server in this test")
+    },
+  })
+  register(office)
+  const s = office.store.createSession(session({ harness: "codex", status: "idle", opened_by: CEO }))
+  const q = office.store.addQuestion(question(s.id, { source: "harness", options: ["Approve", "Deny"] }))
+  const { sock } = await served(office)
+  const r = await post(sock, `/questions/${q.id}/answer`, { answer: "Approve", answer_kind: "option" })
+  expect(r.status).toBe(200)
+  expect(r.json()).toMatchObject({ status: "stale", answer: null })
 })
 
 test("stop is credited to the verified person", async () => {

@@ -5,7 +5,9 @@ import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { HarnessError } from "../../src/chat/state.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { person } from "../company/helpers.ts"
+import { CEO, ULID } from "../daemon/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
+import { question, session } from "../store/helpers.ts"
 import { type Codex, allGone, makeCodex, start, startSession, status, texts } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -172,4 +174,42 @@ test("a start whose default connection cant be read takes office and says so", a
   expect(row.connection).toBe("office")
   expect(h.lines).toContain("the office's default connection can't be read; new chats take office as the default")
   await waitFor(() => status(h, row.id) === "idle", { what: "the load" })
+})
+
+test("an answer to a question of a session on another harness is stored for the caller or the opener", async () => {
+  const h = makeCodex()
+  const s = h.store.createSession(
+    session({ harness: "composer", status: "waiting", repo_commit: await h.office.git.head(), opened_by: null }),
+  )
+  const q1 = h.store.addQuestion(question(s.id))
+  const q2 = h.store.addQuestion(question(s.id))
+  const first = await h.sessions.answer(q1.id, "Postgres", "text", { by: "ava" })
+  expect([first.status, first.answer, first.answered_by]).toEqual(["answered", "Postgres", "ava"])
+  // No caller named and no opener: the pinned company's CEO.
+  expect((await h.sessions.answer(q2.id, "x", "text")).answered_by).toBe(CEO)
+  const again = await rejection(h.sessions.answer(q1.id, "MySQL", "text", { by: "ava" }))
+  expect(again).toBeInstanceOf(HarnessError)
+  expect([again.status, again.code]).toEqual([409, "not_open"])
+})
+
+test("esc on a live session on another harness leaves its questions open", async () => {
+  const h = makeCodex()
+  const s = h.store.createSession(session({ harness: "composer", status: "waiting" }))
+  const asked = h.store.addQuestion(question(s.id, { source: "ask_user" }))
+  const managed = h.store.addQuestion(question(s.id, { source: "ask_manager" }))
+  // No run of it is live here, so nothing runs to stop.
+  await h.sessions.interrupt(s.id)
+  expect(h.store.getQuestion(asked.id)!.status).toBe("open")
+  expect(h.store.getQuestion(managed.id)!.status).toBe("open")
+  expect(h.store.getSession(s.id)).toEqual(s)
+})
+
+test("esc on a session on another harness that is not live is 409 and a missing one 404", async () => {
+  const h = makeCodex()
+  const s = h.store.createSession(session({ harness: "composer", status: "ended" }))
+  const ended = await rejection(h.sessions.interrupt(s.id))
+  expect(ended).toBeInstanceOf(HarnessError)
+  expect([ended.status, ended.code]).toEqual([409, "not_live"])
+  const missing = await rejection(h.sessions.interrupt(ULID))
+  expect([missing.status, missing.code]).toEqual([404, "not_found"])
 })
