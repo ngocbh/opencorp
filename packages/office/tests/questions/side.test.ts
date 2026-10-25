@@ -1,16 +1,23 @@
-/** A side session's discussion and its seed file (Python's `tests/questions/test_side.py`). */
+/** A side session's run spec, its discussion and its seed file (Python's `tests/questions/test_side.py`). */
 import { expect, setDefaultTimeout, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import type { RunLogEntry } from "@ngocbh/yian/run"
-import type { Message, Part } from "@opencorp/protocol"
+import type { Message, Part, Session } from "@opencorp/protocol"
+import { sideSpec } from "../../src/chat/run_spec.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
+import { FlowOutsideRepo, loadConfined } from "../../src/company/flows.ts"
+import { CompanyGit } from "../../src/company/git.ts"
+import { loadRepo } from "../../src/company/loader.ts"
+import { Monitor } from "../../src/perm/monitor.ts"
 import { discussion, readSeed, SEED_FILE, writeSeed } from "../../src/questions/side.ts"
+import { SecretStore } from "../../src/secrets.ts"
 import { newId } from "../../src/store/store.ts"
 import type { Delivery } from "../../src/worker/job.ts"
-import { fakeLlm, logPrefix, send, TemplateOffice, waitingChat } from "../chat/helpers.ts"
+import { fakeLlm, logPrefix, ROOT, send, TemplateOffice, waitingChat } from "../chat/helpers.ts"
+import { baseFiles, writeRepo } from "../company/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
-import { openStore, session } from "../store/helpers.ts"
+import { openStore, question, session } from "../store/helpers.ts"
 import { advanceJob, run, type TestWorker } from "../worker/helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -141,4 +148,78 @@ test("a seed is a private file read back as written", () => {
 
   fs.chmodSync(file, 0o640)
   expect(() => readSeed(dir)).toThrow()
+})
+
+const SIDE_CHAT_FLOW = "shared/flows/side_chat.yaml"
+
+/** Stands in for `WorkspaceTools`: building a spec's tools never runs the workspace. */
+const NO_WORKSPACE = {
+  call: (): never => {
+    throw new Error("the workspace is never called")
+  },
+}
+
+/** The base company with human lan (no side chat flow in it), its git, a store, a monitor, and `side`: a side
+ *  session about a question from a session of minh's, with `over` applied, and its spec. */
+async function office() {
+  const dir = tempDir()
+  const root = writeRepo(path.join(dir, "company"), {
+    ...baseFiles(),
+    "people/lan/person.yaml": { handle: "lan", name: "Lan", kind: "human", title: "Designer", manager: "ngocbh" },
+  })
+  const git = new CompanyGit(root, path.join(dir, "worktrees"))
+  const store = openStore()
+  const monitor = new Monitor(root, store, new SecretStore(path.join(dir, "secrets")))
+  const repo = loadRepo(root)
+  const head = await git.head()
+  const asker = store.createSession(session({ repo_commit: head }))
+  const asked = store.addQuestion(question(asker.id))
+  const side = (over: Partial<Session> = {}) => {
+    const s = store.createSession(
+      session({ repo_commit: head, kind: "side", question_id: asked.id, status: "starting", ...over }),
+    )
+    const spec = sideSpec({ store, git, repo, session: s, workspace: NO_WORKSPACE, monitor, question: asked })
+    return { session: s, spec }
+  }
+  return { dir, git, head, repo, side }
+}
+
+test("a side run gets the askers identity and who opened it", async () => {
+  const o = await office()
+  expect(o.side().spec.inputs).toEqual({
+    person: {
+      name: "Minh",
+      handle: "minh",
+      title: "Engineer",
+      company: "test-corp",
+      reports_to: "You report to Hong Ngoc Bui (@ngocbh).",
+    },
+    talking_to: "You're talking with Hong Ngoc Bui (@ngocbh), the CEO and your manager.",
+    max_turns: 500,
+    history_budget: o.repo.company!.defaults!.side_seed_max_chars + 32000,
+  })
+  expect(o.side({ opened_by: "lan" }).spec.inputs.talking_to).toBe("You're talking with Lan (@lan), your peer.")
+})
+
+test("a side run offers read tools then work items", async () => {
+  const { session, spec } = (await office()).side()
+  const groups = spec.groups({ session, runId: "run-1" })
+  expect(Object.entries(groups).map(([g, t]) => [g, Object.keys(t)])).toEqual([
+    ["workspace", ["read_file", "list", "search"]],
+    ["work_items", ["list_work_items", "read_work_item"]],
+  ])
+})
+
+const LINKS = [SIDE_CHAT_FLOW, "shared/flows"]
+
+test.each(LINKS)("a side chat flow linked from outside the pin is refused [%s]", async (link) => {
+  const o = await office()
+  const pin = await o.git.pin(o.head)
+  const flows = path.join(o.dir, "outside", "flows")
+  fs.cpSync(path.join(pin, "shared/flows"), flows, { recursive: true }) // the other flows stay reachable
+  fs.writeFileSync(path.join(flows, "side_chat.yaml"), fs.readFileSync(path.join(ROOT, SIDE_CHAT_FLOW)))
+  // A pin's folders stay writable; only its files are read-only.
+  if (link === "shared/flows") fs.rmSync(path.join(pin, "shared/flows"), { recursive: true })
+  fs.symlinkSync(link === SIDE_CHAT_FLOW ? path.join(flows, "side_chat.yaml") : flows, path.join(pin, link))
+  await expect(loadConfined(pin, path.join(pin, SIDE_CHAT_FLOW))).rejects.toBeInstanceOf(FlowOutsideRepo)
 })
