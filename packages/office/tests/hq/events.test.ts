@@ -141,6 +141,8 @@ test("revoking ends a busy stream", async () => {
     await take(it, 3)
     await hq.sessions.revoke(sid)
     await drain(it)
+    expect(office.bus.subscriberCount).toBe(0)
+    expect(hq.sessions.streams(sid)).toBe(0)
   } finally {
     clearInterval(noise)
   }
@@ -156,18 +158,20 @@ test("expiry ends a busy stream", async () => {
     // Past any session issued now.
     hq.sessions.clock = () => new Date(Date.now() + 2 * TTL)
     await drain(it)
+    expect(office.bus.subscriberCount).toBe(0)
   } finally {
     clearInterval(noise)
   }
 })
 
 test("expiry ends an idle stream at its next ping", async () => {
-  const { hq, client } = await served()
+  const { office, hq, client } = await served()
   hq.pingMs = 50
   const it = frames(await client.stream("/api/events"))
   await take(it, 1)
   hq.sessions.clock = () => new Date(Date.now() + 2 * TTL)
   await drain(it)
+  expect(office.bus.subscriberCount).toBe(0)
 })
 
 test("a password change ends the stream at company updated", async () => {
@@ -179,11 +183,12 @@ test("a password change ends the stream at company updated", async () => {
   office.store.emit("company.updated", sha, { sha })
   // No company.updated frame first.
   expect(await ends(it)).toBe(true)
+  expect(office.bus.subscriberCount).toBe(0)
   expect((await client.get("/api/whoami")).status).toBe(401)
 })
 
 test("a failing recheck ends the stream quietly and keeps the session", async () => {
-  const { office, client, logs } = await served()
+  const { office, hq, client, logs } = await served()
   const sid = office.store.listHqSessions()[0]!.id
   const it = frames(await client.stream("/api/events"))
   await take(it, 1)
@@ -191,6 +196,8 @@ test("a failing recheck ends the stream quietly and keeps the session", async ()
   const sha = "f".repeat(40)
   office.store.emit("company.updated", sha, { sha })
   await drain(it)
+  expect(office.bus.subscriberCount).toBe(0)
+  expect(hq.sessions.streams(sid)).toBe(0)
   expect(office.store.getHqSession(sid)).toBeDefined()
   const said = logs.filter((line) => line.includes(`couldn't re-check HQ session ${sid} at ${sha}; ending its stream`))
   // The error's type only, never its message.
@@ -199,7 +206,7 @@ test("a failing recheck ends the stream quietly and keeps the session", async ()
 })
 
 test("an unreadable person file ends the stream but not the session", async () => {
-  const { office, client } = await served()
+  const { office, hq, client } = await served()
   const sid = office.store.listHqSessions()[0]!.id
   const it = frames(await client.stream("/api/events"))
   await take(it, 1)
@@ -208,6 +215,8 @@ test("an unreadable person file ends the stream but not the session", async () =
   office.store.emit("company.updated", sha, { sha })
   // No company.updated frame first.
   expect(await ends(it)).toBe(true)
+  expect(office.bus.subscriberCount).toBe(0)
+  expect(hq.sessions.streams(sid)).toBe(0)
   expect(office.store.getHqSession(sid)).toBeDefined()
   expect((await client.get("/api/whoami")).status).toBe(401)
   handEdit(office.paths.company, CEO, { kind: "human" })

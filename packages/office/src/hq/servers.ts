@@ -104,6 +104,8 @@ export class Listeners {
     const port = hq.config.port
     let server: Server | undefined
     let bound = false
+    // Set once this attempt has scheduled the next, so a failure after that can't schedule a second.
+    let retried = false
     try {
       // The app needs the bound port (hq.json may say 0), so it is set once the bind resolves, which happens
       // before any request on the server can be read.
@@ -121,12 +123,13 @@ export class Listeners {
         if (this.#stopping) return
         const why = messageOf(error)
         hq.tcpError = why
-        this.#retry()
         if (why !== this.#said) {
           const every = `trying again every ${this.#retryMs / 1000} s`
           this.#log("WARNING", `HQ can't listen on 127.0.0.1:${port} (${why}); ${every}`)
           this.#said = why
         }
+        retried = true
+        this.#retry()
         return
       }
       bound = true
@@ -142,11 +145,13 @@ export class Listeners {
       this.#said = null
       this.#log("INFO", `HQ listening on http://127.0.0.1:${at}/`)
     } catch (error) {
+      // Cleaned up before the log, so a throwing log hook can't skip it. A kept server serves on; one that isn't
+      // must not stay open without an app.
+      if (!this.#servers.some((s) => s.server === server)) {
+        if (server && bound) await close(server)
+        if (!this.#stopping && !retried) this.#retry()
+      }
       this.#log("ERROR", `HQ's TCP bind failed: ${typeOf(error)}`)
-      // A kept server serves on; one that isn't must not stay open without an app.
-      if (this.#servers.some((s) => s.server === server)) return
-      if (server && bound) await close(server)
-      if (!this.#stopping) this.#retry()
     }
   }
 
