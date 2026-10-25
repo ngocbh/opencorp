@@ -8,7 +8,7 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
 import { groupSpecs, type JobInput } from "../../src/worker/job.ts"
-import { EXIT_FAILED, EXIT_OK, EXIT_ORPHANED, isOfficeChannel, report } from "../../src/worker/main.ts"
+import { EXIT_FAILED, EXIT_OK, EXIT_ORPHANED, isOfficeChannel, report, serve } from "../../src/worker/main.ts"
 import type { AskRequest, OfficeTool } from "../../src/worker/rpc.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"
@@ -77,6 +77,33 @@ test("after its last frame a worker answers deliveries until the office closes",
   expect(out.code).toBeUndefined()
   office.closeSend()
   await waitFor(() => out.code !== undefined, { timeout: 5000, what: "the worker to return" })
+  expect(out.code).toBe(EXIT_FAILED)
+})
+
+test("a worker returns only once its last reply is written", async () => {
+  const { office, worker } = await channelPair()
+  // The reply's write is held, as a slow socket would hold it: the worker exits once `serve` returns, and a write
+  // still in flight then is lost.
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  const send = worker.send.bind(worker)
+  worker.send = async (frame) => {
+    if (frame.type === "deliver_reply") await held
+    return send(frame)
+  }
+  const out: { code?: number } = {}
+  const done = serve(worker, { env: {}, exit: () => {} }).then((code) => {
+    out.code = code
+  })
+  await office.send(badStart())
+  expect((await office.recv()).type).toBe("error")
+  await office.send({ type: "deliver", id: "d1", op: "send", inbox: "steers", event: "too late" })
+  office.closeSend()
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(out.code).toBeUndefined()
+  release()
+  expect(await office.recv()).toEqual({ type: "deliver_reply", id: "d1", refused: "not_started" })
+  await done
   expect(out.code).toBe(EXIT_FAILED)
 })
 
