@@ -1,5 +1,6 @@
 /** `opencorp init`: the model, the company from the flags or the interview with its teammates, the CEO's password,
  *  this device and the remote, then onboarding this machine. */
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -15,6 +16,7 @@ import { CompanyGit, CompanyGitError } from "../../src/company/git.ts"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { isNew, missingFiles, writeCompany } from "../../src/company_template/index.ts"
+import * as fallback from "../../src/install/fallback.ts"
 import { type InitOptions, init } from "../../src/install/init.ts"
 import {
   Asking,
@@ -28,13 +30,22 @@ import {
   REMOTE,
   remoteStep,
 } from "../../src/install/interview.ts"
-import { GIT_ACCESS, redact, SET_UP_AGAIN, setupConnectionFile, TRY_AGAIN } from "../../src/install/onboard.ts"
+import { launch, officeAnswers } from "../../src/install/launch.ts"
+import {
+  GIT_ACCESS,
+  onboard,
+  redact,
+  SET_UP_AGAIN,
+  setupConnectionFile,
+  TRY_AGAIN,
+} from "../../src/install/onboard.ts"
 import { KeyboardInterrupt, NoTerminal, OnboardError, TtyPrompter } from "../../src/install/prompts.ts"
+import { selfSpawnEnv } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { git, gitEnv } from "../company/helpers.ts"
-import { tempDir } from "../helpers.ts"
-import { flowReplies, makeHost, NO_LISTING, Runner, Script } from "./helpers.ts"
+import { shortDir, tempDir } from "../helpers.ts"
+import { daemonHost, flowReplies, killedAtEnd, makeHost, NO_LISTING, Runner, Script } from "./helpers.ts"
 
 // Hashing the password with scrypt and the company's git take a while.
 setDefaultTimeout(30_000)
@@ -54,11 +65,14 @@ function scripted(remote = ""): Script {
   return new Script([PASSWORD, PASSWORD, remote || "1"], { interactive: false })
 }
 
+/** What `stopping` throws: distinct from init's own errors, so a test can't match one of them by mistake. */
+const STOP = "stopped at the service install"
+
 /** A host where nothing real runs and the first command onboarding runs, the service install's, stops it. */
 function stopping(dir: string) {
   return makeHost(dir, {
     run: async () => {
-      throw new OnboardError("stop")
+      throw new OnboardError(STOP)
     },
   })
 }
@@ -133,7 +147,7 @@ test("init makes the company its ceo and seeded teammates in one commit", async 
   const home = path.join(dir, "home")
   const company = path.join(home, "company")
   const ask = new Script([PASSWORD, PASSWORD, "1"])
-  await expect(runInit(dir, ask, FLAGS, interviewed(ACME))).rejects.toThrow("stop")
+  await expect(runInit(dir, ask, FLAGS, interviewed(ACME))).rejects.toThrow(STOP)
   const repo = loadRepo(company)
   expect([repo.company?.name, repo.company?.ceo]).toEqual(["Acme", "ngocbh"])
   expect(Object.fromEntries([...repo.people].map(([h, p]) => [h, [p.kind, p.title, p.manager]]))).toEqual({
@@ -162,7 +176,7 @@ test("init makes the company its ceo and seeded teammates in one commit", async 
 test("the model is asked first", async () => {
   const dir = tempDir()
   const ask = new Script(["openai", "", "", PASSWORD, PASSWORD, "1"])
-  await expect(init(path.join(dir, "home"), ask, { ...base(dir), ...interviewed(ACME) })).rejects.toThrow("stop")
+  await expect(init(path.join(dir, "home"), ask, { ...base(dir), ...interviewed(ACME) })).rejects.toThrow(STOP)
   expect(ask.seen.slice(0, 3)).toEqual([
     "Step 1 of 5: Model",
     "Your agents think with this model; its key stays in this office, readable only by you.",
@@ -178,9 +192,9 @@ test("the provider from the first step is kept by the last", async () => {
   const ask = new Script(["openai", "", "", PASSWORD, PASSWORD, "1"])
   const host = makeHost(dir, new Runner())
   // The stand-in office never starts.
-  await expect(init(path.join(dir, "home"), ask, { ...base(dir), ...interviewed(ACME), host })).rejects.toThrow(
-    "did not answer",
-  )
+  const error = await rejection(init(path.join(dir, "home"), ask, { ...base(dir), ...interviewed(ACME), host }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("did not answer")
   const file = setupConnectionFile(path.join(dir, "home", "office"))
   expect(ask.seen).toContain(`Model provider: saved to ${file}`)
   expect(ask.seen).toContain(`Model provider: up to date at ${file}`)
@@ -203,7 +217,7 @@ test("the flow with a model makes the company and never sends a secret", async (
   const ask = new Script(["Acme; I'm ngocbh; hire Lan for QA", "1", PASSWORD, PASSWORD, remote])
   const provider = { llm_config: { ...LLM_CONFIG, api_key: KEY }, env: fake.env() }
   const stdin = Readable.from([JSON.stringify(provider)])
-  await expect(init(home, ask, { ...base(dir), stdin })).rejects.toThrow("stop")
+  await expect(init(home, ask, { ...base(dir), stdin })).rejects.toThrow(STOP)
   const sent = JSON.stringify(fake.requests())
   const repo = loadRepo(company)
   expect([repo.company?.name, repo.company?.ceo]).toEqual(["Acme", "ngocbh"])
@@ -236,7 +250,7 @@ test("without a terminal the flags make the company without asking to confirm", 
   const interview = async (): Promise<never> => {
     throw new Error("the flow ran")
   }
-  await expect(runInit(dir, ask, known, { interview })).rejects.toThrow("stop")
+  await expect(runInit(dir, ask, known, { interview })).rejects.toThrow(STOP)
   const repo = loadRepo(path.join(dir, "home", "company"))
   expect(repo.company?.name).toBe("Acme")
   expect(new Set(repo.people.keys())).toEqual(new Set(["bo", "lan"]))
@@ -247,7 +261,7 @@ test("a failed interview can be tried again with the same model", async () => {
   const dir = tempDir()
   const { interview, calls } = failingInterview(ACME)
   const ask = new Script(["openai", "", "", "1", PASSWORD, PASSWORD, "1"])
-  await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow("stop")
+  await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow(STOP)
   expect(calls).toHaveLength(2)
   expect(ask.seen).toContain("The model couldn't run the interview: Connection error")
   expect(ask.offered).toContainEqual([TRY_AGAIN, SET_UP_AGAIN])
@@ -258,7 +272,7 @@ test("a failed interview can set up the model again", async () => {
   const dir = tempDir()
   const { interview } = failingInterview(ACME)
   const ask = new Script(["openai", "", "", "2", "anthropic", KEY, "", PASSWORD, PASSWORD, "1"])
-  await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow("stop")
+  await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow(STOP)
   const file = setupConnectionFile(path.join(dir, "home", "office"))
   expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({
     llm_config: { provider: "anthropic", api_key: KEY, model: "claude-sonnet-4-5" },
@@ -270,7 +284,7 @@ test("setting the model up again starts from step ones answers", async () => {
   const dir = tempDir()
   const { interview } = failingInterview(ACME)
   const ask = new Script(["openai", KEY, "gpt-x", "2", "", "", "", PASSWORD, PASSWORD, "1"])
-  await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow("stop")
+  await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow(STOP)
   const file = setupConnectionFile(path.join(dir, "home", "office"))
   expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({
     llm_config: { provider: "openai", api_key: KEY, model: "gpt-x" },
@@ -283,9 +297,9 @@ test("the model is checked before it is saved", async () => {
   const problems: (string | null)[] = ["Connection error", null]
   const checkModel = async () => problems.shift() ?? null
   const ask = new Script(["openai", "", "", "1", PASSWORD, PASSWORD, "1"])
-  await expect(init(path.join(dir, "home"), ask, { ...base(dir), ...interviewed(ACME), checkModel })).rejects.toThrow(
-    "stop",
-  )
+  await expect(
+    init(path.join(dir, "home"), ask, { ...base(dir), ...interviewed(ACME), checkModel }),
+  ).rejects.toThrow(STOP)
   expect(ask.seen).toContain("The model didn't answer: Connection error")
   expect(problems).toEqual([])
 })
@@ -302,7 +316,7 @@ test("init registers this device for the ceo in the first commit", async () => {
   const dir = tempDir()
   const home = path.join(dir, "home")
   const ask = scripted()
-  await expect(runInit(dir, ask)).rejects.toThrow("stop")
+  await expect(runInit(dir, ask)).rejects.toThrow(STOP)
   const me = (await readIdentity(path.join(home, "identity.json")))!
   expect([me.handle, me.device]).toEqual(["me", deviceName()])
   expect(fs.statSync(path.join(home, "identity.json")).mode & 0o777).toBe(0o600)
@@ -318,7 +332,7 @@ test("init keeps only the hash of the ceos password in the first commit", async 
   const dir = tempDir()
   const company = path.join(dir, "home", "company")
   const ask = scripted()
-  await expect(runInit(dir, ask)).rejects.toThrow("stop")
+  await expect(runInit(dir, ask)).rejects.toThrow(STOP)
   const first = parse(git(company, "show", "HEAD:people/me/person.yaml"))
   expect(await checkPassword(PASSWORD, first.password_hash)).toBe(true)
   expect(ask.seen.filter((line) => line.includes(PASSWORD))).toEqual([])
@@ -329,7 +343,7 @@ test("init keeps only the hash of the ceos password in the first commit", async 
 test("a short or mistyped password is asked again", async () => {
   const dir = tempDir()
   const ask = new Script(["eleven-char", PASSWORD, "typo-typo", PASSWORD, PASSWORD, "1"], { interactive: false })
-  await expect(runInit(dir, ask)).rejects.toThrow("stop")
+  await expect(runInit(dir, ask)).rejects.toThrow(STOP)
   expect(ask.seen).toContain(
     "Your password, to log in new devices with (at least 12 characters, one you use nowhere else; not shown)",
   )
@@ -350,7 +364,7 @@ class NoTerminalScript extends Script {
 test("without a terminal the ceo gets no password and is told how to set one", async () => {
   const dir = tempDir()
   const ask = new NoTerminalScript([""], { interactive: false })
-  await expect(runInit(dir, ask)).rejects.toThrow("stop")
+  await expect(runInit(dir, ask)).rejects.toThrow(STOP)
   expect(loadRepo(path.join(dir, "home", "company")).people.get("me")!.password_hash).toBeNull()
   expect(ask.seen).toContain(
     "Password: none, since there's no terminal to ask on; set one later with `opencorp password`",
@@ -362,7 +376,7 @@ test("init replaces an old identity", async () => {
   const home = path.join(dir, "home")
   fs.mkdirSync(home)
   fs.writeFileSync(path.join(home, "identity.json"), '{"handle": "old", "device": "old", "token": "act_old"}')
-  await expect(runInit(dir, scripted())).rejects.toThrow("stop")
+  await expect(runInit(dir, scripted())).rejects.toThrow(STOP)
   const me = (await readIdentity(path.join(home, "identity.json")))!
   expect(me.handle).toBe("me")
   expect(me.token).not.toBe("act_old")
@@ -371,7 +385,7 @@ test("init replaces an old identity", async () => {
 test("no device leaves the company open without tokens", async () => {
   const dir = tempDir()
   const home = path.join(dir, "home")
-  await expect(runInit(dir, scripted(), FLAGS, { device: false })).rejects.toThrow("stop")
+  await expect(runInit(dir, scripted(), FLAGS, { device: false })).rejects.toThrow(STOP)
   expect(fs.existsSync(path.join(home, "identity.json"))).toBe(false)
   expect(loadRepo(path.join(home, "company")).people.get("me")!.devices).toEqual([])
 })
@@ -397,7 +411,7 @@ test("a company whose first write stopped early is finished", async () => {
   fs.mkdirSync(company, { recursive: true })
   git(company, "init", "-q", "-b", "main")
   fs.writeFileSync(path.join(company, "company.yaml"), 'name: "Acme"\nceo: "me"\n')
-  await expect(runInit(dir, scripted())).rejects.toThrow("stop")
+  await expect(runInit(dir, scripted())).rejects.toThrow(STOP)
   expect(await lint(loadRepo(company))).toEqual([])
   expect(git(company, "status", "--porcelain")).toBe("")
 })
@@ -408,7 +422,9 @@ async function stopBeforeTheFirstCommit(dir: string): Promise<string> {
     throw new CompanyGitError("killed")
   })
   try {
-    await expect(runInit(dir, scripted(), { company: "Acme", name: "An", handle: "an" })).rejects.toThrow("killed")
+    const error = await rejection(runInit(dir, scripted(), { company: "Acme", name: "An", handle: "an" }))
+    expect(error).toBeInstanceOf(OnboardError)
+    expect(error.message).toContain("killed")
   } finally {
     commit.mockRestore()
   }
@@ -423,7 +439,7 @@ test.each(["false", "true"])("a second init after a stopped first write uses the
   const dir = tempDir()
   const company = await stopBeforeTheFirstCommit(dir)
   if (truncate) fs.writeFileSync(path.join(company, "company.yaml"), 'name: "Ac')
-  await expect(runInit(dir, scripted(), { company: "Beta", name: "Bo", handle: "bo" })).rejects.toThrow("stop")
+  await expect(runInit(dir, scripted(), { company: "Beta", name: "Bo", handle: "bo" })).rejects.toThrow(STOP)
   const committed = git(company, "show", "HEAD:company.yaml")
   expect(committed).toContain('name: "Beta"')
   expect(committed).toContain('ceo: "bo"')
@@ -454,7 +470,7 @@ test("an existing home others can read is made private", async () => {
   const home = path.join(dir, "home")
   fs.mkdirSync(home, { mode: 0o755 })
   fs.chmodSync(home, 0o755)
-  await expect(runInit(dir, scripted())).rejects.toThrow("stop")
+  await expect(runInit(dir, scripted())).rejects.toThrow(STOP)
   expect(fs.statSync(home).mode & 0o777).toBe(0o700)
 })
 
@@ -471,7 +487,7 @@ test("a remote is added and pushed to with main tracking it", async () => {
   const dir = tempDir()
   const remote = bare(path.join(dir, "acme.git"))
   const ask = scripted(remote)
-  await expect(runInit(dir, ask)).rejects.toThrow("stop")
+  await expect(runInit(dir, ask)).rejects.toThrow(STOP)
   const company = path.join(dir, "home", "company")
   expect(git(remote, "rev-parse", "main")).toBe(git(company, "rev-parse", "HEAD"))
   expect(git(company, "rev-parse", "--abbrev-ref", "main@{upstream}")).toBe("origin/main")
@@ -482,7 +498,7 @@ test("a remote flag is used without asking", async () => {
   const dir = tempDir()
   const remote = bare(path.join(dir, "acme.git"))
   const ask = new Script([PASSWORD, PASSWORD], { interactive: false })
-  await expect(runInit(dir, ask, { ...FLAGS, remote })).rejects.toThrow("stop")
+  await expect(runInit(dir, ask, { ...FLAGS, remote })).rejects.toThrow(STOP)
   expect(git(remote, "rev-parse", "main")).toBe(git(path.join(dir, "home", "company"), "rev-parse", "HEAD"))
   expect(ask.seen).not.toContain(REMOTE)
 })
@@ -492,7 +508,7 @@ test("a push that fails is a warning with the retry and init goes on", async () 
   const nowhere = path.join(dir, "nowhere.git")
   const ask = scripted(nowhere)
   // It got past the remote, to onboarding.
-  await expect(runInit(dir, ask)).rejects.toThrow("stop")
+  await expect(runInit(dir, ask)).rejects.toThrow(STOP)
   const company = path.join(dir, "home", "company")
   const warning = ask.seen.find((line) => line.startsWith("Warning: couldn't push"))!
   expect(warning).toContain(GIT_ACCESS)
@@ -507,7 +523,7 @@ test("a token in the remote url is never shown", async () => {
   const environ = Object.fromEntries(Object.entries(gitEnv(process.env)).filter(([name]) => !/_proxy$/i.test(name)))
   const url = "http://x-access-token:ghp_sentinel42@127.0.0.1:9/acme.git"
   const ask = scripted(url)
-  await expect(runInit(dir, ask, FLAGS, { environ })).rejects.toThrow("stop")
+  await expect(runInit(dir, ask, FLAGS, { environ })).rejects.toThrow(STOP)
   expect(ask.seen.some((line) => line.startsWith("Warning: couldn't push"))).toBe(true)
   expect(ask.seen.filter((line) => line.includes("ghp_sentinel42"))).toEqual([])
   expect(redact(url)).toBe("http://***@127.0.0.1:9/acme.git")
@@ -543,8 +559,10 @@ test("the remote node uses the flag or asks", async () => {
 test("the remote is asked before the company is written", async () => {
   const dir = tempDir()
   const ask = scripted()
-  await expect(runInit(dir, ask)).rejects.toThrow("stop")
+  await expect(runInit(dir, ask)).rejects.toThrow(STOP)
   const created = ask.seen.findIndex((line) => line.startsWith("Company repo: created at"))
+  expect(ask.seen).toContain("Step 3 of 5: Password")
+  expect(ask.seen).toContain(REMOTE)
   expect(ask.seen.indexOf("Step 3 of 5: Password")).toBeLessThan(ask.seen.indexOf(REMOTE))
   expect(ask.seen.indexOf(REMOTE)).toBeLessThan(created)
 })
@@ -579,3 +597,105 @@ test("without anyone to ask there is no remote", async () => {
   })
   expect(await remoteStep(prompter, "")).toBe("")
 })
+
+const CEO: Known = { company: "Acme", name: "Hong Ngoc Bui", handle: "ngocbh" }
+
+/** A short home whose office really starts in the background, and the options that run it: listers and a model
+ *  check that reach no provider, git without the user's config, and a fixed login, so no test reads the account
+ *  database. Call `killedAtEnd()` first, so the daemon goes before the home is removed. */
+function realOffice(spawned: ReturnType<typeof killedAtEnd>) {
+  const dir = shortDir()
+  // Python's `no_web_port`: HQ stays off its TCP port, which the owner's own office holds.
+  fs.mkdirSync(path.join(dir, "office"), { mode: 0o700 })
+  fs.writeFileSync(path.join(dir, "office", "hq.json"), '{"tcp": false}')
+  const environ = { ...gitEnv(selfSpawnEnv(process.env)), HOME: tempDir() }
+  const options = {
+    mode: "background",
+    host: daemonHost(dir, spawned),
+    environ,
+    listers: NO_LISTING,
+    checkModel: async () => null,
+    loginDefaults: () => ["Hong Ngoc Bui", "ngocbh"],
+  } satisfies Partial<InitOptions>
+  return { dir, environ, options, stop: () => fallback.stopProcess(launch(dir, { environ, userHome: dir })) }
+}
+
+/** Every regular file under `root` that holds `text`, links skipped. */
+function holding(root: string, text: string): string[] {
+  const found: string[] = []
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const file = path.join(root, entry.name)
+    if (entry.isDirectory()) found.push(...holding(file, text))
+    else if (entry.isFile() && fs.readFileSync(file).includes(text)) found.push(file)
+  }
+  return found
+}
+
+test(
+  "init sets up the office and a second onboard changes nothing",
+  async () => {
+    const { dir, options, stop } = realOffice(killedAtEnd())
+    const company = path.join(dir, "company")
+    const file = setupConnectionFile(path.join(dir, "office"))
+    const pidfile = path.join(dir, "office", "office.pid")
+    const installed = path.join(dir, "office", "install.json")
+    const first = new Script(["openai", "", "", PASSWORD, PASSWORD, "1"], { interactive: false })
+    try {
+      await init(dir, first, { ...options, known: CEO })
+      expect(await officeAnswers(path.join(dir, "office", "office.sock"))).toBe(true)
+      const repo = loadRepo(company)
+      expect(await lint(repo)).toEqual([])
+      expect(missingFiles(company)).toEqual([])
+      expect(Object.fromEntries([...repo.people].map(([h, p]) => [h, p.kind]))).toEqual({
+        ngocbh: "human",
+        minh: "agent",
+      })
+      expect(git(company, "log", "--format=%s").split("\n")).toEqual(["init: create the company"])
+      const me = (await readIdentity(path.join(dir, "identity.json")))!
+      expect(repo.people.get("ngocbh")?.devices.map((d) => d.name)).toEqual([me.device])
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+      const head = git(company, "rev-parse", "HEAD")
+      const pid = fs.readFileSync(pidfile, "utf8")
+      const saved = fs.statSync(file, { bigint: true }).mtimeNs
+      const install = fs.readFileSync(installed, "utf8")
+
+      const again = new Script() // no answers: a second run must not ask anything
+      await onboard(dir, again, options)
+      expect(git(company, "rev-parse", "HEAD")).toBe(head)
+      expect(fs.readFileSync(pidfile, "utf8")).toBe(pid)
+      expect(fs.statSync(file, { bigint: true }).mtimeNs).toBe(saved)
+      expect(fs.readFileSync(installed, "utf8")).toBe(install)
+      expect(again.seen.some((line) => line.includes("up to date"))).toBe(true)
+    } finally {
+      await stop()
+    }
+  },
+  120_000,
+)
+
+test(
+  "the key lands only in the provider file",
+  async () => {
+    const { dir, options, stop } = realOffice(killedAtEnd())
+    const file = setupConnectionFile(path.join(dir, "office"))
+    const ask = new Script(["anthropic", KEY, "", PASSWORD, PASSWORD, "1"], { interactive: false })
+    try {
+      await init(dir, ask, { ...options, known: CEO })
+      expect(JSON.parse(fs.readFileSync(file, "utf8")).llm_config.api_key).toBe(KEY)
+      const token = (await readIdentity(path.join(dir, "identity.json")))!.token
+      expect(ask.seen.filter((line) => line.includes(KEY) || line.includes(token))).toEqual([])
+      expect(holding(dir, KEY)).toEqual([file])
+      expect(holding(dir, token)).toEqual([path.join(dir, "identity.json")])
+      // Git objects are compressed, so the byte search above can't see into them.
+      const objects = spawnSync("git", ["cat-file", "--batch-all-objects", "--batch"], {
+        cwd: path.join(dir, "company"),
+      }).stdout
+      expect(objects.length).toBeGreaterThan(0)
+      expect(objects.includes(KEY)).toBe(false)
+      expect(objects.includes(token)).toBe(false)
+    } finally {
+      await stop()
+    }
+  },
+  120_000,
+)

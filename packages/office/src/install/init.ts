@@ -191,6 +191,6 @@ export async function init(home: string, prompter: Prompter, options: InitOption
     host,
     environ,
     steps: false,
-    loginDefaults: options.loginDefaults,
+    loginDefaults: defaults,
   })
 }
