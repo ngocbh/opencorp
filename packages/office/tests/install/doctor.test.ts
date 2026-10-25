@@ -2,7 +2,8 @@
 import fs from "node:fs"
 import http from "node:http"
 import path from "node:path"
-import type { HqStatus } from "@opencorp/protocol"
+import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
+import { VERSION } from "@opencorp/protocol/version"
 import { expect, onTestFinished, test } from "bun:test"
 import { Identity, identityPath, readIdentity, writeIdentity } from "../../src/auth/identity.ts"
 import { newToken } from "../../src/auth/tokens.ts"
@@ -784,14 +785,14 @@ test("hq status is read with this devices token", async () => {
   await writeIdentity(identityPath(home), new Identity(CEO, "mac", token))
   attach(office, { log: () => {}, listen: false })
   const { sock } = await served(office, { tokens: true })
-  const status = await doctor.hqStatus(sock, await readIdentity(identityPath(home)))
+  const status = await doctor.hqStatus(sock, await readIdentity(identityPath(home)), 10_000)
   if (typeof status === "string") throw new Error(`unread: ${status}`)
   expect(status.socket.endsWith("hq.sock")).toBe(true)
   expect(doctor.report(doctor.hqChecks(status, home, home))).not.toContain(token)
   fs.unlinkSync(identityPath(home))
   const gone = await readIdentity(identityPath(home))
   expect(gone).toBeUndefined()
-  expect(await doctor.hqStatus(sock, gone)).toBe("refused") // 401
+  expect(await doctor.hqStatus(sock, gone, 10_000)).toBe("refused") // 401
 })
 
 test("an office without hq or no office at all is unreachable", async () => {
@@ -939,10 +940,10 @@ test("the offices warnings are shown", () => {
 test("an answer that isnt an hq status is unreadable", async () => {
   for (const body of ["<html>", '{"ok": true}', '{"socket": "/s", "tcp": [], "url": null, "health": {}}', "[1]"]) {
     const sock = await answering(200, body)
-    expect(await doctor.hqStatus(sock, undefined), body).toBe("unreadable")
+    expect(await doctor.hqStatus(sock, undefined, 10_000), body).toBe("unreadable")
   }
   const sock = await answering(200, JSON.stringify(status()))
-  expect(await doctor.hqStatus(sock, undefined)).toEqual(status())
+  expect(await doctor.hqStatus(sock, undefined, 10_000)).toEqual(status())
 })
 
 test("a refused device is told to log in", () => {
@@ -961,4 +962,163 @@ test("an unreachable hq is told to restart", () => {
   expect(got!.status).toBe("warn")
   expect(got!.detail).toContain("`opencorp restart`")
   expect(got!.detail).not.toContain("login")
+})
+
+/** What an office running this code for `home` would answer on `GET /office`, with `over` over its fields. */
+function info(home: string, over: Partial<OfficeInfo> = {}): OfficeInfo {
+  return {
+    pid: 42,
+    home,
+    started_at: "2026-10-25T10:00:00.000Z",
+    version: VERSION,
+    tools: {},
+    guards: { install: [], tools: [], path: [] },
+    ...over,
+  }
+}
+
+/** `checks` on a running office at `paths`, whose `GET /hq` answers `status()` and `GET /office` answers `office`. */
+function runningChecks(dir: string, paths: OfficePaths, office: OfficeInfo | doctor.Unread): Promise<Check[]> {
+  return doctor.checks(paths.home, {
+    host: makeHost(dir, new Runner(), { answers: async () => true }),
+    command: COMMAND,
+    repo: path.join(dir, "repo"),
+    probe: async () => null,
+    codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
+    environ: {},
+    hq: async () => status(),
+    office: async () => office,
+  })
+}
+
+test("a running office reports hq", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const found = await runningChecks(dir, paths, info(launchFor(dir, paths).home))
+  const got = byName(found)
+  expect(got.hq!.status).toBe("ok")
+  expect(got.version).toEqual({ name: "version", status: "ok", detail: "pid 42 runs the current code" })
+  expect(got.tools!.status).toBe("ok")
+  expect(got.office!.detail).toContain("(pid ?)") // no pidfile
+  expect(found.map((c) => c.name).slice(found.findIndex((c) => c.name === "office"))).toEqual([
+    "office",
+    "version",
+    "tools",
+    "hq",
+    "web app",
+    "sandbox",
+    "codex",
+  ])
+})
+
+test("an office older than the code is told to restart", () => {
+  const dir = tempDir()
+  const run = launchFor(dir, new OfficePaths(path.join(dir, "home")))
+  const office = info(run.home)
+  const started = Date.parse(office.started_at)
+  const old = doctor.versionCheck(run, office, started + 60_000)
+  expect(old.status).toBe("warn")
+  expect(old.detail).toContain("restart it to run the new code")
+  expect(doctor.versionCheck(run, office, started - 60_000)).toEqual({
+    name: "version",
+    status: "ok",
+    detail: "pid 42 runs the current code",
+  })
+})
+
+test("an office of another version or home is told so", () => {
+  const dir = tempDir()
+  const run = launchFor(dir, new OfficePaths(path.join(dir, "home")))
+  const elsewhere = doctor.versionCheck(run, info("/somewhere/else"), 0)
+  expect(elsewhere.status).toBe("warn")
+  expect(elsewhere.detail).toBe("pid 42 is not this office's daemon: it serves /somewhere/else")
+  const older = doctor.versionCheck(run, info(run.home, { version: "0.0.0-old" }), 0)
+  expect(older.status).toBe("warn")
+  expect(older.detail).toContain("0.0.0-old")
+  expect(older.detail).toContain(VERSION)
+})
+
+test("the newest source covers the office protocol cli and yian", () => {
+  const checkout = path.join(tempDir(), "checkout")
+  const entry = path.join(checkout, "packages/cli/src/main.ts")
+  const files: [string, number][] = [
+    [entry, 100],
+    [path.join(checkout, "packages/office/src/daemon/x.ts"), 200],
+    [path.join(checkout, "packages/protocol/src/y.ts"), 300],
+    [path.join(checkout, "packages/yian/ts/src/deep/er/z.ts"), 400],
+    [path.join(checkout, "packages/app/src/later.ts"), 900], // not code the office runs
+  ]
+  for (const [file, when] of files) {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, "")
+    fs.utimesSync(file, when, when)
+  }
+  expect(doctor.newestSource(["/usr/local/bin/bun", "--smol", entry])).toBe(400_000)
+  fs.utimesSync(entry, 500, 500)
+  expect(doctor.newestSource(["/usr/local/bin/bun", entry])).toBe(500_000)
+  expect(doctor.newestSource(COMMAND)).toBe(0) // a compiled binary
+})
+
+test("an office that cant say what it runs warns on the version line", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  for (const why of ["refused", "unreachable", "unreadable"] as const) {
+    const got = byName(await runningChecks(dir, paths, why))
+    expect(got.version).toEqual({ name: "version", status: "warn", detail: doctor.VERSION_UNREAD[why] })
+    expect(got.tools).toBeUndefined()
+    expect(got.hq!.status).toBe("ok")
+  }
+  expect(doctor.VERSION_UNREAD.refused).toContain("`opencorp login`")
+  expect(doctor.VERSION_UNREAD.unreachable).toContain("`opencorp restart`")
+})
+
+test("office info is read with this devices token", async () => {
+  const office = makeOffice({ tools: { git: "/usr/bin/git" } })
+  const home = tempDir()
+  const token = newToken()
+  giveDevice(office.paths.company, CEO, "mac", token) // enforced from now on
+  await writeIdentity(identityPath(home), new Identity(CEO, "mac", token))
+  const { sock } = await served(office, { tokens: true })
+  const got = await doctor.officeInfo(sock, await readIdentity(identityPath(home)), 10_000)
+  if (typeof got === "string") throw new Error(`unread: ${got}`)
+  expect(got.pid).toBe(process.pid)
+  expect(got.home).toBe(office.paths.home)
+  expect(got.tools).toEqual({ git: "/usr/bin/git" })
+  const run = launchFor(home, new OfficePaths(home))
+  expect(doctor.report([doctor.versionCheck(run, got, 0), doctor.toolsCheck(got)])).not.toContain(token)
+  expect(await doctor.officeInfo(sock, undefined, 10_000)).toBe("refused") // 401
+})
+
+test("an answer that isnt office info is unreadable", async () => {
+  for (const body of ["<html>", '{"ok": true}', "[1]"]) {
+    const sock = await answering(200, body)
+    expect(await doctor.officeInfo(sock, undefined, 10_000), body).toBe("unreadable")
+  }
+  expect(await doctor.officeInfo(await answering(404, "{}"), undefined, 10_000)).toBe("unreachable")
+})
+
+/** An executable file in a fresh temp dir. */
+function program(): string {
+  const file = path.join(tempDir(), "prog")
+  fs.writeFileSync(file, "#!/bin/sh\n", { mode: 0o755 })
+  return file
+}
+
+test("every pinned tool still there is ok", () => {
+  const got = doctor.toolsCheck(info("/h", { tools: { git: program(), ps: program() } }))
+  expect(got.status).toBe("ok")
+  expect(got.detail).toBe("every program the office runs is where it found it at start")
+})
+
+test("a pinned tool that vanished is told to restart the office", () => {
+  const gone = path.join(tempDir(), "gone")
+  const noGit = doctor.toolsCheck(info("/h", { tools: { git: gone, ps: program() } }))
+  expect(noGit.status).toBe("fail")
+  expect(noGit.detail).toBe(
+    `\`git\` at ${gone} is gone, so the office can't run it; ` +
+      "restart the office (`opencorp restart`) so it finds them on its PATH again",
+  )
+  const noPs = doctor.toolsCheck(info("/h", { tools: { git: program(), ps: gone } }))
+  expect(noPs.status).toBe("warn")
+  expect(noPs.detail).toContain(`\`ps\` at ${gone} is gone`)
 })

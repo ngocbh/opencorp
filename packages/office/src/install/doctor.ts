@@ -2,9 +2,10 @@
  *  daemon, HQ, sandbox, and Codex. */
 import fs from "node:fs"
 import path from "node:path"
-import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
+import { type HqStatus, OfficeInfo } from "@opencorp/protocol"
+import { VERSION } from "@opencorp/protocol/version"
 import { FileLockError } from "@ngocbh/yian/platform"
-import type { Identity } from "../auth/identity.ts"
+import { type Identity, identityPath, readIdentity } from "../auth/identity.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
 import type { RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
@@ -13,14 +14,16 @@ import { isNew, missingFiles } from "../company_template/index.ts"
 import { OfficePaths } from "../daemon/office.ts"
 import { CodexMissing, codexCommand } from "../harness/codex.ts"
 import { RETRY_MS } from "../hq/servers.ts"
+import { CHECKOUT } from "../hq/version.ts"
 import { selfCommand } from "../platform.ts"
 import { workerEnv } from "../worker/spawn.ts"
-import { defaultHost, type Env, type Host, type Launch, launch, runCommand } from "./launch.ts"
+import { defaultHost, type Env, type Host, type Launch, launch, runCommand, which } from "./launch.ts"
 import * as launchd from "./launchd.ts"
 import { checkProvider, SET_UP, setupConnectionFile, stopToTopUp, withDefaultModel } from "./onboard.ts"
 import { OnboardError } from "./prompts.ts"
 import * as service from "./service.ts"
 import * as systemd from "./systemd.ts"
+import { installPaths } from "./tools.ts"
 
 /** How the daemon prefixes the one line it prints when it can't start. */
 const START_ERROR = "opencorp office: "
@@ -455,7 +458,7 @@ export async function getJson(
     // Bun's fetch over a unix socket.
     const res = await fetch(`http://office${target}`, {
       unix: socket,
-      headers: identity ? identity.headers() : {},
+      headers: identity?.headers(),
       signal: AbortSignal.timeout(timeoutMs),
     })
     return { status: res.status, text: await res.text() }
@@ -478,7 +481,10 @@ function readByChecks(body: unknown): HqStatus | undefined {
   if (!["enabled", "port", "listening", "error"].every((key) => key in tcp)) return undefined
   if (!isRecord(office) || !("api" in office)) return undefined
   if (app !== null && !(isRecord(app) && "api" in app)) return undefined
-  if (body.warnings !== undefined && !Array.isArray(body.warnings)) return undefined
+  const { warnings } = body
+  if (warnings !== undefined && !(Array.isArray(warnings) && warnings.every((w) => typeof w === "string"))) {
+    return undefined
+  }
   return body as HqStatus
 }
 
@@ -602,6 +608,115 @@ export function hqChecks(status: HqStatus | Unread, officeDir: string, repo: str
   return found
 }
 
+/**
+ * `GET /office` from the office on `socket`, sent with the identity's token when there is one: its pid, home, start
+ * time, version and pinned tools, or why it couldn't be read.
+ */
+export async function officeInfo(
+  socket: string,
+  identity: Identity | undefined,
+  timeoutMs = 2000,
+): Promise<OfficeInfo | Unread> {
+  const got = await getJson(socket, identity, "/office", timeoutMs)
+  if (got === "unreachable") return got
+  if (got.status === 401) return "refused"
+  if (got.status !== 200) return "unreachable" // 404 from an office before the route
+  let body: unknown
+  try {
+    body = JSON.parse(got.text)
+  } catch {
+    return "unreadable"
+  }
+  const parsed = OfficeInfo.safeParse(body)
+  return parsed.success ? parsed.data : "unreadable"
+}
+
+/** What to do about an office that wouldn't say what code it runs, by why. */
+export const VERSION_UNREAD: Record<Unread, string> = {
+  refused: "the office doesn't know this device, so it won't say what it runs: run `opencorp login`",
+  unreachable: "the office didn't say what code it runs: run `opencorp restart`",
+  unreadable:
+    "the office's answer about its code isn't one doctor can read (an office running other code?): " +
+    "run `opencorp restart`",
+}
+
+/** The newest modification time (ms) of the regular files under `dir`, at any depth; 0 when there are none. What
+ *  can't be read is skipped. */
+function newestUnder(dir: string): number {
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return 0
+  }
+  let newest = 0
+  for (const entry of entries) {
+    const file = path.join(dir, entry.name)
+    if (entry.isDirectory()) newest = Math.max(newest, newestUnder(file))
+    else if (entry.isFile()) {
+      try {
+        newest = Math.max(newest, fs.statSync(file).mtimeMs)
+      } catch {
+        // removed while this ran, or unreadable
+      }
+    }
+  }
+  return newest
+}
+
+/**
+ * The newest modification time (ms) of the code the office runs from a checkout command
+ * (`[bun, ...flags, <checkout>/packages/cli/src/main.ts]`): the office, protocol and CLI sources and Yian's. 0 for a
+ * compiled binary, or when nothing is found.
+ */
+export function newestSource(command: readonly [string, ...string[]]): number {
+  // npm installs date every file 1985, so a binary's dates say nothing; VERSION catches an upgrade.
+  if (command.length < 2) return 0
+  const checkout = installPaths(command)[0]!
+  const roots = ["office", "protocol", "cli"].map((pkg) => path.join(checkout, "packages", pkg, "src"))
+  roots.push(path.join(checkout, "packages", "yian", "ts", "src"))
+  return Math.max(0, ...roots.map(newestUnder))
+}
+
+/** Whether `info` is this office's daemon (`launch`'s home), runs this install's version, and started after its code
+ *  last changed (`newest`, ms). */
+export function versionCheck(launch: Launch, info: OfficeInfo, newest: number): Check {
+  if (info.home !== launch.home) {
+    const detail = `pid ${info.pid} is not this office's daemon: it serves ${info.home}`
+    return { name: "version", status: "warn", detail }
+  }
+  if (info.version !== VERSION) {
+    return {
+      name: "version",
+      status: "warn",
+      detail: `the office runs ${info.version} and this install is ${VERSION}; restart it to run the new code`,
+    }
+  }
+  if (Date.parse(info.started_at) < newest) {
+    return {
+      name: "version",
+      status: "warn",
+      detail: "the office started before its code last changed; restart it to run the new code",
+    }
+  }
+  return { name: "version", status: "ok", detail: `pid ${info.pid} runs the current code` }
+}
+
+/** Whether every program the office pinned at start (`info.tools`) is still a runnable file. A missing `git` fails:
+ *  the office can't serve without it. */
+export function toolsCheck(info: OfficeInfo): Check {
+  const gone = Object.entries(info.tools).filter(([, found]) => which(found, undefined) === null)
+  if (!gone.length) {
+    return { name: "tools", status: "ok", detail: "every program the office runs is where it found it at start" }
+  }
+  const lost = gone.map(([name, found]) => `\`${name}\` at ${found} is gone, so the office can't run it`).join("; ")
+  return {
+    name: "tools",
+    status: gone.some(([name]) => name === "git") ? "fail" : "warn",
+    detail: `${lost}; restart the office (\`opencorp restart\`) so it finds them on its PATH again`,
+  }
+}
+
 /** What `checks` reads and runs; tests pass stand-ins. */
 export interface CheckOptions {
   /** The machine (default `defaultHost()`). */
@@ -617,17 +732,23 @@ export interface CheckOptions {
   codex?: (env: Record<string, string>, environ: Env, mode: string | null) => Promise<Check>
   /** The shell's environment (default `process.env`). */
   environ?: Env
-  /** `GET /hq` from the office on the socket, sent with the identity's token when there is one. */
-  hq: (socket: string, identity: Identity | undefined) => Promise<HqStatus | Unread>
-  /** `GET /office` from the office on the socket, sent with the identity's token when there is one. */
-  office: (socket: string, identity: Identity | undefined) => Promise<OfficeInfo | Unread>
+  /** `GET /hq` from the office on the socket, sent with the identity's token when there is one (default
+   *  `hqStatus`). */
+  hq?: (socket: string, identity: Identity | undefined) => Promise<HqStatus | Unread>
+  /** `GET /office` from the office on the socket, sent with the identity's token when there is one (default
+   *  `officeInfo`). */
+  office?: (socket: string, identity: Identity | undefined) => Promise<OfficeInfo | Unread>
   /** Looks at a path without following a symlink (default `fs.lstatSync`). */
   lstat?: (p: string) => fs.Stats
 }
 
-/** Every check for the office at `home`, in the order onboarding sets things up. */
+/**
+ * Every check for the office at `home`, in the order onboarding sets things up. A running office is asked what it
+ * runs and where HQ listens with this device's identity, read once; that read can wait on a busy `<home>/.lock`.
+ */
 export async function checks(home: string, options: CheckOptions): Promise<Check[]> {
-  const { host = defaultHost(), command = selfCommand(), environ = process.env, codex = codexCheck } = options
+  const { host = defaultHost(), command = selfCommand(), repo = CHECKOUT, environ = process.env } = options
+  const { codex = codexCheck, hq = hqStatus, office = officeInfo } = options
   const lstat = options.lstat ?? ((p: string) => fs.lstatSync(p))
   const run = launch(home, { command, environ, userHome: host.userHome })
   const paths = new OfficePaths(run.home)
@@ -641,6 +762,11 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   found.push(await serviceCheck(run, host))
   if (running) {
     found.push({ name: "office", status: "ok", detail: `answering on ${run.socket} (pid ${service.pid(run)})` })
+    const identity = await readIdentity(identityPath(run.home))
+    const info = await office(run.socket, identity)
+    if (typeof info === "string") found.push({ name: "version", status: "warn", detail: VERSION_UNREAD[info] })
+    else found.push(versionCheck(run, info, newestSource(command)), toolsCheck(info))
+    found.push(...hqChecks(await hq(run.socket, identity), paths.office, repo))
   } else {
     const error = crash(run.log)
     const why = error === null ? "" : `; its last start failed: ${error}`
