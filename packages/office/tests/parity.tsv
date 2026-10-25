@@ -861,8 +861,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/channel.test.ts::a broken transport closes the channel with a fixed message	design §2.4, §6 rule 1	O3-1
 —	new	packages/office/tests/worker/channel.test.ts::a channel shows no frame bytes when inspected	design §2.4: buffered bytes can hold the start frame's provider key	O3-1
 —	new	packages/office/tests/worker/channel.test.ts::a frame that is not json is refused with a fixed message	design §2.4, §6 rule 1	O3-1
-—	new	packages/office/tests/worker/channel.test.ts::a grandchild of the worker does not hold the channel open	design §2.4; O0-10 P1: no setCloexec, the regression test stays	O3-1
-—	new	packages/office/tests/worker/channel.test.ts::a worker close stops its queued sends	design §2.4: queued frames stop at close() or a failed write, as Python shutdown does	O3-1
+—	new	packages/office/tests/worker/channel.test.ts::a grandchild of the worker does not hold the channel open	design §2.4; O0-10 P1: no setCloexec, the regression test stays; by fd identity with a positive control (a shell's own fds aren't the channel)	O3-1
+—	new	packages/office/tests/worker/channel.test.ts::a worker close stops its queued sends	design §2.4: queued frames stop at close() or a failed write, as Python shutdown does; fills the socket first (buffers differ by host, 16 MiB on Misha)	O3-1
 —	new	packages/office/tests/worker/channel.test.ts::a worker send after the office closed the channel raises channel closed	design §2.4	O3-1
 —	new	packages/office/tests/worker/channel.test.ts::frames buffered before a reset still arrive	design §2.4: frames already received are never dropped	O3-1
 —	new	packages/office/tests/worker/channel.test.ts::frames sent just before the worker exits still arrive	design §2.4	O3-1
