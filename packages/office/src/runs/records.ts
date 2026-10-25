@@ -2,6 +2,7 @@
  *  actor's memory, and yian's run index and logs. */
 import fs from "node:fs"
 import path from "node:path"
+import { RunSummary } from "@opencorp/protocol"
 import { withWarnings } from "@ngocbh/yian/platform"
 import {
   inspectRun,
@@ -12,9 +13,16 @@ import {
   type WaitInfo,
 } from "@ngocbh/yian/run"
 import { MAIN_CHAT } from "../chat/turns.ts"
-import { REASON_CHARS, cutReason, type QuestionRecord, type RunRow, type SessionRecord } from "../store/store.ts"
+import {
+  REASON_CHARS,
+  cutReason,
+  type QuestionRecord,
+  type RunRow,
+  type SessionRecord,
+  type Store,
+} from "../store/store.ts"
 import { errorName } from "../worker/rpc.ts"
-import { COULDNT_RESUME, COULDNT_START, WORKER_STOPPED } from "./outcomes.ts"
+import { COULDNT_RESUME, COULDNT_START, DEBRIEF, FLOWS, WORKER_STOPPED } from "./outcomes.ts"
 
 export const NO_OUTCOME = "ended without a recorded outcome"
 /** The most children a run's page shows with it (the newest). */
@@ -125,6 +133,20 @@ export class YianRuns {
   /** The run's index row, if the index has one. */
   row(runId: string): RunIndexRow | undefined {
     return this.#index.get(runId)
+  }
+
+  /** The run ids of the index rows whose parent is one of `parentIds`, by parent id; a parent with none is left
+   *  out. */
+  children(parentIds: Iterable<string>): Map<string, string[]> {
+    const parents = new Set(parentIds)
+    const out = new Map<string, string[]>()
+    for (const row of this.#index.values()) {
+      if (row.parentRunId === null || !parents.has(row.parentRunId)) continue
+      const kids = out.get(row.parentRunId) ?? []
+      kids.push(row.runId)
+      out.set(row.parentRunId, kids)
+    }
+    return out
   }
 
   /** What yian says about the run: its index row, with a failed run's failure from its log; the log's answer for a
@@ -246,4 +268,154 @@ export function participants(driver: string, person: string, others: Iterable<st
     if (who && who !== driver && !out.includes(who) && HANDLE.test(who)) out.push(who)
   }
   return out
+}
+
+/** Newest first: by launch, then run id. */
+function newestFirst(a: RunRow, b: RunRow): number {
+  if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1
+  return a.runId < b.runId ? 1 : a.runId > b.runId ? -1 : 0
+}
+
+/** RunSummary objects for a batch of office rows, with one store read per kind of fact (and one per session).
+ *
+ *  `live` is read before the store; `fresh` (when given) reads memory again after the store reads of each build,
+ *  and the two are merged: a run that ends between the reads is live in the first, one that starts between them is
+ *  live in the second. Children and their parents come from yian's index. A stored reason is shown cut to
+ *  REASON_CHARS. */
+export class Summaries {
+  readonly #store: Store
+  readonly #live: Live
+  readonly #yian: YianRuns
+  readonly #fresh: (() => Live) | undefined
+  readonly #childrenShown: number
+  readonly #log: (line: string) => void
+
+  constructor(
+    store: Store,
+    live: Live,
+    yian: YianRuns,
+    options: { fresh?: () => Live; childrenShown?: number; log?: (line: string) => void } = {},
+  ) {
+    this.#store = store
+    this.#live = live
+    this.#yian = yian
+    this.#fresh = options.fresh
+    this.#childrenShown = options.childrenShown ?? CHILDREN_SHOWN
+    this.#log = options.log ?? (() => {})
+  }
+
+  /** Each row's summary by run id, with how many runs it started (`children_total`) and no children. Given
+   *  `children` (by parent id, newest first), the newest `childrenShown` of each are summarized and attached. A row
+   *  whose session is gone is left out. */
+  build(rows: RunRow[], options: { children?: ReadonlyMap<string, RunRow[]> } = {}): Map<string, RunSummary> {
+    const children = options.children ?? new Map<string, RunRow[]>()
+    const byId = new Map<string, RunRow>()
+    for (const r of [...rows, ...[...children.values()].flatMap((ks) => ks.slice(0, this.#childrenShown))]) {
+      byId.set(r.runId, r)
+    }
+    const everyone = [...byId.values()]
+    const ids = everyone.map((r) => r.runId)
+    const sessions = new Map<string, SessionRecord | undefined>()
+    for (const r of everyone) {
+      if (!sessions.has(r.sessionId)) sessions.set(r.sessionId, this.#store.getSession(r.sessionId))
+    }
+    const questions = new Map<string, QuestionRecord[]>()
+    if (everyone.length > 0) {
+      for (const q of this.#store.listQuestions({ runId: ids })) {
+        const list = questions.get(q.run_id)
+        if (list) list.push(q)
+        else questions.set(q.run_id, [q])
+      }
+    }
+    const kids = this.#yian.children(ids)
+    const kidRows = this.#store.getRuns([...kids.values()].flat())
+    const nextIds = new Map<string, string>()
+    for (const r of everyone) {
+      const runIds = sessions.get(r.sessionId)?.run_ids ?? []
+      const i = runIds.indexOf(r.runId)
+      if (i >= 0 && i + 1 < runIds.length) nextIds.set(r.runId, runIds[i + 1]!)
+    }
+    const nextRows = this.#store.getRuns(nextIds.values())
+    const live = this.#fresh ? this.#live.merged(this.#fresh()) : this.#live
+    const out = new Map<string, RunSummary>()
+    for (const r of everyone) {
+      const session = sessions.get(r.sessionId)
+      if (!session) continue
+      const openers = (kids.get(r.runId) ?? [])
+        .flatMap((k) => {
+          const kid = kidRows.get(k)
+          return kid?.flow === FLOWS.side ? [kid] : []
+        })
+        .sort(newestFirst)
+        .map((k) => k.driver)
+      const next = nextRows.get(nextIds.get(r.runId) ?? "")
+      const replacedBy = next?.replacesRunId === r.runId ? next.runId : null
+      const childrenTotal = kids.get(r.runId)?.length ?? 0
+      out.set(r.runId, this.#one(r, session, questions.get(r.runId) ?? [], openers, replacedBy, childrenTotal, live))
+    }
+    for (const [parentId, ks] of children) {
+      const parent = out.get(parentId)
+      if (!parent) continue
+      const shown = ks.slice(0, this.#childrenShown).flatMap((k) => out.get(k.runId) ?? [])
+      out.set(parentId, { ...parent, children: shown })
+    }
+    return out
+  }
+
+  /** The office rows of each run's index children, newest first (by launch, then run id), by parent id; a run
+   *  with none is left out. */
+  children(runIds: string[]): Map<string, RunRow[]> {
+    const kids = this.#yian.children(runIds)
+    const rows = this.#store.getRuns([...kids.values()].flat())
+    const out = new Map<string, RunRow[]>()
+    for (const [parentId, ids] of kids) {
+      const found = ids.flatMap((id) => rows.get(id) ?? []).sort(newestFirst)
+      if (found.length > 0) out.set(parentId, found)
+    }
+    return out
+  }
+
+  #one(
+    row: RunRow,
+    session: SessionRecord,
+    questions: QuestionRecord[],
+    openers: string[],
+    replacedBy: string | null,
+    childrenTotal: number,
+    live: Live,
+  ): RunSummary {
+    const { status, reason, failedNode } = statusOf(row, session, live, this.#yian, this.#log)
+    const asleep = (status === "idle" || status === "waiting") && !live.runs.has(row.runId)
+    const waits = asleep ? (this.#yian.ofRun(row.runId)?.waits ?? []) : []
+    const open = questions.filter((q) => q.status === "open")
+    const { nodes, asking, held } = currentNodes(status, row.runId, open, live, waits)
+    const answerers = questions.map((q) => q.answered_by)
+    const index = this.#yian.row(row.runId)
+    let endedAt: string | null = null
+    if (row.endReason !== null) endedAt = row.endedAt
+    else if (index && ENDED.has(index.status)) endedAt = index.endedAt
+    return RunSummary.parse({
+      run_id: row.runId,
+      session_id: row.sessionId,
+      flow: row.flow,
+      flow_path: row.flowPath,
+      person: session.person,
+      driver: row.driver,
+      participants: participants(row.driver, session.person, [...answerers, ...openers]),
+      parent_run_id: index?.parentRunId ?? null,
+      status,
+      reason: reason === null ? null : cutReason(reason, REASON_CHARS),
+      failed_node: failedNode,
+      current_nodes: nodes,
+      asking,
+      held,
+      codex: row.flow === DEBRIEF && session.harness === "codex",
+      launched_at: row.createdAt,
+      ended_at: endedAt,
+      replaces: row.replacesRunId,
+      replaced_by: replacedBy,
+      children: [],
+      children_total: childrenTotal,
+    })
+  }
 }

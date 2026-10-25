@@ -11,6 +11,7 @@ import {
   type LiveRun,
   NO_OUTCOME,
   STOPPED,
+  Summaries,
   YianRuns,
   currentNodes,
   participants,
@@ -20,7 +21,7 @@ import {
 import { CARD_CLOSED, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
 import { newId, type RunRow, type SessionRecord } from "../../src/store/store.ts"
 import { tempDir } from "../helpers.ts"
-import { question, session } from "../store/helpers.ts"
+import { openStore, question, session } from "../store/helpers.ts"
 import { committed, RUN, runStarted, started, succeeded } from "./helpers.ts"
 
 const T = "2026-10-20T10:00:00.000Z"
@@ -233,6 +234,13 @@ test("a stopped run shows interrupted stopped", () => {
     reason: STOPPED,
     failedNode: null,
   })
+  // A fresh row's log isn't read again, whatever it would say.
+  const fresh = yianOf([indexRow("R", { status: "stopped" })], () => inspection({ status: "succeeded" }))
+  expect(statusOf(row(s, "R"), s, new Live(), fresh)).toEqual({
+    status: "interrupted",
+    reason: STOPPED,
+    failedNode: null,
+  })
 })
 
 test("a waiting run shows idle when only its turn waits and waiting otherwise", () => {
@@ -294,6 +302,10 @@ test("a stale waiting or stopped row asks the log", () => {
     const yian = yianOf([indexRow("R", { status })], () => inspection({ status: "succeeded" }), ["R"])
     expect(statusOf(row(s, "R"), s, new Live(), yian).status).toBe("finished")
   }
+  // No log file at all counts as stale too.
+  const index = new Map([["R", indexRow("R", { status: "waiting" })]])
+  const missing = new YianRuns(index, new Inspections(tempDir(), () => inspection({ status: "succeeded" })))
+  expect(statusOf(row(s, "R"), s, new Live(), missing).status).toBe("finished")
 })
 
 test("a run with no outcome is warned about once", () => {
@@ -328,4 +340,112 @@ test("reading the index logs its warnings by path and an unreadable index is emp
   expect(readIndex(garbage, (line) => lines.push(line)).size).toBe(0)
   expect(lines).toHaveLength(1)
   expect(lines[0]).toMatch(/^run index read failed \([A-Za-z]+\)$/)
+})
+
+test("participants come from answers and side chat openers", () => {
+  const store = openStore()
+  const s = store.createSession(session({ status: "idle" }))
+  const top = newId()
+  store.addSessionRun(s.id, top)
+  store.addRun(row(s, top))
+  const q = store.addQuestion(question(s.id, { run_id: top, source: "ask", node_id: "chat#0/setup" }))
+  store.answerQuestion(q.id, "hi", "text", "kai")
+  const side = store.createSession(session({ kind: "side", status: "ended" }))
+  const kid = newId()
+  store.addSessionRun(side.id, kid)
+  store.addRun(row(side, kid, { flow: "side_chat", driver: "lan" }))
+  const yian = yianOf([indexRow(top), indexRow(kid, { parentRunId: top })])
+  const memory = live({ [top]: { status: "idle", nodes: [] } })
+  const summaries = new Summaries(store, memory, yian)
+  const built = summaries.build([store.getRun(top)!])
+  const one = built.get(top)!
+  expect([one.participants, one.children_total, one.children]).toEqual([["minh", "kai", "lan"], 1, []])
+  const shown = summaries.build([store.getRun(top)!], { children: summaries.children([top]) })
+  expect(shown.get(top)!.children!.map((k) => k.participants)).toEqual([["minh"]])
+  expect(shown.get(top)!.children![0]!.parent_run_id).toBe(top)
+})
+
+test("children are counted and the newest shown", () => {
+  const store = openStore()
+  const s = store.createSession(session({ status: "ended" }))
+  const top = newId()
+  store.addRun(row(s, top))
+  const kids: string[] = []
+  for (let i = 0; i < 3; i++) {
+    const side = store.createSession(session({ kind: "side", status: "ended" }))
+    kids.push(store.addRun(row(side, newId(), { flow: "side_chat" })).runId)
+  }
+  const yian = yianOf([indexRow(top), ...kids.map((k) => indexRow(k, { parentRunId: top }))])
+  const summaries = new Summaries(store, new Live(), yian, { childrenShown: 2 })
+  const built = summaries.build([store.getRun(top)!], { children: summaries.children([top]) })
+  expect(built.get(top)!.children!.map((k) => k.run_id)).toEqual([kids[2], kids[1]])
+  expect(built.get(top)!.children_total).toBe(3)
+})
+
+test("a fresh run replaces the run whose end is its launch", () => {
+  const store = openStore()
+  const s = store.createSession(session({ status: "idle" }))
+  const [a, b] = [newId(), newId()]
+  for (const runId of [a, b]) store.addSessionRun(s.id, runId)
+  store.addRun(row(s, a))
+  store.endRun(a, WORKER_STOPPED, T)
+  store.addRun(row(s, b, { replacesRunId: a }))
+  const memory = live({ [b]: { status: "idle", nodes: [] } })
+  const built = new Summaries(store, memory, none()).build(store.runsOfSession(s.id))
+  const [ra, rb] = [built.get(a)!, built.get(b)!]
+  expect([ra.replaced_by, rb.replaces, ra.replaces, rb.replaced_by]).toEqual([b, a, null, null])
+  expect([ra.status, rb.status]).toEqual(["failed", "idle"])
+})
+
+test("a reopened side chat doesnt replace its earlier run", () => {
+  const store = openStore()
+  const side = store.createSession(session({ kind: "side", status: "idle" }))
+  const [a, b] = [newId(), newId()]
+  for (const runId of [a, b]) store.addSessionRun(side.id, runId)
+  store.addRun(row(side, a, { flow: "side_chat" }))
+  store.addRun(row(side, b, { flow: "side_chat", createdAt: "2026-10-20T10:09:00.000Z" }))
+  const yian = yianOf([indexRow(a, { endedAt: "2026-10-20T10:05:00.000Z" })])
+  const built = new Summaries(store, new Live(), yian).build(store.runsOfSession(side.id))
+  expect([built.get(b)!.replaces, built.get(a)!.replaced_by]).toEqual([null, null])
+  expect(built.get(a)!.ended_at).toBe("2026-10-20T10:05:00.000Z")
+})
+
+test("two live reads merge so a run live in either is live", () => {
+  const first = live({ R1: { status: "running", nodes: ["a"] }, X: { status: "running", nodes: [] } })
+  const later = live({ R1: { status: "idle", nodes: ["n"] }, R2: { status: "waiting", nodes: [] } })
+  const both = first.merged(later)
+  expect(Object.fromEntries([...both.runs].map(([id, r]) => [id, r.status]))).toEqual({
+    R1: "idle",
+    X: "running",
+    R2: "waiting",
+  })
+  expect(both.nodes("R1")).toEqual(["n"])
+})
+
+test("a build reads memory again after the store", () => {
+  const store = openStore()
+  const s = store.createSession(session({ status: "busy" }))
+  const runId = newId()
+  store.addSessionRun(s.id, runId)
+  store.addRun(row(s, runId))
+  const reads: string[] = []
+  const fresh = () => {
+    reads.push("fresh")
+    return live({ [runId]: { status: "running", nodes: [] } })
+  }
+  const built = new Summaries(store, new Live(), none(), { fresh }).build([store.getRun(runId)!])
+  expect(built.get(runId)!.status).toBe("running")
+  expect(reads).toEqual(["fresh"])
+})
+
+test("a long stored reason is cut to be shown", () => {
+  const store = openStore()
+  const s = store.createSession(session({ status: "ended" }))
+  const runId = newId()
+  store.addRun(row(s, runId))
+  store.endRun(runId, "x".repeat(1500))
+  expect(store.getRun(runId)!.endReason).toHaveLength(256)
+  const [built] = new Summaries(store, new Live(), none()).build([store.getRun(runId)!]).values()
+  expect(built!.reason).toHaveLength(200)
+  expect(built!.reason!.endsWith("…")).toBe(true)
 })

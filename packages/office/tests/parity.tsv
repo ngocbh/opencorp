@@ -463,12 +463,14 @@ runs/test_reader.py::test_one_record_by_seq_has_its_evidence_and_is_capped	chang
 runs/test_reader.py::test_progress_and_size_never_say_less_than_was_read	dropped	—	§5.5: no progress is reported	O4b-5
 runs/test_reader.py::test_unknown_envelope_fields_before_or_after_seq_and_at_are_ignored	changed	packages/office/tests/runs/reader.test.ts::an unknown envelope field makes the log unreadable	§5.5, design §3.2: the index reads through yian's iterRunRecords, which refuses envelope fields other than its six	O4b-5
 runs/test_reason_cut.py	open	—	—	O4b-7
-runs/test_records.py	open	—	—	O4b-6
+runs/test_records.py	ported	packages/office/tests/runs/records.test.ts	—	O4b-6
 runs/test_records.py::test_a_busy_sessions_current_run_runs_only_with_its_live_run_or_wake	changed	packages/office/tests/runs/records.test.ts::a busy sessions current run runs only with its live run or wake	§5.1 rule 2: the actor's memory, not the stored session status	O4b-6
 runs/test_records.py::test_a_debrief_in_flight_runs_and_a_backward_job_leaves_a_finished_run_finished	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-6
+runs/test_records.py::test_a_fresh_run_replaces_the_run_whose_end_is_its_launch	changed	packages/office/tests/runs/records.test.ts::a fresh run replaces the run whose end is its launch	§5.1: replaces is the office row's replaces_run_id, not equal times	O4b-6
 runs/test_records.py::test_a_starting_sessions_current_run_is_running	changed	packages/office/tests/runs/records.test.ts::a starting sessions current run is running	§5.1 rule 2: the actor's memory, not the stored session status	O4b-6
 runs/test_records.py::test_a_waiting_or_idle_sessions_current_run_has_its_status_awake_or_asleep	changed	packages/office/tests/runs/records.test.ts::a waiting or idle sessions current run has its status awake or asleep	§5.1 rule 2: the actor's memory, not the stored session status	O4b-6
 runs/test_records.py::test_current_nodes_by_status	changed	packages/office/tests/runs/records.test.ts::current nodes by status	O4a-1: turns are takes, not questions; nodes from the actor or the index's waits (O4b-5 handoff)	O4b-6
+runs/test_records.py::test_two_live_reads_merge_so_a_run_live_in_either_is_live	changed	packages/office/tests/runs/records.test.ts::two live reads merge so a run live in either is live	the actor's memory is one map by run id; no waking or debrief sets (D32)	O4b-6
 runs/test_sweep.py	open	—	—	O4b-6
 sandbox/test_bwrap.py	ported	packages/office/tests/sandbox/bwrap.test.ts	—	O1-9
 sandbox/test_escape.py	ported	packages/office/tests/sandbox/escape.test.ts	rule 1: through run.ts; file tools through the real __fs-helper under its profile, shell stand-ins for the rest; Bun for the interpreter	O1-10
