@@ -44,7 +44,8 @@ const OUT: InitOutput = {
 }
 const PASSWORD = "pw-sentinel-5d1f"
 const FLOW = embedded(initYaml).toString("utf8")
-const MAX = (readFlow(FLOW) as any).nodes.rounds.max as number
+const RAW = readFlow(FLOW) as any // the YAML as written; readFlow leaves it untyped
+const MAX = RAW.nodes.rounds.max as number
 
 /** The fake model, and a provider for it. */
 async function model(): Promise<{ fake: Awaited<ReturnType<typeof fakeLlm>>; provider: Provider }> {
@@ -295,14 +296,24 @@ class Raising extends Script {
   }
 }
 
+const BOOM = new Error("boom")
+const INTERRUPT = new KeyboardInterrupt()
+
 test.each([
-  ["error", new Error("boom"), ModelError],
-  ["interrupt", new KeyboardInterrupt(), KeyboardInterrupt],
-] as const)("the env is restored when the run raises [%s]", async (_, error, raised) => {
+  ["error", BOOM],
+  ["interrupt", INTERRUPT],
+] as const)("the env is restored when the run raises [%s]", async (kind, error) => {
   const before = { ...process.env }
   const { fake, provider } = await model()
   fake.script({ tool_calls: [{ name: "ask_user", arguments: { question: "Company?" } }] })
-  expect(await rejection(run(provider, new Raising(error)))).toBeInstanceOf(raised)
+  const raised = await rejection(run(provider, new Raising(error)))
+  if (kind === "error") {
+    expect(raised).toBeInstanceOf(ModelError)
+    expect(raised.message).toContain("boom")
+    expect(fake.requests()).toHaveLength(1)
+  } else {
+    expect(raised).toBe(INTERRUPT)
+  }
   expect({ ...process.env }).toEqual(before)
 })
 
@@ -311,7 +322,7 @@ test("a failed run says the model couldnt run the interview", async () => {
   fake.script({ error: 500 })
   const error = await rejection(run(provider, new Script()))
   expect(error).toBeInstanceOf(ModelError)
-  expect(error.message).toContain("couldn't run the interview")
+  expect(error.message).toMatch(/^the model couldn't run the interview: /)
   expect(fake.requests()).toHaveLength(1)
 })
 
@@ -367,7 +378,7 @@ test("an onboard error inside owner prompter is kept for the caller", async () =
 })
 
 test("the interview offers a handle made from the name as an option", () => {
-  const prompt: string = (readFlow(FLOW) as any).nodes.rounds.nodes.interview.prompt
+  const prompt: string = RAW.nodes.rounds.nodes.interview.prompt
   expect(prompt.split(/\s+/).filter(Boolean).join(" ")).toContain(
     "Offer one made from the person's name as an option, such as",
   )
@@ -380,7 +391,7 @@ test("no agent node reads the password or the remote", () => {
       yield* agents(node.nodes ?? {})
     }
   }
-  const found = [...agents((readFlow(FLOW) as any).nodes)]
+  const found = [...agents(RAW.nodes)]
   expect(found.length).toBeGreaterThan(0)
   for (const node of found) {
     const inputs = JSON.stringify(node.input)

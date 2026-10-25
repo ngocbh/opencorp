@@ -118,7 +118,7 @@ export class Asking {
 /** What `fn` resolves to, asking the owner with `state`'s prompter. An `OnboardError` or `KeyboardInterrupt`
  *  it throws is kept in `state.stopped` and rethrown, so the run's caller throws it rather than the run's
  *  failure. */
-export async function withOwner<T>(state: Asking, fn: (prompter: Prompter) => Promise<T>): Promise<T> {
+async function withOwner<T>(state: Asking, fn: (prompter: Prompter) => Promise<T>): Promise<T> {
   try {
     return await fn(state.prompter)
   } catch (error) {
@@ -235,6 +235,7 @@ export const confirmCompanyTool: FunctionTool = tool({
   name: "confirm_company",
   description: "Check the drafted company and, if it has no problems, ask the owner to create it.",
   parameters: { type: "object", properties: { answers: { type: "object" } }, required: ["answers"] },
+  // The flow types this input: it is the interview's `Answers` output.
   execute: (args, ctx) => confirm(args as { answers: InitOutput }, asking(ctx)),
 })
 
@@ -252,6 +253,7 @@ export const askRemoteTool: FunctionTool = tool({
   name: "ask_remote",
   description: "Ask the owner for a git remote URL unless one was given; returns it, or empty for none.",
   parameters: { type: "object", properties: { given: { type: "string" } }, required: ["given"] },
+  // The flow passes its `!str` `input.remote`.
   execute: (args, ctx) => withOwner(asking(ctx), (prompter) => remoteStep(prompter, args.given as string)),
 })
 
@@ -291,6 +293,7 @@ export async function runInitFlow(
     throw new OnboardError("the interview didn't settle on a company; run `opencorp init` again")
   }
   if (message !== null) throw new ModelError(`the model couldn't run the interview: ${message}`)
+  // A null message means the run finished; init.yaml's `output:` block gives this shape.
   return result!.output as InitOutput & { readonly remote: string }
 }
 
@@ -298,8 +301,8 @@ export async function runInitFlow(
  * The new company with its CEO's password hash, and the git remote URL (empty for none), from the init flow run
  * with the model in the provider file `file`, starting from `known`.
  *
- * Rejects as `runInitFlow` does, and with `ProviderError` or the `ENOENT` error when the provider file can't be
- * used.
+ * A missing provider file is an empty provider, so the run fails as a `ModelError`. Rejects as `runInitFlow` does,
+ * and with `ProviderError` when the provider file can't be used.
  */
 export async function initFlow(
   file: string,
@@ -307,7 +310,7 @@ export async function initFlow(
   known: Known,
   defaults: LoginDefaults = loginDefaults,
 ): Promise<[Draft, string]> {
-  const provider = await loadProvider(file, Provider.parse, { missingOk: false })
+  const provider = await loadProvider(file, Provider.parse)
   const output = await runInitFlow(provider, prompter, known, defaults)
   return [draftFromOutput(output), output.remote]
 }
