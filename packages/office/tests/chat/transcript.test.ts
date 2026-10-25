@@ -249,8 +249,21 @@ test("tool calls become tool parts", async () => {
 
 test("a live run shows a call without its result as running", async () => {
   const job = await toolRun(tempDir())
-  const read = messages(beforeC3(job), newId(), ["r1"], { live: liveCalls([]) })
+  const crashed = beforeC3(job)
+  const read = messages(crashed, newId(), ["r1"], { live: liveCalls([]) })
   expect(tools(read)[2]).toEqual(["c3", "running", {}, null])
+  // Only the session's last run is asked for its live calls; an earlier one left its call cut.
+  fs.mkdirSync(path.join(crashed, "r2"))
+  fs.copyFileSync(job.log, path.join(crashed, "r2", "log.jsonl"))
+  const asked: string[] = []
+  const live = {
+    calls: (runId: string) => {
+      asked.push(runId)
+      return []
+    },
+  }
+  expect(tools(messages(crashed, newId(), ["r1", "r2"], { live }))[2]).toEqual(["c3", "interrupted", {}, null])
+  expect(asked).toEqual(["r2"])
 })
 
 test("a node that never called a model writes nothing", async () => {
@@ -412,12 +425,16 @@ test("an interrupted reply ends with the interrupted marker", async () => {
   const fake = await fakeLlm()
   const runs = tempDir()
   await interruptMidReply(fake, { content: "Thinking about it" }, { runs })
-  expect(shown(messages(runs, newId(), ["r1"]))).toEqual([
+  const transcript = new Transcript(runs)
+  const sessionId = newId()
+  const read = messages(runs, sessionId, ["r1"], { transcript })
+  expect(shown(read)).toEqual([
     ["user", ["one"]],
     ["assistant", ["Thinking " + INTERRUPTED_TEXT]],
     ["user", ["queued"]],
     ["assistant", ["Got it."]],
   ])
+  expect(messages(runs, sessionId, ["r1"], { transcript })).toEqual(read)
 })
 
 test("a reply interrupted after a tool call ends with the marker after it", async () => {
@@ -428,11 +445,14 @@ test("a reply interrupted after a tool call ends with the marker after it", asyn
   const office = new DeliverDuringTool({ id: "cut", op: "interrupt", inbox: "messages" })
   const rec = await run(advanceJob(job, { deliver: [send("s1", "Plan the trip.")] }), office, { env: fake.env() })
   expect(waitingAt(rec)).toEqual(["chat#1/heard"])
-  const read = messages(runs, newId(), ["r1"])
+  const transcript = new Transcript(runs)
+  const sessionId = newId()
+  const read = messages(runs, sessionId, ["r1"], { transcript })
   expect(shown(read)).toEqual([
     ["user", ["Plan the trip."]],
     ["assistant", ["Working", "completed", "[interrupted]"]],
   ])
+  expect(messages(runs, sessionId, ["r1"], { transcript })).toEqual(read)
   const cut = [...iterRunRecords(job.log, { kinds: ["node_step"] })].find(
     (entry) => (entry.envelope.record as unknown as { step: Step }).step.kind === "interrupted",
   )!
@@ -506,11 +526,33 @@ test("a reply in flight shows its live text under the id its step gets", async (
   const n = (call.envelope.record as unknown as { n: number }).n
   const crashed = tempDir()
   logPrefix(job.log, (entry) => !isCall(entry), crashed)
+  const transcript = new Transcript(crashed)
+  const sessionId = newId()
+  const replies = (live?: LiveCalls) =>
+    messages(crashed, sessionId, ["r1"], { transcript, live })
+      .filter((m) => m.role === "assistant")
+      .map((m) => m.parts)
   const live = liveCalls([{ node: "chat#0/reply", n, text: "hello ", nextIndex: 1 }])
-  const flight = messages(crashed, newId(), ["r1"], { live }).filter((m) => m.role === "assistant")
-  expect(flight.map((m) => m.parts)).toEqual([[{ id: `r1:chat#0/reply:${n}`, type: "text", text: "hello " }]])
+  expect(replies(live)).toEqual([[{ id: `r1:chat#0/reply:${n}`, type: "text", text: "hello " }]])
+  // The live part is not kept: a read without live calls shows none.
+  expect(replies()).toEqual([])
+  // A call that has streamed nothing yet still shows; a call for a node the run never started does not.
+  const quiet = liveCalls([
+    { node: "chat#0/reply", n, text: "", nextIndex: 0 },
+    { node: "chat#9/reply", n: 0, text: "x", nextIndex: 1 },
+  ])
+  expect(replies(quiet)).toEqual([[{ id: `r1:chat#0/reply:${n}`, type: "text", text: "" }]])
   const full = messages(runs, newId(), ["r1"]).filter((m) => m.role === "assistant")
   expect(full.map((m) => m.parts)).toEqual([[{ id: `r1:chat#0/reply:${n}`, type: "text", text: "hello there" }]])
+  // A live call goes last in its node's message, after what the node recorded.
+  const next = liveCalls([{ node: "chat#0/reply", n: n + 1, text: "more", nextIndex: 1 }])
+  const after = messages(runs, newId(), ["r1"], { live: next }).filter((m) => m.role === "assistant")
+  expect(after.map((m) => m.parts)).toEqual([
+    [
+      { id: `r1:chat#0/reply:${n}`, type: "text", text: "hello there" },
+      { id: `r1:chat#0/reply:${n + 1}`, type: "text", text: "more" },
+    ],
+  ])
 })
 
 test("reads are incremental", async () => {

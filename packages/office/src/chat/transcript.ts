@@ -170,6 +170,8 @@ export class Transcript {
 
 /** Folds into `state` the records of the log `log` after the last one it folded; returns `state`. */
 function readOn(log: string, state: Fold): Fold {
+  // The resume point is the last folded record, so records of kinds not in KINDS after it are scanned again on the
+  // next read; that rescan is bounded by the log's tail.
   const resume = state.seq === null ? {} : { afterOffset: state.end, runId: state.runId, afterSeq: state.seq }
   for (const entry of iterRunRecords(log, { ...resume, kinds: KINDS })) {
     fold(state, entry)
