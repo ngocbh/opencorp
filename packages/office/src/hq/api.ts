@@ -12,9 +12,10 @@ import {
   HqLoginRequest,
   PairRequest,
   Person,
+  Question,
   WorkItem,
 } from "@opencorp/protocol"
-import type { z } from "zod"
+import { z } from "zod"
 import { blankSecrets } from "../company/secret_keys.ts"
 import { SourceError } from "../company/source.ts"
 import { HttpError, RawReply, type RequestInfo, type Route, logLine, requestListener } from "../daemon/http.ts"
@@ -23,6 +24,7 @@ import type { RequestContext } from "../daemon/office.ts"
 import { costs } from "../daemon/routes/costs.ts"
 import { whoami } from "../daemon/routes/devices.ts"
 import { RESET, frame } from "../daemon/routes/events.ts"
+import { listQuestions } from "../daemon/routes/questions.ts"
 import { getWorkItem } from "../daemon/routes/work_items.ts"
 import { browserAuth, cookieName, cookieValue } from "./auth.ts"
 import type { Hq } from "./core.ts"
@@ -183,7 +185,9 @@ export const ROUTES: readonly Route<HqContext>[] = [
       }
     },
   },
-  // The sessions list, the questions and the runs, ported later, go here, in Python's order.
+  // The sessions list, ported later, goes here, in Python's order.
+  { method: "GET", path: "/api/questions", reply: z.array(Question), handler: listQuestions },
+  // The runs, ported later, go here.
   { method: "GET", path: "/api/work-items/:id", reply: WorkItem, handler: getWorkItem },
   { method: "GET", path: "/api/costs", reply: CostReport, handler: costs },
   // HQ's event stream (`hqEvents`). HEAD is refused here rather than by `head: false`, which would let the GET

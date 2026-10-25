@@ -630,7 +630,6 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/harness/translate.test.ts::a reasoning item with an empty summary writes nothing	translate.py:166,241,339: Python's truthiness kept	O3-11
 —	new	packages/office/tests/harness/translate.test.ts::a typed form answer that isnt a number makes no reply	design §7.1: the adapter builds the reply from its own card; numbers parse as decimals only (translate.py:444-451's int()/float(), strict)	O3-11
 —	new	packages/office/tests/harness/translate.test.ts::an answer that isnt an offered option makes no reply	design §7.1 and security rule 11: an answer that isn't an offered label is refused	O3-11
-—	new	packages/office/tests/hq/api.test.ts::a work item and costs are on the allowlist	design §3.2: HQ reuses getWorkItem and costs; test_open_questions_a_work_item_and_costs stays open for O3-9's /api/questions	O2-9
 —	new	packages/office/tests/hq/api.test.ts::a wrong method under api is a json 404	design §6.4: a wrong method under /api is 404 no_route, as Starlette's catch-all route was	O2-9
 —	new	packages/office/tests/hq/api.test.ts::get office isnt on the hq allowlist	design §6, rule 7 (P14): GET /office is office.sock only	O2-9
 —	new	packages/office/tests/hq/auth.test.ts::only the first cookie header counts	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
