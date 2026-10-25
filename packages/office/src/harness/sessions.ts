@@ -6,10 +6,12 @@ import type { Hooks } from "../chat/hooks.ts"
 import { HarnessError, notWaiting } from "../chat/state.ts"
 import { loadRepo } from "../company/loader.ts"
 import type { Office } from "../daemon/office.ts"
+import type { AnswerKind, CardActor } from "../questions/cards.ts"
 import { InvalidTransition, NotFound, type QuestionRecord, type SessionRecord, type Store } from "../store/store.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import type { HarnessEvent } from "./adapter.ts"
 import { CLOSE_GRACE_MS, CodexProcess, CodexStartError, appServerCommand } from "./codex.ts"
+import { nameOf } from "./rpc.ts"
 import { CodexSession, END_WAIT_MS, REPLY_WAIT_MS, STOP_WAIT_MS } from "./session.ts"
 
 /** What `CodexSessions.launch` needs of a session. */
@@ -33,7 +35,7 @@ export type CodexSessionsOptions = {
  *
  *  `hooks` are the chat harness's: Codex sessions fire `promptCheck`, `endStatus` and `sessionEnded` (never the run
  *  hooks: Codex turns are not office runs). */
-export class CodexSessions {
+export class CodexSessions implements CardActor {
   readonly office: Office
   readonly store: Store
   readonly hooks: Hooks
@@ -87,6 +89,47 @@ export class CodexSessions {
   /** Esc on the session `sessionId`: interrupts its running turn. */
   async interrupt(sessionId: string): Promise<void> {
     await this.#must(sessionId).interrupt()
+  }
+
+  /** Answers question `questionId` as `by` (the session's opener when null) after the `answerCheck` hooks: stores
+   *  the answer (secret pages as `[secret]`), then replies if Codex still waits. The store's open → answered move
+   *  picks the one answer that replies, and a second answer is 409 `not_open`; a replied card is `consumed`.
+   *
+   *  An answer Codex no longer waits for, or that no reply can be made from, is returned with the card `stale` and no
+   *  decision: Codex resolved the request first, its turn ended, the app-server died, the office stopped, the reply
+   *  waited longer than `replyWaitMs` (Codex hears it came too late), or the answer isn't one Codex takes (Codex hears
+   *  it failed). */
+  async answer(
+    questionId: string,
+    value: unknown,
+    kind: AnswerKind,
+    { by = null }: { by?: string | null } = {},
+  ): Promise<QuestionRecord> {
+    const question = this.store.getQuestion(questionId)
+    if (question === undefined) throw new HarnessError(404, "not_found", `no question ${questionId}`)
+    if (question.status !== "open")
+      throw new HarnessError(409, "not_open", `question ${questionId} is ${question.status}`)
+    for (const refusal of this.hooks.fire("answerCheck", question, value, kind))
+      if (refusal) throw new HarnessError(422, "invalid_answer", String(refusal))
+    const live = this.#live.get(question.session_id)
+    const who = by || (live ? live.author : await this.opener(this.store.getSession(question.session_id)!))
+    try {
+      this.store.answerQuestion(questionId, masked(question, value), kind, who)
+    } catch (error) {
+      if (error instanceof InvalidTransition) throw new HarnessError(409, "not_open", error.message)
+      throw error
+    }
+    // The secret itself is only ever in this call's arguments, until the reply.
+    const replied = live !== undefined && (await live.reply(questionId, value, who))
+    if (replied) {
+      try {
+        this.store.setQuestionStatus(questionId, "consumed")
+      } catch (error) {
+        // Codex has the reply, so the answer stands.
+        this.log(`codex session ${question.session_id}: card ${questionId} wasn't marked consumed (${nameOf(error)})`)
+      }
+    } else this.store.loseAnswer(questionId)
+    return this.store.getQuestion(questionId)!
   }
 
   /** Ends the session `sessionId`. */
@@ -176,8 +219,7 @@ export class CodexSessions {
       try {
         this.store.setQuestionStatus(e.key, "stale")
       } catch (error) {
-        // Answered meanwhile: its reply finds no pending request and loses the answer.
-        if (error instanceof InvalidTransition) return
+        if (error instanceof InvalidTransition) return // answered meanwhile: its reply finds no request and loses it
         if (!(error instanceof NotFound)) throw error
         this.log(`codex session ${session_id}: card ${e.key} is gone`)
       }

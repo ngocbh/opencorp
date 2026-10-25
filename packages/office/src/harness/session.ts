@@ -574,8 +574,8 @@ export class CodexSession {
       if (error instanceof RpcClosed) return false
       throw error
     }
-    // Codex has the reply, so the answer stands whatever is left to write; a failure is logged, not thrown. The
-    // question cards mark the stored question consumed once `reply` returns true.
+    // Codex has the reply, so the answer stands whatever is left to write; a failure is logged, not thrown.
+    // `CodexSessions.answer` marks the stored question consumed once `reply` returns true.
     try {
       this.translator.decided(pending.issued, decision, by || this.author)
     } catch (error) {
