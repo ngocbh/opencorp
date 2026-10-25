@@ -5,15 +5,24 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { readFlow } from "../../src/company/flow_yaml.ts"
 import { loadConfined } from "../../src/company/flows.ts"
-import type { FakeLLM, ScriptedReply } from "../../src/testing/fake_llm.ts"
-import type { Delivery, Job, JobInput } from "../../src/worker/job.ts"
-import { tempDir, waitFor } from "../helpers.ts"
-import { advanceJob, inProcessWorker, makeJob, Recorder, run, type TestWorker, waitsOf } from "../worker/helpers.ts"
-import { fakeLlm } from "./helpers.ts"
+import type { FakeLLM } from "../../src/testing/fake_llm.ts"
+import { waitFor } from "../helpers.ts"
+import { advanceJob, run, type TestWorker } from "../worker/helpers.ts"
+import {
+  advance,
+  CLOSE,
+  fakeLlm,
+  interruptMidReply,
+  TemplateOffice as Office,
+  ROOT,
+  send,
+  succeeded,
+  waitingAt,
+  waitingChat,
+} from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
-const ROOT = fileURLToPath(new URL("../../src/company_template/template/", import.meta.url))
 const CHAT = path.join(ROOT, "shared", "flows", "chat.yaml")
 const SIDE = path.join(ROOT, "shared", "flows", "side_chat.yaml")
 const MANAGER = path.join(ROOT, "shared", "flows", "profile_manager.yaml")
@@ -91,75 +100,9 @@ test("the template compacts history with yians compact history flow", () => {
 // but never advanced, so no test races a send against the end of a run: messages go in while a model call is held,
 // or into a waiting run through an advance job's deliveries.
 
-const PERSON = { name: "Minh", handle: "minh", title: "Engineer", company: "Acme", reports_to: "" }
-// The groups each template flow names; `ask_user` is the worker's own tool.
-const GROUPS: Record<string, string[]> = {
-  chat: ["toolbox", "workspace", "company"],
-  side_chat: ["workspace", "work_items"],
-  profile_manager: ["profile"],
-}
-
 /** Stringifies `value` as JSON, ints that arrive as bigint included. */
 function json(value: unknown): string {
   return JSON.stringify(value, (_key, v) => (typeof v === "bigint" ? Number(v) : v))
-}
-
-/** A user message saying `text`, from `author` when given. */
-function message(text: string, author?: string): Record<string, unknown> {
-  return { role: "user", parts: [{ type: "text", text }], ...(author === undefined ? {} : { author }) }
-}
-
-/** A send of `text` to the messages inbox. */
-function send(id: string, text: string, author?: string): Delivery {
-  return { id, op: "send", inbox: "messages", event: message(text, author) }
-}
-
-const CLOSE: Delivery = { id: "close", op: "close", inbox: "messages" }
-
-const EMPTY = { type: "object", properties: {} }
-
-/** A `Recorder` serving one no-op tool, `<group>_stub`, for each group `name`'s flow names. */
-class Office extends Recorder {
-  constructor(name = "chat") {
-    super({
-      tools: Object.fromEntries(
-        GROUPS[name]!.map((group) => [
-          group,
-          { [`${group}_stub`]: { description: "Does nothing.", parameters: EMPTY, call: () => "ok" } },
-        ]),
-      ),
-    })
-  }
-}
-
-/** A chat job running the template flow `name` from a temp copy of the template; `inputs` replace the defaults. */
-function templateJob(name: string, handlers: Recorder, inputs: Record<string, unknown> = {}): Job {
-  const root = tempDir()
-  const pin = path.join(root, "pin")
-  fs.cpSync(ROOT, pin, { recursive: true })
-  const who = name === "profile_manager" ? {} : { person: PERSON, talking_to: "" }
-  const over: Partial<JobInput> = {
-    inputs: { ...who, summary: "", history: [], turns: 0, max_turns: 500, ...inputs },
-  }
-  return makeJob({ pin, runs: path.join(root, "runs") }, `shared/flows/${name}.yaml`, over, handlers)
-}
-
-/** Advances the run `chat` started, applying `deliver` first; returns its recorder. */
-function advance(chat: Job, fake: FakeLLM, deliver: Delivery[], name = "chat"): Promise<Recorder> {
-  return run(advanceJob(chat, { deliver }), new Office(name), { env: fake.env() })
-}
-
-/** The nodes a waiting result waits at. */
-function waitingAt(rec: Recorder): unknown[] {
-  expect(rec.outcome?.status).toBe("waiting")
-  return waitsOf(rec).map((wait) => wait.node)
-}
-
-/** The data of each NodeSucceeded event `rec` recorded for `node`. */
-function succeeded(rec: Recorder, node: string): Record<string, any>[] {
-  return rec.frames
-    .filter((frame) => frame.name === "NodeSucceeded" && (frame.data as Record<string, unknown>).node_id === node)
-    .map((frame) => frame.data as Record<string, any>)
 }
 
 /** Each message as its role and text: the text parts joined. */
@@ -176,15 +119,6 @@ function said(messages: Record<string, any>[]): [string, string][] {
 /** The messages of the `index`th model request. */
 function requestMessages(fake: FakeLLM, index: number): Record<string, any>[] {
   return fake.requests()[index]!.messages as Record<string, any>[]
-}
-
-/** Starts a chat job of `name` with no deliveries and runs it to waiting at its first take; returns the job. */
-async function waitingChat(fake: FakeLLM, name = "chat", inputs: Record<string, unknown> = {}): Promise<Job> {
-  const rec = new Office(name)
-  const job = templateJob(name, rec, inputs)
-  await run(job, rec, { env: fake.env() })
-  expect(waitingAt(rec)).toEqual(["chat#0/heard"])
-  return job
 }
 
 test("two messages sent before an advance are one turn", async () => {
@@ -234,25 +168,6 @@ test("a message sent after the replys last model call is the next turn at once",
   expect(requestMessages(fake, 1).at(-1)).toEqual({ role: "user", content: "two" })
   expect(waitingAt(rec)).toEqual(["chat#2/heard"])
 })
-
-/** Holds the reply's first model call (answering `held`), sends "queued", interrupts, then releases; returns the
- *  recorder of that run, which answers "queued" as its next turn and waits at the one after. */
-async function interruptMidReply(fake: FakeLLM, held: ScriptedReply): Promise<Recorder> {
-  fake.script({ ...held, hold: true }, { content: "Got it." })
-  const job = await waitingChat(fake)
-  const cut = new Office()
-  const worker = await inProcessWorker(advanceJob(job, { deliver: [send("s1", "one")] }), cut, { env: fake.env() })
-  await fake.waitForRequests(1, 30_000)
-  expect(await worker.deliver(send("queued", "queued"))).toBe(true)
-  await waitFor(() => cut.replies.some((reply) => reply.id === "queued"), { timeout: 10_000, what: "the send" })
-  expect(await worker.deliver({ id: "cut", op: "interrupt", inbox: "messages" })).toBe(true)
-  await waitFor(() => cut.replies.some((reply) => reply.id === "cut"), { timeout: 10_000, what: "the interrupt" })
-  fake.release()
-  expect(await worker.wait()).not.toBeNull()
-  // The queued message the cut reply never read is the next turn, taken by the same worker.
-  expect(waitingAt(cut)).toEqual(["chat#2/heard"])
-  return cut
-}
 
 test("an interrupt mid reply gives a null reply and the run waits at the next turn with the queued message", async () => {
   const fake = await fakeLlm()
