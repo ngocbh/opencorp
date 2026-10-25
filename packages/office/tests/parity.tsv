@@ -428,11 +428,21 @@ runs/test_detail.py	open	—	—	O4b-7
 runs/test_launches.py	open	—	—	O4a-5
 runs/test_list.py	open	—	—	O4b-7
 runs/test_live.py	open	—	—	O4b-2
-runs/test_nodes.py	open	—	—	O4b-5
+runs/test_nodes.py	ported	packages/office/tests/runs/nodes.test.ts	—	O4b-5
 runs/test_notify.py	open	—	—	O4b-7
 runs/test_outcome_names.py	ported	packages/office/tests/runs/outcome_names.test.ts	—	O3-1
 runs/test_outcomes.py	open	—	—	O4a-4
-runs/test_reader.py	open	—	—	O4b-5
+runs/test_reader.py	ported	packages/office/tests/runs/reader.test.ts	—	O4b-5
+runs/test_reader.py::test_a_large_log_builds_with_memory_under_its_largest_line_plus_32_mib	changed	packages/office/tests/runs/reader.test.ts::a large log builds with memory under its largest line plus 32 mib	§5.5: the index reads through iterRunRecords after a byte pre-scan capping lines at 64 MiB; Bun has no tracemalloc, so the build is checked, not its peak	O4b-5
+runs/test_reader.py::test_a_slow_build_answers_none_with_its_progress_then_the_index	dropped	—	§5.5: indexing, bytes_done and bytes_total go; a request awaits the build, which yields to the event loop	O4b-5
+runs/test_reader.py::test_an_envelope_field_after_seq_doesnt_hide_a_record_from_pages_or_one_record	dropped	—	§5.5: yian refuses a log with unknown envelope fields, so no page meets one; covered by packages/office/tests/runs/reader.test.ts::an unknown envelope field makes the log unreadable	O4b-5
+runs/test_reader.py::test_an_oversized_line_whose_kind_isnt_first_is_an_unknown_stub	dropped	—	§5.5: yian writes and reads only its six envelope fields, at and kind first, so an indexed line always names its kind	O4b-5
+runs/test_reader.py::test_lines_are_hashed_outside_the_index_lock	dropped	—	§5.5: no index lock: the office reads on one thread and folds each record whole between event-loop turns	O4b-5
+runs/test_reader.py::test_long_strings_are_cut_evidence_left_out_and_the_page_stops_at_its_bytes	changed	packages/office/tests/runs/reader.test.ts::long strings are cut and the page stops at its bytes	§5.5 (evidence_left_out goes), #362: schema 22 holds no evidence	O4b-5
+runs/test_reader.py::test_one_huge_record_is_read_without_holding_its_line	changed	packages/office/tests/runs/reader.test.ts::one huge record is read without holding its line	no tracemalloc in Bun; the line scanner keeps only a huge line's first 256 bytes by construction	O4b-5
+runs/test_reader.py::test_one_record_by_seq_has_its_evidence_and_is_capped	changed	packages/office/tests/runs/reader.test.ts::one record by seq is whole and is capped	§5.5, #362: no evidence in schema 22	O4b-5
+runs/test_reader.py::test_progress_and_size_never_say_less_than_was_read	dropped	—	§5.5: no progress is reported	O4b-5
+runs/test_reader.py::test_unknown_envelope_fields_before_or_after_seq_and_at_are_ignored	changed	packages/office/tests/runs/reader.test.ts::an unknown envelope field makes the log unreadable	§5.5, design §3.2: the index reads through yian's iterRunRecords, which refuses envelope fields other than its six	O4b-5
 runs/test_reason_cut.py	open	—	—	O4b-7
 runs/test_records.py	open	—	—	O4b-6
 runs/test_sweep.py	open	—	—	O4b-6
@@ -1095,6 +1105,22 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/questions/cards.test.ts::two send backs at once leave one note	card behaviour through a stand-in actor (rule 1); the side-chat run of `test_a_side_turn_stored_during_send_back_keeps_the_note` (the `_discussion` lock) is O4a-9's	O3-9
 —	new	packages/office/tests/questions/checker.test.ts::answer keys on the prototype are not answers	design §6: prototype safety for answers (own-key lookups; records built with own keys)	O3-7
 —	new	packages/office/tests/questions/format.test.ts::an astral discussion is cut by code points	design §1.4 deviation: the discussion cap counts code points as Python's len, so the cut never splits a surrogate pair	O3-7
+—	new	packages/office/tests/runs/nodes.test.ts::a recorded run names its node kinds	P15	O4b-5
+—	new	packages/office/tests/runs/nodes.test.ts::a woken node opens again after a clear	yian #1064: advancing a waiting run emits NodeWoken	O4b-5
+—	new	packages/office/tests/runs/nodes.test.ts::kinds wait for the run start to be read	P15: a run start still being written gets kinds once it is read	O4b-5
+—	new	packages/office/tests/runs/nodes.test.ts::node kinds come from the flows static nodes	P15	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a code reference outside the code root shows no derived value and no kinds	§6 rule 10, Y6c	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a commit value shows in its display form	Y5, §5.5: values decoded office-side for clients	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a deeply nested payload is cut at its depth	security review: bounded recursion	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a derived commit shows its value when opened	#362 PR 8b, §5.5	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a line over the line cap makes the log unreadable before yian reads it	security review: a log must not exhaust memory; yian's reader joins whole lines	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a log over the fold cap shows no derived value	security review: the fold holds the whole log	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a page stops after its scan budget	security review: a page's synchronous reads are bounded (Python read pages in a thread)	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a payload whose cuts would name too much is a size stub	security review: bounded output	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a real log is in the schema this office reads	§5.5	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a sparse entry marks every few mib of records	security review: a page's synchronous reads are bounded (Python read pages in a thread)	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a waiting node stays open through a resume and a woken one runs on	yian #1057, #1064: a waiting node is non-terminal and a resume doesn't retry it	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::an unterminated tail over the line cap makes the log unreadable	security review: a line over the cap is refused before it is read whole	O4b-5
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv equals the Python argv	§6.1 golden argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::the checkout helper binds bun and its entry read only	§2.5, O0-10 P7	O1-9
