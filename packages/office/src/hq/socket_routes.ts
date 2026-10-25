@@ -30,7 +30,6 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     method: "GET",
     path: "/hq",
     reply: HqStatus,
-    guard: (ctx) => void hqOf(ctx, "GET /hq"),
     handler: (ctx) => hqOf(ctx, "GET /hq").status(),
   },
   // A one-time link that signs a browser in as `handle` (the asking person by default). In no-device mode the
@@ -40,6 +39,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     path: "/hq/pair",
     body: PairCodeRequest,
     reply: PairCode,
+    // Without HQ the 501 comes before the body is read.
     guard: (ctx) => void hqOf(ctx, "POST /hq/pair"),
     handler: async (ctx, _params, body) => {
       const hq = hqOf(ctx, "POST /hq/pair")
@@ -57,7 +57,6 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     method: "GET",
     path: "/hq/browsers",
     reply: z.array(BrowserSession),
-    guard: (ctx) => void hqOf(ctx, "GET /hq/browsers"),
     handler: async (ctx) => {
       const hq = hqOf(ctx, "GET /hq/browsers")
       const actor = actingPerson(ctx)
@@ -71,7 +70,6 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     method: "DELETE",
     path: "/hq/browsers/:id",
     reply: Ack,
-    guard: (ctx) => void hqOf(ctx, "DELETE /hq/browsers/:id"),
     handler: async (ctx, params) => {
       const hq = hqOf(ctx, "DELETE /hq/browsers/:id")
       const record = ctx.office.store.getHqSession(params.id!)

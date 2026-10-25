@@ -4,32 +4,31 @@ import { newToken } from "../../src/auth/tokens.ts"
 import { DeviceTokens } from "../../src/daemon/auth.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
-import type { Hq } from "../../src/hq/core.ts"
-import { CEO, addHuman, bearer, giveDevice, makeOffice, request, serve } from "../daemon/helpers.ts"
+import { CEO, ULID, addHuman, bearer, giveDevice, makeOffice, request, serve } from "../daemon/helpers.ts"
 import { makeHq } from "./helpers.ts"
 
-type Headers = Record<string, string>
+type HeaderMap = Record<string, string>
 
 /** A client of the office socket's own table, with device tokens; `log` gets the pipeline's log lines. */
 async function socketClient(office: Office, { log }: { log?: (line: string) => void } = {}) {
   const { sock } = await serve(allRoutes(), { context: new DeviceTokens(office).context, log })
-  const send = async (method: string, target: string, headers: Headers = {}, json?: unknown) => {
+  const send = async (method: string, target: string, headers: HeaderMap = {}, json?: unknown) => {
     const body = json === undefined ? undefined : JSON.stringify(json)
     if (body !== undefined) headers = { ...headers, "content-type": "application/json" }
     const r = await request(sock, method, target, { headers, body })
     return { status: r.status, json: () => r.json() as any }
   }
   return {
-    get: (target: string, headers?: Headers) => send("GET", target, headers),
-    post: (target: string, json: unknown, headers?: Headers) => send("POST", target, headers, json),
-    delete: (target: string, headers?: Headers) => send("DELETE", target, headers),
+    get: (target: string, headers?: HeaderMap) => send("GET", target, headers),
+    post: (target: string, json: unknown, headers?: HeaderMap) => send("POST", target, headers, json),
+    delete: (target: string, headers?: HeaderMap) => send("DELETE", target, headers),
   }
 }
 
 /** An office with HQ attached and a client of its socket (Python's `sock`, `hq` and `company` fixtures). */
 async function setup({ logs, log }: { logs?: string[]; log?: (line: string) => void } = {}) {
   const office = makeOffice({ log })
-  const hq: Hq = await makeHq(office, { logs })
+  const hq = await makeHq(office, { logs })
   return { office, hq, company: office.paths.company, sock: await socketClient(office, { log }) }
 }
 
@@ -109,6 +108,8 @@ test("without hq the routes are 501", async () => {
   expect(office.hq).toBeUndefined()
   expect((await sock.get("/hq")).status).toBe(501)
   expect((await sock.post("/hq/pair", {})).status).toBe(501)
+  expect((await sock.get("/hq/browsers")).status).toBe(501)
+  expect((await sock.delete(`/hq/browsers/${ULID}`)).status).toBe(501)
 })
 
 test("get hq reports off retrying and listening", async () => {
