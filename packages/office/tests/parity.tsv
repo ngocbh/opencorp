@@ -569,6 +569,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/main.test.ts::build office reaps workers left by an earlier office	design §6.6 and O2-11a: the workers an earlier office left are reaped at start	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::release removes the pidfile and frees the lock	design §2.3: the pidfile is removed on stop	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::the crash report names the error type and its frames never its message	design §6 rule 13: the crash marker logs the error type and stack frames, never the message	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::the daemon refuses to start without git on its path	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
+—	new	packages/office/tests/daemon/main.test.ts::the office gets the tools the daemon resolved and its company git runs that git	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
 —	new	packages/office/tests/daemon/main.test.ts::the office holds the company snapshots and the secret store	design §2.3: typed Office fields replace Python's extras	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::the stop waits for running handlers but not for ever	Python's 5 s graceful wait (uvicorn timeout_graceful_shutdown)	O2-5
 —	new	packages/office/tests/daemon/routes_costs.test.ts::since keeps milliseconds and python iso forms	design §5 (fixed-width Timestamp); the TS parser is narrower than fromisoformat (no week dates, basic form or other separators), so its accepted forms are pinned; also refused: mixed basic forms, a space before the offset, fractional hours or minutes, offset seconds, offset minutes 60, an empty fraction	O2-6

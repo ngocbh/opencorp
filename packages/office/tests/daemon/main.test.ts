@@ -24,7 +24,7 @@ import { resolveHome } from "../../src/install/launch.ts"
 import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { Store } from "../../src/store/store.ts"
-import { company } from "../company/helpers.ts"
+import { company, recordingGit } from "../company/helpers.ts"
 import { isGone, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { makeOffice, request, served } from "./helpers.ts"
 
@@ -335,13 +335,40 @@ test("build office reaps workers left by an earlier office", async () => {
   } finally {
     store.close()
   }
-  const office = buildOffice(paths, { write: collect().write })
+  const rec = recordingGit(tempDir())
+  const office = buildOffice(paths, { tools: { git: rec.git }, write: collect().write })
   try {
     await waitFor(() => isGone(group.pid, group.started), { what: "the left worker to be killed" })
     expect(office.store.listWorkers()).toEqual([])
   } finally {
     office.store.close()
   }
+})
+
+test("the office gets the tools the daemon resolved and its company git runs that git", async () => {
+  const paths = new OfficePaths(home())
+  const rec = recordingGit(tempDir())
+  const tools = { git: rec.git, ps: "/bin/ps" }
+  const guards = { tools: [rec.git] }
+  const office = buildOffice(paths, { tools, guards, write: collect().write })
+  try {
+    expect(office.tools).toEqual(tools)
+    expect(office.guards).toEqual(guards)
+    await office.git.head()
+    expect(rec.calls().length).toBeGreaterThan(0)
+  } finally {
+    office.store.close()
+  }
+})
+
+test("the daemon refuses to start without git on its path", async () => {
+  const dir = home()
+  const paths = new OfficePaths(dir)
+  const out = collect()
+  expect(await inProcess(() => main(["--home", dir], { tools: {}, write: out.write }))).toBe(1)
+  expect(out.text()).toContain("no git on the office's PATH")
+  expect(fs.existsSync(paths.socket)).toBe(false)
+  await released(paths)
 })
 
 test("bad arguments exit 2", async () => {

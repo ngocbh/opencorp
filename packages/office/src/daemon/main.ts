@@ -9,7 +9,9 @@ import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform
 import { CompanyGit } from "../company/git.ts"
 import { HeadWatcher } from "../company/watch.ts"
 import { EXTENSIONS, type Extension, ExtensionError, loadExtensions } from "../extensions/index.ts"
-import { resolveHome } from "../install/launch.ts"
+import { daemonEnv, resolveHome } from "../install/launch.ts"
+import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
+import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { Store } from "../store/store.ts"
 import { reap } from "../worker/reaper.ts"
 import { DeviceTokens } from "./auth.ts"
@@ -203,19 +205,29 @@ export function exitOnCrash(write: Write = writeStderr): void {
   process.on("unhandledRejection", onCrash)
 }
 
-/** Opens the store and the company clone, kills the processes an earlier office left, and assembles the
- *  office with its HEAD watcher (started and stopped with the office). */
-export function buildOffice(paths: OfficePaths, { git, write }: { git?: string; write: Write }): Office {
+// Names the variable, never its value.
+const NO_GIT = "no git on the office's PATH"
+
+/** Opens the store and the company clone (run by `tools.git`), kills the processes an earlier office left, and
+ *  assembles the office with its tools, its workspace guards and its HEAD watcher (started and stopped with the
+ *  office). `OfficeStartError` when `tools` has no git. */
+export function buildOffice(
+  paths: OfficePaths,
+  { tools, guards = {}, write }: { tools: Tools; guards?: SandboxOfficePaths; write: Write },
+): Office {
+  if (tools.git === undefined) throw new OfficeStartError(NO_GIT)
   const log = officeLogger(write)
   const store = new Store(paths.store, { log: log("ERROR", "opencorp.store") })
   try {
-    const companyGit = new CompanyGit(paths.company, paths.worktrees, git === undefined ? {} : { git })
+    const companyGit = new CompanyGit(paths.company, paths.worktrees, { git: tools.git })
     reap(store)
     const office = new Office({
       paths,
       store,
       git: companyGit,
       bus: new Bus(),
+      tools,
+      guards,
       log: log("ERROR", "opencorp.daemon.office"),
     })
     const watcher = new HeadWatcher(office, { log: log("ERROR", "opencorp.company.watch") })
@@ -271,9 +283,9 @@ function close(server: Server): Promise<void> {
  *
  * The start: the office dir, the lock and pidfile, the stop signals (installed before anything opens, so a signal
  * during the start stops the office once it has started instead of killing the process mid-start), the company
- * repo and socket path checks, the office (store, company clone, reaped workers), the extensions, the office's
- * start, and last the socket: it listens only once everything is ready. A failed start undoes what it did, in
- * reverse.
+ * repo and socket path checks, the tools (git required), the office (store, company clone, reaped workers), the
+ * extensions, the office's start, and last the socket: it listens only once everything is ready. A failed start
+ * undoes what it did, in reverse.
  *
  * The stop: the office stops first (its bus closes before anything else, because SSE responses never end on their
  * own, so the server's close isn't held by them), then the connections and the server close, the socket file goes,
@@ -281,7 +293,7 @@ function close(server: Server): Promise<void> {
  */
 async function run(
   paths: OfficePaths,
-  { extensions, write, git }: { extensions: readonly Extension[]; write: Write; git?: string },
+  { extensions, write, tools: given }: { extensions: readonly Extension[]; write: Write; tools?: Tools },
 ): Promise<void> {
   const log = officeLogger(write)
   makeOfficeDir(paths.office)
@@ -296,7 +308,10 @@ async function run(
       if (!fs.existsSync(path.join(paths.company, ".git")))
         throw new OfficeStartError(`no company repo at ${paths.company}`)
       checkSocketPath(paths.socket)
-      const office = buildOffice(paths, { git, write })
+      const env = daemonEnv(process.env)
+      const tools = given ?? resolveTools(env)
+      if (tools.git === undefined) throw new OfficeStartError(NO_GIT)
+      const office = buildOffice(paths, { tools, guards: workspaceGuards(tools, env), write })
       try {
         try {
           loadExtensions(office, extensions)
@@ -352,8 +367,8 @@ export interface MainOptions {
   extensions?: readonly Extension[]
   /** Where log lines and start errors go (default stderr). */
   write?: Write
-  /** The git executable, resolved by the caller (default `git` on PATH). */
-  git?: string
+  /** The programs the daemon runs, as absolute realpaths (default `resolveTools` on the daemon's `PATH`). */
+  tools?: Tools
 }
 
 /**
@@ -365,10 +380,12 @@ export interface MainOptions {
  * would hold the server's close); then the server and the socket file, the handlers still running (up to
  * `HANDLER_WAIT_MS`), the store, and the pidfile and lock. Writes are synchronous by default: the process exits as
  * soon as this returns, so nothing may wait in a stream buffer.
+ *
+ * The tools are resolved once at start, to absolute realpaths; nothing is looked up by name later.
  */
 export async function main(
   argv: string[],
-  { extensions = EXTENSIONS, write = writeStderr, git }: MainOptions = {},
+  { extensions = EXTENSIONS, write = writeStderr, tools }: MainOptions = {},
 ): Promise<number> {
   let value: string | undefined
   try {
@@ -391,7 +408,7 @@ export async function main(
     } catch (error) {
       throw new OfficeStartError(`can't resolve the home ${wanted}: ${messageOf(error)}`)
     }
-    await run(new OfficePaths(home), { extensions, write, git })
+    await run(new OfficePaths(home), { extensions, write, tools })
     return 0
   } catch (error) {
     if (error instanceof AlreadyRunning) {
