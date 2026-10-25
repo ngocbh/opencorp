@@ -101,7 +101,9 @@ export function pipe(): [number, number] {
  *  each pending read on a blocking pipe holds one of its threads, one per core). Owns `fd`: closes it once the
  *  stream closes (end, destroy or error). */
 export function pipeReadable(fd: number): Readable {
-  const stream = Readable.fromWeb(Bun.file(fd).stream() as ReadableStream<Uint8Array>)
+  // Through unknown: the packages that also typecheck this file (the app, the CLI) give the runtime's stream the
+  // DOM's type, which doesn't overlap Node's web-stream type.
+  const stream = Readable.fromWeb(Bun.file(fd).stream() as unknown as ReadableStream<Uint8Array>)
   // The runtime's stream never closes the fd itself.
   stream.once("close", () => fs.closeSync(fd))
   return stream
