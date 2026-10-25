@@ -18,7 +18,7 @@ export class ServiceError extends Error {
 /** One office's daemon: its launch command, environment and folder, and its service name. */
 export class Launch {
   constructor(
-    readonly argv: readonly string[],
+    readonly argv: readonly [string, ...string[]],
     readonly env: Readonly<Record<string, string>>,
     readonly cwd: string,
     readonly home: string,
@@ -128,7 +128,7 @@ export interface PinOptions {
   /** The daemon's cwd (default `process.cwd`). */
   cwd?: () => string
   /** The argv prefix that runs the office's own code (default `selfCommand()`). */
-  command?: readonly string[]
+  command?: readonly [string, ...string[]]
   /** Replaces this process with `argv` in `cwd` with exactly `env` (default `platform.ts`'s `reexec`). */
   exec?: (argv: [string, ...string[]], env: Record<string, string>, cwd: string) => never
   /** Where the refusal goes (default a synchronous write to stderr). */
@@ -173,7 +173,7 @@ export function pinDaemon(argv: readonly string[], options: PinOptions = {}): nu
   try {
     home = resolveHome(wanted)
   } catch (error) {
-    // The path is the caller's own argument (or the default), never a value from the env.
+    // The caller's argument, or the default under `$HOME`, which isn't a secret.
     write(`opencorp office: can't resolve the home ${wanted}: ${messageOf(error)}\n`)
     return 1
   }
@@ -186,9 +186,9 @@ export function pinDaemon(argv: readonly string[], options: PinOptions = {}): nu
     write(`opencorp office: ${messageOf(error)}\n`)
     return 1
   }
-  const want = daemonEnv(environ)
-  const names = [...new Set([...Object.keys(environ), ...Object.keys(want)])]
-    .filter((name) => environ[name] !== want[name])
+  const officeEnv = daemonEnv(environ)
+  const names = [...new Set([...Object.keys(environ), ...Object.keys(officeEnv)])]
+    .filter((name) => environ[name] !== officeEnv[name])
     .sort()
   let cwdDiffers: boolean
   try {
@@ -203,10 +203,10 @@ export function pinDaemon(argv: readonly string[], options: PinOptions = {}): nu
     write(`opencorp office: still not in the office's env after a re-exec: ${differing.join(", ")}\n`)
     return 1
   }
-  const next: string[] = [...command, "daemon", "--home", home, "--reexeced"]
+  const next: [string, ...string[]] = [...command, "daemon", "--home", home, "--reexeced"]
   let reason = "returned"
   try {
-    exec(next as [string, ...string[]], want, officeReal)
+    exec(next, officeEnv, officeReal)
   } catch (error) {
     // An error's message could quote the env; its code or type can't.
     const code = (error as { code?: unknown } | null)?.code
@@ -230,7 +230,7 @@ export function launch(
     command = selfCommand(),
     environ = process.env,
     userHome = os.homedir(),
-  }: { command?: readonly string[]; environ?: Env; userHome?: string } = {},
+  }: { command?: readonly [string, ...string[]]; environ?: Env; userHome?: string } = {},
 ): Launch {
   const real = resolveHome(home)
   const name =

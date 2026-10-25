@@ -565,13 +565,13 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/main.test.ts::a signal during the start stops the office once it has started	design §2.3: SIGINT, SIGTERM and SIGHUP stop cleanly, their handlers installed before the start	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::a symlinked office dir stops the daemon start [%s]	design §2.3, §6 rule 6: the office dir is checked through main(), as Python's test_a_symlinked_office_dir_is_refused did	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::an uncaught error in the daemon is logged as office crashed [%s]	design §2.3, §6 rule 13: an uncaught exception or rejection writes the crash marker (type and frames, never the message) and exits 1	O2-5
-—	new	packages/office/tests/daemon/main.test.ts::background mode starts the daemon in the office env from a poisoned caller	design §9.3 (background mode, daemonEnv and office cwd)	O2-11b
 —	new	packages/office/tests/daemon/main.test.ts::bad arguments exit 2	argparse's exit 2 for bad arguments, kept	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::build office reaps workers left by an earlier office	design §6.6 and O2-11a: the workers an earlier office left are reaped at start	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::opencorp daemon from a shell re-execs into the office env and folder	design §6.5 (R2 I1)	O2-11b
 —	new	packages/office/tests/daemon/main.test.ts::release removes the pidfile and frees the lock	design §2.3: the pidfile is removed on stop	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::the crash report names the error type and its frames never its message	design §6 rule 13: the crash marker logs the error type and stack frames, never the message	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::the daemon refuses to start without git on its path	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
+—	new	packages/office/tests/daemon/main.test.ts::the launch command env and folder start the daemon without a re-exec from a poisoned caller	design §9.3 (background mode, daemonEnv and office cwd)	O2-11b
 —	new	packages/office/tests/daemon/main.test.ts::the office gets the tools the daemon resolved and its company git runs that git	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
 —	new	packages/office/tests/daemon/main.test.ts::the office holds the company snapshots and the secret store	design §2.3: typed Office fields replace Python's extras	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::the stop waits for running handlers but not for ever	Python's 5 s graceful wait (uvicorn timeout_graceful_shutdown)	O2-5

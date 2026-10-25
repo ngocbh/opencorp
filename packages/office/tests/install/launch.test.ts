@@ -45,7 +45,13 @@ test("the launch command is the daemons with absolute paths", () => {
     path.join(HOME, "office", "office.log"),
     path.join(HOME, "office", "office.sock"),
   ])
-  const checkout = ["/b/bun", "--no-install", "--no-env-file", "--config=/dev/null", "/c/packages/cli/src/main.ts"]
+  const checkout: [string, ...string[]] = [
+    "/b/bun",
+    "--no-install",
+    "--no-env-file",
+    "--config=/dev/null",
+    "/c/packages/cli/src/main.ts",
+  ]
   expect(launch(HOME, { command: checkout, environ: {}, userHome: "/Users/owner" }).argv).toEqual([
     ...checkout,
     "daemon",
@@ -151,7 +157,7 @@ test("the daemon parser takes home and reexeced and nothing else", () => {
   expect(() => daemonArgs(["--home="])).toThrow("the home can't be empty")
 })
 
-const COMMAND = ["/opt/opencorp/bin/opencorp"]
+const COMMAND: [string] = ["/opt/opencorp/bin/opencorp"]
 
 /** A `pinDaemon` run on `argv` with a stub re-exec that records its calls and returns, and a `write` that keeps
  *  the text. */
@@ -206,6 +212,14 @@ test("a daemon with another env re-execs into the office env and folder", () => 
   const linked = pin(["--home", link], { environ: { ...poisoned, HOME: link }, cwd: () => office })
   expect(linked.code).toBe(1)
   expect(linked.calls.map((c) => [c.argv, c.cwd])).toEqual([[argv, office]])
+  const deleted = pin(["--home", home], {
+    environ: clean(home),
+    cwd: () => {
+      throw Object.assign(new Error("deleted"), { code: "ENOENT" })
+    },
+  })
+  expect(deleted.code).toBe(1)
+  expect(deleted.calls).toEqual([reexec(clean(home))])
 })
 
 test("a daemon that still differs after its re-exec exits 1 naming variables not values", () => {
@@ -265,7 +279,7 @@ function specifiers(file: string, { values = false } = {}): string[] {
     .replace(/(^|\s)\/\/.*$/gm, "$1")
   const found: string[] = []
   const patterns = [
-    /\b(?:import|export)\s+(type\s+)?[^"'`;]*?\bfrom\s*["']([^"']+)["']/g,
+    /\b(?:import|export)\s+(type\s+)?(?:(?!\b(?:import|export)\b)[^"'`;])*?\bfrom\s*["']([^"']+)["']/g,
     /\bimport\s*()["']([^"']+)["']/g,
     /\b(?:import|require)\s*\(\s*()["']([^"']+)["']/g,
   ]

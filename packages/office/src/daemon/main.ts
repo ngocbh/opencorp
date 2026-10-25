@@ -307,8 +307,7 @@ async function run(
       if (!fs.existsSync(path.join(paths.company, ".git")))
         throw new OfficeStartError(`no company repo at ${paths.company}`)
       checkSocketPath(paths.socket)
-      // A foreground start may not have a filtered env yet (it is pinned by the re-exec), so the tools are
-      // resolved on the daemon env, not the raw one.
+      // `main` can run without `pinDaemon` (tests); after the pin this filter changes nothing.
       const env = daemonEnv(process.env)
       const tools = given ?? resolveTools(env)
       const office = buildOffice(paths, { tools, guards: workspaceGuards(tools, env), write })

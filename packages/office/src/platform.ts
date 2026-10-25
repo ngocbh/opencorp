@@ -60,7 +60,7 @@ export function selfSpawnCwd(): string {
 /** Replaces this process (same pid) with `argv`, run in `cwd` with exactly `env`. Doesn't return; if the exec
  *  fails it throws, already in `cwd`. */
 export function reexec(argv: [string, ...string[]], env: Record<string, string>, cwd: string): never {
-  if (!process.execve) throw new Error("this runtime has no process.execve")
+  if (!process.execve) throw Object.assign(new Error("this runtime has no process.execve"), { code: "ENOSYS" })
   process.chdir(cwd)
   return process.execve(argv[0], argv, env)
 }

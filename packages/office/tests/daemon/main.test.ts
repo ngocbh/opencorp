@@ -476,7 +476,7 @@ function daemonHome(): string {
  *  with HOME set to `home`), its output in `<home>/daemon.log`, and records it for the cleanup. */
 function launch(
   home: string,
-  [bin, ...args]: [string, ...string[]],
+  [bin, ...args]: readonly [string, ...string[]],
   { env, cwd }: { env?: Record<string, string>; cwd?: string } = {},
 ): Daemon {
   // A file: an unread pipe fills up and blocks the daemon's writes.
@@ -803,7 +803,7 @@ test(
 )
 
 test(
-  "background mode starts the daemon in the office env from a poisoned caller",
+  "the launch command env and folder start the daemon without a re-exec from a poisoned caller",
   async () => {
     const dir = daemonHome()
     const proj = tempDir()
@@ -818,7 +818,7 @@ test(
     })
     for (const name of ["OPENAI_API_KEY", "BUN_OPTIONS", "PWD"]) expect(Object.keys(l.env)).not.toContain(name)
     makeOfficeDir(l.office)
-    const d = launch(dir, l.argv as [string, ...string[]], { env: { ...l.env }, cwd: l.cwd })
+    const d = launch(dir, l.argv, { env: { ...l.env }, cwd: l.cwd })
     await waitUntilServing(dir, d)
     expect(reexecMarks(d.pid)).toBe(0)
     const names = envNames(d.pid)
@@ -838,7 +838,7 @@ test(
     const l = officeLaunch(dir, { environ: { ...selfSpawnEnv(process.env), HOME: dir } })
     // What launchd and systemd add to a service's env.
     const env = { ...l.env, XPC_SERVICE_NAME: "com.opencorp.test", INVOCATION_ID: "0123" }
-    const d = launch(dir, l.argv as [string, ...string[]], { env, cwd: l.cwd })
+    const d = launch(dir, l.argv, { env, cwd: l.cwd })
     await waitUntilServing(dir, d)
     expect(reexecMarks(d.pid)).toBe(1)
     const names = envNames(d.pid)
