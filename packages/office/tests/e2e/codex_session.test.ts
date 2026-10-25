@@ -1,20 +1,21 @@
 /** The phase 3 milestone (design §11) end to end: `opencorp init` through the checkout wrapper starts a TS office
  *  in the background, and requests over its socket run a Codex session on `fake_codex.ts`, put first on `PATH` as
  *  `codex`: a streamed part, an approval card answered, the turn's end and the session's. It joins the cut-over
- *  gate (§10.4). Nothing touches the owner's home, a real Codex or a real service manager. */
+ *  gate (§10.4). Nothing touches the owner's home, a real Codex or a real service manager. Requests go through the
+ *  daemon tests' socket helpers, not `@opencorp/client`, whose sources need DOM types the office's tsconfig lacks. */
 import { execFileSync, spawn } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
 import path from "node:path"
 import type { LiveEvent, Question, Session } from "@opencorp/protocol"
-import { expect, test } from "bun:test"
+import { expect, onTestFinished, test } from "bun:test"
 import { parse, stringify } from "yaml"
 import { args } from "../../src/install/proc.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { git, gitEnv } from "../company/helpers.ts"
 import { frames, request } from "../daemon/helpers.ts"
-import { ps, shortDir, waitFor } from "../helpers.ts"
+import { ps, waitFor } from "../helpers.ts"
 
 const REPO = path.resolve(import.meta.dirname, "../../../..")
 const OPENCORP = path.join(REPO, "packages/cli/bin/opencorp")
@@ -113,8 +114,24 @@ async function stopAll(root: string, home: string): Promise<void> {
 test(
   "a codex session on a wrapper started office streams a part takes a card answer and ends",
   async () => {
-    const root = shortDir()
+    // Made here, not with shortDir(): its delete hook would run before the stop below, as hooks run in order.
+    const root = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
     const home = path.join(root, "h")
+    const llm = await FakeLLM.start()
+    let events: http.ClientRequest | undefined
+    // A hook, not a finally: a test that times out skips its finally but still runs and awaits this.
+    onTestFinished(async () => {
+      events?.destroy()
+      try {
+        await stopAll(root, home)
+      } finally {
+        try {
+          await llm.close()
+        } finally {
+          fs.rmSync(root, { recursive: true, force: true })
+        }
+      }
+    })
     fs.mkdirSync(path.join(home, "office"), { recursive: true, mode: 0o700 })
     fs.writeFileSync(path.join(home, "office", "hq.json"), JSON.stringify({ tcp: false }))
     const codexDir = path.join(root, "codex")
@@ -152,135 +169,120 @@ test(
     const { OPENCORP_CODEX_BIN: _, ...base } = gitEnv(process.env)
     const env = {
       ...base,
-      PATH: `${tools}:${process.env.PATH}`,
+      PATH: [tools, process.env.PATH].filter(Boolean).join(":"),
       OPENCORP_HOME: home,
       OPENCORP_BUN: process.execPath,
     }
     const socket = path.join(home, "office", "office.sock")
-    const llm = await FakeLLM.start()
-    let events: http.ClientRequest | undefined
-    let failed = false
-    try {
-      llm.script({ content: "OK", match: "Reply with the single word OK." })
-      const init = await run(
-        [
-          OPENCORP,
-          "init",
-          "--home",
-          home,
-          "--provider-stdin",
-          "--company",
-          "Acme",
-          "--name",
-          "Ngoc",
-          "--handle",
-          "ngocbh",
-          "--service",
-          "background",
-          "--no-device",
-        ],
-        JSON.stringify({ llm_config: LLM_CONFIG, env: llm.env() }),
-        { cwd: home, env },
-      )
-      if (init.code !== 0 || !init.stdout.includes("with you as CEO and Minh (@minh)"))
-        throw new Error(`opencorp init exited ${init.code}:\n${init.stdout}${init.stderr}`)
+    llm.script({ content: "OK", match: "Reply with the single word OK." })
+    const init = await run(
+      [
+        OPENCORP,
+        "init",
+        "--home",
+        home,
+        "--provider-stdin",
+        "--company",
+        "Acme",
+        "--name",
+        "Ngoc",
+        "--handle",
+        "ngocbh",
+        "--service",
+        "background",
+        "--no-device",
+      ],
+      JSON.stringify({ llm_config: LLM_CONFIG, env: llm.env() }),
+      { cwd: home, env },
+    )
+    if (init.code !== 0 || !init.stdout.includes("with you as CEO and Minh (@minh)"))
+      throw new Error(`opencorp init exited ${init.code}:\n${init.stdout}${init.stderr}`)
 
-      // The office loads a session's person from the company's HEAD, so the edit is committed.
-      const company = path.join(home, "company")
-      const personFile = path.join(company, "people", "minh", "person.yaml")
-      const minh = parse(fs.readFileSync(personFile, "utf8")) as Record<string, unknown>
-      minh.harnesses = ["composer", "codex"]
-      fs.writeFileSync(personFile, stringify(minh))
-      git(company, "commit", "-qam", "minh uses codex")
+    // The office loads a session's person from the company's HEAD, so the edit is committed.
+    const company = path.join(home, "company")
+    const personFile = path.join(company, "people", "minh", "person.yaml")
+    const minh = parse(fs.readFileSync(personFile, "utf8")) as Record<string, unknown>
+    minh.harnesses = ["composer", "codex"]
+    fs.writeFileSync(personFile, stringify(minh))
+    git(company, "commit", "-qam", "minh uses codex")
 
-      // The folder holding the pinned codex's folder is refused as a workspace.
-      const refused = await call(socket, "POST", "/sessions", {
-        person: "minh",
-        cwd: path.join(root, "tools"),
-        harness: "codex",
-      })
-      expect([refused.status, refused.body.error]).toEqual([422, "unsafe_workspace"])
+    // The folder holding the pinned codex's folder is refused as a workspace.
+    const refused = await call(socket, "POST", "/sessions", {
+      person: "minh",
+      cwd: path.join(root, "tools"),
+      harness: "codex",
+    })
+    expect([refused.status, refused.body.error]).toEqual([422, "unsafe_workspace"])
 
-      const cwd = fs.realpathSync(workspace)
-      const created: Session = await ok(socket, "POST", "/sessions", { person: "minh", cwd, harness: "codex" })
-      expect(created.harness).toBe("codex")
-      const sid = created.id
-      const statusIs = async (want: string) => ((await ok(socket, "GET", `/sessions/${sid}`)) as Session).status === want
-      await waitFor(() => statusIs("idle"), { timeout: 60_000, what: "the Codex session to load" })
-
-      let connected = false
-      let streamError: unknown
-      const live: LiveEvent[] = []
-      /** Whether `check()` holds; throws the event stream's error once it has one. */
-      const streamed = (check: () => boolean) => {
-        if (streamError !== undefined) throw streamError
-        return check()
-      }
-      events = http.request({ socketPath: socket, path: `/events?session=${sid}`, agent: false }, (res) => {
-        // The cleanup's destroy cuts the stream, which then errors with nobody reading it.
-        res.on("error", () => {})
-        void (async () => {
-          for await (const [kind, , data] of frames(res)) {
-            if (kind === "comment" && data === "connected") connected = true
-            else if (kind === "live") live.push(data as LiveEvent)
-          }
-        })().catch((error) => (streamError = error))
-      })
-      events.on("error", () => {})
-      events.end()
-      await waitFor(() => streamed(() => connected), { what: "the event stream" })
-
-      expect(await ok(socket, "POST", `/sessions/${sid}/prompt`, { text: "Create hello.txt" })).toEqual({ ok: true })
-      await waitFor(
-        () => streamed(() => live.some((e) => ["part.updated", "part.delta"].includes(e.type) && e.session_id === sid)),
-        { what: "a streamed part" },
-      )
-
-      const card: Question = await waitFor(
-        async () => ((await ok(socket, "GET", `/questions?session=${sid}&status=open`)) as Question[])[0],
-        { what: "the approval card" },
-      )
-      expect(card.source).toBe("harness")
-      expect(card.options).toContain("Approve")
-      const answer = { answer: "Approve", answer_kind: "option" }
-      const answered: Question = await ok(socket, "POST", `/questions/${card.id}/answer`, answer)
-      expect(answered.status).toBe("consumed")
-
-      await waitFor(() => statusIs("idle"), { what: "the turn to end" })
-      const entries = () =>
-        fs
-          .readFileSync(rpcLog, "utf8")
-          .split("\n")
-          .filter(Boolean)
-          .map((line) => JSON.parse(line) as { dir: string; msg: Record<string, any> })
-      await waitFor(() => entries().some((e) => e.dir === "out" && e.msg.method === "turn/completed"), {
-        what: "the fake to complete the turn",
-      })
-      const read = entries()
-      expect(read.some((e) => e.dir === "in" && e.msg.method === "thread/start")).toBe(true)
-      const replies = read.filter((e) => e.dir === "in" && e.msg.id === 1 && !("method" in e.msg))
-      expect(replies.map((e) => e.msg.result)).toEqual([{ decision: "accept" }])
-
-      expect(await ok(socket, "POST", `/sessions/${sid}/end`)).toEqual({ ok: true })
-      await waitFor(() => statusIs("ended"), { what: "the session to end" })
-      expect(await ok(socket, "GET", `/sessions/${sid}/messages`)).toEqual([])
-      expect(fs.existsSync(calls)).toBe(false)
-    } catch (error) {
-      failed = true
-      throw error
-    } finally {
-      events?.destroy()
-      try {
-        try {
-          await stopAll(root, home)
-        } finally {
-          await llm.close()
-        }
-      } catch (error) {
-        // The body's failure is the cause to report; a cleanup error replaces only a pass.
-        if (!failed) throw error
-      }
+    const cwd = fs.realpathSync(workspace)
+    const created: Session = await ok(socket, "POST", "/sessions", { person: "minh", cwd, harness: "codex" })
+    expect(created.harness).toBe("codex")
+    const sid = created.id
+    /** Whether the session's status is `want`; throws once the session has failed. */
+    const statusIs = async (want: string) => {
+      const session: Session = await ok(socket, "GET", `/sessions/${sid}`)
+      if (session.status === "failed") throw new Error(`the Codex session failed: ${JSON.stringify(session)}`)
+      return session.status === want
     }
+    await waitFor(() => statusIs("idle"), { timeout: 60_000, what: "the Codex session to load" })
+
+    let connected = false
+    let streamError: unknown
+    const live: LiveEvent[] = []
+    /** Whether `check()` holds; throws the event stream's error once it has one. */
+    const streamed = (check: () => boolean) => {
+      if (streamError !== undefined) throw streamError
+      return check()
+    }
+    events = http.request({ socketPath: socket, path: `/events?session=${sid}`, agent: false }, (res) => {
+      // The cleanup's destroy cuts the stream, which then errors with nobody reading it.
+      res.on("error", () => {})
+      void (async () => {
+        for await (const [kind, , data] of frames(res)) {
+          if (kind === "comment" && data === "connected") connected = true
+          else if (kind === "live") live.push(data as LiveEvent)
+        }
+      })().catch((error) => (streamError = error))
+    })
+    events.on("error", () => {})
+    events.end()
+    await waitFor(() => streamed(() => connected), { what: "the event stream" })
+
+    expect(await ok(socket, "POST", `/sessions/${sid}/prompt`, { text: "Create hello.txt" })).toEqual({ ok: true })
+    await waitFor(
+      () => streamed(() => live.some((e) => ["part.updated", "part.delta"].includes(e.type) && e.session_id === sid)),
+      { what: "a streamed part" },
+    )
+
+    const card: Question = await waitFor(
+      async () => ((await ok(socket, "GET", `/questions?session=${sid}&status=open`)) as Question[])[0],
+      { what: "the approval card" },
+    )
+    expect(card.source).toBe("harness")
+    expect(card.options).toContain("Approve")
+    const answer = { answer: "Approve", answer_kind: "option" }
+    const answered: Question = await ok(socket, "POST", `/questions/${card.id}/answer`, answer)
+    expect(answered.status).toBe("consumed")
+
+    await waitFor(() => statusIs("idle"), { what: "the turn to end" })
+    const entries = () =>
+      fs
+        .readFileSync(rpcLog, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { dir: string; msg: Record<string, any> })
+    await waitFor(() => entries().some((e) => e.dir === "out" && e.msg.method === "turn/completed"), {
+      what: "the fake to complete the turn",
+    })
+    const read = entries()
+    expect(read.some((e) => e.dir === "in" && e.msg.method === "thread/start")).toBe(true)
+    const replies = read.filter((e) => e.dir === "in" && e.msg.id === 1 && !("method" in e.msg))
+    expect(replies.map((e) => e.msg.result)).toEqual([{ decision: "accept" }])
+
+    expect(await ok(socket, "POST", `/sessions/${sid}/end`)).toEqual({ ok: true })
+    await waitFor(() => statusIs("ended"), { what: "the session to end" })
+    expect(await ok(socket, "GET", `/sessions/${sid}/messages`)).toEqual([])
+    expect(fs.existsSync(calls)).toBe(false)
   },
   180_000,
 )
