@@ -141,8 +141,9 @@ export class TemplateOffice extends Recorder {
 }
 
 /** A chat job running the template flow `name` from a temp copy of the template, or, with `base`, from `base.pin`
- *  (which holds the flow at `shared/flows/<name>.yaml`) logging under `base.runs`; `inputs` replace the defaults. It
- *  logs under `runs` (a temp folder by default) as `runId` (`r1` by default); `over` replaces the job's fields. */
+ *  (which holds the flow at `shared/flows/<name>.yaml`) logging under `base.runs`; `inputs` replace the defaults.
+ *  Without `base` it logs under `runs` (a temp folder by default); it runs as `runId` (`r1` by default); `over`
+ *  replaces the job's fields. */
 export function templateJob(
   name: string,
   handlers: Recorder,

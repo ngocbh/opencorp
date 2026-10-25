@@ -358,7 +358,7 @@ async function runJob(
   deliveries: Deliveries,
   { env, signal }: { env: WorkerEnv; signal: AbortSignal },
 ): Promise<Frame> {
-  const read: Env = (name) => (Object.hasOwn(env, name) ? env[name] : undefined)
+  const read = reader(env)
   const flow = job.kind === "chat" ? await loadConfined(job.pin, path.join(job.pin, job.flow)) : null
   const runs = path.dirname(path.dirname(job.log))
   if (job.log !== path.join(runs, job.run_id, "log.jsonl")) {
@@ -390,18 +390,15 @@ async function runJob(
   if (flow !== null) {
     let inputs = job.inputs
     if (job.seed !== null) {
-      const seedEnv = job.seed.env
-      const seedOptions = {
-        env: (name: string) => (Object.hasOwn(seedEnv, name) ? seedEnv[name] : undefined),
-        codeRoot: job.pin,
-      }
+      const seedOptions = { env: reader(job.seed.env), codeRoot: job.pin }
       const seeded = await readSeed(job.seed.log, seedOptions)
       if (seeded.error !== null) {
         process.stderr.write(`opencorp __worker: history not seeded (${seeded.error})\n`)
         await channel.send({ type: "event", name: "history_not_seeded", data: { error_type: seeded.error } })
       }
       inputs = { ...job.inputs, summary: seeded.summary, history: seeded.history }
-      if (job.seed.cancel) await cancelReplaced(job.seed.log, seedOptions)
+      // After a stop the fresh run won't start, so the replaced run stays as it is for the next fresh run.
+      if (job.seed.cancel && !signal.aborted) await cancelReplaced(job.seed.log, seedOptions)
       // Ahead of the job's own deliveries, which `serve` queued first.
       deliveries.pushFront(
         seeded.unread.map((event, n) => ({ id: `moved-${n}`, op: "send", inbox: MAIN_CHAT.inbox, event })),
@@ -463,6 +460,11 @@ async function runJob(
     failure: result.failure,
     waits: wireWaits(result.waits),
   }
+}
+
+/** How yian reads a variable of `env`: its own entries only. */
+function reader(env: WorkerEnv): Env {
+  return (name) => (Object.hasOwn(env, name) ? env[name] : undefined)
 }
 
 /** `value` when it is a record of strings, else `null`. */
