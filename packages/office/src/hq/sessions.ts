@@ -132,7 +132,8 @@ function entry(record: HqSessionRecord): Live {
 export class BrowserSessions {
   readonly store: Store
   readonly snapshots: CompanySnapshots
-  readonly clock: () => Date
+  /** What time it is; tests swap it. */
+  clock: () => Date
   readonly #fingerprints: Fingerprints
   readonly #live = new Map<string, Live>()
 
@@ -280,6 +281,11 @@ export class BrowserSessions {
   /** Forgets a stream that ended. */
   unregister(sid: string, sub: Subscription): void {
     this.#live.get(sid)?.streams.delete(sub)
+  }
+
+  /** How many open streams session `sid` has; 0 when unknown. */
+  streams(sid: string): number {
+    return this.#live.get(sid)?.streams.size ?? 0
   }
 
   /** Whether `sid` is neither revoked nor expired, without a store read: checked on every frame. */

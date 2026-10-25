@@ -4,9 +4,11 @@ import { type Health, type HqStatus, type PairCode, now, stamp } from "@opencorp
 import type { CompanySnapshots } from "../company/snapshot.ts"
 import { CompanySource } from "../company/source.ts"
 import type { Office } from "../daemon/office.ts"
+import { PING_MS } from "../daemon/routes/events.ts"
 import { type HqConfig, loadConfig } from "./config.ts"
 import { Logins } from "./login.ts"
 import { PairCodes } from "./pairing.ts"
+import { Listeners } from "./servers.ts"
 import { BrowserSessions } from "./sessions.ts"
 import { otherUsers } from "./status.ts"
 import { BuildInfo, officeApi } from "./version.ts"
@@ -33,6 +35,14 @@ export class Hq {
   nextRetryAt: string | null = null
   /** Why hq.sock isn't listening, when binding it failed. */
   socketError: string | null = null
+  /** How long an idle `/api/events` waits before a ping, in ms; tests shorten it. */
+  pingMs = PING_MS
+  /** Whether starting HQ starts its listeners (the daemon); tests attach without them. */
+  listen = false
+  /** HQ's listeners while they run. */
+  listeners: Listeners | null = null
+  /** Who else uses this host; tests replace it. */
+  otherUsers: () => Promise<string[]> = otherUsers
 
   constructor(office: Office, config: HqConfig, log: (line: string) => void) {
     this.office = office
@@ -102,7 +112,7 @@ export class Hq {
   async warnings(): Promise<string[]> {
     const found = this.config.problem === null ? [] : [`settings ignored: ${this.config.problem}`]
     if (this.config.tcp) {
-      const others = await otherUsers()
+      const others = await this.otherUsers()
       if (others.length > 0)
         found.push(
           `the web port is on and this host has other users (${others.join(", ")}): any of them could take the ` +
@@ -113,21 +123,39 @@ export class Hq {
     return found
   }
 
-  /** Delete expired browser sessions and the redirect files a crash left. */
+  /** Delete expired browser sessions and the redirect files a crash left, then start the listeners if `listen`. */
   async start(): Promise<void> {
     this.office.store.pruneHqSessions(now())
     this.codes.removeLeftovers()
+    if (this.listen) {
+      this.listeners = new Listeners(this)
+      await this.listeners.start()
+    }
   }
 
-  /** Forget pending codes and delete their redirect files. */
+  /** Stop the listeners, forget pending codes and delete their redirect files. */
   async stop(): Promise<void> {
-    this.codes.close()
+    try {
+      const listeners = this.listeners
+      this.listeners = null
+      await listeners?.stop()
+    } finally {
+      this.codes.close()
+    }
   }
 }
 
-/** Attach HQ to `office` (`office.hq`): attached last, it starts after everything else and stops first. */
-export function attach(office: Office, { log }: { log: (line: string) => void }): Hq {
+/**
+ * Attach HQ to `office` (`office.hq`): attached last, it starts after everything else and stops first.
+ *
+ * `listen` starts the listeners on start (the daemon); tests attach without them.
+ */
+export function attach(
+  office: Office,
+  { log, listen = true }: { log: (line: string) => void; listen?: boolean },
+): Hq {
   const hq = Hq.create(office, { log })
+  hq.listen = listen
   office.hq = hq
   office.onStart.push(() => hq.start())
   office.onStop.push(() => hq.stop())

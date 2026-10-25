@@ -1,13 +1,14 @@
 /** The daemon process: one daemon per home, held by a lock beside its pidfile; its start, its stop on a signal,
  *  and its log. */
 import fs from "node:fs"
-import type { IncomingMessage, Server, ServerResponse } from "node:http"
+import type { Server } from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform"
 import { CompanyGit } from "../company/git.ts"
 import { HeadWatcher } from "../company/watch.ts"
 import { EXTENSIONS, type Extension, ExtensionError, loadExtensions } from "../extensions/index.ts"
+import { attach } from "../hq/core.ts"
 import { daemonArgs, daemonEnv, resolveHome } from "../install/launch.ts"
 import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
@@ -15,7 +16,7 @@ import { Store } from "../store/store.ts"
 import { reap } from "../worker/reaper.ts"
 import { DeviceTokens } from "./auth.ts"
 import { Bus } from "./bus.ts"
-import { type Level, createServer, logLine, requestListener } from "./http.ts"
+import { HANDLER_WAIT_MS, type Level, createServer, logLine, requestListener, trackRequests } from "./http.ts"
 import { Office, OfficePaths } from "./office.ts"
 import { allRoutes } from "./routes/index.ts"
 import { OfficeStartError, checkSocketPath, listenUnix, makeOfficeDir, removeStaleSocket } from "./sockets.ts"
@@ -247,35 +248,6 @@ export function buildOffice(
   }
 }
 
-/** How long a stop waits for request handlers still running before the store closes. */
-export const HANDLER_WAIT_MS = 5000
-
-/** Wraps a request listener so the requests it is still handling can be awaited: `settled(ms)` resolves
- *  once every running handler has settled or after `ms`, whichever is first. */
-export function trackRequests(listener: (req: IncomingMessage, res: ServerResponse) => Promise<void>): {
-  listener: (req: IncomingMessage, res: ServerResponse) => Promise<void>
-  settled(ms: number): Promise<void>
-} {
-  const running = new Set<Promise<void>>()
-  return {
-    listener(req, res) {
-      const handling: Promise<void> = listener(req, res).finally(() => running.delete(handling))
-      running.add(handling)
-      return handling
-    },
-    settled(ms) {
-      return new Promise((resolve) => {
-        // Ref'd: the stop's wait must keep the process alive until the store closes and the pidfile and lock go.
-        const timer = setTimeout(resolve, ms)
-        void Promise.allSettled(running).then(() => {
-          clearTimeout(timer)
-          resolve()
-        })
-      })
-    },
-  }
-}
-
 const STOP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const
 
 /** Closes `server` and resolves once it has, whatever its callback reports, so the stop never skips the
@@ -291,8 +263,8 @@ function close(server: Server): Promise<void> {
  * The start: the office dir, the lock and pidfile, the stop signals (installed before anything opens, so a signal
  * during the start stops the office once it has started instead of killing the process mid-start), the company
  * repo and socket path checks, the tools (git required), the office (store, company clone, reaped workers), the
- * extensions, the office's start, and last the socket: it listens only once everything is ready. A failed start
- * undoes what it did, in reverse.
+ * extensions, HQ (attached last, so its listeners start after everything else and stop first), the office's start,
+ * and last the socket: it listens only once everything is ready. A failed start undoes what it did, in reverse.
  *
  * The stop: the office stops first (its bus closes before anything else, because SSE responses never end on their
  * own, so the server's close isn't held by them), then the connections and the server close, the socket file goes,
@@ -326,6 +298,8 @@ async function run(
           if (error instanceof ExtensionError) throw new OfficeStartError(error.message)
           throw error
         }
+        // Last, so HQ starts after everything else and stops first.
+        attach(office, { log: (line) => write(line + "\n") })
         removeStaleSocket(paths.socket) // we hold the lock, so no live daemon owns it
         try {
           await office.start()

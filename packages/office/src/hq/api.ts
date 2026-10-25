@@ -18,9 +18,11 @@ import type { z } from "zod"
 import { blankSecrets } from "../company/secret_keys.ts"
 import { SourceError } from "../company/source.ts"
 import { HttpError, RawReply, type RequestInfo, type Route, logLine, requestListener } from "../daemon/http.ts"
+import { PING } from "../daemon/bus.ts"
 import type { RequestContext } from "../daemon/office.ts"
 import { costs } from "../daemon/routes/costs.ts"
 import { whoami } from "../daemon/routes/devices.ts"
+import { RESET, frame } from "../daemon/routes/events.ts"
 import { getWorkItem } from "../daemon/routes/work_items.ts"
 import { browserAuth, cookieName, cookieValue } from "./auth.ts"
 import type { Hq } from "./core.ts"
@@ -38,6 +40,20 @@ export interface HqContext extends RequestContext {
   /** The company at HEAD the session was checked against; null on the open requests. */
   company: z.output<typeof CompanyView> | null
 }
+
+/** What HQ's stream carries: sessions, questions, work items, runs and the company. No live transcript events,
+ *  profiles, feedback, debriefs, proposals or comments; run logs, which hold some of those, are read through /api/runs
+ *  (every signed-in human can read every one). */
+export const HQ_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "session.created",
+  "session.updated",
+  "question.created",
+  "question.updated",
+  "work_item.created",
+  "work_item.updated",
+  "run.updated",
+  "company.updated",
+])
 
 /** The cookie's lifetime in seconds: the session's. */
 export const MAX_AGE = 30 * 24 * 3600
@@ -64,6 +80,59 @@ function errorReply(status: number, code: ErrorCode, message: string, headers: R
 /** The last `name` in the query, as Starlette's `query_params.get`; undefined when absent. */
 function last(ctx: HqContext, name: string): string | undefined {
   return ctx.query.getAll(name).at(-1)
+}
+
+/**
+ * HQ's event stream: the /events contract (`: connected`, frames, `reset`, pings) for HQ's event types.
+ *
+ * Every frame and ping checks the session's expiry and revocation, and each `company.updated` checks its person
+ * again at the new commit; a failing check ends the stream (the app then gets 401 and shows sign-in).
+ */
+async function* hqEvents(ctx: HqContext): AsyncGenerator<string> {
+  const { hq } = ctx
+  const sid = ctx.session!
+  // Subscribed here, on the first pull, so a reply that never starts leaves no subscription behind.
+  const sub = hq.office.bus.subscribe(null, { types: HQ_EVENT_TYPES })
+  hq.sessions.register(sid, sub)
+  // A generator can't be stopped from outside while it awaits `next`; ending the subscription wakes it.
+  const end = () => sub.end()
+  if (ctx.signal.aborted) end()
+  else ctx.signal.addEventListener("abort", end, { once: true })
+  try {
+    yield ": connected\n\n"
+    while (hq.sessions.alive(sid)) {
+      const item = await sub.next(hq.pingMs)
+      if (item === null) {
+        if (sub.dropped) yield RESET
+        return
+      }
+      if (!hq.sessions.alive(sid)) return
+      if (item === PING) {
+        yield ": ping\n\n"
+        continue
+      }
+      const [, event] = item
+      if (event.type === "company.updated") {
+        let valid: boolean
+        try {
+          valid = await hq.sessions.stillValid(sid, event.subject_id)
+        } catch (error) {
+          // The app reconnects, and its next request checks the session at HEAD again. The type only: a message
+          // can quote what it failed on.
+          const type = error instanceof Error ? error.constructor.name : typeof error
+          const text = `couldn't re-check HQ session ${sid} at ${event.subject_id}; ending its stream: ${type}`
+          hq.log(logLine("ERROR", "opencorp.hq.api", text))
+          return
+        }
+        if (!valid) return
+      }
+      yield frame(item)
+    }
+  } finally {
+    ctx.signal.removeEventListener("abort", end)
+    hq.sessions.unregister(sid, sub)
+    sub.close()
+  }
 }
 
 /** Everything under /api that isn't on the allowlist: the pipeline's own 404, for any method. */
@@ -117,7 +186,20 @@ export const ROUTES: readonly Route<HqContext>[] = [
   // The sessions list, the questions and the runs, ported later, go here, in Python's order.
   { method: "GET", path: "/api/work-items/:id", reply: WorkItem, handler: getWorkItem },
   { method: "GET", path: "/api/costs", reply: CostReport, handler: costs },
-  // The event stream, ported later, goes here.
+  // HQ's event stream (`hqEvents`). HEAD is refused here rather than by `head: false`, which would let the GET
+  // catch-all answer it with 404: a HEAD reply to a stream that never ends would hold the connection.
+  {
+    method: "GET",
+    path: "/api/events",
+    handler: (ctx) =>
+      ctx.req.method !== "GET"
+        ? errorReply(405, "method_not_allowed", `${ctx.req.method} is not allowed on /api/events`, { allow: "GET" })
+        : new RawReply(
+            200,
+            { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
+            hqEvents(ctx),
+          ),
+  },
   // Spends a one-time code from a pairing link and signs this browser in. Open without a session. A local failure
   // after the code is spent burns it; run `opencorp pair` again.
   {

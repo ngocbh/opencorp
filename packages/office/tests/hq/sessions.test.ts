@@ -1,10 +1,7 @@
 /** Browser sessions: hashed, 30 days, checked against the person at HEAD on every request. */
 import { createHash } from "node:crypto"
-import fs from "node:fs"
-import path from "node:path"
 import { inspect } from "node:util"
 import { expect, test } from "bun:test"
-import { parse, stringify } from "yaml"
 import { hashPassword } from "../../src/auth/passwords.ts"
 import type { CompanyGit } from "../../src/company/git.ts"
 import { CompanySnapshots } from "../../src/company/snapshot.ts"
@@ -13,6 +10,7 @@ import type { Office } from "../../src/daemon/office.ts"
 import { BrowserSessions, Fingerprints, type Humans, passwordFp, passwordFps, TTL } from "../../src/hq/sessions.ts"
 import { git } from "../company/helpers.ts"
 import { makeOffice } from "../daemon/helpers.ts"
+import { handEdit } from "./helpers.ts"
 
 const T0 = new Date("2026-10-19T10:00:00Z")
 const MINUTE = 60_000
@@ -47,16 +45,6 @@ async function httpError(promise: Promise<unknown>): Promise<HttpError> {
 const ISSUE = { issuedBy: "ngocbh", label: null }
 
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex")
-
-/** Applies `changes` to `people/<handle>/person.yaml` in `company` and commits it; an undefined value drops its
- *  key. */
-function handEdit(company: string, handle: string, changes: Record<string, unknown>): void {
-  const file = path.join(company, "people", handle, "person.yaml")
-  const data: Record<string, unknown> = { ...parse(fs.readFileSync(file, "utf8")), ...changes }
-  for (const [key, value] of Object.entries(data)) if (value === undefined) delete data[key]
-  fs.writeFileSync(file, stringify(data))
-  git(company, "commit", "-qam", `edit ${handle}`)
-}
 
 test("password fp is 16 hex of the hash or empty", () => {
   expect(passwordFp(null)).toBe(sha256("").slice(0, 16))
