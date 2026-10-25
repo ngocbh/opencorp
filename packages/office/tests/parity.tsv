@@ -565,6 +565,7 @@ worker/test_steering.py::test_an_interrupt_returns_the_text_so_far	changed	packa
 worker/test_steering.py::test_close_refuses_new_steers_and_returns_every_queued_one	dropped	—	yian #1100: interrupt(run, inbox) replaces node signals; yian holds the inbox	O4a-0a
 worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089: steers go to the agent's steer inbox through yian's send; unread steers stay in the inbox; yian queues steers per inbox, not per node	O3-17
 —	new	packages/cli/test/entry.test.ts::opencorp daemon reaches the office daemon mode	§2.1: the CLI hands daemon to the office before it loads anything else	O2-5
+—	new	packages/cli/test/entry.test.ts::opencorp install reaches the office install mode	§2.1: the CLI hands install to the office before it loads anything else	O2-13b
 —	new	packages/cli/test/entry.test.ts::opencorp through the npm shim from a folder holding .env and a bunfig.toml preload sees neither	§2.7, §6.2	O2-26
 —	new	packages/cli/test/entry.test.ts::plain bun from a folder holding .env shows the planted identity	§2.7 (control for the binary checks)	O2-26
 —	new	packages/cli/test/entry.test.ts::the CODE worker shim only imports the code-worker entry of yian	§2.7, O0-3	O2-26
@@ -946,6 +947,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/launchd.test.ts::a plist that cant be written is a service error and only the probe ran	design §9.3 (service files: a failed write is a ServiceError with the system's text)	O2-12
 —	new	packages/office/tests/install/main.test.ts::a missing or unknown command or flag is a usage error	design §9.1: exit 2 for usage, as argparse	O2-13b
 —	new	packages/office/tests/install/main.test.ts::a service mode that isnt one is a usage error	design §9.1: the service modes are auto plus service.MODES (O2-12)	O2-13b
+—	new	packages/office/tests/install/main.test.ts::all of stdout reaches the reader before setup exits	O2-13a handoff: exit only after stdout drains	O2-13b
+—	new	packages/office/tests/install/main.test.ts::an unexpected error is exit 1 with its stack on stderr	design §9.1: setup failures go to stderr; Bun only prints an unhandled rejection	O2-13b
 —	new	packages/office/tests/install/offboard.test.ts::launchers finds a link to the checkout wrapper and a script naming it	O0-5 handoff: packages/cli/bin/opencorp is the checkout's launcher; a link's hint names its target	O2-18b
 —	new	packages/office/tests/install/offboard.test.ts::offboard outside a checkout reports no launchers	design §2.1/O2-26: the compiled binary has no checkout, so there is no launcher to report	O2-18b
 —	new	packages/office/tests/install/onboard.test.ts::a model check given an env runs in that env	P2 and Decision 1 (o3-5 plan): the check job runs modelProblem in the worker's own env, which holds the provider env	O3-5

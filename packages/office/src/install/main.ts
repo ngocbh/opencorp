@@ -285,6 +285,59 @@ export async function main(argv: string[], setup: Partial<Setup> = {}): Promise<
   return COMMANDS[command]!.run(args, s)
 }
 
+/** `error`'s stack, or the value itself when it isn't an `Error`. */
+function stack(error: unknown): string {
+  return error instanceof Error && error.stack ? error.stack : String(error)
+}
+
+/** Runs `main` as the `opencorp install` process and exits with its code once stdout and stderr have drained: 130
+ *  on Ctrl-C, 1 with the stack on stderr for an error nothing expected or a rejection nothing handled. */
+export async function run(argv: string[], setup: Partial<Setup> = {}): Promise<never> {
+  let exiting = false
+  let ending = false
+  let failed = false
+  const exit = async (code: number): Promise<never> => {
+    if (exiting) return new Promise<never>(() => {})
+    exiting = true
+    // Bun reports a rejection the last step left only after a macrotask; this lets `crashed` see it first.
+    await new Promise((resolve) => setImmediate(resolve))
+    ending = true
+    // A zero-length write's callback can come before earlier writes have arrived; end's comes after all of them.
+    for (const stream of [process.stdout, process.stderr]) await new Promise<void>((resolve) => stream.end(resolve))
+    return process.exit(failed ? 1 : code)
+  }
+  process.on("SIGINT", () => {
+    // A second Ctrl-C while the streams drain exits at once, in case a flush never ends.
+    if (exiting) process.exit(130)
+    // At a prompt Ctrl-C is a key in raw mode, not a signal, so this one came outside a prompt (a numbered list
+    // reading a line, git running); raw mode goes off in case something left it on.
+    if (process.stdin.isTTY) process.stdin.setRawMode?.(false)
+    process.stderr.write("\n")
+    void exit(130)
+  })
+  const crashed = (error: unknown) => {
+    // Writing after the streams end raises `write after end`, which would land here again.
+    if (ending) return
+    // readline re-emits the terminal's EIO after the prompt already failed on the closed input, and `main` ends
+    // with 1 for that.
+    if ((error as { code?: unknown } | null)?.code === "EIO") return
+    // Bun only prints an unhandled rejection and carries on, so without this an exit would turn it into 0.
+    failed = true
+    process.stderr.write(`${stack(error)}\n`)
+    void exit(1)
+  }
+  process.on("uncaughtException", crashed)
+  process.on("unhandledRejection", crashed)
+  let code: number
+  try {
+    code = await main(argv, setup)
+  } catch (error) {
+    process.stderr.write(`${stack(error)}\n`)
+    code = 1
+  }
+  return exit(code)
+}
+
 /** The home to use: `--home`, else `$OPENCORP_HOME` (empty is unset), else `~/.opencorp`; resolved by each
  *  command through `launch`. */
 function home(value: string | undefined, s: Setup): string {

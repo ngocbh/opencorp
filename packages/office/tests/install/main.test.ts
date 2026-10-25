@@ -1,5 +1,6 @@
 /** `opencorp install …`: the parser, help and usage errors, and each command run in-process through `main` with
  *  stand-ins for the machine. */
+import { spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { Readable, Writable } from "node:stream"
@@ -13,7 +14,7 @@ import { KeyboardInterrupt, type Prompter, TtyPrompter } from "../../src/install
 import { selfSpawnEnv } from "../../src/platform.ts"
 import { git, gitEnv } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
-import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner } from "./helpers.ts"
+import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner, SRC } from "./helpers.ts"
 
 // onTestFinished hooks inherit it, and a daemon's stop can take 25 s plus a SIGKILL.
 setDefaultTimeout(30_000)
@@ -362,3 +363,103 @@ test(
   },
   120_000,
 )
+
+// Python's conftest refused the service tools on PATH; these record any call, so a test can show none ran.
+const REFUSED = ["launchctl", "systemctl", "loginctl", "tmux"]
+
+/** A child's env under `dir`: HOME and the office home inside it, and `dir/bin` first on PATH, holding refusing
+ *  service tools that append their argv to `dir/calls.log` and exit 1. */
+function childEnv(dir: string): Record<string, string> {
+  const bin = path.join(dir, "bin")
+  fs.mkdirSync(bin, { recursive: true })
+  fs.mkdirSync(path.join(dir, "user"), { recursive: true })
+  for (const name of REFUSED) {
+    const log = JSON.stringify(path.join(dir, "calls.log"))
+    fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho "${name} $*" >> ${log}\nexit 1\n`, { mode: 0o755 })
+  }
+  return {
+    ...gitEnv(selfSpawnEnv(process.env)),
+    HOME: path.join(dir, "user"),
+    OPENCORP_HOME: path.join(dir, "user", ".opencorp"),
+    PATH: `${bin}:${process.env.PATH}`,
+  }
+}
+
+/** Writes a driver to `dir/driver.ts` that runs `run` with the setup `overrides` (TS source of an object) on the
+ *  driver's own argv; returns its path. */
+function driver(dir: string, overrides: string): string {
+  const file = path.join(dir, "driver.ts")
+  const main = JSON.stringify(path.join(SRC, "install/main.ts"))
+  fs.writeFileSync(file, `import { run } from ${main}\nawait run(process.argv.slice(2), ${overrides})\n`)
+  return file
+}
+
+/** Runs `argv` with this Bun and the no-autoload flags in `cwd` with `env`, `input` on stdin; killed after `bound`
+ *  ms. With `readAfter`, stdout is read only after that many ms. */
+function spawnChild(
+  argv: string[],
+  env: Record<string, string>,
+  { input = "", bound, cwd, readAfter }: { input?: string; bound: number; cwd: string; readAfter?: number },
+): Promise<{ code: number | null; stdout: Buffer; stderr: string }> {
+  const child = spawn(process.execPath, ["--no-install", "--no-env-file", "--config=/dev/null", ...argv], {
+    cwd,
+    env,
+    stdio: ["pipe", "pipe", "pipe"],
+  })
+  const kill = setTimeout(() => child.kill("SIGKILL"), bound)
+  const out: Buffer[] = []
+  const err: Buffer[] = []
+  child.stdout.on("data", (chunk: Buffer) => out.push(chunk))
+  child.stderr.on("data", (chunk: Buffer) => err.push(chunk))
+  if (readAfter !== undefined) {
+    child.stdout.pause()
+    setTimeout(() => child.stdout.resume(), readAfter)
+  }
+  child.stdin.end(input)
+  return new Promise((resolve, reject) => {
+    child.on("error", reject)
+    child.on("close", (code) => {
+      clearTimeout(kill)
+      resolve({ code, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString() })
+    })
+  })
+}
+
+test("all of stdout reaches the reader before setup exits", async () => {
+  const dir = tempDir()
+  const script = driver(
+    dir,
+    `{ offboard: async () => { for (let i = 0; i < 1024; i++) process.stdout.write("x".repeat(1024) + "\\n") } }`,
+  )
+  const home = path.join(dir, "user", ".opencorp")
+  const result = await spawnChild([script, "offboard", "--home", home], childEnv(dir), {
+    bound: 20_000,
+    cwd: dir,
+    readAfter: 500,
+  })
+  expect(result.code, result.stderr).toBe(0)
+  expect(result.stdout.length).toBe(1024 * 1025)
+  expect(fs.existsSync(path.join(dir, "calls.log"))).toBe(false)
+})
+
+test("an unexpected error is exit 1 with its stack on stderr", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "user", ".opencorp")
+  const env = childEnv(dir)
+  const boom = driver(
+    dir,
+    `{ doctor: { probe: async () => { throw new Error("boom") }, ` +
+      `codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }) } }`,
+  )
+  const crashed = await spawnChild([boom, "doctor", "--home", home], env, { bound: 20_000, cwd: dir })
+  expect(crashed.code, crashed.stderr).toBe(1)
+  expect(crashed.stderr).toContain("boom")
+  expect(crashed.stderr).toMatch(/^\s+at /m)
+  expect(crashed.stdout.toString()).not.toContain("boom")
+  // A rejection nothing handles, left by a step that then returns: Bun would only print it and exit 0.
+  const dangling = driver(dir, `{ offboard: async () => { Promise.reject(new Error("dangling")) } }`)
+  const left = await spawnChild([dangling, "offboard", "--home", home], env, { bound: 20_000, cwd: dir })
+  expect(left.code, left.stderr).toBe(1)
+  expect(left.stderr).toContain("dangling")
+  expect(fs.existsSync(path.join(dir, "calls.log"))).toBe(false)
+})
