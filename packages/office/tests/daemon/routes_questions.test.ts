@@ -13,7 +13,7 @@ import { InvalidTransition, type QuestionRecord, type Store } from "../../src/st
 import { question, recordEvents, session } from "../store/helpers.ts"
 import { CEO, type Reply, addHuman, bearer, giveDevice, makeOffice, request, served, standInHarness, ULID } from "./helpers.ts"
 
-// The same stand-in for the session actor as tests/questions/cards.test.ts, less the knobs these tests leave unused;
+// The same stand-in for the session harness as tests/questions/cards.test.ts, less the knobs these tests leave unused;
 // no test here interrupts a session.
 class StandIn implements CardActor {
   readonly hooks: Hooks

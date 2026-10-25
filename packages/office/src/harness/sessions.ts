@@ -175,9 +175,9 @@ export class CodexSessions implements SessionHarness {
 
   /** A message: `turn`, `steer` (a turn was running), or `queued` (until the thread is loaded). */
   async prompt(sessionId: string, text: string, { by = null }: { by?: string | null } = {}) {
-    this.#codexSession(sessionId)
+    const session = this.#codexSession(sessionId)
     const live = this.#must(sessionId)
-    for (const refusal of this.hooks.fire("promptCheck", this.store.getSession(sessionId), text))
+    for (const refusal of this.hooks.fire("promptCheck", session, text))
       if (refusal) throw new HarnessError(422, "refused", String(refusal))
     return live.prompt(text, { by })
   }
