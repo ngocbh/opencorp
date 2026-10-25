@@ -27,11 +27,12 @@ import {
 } from "../../chat/connections.ts"
 import { LoginNotFound, LoginsClosed } from "../../chat/logins.ts"
 import { DEADLINE_MS, DEFAULT_MODELS, type Listing } from "../../chat/models.ts"
-import { type LlmConfig, ProviderError } from "../../chat/provider.ts"
+import { type LlmConfig, Provider, ProviderError } from "../../chat/provider.ts"
 import { loadRepo } from "../../company/loader.ts"
 import { checkProvider } from "../../install/onboard.ts"
 import { OnboardError } from "../../install/prompts.ts"
 import { mayManageConnections } from "../../perm/office.ts"
+import { RegistryClosed } from "../../worker/spawn.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, type Params, type Route } from "../http.ts"
 import type { Office, RequestContext } from "../office.ts"
@@ -151,14 +152,23 @@ async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
     // Yian has no default model, so the connection is checked, and saved, on this one.
     llm.model = fallback
   }
-  // The one-reply check, on `llm` as built here, runs as a worker job, which comes with the worker;
-  // until then such an add saves nothing.
   if (needsCheck) {
-    throw new HttpError(
-      501,
-      "not_implemented",
-      "adding a connection whose model needs a one-reply check is not implemented yet",
-    )
+    let problem: string | null
+    try {
+      // Not through checkProvider again: it passed this config, and only the model changed since.
+      problem = await office.checkModel(Provider.parse({ llm_config: llm }))
+    } catch (error) {
+      if (error instanceof RegistryClosed) throw new HttpError(503, "stopping", error.message)
+      throw error
+    }
+    if (problem) {
+      if (body.model) throw new HttpError(422, "model_refused", `The model didn't answer: ${problem}`)
+      throw new HttpError(
+        422,
+        "model_refused",
+        `The model '${llm.model}' didn't answer: ${problem}; name another model`,
+      )
+    }
   }
   let name: string
   try {

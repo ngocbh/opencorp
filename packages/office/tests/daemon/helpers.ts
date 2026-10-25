@@ -17,6 +17,7 @@ import { type Limits, type RequestInfo, type Route, createServer, requestListene
 import { Office, OfficePaths, type RequestContext } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
+import type { ModelCheck } from "../../src/install/onboard.ts"
 import { blobId } from "../../src/profile/store.ts"
 import { Store } from "../../src/store/store.ts"
 import { git, makeCompany } from "../company/helpers.ts"
@@ -30,8 +31,8 @@ export const ULID = "01JA1H0000000000000000000A"
 /**
  * An office over a fresh home: the base company at `paths.company`, a store, company git and a bus; not started
  * (Python's `office` fixture). `log` gets the office's raw log messages. The listing and the sign-in are offline
- * stand-ins unless `models`/`logins` give others: the defaults reach OpenAI. `files` are `makeCompany` overrides on
- * the base company.
+ * stand-ins unless `models`/`logins` give others: the defaults reach OpenAI. The model check rejects unless
+ * `checkModel` gives one, as tests have no worker. `files` are `makeCompany` overrides on the base company.
  *
  * When the test finishes it is stopped and its store closed, before its temp dir is removed. A test that already
  * called `stop()` gets a second one then, after its assertions; that is harmless, though `stop` is not idempotent
@@ -42,11 +43,13 @@ export function makeOffice({
   models,
   logins,
   files,
+  checkModel = () => Promise.reject(new Error("no worker in tests: pass checkModel")),
 }: {
   log?: (message: string) => void
   models?: ModelCacheOptions
   logins?: Omit<LoginsOptions, "models">
   files?: Record<string, unknown>
+  checkModel?: ModelCheck
 } = {}): Office {
   let office: Office | undefined
   let store: Store | undefined
@@ -75,6 +78,7 @@ export function makeOffice({
       },
       ...logins,
     },
+    checkModel,
   })
   return office
 }

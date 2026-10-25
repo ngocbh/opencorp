@@ -65,7 +65,8 @@ interface WorkerState {
 }
 
 /**
- * Runs the job the office sends on `channel`; returns the exit code.
+ * Runs the job the office sends on `channel`; returns the exit code. A `check` job sends only its result frame,
+ * `{type: "result", problem}`.
  *
  * A steer is forwarded to yian's steer inbox of the run; a steer yian refuses or fails to take comes back, as
  * `steer_left`. The last frame is `result` (or `error`). After it the worker answers steers with `steer_left` until
@@ -99,7 +100,14 @@ export async function serve(
     const start = await started
     if (start.type !== "start") throw new TypeError("expected a start frame")
     const job = parseJob(start.job)
-    last = { type: "result", ...(await runJob(job, channel, rpc, interrupts, state, { env, signal: stopper.signal })) }
+    if (job.kind === "check") {
+      // Loaded only here, so a chat worker doesn't load onboarding.
+      const { runCheck } = await import("../chat/check.ts")
+      last = { type: "result", problem: await runCheck(job, env) }
+    } else {
+      const fields = await runJob(job, channel, rpc, interrupts, state, { env, signal: stopper.signal })
+      last = { type: "result", ...fields }
+    }
     code = EXIT_OK
   } catch (error) {
     last = { type: "error", message: `${errorName(error)}: ${errorMessage(error)}`, traceback: stackFrames(error) }

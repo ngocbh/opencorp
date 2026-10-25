@@ -5,6 +5,7 @@ import type { Server } from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform"
+import { oneReplyProblem } from "../chat/check.ts"
 import { Hooks } from "../chat/hooks.ts"
 import { CompanyGit } from "../company/git.ts"
 import { HeadWatcher } from "../company/watch.ts"
@@ -213,9 +214,10 @@ const NO_GIT = "no git on the office's PATH"
 
 /** Opens the store and the company clone (run by `tools.git`), kills the processes an earlier office left, and
  *  assembles the office with its tools, its workspace guards, its worker registry (closed when the office stops,
- *  refusing new workers from then on; the chat harness will be built around it here), its Codex sessions (on the
- *  chat hooks, closed on stop), its HEAD watcher (started and stopped with the office), a model warm-up on start
- *  (not awaited) and the cancelling of sign-ins still waiting on stop. `OfficeStartError` when `tools` has no git. */
+ *  refusing new workers from then on; the chat harness will be built around it here, and the one-reply model
+ *  check runs over it), its Codex sessions (on the chat hooks, closed on stop), its HEAD watcher (started and
+ *  stopped with the office), a model warm-up on start (not awaited) and the cancelling of sign-ins still waiting on
+ *  stop. `OfficeStartError` when `tools` has no git. */
 export function buildOffice(
   paths: OfficePaths,
   { tools, guards, write }: { tools: Tools; guards: SandboxOfficePaths; write: Write },
@@ -239,6 +241,7 @@ export function buildOffice(
       connections: { log: log("WARNING", "opencorp.chat.connections") },
       models: { log: log("WARNING", "opencorp.chat.models") },
       logins: { log: log("WARNING", "opencorp.chat.logins") },
+      checkModel: (provider) => oneReplyProblem(workers, provider, { log: log("WARNING", "opencorp.chat.check") }),
     })
     // Not awaited: a slow provider must not hold up the start. warm never rejects.
     office.onStart.push(() => void office.models.warm())

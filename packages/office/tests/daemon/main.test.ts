@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url"
 import { isLocked } from "@ngocbh/yian/platform"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { Hooks } from "../../src/chat/hooks.ts"
+import { Provider } from "../../src/chat/provider.ts"
 import { trackRequests } from "../../src/daemon/http.ts"
 import {
   AlreadyRunning,
@@ -26,7 +27,9 @@ import { launch as officeLaunch, resolveHome } from "../../src/install/launch.ts
 import { args, killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { Store } from "../../src/store/store.ts"
+import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { RegistryClosed, WorkerRegistry } from "../../src/worker/spawn.ts"
+import { fakeLlm } from "../chat/helpers.ts"
 import { company, recordingGit } from "../company/helpers.ts"
 import { cwdOf, envNames, isGone, ps, reexecMarks, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { freePort } from "../hq/helpers.ts"
@@ -514,6 +517,26 @@ test("build office runs codex sessions closed on stop", async () => {
   await codex.start(row)
   expect(codex.get(row.id)).toBeUndefined()
   expect(office.store.listWorkers()).toEqual([])
+})
+
+test("build office checks a model in a worker of its registry", async () => {
+  const fake = await fakeLlm()
+  const key = "sk-test-check-5d1e7a93"
+  const rec = recordingGit(tempDir())
+  const office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  try {
+    await office.start()
+    const provider = Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: key }, env: fake.env() })
+    fake.script({ content: "OK" })
+    expect(await office.checkModel(provider)).toBeNull()
+    expect(fake.authorizations()).toEqual([`Bearer ${key}`])
+    await office.stop()
+    await expect(office.checkModel(provider)).rejects.toBeInstanceOf(RegistryClosed)
+  } finally {
+    // A failed assert leaves no worker behind; a second stop after the test's own is harmless.
+    await office.stop()
+    office.store.close()
+  }
 })
 
 /** How a process exited. */

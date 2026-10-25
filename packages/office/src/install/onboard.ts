@@ -35,6 +35,7 @@ import { repr } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
 import { PrivateFileError, writePrivate } from "../secrets.ts"
+import type { WorkerEnv } from "../worker/main.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import checkModelYaml from "./flows/check_model.yaml" with { type: "file" }
 import { type Completed, defaultHost, type Env, type Host, launch, runCommand, ServiceError } from "./launch.ts"
@@ -894,17 +895,26 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
 
 /**
  * Runs `flow` with `provider`'s model as an office run would; resolves its result (null when the run threw), and
- * why it failed (null when it didn't), without the key or URL credentials.
+ * why it failed (null when it didn't), without the key or URL credentials. The run's environment is `env` (by
+ * default a worker's, from this process's) with `provider.env` on top.
  */
 export async function runSetup(
   flow: ComposedFlow,
   inputs: Readonly<Record<string, unknown>>,
   provider: Provider,
-  { tools, context }: { tools: NonNullable<RunFlowOptions["tools"]>; context?: unknown },
+  {
+    tools,
+    context,
+    env: base,
+  }: {
+    tools: NonNullable<RunFlowOptions["tools"]>
+    context?: unknown
+    env?: WorkerEnv
+  },
 ): Promise<{ result: RunResult | null; message: string | null }> {
   // The run gets the environment office runs get, so it authenticates the way they will: a shell variable the
   // office never sees can't make it work.
-  const vars: Record<string, string> = { ...workerEnv(process.env), ...provider.env }
+  const vars: Record<string, string | undefined> = { ...(base ?? workerEnv(process.env)), ...provider.env }
   const env = (name: string) => (Object.hasOwn(vars, name) ? vars[name] : undefined)
   // An Azure deployment or a gateway's model is never in yian's list; the owner chose it on purpose.
   const handler = (message: string, type: string | undefined) => {
@@ -930,10 +940,13 @@ export async function runSetup(
 }
 
 /** Why `provider`'s model doesn't answer a one-word request made as an office run makes it, or null when it
- *  answers. */
-export async function modelProblem(provider: Provider): Promise<string | null> {
+ *  answers; the run's environment is as `runSetup`'s, `env` replacing the default base. */
+export async function modelProblem(
+  provider: Provider,
+  { env }: { env?: WorkerEnv } = {},
+): Promise<string | null> {
   const flow = await loadFlow(embedded(checkModelYaml).toString("utf8"), {
     sourceLabel: "install/flows/check_model.yaml",
   })
-  return (await runSetup(flow, {}, provider, { tools: {} })).message
+  return (await runSetup(flow, {}, provider, { tools: {}, env })).message
 }

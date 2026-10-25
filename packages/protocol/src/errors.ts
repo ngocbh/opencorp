@@ -31,6 +31,7 @@ export const ERROR_CODES = [
   "key_refused",
   "lint_failed",
   "method_not_allowed",
+  "model_refused",
   "models_unlisted",
   "no_discussion",
   "no_file",
