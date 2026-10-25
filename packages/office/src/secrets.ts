@@ -41,7 +41,7 @@ function trimmedLength(value: string): number {
 
 /** Throws `PrivateFileError` unless `dir` is a directory (not a symlink) of this user with mode 0700 or narrower;
  *  `ENOENT` propagates. */
-function checkFolder(dir: string, label: string): void {
+export function checkFolder(dir: string, label: string): void {
   let st: fs.Stats
   try {
     st = fs.lstatSync(dir)
@@ -70,10 +70,10 @@ function refuseLockFile(file: string): void {
 }
 
 /** Replaces `<dir>/<name>` with `data` as a 0600 file, atomically; a symlink there is replaced, not followed.
- *  The caller holds the folder's lock. */
-function replaceFile(dir: string, name: string, data: string | Uint8Array): void {
+ *  The caller holds the folder's lock, or is the folder's only writer. */
+export function replaceFile(dir: string, name: string, data: string | Uint8Array): void {
   const tmp = path.join(dir, `.${name}.${process.pid}.tmp`)
-  fs.rmSync(tmp, { force: true }) // left by a crashed run with the same pid; safe under the lock
+  fs.rmSync(tmp, { force: true }) // left by a crashed run with the same pid; safe with no other writer
   const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants
   let fd: number | undefined
   try {

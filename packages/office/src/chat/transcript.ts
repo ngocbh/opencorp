@@ -131,6 +131,16 @@ export class Transcript {
     return out
   }
 
+  /** The id of the first message of the reply still running in the run `runId` (its last reply, if it started, hasn't
+   *  succeeded or failed, and the run wasn't cancelled or failed), or null. */
+  runningReply(runId: string): string | null {
+    if (!safeRunId(runId)) return null
+    const state = this.read(runId)
+    const start = state.items.findLast((item) => item.kind === "start")
+    if (state.ended || start === undefined || state.settled.has(start.node)) return null
+    return messageId(runId, start.seq)
+  }
+
   /** Forgets the reads of `runIds`, for a session that ended. */
   forget(runIds: Iterable<string>): void {
     for (const runId of runIds) this.cache.delete(runId)
