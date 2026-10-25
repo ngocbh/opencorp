@@ -20,6 +20,7 @@ function load(name: string) {
   return loadFlow(fs.readFileSync(path.join(DIR, name), "utf8"), { sourceLabel: name })
 }
 
+/** A setup flow's YAML, as the office's strict reader parses it. */
 function read(name: string): Record<string, any> {
   return readFlow(fs.readFileSync(path.join(DIR, name), "utf8")) as Record<string, any>
 }
