@@ -18,12 +18,13 @@ export interface Writer {
 }
 
 /**
- * Runs the install `argv` in `cwd` behind the setup screen; resolves to its exit code once the screen is gone and
- * its transcript and stderr are printed.
+ * Runs the install `argv` in `cwd` with exactly `env` behind the setup screen; resolves to its exit code once the
+ * screen is gone and its transcript and stderr are printed. The header names the command after `install`.
  */
-export async function runSetup(argv: string[], cwd: string): Promise<number> {
-  const child = spawnSetup(argv, cwd)
-  const name = argv[argv.indexOf("opencorp.install") + 1]
+export async function runSetup(argv: string[], cwd: string, env: Record<string, string>): Promise<number> {
+  const child = spawnSetup(argv, cwd, env)
+  const at = argv.indexOf("install")
+  const name = at < 0 ? undefined : argv[at + 1]
   try {
     return await runSetupWith(child, process.stdout, process.stderr, name ? `opencorp ${name}` : "")
   } catch (e) {
