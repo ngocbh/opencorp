@@ -471,6 +471,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+/**
+ * `GET target` from the office on `socket`, sent with the identity's token when there is one, and its JSON body as
+ * `read` takes it, or why it couldn't be read (`read` returning undefined makes it unreadable).
+ */
+async function readFromOffice<T>(
+  socket: string,
+  identity: Identity | undefined,
+  target: string,
+  timeoutMs: number,
+  read: (body: unknown) => T | undefined,
+): Promise<T | Unread> {
+  const got = await getJson(socket, identity, target, timeoutMs)
+  if (got === "unreachable") return got
+  if (got.status === 401) return "refused"
+  // 404 from an office before the route; for /hq, 501 from one without HQ attached
+  if (got.status !== 200) return "unreachable"
+  let body: unknown
+  try {
+    body = JSON.parse(got.text)
+  } catch {
+    return "unreadable"
+  }
+  return read(body) ?? "unreadable"
+}
+
 /** `body`, once every part of it that `hqChecks` reads is there; undefined if one isn't. */
 function readByChecks(body: unknown): HqStatus | undefined {
   if (!isRecord(body) || !isRecord(body.tcp) || !isRecord(body.health)) return undefined
@@ -497,17 +522,7 @@ export async function hqStatus(
   identity: Identity | undefined,
   timeoutMs = 2000,
 ): Promise<HqStatus | Unread> {
-  const got = await getJson(socket, identity, "/hq", timeoutMs)
-  if (got === "unreachable") return got
-  if (got.status === 401) return "refused"
-  if (got.status !== 200) return "unreachable" // 404 from an office before HQ, 501 from one without it attached
-  let body: unknown
-  try {
-    body = JSON.parse(got.text)
-  } catch {
-    return "unreadable"
-  }
-  return readByChecks(body) ?? "unreadable"
+  return readFromOffice(socket, identity, "/hq", timeoutMs, readByChecks)
 }
 
 /** How HQ's status starts the TCP error when the web port's server stopped after it bound, not a failed bind. */
@@ -617,18 +632,7 @@ export async function officeInfo(
   identity: Identity | undefined,
   timeoutMs = 2000,
 ): Promise<OfficeInfo | Unread> {
-  const got = await getJson(socket, identity, "/office", timeoutMs)
-  if (got === "unreachable") return got
-  if (got.status === 401) return "refused"
-  if (got.status !== 200) return "unreachable" // 404 from an office before the route
-  let body: unknown
-  try {
-    body = JSON.parse(got.text)
-  } catch {
-    return "unreadable"
-  }
-  const parsed = OfficeInfo.safeParse(body)
-  return parsed.success ? parsed.data : "unreadable"
+  return readFromOffice(socket, identity, "/office", timeoutMs, (body) => OfficeInfo.safeParse(body).data)
 }
 
 /** What to do about an office that wouldn't say what code it runs, by why. */
@@ -705,6 +709,7 @@ export function versionCheck(launch: Launch, info: OfficeInfo, newest: number): 
 /** Whether every program the office pinned at start (`info.tools`) is still a runnable file. A missing `git` fails:
  *  the office can't serve without it. */
 export function toolsCheck(info: OfficeInfo): Check {
+  // Each pinned path is absolute, so `which` only checks it is a runnable file; it searches nothing.
   const gone = Object.entries(info.tools).filter(([, found]) => which(found, undefined) === null)
   if (!gone.length) {
     return { name: "tools", status: "ok", detail: "every program the office runs is where it found it at start" }
@@ -713,7 +718,7 @@ export function toolsCheck(info: OfficeInfo): Check {
   return {
     name: "tools",
     status: gone.some(([name]) => name === "git") ? "fail" : "warn",
-    detail: `${lost}; restart the office (\`opencorp restart\`) so it finds them on its PATH again`,
+    detail: `${lost}; restart the office (\`opencorp restart\`) so it looks for them on its PATH again`,
   }
 }
 

@@ -938,7 +938,14 @@ test("the offices warnings are shown", () => {
 })
 
 test("an answer that isnt an hq status is unreadable", async () => {
-  for (const body of ["<html>", '{"ok": true}', '{"socket": "/s", "tcp": [], "url": null, "health": {}}', "[1]"]) {
+  const bodies = [
+    "<html>",
+    '{"ok": true}',
+    '{"socket": "/s", "tcp": [], "url": null, "health": {}}',
+    "[1]",
+    JSON.stringify({ ...status(), warnings: [1] }),
+  ]
+  for (const body of bodies) {
     const sock = await answering(200, body)
     expect(await doctor.hqStatus(sock, undefined, 10_000), body).toBe("unreadable")
   }
@@ -1018,7 +1025,7 @@ test("an office older than the code is told to restart", () => {
   const started = Date.parse(office.started_at)
   const old = doctor.versionCheck(run, office, started + 60_000)
   expect(old.status).toBe("warn")
-  expect(old.detail).toContain("restart it to run the new code")
+  expect(old.detail).toBe("the office started before its code last changed; restart it to run the new code")
   expect(doctor.versionCheck(run, office, started - 60_000)).toEqual({
     name: "version",
     status: "ok",
@@ -1034,8 +1041,7 @@ test("an office of another version or home is told so", () => {
   expect(elsewhere.detail).toBe("pid 42 is not this office's daemon: it serves /somewhere/else")
   const older = doctor.versionCheck(run, info(run.home, { version: "0.0.0-old" }), 0)
   expect(older.status).toBe("warn")
-  expect(older.detail).toContain("0.0.0-old")
-  expect(older.detail).toContain(VERSION)
+  expect(older.detail).toBe(`the office runs 0.0.0-old and this install is ${VERSION}; restart it to run the new code`)
 })
 
 test("the newest source covers the office protocol cli and yian", () => {
@@ -1116,7 +1122,7 @@ test("a pinned tool that vanished is told to restart the office", () => {
   expect(noGit.status).toBe("fail")
   expect(noGit.detail).toBe(
     `\`git\` at ${gone} is gone, so the office can't run it; ` +
-      "restart the office (`opencorp restart`) so it finds them on its PATH again",
+      "restart the office (`opencorp restart`) so it looks for them on its PATH again",
   )
   const noPs = doctor.toolsCheck(info("/h", { tools: { git: program(), ps: gone } }))
   expect(noPs.status).toBe("warn")
