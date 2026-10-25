@@ -149,13 +149,13 @@ test.skipIf(!sandboxAvailable())("quiet calls leave the others their output", as
   fs.writeFileSync(small, "small")
   const stop = new AbortController()
   onTestFinished(() => stop.abort())
-  // More quiet calls than the runtime's fs thread pool has threads (one per core); half also have stdin
-  // they never read, so its write stays pending.
+  // More quiet calls than the runtime's fs thread pool has threads (one per core), each with stdin it never
+  // reads, so the reads and the writes each would use up the pool on their own.
   const count = os.availableParallelism() + 2
   let started = 0
-  const quiet = Array.from({ length: count }, (_, i) =>
+  const quiet = Array.from({ length: count }, () =>
     sh(policy, "sleep 30", {
-      ...(i % 2 === 0 ? { stdin: Buffer.alloc(1 << 20) } : {}),
+      stdin: Buffer.alloc(1 << 20),
       signal: stop.signal,
       track: () => {
         started++

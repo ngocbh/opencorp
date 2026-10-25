@@ -108,7 +108,7 @@ export function pipeReadable(fd: number): Readable {
 }
 
 /** Writes `data` to pipe `fd` through the runtime's event loop, not the fs thread pool, ends it and closes `fd`.
- *  Rejects with the write's error (EPIPE when the reader is gone). */
+ *  May reject with the write's error (EPIPE when the reader is gone). */
 export async function endPipe(fd: number, data: string | Buffer): Promise<void> {
   try {
     const sink = Bun.file(fd).writer()
