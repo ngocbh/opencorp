@@ -619,3 +619,48 @@ test(
   },
   100_000,
 )
+
+test(
+  "ctrl c at a numbered question is exit 130 with only a newline",
+  async () => {
+    const dir = tempDir()
+    const env = childEnv(dir)
+    const home = childHome(env)
+    // No provider on stdin, so the terminal prompter asks its numbered list on the pipe left open.
+    const argv = [...selfCommand(), "install", "init", "--home", home, "--service", "background"]
+    const result = await spawnChild(argv, env, {
+      bound: 30_000,
+      cwd: dir,
+      talk: (child) => {
+        let seen = ""
+        child.stdout.on("data", (chunk: Buffer) => {
+          const asked = seen.includes("Model provider")
+          seen += chunk.toString()
+          if (!asked && seen.includes("Model provider")) child.kill("SIGINT")
+        })
+      },
+    })
+    expect(result.code, result.stderr).toBe(130)
+    expect(result.stderr).toBe("\n")
+    expect(fs.existsSync(path.join(dir, "calls.log"))).toBe(false)
+  },
+  60_000,
+)
+
+test("an input error after a prompt failed is not a crash", async () => {
+  const dir = tempDir()
+  const prompts = JSON.stringify(path.join(SRC, "install/prompts.ts"))
+  const script = driver(
+    dir,
+    "{ offboard: async () => { " +
+      'setImmediate(() => { throw Object.assign(new Error("read EIO"), { code: "EIO" }) }); ' +
+      "await new Promise((r) => setTimeout(r, 100)); " +
+      "throw new OnboardError(\"no answer to 'x' (stdin closed)\") } }",
+    `import { OnboardError } from ${prompts}\n`,
+  )
+  const home = path.join(dir, "user", ".opencorp")
+  const result = await spawnChild([...script, "offboard", "--home", home], childEnv(dir), { bound: 20_000, cwd: dir })
+  expect(result.code, result.stderr).toBe(1)
+  expect(result.stderr).toBe("opencorp offboard: no answer to 'x' (stdin closed)\n")
+  expect(fs.existsSync(path.join(dir, "calls.log"))).toBe(false)
+}, 30_000)
