@@ -6,6 +6,7 @@ import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { FileLockError } from "@ngocbh/yian/platform"
 import type { Identity } from "../auth/identity.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
+import type { RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
 import { isNew, missingFiles } from "../company_template/index.ts"
@@ -22,8 +23,8 @@ export interface Check {
   detail: string
 }
 
-/** Why the office's answer couldn't be read: it refused this device's token; no office answered, or one from before
- *  the route, in time; or its answer isn't what was asked for. */
+/** Why the office's answer couldn't be read: it refused this device's token; no office answered in time (or one too
+ *  old to have the route); or its answer isn't what was asked for. */
 export type Unread = "refused" | "unreachable" | "unreadable"
 
 function errnoCode(error: unknown): string | undefined {
@@ -57,8 +58,9 @@ function homeCheck(paths: OfficePaths): Check {
     st = fs.statSync(paths.home)
   } catch (error) {
     const code = errnoCode(error)
+    if (code === undefined) throw error
     if (code === "ENOENT") return { name: "home", status: "fail", detail: `no office home at ${paths.home}; ${SET_UP}` }
-    return { name: "home", status: "fail", detail: `can't read ${paths.home}: ${code ?? messageOf(error)}` }
+    return { name: "home", status: "fail", detail: `can't read ${paths.home}: ${code}` }
   }
   if (!st.isDirectory()) return { name: "home", status: "fail", detail: `${paths.home} is not a directory` }
   if ((st.mode & 0o7777) !== 0o700) {
@@ -83,7 +85,7 @@ async function companyCheck(paths: OfficePaths, running: boolean): Promise<Check
       detail: `${root} has no company yet (no company.yaml, or no first commit); run \`opencorp init\` to finish it`,
     }
   }
-  let issues: Awaited<ReturnType<typeof lint>>
+  let issues: RepoIssue[]
   try {
     issues = await lint(loadRepo(root))
   } catch (error) {
@@ -181,8 +183,9 @@ function connectionsCheck(paths: OfficePaths, lstat: (p: string) => fs.Stats): C
   try {
     entries = fs.readdirSync(folder).sort()
   } catch (error) {
-    const why = errnoCode(error) ?? messageOf(error)
-    return { name: "connections", status: "fail", detail: `can't read ${folder}: ${why}` }
+    const code = errnoCode(error)
+    if (code === undefined) throw error
+    return { name: "connections", status: "fail", detail: `can't read ${folder}: ${code}` }
   }
   const loose: string[] = []
   for (const entry of entries) {
