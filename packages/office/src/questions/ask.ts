@@ -1,8 +1,9 @@
 /** The office side of a run's `ask_user`: one stored question per yian call, answered later, and the endings of a
  *  call that closes before its answer. */
+import type { PendingCall } from "@ngocbh/yian/run"
 import { pending } from "@ngocbh/yian/tools"
 import { type DiscussionEntry, Question, now, validationMessage } from "@opencorp/protocol"
-import { newId, type QuestionRecord, type SessionRecord, type Store, type WorkItemRecord } from "../store/store.ts"
+import { InvalidTransition, newId, type QuestionRecord, type SessionRecord, type Store, type WorkItemRecord } from "../store/store.ts"
 import { type AskRequest, errorName } from "../worker/rpc.ts"
 import { formatAnswer, INTERRUPTED } from "./format.ts"
 import { normalizeOptions } from "./normalize.ts"
@@ -104,11 +105,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  */
 export class Answers {
   readonly store: Store
+  readonly #log: (line: string) => void
 
-  /** `log` (default: `console.error`) gets a line when an `ask_manager` question's work item can't be updated. */
+  /** `log` (default: `console.error`) gets a line when an `ask_manager` question's work item can't be updated, or a
+   *  question can't be stored by `reconcile`. */
   constructor(store: Store, options: { log?: (line: string) => void } = {}) {
     this.store = store
-    const log = options.log ?? ((line) => console.error(line))
+    this.#log = options.log ?? ((line) => console.error(line))
     store.addListener((event) => {
       if (event.type !== "question.updated") return
       const question = event.data as QuestionRecord
@@ -124,7 +127,7 @@ export class Answers {
         )
       } catch (error) {
         // Only the error's name: its message may hold paths or values.
-        log(`could not settle the work item of question ${question.id}: ${errorName(error)}`)
+        this.#log(`could not settle the work item of question ${question.id}: ${errorName(error)}`)
       }
     })
   }
@@ -177,5 +180,74 @@ export class Answers {
       }
       return this.store.setQuestionStatus(question.id, "stale")
     })
+  }
+
+  /**
+   * Settle a waiting run's questions against yian's open calls (`pendingCalls(log)`): an open question whose call
+   * isn't listed goes stale; a listed call with no question is stored through `handlers`, as a live call would be.
+   * Call only for a `waiting` run while no worker runs it (a crashed run's questions may belong to calls yian hasn't
+   * recorded yet, which a resume re-invokes). Call ids outside `${runId}/` are skipped. An `answered` question whose
+   * call yian settled is left as it is. Only question calls (`ask`, `ask_user`, `ask_manager`) are rebuilt: a pending
+   * step names a tool, and re-running any other tool from it would skip the job's grant check.
+   *
+   * A TOOL `ask` call's recorded arguments are the node's inputs only, so its rebuilt question has no title and no
+   * answer schema. A handler that throws is logged by the call id and the error's name, and the rest go on.
+   */
+  async reconcile(
+    runId: string,
+    calls: readonly PendingCall[],
+    handlers: {
+      askUser: (request: AskRequest, callId: string) => unknown
+      askManager?: (args: Record<string, unknown>, callId: string) => unknown
+    },
+  ): Promise<void> {
+    const own = calls.filter((call) => call.callId.startsWith(`${runId}/`))
+    const listed = new Set(own.map((call) => call.callId))
+    // Stale first, so a question rebuilt below is never taken for an unlisted one.
+    for (const question of this.store.listQuestions({ runId, status: "open" })) {
+      if (question.call_id === null || listed.has(question.call_id)) continue
+      try {
+        this.store.setQuestionStatus(question.id, "stale")
+      } catch (error) {
+        // Answered or closed since it was listed: it is no longer open, which is all this step wants.
+        if (!(error instanceof InvalidTransition)) throw error
+      }
+    }
+    for (const call of own) {
+      if (this.store.getQuestionByCall(call.callId)) continue
+      const args: Record<string, unknown> = call.arguments ?? {}
+      try {
+        if (call.tool === "ask_user") {
+          await handlers.askUser(
+            {
+              question: args.question ?? null,
+              options: args.options ?? null,
+              questions: null,
+              answer_schema: null,
+              title: null,
+              node_id: null,
+            },
+            call.callId,
+          )
+        } else if (call.tool === "ask") {
+          await handlers.askUser(
+            {
+              question: args.prompt ?? "",
+              questions: args.questions ?? args.__questions ?? null,
+              answer_schema: null,
+              title: null,
+              node_id: call.node,
+              options: null,
+            },
+            call.callId,
+          )
+        } else if (call.tool === "ask_manager") {
+          await handlers.askManager?.(args, call.callId)
+        }
+      } catch (error) {
+        // Only the error's name: its message may quote the question or its arguments.
+        this.#log(`could not store the question of call ${call.callId}: ${errorName(error)}`)
+      }
+    }
   }
 }

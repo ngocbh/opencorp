@@ -1,4 +1,5 @@
 /** The office side of a run's ask_user: the handler, and storing each call's question once until it is answered. */
+import { type PendingCall, pendingCalls } from "@ngocbh/yian/run"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { isPending, ToolSet } from "@ngocbh/yian/tools"
 import { Question } from "@opencorp/protocol"
@@ -8,7 +9,8 @@ import { DuplicateKey, NotFound, StoreError, newId, type QuestionRecord } from "
 import { EXIT_OK } from "../../src/worker/main.ts"
 import { ASK_KEYS, type AskRequest, askUserStub, BaseHandlers } from "../../src/worker/rpc.ts"
 import { openStore, question, session, workItem } from "../store/helpers.ts"
-import { base, inProcessWorker, makeJob, officeEnd, Recorder, writeFiles } from "../worker/helpers.ts"
+import { fakeLlm } from "../chat/helpers.ts"
+import { base, inProcessWorker, makeJob, officeEnd, Pending, Recorder, writeFiles } from "../worker/helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -455,4 +457,105 @@ test("a closed call of another run or an answered question changes nothing", () 
   store.answerQuestion(open.id, "pg", "text")
   expect(answers.closedCall("run-1", CALL, "interrupted")!.status).toBe("answered")
   expect([store.getQuestion(open.id)!.status, store.getQuestion(open.id)!.answer]).toEqual(["answered", "pg"])
+})
+
+/** An open host call of run-1 as `pendingCalls` lists it. */
+function pendingCall(over: Partial<PendingCall>): PendingCall {
+  return {
+    callId: CALL,
+    node: "reply",
+    tool: "ask_user",
+    arguments: null,
+    pendingSeq: 1,
+    deadline: null,
+    ...over,
+  }
+}
+
+test("reconcile marks an unlisted question stale and stores an unstored call", async () => {
+  const { store, sid, answers, lines } = setup()
+  const s = store.getSession(sid)!
+  const unlisted = answers.ask(question(sid, { call_id: "run-1/reply/1/0" }))
+  const kept = answers.ask(question(sid, { call_id: "run-1/reply/4/0" }))
+  const other = store.addQuestion(question(sid, { run_id: "run-2", call_id: "run-2/reply/1/0" }))
+  const answered = answers.ask(question(sid, { call_id: "run-1/reply/5/0" }))
+  store.answerQuestion(answered.id, "pg", "text")
+  const calls = [
+    pendingCall({ callId: "run-1/reply/2/0", arguments: { question: "Which city?", options: ["Paris", "Rome"] } }),
+    pendingCall({ callId: "run-1/reply/4/0", arguments: { question: "Which db?" } }),
+  ]
+  const askUser = makeAskUser(s, "run-1", (q, o) => answers.ask(q, o))
+  await answers.reconcile("run-1", calls, { askUser })
+  expect(store.getQuestion(unlisted.id)!.status).toBe("stale")
+  expect(store.getQuestion(kept.id)).toEqual(kept)
+  expect(store.getQuestion(other.id)!.status).toBe("open")
+  expect([store.getQuestion(answered.id)!.status, store.getQuestion(answered.id)!.answer]).toEqual(["answered", "pg"])
+  const stored = store.listQuestions({ runId: "run-1", status: "open" })
+  expect(stored.map((q) => [q.call_id, q.source, q.question, q.options])).toEqual([
+    ["run-1/reply/4/0", "ask_user", "Which db?", []],
+    ["run-1/reply/2/0", "ask_user", "Which city?", ["Paris", "Rome"]],
+  ])
+  expect(store.listQuestions({ sessionId: sid })).toHaveLength(5)
+  expect(lines).toEqual([])
+})
+
+test("reconcile rebuilds an ask node call from its recorded inputs", async () => {
+  const fake = await fakeLlm()
+  const job = makeJob(base(), "flows/turn.yaml", { inputs: {} })
+  const handlers = new Pending()
+  const worker = await inProcessWorker(job, handlers, { env: fake.env() })
+  expect(await worker.wait()).toBe(EXIT_OK)
+  expect(handlers.outcome?.status, String(handlers.outcome?.message)).toBe("waiting")
+  const calls = pendingCalls(job.log)
+  expect(calls.map((call) => [call.node, call.tool, call.callId])).toEqual([["asked", "ask", `${job.run_id}/asked`]])
+
+  const { store, sid, answers, lines } = setup()
+  const askUser = makeAskUser(store.getSession(sid)!, job.run_id, (q, o) => answers.ask(q, o))
+  await answers.reconcile(job.run_id, calls, { askUser })
+  const stored = store.listQuestions({ sessionId: sid })
+  expect(stored.map((q) => [q.source, q.node_id, q.question, q.call_id, q.status, q.title, q.answer_schema])).toEqual([
+    ["ask", "asked", "Where to?", `${job.run_id}/asked`, "open", null, []],
+  ])
+
+  const byHand = pendingCall({
+    callId: "run-1/sop#0/ask",
+    node: "sop#0/ask",
+    tool: "ask",
+    arguments: { prompt: "Setup", questions: [{ question: "Why?", header: "Why" }] },
+  })
+  const askRun1 = makeAskUser(store.getSession(sid)!, "run-1", (q, o) => answers.ask(q, o))
+  await answers.reconcile("run-1", [byHand], { askUser: askRun1 })
+  const page = store.getQuestionByCall("run-1/sop#0/ask")!
+  expect([page.source, page.node_id, page.question]).toEqual(["ask", "sop#0/ask", "Setup"])
+  expect(page.questions).toEqual([{ question: "Why?", header: "Why", options: [], multi_select: false, secret: false }])
+  expect(lines).toEqual([])
+})
+
+test("reconcile skips calls of another run and logs a call it cannot store by its error name", async () => {
+  const { store, sid, answers, lines } = setup()
+  const real = makeAskUser(store.getSession(sid)!, "run-1", (q, o) => answers.ask(q, o))
+  const seen: string[] = []
+  const askUser = (request: AskRequest, callId: string) => {
+    seen.push(callId)
+    if (callId === "run-1/reply/3/0") return Promise.reject(new StoreError("secret"))
+    return real(request, callId)
+  }
+  const managed: string[] = []
+  const calls = [
+    pendingCall({ callId: "run-2/reply/1/0", arguments: { question: "Elsewhere?" } }),
+    pendingCall({ callId: "run-1/reply/2/0", tool: "shout", arguments: { text: "hi" } }),
+    pendingCall({ callId: "run-1/reply/3/0", arguments: { question: "secret question" } }),
+    pendingCall({ callId: "run-1/reply/4/0", arguments: { question: "Which city?" } }),
+  ]
+  await answers.reconcile("run-1", calls, {
+    askUser,
+    askManager: (_args, callId) => managed.push(callId),
+  })
+  expect(seen).toEqual(["run-1/reply/3/0", "run-1/reply/4/0"])
+  expect(managed).toEqual([])
+  expect(lines).toEqual(["could not store the question of call run-1/reply/3/0: StoreError"])
+  expect(lines.some((line) => line.includes("secret"))).toBe(false)
+  expect(store.listQuestions({ sessionId: sid }).map((q) => [q.call_id, q.question])).toEqual([
+    ["run-1/reply/4/0", "Which city?"],
+  ])
 })

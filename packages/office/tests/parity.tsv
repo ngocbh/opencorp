@@ -948,6 +948,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/questions/ask.test.ts::a work item that cannot be cancelled is logged by its error name	design §6: logs carry an error's type only; the ask_manager item's ending is a store listener now	O4a-0b
 —	new	packages/office/tests/questions/ask.test.ts::an ask node from a real flow stores its pages	yian hands a TOOL ask's pages parsed, multiSelect; the protocol page wants multi_select	O4a-0b
 —	new	packages/office/tests/questions/ask.test.ts::carried returns the expired questions discussion or nothing	Answers.carried had no Python test (design §3.2 API)	O3-8a
+—	new	packages/office/tests/questions/ask.test.ts::reconcile marks an unlisted question stale and stores an unstored call	4a-revision §1, design §8.4: restore reconciles open questions against pendingCalls	O4a-0b
+—	new	packages/office/tests/questions/ask.test.ts::reconcile rebuilds an ask node call from its recorded inputs	design §8.4; yian records a TOOL ask's inputs, not its title or answer schema	O4a-0b
+—	new	packages/office/tests/questions/ask.test.ts::reconcile skips calls of another run and logs a call it cannot store by its error name	§6 rules 9 and 13	O4a-0b
 —	new	packages/office/tests/questions/cards.test.ts::a dismissed carry over is cleared	card behaviour through a stand-in actor (rule 1); the chat run of `test_a_dismissed_carry_over_stays_out_of_the_answer` is O4a-4's	O3-9
 —	new	packages/office/tests/questions/cards.test.ts::a manager question is stopped by answering it as who clicked	card behaviour through a stand-in actor (rule 1); the chat runs of `test_a_manager_question_is_stopped_by_answering_it` and `test_stopping_a_manager_question_is_credited_to_who_clicked` are O4a-4's	O3-9
 —	new	packages/office/tests/questions/cards.test.ts::a secret pages answer is never in a refusal or a log line	design §6 rules 1 and 13: no answer value in errors or logs	O3-9
