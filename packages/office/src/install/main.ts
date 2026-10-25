@@ -13,13 +13,15 @@ import path from "node:path"
 import type { Readable, Writable } from "node:stream"
 import { parseArgs } from "node:util"
 import { handleProblem } from "../company/naming.ts"
+import { isNew } from "../company_template/index.ts"
+import { OfficeStartError } from "../daemon/sockets.ts"
 import { repr } from "../perm/redact.ts"
 import { type CheckOptions, checks, exitCode, report } from "./doctor.ts"
 import { init } from "./init.ts"
 import { JsonPrompter, type TextOut } from "./json_prompts.ts"
-import { defaultHost, type Env, type Host } from "./launch.ts"
+import { defaultHost, type Env, type Host, type Launch, launch, ServiceError } from "./launch.ts"
 import { Declined, OffboardError, offboard } from "./offboard.ts"
-import { LISTERS, type Listers, type ModelCheck, modelProblem, onboard, WHO } from "./onboard.ts"
+import { LISTERS, type Listers, type ModelCheck, modelProblem, onboard, SET_UP, WHO } from "./onboard.ts"
 import { KeyboardInterrupt, OnboardError, type Prompter, TtyPrompter } from "./prompts.ts"
 import * as service from "./service.ts"
 
@@ -274,6 +276,12 @@ export async function main(argv: string[], setup: Partial<Setup> = {}): Promise<
   return COMMANDS[command]!.run(args, s)
 }
 
+/** The home to use: `--home`, else `$OPENCORP_HOME` (empty is unset), else `~/.opencorp`; resolved by each
+ *  command through `launch`. */
+function home(value: string | undefined, s: Setup): string {
+  return value || s.environ.OPENCORP_HOME || path.join(s.host.userHome, ".opencorp")
+}
+
 /** The prompter for init and onboard: the setup screen's with `--json-prompts`, else the terminal's, which asks
  *  no one when the provider comes on stdin. */
 function prompter(args: Args, stdin: Readable | undefined, s: Setup, preset: Record<string, string> = {}): Prompter {
@@ -387,22 +395,58 @@ async function offboardCommand(args: Args, s: Setup): Promise<number> {
   return 0
 }
 
-/** The home to use: `--home`, else `$OPENCORP_HOME` (empty is unset), else `~/.opencorp`; resolved by each
- *  command through `launch`. */
-function home(value: string | undefined, s: Setup): string {
-  return value || s.environ.OPENCORP_HOME || path.join(s.host.userHome, ".opencorp")
-}
-
 async function doctorCommand(args: Args, s: Setup): Promise<number> {
   const found = await checks(home(args.home, s), { ...s.doctor, host: s.host, environ: s.environ })
   s.stdout.write(report(found))
   return exitCode(found)
 }
 
-async function startCommand(_args: Args, _s: Setup): Promise<number> {
+/** Starts the office with `how` (`service.start` or `service.restart`) and waits for it to answer; says why on
+ *  stderr when it didn't come up. */
+async function cameUp(
+  run: Launch,
+  s: Setup,
+  how: (run: Launch, host: Host) => Promise<service.Installed>,
+): Promise<boolean> {
+  try {
+    const started = await how(run, s.host)
+    for (const note of started.notes) {
+      s.stderr.write(`opencorp: ${note}; started the office in the background instead\n`)
+    }
+    await service.wait(run, s.host)
+  } catch (error) {
+    if (!(error instanceof ServiceError || error instanceof OfficeStartError)) throw error
+    s.stderr.write(`opencorp: ${error.message}\n`)
+    return false
+  }
+  return true
+}
+
+/** Whether there's no company at the office's home yet; says so on stderr. */
+async function notOnboarded(run: Launch, s: Setup): Promise<boolean> {
+  if (!(await isNew(path.join(run.home, "company")))) return false
+  s.stderr.write(`opencorp: no office at ${run.home} yet; ${SET_UP}\n`)
+  return true
+}
+
+async function startCommand(args: Args, s: Setup): Promise<number> {
+  const run = launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome })
+  if (await s.host.answers(run.socket)) {
+    s.stdout.write(`The office is already running (pid ${service.pid(run)}).\n`)
+    return 0
+  }
+  if (await notOnboarded(run, s)) return NOT_ONBOARDED
+  if (!(await cameUp(run, s, service.start))) return 1
+  s.stdout.write(`Started the office (pid ${service.pid(run)}).\n`)
   return 0
 }
 
-async function restartCommand(_args: Args, _s: Setup): Promise<number> {
+async function restartCommand(args: Args, s: Setup): Promise<number> {
+  const run = launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome })
+  if (await notOnboarded(run, s)) return NOT_ONBOARDED
+  const was = (await s.host.answers(run.socket)) ? service.pid(run) : null
+  if (!(await cameUp(run, s, service.restart))) return 1
+  if (was === null) s.stdout.write(`The office wasn't running; started it (pid ${service.pid(run)}).\n`)
+  else s.stdout.write(`Restarted the office (pid ${service.pid(run)}; was ${was}).\n`)
   return 0
 }

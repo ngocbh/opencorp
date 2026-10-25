@@ -4,12 +4,16 @@ import fs from "node:fs"
 import path from "node:path"
 import { Readable, Writable } from "node:stream"
 import { expect, setDefaultTimeout, test } from "bun:test"
+import * as fallback from "../../src/install/fallback.ts"
 import type { InitOptions } from "../../src/install/init.ts"
+import { launch, officeAnswers } from "../../src/install/launch.ts"
 import { main, type Setup } from "../../src/install/main.ts"
 import { type OnboardOptions, SET_UP, WHO } from "../../src/install/onboard.ts"
 import { KeyboardInterrupt, type Prompter, TtyPrompter } from "../../src/install/prompts.ts"
-import { tempDir } from "../helpers.ts"
-import { makeHost, NO_LISTING, Runner } from "./helpers.ts"
+import { selfSpawnEnv } from "../../src/platform.ts"
+import { git, gitEnv } from "../company/helpers.ts"
+import { shortDir, tempDir } from "../helpers.ts"
+import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner } from "./helpers.ts"
 
 // onTestFinished hooks inherit it, and a daemon's stop can take 25 s plus a SIGKILL.
 setDefaultTimeout(30_000)
@@ -164,12 +168,15 @@ test("ctrl c during init is exit 130 with only a newline", async () => {
   expect(s.err()).toBe("\n")
 })
 
-test.each(["onboard", "offboard"])("ctrl c during onboard or offboard is exit 130 with only a newline [%s]", async (command) => {
-  const dir = tempDir()
-  const s = { ...standIns(dir), onboard: interrupted, offboard: interrupted }
-  expect(await main([command, "--home", path.join(dir, "home")], s)).toBe(130)
-  expect(s.err()).toBe("\n")
-})
+test.each(["onboard", "offboard"])(
+  "ctrl c during onboard or offboard is exit 130 with only a newline [%s]",
+  async (command) => {
+    const dir = tempDir()
+    const s = { ...standIns(dir), onboard: interrupted, offboard: interrupted }
+    expect(await main([command, "--home", path.join(dir, "home")], s)).toBe(130)
+    expect(s.err()).toBe("\n")
+  },
+)
 
 test("the same handle for you and the first teammate stops init before it starts", async () => {
   const dir = tempDir()
@@ -250,3 +257,103 @@ test("offboard on an empty home is exit 0", async () => {
   expect(await main(["offboard", "--home", path.join(dir, "home")], s)).toBe(0)
   expect(s.out()).toContain("Nothing of this office to remove at")
 })
+
+test("start before onboarding is exit 3 with a hint", async () => {
+  const dir = tempDir()
+  const s = standIns(dir)
+  expect(await main(["start", "--home", path.join(dir, "home")], s)).toBe(3)
+  expect(s.err()).toContain(SET_UP)
+})
+
+test("restart before onboarding is exit 3 with a hint", async () => {
+  const dir = tempDir()
+  const s = standIns(dir)
+  expect(await main(["restart", "--home", path.join(dir, "home")], s)).toBe(3)
+  expect(s.err()).toContain(SET_UP)
+})
+
+test("start with a company that has no first commit is exit 3 with a hint", async () => {
+  const dir = tempDir()
+  const company = path.join(dir, "home", "company")
+  fs.mkdirSync(company, { recursive: true })
+  git(company, "init", "-q", "-b", "main")
+  fs.writeFileSync(path.join(company, "company.yaml"), 'name: "Acme"\nceo: "me"\n')
+  const s = standIns(dir)
+  expect(await main(["start", "--home", path.join(dir, "home")], s)).toBe(3)
+  expect(s.err()).toContain(SET_UP)
+})
+
+/** A home for a real office, kept off HQ's TCP port, which the owner's own office holds: `install(argv)` runs
+ *  `main` with a host that really starts the daemon, each call with its own output; `pid()` reads the pidfile. */
+function realOffice(spawned: ReturnType<typeof killedAtEnd>) {
+  const dir = shortDir()
+  fs.mkdirSync(path.join(dir, "office"), { mode: 0o700 })
+  fs.writeFileSync(path.join(dir, "office", "hq.json"), '{"tcp": false}')
+  const environ = { ...gitEnv(selfSpawnEnv(process.env)), HOME: tempDir() }
+  const host = daemonHost(dir, spawned)
+  const install = async (argv: string[], stdin: Readable = Readable.from([])) => {
+    const s = { ...standIns(dir), host, environ, stdin }
+    const code = await main([argv[0]!, "--home", dir, ...argv.slice(1)], s)
+    return { code, out: s.out(), err: s.err() }
+  }
+  const initArgs = ["init", "--provider-stdin", "--company", "Acme", "--name", "Hong Ngoc Bui", "--handle", "ngocbh"]
+  const provider = JSON.stringify({ llm_config: { provider: "openai" } })
+  return {
+    dir,
+    socket: path.join(dir, "office", "office.sock"),
+    init: () => install([...initArgs, "--service", "background"], Readable.from([provider])),
+    install,
+    pid: () => fs.readFileSync(path.join(dir, "office", "office.pid"), "utf8").trim(),
+    stop: () => fallback.stopProcess(launch(dir, { environ, userHome: dir })),
+  }
+}
+
+test(
+  "scripted init then start brings a stopped office back",
+  async () => {
+    const office = realOffice(killedAtEnd())
+    try {
+      const made = await office.init()
+      expect(made.code, made.err).toBe(0)
+      expect(made.out).toContain("with you as CEO and Minh (@minh)")
+      const running = await office.install(["start"]) // already running: nothing to do
+      expect(running.code).toBe(0)
+      expect(running.out).toBe(`The office is already running (pid ${office.pid()}).\n`)
+      await office.stop()
+      expect(await officeAnswers(office.socket)).toBe(false)
+      const started = await office.install(["start"])
+      expect(started.code, started.err).toBe(0)
+      expect(await officeAnswers(office.socket)).toBe(true)
+      expect(started.out).toBe(`Started the office (pid ${office.pid()}).\n`)
+    } finally {
+      await office.stop()
+    }
+  },
+  120_000,
+)
+
+test(
+  "restart replaces a running office and starts a stopped one",
+  async () => {
+    const office = realOffice(killedAtEnd())
+    try {
+      const made = await office.init()
+      expect(made.code, made.err).toBe(0)
+      const old = office.pid()
+      const restarted = await office.install(["restart"])
+      expect(restarted.code, restarted.err).toBe(0)
+      const now = office.pid()
+      expect(now).not.toBe(old)
+      expect(await officeAnswers(office.socket)).toBe(true)
+      expect(restarted.out).toBe(`Restarted the office (pid ${now}; was ${old}).\n`)
+      await office.stop()
+      const started = await office.install(["restart"])
+      expect(started.code, started.err).toBe(0)
+      expect(await officeAnswers(office.socket)).toBe(true)
+      expect(started.out).toBe(`The office wasn't running; started it (pid ${office.pid()}).\n`)
+    } finally {
+      await office.stop()
+    }
+  },
+  120_000,
+)

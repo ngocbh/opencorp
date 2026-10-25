@@ -309,6 +309,12 @@ install/test_launchd.py::test_the_plist_matches_the_golden_file	changed	packages
 install/test_launchd.py::test_xml_special_characters_and_newlines_survive_the_plist	changed	packages/office/tests/install/launchd.test.ts::xml special characters and newlines survive the plist	design §9.3 (hand-written plist; checked as text and with plutil, not plistlib)	O2-12
 install/test_legacy.py	dropped	—	legacy.py goes; no migration (D24, D4)	O0-9
 install/test_main.py	open	—	—	O2-13b
+install/test_main.py::test_another_home_is_not_held_up_by_the_old_one	dropped	—	D24: legacy.py is not ported	O2-13b
+install/test_main.py::test_doctor_looks_for_leftovers_once	dropped	—	D24: legacy.py is not ported	O2-13b
+install/test_main.py::test_doctor_prints_the_commands_that_finish_the_move	dropped	—	D24: legacy.py is not ported	O2-13b
+install/test_main.py::test_init_flags_are_known_answers_for_the_interview	changed	packages/office/tests/install/main.test.ts::init flags are known answers for the interview	O2-13a: TtyPrompter keeps its preset private; the test checks an interactive TtyPrompter and the flags as known	O2-13b
+install/test_main.py::test_install_tests_get_a_stand_in_codex_check	dropped	—	design §10: no conftest; each doctor test passes its own codex stand-in through Setup.doctor	O2-13b
+install/test_main.py::test_the_default_home_waits_for_the_old_one_to_be_moved	dropped	—	D24: legacy.py is not ported	O2-13b
 install/test_offboard.py	ported	packages/office/tests/install/offboard.test.ts	—	O2-18b
 install/test_onboard.py	ported	packages/office/tests/install/onboard.test.ts	—	O2-15
 install/test_onboard.py::test_a_running_office_is_not_topped_up_behind_its_back	changed	packages/office/tests/install/onboard.test.ts::a running office is not topped up behind its back	D32: no debrief flow in the template; side_chat and profile_manager are the two dropped flows	O2-15
@@ -938,6 +944,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/launch.test.ts::which finds a runnable program on the absolute path entries only	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
 —	new	packages/office/tests/install/launchd.test.ts::a control character in a value is a service error	design §9.3 (hand-written plist refuses what plistlib refuses, CR included)	O2-12
 —	new	packages/office/tests/install/launchd.test.ts::a plist that cant be written is a service error and only the probe ran	design §9.3 (service files: a failed write is a ServiceError with the system's text)	O2-12
+—	new	packages/office/tests/install/main.test.ts::a service mode that isnt one is a usage error	design §9.1: the service modes are auto plus service.MODES (O2-12)	O2-13b
+—	new	packages/office/tests/install/main.test.ts::an unknown command is a usage error	design §9.1: exit 2 for usage, as argparse	O2-13b
 —	new	packages/office/tests/install/offboard.test.ts::launchers finds a link to the checkout wrapper and a script naming it	O0-5 handoff: packages/cli/bin/opencorp is the checkout's launcher; a link's hint names its target	O2-18b
 —	new	packages/office/tests/install/offboard.test.ts::offboard outside a checkout reports no launchers	design §2.1/O2-26: the compiled binary has no checkout, so there is no launcher to report	O2-18b
 —	new	packages/office/tests/install/onboard.test.ts::a model check given an env runs in that env	P2 and Decision 1 (o3-5 plan): the check job runs modelProblem in the worker's own env, which holds the provider env	O3-5
