@@ -3,6 +3,8 @@ auth/test_identity.py	ported	packages/office/tests/auth/identity.test.ts	—	O1-
 auth/test_passwords.py	ported	packages/office/tests/auth/passwords.test.ts	—	O1-14
 auth/test_tokens.py	ported	packages/office/tests/auth/tokens.test.ts	—	O1-14
 chat/test_check.py	open	—	—	O3-5
+chat/test_check.py::test_one_reply_check_runs_isolated_in_a_temp_cwd	changed	packages/office/tests/chat/check.test.ts::one reply check runs isolated in a temp cwd	P2: a check job through the worker registry, not `python -I -m`; the key goes in the start frame's llm_config, not stdin; the provider env passed to spawn stands in for worker_env(); its folder (with worker.log, the dropped stderr) is removed afterwards	O3-5
+chat/test_check.py::test_only_the_result_line_is_read	changed	packages/office/tests/chat/check.test.ts::only the result line is read [%s]	P2: the result is the worker's result frame, not a stdout line; the last result or error frame counts; not JSON and a list have no frame form (the codec only yields JSON objects), so a result without problem and a chat-shaped result take their places	O3-5
 chat/test_connections.py	ported	packages/office/tests/chat/connections.test.ts	—	O2-19
 chat/test_connections.py::test_a_run_record_holds_hashes_and_no_key	changed	packages/office/tests/chat/connections.test.ts::a run record holds hashes and no key	D32: no target hash; design §5.1: the record is the store's runs values, not a file	O2-19
 chat/test_connections.py::test_a_run_record_refuses_unknown_fields	dropped	—	D4, design §5.1: the run record is the store's runs row, not a file	O2-19
@@ -506,6 +508,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/auth/passwords.test.ts::a password that isnt well formed checks nothing	design §6.4 (passwords as Python's): Python's encode refuses lone surrogates	O1-14
 —	new	packages/office/tests/auth/passwords.test.ts::the dummy hash checks nothing	P4 (D36)	O1-14
 —	new	packages/office/tests/auth/tokens.test.ts::a person file in the wrong folder lets no one in	design §6.4: the roster reads people as the loader does	O1-14
+—	new	packages/office/tests/chat/check.test.ts::a check the registry refuses leaves no folder	design §6.6 and Decision 5 (o3-5 plan): the registry refuses spawns once the office stops; the throwaway folder is removed on every path	O3-5
 —	new	packages/office/tests/chat/connections.test.ts::a connection file has the python layout and a python file reads	design §10.4 (R2 m9): test_run_logs.py writes connections through the Python code	O2-19
 —	new	packages/office/tests/chat/connections.test.ts::a connections folder this user cannot read is a provider error	design §6 rule 6: the folder is checked through an fd before any mode change (#409), so an unreadable one is refused with a fix instead of repaired	O2-21
 —	new	packages/office/tests/chat/connections.test.ts::a connections path that is a file or a dangling symlink is refused	design §6 rule 6: a private folder is a directory of this user, checked before any mode change (#409)	O2-21

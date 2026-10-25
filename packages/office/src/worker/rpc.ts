@@ -228,7 +228,7 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
   /** Steers yian refused for `inbox` (the run ended or hadn't started, or no such inbox) or could not take (one may
    *  then also be in the log). */
   steerLeft(worker: W, inbox: string, texts: string[]): void
-  /** The job finished: `status`, `run_id`, `output`, `failure`. */
+  /** The job finished: `status`, `run_id`, `output`, `failure`; a `check` job's is `{problem}`. */
   result(worker: W, frame: Frame): void
   /** The job threw before it could finish. */
   error(worker: W, frame: Frame): void
