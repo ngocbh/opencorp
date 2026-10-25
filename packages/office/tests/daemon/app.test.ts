@@ -97,9 +97,7 @@ const STREAMS: [string, string][] = [["GET", "/events"]]
 // [method, route pattern, concrete path, body] for every other route; null is no body. Python's table
 // (tests/daemon/test_app.py) also covered these routes; each is added here when its route area is ported:
 // - sessions: GET and POST /sessions, GET /sessions/:id, GET /sessions/:id/messages, and POST /sessions/:id/
-//   prompt, steer, interrupt, end, continue, cost-cap and model;
-// - questions: GET /questions, GET /questions/:id, and POST /questions/:id/ answer, side, send-back, stop and
-//   carried/dismiss.
+//   prompt, steer, interrupt, end, continue, cost-cap and model.
 // GET /health, GET /office, GET /whoami, the device routes, GET /costs, the GET /runs* stubs, the connection
 // routes and HQ's socket routes (/hq*) weren't in Python's table.
 const TABLE: [string, string, string, unknown][] = [
@@ -115,6 +113,13 @@ const TABLE: [string, string, string, unknown][] = [
   ["GET", "/folders/*cwd/people", "/folders/%2Fw%2Fapp/people", null],
   ["GET", "/work-items/:id", `/work-items/${ULID}`, null],
   ["GET", "/work-items/:id/comments", `/work-items/${ULID}/comments`, null],
+  ["GET", "/questions", "/questions", null],
+  ["GET", "/questions/:id", `/questions/${ULID}`, null],
+  ["POST", "/questions/:id/answer", `/questions/${ULID}/answer`, { answer: "a", answer_kind: "text" }],
+  ["POST", "/questions/:id/side", `/questions/${ULID}/side`, { text: "why?" }],
+  ["POST", "/questions/:id/send-back", `/questions/${ULID}/send-back`, { note: "more" }],
+  ["POST", "/questions/:id/stop", `/questions/${ULID}/stop`, null],
+  ["POST", "/questions/:id/carried/dismiss", `/questions/${ULID}/carried/dismiss`, null],
   ["GET", "/profiles/:handle", "/profiles/minh", null],
   ["PUT", "/profiles/:handle", "/profiles/minh", { text: "x", base_version: "a".repeat(40) }],
   ["GET", "/costs", "/costs?since=2026-01-01T00:00:00Z", null],
