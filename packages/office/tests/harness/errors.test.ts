@@ -11,6 +11,7 @@ import { waitFor } from "../helpers.ts"
 import { session } from "../store/helpers.ts"
 import {
   allGone,
+  type Codex,
   codexLog,
   errors,
   makeCodex,
@@ -33,16 +34,16 @@ const WRITER_LOCK = {
 /** Real Codex's stderr: several log streams at once, and lines that have nothing to do with the session. */
 const STDERR = "ERROR rmcp::transport::auth: OAuth token refresh failed for MCP server jira WARN codex_core: retrying"
 
-/** A JSON object from the fake's log. */
+/** A JSON object from the fake's log: `any`, since the assertions read whatever was written. */
 type Entry = Record<string, any>
 
 /** The params of each request the office sent with `method`. */
-function calls(h: ReturnType<typeof makeCodex>, method: string): Entry[] {
+function calls(h: Codex, method: string): Entry[] {
   return h.fake.calls(method) as Entry[]
 }
 
 /** The keys of the stored worker records. */
-function workerKeys(h: ReturnType<typeof makeCodex>): string[] {
+function workerKeys(h: Codex): string[] {
   return h.store.listWorkers().map((r) => r.key)
 }
 
@@ -59,7 +60,7 @@ function gate(): [Promise<void>, () => void] {
 }
 
 /** Prompts `sid` and waits until its crash is handled: an error shown and the session idle. */
-async function crashed(h: ReturnType<typeof makeCodex>, sid: string, text = "go"): Promise<void> {
+async function crashed(h: Codex, sid: string, text = "go"): Promise<void> {
   await h.sessions.prompt(sid, text)
   await waitFor(() => errors(h, sid).length > 0 && status(h, sid) === "idle", { what: "the crash handled" })
 }
@@ -499,6 +500,7 @@ test("a reload whose app server dies before taking the message says so once", as
     const realRequest = p.rpc!.request.bind(p.rpc!)
     spyOn(p.rpc!, "request").mockImplementation(async (method, params, options) => {
       if (method !== "turn/start") return realRequest(method, params, options)
+      expect(p.alive).toBe(true)
       process.kill(-p.pid, "SIGKILL")
       await waitFor(() => !p.alive, { what: "the group gone" })
       throw new RpcClosed("the app-server closed before answering turn/start")
