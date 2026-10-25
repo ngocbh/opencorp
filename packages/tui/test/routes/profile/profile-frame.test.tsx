@@ -222,9 +222,11 @@ test("m starts a profile manager chat; later messages prompt the same session", 
       body: { text: "Say Minh writes tests first" },
     })
     await app.until((f) => f.includes("The profile manager is thinking…"))
-    reply(office, manager.id, "Proposed a change: see below.")
+    reply(office, manager.id, "Noted: tests first.")
     office.setStatus(manager.id, "idle")
-    await app.until((f) => f.includes("manager: Proposed a change: see below.") && !f.includes("thinking…"))
+    // The profile itself still shows above the chat as the chat grows under it.
+    const profileShown = /^  Writes small, tested changes\. *$/m
+    await app.until((f) => f.includes("manager: Noted: tests first.") && !f.includes("thinking…") && profileShown.test(f))
     await typeInto(app, "Shorter please")
     app.input.pressEnter()
     await app.until((f) => f.includes("you: Shorter please"))
