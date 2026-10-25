@@ -89,8 +89,8 @@ export const SetPasswordRequest = z.strictObject({
 export type SetPasswordRequest = z.input<typeof SetPasswordRequest>
 
 /** The reply of GET /office on the office socket (never on HQ): the running daemon's process id, OpenCorp
- *  home, start time, release version, pinned programs and workspace guards, for `doctor` and `stop`. Needs a device token once tokens are
- *  enforced. */
+ *  home, start time, release version, pinned programs and workspace guards, for `doctor` and `stop`. Needs a
+ *  device token once tokens are enforced. */
 export const OfficeInfo = z.strictObject({
   pid: z.int().min(1),
   home: z.string().min(1),
