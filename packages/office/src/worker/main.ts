@@ -2,16 +2,25 @@
 import fs from "node:fs"
 import path from "node:path"
 import {
+  advance,
   cancel,
   close as closeInbox,
   complete,
   DeliveryRefused,
   interrupt,
   ProfileMemory,
+  RunBusyError,
   runFlow,
   send,
 } from "@ngocbh/yian"
-import { type EventHook, inspectRun, type RunInspection, runLogPath } from "@ngocbh/yian/run"
+import {
+  type EventHook,
+  inspectRun,
+  type RunInspection,
+  type RunResult,
+  runLogPath,
+  type StreamHook,
+} from "@ngocbh/yian/run"
 import { loadSkills, type Skill } from "@ngocbh/yian/skills"
 import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
@@ -289,8 +298,10 @@ export async function serve(
   return code
 }
 
-/** Runs `job`, sending its event and stream frames, and lets `deliveries` apply to the run once it has started;
- *  returns the result frame's fields. */
+/** Runs `job`, sending its event and stream frames, and lets `deliveries` apply to the run once it can take them;
+ *  returns the result frame's fields. A chat job runs its flow afresh; an advance job applies the deliveries the run
+ *  can take now, then moves the run on from its log with yian's `advance` (or, with `advance: false`, only
+ *  delivers). */
 async function runJob(
   job: Job,
   channel: Channel,
@@ -298,36 +309,71 @@ async function runJob(
   deliveries: Deliveries,
   { env, signal }: { env: WorkerEnv; signal: AbortSignal },
 ): Promise<Frame> {
-  if (job.kind === "advance") throw new Error("this worker can't resume a run yet")
   const read: Env = (name) => (Object.hasOwn(env, name) ? env[name] : undefined)
-  const flow = await loadConfined(job.pin, path.join(job.pin, job.flow))
+  const flow = job.kind === "chat" ? await loadConfined(job.pin, path.join(job.pin, job.flow)) : null
   const runs = path.dirname(path.dirname(job.log))
   if (job.log !== path.join(runs, job.run_id, "log.jsonl")) {
-    throw new RangeError("a chat job's log must be <runs>/<run_id>/log.jsonl")
+    throw new RangeError("a job's log must be <runs>/<run_id>/log.jsonl")
   }
-  // Makes the run's folder, and throws EEXIST if it is already there: each launch gets a fresh one.
-  const log = runLogPath(runs, job.run_id)
+  // A chat job makes the run's folder, and throws EEXIST if it is already there: each launch gets a fresh one. An
+  // advance job's log must exist.
+  const log = flow === null ? job.log : runLogPath(runs, job.run_id)
   // An off-engine delivery recompiles the recorded flow, so it is confined to the pin as the run is.
   deliveries.bind(applier(log, read, job.pin))
   const onEvent: EventHook = (event) => {
     // Not awaited: a delivery waits for the run to go live, which happens after this observer returns.
-    if (event.type === "RunStarted") deliveries.open()
+    if (event.type === "RunStarted" || event.type === "RunResumed") deliveries.open()
     // A send that fails rejects the run.
     return channel.send({ type: "event", name: event.type, data: event.toJSON() })
   }
-  const result = await runFlow(flow, job.inputs, {
+  const onStream: StreamHook = (chunk) => channel.send({ type: "stream", ...chunk.toJSON() })
+  const common = {
     log,
-    runId: job.run_id,
-    numWorkers: job.num_workers,
     onEvent,
-    onStream: (chunk) => channel.send({ type: "stream", ...chunk.toJSON() }),
-    llmConfig: job.llm_config,
+    onStream,
     memory: jobMemory(job, rpc, read),
     tools: jobTools(job, rpc),
     skills: pickSkills(job.pin, job.person, job.skills),
     signal,
     env: read,
-  })
+  }
+  let result: RunResult
+  if (flow !== null) {
+    result = await runFlow(flow, job.inputs, {
+      ...common,
+      runId: job.run_id,
+      numWorkers: job.num_workers,
+      llmConfig: job.llm_config,
+    })
+  } else {
+    const status = inspectRun(log).status
+    if (!job.advance) {
+      // This job only delivers to a run at rest; a running one is someone else's to move.
+      if (status === "running") throw new RunBusyError(log)
+      deliveries.open()
+      await deliveries.drained()
+      return { run_id: job.run_id, output: null, ...waitingFields(log) }
+    }
+    if (status === "stopped" || status === "crashed") {
+      // Offline, an interrupt or close finds no agent to cut, so it and everything after waits for RunResumed;
+      // the ones before it reach the log before the resumed run replays it.
+      const cut = job.deliver.findIndex((delivery) => delivery.op === "interrupt" || delivery.op === "close")
+      await deliveries.applyFirst(cut === -1 ? job.deliver.length : cut)
+    } else if (status !== "running") {
+      // A waiting run reads its deliveries when it wakes, and an ended one refuses them; no RunResumed comes.
+      deliveries.open()
+      await deliveries.drained()
+    }
+    const config = job.llm_config ?? {}
+    result = await advance({
+      ...common,
+      codeRoot: job.pin,
+      // `null` keeps the recorded bound: a changed one would make a waiting run write RunResumed.
+      numWorkers: null,
+      apiKey: typeof config.api_key === "string" ? config.api_key : null,
+      headers: stringRecord(config.headers),
+    })
+  }
   return {
     status: result.status,
     run_id: result.runId,
@@ -335,6 +381,12 @@ async function runJob(
     failure: result.failure,
     waits: wireWaits(result.waits),
   }
+}
+
+/** `value` when it is a record of strings, else `null`. */
+function stringRecord(value: unknown): Record<string, string> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null
+  return Object.values(value).every((v) => typeof v === "string") ? (value as Record<string, string>) : null
 }
 
 /**

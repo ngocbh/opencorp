@@ -77,6 +77,18 @@ export const CUTTABLE = agentFlow("cuttable", {
 export const INBOX =
   "id: inbox\nname: inbox\ninput:\n  messages: !Inbox(str)\nnodes:\n  heard:\n    kind: tool\n    tool_id: take\n" +
   "    input:\n      from: ${input.messages}\n      take: all\noutput: ${heard.output}\n"
+// The inbox flow's take feeding an agent that answers what it heard, so the run waits, then calls the model.
+export const HEARD =
+  "id: heard\nname: heard\ninput:\n  messages: !Inbox(str)\nnodes:\n  heard:\n    kind: tool\n    tool_id: take\n" +
+  "    input:\n      from: ${input.messages}\n      take: all\n  reply:\n    kind: agent\n    input:\n" +
+  '      said: ${heard.output.events}\n    output: str\n    prompt: "${said}"\noutput: ${reply.output}\n'
+// A CODE node whose function is in a file beside the flow, then the inbox flow's take, so the run waits with a CODE
+// reference recorded.
+export const CODED =
+  "id: coded\nname: coded\ninput:\n  messages: !Inbox(str)\nnodes:\n  prep:\n    kind: code\n" +
+  "    code: ./helpers.ts:fn\n    output: str\n  heard:\n    kind: tool\n    tool_id: take\n" +
+  "    depends_on: [prep]\n    input:\n      from: ${input.messages}\n      take: all\noutput: ${heard.output}\n"
+export const CODED_HELPERS = 'export function fn(): string {\n  return "ready"\n}\n'
 export const PROFILED = agentFlow("profiled", { top: "long_term_memory: profile\n" })
 export const SKILLED = agentFlow("skilled", { node: "    skills: all\n" })
 // A run whose one node sleeps an hour, so it quiesces as waiting.
@@ -104,6 +116,9 @@ export function writePin(root: string): string {
     "flows/steerable.yaml": STEERABLE,
     "flows/cuttable.yaml": CUTTABLE,
     "flows/inbox.yaml": INBOX,
+    "flows/heard.yaml": HEARD,
+    "flows/coded.yaml": CODED,
+    "flows/helpers.ts": CODED_HELPERS,
     "flows/profiled.yaml": PROFILED,
     "flows/skilled.yaml": SKILLED,
     "flows/nap.yaml": NAP,

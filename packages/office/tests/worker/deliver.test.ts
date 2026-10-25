@@ -1,14 +1,26 @@
 /** Deliveries: yian host calls a worker makes on its run, from the job and from deliver frames. */
 import fs from "node:fs"
-import { foldRunLog, PoolCommitRecord } from "@ngocbh/yian/run"
+import path from "node:path"
+import { foldRunLog, inspectRun, PoolCommitRecord } from "@ngocbh/yian/run"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
+import { type FakeLLM, LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { ChannelClosed, type Frame } from "../../src/worker/channel.ts"
-import type { Job, JobInput } from "../../src/worker/job.ts"
+import { Job, type JobInput } from "../../src/worker/job.ts"
 import { EXIT_FAILED, EXIT_OK } from "../../src/worker/main.ts"
 import { fakeLlm } from "../chat/helpers.ts"
-import { waitFor } from "../helpers.ts"
-import { base, inProcessWorker, lastFrame, makeJob, Recorder, run, startWorker, type TestWorker } from "./helpers.ts"
+import { tempDir, waitFor } from "../helpers.ts"
+import {
+  base,
+  inProcessWorker,
+  lastFrame,
+  makeJob,
+  makeRegistry,
+  Recorder,
+  recordFrames,
+  run,
+  startWorker,
+  type TestWorker,
+} from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -129,7 +141,8 @@ test("an interrupt returns the text so far", async () => {
       entry.envelope.record instanceof PoolCommitRecord &&
       entry.envelope.record.key === "reply.new_messages",
   )
-  const [cut] = newMessages?.value?.toObject() as Record<string, unknown>[]
+  expect(newMessages).toBeDefined()
+  const [cut] = newMessages!.value!.toObject() as Record<string, unknown>[]
   expect(cut).toMatchObject({
     role: "assistant",
     parts: [
@@ -328,4 +341,177 @@ test("a refused delivery reply holds only the reason", async () => {
   expect((await lastFrame(office)).status).toBe("waiting")
   await office.send({ type: "deliver", id: "c1", op: "complete", call_id: "nope", result: { output: "sk-SECRET" } })
   expect(await office.recv()).toEqual({ type: "deliver_reply", id: "c1", refused: "unknown_call" })
+})
+
+/** An advance job of the run `chat` started: same run, log, pin, grants and model config; `over` replaces fields. */
+function advanceJob(chat: Job, over: Partial<JobInput> = {}): Job {
+  return Job.parse({ ...chat, kind: "advance", deliver: [], ...over })
+}
+
+/** A `Recorder` that also lists, in arrival order, the RunResumed event and each reply's id. */
+class Sequence extends Recorder {
+  readonly seen: string[] = []
+
+  override event(worker: unknown, frame: Frame): void {
+    if (frame.name === "RunResumed") this.seen.push("RunResumed")
+    super.event(worker, frame)
+  }
+
+  override deliverReply(worker: unknown, frame: Frame): void {
+    this.seen.push(String(frame.id))
+    super.deliverReply(worker, frame)
+  }
+}
+
+/** The data of each `NodeSucceeded` event `rec` recorded for the node `reply`. */
+function replyEnded(rec: Recorder): Record<string, unknown>[] {
+  return rec.frames
+    .filter((f) => f.name === "NodeSucceeded" && (f.data as Record<string, unknown>).node_id === "reply")
+    .map((f) => f.data as Record<string, unknown>)
+}
+
+/** Starts a chat job on the cuttable flow in a worker process and kills it while its model call is held; returns
+ *  the job, whose run is then crashed. */
+async function crashedRun(fake: FakeLLM): Promise<Job> {
+  const where = base()
+  const job = makeJob(where, "flows/cuttable.yaml", { groups: specGroups() })
+  fake.script({ content: "lost", hold: true })
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const worker = await makeRegistry().spawn(job, sessionDir, new Recorder(), { env: fake.env() })
+  await fake.waitForRequests(1, 30_000)
+  worker.kill()
+  expect(await worker.wait(10_000)).toBe(-9)
+  expect(inspectRun(job.log).status).toBe("crashed")
+  return job
+}
+
+test("an advance job applies its sends then moves the run", async () => {
+  const chat = makeJob(base(), "flows/inbox.yaml", { inputs: {} })
+  expect((await run(chat, new Recorder())).outcome?.status).toBe("waiting")
+  const send = { id: "s1", op: "send", inbox: "messages", event: "hi" } as const
+  const rec = await run(advanceJob(chat, { deliver: [send] }), new Recorder())
+  expect(rec.outcome?.status, String(rec.outcome?.message)).toBe("succeeded")
+  expect((rec.outcome?.output as { events: unknown[] }).events).toEqual(["hi"])
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", seq: expect.any(Number) }])
+  expect(rec.order).toEqual(["deliver_reply", "result"])
+})
+
+test("an advance job with advance false only delivers", async () => {
+  const chat = makeJob(base(), "flows/inbox.yaml", { inputs: {} })
+  expect((await run(chat, new Recorder())).outcome?.status).toBe("waiting")
+  const send = { id: "s1", op: "send", inbox: "messages", event: "hi" } as const
+  const rec = await run(advanceJob(chat, { advance: false, deliver: [send] }), new Recorder())
+  expect(rec.outcome).toMatchObject({ type: "result", status: "waiting", run_id: "r1", output: null, failure: null })
+  expect((rec.outcome?.waits as Record<string, unknown>[])[0]!.settled).toBe(true)
+  expect(rec.order).toEqual(["deliver_reply", "result"])
+  expect(sent(chat, "messages")).toEqual(["hi"])
+  expect(logPayloads(chat, "node_woken")).toEqual([])
+})
+
+test("an interrupt for a crashed run takes effect after RunResumed", async () => {
+  const fake = await fakeLlm()
+  onTestFinished(() => fake.release())
+  const chat = await crashedRun(fake)
+  fake.script({ content: "late", hold: true })
+  const rec = new Sequence()
+  const job = advanceJob(chat, { deliver: [{ id: "i1", op: "interrupt", inbox: "steers" }] })
+  const worker = await inProcessWorker(job, rec, { env: fake.env() })
+  expect(await worker.wait()).toBe(EXIT_OK)
+  expect(rec.seen).toEqual(["RunResumed", "i1"])
+  expect([rec.outcome?.status, rec.outcome?.output]).toEqual(["succeeded", null])
+  expect(replyEnded(rec).map((data) => data.interrupted)).toEqual([true])
+})
+
+test("an interrupt frame for a crashed run waits for RunResumed", async () => {
+  const fake = await fakeLlm()
+  onTestFinished(() => fake.release())
+  const chat = await crashedRun(fake)
+  fake.script({ content: "late", hold: true })
+  const rec = new Sequence()
+  const worker = await inProcessWorker(advanceJob(chat), rec, { env: fake.env() })
+  expect(await worker.deliver({ id: "i1", op: "interrupt", inbox: "steers" })).toBe(true)
+  expect(await worker.wait()).toBe(EXIT_OK)
+  expect(rec.seen).toEqual(["RunResumed", "i1"])
+  expect([rec.outcome?.status, rec.outcome?.output]).toEqual(["succeeded", null])
+  expect(replyEnded(rec).map((data) => data.interrupted)).toEqual([true])
+})
+
+test("a stopped run takes its sends before the advance and its close after RunResumed", async () => {
+  const fake = await fakeLlm()
+  onTestFinished(() => fake.release())
+  fake.script({ content: "lost", hold: true })
+  const chat = makeJob(base(), "flows/cuttable.yaml", { groups: specGroups() })
+  const first = await inProcessWorker(chat, new Recorder(), { env: fake.env() })
+  await fake.waitForRequests(1, 30_000)
+  expect(await first.stop()).toBe(true)
+  expect(await first.wait()).toBe(EXIT_FAILED)
+  expect(inspectRun(chat.log).status).toBe("stopped")
+  fake.script({ content: "Done." })
+  const rec = new Sequence()
+  const job = advanceJob(chat, {
+    deliver: [
+      { id: "s1", op: "send", inbox: "steers", event: "more" },
+      { id: "c1", op: "close", inbox: "steers" },
+    ],
+  })
+  const worker = await inProcessWorker(job, rec, { env: fake.env() })
+  expect(await worker.wait()).toBe(EXIT_OK)
+  expect(rec.seen).toEqual(["s1", "RunResumed", "c1"])
+  expect(rec.replies).toEqual([
+    { type: "deliver_reply", id: "s1", seq: expect.any(Number) },
+    { type: "deliver_reply", id: "c1", seq: expect.any(Number) },
+  ])
+  expect([rec.outcome?.status, rec.outcome?.output]).toEqual(["succeeded", "Done."])
+  expect(JSON.stringify(fake.requests().at(-1)!.messages)).toContain("more")
+})
+
+test("an advance that throws before its gate opens refuses the held deliveries", async () => {
+  const fake = await fakeLlm()
+  onTestFinished(() => fake.release())
+  fake.script({ content: "Done.", hold: true })
+  const chat = makeJob(base(), "flows/cuttable.yaml", { groups: specGroups() })
+  const first = new Recorder()
+  const a = await inProcessWorker(chat, first, { env: fake.env() })
+  await fake.waitForRequests(1, 30_000)
+  const rec = new Recorder()
+  const job = advanceJob(chat, { deliver: [{ id: "i1", op: "interrupt", inbox: "steers" }] })
+  const b = await inProcessWorker(job, rec, { env: fake.env() })
+  expect(await b.wait()).toBe(EXIT_FAILED)
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "i1", refused: "not_started" }])
+  expect(rec.order).toEqual(["deliver_reply", "error"])
+  expect(String(rec.outcome?.message)).toStartWith("RunBusyError:")
+  fake.release()
+  expect(await a.wait()).toBe(EXIT_OK)
+  expect([first.outcome?.status, first.outcome?.output]).toEqual(["succeeded", "Done."])
+  expect(replyEnded(first).map((data) => data.interrupted)).toEqual([false])
+})
+
+test("an advance confines the recorded flow to the pin", async () => {
+  const chat = makeJob(base(), "flows/coded.yaml", { inputs: {} })
+  const started = await run(chat, new Recorder())
+  expect(started.outcome?.status, String(started.outcome?.message)).toBe("waiting")
+  const send = { id: "s1", op: "send", inbox: "messages", event: "hi" } as const
+  const rec = await run(advanceJob(chat, { pin: tempDir(), deliver: [send] }), new Recorder())
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", failed: "LoadError" }])
+  expect(rec.order).toEqual(["deliver_reply", "error"])
+  expect(String(rec.outcome?.message)).toStartWith("LoadError:")
+  expect(sent(chat, "messages")).toEqual([])
+})
+
+test("an advance job sends the key only to the model", async () => {
+  const fake = await fakeLlm()
+  const key = "sk-ADV-1"
+  const frames = recordFrames()
+  const llm_config = { ...LLM_CONFIG, base_url: `${fake.baseUrl}/v1`, api_key: key }
+  const chat = makeJob(base(), "flows/heard.yaml", { inputs: {}, llm_config })
+  expect((await run(chat, new Recorder(), { env: {} })).outcome?.status).toBe("waiting")
+  fake.script({ content: "ok" })
+  const send = { id: "s1", op: "send", inbox: "messages", event: "hi" } as const
+  const rec = await run(advanceJob(chat, { deliver: [send] }), new Recorder(), { env: {} })
+  expect([rec.outcome?.status, rec.outcome?.output]).toEqual(["succeeded", "ok"])
+  expect(fake.authorizations()).toEqual([`Bearer ${key}`])
+  // In process, each start frame is recorded twice: as the office sends it and as the worker reads it.
+  const holding = frames.filter((frame) => frame.includes(key)).map((frame) => JSON.parse(frame).type)
+  expect(holding).toEqual(["start", "start", "start", "start"])
+  expect(fs.readFileSync(chat.log, "utf8")).not.toContain(key)
 })

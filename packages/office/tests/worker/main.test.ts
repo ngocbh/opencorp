@@ -206,18 +206,17 @@ test("a worker exits 3 when the office closes during the run", async () => {
   fake.release()
 })
 
-test("a resume job is refused until the worker can resume", async () => {
-  const fake = await fakeLlm()
-  const rec = await run(makeJob(base(), "flows/echo.yaml", { kind: "advance" }), new Recorder(), { env: fake.env() })
-  expect(rec.outcome?.type).toBe("error")
-  const message = "Error: this worker can't resume a run yet"
-  expect(rec.outcome?.message).toBe(message)
-  const traceback = String(rec.outcome?.traceback)
-  expect(traceback).not.toBe("")
-  expect(traceback).not.toContain("resume a run yet")
-  for (const line of traceback.split("\n")) expect(line).toMatch(/^\s+at /)
+test("a delivery to a missing log is refused as not started", async () => {
+  const job = makeJob(base(), "flows/inbox.yaml", {
+    kind: "advance",
+    deliver: [{ id: "s1", op: "send", inbox: "messages", event: "hi" }],
+  })
+  const rec = await run(job, new Recorder())
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", refused: "not_started" }])
+  expect(rec.order).toEqual(["deliver_reply", "error"])
+  expect(String(rec.outcome?.message)).toContain("ENOENT")
   expect(rec.returncode).toBe(EXIT_FAILED)
-  expect(fake.requests()).toEqual([])
+  expect(fs.existsSync(job.log)).toBe(false)
 })
 
 test("a reserved tool name is refused before any model call", async () => {
