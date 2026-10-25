@@ -77,11 +77,15 @@ test("a relative home is made absolute against the callers folder; ~ and empty v
   expect(passed("start", ["--home", "rel"])).toEqual(["--home", "/somewhere/rel"])
   expect(passed("start", ["--home=rel"])).toEqual(["--home=/somewhere/rel"])
   expect(passed("start", ["--home", "~x"])).toEqual(["--home", "/somewhere/~x"])
+  // The install's parser rejects only a separate value that looks like a flag; `-` and `--home=-x` are values.
+  expect(passed("start", ["--home=-x"])).toEqual(["--home=/somewhere/-x"])
+  expect(passed("start", ["--home", "-"])).toEqual(["--home", "/somewhere/-"])
   for (const args of [["--home", "~/x"], ["--home=~"], ["--home="], ["--home", "-x"], ["--home", "/abs"], ["--home"]])
     expect(passed("start", args)).toEqual(args)
   expect(passed("doctor", ["--home", "a", "--home=b"])).toEqual(["--home", "/somewhere/a", "--home=/somewhere/b"])
   const env = (value: string) => installSpawn("start", [], { OPENCORP_HOME: value }, () => "/somewhere").env
   expect(env("rel")).toEqual({ OPENCORP_HOME: "/somewhere/rel" })
+  expect(env("-x")).toEqual({ OPENCORP_HOME: "/somewhere/-x" })
   for (const value of ["~/o", "", "/abs"]) expect(env(value)).toEqual({ OPENCORP_HOME: value })
 })
 

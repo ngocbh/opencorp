@@ -34,10 +34,9 @@ export interface InstallSpec {
 }
 
 /** `value` resolved against the caller's folder when it is a relative path; else unchanged: empty, absolute,
- *  `~` or `~/…` (which the install expands), a flag (which the install rejects), or when the folder can't be read. */
+ *  `~` or `~/…` (which the install expands), or when the folder can't be read. */
 function absolute(value: string, cwd: () => string): string {
-  if (value === "" || value === "~" || value.startsWith("~/") || value.startsWith("-") || path.isAbsolute(value))
-    return value
+  if (value === "" || value === "~" || value.startsWith("~/") || path.isAbsolute(value)) return value
   try {
     return path.resolve(cwd(), value)
   } catch {
@@ -70,7 +69,9 @@ function absoluteArgs(command: string, args: string[], cwd: () => string): strin
     const fix = fixes[flag]
     if (!fix) continue
     if (eq >= 0) out[i] = `${flag}=${fix(arg.slice(eq + 1), cwd)}`
-    else if (i + 1 < out.length) out[i + 1] = fix(out[++i]!, cwd)
+    // A separate value that looks like a flag (`--home -x`) the install's parser rejects as a usage error; `-` is a
+    // value.
+    else if (i + 1 < out.length && !/^-./.test(out[i + 1]!)) out[i + 1] = fix(out[++i]!, cwd)
   }
   return out
 }
