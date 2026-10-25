@@ -156,7 +156,12 @@ harness/test_approvals.py::test_an_approval_answered_after_a_steer_lands_on_the_
 harness/test_approvals.py::test_an_approvals_answer_is_codexs_reply_and_its_resolved_leaves_the_card_consumed	changed	packages/office/tests/harness/approvals.test.ts::an approvals answer is codexs reply and its resolved leaves the card consumed	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
 harness/test_codex.py	ported	packages/office/tests/harness/codex.test.ts	—	O3-12
 harness/test_codex.py::test_a_closed_app_server_leaves_no_open_pipes	changed	packages/office/tests/harness/codex.test.ts::a closed app server leaves no open pipes	design §7.2 (no ResourceWarning or gc in Bun: every pipe destroyed and the rpc closed after close)	O3-12
-harness/test_continue.py	open	—	—	O3-14
+harness/test_continue.py	ported	packages/office/tests/harness/continue.test.ts	—	O3-14
+harness/test_continue.py::test_a_resume_codex_refuses_fails_the_new_row_and_leaves_the_old_one	changed	packages/office/tests/harness/continue.test.ts::a resume codex refuses fails the new row and leaves the old one	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
+harness/test_continue.py::test_a_session_ended_before_an_office_restart_continues_after_it	changed	packages/office/tests/harness/continue.test.ts::a session ended before an office restart continues after it	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
+harness/test_continue.py::test_continuing_makes_a_new_row_on_the_same_thread_and_resumes_it	changed	packages/office/tests/harness/continue.test.ts::continuing makes a new row on the same thread and resumes it	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
+harness/test_continue.py::test_each_stretch_gets_its_own_debrief	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O3-14
+harness/test_continue.py::test_why_a_session_can_not_continue	changed	packages/office/tests/harness/continue.test.ts::why a session can not continue	design §7.1: CodexSessions always serves codex, so the no-Codex-sessions case (422 unsupported_harness) is chat/harness.ts's (O4a-4); the two not_continuable cases are checked here	O3-14
 harness/test_debrief.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 harness/test_errors.py	open	—	—	O3-15
 harness/test_restore.py	ported	packages/office/tests/harness/restore.test.ts	—	O3-14
@@ -172,8 +177,6 @@ harness/test_restore.py::test_restore_interrupts_tool_parts_left_running_whateve
 harness/test_restore.py::test_restore_interrupts_tool_parts_left_running_whatever_the_status[starting]	dropped	—	D9: no stored messages or parts (add_message and _ends_interrupted go)	O3-14
 harness/test_rpc.py	ported	packages/office/tests/harness/rpc.test.ts	—	O3-10
 harness/test_session.py	open	—	split: O3-13 → O4a-4; O3-13's tests are in packages/office/tests/harness/session.test.ts	O4a-4
-harness/test_session.py::test_a_codex_session_starts_with_an_owner_load	changed	packages/office/tests/harness/session.test.ts::a codex session starts with an owner load	the work item and connection are chat/harness.ts's start_session (O4a-4); the test helper's stand-in writes the row	O3-13
-harness/test_session.py::test_a_codex_session_that_cant_be_set_up_fails_at_once	changed	packages/office/tests/harness/session.test.ts::a codex session that cant be set up fails at once	sessions.start rejects before anything is live; the 500 start_failed and the failed row are chat/harness.ts's start_session (O4a-4)	O3-13
 harness/test_session.py::test_a_load_codex_refuses_fails_the_session_with_why	changed	packages/office/tests/harness/session.test.ts::a load codex refuses fails the session with why	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-13
 harness/test_session.py::test_a_message_is_a_turn_whose_reply_streams_into_the_transcript	changed	packages/office/tests/harness/session.test.ts::a message is a turn whose reply streams into the transcript	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-13
 harness/test_session.py::test_a_message_while_loading_waits_for_the_load	changed	packages/office/tests/harness/session.test.ts::a message while loading waits for the load	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-13
@@ -761,6 +764,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/harness/codex.test.ts::a relative override or path entry is not codex	design §6.1: codex is looked up on the absolute PATH entries only, as resolveTools	O3-12
 —	new	packages/office/tests/harness/codex.test.ts::a store that cannot record the app server leaves it dead	design §6.6: a process the office can't record is killed at once, nothing left running	O3-12
 —	new	packages/office/tests/harness/codex.test.ts::the pinned codex makes the app server command	design §6.8 rule 3: the app-server runs the codex binary pinned at start	O3-12
+—	new	packages/office/tests/harness/continue.test.ts::a continuation whose folder is now unsafe is refused before any write	design §6 rule 5: chat/harness.py continue_session re-runs _open's folder checks on the old cwd	O3-14
+—	new	packages/office/tests/harness/continue.test.ts::two continuations at once make one new row and one 409 live	design §7.1: Python's continuing lock (chat/harness.py continue_session); the thread check and the new row are one serial section	O3-14
 —	new	packages/office/tests/harness/rpc.test.ts::a broken stdin fails requests notifications and replies as rpc closed	design §7.2: write errors (EPIPE) become RpcClosed	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a character split across two writes arrives whole and a last line without a newline is read at the end	design §7.2: lines split as bytes, the last line read at the end	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a kill or closed handler that throws still fails the pending requests	design §7.2: a protocol failure never crashes the office	O3-10
@@ -774,7 +779,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/harness/session.test.ts::a server request is a request event and the session waits on its card	design §7.1, §7.2: the request half of session.ts, which O3-14's test_approvals.py port drives through answers	O3-13
 —	new	packages/office/tests/harness/session.test.ts::every load of the thread carries the owner load	security rule 11 (design §6.8): owner-load params on every thread/resume	O3-13
 —	new	packages/office/tests/harness/session.test.ts::office stop makes a reply not yet written give up at once	design §7.2: answers settle once the office stops (O3-9's settle-on-stop duty)	O3-13
+—	new	packages/office/tests/harness/sessions.test.ts::a start whose default connection cant be read takes office and says so	design §7.1: chat/harness.py _default's fallback and warning, kept without _choose's probes (D32)	O3-14
 —	new	packages/office/tests/harness/sessions.test.ts::a steer and messages queued during a load join the turn they come in	P12, design §7.3: the current turn kept in memory for a reattaching client	O3-14
+—	new	packages/office/tests/harness/sessions.test.ts::start session refuses before any write [%s]	design §6 rules 5 and 7: chat/harness.py _open and _policy for codex, with the office's guards; a 422 never echoes the cwd	O3-14
 —	new	packages/office/tests/harness/sessions.test.ts::the current turn holds the turn in progress then the last turn until the next message starts one	P12, design §7.3: the current turn kept in memory for a reattaching client	O3-14
 —	new	packages/office/tests/harness/sessions.test.ts::the current turn is a copy and empty for a session that is not live	P12, design §7.3: the current turn kept in memory for a reattaching client	O3-14
 —	new	packages/office/tests/harness/translate.test.ts::a command card whose permissions are all null names none	translate.py:166,241,339: Python's truthiness kept	O3-11

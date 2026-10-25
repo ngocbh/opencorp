@@ -1,7 +1,11 @@
 /** The office's Codex sessions: what `CodexSessions` keeps beyond one session's app-server and turns. */
+import fs from "node:fs"
+import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import { HarnessError } from "../../src/chat/state.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
-import { waitFor } from "../helpers.ts"
+import { person } from "../company/helpers.ts"
+import { tempDir, waitFor } from "../helpers.ts"
 import { type Codex, allGone, makeCodex, start, startSession, status, texts } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -81,4 +85,72 @@ test("the current turn is a copy and empty for a session that is not live", asyn
   const kept = h.sessions.currentTurn(sid)
   expect(kept.length).toBe(2)
   expect(kept[0]!.parts.length).toBe(1)
+})
+
+test.each([
+  ["no person", {}, (h: Codex) => ["nobody", h.workspace], 404, "not_found"],
+  ["not an agent", {}, (h: Codex) => ["ngocbh", h.workspace], 422, "not_an_agent"],
+  [
+    "no codex",
+    // An agent built from minh's file, since the kind check comes first.
+    { "people/ava/person.yaml": person("minh", { handle: "ava", name: "Ava", harnesses: ["composer"] }) },
+    (h: Codex) => ["ava", h.workspace],
+    422,
+    "unsupported_harness",
+  ],
+  ["relative cwd", {}, () => ["minh", "rel/dir"], 422, "invalid_body"],
+  ["missing folder", {}, () => ["minh", path.join(tempDir(), "gone")], 422, "invalid_body"],
+  [
+    "not a folder",
+    {},
+    () => {
+      const file = path.join(tempDir(), "file")
+      fs.writeFileSync(file, "")
+      return ["minh", file]
+    },
+    422,
+    "invalid_body",
+  ],
+  ["root", {}, () => ["minh", "/"], 422, "unsafe_workspace"],
+  ["office files", {}, (h: Codex) => ["minh", h.office.paths.company], 422, "unsafe_workspace"],
+  [
+    "office guards",
+    {},
+    (h: Codex) => {
+      // A daemon PATH entry inside the workspace: the start checks the folder with the office's guards.
+      h.office.guards.path = [path.join(h.workspace, "bin")]
+      return ["minh", h.workspace]
+    },
+    422,
+    "unsafe_workspace",
+  ],
+] as [string, Record<string, unknown>, (h: Codex) => string[], number, string][])(
+  "start session refuses before any write [%s]",
+  async (name, files, setup, status, code) => {
+    const h = makeCodex({ files })
+    const [handle, cwd] = setup(h)
+    const error = await h.sessions.startSession(handle!, cwd!, { openedBy: "ngocbh" }).then(
+      () => {
+        throw new Error("expected a rejection")
+      },
+      (e: unknown) => e as HarnessError,
+    )
+    expect(error).toBeInstanceOf(HarnessError)
+    expect([error.status, error.code]).toEqual([status, code])
+    // A 422 never echoes a path the request gave that isn't a usable folder.
+    if (code === "invalid_body") expect(error.message).not.toContain(cwd!)
+    if (name === "office guards") expect(error.message).toContain("a folder on the office's PATH")
+    expect(h.store.listSessions()).toEqual([])
+    expect(h.store.listWorkItems()).toEqual([])
+  },
+)
+
+test("a start whose default connection cant be read takes office and says so", async () => {
+  const h = makeCodex()
+  h.office.connections.ensureDir()
+  fs.writeFileSync(path.join(h.office.connections.dir, "_default.json"), JSON.stringify({ x: 1 }), { mode: 0o600 })
+  const row = await h.sessions.startSession("minh", h.workspace, { openedBy: "ngocbh" })
+  expect(row.connection).toBe("office")
+  expect(h.lines).toContain("the office's default connection can't be read; new chats take office as the default")
+  await waitFor(() => status(h, row.id) === "idle", { what: "the load" })
 })

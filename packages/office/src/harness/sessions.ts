@@ -1,13 +1,23 @@
 /** The office's live Codex sessions, each with its own app-server. */
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
-import { type HarnessPolicy, type Message, Question, now } from "@opencorp/protocol"
+import { type HarnessPolicy, type Message, OFFICE, Question, Session, WorkItem, now } from "@opencorp/protocol"
 import type { Hooks } from "../chat/hooks.ts"
+import { ProviderError } from "../chat/provider.ts"
 import { HarnessError, LIVE, notWaiting } from "../chat/state.ts"
 import { loadRepo } from "../company/loader.ts"
 import type { Office } from "../daemon/office.ts"
 import type { AnswerKind, CardActor } from "../questions/cards.ts"
-import { InvalidTransition, NotFound, type QuestionRecord, type SessionRecord, type Store } from "../store/store.ts"
+import { UnsafeWorkspace, checkWorkspace, isInside, realPath } from "../sandbox/policy.ts"
+import {
+  InvalidTransition,
+  NotFound,
+  type QuestionRecord,
+  type SessionRecord,
+  type Store,
+  newId,
+} from "../store/store.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import type { HarnessEvent } from "./adapter.ts"
 import { CLOSE_GRACE_MS, CodexProcess, CodexStartError, appServerCommand } from "./codex.ts"
@@ -50,6 +60,8 @@ export class CodexSessions implements CardActor {
   readonly #live = new Map<string, CodexSession>()
   /** Set by `closeAll`: no session starts after office stop. */
   #closed = false
+  /** The tail of the continuations' serial section. */
+  #continuing: Promise<unknown> = Promise.resolve()
 
   constructor(office: Office, hooks: Hooks, options: CodexSessionsOptions = {}) {
     this.office = office
@@ -67,6 +79,68 @@ export class CodexSessions implements CardActor {
   /** The live session `sessionId`, if it has one. */
   get(sessionId: string): CodexSession | undefined {
     return this.#live.get(sessionId)
+  }
+
+  /** Starts `handle`'s Codex chat in `cwd`: work item, session, worked folder, then the load of its own thread.
+   *
+   *  `openedBy` is the human who opened it; the work item is theirs (the CEO's when null). `connection` is their
+   *  pick for the session's debrief. A start that fails before anything is live leaves the session `failed` and
+   *  rejects with 500 `start_failed` naming it; a load that fails later fails the session with why. */
+  async startSession(
+    handle: string,
+    cwd: string,
+    { openedBy = null, connection = null }: { openedBy?: string | null; connection?: string | null } = {},
+  ): Promise<SessionRecord> {
+    const session = await this.#open(handle, cwd, { openedBy, connection })
+    try {
+      await this.start(session)
+    } catch (error) {
+      await this.#failed(session.id, error, `can't start Codex session ${session.id}`)
+    }
+    return this.store.getSession(session.id)!
+  }
+
+  /** Continues an ended Codex session: a new session on the same Codex thread, which it resumes.
+   *
+   *  The new session is `by`'s, in the same person and folder, at the company's current commit, with its own work
+   *  item and token counts. A resume Codex refuses fails the new session with why. */
+  async continueSession(sessionId: string, { by = null }: { by?: string | null } = {}): Promise<SessionRecord> {
+    const old = this.store.getSession(sessionId)
+    if (old === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
+    if (old.harness !== "codex") throw new HarnessError(422, "not_continuable", "only a Codex session can be continued")
+    // Its first load failed.
+    if (!old.harness_session_id)
+      throw new HarnessError(
+        422,
+        "not_continuable",
+        "this Codex session never loaded its thread, so there is nothing to continue",
+      )
+    if (LIVE.includes(old.status)) throw new HarnessError(409, "live", `session ${sessionId} is still open`)
+    const session = await this.#serial(async () => {
+      const thread = this.store
+        .listSessions()
+        .filter((s) => s.harness === "codex" && s.harness_session_id === old.harness_session_id)
+      const holder = thread.find((s) => LIVE.includes(s.status))
+      if (holder !== undefined) throw new HarnessError(409, "live", `this Codex thread is open in session ${holder.id}`)
+      // The newest stretch on the thread is the parent, whichever one was asked for: the chain stays one line, so
+      // each stretch's token counts start after every earlier one's.
+      const newest = thread.reduce((a, b) =>
+        b.created_at > a.created_at || (b.created_at === a.created_at && b.id > a.id) ? b : a,
+      )
+      // The continued session's connection, so this stretch's debrief runs on the same office model.
+      return this.#open(old.person, old.cwd, {
+        openedBy: by,
+        connection: old.connection,
+        harnessSessionId: old.harness_session_id,
+        parentSessionId: newest.id,
+      })
+    })
+    try {
+      await this.start(session, { resume: true })
+    } catch (error) {
+      await this.#failed(session.id, error, `can't continue session ${sessionId}`)
+    }
+    return this.store.getSession(session.id)!
   }
 
   /** Loads `session`'s thread in a new app-server, as a job of the session's queue; a failure there fails the
@@ -314,6 +388,135 @@ export class CodexSessions implements CardActor {
     fs.chmodSync(runDir, 0o700)
     await proc.start()
     return proc
+  }
+
+  /** Fails session `sessionId` if it is still `starting`, then rejects: a `HarnessError` as it is, anything else
+   *  logged by type as `what` and as 500 `start_failed`. */
+  async #failed(sessionId: string, error: unknown, what: string): Promise<never> {
+    if (this.store.getSession(sessionId)?.status === "starting") {
+      const session = this.store.updateSession(sessionId, notWaiting("failed"))
+      await this.hooks.notify("sessionEnded", session)
+    }
+    if (error instanceof HarnessError) throw error
+    // The type only: the message can quote anything.
+    this.log(`${what} (${nameOf(error)})`)
+    throw new HarnessError(500, "start_failed", `session ${sessionId} failed to start; see the office log`)
+  }
+
+  /** Runs `body` after every earlier one has settled, so two continuations can't both find the thread free. */
+  #serial<T>(body: () => Promise<T>): Promise<T> {
+    const run = this.#continuing.then(() => body())
+    this.#continuing = run.catch(() => undefined)
+    return run
+  }
+
+  /** Checks `handle` and `cwd` at the company's current commit, then stores the Codex session `starting` with its
+   *  work item and worked folder; nothing runs yet. Every check comes before any write. */
+  async #open(
+    handle: string,
+    cwd: string,
+    {
+      openedBy,
+      connection,
+      harnessSessionId = null,
+      parentSessionId = null,
+    }: {
+      openedBy: string | null
+      connection: string | null
+      harnessSessionId?: string | null
+      parentSessionId?: string | null
+    },
+  ): Promise<SessionRecord> {
+    await this.office.git.commitHandEdits()
+    const head = await this.office.git.head()
+    const repo = loadRepo(await this.office.git.pin(head))
+    const person = repo.people.get(handle)
+    if (person === undefined) throw new HarnessError(404, "not_found", `no person ${handle}`)
+    if (person.kind !== "agent") throw new HarnessError(422, "not_an_agent", `${handle} has no main flow to chat with`)
+    if (!person.harnesses.includes("codex"))
+      throw new HarnessError(422, "unsupported_harness", `${handle} doesn't use the codex harness`)
+    // A 422 never echoes the request's path: it may not be a folder at all.
+    if (!path.isAbsolute(cwd)) throw new HarnessError(422, "invalid_body", "cwd is not an absolute path")
+    if (!fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory())
+      throw new HarnessError(422, "invalid_body", "cwd is not a folder")
+    // Clients match folders by their resolved path (/tmp is /private/tmp on macOS).
+    const real = realPath(cwd)
+    try {
+      checkWorkspace(real, this.office.guards)
+    } catch (error) {
+      if (error instanceof UnsafeWorkspace) throw new HarnessError(422, "unsafe_workspace", error.message)
+      throw error
+    }
+    // The workspace check guards ~/.opencorp; this office's home may be elsewhere.
+    for (const kept of [this.office.paths.company, this.office.paths.office]) {
+      if (isInside(real, kept) || isInside(kept, real))
+        throw new HarnessError(
+          422,
+          "unsafe_workspace",
+          `workspace ${real} overlaps the office's files at ${realPath(kept)}; use a project folder`,
+        )
+    }
+    const chosen = await this.#connection(connection)
+    const t = now()
+    const item = this.store.createWorkItem(
+      WorkItem.parse({
+        id: newId(),
+        title: `Chat with ${person.name} in ${path.basename(real) || real}`,
+        kind: "task",
+        status: "in_progress",
+        requester: openedBy || (repo.company ? repo.company.ceo : handle),
+        assignee: handle,
+        created_at: t,
+        updated_at: t,
+      }),
+    )
+    const session = this.store.createSession(
+      Session.parse({
+        id: newId(),
+        person: handle,
+        harness: "codex",
+        office: os.hostname(),
+        cwd: real,
+        repo_commit: head,
+        status: "starting",
+        kind: "main",
+        work_item_id: item.id,
+        opened_by: openedBy,
+        connection: chosen,
+        model: null,
+        model_note: null,
+        harness_session_id: harnessSessionId,
+        parent_session_id: parentSessionId,
+        created_at: t,
+        updated_at: t,
+      }),
+    )
+    this.store.touchWorkedFolder(handle, real)
+    return session
+  }
+
+  /** The connection a new Codex session's debrief runs on: `requested` if it is on this office, else the office's
+   *  default (`office` when the names or the default can't be read). Nothing is probed: a Codex session runs on
+   *  Codex's own login, so the connection only serves its debrief, and a probe would make a start wait on the
+   *  network. */
+  async #connection(requested: string | null): Promise<string> {
+    let names: string[]
+    try {
+      names = await this.office.connections.names()
+    } catch (error) {
+      if (error instanceof ProviderError) return OFFICE
+      throw error
+    }
+    let fallback: string
+    try {
+      fallback = await this.office.connections.default()
+    } catch (error) {
+      if (!(error instanceof ProviderError)) throw error
+      // Nothing else would say why chats left the default.
+      this.log("the office's default connection can't be read; new chats take office as the default")
+      fallback = OFFICE
+    }
+    return requested && names.includes(requested) ? requested : fallback
   }
 
   #must(sessionId: string): CodexSession {
