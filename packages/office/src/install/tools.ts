@@ -35,26 +35,28 @@ export function resolveTools(env: Env): Tools {
 /**
  * The office's install folders, as realpaths. A checkout command
  * (`[bun, ...flags, <checkout>/packages/cli/src/main.ts]`) is the checkout root. A compiled binary at
- * `<pkg>/bin/opencorp`, with `<pkg>` an `opencorp-<os>-<cpu>` package, is that package plus the `opencorp` shim
- * package beside it (hoisted) or holding it (nested in its `node_modules`); any other binary is its own folder.
+ * `<pkg>/bin/opencorp`, with `<pkg>` an `opencorp-<os>-<cpu>` package, is that package, plus the `opencorp` shim
+ * package when npm's layouts put it there: hoisted beside `<pkg>` in the same `node_modules`, or nested, with `<pkg>`
+ * in the `node_modules` of a shim that itself sits in a `node_modules`. pnpm's store isn't searched: a workspace
+ * containing the store already contains the package. Any other binary is its own folder.
  */
-export function installPaths(command: readonly string[] = selfCommand()): string[] {
-  if (command.length > 1) {
-    const entry = realPath(command[command.length - 1]!)
-    return [path.dirname(path.dirname(path.dirname(path.dirname(entry))))]
-  }
-  const binary = realPath(command[0]!)
+export function installPaths([program, ...rest]: readonly [string, ...string[]] = selfCommand()): string[] {
+  const entry = rest.at(-1)
+  if (entry !== undefined) return [path.dirname(path.dirname(path.dirname(path.dirname(realPath(entry)))))]
+  const binary = realPath(program)
   const bin = path.dirname(binary)
   const pkg = path.dirname(bin)
   const inPackage =
     path.basename(binary) === "opencorp" && path.basename(bin) === "bin" && PLATFORM_PACKAGE.test(path.basename(pkg))
   if (!inPackage) return [bin]
   const parent = path.dirname(pkg)
-  if (path.basename(parent) === "node_modules" && path.basename(path.dirname(parent)) === "opencorp") {
-    return [pkg, path.dirname(parent)]
-  }
+  if (path.basename(parent) !== "node_modules") return [pkg]
   const sibling = path.join(parent, "opencorp")
-  return fs.existsSync(sibling) ? [pkg, realPath(sibling)] : [pkg]
+  if (fs.existsSync(sibling)) return [pkg, realPath(sibling)]
+  const shim = path.dirname(parent)
+  // A project folder that happens to be named opencorp is not the shim; npm's nested shim is itself a package.
+  if (path.basename(shim) === "opencorp" && path.basename(path.dirname(shim)) === "node_modules") return [pkg, shim]
+  return [pkg]
 }
 
 /**
@@ -65,11 +67,11 @@ export function installPaths(command: readonly string[] = selfCommand()): string
 export function workspaceGuards(
   tools: Tools,
   env: Env,
-  command: readonly string[] = selfCommand(),
+  command: readonly [string, ...string[]] = selfCommand(),
 ): SandboxOfficePaths {
   return {
     install: installPaths(command),
-    tools: [...Object.values(tools).filter((tool) => tool !== undefined), realPath(command[0]!)],
+    tools: [...Object.values(tools).filter((tool) => tool !== undefined), realPath(command[0])],
     path: (env.PATH ?? "").split(":").filter((entry) => entry.startsWith("/")),
   }
 }

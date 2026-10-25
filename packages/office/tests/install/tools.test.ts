@@ -36,11 +36,13 @@ test("relative entries directories and files that cant run are skipped", () => {
   const relative = path.relative(process.cwd(), r)
   expect(path.isAbsolute(relative)).toBe(false)
   const root = tempDir()
-  const [d1, d2, d3] = ["d1", "d2", "d3"].map((d) => path.join(root, d))
-  fs.mkdirSync(path.join(d1!, "git"), { recursive: true })
-  fakeTool(path.join(d2!, "git"), 0o644)
-  fakeTool(path.join(d3!, "git"))
-  expect(resolveTools({ PATH: [relative, d1, d2, d3].join(":") }).git).toBe(fs.realpathSync(path.join(d3!, "git")))
+  const d1 = path.join(root, "d1")
+  const d2 = path.join(root, "d2")
+  const d3 = path.join(root, "d3")
+  fs.mkdirSync(path.join(d1, "git"), { recursive: true })
+  fakeTool(path.join(d2, "git"), 0o644)
+  fakeTool(path.join(d3, "git"))
+  expect(resolveTools({ PATH: [relative, d1, d2, d3].join(":") }).git).toBe(fs.realpathSync(path.join(d3, "git")))
   expect(resolveTools({ PATH: relative }).git).toBeUndefined()
 })
 
@@ -67,19 +69,31 @@ test("repo is this checkout", () => {
 })
 
 test("a compiled binary installs as its package and its shim package", () => {
-  const hoisted = path.join(tempDir(), "nm")
+  const hoisted = path.join(tempDir(), "node_modules")
   const pkg = path.join(hoisted, "opencorp-darwin-arm64")
   const binary = fakeTool(path.join(pkg, "bin", "opencorp"))
-  fs.mkdirSync(path.join(hoisted, "opencorp"))
-  expect(installPaths([binary])).toEqual([fs.realpathSync(pkg), fs.realpathSync(path.join(hoisted, "opencorp"))])
+  const sibling = path.join(hoisted, "opencorp")
+  fs.mkdirSync(sibling)
+  expect(installPaths([binary])).toEqual([fs.realpathSync(pkg), fs.realpathSync(sibling)])
 
-  const shim = path.join(tempDir(), "nm", "opencorp")
+  const link = path.join(tempDir(), "link", "bin", "opencorp")
+  fs.mkdirSync(path.dirname(link), { recursive: true })
+  fs.symlinkSync(binary, link)
+  expect(installPaths([link])).toEqual([fs.realpathSync(pkg), fs.realpathSync(sibling)])
+
+  const shim = path.join(tempDir(), "node_modules", "opencorp")
   const nested = path.join(shim, "node_modules", "opencorp-linux-x64")
-  fakeTool(path.join(nested, "bin", "opencorp"))
-  expect(installPaths([path.join(nested, "bin", "opencorp")])).toEqual([
+  expect(installPaths([fakeTool(path.join(nested, "bin", "opencorp"))])).toEqual([
     fs.realpathSync(nested),
     fs.realpathSync(shim),
   ])
+
+  const alone = path.join(tempDir(), "node_modules", "opencorp-darwin-arm64")
+  expect(installPaths([fakeTool(path.join(alone, "bin", "opencorp"))])).toEqual([fs.realpathSync(alone)])
+
+  // `npm i opencorp` in a project folder that is itself named opencorp: the project is not the shim.
+  const project = path.join(tempDir(), "opencorp", "node_modules", "opencorp-darwin-arm64")
+  expect(installPaths([fakeTool(path.join(project, "bin", "opencorp"))])).toEqual([fs.realpathSync(project)])
 
   const x = path.join(tempDir(), "x")
   expect(installPaths([fakeTool(path.join(x, "opencorp"))])).toEqual([fs.realpathSync(x)])
@@ -87,13 +101,11 @@ test("a compiled binary installs as its package and its shim package", () => {
 
 test("the workspace guards refuse a tool folder a path entry and the install", () => {
   const root = tempDir()
-  const [t, p, c, r, sibling] = ["t", "p", "c", "r", "sibling"].map((d) => path.join(root, d)) as [
-    string,
-    string,
-    string,
-    string,
-    string,
-  ]
+  const t = path.join(root, "t")
+  const p = path.join(root, "p")
+  const c = path.join(root, "c")
+  const r = path.join(root, "r")
+  const sibling = path.join(root, "sibling")
   fakeTool(path.join(t, "bin", "git"))
   fs.mkdirSync(path.join(p, "bin"), { recursive: true })
   fs.mkdirSync(sibling)
