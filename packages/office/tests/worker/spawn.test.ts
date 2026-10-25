@@ -291,18 +291,46 @@ test("the office closes the channel of a worker that sends a bad frame", async (
   expect(lines).toEqual([["WARNING", BAD_FRAME_LINE]])
 })
 
-test("a deliver reply frame without its fields is a bad frame", async () => {
+const BAD_REPLIES: Frame[] = [
+  { id: 3 },
+  { id: "", seq: 1 },
+  { id: "a" },
+  { id: "a", seq: 1, refused: "x" },
+  { id: "a", refused: "x", closed: [] },
+  { id: "a", seq: "1" },
+  { id: "a", seq: 1, closed: [1] },
+  { id: "a", failed: 3 },
+]
+
+test.each(BAD_REPLIES.map((fields) => [JSON.stringify(fields), fields] as const))(
+  "a deliver reply frame without its fields is a bad frame [%s]",
+  async (_shape, fields) => {
+    const { office, worker: far } = await channelPair()
+    const rec = new Recorder()
+    const { lines, log } = recordingLog()
+    const worker = workerOver(exitedChild(), office, rec, makeJob(base()), { log })
+    await worker.start()
+    expect((await far.recv()).type).toBe("start")
+    await far.send({ type: "deliver_reply", ...fields })
+    await expect(far.recv()).rejects.toBeInstanceOf(ChannelClosed)
+    expect(await worker.wait(10_000)).toBe(0)
+    expect(rec.replies).toEqual([])
+    expect(lines).toEqual([["WARNING", BAD_FRAME_LINE]])
+  },
+)
+
+test("a well formed deliver reply frame reaches the handler", async () => {
   const { office, worker: far } = await channelPair()
   const rec = new Recorder()
   const { lines, log } = recordingLog()
   const worker = workerOver(exitedChild(), office, rec, makeJob(base()), { log })
   await worker.start()
   expect((await far.recv()).type).toBe("start")
-  await far.send({ type: "deliver_reply", id: 3 })
-  await expect(far.recv()).rejects.toBeInstanceOf(ChannelClosed)
-  expect(await worker.wait(10_000)).toBe(0)
-  expect(rec.replies).toEqual([])
-  expect(lines).toEqual([["WARNING", BAD_FRAME_LINE]])
+  const reply = { type: "deliver_reply", id: "a", seq: null, closed: ["c1"] }
+  await far.send(reply)
+  await waitFor(() => rec.replies.length === 1, { timeout: 10_000, what: "the reply to reach the handler" })
+  expect(rec.replies).toEqual([reply])
+  expect(lines).toEqual([])
 })
 
 test("a worker that keeps running after its channel closes is killed after the grace", async () => {

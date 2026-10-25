@@ -1,5 +1,6 @@
 /** Deliveries: yian host calls a worker makes on its run, from the job and from deliver frames. */
 import fs from "node:fs"
+import { foldRunLog, PoolCommitRecord } from "@ngocbh/yian/run"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { ChannelClosed, type Frame } from "../../src/worker/channel.ts"
@@ -72,6 +73,16 @@ function steerSteps(job: Job): [unknown, Record<string, unknown>][] {
     .filter(([, step]) => step.kind === "steer")
 }
 
+/** A `Recorder` that also notes, for each `deliver_reply`, whether the RunStarted event came before it. */
+class RepliesAfterStart extends Recorder {
+  readonly afterStart: boolean[] = []
+
+  override deliverReply(worker: unknown, frame: Frame): void {
+    this.afterStart.push(this.names().includes("RunStarted"))
+    super.deliverReply(worker, frame)
+  }
+}
+
 /** Reads `office`'s frames until `done(frames)` holds; returns every frame read. */
 async function readUntil(office: { recv(): Promise<Frame> }, done: (frames: Frame[]) => boolean): Promise<Frame[]> {
   const frames: Frame[] = []
@@ -99,8 +110,9 @@ test("an interrupt returns the text so far", async () => {
   const fake = await fakeLlm()
   fake.script(...TOOL_THEN_DONE)
   const job = makeJob(base(), "flows/cuttable.yaml", { groups: specGroups() })
+  const env = fake.env()
   const rec = await run(job, new DuringShout((w) => w.deliver({ id: "i1", op: "interrupt", inbox: "steers" })), {
-    env: fake.env(),
+    env,
   })
   expect([rec.outcome?.status, rec.outcome?.output]).toEqual(["succeeded", null])
   expect(fake.requests().length).toBe(1)
@@ -110,8 +122,21 @@ test("an interrupt returns the text so far", async () => {
   expect(ended.length).toBe(1)
   expect(ended[0]!.interrupted).toBe(true)
   expect(rec.replies).toEqual([{ type: "deliver_reply", id: "i1", seq: null, closed: [] }])
-  const steps = logPayloads(job, "node_step").filter((payload) => payload.node_id === "reply")
-  expect(JSON.stringify(steps)).toContain("Working")
+  const folded = await foldRunLog(job.log, { env: (name) => env[name], codeRoot: job.pin })
+  const newMessages = folded.records.find(
+    ({ entry, value }) =>
+      value !== null &&
+      entry.envelope.record instanceof PoolCommitRecord &&
+      entry.envelope.record.key === "reply.new_messages",
+  )
+  const [cut] = newMessages?.value?.toObject() as Record<string, unknown>[]
+  expect(cut).toMatchObject({
+    role: "assistant",
+    parts: [
+      { type: "text", text: "Working" },
+      { type: "tool_call", name: "shout" },
+    ],
+  })
 })
 
 test("a steer the node never reads stays in the inbox", async () => {
@@ -179,7 +204,7 @@ test("deliveries sent before RunStarted arrive in order", async () => {
   const fake = await fakeLlm()
   onTestFinished(() => fake.release())
   fake.script({ content: "Done.", hold: true }, { content: "Done." })
-  const rec = new Recorder()
+  const rec = new RepliesAfterStart()
   const job = makeJob(base(), "flows/steerable.yaml", {
     groups: specGroups(),
     deliver: [
@@ -188,6 +213,9 @@ test("deliveries sent before RunStarted arrive in order", async () => {
     ],
   })
   const worker = await inProcessWorker(job, rec, { env: fake.env() })
+  // The job's a and b are always held: they are queued before the run starts. Whether the worker reads c and d
+  // before RunStarted (held) or after (applied live) is a race the test can't control; either way they follow a and
+  // b, and no reply comes before the run started.
   expect(await worker.deliver({ id: "c", op: "send", inbox: "steers", event: "c" })).toBe(true)
   expect(await worker.deliver({ id: "d", op: "send", inbox: "steers", event: "d" })).toBe(true)
   await fake.waitForRequests(1, 30_000)
@@ -197,6 +225,7 @@ test("deliveries sent before RunStarted arrive in order", async () => {
   expect(rec.outcome?.status).toBe("succeeded")
   expect(sent(job, "steers")).toEqual(["a", "b", "c", "d"])
   expect(rec.replies.map((reply) => reply.id)).toEqual(["a", "b", "c", "d"])
+  expect(rec.afterStart).toEqual([true, true, true, true])
   const seqs = rec.replies.map((reply) => reply.seq as number)
   expect(seqs.every((seq, i) => typeof seq === "number" && (i === 0 || seq > seqs[i - 1]!))).toBe(true)
 })
@@ -277,14 +306,14 @@ test("a deliver to a run that ended is refused", async () => {
 
 test("a malformed deliver frame after the result is a bad office frame", async () => {
   const job = makeJob(base(), "flows/inbox.yaml", { inputs: {} })
-  const { office, done, out } = await startWorker()
+  const { office, done, out } = await startWorker({ linger: 60_000 })
   await office.send({ type: "start", job })
   expect((await lastFrame(office)).status).toBe("waiting")
   const began = performance.now()
   await office.send({ type: "deliver", id: "x", op: "send" })
   await office.send({ type: "deliver", id: "y", op: "send", inbox: "messages", event: "hi" })
   await done
-  // Reading ended, so the linger ended at once, not after LINGER_MS.
+  // Reading ended, so the linger ended at once, not after its 60 s.
   expect(performance.now() - began).toBeLessThan(4000)
   expect(out.code).toBe(EXIT_OK)
   expect(out.exit).toBeUndefined()

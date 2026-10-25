@@ -65,8 +65,8 @@ export function jobMemory(job: Job, rpc: Rpc, env: Env): Map<string, ProfileMemo
   return memory.size > 0 ? memory : null
 }
 
-/** A delivery's answer, without its `type` and `id`: `{seq, closed?}`, `{refused}` or `{failed}`. */
-type Outcome = Record<string, unknown>
+/** A delivery's answer: a `deliver_reply` without its `type` and `id`. */
+type Outcome = { seq: number | null; closed?: string[] } | { refused: string } | { failed: string }
 
 /**
  * The deliveries a worker applies to its run, in order, each answered by one `deliver_reply`.
@@ -118,7 +118,8 @@ class Deliveries {
     this.#pump()
   }
 
-  /** Applies the first `n` queued deliveries one at a time, each answered as usual; the rest stay held. */
+  /** Only for a held queue: applies the first `n` queued deliveries one at a time, each answered as usual, while
+   *  the queue stays held; the rest wait for `open()`. */
   async applyFirst(n: number): Promise<void> {
     const first = this.#queue.splice(0, n)
     this.#busy = true
@@ -130,7 +131,8 @@ class Deliveries {
     }
   }
 
-  /** Resolves once nothing is queued or being applied. */
+  /** Resolves once nothing is queued or being applied; on a held queue with deliveries queued, only after `open()`
+   *  or `refuse()`. */
   drained(): Promise<void> {
     if (!this.#busy && this.#queue.length === 0) return Promise.resolve()
     return new Promise((resolve) => this.#idle.push(resolve))
@@ -141,7 +143,8 @@ class Deliveries {
       for (const { id } of this.#queue.splice(0)) this.#reply({ type: "deliver_reply", id, refused: "not_started" })
     } else if (this.#state === "open" && !this.#busy && this.#queue.length > 0) {
       this.#busy = true
-      void this.#run(this.#queue.shift()!).then(() => {
+      // `#run` never rejects: `#apply` is bound before `open()`, and the applier catches every error.
+      void this.#run(this.#queue.shift()!).finally(() => {
         this.#busy = false
         this.#pump()
       })
@@ -184,7 +187,7 @@ function applier(log: string, env: Env, codeRoot: string): (delivery: Delivery) 
 }
 
 /** The calls a run waits on, in a frame's field names. */
-function waitsFrame(waits: RunInspection["waits"]): Frame[] {
+function wireWaits(waits: RunInspection["waits"]): Frame[] {
   return waits.map((w) => ({
     node: w.node,
     call_id: w.callId,
@@ -198,7 +201,7 @@ function waitsFrame(waits: RunInspection["waits"]): Frame[] {
 /** A waiting run's `status`, `waits` and `failure` as its log says now. */
 function waitingFields(log: string): Frame {
   const inspection = inspectRun(log)
-  return { status: inspection.status, waits: waitsFrame(inspection.waits), failure: inspection.failure }
+  return { status: inspection.status, waits: wireWaits(inspection.waits), failure: inspection.failure }
 }
 
 /** What `serve` and `readFrames` share: whether the job finished. */
@@ -254,6 +257,7 @@ export async function serve(
     } else {
       log = job.log
       last = { type: "result", ...(await runJob(job, channel, rpc, deliveries, { env, signal: stopper.signal })) }
+      // After the run call a delivery applies offline, with yian taking the lock; a no-op once RunStarted opened it.
       deliveries.open()
     }
     code = EXIT_OK
@@ -329,7 +333,7 @@ async function runJob(
     run_id: result.runId,
     output: result.output,
     failure: result.failure,
-    waits: waitsFrame(result.waits),
+    waits: wireWaits(result.waits),
   }
 }
 

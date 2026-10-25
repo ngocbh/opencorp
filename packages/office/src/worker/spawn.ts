@@ -439,13 +439,18 @@ export class WorkerRegistry implements WorkerPool {
  *  with `closed` absent or a list of call ids), `refused` or `failed` (strings). */
 function isDeliverReply(frame: Frame): boolean {
   if (typeof frame.id !== "string" || frame.id === "") return false
-  const outcomes = ["seq", "refused", "failed"].filter((key) => Object.hasOwn(frame, key))
-  if (outcomes.length !== 1) return false
-  const { seq, closed } = frame
-  if (outcomes[0] !== "seq") return typeof frame[outcomes[0]!] === "string" && !Object.hasOwn(frame, "closed")
-  const closedOk =
-    !Object.hasOwn(frame, "closed") || (Array.isArray(closed) && closed.every((id) => typeof id === "string"))
-  return (seq === null || typeof seq === "number") && closedOk
+  const has = (key: string) => Object.hasOwn(frame, key)
+  if (has("seq")) {
+    const { seq, closed } = frame
+    return (
+      (seq === null || typeof seq === "number") &&
+      (!has("closed") || (Array.isArray(closed) && closed.every((id) => typeof id === "string"))) &&
+      !has("refused") &&
+      !has("failed")
+    )
+  }
+  if (has("closed")) return false
+  return has("refused") ? typeof frame.refused === "string" && !has("failed") : typeof frame.failed === "string"
 }
 
 /** A child's exit as a return code: its exit code, or minus the number of the signal that ended it. */
