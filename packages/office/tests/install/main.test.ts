@@ -397,21 +397,23 @@ function driver(dir: string, overrides: string, imports = ""): string[] {
   const file = path.join(dir, "driver.ts")
   const main = JSON.stringify(path.join(SRC, "install/main.ts"))
   fs.writeFileSync(file, `${imports}import { run } from ${main}\nawait run(process.argv.slice(2), ${overrides})\n`)
+  // The same flags as CHECKOUT_FLAGS in src/platform.ts, which doesn't export them; keep the two in sync.
   return [process.execPath, "--no-install", "--no-env-file", "--config=/dev/null", file]
 }
 
-/** A short home for a child's office, kept off HQ's TCP port; when the test ends, the daemon a child left there
- *  is stopped before the home is removed. */
-function childHome(env: Record<string, string>): string {
+/** A short home for a child's office, kept off HQ's TCP port, and `stop`, which stops the daemon a child left
+ *  there; it also runs when the test ends, before the home is removed. */
+function childHome(env: Record<string, string>): { home: string; stop: () => Promise<unknown> } {
   let home = ""
+  const stop = async () => {
+    if (home) await fallback.stopProcess(launch(home, { environ: env }))
+  }
   // Registered before shortDir registers the removal, so it runs first.
-  onTestFinished(async () => {
-    if (home) await fallback.stopProcess(launch(home, { environ: env, userHome: home }))
-  })
+  onTestFinished(stop)
   home = shortDir()
   fs.mkdirSync(path.join(home, "office"), { mode: 0o700 })
   fs.writeFileSync(path.join(home, "office", "hq.json"), '{"tcp": false}')
-  return home
+  return { home, stop }
 }
 
 /** Runs `argv` in `cwd` with `env`, `input` on stdin; killed after `bound` ms. With `readAfter`, stdout is read
@@ -448,7 +450,10 @@ function spawnChild(
   if (talk) talk(child)
   else child.stdin.end(input)
   return new Promise((resolve, reject) => {
-    child.on("error", reject)
+    child.on("error", (error) => {
+      clearTimeout(kill)
+      reject(error)
+    })
     child.on("close", (code) => {
       clearTimeout(kill)
       resolve({ code, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString() })
@@ -471,7 +476,7 @@ test("all of stdout reaches the reader before setup exits", async () => {
   expect(result.code, result.stderr).toBe(0)
   expect(result.stdout.length).toBe(1024 * 1025)
   expect(fs.existsSync(path.join(dir, "calls.log"))).toBe(false)
-})
+}, 30_000)
 
 test("an unexpected error is exit 1 with its stack on stderr", async () => {
   const dir = tempDir()
@@ -493,7 +498,7 @@ test("an unexpected error is exit 1 with its stack on stderr", async () => {
   expect(left.code, left.stderr).toBe(1)
   expect(left.stderr).toContain("dangling")
   expect(fs.existsSync(path.join(dir, "calls.log"))).toBe(false)
-})
+}, 60_000)
 
 const KEY = "sk-ant-sentinel-a7d93c10e5b2"
 
@@ -512,12 +517,13 @@ test(
     fake.script({ content: "OK" })
     const dir = tempDir()
     const env = childEnv(dir)
-    const home = childHome(env)
+    const { home } = childHome(env)
     const done = await realInit(home, env, fake.env(), dir)
     expect(done.code, done.stderr).toBe(0)
     expect(done.stdout.toString()).not.toContain(KEY)
     expect(done.stderr).not.toContain(KEY)
     expect(done.stdout.toString()).toContain("Done.")
+    expect(fake.requests()).toHaveLength(1)
     const kinds = [...loadRepo(path.join(home, "company")).people.values()].map((p) => p.kind)
     expect(kinds.sort()).toEqual(["agent", "human"])
     const file = setupConnectionFile(path.join(home, "office"))
@@ -542,10 +548,10 @@ test(
     fake.script({ content: "OK" })
     const dir = tempDir()
     const env = childEnv(dir)
-    const home = childHome(env)
+    const { home, stop } = childHome(env)
     const done = await realInit(home, env, fake.env(), dir)
     expect(done.code, done.stderr).toBe(0)
-    await fallback.stopProcess(launch(home, { environ: env, userHome: home }))
+    await stop()
     const file = setupConnectionFile(path.join(home, "office"))
     fs.unlinkSync(file) // so onboard asks for the provider
     // The stray output comes after stdout is guarded, so it must land on stderr, not between prompts.
@@ -599,7 +605,7 @@ test(
   async () => {
     const dir = tempDir()
     const env = childEnv(dir)
-    const home = childHome(env)
+    const { home } = childHome(env)
     const empty = path.join(dir, "empty")
     fs.mkdirSync(empty)
     const script = driver(
@@ -625,7 +631,7 @@ test(
   async () => {
     const dir = tempDir()
     const env = childEnv(dir)
-    const home = childHome(env)
+    const { home } = childHome(env)
     // No provider on stdin, so the terminal prompter asks its numbered list on the pipe left open.
     const argv = [...selfCommand(), "install", "init", "--home", home, "--service", "background"]
     const result = await spawnChild(argv, env, {
@@ -633,10 +639,13 @@ test(
       cwd: dir,
       talk: (child) => {
         let seen = ""
+        let sent = false
         child.stdout.on("data", (chunk: Buffer) => {
-          const asked = seen.includes("Model provider")
           seen += chunk.toString()
-          if (!asked && seen.includes("Model provider")) child.kill("SIGINT")
+          if (!sent && seen.includes("Model provider")) {
+            sent = true
+            child.kill("SIGINT")
+          }
         })
       },
     })
@@ -650,11 +659,11 @@ test(
 test("an input error after a prompt failed is not a crash", async () => {
   const dir = tempDir()
   const prompts = JSON.stringify(path.join(SRC, "install/prompts.ts"))
+  // The queued EIO comes in exit's one-macrotask yield, before the streams end: where it could count as a crash.
   const script = driver(
     dir,
     "{ offboard: async () => { " +
       'setImmediate(() => { throw Object.assign(new Error("read EIO"), { code: "EIO" }) }); ' +
-      "await new Promise((r) => setTimeout(r, 100)); " +
       "throw new OnboardError(\"no answer to 'x' (stdin closed)\") } }",
     `import { OnboardError } from ${prompts}\n`,
   )

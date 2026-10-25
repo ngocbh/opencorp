@@ -296,7 +296,9 @@ export async function run(argv: string[], setup: Partial<Setup> = {}): Promise<n
   let exiting = false
   let ending = false
   let failed = false
+  let interrupted = false
   const exit = async (code: number): Promise<never> => {
+    // The first exit is already on its way to process.exit; later callers wait for it.
     if (exiting) return new Promise<never>(() => {})
     exiting = true
     // Bun reports a rejection the last step left only after a macrotask; this lets `crashed` see it first.
@@ -307,8 +309,11 @@ export async function run(argv: string[], setup: Partial<Setup> = {}): Promise<n
     return process.exit(failed ? 1 : code)
   }
   process.on("SIGINT", () => {
-    // A second Ctrl-C while the streams drain exits at once, in case a flush never ends.
-    if (exiting) process.exit(130)
+    // A repeat Ctrl-C exits at once, in case a flush never ends. A first one while an exit drains leaves that
+    // exit's code alone.
+    if (interrupted) process.exit(130)
+    interrupted = true
+    if (exiting) return
     // At a prompt Ctrl-C is a key in raw mode, not a signal, so this one came outside a prompt (a numbered list
     // reading a line, git running); raw mode goes off in case something left it on.
     if (process.stdin.isTTY) process.stdin.setRawMode?.(false)
