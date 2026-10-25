@@ -225,6 +225,9 @@ install/test_legacy.py	dropped	—	legacy.py goes; no migration (D24, D4)	O0-9
 install/test_main.py	open	—	—	O2-13b
 install/test_offboard.py	open	—	—	O2-18b
 install/test_onboard.py	open	—	—	O2-15
+install/test_onboard.py::test_a_running_office_is_not_topped_up_behind_its_back	changed	packages/office/tests/install/onboard.test.ts::a running office is not topped up behind its back	D32: no debrief flow in the template; side_chat and profile_manager are the two dropped flows	O2-15
+install/test_onboard.py::test_lint_errors_stop_onboarding_before_anything_runs	changed	packages/office/tests/install/onboard.test.ts::lint errors stop onboarding before anything runs	D13/P3: the setup connection is office/connections/office.json	O2-15
+install/test_onboard.py::test_onboard_saves_no_provider_whose_model_doesnt_answer	changed	packages/office/tests/install/onboard.test.ts::onboard saves no provider whose model doesnt answer	D13/P3: the setup connection is office/connections/office.json	O2-15
 install/test_provider_setup.py	ported	packages/office/tests/install/provider_setup.test.ts	—	O2-14
 install/test_provider_setup.py::test_a_directory_where_the_provider_goes_is_an_onboard_error	changed	packages/office/tests/install/provider_setup.test.ts::a directory where the provider goes is an onboard error	D13/P3: office/connections keeps its .lock beside office.json	O2-14
 install/test_provider_setup.py::test_a_key_in_the_environment_is_never_read	changed	packages/office/tests/install/provider_setup.test.ts::a key in the environment is never read	design §10.1: no test changes process.env; the poisoned env is a child's	O2-14
@@ -737,6 +740,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/onboard.test.ts::a model that fails says why without the key	plan.md How the dependencies were derived 4: modelProblem lives in onboard.ts; O2-17 lists onboard.test.ts when it flips test_interview.py and drops this row	O2-15
 —	new	packages/office/tests/install/onboard.test.ts::a setup run failure never shows the key or url credentials	plan.md How the dependencies were derived 4: modelProblem lives in onboard.ts; O2-17 lists onboard.test.ts when it flips test_interview.py and drops this row	O2-15
 —	new	packages/office/tests/install/onboard.test.ts::a setup run sees only the office workers env and the providers	plan.md How the dependencies were derived 4: modelProblem lives in onboard.ts; O2-17 lists onboard.test.ts when it flips test_interview.py and drops this row	O2-15
+—	new	packages/office/tests/install/onboard.test.ts::an existing home is made private	design §6 rule 6: the home is 0700, an existing one chmodded as Python's make_home does	O2-15
 —	new	packages/office/tests/install/onboard.test.ts::redact takes the user and password out of urls	design §9.1: errors are scrubbed of the key and URL userinfo	O2-15
 —	new	packages/office/tests/install/onboard.test.ts::the unknown model warning stays off the terminal	plan.md How the dependencies were derived 4: modelProblem lives in onboard.ts; O2-17 lists onboard.test.ts when it flips test_interview.py and drops this row	O2-15
 —	new	packages/office/tests/install/proc.test.ts::args of an exited process is null	design §9.4: ps replaces psutil cmdline	O2-11a

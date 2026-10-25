@@ -19,12 +19,15 @@ import {
 } from "@ngocbh/yian/llm_clients"
 import { FileLockError, withWarnings } from "@ngocbh/yian/platform"
 import type { RunFlowOptions, RunResult } from "@ngocbh/yian/run"
-import { deviceName, Identity, identityPath, writeIdentity } from "../auth/identity.ts"
+import { deviceName, Identity, identityPath, readIdentity, writeIdentity } from "../auth/identity.ts"
 import { newToken, tokenSha256 } from "../auth/tokens.ts"
 import { azureBaseUrl, Connections } from "../chat/connections.ts"
 import * as models from "../chat/models.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
-import type { Owner } from "../company_template/index.ts"
+import { CompanyGitError } from "../company/git.ts"
+import { lint } from "../company/lint.ts"
+import { loadRepo } from "../company/loader.ts"
+import { isNew, missingFiles, type Owner, writeCompany } from "../company_template/index.ts"
 import { makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
 import { repr } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
@@ -32,8 +35,9 @@ import { strerror } from "../sandbox/fs_helper.ts"
 import { PrivateFileError, writePrivate } from "../secrets.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import checkModelYaml from "./flows/check_model.yaml" with { type: "file" }
-import { type Completed, type Env, runCommand } from "./launch.ts"
+import { type Completed, defaultHost, type Env, type Host, launch, runCommand, ServiceError } from "./launch.ts"
 import { NoTerminal, OnboardError, type Prompter, TRIES } from "./prompts.ts"
+import * as service from "./service.ts"
 
 /** What to do when a home has no company. */
 export const SET_UP = "run `opencorp init` to create one, or `opencorp onboard --from URL` to join one"
@@ -589,8 +593,9 @@ export function makeHome(home: string): void {
     makeOfficeDir(path.join(home, "office"))
   } catch (error) {
     if (error instanceof OfficeStartError) throw new OnboardError(error.message)
-    if (errnoCode(error) === undefined) throw error
-    throw new OnboardError(`can't set up the office home ${home}: ${strerror(error) ?? (error as Error).message}`)
+    const text = strerror(error)
+    if (text === undefined) throw error
+    throw new OnboardError(`can't set up the office home ${home}: ${text}`)
   }
 }
 
@@ -618,19 +623,158 @@ export const CLONE = ".company-clone"
 
 /** The questions, by which command-line flags preset their answers. */
 export const REPO_URL = "Company repo URL (empty if there's none yet)"
-/** The questions, by which command-line flags preset their answers. */
 export const WHO = "Which of them are you?"
 
 /** Removes `file`, whether a dir, a file, or a symlink (never what it points to); nothing if it's gone. */
 export function removePath(file: string): void {
-  const st = fs.lstatSync(file, { throwIfNoEntry: false })
-  if (st === undefined) return
-  if (st.isDirectory()) fs.rmSync(file, { recursive: true, force: true })
-  else fs.rmSync(file, { force: true })
+  fs.rmSync(file, { recursive: true, force: true })
 }
 
 /** Onboarding's steps: the company, this device, the model, and the office. */
 export const STEPS = 4
+
+/** The identity saved at `home`, or undefined when there is none. Looked for first, since reading takes the
+ *  home's `.lock`, which a failed onboarding must not leave behind. */
+async function knownIdentity(home: string): Promise<Identity | undefined> {
+  const file = identityPath(home)
+  return lexists(file) ? await readIdentity(file) : undefined
+}
+
+/** How `onboard` runs. */
+export interface OnboardOptions {
+  /** Lists deployments and models to pick from. */
+  listers: Listers
+  /** Checks the model answers before the provider is saved (`modelProblem` in production). */
+  checkModel: ModelCheck
+  /** The service manager to run the office under; `auto` (the default) takes the first that works. */
+  mode?: service.Mode | "auto"
+  /** A provider as JSON, which replaces the saved one. */
+  stdin?: Readable
+  /** This machine (`defaultHost()` by default). */
+  host?: Host
+  /** The caller's environment: the daemon's is taken from it, and the user's git runs in it (`process.env` by
+   *  default). */
+  environ?: Env
+  /** The company repo to clone when there's none here; asked for when not given. */
+  source?: string
+  /** Whether each step gets a numbered header (default true). */
+  steps?: boolean
+  /** This account's default name and handle (`loginDefaults` by default). */
+  loginDefaults?: () => [name: string, handle: string]
+}
+
+/**
+ * Sets up this machine's office for the company at `home`; running it again only fills in what is missing.
+ *
+ * In order: the home and office dirs (0700); the company repo, cloned from `source` (or a URL asked for) when
+ * there's none here, and topped up with any template files it lacks (lint errors stop here; left alone while the
+ * office runs); this device, which for a cloned company is listed for the human you pick (after their password,
+ * if they have one) and committed in the clone before the office starts, unless the company already lists this
+ * device's identity; the office's setup connection; and the daemon under `mode`. With `steps`, each step gets a
+ * numbered header (`opencorp init` turns them off, since onboarding is one of its steps).
+ *
+ * Throws `OnboardError` when a step failed, or there's no company here and no repo to clone; earlier steps stay
+ * done.
+ */
+export async function onboard(home: string, prompter: Prompter, options: OnboardOptions): Promise<void> {
+  const host = options.host ?? defaultHost()
+  const one = launch(home, { environ: options.environ ?? process.env, userHome: host.userHome })
+  const company = path.join(one.home, "company")
+  const worktrees = path.join(one.office, "worktrees")
+  makeHome(one.home)
+  prompter.say(`Office home: ${one.home}`)
+
+  const step = (number: number, title: string, why: string) => {
+    if (options.steps ?? true) prompter.step(number, STEPS, title, why)
+  }
+
+  step(1, "Company", "This office works for one company, whose people and flows live in its git repo.")
+  // A running office is the only writer of its company clone (CompanyGit's lock is in-process), so the template
+  // top-up waits until it is stopped.
+  const running = await host.answers(one.socket)
+  const fresh = await isNew(company)
+  const root = company
+  if (fresh) {
+    if (running) {
+      throw new OnboardError(
+        `the office is running, but ${company} has no company yet; stop it and run \`opencorp onboard\` again`,
+      )
+    }
+    if (fs.statSync(company, { throwIfNoEntry: false })?.isDirectory() && fs.readdirSync(company).length > 0) {
+      throw new OnboardError(
+        `${company} holds a company that was never finished (no first commit);` +
+          " run `opencorp init` to finish it, or remove it to join another",
+      )
+    }
+    const url = options.source || (await prompter.ask(REPO_URL))
+    if (!url) throw new OnboardError(`there's no company at ${company}; ${SET_UP}`)
+    throw new OnboardError("cloning comes in 5b")
+  }
+  let me: Identity | undefined
+  try {
+    let written: string[] = []
+    let missing: string[] = []
+    try {
+      if (running) missing = missingFiles(root)
+      else written = await writeCompany(root, worktrees)
+    } catch (error) {
+      if (!(error instanceof CompanyGitError || error instanceof RangeError || errnoCode(error) !== undefined)) {
+        throw error
+      }
+      throw new OnboardError(`can't write the company repo at ${company}: ${(error as Error).message}`)
+    }
+    if (missing.length > 0) {
+      prompter.say(`Company repo: ${company}. ${stopToTopUp(missing.length)}`)
+    } else if (written.length > 0 || !fresh) {
+      const done = written.length > 0 ? `added ${written.length} template files to` : "up to date at"
+      prompter.say(`Company repo: ${done} ${company}`)
+    }
+    const errors = (await lint(loadRepo(root))).filter((issue) => issue.severity === "error")
+    if (errors.length > 0) {
+      throw new OnboardError(
+        "the company repo has errors; fix them and run `opencorp onboard` again:\n" +
+          errors.map((issue) => `  ${issue.path}: ${issue.code}: ${issue.message}`).join("\n"),
+      )
+    }
+
+    step(2, "This device", "The office takes requests only from devices its humans list, once any human lists one.")
+    me = await knownIdentity(one.home)
+    if (fresh) {
+      // An empty dir: rename can't put a directory over a full one.
+      if (fs.statSync(company, { throwIfNoEntry: false })?.isDirectory()) fs.rmdirSync(company)
+      fs.renameSync(root, company)
+    }
+  } catch (error) {
+    if (fresh) removePath(root)
+    throw error
+  }
+  if (me !== undefined) {
+    prompter.say(`This device: ${me.device}, acting as @${me.handle} (its token is in ${identityPath(one.home)})`)
+  } else {
+    prompter.say("This device has no identity yet; run `opencorp login` to use opencorp from it.")
+  }
+
+  step(3, "Model", "Your agents think with this model; its key stays in this office, readable only by you.")
+  const wrote = await ensureProvider(one.office, prompter, {
+    listers: options.listers,
+    stdin: options.stdin,
+    checkModel: options.checkModel,
+  })
+  prompter.say(`Model provider: ${wrote ? "saved to" : "up to date at"} ${setupConnectionFile(one.office)}`)
+
+  step(4, "Office", "The office runs as a service, so your agents keep working after this terminal closes.")
+  let installed: service.Installed
+  try {
+    installed = await service.install(one, host, options.mode ?? "auto")
+    for (const note of installed.notes) prompter.say(`  skipped ${note}`)
+    await service.wait(one, host)
+  } catch (error) {
+    if (error instanceof ServiceError || error instanceof OfficeStartError) throw new OnboardError(error.message)
+    throw error
+  }
+  prompter.say(`Office: running under ${installed.mode ?? "a process started by hand"}; log at ${one.log}`)
+  prompter.say("Done. Run `opencorp` in a project folder to talk to your team.")
+}
 
 /**
  * Runs `flow` with `provider`'s model as an office run would; resolves its result (null when the run threw), and
