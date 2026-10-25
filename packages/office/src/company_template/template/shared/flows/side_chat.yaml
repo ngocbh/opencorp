@@ -26,7 +26,9 @@ input:
   history: !list(list(Message))  # the kept turns, one list of messages each; [] for a new chat
   turns: !int  # the session's turns so far
   max_turns: !int  # the run ends once turns reaches it
-  history_budget: !int 32000  # characters of message text before compacting, the seed included; the office passes the seed's cap plus 32,000
+  # Characters of message text before compacting, the seed included; the office passes the seed's
+  # cap plus 32,000.
+  history_budget: !int 32000
 
 defs:
   # The history so far, compacted, plus its kept turns as one list: a prompt splice must be a lone

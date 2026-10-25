@@ -8,7 +8,7 @@ import { loadConfined } from "../../src/company/flows.ts"
 import type { FakeLLM, ScriptedReply } from "../../src/testing/fake_llm.ts"
 import type { Delivery, Job, JobInput } from "../../src/worker/job.ts"
 import { tempDir, waitFor } from "../helpers.ts"
-import { advanceJob, inProcessWorker, makeJob, Recorder, type TestWorker, waitsOf } from "../worker/helpers.ts"
+import { advanceJob, inProcessWorker, makeJob, Recorder, run, type TestWorker, waitsOf } from "../worker/helpers.ts"
 import { fakeLlm } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -144,16 +144,9 @@ function templateJob(name: string, handlers: Recorder, inputs: Record<string, un
   return makeJob({ pin, runs: path.join(root, "runs") }, `shared/flows/${name}.yaml`, over, handlers)
 }
 
-/** Runs `job` with `handlers` in an in-process worker against `fake` until it exits; returns `handlers`. */
-async function runJob<H extends Recorder>(job: Job, handlers: H, fake: FakeLLM): Promise<H> {
-  const worker = await inProcessWorker(job, handlers, { env: fake.env() })
-  expect(await worker.wait()).not.toBeNull()
-  return handlers
-}
-
 /** Advances the run `chat` started, applying `deliver` first; returns its recorder. */
 function advance(chat: Job, fake: FakeLLM, deliver: Delivery[], name = "chat"): Promise<Recorder> {
-  return runJob(advanceJob(chat, { deliver }), new Office(name), fake)
+  return run(advanceJob(chat, { deliver }), new Office(name), { env: fake.env() })
 }
 
 /** The nodes a waiting result waits at. */
@@ -189,7 +182,7 @@ function requestMessages(fake: FakeLLM, index: number): Record<string, any>[] {
 async function waitingChat(fake: FakeLLM, name = "chat", inputs: Record<string, unknown> = {}): Promise<Job> {
   const rec = new Office(name)
   const job = templateJob(name, rec, inputs)
-  await runJob(job, rec, fake)
+  await run(job, rec, { env: fake.env() })
   expect(waitingAt(rec)).toEqual(["chat#0/heard"])
   return job
 }
@@ -220,7 +213,8 @@ test("a message sent during the reply reaches its next model call and the histor
       return await super.toolCall(worker, group, name, args)
     }
   }
-  const rec = await runJob(advanceJob(job, { deliver: [send("s1", "Plan the trip.")] }), new SendDuringTool(), fake)
+  const during = advanceJob(job, { deliver: [send("s1", "Plan the trip.")] })
+  const rec = await run(during, new SendDuringTool(), { env: fake.env() })
   expect(fake.requests().length).toBe(2)
   expect(json(requestMessages(fake, 1))).toContain("Also mention Rome.")
   const [end] = succeeded(rec, "chat#0/__end__")
@@ -242,8 +236,8 @@ test("a message sent after the replys last model call is the next turn at once",
 })
 
 /** Holds the reply's first model call (answering `held`), sends "queued", interrupts, then releases; returns the
- *  recorders of the cut run and of the run that answered "queued" (the same one when the cut run took it). */
-async function interruptMidReply(fake: FakeLLM, held: ScriptedReply): Promise<{ cut: Recorder; last: Recorder }> {
+ *  recorder of that run, which answers "queued" as its next turn and waits at the one after. */
+async function interruptMidReply(fake: FakeLLM, held: ScriptedReply): Promise<Recorder> {
   fake.script({ ...held, hold: true }, { content: "Got it." })
   const job = await waitingChat(fake)
   const cut = new Office()
@@ -255,34 +249,30 @@ async function interruptMidReply(fake: FakeLLM, held: ScriptedReply): Promise<{ 
   await waitFor(() => cut.replies.some((reply) => reply.id === "cut"), { timeout: 10_000, what: "the interrupt" })
   fake.release()
   expect(await worker.wait()).not.toBeNull()
-  expect(cut.outcome?.status).toBe("waiting")
-  const last = fake.requests().length > 1 ? cut : await advance(job, fake, [])
-  return { cut, last }
+  // The queued message the cut reply never read is the next turn, taken by the same worker.
+  expect(waitingAt(cut)).toEqual(["chat#2/heard"])
+  return cut
 }
 
 test("an interrupt mid reply gives a null reply and the run waits at the next turn with the queued message", async () => {
   const fake = await fakeLlm()
   // Several chunks: the cut lands before a later one, since a reply whose text has all arrived stands.
-  const { cut, last } = await interruptMidReply(fake, { content: "Thinking about it" })
+  const cut = await interruptMidReply(fake, { content: "Thinking about it" })
   const [reply] = succeeded(cut, "chat#0/reply")
   expect([reply!.interrupted, reply!.output]).toEqual([true, null])
   expect(fake.requests().length).toBe(2)
   expect(requestMessages(fake, 1).at(-1)).toEqual({ role: "user", content: "queued" })
-  expect(waitingAt(last)).toEqual(["chat#2/heard"])
 })
 
 test("an interrupted reply with no text adds no empty assistant message to the next request", async () => {
   const fake = await fakeLlm()
   // A reply with no text and no tool call is a final answer, which stands; one that calls a tool is cut before the
   // call runs.
-  const { cut } = await interruptMidReply(fake, { content: "", tool_calls: [{ name: "toolbox_stub" }] })
+  const cut = await interruptMidReply(fake, { content: "", tool_calls: [{ name: "toolbox_stub" }] })
   expect(succeeded(cut, "chat#0/reply").map((reply) => [reply.interrupted, reply.output])).toEqual([[true, null]])
-  const after = fake.requests().slice(1)
-  expect(after.length).toBe(1)
-  for (const request of after) {
-    const assistants = (request.messages as Record<string, any>[]).filter((m) => m.role === "assistant")
-    expect(assistants.filter((m) => !m.content && !m.tool_calls)).toEqual([])
-  }
+  expect(fake.requests().length).toBe(2)
+  const assistants = requestMessages(fake, 1).filter((m) => m.role === "assistant")
+  expect(assistants.filter((m) => !m.content && !m.tool_calls)).toEqual([])
 })
 
 test("the author of a message reaches the request", async () => {

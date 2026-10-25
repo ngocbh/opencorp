@@ -568,8 +568,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/provider.test.ts::an env name or value a spawn cant pass is refused [%s]	design §6.5: a spawn can't pass an empty name or one holding = or NUL, or a value holding NUL, as given (= sets another variable; NUL makes the spawn throw with the value in its message)	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::runtime settings that arent loader variables are kept	design §6.5 (R2 m5): the refusal stops at runtime and loader names	O2-19
 —	new	packages/office/tests/chat/state.test.ts::write state with nothing new writes nothing	design §3.2 (mirror): Python's equality check before writing (state.py:56) had no test; it keeps a no-op status write from emitting session.updated	O3-8b
-—	new	packages/office/tests/chat/template.test.ts::a long history is folded into the summary before the reply	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
-—	new	packages/office/tests/chat/template.test.ts::a message read along with the close is kept unanswered	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::a long history is folded into the summary before the reply	design §8.8; Python's session memory summarised past 32,000 characters keeping 4 turns: the template folds them with yian's compact_history	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::a message read along with the close is kept unanswered	4a-revision §1: messages read along with the close aren't answered	O4a-1
 —	new	packages/office/tests/chat/template.test.ts::a message sent after the replys last model call is the next turn at once	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
 —	new	packages/office/tests/chat/template.test.ts::a message sent during the reply reaches its next model call and the history	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
 —	new	packages/office/tests/chat/template.test.ts::a template chat ends when its inbox closes [%s]	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
