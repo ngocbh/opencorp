@@ -118,7 +118,7 @@ test("init runs its interview then asks for the password and the remote through 
         confirm_company,
         ask_password,
         ask_remote,
-        ask_user: async () => "x",
+        ask: async () => "x",
       },
     },
   )
