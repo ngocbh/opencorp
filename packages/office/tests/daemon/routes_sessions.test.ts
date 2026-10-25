@@ -20,14 +20,17 @@ function post(sock: string, target: string, body: unknown, headers: Record<strin
   })
 }
 
+/** GETs `target`. */
 function get(sock: string, target: string): Promise<Reply> {
   return request(sock, "GET", target)
 }
 
+/** The reply's error code. */
 function errorOf(r: Reply): string {
   return (r.json() as { error: string }).error
 }
 
+/** The ids of the sessions in the reply. */
 function ids(r: Reply): string[] {
   return (r.json() as { id: string }[]).map((s) => s.id)
 }
@@ -81,7 +84,7 @@ test("list sessions defaults to fifty", async () => {
   expect(ids(await get(sock, "/sessions"))).toHaveLength(50)
 })
 
-// "²" is a digit to Python's `int()`, not to the route.
+// "²".isdigit() is true, but neither Python's int() nor the route takes it.
 test.each(["0", "501", "x", "²"])("bad limit is 422 [%s]", async (limit) => {
   const { sock } = await served(makeOffice())
   const r = await get(sock, "/sessions" + query([["limit", limit]]))

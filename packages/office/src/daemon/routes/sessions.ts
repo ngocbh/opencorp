@@ -31,8 +31,8 @@ export function listSessions(ctx: RequestContext) {
     .flatMap((raw) => raw.split(","))
     .map(strip)
     .filter((s) => s !== "")
-  // The last of a repeated param, as Starlette's `get` reads it. An empty value is passed on as Python's was
-  // (`?person=` matches no session), unlike `/questions`' empty `session`.
+  // An empty value is passed on as Python's was (`?person=` matches no session), unlike `/questions`' empty
+  // `session`.
   const last = (name: string) => q.getAll(name).at(-1)
   return ctx.office.store.listSessions({
     person: last("person"),
@@ -74,7 +74,7 @@ export async function harnessCall<T>(fn: () => T | Promise<T>): Promise<T> {
 }
 
 /** What a client reads of a session before following its live events: a Codex session's current turn. 404 comes
- *  first, since the transcript read never needed a harness. */
+ *  first: Python's transcript read was a store read, with no harness. */
 export async function listMessages(ctx: RequestContext, params: Params) {
   const session = stored(ctx, params.id!)
   const actor = harness(ctx, "GET /sessions/:id/messages")
