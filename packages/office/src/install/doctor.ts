@@ -17,6 +17,7 @@ import { CodexMissing, codexCommand } from "../harness/codex.ts"
 import { RETRY_MS } from "../hq/servers.ts"
 import { CHECKOUT } from "../hq/version.ts"
 import { selfCommand } from "../platform.ts"
+import { strerror } from "../sandbox/fs_helper.ts"
 import { checkWorkspace, type OfficePaths as Guards, SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
 import { fsHelper, run } from "../sandbox/run.ts"
 import { workerEnv } from "../worker/spawn.ts"
@@ -113,7 +114,7 @@ function homeCheck(paths: OfficePaths): Check {
     const code = errnoCode(error)
     if (code === undefined) throw error
     if (code === "ENOENT") return { name: "home", status: "fail", detail: `no office home at ${paths.home}; ${SET_UP}` }
-    return { name: "home", status: "fail", detail: `can't read ${paths.home}: ${code}` }
+    return { name: "home", status: "fail", detail: `can't read ${paths.home}: ${strerror(error) ?? code}` }
   }
   if (!st.isDirectory()) return { name: "home", status: "fail", detail: `${paths.home} is not a directory` }
   if ((st.mode & 0o7777) !== 0o700) {
@@ -192,7 +193,7 @@ async function providerCheck(paths: OfficePaths): Promise<Check> {
     }
     const code = errnoCode(error)
     if (code === undefined) throw error
-    return { name: "provider", status: "fail", detail: `can't read ${file}: ${code}` }
+    return { name: "provider", status: "fail", detail: `can't read ${file}: ${strerror(error) ?? code}` }
   }
   const llm = saved.llm_config ?? {}
   const name = (typeof llm.provider === "string" && llm.provider) || "default provider"
@@ -238,7 +239,7 @@ function connectionsCheck(paths: OfficePaths, lstat: (p: string) => fs.Stats): C
   } catch (error) {
     const code = errnoCode(error)
     if (code === undefined) throw error
-    return { name: "connections", status: "fail", detail: `can't read ${folder}: ${code}` }
+    return { name: "connections", status: "fail", detail: `can't read ${folder}: ${strerror(error) ?? code}` }
   }
   const loose: string[] = []
   for (const entry of entries) {

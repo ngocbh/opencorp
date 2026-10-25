@@ -763,15 +763,15 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/hq/static.test.ts::a path with a doubled slash is not a file of the app	design §6 static rules: //index.html resolves as an absolute path outside app_dir (Python's app_dir / rel), so it is a 404	O2-7
 —	new	packages/office/tests/hq/static.test.ts::the not built page escapes the checkout path	design §6.4 (static): the checkout path is HTML-escaped in the not-built page, as Python's html.escape	O2-7
 —	new	packages/office/tests/hq/version.test.ts::build json that is a fifo is invalid without blocking	design §6: build.json is opened O_NONBLOCK and fstat-checked, so a FIFO never blocks	O2-7
-—	new	packages/office/tests/install/doctor.test.ts::a codex version is shown uncolored and cut short	design §6.8 rule 11	O2-18a
+—	new	packages/office/tests/install/doctor.test.ts::a codex version is shown uncolored and cut short	design §6 security rule 11	O2-18a
 —	new	packages/office/tests/install/doctor.test.ts::a codex wrapper whose inner command is missing is a failed version	design §2.7	O2-18a
 —	new	packages/office/tests/install/doctor.test.ts::a crash marker followed by a later start is not a crash	design §2.3	O2-18a
-—	new	packages/office/tests/install/doctor.test.ts::a crash marker never shows more than the error type	design §2.3, §6.8 rule 13	O2-18a
+—	new	packages/office/tests/install/doctor.test.ts::a crash marker never shows more than the error type	design §2.3, §6 security rule 13	O2-18a
 —	new	packages/office/tests/install/doctor.test.ts::a duplicate start is not a failed start	design §2.3	O2-18a
 —	new	packages/office/tests/install/doctor.test.ts::a helper inside the office home fails the sandbox check	O1-11, design §2.5	O2-18a
-—	new	packages/office/tests/install/doctor.test.ts::a lock file in connections is private	P3, design §6.8 rule 6	O2-18a
+—	new	packages/office/tests/install/doctor.test.ts::a lock file in connections is private	P3, design §6 security rule 6	O2-18a
 —	new	packages/office/tests/install/doctor.test.ts::a pinned tool that vanished is told to restart the office	design §6.1 (O3-12)	O2-18a
-—	new	packages/office/tests/install/doctor.test.ts::a provider whose folder lock isnt private fails	design §6.8 rule 6	O2-18a
+—	new	packages/office/tests/install/doctor.test.ts::a provider whose folder lock isnt private fails	design §6 security rule 6	O2-18a
 —	new	packages/office/tests/install/doctor.test.ts::a stopped offices store is read without its wal files	O2-18a plan choice 6, design §9.4	O2-18a
 —	new	packages/office/tests/install/doctor.test.ts::a store doctor cant read warns on the folders line	design §9.4	O2-18a
 —	new	packages/office/tests/install/doctor.test.ts::a worked folder holding a pinned tool or a path entry fails the folders check	design §6.1	O2-18a
