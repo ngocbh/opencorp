@@ -618,6 +618,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/harness/codex.test.ts::a line over the cap signals the group once	design §6.6 (only the first kill signals a group), §6.8 rule 13 (the line cap kills the app-server)	O3-12
 —	new	packages/office/tests/harness/codex.test.ts::a linked codex log refuses to start	design §6.5, security rule 6 (codex.log opened O_NOFOLLOW, 0600)	O3-12
 —	new	packages/office/tests/harness/codex.test.ts::a relative override or path entry is not codex	design §6.1: codex is looked up on the absolute PATH entries only, as resolveTools	O3-12
+—	new	packages/office/tests/harness/codex.test.ts::a store that cannot record the app server leaves it dead	design §6.6: a process the office can't record is killed at once, nothing left running	O3-12
 —	new	packages/office/tests/harness/codex.test.ts::the pinned codex makes the app server command	design §6.8 rule 3: the app-server runs the codex binary pinned at start	O3-12
 —	new	packages/office/tests/harness/rpc.test.ts::a broken stdin fails requests notifications and replies as rpc closed	design §7.2: write errors (EPIPE) become RpcClosed	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a character split across two writes arrives whole and a last line without a newline is read at the end	design §7.2: lines split as bytes, the last line read at the end	O3-10

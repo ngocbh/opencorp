@@ -467,6 +467,22 @@ test("a line over the cap signals the group once", async () => {
   expect(lines).toEqual(["codex: a line over the 16 MiB limit; stopping the app-server"])
 })
 
+test("a store that cannot record the app server leaves it dead", async () => {
+  const dir = tempDir()
+  const store = openStore()
+  tracked(store)
+  // The same spy as tracked's, so the failed call is still captured for cleanup by pid and start time.
+  const record = spyOn(store, "recordWorker").mockImplementationOnce(() => {
+    throw new Error("disk full")
+  })
+  const { p } = proc(dir, store)
+  expect((await rejection(p.start())).message).toBe("disk full")
+  expect(record.mock.calls.map(([, w]) => w.pid)).toEqual([p.pid])
+  await waitFor(() => !p.alive, { timeout: 5000, what: "the app-server to die" })
+  expect(store.listWorkers()).toEqual([])
+  expect(p.proc!.stdout!.destroyed).toBe(true)
+})
+
 test("a linked codex log refuses to start", async () => {
   const dir = tempDir()
   const store = openStore()
