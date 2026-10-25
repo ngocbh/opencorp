@@ -50,6 +50,7 @@ export async function startTmux(launch: Launch, host: Host): Promise<void> {
   if (done.code !== 0) throw new ServiceError(`tmux new-session failed: ${done.stderr.trim()}`)
 }
 
+/** `error`'s text: the system's words for an OS error, else its message. */
 function messageOf(error: unknown): string {
   return strerror(error) ?? (error instanceof Error ? error.message : String(error))
 }
@@ -64,7 +65,8 @@ function messageOf(error: unknown): string {
 export function startBackground(launch: Launch, host: Host): void {
   makeOfficeDir(launch.office)
   const program = launch.argv[0]
-  // `sh` would report a missing program only in the log, after the caller has started waiting.
+  // `sh` would report a missing program only in the log, after the caller has started waiting. The office
+  // program is always an absolute path (`launch` builds it from `selfCommand()`), so no search path is given.
   if (which(program, undefined) === null) throw new ServiceError(`can't start ${program}: not an executable file`)
   let log: number
   try {
@@ -93,6 +95,7 @@ export function startBackground(launch: Launch, host: Host): void {
     // A late spawn error must not become an uncaught exception; the caller's wait reports a daemon that never
     // answers.
     child.on("error", () => {})
+    if (child.pid === undefined) throw new ServiceError(`can't start ${program}`)
     child.unref()
   } finally {
     fs.closeSync(log)

@@ -24,6 +24,16 @@ function officeAt(dir: string, command: string, environ: Record<string, string> 
   return launch(path.join(dir, "home"), { command: [command], environ, userHome: dir })
 }
 
+/** What `call` threw; fails the test when it returns. */
+function refusal(call: () => void): Error {
+  try {
+    call()
+  } catch (error) {
+    return error as Error
+  }
+  throw new Error("expected a throw")
+}
+
 test("the tmux command runs the daemon with only its env its output to the log and its stdin on the pane", () => {
   expect(fallback.shellCommand(ownerLaunch())).toBe(
     "ulimit -n 4096; exec /usr/bin/env -i HOME=/Users/owner PATH=/usr/bin:/bin" +
@@ -66,7 +76,8 @@ test("background detaches the daemon with its output in a private log", () => {
     got.options = options
     // The parent closes the log after the spawn, so it is read while the call runs.
     got.log = fs.fstatSync(stdio[1])
-    return Object.assign(new EventEmitter(), { unref: () => (got.unref = true) }) as unknown as ChildProcess
+    const child = { pid: 4242, unref: () => (got.unref = true) }
+    return Object.assign(new EventEmitter(), child) as unknown as ChildProcess
   }
   const one = officeAt(dir, program(dir), { PATH: "/usr/bin", ANTHROPIC_API_KEY: "sk-x" })
   fallback.startBackground(one, makeHost(dir, new Runner(), { spawn }))
@@ -81,6 +92,22 @@ test("background detaches the daemon with its output in a private log", () => {
   expect(got.log!.ino).toBe(fs.statSync(one.log).ino)
   expect(fs.statSync(one.office).mode & 0o777).toBe(0o700)
   expect(got.unref).toBe(true)
+  expect(() => fs.fstatSync(stdio[1])).toThrow()
+})
+
+test("a spawn that fails is a service error and closes the log", () => {
+  const dir = tempDir()
+  let fd: number | undefined
+  const spawn = (_argv: readonly [string, ...string[]], options: SpawnOptions): ChildProcess => {
+    fd = (options.stdio as [string, number, number])[1]
+    throw new Error("spawn refused")
+  }
+  const one = officeAt(dir, program(dir))
+  const error = refusal(() => fallback.startBackground(one, makeHost(dir, new Runner(), { spawn })))
+  expect(error).toBeInstanceOf(ServiceError)
+  expect(error.message).toContain("can't start")
+  expect(fd).toBeNumber()
+  expect(() => fs.fstatSync(fd!)).toThrow("EBADF")
 })
 
 test("background refuses a symlinked log", () => {
@@ -88,8 +115,9 @@ test("background refuses a symlinked log", () => {
   const one = officeAt(dir, program(dir))
   fs.mkdirSync(one.office, { recursive: true, mode: 0o700 })
   fs.symlinkSync(path.join(dir, "elsewhere"), one.log)
-  expect(() => fallback.startBackground(one, makeHost(dir, new Runner()))).toThrow(ServiceError)
-  expect(() => fallback.startBackground(one, makeHost(dir, new Runner()))).toThrow("log")
+  const error = refusal(() => fallback.startBackground(one, makeHost(dir, new Runner())))
+  expect(error).toBeInstanceOf(ServiceError)
+  expect(error.message).toContain("log")
   expect(fs.existsSync(path.join(dir, "elsewhere"))).toBe(false)
 })
 
@@ -101,8 +129,9 @@ test("background without the office program is a service error", () => {
     spawned = true
     throw new Error("not reached")
   }
-  expect(() => fallback.startBackground(one, makeHost(dir, new Runner(), { spawn }))).toThrow(ServiceError)
-  expect(() => fallback.startBackground(one, makeHost(dir, new Runner(), { spawn }))).toThrow("can't start")
+  const error = refusal(() => fallback.startBackground(one, makeHost(dir, new Runner(), { spawn })))
+  expect(error).toBeInstanceOf(ServiceError)
+  expect(error.message).toContain("can't start")
   expect(spawned).toBe(false)
 })
 
@@ -113,17 +142,16 @@ async function standIn(tail: string): Promise<{ pid: number; started: number | n
   return { pid: group.pid, started: group.started }
 }
 
-/** An office at a fresh home whose pidfile names `pid`. */
-function officeWithPid(pid: number): Launch {
+/** An office at a fresh home, its office dir made. */
+function officeDir(): Launch {
   const dir = tempDir()
   const one = officeAt(dir, "/opt/opencorp/bin/opencorp")
   fs.mkdirSync(one.office, { recursive: true, mode: 0o700 })
-  fs.writeFileSync(path.join(one.office, "office.pid"), `${pid}\n`)
   return one
 }
 
 test("the daemon is found only by its pid start time and home", async () => {
-  const one = officeWithPid(0)
+  const one = officeDir()
   const pidfile = path.join(one.office, "office.pid")
   const live = await standIn(`daemon --home ${one.home}`)
   fs.writeFileSync(pidfile, `${live.pid}\n`)
@@ -151,10 +179,12 @@ test("the daemon is found only by its pid start time and home", async () => {
 })
 
 test("stop process stops the office daemon and nothing else", async () => {
-  const one = officeWithPid(0)
+  const one = officeDir()
   const pidfile = path.join(one.office, "office.pid")
-  fs.writeFileSync(pidfile, `${process.pid}\n`)
+  const other = await standIn(`daemon --home ${one.home}2`)
+  fs.writeFileSync(pidfile, `${other.pid}\n`)
   expect(await fallback.stopProcess(one, { ps: ps() })).toBeNull()
+  expect(isGone(other.pid, other.started)).toBe(false)
 
   const live = await standIn(`daemon --home ${one.home}`)
   fs.writeFileSync(pidfile, `${live.pid}\n`)
