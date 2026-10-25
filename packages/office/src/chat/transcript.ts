@@ -35,7 +35,7 @@ interface Entry {
 }
 
 /** What one run's log has said so far, folded record by record. */
-interface RunState {
+interface Fold {
   /** Every send, by seq, in seq order. */
   sends: Map<number, Send>
   /** The seqs of the sends an accepted take consumed. */
@@ -58,8 +58,8 @@ function messageId(runId: string, seq: number): string {
 
 /** A session's transcript, read from its runs' logs (`<runs>/<run_id>/log.jsonl`). */
 export class Transcript {
-  readonly runs: string
-  readonly maxBytes: number | undefined
+  private readonly runs: string
+  private readonly maxBytes: number | undefined
 
   constructor(runs: string, options: { maxBytes?: number } = {}) {
     this.runs = runs
@@ -94,28 +94,30 @@ export class Transcript {
   }
 
   /** The state of the run `runId`, folded from its whole log; a run with no log yet has none. */
-  private read(runId: string): RunState {
-    const state: RunState = { sends: new Map(), read: new Set(), takes: new Map(), entries: [] }
+  private read(runId: string): Fold {
+    const state: Fold = { sends: new Map(), read: new Set(), takes: new Map(), entries: [] }
     try {
       for (const entry of iterRunRecords(path.join(this.runs, runId, "log.jsonl"), { kinds: KINDS })) {
         fold(state, entry.seq, entry.at, entry.kind, entry.envelope.record)
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw error
     }
     return state
   }
 }
 
 /** Folds the record `record` (of kind `kind`, at `seq` and `at`) into `state`. */
-function fold(state: RunState, seq: number, at: string, kind: string, record: unknown): void {
+function fold(state: Fold, seq: number, at: string, kind: string, record: unknown): void {
   const inbox = MAIN_CHAT.inbox
   if (kind === "pool_commit" && record instanceof PoolCommitRecord) {
     if (record.value !== null && record.key === `${record.nodeId}.${inbox}`) {
       let message: RunMessage
       try {
         message = checkMessage(TypedValue.fromWire(record.value).toObject())
-      } catch {
+      } catch (error) {
+        // Only a value that isn't a Message is skipped; checkMessage refuses one with a RangeError.
+        if (!(error instanceof RangeError)) throw error
         return
       }
       state.sends.set(seq, { seq, at, message })

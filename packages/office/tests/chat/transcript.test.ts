@@ -1,5 +1,6 @@
 /** A session's transcript, read from its runs' logs (Python's `tests/chat/test_transcript.py`). */
 import { expect, setDefaultTimeout, test } from "bun:test"
+import { iterRunRecords, type PoolCommitRecord } from "@ngocbh/yian/run"
 import { Message } from "@opencorp/protocol"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { MAIN_CHAT } from "../../src/chat/turns.ts"
@@ -40,6 +41,15 @@ test("a user message comes from its turns take commit", async () => {
     ["user", ["one"]],
     ["user", ["two"]],
   ])
+  const sends = [...iterRunRecords(job.log, { kinds: ["pool_commit"] })].filter((entry) =>
+    (entry.envelope.record as PoolCommitRecord).key.endsWith(".messages"),
+  )
+  expect(sends.length).toBe(2)
+  sends.forEach((entry, i) => {
+    expect(read[i]!.id).toBe(`r1:${String(entry.seq).padStart(12, "0")}`)
+    expect(read[i]!.parts[0]!.id).toBe(`${read[i]!.id}:0`)
+    expect(read[i]!.created_at).toBe(entry.at)
+  })
 })
 
 test("a user message can name its author", async () => {
@@ -88,7 +98,11 @@ test("an orphan take commit leaves its messages queued", async () => {
   const job = await waitingChat(fake, "chat", {}, { runs })
   await advance(job, fake, [send("s1", "one"), send("s2", "two")])
   const crashed = tempDir()
-  logPrefix(job.log, (entry) => !(entry.kind === "node_succeeded" && MAIN_CHAT.isTurn(entry.nodeId)), crashed)
+  const cut = logPrefix(job.log, (entry) => !(entry.kind === "node_succeeded" && MAIN_CHAT.isTurn(entry.nodeId)), crashed)
+  const takes = [...iterRunRecords(cut, { kinds: ["pool_commit"] })].filter(
+    (entry) => (entry.envelope.record as PoolCommitRecord).take !== null,
+  )
+  expect(takes.length).toBe(1)
   const read = messages(crashed, newId(), ["r1"])
   expect(texts(read)).toEqual([
     ["user", ["one"]],
