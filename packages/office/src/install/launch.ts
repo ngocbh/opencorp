@@ -248,9 +248,10 @@ export interface Completed {
 }
 
 /**
- * Runs `argv` with this process's environment, or exactly `env` when given, and captures its output. A program that can't start is exit 127
- * and one still running after `timeoutMs` is killed and exit 124, not an exception: the output it wrote before
- * the kill is kept, and stderr becomes `<argv[0]> timed out`. One killed by a signal is minus the signal's number.
+ * Runs `argv` with this process's environment, or exactly `env` when given, and captures its output. A program that
+ * can't start is exit 127 and one still running after `timeoutMs` is killed and exit 124, not an exception: the output
+ * it wrote before the kill is kept, and stderr becomes `<argv[0]> timed out`. One killed by a signal is minus the
+ * signal's number.
  */
 export function runCommand(
   argv: readonly [string, ...string[]],

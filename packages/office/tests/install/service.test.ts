@@ -1,15 +1,14 @@
 /** Installing, starting, waiting on, stopping and restarting the office under the best service manager that
  *  works here. Every host's `run` is a stand-in, so no service tool runs; the background-daemon tests start real
  *  daemons on temp homes and kill them by pid and start time when they finish. */
-import { type ChildProcess, spawn } from "node:child_process"
+import type { ChildProcess } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
-import { expect, onTestFinished, test } from "bun:test"
+import { expect, test } from "bun:test"
 import * as fallback from "../../src/install/fallback.ts"
 import {
   type Completed,
-  type Host,
   type Launch,
   ServiceError,
   defaultHost,
@@ -17,13 +16,12 @@ import {
   officeAnswers,
 } from "../../src/install/launch.ts"
 import * as launchd from "../../src/install/launchd.ts"
-import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import * as service from "../../src/install/service.ts"
 import * as systemd from "../../src/install/systemd.ts"
 import { selfSpawnEnv } from "../../src/platform.ts"
 import { company } from "../company/helpers.ts"
 import { cwdOf, envNames, isGone, reexecMarks, shortDir, tempDir } from "../helpers.ts"
-import { Runner, makeHost } from "./helpers.ts"
+import { Runner, daemonHost, killedAtEnd, makeHost } from "./helpers.ts"
 
 /** A `which` that finds every program in `/usr/bin`. */
 const found = (name: string) => `/usr/bin/${name}`
@@ -432,50 +430,6 @@ test("uninstalling nothing runs nothing", async () => {
   expect(await service.uninstall(one, makeHost(dir, run))).toEqual([])
   expect(run.calls).toEqual([])
 })
-
-/** A process the test host started: its pid and the start time read right after the spawn. */
-interface Spawned {
-  pid: number
-  started: number
-}
-
-/**
- * The list a `daemonHost` records its processes in; when the test finishes, each one's group is SIGKILLed if it
- * still has its start time, never by name or pattern. Call before making the test's temp dirs: onTestFinished
- * runs callbacks in registration order, so the daemons go before their homes are removed.
- */
-function killedAtEnd(): Spawned[] {
-  const spawned: Spawned[] = []
-  onTestFinished(() => {
-    for (const d of spawned) if (sameProcess(d.pid, d.started)) killGroup(d.pid)
-  })
-  return spawned
-}
-
-/** A host that really starts processes, recording each in `spawned` at once, waits in real time and asks the
- *  real socket. Its commands still go to a `Runner` and it finds no program, so no service tool runs. */
-function daemonHost(dir: string, spawned: Spawned[]): Host {
-  return {
-    ...makeHost(dir, new Runner()),
-    clock: () => performance.now(),
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    answers: officeAnswers,
-    which: () => null,
-    spawn: (argv, options) => {
-      const child = spawn(argv[0], argv.slice(1), options)
-      if (child.pid !== undefined) {
-        const started = startTime(child.pid)
-        if (started === null) {
-          // Without a start time the cleanup could not tell it from a reused pid, so it must not run on.
-          child.kill("SIGKILL")
-          throw new Error(`can't read the start time of ${argv[0]} (pid ${child.pid})`)
-        }
-        spawned.push({ pid: child.pid, started })
-      }
-      return child
-    },
-  }
-}
 
 /** A home in `dir` with the base company, and HQ kept off its TCP port (Python's `no_web_port`), which the
  *  owner's own office holds. */
