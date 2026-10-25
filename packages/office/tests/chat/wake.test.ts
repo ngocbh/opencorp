@@ -7,6 +7,7 @@ import {
   asleep,
   chatOffice,
   fakeLlm,
+  followWorkers,
   makeActor,
   newSession,
   noWorkersLeft,
@@ -149,18 +150,20 @@ test("wakes racing close all leave the session to wake again", async () => {
   const { actor: first, sid } = await startActor(o)
   await waitFor(() => !first.hasWorker, { what: "the first worker to exit" })
   first.close()
+  const ended: string[] = []
+  o.hooks.sessionEnded.push((s) => void ended.push(s.id))
   for (let i = 0; i < 5; i++) {
-    const registry = makeRegistry(o.office.store)
+    const registry = followWorkers(makeRegistry(o.office.store))
     const actor = new SessionActor({ ...o.ctx, workers: registry }, sid)
     o.actors.push(actor)
-    const delay = Math.random() * 300
     const sends = [0, 1, 2].map((j) => outcome(actor.prompt(`m${i}-${j}`)))
-    await pause(delay)
+    await pause([0, 20, 60, 150, 300][i]!)
     actor.close()
     await registry.closeAll()
     for (const got of await Promise.all(sends)) expect(["turn", "queued", "steer", "503 stopping"]).toContain(got)
     expect(registry.get(sid)).toBeUndefined()
     expect(["idle", "busy"]).toContain(status(o, sid))
+    expect(ended).toEqual([])
   }
   // It still wakes.
   const last = makeActor(o, sid)

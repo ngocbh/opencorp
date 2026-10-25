@@ -47,6 +47,56 @@ test("the status is busy as soon as a message is accepted", async () => {
   await waitFor(() => status(o, sid) === "idle" && texts(o, sid).includes("held"), { what: "the reply" })
 })
 
+test("the status is busy when a message is accepted after the result", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const { worker, handlers, deliveries } = workers[0]!
+  handlers.event(worker, { type: "event", name: "NodeWaiting", data: { node_id: "chat#0/heard", call_ids: ["c1"] } })
+  await waitFor(() => status(o, sid) === "idle", { what: "idle at the turn" })
+  const sent = actor.prompt("hi")
+  await waitFor(() => deliveries.length === 1, { what: "the send" })
+  const take = { node: "chat#0/heard", call_id: "c1", tool: "take", inbox: "messages", deadline: null, settled: false }
+  handlers.result(worker, { type: "result", status: "waiting", run_id: runId, output: null, failure: null, waits: [take] })
+  handlers.deliverReply(worker, { type: "deliver_reply", id: deliveries[0]!.id, seq: 7 })
+  expect(await sent).toBe("turn")
+  // The worker's exit spawns the advance that reads it.
+  expect(status(o, sid)).toBe("busy")
+})
+
+test("a prompt whose send comes back unsent after close is refused as stopping", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const scripted = workers[0]!
+  let unsent!: (sent: boolean) => void
+  scripted.accept = () => new Promise((resolve) => (unsent = resolve))
+  const sent = actor.prompt("hi")
+  await waitFor(() => scripted.deliveries.length === 1, { what: "the send" })
+  actor.close()
+  unsent(false)
+  await expect(sent).rejects.toMatchObject({ status: 503, code: "stopping" })
+  expect(o.kinds).toEqual(["chat"])
+})
+
+test("a start after the registry closed is refused as stopping", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await o.registry.closeAll()
+  await expect(actor.start()).rejects.toMatchObject({ status: 503, code: "stopping" })
+  expect(status(o, sid)).toBe("starting")
+  for (const runId of session(o, sid).run_ids) expect(o.office.store.getRun(runId)?.endReason).toBeNull()
+})
+
 test("the user message is published live under its send id", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "hello" })

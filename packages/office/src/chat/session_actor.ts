@@ -2,7 +2,8 @@
  *  call, the way `yian chat` does (deliver, then `advance`, again while the run waits). */
 import path from "node:path"
 import type { Scheduler } from "@ngocbh/yian/platform"
-import { CompanyDefaults, Handle, type Message, now } from "@opencorp/protocol"
+import type { Message as RunMessage } from "@ngocbh/yian/run"
+import { CompanyDefaults, now } from "@opencorp/protocol"
 import type { z } from "zod"
 import type { CompanyGit } from "../company/git.ts"
 import { loadRepo } from "../company/loader.ts"
@@ -21,7 +22,7 @@ import type { Hooks } from "./hooks.ts"
 import { ProviderError } from "./provider.ts"
 import { chatJob, type RunSpec } from "./run_spec.ts"
 import { HarnessError, LIVE, notWaiting, runState, SETTLED, writeState } from "./state.ts"
-import type { LiveCalls, Transcript } from "./transcript.ts"
+import { type LiveCalls, type Transcript, userMessage } from "./transcript.ts"
 import { type ChatFlow, MAIN_CHAT } from "./turns.ts"
 
 /** What every actor of an office shares. */
@@ -284,8 +285,9 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * Writes the session's run state from what its run waits in: busy while a worker is being spawned, or while a
-   * worker runs the run and it isn't at its turn; else idle. `writeState` leaves ending and finished sessions alone.
+   * Writes the session's run state from what its run waits in: busy while a worker is being spawned or is sure to be
+   * (a re-advance, or a message held for the next job), or while a worker runs the run and it isn't at its turn; else
+   * idle. `writeState` leaves ending and finished sessions alone.
    * Called inside queue jobs.
    */
   settle(): void {
@@ -293,15 +295,16 @@ export class SessionActor implements LiveCalls {
     const session = store.getSession(this.sessionId)
     if (session === undefined || !SETTLED.includes(session.status)) return
     const run = this.#run
-    const running = this.#starting !== null || (run !== null && run.outcome === null && !this.#runAtTurn(run))
+    const spawning = this.#starting !== null || this.#readvance || this.#next.some((p) => p.delivery.op === "send")
+    const running = spawning || (run !== null && run.outcome === null && !this.#runAtTurn(run))
     writeState(store, this.sessionId, runState({ waiting: false, running }), [])
   }
 
   /**
    * Office stop: the workspace is interrupted and every delivery not yet answered is answered: with its recorded
    * reply when the worker sent one, else by the closing rule with `503 stopping`. Later commands are refused `503
-   * stopping`, later worker frames are ignored and later worker requests are refused; the office's registry stops
-   * the workers.
+   * stopping`, later worker frames are ignored and later `askUser` and `toolCall` requests are refused (store requests
+   * still run); the office's registry stops the workers.
    */
   close(): void {
     if (this.#closed) return
@@ -366,6 +369,8 @@ export class SessionActor implements LiveCalls {
       }
       // The worker read its last frame meanwhile; its exit decides the next spawn.
       run.given.splice(run.given.indexOf(p), 1)
+      // The office stopped meanwhile: nothing would answer it from the next job.
+      if (this.#closed) return p.reject(stopping())
     }
     this.#next.push(p)
     if (this.#run === null) await this.#spawnQuietly("advance")
@@ -416,6 +421,8 @@ export class SessionActor implements LiveCalls {
     const runId = this.#runId!
     const pendings = this.#next
     this.#next = []
+    // This spawn is the re-advance; one that fails leaves nothing to wait for.
+    this.#readvance = false
     const run = new WorkerRun(runId, pendings, kind === "advance" ? (this.#waits ?? []) : [])
     this.#starting = run
     try {
@@ -443,10 +450,11 @@ export class SessionActor implements LiveCalls {
       })
       if (kind === "chat") store.setRunConfig(runId, runRecord(name, model, provider))
       const handlers = this.#handlers(run, ask, tools, spec.stores)
+      // The office may have stopped during the awaits above.
+      if (this.#closed) throw stopping()
       run.worker = await this.#ctx.workers.spawn(job, paths.sessionDir(sid), handlers, { env: provider.env })
       this.#run = run
       this.#starting = null
-      this.#readvance = false
       void this.#ctx.hooks.notify("runStarted", session, runId)
       // Busy before any caller hears back: the run isn't at its turn until it shows it.
       if (!this.#closed) this.#trySettle("after a spawn")
@@ -588,7 +596,7 @@ export class SessionActor implements LiveCalls {
     const op = p.delivery.op
     if (Object.hasOwn(reply, "seq")) {
       if (p.late && (op === "send" || op === "complete" || op === "close")) this.#readvance = true
-      if (p.delivery.op === "send") {
+      if (op === "send") {
         // The stored status is busy, and the message shown, before the caller hears back.
         this.#trySettle("after a message")
         this.#publishMessage(run.runId, reply.seq as number, p.delivery.event)
@@ -605,21 +613,10 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  /** Publishes the user message of the `send` the run took at `seq`, as the transcript will show it: its id from the
-   *  run and seq, and only the person's text, the last text part of `sent`. */
+  /** Publishes the user message of the `send` the run took at `seq`, as the transcript will show it. `sent` is the
+   *  message `prompt` built. */
   #publishMessage(runId: string, seq: number, sent: unknown): void {
-    const event = (sent ?? {}) as { parts?: { type?: unknown; text?: unknown }[]; author?: unknown }
-    const text = (event.parts ?? []).findLast((part) => part.type === "text")?.text
-    const id = `${runId}:${String(seq).padStart(12, "0")}`
-    const author = Handle.safeParse(event.author)
-    const message: Message = {
-      id,
-      session_id: this.sessionId,
-      role: "user",
-      author: author.success ? author.data : null,
-      parts: typeof text === "string" ? [{ id: `${id}:0`, type: "text", text }] : [],
-      created_at: now(),
-    }
+    const message = userMessage(this.sessionId, runId, { seq, at: now(), message: sent as RunMessage })
     try {
       this.#ctx.bus.publishLive({ type: "message.updated", session_id: this.sessionId, data: message })
     } catch (error) {

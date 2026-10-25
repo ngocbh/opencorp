@@ -348,7 +348,7 @@ function assistantMessage(sessionId: string, runId: string, seq: number, at: str
 }
 
 /** The user message of `send` in the run `runId`: its last text part, since earlier ones are the turn's context. */
-function userMessage(sessionId: string, runId: string, send: Send): Message {
+export function userMessage(sessionId: string, runId: string, send: Send): Message {
   const id = messageId(runId, send.seq)
   const text = send.message.parts.findLast((part) => part.type === "text") as { text: string } | undefined
   const author = Handle.safeParse(send.message.author)

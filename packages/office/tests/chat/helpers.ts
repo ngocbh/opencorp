@@ -287,6 +287,17 @@ export async function noWorkersLeft(): Promise<void> {
   await waitFor(() => livingWorkers().length === 0, { timeout: 10_000, what: "the workers to exit" })
 }
 
+/** Records each worker `registry` spawns, so `noWorkersLeft` waits for it too; returns `registry`. */
+export function followWorkers(registry: WorkerRegistry): WorkerRegistry {
+  const spawn = registry.spawn.bind(registry)
+  registry.spawn = async (...args) => {
+    const worker = await spawn(...args)
+    spawnedWorkers.push({ pid: worker.pid, started: startTime(worker.pid) })
+    return worker
+  }
+  return registry
+}
+
 /** An office for session actors: its registry, the context its actors share, and what its spawns did. */
 export interface ChatOffice {
   readonly office: Office
@@ -348,7 +359,7 @@ export async function chatOffice(
   office.connections.ensureDir()
   const provider = { llm_config: { ...llmConfig }, env: fake.env(), prices }
   await writePrivate(path.join(office.connections.dir, "office.json"), JSON.stringify(provider))
-  registry = makeRegistry(office.store)
+  registry = followWorkers(makeRegistry(office.store))
   const kinds: string[] = []
   const jobs: Job[] = []
   const holds: { entered: () => void; released: Promise<void> }[] = []
@@ -368,7 +379,6 @@ export async function chatOffice(
       throw new Error("the spawn failed")
     }
     const worker = await spawn(job, sessionDir, handlers, options)
-    spawnedWorkers.push({ pid: worker.pid, started: startTime(worker.pid) })
     afters.shift()?.(worker)
     return worker
   }
@@ -534,17 +544,18 @@ export function state(o: ChatOffice, sid: string): Pick<SessionRecord, "status" 
   return { status, waiting_on, capped }
 }
 
-/** A worker a test drives in place of a process: its job, the handlers the actor gave it, and each delivery sent to
- *  it. */
+/** A worker a test drives in place of a process: its job, the handlers the actor gave it, each delivery sent to it,
+ *  and what its `deliver` answers for a delivery (true by default). */
 export interface ScriptedWorker {
   readonly worker: ActorWorker
   readonly job: Job
   readonly handlers: WorkerHandlers<ActorWorker>
   readonly deliveries: Delivery[]
+  accept: (delivery: Delivery) => boolean | Promise<boolean>
 }
 
 /** Makes `o`'s spawns return scripted workers (still recording each kind and job) whose `deliver` records the
- *  delivery and returns true; returns the workers spawned, in order. */
+ *  delivery and returns what the worker's `accept` says; returns the workers spawned, in order. */
 export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
   const spawned: ScriptedWorker[] = []
   o.registry.spawn = async (job, _sessionDir, handlers) => {
@@ -556,11 +567,12 @@ export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
       pid: NO_GROUP,
       deliver: async (delivery) => {
         deliveries.push(delivery)
-        return true
+        return scripted.accept(delivery)
       },
       stop: async () => true,
     }
-    spawned.push({ worker, job, handlers, deliveries })
+    const scripted: ScriptedWorker = { worker, job, handlers, deliveries, accept: () => true }
+    spawned.push(scripted)
     return worker as Worker
   }
   return spawned
