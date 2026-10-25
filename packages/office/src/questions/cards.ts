@@ -97,8 +97,8 @@ export class Cards {
   /**
    * Stop the asker from the card: it gets `[interrupted by the user]` with the discussion.
    *
-   * A model question in a live main chat is Esc on that chat (the reply stops too), which is no one's; any other
-   * model question is answered as `by` and its run carries on.
+   * A model question in a live main chat is Esc on that chat (the reply stops too) and is credited to no one; any
+   * other model question is answered as `by` and its run carries on.
    */
   async stop(questionId: string, { by = null }: { by?: string | null } = {}): Promise<QuestionRecord> {
     const question = this.#open(questionId)
@@ -140,8 +140,8 @@ export class Cards {
     return null
   }
 
-  /** Runs `body` after every queued body before it, failed or not; it stands for Python's `_discussion` lock, so
-   *  a send-back's re-check, note and answer don't interleave with another's. */
+  /** Runs `body` after every queued body before it, failed or not, so one send-back's re-check, note and answer
+   *  never interleave with another's. */
   #serial<T>(body: () => Promise<T>): Promise<T> {
     const run = this.#tail.then(() => body())
     this.#tail = run.catch(() => undefined)

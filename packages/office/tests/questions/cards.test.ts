@@ -296,12 +296,13 @@ test("two send backs at once leave one note", async () => {
   const results = await Promise.allSettled([cards.sendBack(q.id, "a"), cards.sendBack(q.id, "b")])
   expect(results.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"])
   const failed = results.find((result) => result.status === "rejected")!
+  expect(failed.reason).toBeInstanceOf(HarnessError)
   const error = failed.reason as HarnessError
   expect([error.status, error.code]).toEqual([409, "not_open"])
   expect(office.store.getQuestion(q.id)!.discussion).toHaveLength(2)
 })
 
-test("a dismissed carry over is cleared", async () => {
+test("a dismissed carry over is cleared", () => {
   const office = makeOffice()
   const { cards } = wire(office)
   const stale = card(office)
