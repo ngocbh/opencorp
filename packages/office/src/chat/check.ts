@@ -2,11 +2,13 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { modelProblem } from "../install/onboard.ts"
 import type { Frame } from "../worker/channel.ts"
-import { parseJob } from "../worker/job.ts"
+import { type Job, parseJob } from "../worker/job.ts"
+import type { WorkerEnv } from "../worker/main.ts"
 import { BaseHandlers } from "../worker/rpc.ts"
 import type { WorkerRegistry } from "../worker/spawn.ts"
-import type { Provider } from "./provider.ts"
+import { Provider } from "./provider.ts"
 
 /** How long, in ms, the check may take: one short reply from the model. */
 export const TIMEOUT_MS = 90_000
@@ -83,4 +85,10 @@ function resultOf(frame: Frame | undefined): string | null {
   if (keys.length !== 2 || !Object.hasOwn(frame, "problem")) return NO_RESULT
   const problem = frame.problem
   return problem === null || typeof problem === "string" ? problem : NO_RESULT
+}
+
+/** The worker's side of a `check` job: why the model in `job.llm_config` doesn't answer, or null when it does. The
+ *  run's environment is `env`, the worker's own, which holds the provider env. */
+export async function runCheck(job: Job, env: WorkerEnv): Promise<string | null> {
+  return modelProblem(Provider.parse({ llm_config: job.llm_config }), { env })
 }

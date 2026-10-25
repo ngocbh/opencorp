@@ -618,6 +618,15 @@ test("a model that answers has no problem", async () => {
   expect(fake.requests()).toHaveLength(1)
 })
 
+test("a model check given an env runs in that env", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "OK" })
+  // The fake is reachable only through the given env.
+  expect(process.env.VLLM_BASE_URL).toBeUndefined()
+  expect(await modelProblem(Provider.parse({ llm_config: LLM_CONFIG }), { env: fake.env() })).toBeNull()
+  expect(fake.requests()).toHaveLength(1)
+})
+
 test("a model that fails says why without the key", async () => {
   const fake = await fakeLlm()
   fake.script({ error: 401 })
