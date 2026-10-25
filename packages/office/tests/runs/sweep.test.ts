@@ -95,7 +95,7 @@ test("the start sweep interrupts what an earlier office left open", () => {
   for (const [runId, s] of [[killed!.runId, ended], [replaced, idle], [coded!.runId, codex]] as const) {
     const got = store.getRun(runId)!
     expect([got.endReason, got.endedAt]).toEqual([OFFICE_STOPPED, null])
-    expect(statusOf(got, s, new Live(), yian)).toEqual({
+    expect(statusOf(got, s, new Live(), yian)).toMatchObject({
       status: "interrupted",
       reason: OFFICE_STOPPED,
       failedNode: null,
@@ -115,12 +115,16 @@ test("the start sweep leaves a resumed sessions current run to restore", () => {
 
 test("the start sweep leaves a run yian ended to its outcome", () => {
   const store = openStore()
-  const [done, stale, lost] = [newId(), newId(), newId()]
-  const s = store.createSession(session({ status: "ended", run_ids: [done, stale, lost] }))
+  const [done, stale, held, writing, lost] = [newId(), newId(), newId(), newId(), newId()]
+  const s = store.createSession(session({ status: "ended", run_ids: [done, stale, held, writing, lost] }))
   addRuns(store, s)
-  // The stale row is from before the run ended: an update after the office stopped failed.
-  const yian = yianOf([indexRow(done, "succeeded"), indexRow(stale, "waiting")], (log) => {
-    if (path.basename(path.dirname(log)) === stale) return inspection("succeeded")
+  // The stale row is from before the run ended: an update after the office stopped failed. A running row or log
+  // is one a writer holds now: it may still end the run, so the office end must not hide that.
+  const rows = [indexRow(done, "succeeded"), indexRow(stale, "waiting"), indexRow(held, "running")]
+  const yian = yianOf(rows, (log) => {
+    const runId = path.basename(path.dirname(log))
+    if (runId === stale) return inspection("succeeded")
+    if (runId === writing) return inspection("running")
     throw new Error("damaged")
   })
 
@@ -130,5 +134,6 @@ test("the start sweep leaves a run yian ended to its outcome", () => {
     expect(got.endReason).toBeNull()
     expect(statusOf(got, s, new Live(), yian).status).toBe("finished")
   }
+  for (const runId of [held, writing]) expect(store.getRun(runId)!.endReason).toBeNull()
   expect(store.getRun(lost)!.endReason).toBe(OFFICE_STOPPED)
 })

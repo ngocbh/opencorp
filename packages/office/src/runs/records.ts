@@ -158,13 +158,14 @@ export class YianRuns {
     return out
   }
 
-  /** Whether yian ended the run (succeeded, failed or cancelled): its index row says so, else its log does. */
-  ended(runId: string): boolean {
+  /** Whether yian ended the run (succeeded, failed or cancelled) or a writer holds its log now (running): its index
+   *  row says so, else its log does. */
+  endedOrRunning(runId: string): boolean {
     const status = this.#index.get(runId)?.status
-    if (status && ENDED.has(status)) return true
+    if (status === "running" || (status && ENDED.has(status))) return true
     // A row from before the run ended (an update that failed) must not hide its end, so the log is asked too.
     const seen = this.#inspections.get(runId)?.status
-    return !!seen && ENDED.has(seen)
+    return seen === "running" || (!!seen && ENDED.has(seen))
   }
 
   /** What yian says about the run: its index row, with a failed run's failure from its log; the log's answer for a
@@ -214,55 +215,57 @@ export function readIndex(runsDir: string, log: (line: string) => void = () => {
 }
 
 /** Ends, as the office stopped and with no end time, each run an earlier office left open: the office rows with no
- *  end reason, but each live composer session's current run (restore resumes, replaces or fails it, or it sleeps)
- *  and the runs yian ended. Returns the run ids it wrote, in run-id order.
+ *  end reason, but each live composer session's current run (restore resumes, replaces or fails it, or it sleeps),
+ *  the runs yian ended and the runs whose log a writer holds now. Returns the run ids it wrote, in run-id order.
  *
- *  The office end goes only on runs yian didn't end: in the run status rule an office end reason wins over yian's
- *  status, so it would hide yian's outcome. */
+ *  The office end goes only on runs yian didn't end and can't still end: in the run status rule an office end
+ *  reason wins over yian's status, so it would hide yian's outcome. */
 export function sweep(store: Store, yian: YianRuns): string[] {
   const keep = new Set(
     store
       .listSessions({ status: [...LIVE] })
       .flatMap((s) => (s.harness === "composer" && s.run_ids.length > 0 ? [s.run_ids.at(-1)!] : [])),
   )
-  const rest = store.openRuns().flatMap((r) => (keep.has(r.runId) || yian.ended(r.runId) ? [] : [r.runId]))
+  const rest = store.openRuns().flatMap((r) => (keep.has(r.runId) || yian.endedOrRunning(r.runId) ? [] : [r.runId]))
   return store.sweepRuns(rest, OFFICE_STOPPED)
 }
 
-/** A run's status, reason and failed node; the first rule that matches wins. */
+/** A run's status, reason and failed node, and what yian said about it (`null` when the office's end reason or the
+ *  actor's memory answered, or yian doesn't know the run); the first rule that matches wins. */
 export function statusOf(
   row: RunRow,
   session: SessionRecord | undefined,
   live: Live,
   yian: YianRuns,
   log: (line: string) => void = () => {},
-): { status: RunStatusShown; reason: string | null; failedNode: string | null } {
+): { status: RunStatusShown; reason: string | null; failedNode: string | null; yian: YianRun | null } {
   if (row.endReason !== null) {
     const status = FAILED_ENDS.has(row.endReason) ? "failed" : "interrupted"
-    return { status, reason: row.endReason, failedNode: null }
+    return { status, reason: row.endReason, failedNode: null, yian: null }
   }
   const current = live.runs.get(row.runId)
   if (current && session?.run_ids.at(-1) === row.runId) {
-    return { status: current.status, reason: null, failedNode: null }
+    return { status: current.status, reason: null, failedNode: null, yian: null }
   }
   const run = yian.ofRun(row.runId)
   switch (run?.status) {
     case "succeeded":
-      return { status: "finished", reason: null, failedNode: null }
+      return { status: "finished", reason: null, failedNode: null, yian: run }
     case "failed":
       return {
         status: "failed",
         reason: run.failure ? cutReason(run.failure.message, REASON_CHARS) : null,
         failedNode: run.failure?.nodeId ?? null,
+        yian: run,
       }
     case "stopped":
-      return { status: "interrupted", reason: STOPPED, failedNode: null }
+      return { status: "interrupted", reason: STOPPED, failedNode: null, yian: run }
     case "waiting": {
       const idle = run.waits.length > 0 && run.waits.every((w) => MAIN_CHAT.isTurn(w.node))
-      return { status: idle ? "idle" : "waiting", reason: null, failedNode: null }
+      return { status: idle ? "idle" : "waiting", reason: null, failedNode: null, yian: run }
     }
     case "cancelled":
-      return { status: "interrupted", reason: CANCELLED, failedNode: null }
+      return { status: "interrupted", reason: CANCELLED, failedNode: null, yian: run }
   }
   if (!warned.has(row.runId)) {
     // A missing end path: say so once per run.
@@ -270,7 +273,7 @@ export function statusOf(
     warned.add(row.runId)
     log(`run ${row.runId} has no recorded outcome and nothing runs it`)
   }
-  return { status: "interrupted", reason: NO_OUTCOME, failedNode: null }
+  return { status: "interrupted", reason: NO_OUTCOME, failedNode: null, yian: run }
 }
 
 /** The node ids a run in `status` is at, whether a model question is open (`asking`), and whether it waits with
@@ -418,13 +421,9 @@ export class Summaries {
     childrenTotal: number,
     live: Live,
   ): RunSummary {
-    const { status, reason, failedNode } = statusOf(row, session, live, this.#yian, this.#log)
+    const { status, reason, failedNode, yian: run } = statusOf(row, session, live, this.#yian, this.#log)
     const asleep = (status === "idle" || status === "waiting") && !live.runs.has(row.runId)
-    // yian's answer gives an asleep run's waits and the end yian recorded, from the log too while the index lags; an
-    // ended run's inspection is cached, so asking again after statusOf doesn't read its log twice.
-    const endedInYian =
-      status === "finished" || status === "failed" || (status === "interrupted" && reason === CANCELLED)
-    const run = row.endReason === null && (asleep || endedInYian) ? this.#yian.ofRun(row.runId) : null
+    // yian's answer gives an asleep run's waits and the end yian recorded, from the log too while the index lags.
     const waits = asleep ? (run?.waits ?? []) : []
     const open = questions.filter((q) => q.status === "open")
     const { nodes, asking, held } = currentNodes(status, row.runId, open, live, waits)

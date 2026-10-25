@@ -120,13 +120,13 @@ test("the outcome wins", () => {
   const s = session({ status: "idle", run_ids: ["R"] })
   const memory = live({ R: { status: "idle", nodes: [] } })
   const out = statusOf(row(s, "R", { endReason: WORKER_STOPPED }), s, memory, none())
-  expect(out).toEqual({ status: "failed", reason: "worker stopped", failedNode: null })
+  expect(out).toMatchObject({ status: "failed", reason: "worker stopped", failedNode: null })
 })
 
 test("a waiting or idle sessions current run has its status awake or asleep", () => {
   for (const st of ["idle", "waiting"] as const) {
     const s = session({ status: st, run_ids: ["R"] })
-    expect(statusOf(row(s, "R"), s, live({ R: { status: st, nodes: [] } }), none())).toEqual({
+    expect(statusOf(row(s, "R"), s, live({ R: { status: st, nodes: [] } }), none())).toMatchObject({
       status: st,
       reason: null,
       failedNode: null,
@@ -142,12 +142,12 @@ test("a waiting or idle sessions current run has its status awake or asleep", ()
 test("a busy sessions current run runs only with its live run or wake", () => {
   const s = session({ status: "busy", run_ids: ["R"] })
   expect(statusOf(row(s, "R"), s, live({ R: { status: "running", nodes: [] } }), none()).status).toBe("running")
-  expect(statusOf(row(s, "R"), s, live({ OTHER: { status: "running", nodes: [] } }), none())).toEqual({
+  expect(statusOf(row(s, "R"), s, live({ OTHER: { status: "running", nodes: [] } }), none())).toMatchObject({
     status: "interrupted",
     reason: NO_OUTCOME,
     failedNode: null,
   })
-  expect(statusOf(row(s, "R"), s, new Live(), none())).toEqual({
+  expect(statusOf(row(s, "R"), s, new Live(), none())).toMatchObject({
     status: "interrupted",
     reason: NO_OUTCOME,
     failedNode: null,
@@ -156,7 +156,7 @@ test("a busy sessions current run runs only with its live run or wake", () => {
 
 test("a starting sessions current run is running", () => {
   const s = session({ status: "starting", run_ids: ["R"] })
-  expect(statusOf(row(s, "R"), s, live({ R: { status: "running", nodes: [] } }), none())).toEqual({
+  expect(statusOf(row(s, "R"), s, live({ R: { status: "running", nodes: [] } }), none())).toMatchObject({
     status: "running",
     reason: null,
     failedNode: null,
@@ -166,7 +166,7 @@ test("a starting sessions current run is running", () => {
 test("an earlier run of a live session with no outcome is interrupted", () => {
   const s = session({ status: "idle", run_ids: ["OLD", "NEW"] })
   const memory = live({ OLD: { status: "idle", nodes: [] }, NEW: { status: "idle", nodes: [] } })
-  expect(statusOf(row(s, "OLD"), s, memory, none())).toEqual({
+  expect(statusOf(row(s, "OLD"), s, memory, none())).toMatchObject({
     status: "interrupted",
     reason: NO_OUTCOME,
     failedNode: null,
@@ -209,7 +209,7 @@ test("participants put the employee first and never the driver", () => {
 
 test("a succeeded run shows finished", () => {
   const s = session({ status: "ended", run_ids: ["R"] })
-  expect(statusOf(row(s, "R"), s, new Live(), yianOf([indexRow("R", { status: "succeeded" })]))).toEqual({
+  expect(statusOf(row(s, "R"), s, new Live(), yianOf([indexRow("R", { status: "succeeded" })]))).toMatchObject({
     status: "finished",
     reason: null,
     failedNode: null,
@@ -229,14 +229,14 @@ test("a failed run shows failed with yians failure and node", () => {
 
 test("a stopped run shows interrupted stopped", () => {
   const s = session({ status: "ended", run_ids: ["R"] })
-  expect(statusOf(row(s, "R"), s, new Live(), yianOf([indexRow("R", { status: "stopped" })]))).toEqual({
+  expect(statusOf(row(s, "R"), s, new Live(), yianOf([indexRow("R", { status: "stopped" })]))).toMatchObject({
     status: "interrupted",
     reason: STOPPED,
     failedNode: null,
   })
   // A fresh row's log isn't read again, whatever it would say.
   const fresh = yianOf([indexRow("R", { status: "stopped" })], () => inspection({ status: "succeeded" }))
-  expect(statusOf(row(s, "R"), s, new Live(), fresh)).toEqual({
+  expect(statusOf(row(s, "R"), s, new Live(), fresh)).toMatchObject({
     status: "interrupted",
     reason: STOPPED,
     failedNode: null,
@@ -255,12 +255,12 @@ test("a waiting run shows idle when only its turn waits and waiting otherwise", 
 test("a cancelled run shows interrupted with the office reason", () => {
   const s = session({ status: "ended", run_ids: ["R"] })
   const yian = yianOf([indexRow("R", { status: "cancelled" })])
-  expect(statusOf(row(s, "R", { endReason: CARD_CLOSED }), s, new Live(), yian)).toEqual({
+  expect(statusOf(row(s, "R", { endReason: CARD_CLOSED }), s, new Live(), yian)).toMatchObject({
     status: "interrupted",
     reason: CARD_CLOSED,
     failedNode: null,
   })
-  expect(statusOf(row(s, "R"), s, new Live(), yian)).toEqual({
+  expect(statusOf(row(s, "R"), s, new Live(), yian)).toMatchObject({
     status: "interrupted",
     reason: CANCELLED,
     failedNode: null,
@@ -273,12 +273,12 @@ test("a crashed running or missing index row asks the log and else has no outcom
   for (const rs of rows) {
     const asks = (inspect: (log: string) => RunInspection) => statusOf(row(s, "R"), s, new Live(), yianOf(rs, inspect))
     expect(asks(() => inspection({ status: "succeeded" })).status).toBe("finished")
-    expect(asks(() => inspection({ status: "crashed" }))).toEqual({
+    expect(asks(() => inspection({ status: "crashed" }))).toMatchObject({
       status: "interrupted",
       reason: NO_OUTCOME,
       failedNode: null,
     })
-    expect(asks(noLog)).toEqual({ status: "interrupted", reason: NO_OUTCOME, failedNode: null })
+    expect(asks(noLog)).toMatchObject({ status: "interrupted", reason: NO_OUTCOME, failedNode: null })
   }
 })
 

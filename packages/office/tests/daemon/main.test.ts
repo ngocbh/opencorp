@@ -746,7 +746,7 @@ test("build office updates the run index when a worker exits", async () => {
   await waitFor(() => update.mock.calls.length > 0, { what: "a run index update on the worker's exit" })
 })
 
-test("a broken index does not stop the office start", async () => {
+test("a failing start sweep does not stop the office start", async () => {
   let office: Office | undefined
   // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
   onTestFinished(async () => {
@@ -767,6 +767,45 @@ test("a broken index does not stop the office start", async () => {
   await office.start()
   expect(out.text()).toContain("the start sweep failed: Error")
   expect(out.text()).not.toContain(key)
+})
+
+test("a broken index skips the start sweep and does not stop the office start", async () => {
+  let office: Office | undefined
+  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const paths = new OfficePaths(home())
+  fs.mkdirSync(paths.runs, { recursive: true })
+  fs.writeFileSync(path.join(paths.runs, "index.sqlite"), "not a database, only garbage\n".repeat(64))
+  const out = collect()
+  const rec = recordingGit(tempDir())
+  office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write: out.write })
+  spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
+  const open = newId()
+  const ended = office.store.createSession(session({ status: "ended", run_ids: [open] }))
+  office.store.addRun({
+    runId: open,
+    sessionId: ended.id,
+    driver: "minh",
+    flow: "chat",
+    flowPath: "shared/flows/chat.yaml",
+    connection: null,
+    model: null,
+    configSha256: null,
+    replacesRunId: null,
+    createdAt: ended.created_at,
+  })
+  await office.start()
+  expect(out.text()).toMatch(/run index update failed \([A-Za-z_$][\w$]*\)/)
+  expect(out.text()).toContain("the start sweep was skipped (the run index is not up to date)")
+  // SQLite's message names the damage; only its type may reach the log.
+  expect(out.text()).not.toMatch(/not a database|malformed|SQLITE_/)
+  expect(office.store.getRun(open)!.endReason).toBeNull()
 })
 
 /** How a process exited. */

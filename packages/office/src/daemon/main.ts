@@ -213,19 +213,25 @@ export function exitOnCrash(write: Write = writeStderr): void {
 // Names PATH, never its value (no env value in errors).
 const NO_GIT = "no git on the office's PATH"
 
-/** How long the start waits for the run index to be brought up to date before the sweep runs on what it has. */
-const START_INDEX_MS = 60_000
+/** How long the start waits for the run index to be brought up to date; under `service.wait`'s 20 s, since the
+ *  socket listens only after the start callbacks. */
+const START_INDEX_MS = 10_000
 
 /** Brings the run index up to date, waiting at most `START_INDEX_MS` (the update goes on past that), then sweeps
- *  the runs an earlier office left open. A failure is logged by its type: a broken index never stops the start. */
+ *  the runs an earlier office left open. The sweep runs only on an up-to-date index: without one it would read every
+ *  run log yian ended, and those rows show interrupted until a later start sweeps them. A failure is logged by its
+ *  type: a broken or hung index never stops the start. */
 async function sweepOnStart(office: Office, log: ReturnType<typeof officeLogger>): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    const waited = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, START_INDEX_MS)
+    const waited = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), START_INDEX_MS)
       timer.unref()
     })
-    await Promise.race([office.runIndex.update(), waited])
+    if (!(await Promise.race([office.runIndex.update(), waited]))) {
+      log("WARNING", "opencorp.daemon.main")("the start sweep was skipped (the run index is not up to date)")
+      return
+    }
     const runs = office.paths.runs
     sweep(office.store, new YianRuns(readIndex(runs, log("WARNING", "opencorp.runs.records")), new Inspections(runs)))
   } catch (error) {

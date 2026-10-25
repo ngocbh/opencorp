@@ -8,10 +8,23 @@ import fs from "node:fs"
 import { isMainThread, parentPort, workerData } from "node:worker_threads"
 import { withWarnings } from "@ngocbh/yian/platform"
 import { updateRunIndex } from "@ngocbh/yian/run"
-import { errorName } from "../worker/rpc.ts"
 
 // Lazy, so a message that itself holds "/log.jsonl: " can't stretch the path into it.
 const SKIPPED = /^run index skipped (.+?\/log\.jsonl): /
+
+// Local, as worker/rpc.ts's errorName would load yian's root, tools, zod and the protocol into this thread.
+const NAME = /^[A-Za-z_$][\w$]{0,63}$/
+
+/** A thrown value's name for a reply: an identifier-shaped `.name`, else "Error"; never throws. */
+function errorName(error: unknown): string {
+  try {
+    if (!(error instanceof Error)) return typeof error
+    const name: unknown = error.name
+    return typeof name === "string" && NAME.test(name) ? name : "Error"
+  } catch {
+    return "Error"
+  }
+}
 
 /** What `serve` listens and replies on; node's `MessagePort` and `parentPort` fit. */
 export interface Port {
