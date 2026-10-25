@@ -346,6 +346,21 @@ test("a running command from before a steer is interrupted with the turn", () =>
     ["assistant", ["[interrupted]"]]])
 })
 
+test("abort marks an unfinished text part and interrupts running tools", () => {
+  const { t, events } = tr()
+  feed(t, [agentMessage("m1", "")[0]!, agentMessageDelta("m1", "half a sen"), agentMessageDelta("m1", "tence"),
+    commandStarted("c1", "sleep 9")])
+  t.abort()
+  const written = parts(events)
+  expect(written).toHaveLength(2)
+  const [text, tool] = written
+  expect(text).toMatchObject({ type: "text", text: "half a sentence\n\n[interrupted]" })
+  expect(tool).toMatchObject({ type: "tool", state: "interrupted" })
+  const count = events.length
+  t.abort()
+  expect(events.length).toBe(count)
+})
+
 // --- approval cards ----------------------------------------------------------------------
 
 test("a command approval offers the four decisions and replies with the picked one", () => {

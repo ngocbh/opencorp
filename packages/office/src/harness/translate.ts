@@ -130,8 +130,13 @@ export class Translator {
   }
 
   /** Adds a user message; `author` is the human who sent it. A message mid-turn is a steer. */
-  user(text: string, author: string): void {
+  user(text: string, author: string | null): void {
     this.live.user(text, author)
+  }
+
+  /** Office stop: stores each unfinished text with the marker and each running tool as interrupted. */
+  abort(): void {
+    this.live.abort()
   }
 
   /** Adds an assistant message saying why a turn or the session failed. */
@@ -365,7 +370,7 @@ class Live {
 
   constructor(private readonly sessionId: string, private readonly emit: (e: HarnessEvent) => void) {}
 
-  user(text: string, author: string): void {
+  user(text: string, author: string | null): void {
     const message: Message = { id: newId(), session_id: this.sessionId, role: "user", author,
       parts: [{ id: newId(), type: "text", text }], created_at: now() }
     for (const node of this.messages.keys()) this.steered.add(node)
@@ -440,6 +445,16 @@ class Live {
         : { id: newId(), type: "text", text: INTERRUPTED_TEXT.trimStart() })
     }
     this.close(node)
+  }
+
+  /** Office stop: stores each unfinished text with the marker and each running tool as interrupted. */
+  abort(): void {
+    for (const { node, part } of this.texts.values()) this.put(node, { ...part, text: part.text + INTERRUPTED_TEXT })
+    for (const { node, part } of this.tools.values()) {
+      if (part.state === "running") this.put(node, { ...part, state: "interrupted" })
+    }
+    this.texts.clear()
+    this.tools.clear()
   }
 
   private message(node: string): string {
