@@ -133,7 +133,8 @@ e2e/test_hq.py	open	—	—	O5-1
 e2e/test_journey.py	open	—	—	O5-1
 e2e/test_run_logs.py	open	—	—	O5-1
 harness/test_approvals.py	open	—	—	O3-14
-harness/test_codex.py	open	—	—	O3-12
+harness/test_codex.py	ported	packages/office/tests/harness/codex.test.ts	—	O3-12
+harness/test_codex.py::test_a_closed_app_server_leaves_no_open_pipes	changed	packages/office/tests/harness/codex.test.ts::a closed app server leaves no open pipes	design §7.2 (no ResourceWarning or gc in Bun: every pipe destroyed and the rpc closed after close)	O3-12
 harness/test_continue.py	open	—	—	O3-14
 harness/test_debrief.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 harness/test_errors.py	open	—	—	O3-15
@@ -614,6 +615,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/routes_questions.test.ts::stop is credited to the verified person	through the stand-in (rule 1): the chat run that test_stopping_a_manager_question_is_credited_to_the_verified_person needs is O4a-9's	O3-9
 —	new	packages/office/tests/daemon/routes_runs.test.ts::every runs route answers 501 not implemented	design §4.3: GET /runs* answers 501 until the run views (O4b-3, O4b-7 replace it)	O2-6
 —	new	packages/office/tests/harness/codex.test.ts::a directory, a file that isnt executable or an empty path is not codex	design §6.1, §6.8 rule 3: codex is looked up on the absolute PATH entries, as resolveTools	O3-10
+—	new	packages/office/tests/harness/codex.test.ts::a line over the cap signals the group once	design §6.6 (only the first kill signals a group), §6.8 rule 13 (the line cap kills the app-server)	O3-12
+—	new	packages/office/tests/harness/codex.test.ts::a linked codex log refuses to start	design §6.5, security rule 6 (codex.log opened O_NOFOLLOW, 0600)	O3-12
 —	new	packages/office/tests/harness/codex.test.ts::a relative override or path entry is not codex	design §6.1: codex is looked up on the absolute PATH entries only, as resolveTools	O3-12
 —	new	packages/office/tests/harness/codex.test.ts::the pinned codex makes the app server command	design §6.8 rule 3: the app-server runs the codex binary pinned at start	O3-12
 —	new	packages/office/tests/harness/rpc.test.ts::a broken stdin fails requests notifications and replies as rpc closed	design §7.2: write errors (EPIPE) become RpcClosed	O3-10
