@@ -206,7 +206,7 @@ export class LiveRelay implements LiveCalls {
       let entry = this.#runs.get(runId)
       if (entry?.worker !== worker) {
         // One view per running worker: a new worker's view is built from its own snapshot, with nothing of the old.
-        if (entry !== undefined) for (const viewer of [...entry.viewers]) viewer.end(true)
+        if (entry !== undefined) this.#endViewers(entry, true)
         entry = { runId, worker, view: null, failedBuilds: 0, viewers: new Set() }
         this.#runs.set(runId, entry)
       }
@@ -234,7 +234,7 @@ export class LiveRelay implements LiveCalls {
       const entry = this.#runs.get(runId)
       if (entry?.worker === worker) {
         this.#runs.delete(runId)
-        for (const viewer of [...entry.viewers]) viewer.end(true)
+        this.#endViewers(entry, true)
       }
       // Shows what the worker appended outside the live channel (offline deliveries, the linger) and the tool calls it
       // left without a result as interrupted.
@@ -257,10 +257,11 @@ export class LiveRelay implements LiveCalls {
   }
 
   /** In one synchronous step: the view's last seq and calls, and a viewer for every later frame. `"rebuilding"` while
-   *  a worker feeds the run but its view isn't built; null when no worker feeds it. */
+   *  a worker feeds the run but its view isn't built; null when no worker feeds it or its view will never be built
+   *  again (its snapshots kept failing). */
   join(runId: string): LiveJoin | "rebuilding" | null {
     const entry = this.#runs.get(runId)
-    if (entry === undefined) return null
+    if (entry === undefined || entry.failedBuilds >= MAX_FAILED_BUILDS) return null
     if (entry.view === null) return "rebuilding"
     const viewer = new LiveViewer((v) => entry.viewers.delete(v), this.#queueSize)
     entry.viewers.add(viewer)
@@ -269,13 +270,14 @@ export class LiveRelay implements LiveCalls {
 
   /** Ends every viewer (office stop). */
   close(): void {
-    for (const entry of this.#runs.values()) for (const viewer of [...entry.viewers]) viewer.end(false)
+    for (const entry of this.#runs.values()) this.#endViewers(entry, false)
   }
 
   /** Builds `entry`'s view from its run log and `snapshot`; a failure counts toward the build cap. Returns whether it
    *  built. */
   #build(entry: Entry, snapshot: LiveSnapshot): boolean {
-    // Frames between the old view and this snapshot never reach the viewers, so they join again.
+    // Matters only for a snapshot that comes while a view stands (a re-follow after a gap has no viewers, and the
+    // worker sends no other): it may skip frames the viewers never got, so they join again.
     this.#dropViewers(entry)
     let view: LiveView
     try {
@@ -299,7 +301,7 @@ export class LiveRelay implements LiveCalls {
         : undefined
     // A duplicate record or chunk changes nothing, so viewers don't get it; and apply drops a duplicate or a gap
     // before decoding a record's line, so only the next record's line is worth a read.
-    const fresh = frame.type === "record" ? frame.seq === view.lastSeq + 1 : frame.type !== "chunk" || !!before
+    const fresh = frame.type === "record" ? frame.seq === view.lastSeq + 1 : frame.type !== "chunk" || before !== undefined
     let applied: LiveFrame | null
     try {
       applied =
@@ -416,6 +418,11 @@ export class LiveRelay implements LiveCalls {
   /** Drops `entry`'s viewers, which would miss frames: they join again once its view is built. */
   #dropViewers(entry: Entry): void {
     for (const viewer of [...entry.viewers]) viewer.drop()
+  }
+
+  /** Ends `entry`'s viewers after their queued frames, with `run_end` first when `runEnd`. */
+  #endViewers(entry: Entry, runEnd: boolean): void {
+    for (const viewer of [...entry.viewers]) viewer.end(runEnd)
   }
 }
 

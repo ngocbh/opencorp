@@ -162,6 +162,8 @@ test("a view that cant be built stops following after three tries", async () => 
   for (let i = 0; i < 3; i++) relay.frame(worker, past)
   expect(lines).toEqual([gapLine("snapshot"), gapLine("snapshot"), "run r1: live view can't be built; not following"])
   expect(worker.follows).toBe(2)
+  // Its view will never be built again, so a client has nothing to wait for.
+  expect(relay.join("r1")).toBeNull()
   for (const frame of frames) relay.frame(worker, frame)
   expect(relay.calls("r1")).toEqual([])
   expect(lines).toHaveLength(3)
@@ -177,9 +179,11 @@ test("an over cap record is read from the log", async () => {
   const worker = new StubWorker(job)
   for (const frame of frames.slice(0, at)) relay.frame(worker, frame)
   expect(relay.calls("r1")!.map((call) => call.node)).toEqual([REPLY])
+  const { viewer } = joinOf(relay)
   // Its step record drops the call, so the view has passed it.
   relay.frame(worker, { type: "record", seq: step.seq })
   expect(relay.calls("r1")).toEqual([])
+  expect(await drainQueued(viewer)).toEqual([{ type: "record", seq: step.seq, line: logLines(job.log)[step.seq]! }])
   for (const frame of frames.slice(at + 1)) relay.frame(worker, frame)
   expect(relay.calls("r1")).toEqual([])
   expect(lines).toEqual([])
@@ -673,6 +677,13 @@ async function drain(viewer: LiveViewer): Promise<ViewerFrame[]> {
   }
 }
 
+/** The items `viewer` holds now, without waiting for more. */
+async function drainQueued(viewer: LiveViewer): Promise<(ViewerFrame | typeof PING | null)[]> {
+  const items: (ViewerFrame | typeof PING | null)[] = []
+  while (viewer.queued > 0) items.push(await viewer.next(1000))
+  return items
+}
+
 /** The lines of the run log `log` by seq, without their newlines. */
 function logLines(log: string): string[] {
   const bytes = fs.readFileSync(log)
@@ -781,12 +792,21 @@ test("a lagging viewers chunks of one call merge into one", async () => {
   expect(await capped.viewer.next(1000)).toBeNull()
 })
 
-/** The items `viewer` holds now, without waiting for more. */
-async function drainQueued(viewer: LiveViewer): Promise<(ViewerFrame | typeof PING | null)[]> {
-  const items: (ViewerFrame | typeof PING | null)[] = []
-  while (viewer.queued > 0) items.push(await viewer.next(1000))
-  return items
-}
+test("a merge leaves frames other viewers hold as they were", async () => {
+  const job = await waitingRun()
+  const { relay } = makeRelay()
+  const worker = new StubWorker(job)
+  relay.frame(worker, snapshot(lastSeq(job.log), [{ node: "a", n: 1, chunks: [], next_index: 0 }]))
+  const a = joinOf(relay).viewer
+  const b = joinOf(relay).viewer
+  const chunk = (index: number, text: string) => ({ type: "chunk" as const, node: "a", n: 1, index, text })
+  relay.frame(worker, chunk(0, "a0"))
+  const taken = await a.next(1000)
+  relay.frame(worker, chunk(1, "a1"))
+  expect(taken).toEqual(chunk(0, "a0"))
+  expect(await drainQueued(b)).toEqual([chunk(1, "a0a1")])
+  expect(await drainQueued(a)).toEqual([chunk(1, "a1")])
+})
 
 test("a gap drops the runs viewers", async () => {
   const { job, frames } = await recordedTurn("Hello there my good friend")
