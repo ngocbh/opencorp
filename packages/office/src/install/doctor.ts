@@ -39,13 +39,17 @@ const FRAME = /^\s+at /
 /** How `codex login status` starts the line it prints when nobody is signed in, lowercased. */
 const SIGNED_OUT = "not logged in"
 
-/** The most of a failed `codex --version` or `codex login status` the report shows. */
+/** The most of a line from `codex --version` or `codex login status` the report shows. */
 const LINE_CAP = 200
 
 /** An ANSI color code, which Codex may print around a line. */
 const COLOR = /\x1b\[[0-9;]*m/g
 
-/** How Node words a program that never started: `<code>: <strerror>, posix_spawn '<path>'`. */
+/**
+ * How Bun words a program that never started: `<code>: <strerror>, posix_spawn '<path>'` (Node's `spawn <path> <code>`
+ * differs).
+ */
+// Bun's wording on Linux hasn't been probed here, so a plain `spawn` is accepted too.
 const SPAWN_ERROR = /^E[A-Z0-9]+: (.*), (?:posix_)?spawn\b/
 
 /** One line of the report: `fail` needs fixing, `warn` is worth knowing. */
@@ -420,7 +424,7 @@ export async function codexCheck(
   }
   const login = await ask("login", "status")
   if ("name" in login) return login
-  const printed = version.stdout.trim()
+  const printed = (lines(version.stdout)[0] ?? "").slice(0, LINE_CAP)
   const named = printed ? `${printed} at ${found}` : `${found} (no version printed)`
   if (login.code !== 0) {
     const said = lines(`${login.stderr}\n${login.stdout}`)

@@ -590,6 +590,22 @@ test("a failed codex version line is cut short and uncolored", async () => {
   })
 })
 
+test("a codex version is shown uncolored and cut short", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 0)
+  const codex = path.join(dir, "bin", "codex")
+  fs.writeFileSync(
+    codex,
+    '#!/bin/sh\ncase "$1" in --version) printf "\\n\\033[32mcodex-cli 1.2.3\\033[0m\\nsecond line\\n";; login) exit 0;; esac\n',
+  )
+  expect((await doctor.codexCheck(env, {})).detail).toBe(`codex-cli 1.2.3 at ${codex}, signed in`)
+  fs.writeFileSync(
+    codex,
+    '#!/bin/sh\ncase "$1" in --version) printf "v%s\\n" "$(printf "9%.0s" $(seq 1 300))";; login) exit 0;; esac\n',
+  )
+  expect((await doctor.codexCheck(env, {})).detail).toBe(`v${"9".repeat(199)} at ${codex}, signed in`)
+})
+
 test("a failed codex login status falls back to stdout then the exit code", async () => {
   const dir = tempDir()
   const env = fakeCodex(dir, 2, "", "something odd\n")
