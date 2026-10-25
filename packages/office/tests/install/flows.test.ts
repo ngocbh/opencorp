@@ -1,4 +1,4 @@
-/** `opencorp init`'s setup flows on TS yian: they load, use node kinds both yian versions take, and run. */
+/** `opencorp init`'s setup flows on TS yian: they load, use only agent, code, loop and tool nodes, and run. */
 import { expect, setDefaultTimeout, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
@@ -37,12 +37,12 @@ test.each(FLOWS)("both setup flows load on ts yian [%s]", async (name) => {
   expect((await load(name)).name).toBe(base)
 })
 
-test("the setup flows use only node kinds both yian versions take", () => {
+test("the setup flows use only agent code loop and tool nodes", () => {
   for (const name of FLOWS) {
     for (const node of nodes(read(name))) {
       expect(["agent", "code", "loop", "tool"]).toContain(node.kind)
       expect(node).not.toHaveProperty("steerable")
-      // Their meaning as a TOOL node's tool moves in yian #1078.
+      // yian's built-ins (`ask_user` is `ask`'s old name): the setup flows' TOOL nodes call only office tools.
       if (node.kind === "tool") expect(["ask", "ask_user", "sleep", "take"]).not.toContain(node.tool_id)
     }
   }
@@ -131,4 +131,5 @@ test("init runs its interview then asks for the password and the remote through 
   }[]
   expect(requests[0]!.tools!.map((t) => t.function.name)).toEqual(["ask_user", "check_company"])
   expect(requests[1]!.messages).toContainEqual(expect.objectContaining({ role: "tool", content: "No problems." }))
+  expect(JSON.stringify(requests)).not.toContain("git@example.com:acme.git")
 })

@@ -630,7 +630,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/flows.test.ts::check model asks for one word and returns it	design §9.2: the setup flows load and run on TS yian with init's TOOL nodes (row exit)	O2-16b
 —	new	packages/office/tests/install/flows.test.ts::init runs its interview then asks for the password and the remote through the office tools	design §9.2: the setup flows load and run on TS yian with init's TOOL nodes (row exit)	O2-16b
 —	new	packages/office/tests/install/flows.test.ts::the model never sees the password or the remote	design §9.2: the setup flows load and run on TS yian with init's TOOL nodes (row exit)	O2-16b
-—	new	packages/office/tests/install/flows.test.ts::the setup flows use only node kinds both yian versions take	design §9.2: the setup flows load and run on TS yian with init's TOOL nodes (row exit)	O2-16b
+—	new	packages/office/tests/install/flows.test.ts::the setup flows use only agent code loop and tool nodes	design §9.2: the setup flows load and run on TS yian with init's TOOL nodes (row exit)	O2-16b
 —	new	packages/office/tests/install/json_prompts.test.ts::a stdin destroyed before an answer is an onboard error	design §9.1: a closed or broken stdin is closed input, not a hang	O2-13a
 —	new	packages/office/tests/install/json_prompts.test.ts::an empty choice list is refused before anything is sent	design §9.1: SetupChoose needs an option; the TUI would wait forever	O2-13a
 —	new	packages/office/tests/install/json_prompts.test.ts::read line leaves the rest of the stream for the next read and lets the process exit	design §9.1: the TUI keeps the setup's stdin open, so a read must not hold the process	O2-13a
