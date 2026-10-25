@@ -568,8 +568,18 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/provider.test.ts::an env name or value a spawn cant pass is refused [%s]	design §6.5: a spawn can't pass an empty name or one holding = or NUL, or a value holding NUL, as given (= sets another variable; NUL makes the spawn throw with the value in its message)	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::runtime settings that arent loader variables are kept	design §6.5 (R2 m5): the refusal stops at runtime and loader names	O2-19
 —	new	packages/office/tests/chat/state.test.ts::write state with nothing new writes nothing	design §3.2 (mirror): Python's equality check before writing (state.py:56) had no test; it keeps a no-op status write from emitting session.updated	O3-8b
+—	new	packages/office/tests/chat/template.test.ts::a long history is folded into the summary before the reply	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::a message read along with the close is kept unanswered	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::a message sent after the replys last model call is the next turn at once	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::a message sent during the reply reaches its next model call and the history	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::a template chat ends when its inbox closes [%s]	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::an interrupt mid reply gives a null reply and the run waits at the next turn with the queued message	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::an interrupted reply with no text adds no empty assistant message to the next request	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
 —	new	packages/office/tests/chat/template.test.ts::every chat template takes its turns and steers from its messages inbox	4a-revision §1, design §8.5: one messages inbox for the turn and the steers	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::one turn below max turns answers one turn with two messages queued then succeeds	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::the author of a message reaches the request	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
 —	new	packages/office/tests/chat/template.test.ts::the template compacts history with yians compact history flow	design §8.8; Python's session memory summarised past 32,000 characters keeping 4 turns: yian's example does it in the flow	O4a-1
+—	new	packages/office/tests/chat/template.test.ts::two messages sent before an advance are one turn	plan O4a-1 exit criteria; 4a-revision §1	O4a-1
 —	new	packages/office/tests/company/flow_yaml.test.ts::a company file refuses a tag outside the core schema	D8: YAML 1.2 core schema for company files	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::a leading zero int is decimal and 0o and 0x are octal and hex	D8, design §9.5: YAML 1.2 core readings	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::a lone cr is a line break	design §9.5: read as TS yian reads flows	O1-5
