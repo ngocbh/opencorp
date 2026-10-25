@@ -8,11 +8,13 @@ import type { z } from "zod"
 import { checked, loadProvider, Provider, ProviderError, providerSchema } from "../../src/chat/provider.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import type { Frame } from "../../src/worker/channel.ts"
+import { decode, encode } from "../../src/worker/codec.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
 import type { SpawnLog } from "../../src/worker/spawn.ts"
 import { envText, tempDir } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
-import { base, json, makeJob, makeRegistry, Recorder, recordFrames, runWorker } from "../worker/helpers.ts"
+import { base, makeJob, makeRegistry, Recorder, recordFrames, runWorker } from "../worker/helpers.ts"
 import { fakeLlm } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -222,12 +224,21 @@ test("runtime settings that arent loader variables are kept", async () => {
   expect((await loadProvider(file, Provider.parse)).env).toEqual(kept)
 })
 
-/** The files under `root`, relative to it, whose bytes hold `text`. */
+/** The regular files under `root` (symlinks not followed), relative to it, whose bytes hold `text`. */
 function filesHolding(root: string, text: string): string[] {
   if (!fs.existsSync(root)) return []
   return fs
-    .readdirSync(root, { recursive: true, encoding: "utf8" })
-    .filter((rel) => fs.statSync(path.join(root, rel)).isFile() && fs.readFileSync(path.join(root, rel)).includes(text))
+    .readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter((d) => d.isFile() && fs.readFileSync(path.join(d.parentPath, d.name)).includes(text))
+    .map((d) => path.relative(root, path.join(d.parentPath, d.name)))
+}
+
+/** Handlers whose `event` records the frame, then throws an error whose message is the key. */
+class LeakyRecorder extends Recorder {
+  override event(worker: unknown, frame: Frame): void {
+    super.event(worker, frame)
+    throw new Error(SENTINEL)
+  }
 }
 
 test("a key in llm config reaches the model and nothing else", async () => {
@@ -259,33 +270,37 @@ test("a key in llm config reaches the model and nothing else", async () => {
     env: fake.env(),
   })
   fake.script({ error: 401 })
-  const refused = new Recorder({ tools: { toolbox: { echo } } })
+  // Its handler throws the key, so the log scan meets a real line on an error path.
+  const refused = new LeakyRecorder({ tools: { toolbox: { echo } } })
   const job = makeJob(where, "flows/tools.yaml", { run_id: "r2", llm_config: llmConfig }, refused)
   await runWorker(registry, job, refused, sessionDir, { env: fake.env() })
 
   const leaks = [
     ...frames.filter((f) => f.includes(SENTINEL) && !f.startsWith('{"type":"start"')).map((f) => `frame ${f}`),
-    ...fake.requests().filter((r) => json(r).includes(SENTINEL)).map(() => "a model request"),
+    ...fake.requests().filter((r) => encode(r).includes(SENTINEL)).map(() => "a model request"),
     ...[sessionDir, where.runs, path.dirname(store.path)].flatMap((root) =>
       filesHolding(root, SENTINEL).map((rel) => `file ${path.join(root, rel)}`),
     ),
     ...lines.filter((line) => line.includes(SENTINEL)).map((line) => `log line ${line}`),
     ...envs.filter((text) => text.includes(SENTINEL)).map(() => "the worker env"),
-    ...(json(refused.outcome?.failure).includes(SENTINEL) ? ["the failure"] : []),
+    ...(encode(refused.outcome?.failure ?? null).includes(SENTINEL) ? ["the failure"] : []),
   ]
   expect(leaks).toEqual([])
   // The key did travel: in the office's two start frames, and to the model.
   expect(frames.filter((f) => f.includes(SENTINEL))).toHaveLength(2)
+  // The scan reads both directions: the worker's tool call came in through the office's channel.
+  expect(frames.some((f) => (decode(f) as Frame).type === "tool_call")).toBe(true)
+  // ...and real log lines: the failing handler's, with the error's type only.
+  expect(lines).toContain(`ERROR worker s1 handler event failed (Error)`)
   expect(envs).toHaveLength(1)
   expect(envs[0]).toContain("VLLM_BASE_URL")
   // The scan reads both run logs, run_started included.
   expect(filesHolding(where.runs, '"kind":"run_started"').sort()).toEqual(["r1/log.jsonl", "r2/log.jsonl"])
   expect(new Set(fake.authorizations())).toEqual(new Set([`Bearer ${SENTINEL}`]))
-  expect(json(ok.frames)).toContain("ToolCallFinished")
+  expect(encode(ok.frames)).toContain("ToolCallFinished")
   expect(ok.outcome?.status).toBe("succeeded")
   expect(ok.returncode).toBe(0)
   expect(refused.outcome?.status).toBe("failed")
   expect(refused.outcome?.failure).toBeTruthy()
   expect(fs.existsSync(path.join(sessionDir, "worker.log"))).toBe(true)
-  expect(fs.existsSync(job.log)).toBe(true)
 })

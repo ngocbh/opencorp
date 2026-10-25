@@ -2,8 +2,9 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
+import { encode } from "../../src/worker/codec.ts"
 import { fakeLlm } from "../chat/helpers.ts"
-import { base, json, makeJob, makeRegistry, Recorder, recordFrames, runWorker } from "../worker/helpers.ts"
+import { base, makeJob, makeRegistry, Recorder, recordFrames, runWorker } from "../worker/helpers.ts"
 import { cluster, makeMonitor, TOKEN } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -32,7 +33,7 @@ test("no frame or model text holds a secret", async () => {
   await runWorker(registry, job, rec, sessionDir, { env: fake.env() })
 
   expect(rec.outcome?.output).toBe("done")
-  const modelText = json(fake.requests())
+  const modelText = encode(fake.requests())
   // The calls really ran, and their results reached the model.
   expect(modelText).toContain("ran train on gpu-small with [redacted]")
   expect(modelText).toContain('permission denied: cluster_a__submit_job: partition must be one of [\\"gpu-small\\"]')
@@ -45,5 +46,5 @@ test("no frame or model text holds a secret", async () => {
   expect(fs.readFileSync(job.log, "utf8")).not.toContain(TOKEN)
   const rows = audit.listAudit()
   expect(rows.map((r) => r.outcome).sort()).toEqual(["denied", "error", "ok"])
-  expect(rows.filter((r) => (json(r.args) + (r.detail ?? "")).includes(TOKEN))).toEqual([])
+  expect(rows.filter((r) => (encode(r.args) + (r.detail ?? "")).includes(TOKEN))).toEqual([])
 })

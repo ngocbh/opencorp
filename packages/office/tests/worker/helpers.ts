@@ -9,6 +9,7 @@ import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import type { Store } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
+import { encode } from "../../src/worker/codec.ts"
 import { Job, groupSpecs, type JobInput } from "../../src/worker/job.ts"
 import { EXIT_FAILED, serve, type WorkerEnv } from "../../src/worker/main.ts"
 import {
@@ -27,23 +28,18 @@ import { CHAT } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
 
-/** `value` as JSON, a bigint written as its digits. */
-export function json(value: unknown): string {
-  return JSON.stringify(value, (_key, v: unknown) => (typeof v === "bigint" ? v.toString() : v))
-}
-
-/** Records, as `json`, every frame this process's channels send and receive until the test finishes: for a spawned
- *  worker, both directions of the office's end. */
+/** Records, in the wire form the codec's `encode` writes, every frame this process's channels send and receive until
+ *  the test finishes: for a spawned worker, both directions of the office's end. */
 export function recordFrames(): string[] {
   const frames: string[] = []
   const { send, recv } = Channel.prototype
   const sending = spyOn(Channel.prototype, "send").mockImplementation(function (this: Channel, frame: Frame) {
-    frames.push(json(frame))
+    frames.push(encode(frame))
     return send.call(this, frame)
   })
   const receiving = spyOn(Channel.prototype, "recv").mockImplementation(async function (this: Channel) {
     const frame = await recv.call(this)
-    frames.push(json(frame))
+    frames.push(encode(frame))
     return frame
   })
   onTestFinished(() => {

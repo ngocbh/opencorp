@@ -108,6 +108,6 @@ test("spawn reaps a leftover worker of the session", async () => {
   const registry = makeRegistry(store)
   const sessionDir = path.join(where.root, "sessions", "s1")
   const rec = await runWorker(registry, makeJob(where), new Recorder(), sessionDir, { env: fake.env() })
-  expect((await stale.exited).signal).toBe("SIGKILL")
+  expect(await waitFor(() => stale.child.signalCode, { timeout: 5000, what: "the leftover killed" })).toBe("SIGKILL")
   expect(rec.outcome?.output).toBe("fresh")
 })
