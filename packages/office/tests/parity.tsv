@@ -176,7 +176,8 @@ hq/test_app_fixture.py	ported	packages/office/tests/hq/app_fixture.test.ts	—	O
 hq/test_auth.py	ported	packages/office/tests/hq/auth.test.ts	—	O2-9
 hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7
 hq/test_core.py	open	—	—	O2-10
-hq/test_events.py	open	—	—	O2-10
+hq/test_events.py	ported	packages/office/tests/hq/events.test.ts	—	O2-10
+hq/test_events.py::test_a_failing_recheck_ends_the_stream_quietly_and_keeps_the_session	changed	packages/office/tests/hq/events.test.ts::a failing recheck ends the stream quietly and keeps the session	design §10.1 and §6 rule 13: a commit that doesnt exist makes the fingerprint load fail (ESM modules cant be monkeypatched); the log line ends with the errors type, no traceback, and no internal error line follows	O2-10
 hq/test_guard.py	ported	packages/office/tests/hq/guard.test.ts	—	O2-9
 hq/test_guard.py::test_a_408_closes_the_connection_while_the_client_still_trickles	changed	packages/office/tests/hq/guard.test.ts::a 408 closes the connection while the client still trickles	D16, design §6.4: the 408 is the listener's requestTimeout, written by Bun (no JSON, no HQ headers); the trickling client may lose Bun's 408 to its own write, so this test checks the close and the guard's settled promise, and `a body that stops arriving is 408` checks the 408 and `connection: close`	O2-7
 hq/test_guard.py::test_a_body_that_stops_arriving_is_408	changed	packages/office/tests/hq/guard.test.ts::a body that stops arriving is 408	D16, design §6.4: the listener's requestTimeout answers Bun's own 408 and closes; no body_timeout JSON	O2-7

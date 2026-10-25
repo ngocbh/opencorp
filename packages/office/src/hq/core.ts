@@ -4,6 +4,7 @@ import { type Health, type HqStatus, type PairCode, now, stamp } from "@opencorp
 import type { CompanySnapshots } from "../company/snapshot.ts"
 import { CompanySource } from "../company/source.ts"
 import type { Office } from "../daemon/office.ts"
+import { PING_MS } from "../daemon/routes/events.ts"
 import { type HqConfig, loadConfig } from "./config.ts"
 import { Logins } from "./login.ts"
 import { PairCodes } from "./pairing.ts"
@@ -33,6 +34,8 @@ export class Hq {
   nextRetryAt: string | null = null
   /** Why hq.sock isn't listening, when binding it failed. */
   socketError: string | null = null
+  /** How long an idle `/api/events` waits before a ping, in ms; tests shorten it. */
+  pingMs = PING_MS
 
   constructor(office: Office, config: HqConfig, log: (line: string) => void) {
     this.office = office

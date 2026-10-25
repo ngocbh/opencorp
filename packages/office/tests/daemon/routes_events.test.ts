@@ -5,12 +5,9 @@ import { type Event, type LiveEvent, now } from "@opencorp/protocol"
 import { newId } from "../../src/store/store.ts"
 import { waitFor } from "../helpers.ts"
 import { recordEvents, session } from "../store/helpers.ts"
-import { Conn, makeOffice, served } from "./helpers.ts"
+import { Conn, ends, frames, makeOffice, served, take } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
-
-/** `[event, id, data]` per SSE frame, and `["comment", null, text]` per comment line. */
-type Frame = [string, string | null, unknown]
 
 /** Opens `target` with a `node:http` request; resolves with the response, whose data events stream. The request
  *  is destroyed when the test finishes. */
@@ -25,66 +22,6 @@ function openEvents(sock: string, target = "/events"): Promise<http.IncomingMess
     req.on("error", reject)
     req.end()
   })
-}
-
-/** The frames of `res`, as Python's `frames` reads them: `data` JSON-parsed, an empty `data:` as null. */
-async function* frames(res: http.IncomingMessage): AsyncGenerator<Frame> {
-  res.setEncoding("utf8")
-  let event: string | null = null
-  let id: string | null = null
-  let data: unknown = null
-  // Chunks can split or merge lines, so the unfinished last line waits for the next chunk.
-  let tail = ""
-  for await (const chunk of res as AsyncIterable<string>) {
-    const lines = (tail + chunk).split("\n")
-    tail = lines.pop()!
-    for (const line of lines) {
-      if (line.startsWith(":")) yield ["comment", null, line.slice(1).trim()]
-      else if (line.startsWith("event: ")) event = line.slice(7)
-      else if (line.startsWith("id: ")) id = line.slice(4)
-      else if (line.startsWith("data: ")) data = JSON.parse(line.slice(6))
-      else if (line === "data:") data = null
-      else if (line === "" && event !== null) {
-        yield [event, id, data]
-        event = null
-        id = null
-        data = null
-      }
-    }
-  }
-}
-
-/** `promise`, or a rejection after 5 s. */
-async function within<T>(promise: Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("timed out after 5 s")), 5000)
-  })
-  try {
-    return await Promise.race([promise, timeout])
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-/** The next `n` frames of `it`, within 5 s. */
-async function take(it: AsyncIterator<Frame>, n: number): Promise<Frame[]> {
-  return within(
-    (async () => {
-      const got: Frame[] = []
-      for (let i = 0; i < n; i++) {
-        const step = await it.next()
-        if (step.done) throw new Error(`the stream ended after ${got.length} frames`)
-        got.push(step.value)
-      }
-      return got
-    })(),
-  )
-}
-
-/** Whether `it` ends (within 5 s) instead of yielding another frame. */
-async function ends(it: AsyncIterator<Frame>): Promise<boolean> {
-  return (await within(it.next())).done === true
 }
 
 function delta(sessionId: string, text: string): LiveEvent {

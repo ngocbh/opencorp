@@ -258,6 +258,69 @@ export function request(
   })
 }
 
+/** `[event, id, data]` per SSE frame, and `["comment", null, text]` per comment line. */
+export type Frame = [string, string | null, unknown]
+
+/** The frames of `res`, as Python's `frames` reads them: `data` JSON-parsed, an empty `data:` as null. */
+export async function* frames(res: http.IncomingMessage): AsyncGenerator<Frame> {
+  res.setEncoding("utf8")
+  let event: string | null = null
+  let id: string | null = null
+  let data: unknown = null
+  // Chunks can split or merge lines, so the unfinished last line waits for the next chunk.
+  let tail = ""
+  for await (const chunk of res as AsyncIterable<string>) {
+    const lines = (tail + chunk).split("\n")
+    tail = lines.pop()!
+    for (const line of lines) {
+      if (line.startsWith(":")) yield ["comment", null, line.slice(1).trim()]
+      else if (line.startsWith("event: ")) event = line.slice(7)
+      else if (line.startsWith("id: ")) id = line.slice(4)
+      else if (line.startsWith("data: ")) data = JSON.parse(line.slice(6))
+      else if (line === "data:") data = null
+      else if (line === "" && event !== null) {
+        yield [event, id, data]
+        event = null
+        id = null
+        data = null
+      }
+    }
+  }
+}
+
+/** `promise`, or a rejection after 5 s. */
+export async function within<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("timed out after 5 s")), 5000)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** The next `n` frames of `it`, within 5 s. */
+export async function take(it: AsyncIterator<Frame>, n: number): Promise<Frame[]> {
+  return within(
+    (async () => {
+      const got: Frame[] = []
+      for (let i = 0; i < n; i++) {
+        const step = await it.next()
+        if (step.done) throw new Error(`the stream ended after ${got.length} frames`)
+        got.push(step.value)
+      }
+      return got
+    })(),
+  )
+}
+
+/** Whether `it` ends (within 5 s) instead of yielding another frame. */
+export async function ends(it: AsyncIterator<Frame>): Promise<boolean> {
+  return (await within(it.next())).done === true
+}
+
 /** Writes `text` on a new connection and reads until the first line, the end of the head, or EOF. `closed`
  *  is true only when the peer ended the connection (a reset counts). */
 export function raw(

@@ -1,10 +1,11 @@
 /** HQ test helpers (Python's `tests/hq/conftest.py` and `net.py`): an office with HQ attached but not listening, and
  *  clients for its HQ app. */
 import fs from "node:fs"
+import http, { type IncomingMessage, type ServerResponse } from "node:http"
 import net from "node:net"
 import path from "node:path"
-import type { ServerResponse } from "node:http"
 import { expect, onTestFinished } from "bun:test"
+import { parse, stringify } from "yaml"
 import { type Limits, createServer } from "../../src/daemon/http.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
@@ -12,6 +13,7 @@ import { createHqApp } from "../../src/hq/api.ts"
 import { type Hq, attach } from "../../src/hq/core.ts"
 import { HEADERS, type Inner, hqGuard } from "../../src/hq/guard.ts"
 import { HQ_LIMITS } from "../../src/hq/servers.ts"
+import { git } from "../company/helpers.ts"
 import { shortDir } from "../helpers.ts"
 import { CEO, type Reply, request } from "../daemon/helpers.ts"
 
@@ -75,8 +77,7 @@ export class HqClient {
       headers["content-type"] = "application/json"
       body = JSON.stringify(opts.json)
     }
-    if (headers.cookie === undefined && this.cookies.size > 0)
-      headers.cookie = [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; ")
+    if (headers.cookie === undefined && this.cookies.size > 0) headers.cookie = this.#cookie()
     let url = target
     if (opts.query !== undefined) {
       const query = new URLSearchParams(opts.query).toString()
@@ -91,6 +92,29 @@ export class HqClient {
       else this.cookies.set(name, first.slice(at + 1))
     }
     return reply
+  }
+
+  /** The jar's cookies as one Cookie header. */
+  #cookie(): string {
+    return [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; ")
+  }
+
+  /** A GET of `target` with the client's headers and cookies; resolves with the response, whose data events
+   *  stream. The request is destroyed when the test finishes. */
+  stream(target: string): Promise<IncomingMessage> {
+    const headers: Record<string, string> = { ...this.#headers }
+    if (this.cookies.size > 0) headers.cookie = this.#cookie()
+    return new Promise((resolve, reject) => {
+      const options = { socketPath: this.sock, path: target, headers, agent: false, setHost: false }
+      const req = http.request(options, (res) => {
+        // The cleanup's destroy cuts an unfinished response, which then errors with nobody reading it.
+        res.on("error", () => {})
+        resolve(res)
+      })
+      onTestFinished(() => req.destroy())
+      req.on("error", reject)
+      req.end()
+    })
   }
 
   get(target: string, opts?: Omit<RequestOpts, "json" | "body" | "chunks">): Promise<Reply> {
@@ -158,6 +182,16 @@ export async function signedIn(hq: Hq): Promise<HqClient> {
   const client = await web(hq)
   expect((await client.post("/api/pair", { code: await pairCode(hq) })).status).toBe(200)
   return client
+}
+
+/** Applies `changes` to `people/<handle>/person.yaml` in `company` and commits it; an undefined value drops its
+ *  key. */
+export function handEdit(company: string, handle: string, changes: Record<string, unknown>): void {
+  const file = path.join(company, "people", handle, "person.yaml")
+  const data: Record<string, unknown> = { ...parse(fs.readFileSync(file, "utf8")), ...changes }
+  for (const [key, value] of Object.entries(data)) if (value === undefined) delete data[key]
+  fs.writeFileSync(file, stringify(data))
+  git(company, "commit", "-qam", `edit ${handle}`)
 }
 
 /** A TCP port on 127.0.0.1 that nothing listens on right now (Python's `free_port`). */
