@@ -170,8 +170,12 @@ test("a hung check in a worker is killed and its folder removed", async () => {
   const dir = spawning.mock.calls[0]![1]
   const started = startTime(worker.pid)
   expect(cwdOf(worker.pid)).toBe(fs.realpathSync(dir))
-  expect(args(worker.pid, ps())).not.toContain(SENTINEL)
-  expect(envText(worker.pid)).not.toContain(SENTINEL)
+  const argv = args(worker.pid, ps())
+  expect(argv).toContain("__worker")
+  expect(argv).not.toContain(SENTINEL)
+  const env = envText(worker.pid)
+  expect(env).toContain("VLLM_BASE_URL")
+  expect(env).not.toContain(SENTINEL)
 
   expect(await checking).toBe(NOT_FINISHED)
   expect(isGone(worker.pid, started)).toBe(true)
