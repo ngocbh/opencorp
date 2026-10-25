@@ -9,6 +9,7 @@ import { HttpResponse } from "@ngocbh/yian/llm_clients"
 import { realScheduler, type Scheduler } from "@ngocbh/yian/platform"
 import { iterRunRecords, type RunLogEntry } from "@ngocbh/yian/run"
 import { now, OFFICE, Session, WorkItem } from "@opencorp/protocol"
+import { ChatHarness } from "../../src/chat/harness.ts"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { mainSpec } from "../../src/chat/run_spec.ts"
 import { type ActorContext, type ActorWorker, SessionActor, type Wait } from "../../src/chat/session_actor.ts"
@@ -24,9 +25,10 @@ import { newId, type QuestionRecord, type SessionRecord, type WorkItemRecord } f
 import { FakeLLM, LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { type Delivery, Job, type JobInput } from "../../src/worker/job.ts"
 import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
-import type { Worker, WorkerRegistry } from "../../src/worker/spawn.ts"
+import { type Worker, WorkerRegistry } from "../../src/worker/spawn.ts"
 import { baseFiles, person } from "../company/helpers.ts"
 import { CEO, makeOffice } from "../daemon/helpers.ts"
+import { makeCodex } from "../harness/helpers.ts"
 import { NO_GROUP, tempDir, waitFor } from "../helpers.ts"
 import { advanceJob, inProcessWorker, makeJob, makeRegistry, Recorder, run, waitsOf } from "../worker/helpers.ts"
 
@@ -764,4 +766,25 @@ export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
     return worker as Worker
   }
   return spawned
+}
+
+/** A chat harness over a fresh office with `files` (`makeCompany` overrides), and, with `codex`, `makeCodex`'s Codex
+ *  sessions over a fake app-server as `office.codex`, on the harness's hooks (minh may then use Codex unless `files`
+ *  replace him). `lines` gets the log lines; `codex` is what `makeCodex` returned. Call inside a test: when it
+ *  finishes the office stops, closing the harness before the store closes. */
+export function makeHarness({ files = {}, codex = false }: { files?: Record<string, unknown>; codex?: boolean } = {}) {
+  const c = codex ? makeCodex({ files }) : undefined
+  const office = c?.office ?? makeOffice({ files })
+  const lines = c?.lines ?? []
+  const log = (line: string) => lines.push(line)
+  const hooks = c?.hooks ?? new Hooks({ log })
+  office.codex = c?.sessions
+  const harness = new ChatHarness(office, {
+    monitor: new Monitor(office.paths.company, office.store, office.secrets),
+    hooks,
+    workers: new WorkerRegistry(office.store),
+    log,
+  })
+  office.onStop.push(() => harness.closeAll())
+  return { harness, office, store: office.store, hooks, lines, workspace: c?.workspace ?? tempDir(), codex: c }
 }

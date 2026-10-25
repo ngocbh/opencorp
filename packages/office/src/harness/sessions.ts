@@ -496,28 +496,8 @@ export class CodexSessions implements SessionHarness {
     if (person.kind !== "agent") throw new HarnessError(422, "not_an_agent", `${handle} has no main flow to chat with`)
     if (!person.harnesses.includes("codex"))
       throw new HarnessError(422, "unsupported_harness", `${handle} doesn't use the codex harness`)
-    // A 422 never echoes the request's path: it may not be a folder at all.
-    if (!path.isAbsolute(cwd)) throw new HarnessError(422, "invalid_body", "cwd is not an absolute path")
-    if (!isFolder(cwd))
-      throw new HarnessError(422, "invalid_body", "cwd is not a folder")
-    // Clients match folders by their resolved path (/tmp is /private/tmp on macOS).
-    const real = realPath(cwd)
-    try {
-      checkWorkspace(real, this.office.guards)
-    } catch (error) {
-      if (error instanceof UnsafeWorkspace) throw new HarnessError(422, "unsafe_workspace", error.message)
-      throw error
-    }
-    // The workspace check guards ~/.opencorp; this office's home may be elsewhere.
-    for (const kept of [this.office.paths.company, this.office.paths.office]) {
-      if (isInside(real, kept) || isInside(kept, real))
-        throw new HarnessError(
-          422,
-          "unsafe_workspace",
-          `workspace ${real} overlaps the office's files at ${realPath(kept)}; use a project folder`,
-        )
-    }
-    const chosen = await this.#connection(connection)
+    const real = checkFolder(this.office, cwd)
+    const chosen = await startConnection(this.office, connection, this.log)
     const t = now()
     const item = this.store.createWorkItem(
       WorkItem.parse({
@@ -556,30 +536,6 @@ export class CodexSessions implements SessionHarness {
     return session
   }
 
-  /** The connection a new Codex session's debrief runs on: `requested` if it is on this office, else the office's
-   *  default (`office` when the names or the default can't be read). Nothing is probed: a Codex session runs on
-   *  Codex's own login, so the connection only serves its debrief, and a probe would make a start wait on the
-   *  network. */
-  async #connection(requested: string | null): Promise<string> {
-    let names: string[]
-    try {
-      names = await this.office.connections.names()
-    } catch (error) {
-      if (error instanceof ProviderError) return OFFICE
-      throw error
-    }
-    let fallback: string
-    try {
-      fallback = await this.office.connections.default()
-    } catch (error) {
-      if (!(error instanceof ProviderError)) throw error
-      // Nothing else would say why chats left the default.
-      this.log("the office's default connection can't be read; new chats take office as the default")
-      fallback = OFFICE
-    }
-    return requested && names.includes(requested) ? requested : fallback
-  }
-
   /** The stored session `sessionId` if it is a Codex session: 404 when there is none, 501 for a yian chat. */
   #codexSession(sessionId: string): SessionRecord {
     const session = this.store.getSession(sessionId)
@@ -602,6 +558,60 @@ export class CodexSessions implements SessionHarness {
       throw new HarnessError(404, "not_found", `no session ${sessionId}`)
     throw new HarnessError(409, "not_live", `session ${sessionId} has no live Codex app-server`)
   }
+}
+
+/** The realpath of `cwd`, a new session's folder, once it is checked: 422 `invalid_body` when it isn't an absolute path
+ *  to a folder, and 422 `unsafe_workspace` when `checkWorkspace` refuses it or it overlaps the office's own files. */
+export function checkFolder(office: Office, cwd: string): string {
+  // A 422 never echoes the request's path: it may not be a folder at all.
+  if (!path.isAbsolute(cwd)) throw new HarnessError(422, "invalid_body", "cwd is not an absolute path")
+  if (!isFolder(cwd))
+    throw new HarnessError(422, "invalid_body", "cwd is not a folder")
+  // Clients match folders by their resolved path (/tmp is /private/tmp on macOS).
+  const real = realPath(cwd)
+  try {
+    checkWorkspace(real, office.guards)
+  } catch (error) {
+    if (error instanceof UnsafeWorkspace) throw new HarnessError(422, "unsafe_workspace", error.message)
+    throw error
+  }
+  // The workspace check guards ~/.opencorp; this office's home may be elsewhere.
+  for (const kept of [office.paths.company, office.paths.office]) {
+    if (isInside(real, kept) || isInside(kept, real))
+      throw new HarnessError(
+        422,
+        "unsafe_workspace",
+        `workspace ${real} overlaps the office's files at ${realPath(kept)}; use a project folder`,
+      )
+  }
+  return real
+}
+
+/** The connection a new session starts on: `requested` if it is on this office, else the office's default (`office`
+ *  when the names or the default can't be read); `log` gets a line when the default can't be read. Nothing is
+ *  probed, so a start never waits on the network. */
+export async function startConnection(
+  office: Office,
+  requested: string | null,
+  log: (line: string) => void,
+): Promise<string> {
+  let names: string[]
+  try {
+    names = await office.connections.names()
+  } catch (error) {
+    if (error instanceof ProviderError) return OFFICE
+    throw error
+  }
+  let fallback: string
+  try {
+    fallback = await office.connections.default()
+  } catch (error) {
+    if (!(error instanceof ProviderError)) throw error
+    // Nothing else would say why chats left the default.
+    log("the office's default connection can't be read; new chats take office as the default")
+    fallback = OFFICE
+  }
+  return requested && names.includes(requested) ? requested : fallback
 }
 
 /** Whether `p` is a folder; a path that can't name one (missing, below a file, a link loop, a NUL byte) is not. */
