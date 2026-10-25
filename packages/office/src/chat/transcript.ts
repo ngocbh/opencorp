@@ -6,6 +6,7 @@ import {
   type LiveViewCall,
   type Message as RunMessage,
   PoolCommitRecord,
+  RunLogChangedError,
   type RunLogEntry,
   TypedValue,
 } from "@ngocbh/yian/run"
@@ -64,6 +65,27 @@ interface Fold {
   settled: Set<string>
   /** Whether the run was cancelled or failed. */
   ended: boolean
+  /** The end offset, seq and run id of the last record folded, where the next read resumes; a fold that has folded no
+   *  record has no seq. The end is also the bytes the fold stands for in the cache. */
+  end: number
+  seq: number | null
+  runId: string
+}
+
+/** A fold of no record yet. */
+function emptyFold(): Fold {
+  return {
+    sends: new Map(),
+    read: new Set(),
+    takes: new Map(),
+    items: [],
+    started: new Set(),
+    settled: new Set(),
+    ended: false,
+    end: 0,
+    seq: null,
+    runId: "",
+  }
 }
 
 /** True for a run id that names a folder directly under the runs folder. */
@@ -76,14 +98,19 @@ function messageId(runId: string, seq: number): string {
   return `${runId}:${String(seq).padStart(12, "0")}`
 }
 
-/** A session's transcript, read from its runs' logs (`<runs>/<run_id>/log.jsonl`). */
+/**
+ * A session's transcript, read from its runs' logs (`<runs>/<run_id>/log.jsonl`). Each run's fold is cached, least
+ * recently read first, and each read folds only what its log added since; the cache keeps at most `maxBytes` of log
+ * (32 MiB by default), and always the run just read.
+ */
 export class Transcript {
   private readonly runs: string
-  private readonly maxBytes: number | undefined
+  private readonly maxBytes: number
+  private readonly cache = new Map<string, Fold>()
 
   constructor(runs: string, options: { maxBytes?: number } = {}) {
     this.runs = runs
-    this.maxBytes = options.maxBytes
+    this.maxBytes = options.maxBytes ?? 32 * 1024 * 1024
   }
 
   /** The messages of the runs `runIds` (session_runs order), then the last run's queued messages. */
@@ -93,7 +120,7 @@ export class Transcript {
       if (!safeRunId(runId)) return
       const state = this.read(runId)
       const last = index === runIds.length - 1
-      render(out, sessionId, runId, state, last && (live?.calls(runId) ?? null) !== null, last)
+      render(out, sessionId, runId, state, last ? (live?.calls(runId) ?? null) : null, last)
       // A replaced run's unread sends were moved into the fresh run, so only the last run's are queued.
       if (last) {
         for (const send of state.sends.values()) {
@@ -106,27 +133,51 @@ export class Transcript {
 
   /** Forgets the reads of `runIds`, for a session that ended. */
   forget(runIds: Iterable<string>): void {
-    // Each call reads the whole logs, so nothing is kept to forget.
+    for (const runId of runIds) this.cache.delete(runId)
   }
 
-  /** The state of the run `runId`, folded from its whole log; a run with no log yet has none. */
+  /** The fold of the run `runId`, its cached fold read on to the end of its log; a run with no log yet has an empty
+   *  fold, not cached. */
   private read(runId: string): Fold {
-    const state: Fold = {
-      sends: new Map(),
-      read: new Set(),
-      takes: new Map(),
-      items: [],
-      started: new Set(),
-      settled: new Set(),
-      ended: false,
-    }
+    const log = path.join(this.runs, runId, "log.jsonl")
+    const cached = this.cache.get(runId)
+    // Out of the cache while it is read, so a read that throws leaves no half-read fold, and put back last.
+    this.cache.delete(runId)
+    let state: Fold
     try {
-      for (const entry of iterRunRecords(path.join(this.runs, runId, "log.jsonl"), { kinds: KINDS })) fold(state, entry)
+      try {
+        state = readOn(log, cached ?? emptyFold())
+      } catch (error) {
+        if (!(error instanceof RunLogChangedError)) throw error
+        state = readOn(log, emptyFold())
+      }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw error
+      if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return emptyFold()
+      throw error
+    }
+    this.cache.set(runId, state)
+    let bytes = 0
+    for (const fold of this.cache.values()) bytes += fold.end
+    for (const [id, fold] of this.cache) {
+      if (bytes <= this.maxBytes) break
+      if (id === runId) continue
+      this.cache.delete(id)
+      bytes -= fold.end
     }
     return state
   }
+}
+
+/** Folds into `state` the records of the log `log` after the last one it folded; returns `state`. */
+function readOn(log: string, state: Fold): Fold {
+  const resume = state.seq === null ? {} : { afterOffset: state.end, runId: state.runId, afterSeq: state.seq }
+  for (const entry of iterRunRecords(log, { ...resume, kinds: KINDS })) {
+    fold(state, entry)
+    state.end = entry.end
+    state.seq = entry.seq
+    state.runId = entry.runId
+  }
+  return state
 }
 
 /** Folds the log record `entry` into `state`. */
@@ -180,13 +231,22 @@ function fold(state: Fold, entry: RunLogEntry): void {
 /**
  * Appends to `out` the messages of the run `runId` from its fold `state`: each accepted take's user messages, each
  * reply's assistant message, and the user messages a steer read, between what the reply said before and after.
- * `live` says a worker runs the run; `last`, that it is the session's last run.
+ * `live` is the model calls in flight of a run a worker runs, null when none runs it; `last` says the run is the
+ * session's last.
  */
-function render(out: Message[], sessionId: string, runId: string, state: Fold, live: boolean, last: boolean): void {
+function render(
+  out: Message[],
+  sessionId: string,
+  runId: string,
+  state: Fold,
+  live: readonly LiveViewCall[] | null,
+  last: boolean,
+): void {
   const open = new Map<string, Message>() // reply node -> its open message
   const calls = new Map<string, Map<string, ToolPart>>() // reply node -> its last model call's tool parts, by call id
   const unresolved = new Map<ToolPart, string>() // tool part without a result -> its reply node
   const waiting = new Set<ToolPart>() // tool parts whose call waits on the host
+  const called = new Set<string>() // "<node>:<n>" of each model_call step
   // A message is emitted at its first part, so a reply that never shows anything adds no message.
   const add = (node: string, part: Part): void => {
     const message = open.get(node)
@@ -204,6 +264,7 @@ function render(out: Message[], sessionId: string, runId: string, state: Fold, l
       open.set(item.node, assistantMessage(sessionId, runId, item.seq, item.at))
     } else {
       const { node, n, step } = item
+      if (step.kind === "model_call") called.add(`${node}:${n}`)
       if (step.kind === "model_call" && step.purpose === "chat" && step.error == null) {
         const output = step.output as { parts?: Record<string, unknown>[] } | null
         const parts = output?.parts ?? []
@@ -260,9 +321,13 @@ function render(out: Message[], sessionId: string, runId: string, state: Fold, l
       }
     }
   }
+  // A model call in flight shows its text so far, even none, under the id its step will get.
+  for (const { node, n, text } of live ?? []) {
+    if (!called.has(`${node}:${n}`)) add(node, { id: `${runId}:${node}:${n}`, type: "text", text })
+  }
   // A call with no result runs on only while its reply can still finish it: a run nothing runs left it cut.
   for (const [part, node] of unresolved) {
-    const running = last && !state.ended && !state.settled.has(node) && (waiting.has(part) || live)
+    const running = last && !state.ended && !state.settled.has(node) && (waiting.has(part) || live !== null)
     part.state = running ? "running" : "interrupted"
   }
 }

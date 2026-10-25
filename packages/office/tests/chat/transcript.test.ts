@@ -1,10 +1,11 @@
 /** A session's transcript, read from its runs' logs (Python's `tests/chat/test_transcript.py`). */
 import { expect, setDefaultTimeout, test } from "bun:test"
 import fs from "node:fs"
-import { iterRunRecords, type PoolCommitRecord, type RunLogEntry } from "@ngocbh/yian/run"
+import path from "node:path"
+import { iterRunRecords, type LiveViewCall, type PoolCommitRecord, type RunLogEntry } from "@ngocbh/yian/run"
 import { pending } from "@ngocbh/yian/tools"
 import { Message, type ToolPart } from "@opencorp/protocol"
-import { INTERRUPTED_TEXT, Transcript } from "../../src/chat/transcript.ts"
+import { INTERRUPTED_TEXT, type LiveCalls, Transcript } from "../../src/chat/transcript.ts"
 import { MAIN_CHAT } from "../../src/chat/turns.ts"
 import { newId } from "../../src/store/store.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
@@ -26,10 +27,15 @@ import {
 
 setDefaultTimeout(30_000)
 
-/** The messages of the runs `runIds` under `runs`, each checked against the protocol's `Message`, their ids checked
- *  to sort in transcript order. */
-function messages(runs: string, sessionId: string, runIds: string[]): Message[] {
-  const read = new Transcript(runs).messages(sessionId, runIds)
+/** The messages of the runs `runIds` under `runs`, read by `transcript` (a fresh one by default) with `live`, each
+ *  checked against the protocol's `Message`, their ids checked to sort in transcript order. */
+function messages(
+  runs: string,
+  sessionId: string,
+  runIds: string[],
+  { transcript = new Transcript(runs), live }: { transcript?: Transcript; live?: LiveCalls } = {},
+): Message[] {
+  const read = transcript.messages(sessionId, runIds, live)
   for (const message of read) Message.parse(message)
   const ids = read.map((m) => m.id)
   expect(ids).toEqual([...ids].sort())
@@ -64,6 +70,21 @@ function steps(log: string): Record<string, unknown>[] {
   return [...iterRunRecords(log, { kinds: ["node_step"] })].map(
     (entry) => (entry.envelope.record as unknown as { step: Record<string, unknown> }).step,
   )
+}
+
+/** Live calls that say `calls` for every run. */
+function liveCalls(calls: LiveViewCall[]): LiveCalls {
+  return { calls: () => calls }
+}
+
+/** Overwrites the first byte of the log `log`, so a read from its start fails at its first record. */
+function corrupt(log: string): void {
+  const fd = fs.openSync(log, "r+")
+  try {
+    fs.writeSync(fd, "x", 0)
+  } finally {
+    fs.closeSync(fd)
+  }
 }
 
 /** Applies `deliver` to the waiting run `job` without moving it on. */
@@ -224,6 +245,12 @@ test("tool calls become tool parts", async () => {
   expect(c1.input).toEqual({ command: "ls", count: 3 })
   expect(() => JSON.stringify(read)).not.toThrow()
   expect(tools(messages(beforeC3(job), newId(), ["r1"]))[2]).toEqual(["c3", "interrupted", {}, null])
+})
+
+test("a live run shows a call without its result as running", async () => {
+  const job = await toolRun(tempDir())
+  const read = messages(beforeC3(job), newId(), ["r1"], { live: liveCalls([]) })
+  expect(tools(read)[2]).toEqual(["c3", "running", {}, null])
 })
 
 test("a node that never called a model writes nothing", async () => {
@@ -463,4 +490,103 @@ test("messages of every run come in run order and their ids sort in that order",
     ["assistant", ["Second."]],
   ])
   expect(read.map((m) => m.id.split(":")[0])).toEqual([runIds[0], runIds[0], runIds[1], runIds[1]])
+})
+
+test("a reply in flight shows its live text under the id its step gets", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "hello there" })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "hi")])
+  const isCall = (entry: RunLogEntry) =>
+    entry.kind === "node_step" &&
+    entry.nodeId === "chat#0/reply" &&
+    (entry.envelope.record as unknown as { step: Step }).step.kind === "model_call"
+  const call = [...iterRunRecords(job.log)].find(isCall)!
+  const n = (call.envelope.record as unknown as { n: number }).n
+  const crashed = tempDir()
+  logPrefix(job.log, (entry) => !isCall(entry), crashed)
+  const live = liveCalls([{ node: "chat#0/reply", n, text: "hello ", nextIndex: 1 }])
+  const flight = messages(crashed, newId(), ["r1"], { live }).filter((m) => m.role === "assistant")
+  expect(flight.map((m) => m.parts)).toEqual([[{ id: `r1:chat#0/reply:${n}`, type: "text", text: "hello " }]])
+  const full = messages(runs, newId(), ["r1"]).filter((m) => m.role === "assistant")
+  expect(full.map((m) => m.parts)).toEqual([[{ id: `r1:chat#0/reply:${n}`, type: "text", text: "hello there" }]])
+})
+
+test("reads are incremental", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "first")])
+  const transcript = new Transcript(runs)
+  const sessionId = newId()
+  expect(texts(messages(runs, sessionId, ["r1"], { transcript }))).toEqual([
+    ["user", ["first"]],
+    ["assistant", ["one"]],
+  ])
+  await advance(job, fake, [send("s2", "second")])
+  corrupt(job.log)
+  expect(() => new Transcript(runs).messages(sessionId, ["r1"])).toThrow()
+  expect(texts(messages(runs, sessionId, ["r1"], { transcript }))).toEqual([
+    ["user", ["first"]],
+    ["assistant", ["one"]],
+    ["user", ["second"]],
+    ["assistant", ["two"]],
+  ])
+})
+
+test("a log that no longer continues is read again from the start", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "first")])
+  const prefix = fs.readFileSync(job.log)
+  await advance(job, fake, [send("s2", "second")])
+  const transcript = new Transcript(runs)
+  const sessionId = newId()
+  expect(messages(runs, sessionId, ["r1"], { transcript }).length).toBe(4)
+  fs.writeFileSync(job.log, prefix)
+  expect(texts(messages(runs, sessionId, ["r1"], { transcript }))).toEqual([
+    ["user", ["first"]],
+    ["assistant", ["one"]],
+  ])
+})
+
+test("the cache keeps at most max bytes and forgets ended runs", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "A." }, { content: "B." })
+  const runs = tempDir()
+  const a = await waitingChat(fake, "chat", {}, { runs, runId: "a" })
+  await advance(a, fake, [send("s1", "to a")])
+  const b = await waitingChat(fake, "chat", {}, { runs, runId: "b" })
+  await advance(b, fake, [send("s2", "to b")])
+  const transcript = new Transcript(runs, { maxBytes: 1 })
+  const sessionId = newId()
+  expect(messages(runs, sessionId, ["a"], { transcript }).length).toBe(2)
+  expect(messages(runs, sessionId, ["b"], { transcript }).length).toBe(2)
+  corrupt(a.log)
+  expect(() => transcript.messages(sessionId, ["a"])).toThrow()
+  corrupt(b.log)
+  expect(texts(messages(runs, sessionId, ["b"], { transcript }))).toEqual([
+    ["user", ["to b"]],
+    ["assistant", ["B."]],
+  ])
+  transcript.forget(["b"])
+  expect(() => transcript.messages(sessionId, ["b"])).toThrow()
+})
+
+test("a run without a log yet has no messages", () => {
+  expect(messages(tempDir(), newId(), ["r1"])).toEqual([])
+})
+
+test("a run id that is not one folder name is skipped", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Hi." })
+  const runs = path.join(tempDir(), "runs")
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "hi")])
+  expect(messages(runs, newId(), ["r1"]).length).toBe(2)
+  expect(messages(runs, newId(), ["", ".", "..", "../runs/r1", "r1/..", "r1\\x", "r1\0"])).toEqual([])
 })
