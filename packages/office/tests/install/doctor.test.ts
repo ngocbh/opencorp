@@ -411,6 +411,25 @@ test("an office that crashed with the crash marker fails", async () => {
   expect(got.office!.detail).not.toContain("y.ts")
 })
 
+test("a crash marker never shows more than the error type", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const log = `${logLine("ERROR", "opencorp.daemon.main", "office crashed: TypeError token=abc")}\n    at f (x.ts:1:1)\n`
+  fs.writeFileSync(path.join(paths.office, "office.log"), log)
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office!.detail).not.toContain("token=abc")
+})
+
+test("the crash marker is found at the end of a long log", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const info = `${logLine("INFO", "opencorp.daemon.main", "office listening")}\n`
+  fs.writeFileSync(path.join(paths.office, "office.log"), info.repeat(Math.ceil((100 * 1024) / info.length)) + crashedLog())
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office!.status).toBe("fail")
+  expect(got.office!.detail).toContain("its last start failed: office crashed: TypeError")
+})
+
 test("a crash marker followed by a later start is not a crash", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)

@@ -22,8 +22,14 @@ import * as systemd from "./systemd.ts"
 /** How the daemon prefixes the one line it prints when it can't start. */
 const START_ERROR = "opencorp office: "
 
-/** The crash marker's line (`logLine` from the daemon's `crashReport`), capturing `office crashed: <type>`. */
-const CRASH_MARKER = /^\S+ ERROR opencorp\.daemon\.main: (office crashed: .*)$/
+/**
+ * The crash marker's line (`logLine` from the daemon's `crashReport`), capturing `office crashed: <type>`. The type
+ * may be empty (an anonymous class); a marker with anything after the type doesn't match, so no message shows.
+ */
+const CRASH_MARKER = /^\S+ ERROR opencorp\.daemon\.main: (office crashed: \S*)$/
+
+/** The end of the office log that `crash` looks at: far more than 40 lines. */
+const LOG_TAIL_BYTES = 64 * 1024
 
 /** A stack frame line under the crash marker. */
 const FRAME = /^\s+at /
@@ -284,6 +290,25 @@ function nextStep(run: Launch, host: Host): string {
 }
 
 /**
+ * The last `LOG_TAIL_BYTES` of `file`, without the partial first line when it is cut; empty when `file` isn't a
+ * regular file.
+ */
+function tail(file: string): string {
+  // Non-blocking so a FIFO at the log's path can't hang the open.
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK)
+  try {
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile()) return ""
+    const start = Math.max(0, stat.size - LOG_TAIL_BYTES)
+    const buf = Buffer.alloc(LOG_TAIL_BYTES)
+    const text = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, start)).toString("utf8")
+    return start === 0 ? text : text.slice(text.indexOf("\n") + 1)
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+/**
  * Why the daemon's last start failed, from the office log, or null if it didn't: the line it printed when it
  * couldn't start, or `office crashed: <type>` when the log ends with the crash marker and its frames (the frames
  * stay in the log). A marker with other lines after it belongs to an earlier start.
@@ -291,7 +316,7 @@ function nextStep(run: Launch, host: Host): string {
 function crash(log: string): string | null {
   let text: string
   try {
-    text = fs.readFileSync(log, "utf8")
+    text = tail(log)
   } catch (error) {
     if (errnoCode(error) === undefined) throw error
     return null
