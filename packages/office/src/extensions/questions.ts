@@ -9,4 +9,5 @@ export function register(office: Office): void {
   const cards = new Cards(office, harness)
   office.cards = cards
   harness.hooks.answerCheck.push(cards.check.bind(cards))
+  office.onStop.push(() => cards.close())
 }

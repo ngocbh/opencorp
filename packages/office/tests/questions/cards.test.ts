@@ -100,6 +100,8 @@ test("an ask nodes card cant be sent back or stopped and takes a record keyed by
   })
   const refused = [() => cards.answer(q.id, { db: "SQLite" }, "option"), () => actor.answer(q.id, "SQLite", "text")]
   for (const action of refused) expect((await refusal(action)).code).toBe("invalid_answer")
+  expect((await refusal(() => cards.sendBack(q.id, "x"))).code).toBe("cannot_send_back")
+  expect((await refusal(() => cards.stop(q.id))).code).toBe("cannot_stop")
   expect(actor.answered).toEqual([])
   const answer = { db: "SQLite", features: ["auth", "search"] }
   expect((await cards.answer(q.id, answer, "option")).answer).toEqual(answer)
@@ -166,6 +168,7 @@ test("no harness means no cards", () => {
   const { cards, actor } = wire(office)
   expect(office.cards).toBe(cards)
   expect(actor.hooks.answerCheck).toHaveLength(1)
+  expect(office.onStop).toHaveLength(1)
 })
 
 test("a secret pages answer is never in a refusal or a log line", async () => {
@@ -198,4 +201,160 @@ test("a secret pages answer is never in a refusal or a log line", async () => {
     }
   }
   expect(lines.filter((line) => line.includes(SECRET))).toEqual([])
+})
+
+test("a harness card takes only an answer", async () => {
+  const office = makeOffice()
+  const { cards } = wire(office)
+  const s = office.store.createSession(session({ harness: "codex" }))
+  const q = office.store.addQuestion(
+    question(s.id, {
+      run_id: "turn_1",
+      node_id: "1",
+      source: "harness",
+      question: "$ touch a",
+      options: ["Approve", "Deny and stop"],
+    }),
+  )
+  for (const action of [() => cards.openSide(q.id, "why?"), () => cards.sendBack(q.id, ""), () => cards.stop(q.id)]) {
+    const error = await refusal(action)
+    expect([error.status, error.code]).toEqual([422, "harness_card"])
+  }
+  expect(office.store.getQuestion(q.id)!.status).toBe("open")
+})
+
+test("stop on a live main chats model question is esc on that chat", async () => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  const q = card(office)
+  const stopped = await cards.stop(q.id, { by: "lan" })
+  expect(actor.interrupted).toEqual([q.session_id])
+  expect(actor.answered).toEqual([])
+  expect([stopped.answer, stopped.answer_kind, stopped.answered_by]).toEqual([INTERRUPTED, "interrupted", null])
+})
+
+test("stop answers the question when the asking chat has no run to interrupt", async () => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  actor.interruptFails = true
+  const q = card(office)
+  const stopped = await cards.stop(q.id, { by: "lan" })
+  expect([stopped.answer, stopped.answer_kind, stopped.answered_by]).toEqual([INTERRUPTED, "interrupted", "lan"])
+
+  actor.interruptFails = false
+  const ended = office.store.createSession(session({ status: "ended" }))
+  const q2 = office.store.addQuestion(question(ended.id))
+  const answered = await cards.stop(q2.id, { by: "lan" })
+  expect([answered.answer, answered.answer_kind, answered.answered_by]).toEqual([INTERRUPTED, "interrupted", "lan"])
+  expect(actor.interrupted).toEqual([])
+})
+
+test("a manager question is stopped by answering it as who clicked", async () => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  const q = card(office, { source: "ask_manager" })
+  const stopped = await cards.stop(q.id, { by: "ngocbh" })
+  expect(actor.answered).toEqual([[q.id, INTERRUPTED, "interrupted", "ngocbh"]])
+  expect(stopped.answered_by).toBe("ngocbh")
+  expect(actor.interrupted).toEqual([])
+})
+
+test("send back needs a discussion or a carried one", async () => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  const q = card(office)
+  const error = await refusal(() => cards.sendBack(q.id, ""))
+  expect([error.status, error.code]).toEqual([422, "no_discussion"])
+  expect(actor.answered).toEqual([])
+
+  const stale = card(office)
+  office.store.setQuestionStatus(stale.id, "stale")
+  const carried = card(office, { carried_from: stale.id })
+  expect((await cards.sendBack(carried.id, "")).answer_kind).toBe("sent_back")
+})
+
+test("send back adds a non blank note and answers undecided as who acted", async () => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  const discussion = [
+    { role: "user" as const, text: "why?" },
+    { role: "assistant" as const, text: "quota" },
+  ]
+  const q = card(office, { discussion })
+  const sent = await cards.sendBack(q.id, " list them ", { by: "lan" })
+  expect(sent.discussion).toEqual([...discussion, { role: "user", text: " list them " }])
+  expect(actor.answered).toEqual([[q.id, null, "sent_back", "lan"]])
+
+  const q2 = card(office, { discussion })
+  expect((await cards.sendBack(q2.id, "  ")).discussion).toEqual(discussion)
+})
+
+test("two send backs at once leave one note", async () => {
+  const office = makeOffice()
+  const { cards } = wire(office)
+  const q = card(office, { discussion: [{ role: "user", text: "why?" }] })
+  const results = await Promise.allSettled([cards.sendBack(q.id, "a"), cards.sendBack(q.id, "b")])
+  expect(results.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"])
+  const failed = results.find((result) => result.status === "rejected")!
+  const error = failed.reason as HarnessError
+  expect([error.status, error.code]).toEqual([409, "not_open"])
+  expect(office.store.getQuestion(q.id)!.discussion).toHaveLength(2)
+})
+
+test("a dismissed carry over is cleared", async () => {
+  const office = makeOffice()
+  const { cards } = wire(office)
+  const stale = card(office)
+  office.store.setQuestionStatus(stale.id, "stale")
+  const q = card(office, { carried_from: stale.id })
+  const dismissed = cards.dismissCarried(q.id)
+  expect(dismissed.carried_from).toBeNull()
+  expect(office.store.getQuestion(q.id)).toEqual(dismissed)
+})
+
+test("card actions on a closed question are 409 not open", async () => {
+  const office = makeOffice()
+  const { cards } = wire(office)
+  const q = card(office, { options: ["Retry", "Back off"] })
+  await cards.answer(q.id, "Retry", "option")
+  const actions = (id: string) => [
+    () => cards.answer(id, "Retry", "option"),
+    () => cards.sendBack(id, "x"),
+    () => cards.stop(id),
+    async () => cards.dismissCarried(id),
+    () => cards.openSide(id, "why?"),
+  ]
+  for (const action of actions(q.id)) {
+    const error = await refusal(action)
+    expect([error.status, error.code]).toEqual([409, "not_open"])
+  }
+  for (const action of actions("01MISSINGQUESTION000000000")) {
+    const error = await refusal(action)
+    expect([error.status, error.code]).toEqual([404, "not_found"])
+  }
+})
+
+test("close waits for queued send backs", async () => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  let release = () => {}
+  actor.answerGate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  try {
+    const q = card(office, { discussion: [{ role: "user", text: "why?" }] })
+    const sent = cards.sendBack(q.id, "")
+    let closed = false
+    const closing = cards.close().then(() => {
+      closed = true
+    })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(closed).toBe(false)
+    release()
+    expect((await sent).answer_kind).toBe("sent_back")
+    await closing
+    expect(closed).toBe(true)
+  } finally {
+    release()
+  }
 })

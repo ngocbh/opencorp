@@ -1,10 +1,12 @@
 /** Question-card actions (answer, chat about this, send back, stop). */
 import type { Hooks } from "../chat/hooks.ts"
-import { HarnessError } from "../chat/state.ts"
+import { HarnessError, LIVE } from "../chat/state.ts"
 import { MAIN_CHAT } from "../chat/turns.ts"
 import type { Office } from "../daemon/office.ts"
+import { strip } from "../perm/redact.ts"
 import type { QuestionRecord, SessionRecord, Store } from "../store/store.ts"
 import { InvalidAnswer, checkAnswer } from "./checker.ts"
+import { INTERRUPTED } from "./format.ts"
 
 /** The four ways a question is answered (`option`, `text`, `sent_back`, `interrupted`): the store's `answer_kind`. */
 export type AnswerKind = NonNullable<QuestionRecord["answer_kind"]>
@@ -33,6 +35,7 @@ export class Cards {
   readonly office: Office
   readonly actor: CardActor
   readonly store: Store
+  #tail: Promise<unknown> = Promise.resolve()
 
   constructor(office: Office, actor: CardActor) {
     this.office = office
@@ -68,6 +71,63 @@ export class Cards {
     throw new HarnessError(501, "not_implemented", "side chats are not implemented yet")
   }
 
+  /** Send the discussion back undecided as `by`; a non-blank `note` is the human's last message in it. */
+  async sendBack(
+    questionId: string,
+    note: string,
+    { by = null }: { by?: string | null } = {},
+  ): Promise<QuestionRecord> {
+    const question = this.#open(questionId)
+    this.#notHarness(question)
+    if (question.source === "ask") {
+      throw new HarnessError(422, "cannot_send_back", "a flow's own question can't be sent back")
+    }
+    return this.#serial(async () => {
+      const current = this.#open(questionId)
+      if (current.discussion.length === 0 && !current.carried_from) {
+        throw new HarnessError(422, "no_discussion", "chat about the question before sending it back")
+      }
+      if (strip(note)) {
+        this.store.updateQuestion(questionId, { discussion: [...current.discussion, { role: "user", text: note }] })
+      }
+      return this.actor.answer(questionId, null, "sent_back", { by })
+    })
+  }
+
+  /**
+   * Stop the asker from the card: it gets `[interrupted by the user]` with the discussion.
+   *
+   * A model question in a live main chat is Esc on that chat (the reply stops too), which is no one's; any other
+   * model question is answered as `by` and its run carries on.
+   */
+  async stop(questionId: string, { by = null }: { by?: string | null } = {}): Promise<QuestionRecord> {
+    const question = this.#open(questionId)
+    this.#notHarness(question)
+    if (question.source === "ask") throw new HarnessError(422, "cannot_stop", "a flow's own question can't be stopped")
+    const asker = this.store.getSession(question.session_id)
+    if (question.source === "ask_user" && asker !== undefined && asker.kind === "main" && LIVE.includes(asker.status)) {
+      try {
+        await this.actor.interrupt(asker.id)
+        return this.store.getQuestion(questionId)!
+      } catch (error) {
+        // Its run is gone: answer the question alone.
+        if (!(error instanceof HarnessError)) throw error
+      }
+    }
+    return this.actor.answer(questionId, INTERRUPTED, "interrupted", { by })
+  }
+
+  /** Stop carrying an expired question's discussion into this card and its answer. */
+  dismissCarried(questionId: string): QuestionRecord {
+    this.#open(questionId)
+    return this.store.updateQuestion(questionId, { carried_from: null })
+  }
+
+  /** Waits for queued card work (a send-back) to finish. */
+  async close(): Promise<void> {
+    await this.#tail
+  }
+
   /** `answerCheck`: refuse an answer that doesn't fit its card (turn questions aren't cards). */
   check(question: QuestionRecord, answer: unknown, kind: AnswerKind): string | null {
     if (this.#isTurn(question)) return null
@@ -78,6 +138,14 @@ export class Cards {
       throw error
     }
     return null
+  }
+
+  /** Runs `body` after every queued body before it, failed or not; it stands for Python's `_discussion` lock, so
+   *  a send-back's re-check, note and answer don't interleave with another's. */
+  #serial<T>(body: () => Promise<T>): Promise<T> {
+    const run = this.#tail.then(() => body())
+    this.#tail = run.catch(() => undefined)
+    return run
   }
 
   #open(questionId: string): QuestionRecord {
