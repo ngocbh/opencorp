@@ -665,12 +665,17 @@ export interface ScriptedWorker {
 }
 
 /** Makes `o`'s spawns return scripted workers (still recording each kind and job) whose `deliver` records the
- *  delivery and returns what the worker's `accept` says; returns the workers spawned, in order. */
+ *  delivery and returns what the worker's `accept` says; a `chat` job's worker makes its run's log, as a worker
+ *  that starts the run does. Returns the workers spawned, in order. */
 export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
   const spawned: ScriptedWorker[] = []
   o.registry.spawn = async (job, _sessionDir, handlers) => {
     o.kinds.push(job.kind)
     o.jobs.push(job)
+    if (job.kind === "chat") {
+      fs.mkdirSync(path.dirname(job.log), { recursive: true })
+      fs.writeFileSync(job.log, "")
+    }
     const deliveries: Delivery[] = []
     const worker: ActorWorker = {
       job,

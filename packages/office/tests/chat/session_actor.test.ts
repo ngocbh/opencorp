@@ -4,10 +4,12 @@ import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveEvent } from "@opencorp/protocol"
-import { INTERRUPTED_CALL, type SessionActor, type Wait } from "../../src/chat/session_actor.ts"
+import { INTERRUPTED_CALL, type Wait } from "../../src/chat/session_actor.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
-import { COULDNT_RESUME, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
+import { COULDNT_RESUME, NEW_MODEL, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
+import { writePrivate } from "../../src/secrets.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import type { Delivery } from "../../src/worker/job.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
 import { CEO } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
@@ -447,15 +449,6 @@ test("the provider key never reaches a reason a hook a log or the store", async 
   }
 })
 
-/** Gives the current run of `actor` a log, as a run that started has. */
-function withLog(o: ChatOffice, actor: SessionActor): string {
-  const runId = actor.runId!
-  const log = path.join(o.office.paths.runs, runId, "log.jsonl")
-  fs.mkdirSync(path.dirname(log), { recursive: true })
-  fs.writeFileSync(log, "")
-  return runId
-}
-
 /** Records the order `runFinished` and `sessionEnded` fire in. */
 function hookOrder(o: ChatOffice): string[] {
   const fired: string[] = []
@@ -472,7 +465,7 @@ test("a second worker death fails the session", async () => {
   const sid = await newSession(o)
   const actor = makeActor(o, sid)
   await actor.start()
-  const runId = withLog(o, actor)
+  const runId = actor.runId!
   workers[0]!.handlers.exited(workers[0]!.worker, 1)
   await waitFor(() => workers.length === 2, { what: "the retry" })
   expect(o.jobs[1]).toMatchObject({ kind: "advance", advance: true, deliver: [] })
@@ -494,7 +487,7 @@ test("a run that stops on every advance fails after one retry", async () => {
   const sid = await newSession(o)
   const actor = makeActor(o, sid)
   await actor.start()
-  const runId = withLog(o, actor)
+  const runId = actor.runId!
   const stopped = { type: "result", status: "stopped", run_id: runId, output: null, failure: null, waits: [] }
   workers[0]!.handlers.result(workers[0]!.worker, stopped)
   workers[0]!.handlers.exited(workers[0]!.worker, 0)
@@ -517,7 +510,6 @@ test("fail with a live worker cancels through it", async () => {
   const sid = await newSession(o)
   const actor = makeActor(o, sid)
   await actor.start()
-  withLog(o, actor)
   await actor.fail()
   expect(status(o, sid)).toBe("failed")
   await waitFor(() => workers[0]!.deliveries.length === 1, { what: "the cancel" })
@@ -534,7 +526,7 @@ test("fail with a lingering waiting worker reports no run frame", async () => {
   const sid = await newSession(o)
   const actor = makeActor(o, sid)
   await actor.start()
-  const runId = withLog(o, actor)
+  const runId = actor.runId!
   const { worker, handlers } = workers[0]!
   handlers.result(worker, waitingResult(runId))
   await actor.fail()
@@ -562,7 +554,8 @@ test("a hard stop waits for the lingering worker and skips a run with no log", a
     const actor = makeActor(o, sid)
     await actor.start()
     const before = o.kinds.length
-    if (logged) withLog(o, actor)
+    // A run whose worker never started it has no log.
+    if (!logged) fs.rmSync(path.join(o.office.paths.runs, actor.runId!, "log.jsonl"))
     const scripted = workers.at(-1)!
     // The worker read its last frame: the cancel isn't sent.
     scripted.accept = () => false
@@ -783,4 +776,161 @@ test("the wake at timer is armed in chunks and never advances early", async () =
   await waitFor(() => workers.length === 2, { what: "the advance at the deadline" })
   expect(o.jobs[1]).toMatchObject({ kind: "advance", advance: true, deliver: [] })
   expect(status(o, sid)).toBe("busy")
+})
+
+test("a changed endpoint before a message starts a fresh run", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  expect(await say(o, actor, sid, "a")).toBe("one")
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  const old = actor.runId!
+  // The office connection now points at another endpoint.
+  const moved = await fakeLlm()
+  moved.script({ content: "two" })
+  const file = path.join(o.office.paths.office, "connections", "office.json")
+  await writePrivate(file, JSON.stringify({ llm_config: LLM_CONFIG, env: moved.env(), prices: {} }))
+  const before = o.kinds.length
+  expect(await say(o, actor, sid, "b")).toBe("two")
+  expect(o.kinds.slice(before)).toEqual(["chat"])
+  const runIds = session(o, sid).run_ids
+  expect(runIds).toEqual([old, actor.runId!])
+  expect(o.office.store.getRun(old)?.endReason).toBe(NEW_MODEL)
+  expect(o.office.store.getRun(actor.runId!)?.replacesRunId).toBe(old)
+  // The fresh run carried the conversation to the new endpoint; the old one got nothing more.
+  expect(JSON.stringify(moved.requests().at(-1)!.messages)).toContain("one")
+  expect(fake.requests()).toHaveLength(1)
+})
+
+test("a profile edited between two messages does not stop the next advance", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  expect(await say(o, actor, sid, "a")).toBe("one")
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  const { git } = o.office
+  fs.writeFileSync(path.join(git.root, "people/minh/profile.md"), "# Minh, Engineer\n\nLikes tests.\n")
+  await git.commit(["people/minh/profile.md"], "Edit minh's profile")
+  const before = o.kinds.length
+  expect(await say(o, actor, sid, "b")).toBe("two")
+  // The run's recorded profile is still served: the advance resumes it, with no fresh run.
+  expect(o.kinds.slice(before)).toEqual(["advance"])
+  expect(session(o, sid).run_ids).toHaveLength(1)
+})
+
+/** A `not_resumed` result frame of run `runId`. */
+function notResumed(runId: string): Record<string, unknown> {
+  return { type: "result", status: "not_resumed", run_id: runId, error_type: "ResumeError" }
+}
+
+test("a not resumed advance starts a fresh run with the deliveries it never applied", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const old = actor.runId!
+  const first = workers[0]!
+  // The model asks the user twice and its manager once, each on its own call.
+  for (const n of [1, 2]) {
+    await first.handlers.askUser(first.worker, { ...ASKED, question: `Which ${n}?` }, `${old}/c${n}`)
+  }
+  await first.handlers.toolCall(first.worker, "company", "ask_manager", { question: "Budget?" }, `${old}/c3`)
+  const asked = o.office.store.listQuestions({ sessionId: sid })
+  expect(asked).toHaveLength(3)
+  const waits = asked.map((q) => ({ ...TAKE, node: "chat#0/reply", call_id: q.call_id!, tool: q.source, inbox: null }))
+  first.handlers.result(first.worker, waitingResult(old, waits))
+  first.handlers.exited(first.worker, 0)
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  // A card answers the second question: its complete goes with the advance.
+  const card2 = asked.find((q) => q.call_id === `${old}/c2`)!
+  await actor.answer(card2.id, "B", "option")
+  await waitFor(() => workers.length === 2, { what: "the advance" })
+  const second = workers[1]!
+  expect(second.job.deliver.map((d) => d.op)).toEqual(["complete"])
+  // A message answers the first question; another message, an Esc and a third message follow.
+  const a = outcome(actor.prompt("A"))
+  await waitFor(() => second.deliveries.length === 1, { what: "the answer" })
+  const b = outcome(actor.prompt("B"))
+  await waitFor(() => second.deliveries.length === 2, { what: "the second message" })
+  const cut = actor.interrupt()
+  await waitFor(() => second.deliveries.length === 3, { what: "the interrupt" })
+  const c = outcome(actor.prompt("C"))
+  await waitFor(() => second.deliveries.length === 4, { what: "the third message" })
+  expect(second.deliveries.map((d) => d.op)).toEqual(["complete", "send", "interrupt", "send"])
+  const [, sendB, interrupt, sendC] = second.deliveries as [Delivery, Delivery, Delivery, Delivery]
+  /** The worker's reply to `d`. */
+  const reply = (d: Delivery, fields: Record<string, unknown>) =>
+    second.handlers.deliverReply(second.worker, { type: "deliver_reply", id: d.id, ...fields })
+  // The interrupt reached the log; yian then refused the advance before appending anything.
+  reply(interrupt, { seq: 3, closed: [] })
+  reply(second.job.deliver[0]!, { refused: "not_started" })
+  reply(sendB, { refused: "not_started" })
+  reply(sendC, { failed: "OSError" })
+  second.handlers.result(second.worker, notResumed(old))
+  second.handlers.exited(second.worker, 1)
+  await cut
+  await waitFor(() => workers.length === 3, { what: "the fresh run" })
+  const fresh = workers[2]!
+  const runId = actor.runId!
+  expect(runId).not.toBe(old)
+  expect(fresh.job).toMatchObject({
+    kind: "chat",
+    run_id: runId,
+    seed: { log: path.join(o.office.paths.runs, old, "log.jsonl"), cancel: true },
+  })
+  // What the run never applied, the first answer as its message; no interrupt and no card answer again.
+  const said = fresh.job.deliver.map((d) =>
+    d.op === "send" ? (d.event as { parts: { text: string }[] }).parts.at(-1)!.text : d.op,
+  )
+  expect(said).toEqual(["A", "B", "C"])
+  expect(fresh.job.deliver.slice(1)).toEqual([sendB, sendC])
+  expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
+  expect(o.office.store.getRun(runId)?.replacesRunId).toBe(old)
+  expect(session(o, sid).run_ids).toEqual([old, runId])
+  // The replaced run's open question goes stale once the fresh run starts.
+  const open3 = asked.find((q) => q.call_id === `${old}/c3`)!
+  expect(o.office.store.getQuestion(open3.id)!.status).toBe("open")
+  fresh.handlers.event(fresh.worker, { type: "event", name: "RunStarted", data: { run_id: runId } })
+  await waitFor(() => o.office.store.getQuestion(open3.id)!.status === "stale", { what: "the stale question" })
+  expect(o.office.store.getQuestion(card2.id)!.status).toBe("answered")
+  fresh.job.deliver.forEach((d, n) => {
+    fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: d.id, seq: n + 1 })
+  })
+  expect([await a, await b, await c]).toEqual(["queued", "queued", "queued"])
+})
+
+test("an end whose advance is not resumed still closes the fresh run", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const old = actor.runId!
+  workers[0]!.handlers.result(workers[0]!.worker, waitingResult(old))
+  workers[0]!.handlers.exited(workers[0]!.worker, 0)
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "asleep at the turn" })
+  await actor.end()
+  await waitFor(() => workers.length === 2, { what: "the end's advance" })
+  const second = workers[1]!
+  expect(second.job.deliver.map((d) => d.op)).toEqual(["close"])
+  // The close reached the old run's log, but the advance was refused.
+  second.handlers.deliverReply(second.worker, { type: "deliver_reply", id: second.job.deliver[0]!.id, seq: 2 })
+  second.handlers.result(second.worker, notResumed(old))
+  second.handlers.exited(second.worker, 1)
+  await waitFor(() => workers.length === 3, { what: "the fresh run" })
+  const fresh = workers[2]!
+  expect(fresh.job.kind).toBe("chat")
+  expect(fresh.job.deliver.map((d) => d.op)).toEqual(["close"])
+  expect(status(o, sid)).toBe("ending")
+  const ended = { type: "result", status: "succeeded", run_id: fresh.job.run_id, output: null, failure: null, waits: [] }
+  fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: fresh.job.deliver[0]!.id, seq: 1 })
+  fresh.handlers.result(fresh.worker, ended)
+  fresh.handlers.exited(fresh.worker, 0)
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
 })

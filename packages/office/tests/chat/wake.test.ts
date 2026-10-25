@@ -1,11 +1,16 @@
 /** Waking a sleeping session: one worker at a time, nothing lost (Python's `tests/chat/test_wake.py`). */
+import fs from "node:fs"
+import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { SessionActor } from "../../src/chat/session_actor.ts"
+import { writePrivate } from "../../src/secrets.ts"
+import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { makeRegistry } from "../worker/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import {
   ASKED,
   asleep,
+  type ChatOffice,
   chatOffice,
   fakeLlm,
   followWorkers,
@@ -35,6 +40,23 @@ const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 function outcome(promise: Promise<unknown>): Promise<string> {
   return promise.then(String, (error) => `${error.status} ${error.code}`)
 }
+
+/** The office connection's file of `o`. */
+function officeJson(o: ChatOffice): string {
+  return path.join(o.office.paths.office, "connections", "office.json")
+}
+
+test("a waking run that cant start is dropped and its session kept", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "back" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await asleep(o)
+  o.failNextSpawn()
+  expect(await outcome(actor.prompt("hi"))).toBe("503 cant_wake")
+  expect(status(o, sid)).toBe("idle")
+  expect(actor.hasWorker).toBe(false)
+  expect(await say(o, actor, sid, "again")).toBe("back")
+})
 
 test("a call after close all is refused as the office stopping", async () => {
   const fake = await fakeLlm()
@@ -312,4 +334,57 @@ test("worker exit right after wake spawn is misread as stopping", async () => {
   // One respawn after the death, which kept the message.
   expect(o.kinds.slice(before)).toEqual(["advance", "advance"])
   expect(await say(o, actor, sid, "again")).toBe("two")
+})
+
+test("a wake whose provider cant resolve answers 503 and leaves the session idle", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "back" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await asleep(o)
+  // Not private: the office's connection can't be read.
+  fs.chmodSync(officeJson(o), 0o644)
+  const questions = () => o.office.store.listQuestions({ sessionId: sid }).map((q) => [q.id, q.status])
+  const asked = questions()
+  const before = o.kinds.length
+  expect(await outcome(actor.prompt("hi"))).toBe("503 cant_wake")
+  expect(status(o, sid)).toBe("idle")
+  expect(actor.hasWorker).toBe(false)
+  expect(o.kinds.length).toBe(before)
+  // Its cards are as they were, and no run was added.
+  expect(questions()).toEqual(asked)
+  expect(session(o, sid).run_ids).toHaveLength(1)
+  // Fixed: the next message wakes it.
+  fs.chmodSync(officeJson(o), 0o600)
+  expect(await say(o, actor, sid, "hi")).toBe("back")
+})
+
+test("an end whose wake cant resolve fails the session", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const { actor, sid } = await asleep(o)
+  fs.chmodSync(officeJson(o), 0o644)
+  expect(await outcome(actor.end())).toBe("503 cant_wake")
+  expect(status(o, sid)).toBe("failed")
+})
+
+test("a wake whose fresh run cant spawn stays idle and the next wake starts fresh", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "b's reply" })
+  const o = await chatOffice(fake, { llmConfig: { ...LLM_CONFIG, api_key: "sk-wake-one" } })
+  const { actor, sid } = await asleep(o)
+  // The key changed: the run's record no longer matches, so a fresh run replaces it.
+  const llm_config = { ...LLM_CONFIG, api_key: "sk-wake-two" }
+  await writePrivate(officeJson(o), JSON.stringify({ llm_config, env: fake.env(), prices: {} }))
+  o.failNextSpawn()
+  expect(await outcome(actor.prompt("a"))).toBe("503 cant_wake")
+  expect(status(o, sid)).toBe("idle")
+  expect(actor.hasWorker).toBe(false)
+  const before = o.kinds.length
+  expect(await say(o, actor, sid, "b")).toBe("b's reply")
+  // The run that never started isn't resumed.
+  expect(o.kinds.slice(before)).toEqual(["chat"])
+  const runIds = session(o, sid).run_ids
+  expect(runIds).toHaveLength(3)
+  // Seeded from the first run, the newest that has a log.
+  expect(o.jobs.at(-1)!.seed).toMatchObject({ log: path.join(o.office.paths.runs, runIds[0]!, "log.jsonl") })
 })

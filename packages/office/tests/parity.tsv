@@ -695,12 +695,16 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/run_spec.test.ts::the side spec has read only lookups and room for its seed	plan O4a-1: chat/run_spec.ts	O4a-1
 —	new	packages/office/tests/chat/session_actor.test.ts::a busy run is retried once then answered run busy	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a card answer is completed and consumed	4a revision §1	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a changed endpoint before a message starts a fresh run	design §8.4	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a delivery acked after result is advanced	O4a-0a	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a lost ack is resent and a lost interrupt is dropped	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a message after end is refused as ending	4a revision §1	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a not resumed advance starts a fresh run with the deliveries it never applied	O4a-2	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a profile edited between two messages does not stop the next advance	Y3	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a send the worker answered is not sent again when its frame reports the channel closed	4a revision §1: only a lost ack is resent (G2); a delivery the worker answered stays answered	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a settled wait is re-advanced once without progress	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a stored question fires question stored once	4a revision §1	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::an end whose advance is not resumed still closes the fresh run	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::esc on a session asleep while its agent waits on a call spawns one advance that cuts it	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::exit typed ends the session	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::fail with a lingering waiting worker reports no run frame	4a revision §1 (Finish): runFinished gets only the result that ended the run; Python passed None when the office ended it	O4a-3
