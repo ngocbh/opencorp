@@ -308,12 +308,14 @@ install/test_launchd.py	ported	packages/office/tests/install/launchd.test.ts	—
 install/test_launchd.py::test_the_plist_matches_the_golden_file	changed	packages/office/tests/install/launchd.test.ts::the plist matches the golden file	#449: ExitTimeOut 30 so launchd doesn't SIGKILL the daemon inside its 25 s stop budget (fallback.STOP_TIMEOUT_MS); Python's plist had launchd's 20 s default	O2-13b
 install/test_launchd.py::test_xml_special_characters_and_newlines_survive_the_plist	changed	packages/office/tests/install/launchd.test.ts::xml special characters and newlines survive the plist	design §9.3 (hand-written plist; checked as text and with plutil, not plistlib)	O2-12
 install/test_legacy.py	dropped	—	legacy.py goes; no migration (D24, D4)	O0-9
-install/test_main.py	open	—	—	O2-13b
+install/test_main.py	ported	packages/office/tests/install/main.test.ts	—	O2-13b
 install/test_main.py::test_another_home_is_not_held_up_by_the_old_one	dropped	—	D24: legacy.py is not ported	O2-13b
 install/test_main.py::test_doctor_looks_for_leftovers_once	dropped	—	D24: legacy.py is not ported	O2-13b
 install/test_main.py::test_doctor_prints_the_commands_that_finish_the_move	dropped	—	D24: legacy.py is not ported	O2-13b
 install/test_main.py::test_init_flags_are_known_answers_for_the_interview	changed	packages/office/tests/install/main.test.ts::init flags are known answers for the interview	O2-13a: TtyPrompter keeps its preset private; the test checks an interactive TtyPrompter and the flags as known	O2-13b
+install/test_main.py::test_init_in_a_real_process_keeps_the_key_off_the_terminal	changed	packages/office/tests/install/main.test.ts::init in a real process keeps the key off the terminal	P3/D13: the key is in office/connections/office.json; the child is selfCommand() + install init	O2-13b
 install/test_main.py::test_install_tests_get_a_stand_in_codex_check	dropped	—	design §10: no conftest; each doctor test passes its own codex stand-in through Setup.doctor	O2-13b
+install/test_main.py::test_onboard_with_json_prompts_in_a_real_process_keeps_the_channel_clean	changed	packages/office/tests/install/main.test.ts::onboard with json prompts in a real process keeps the channel clean	P3/D13: the connection file; design §9.1: the stray output is a console.log and a direct process.stdout.write, through a driver calling run()	O2-13b
 install/test_main.py::test_the_default_home_waits_for_the_old_one_to_be_moved	dropped	—	D24: legacy.py is not ported	O2-13b
 install/test_offboard.py	ported	packages/office/tests/install/offboard.test.ts	—	O2-18b
 install/test_onboard.py	ported	packages/office/tests/install/onboard.test.ts	—	O2-15

@@ -1,17 +1,22 @@
 /** `opencorp install …`: the parser, help and usage errors, and each command run in-process through `main` with
  *  stand-ins for the machine. */
-import { spawn } from "node:child_process"
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
+import readline from "node:readline"
 import { Readable, Writable } from "node:stream"
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { SetupPrompt } from "@opencorp/protocol"
+import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { loadRepo } from "../../src/company/loader.ts"
 import * as fallback from "../../src/install/fallback.ts"
 import type { InitOptions } from "../../src/install/init.ts"
 import { launch, officeAnswers } from "../../src/install/launch.ts"
 import { main, type Setup } from "../../src/install/main.ts"
-import { type OnboardOptions, SET_UP, WHO } from "../../src/install/onboard.ts"
+import { type OnboardOptions, SET_UP, setupConnectionFile, WHO } from "../../src/install/onboard.ts"
 import { KeyboardInterrupt, type Prompter, TtyPrompter } from "../../src/install/prompts.ts"
-import { selfSpawnEnv } from "../../src/platform.ts"
+import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
+import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import { fakeLlm } from "../chat/helpers.ts"
 import { git, gitEnv } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
 import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner, SRC } from "./helpers.ts"
@@ -386,36 +391,62 @@ function childEnv(dir: string): Record<string, string> {
 }
 
 /** Writes a driver to `dir/driver.ts` that runs `run` with the setup `overrides` (TS source of an object) on the
- *  driver's own argv; returns its path. */
-function driver(dir: string, overrides: string): string {
+ *  driver's own argv, after the `imports` lines; returns the command that runs it with this Bun and the
+ *  no-autoload flags. */
+function driver(dir: string, overrides: string, imports = ""): string[] {
   const file = path.join(dir, "driver.ts")
   const main = JSON.stringify(path.join(SRC, "install/main.ts"))
-  fs.writeFileSync(file, `import { run } from ${main}\nawait run(process.argv.slice(2), ${overrides})\n`)
-  return file
+  fs.writeFileSync(file, `${imports}import { run } from ${main}\nawait run(process.argv.slice(2), ${overrides})\n`)
+  return [process.execPath, "--no-install", "--no-env-file", "--config=/dev/null", file]
 }
 
-/** Runs `argv` with this Bun and the no-autoload flags in `cwd` with `env`, `input` on stdin; killed after `bound`
- *  ms. With `readAfter`, stdout is read only after that many ms. */
+/** A short home for a child's office, kept off HQ's TCP port; when the test ends, the daemon a child left there
+ *  is stopped before the home is removed. */
+function childHome(env: Record<string, string>): string {
+  let home = ""
+  // Registered before shortDir registers the removal, so it runs first.
+  onTestFinished(async () => {
+    if (home) await fallback.stopProcess(launch(home, { environ: env, userHome: home }))
+  })
+  home = shortDir()
+  fs.mkdirSync(path.join(home, "office"), { mode: 0o700 })
+  fs.writeFileSync(path.join(home, "office", "hq.json"), '{"tcp": false}')
+  return home
+}
+
+/** Runs `argv` in `cwd` with `env`, `input` on stdin; killed after `bound` ms. With `readAfter`, stdout is read
+ *  only after that many ms. With `talk`, stdin stays open and `talk` gets the child to drive it instead. */
 function spawnChild(
   argv: string[],
   env: Record<string, string>,
-  { input = "", bound, cwd, readAfter }: { input?: string; bound: number; cwd: string; readAfter?: number },
-): Promise<{ code: number | null; stdout: Buffer; stderr: string }> {
-  const child = spawn(process.execPath, ["--no-install", "--no-env-file", "--config=/dev/null", ...argv], {
+  {
+    input = "",
+    bound,
     cwd,
-    env,
-    stdio: ["pipe", "pipe", "pipe"],
-  })
+    readAfter,
+    talk,
+  }: {
+    input?: string
+    bound: number
+    cwd: string
+    readAfter?: number
+    talk?: (child: ChildProcessWithoutNullStreams) => void
+  },
+): Promise<{ code: number | null; stdout: Buffer; stderr: string }> {
+  const child = spawn(argv[0]!, argv.slice(1), { cwd, env, stdio: ["pipe", "pipe", "pipe"] })
   const kill = setTimeout(() => child.kill("SIGKILL"), bound)
   const out: Buffer[] = []
   const err: Buffer[] = []
   child.stdout.on("data", (chunk: Buffer) => out.push(chunk))
   child.stderr.on("data", (chunk: Buffer) => err.push(chunk))
+  // A child that exits before reading all its input closes the pipe under a write.
+  child.stdin.on("error", () => {})
   if (readAfter !== undefined) {
     child.stdout.pause()
     setTimeout(() => child.stdout.resume(), readAfter)
   }
-  child.stdin.end(input)
+  if (talk) talk(child)
+  else child.stdin.end(input)
   return new Promise((resolve, reject) => {
     child.on("error", reject)
     child.on("close", (code) => {
@@ -432,7 +463,7 @@ test("all of stdout reaches the reader before setup exits", async () => {
     `{ offboard: async () => { for (let i = 0; i < 1024; i++) process.stdout.write("x".repeat(1024) + "\\n") } }`,
   )
   const home = path.join(dir, "user", ".opencorp")
-  const result = await spawnChild([script, "offboard", "--home", home], childEnv(dir), {
+  const result = await spawnChild([...script, "offboard", "--home", home], childEnv(dir), {
     bound: 20_000,
     cwd: dir,
     readAfter: 500,
@@ -451,15 +482,140 @@ test("an unexpected error is exit 1 with its stack on stderr", async () => {
     `{ doctor: { probe: async () => { throw new Error("boom") }, ` +
       `codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }) } }`,
   )
-  const crashed = await spawnChild([boom, "doctor", "--home", home], env, { bound: 20_000, cwd: dir })
+  const crashed = await spawnChild([...boom, "doctor", "--home", home], env, { bound: 20_000, cwd: dir })
   expect(crashed.code, crashed.stderr).toBe(1)
   expect(crashed.stderr).toContain("boom")
   expect(crashed.stderr).toMatch(/^\s+at /m)
   expect(crashed.stdout.toString()).not.toContain("boom")
   // A rejection nothing handles, left by a step that then returns: Bun would only print it and exit 0.
   const dangling = driver(dir, `{ offboard: async () => { Promise.reject(new Error("dangling")) } }`)
-  const left = await spawnChild([dangling, "offboard", "--home", home], env, { bound: 20_000, cwd: dir })
+  const left = await spawnChild([...dangling, "offboard", "--home", home], env, { bound: 20_000, cwd: dir })
   expect(left.code, left.stderr).toBe(1)
   expect(left.stderr).toContain("dangling")
   expect(fs.existsSync(path.join(dir, "calls.log"))).toBe(false)
 })
+
+const KEY = "sk-ant-sentinel-a7d93c10e5b2"
+
+/** Runs `opencorp install init` in a real process on `home` with the key and the fake model's env on stdin. */
+function realInit(home: string, env: Record<string, string>, fakeEnv: Record<string, string>, cwd: string) {
+  const argv = [...selfCommand(), "install", "init", "--home", home, "--provider-stdin", "--company", "Acme"]
+  argv.push("--name", "Ngoc", "--handle", "ngocbh", "--service", "background")
+  const input = JSON.stringify({ llm_config: { ...LLM_CONFIG, api_key: KEY }, env: fakeEnv })
+  return spawnChild(argv, env, { input, bound: 60_000, cwd })
+}
+
+test(
+  "init in a real process keeps the key off the terminal",
+  async () => {
+    const fake = await fakeLlm()
+    fake.script({ content: "OK" })
+    const dir = tempDir()
+    const env = childEnv(dir)
+    const home = childHome(env)
+    const done = await realInit(home, env, fake.env(), dir)
+    expect(done.code, done.stderr).toBe(0)
+    expect(done.stdout.toString()).not.toContain(KEY)
+    expect(done.stderr).not.toContain(KEY)
+    expect(done.stdout.toString()).toContain("Done.")
+    const kinds = [...loadRepo(path.join(home, "company")).people.values()].map((p) => p.kind)
+    expect(kinds.sort()).toEqual(["agent", "human"])
+    const file = setupConnectionFile(path.join(home, "office"))
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).llm_config.api_key).toBe(KEY)
+    expect(fs.existsSync(path.join(dir, "calls.log"))).toBe(false)
+  },
+  150_000,
+)
+
+/** What the test answers `prompt` with, as the setup screen would; null when it needs no answer. */
+function answer(prompt: ReturnType<typeof SetupPrompt.parse>): string | null {
+  if (prompt.type === "choose") return prompt.question === "Model provider" ? "anthropic" : prompt.default
+  if (prompt.type === "secret") return KEY
+  if (prompt.type === "ask") return ""
+  return null
+}
+
+test(
+  "onboard with json prompts in a real process keeps the channel clean",
+  async () => {
+    const fake = await fakeLlm()
+    fake.script({ content: "OK" })
+    const dir = tempDir()
+    const env = childEnv(dir)
+    const home = childHome(env)
+    const done = await realInit(home, env, fake.env(), dir)
+    expect(done.code, done.stderr).toBe(0)
+    await fallback.stopProcess(launch(home, { environ: env, userHome: home }))
+    const file = setupConnectionFile(path.join(home, "office"))
+    fs.unlinkSync(file) // so onboard asks for the provider
+    // The stray output comes after stdout is guarded, so it must land on stderr, not between prompts.
+    const script = driver(
+      dir,
+      "{ listers: { azureDeployments: async () => [], providerModels: async () => [] }, checkModel: async () => " +
+        '{ console.log("a stray print"); process.stdout.write("a stray write\\n"); return null } }',
+    )
+    const lines: string[] = []
+    const kinds = new Set<string>()
+    const bad: string[] = []
+    const argv = [...script, "onboard", "--home", home, "--json-prompts", "--service", "background"]
+    const result = await spawnChild(argv, env, {
+      bound: 60_000,
+      cwd: dir,
+      talk: (child) => {
+        readline.createInterface({ input: child.stdout }).on("line", (line) => {
+          lines.push(line)
+          let prompt
+          try {
+            prompt = SetupPrompt.parse(JSON.parse(line))
+          } catch {
+            bad.push(line)
+            return
+          }
+          kinds.add(prompt.type)
+          const reply = answer(prompt)
+          if (reply !== null) child.stdin.write(`${JSON.stringify({ answer: reply })}\n`)
+        })
+      },
+    })
+    const out = result.stdout.toString()
+    expect(result.code, result.stderr).toBe(0)
+    expect(result.stderr).toContain("a stray print")
+    expect(result.stderr).toContain("a stray write")
+    expect(out).not.toContain("a stray print")
+    expect(out).not.toContain("a stray write")
+    expect(bad).toEqual([])
+    expect(lines.length).toBeGreaterThan(0)
+    expect(out).not.toContain(KEY)
+    expect(result.stderr).not.toContain(KEY)
+    expect([...kinds]).toEqual(expect.arrayContaining(["step", "say"]))
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).llm_config.api_key).toBe(KEY)
+    expect(fs.existsSync(path.join(dir, "calls.log"))).toBe(false)
+  },
+  220_000,
+)
+
+test(
+  "init without git says so instead of a traceback",
+  async () => {
+    const dir = tempDir()
+    const env = childEnv(dir)
+    const home = childHome(env)
+    const empty = path.join(dir, "empty")
+    fs.mkdirSync(empty)
+    const script = driver(
+      dir,
+      "{ listers: { azureDeployments: async () => [], providerModels: async () => [] }, checkModel: async () => null }",
+    )
+    const argv = [...script, "init", "--home", home, "--provider-stdin", "--company", "Acme", "--name", "Ngoc"]
+    argv.push("--handle", "ngocbh", "--service", "background")
+    // The driver runs with Bun's absolute path, so a PATH with nothing on it is fine.
+    const input = JSON.stringify({ llm_config: { provider: "openai" } })
+    const result = await spawnChild(argv, { ...env, PATH: empty }, { input, bound: 60_000, cwd: dir })
+    expect(result.code, result.stderr).toBe(1)
+    expect(result.stderr).toStartWith("opencorp init: ")
+    expect(result.stderr).toContain("git")
+    expect(result.stderr).not.toMatch(/^\s+at /m)
+    expect(fs.existsSync(path.join(dir, "calls.log"))).toBe(false)
+  },
+  100_000,
+)
