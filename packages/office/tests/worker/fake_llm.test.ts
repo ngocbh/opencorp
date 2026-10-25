@@ -202,3 +202,23 @@ test("closing releases held replies and ends open connections", async () => {
   await within(call.done.then(() => undefined, () => undefined), 2_000)
   await fake.close()
 })
+
+test("a cut reply ends its stream without a finish", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Half an answer", cut: true })
+  const body = {
+    model: "stub",
+    stream: true,
+    stream_options: { include_usage: true },
+    messages: [{ role: "user", content: "x" }],
+  }
+  const text = await (await post(`${fake.baseUrl}/v1/chat/completions`, body)).text()
+  const data = text
+    .split("\n\n")
+    .filter((frame) => frame !== "")
+    .map((frame) => frame.replace(/^data: /, ""))
+  expect(data).not.toContain("[DONE]")
+  const chunks = data.map((frame) => JSON.parse(frame))
+  expect(chunks.map((chunk) => chunk.choices[0].delta.content ?? "").join("")).toBe("Half an answer")
+  expect(chunks.every((chunk) => chunk.choices.length === 1 && chunk.choices[0].finish_reason === null)).toBe(true)
+})

@@ -1,6 +1,8 @@
-/** The live relay: one yian `LiveView` per running worker, built from its snapshot and fed its live frames. */
+/** The live relay: one yian `LiveView` per running worker, built from its snapshot and fed its live frames, and the
+ *  bus events that show its run's replies as they change. */
 import fs from "node:fs"
 import { iterRunRecords, type LiveFollowFrame, type LiveSnapshot, LiveView, type LiveViewCall } from "@ngocbh/yian/run"
+import type { LiveEvent, Message, Part } from "@opencorp/protocol"
 import type { LiveCalls, Transcript } from "../chat/transcript.ts"
 import type { Job } from "../worker/job.ts"
 import { errorName } from "../worker/rpc.ts"
@@ -20,6 +22,14 @@ const TYPES: ReadonlySet<string> = new Set<WorkerFrame["type"]>(["record", "star
 /** How many snapshot builds in a row may fail before the relay stops following a worker. */
 const MAX_FAILED_BUILDS = 3
 
+/** What the relay has published of a run: each assistant message from `floor` on, with its parts by id as shown. */
+interface Shown {
+  /** The id of the earliest message that can still change; earlier ones are final and not kept. "" until the run shows
+   *  an assistant message. */
+  floor: string
+  messages: Map<string, Map<string, Part>>
+}
+
 /** A run's live state, held for the one worker that feeds it. */
 interface Entry {
   readonly runId: string
@@ -34,6 +44,10 @@ interface Entry {
  * Keeps, per running worker, a `LiveView` of its run: built per yian's recipe from the run log and the worker's
  * snapshot, then fed every later frame. A gap (a frame the view can't apply, a malformed frame, a snapshot that can't
  * be built) drops the view and asks the worker to follow again; frames are ignored until the next snapshot.
+ *
+ * After each snapshot that builds and each `start` or `record` it applies, it renders the worker's run with the
+ * transcript and publishes, on the worker's session, what changed among its assistant messages since the run was last
+ * shown; a `chunk` of a shown live part is published as a `part.delta`. What was shown is kept per run until `forget`.
  */
 export class LiveRelay implements LiveCalls {
   readonly #bus: Pick<Bus, "publishLive">
@@ -41,6 +55,7 @@ export class LiveRelay implements LiveCalls {
   readonly #log: (line: string) => void
   readonly #queueSize: number
   readonly #runs = new Map<string, Entry>()
+  readonly #shown = new Map<string, Shown>()
 
   constructor(options: {
     bus: Pick<Bus, "publishLive">
@@ -72,13 +87,35 @@ export class LiveRelay implements LiveCalls {
         if (type === "snapshot") this.#failedBuild(entry)
         else this.#gap(entry, type)
       } else if (checked.type === "snapshot") {
-        this.#build(entry, checked.snapshot)
+        if (this.#build(entry, checked.snapshot)) this.#show(worker)
       } else if (entry.view !== null) {
         this.#apply(entry, entry.view, checked)
       }
     } catch (error) {
       this.#log(`live relay: a frame was not handled (${errorName(error)})`)
     }
+  }
+
+  /** `worker` exited: drop its view if it holds the run's, end its viewers with `run_end`, and show the run once more
+   *  with no live calls of its own. Never throws. */
+  detach(worker: LiveWorker): void {
+    try {
+      const runId = worker.job.run_id
+      if (this.#runs.get(runId)?.worker === worker) {
+        this.#runs.delete(runId)
+        // The run's viewers end here.
+      }
+      // Shows what the worker appended outside the live channel (offline deliveries, the linger) and the tool calls it
+      // left without a result as interrupted.
+      this.#show(worker)
+    } catch (error) {
+      this.#log(`live relay: a worker was not detached (${errorName(error)})`)
+    }
+  }
+
+  /** Drops what was shown of `runIds` (a session that ended). */
+  forget(runIds: Iterable<string>): void {
+    for (const runId of runIds) this.#shown.delete(runId)
   }
 
   /** The calls in flight of `runId`'s view; [] while its worker's view is being built; null when no worker feeds it. */
@@ -88,21 +125,28 @@ export class LiveRelay implements LiveCalls {
     return entry.view?.calls() ?? []
   }
 
-  /** Builds `entry`'s view from its run log and `snapshot`; a failure counts toward the build cap. */
-  #build(entry: Entry, snapshot: LiveSnapshot): void {
+  /** Builds `entry`'s view from its run log and `snapshot`; a failure counts toward the build cap. Returns whether it
+   *  built. */
+  #build(entry: Entry, snapshot: LiveSnapshot): boolean {
     let view: LiveView
     try {
       view = LiveView.from(iterRunRecords(entry.worker.job.log, { payloads: false }), snapshot)
     } catch {
       this.#failedBuild(entry)
-      return
+      return false
     }
     entry.view = view
     entry.failedBuilds = 0
+    return true
   }
 
-  /** Applies `frame` to `view`, `entry`'s; a frame it can't apply is a gap. */
+  /** Applies `frame` to `view`, `entry`'s, and publishes what it changed; a frame it can't apply is a gap. */
   #apply(entry: Entry, view: LiveView, frame: Exclude<WorkerFrame, { type: "snapshot" }>): void {
+    // The call's text before a chunk that is its next one; a duplicate chunk changes nothing.
+    const before =
+      frame.type === "chunk"
+        ? view.calls().find((call) => call.node === frame.node && call.n === frame.n && call.nextIndex === frame.index)
+        : undefined
     let applied: boolean
     try {
       if (frame.type === "record") {
@@ -117,6 +161,77 @@ export class LiveRelay implements LiveCalls {
       applied = false
     }
     if (!applied) this.#gap(entry, frame.type)
+    else if (frame.type === "chunk") {
+      if (before !== undefined) this.#delta(entry.worker, frame.node, frame.n, before.text, frame.text)
+    } else if (frame.type !== "end") this.#show(entry.worker)
+  }
+
+  /** Renders `worker`'s run with the views' live calls and publishes its assistant messages' changes since it was last
+   *  shown, then moves its floor. A render or publish that throws is logged. */
+  #show(worker: LiveWorker): void {
+    const { run_id: runId, session_id: sessionId } = worker.job
+    try {
+      const rendered = this.#transcript.messages(sessionId, [runId], this).filter((m) => m.role === "assistant")
+      const live = new Set((this.calls(runId) ?? []).map((call) => `${runId}:${call.node}:${call.n}`))
+      const floor = floorOf(rendered, live)
+      let shown = this.#shown.get(runId)
+      if (shown === undefined) {
+        // A client fetched the run after this office started, and what was below the floor then was final.
+        shown = { floor, messages: new Map() }
+        this.#shown.set(runId, shown)
+      }
+      const publish = (type: LiveEvent["type"], data: LiveEvent["data"]) =>
+        this.#bus.publishLive({ type, session_id: sessionId, data })
+      const byId = new Map<string, Message>()
+      for (const message of rendered) {
+        if (message.id < shown.floor) continue
+        byId.set(message.id, message)
+        const parts = shown.messages.get(message.id)
+        if (parts === undefined) {
+          publish("message.updated", message)
+          shown.messages.set(message.id, new Map(message.parts.map((part) => [part.id, part])))
+          continue
+        }
+        for (const part of message.parts) {
+          const was = parts.get(part.id)
+          if (was !== undefined && JSON.stringify(was) === JSON.stringify(part)) continue
+          publish("part.updated", { message_id: message.id, part })
+          parts.set(part.id, part)
+        }
+      }
+      // Clients can't remove a part, so a text part that left the render (a failed attempt, the empty live part of a
+      // call that only called tools) is emptied once; tool parts never leave.
+      for (const [id, parts] of shown.messages) {
+        const kept = new Set(byId.get(id)?.parts.map((part) => part.id))
+        for (const [partId, part] of parts) {
+          if (part.type !== "text" || kept.has(partId)) continue
+          if (part.text !== "") publish("part.updated", { message_id: id, part: { ...part, text: "" } })
+          parts.delete(partId)
+        }
+        if (parts.size === 0) shown.messages.delete(id)
+      }
+      if (floor > shown.floor) shown.floor = floor
+      for (const id of shown.messages.keys()) if (id < shown.floor) shown.messages.delete(id)
+    } catch (error) {
+      this.#log(`run ${runId}: live events were not published (${errorName(error)})`)
+    }
+  }
+
+  /** Publishes `text`, the next chunk of `worker`'s call `node`/`n`, as a delta of the call's text part, if that part
+   *  shows the call's text so far, `before`; a part that shows other text already shows the log's. */
+  #delta(worker: LiveWorker, node: string, n: number, before: string, text: string): void {
+    const { run_id: runId, session_id: sessionId } = worker.job
+    const partId = `${runId}:${node}:${n}`
+    for (const [messageId, parts] of this.#shown.get(runId)?.messages ?? []) {
+      const part = parts.get(partId)
+      if (part?.type !== "text") continue
+      if (part.text !== before) return
+      const data = { message_id: messageId, part_id: partId, text }
+      this.#bus.publishLive({ type: "part.delta", session_id: sessionId, data })
+      // A new value, since the bus may still hold the old one in a published event.
+      parts.set(partId, { ...part, text: part.text + text })
+      return
+    }
   }
 
   /** A snapshot of `entry` that didn't build: a gap, or past the cap, the end of following its worker. */
@@ -139,6 +254,15 @@ export class LiveRelay implements LiveCalls {
       this.#log(`run ${entry.runId}: live follow failed (${errorName(error)})`)
     })
   }
+}
+
+/** The id of the earliest of `messages` holding a part of a call in `live` or a running tool part, else of the last;
+ *  "" when there are none. */
+function floorOf(messages: readonly Message[], live: ReadonlySet<string>): string {
+  const open = messages.find((message) =>
+    message.parts.some((part) => live.has(part.id) || (part.type === "tool" && part.state === "running")),
+  )
+  return open?.id ?? messages.at(-1)?.id ?? ""
 }
 
 /** `frame`'s type for a log line: a known frame type, else `unknown`; never the frame's own string. */
