@@ -73,7 +73,11 @@ export class Listeners {
   }
 
   #log(level: Level, text: string): void {
-    this.#hq.log(logLine(level, "opencorp.hq.servers", text))
+    try {
+      this.#hq.log(logLine(level, "opencorp.hq.servers", text))
+    } catch {
+      // A broken log must not reject a bind nobody awaits or skip a step of stop.
+    }
   }
 
   /** Listens on hq.sock, and starts binding TCP in the background. */
@@ -104,8 +108,6 @@ export class Listeners {
     const port = hq.config.port
     let server: Server | undefined
     let bound = false
-    // Set once this attempt has scheduled the next, so a failure after that can't schedule a second.
-    let retried = false
     try {
       // The app needs the bound port (hq.json may say 0), so it is set once the bind resolves, which happens
       // before any request on the server can be read.
@@ -128,7 +130,6 @@ export class Listeners {
           this.#log("WARNING", `HQ can't listen on 127.0.0.1:${port} (${why}); ${every}`)
           this.#said = why
         }
-        retried = true
         this.#retry()
         return
       }
@@ -145,11 +146,10 @@ export class Listeners {
       this.#said = null
       this.#log("INFO", `HQ listening on http://127.0.0.1:${at}/`)
     } catch (error) {
-      // Cleaned up before the log, so a throwing log hook can't skip it. A kept server serves on; one that isn't
-      // must not stay open without an app.
+      // A kept server serves on; one that isn't must not stay open without an app.
       if (!this.#servers.some((s) => s.server === server)) {
         if (server && bound) await close(server)
-        if (!this.#stopping && !retried) this.#retry()
+        if (!this.#stopping) this.#retry()
       }
       this.#log("ERROR", `HQ's TCP bind failed: ${typeOf(error)}`)
     }

@@ -136,11 +136,9 @@ export class Hq {
   /** Stop the listeners, forget pending codes and delete their redirect files. */
   async stop(): Promise<void> {
     try {
-      if (this.listeners) {
-        const listeners = this.listeners
-        this.listeners = null
-        await listeners.stop()
-      }
+      const listeners = this.listeners
+      this.listeners = null
+      await listeners?.stop()
     } finally {
       this.codes.close()
     }

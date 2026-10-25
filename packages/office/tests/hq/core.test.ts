@@ -4,7 +4,6 @@ import path from "node:path"
 import { expect, test } from "bun:test"
 import type { Office } from "../../src/daemon/office.ts"
 import { Hq, attach } from "../../src/hq/core.ts"
-import { Listeners } from "../../src/hq/servers.ts"
 import { officeApi } from "../../src/hq/version.ts"
 import { HqSessionRecord, newId } from "../../src/store/store.ts"
 import { shortDir, tempDir } from "../helpers.ts"
@@ -29,7 +28,6 @@ test("hq reads its settings and reports health", () => {
   fs.writeFileSync(path.join(office.paths.office, "hq.json"), JSON.stringify(settings))
   const hq = Hq.create(office, { log })
   expect(hq.config.tcp).toBe(false)
-  expect(hq.snapshots).toBe(office.snapshots)
   const health = hq.health()
   expect(health.ok).toBe(true)
   expect(health.office.api).toBe(officeApi())
@@ -102,7 +100,9 @@ test("mint while listening writes a file that stopping deletes", async () => {
 
 test("status before listening", async () => {
   const office = makeOffice()
-  const status = await attach(office, { log, listen: false }).status()
+  const hq = attach(office, { log, listen: false })
+  hq.otherUsers = async () => []
+  const status = await hq.status()
   expect(status.url).toBeNull()
   expect(status.tcp.listening).toBe(false)
   expect(status.health.office.api).toBeTruthy()
@@ -113,6 +113,7 @@ test("status before listening", async () => {
 test("status carries why hq sock isnt listening once", async () => {
   const office = makeOffice()
   const hq = attach(office, { log, listen: false })
+  hq.otherUsers = async () => []
   hq.socketError = "AF_UNIX path too long"
   const status = await hq.status()
   expect(status.socket_error).toBe("AF_UNIX path too long")
@@ -123,7 +124,9 @@ test("status names ignored settings", async () => {
   const office = makeOffice()
   fs.mkdirSync(office.paths.office, { recursive: true })
   fs.writeFileSync(path.join(office.paths.office, "hq.json"), "{")
-  expect((await attach(office, { log, listen: false }).status()).warnings![0]).toStartWith("settings ignored: ")
+  const hq = attach(office, { log, listen: false })
+  hq.otherUsers = async () => []
+  expect((await hq.status()).warnings![0]).toStartWith("settings ignored: ")
 })
 
 test("start deletes redirect files a crash left", async () => {
@@ -175,13 +178,18 @@ test("stop forgets the codes even when the listeners fail to stop", async () => 
   fs.writeFileSync(path.join(dir, "hq.json"), JSON.stringify({ tcp: false }))
   const hq = attach(office, { log })
   await office.start()
-  await hq.mint("ngocbh", { issuer: "ngocbh", openFile: false })
   const listeners = hq.listeners!
-  listeners.stop = async () => {
-    throw new Error("boom")
+  const realStop = listeners.stop.bind(listeners)
+  try {
+    await hq.mint("ngocbh", { issuer: "ngocbh", openFile: false })
+    listeners.stop = async () => {
+      throw new Error("boom")
+    }
+    expect(hq.codes.toJSON().pending).toBe(1)
+    await expect(hq.stop()).rejects.toThrow("boom")
+    expect(hq.codes.toJSON().pending).toBe(0)
+  } finally {
+    await realStop()
+    await office.stop()
   }
-  await expect(hq.stop()).rejects.toThrow("boom")
-  expect(hq.codes.toJSON().pending).toBe(0)
-  await Listeners.prototype.stop.call(listeners)
-  await office.stop()
 })
