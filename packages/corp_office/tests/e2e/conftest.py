@@ -46,11 +46,11 @@ def fake_codex_on_path(tmp_path_factory, monkeypatch):
     root = tmp_path_factory.mktemp("codex")
     codex = root / "codex"
     bun = shutil.which("bun") or "bun"
-    home = shlex.quote(str(root))
+    quoted_root = shlex.quote(str(root))
     codex.write_text(
         "#!/bin/sh\n"
-        f"cd {home} || exit 1\n"
-        f"exec /usr/bin/env -i PATH=/usr/bin:/bin HOME={home} {shlex.quote(bun)}"
+        f"cd {quoted_root} || exit 1\n"
+        f"exec /usr/bin/env -i PATH=/usr/bin:/bin HOME={quoted_root} {shlex.quote(bun)}"
         f' --no-install --no-env-file --config=/dev/null {shlex.quote(str(FAKE))} "$@"\n'
     )
     codex.chmod(codex.stat().st_mode | stat.S_IXUSR)

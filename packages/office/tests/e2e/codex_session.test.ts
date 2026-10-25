@@ -16,13 +16,13 @@ import { git, gitEnv } from "../company/helpers.ts"
 import { frames, request } from "../daemon/helpers.ts"
 import { ps, shortDir, waitFor } from "../helpers.ts"
 
-const REPO = path.resolve(import.meta.dir, "../../../..")
+const REPO = path.resolve(import.meta.dirname, "../../../..")
 const OPENCORP = path.join(REPO, "packages/cli/bin/opencorp")
 const FAKE = path.join(REPO, "packages/office/src/testing/fake_codex.ts")
 const SERVICE_TOOLS = ["launchctl", "systemctl", "loginctl", "tmux"]
 
-/** `s` single-quoted for sh; the paths quoted here hold no `'`. */
-const q = (s: string) => `'${s}'`
+/** `s` single-quoted for sh. */
+const q = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`
 
 /** Writes an executable sh script at `file`. */
 function script(file: string, body: string): void {
@@ -51,10 +51,15 @@ function run(argv: string[], input: string, opts: { cwd: string; env: Record<str
   let stderr = ""
   child.stdout.on("data", (chunk) => (stdout += chunk))
   child.stderr.on("data", (chunk) => (stderr += chunk))
+  // An init that exits before reading stdin, or fails to spawn, reports through `close` or `error` instead.
+  child.stdin.on("error", () => {})
   child.stdin.end(input)
   const timer = setTimeout(() => child.kill("SIGKILL"), 120_000)
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-    child.on("error", reject)
+    child.on("error", (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
     child.on("close", (code) => {
       clearTimeout(timer)
       resolve({ code, stdout, stderr })
@@ -64,7 +69,11 @@ function run(argv: string[], input: string, opts: { cwd: string; env: Record<str
 
 /** The pids of every process, other than this one, whose command line contains `root`. */
 function under(root: string): number[] {
-  return execFileSync(ps(), ["-axo", "pid=,command="], { env: { LC_ALL: "C.UTF-8" }, encoding: "utf8" })
+  return execFileSync(ps(), ["-wwaxo", "pid=,command="], {
+    env: { LC_ALL: "C.UTF-8" },
+    encoding: "utf8",
+    timeout: 5000,
+  })
     .split("\n")
     .filter((line) => line.includes(root))
     .map((line) => Number.parseInt(line.trim(), 10))
@@ -79,12 +88,17 @@ async function stopAll(root: string, home: string): Promise<void> {
     const pid = Number.parseInt(fs.readFileSync(pidfile, "utf8"), 10)
     // The pid may have been reused by another process: signal it only while its command line names this home.
     const ours = () => args(pid, ps())?.includes(home) ?? false
+    // The office may exit between the check and the signal (ESRCH).
     if (ours()) {
-      process.kill(pid, "SIGTERM")
+      try {
+        process.kill(pid, "SIGTERM")
+      } catch {}
       try {
         await waitFor(() => !ours(), { timeout: 15_000, what: "the office to stop" })
       } catch {
-        if (ours()) process.kill(pid, "SIGKILL")
+        try {
+          if (ours()) process.kill(pid, "SIGKILL")
+        } catch {}
       }
     }
   }
@@ -145,6 +159,7 @@ test(
     const socket = path.join(home, "office", "office.sock")
     const llm = await FakeLLM.start()
     let events: http.ClientRequest | undefined
+    let failed = false
     try {
       llm.script({ content: "OK", match: "Reply with the single word OK." })
       const init = await run(
@@ -194,7 +209,13 @@ test(
       await waitFor(() => statusIs("idle"), { timeout: 60_000, what: "the Codex session to load" })
 
       let connected = false
+      let streamError: unknown
       const live: LiveEvent[] = []
+      /** Whether `check()` holds; throws the event stream's error once it has one. */
+      const streamed = (check: () => boolean) => {
+        if (streamError !== undefined) throw streamError
+        return check()
+      }
       events = http.request({ socketPath: socket, path: `/events?session=${sid}`, agent: false }, (res) => {
         // The cleanup's destroy cuts the stream, which then errors with nobody reading it.
         res.on("error", () => {})
@@ -203,15 +224,15 @@ test(
             if (kind === "comment" && data === "connected") connected = true
             else if (kind === "live") live.push(data as LiveEvent)
           }
-        })().catch(() => {})
+        })().catch((error) => (streamError = error))
       })
       events.on("error", () => {})
       events.end()
-      await waitFor(() => connected, { what: "the event stream" })
+      await waitFor(() => streamed(() => connected), { what: "the event stream" })
 
       expect(await ok(socket, "POST", `/sessions/${sid}/prompt`, { text: "Create hello.txt" })).toEqual({ ok: true })
       await waitFor(
-        () => live.some((e) => ["part.updated", "part.delta"].includes(e.type) && e.session_id === sid),
+        () => streamed(() => live.some((e) => ["part.updated", "part.delta"].includes(e.type) && e.session_id === sid)),
         { what: "a streamed part" },
       )
 
@@ -244,10 +265,21 @@ test(
       await waitFor(() => statusIs("ended"), { what: "the session to end" })
       expect(await ok(socket, "GET", `/sessions/${sid}/messages`)).toEqual([])
       expect(fs.existsSync(calls)).toBe(false)
+    } catch (error) {
+      failed = true
+      throw error
     } finally {
       events?.destroy()
-      await llm.close()
-      await stopAll(root, home)
+      try {
+        try {
+          await stopAll(root, home)
+        } finally {
+          await llm.close()
+        }
+      } catch (error) {
+        // The body's failure is the cause to report; a cleanup error replaces only a pass.
+        if (!failed) throw error
+      }
     }
   },
   180_000,
