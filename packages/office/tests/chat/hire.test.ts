@@ -11,7 +11,7 @@ import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { baseFiles, git as runGit, gitEnv, person, writeRepo } from "../company/helpers.ts"
 import { tempDir } from "../helpers.ts"
-import { CHAT_FLOW } from "./helpers.ts"
+import { CHAT_FILES, CHAT_FLOW } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -21,7 +21,7 @@ function req(form: Record<string, unknown>, confirm = false) {
   return HireRequest.parse({ ...form, confirm })
 }
 
-function makeGit(files: Record<string, unknown> = { ...baseFiles(), "shared/flows/chat.yaml": CHAT_FLOW }) {
+function makeGit(files: Record<string, unknown> = { ...baseFiles(), ...CHAT_FILES }) {
   const dir = tempDir()
   return new CompanyGit(writeRepo(path.join(dir, "company"), files), path.join(dir, "worktrees"))
 }
@@ -163,7 +163,7 @@ test("a failed commit leaves nothing behind and a retry succeeds", async () => {
     }
   }
   const dir = tempDir()
-  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), "shared/flows/chat.yaml": CHAT_FLOW })
+  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), ...CHAT_FILES })
   const git = new FlakyGit(root, path.join(dir, "worktrees"))
   const hiring = new Hiring(git)
   const head = await git.head()
@@ -193,7 +193,7 @@ test("a newline in the title cant forge a commit trailer", async () => {
 test("an existing lint error is a warning and doesnt block a hire", async () => {
   const files = {
     ...baseFiles(),
-    "shared/flows/chat.yaml": CHAT_FLOW,
+    ...CHAT_FILES,
     "people/minh/person.yaml": person("minh", { manager: "kai" }),
   }
   const git = makeGit(files)
@@ -240,9 +240,10 @@ test("a preview leaves hand edits alone", async () => {
 
 test("issue messages name the company repo not the scratch copy", async () => {
   const check =
-    "  check:\n    kind: code\n    code: ./nope.ts:fn\n    input:\n      x: ${chat.output.reply}\n    output: str\n"
-  const flow = CHAT_FLOW.replace("output: ${chat.output.reply}\n", check + "output: ${chat.output.reply}\n")
-  const git = makeGit({ ...baseFiles(), "shared/flows/chat.yaml": flow })
+    "  check:\n    kind: code\n    code: ./nope.ts:fn\n    input:\n      x: ${chat.output.summary}\n    output: str\n"
+  const end = "output:\n  summary: ${chat.output.summary}\n"
+  const flow = CHAT_FLOW.replace(end, check + end)
+  const git = makeGit({ ...baseFiles(), ...CHAT_FILES, "shared/flows/chat.yaml": flow })
   const preview = await new Hiring(git).hire(req(FORM))
   const named = preview.issues.filter((i) => i.message.includes("nope.ts"))
   expect(named.length).toBeGreaterThan(0)
@@ -256,7 +257,7 @@ test("issue messages name the company repo not the scratch copy", async () => {
 
 test("a hire is never written outside the repo", async () => {
   const dir = tempDir()
-  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), "shared/flows/chat.yaml": CHAT_FLOW })
+  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), ...CHAT_FILES })
   const outside = path.join(dir, "outside")
   fs.renameSync(path.join(root, "people"), outside)
   fs.symlinkSync(outside, path.join(root, "people"))
@@ -271,7 +272,7 @@ test("a hire is never written outside the repo", async () => {
 
 test("a relative people link out of the repo counts as outside the repo", async () => {
   const dir = tempDir()
-  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), "shared/flows/chat.yaml": CHAT_FLOW })
+  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), ...CHAT_FILES })
   const shared = path.join(dir, "shared-people")
   fs.renameSync(path.join(root, "people"), shared)
   fs.symlinkSync("../shared-people", path.join(root, "people"))
@@ -287,7 +288,7 @@ test("a relative people link out of the repo counts as outside the repo", async 
 
 test("a preview through a symlinked company folder writes nothing in the repo", async () => {
   const dir = tempDir()
-  const real = writeRepo(path.join(dir, "real"), { ...baseFiles(), "shared/flows/chat.yaml": CHAT_FLOW })
+  const real = writeRepo(path.join(dir, "real"), { ...baseFiles(), ...CHAT_FILES })
   fs.symlinkSync(real, path.join(dir, "company"))
   const hiring = new Hiring(new CompanyGit(path.join(dir, "company"), path.join(dir, "worktrees")))
   expect((await hiring.hire(req(FORM))).issues).toEqual([])
@@ -301,7 +302,7 @@ test("a preview through a symlinked company folder writes nothing in the repo", 
 
 test("an in repo people link is refused at preview as at confirm", async () => {
   const dir = tempDir()
-  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), "shared/flows/chat.yaml": CHAT_FLOW })
+  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), ...CHAT_FILES })
   fs.renameSync(path.join(root, "people"), path.join(root, "staff"))
   fs.symlinkSync("staff", path.join(root, "people"))
   runGit(root, "add", "-A")
@@ -325,7 +326,7 @@ test("a handle folder made after the draft is refused as taken", async () => {
     }
   }
   const dir = tempDir()
-  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), "shared/flows/chat.yaml": CHAT_FLOW })
+  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), ...CHAT_FILES })
   const head = runGit(root, "rev-parse", "HEAD")
   const hiring = new Hiring(new RacingGit(root, path.join(dir, "worktrees")))
   await hiring.hire(req(FORM)) // a preview doesn't read HEAD; the confirm reads it after its draft
@@ -350,7 +351,7 @@ test("a people folder swapped for a link after the draft is never written throug
       return super.head()
     }
   }
-  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), "shared/flows/chat.yaml": CHAT_FLOW })
+  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), ...CHAT_FILES })
   const head = runGit(root, "rev-parse", "HEAD")
   const hiring = new Hiring(new SwappingGit(root, path.join(dir, "worktrees")))
   await hiring.hire(req(FORM)) // a preview doesn't read HEAD; the confirm reads it after its draft
@@ -374,7 +375,7 @@ test("a people folder swapped for a link during the commit is never deleted thro
       return super.locked((locked) => fn({ ...locked, commit }))
     }
   }
-  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), "shared/flows/chat.yaml": CHAT_FLOW })
+  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), ...CHAT_FILES })
   const hiring = new Hiring(new SwappingGit(root, path.join(dir, "worktrees")))
   await hiring.hire(req(FORM))
   await expect(hiring.hire(req(FORM, true))).rejects.toThrow("commit failed")

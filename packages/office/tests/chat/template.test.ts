@@ -3,11 +3,8 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { runFlow, tool } from "@ngocbh/yian"
 import { readFlow } from "../../src/company/flow_yaml.ts"
 import { loadConfined } from "../../src/company/flows.ts"
-import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
-import { fakeLlm } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -45,15 +42,32 @@ test.each([
   expect((await loadConfined(ROOT, file)).name).toBe(flow.name)
 })
 
-test("every chat template reads steers from its steers inbox", () => {
+test("every chat template takes its turns and steers from its messages inbox", () => {
   for (const file of [CHAT, SIDE, MANAGER]) {
     const flow = read(file)
-    expect([
-      flow.input.steers,
-      flow.defs.turn.input.steers,
-      flow.nodes.chat.input.steers,
-      flow.defs.turn.nodes.reply.steer_inbox,
-    ]).toEqual(["!Inbox(str)", "!Inbox(str)", "${input.steers}", "${input.steers}"])
+    const turn = flow.defs.turn
+    const reply = turn.nodes.reply
+    expect([flow.input.messages, turn.input.messages, flow.nodes.chat.input.messages]).toEqual([
+      "!Inbox(Message)",
+      "!Inbox(Message)",
+      "${input.messages}",
+    ])
+    expect(turn.nodes.heard).toEqual({ kind: "tool", tool_id: "take", input: { from: "${input.messages}", take: "all" } })
+    expect([reply.steer_inbox, reply.output, reply.prompt]).toEqual([
+      "${input.messages}",
+      "Optional(str)",
+      ["${history}", "${said}"],
+    ])
+    expect(flow.nodes.chat.while).toBe("not closed and turns < max_turns")
+    expect([flow.input.summary, flow.input.history, flow.input.turns, flow.input.max_turns]).toEqual([
+      "!str",
+      "!list(list(Message))",
+      "!int",
+      "!int",
+    ])
+    expect(Object.keys(turn.nodes)).toEqual(["context", "heard", "route", "reply"])
+    expect(flow.typedefs?.Msg).toBeUndefined()
+    expect(flow.input).not.toHaveProperty("steers")
   }
 })
 
@@ -62,64 +76,8 @@ test("the template ends no session by time and its chats have no loop cap", () =
   for (const file of [CHAT, SIDE, MANAGER]) expect(fs.readFileSync(file, "utf8")).not.toContain("max:")
 })
 
-/** A tool that does nothing, so every toolset a template names has one. */
-function stub(name: string) {
-  return tool({ name, description: "Do nothing.", parameters: { type: "object", properties: {} }, execute: () => "ok" })
-}
-
-const PERSON = { name: "Minh", handle: "minh", title: "Engineer", company: "Acme", reports_to: "" }
-const EARLIER = [
-  { role: "user", text: "earlier" },
-  { role: "assistant", text: "ok" },
-]
-
-test.each([
-  ["chat", CHAT],
-  ["side_chat", SIDE],
-  ["profile_manager", MANAGER],
-])("a template chat carries its history in the prompt list and ends on exit [%s]", async (name, file) => {
-  const flow = await loadConfined(ROOT, file)
-  const fake = await fakeLlm()
-  fake.script({ content: "hello" })
-  fake.script({ content: "fine" })
-  const answers = ["hi", "again", "/exit"]
-  const inputs = name === "profile_manager" ? { history: EARLIER } : { person: PERSON, talking_to: "", history: EARLIER }
-  const result = await runFlow(flow, inputs, {
-    llmConfig: LLM_CONFIG,
-    env: (n) => fake.env()[n],
-    skills: new Map(),
-    tools: {
-      toolbox: [stub("toolbox_stub")],
-      workspace: [stub("workspace_stub")],
-      company: [stub("company_stub")],
-      work_items: [stub("work_items_stub")],
-      profile: [stub("profile_stub")],
-      ask_user: async () => answers.shift() ?? "/exit",
-    },
-  })
-  expect([result.status, result.output]).toEqual(["succeeded", ""])
-  const requests = fake.requests() as { messages: { role: string; content: unknown }[] }[]
-  expect(requests).toHaveLength(2)
-  expect(requests[1]!.messages.slice(1).map(({ role, content }) => ({ role, content }))).toEqual([
-    { role: "user", content: "earlier" },
-    { role: "assistant", content: "ok" },
-    { role: "user", content: "hi" },
-    { role: "assistant", content: "hello" },
-    { role: "user", content: "again" },
-  ])
-  const ends = new Map<string, any>()
-  for (const event of result.events) {
-    if (event.type === "NodeSucceeded" && /^chat#\d+\/__end__$/.test(event.nodeId)) ends.set(event.nodeId, event.output)
-  }
-  expect([...ends.keys()]).toEqual(["chat#0/__end__", "chat#1/__end__", "chat#2/__end__"])
-  const last = ends.get("chat#2/__end__")
-  expect(last.exited).toBe(true)
-  expect(last.history).toEqual([
-    ...EARLIER,
-    { role: "user", text: "hi" },
-    { role: "assistant", text: "hello" },
-    { role: "user", text: "again" },
-    { role: "assistant", text: "fine" },
-  ])
-  expect(last.history).toEqual(ends.get("chat#1/__end__").history)
+test("the template compacts history with yians compact history flow", () => {
+  const yian = fileURLToPath(new URL("../../../yian/examples/compact_history.yaml", import.meta.url))
+  expect(fs.readFileSync(path.join(ROOT, "shared", "flows", "compact_history.yaml"))).toEqual(fs.readFileSync(yian))
+  expect(read(CHAT).uses.compact_history).toBe("compact_history")
 })

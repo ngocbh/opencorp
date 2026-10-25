@@ -12,6 +12,18 @@ export const CHAT_FLOW = fs.readFileSync(
   "utf8",
 )
 
+/** The template's `compact_history.yaml`, which the chat flow uses. */
+export const COMPACT_HISTORY = fs.readFileSync(
+  new URL("../../src/company_template/template/shared/flows/compact_history.yaml", import.meta.url),
+  "utf8",
+)
+
+/** The chat flow and the flow it uses, by repo path. */
+export const CHAT_FILES = {
+  "shared/flows/chat.yaml": CHAT_FLOW,
+  "shared/flows/compact_history.yaml": COMPACT_HISTORY,
+}
+
 /** A started fake LLM, closed when the current test finishes. Call inside a test. */
 export async function fakeLlm(): Promise<FakeLLM> {
   const fake = await FakeLLM.start()

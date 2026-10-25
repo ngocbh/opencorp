@@ -1,9 +1,13 @@
-# A person's main chat: one LOOP iteration per turn. The conversation so far rides in the LOOP as
-# `history`; the person's profile is memory on the whole flow.
+# A person's main chat: one LOOP iteration per turn. Each turn takes everything sent to `messages`
+# since the last one and the reply answers it; messages sent while the reply works steer it. Older
+# turns fold into `summary` through compact_history (yian's example); the kept turns ride in the LOOP
+# as `history`. The person's profile is memory on the reply. Closing `messages` ends the chat.
 id: chat
 name: chat
 description: Chat with a person in the office.
-long_term_memory: profile
+
+uses:
+  compact_history: compact_history  # shared/flows/compact_history.yaml, yian's example
 
 typedefs:
   Person:
@@ -12,99 +16,113 @@ typedefs:
     title: str
     company: str
     reports_to: str  # "You report to <Name> (@<handle>)." or ""
-  Msg:
-    role: Literal(user, assistant)
-    text: str
 input:
-  steers: !Inbox(str)  # what people send while the reply works; the office sends it
+  messages: !Inbox(Message)  # what people send; read by each turn's take and, while the reply works, as steers
   person: !Person  # who the reply speaks as; the office passes it
   talking_to: !str  # "You're talking with <Name> (@<handle>), <roles>." or ""; the office passes it
-  history: !list(Msg)  # the conversation so far; the office passes [] for a new chat
+  summary: !str  # older turns folded by compact_history; "" for a new chat
+  history: !list(list(Message))  # the kept turns, one list of messages each; [] for a new chat
+  turns: !int  # the session's turns so far
+  max_turns: !int  # the run ends once turns reaches it
 
 defs:
+  # The history so far, compacted, plus its kept turns as one list: a prompt splice must be a lone
+  # `${name}`, so the flattening sits in this derived binding rather than on the reply.
+  context:
+    input:
+      summary: !str
+      history: !list(list(Message))
+    nodes:
+      compacted:
+        kind: call
+        call: compact_history
+        input:
+          summary: ${input.summary}
+          history: ${input.history}
+    output:
+      summary: ${compacted.output.summary}
+      history: ${compacted.output.history}
+      messages: ${[m for t in compacted.output.history for m in t]}
   turn:
     input:
-      steers: !Inbox(str)
+      messages: !Inbox(Message)
       person: !Person
       talking_to: !str
-      history: !list(Msg)
-      exited: !bool
-      reply: !str
+      summary: !str
+      history: !list(list(Message))
+      closed: !bool
+      turns: !int
+      max_turns: !int
     nodes:
-      # The turn's message: what the person sent. Every node below reads it from here; what they send
-      # while the reply works arrives through `steers`.
-      ask:
-        kind: tool
-        tool_id: ask
+      context:
+        kind: call
+        call: context
         input:
-          prompt: "You:"
-        output: str
+          summary: ${input.summary}
+          history: ${input.history}
+      # The turn: everything sent since the last one. Messages read along with a close aren't answered.
+      heard:
+        kind: tool
+        tool_id: take
+        input:
+          from: ${input.messages}
+          take: all
       route:
         kind: case
-        on: ${ask.output}
         cases:
-          - when: /exit
-            then: exit_turn
-        else: reply
-      exit_turn:
-        kind: code
-        output:
-          exited: bool
-        code: |
-          return {exited: true}
+          - when: ${heard.output.events != [] and not heard.output.closed}
+            then: reply
       reply:
         kind: agent
-        steer_inbox: ${input.steers}
+        long_term_memory: profile
+        steer_inbox: ${input.messages}
         env:
           max_tool_iterations: 100
         tools: [toolbox, workspace, company, ask_user]
         skills: all
         input:
-          history: ${input.history}
-          message: ${ask.output}
+          summary: ${context.output.summary}
+          history: ${context.output.messages}
+          said: ${heard.output.events}
           person: ${input.person}
           talking_to: ${input.talking_to}
-        output: str
+        output: Optional(str)  # null only after an interrupt
         system_prompt: |-
           You are ${person.name} (@${person.handle}), ${person.title} at ${person.company}. ${person.reports_to} ${talking_to}
           You work in the office alongside the people you talk with. Speak as yourself, in the first person;
           you are a person here, not a generic assistant. Your profile, in the memory below, is what you've
           learned about your work and the people you work with: follow it. Use your tools to gather the facts
           you need, and ask people only through the ask_user tool.
+          A summary of this conversation's older turns (empty while it is short): ${summary}
         prompt:
           - ${history}
-          - user: ${message}
-      # Code, not an output expression: yian evaluates both sides of an expression, so appending the
-      # reply there fails the exit turn, where reply never ran.
-      remember:
-        kind: code
-        input:
-          history: ${input.history}
-          message: ${ask.output}
-          reply: ${reply.output}
-        output: list(Msg)
-        code: |
-          return [...inputs.history, {role: "user", text: inputs.message}, {role: "assistant", text: inputs.reply}]
-    # A LOOP body maps its carried record to the next one, so the person and who they talk with ride along
-    # unchanged, and an exit turn leaves the history as it was. The loop carries the steers inbox itself,
-    # so the output leaves it out.
+          - ${said}
+    # A LOOP body maps its carried record to the next one, so the person and who they talk with ride
+    # along unchanged; the loop carries the messages inbox itself, so the output leaves it out. A close
+    # with nothing queued appends an empty turn; the run ends right after.
     output:
       person: ${input.person}
       talking_to: ${input.talking_to}
-      history: ${remember.output :- input.history}
-      exited: ${exit_turn.output.exited == true}
-      reply: '${reply.output:-""}'
+      summary: ${context.output.summary}
+      history: ${context.output.history + [heard.output.events + (reply.new_messages :- [])]}
+      closed: ${heard.output.closed}
+      turns: ${input.turns + 1}
+      max_turns: ${input.max_turns}
 
 nodes:
   chat:
     kind: loop
     call: turn
     input:
-      steers: ${input.steers}
+      messages: ${input.messages}
       person: ${input.person}
       talking_to: ${input.talking_to}
+      summary: ${input.summary}
       history: ${input.history}
-      exited: false
-      reply: ""
-    while: not exited
-output: ${chat.output.reply}
+      closed: false
+      turns: ${input.turns}
+      max_turns: ${input.max_turns}
+    while: not closed and turns < max_turns
+output:
+  summary: ${chat.output.summary}
+  history: ${[m for t in chat.output.history for m in t]}
