@@ -26,11 +26,11 @@ async function rejection(promise: Promise<unknown>): Promise<HarnessError> {
 }
 
 test.each([
-  ["nobody", null, "not_found"],
-  ["ngocbh", null, "not_an_agent"],
-  ["minh", "relative/path", "invalid_body"],
-  ["minh", "/", "unsafe_workspace"],
-] as const)("start refuses bad requests [%s]", async (handle, cwd, code) => {
+  ["unknown person", "nobody", null, "not_found"],
+  ["human", "ngocbh", null, "not_an_agent"],
+  ["relative cwd", "minh", "relative/path", "invalid_body"],
+  ["root cwd", "minh", "/", "unsafe_workspace"],
+] as const)("start refuses bad requests [%s]", async (_case, handle, cwd, code) => {
   const h = makeHarness()
   const error = await rejection(h.harness.startSession(handle, cwd ?? h.workspace))
   expect(error.code).toBe(code)
@@ -39,8 +39,12 @@ test.each([
   expect(fs.existsSync(h.office.paths.runs)).toBe(false)
 })
 
-// "" is the home.
-test.each(["", "company", "office", "office/runs"])("start refuses the offices own folders [%s]", async (where) => {
+test.each([
+  ["home", ""],
+  ["company", "company"],
+  ["office", "office"],
+  ["office/runs", "office/runs"],
+])("start refuses the offices own folders [%s]", async (_label, where) => {
   const h = makeHarness()
   const paths = h.office.paths
   const cwd = path.join(paths.home, where)
@@ -98,4 +102,25 @@ test("a codex session can not continue without the codex sessions", async () => 
     "unsupported_harness",
     "the codex harness is not supported yet",
   ])
+})
+
+test.each(["setCostCap", "setModel"] as const)(
+  "a codex sessions %s is not supported without the codex sessions",
+  async (call) => {
+    const h = makeHarness()
+    const stored = h.store.createSession(session({ harness: "codex", harness_session_id: "thr_1" }))
+    const error = await rejection(
+      call === "setCostCap" ? h.harness.setCostCap(stored.id, 5) : h.harness.setModel(stored.id, "default", "gpt-x"),
+    )
+    expect([error.status, error.code]).toEqual([422, "not_supported"])
+  },
+)
+
+test("close closes the workers even when the codex sessions fail to close", async () => {
+  const h = makeHarness({ codex: true })
+  spyOn(h.codex!.sessions, "closeAll").mockRejectedValue(new Error("sentinel"))
+  const workers = spyOn(h.harness.registry, "closeAll")
+  await expect(h.harness.closeAll()).rejects.toThrow("sentinel")
+  await expect(h.harness.closeAll()).rejects.toThrow("sentinel")
+  expect(workers).toHaveBeenCalledTimes(1)
 })

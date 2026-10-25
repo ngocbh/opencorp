@@ -29,7 +29,8 @@ export type ChatHarnessOptions = {
 }
 
 /** The office's session harness. A call on a Codex session goes to `office.codex`, the Codex sessions; without them it
- *  answers 409 `not_live`, and a Codex start or continuation 422 `unsupported_harness`. Every call answers 503
+ *  answers 409 `not_live`, a cost cap or model 422 `not_supported`, and a Codex start or continuation 422
+ *  `unsupported_harness`. Every call answers 503
  *  `stopping` once `closeAll` has begun. */
 export class ChatHarness implements SessionHarness {
   readonly office: Office
@@ -110,11 +111,11 @@ export class ChatHarness implements SessionHarness {
   }
 
   async setCostCap(sessionId: string, usd: number): Promise<SessionRecord> {
-    return this.#codexFor(sessionId).setCostCap(sessionId, usd)
+    return this.#codexFor(sessionId, notSupported).setCostCap(sessionId, usd)
   }
 
   async setModel(sessionId: string, connection: string, model: string): Promise<SessionRecord> {
-    return this.#codexFor(sessionId).setModel(sessionId, connection, model)
+    return this.#codexFor(sessionId, notSupported).setModel(sessionId, connection, model)
   }
 
   messages(sessionId: string): Message[] {
@@ -143,8 +144,11 @@ export class ChatHarness implements SessionHarness {
   closeAll(): Promise<void> {
     this.#closed = true
     this.#closing ??= (async () => {
-      await this.office.codex?.closeAll()
-      await this.registry.closeAll()
+      try {
+        await this.office.codex?.closeAll()
+      } finally {
+        await this.registry.closeAll()
+      }
     })()
     return this.#closing
   }
@@ -177,20 +181,22 @@ export class ChatHarness implements SessionHarness {
       return (await this.office.connections.get(name)).llm_config?.model === model ? null : model
     } catch (error) {
       // Resolving it at the spawn reports why it can't be read.
-      if (error instanceof ProviderError || error instanceof RangeError) return model
+      if (error instanceof ProviderError) return model
       throw error
     }
   }
 
-  /** The Codex sessions, for a call on `sessionId`, a Codex session: 404 for no session, 501 for a yian chat, 409
-   *  `not_live` for a Codex session with no Codex sessions, and 503 once closed. */
-  #codexFor(sessionId: string): CodexSessions {
+  /** The Codex sessions, for a call on `sessionId`, a Codex session: 404 for no session, 501 for a yian chat,
+   *  `without()` (409 `not_live` by default) for a Codex session with no Codex sessions, and 503 once closed. */
+  #codexFor(
+    sessionId: string,
+    without = () => new HarnessError(409, "not_live", `session ${sessionId} has no live run`),
+  ): CodexSessions {
     this.#running()
     const session = this.store.getSession(sessionId)
     if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
     if (session.harness !== "codex") throw new HarnessError(501, "not_implemented", NOT_SERVED)
-    if (this.office.codex === undefined)
-      throw new HarnessError(409, "not_live", `session ${sessionId} has no live run`)
+    if (this.office.codex === undefined) throw without()
     return this.office.codex
   }
 
@@ -204,6 +210,11 @@ export class ChatHarness implements SessionHarness {
   #running(): void {
     if (this.#closed) throw new HarnessError(503, "stopping", "the office is stopping")
   }
+}
+
+/** A Codex session's cost cap and model are Codex's own. */
+function notSupported(): HarnessError {
+  return new HarnessError(422, "not_supported", "a Codex session runs on Codex's own model and login")
 }
 
 function unsupported(harness: string): HarnessError {
