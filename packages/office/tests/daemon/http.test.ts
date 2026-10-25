@@ -875,12 +875,13 @@ function connect(sock: string): net.Socket {
 async function socketCapacity(chunk: Buffer): Promise<number> {
   const where = path.join(shortDir(), "s")
   const server = net.createServer()
-  await new Promise<void>((resolve) => server.listen(where, resolve))
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(where, resolve))
   const accepted = new Promise<net.Socket>((resolve) => server.once("connection", resolve))
   const client = net.connect(where)
   client.pause()
   let writer: net.Socket | undefined
   try {
+    await new Promise<void>((resolve, reject) => client.once("connect", resolve).once("error", reject))
     writer = await accepted
     let written = 0
     for (;;) {

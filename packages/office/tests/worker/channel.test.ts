@@ -354,7 +354,15 @@ test(
       // frames go out until one stays unsent for 200 ms: that write is blocked on a full socket.
       let blocked = -1
       for (let n = 0; n < 64 && blocked < 0; n++) {
-        const sent = channel.send({ n, pad }).then(() => false)
+        const sent = channel.send({ n, pad }).then(
+          () => false,
+          (error) => {
+            // Only while filling: close() rejects the blocked send on purpose.
+            if (blocked >= 0) return
+            fs.writeFileSync("closed", "send failed: " + String(error?.name))
+            process.exit(1)
+          },
+        )
         const late = new Promise((resolve) => setTimeout(resolve, 200, true))
         if (await Promise.race([sent, late])) blocked = n
       }
