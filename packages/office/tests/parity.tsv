@@ -434,7 +434,7 @@ worker/test_channel.py::test_jsonable_unpacks_observer_values	changed	packages/o
 worker/test_fake_llm.py	ported	packages/office/tests/worker/fake_llm.test.ts	—	O2-20
 worker/test_job.py	ported	packages/office/tests/worker/job.test.ts	—	O2-22b
 worker/test_job.py::test_a_job_round_trips_through_json	changed	packages/office/tests/worker/job.test.ts::a job round trips through json	design §2.4: no session memory (#1001), env (R2 m5) or feedback (D32)	O3-1
-worker/test_job.py::test_bad_jobs_are_refused	changed	packages/office/tests/worker/job.test.ts::bad jobs are refused	design §2.4: also refuses backward, feedback, learnable (D32), session memory (#1001), env (R2 m5); yian #1078: a group named ask (the ask slot) too	O3-17
+worker/test_job.py::test_bad_jobs_are_refused	changed	packages/office/tests/worker/job.test.ts::bad jobs are refused	design §2.4: also refuses backward, feedback, learnable (D32), session memory (#1001), env (R2 m5); yian #1078: a group named ask (the ask slot) too; 4a revision: also refuses kind resume, advance false on chat, malformed deliveries	O3-17
 worker/test_job.py::test_tool_spec_of_a_base_tool_uses_the_given_name	changed	packages/office/tests/worker/job.test.ts::tool spec uses the given name	D20: explicit schemas, no langchain tools	O3-1
 worker/test_job.py::test_tool_spec_of_a_function	changed	packages/office/tests/worker/job.test.ts::tool spec takes the description and parameters the tool declares	D20: explicit schemas, no introspection	O3-1
 worker/test_job_loading.py	open	—	split: O3-3 → O4a-2	O4a-2
@@ -995,7 +995,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/codec.test.ts::nested values round trip	design §2.4: the office value codec	O3-1
 —	new	packages/office/tests/worker/codec.test.ts::text that is not json is refused with a fixed message	design §2.4: the office value codec; §6 rule 1	O3-1
 —	new	packages/office/tests/worker/fake_llm.test.ts::closing releases held replies and ends open connections	O2-1 handoff: node:http stop order; servers close per test	O2-24
+—	new	packages/office/tests/worker/job.test.ts::a bad delivery error holds no input value	design §2.4, 4a revision §1: a delivery can hold what a person typed, so its errors name the field only (§6 rule 1)	O4a-0a
 —	new	packages/office/tests/worker/job.test.ts::a bad job error holds no input value	design §2.4, §6 rule 1	O3-1
+—	new	packages/office/tests/worker/job.test.ts::a job carries deliveries and the advance flag	design §2.4, 4a revision §1: a job lists host calls to deliver and can apply them without moving the run	O4a-0a
 —	new	packages/office/tests/worker/job.test.ts::group specs builds a spec for each tool under its key	design §2.4	O3-1
 —	new	packages/office/tests/worker/main.test.ts::a frame other than start is an error	design §2.4 step 1	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a reserved tool name is refused before any model call	yian #1062 reserved names; a group named ask is refused by the job (yian #1078)	O3-17

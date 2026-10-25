@@ -135,7 +135,7 @@ async function runJob(
   state: WorkerState,
   { env, signal }: { env: WorkerEnv; signal: AbortSignal },
 ): Promise<Frame> {
-  if (job.kind === "resume") throw new Error("this worker can't resume a run yet")
+  if (job.kind === "advance") throw new Error("this worker can't resume a run yet")
   const read: Env = (name) => (Object.hasOwn(env, name) ? env[name] : undefined)
   const flow = await loadConfined(job.pin, path.join(job.pin, job.flow))
   const runs = path.dirname(path.dirname(job.log))

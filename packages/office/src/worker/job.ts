@@ -25,34 +25,62 @@ export type ProfileMemorySpec = z.output<typeof ProfileMemorySpec>
 // validationMessage replaces these messages with a fixed phrase; they only say what each check means.
 const absolute = z.string().refine((p) => path.posix.isAbsolute(p), "must be an absolute path")
 
+const deliveryId = z.string().min(1)
+const present = z.custom<unknown>((value) => value !== undefined, "is required")
+
+/** One yian host call the worker makes on the run, with the id its `deliver_reply` answers. */
+export const Delivery = z.discriminatedUnion("op", [
+  z.strictObject({ id: deliveryId, op: z.literal("send"), inbox: z.string(), event: present }),
+  z.strictObject({
+    id: deliveryId,
+    op: z.literal("complete"),
+    call_id: z.string(),
+    result: z.union([z.strictObject({ output: present }), z.strictObject({ error: z.string() })]),
+  }),
+  z.strictObject({ id: deliveryId, op: z.literal("close"), inbox: z.string() }),
+  z.strictObject({ id: deliveryId, op: z.literal("interrupt"), inbox: z.string() }),
+  z.strictObject({ id: deliveryId, op: z.literal("cancel") }),
+])
+export type Delivery = z.output<typeof Delivery>
+
 /**
  * What one worker runs: a flow from a pinned company worktree, and how to run it.
  *
- * `kind` is `chat` (runs the flow afresh), `resume` (resumes the run `run_id` from its log), or `check` (runs the
- * office's one-reply model check (`install/flows/check_model.yaml`) on `llm_config`, and reads no other field but
- * `session_id`). `flow` is relative to `pin`. A `Job` holds the provider key in `llm_config`, so it is never logged.
+ * `kind` is `chat` (runs the flow afresh), `advance` (moves the run `run_id` on from its log with yian's
+ * `advance`, which uses the recorded flow, inputs and worker bound, so `flow`, `inputs` and `num_workers` are
+ * ignored), or `check` (runs the office's one-reply model check (`install/flows/check_model.yaml`) on
+ * `llm_config`, and reads no other field but `session_id`). `flow` is relative to `pin`. `deliver` lists host calls applied to the run in order, each answered by
+ * one `deliver_reply`; `advance: false` applies them without moving the run. A `Job` holds the provider key in
+ * `llm_config`, so it is never logged.
  */
-export const Job = z.strictObject({
-  kind: z.enum(["chat", "resume", "check"]),
-  session_id: z.string(),
-  run_id: z.string(),
-  person: z.string(),
-  pin: absolute,
-  flow: z.string().refine((p) => !path.posix.isAbsolute(p), "must be relative to pin"),
-  log: absolute,
-  inputs: z.record(z.string(), z.unknown()).default(() => ({})),
-  llm_config: z.record(z.string(), z.unknown()).nullable().default(null),
-  skills: z.array(z.string()).default(() => []),
-  num_workers: z.number().int().default(8),
-  groups: z
-    .record(z.string(), z.array(ToolSpec))
-    .refine(
-      (groups) => !Object.hasOwn(groups, "ask") && !Object.hasOwn(groups, "ask_user"),
-      "ask and ask_user are the worker's own tools, not groups",
-    )
-    .default(() => ({})),
-  memory: z.record(z.string(), ProfileMemorySpec).default(() => ({})),
-})
+export const Job = z
+  .strictObject({
+    kind: z.enum(["chat", "advance", "check"]),
+    session_id: z.string(),
+    run_id: z.string(),
+    person: z.string(),
+    pin: absolute,
+    flow: z.string().refine((p) => !path.posix.isAbsolute(p), "must be relative to pin"),
+    log: absolute,
+    inputs: z.record(z.string(), z.unknown()).default(() => ({})),
+    llm_config: z.record(z.string(), z.unknown()).nullable().default(null),
+    skills: z.array(z.string()).default(() => []),
+    num_workers: z.number().int().default(8),
+    groups: z
+      .record(z.string(), z.array(ToolSpec))
+      .refine(
+        (groups) => !Object.hasOwn(groups, "ask") && !Object.hasOwn(groups, "ask_user"),
+        "ask and ask_user are the worker's own tools, not groups",
+      )
+      .default(() => ({})),
+    memory: z.record(z.string(), ProfileMemorySpec).default(() => ({})),
+    deliver: z.array(Delivery).default(() => []),
+    advance: z.boolean().default(true),
+  })
+  .refine((job) => job.advance || job.kind === "advance", {
+    message: "advance false needs kind advance",
+    path: ["advance"],
+  })
 export type Job = z.output<typeof Job>
 export type JobInput = z.input<typeof Job>
 

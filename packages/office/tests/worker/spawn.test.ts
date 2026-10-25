@@ -760,7 +760,7 @@ test("an ask node asks through the same stub", async () => {
   expect(JSON.stringify(fake.requests().at(-1)?.messages)).toContain("hi there")
 })
 
-test.each(["chat", "resume"] as const)("every job kind gets the ask user stub [%s]", async (kind) => {
+test.each(["chat", "advance"] as const)("every job kind gets the ask user stub [%s]", async (kind) => {
   const groups = { toolbox: [{ name: "shout", description: "", parameters: { type: "object", properties: {} } }] }
   const rpc = await officeEnd(new Recorder())
   const tools = jobTools(makeJob(base(), "flows/echo.yaml", { kind, groups }), rpc)

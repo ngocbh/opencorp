@@ -198,7 +198,7 @@ test("a worker exits 3 when the office closes during the run", async () => {
 
 test("a resume job is refused until the worker can resume", async () => {
   const fake = await fakeLlm()
-  const rec = await run(makeJob(base(), "flows/echo.yaml", { kind: "resume" }), new Recorder(), { env: fake.env() })
+  const rec = await run(makeJob(base(), "flows/echo.yaml", { kind: "advance" }), new Recorder(), { env: fake.env() })
   expect(rec.outcome?.type).toBe("error")
   const message = "Error: this worker can't resume a run yet"
   expect(rec.outcome?.message).toBe(message)
