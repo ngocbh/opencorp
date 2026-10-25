@@ -12,13 +12,15 @@ import { Console } from "node:console"
 import path from "node:path"
 import type { Readable, Writable } from "node:stream"
 import { parseArgs } from "node:util"
+import { handleProblem } from "../company/naming.ts"
 import { repr } from "../perm/redact.ts"
 import { type CheckOptions, checks, exitCode, report } from "./doctor.ts"
 import { init } from "./init.ts"
-import type { TextOut } from "./json_prompts.ts"
+import { JsonPrompter, type TextOut } from "./json_prompts.ts"
 import { defaultHost, type Env, type Host } from "./launch.ts"
-import { offboard } from "./offboard.ts"
-import { LISTERS, type Listers, type ModelCheck, modelProblem, onboard } from "./onboard.ts"
+import { Declined, OffboardError, offboard } from "./offboard.ts"
+import { LISTERS, type Listers, type ModelCheck, modelProblem, onboard, WHO } from "./onboard.ts"
+import { KeyboardInterrupt, OnboardError, type Prompter, TtyPrompter } from "./prompts.ts"
 import * as service from "./service.ts"
 
 /** The exit code of `start` and `restart` when there's no office yet. */
@@ -272,15 +274,116 @@ export async function main(argv: string[], setup: Partial<Setup> = {}): Promise<
   return COMMANDS[command]!.run(args, s)
 }
 
-async function initCommand(_args: Args, _s: Setup): Promise<number> {
+/** The prompter for init and onboard: the setup screen's with `--json-prompts`, else the terminal's, which asks
+ *  no one when the provider comes on stdin. */
+function prompter(args: Args, stdin: Readable | undefined, s: Setup, preset: Record<string, string> = {}): Prompter {
+  if (args["json-prompts"]) return new JsonPrompter(s.guardStdout(), s.stdin, preset)
+  return new TtyPrompter({ preset, interactive: stdin === undefined, input: s.stdin, output: s.stdout, env: s.environ })
+}
+
+/** The exit code for `run` as `opencorp <command>`: 1 with the reason for an `OnboardError`, 130 for Ctrl-C. */
+async function setupRun(command: string, s: Setup, run: () => Promise<void>): Promise<number> {
+  try {
+    await run()
+  } catch (error) {
+    if (error instanceof OnboardError) {
+      s.stderr.write(`opencorp ${command}: ${error.message}\n`)
+      return 1
+    }
+    if (error instanceof KeyboardInterrupt) {
+      // Ctrl-C at a question leaves the cursor mid-line; end the line instead of showing a stack.
+      s.stderr.write("\n")
+      return 130
+    }
+    throw error
+  }
   return 0
 }
 
-async function onboardCommand(_args: Args, _s: Setup): Promise<number> {
-  return 0
+async function initCommand(args: Args, s: Setup): Promise<number> {
+  // Handles from flags are checked before anything is asked, so a bad one doesn't cost the owner an interview.
+  for (const [flag, handle] of [
+    ["--handle", args.handle],
+    ["--agent-handle", args["agent-handle"]],
+  ] as const) {
+    const problem = handle ? handleProblem(handle) : null
+    if (problem) {
+      s.stderr.write(`opencorp init: ${flag} ${repr(handle!)}: ${problem}\n`)
+      return 1
+    }
+  }
+  if (args.handle && args["agent-handle"] === args.handle) {
+    s.stderr.write(`opencorp init: --agent-handle ${repr(args.handle)} is the same as --handle\n`)
+    return 1
+  }
+  const known = {
+    company: args.company ?? "",
+    name: args.name ?? "",
+    handle: args.handle ?? "",
+    title: args.title ?? "",
+    agent: args.agent ?? "",
+    agent_handle: args["agent-handle"] ?? "",
+    remote: args.remote ?? "",
+  }
+  // With the provider on stdin nothing is asked, and questions without a flag take their defaults.
+  const stdin = args["provider-stdin"] ? s.stdin : undefined
+  return setupRun("init", s, () =>
+    s.init(home(args.home, s), prompter(args, stdin, s), {
+      listers: s.listers,
+      checkModel: s.checkModel,
+      known,
+      mode: args.service as service.Mode | "auto",
+      stdin,
+      device: !args["no-device"],
+      host: s.host,
+      environ: s.environ,
+    }),
+  )
 }
 
-async function offboardCommand(_args: Args, _s: Setup): Promise<number> {
+async function onboardCommand(args: Args, s: Setup): Promise<number> {
+  const stdin = args["provider-stdin"] ? s.stdin : undefined
+  return setupRun("onboard", s, () =>
+    s.onboard(home(args.home, s), prompter(args, stdin, s, { [WHO]: args.handle ?? "" }), {
+      listers: s.listers,
+      checkModel: s.checkModel,
+      mode: args.service as service.Mode | "auto",
+      stdin,
+      source: args.from,
+      host: s.host,
+      environ: s.environ,
+    }),
+  )
+}
+
+async function offboardCommand(args: Args, s: Setup): Promise<number> {
+  // Without a terminal the confirmation takes its default, No, so only --yes removes anything.
+  const asking = new TtyPrompter({
+    interactive: (s.stdin as { isTTY?: boolean }).isTTY === true,
+    input: s.stdin,
+    output: s.stdout,
+    env: s.environ,
+  })
+  try {
+    await s.offboard(home(args.home, s), asking, {
+      yes: args.yes,
+      deleteCompany: args["delete-company"],
+      host: s.host,
+      environ: s.environ,
+    })
+  } catch (error) {
+    if (error instanceof OffboardError || error instanceof OnboardError) {
+      const declined = error instanceof Declined && !asking.interactive
+      const hint = declined ? "; there's no terminal to ask on, so pass --yes to remove it" : ""
+      s.stderr.write(`opencorp offboard: ${error.message}${hint}\n`)
+      return 1
+    }
+    if (error instanceof KeyboardInterrupt) {
+      s.stderr.write("\n")
+      return 130
+    }
+    throw error
+  }
   return 0
 }
 

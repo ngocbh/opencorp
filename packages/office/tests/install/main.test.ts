@@ -4,7 +4,10 @@ import fs from "node:fs"
 import path from "node:path"
 import { Readable, Writable } from "node:stream"
 import { expect, setDefaultTimeout, test } from "bun:test"
+import type { InitOptions } from "../../src/install/init.ts"
 import { main, type Setup } from "../../src/install/main.ts"
+import { type OnboardOptions, SET_UP, WHO } from "../../src/install/onboard.ts"
+import { KeyboardInterrupt, type Prompter, TtyPrompter } from "../../src/install/prompts.ts"
 import { tempDir } from "../helpers.ts"
 import { makeHost, NO_LISTING, Runner } from "./helpers.ts"
 
@@ -104,4 +107,146 @@ test("an empty opencorp home means the default", async () => {
   const s = { ...standIns(dir), environ: { OPENCORP_HOME: "" } }
   await main(["doctor"], s)
   expect(s.out()).toContain(`no company repo at ${dir}/.opencorp/company`)
+})
+
+/** What a stand-in for init, onboard or offboard was called with. */
+interface Call<O> {
+  home: string
+  prompter: Prompter
+  options: O
+}
+
+/** A stand-in for a command that throws `KeyboardInterrupt`, as a Ctrl-C at a question does. */
+async function interrupted(): Promise<void> {
+  throw new KeyboardInterrupt()
+}
+
+/** A stand-in for init that must not run. */
+async function mustNotRun(): Promise<void> {
+  throw new Error("init ran")
+}
+
+test("init flags are known answers for the interview", async () => {
+  const dir = tempDir()
+  let seen: Call<InitOptions> | undefined
+  const s = {
+    ...standIns(dir),
+    init: async (home: string, prompter: Prompter, options: InitOptions) => {
+      seen = { home, prompter, options }
+    },
+  }
+  const argv = ["init", "--home", path.join(dir, "home"), "--company", "Acme", "--name", "Me", "--handle", "me"]
+  argv.push("--agent", "Bo", "--agent-handle", "bo", "--title", "CTO", "--remote", "u", "--no-device")
+  expect(await main(argv, s)).toBe(0)
+  expect(seen!.options.known).toEqual({
+    company: "Acme",
+    name: "Me",
+    handle: "me",
+    title: "CTO",
+    agent: "Bo",
+    agent_handle: "bo",
+    remote: "u",
+  })
+  expect(seen!.prompter).toBeInstanceOf(TtyPrompter)
+  expect(seen!.prompter.interactive).toBe(true)
+  expect(seen!.options.device).toBe(false)
+  expect(seen!.options.stdin).toBeUndefined()
+  expect(seen!.options.listers).toBe(s.listers)
+  expect(seen!.options.checkModel).toBe(s.checkModel)
+  expect(seen!.options.host).toBe(s.host)
+  expect(seen!.options.environ).toBe(s.environ)
+})
+
+test("ctrl c during init is exit 130 with only a newline", async () => {
+  const dir = tempDir()
+  const s = { ...standIns(dir), init: interrupted }
+  expect(await main(["init", "--home", path.join(dir, "home")], s)).toBe(130)
+  expect(s.err()).toBe("\n")
+})
+
+test.each(["onboard", "offboard"])("ctrl c during onboard or offboard is exit 130 with only a newline [%s]", async (command) => {
+  const dir = tempDir()
+  const s = { ...standIns(dir), onboard: interrupted, offboard: interrupted }
+  expect(await main([command, "--home", path.join(dir, "home")], s)).toBe(130)
+  expect(s.err()).toBe("\n")
+})
+
+test("the same handle for you and the first teammate stops init before it starts", async () => {
+  const dir = tempDir()
+  const s = { ...standIns(dir), init: mustNotRun }
+  expect(await main(["init", "--home", path.join(dir, "home"), "--handle", "x", "--agent-handle", "x"], s)).toBe(1)
+  expect(s.err()).toBe("opencorp init: --agent-handle 'x' is the same as --handle\n")
+})
+
+// Checked before anything is asked, so a bad flag costs the owner no questions.
+test.each(["--handle", "--agent-handle"])("a bad handle flag stops init before it starts [%s]", async (flag) => {
+  const dir = tempDir()
+  const s = { ...standIns(dir), init: mustNotRun }
+  expect(await main(["init", "--home", path.join(dir, "home"), flag, "Bad_Handle"], s)).toBe(1)
+  expect(s.err()).toStartWith(`opencorp init: ${flag} 'Bad_Handle': `)
+  expect(s.err()).toContain("should match pattern")
+})
+
+test("an init error is exit 1 with the reason", async () => {
+  const dir = tempDir()
+  const s = { ...standIns(dir), stdin: Readable.from(["not json"]) }
+  const argv = ["init", "--home", path.join(dir, "home"), "--provider-stdin", "--company", "Acme"]
+  argv.push("--name", "Ngoc", "--handle", "ngocbh", "--service", "background")
+  expect(await main(argv, s)).toBe(1)
+  expect(s.err()).toContain("opencorp init: the provider on stdin is not valid JSON")
+})
+
+test("onboard flags give the repo to clone and say which human you are", async () => {
+  const dir = tempDir()
+  let seen: Call<OnboardOptions> | undefined
+  const s = {
+    ...standIns(dir),
+    onboard: async (home: string, prompter: Prompter, options: OnboardOptions) => {
+      seen = { home, prompter, options }
+    },
+  }
+  const argv = ["onboard", "--home", path.join(dir, "home"), "--from", "git@example.com:acme.git", "--handle", "lan"]
+  expect(await main(argv, s)).toBe(0)
+  expect(seen!.options.source).toBe("git@example.com:acme.git")
+  expect(await seen!.prompter.choose(WHO, ["ceo", "lan"], "ceo")).toBe("lan")
+})
+
+test("onboard without a company or a repo is exit 1 with the ways to get one", async () => {
+  const dir = tempDir()
+  const s = { ...standIns(dir), stdin: Readable.from(["{}"]) }
+  expect(await main(["onboard", "--home", path.join(dir, "home"), "--provider-stdin"], s)).toBe(1)
+  expect(s.err()).toContain(SET_UP)
+})
+
+test("offboard flags reach offboard", async () => {
+  const dir = tempDir()
+  let seen: Call<Parameters<Setup["offboard"]>[2]> | undefined
+  const s = {
+    ...standIns(dir),
+    offboard: async (home: string, prompter: Prompter, options: Parameters<Setup["offboard"]>[2]) => {
+      seen = { home, prompter, options }
+    },
+  }
+  expect(await main(["offboard", "--home", path.join(dir, "home"), "--yes", "--delete-company"], s)).toBe(0)
+  expect(seen!.home).toBe(path.join(dir, "home"))
+  expect(seen!.options).toMatchObject({ yes: true, deleteCompany: true })
+  expect(seen!.options?.host).toBe(s.host)
+  expect(seen!.options?.environ).toBe(s.environ)
+})
+
+test("offboard without a terminal or yes removes nothing", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  fs.mkdirSync(path.join(home, "office"), { recursive: true })
+  const s = { ...standIns(dir), stdin: Readable.from([""]) }
+  expect(await main(["offboard", "--home", home], s)).toBe(1)
+  expect(s.err()).toContain("opencorp offboard: nothing was removed; there's no terminal to ask on, so pass --yes")
+  expect(fs.statSync(path.join(home, "office")).isDirectory()).toBe(true)
+})
+
+test("offboard on an empty home is exit 0", async () => {
+  const dir = tempDir()
+  const s = standIns(dir)
+  expect(await main(["offboard", "--home", path.join(dir, "home")], s)).toBe(0)
+  expect(s.out()).toContain("Nothing of this office to remove at")
 })
