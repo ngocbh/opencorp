@@ -305,6 +305,7 @@ install/test_launch.py	ported	packages/office/tests/install/launch.test.ts,packa
 install/test_launch.py::test_repo_is_this_checkout	changed	packages/office/tests/install/tools.test.ts::repo is this checkout	design §6.1 (no REPO: the install path, the checkout root in a checkout)	O2-11b
 install/test_launch.py::test_the_launch_command_is_the_daemons_with_absolute_paths	changed	packages/office/tests/install/launch.test.ts::the launch command is the daemons with absolute paths	design §9.3 (selfCommand() + daemon --home H, cwd the office dir)	O2-11b
 install/test_launchd.py	ported	packages/office/tests/install/launchd.test.ts	—	O2-12
+install/test_launchd.py::test_the_plist_matches_the_golden_file	changed	packages/office/tests/install/launchd.test.ts::the plist matches the golden file	#449: ExitTimeOut 30 so launchd doesn't SIGKILL the daemon inside its 25 s stop budget (fallback.STOP_TIMEOUT_MS); Python's plist had launchd's 20 s default	O2-13b
 install/test_launchd.py::test_xml_special_characters_and_newlines_survive_the_plist	changed	packages/office/tests/install/launchd.test.ts::xml special characters and newlines survive the plist	design §9.3 (hand-written plist; checked as text and with plutil, not plistlib)	O2-12
 install/test_legacy.py	dropped	—	legacy.py goes; no migration (D24, D4)	O0-9
 install/test_main.py	open	—	—	O2-13b
