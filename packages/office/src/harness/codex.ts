@@ -7,7 +7,7 @@ import { VERSION } from "@opencorp/protocol/version"
 import { which } from "../install/launch.ts"
 import { killGroup, startTime } from "../install/proc.ts"
 import type { Store } from "../store/store.ts"
-import { JsonRpc, RpcClosed, RpcError } from "./rpc.ts"
+import { JsonRpc, nameOf } from "./rpc.ts"
 
 export const APP_SERVER_ARGS = ["app-server", "--listen", "stdio://"] as const
 /** Milliseconds an app-server has to exit after stdin closes, before its group is killed. */
@@ -79,10 +79,8 @@ export function ownerLoad(cwd: string, policy: HarnessPolicy | null) {
   }
 }
 
-/** `error`'s `name`: what a log line says of a failure, since its message can quote a secret. */
-function nameOf(error: unknown): string {
-  return error instanceof Error ? error.name : typeof error
-}
+/** What `account/read` answers, as far as the sign-in check reads it. */
+type Account = { account?: unknown; requiresOpenaiAuth?: unknown } | null
 
 /** What a `CodexProcess` runs and calls. */
 export type CodexProcessOptions = {
@@ -96,7 +94,8 @@ export type CodexProcessOptions = {
   onExit(process: CodexProcess): void
   /** The office's environment (default `process.env`); only `CODEX_HOME` is read. */
   environ?: Record<string, string | undefined>
-  /** Where warnings go (default `console.error`); also the `JsonRpc`'s log. */
+  /** Where warnings go (default `console.error`); also the `JsonRpc`'s log. Must not throw: `kill()` never rejects
+   *  and logs through it. */
   logLine?: (line: string) => void
 }
 
@@ -170,8 +169,15 @@ export class CodexProcess {
     // before any write can fail.
     this.proc = proc
     this.#exited = new Promise((resolve) => proc.once("exit", () => resolve()))
-    // A 0 start time never matches a process, so the reaper never signals such a row.
-    this.#store.recordWorker(this.#key, { pid, pgid: pid, startTime: startTime(pid) ?? 0 })
+    try {
+      // A 0 start time never matches a process, so the reaper never signals such a row.
+      this.#store.recordWorker(this.#key, { pid, pgid: pid, startTime: startTime(pid) ?? 0 })
+    } catch (error) {
+      // No record was written, so there is none to remove; only the process must not outlive the failed start.
+      this.#signal()
+      proc.stdout?.destroy()
+      throw error
+    }
     this.#recorded = true
     const options = this.#options
     const rpc = (this.rpc = new JsonRpc(proc.stdin!, proc.stdout!, {
@@ -183,7 +189,7 @@ export class CodexProcess {
     }))
     rpc.start()
     let result: unknown
-    let account: { account?: unknown; requiresOpenaiAuth?: unknown } | null | undefined
+    let account: Account
     try {
       result = await rpc.request(
         "initialize",
@@ -194,14 +200,11 @@ export class CodexProcess {
         { timeout: START_TIMEOUT_MS },
       )
       await rpc.notify("initialized")
-      const read = await rpc.request("account/read", { refreshToken: false }, { timeout: START_TIMEOUT_MS })
-      account = read as typeof account
+      account = (await rpc.request("account/read", { refreshToken: false }, { timeout: START_TIMEOUT_MS })) as Account
     } catch (error) {
-      const known =
-        error instanceof RpcError || error instanceof RpcClosed || (error as Error | null)?.name === "TimeoutError"
+      // The rpc rejects only with RpcError, RpcClosed or a TimeoutError.
       const stopped = this.closing // an office stop killed it mid-handshake
       await this.kill()
-      if (!known) throw error
       if (stopped) throw new CodexStartError(STOPPED, { cause: error })
       throw this.startError(error as Error)
     }

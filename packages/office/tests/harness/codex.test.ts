@@ -180,8 +180,10 @@ function env(dir: string): Record<string, string> {
   return { PATH: "/usr/bin:/bin", HOME: dir }
 }
 
-/** A `CodexProcess` under `harness:S1` running the fake in `dir`; `exits` resolves when its `onExit` runs. */
+/** A `CodexProcess` under `harness:S1` running the fake in `dir`; `exits` resolves when its `onExit` runs, and `lines`
+ *  holds what it logged. */
 function proc(dir: string, store: Store, script?: object, over: Partial<CodexProcessOptions> = {}) {
+  const lines: string[] = []
   let exited!: () => void
   const exits = new Promise<void>((resolve) => (exited = resolve))
   const p = new CodexProcess(store, "harness:S1", {
@@ -193,9 +195,10 @@ function proc(dir: string, store: Store, script?: object, over: Partial<CodexPro
     onRequest: () => {},
     onExit: () => exited(),
     environ: {},
+    logLine: (line) => lines.push(line),
     ...over,
   })
-  return { p, exits }
+  return { p, exits, lines }
 }
 
 /** What `promise` rejected with; throws if it resolved. */
@@ -212,7 +215,7 @@ test("start initializes and records the group close removes it", async () => {
   const dir = tempDir()
   const store = openStore()
   tracked(store)
-  const { p } = proc(dir, store)
+  const { p, lines } = proc(dir, store)
   await p.start()
   const sent = entries(dir)
     .filter((e) => e.dir === "in")
@@ -233,6 +236,7 @@ test("start initializes and records the group close removes it", async () => {
   expect(p.alive).toBe(false)
   expect(store.listWorkers()).toEqual([])
   expect(isGone(p.pid, record!.startTime)).toBe(true)
+  expect(lines).toEqual([])
 })
 
 test("a server that dies calls on exit and leaves its stderr in its log", async () => {
@@ -405,10 +409,12 @@ test("a kill during the handshake says codex was stopped", async () => {
   tracked(store)
   const { p } = proc(dir, store, { initialize_delay: 2 })
   const starting = p.start()
-  await waitFor(() => p.proc !== null, { timeout: 5000, what: "the spawn" })
-  const [r] = await Promise.allSettled([starting, p.kill()])
-  expect(r.status).toBe("rejected")
-  expect((r as PromiseRejectedResult).reason.message).toBe("Codex was stopped before it started.")
+  // start() spawns before its first await.
+  expect(p.proc).not.toBeNull()
+  const [started, killed] = await Promise.allSettled([starting, p.kill()])
+  expect(started.status).toBe("rejected")
+  expect((started as PromiseRejectedResult).reason.message).toBe("Codex was stopped before it started.")
+  expect(killed.status).toBe("fulfilled")
   expect(store.listWorkers()).toEqual([])
 })
 
@@ -416,7 +422,7 @@ test("only the first kill signals the group", async () => {
   const dir = tempDir()
   const store = openStore()
   tracked(store)
-  const { p } = proc(dir, store)
+  const { p, lines } = proc(dir, store)
   await p.start()
   const kill = spyOn(process, "kill")
   try {
@@ -426,6 +432,7 @@ test("only the first kill signals the group", async () => {
   } finally {
     kill.mockRestore()
   }
+  expect(lines).toEqual([])
 })
 
 test("a closed app server leaves no open pipes", async () => {
@@ -445,8 +452,8 @@ test("a line over the cap signals the group once", async () => {
   const dir = tempDir()
   const store = openStore()
   tracked(store)
-  const command = ["/bin/sh", "-c", "head -c 17000000 /dev/zero | tr '\\0' a; sleep 30"]
-  const { p } = proc(dir, store, undefined, { command })
+  const command = ["/bin/sh", "-c", "head -c 17000000 /dev/zero | tr '\\0' a; exec sleep 30"]
+  const { p, lines } = proc(dir, store, undefined, { command })
   const kill = spyOn(process, "kill")
   try {
     expect((await rejection(p.start())).message).toContain("Codex didn't start")
@@ -457,6 +464,7 @@ test("a line over the cap signals the group once", async () => {
     kill.mockRestore()
   }
   expect(store.listWorkers()).toEqual([])
+  expect(lines).toEqual(["codex: a line over the 16 MiB limit; stopping the app-server"])
 })
 
 test("a linked codex log refuses to start", async () => {
