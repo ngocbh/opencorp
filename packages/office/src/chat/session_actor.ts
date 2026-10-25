@@ -2,7 +2,7 @@
  *  call, the way `yian chat` does (deliver, then `advance`, again while the run waits). */
 import path from "node:path"
 import type { Scheduler } from "@ngocbh/yian/platform"
-import { CompanyDefaults, now } from "@opencorp/protocol"
+import { CompanyDefaults, Handle, type Message, now } from "@opencorp/protocol"
 import type { z } from "zod"
 import type { CompanyGit } from "../company/git.ts"
 import { loadRepo } from "../company/loader.ts"
@@ -21,7 +21,7 @@ import type { Hooks } from "./hooks.ts"
 import { ProviderError } from "./provider.ts"
 import { chatJob, type RunSpec } from "./run_spec.ts"
 import { HarnessError, LIVE, notWaiting, runState, SETTLED, writeState } from "./state.ts"
-import type { Transcript } from "./transcript.ts"
+import type { LiveCalls, Transcript } from "./transcript.ts"
 import { type ChatFlow, MAIN_CHAT } from "./turns.ts"
 
 /** What every actor of an office shares. */
@@ -119,6 +119,8 @@ class Pending {
 
 /** One worker: the deliveries it was given, and what its run call has shown so far. */
 class WorkerRun {
+  /** The run it runs. */
+  readonly runId: string
   worker: ActorWorker | null = null
   /** Its job's deliveries, then each one sent to it. */
   readonly given: Pending[]
@@ -133,8 +135,9 @@ class WorkerRun {
   /** Whether a message was given to it since a turn node last started waiting: the take will read it. */
   turnPending: boolean
 
-  /** A worker given `given`, over a run that waits at `waits`. */
-  constructor(given: Pending[], waits: readonly Wait[]) {
+  /** A worker of run `runId` given `given`, over a run that waits at `waits`. */
+  constructor(runId: string, given: Pending[], waits: readonly Wait[]) {
+    this.runId = runId
     this.given = given
     for (const wait of waits) this.waiting.set(wait.node, [...(this.waiting.get(wait.node) ?? []), wait.call_id])
     this.turnPending = given.some((p) => p.delivery.op === "send")
@@ -150,13 +153,14 @@ class WorkerRun {
  * worker gets a `deliver` frame, and a run at rest gets a new worker whose job lists the deliveries. A command that
  * sends something resolves once its delivery is answered, which it waits for outside the queue.
  */
-export class SessionActor {
+export class SessionActor implements LiveCalls {
   readonly sessionId: string
   readonly #ctx: ActorContext
   #tail: Promise<unknown> = Promise.resolve()
   #runId: string | null
   #run: WorkerRun | null = null
-  #spawning = false
+  /** The worker being spawned, holding its job's deliveries. */
+  #starting: WorkerRun | null = null
   /** The calls the run waited on at its last `waiting` result; null when this actor hasn't seen one. */
   #waits: Wait[] | null = null
   /** The deliveries the next spawn's job carries. */
@@ -186,7 +190,12 @@ export class SessionActor {
 
   /** Whether a worker runs the session's run, or is being spawned. */
   get hasWorker(): boolean {
-    return this.#run !== null || this.#spawning
+    return this.#run !== null || this.#starting !== null
+  }
+
+  /** The model calls in flight of `runId` (none are tracked yet): empty while a worker runs it, else null. */
+  calls(runId: string): readonly [] | null {
+    return this.#run !== null && !this.#closed && runId === this.#runId ? [] : null
   }
 
   /**
@@ -226,6 +235,8 @@ export class SessionActor {
         await this.#spawn("chat")
       } catch (error) {
         this.#log(`session ${sid} can't start (${errorName(error)})`)
+        // The office stops: the session stays as it was, for the next office to start.
+        if (error instanceof RegistryClosed || this.#closed) throw stopping()
         this.#failStart(stored ? runId : null)
         if (error instanceof HarnessError) throw error
         // A provider error never echoes the file; anything else may hold anything, so it stays in the log.
@@ -251,9 +262,16 @@ export class SessionActor {
       }
       const spec = await this.#specOf(session)
       const author = by ?? (await this.#owner(session))
-      const event = { role: "user", parts: [{ type: "text", text }], ...(author ? { author } : {}) }
+      const reply = this.#replyNow(session)
+      const parts = [{ type: "text", text }]
+      if (reply !== "steer") {
+        const results = this.#ctx.hooks.fire("turnContext", session, text, { first: session.turns === 0 })
+        const context = results.find((result) => typeof result === "string")
+        if (typeof context === "string") parts.unshift({ type: "text", text: context })
+      }
+      const event = { role: "user", parts, ...(author ? { author } : {}) }
       const delivery: Delivery = { id: newId(), op: "send", inbox: spec.chat.inbox, event }
-      const p = new Pending(delivery, this.#replyNow(session))
+      const p = new Pending(delivery, reply)
       await this.#deliver(p)
       return p
     })
@@ -275,13 +293,22 @@ export class SessionActor {
     const session = store.getSession(this.sessionId)
     if (session === undefined || !SETTLED.includes(session.status)) return
     const run = this.#run
-    const running = this.#spawning || (run !== null && run.outcome === null && !this.#runAtTurn(run))
+    const running = this.#starting !== null || (run !== null && run.outcome === null && !this.#runAtTurn(run))
     writeState(store, this.sessionId, runState({ waiting: false, running }), [])
   }
 
-  /** Office stop: later commands are refused `503 stopping` and later worker frames are ignored. */
+  /**
+   * Office stop: the workspace is interrupted and every delivery not yet answered is answered: with its recorded
+   * reply when the worker sent one, else by the closing rule with `503 stopping`. Later commands are refused `503
+   * stopping`, later worker frames are ignored and later worker requests are refused; the office's registry stops
+   * the workers.
+   */
   close(): void {
+    if (this.#closed) return
     this.#closed = true
+    this.#interruptWorkspace()
+    const given = [...(this.#starting?.given ?? []), ...(this.#run?.given ?? []), ...this.#next.splice(0)]
+    this.#answerRest(given, stopping())
   }
 
   // --- the queue ------------------------------------------------------------------------
@@ -319,10 +346,11 @@ export class SessionActor {
   /** Sends `p` to the worker while it hasn't sent its `result`; otherwise it goes to the next spawn's job, which
    *  starts now when no worker runs, or at the lingering worker's exit. */
   async #deliver(p: Pending): Promise<void> {
+    // The office stopped while the command waited: no worker may start for it.
+    if (this.#closed) return p.reject(stopping())
     const run = this.#run
     if (run !== null && run.worker !== null && run.outcome === null) {
       run.given.push(p)
-      if (p.delivery.op === "send") run.turnPending = true
       let sent: boolean
       try {
         sent = await run.worker.deliver(p.delivery)
@@ -332,7 +360,10 @@ export class SessionActor {
         p.reject(error instanceof FrameTooLarge ? tooLarge() : this.#cantWake(errorName(error)))
         return
       }
-      if (sent) return
+      if (sent) {
+        if (p.delivery.op === "send") run.turnPending = true
+        return
+      }
       // The worker read its last frame meanwhile; its exit decides the next spawn.
       run.given.splice(run.given.indexOf(p), 1)
     }
@@ -351,9 +382,9 @@ export class SessionActor {
 
   /** Whether the run waits only at its turn: a worker's run with nothing in flight, no message pending for the
    *  take and only turn nodes waiting; with no running worker, a last result whose waits are only the turn's
-   *  unsettled take (unknown waits: whether the session is idle). */
+   *  unsettled take (unknown waits: whether the session is idle). A message held for the next job is pending too. */
   #atTurn(session: SessionRecord): boolean {
-    if (this.#spawning) return false
+    if (this.#next.some((p) => p.delivery.op === "send")) return false
     const run = this.#run
     if (run !== null && run.outcome === null) return this.#runAtTurn(run)
     const waits = run !== null ? waitsOf(run.outcome!) : this.#waits
@@ -382,11 +413,13 @@ export class SessionActor {
   async #spawn(kind: "chat" | "advance"): Promise<void> {
     const { store, connections, paths } = this.#ctx
     const sid = this.sessionId
+    const runId = this.#runId!
     const pendings = this.#next
     this.#next = []
-    this.#spawning = true
+    const run = new WorkerRun(runId, pendings, kind === "advance" ? (this.#waits ?? []) : [])
+    this.#starting = run
     try {
-      const runId = this.#runId!
+      if (this.#closed) throw stopping()
       let session = this.#session()
       const [name, model, moved] = await connections.choice(session.connection, session.model)
       if (moved) session = store.updateSession(sid, { connection: name, model })
@@ -409,27 +442,30 @@ export class SessionActor {
         deliver: pendings.map((p) => p.delivery),
       })
       if (kind === "chat") store.setRunConfig(runId, runRecord(name, model, provider))
-      const run = new WorkerRun(pendings, kind === "advance" ? (this.#waits ?? []) : [])
       const handlers = this.#handlers(run, ask, tools, spec.stores)
       run.worker = await this.#ctx.workers.spawn(job, paths.sessionDir(sid), handlers, { env: provider.env })
       this.#run = run
+      this.#starting = null
       this.#readvance = false
       void this.#ctx.hooks.notify("runStarted", session, runId)
+      // Busy before any caller hears back: the run isn't at its turn until it shows it.
+      if (!this.#closed) this.#trySettle("after a spawn")
     } catch (error) {
-      this.#log(`session ${sid}: a worker can't start (${errorName(error)})`)
       const refusal = this.#wakeError(error)
       for (const p of pendings) p.reject(refusal)
       throw error
     } finally {
-      this.#spawning = false
+      if (this.#starting === run) this.#starting = null
     }
   }
 
-  /** `#spawn`, whose failure it already logged and answered. */
+  /** `#spawn`, logging its failure, which it already answered. */
   async #spawnQuietly(kind: "chat" | "advance"): Promise<void> {
     try {
       await this.#spawn(kind)
-    } catch {}
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a worker can't start (${errorName(error)})`)
+    }
   }
 
   /** One worker's handlers: its notifications go to the queue, its requests run at once. */
@@ -464,7 +500,19 @@ export class SessionActor {
       }
 
       override askUser(_worker: unknown, request: AskRequest, callId: string): Promise<unknown> {
+        if (actor.#closed) return Promise.reject(new Error("the office is stopping"))
         return ask(request, callId)
+      }
+
+      override toolCall(
+        worker: unknown,
+        group: string,
+        name: string,
+        args: Record<string, unknown>,
+        callId?: string,
+      ): Promise<unknown> {
+        if (actor.#closed) return Promise.reject(new Error("the office is stopping"))
+        return super.toolCall(worker, group, name, args, callId)
       }
     })({ tools, stores })
   }
@@ -540,14 +588,42 @@ export class SessionActor {
     const op = p.delivery.op
     if (Object.hasOwn(reply, "seq")) {
       if (p.late && (op === "send" || op === "complete" || op === "close")) this.#readvance = true
+      if (p.delivery.op === "send") {
+        // The stored status is busy, and the message shown, before the caller hears back.
+        this.#trySettle("after a message")
+        this.#publishMessage(run.runId, reply.seq as number, p.delivery.event)
+      }
       p.resolve(p.acked)
     } else if (typeof reply.refused === "string") {
       // The reason only: a delivery never names the message's text.
       this.#log(`session ${this.sessionId}: a ${op} was refused (${reply.refused})`)
       if (reply.refused !== "not_started") p.reject(refusalOf(reply.refused))
     } else {
-      this.#log(`session ${this.sessionId}: a ${op} failed (${String(reply.failed)})`)
-      if (run.nodeEvent) p.reject(this.#cantWake(String(reply.failed)))
+      const failed = reply.failed as string
+      this.#log(`session ${this.sessionId}: a ${op} failed (${failed})`)
+      if (run.nodeEvent) p.reject(this.#cantWake(failed))
+    }
+  }
+
+  /** Publishes the user message of the `send` the run took at `seq`, as the transcript will show it: its id from the
+   *  run and seq, and only the person's text, the last text part of `sent`. */
+  #publishMessage(runId: string, seq: number, sent: unknown): void {
+    const event = (sent ?? {}) as { parts?: { type?: unknown; text?: unknown }[]; author?: unknown }
+    const text = (event.parts ?? []).findLast((part) => part.type === "text")?.text
+    const id = `${runId}:${String(seq).padStart(12, "0")}`
+    const author = Handle.safeParse(event.author)
+    const message: Message = {
+      id,
+      session_id: this.sessionId,
+      role: "user",
+      author: author.success ? author.data : null,
+      parts: typeof text === "string" ? [{ id: `${id}:0`, type: "text", text }] : [],
+      created_at: now(),
+    }
+    try {
+      this.#ctx.bus.publishLive({ type: "message.updated", session_id: this.sessionId, data: message })
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a message can't be shown (${errorName(error)})`)
     }
   }
 
@@ -569,12 +645,7 @@ export class SessionActor {
     this.#run = null
     const session = this.#ctx.store.getSession(this.sessionId)
     if (session !== undefined) void this.#ctx.hooks.notify("workerExited", session, returncode)
-    try {
-      // Nobody is left to read what its calls return.
-      this.#spec?.workspace?.interrupt()
-    } catch (error) {
-      this.#log(`session ${this.sessionId}: the workspace can't be interrupted (${errorName(error)})`)
-    }
+    this.#interruptWorkspace()
     const outcome = run.outcome
     if (outcome?.type === "result" && outcome.status === "waiting") {
       const carry = run.given.filter(
@@ -612,7 +683,7 @@ export class SessionActor {
       } else if (typeof reply.failed === "string") {
         p.reject(this.#cantWake(reply.failed))
       } else {
-        p.reject(reply.refused === "not_started" ? this.#cantWake() : refusalOf(String(reply.refused)))
+        p.reject(reply.refused === "not_started" ? this.#cantWake() : refusalOf(reply.refused as string))
       }
     }
   }
@@ -680,6 +751,15 @@ export class SessionActor {
       return failed
     })
     void this.#ctx.hooks.notify("sessionEnded", session)
+  }
+
+  /** Interrupts the workspace's calls in flight: nobody is left to read what they return. */
+  #interruptWorkspace(): void {
+    try {
+      this.#spec?.workspace?.interrupt()
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: the workspace can't be interrupted (${errorName(error)})`)
+    }
   }
 
   /** `settle`, logging a failure by its type, where the step around it must go on. */

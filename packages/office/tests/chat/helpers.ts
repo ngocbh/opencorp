@@ -11,7 +11,7 @@ import { iterRunRecords, type RunLogEntry } from "@ngocbh/yian/run"
 import { now, OFFICE, Session, WorkItem } from "@opencorp/protocol"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { mainSpec } from "../../src/chat/run_spec.ts"
-import { type ActorContext, SessionActor } from "../../src/chat/session_actor.ts"
+import { type ActorContext, type ActorWorker, SessionActor } from "../../src/chat/session_actor.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import type { Office } from "../../src/daemon/office.ts"
@@ -22,11 +22,11 @@ import { SecretStore, writePrivate } from "../../src/secrets.ts"
 import { newId, type SessionRecord } from "../../src/store/store.ts"
 import { FakeLLM, LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { type Delivery, Job, type JobInput } from "../../src/worker/job.ts"
-import type { OfficeTool } from "../../src/worker/rpc.ts"
+import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
 import type { Worker, WorkerRegistry } from "../../src/worker/spawn.ts"
 import { baseFiles } from "../company/helpers.ts"
 import { CEO, makeOffice } from "../daemon/helpers.ts"
-import { tempDir, waitFor } from "../helpers.ts"
+import { NO_GROUP, tempDir, waitFor } from "../helpers.ts"
 import { advanceJob, inProcessWorker, makeJob, makeRegistry, Recorder, run, waitsOf } from "../worker/helpers.ts"
 
 /** The template's chat flow, as a hire's main points at it. */
@@ -532,4 +532,36 @@ export function status(o: ChatOffice, sid: string): string {
 export function state(o: ChatOffice, sid: string): Pick<SessionRecord, "status" | "waiting_on" | "capped"> {
   const { status, waiting_on, capped } = session(o, sid)
   return { status, waiting_on, capped }
+}
+
+/** A worker a test drives in place of a process: its job, the handlers the actor gave it, and each delivery sent to
+ *  it. */
+export interface ScriptedWorker {
+  readonly worker: ActorWorker
+  readonly job: Job
+  readonly handlers: WorkerHandlers<ActorWorker>
+  readonly deliveries: Delivery[]
+}
+
+/** Makes `o`'s spawns return scripted workers (still recording each kind and job) whose `deliver` records the
+ *  delivery and returns true; returns the workers spawned, in order. */
+export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
+  const spawned: ScriptedWorker[] = []
+  o.registry.spawn = async (job, _sessionDir, handlers) => {
+    o.kinds.push(job.kind)
+    o.jobs.push(job)
+    const deliveries: Delivery[] = []
+    const worker: ActorWorker = {
+      job,
+      pid: NO_GROUP,
+      deliver: async (delivery) => {
+        deliveries.push(delivery)
+        return true
+      },
+      stop: async () => true,
+    }
+    spawned.push({ worker, job, handlers, deliveries })
+    return worker as Worker
+  }
+  return spawned
 }

@@ -73,8 +73,10 @@ chat/test_turns.py	ported	packages/office/tests/chat/turns.test.ts	—	O3-8b
 chat/test_turns.py::test_the_main_chat_names_its_turn_and_reply	changed	packages/office/tests/chat/turns.test.ts::the main chat names its turn and reply	4a-revision §1: the turn is the take chat/heard on the messages inbox	O4a-1
 chat/test_turns.py::test_the_reply_after_a_turn_is_in_the_same_occurrence	changed	packages/office/tests/chat/turns.test.ts::the reply after a turn is in the same occurrence	4a-revision §1: the turn is the take chat/heard on the messages inbox	O4a-1
 chat/test_turns.py::test_turn_path_strips_each_occurrence_suffix[chat~1-chat~1]	changed	packages/office/tests/chat/turns.test.ts::turn path strips each occurrence suffix	design §3.2: turns.ts matches through yian's staticPathOf, which also drops a LOOP driver clone's ~k (TS yian ids: body L#k/…, driver L~k)	O3-8b
-chat/test_waiting.py	open	—	—	O4a-3
-chat/test_wake.py	open	—	—	O4a-3
+chat/test_waiting.py	open	—	—	O4a-6
+chat/test_waiting.py::test_settle_gives_idle_at_the_turn_and_busy_while_a_live_run_has_no_turn	changed	packages/office/tests/chat/waiting.test.ts::settle gives idle at the turn and busy while a live run has no turn	4a revision §1: no turn question; idle means only the turn's take waits	O4a-3
+chat/test_wake.py	open	—	—	O4a-6
+chat/test_wake.py::test_a_call_after_close_all_is_refused_as_the_office_stopping	changed	packages/office/tests/chat/wake.test.ts::a call after close all is refused as the office stopping	design §8.2: the actor refuses a worker request after close (a scripted worker's handler), not the harness's call counter	O4a-3
 company/test_draft.py	ported	packages/office/tests/company/draft.test.ts	—	O2-16b
 company/test_flows.py	ported	packages/office/tests/company/flows.test.ts	—	O1-8
 company/test_git.py	ported	packages/office/tests/company/git.test.ts	—	O1-6

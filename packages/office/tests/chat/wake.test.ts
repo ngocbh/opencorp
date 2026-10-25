@@ -1,7 +1,23 @@
 /** Waking a sleeping session: one worker at a time, nothing lost (Python's `tests/chat/test_wake.py`). */
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import { SessionActor } from "../../src/chat/session_actor.ts"
+import { makeRegistry } from "../worker/helpers.ts"
 import { waitFor } from "../helpers.ts"
-import { asleep, chatOffice, fakeLlm, noWorkersLeft, reopen, say, session, startActor, texts } from "./helpers.ts"
+import {
+  asleep,
+  chatOffice,
+  fakeLlm,
+  makeActor,
+  newSession,
+  noWorkersLeft,
+  reopen,
+  say,
+  scriptedWorker,
+  session,
+  startActor,
+  status,
+  texts,
+} from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 afterAll(noWorkersLeft)
@@ -12,6 +28,31 @@ function track<T>(promise: Promise<T>, name: string, settled: string[]): Promise
 }
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** What a command settled with: its value, or the status and code of the error it was refused with. */
+function outcome(promise: Promise<unknown>): Promise<string> {
+  return promise.then(String, (error) => `${error.status} ${error.code}`)
+}
+
+test("a call after close all is refused as the office stopping", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  actor.close()
+  await o.registry.closeAll()
+  const { worker, handlers } = workers[0]!
+  const request = { question: "Which?", questions: null, answer_schema: null, title: null, node_id: null, options: null }
+  await expect(Promise.resolve().then(() => handlers.askUser(worker, request, "c1"))).rejects.toThrow(
+    "the office is stopping",
+  )
+  await expect(
+    Promise.resolve().then(() => handlers.toolCall(worker, "workspace", "workspace_stub", {}, "c2")),
+  ).rejects.toThrow("the office is stopping")
+  expect(o.office.store.listQuestions({ sessionId: sid })).toEqual([])
+})
 
 test("a prompt wakes a sleeping session on its own run", async () => {
   const fake = await fakeLlm()
@@ -82,4 +123,49 @@ test("a steer to a sleeping session wakes it and is its next message", async () 
   await actor.steer("look here")
   await waitFor(() => JSON.stringify(texts(o, sid)) === JSON.stringify(["steered"]), { what: "the reply" })
   expect(texts(o, sid, "user")).toEqual(["look here"])
+})
+
+test("close all during a wake answers 503 and leaves the status", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "spare" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await asleep(o)
+  const held = o.hold()
+  const sent = outcome(actor.prompt("hi"))
+  await held.entered
+  actor.close()
+  const closing = o.registry.closeAll()
+  held.release()
+  expect(await sent).toBe("503 stopping")
+  await closing
+  expect(status(o, sid)).toBe("idle")
+  expect(o.registry.get(sid)).toBeUndefined()
+})
+
+test("wakes racing close all leave the session to wake again", async () => {
+  const fake = await fakeLlm()
+  fake.script(...Array.from({ length: 30 }, (_, i) => ({ content: `r${i}` })))
+  const o = await chatOffice(fake)
+  const { actor: first, sid } = await startActor(o)
+  await waitFor(() => !first.hasWorker, { what: "the first worker to exit" })
+  first.close()
+  for (let i = 0; i < 5; i++) {
+    const registry = makeRegistry(o.office.store)
+    const actor = new SessionActor({ ...o.ctx, workers: registry }, sid)
+    o.actors.push(actor)
+    const delay = Math.random() * 300
+    const sends = [0, 1, 2].map((j) => outcome(actor.prompt(`m${i}-${j}`)))
+    await pause(delay)
+    actor.close()
+    await registry.closeAll()
+    for (const got of await Promise.all(sends)) expect(["turn", "queued", "steer", "503 stopping"]).toContain(got)
+    expect(registry.get(sid)).toBeUndefined()
+    expect(["idle", "busy"]).toContain(status(o, sid))
+  }
+  // It still wakes.
+  const last = makeActor(o, sid)
+  await last.prompt("last")
+  await waitFor(() => JSON.stringify(fake.requests().at(-1)?.messages ?? []).includes("last") && status(o, sid) === "idle", {
+    what: "the last message",
+  })
 })
