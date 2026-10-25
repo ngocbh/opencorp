@@ -1,6 +1,8 @@
 /** The install tests' helpers (Python's `tests/install/conftest.py`, and `Script` from `test_provider_setup.py`).
  *  Tests never run a real service tool: every install test passes a `makeHost` host, whose `run` is a `Runner`. */
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process"
+import fs from "node:fs"
+import path from "node:path"
 import { onTestFinished } from "bun:test"
 import { type Completed, type Host, type Launch, launch, officeAnswers } from "../../src/install/launch.ts"
 import type { Listers } from "../../src/install/onboard.ts"
@@ -177,4 +179,26 @@ export function daemonHost(dir: string, spawned: Spawned[]): Host {
       return child
     },
   }
+}
+
+/** The office source folder. */
+export const SRC = path.join(import.meta.dir, "../../src")
+
+/** Every module `file` names: static and bare imports, re-exports, `import()` and `require()`, comments left out;
+ *  `import type` and `export type` are kept unless `values` is set. */
+export function specifiers(file: string, { values = false } = {}): string[] {
+  const code = fs
+    .readFileSync(path.join(SRC, file), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|\s)\/\/.*$/gm, "$1")
+  const found: string[] = []
+  const patterns = [
+    /\b(?:import|export)\s+(type\s+)?(?:(?!\b(?:import|export)\b)[^"'`;])*?\bfrom\s*["']([^"']+)["']/g,
+    /\bimport\s*()["']([^"']+)["']/g,
+    /\b(?:import|require)\s*\(\s*()["']([^"']+)["']/g,
+  ]
+  for (const pattern of patterns) {
+    for (const [, type, name] of code.matchAll(pattern)) if (!(values && type)) found.push(name!)
+  }
+  return found
 }

@@ -544,6 +544,9 @@ function fullName(uid: number): string {
   }
 }
 
+/** Gives an account's default name and handle, as `loginDefaults` does. */
+export type LoginDefaults = () => [name: string, handle: string]
+
 /** `ownerDefaults` for the account running this. Throws `OnboardError` when the user id has no account. */
 export function loginDefaults(): [name: string, handle: string] {
   const uid = process.getuid!()
@@ -650,7 +653,7 @@ async function clone(url: string, dest: string, env: Env): Promise<void> {
 }
 
 /** This account's default handle, or "" when it has none. */
-function loginHandle(defaults: () => [name: string, handle: string]): string {
+function loginHandle(defaults: LoginDefaults): string {
   try {
     return defaults()[1]
   } catch (error) {
@@ -680,7 +683,7 @@ async function join(
   worktrees: string,
   home: string,
   prompter: Prompter,
-  loginDefaults: () => [name: string, handle: string],
+  loginDefaults: LoginDefaults,
 ): Promise<Identity | null> {
   const people = loadRepo(root).people
   const known = await knownIdentity(home)
@@ -768,7 +771,7 @@ export interface OnboardOptions {
   /** Whether each step gets a numbered header (default true). */
   steps?: boolean
   /** This account's default name and handle (`loginDefaults` by default). */
-  loginDefaults?: () => [name: string, handle: string]
+  loginDefaults?: LoginDefaults
 }
 
 /**
@@ -821,7 +824,7 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
     await clone(url, root, environ)
     prompter.say(`Company repo: cloned ${redact(url)}`)
   }
-  let me: Identity | null | undefined
+  let me: Identity | null = null
   try {
     let written: string[] = []
     let missing: string[] = []
@@ -851,7 +854,7 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
     step(2, "This device", "The office takes requests only from devices its humans list, once any human lists one.")
     me = fresh
       ? await join(root, worktrees, one.home, prompter, options.loginDefaults ?? loginDefaults)
-      : await knownIdentity(one.home)
+      : ((await knownIdentity(one.home)) ?? null)
     if (fresh) {
       // An empty dir: rename can't put a directory over a full one.
       if (fs.statSync(company, { throwIfNoEntry: false })?.isDirectory()) fs.rmdirSync(company)

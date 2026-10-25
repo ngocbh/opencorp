@@ -25,12 +25,16 @@ import {
   setupConnectionFile,
   WHO,
 } from "../../src/install/onboard.ts"
+import * as fallback from "../../src/install/fallback.ts"
+import { launch } from "../../src/install/launch.ts"
 import { OnboardError, TRIES, TtyPrompter } from "../../src/install/prompts.ts"
+import { selfSpawnEnv } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { git, gitEnv } from "../company/helpers.ts"
-import { tempDir } from "../helpers.ts"
-import { makeHost, NO_LISTING, Runner, Script } from "./helpers.ts"
+import { request } from "../daemon/helpers.ts"
+import { shortDir, tempDir } from "../helpers.ts"
+import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner, Script, specifiers } from "./helpers.ts"
 
 const KEY = "sk-test-0000000000000000"
 const PROVIDER_JSON = '{"llm_config": {"provider": "openai"}}'
@@ -59,13 +63,15 @@ function provider(): Readable {
 }
 
 /** The options every test passes: listers and a model check that reach no provider, git without the user's
- *  config, and a stand-in host, so no test can reach the real service tools. */
+ *  config, a stand-in host, so no test can reach the real service tools, and a login no company lists, so no
+ *  test reads the account database. */
 function base(dir: string): OnboardOptions {
   return {
     listers: NO_LISTING,
     checkModel: async () => null,
     environ: gitEnv(process.env),
     host: makeHost(dir, new Runner()),
+    loginDefaults: () => ["Someone", "someone-unlisted"],
   }
 }
 
@@ -508,6 +514,54 @@ test("a second onboard of a cloned company changes nothing and asks nothing", as
   expect(git(path.join(home, "company"), "rev-parse", "HEAD")).toBe(head)
   expect(fs.readFileSync(path.join(home, "identity.json"), "utf8")).toBe(identity)
   expect(again.seen.some((line) => line.startsWith("This device: "))).toBe(true)
+})
+
+test(
+  "a cloned office takes this devices token",
+  async () => {
+    const spawned = killedAtEnd()
+    const dir = shortDir()
+    const source = await published(tempDir())
+    // Python's `no_web_port`: HQ stays off its TCP port, which the owner's own office holds.
+    fs.mkdirSync(path.join(dir, "office"), { mode: 0o700 })
+    fs.writeFileSync(path.join(dir, "office", "hq.json"), '{"tcp": false}')
+    const environ = { ...gitEnv(selfSpawnEnv(process.env)), HOME: tempDir() }
+    try {
+      await onboard(dir, new Script(["lan", "openai", "", ""]), {
+        source,
+        mode: "background",
+        host: daemonHost(dir, spawned),
+        environ,
+        listers: NO_LISTING,
+        checkModel: async () => null,
+        loginDefaults: () => ["Someone", "someone-unlisted"],
+      })
+      const me = (await readIdentity(path.join(dir, "identity.json")))!
+      const sock = path.join(dir, "office", "office.sock")
+      expect((await request(sock, "GET", "/people")).status).toBe(401)
+      const whoami = await request(sock, "GET", "/whoami", { headers: me.headers() })
+      expect(whoami.json()).toEqual({ person: "lan", device: me.device })
+    } finally {
+      await fallback.stopProcess(launch(dir, { environ, userHome: dir }))
+    }
+  },
+  120_000,
+)
+
+test("onboard imports no daemon module but sockets", () => {
+  const seen = new Set<string>()
+  const walk = (file: string) => {
+    if (seen.has(file)) return
+    seen.add(file)
+    if (!file.endsWith(".ts")) return
+    for (const name of specifiers(file)) {
+      if (name.startsWith(".")) walk(path.join(path.dirname(file), name))
+    }
+  }
+  walk("install/onboard.ts")
+  expect(seen).toContain("install/service.ts")
+  expect(seen).toContain("daemon/sockets.ts")
+  expect([...seen].filter((file) => file.startsWith("daemon/"))).toEqual(["daemon/sockets.ts"])
 })
 
 test("a repo url with credentials is never shown", async () => {
