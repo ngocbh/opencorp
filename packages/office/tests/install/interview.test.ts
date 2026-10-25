@@ -310,10 +310,10 @@ test.each([
   if (kind === "error") {
     expect(raised).toBeInstanceOf(ModelError)
     expect(raised.message).toContain("boom")
-    expect(fake.requests()).toHaveLength(1)
   } else {
     expect(raised).toBe(INTERRUPT)
   }
+  expect(fake.requests()).toHaveLength(1)
   expect({ ...process.env }).toEqual(before)
 })
 
