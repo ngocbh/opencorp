@@ -9,10 +9,11 @@
  * Exit codes: 0 done, 1 failed, 2 usage, 3 (`start`, `restart`) no office yet, 130 Ctrl-C.
  */
 import { Console } from "node:console"
+import path from "node:path"
 import type { Readable, Writable } from "node:stream"
 import { parseArgs } from "node:util"
 import { repr } from "../perm/redact.ts"
-import { type CheckOptions } from "./doctor.ts"
+import { type CheckOptions, checks, exitCode, report } from "./doctor.ts"
 import { init } from "./init.ts"
 import type { TextOut } from "./json_prompts.ts"
 import { defaultHost, type Env, type Host } from "./launch.ts"
@@ -283,8 +284,16 @@ async function offboardCommand(_args: Args, _s: Setup): Promise<number> {
   return 0
 }
 
-async function doctorCommand(_args: Args, _s: Setup): Promise<number> {
-  return 0
+/** The home to use: `--home`, else `$OPENCORP_HOME` (empty is unset), else `~/.opencorp`; resolved by each
+ *  command through `launch`. */
+function home(value: string | undefined, s: Setup): string {
+  return value || s.environ.OPENCORP_HOME || path.join(s.host.userHome, ".opencorp")
+}
+
+async function doctorCommand(args: Args, s: Setup): Promise<number> {
+  const found = await checks(home(args.home, s), { ...s.doctor, host: s.host, environ: s.environ })
+  s.stdout.write(report(found))
+  return exitCode(found)
 }
 
 async function startCommand(_args: Args, _s: Setup): Promise<number> {

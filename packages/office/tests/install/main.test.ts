@@ -1,5 +1,7 @@
 /** `opencorp install …`: the parser, help and usage errors, and each command run in-process through `main` with
  *  stand-ins for the machine. */
+import fs from "node:fs"
+import path from "node:path"
 import { Readable, Writable } from "node:stream"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { main, type Setup } from "../../src/install/main.ts"
@@ -74,4 +76,32 @@ test("an unknown command is a usage error", async () => {
     expect(await main(argv, s)).toBe(2)
     expect(s.err()).toStartWith("usage: opencorp install")
   }
+})
+
+test("doctor runs the codex check doctor has when it runs", async () => {
+  const dir = tempDir()
+  const s = standIns(dir)
+  await main(["doctor", "--home", path.join(dir, "home")], s)
+  expect(s.out()).toContain("ok    codex        stand-in")
+})
+
+test("doctor on a fresh machine fails and says to onboard", async () => {
+  const dir = tempDir()
+  const s = standIns(dir)
+  expect(await main(["doctor", "--home", path.join(dir, "home")], s)).toBe(1)
+  expect(s.out()).toContain("fail  company      no company repo")
+})
+
+test("the home defaults to opencorp home", async () => {
+  const dir = tempDir()
+  const s = { ...standIns(dir), environ: { OPENCORP_HOME: path.join(dir, "elsewhere") } }
+  await main(["doctor"], s)
+  expect(s.out()).toContain(`no company repo at ${fs.realpathSync(dir)}/elsewhere/company`)
+})
+
+test("an empty opencorp home means the default", async () => {
+  const dir = tempDir()
+  const s = { ...standIns(dir), environ: { OPENCORP_HOME: "" } }
+  await main(["doctor"], s)
+  expect(s.out()).toContain(`no company repo at ${dir}/.opencorp/company`)
 })
