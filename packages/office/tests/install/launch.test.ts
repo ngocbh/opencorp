@@ -20,7 +20,7 @@ import {
 import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, unsafeEnvName } from "../../src/platform.ts"
 import { ps, shortDir, tempDir, waitFor } from "../helpers.ts"
-import { Runner, makeHost } from "./helpers.ts"
+import { Runner, makeHost, SRC, specifiers } from "./helpers.ts"
 
 // Resolved as `launch` resolves it: on a machine without /Users the path comes back as given.
 const HOME = resolveHome("/Users/owner/.opencorp")
@@ -268,27 +268,6 @@ test("a failed re-exec exits 1 with the errors code and never its message", () =
   expect(typed.text).toBe("opencorp office: can't re-exec into the office's env: RangeError\n")
 })
 
-const SRC = path.join(import.meta.dir, "../../src")
-
-/** Every module `file` names: static and bare imports, re-exports, `import()` and `require()`, comments left out;
- *  `import type` and `export type` are kept unless `values` is set. */
-function specifiers(file: string, { values = false } = {}): string[] {
-  const code = fs
-    .readFileSync(path.join(SRC, file), "utf8")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|\s)\/\/.*$/gm, "$1")
-  const found: string[] = []
-  const patterns = [
-    /\b(?:import|export)\s+(type\s+)?(?:(?!\b(?:import|export)\b)[^"'`;])*?\bfrom\s*["']([^"']+)["']/g,
-    /\bimport\s*()["']([^"']+)["']/g,
-    /\b(?:import|require)\s*\(\s*()["']([^"']+)["']/g,
-  ]
-  for (const pattern of patterns) {
-    for (const [, type, name] of code.matchAll(pattern)) if (!(values && type)) found.push(name!)
-  }
-  return found
-}
-
 test("the pre re-exec check imports only node builtins platform and sockets", () => {
   const launchImports = specifiers("install/launch.ts")
   expect(launchImports).toContain("../platform.ts")
@@ -313,6 +292,12 @@ test("a missing program is exit 127 not an exception", async () => {
   const out = await runCommand(["/nonexistent/launchctl", "print"])
   expect(out.code).toBe(127)
   expect(out.stderr).toContain("nonexistent")
+})
+
+test("run command runs with exactly the env it is given", async () => {
+  const out = await runCommand(["/usr/bin/env"], { env: { PATH: "/usr/bin:/bin", OPENCORP_X: "1" } })
+  expect(out.code).toBe(0)
+  expect(out.stdout.split("\n").filter(Boolean).sort()).toEqual(["OPENCORP_X=1", "PATH=/usr/bin:/bin"])
 })
 
 /** Whether a child of this process is still running `args`. Reads only. */

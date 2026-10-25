@@ -43,7 +43,7 @@ import {
   TtyPrompter,
   readLine,
 } from "../../src/install/prompts.ts"
-import { repr } from "../../src/perm/redact.ts"
+import { NO_LISTING, Script } from "./helpers.ts"
 
 const KEY = "sk-ant-test-0123456789"
 
@@ -384,67 +384,6 @@ test("on a real dumb terminal a numbered list after a secret gets its answer", a
 }, 30_000)
 
 const SENTINEL = "sk-ant-sentinel-a7d93c10e5b2"
-
-/** A prompter that answers from a list and records everything it was asked or told. */
-class Script implements Prompter {
-  readonly answers: string[]
-  readonly interactive: boolean
-  readonly seen: string[] = []
-  /** The options of each `choose`, in order. */
-  readonly offered: string[][] = []
-  /** Whether each `choose` took a typed answer, in order. */
-  readonly typed: boolean[] = []
-
-  constructor(answers: string[] = [], { interactive = true }: { interactive?: boolean } = {}) {
-    this.answers = [...answers]
-    this.interactive = interactive
-  }
-
-  private next(): string {
-    const answer = this.answers.shift()
-    if (answer === undefined) throw new Error("the script ran out of answers")
-    return answer
-  }
-
-  async ask(question: string, defaultAnswer = ""): Promise<string> {
-    this.seen.push(question)
-    return this.next() || defaultAnswer
-  }
-
-  /** The default for an empty answer, an option given exactly, the option a number picks (from 1), or with
-   *  `typed` any other text. */
-  async choose(question: string, options: readonly string[], defaultAnswer = "", typed = false): Promise<string> {
-    this.seen.push(question)
-    this.offered.push([...options])
-    this.typed.push(typed)
-    const answer = this.next()
-    if (!answer) return defaultAnswer
-    if (options.includes(answer)) return answer
-    const number = /^[0-9]+$/.test(answer) ? Number(answer) : 0
-    if (number >= 1 && number <= options.length) return options[number - 1]!
-    if (typed) return answer
-    throw new Error(`${repr(answer)} isn't an answer to ${repr(question)}; the options are [${options.map(repr).join(", ")}]`)
-  }
-
-  async secret(question: string): Promise<string> {
-    this.seen.push(question)
-    return this.next()
-  }
-
-  say(text: string): void {
-    this.seen.push(text)
-  }
-
-  step(number: number, total: number, title: string, why: string): void {
-    this.seen.push(...stepLines(number, total, title, why))
-  }
-}
-
-/** Listers that list nothing, so no test reaches a provider: the model or deployment is typed. */
-const NO_LISTING: Listers = {
-  azureDeployments: async () => [],
-  providerModels: async () => [],
-}
 
 /** `ensureProvider` with `NO_LISTING` unless `options` gives listers. */
 function ensure(office: string, prompter: Prompter, options: Partial<ProviderOptions> = {}): Promise<boolean> {

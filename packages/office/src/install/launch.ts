@@ -248,13 +248,20 @@ export interface Completed {
 }
 
 /**
- * Runs `argv` with this process's environment and captures its output. A program that can't start is exit 127
- * and one still running after `timeoutMs` is killed and exit 124, not an exception: the output it wrote before
- * the kill is kept, and stderr becomes `<argv[0]> timed out`. One killed by a signal is minus the signal's number.
+ * Runs `argv` with this process's environment, or exactly `env` when given, and captures its output. A program that
+ * can't start is exit 127 and one still running after `timeoutMs` is killed and exit 124, not an exception: the output
+ * it wrote before the kill is kept, and stderr becomes `<argv[0]> timed out`. One killed by a signal is minus the
+ * signal's number.
  */
-export function runCommand(argv: readonly [string, ...string[]], { timeoutMs = 60_000 } = {}): Promise<Completed> {
+export function runCommand(
+  argv: readonly [string, ...string[]],
+  { timeoutMs = 60_000, env }: { timeoutMs?: number; env?: Record<string, string> } = {},
+): Promise<Completed> {
   return new Promise((resolve) => {
-    const child = spawn(argv[0], argv.slice(1), { stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawn(argv[0], argv.slice(1), {
+      stdio: ["ignore", "pipe", "pipe"],
+      ...(env ? { env } : {}),
+    })
     let stdout = ""
     let stderr = ""
     let failed = false
@@ -305,8 +312,9 @@ export interface Host {
   userHome: string
   /** The user's id, which names launchd's per-user domain (`gui/<uid>`). */
   uid: number
-  /** Runs a command and captures its output (`runCommand`). */
-  run(argv: readonly [string, ...string[]]): Promise<Completed>
+  /** Runs a command with this process's env, or exactly `env` when given, and captures its output
+   *  (`runCommand`). */
+  run(argv: readonly [string, ...string[]], options?: { env?: Record<string, string> }): Promise<Completed>
   /** Starts a process without waiting for it (the fallback daemon). */
   spawn(argv: readonly [string, ...string[]], options: SpawnOptions): ChildProcess
   /** The path of the program `name` on the user's `PATH`, or null. */
@@ -349,7 +357,7 @@ export function defaultHost(): Host {
     platform: process.platform,
     userHome: os.homedir(),
     uid: process.getuid?.() ?? -1,
-    run: runCommand,
+    run: (argv, options) => runCommand(argv, options),
     spawn: (argv, options) => spawn(argv[0], argv.slice(1), options),
     which: (name) => which(name, process.env.PATH),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
