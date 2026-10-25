@@ -10,9 +10,10 @@ import {
   TypedValue,
 } from "@ngocbh/yian/run"
 import { Handle, type Message, type Part, type ToolPart } from "@opencorp/protocol"
+import { INTERRUPTED_TEXT } from "../harness/translate.ts"
 import { MAIN_CHAT } from "./turns.ts"
 
-export { INTERRUPTED_TEXT } from "../harness/translate.ts"
+export { INTERRUPTED_TEXT }
 
 /** The actor's view of its live runs: the model calls in flight of `runId`, or null when nothing runs it. */
 export interface LiveCalls {
@@ -20,7 +21,15 @@ export interface LiveCalls {
 }
 
 /** The run log records the transcript folds. */
-const KINDS = ["node_started", "node_step", "pool_commit", "node_succeeded", "node_failed", "run_cancelled", "run_failed"]
+const KINDS = [
+  "node_started",
+  "node_step",
+  "pool_commit",
+  "node_succeeded",
+  "node_failed",
+  "run_cancelled",
+  "run_failed",
+]
 
 /** A message sent to the chat's inbox: its send commit's seq and time, and the message. */
 interface Send {
@@ -161,6 +170,7 @@ function fold(state: Fold, entry: RunLogEntry): void {
     if (reply !== null) {
       const { n, step } = record as { n: number; step: Step }
       state.items.push({ kind: "step", node: reply, n, seq, at, step })
+      if (step.kind === "steer") for (const event of step.from as readonly bigint[]) state.read.add(Number(event))
     }
   } else if (kind === "run_cancelled" || kind === "run_failed") {
     state.ended = true
@@ -168,8 +178,9 @@ function fold(state: Fold, entry: RunLogEntry): void {
 }
 
 /**
- * Appends to `out` the messages of the run `runId` from its fold `state`: each accepted take's user messages and
- * each reply's assistant message. `live` says a worker runs the run; `last`, that it is the session's last run.
+ * Appends to `out` the messages of the run `runId` from its fold `state`: each accepted take's user messages, each
+ * reply's assistant message, and the user messages a steer read, between what the reply said before and after.
+ * `live` says a worker runs the run; `last`, that it is the session's last run.
  */
 function render(out: Message[], sessionId: string, runId: string, state: Fold, live: boolean, last: boolean): void {
   const open = new Map<string, Message>() // reply node -> its open message
@@ -206,13 +217,16 @@ function render(out: Message[], sessionId: string, runId: string, state: Fold, l
           .filter((part) => part.type === "tool_call")
           .forEach((call, i) => {
             const args = call.arguments
+            const input = isPlain(args)
+              ? (plain(args) as Record<string, unknown>)
+              : { arguments: call.raw_arguments ?? null }
             const part: ToolPart = {
               id: `${runId}:${node}:${n}:${i}`,
               type: "tool",
               call_id: call.id as string,
               tool: call.name as string,
               state: "running",
-              input: isPlain(args) ? (plain(args) as Record<string, unknown>) : { arguments: call.raw_arguments ?? null },
+              input,
               output: {},
               error: null,
             }
@@ -232,6 +246,17 @@ function render(out: Message[], sessionId: string, runId: string, state: Fold, l
       } else if (step.kind === "pending") {
         const part = calls.get(node)?.get(step.tool_call_id as string)
         if (part !== undefined) waiting.add(part)
+      } else if (step.kind === "steer") {
+        // What the model says after reading a steer follows it, in a message of its own.
+        for (const event of step.from as readonly bigint[]) {
+          const send = state.sends.get(Number(event))
+          if (send) out.push(userMessage(sessionId, runId, send))
+        }
+        if (open.has(node)) open.set(node, assistantMessage(sessionId, runId, item.seq, item.at))
+      } else if (step.kind === "interrupted") {
+        const tail = open.get(node)?.parts.at(-1)
+        if (tail?.type === "text") tail.text += INTERRUPTED_TEXT
+        else add(node, { id: `${runId}:${node}:${n}`, type: "text", text: INTERRUPTED_TEXT.trimStart() })
       }
     }
   }
@@ -244,7 +269,8 @@ function render(out: Message[], sessionId: string, runId: string, state: Fold, l
 
 /** The assistant message the record at `seq` (at `at`) of the run `runId` opens, with no parts yet. */
 function assistantMessage(sessionId: string, runId: string, seq: number, at: string): Message {
-  return { id: messageId(runId, seq), session_id: sessionId, role: "assistant", author: null, parts: [], created_at: at }
+  const id = messageId(runId, seq)
+  return { id, session_id: sessionId, role: "assistant", author: null, parts: [], created_at: at }
 }
 
 /** The user message of `send` in the run `runId`: its last text part, since earlier ones are the turn's context. */

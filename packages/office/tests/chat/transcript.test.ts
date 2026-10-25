@@ -1,16 +1,26 @@
 /** A session's transcript, read from its runs' logs (Python's `tests/chat/test_transcript.py`). */
 import { expect, setDefaultTimeout, test } from "bun:test"
-import { iterRunRecords, type PoolCommitRecord } from "@ngocbh/yian/run"
+import { iterRunRecords, type PoolCommitRecord, type RunLogEntry } from "@ngocbh/yian/run"
 import { pending } from "@ngocbh/yian/tools"
 import { Message, type ToolPart } from "@opencorp/protocol"
-import { Transcript } from "../../src/chat/transcript.ts"
+import { INTERRUPTED_TEXT, Transcript } from "../../src/chat/transcript.ts"
 import { MAIN_CHAT } from "../../src/chat/turns.ts"
 import { newId } from "../../src/store/store.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
 import type { Delivery, Job } from "../../src/worker/job.ts"
-import { tempDir } from "../helpers.ts"
-import { advanceJob, run } from "../worker/helpers.ts"
-import { advance, fakeLlm, logPrefix, send, TemplateOffice, templateJob, waitingAt, waitingChat } from "./helpers.ts"
+import { tempDir, waitFor } from "../helpers.ts"
+import { advanceJob, inProcessWorker, run, type TestWorker } from "../worker/helpers.ts"
+import {
+  advance,
+  fakeLlm,
+  interruptMidReply,
+  logPrefix,
+  send,
+  TemplateOffice,
+  templateJob,
+  waitingAt,
+  waitingChat,
+} from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -24,6 +34,14 @@ function messages(runs: string, sessionId: string, runIds: string[]): Message[] 
 /** Each message as its role and its text parts' texts. */
 function texts(read: Message[]): [string, string[]][] {
   return read.map((m) => [m.role, m.parts.flatMap((part) => (part.type === "text" ? [part.text] : []))])
+}
+
+/** Each message as its role and what each part shows: a text part's text, a tool part's state. */
+function shown(read: Message[]): [string, string[]][] {
+  return read.map((m) => [
+    m.role,
+    m.parts.map((part) => (part.type === "text" ? part.text : part.type === "tool" ? part.state : part.type)),
+  ])
 }
 
 /** Each tool part of `read` as its call id, state, output and error. */
@@ -113,7 +131,8 @@ test("an orphan take commit leaves its messages queued", async () => {
   const job = await waitingChat(fake, "chat", {}, { runs })
   await advance(job, fake, [send("s1", "one"), send("s2", "two")])
   const crashed = tempDir()
-  const cut = logPrefix(job.log, (entry) => !(entry.kind === "node_succeeded" && MAIN_CHAT.isTurn(entry.nodeId)), crashed)
+  const turnDone = (entry: RunLogEntry) => entry.kind === "node_succeeded" && MAIN_CHAT.isTurn(entry.nodeId)
+  const cut = logPrefix(job.log, (entry) => !turnDone(entry), crashed)
   const takes = [...iterRunRecords(cut, { kinds: ["pool_commit"] })].filter(
     (entry) => (entry.envelope.record as PoolCommitRecord).take !== null,
   )
@@ -166,14 +185,12 @@ async function toolRun(runs: string): Promise<Job> {
 /** The log of `job` cut before c3's tool result, under a fresh runs folder; returns that folder. */
 function beforeC3(job: Job): string {
   const crashed = tempDir()
-  logPrefix(
-    job.log,
-    (entry) => {
-      const step = entry.kind === "node_step" ? (entry.envelope.record as unknown as { step: Record<string, unknown> }).step : null
-      return !(step?.kind === "tool_result" && step.call_id === "c3")
-    },
-    crashed,
-  )
+  const c3Result = (entry: RunLogEntry) => {
+    if (entry.kind !== "node_step") return false
+    const { step } = entry.envelope.record as unknown as { step: Record<string, unknown> }
+    return step.kind === "tool_result" && step.call_id === "c3"
+  }
+  logPrefix(job.log, (entry) => !c3Result(entry), crashed)
   return crashed
 }
 
@@ -267,4 +284,109 @@ test("a waiting ask user call shows running while the session sleeps", async () 
   expect(tools(messages(runs, newId(), ["r1"]))).toEqual([["q1", "running", {}, null]])
   await waitingChat(fake, "chat", {}, { runs, runId: "r2" })
   expect(tools(messages(runs, newId(), ["r1", "r2"]))).toEqual([["q1", "interrupted", {}, null]])
+})
+
+/** A template office whose tool calls first deliver `delivery` to the run and wait for its reply. */
+class DeliverDuringTool extends TemplateOffice {
+  constructor(private readonly delivery: Delivery) {
+    super()
+  }
+
+  override async toolCall(worker: TestWorker, group: string, name: string, args: Record<string, unknown>) {
+    await worker.deliver(this.delivery)
+    const delivered = () => this.replies.some((reply) => reply.id === this.delivery.id)
+    await waitFor(delivered, { timeout: 10_000, what: "the reply" })
+    return await super.toolCall(worker, group, name, args)
+  }
+}
+
+test("a user message mid reply comes before what the model says after reading it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Working", tool_calls: [{ id: "c1", name: "toolbox_stub" }] }, { content: "Rome." })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  const office = new DeliverDuringTool(send("during", "Also mention Rome."))
+  await run(advanceJob(job, { deliver: [send("s1", "Plan the trip.")] }), office, { env: fake.env() })
+  const read = messages(runs, newId(), ["r1"])
+  expect(shown(read)).toEqual([
+    ["user", ["Plan the trip."]],
+    ["assistant", ["Working", "completed"]],
+    ["user", ["Also mention Rome."]],
+    ["assistant", ["Rome."]],
+  ])
+  const times = read.map((m) => m.created_at)
+  expect(times).toEqual([...times].sort())
+})
+
+test("a reply that streams nothing after a user message gets its output after it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Working", hold: true }, { content: "Rome." })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  const office = new TemplateOffice()
+  const worker = await inProcessWorker(advanceJob(job, { deliver: [send("s1", "Plan the trip.")] }), office, {
+    env: fake.env(),
+  })
+  await fake.waitForRequests(1, 30_000)
+  expect(await worker.deliver(send("during", "Also mention Rome."))).toBe(true)
+  await waitFor(() => office.replies.some((reply) => reply.id === "during"), { timeout: 10_000, what: "the send" })
+  fake.release()
+  expect(await worker.wait()).not.toBeNull()
+  expect(fake.requests().length).toBe(2)
+  expect(shown(messages(runs, newId(), ["r1"]))).toEqual([
+    ["user", ["Plan the trip."]],
+    ["assistant", ["Working"]],
+    ["user", ["Also mention Rome."]],
+    ["assistant", ["Rome."]],
+  ])
+})
+
+test("a user message the reply never reads comes after it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Done." })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "do it")])
+  await apply(job, fake, [send("s2", "one more thing")])
+  expect(shown(messages(runs, newId(), ["r1"]))).toEqual([
+    ["user", ["do it"]],
+    ["assistant", ["Done."]],
+    ["user", ["one more thing"]],
+  ])
+})
+
+test("an interrupted reply ends with the interrupted marker", async () => {
+  const fake = await fakeLlm()
+  const runs = tempDir()
+  await interruptMidReply(fake, { content: "Thinking about it" }, { runs })
+  expect(shown(messages(runs, newId(), ["r1"]))).toEqual([
+    ["user", ["one"]],
+    ["assistant", ["Thinking " + INTERRUPTED_TEXT]],
+    ["user", ["queued"]],
+    ["assistant", ["Got it."]],
+  ])
+})
+
+test("a reply interrupted after a tool call ends with the marker after it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Working", tool_calls: [{ id: "c1", name: "toolbox_stub" }] }, { content: "Unused." })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  const office = new DeliverDuringTool({ id: "cut", op: "interrupt", inbox: "messages" })
+  const rec = await run(advanceJob(job, { deliver: [send("s1", "Plan the trip.")] }), office, { env: fake.env() })
+  expect(waitingAt(rec)).toEqual(["chat#1/heard"])
+  expect(shown(messages(runs, newId(), ["r1"]))).toEqual([
+    ["user", ["Plan the trip."]],
+    ["assistant", ["Working", "completed", "[interrupted]"]],
+  ])
+})
+
+test("a reply interrupted before it streamed text shows its cut call and the marker", async () => {
+  const fake = await fakeLlm()
+  const runs = tempDir()
+  await interruptMidReply(fake, { content: "", tool_calls: [{ id: "c1", name: "toolbox_stub" }] }, { runs })
+  const reply = messages(runs, newId(), ["r1"])[1]!
+  expect(reply.role).toBe("assistant")
+  expect(tools([reply])).toEqual([["c1", "interrupted", {}, "Not run: interrupted by the user."]])
+  expect(shown([reply])).toEqual([["assistant", ["interrupted", "[interrupted]"]]])
 })

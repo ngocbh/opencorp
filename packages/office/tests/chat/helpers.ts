@@ -193,10 +193,15 @@ export async function waitingChat(
 }
 
 /** Holds the reply's first model call (answering `held`), sends "queued", interrupts, then releases; returns the
- *  recorder of that run, which answers "queued" as its next turn and waits at the one after. */
-export async function interruptMidReply(fake: FakeLLM, held: ScriptedReply): Promise<Recorder> {
+ *  recorder of that run, which answers "queued" as its next turn and waits at the one after. The run logs under
+ *  `runs` (a temp folder by default) as `r1`. */
+export async function interruptMidReply(
+  fake: FakeLLM,
+  held: ScriptedReply,
+  { runs }: { runs?: string } = {},
+): Promise<Recorder> {
   fake.script({ ...held, hold: true }, { content: "Got it." })
-  const job = await waitingChat(fake)
+  const job = await waitingChat(fake, "chat", {}, { runs })
   const cut = new TemplateOffice()
   const worker = await inProcessWorker(advanceJob(job, { deliver: [send("s1", "one")] }), cut, { env: fake.env() })
   await fake.waitForRequests(1, 30_000)
