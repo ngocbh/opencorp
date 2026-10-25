@@ -9,7 +9,8 @@ import { tokenSha256 } from "../../src/auth/tokens.ts"
 import { CompanyGit } from "../../src/company/git.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { type Owner, writeCompany } from "../../src/company_template/index.ts"
-import { type Env, which } from "../../src/install/launch.ts"
+import { type Env, launch, which } from "../../src/install/launch.ts"
+import * as launchd from "../../src/install/launchd.ts"
 import { CONFIRM, Declined, KEEP, launchers, OffboardError, offboard, REMOVE } from "../../src/install/offboard.ts"
 import { makeDevice, makeHome } from "../../src/install/onboard.ts"
 import { git, gitEnv } from "../company/helpers.ts"
@@ -218,6 +219,35 @@ test("offboard with an identity the company doesnt list skips the device", async
   await offboard(paths.home, ask, { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
   expect(ask.seen.some((line) => line.includes("from @me in the company repo"))).toBe(false)
   expect(subjects(paths.company)).toEqual(["init: create the company"])
+})
+
+test("offboard uninstalls a launchd office through the host", async () => {
+  const dir = tempDir()
+  const paths = await office(path.join(dir, "home"))
+  const run = launch(paths.home, { userHome: dir })
+  const runner = new Runner()
+  const host = makeHost(dir, runner)
+  const plist = launchd.plistPath(run, host)
+  expect(plist.startsWith(dir + path.sep)).toBe(true)
+  fs.mkdirSync(path.dirname(plist), { recursive: true })
+  fs.writeFileSync(plist, launchd.plist(run))
+  fs.writeFileSync(path.join(paths.office, "install.json"), '{"mode": "launchd"}')
+  const ask = new Script()
+  await offboard(paths.home, ask, { yes: true, host, environ: gitOnly(dir) })
+  expect(runner.calls).toContainEqual(["launchctl", "bootout", `gui/501/${launchd.label(run)}`])
+  expect(fs.existsSync(plist)).toBe(false)
+  expect(ask.seen.join("\n")).toContain(`the office's launchd service (${plist})`)
+})
+
+test("an office that wont stop keeps its state", async () => {
+  const dir = tempDir()
+  const paths = await office(path.join(dir, "home"))
+  const host = makeHost(dir, new Runner(), { answers: async () => true })
+  const done = offboard(paths.home, new Script(), { yes: true, host, environ: gitOnly(dir) })
+  await expect(done).rejects.toThrow(OffboardError)
+  await expect(done).rejects.toThrow("still answers")
+  expect(fs.existsSync(path.join(paths.office, "provider.json"))).toBe(true)
+  expect(fs.existsSync(path.join(paths.home, "identity.json"))).toBe(true)
 })
 
 test("offboard reports how opencorp was put on path and keeps the checkout", async () => {

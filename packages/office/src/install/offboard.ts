@@ -7,7 +7,7 @@ import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import { loadRepo } from "../company/loader.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
 import * as fallback from "./fallback.ts"
-import { daemonEnv, defaultHost, type Env, type Host, type Launch, launch } from "./launch.ts"
+import { daemonEnv, defaultHost, type Env, type Host, type Launch, launch, ServiceError } from "./launch.ts"
 import * as launchd from "./launchd.ts"
 import { CLONE, knownIdentity, lexists, removePath, userGit } from "./onboard.ts"
 import type { Prompter } from "./prompts.ts"
@@ -302,7 +302,14 @@ export async function offboard(
     removedOnline = await removeOnline(run, me)
     if (removedOnline) prompter.say(`Removed this device (${me.device}) from @${me.handle} through the office.`)
   }
-  for (const line of await service.uninstall(run, host)) prompter.say(`Stopped: ${line}`)
+  let stopped: string[]
+  try {
+    stopped = await service.uninstall(run, host)
+  } catch (error) {
+    if (!(error instanceof ServiceError)) throw error
+    throw new OffboardError(`${error.message}; nothing else was removed`)
+  }
+  for (const line of stopped) prompter.say(`Stopped: ${line}`)
   const company = path.join(run.home, "company")
   if (found.listed && me && !removedOnline) prompter.say(await removeOffline(run, company, me))
 
