@@ -7,7 +7,12 @@ import { staticNodes, staticPathOf } from "@ngocbh/yian/run"
 export const STARTED: ReadonlySet<string> = new Set(["NodeStarted", "NodeWoken"])
 /** Every frame that ends a node: a case ends routed, a loop or map spawner expanded (yian's events). */
 export const ENDED: ReadonlySet<string> = new Set([
-  "NodeSucceeded", "NodeRouted", "NodeSkipped", "NodeFailed", "NodeExpanded"])
+  "NodeSucceeded",
+  "NodeRouted",
+  "NodeSkipped",
+  "NodeFailed",
+  "NodeExpanded",
+])
 /** The most open nodes kept by default: a run's open nodes are bounded by its widest map. */
 export const CAP = 64
 
@@ -23,16 +28,13 @@ export class OpenNodes {
   /** Folds one event frame in; returns whether the open nodes changed. */
   apply(name: string, data: Record<string, unknown>): boolean {
     const failure = data.failure
-    const nodeId = typeof data.node_id === "string" ? data.node_id
-      : failure !== null && typeof failure === "object" && !Array.isArray(failure)
-        ? (failure as Record<string, unknown>).node_id : undefined
+    const failed = failure !== null && typeof failure === "object" && !Array.isArray(failure)
+      ? (failure as Record<string, unknown>).node_id : undefined
+    const nodeId = typeof data.node_id === "string" ? data.node_id : failed
     if (typeof nodeId !== "string") return false
     if (STARTED.has(name) && !this.ids.has(nodeId)) {
       this.ids.add(nodeId)
-      for (const oldest of this.ids) {
-        if (this.ids.size <= this.cap) break
-        this.ids.delete(oldest)
-      }
+      while (this.ids.size > this.cap) this.ids.delete(this.ids.values().next().value!)
       return true
     }
     if (ENDED.has(name) && this.ids.has(nodeId)) {
