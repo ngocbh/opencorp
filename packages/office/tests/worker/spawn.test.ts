@@ -11,13 +11,14 @@ import { INHERITED_ENV as LAUNCH_ENV } from "../../src/install/launch.ts"
 import { args, killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
-import { type Channel, ChannelClosed, socketChannel } from "../../src/worker/channel.ts"
+import { type Channel, ChannelClosed, type Frame, FrameTooLarge, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
 import type { Job } from "../../src/worker/job.ts"
-import { EXIT_FAILED, EXIT_ORPHANED } from "../../src/worker/main.ts"
+import { EXIT_FAILED, EXIT_ORPHANED, jobTools } from "../../src/worker/main.ts"
 import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
 import {
   INHERITED_ENV,
+  RegistryClosed,
   type SpawnLog,
   spawnProcess,
   Worker,
@@ -27,7 +28,7 @@ import {
 import { fakeLlm } from "../chat/helpers.ts"
 import { cwdOf, envEntries, envNames, isGone, ps, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
-import { base, channelPair, makeJob, makeRegistry, Recorder, runWorker } from "./helpers.ts"
+import { base, channelPair, makeJob, makeRegistry, officeEnd, Recorder, runWorker, writeFiles } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -90,6 +91,58 @@ function script(body: string): { child: ChildProcess; channel: Channel } {
   })
   return { child, channel }
 }
+
+/** How many fds this process has open. */
+function fdCount(): number {
+  return fs.readdirSync(process.platform === "linux" ? "/proc/self/fd" : "/dev/fd").length
+}
+
+// The probe writes the identity (`dev:ino`) of each fd 3-63 it holds, then "end", to the file named by its first
+// argument, then stays alive for its second argument's milliseconds (as channel.test.ts's grandchild test).
+const PROBE = `
+  import fs from "node:fs"
+  const [file, stay] = process.argv.slice(-2)
+  const held = []
+  for (let fd = 3; fd < 64; fd++) {
+    try {
+      const { dev, ino } = fs.fstatSync(fd, { bigint: true })
+      held.push(dev + ":" + ino)
+    } catch {}
+  }
+  fs.writeFileSync(file, [...held, "end"].join(" "))
+  setTimeout(() => {}, Number(stay))
+`
+
+// A company CODE node that runs the probe twice from inside the worker: a positive control handed the worker's
+// channel (fd 3) on purpose, then a grandchild that inherits nothing and stays alive. Returns the grandchild's pid
+// and the channel's identity.
+const PROBE_FLOW =
+  "id: probe\nname: probe\ninput:\n  dir: !str\nnodes:\n  probe:\n    kind: code\n" +
+  '    input: {dir: "${input.dir}"}\n    output: Any\n    code: ./probe.ts:run\noutput: ${probe.output}\n'
+const PROBE_CODE = `import { spawn } from "node:child_process"
+import fs from "node:fs"
+import path from "node:path"
+
+const FLAGS = ${JSON.stringify(BUN_FLAGS)}
+const PROBE = ${JSON.stringify(PROBE)}
+
+export async function run(inputs: { dir: string }) {
+  const { dev, ino } = fs.fstatSync(3, { bigint: true })
+  const probe = (file: string, stay: string, stdio: any) =>
+    spawn(process.execPath, [...FLAGS, "-e", PROBE, path.join(inputs.dir, file), stay], { stdio })
+  const control = probe("fds-control", "0", ["ignore", "ignore", "ignore", 3])
+  await new Promise((resolve) => control.once("exit", resolve).once("error", resolve))
+  const grandchild = probe("fds", "60000", "ignore")
+  // The thread must not wait on it.
+  grandchild.unref()
+  // Returns once the grandchild has listed its fds, so the group kill after the worker's exit can't come first.
+  const fds = path.join(inputs.dir, "fds")
+  for (let i = 0; i < 750 && !(fs.existsSync(fds) && fs.readFileSync(fds, "utf8").endsWith("end")); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  return { pid: grandchild.pid, channel: dev + ":" + ino }
+}
+`
 
 /** Handlers granting group `g`, whose tool `big` returns 5,000 characters. */
 function bigTool(): Recorder {
@@ -581,4 +634,176 @@ test("a record that cannot be written leaves no worker behind", async () => {
   await expect(channel!.send({ type: "pad" })).rejects.toThrow("this end stopped sending")
   expect(registry.get("s1")).toBeUndefined()
   expect(store.listWorkers()).toEqual([])
+})
+
+test("a model ask user call reaches the office", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const registry = makeRegistry(openStore())
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fake.script(
+    {
+      content: "",
+      tool_calls: [{ name: "ask_user", arguments: { question: "Which city?", options: ["Paris", "Rome"] } }],
+    },
+    { content: "Booked Paris." },
+  )
+  const job = makeJob(where, "flows/ask.yaml")
+  const rec = await runWorker(registry, job, new Recorder({ answers: ["Paris"] }), sessionDir, { env: fake.env() })
+  expect(rec.asked).toHaveLength(1)
+  const [asked] = rec.asked
+  expect([asked!.question, asked!.node_id, asked!.options]).toEqual(["Which city?", null, ["Paris", "Rome"]])
+  expect(rec.outcome?.output).toBe("Booked Paris.")
+  expect(JSON.stringify(fake.requests().at(-1)?.messages)).toContain("Paris")
+})
+
+test("an ask node asks through the same stub", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const registry = makeRegistry(openStore())
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fake.script({ content: "hello" })
+  const job = makeJob(where, "flows/chat.yaml", { inputs: {} })
+  const rec = await runWorker(registry, job, new Recorder({ answers: ["hi there"] }), sessionDir, { env: fake.env() })
+  expect(rec.asked).toHaveLength(1)
+  const [asked] = rec.asked
+  expect([asked!.question, asked!.node_id]).toEqual(["you> ", "ask"])
+  expect(rec.outcome?.output).toBe("hello")
+  expect(JSON.stringify(fake.requests().at(-1)?.messages)).toContain("hi there")
+})
+
+test.each(["chat", "resume"] as const)("every job kind gets the ask user stub [%s]", async (kind) => {
+  const groups = { toolbox: [{ name: "shout", description: "", parameters: { type: "object", properties: {} } }] }
+  const rpc = await officeEnd(new Recorder())
+  const tools = jobTools(makeJob(base(), "flows/echo.yaml", { kind, groups }), rpc)
+  expect(Object.keys(tools)).toEqual(["toolbox", "ask"])
+  // The groups are spread in under their names, which the return type doesn't list.
+  const { toolbox } = tools as typeof tools & { toolbox?: { name: string }[] }
+  expect(toolbox?.map((tool) => tool.name)).toEqual(["shout"])
+  expect(typeof tools.ask).toBe("function")
+})
+
+test("a start frame that cannot be sent leaves nothing behind", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const started: ChildProcess[] = []
+  const registry = makeRegistry(store, {
+    maxFrame: 2000,
+    spawn: (dir, env, options) => {
+      const out = spawnProcess(dir, env, options)
+      started.push(out.child)
+      return out
+    },
+  })
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const before = fdCount()
+  const job = makeJob(where, undefined, { inputs: { message: "x".repeat(5000) } })
+  await expect(registry.spawn(job, sessionDir, new Recorder())).rejects.toBeInstanceOf(FrameTooLarge)
+  expect(started).toHaveLength(1)
+  const child = started[0]!
+  expect(child.exitCode !== null || child.signalCode !== null).toBe(true)
+  expect(registry.get("s1")).toBeUndefined()
+  expect(store.listWorkers()).toEqual([])
+  await waitFor(() => fdCount() === before, { timeout: 5000, what: "the fds closed" })
+  fake.script({ content: "second try" })
+  const rec = await runWorker(makeRegistry(store), makeJob(where), new Recorder(), sessionDir, { env: fake.env() })
+  expect(rec.outcome?.output).toBe("second try")
+})
+
+test("close during a failing start returns promptly", async () => {
+  const where = base()
+  const store = openStore()
+  const registry = makeRegistry(store, { maxFrame: 2000 })
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const job = makeJob(where, undefined, { inputs: { message: "x".repeat(5000) } })
+  const spawning = registry.spawn(job, sessionDir, new Recorder())
+  spawning.catch(() => {})
+  expect(registry.get("s1")).toBeDefined()
+  const began = performance.now()
+  await registry.close("s1", 2000)
+  expect(performance.now() - began).toBeLessThan(1500)
+  await expect(spawning).rejects.toBeInstanceOf(FrameTooLarge)
+  expect(registry.get("s1")).toBeUndefined()
+  expect(store.listWorkers()).toEqual([])
+})
+
+test("a closed registry refuses new workers", async () => {
+  const where = base()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  await registry.closeAll()
+  await expect(registry.spawn(makeJob(where), sessionDir, new Recorder())).rejects.toBeInstanceOf(RegistryClosed)
+  expect(registry.get("s1")).toBeUndefined()
+  expect(store.listWorkers()).toEqual([])
+  expect(fs.existsSync(path.join(sessionDir, "worker.log"))).toBe(false)
+})
+
+test("the worker log is private and never followed through a link", async () => {
+  const where = base()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 })
+  const target = path.join(where.root, "elsewhere.txt")
+  fs.writeFileSync(target, "untouched\n")
+  fs.symlinkSync(target, path.join(sessionDir, "worker.log"))
+  await expect(registry.spawn(makeJob(where), sessionDir, new Recorder())).rejects.toMatchObject({ code: "ELOOP" })
+  expect(fs.readFileSync(target, "utf8")).toBe("untouched\n")
+  expect(registry.get("s1")).toBeUndefined()
+  expect(store.listWorkers()).toEqual([])
+})
+
+test("a key goes to the base url beside it and stays out of the run log", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const registry = makeRegistry(openStore())
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const key = "sk-test-base-url-0123456789"
+  fake.script({ content: "hello" })
+  const job = makeJob(where, undefined, {
+    llm_config: { provider: "vllm", model: "stub", base_url: `${fake.baseUrl}/v1`, api_key: key },
+  })
+  const rec = await runWorker(registry, job, new Recorder(), sessionDir, { env: {} })
+  expect(rec.outcome?.output).toBe("hello")
+  expect(fake.authorizations()).toEqual([`Bearer ${key}`])
+  const log = fs.readFileSync(job.log, "utf8")
+  expect(log).not.toContain(key)
+  expect(log).toContain(`${fake.baseUrl}/v1`)
+})
+
+test("a grandchild of a spawned worker does not hold the channel open", async () => {
+  const where = base()
+  writeFiles(where.pin, { "flows/probe.yaml": PROBE_FLOW, "flows/probe.ts": PROBE_CODE })
+  const fake = await fakeLlm()
+  const registry = makeRegistry(openStore())
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  // Notes the grandchild with its start time as soon as its pid arrives, so the test can kill it whatever happens.
+  const grand: { pid: number; started: number | null }[] = []
+  class Probed extends Recorder {
+    override result(worker: unknown, frame: Frame): void {
+      super.result(worker, frame)
+      // An int crosses the channel as a bigint.
+      const pid = (frame.output as { pid?: unknown } | null)?.pid
+      if (typeof pid === "bigint") grand.push({ pid: Number(pid), started: startTime(Number(pid)) })
+    }
+  }
+  onTestFinished(() => {
+    for (const { pid, started } of grand) {
+      if (started !== null && sameProcess(pid, started)) process.kill(pid, "SIGKILL")
+    }
+  })
+  const job = makeJob(where, "flows/probe.yaml", { inputs: { dir: sessionDir } })
+  const rec = await runWorker(registry, job, new Probed(), sessionDir, { env: fake.env() })
+  // The office saw the end of the stream while the grandchild lived; the group was killed only after.
+  expect(rec.returncode).toBe(0)
+  const { pid, channel } = rec.outcome?.output as { pid: bigint; channel: string }
+  expect(grand.map((entry) => entry.pid)).toEqual([Number(pid)])
+  expect(fs.readFileSync(path.join(sessionDir, "fds-control"), "utf8").split(" ")).toContain(channel)
+  const listed = fs.readFileSync(path.join(sessionDir, "fds"), "utf8")
+  expect(listed.endsWith("end")).toBe(true)
+  expect(listed.split(" ")).not.toContain(channel)
+  expect(grand[0]!.started).not.toBeNull()
+  await waitFor(() => isGone(Number(pid), grand[0]!.started), { timeout: 10_000, what: "the grandchild to go" })
 })
