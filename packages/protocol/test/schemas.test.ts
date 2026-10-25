@@ -308,6 +308,17 @@ test("parts are a discriminated union", () => {
   expect((issues[0] as { note?: string }).note).toBe("No matching discriminator")
 })
 
+test("message and part ids may be derived from the run log", () => {
+  const data = load(FIXTURES, "Message") as { id: string; parts: { id: string }[] }
+  data.id = "01JA1W0000000000000000000A:000000000012"
+  data.parts[0].id = "01JA1W0000000000000000000A:chat#0/reply:3"
+  const message = Schemas.Message.parse(data)
+  expect([message.id, message.parts[0].id]).toEqual(
+    ["01JA1W0000000000000000000A:000000000012", "01JA1W0000000000000000000A:chat#0/reply:3"])
+  expect(Schemas.Message.safeParse(withValue(data, ["id"], "")).success).toBe(false)
+  expect(Schemas.Message.safeParse(withValue(data, ["parts", 0, "id"], "")).success).toBe(false)
+})
+
 test("setup prompts are a discriminated union", () => {
   expect(Schemas.SetupPrompt.parse(load(FIXTURES, "SetupChoose")).type).toBe("choose")
   const issues = Schemas.SetupPrompt.safeParse({ type: "shout", text: "hi" }).error?.issues ?? []

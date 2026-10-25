@@ -80,15 +80,18 @@ export const Session = z.strictObject({
 })
 export type Session = z.input<typeof Session>
 
+/** A transcript item's id: a ULID, or one derived from the run log record it comes from. */
+const ItemId = z.string().min(1)
+
 export const TextPart = z.strictObject({
-  id: Ulid,
+  id: ItemId,
   type: z.literal("text"),
   text: z.string(),
 })
 export type TextPart = z.input<typeof TextPart>
 
 export const FilePart = z.strictObject({
-  id: Ulid,
+  id: ItemId,
   type: z.literal("file"),
   path: z.string(),
   mime: z.string(),
@@ -96,7 +99,7 @@ export const FilePart = z.strictObject({
 export type FilePart = z.input<typeof FilePart>
 
 export const ToolPart = z.strictObject({
-  id: Ulid,
+  id: ItemId,
   type: z.literal("tool"),
   call_id: z.string(),
   tool: z.string(),
@@ -109,7 +112,7 @@ export type ToolPart = z.input<typeof ToolPart>
 
 /** A turn that failed: why, in words the owner can act on. Never holds a secret. */
 export const ErrorPart = z.strictObject({
-  id: Ulid,
+  id: ItemId,
   type: z.literal("error"),
   message: z.string(),
 })
@@ -119,7 +122,7 @@ export const Part = z.discriminatedUnion("type", [TextPart, FilePart, ToolPart, 
 export type Part = z.input<typeof Part>
 
 export const Message = z.strictObject({
-  id: Ulid,
+  id: ItemId,
   session_id: Ulid,
   role: z.enum(["user", "assistant"]),
   /**
