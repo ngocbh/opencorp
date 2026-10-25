@@ -252,7 +252,7 @@ export function buildOffice(
     const codex = (office.codex = new CodexSessions(office, hooks, { log: log("WARNING", "opencorp.harness.session") }))
     // No chat harness yet: the Codex sessions are the card actor, on the same hooks.
     office.harness = codex
-    // Before loadExtensions adds the cards' sweep, so the sweep finds the restored sessions live.
+    // Before loadExtensions adds the cards' sweep, so the sweep sees the statuses restore settled.
     office.onStart.push(() => codex.restore())
     // Bounded: the sessions close in parallel, each kill waiting at most 5 s and each queue at most stopWaitMs.
     office.onStop.push(() => codex.closeAll())

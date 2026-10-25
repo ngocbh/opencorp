@@ -591,6 +591,8 @@ test("build office restores codex sessions on start before the cards sweep", asy
 test("office stop waits for the send backs queued on the office harness and returns", async () => {
   const rec = recordingGit(tempDir())
   const office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  let release: (() => void) | undefined
+  let stopping: Promise<unknown> | undefined
   try {
     spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
     register(office)
@@ -599,7 +601,6 @@ test("office stop waits for the send backs queued on the office harness and retu
     const discussion = [{ role: "user" as const, text: "why?" }]
     const q1 = office.store.addQuestion(question(s.id, { source: "ask_user", discussion }))
     const q2 = office.store.addQuestion(question(s.id, { source: "ask_user", discussion }))
-    let release!: () => void
     const gate = new Promise<void>((r) => (release = r))
     const codex = office.codex!
     const answer = codex.answer.bind(codex)
@@ -615,10 +616,10 @@ test("office stop waits for the send backs queued on the office harness and retu
     const order: string[] = []
     void first.then(() => order.push("first"))
     void second.then(() => order.push("second"))
-    const stopping = office.stop().then(() => order.push("stopped"))
+    stopping = office.stop().then(() => order.push("stopped"))
     await sleep(200)
     expect(order).toEqual([])
-    release()
+    release!()
     await Promise.race([
       stopping,
       sleep(5000).then(() => {
@@ -631,8 +632,14 @@ test("office stop waits for the send backs queued on the office harness and retu
       expect([got.status, got.answer_kind, got.answered_by]).toEqual(["answered", "sent_back", "ngocbh"])
     }
   } finally {
-    // Stopped once already, above.
-    office.store.close()
+    // A failure before the stop must not leave the first send-back on the gate or the office running; the happy
+    // path stops it once.
+    release?.()
+    try {
+      await (stopping ?? office.stop())
+    } finally {
+      office.store.close()
+    }
   }
 })
 

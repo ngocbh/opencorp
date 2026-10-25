@@ -195,10 +195,10 @@ export class CodexSessions implements CardActor {
       throw new HarnessError(409, "not_open", `question ${questionId} is ${question.status}`)
     for (const refusal of this.hooks.fire("answerCheck", question, value, kind))
       if (refusal) throw new HarnessError(422, "invalid_answer", String(refusal))
-    const session = this.store.getSession(question.session_id)
-    if (session?.harness !== "codex") {
+    const session = this.store.getSession(question.session_id)!
+    if (session.harness !== "codex") {
       // Not a Codex card: stored as the chat harness stores an answer with no live run to hand it to.
-      const owner = by || (session ? await this.opener(session) : null)
+      const owner = by || (await this.opener(session))
       try {
         return this.store.answerQuestion(questionId, value, kind, owner)
       } catch (error) {
