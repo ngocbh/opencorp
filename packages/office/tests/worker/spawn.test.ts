@@ -253,7 +253,7 @@ test("a reply that cannot be sent becomes a failed reply", async () => {
   const worker = workerOver(exitedChild(), office, handlers, job)
   await worker.start()
   expect((await far.recv()).type).toBe("start")
-  await far.send({ type: "tool_call", id: 7, group: "g", name: "big" })
+  await far.send({ type: "tool_call", id: 7, group: "g", name: "big", call_id: "r1/n/1/0" })
   const reply = await far.recv()
   expect([reply.type, reply.id, reply.error, reply.message]).toEqual([
     "tool_result",
@@ -270,7 +270,7 @@ test("a request without an id is answered without raising", async () => {
   const worker = workerOver(exitedChild(), office, handlers, job)
   await worker.start()
   expect((await far.recv()).type).toBe("start")
-  await far.send({ type: "tool_call", group: "g", name: "missing" })
+  await far.send({ type: "tool_call", group: "g", name: "missing", call_id: "r1/n/1/0" })
   const reply = await far.recv()
   expect([reply.type, reply.id, reply.error, reply.message]).toEqual([
     "tool_result",

@@ -73,6 +73,8 @@ export const Session = z.strictObject({
    * earlier stretches. Null for a first stretch.
    */
   parent_session_id: Ulid.nullable().default(null),
+  /** Finished replies: the next fresh run's `turns` input; `0` means no reply has finished yet. */
+  turns: z.int().min(0).default(0),
   created_at: Timestamp,
   updated_at: Timestamp,
 })

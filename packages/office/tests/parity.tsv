@@ -339,9 +339,20 @@ protocol/test_schema.py	ported	packages/protocol/test/schemas.test.ts	zod schema
 protocol/test_schema.py::test_schema_is_valid	changed	packages/protocol/test/schemas.test.ts::schema is valid	zod is the source; checks every schema converts to JSON Schema (D6)	O0-6
 questions/test_ask.py	ported	packages/office/tests/questions/ask.test.ts	—	O3-4
 questions/test_ask.py::test_a_human_input_call_keeps_its_node_pages_and_schema	changed	packages/office/tests/questions/ask.test.ts::an ask node call keeps its node pages and schema	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask	O3-17
-questions/test_ask.py::test_a_re_asked_human_input_finds_its_stored_question	changed	packages/office/tests/questions/ask.test.ts::an ask node asked again finds its stored question	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask	O3-17
+questions/test_ask.py::test_a_model_call_stores_a_flat_question_and_returns_the_formatted_answer	changed	packages/office/tests/questions/ask.test.ts::a model call stores a flat question and returns the formatted answer	yian #1088: the handler stores and returns pending; the answer goes back by complete; stale comes from a closed call; reuse is by call_id	O4a-0b
+questions/test_ask.py::test_a_question_that_goes_stale_cancels_its_work_item	changed	packages/office/tests/questions/ask.test.ts::a question that goes stale cancels its work item	yian #1088: the handler stores and returns pending; the answer goes back by complete; stale comes from a closed call; reuse is by call_id	O4a-0b
+questions/test_ask.py::test_a_question_that_goes_stale_raises	changed	packages/office/tests/questions/ask.test.ts::a question that goes stale raises	yian #1088: the handler stores and returns pending; the answer goes back by complete; stale comes from a closed call; reuse is by call_id	O4a-0b
+questions/test_ask.py::test_a_re_asked_human_input_finds_its_stored_question	changed	packages/office/tests/questions/ask.test.ts::an ask node asked again finds its stored question	yian #1078, #1088: a flow asks with a TOOL ask node (source ask), and a question is reused by its call id	O4a-0b
+questions/test_ask.py::test_a_store_error_after_the_answer_does_not_cancel_the_work_item	changed	packages/office/tests/questions/ask.test.ts::a store error after the answer does not cancel the work item	yian #1088: the handler stores and returns pending; the answer goes back by complete; stale comes from a closed call; reuse is by call_id	O4a-0b
+questions/test_ask.py::test_an_answer_committed_just_before_close_is_returned	dropped	—	yian #1088: nothing in the office waits; yian holds the wait and the answer goes back by complete	O4a-0b
 questions/test_ask.py::test_an_answer_from_another_process_is_found_by_polling	dropped	—	design §3.3: only the daemon writes the store; the 30 s poll goes and waiters wake on its after-commit events	O3-8a
-questions/test_ask.py::test_the_handler_passes_composers_check_and_takes_its_calls	changed	packages/office/tests/questions/ask.test.ts::the handler passes composers check and takes its calls	yian #1078: yian's ToolSet hands the ask slot camelCase fields, adapted to an AskRequest as askUserStub does; the flow side is a TOOL ask node, so the source is ask	O3-4
+questions/test_ask.py::test_an_answer_that_lands_between_the_check_and_the_wait_still_wakes_ask	dropped	—	yian #1088: nothing in the office waits; yian holds the wait and the answer goes back by complete	O4a-0b
+questions/test_ask.py::test_ask_after_close_raises_and_stores_nothing	dropped	—	yian #1088: nothing in the office waits; yian holds the wait and the answer goes back by complete	O4a-0b
+questions/test_ask.py::test_ask_stores_then_blocks_until_answered_and_marks_consumed	changed	packages/office/tests/questions/ask.test.ts::ask stores then blocks until answered and marks consumed	yian #1088: the handler stores and returns pending; the answer goes back by complete; stale comes from a closed call; reuse is by call_id	O4a-0b
+questions/test_ask.py::test_close_leaves_the_open_question_and_its_work_item_as_they_are	dropped	—	yian #1088: nothing in the office waits; yian holds the wait and the answer goes back by complete	O4a-0b
+questions/test_ask.py::test_close_wakes_every_waiting_ask	dropped	—	yian #1088: nothing in the office waits; yian holds the wait and the answer goes back by complete	O4a-0b
+questions/test_ask.py::test_the_handler_answers_through_the_workers_stub	changed	packages/office/tests/questions/ask.test.ts::the handler answers through the workers stub	yian #1088: the handler stores and returns pending; the answer goes back by complete; stale comes from a closed call; reuse is by call_id	O4a-0b
+questions/test_ask.py::test_the_handler_passes_composers_check_and_takes_its_calls	changed	packages/office/tests/questions/ask.test.ts::the handler passes composers check and takes its calls	yian #1088: the handler gets the call id and stores once per call; yian's ToolSet hands the ask slot camelCase fields, adapted to an AskRequest as askUserStub does; the flow side is a TOOL ask node, so the source is ask	O4a-0b
 questions/test_cards.py	open	—	split: O3-9 → O4a-4 → O4a-9; O3-9's tests are in packages/office/tests/questions/cards.test.ts	O4a-9
 questions/test_checker.py	ported	packages/office/tests/questions/checker.test.ts	—	O3-7
 questions/test_checker.py::test_a_single_answer_that_does_not_fit_is_refused[entry4-2.0-a whole number]	changed	packages/office/tests/questions/checker.test.ts::a whole float is a whole number	plain JSON numbers (D15's rule applied to answers; design §1.4): JS can't tell 2.0 from 2, so a whole float is a whole number; 2.5 is still refused	O3-7
@@ -454,6 +465,10 @@ testing/test_codex_spike.py	dropped	—	codex_spike.py stays a dev-only script, 
 testing/test_fake_codex.py	ported	packages/office/tests/testing/fake_codex.test.ts	—	O3-10
 tools/company/test_draft.py	ported	packages/office/tests/tools/company/draft.test.ts	—	O2-16b
 tools/company/test_work.py	ported	packages/office/tests/tools/company/work.test.ts	—	O2-22b
+tools/company/test_work.py::test_ask_manager_cancels_its_work_item_when_its_question_expires	changed	packages/office/tests/tools/company/work.test.ts::ask manager cancels its work item when its question expires	yian #1088: ask_manager stores its question and work item and replies pending; the item is closed or cancelled when the answer or expiry is stored	O4a-0b
+tools/company/test_work.py::test_ask_manager_closes_its_work_item_on_any_answer[interrupted]	changed	packages/office/tests/tools/company/work.test.ts::ask manager closes its work item on any answer [interrupted]	yian #1088: ask_manager stores its question and work item and replies pending; the item is closed or cancelled when the answer or expiry is stored	O4a-0b
+tools/company/test_work.py::test_ask_manager_closes_its_work_item_on_any_answer[sent_back]	changed	packages/office/tests/tools/company/work.test.ts::ask manager closes its work item on any answer [sent_back]	yian #1088: ask_manager stores its question and work item and replies pending; the item is closed or cancelled when the answer or expiry is stored	O4a-0b
+tools/company/test_work.py::test_ask_manager_opens_a_work_item_and_returns_the_formatted_answer	changed	packages/office/tests/tools/company/work.test.ts::ask manager opens a work item and returns the formatted answer	yian #1088: ask_manager stores its question and work item and replies pending; the item is closed or cancelled when the answer or expiry is stored	O4a-0b
 tools/test_build.py	ported	packages/office/tests/tools/build.test.ts	—	O2-22b
 tools/test_work_items.py	ported	packages/office/tests/tools/work_items.test.ts	—	O2-22a
 worker/test_channel.py	ported	packages/office/tests/worker/channel.test.ts,packages/office/tests/worker/codec.test.ts	—	O3-1
@@ -922,14 +937,20 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/profile/store.test.ts::a lone surrogate is a range error and writes nothing	design §3 yian table: Buffer.from replaces a lone surrogate, where Python's encode refused it	O2-23
 —	new	packages/office/tests/profile/store.test.ts::python whitespace collapses and blanks like python	design §6 rule 12: the subject collapses Python's whitespace set, which JS \s and trim() don't match	O2-23
 —	new	packages/office/tests/profile/store.test.ts::write refuses a person folder that resolves elsewhere	design §6 (writes never through a symlink): the realpath check, which Python's test reached only by either error	O2-23
+—	new	packages/office/tests/questions/ask.test.ts::a call id from another run is refused	§6 rule 9; O4a-0a security handoff	O4a-0b
+—	new	packages/office/tests/questions/ask.test.ts::a closed call answers interrupted or goes stale [%s]	4a-revision §1 closed calls; D38 for timed_out	O4a-0b
+—	new	packages/office/tests/questions/ask.test.ts::a closed call interrupts an ask manager question and closes its item	4a-revision §1: an Esc closes the agent's call; ask_manager's item is closed as Python did	O4a-0b
+—	new	packages/office/tests/questions/ask.test.ts::a closed call of another run or an answered question changes nothing	§6 rule 9	O4a-0b
+—	new	packages/office/tests/questions/ask.test.ts::a closed call on a flow question goes stale	4a-revision §1	O4a-0b
+—	new	packages/office/tests/questions/ask.test.ts::a handler called twice with one call id stores one question	4a-revision §1: yian requires idempotent handlers by call_id	O4a-0b
 —	new	packages/office/tests/questions/ask.test.ts::a malformed request is refused without its values	O0-6 and design §6 rule 7: no raw ZodError and no request values in an error	O3-8a
-—	new	packages/office/tests/questions/ask.test.ts::a repeated question id is refused	a DuplicateKey that isnt a re-asked node is the caller's error (Python failed on None.id)	O3-8a
-—	new	packages/office/tests/questions/ask.test.ts::a work item that cannot be cancelled is logged by its error name	design §6: logs carry an error's type only	O3-8a
-—	new	packages/office/tests/questions/ask.test.ts::an aborted ask rejects and leaves its question and work item	design §3.3 (tool calls race their AbortSignal; a raced ask drops its waiter); DeepSeek's ask(signal)	O3-8a
-—	new	packages/office/tests/questions/ask.test.ts::an answer that lands just before the abort is left answered	design §3.3 (a raced ask drops its waiter); an answer no one receives stays answered	O3-8a
-—	new	packages/office/tests/questions/ask.test.ts::an ask whose signal is already aborted stores nothing	design §3.3 (tool calls race their AbortSignal)	O3-8a
+—	new	packages/office/tests/questions/ask.test.ts::a repeated question id is refused	a question id already stored under another call is the caller's error; reuse is by call_id (4a-revision §1)	O4a-0b
+—	new	packages/office/tests/questions/ask.test.ts::a work item that cannot be cancelled is logged by its error name	design §6: logs carry an error's type only; the ask_manager item's ending is a store listener now	O4a-0b
+—	new	packages/office/tests/questions/ask.test.ts::an ask node from a real flow stores its pages	yian hands a TOOL ask's pages parsed, multiSelect; the protocol page wants multi_select	O4a-0b
 —	new	packages/office/tests/questions/ask.test.ts::carried returns the expired questions discussion or nothing	Answers.carried had no Python test (design §3.2 API)	O3-8a
-—	new	packages/office/tests/questions/ask.test.ts::waiters that stop leave no listeners	design §3.3: a promise per waiter, removed with its abort listener when it stops waiting	O3-8a
+—	new	packages/office/tests/questions/ask.test.ts::reconcile marks an unlisted question stale and stores an unstored call	4a-revision §1, design §8.4: restore reconciles open questions against pendingCalls	O4a-0b
+—	new	packages/office/tests/questions/ask.test.ts::reconcile rebuilds an ask node call from its recorded inputs	design §8.4; yian records a TOOL ask's inputs, not its title or answer schema	O4a-0b
+—	new	packages/office/tests/questions/ask.test.ts::reconcile skips calls of another run and logs a call it cannot store by its error name	§6 rules 9 and 13	O4a-0b
 —	new	packages/office/tests/questions/cards.test.ts::a dismissed carry over is cleared	card behaviour through a stand-in actor (rule 1); the chat run of `test_a_dismissed_carry_over_stays_out_of_the_answer` is O4a-4's	O3-9
 —	new	packages/office/tests/questions/cards.test.ts::a manager question is stopped by answering it as who clicked	card behaviour through a stand-in actor (rule 1); the chat runs of `test_a_manager_question_is_stopped_by_answering_it` and `test_stopping_a_manager_question_is_credited_to_who_clicked` are O4a-4's	O3-9
 —	new	packages/office/tests/questions/cards.test.ts::a secret pages answer is never in a refusal or a log line	design §6 rules 1 and 13: no answer value in errors or logs	O3-9
@@ -1023,6 +1044,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/secrets.test.ts::write private makes a 0600 file and replaces a symlink without following it	§6 rule 6	O1-1
 —	new	packages/office/tests/store/close.test.ts::a store cannot close inside a transaction	close() refuses inside a transaction (final review)	O1-2
 —	new	packages/office/tests/store/migrate.test.ts::every migration file is in the ladder	the binary embeds the migrations (§2.7, §5.1)	O1-2
+—	new	packages/office/tests/store/migrate.test.ts::the office migrations bring a fresh database to version 2	design §5.1: migration 0002 adds questions.call_id and sessions.turns	O4a-0b
 —	new	packages/office/tests/store/open.test.ts::a fifo at the store path is refused	never blocks on or follows a non-file (§6 rule 6)	O1-2
 —	new	packages/office/tests/store/open.test.ts::a symlink at the store path is refused	O_EXCL and O_NOFOLLOW pre-create (§5.1, §6 rule 6)	O1-2
 —	new	packages/office/tests/store/open.test.ts::an existing store file is tightened to 0600	§5.1, §6 rule 6	O1-2
@@ -1030,13 +1052,21 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/store/open.test.ts::the database files are 0600	§5.1, §6 rule 6	O1-2
 —	new	packages/office/tests/store/outbox.test.ts::a failure outside tx run still blocks later writes	§5.1	O1-2
 —	new	packages/office/tests/store/outbox.test.ts::new ids are monotonic ULIDs	§5.1	O1-2
+—	new	packages/office/tests/store/questions.test.ts::a question is found by its call id	design §5.1: a question is stored and reused by its yian call id (0002)	O4a-0b
+—	new	packages/office/tests/store/questions.test.ts::a questions call id cannot be changed	design §5.1: a question is keyed by its yian call id, so the id is fixed once stored	O4a-0b
+—	new	packages/office/tests/store/questions.test.ts::a second question with one call id is refused	design §5.1: questions.call_id is unique, nullable (0002)	O4a-0b
 —	new	packages/office/tests/store/questions.test.ts::an answer that isnt json is refused	a value JSON can't hold is a StoreError, never a NULL answer or a raw error quoting it (§6 rule 13)	O1-4
 —	new	packages/office/tests/store/questions.test.ts::questions are read by a long run id list in one statement	one json_each bind (O1-3's getRuns); Python's chunked read was pinned by store/test_runs.py	O1-4
 —	new	packages/office/tests/store/runs.test.ts::a runs config is recorded at spawn	resume or fresh run reads it (§5.1, §8.4)	O1-3
 —	new	packages/office/tests/store/runs.test.ts::an end time needs an end reason	§5.1	O1-3
 —	new	packages/office/tests/store/sessions.test.ts::a field with no column needs a store migration	CLAUDE.md's store-migration rule (§5.1)	O1-3
+—	new	packages/office/tests/store/sessions.test.ts::a session counts its turns from zero	design §5.1, 4a-revision §1: sessions.turns counts finished replies (0002)	O4a-0b
 —	new	packages/office/tests/tools/build.test.ts::the office tool specs equal the saved copy	D20 (Python's compare-only tools/test_spec_dump.py: all four groups through groupSpecs equal tests/fixtures/tool_specs.json)	O2-22b
+—	new	packages/office/tests/tools/company/work.test.ts::an office stop leaves an ask manager item open	O2-22b's third ending: nothing waits, D3 spec of Python's AnswersClosed	O4a-0b
+—	new	packages/office/tests/tools/company/work.test.ts::ask manager called twice with one call id stores one question and one work item	4a-revision §1	O4a-0b
+—	new	packages/office/tests/tools/company/work.test.ts::ask manager replies pending through the office handlers	4a-revision §1: the office tool_call handler may reply pending	O4a-0b
 —	new	packages/office/tests/tools/company/work.test.ts::ask manager titles its work item with the question on one line	Python's TITLE_CHARS rule, untested there: whitespace collapsed, 80 code points, "Question" fallback	O2-22b
+—	new	packages/office/tests/tools/company/work.test.ts::ask manager without a call id stores nothing	§6 rule 9: the worker's call id is required	O4a-0b
 —	new	packages/office/tests/tools/company/work.test.ts::ask manager without an on question callback stores nothing	plan choice 2: no onQuestion rejects before anything is stored	O2-22b
 —	new	packages/office/tests/tools/company/work.test.ts::company tool arguments of the wrong type store nothing	design §6 rule 9 (a worker tool call's args are untrusted: only a string id reaches SQLite; no value in errors)	O2-22b
 —	new	packages/office/tests/tools/work_items.test.ts::a work item id that is not a string is no work item	plan decision 7; design §6 rule 9 (a worker tool call's args are untrusted: only a string id reaches SQLite)	O2-22a
@@ -1113,6 +1143,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/rpc.test.ts::a remote tool sends its call id	yian #1088: a tool_call frame carries the call id the office answers a pending call by	O4a-0a
 —	new	packages/office/tests/worker/rpc.test.ts::a reply that cannot be sent becomes a failed reply	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::a request ends when its signal aborts	P1: a stop ends a node waiting on the office	O3-3
+—	new	packages/office/tests/worker/rpc.test.ts::a request whose call id is another runs is refused	§6 rule 9: a worker can't name another run's call (O4a-0a security handoff)	O4a-0b
 —	new	packages/office/tests/worker/rpc.test.ts::a thrown non error value is a failed reply	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::an error whose name or message cannot be read is a failed reply	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::ask user passes the handler only the six keys	design §2.4 (RS I6), §6 rule 9	O3-2
@@ -1120,6 +1151,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/rpc.test.ts::object arguments keep a proto key	design §2.4: a model-written argument reaches the office as written (Python's dict kept the key)	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::object method names are never tools or stores	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::reply to never rejects	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::the office handlers get the call id	yian #1076: host handlers are idempotent by call_id, so the office handlers get it (4a-revision §1)	O4a-0b
 —	new	packages/office/tests/worker/spawn.test.ts::a closed registry refuses new workers	O2-5 handoff: the worker registry refuses new starts once closed (a request handler can still run during the stop's 5 s handler wait)	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::a deliver reply frame without its fields is a bad frame	design §2.4: a frame the office can't read closes the channel, as Python's reader did	O4a-0a
 —	new	packages/office/tests/worker/spawn.test.ts::a fifo planted as the worker log is refused at once	design §2.4, §6 rule 6: the worker log is a regular file opened without blocking	O3-4

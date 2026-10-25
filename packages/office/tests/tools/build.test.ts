@@ -50,7 +50,7 @@ function ctx(): ToolContext & { monitor: Monitor; session: NonNullable<ToolConte
     repo: loadRepo(company()),
     session: s,
     runId: "run-1",
-    onQuestion: async (q) => q,
+    onQuestion: (q) => q,
     monitor: new FakeMonitor() as unknown as Monitor,
     workspace: NO_WORKSPACE,
   }
@@ -144,7 +144,7 @@ test("the office tool specs equal the saved copy", () => {
     repo: loadRepo(root),
     session: s,
     runId: "run-1",
-    onQuestion: async (q) => q,
+    onQuestion: (q) => q,
     monitor,
     workspace: NO_WORKSPACE,
   }

@@ -3,20 +3,21 @@ import { Comment, Question, WorkItem, now, validationMessage } from "@opencorp/p
 import type { z } from "zod"
 import type { CompanyRepo } from "../../company/loader.ts"
 import { repr } from "../../perm/redact.ts"
-import type { Carried, OnQuestion } from "../../questions/ask.ts"
-import { formatAnswer } from "../../questions/format.ts"
+import { type Carried, type OnQuestion, reply } from "../../questions/ask.ts"
 import { normalizeOptions } from "../../questions/normalize.ts"
 import { newId, type SessionRecord, type Store } from "../../store/store.ts"
+import type { ToolCallOptions } from "../../worker/rpc.ts"
 import type { ToolContext } from "../context.ts"
 
 /** Code points of the question an `ask_manager` work item keeps as its title. */
 export const TITLE_CHARS = 80
 
-/** A model-facing company tool: its description and JSON Schema, and a call that returns text. */
+/** A model-facing company tool: its description and JSON Schema, and a call that returns text (or yian's pending
+ *  marker). */
 export interface CompanyTool {
   readonly description: string
   readonly parameters: Record<string, unknown>
-  call(args: Record<string, unknown>): string | Promise<string>
+  call(args: Record<string, unknown>, options?: ToolCallOptions): unknown
 }
 
 const ASK =
@@ -35,8 +36,10 @@ const SPACES = /[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u20
  * The `company` tool group for `session.person`'s run `runId`.
  *
  * `repo` is the run's pinned company repo (for the caller's manager and valid assignees). `ask_manager` hands
- * `onQuestion` its question and a work item for the manager, waits until the manager answers, then closes the item.
- * A tool's error reaches the model as `error: <message>`.
+ * `onQuestion` its question and a work item for the manager, stored once per yian call id (a call without one is
+ * refused), and replies pending until the manager answers; then the same call gets the formatted answer. The item is
+ * closed (or cancelled) when the answer (or the expiry) is stored, not here. A tool's error reaches the model as
+ * `error: <message>`.
  */
 export function companyTools(
   store: Store,
@@ -66,11 +69,13 @@ export function companyTools(
         title: "ask_manager",
         type: "object",
       },
-      call: async (args) => {
+      call: async (args, options) => {
         const manager = caller?.manager
         if (manager == null) throw new RangeError("you have no manager to ask")
         const question = args.question
         if (typeof question !== "string") throw new TypeError("question must be a string")
+        const callId = options?.callId
+        if (callId === undefined) throw new TypeError("ask_manager needs its call id")
         const title = [...question.split(SPACES).filter(Boolean).join(" ")].slice(0, TITLE_CHARS).join("") || "Question"
         const item = record(WorkItem, {
           ...stamped(),
@@ -81,12 +86,13 @@ export function companyTools(
           parent_id: session.work_item_id,
         })
         const t = now()
-        const answered = await onQuestion(
+        const stored = onQuestion(
           record(Question, {
             id: newId(),
             session_id: session.id,
             run_id: runId,
             node_id: null,
+            call_id: callId,
             source: "ask_manager",
             asker: session.person,
             work_item_id: item.id,
@@ -98,9 +104,7 @@ export function companyTools(
           }),
           { workItem: item },
         )
-        store.updateWorkItem(item.id, { status: "done", resolved_by: answered.answered_by })
-        // An ask_manager question is never an `ask` node's, so its formatted answer is text.
-        return formatAnswer(answered, carried ? carried(answered) : []) as string
+        return reply(stored, carried)
       },
     },
     create_work_item: {
@@ -175,8 +179,8 @@ function record<S extends z.ZodType>(schema: S, data: Record<string, unknown>): 
   return parsed.data
 }
 
-/** Rejects as `BaseHandlers.askUser` does: a run with no one to ask. */
-const noAnswer: OnQuestion = async () => {
+/** Refuses as `BaseHandlers.askUser` does: a run with no one to ask. */
+const noAnswer: OnQuestion = () => {
   throw new Error("nobody is here to answer")
 }
 

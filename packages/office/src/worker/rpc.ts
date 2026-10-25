@@ -208,9 +208,15 @@ export function askUserStub(rpc: Rpc): AskHandler {
   }
 }
 
+/** What an office tool's call gets beside its arguments: the yian call id, and a signal that aborts the call. */
+export interface ToolCallOptions {
+  readonly callId?: string
+  readonly signal?: AbortSignal
+}
+
 /** A tool the office runs for a worker: its declared description and schema, and the call itself. */
 export interface OfficeTool extends DeclaredTool {
-  call(args: Record<string, unknown>): unknown
+  call(args: Record<string, unknown>, options?: ToolCallOptions): unknown
 }
 
 /** What `answerRequest` checks a request against: the worker's job. */
@@ -238,16 +244,17 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
   /** The worker process is gone; called once, last. */
   exited(worker: W, returncode: number | null): void
   /**
-   * Answers a question for `worker.job.session_id`. It may return Yian's `pending()` instead: the reply is then
-   * `{pending: true}`, and the office answers the call later by its `call_id` from the run's `waits`.
+   * Answers a question for `worker.job.session_id`; `callId` is the yian call id (it starts with
+   * `${worker.job.run_id}/`). It may return Yian's `pending()` instead: the reply is then `{pending: true}`, and the
+   * office answers the call later by `complete` on `callId`.
    */
-  askUser(worker: W, request: AskRequest): unknown
+  askUser(worker: W, request: AskRequest, callId: string): unknown
   /**
-   * Runs tool `name` of `group` with `args`; the result must be JSON data. It may return Yian's `pending()` instead:
-   * the reply is then `{pending: true}`, and the office answers the call later by its `call_id` from the run's
-   * `waits`.
+   * Runs tool `name` of `group` with `args`; the result must be JSON data. `callId` is the yian call id (it starts
+   * with `${worker.job.run_id}/`). It may return Yian's `pending()` instead: the reply is then `{pending: true}`, and
+   * the office answers the call later by `complete` on `callId`.
    */
-  toolCall(worker: W, group: string, name: string, args: Record<string, unknown>): unknown
+  toolCall(worker: W, group: string, name: string, args: Record<string, unknown>, callId: string): unknown
   /** `MarkdownStore.read` on the office store named `store`. */
   storeRead(
     worker: W,
@@ -292,14 +299,21 @@ export class BaseHandlers implements WorkerHandlers {
 
   exited(_worker: unknown, _returncode: number | null): void {}
 
-  askUser(_worker: unknown, _request: AskRequest): unknown {
+  askUser(_worker: unknown, _request: AskRequest, _callId?: string): unknown {
     throw new Error("nobody is here to answer")
   }
 
-  async toolCall(_worker: unknown, group: string, name: string, args: Record<string, unknown>): Promise<unknown> {
+  /** Calls tool `name` of `group` with `args` and `{ callId }`. */
+  async toolCall(
+    _worker: unknown,
+    group: string,
+    name: string,
+    args: Record<string, unknown>,
+    callId?: string,
+  ): Promise<unknown> {
     const named = Object.hasOwn(this.tools, group) ? this.tools[group]! : {}
     if (!Object.hasOwn(named, name)) throw new Error(noTool(group, name))
-    return await named[name]!.call(args)
+    return await named[name]!.call(args, { callId })
   }
 
   storeRead(
@@ -333,11 +347,11 @@ export type RpcLog = (level: "INFO" | "WARNING", line: string) => void
  * The reply frame for a worker's request `frame`, from `handlers`, after checking it against `worker.job`. A question
  * or tool call whose handler returns Yian's `pending()` is `{pending: true}`.
  *
- * A malformed request, a tool not in the job's groups, or a failing tool or question is `{error: "failed",
- * message}`. A store error is `mismatch` (with `expected` and `current`) for `MarkdownVersionMismatch`;
- * `unknown_version` for a `RangeError` from a read and `invalid` for one from a write; `invalid` for a `TypeError`;
- * and `unavailable` for anything else, a store the job doesn't name included. Throws a `TypeError` for a frame
- * whose type isn't a request type.
+ * A malformed request, a question or tool call whose `call_id` isn't of `worker.job`'s run, a tool not in the job's
+ * groups, or a failing tool or question is `{error: "failed", message}`. A store error is `mismatch` (with `expected`
+ * and `current`) for `MarkdownVersionMismatch`; `unknown_version` for a `RangeError` from a read and `invalid` for one
+ * from a write; `invalid` for a `TypeError`; and `unavailable` for anything else, a store the job doesn't name
+ * included. Throws a `TypeError` for a frame whose type isn't a request type.
  */
 export async function answerRequest(
   frame: Frame,
@@ -359,11 +373,11 @@ export async function answerRequest(
     checkJob(worker.job, args)
     switch (args.kind) {
       case "ask_user": {
-        const answer = await handlers.askUser(worker, args.request)
+        const answer = await handlers.askUser(worker, args.request, args.callId)
         return isPending(answer) ? { ...head, pending: true } : { ...head, answer: answer ?? null }
       }
       case "tool_call": {
-        const result = await handlers.toolCall(worker, args.group, args.name, args.args)
+        const result = await handlers.toolCall(worker, args.group, args.name, args.args, args.callId)
         return isPending(result) ? { ...head, pending: true } : { ...head, result: result ?? null }
       }
       case "store_read": {
@@ -414,8 +428,8 @@ export async function replyTo(
 }
 
 type RequestArgs =
-  | { kind: "ask_user"; request: AskRequest }
-  | { kind: "tool_call"; group: string; name: string; args: Record<string, unknown> }
+  | { kind: "ask_user"; request: AskRequest; callId: string }
+  | { kind: "tool_call"; group: string; name: string; args: Record<string, unknown>; callId: string }
   | { kind: "store_read"; store: string; version: string | null }
   | { kind: "store_write"; store: string; text: string; baseVersion: string; provenance: JsonObject | null }
 
@@ -436,14 +450,17 @@ function requestArgs(kind: RequestType, frame: Frame): RequestArgs {
     case "ask_user": {
       const request = need("request", isPlainObject)
       const pick = (key: string) => (Object.hasOwn(request, key) ? (request[key] ?? null) : null)
-      return { kind, request: Object.fromEntries(ASK_KEYS.map((key) => [key, pick(key)])) as AskRequest }
+      const asked = Object.fromEntries(ASK_KEYS.map((key) => [key, pick(key)])) as AskRequest
+      return { kind, request: asked, callId: need("call_id", isString) }
     }
     case "tool_call":
+      // `call_id` last, so a bad earlier field is still the one named.
       return {
         kind,
         group: need("group", isString),
         name: need("name", isString),
         args: maybe("args", isPlainObject) ?? {},
+        callId: need("call_id", isString),
       }
     case "store_read":
       return { kind, store: need("store", isString), version: maybe("version", isString) }
@@ -468,9 +485,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null
 }
 
-/** Throws the handlers' own refusal for a tool not in `job.groups` or a store no `job.memory` spec names; `ask_user`
- *  needs no grant. */
+/** Throws for a question or tool call whose call id isn't of `job`'s run, then the handlers' own refusal for a tool
+ *  not in `job.groups` or a store no `job.memory` spec names; `ask_user` needs no grant. */
 function checkJob(job: Job, args: RequestArgs): void {
+  // A fixed text, so the reply never echoes the id sent.
+  if ((args.kind === "ask_user" || args.kind === "tool_call") && !args.callId.startsWith(`${job.run_id}/`)) {
+    throw new Error(`${args.kind} request's call_id is not this run's`)
+  }
   if (args.kind === "tool_call") {
     const specs = Object.hasOwn(job.groups, args.group) ? job.groups[args.group]! : []
     if (!specs.some((spec) => spec.name === args.name)) throw new Error(noTool(args.group, args.name))

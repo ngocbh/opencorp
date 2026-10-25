@@ -194,3 +194,11 @@ test("a field with no column needs a store migration", () => {
   expect(thrown(() => store.createSession({ ...session(), cost: -1 }))).toBeInstanceOf(StoreError)
   expect(sessionCount(store)).toBe(0)
 })
+
+test("a session counts its turns from zero", () => {
+  const store = openStore()
+  const s = store.createSession(session())
+  expect(store.getSession(s.id)!.turns).toBe(0)
+  store.updateSession(s.id, { turns: 3 })
+  expect(store.getSession(s.id)!.turns).toBe(3)
+})

@@ -54,6 +54,33 @@ test("an ask node key is unique", () => {
   expect(store.getQuestionByNode("run-1", "other")).toBeUndefined()
 })
 
+test("a question is found by its call id", () => {
+  const { store, sid } = withSession()
+  const q = store.addQuestion(question(sid, { call_id: "run-1/reply/1/0" }))
+  expect(q.call_id).toBe("run-1/reply/1/0")
+  expect(store.getQuestionByCall("run-1/reply/1/0")).toEqual(q)
+  expect(store.getQuestionByCall("run-1/other")).toBeUndefined()
+})
+
+test("a second question with one call id is refused", () => {
+  const { store, sid } = withSession()
+  store.addQuestion(question(sid, { call_id: "run-1/reply/1/0" }))
+  const again = thrown(() => store.addQuestion(question(sid, { call_id: "run-1/reply/1/0" })))
+  expect(again).toBeInstanceOf(DuplicateKey)
+  store.addQuestion(question(sid, { call_id: null }))
+  store.addQuestion(question(sid, { call_id: null }))
+  expect(store.listQuestions({ runId: "run-1" })).toHaveLength(3)
+})
+
+test("a questions call id cannot be changed", () => {
+  const { store, sid } = withSession()
+  const q = store.addQuestion(question(sid, { call_id: "run-1/reply/1/0" }))
+  const callChange = thrown(() => store.updateQuestion(q.id, { call_id: "run-1/other" }))
+  expect(callChange).toBeInstanceOf(StoreError)
+  expect((callChange as Error).message).toBe('cannot change ["call_id"] this way')
+  expect(store.getQuestion(q.id)!.call_id).toBe("run-1/reply/1/0")
+})
+
 test("many null node questions", () => {
   const { store, sid } = withSession()
   for (let i = 0; i < 3; i++) store.addQuestion(question(sid))
