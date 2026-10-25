@@ -2,17 +2,19 @@
  *  `tests/daemon/test_routes_connections.py`). */
 import fs from "node:fs"
 import path from "node:path"
-import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
-import { type AuthRequest, OpenAIAuth } from "@ngocbh/yian/llm_clients"
+import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import { type AuthRequest, HttpResponse, OpenAIAuth } from "@ngocbh/yian/llm_clients"
 import { stringify } from "yaml"
 import { Identity, identityPath, writeIdentity } from "../../src/auth/identity.ts"
 import { newToken } from "../../src/auth/tokens.ts"
 import { ConnectionFile, providerLabel } from "../../src/chat/connections.ts"
 import type { LoginsOptions } from "../../src/chat/logins.ts"
-import { type Lister, ownModels } from "../../src/chat/models.ts"
-import { ProviderError } from "../../src/chat/provider.ts"
+import { DEADLINE_MS, type Lister, listModels, ownModels } from "../../src/chat/models.ts"
+import { type Provider, ProviderError } from "../../src/chat/provider.ts"
 import type { Office } from "../../src/daemon/office.ts"
+import type { ModelCheck } from "../../src/install/onboard.ts"
 import { writePrivate } from "../../src/secrets.ts"
+import { RegistryClosed } from "../../src/worker/spawn.ts"
 import { APPROVED, CATALOG, PENDING, REFRESH, SIGNATURE, TOKENS, USERCODE, testScheduler } from "../chat/helpers.ts"
 import { git } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
@@ -52,14 +54,28 @@ class Listings {
   }
 }
 
-/** An office with the office connection (anthropic, keyed `SENTINEL`), served with device tokens. */
-async function setup({ auth }: { auth?: LoginsOptions["auth"] } = {}) {
+/** Stands in for the one-reply check: answers the next of `problems` (null: the model answered); records each. */
+class Checks {
+  calls: Provider[] = []
+  problems: (string | null)[] = []
+
+  readonly check: ModelCheck = async (provider) => {
+    this.calls.push(provider)
+    return this.problems.shift() ?? null
+  }
+}
+
+/** An office with the office connection (anthropic, keyed `SENTINEL`), served with device tokens; `lister` stands
+ *  in for the `Listings` fake. */
+async function setup({ auth, lister }: { auth?: LoginsOptions["auth"]; lister?: Lister } = {}) {
   const lines: string[] = []
   const listings = new Listings()
+  const checks = new Checks()
   const office = makeOffice({
     log: (m) => lines.push(m),
-    models: { lister: listings.list },
+    models: { lister: lister ?? listings.list },
     logins: auth ? { auth } : {},
+    checkModel: checks.check,
   })
   // As buildOffice does, so makeOffice's cleanup cancels a sign-in still polling before the store closes.
   office.onStop.push(() => office.logins.closeAll())
@@ -70,7 +86,7 @@ async function setup({ auth }: { auth?: LoginsOptions["auth"] } = {}) {
     JSON.stringify({ llm_config: { provider: "anthropic", api_key: SENTINEL } }),
   )
   const { sock } = await served(office, { tokens: true, log: (l) => lines.push(l) })
-  return { office, sock, listings, lines, company: office.paths.company }
+  return { office, sock, listings, checks, lines, company: office.paths.company }
 }
 
 /** Signs this device in as the owner, ngocbh; their bearer header. */
@@ -157,7 +173,7 @@ test("everyone signed in sees connections without keys", async () => {
 })
 
 test("the owner adds a connection", async () => {
-  const { office, sock, lines } = await setup()
+  const { office, sock, checks, lines } = await setup()
   const owner = await asOwner(office)
   const events = recordEvents(office.store)
   let r = await post(sock, "/connections", owner, { provider: "openai", api_key: SENTINEL })
@@ -169,8 +185,8 @@ test("the owner adds a connection", async () => {
   expect(fs.statSync(file).mode & 0o777).toBe(0o600)
   expect(saved(office, "openai").llm_config).toEqual({ provider: "openai", api_key: SENTINEL, model: "gpt-5.5" })
   r = await post(sock, "/connections", owner, { provider: "openai", api_key: SENTINEL, model: "o3" })
-  // A listed model needs no one-reply check: one would have answered 501.
   expect([r.status, json(r).name, json(r).model]).toEqual([200, "openai-2", "o3"])
+  expect(checks.calls).toEqual([]) // a listed model needs no one-reply check
   const listed = await get(sock, "/connections", owner)
   expect(r.text + listed.text + lines.join("\n")).not.toContain(SENTINEL)
   expect(events.filter((e) => JSON.stringify(e).includes(SENTINEL))).toEqual([])
@@ -183,26 +199,34 @@ test("a listed provider without a default takes its first model", async () => {
   expect(json(r).model).toBe("gpt-5.4")
 })
 
+test("a model the listing doesnt offer gets a one reply check", async () => {
+  const { office, sock, checks } = await setup()
+  const owner = await asOwner(office)
+  checks.problems.push(...Array(2).fill("Error code: 404 - model not found"))
+  for (const body of [
+    { provider: "openai", api_key: SENTINEL, model: "gpt5-prod" },
+    { provider: "azure", api_key: SENTINEL, endpoint: "acme", model: "gpt5-prod" },
+  ]) {
+    const r = await post(sock, "/connections", owner, body)
+    expect([r.status, r.json()]).toEqual([
+      422,
+      { error: "model_refused", message: "The model didn't answer: Error code: 404 - model not found" },
+    ])
+  }
+  onlyOffice(office)
+  expect(checks.calls.map((c) => c.llm_config!.model)).toEqual(["gpt5-prod", "gpt5-prod"])
+  const r = await post(sock, "/connections", owner, { provider: "openai", api_key: SENTINEL, model: "gpt5-prod" })
+  expect([r.status, json(r).name, json(r).model]).toEqual([200, "openai", "gpt5-prod"])
+  expect(checks.calls.at(-1)!.llm_config).toEqual({ provider: "openai", api_key: SENTINEL, model: "gpt5-prod" })
+})
+
 test("azure needs an endpoint and gets its v1 url", async () => {
-  const { office, sock, listings } = await setup()
+  const { office, sock, checks } = await setup()
   const owner = await asOwner(office)
   let r = await post(sock, "/connections", owner, { provider: "azure", api_key: SENTINEL })
   expect([r.status, errorOf(r)]).toEqual([422, "invalid_connection"])
   onlyOffice(office)
-  // An Azure resource that can't be listed needs a model to check with one reply.
-  r = await post(sock, "/connections", owner, { provider: "azure", api_key: UNREACHABLE, endpoint: "acme" })
-  expect([r.status, r.json()]).toEqual([
-    422,
-    {
-      error: "models_unlisted",
-      message:
-        "Couldn't list the deployments (can't reach acme.openai.azure.com); name a model to check it with one reply",
-    },
-  ])
-  onlyOffice(office)
-  expect(listings.calls).toEqual(["azure"])
   r = await post(sock, "/connections", owner, { provider: "azure", api_key: SENTINEL, endpoint: "acme", model: "o3" })
-  // Listing was the check: one would have answered 501.
   expect([r.status, json(r).name, json(r).provider, json(r).model]).toEqual([200, "azure", "azure", "o3"])
   expect(saved(office, "azure").llm_config).toEqual({
     provider: "openai",
@@ -210,16 +234,16 @@ test("azure needs an endpoint and gets its v1 url", async () => {
     api_key: SENTINEL,
     model: "o3",
   })
+  expect(checks.calls).toEqual([]) // listing was the check
 })
 
 test("other takes a base url and needs a model", async () => {
-  const { office, sock } = await setup()
+  const { office, sock, checks } = await setup()
   const owner = await asOwner(office)
   const body = { provider: "openai", api_key: SENTINEL, endpoint: "https://gw.example/v1" }
   let r = await post(sock, "/connections", owner, body)
   expect([r.status, errorOf(r)]).toEqual([422, "invalid_connection"])
   r = await post(sock, "/connections", owner, { ...body, model: "llama-4" })
-  // Listing was the check: one would have answered 501.
   expect([r.status, json(r).name, json(r).provider]).toEqual([200, "custom", "custom"])
   expect(saved(office, "custom").llm_config).toEqual({
     provider: "openai",
@@ -227,6 +251,7 @@ test("other takes a base url and needs a model", async () => {
     api_key: SENTINEL,
     model: "llama-4",
   })
+  expect(checks.calls).toEqual([]) // listing was the check
 })
 
 test("an endpoint is only for azure or openai", async () => {
@@ -241,17 +266,174 @@ test("an endpoint is only for azure or openai", async () => {
 })
 
 test("a refused key on a providers own host or azure is not saved", async () => {
-  const { office, sock } = await setup()
+  const { office, sock, checks } = await setup()
   const owner = await asOwner(office)
   for (const body of [
     { provider: "openai", api_key: REFUSED },
     { provider: "azure", api_key: REFUSED, endpoint: "acme" },
   ]) {
     const r = await post(sock, "/connections", owner, body)
-    // A 422, not the 501 a one-reply check would answer.
     expect([r.status, r.json()]).toEqual([422, { error: "key_refused", message: "The key didn't work (HTTP 401)" }])
   }
   onlyOffice(office)
+  expect(checks.calls).toEqual([])
+})
+
+test("a custom endpoint that refuses its list gets a one reply check", async () => {
+  const { office, sock, checks } = await setup()
+  const owner = await asOwner(office)
+  const body = { provider: "openai", api_key: REFUSED, endpoint: "https://gw.example/v1", model: "llama-4" }
+  checks.problems.push("Error code: 401 - invalid key")
+  let r = await post(sock, "/connections", owner, body)
+  expect([r.status, r.json()]).toEqual([
+    422,
+    { error: "model_refused", message: "The model didn't answer: Error code: 401 - invalid key" },
+  ])
+  onlyOffice(office)
+  r = await post(sock, "/connections", owner, body)
+  expect([r.status, json(r).name, json(r).model]).toEqual([200, "custom", "llama-4"])
+  const llm = { provider: "openai", base_url: "https://gw.example/v1", api_key: REFUSED, model: "llama-4" }
+  expect(checks.calls.map((c) => c.llm_config)).toEqual([llm, llm])
+})
+
+test("a default model that doesnt answer is named", async () => {
+  const { office, sock, checks } = await setup()
+  const owner = await asOwner(office)
+  const lists = LISTS.openai!
+  LISTS.openai = ["o3"]
+  onTestFinished(() => {
+    LISTS.openai = lists
+  })
+  checks.problems.push(...Array(2).fill("Error code: 404 - model not found"))
+  for (const [body, model] of [
+    [{ provider: "openai", api_key: SENTINEL }, "gpt-5.5"],
+    [{ provider: "anthropic", api_key: UNREACHABLE }, "claude-sonnet-4-5"],
+  ] as const) {
+    const r = await post(sock, "/connections", owner, body)
+    expect([r.status, r.json()]).toEqual([
+      422,
+      {
+        error: "model_refused",
+        message: `The model '${model}' didn't answer: Error code: 404 - model not found; name another model`,
+      },
+    ])
+  }
+  expect(checks.calls).toHaveLength(2)
+  onlyOffice(office)
+  // Yian has no default model, so the check and the saved connection name it.
+  expect(checks.calls.map((c) => c.llm_config!.model)).toEqual(["gpt-5.5", "claude-sonnet-4-5"])
+})
+
+test("an unlisted provider named no model is saved on its default", async () => {
+  const { office, sock, checks } = await setup()
+  const owner = await asOwner(office)
+  const r = await post(sock, "/connections", owner, { provider: "anthropic", api_key: UNREACHABLE })
+  expect([r.status, json(r).name, json(r).model]).toEqual([200, "anthropic", "claude-sonnet-4-5"])
+  expect(checks.calls.map((c) => c.llm_config!.model)).toEqual(["claude-sonnet-4-5"])
+  expect(saved(office, "anthropic").llm_config.model).toBe("claude-sonnet-4-5")
+})
+
+test("azure that cant list needs a model to check", async () => {
+  const { office, sock, checks } = await setup()
+  const owner = await asOwner(office)
+  const body = { provider: "azure", api_key: UNREACHABLE, endpoint: "acme" }
+  let r = await post(sock, "/connections", owner, body)
+  expect([r.status, r.json()]).toEqual([
+    422,
+    {
+      error: "models_unlisted",
+      message:
+        "Couldn't list the deployments (can't reach acme.openai.azure.com); name a model to check it with one reply",
+    },
+  ])
+  expect(checks.calls).toEqual([])
+  onlyOffice(office)
+  r = await post(sock, "/connections", owner, { ...body, model: "gpt-5.4" })
+  expect([r.status, json(r).name, json(r).model]).toEqual([200, "azure", "gpt-5.4"])
+  expect(checks.calls.map((c) => c.llm_config!.model)).toEqual(["gpt-5.4"])
+})
+
+test("a provider that cant be listed gets a one reply check", async () => {
+  const { office, sock, checks } = await setup()
+  const owner = await asOwner(office)
+  const body = { provider: "anthropic", api_key: UNREACHABLE, model: "claude-x" }
+  let r = await post(sock, "/connections", owner, body)
+  expect([r.status, json(r).name, json(r).model]).toEqual([200, "anthropic", "claude-x"])
+  expect(checks.calls[0]!.llm_config).toEqual({ provider: "anthropic", api_key: UNREACHABLE, model: "claude-x" })
+  checks.problems.push("Error code: 404 - model not found")
+  r = await post(sock, "/connections", owner, body)
+  expect([r.status, r.json()]).toEqual([
+    422,
+    { error: "model_refused", message: "The model didn't answer: Error code: 404 - model not found" },
+  ])
+  expect(fs.readdirSync(office.connections.dir).sort()).toEqual([".lock", "anthropic.json", "office.json"])
+})
+
+test("a provider the listing leaves unlisted gets a one reply check", async () => {
+  const { office, sock, checks } = await setup()
+  const owner = await asOwner(office)
+  const body = { provider: "google", api_key: SENTINEL, model: "gemini-x" }
+  let r = await post(sock, "/connections", owner, body)
+  expect([r.status, json(r).name, json(r).model]).toEqual([200, "google", "gemini-x"])
+  expect(checks.calls.map((c) => c.llm_config)).toEqual([{ provider: "google", api_key: SENTINEL, model: "gemini-x" }])
+  checks.problems.push("Error code: 404 - model not found")
+  r = await post(sock, "/connections", owner, body)
+  expect([r.status, r.json()]).toEqual([
+    422,
+    { error: "model_refused", message: "The model didn't answer: Error code: 404 - model not found" },
+  ])
+  expect(fs.readdirSync(office.connections.dir).sort()).toEqual([".lock", "google.json", "office.json"])
+})
+
+test("anthropic is checked against what its host lists", async () => {
+  const seen: [url: string, key: string | undefined][] = []
+  const host: AuthRequest = async (_method, url, { headers }) => {
+    const key = headers["x-api-key"]
+    seen.push([url, key])
+    if (key === REFUSED) return new HttpResponse(401, null)
+    // Dated ids only: the aliases that answer as well aren't listed.
+    const dated = ["claude-opus-4-1-20250805", "claude-sonnet-4-5-20250929"]
+    return new HttpResponse(200, { data: dated.map((id) => ({ id })), has_more: false })
+  }
+  const listings = new Listings()
+  // The route lists with exactly DEADLINE_MS and a warm-up with what remains of it, so only the route reaches the
+  // fake host: in Python the route called the patched real listing while the cache kept the fake one.
+  const lister: Lister = (conn, name, opts) =>
+    opts.deadlineMs === DEADLINE_MS
+      ? listModels(conn, name, { ...opts, request: host })
+      : listings.list(conn, name, opts)
+  const { office, sock, checks, lines } = await setup({ lister })
+  const owner = await asOwner(office)
+  let r = await post(sock, "/connections", owner, { provider: "anthropic", api_key: REFUSED })
+  expect([r.status, r.json()]).toEqual([422, { error: "key_refused", message: "The key didn't work (HTTP 401)" }])
+  checks.problems.push("Error code: 404 - model not found")
+  r = await post(sock, "/connections", owner, { provider: "anthropic", api_key: SENTINEL, model: "claude-x" })
+  expect([r.status, r.json()]).toEqual([
+    422,
+    { error: "model_refused", message: "The model didn't answer: Error code: 404 - model not found" },
+  ])
+  onlyOffice(office)
+  r = await post(sock, "/connections", owner, { provider: "anthropic", api_key: SENTINEL })
+  expect([r.status, json(r).name, json(r).model]).toEqual([200, "anthropic", "claude-sonnet-4-5"])
+  expect(checks.calls.map((c) => c.llm_config)).toEqual([
+    { provider: "anthropic", api_key: SENTINEL, model: "claude-x" },
+    { provider: "anthropic", api_key: SENTINEL, model: "claude-sonnet-4-5" },
+  ])
+  r = await post(sock, "/connections", owner, {
+    provider: "anthropic",
+    api_key: SENTINEL,
+    model: "claude-opus-4-1-20250805",
+  })
+  expect([r.status, json(r).model]).toEqual([200, "claude-opus-4-1-20250805"])
+  expect(checks.calls).toHaveLength(2)
+  const url = "https://api.anthropic.com/v1/models?limit=1000"
+  expect(seen).toEqual([
+    [url, REFUSED],
+    [url, SENTINEL],
+    [url, SENTINEL],
+    [url, SENTINEL],
+  ])
+  expect(r.text + lines.join("\n")).not.toContain(SENTINEL)
 })
 
 test("others are refused before the body is read", async () => {
@@ -458,21 +640,13 @@ test("a malformed add never echoes the key", async () => {
   onlyOffice(office)
 })
 
-// Each path to the one-reply check, which runs as a worker job once the worker lands.
-const NEEDS_CHECK: [string, Json][] = [
-  ["unlisted model", { provider: "openai", api_key: SENTINEL, model: "gpt5-prod" }],
-  ["default model", { provider: "anthropic", api_key: UNREACHABLE }],
-  ["refused custom", { provider: "openai", api_key: REFUSED, endpoint: "https://gw.example/v1", model: "llama-4" }],
-  ["azure with a model", { provider: "azure", api_key: UNREACHABLE, endpoint: "acme", model: "gpt-5.4" }],
-  ["unlisted provider", { provider: "google", api_key: SENTINEL, model: "gemini-x" }],
-]
-
-test.each(NEEDS_CHECK)("an add that needs a one reply check answers 501 and saves nothing [%s]", async (_, body) => {
+test("a check once the office is stopping is 503", async () => {
   const { office, sock } = await setup()
   const owner = await asOwner(office)
-  const r = await post(sock, "/connections", owner, body)
-  expect([r.status, errorOf(r)]).toEqual([501, "not_implemented"])
-  expect(r.text).not.toContain(body.api_key as string)
+  spyOn(office, "checkModel").mockRejectedValue(new RegistryClosed())
+  const r = await post(sock, "/connections", owner, { provider: "openai", api_key: SENTINEL, model: "gpt5-prod" })
+  expect([r.status, errorOf(r)]).toEqual([503, "stopping"])
+  expect(r.text).not.toContain(SENTINEL)
   onlyOffice(office)
 })
 

@@ -10,6 +10,7 @@ import type { CompanyGit } from "../company/git.ts"
 import { CompanySnapshots } from "../company/snapshot.ts"
 import type { CodexSessions } from "../harness/sessions.ts"
 import type { Hq } from "../hq/core.ts"
+import type { ModelCheck } from "../install/onboard.ts"
 import type { Tools } from "../install/tools.ts"
 import { GitProfileStore } from "../profile/store.ts"
 import type { CardActor, Cards } from "../questions/cards.ts"
@@ -94,6 +95,8 @@ export class Office {
   readonly models: ModelCache
   /** Subscription sign-ins; `buildOffice`'s office cancels those still waiting on stop. */
   readonly logins: Logins
+  /** The one-reply model check; `buildOffice`'s runs it as a worker job of its registry. */
+  readonly checkModel: ModelCheck
   workers: WorkerPool | undefined
   /** HQ, once `attach` put it here. */
   hq: Hq | undefined
@@ -126,6 +129,7 @@ export class Office {
     connections,
     models,
     logins,
+    checkModel = () => Promise.reject(new Error("this office has no model check")),
     log = console.error,
   }: {
     paths: OfficePaths
@@ -140,6 +144,7 @@ export class Office {
     connections?: ConnectionsOptions
     models?: ModelCacheOptions
     logins?: Omit<LoginsOptions, "models">
+    checkModel?: ModelCheck
     /** Gets raw log messages. */
     log?: (message: string) => void
   }) {
@@ -153,6 +158,7 @@ export class Office {
     this.connections = new Connections(paths.office, { log, ...connections })
     this.models = new ModelCache(this.connections, { log, ...models })
     this.logins = new Logins(this.connections, { log, ...logins, models: this.models })
+    this.checkModel = checkModel
     this.workers = workers
     this.profileStore = profileStore === undefined ? (handle) => new GitProfileStore(git, handle) : profileStore
     this.tools = tools

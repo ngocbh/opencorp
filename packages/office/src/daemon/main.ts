@@ -5,6 +5,7 @@ import type { Server } from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform"
+import { oneReplyProblem } from "../chat/check.ts"
 import { Hooks } from "../chat/hooks.ts"
 import { CompanyGit } from "../company/git.ts"
 import { HeadWatcher } from "../company/watch.ts"
@@ -239,6 +240,7 @@ export function buildOffice(
       connections: { log: log("WARNING", "opencorp.chat.connections") },
       models: { log: log("WARNING", "opencorp.chat.models") },
       logins: { log: log("WARNING", "opencorp.chat.logins") },
+      checkModel: (provider) => oneReplyProblem(workers, provider, { log: log("WARNING", "opencorp.chat.check") }),
     })
     // Not awaited: a slow provider must not hold up the start. warm never rejects.
     office.onStart.push(() => void office.models.warm())
