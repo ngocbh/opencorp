@@ -1,6 +1,7 @@
 /** The office's routes, one module per area. */
 import type { Route } from "../http.ts"
 import type { RequestContext } from "../office.ts"
+import { ROUTES as connectionRoutes } from "./connections.ts"
 import { ROUTES as costRoutes } from "./costs.ts"
 import { ROUTES as deviceRoutes } from "./devices.ts"
 import { eventRoutes } from "./events.ts"
@@ -20,5 +21,6 @@ export function allRoutes({ pingMs }: { pingMs?: number } = {}): Route<RequestCo
     ...profileRoutes,
     ...costRoutes,
     ...runRoutes,
+    ...connectionRoutes,
   ]
 }
