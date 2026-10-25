@@ -4,9 +4,9 @@ import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveEvent } from "@opencorp/protocol"
-import { INTERRUPTED_CALL, SessionActor } from "../../src/chat/session_actor.ts"
+import { INTERRUPTED_CALL, type SessionActor, type Wait } from "../../src/chat/session_actor.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
-import { WORKER_STOPPED } from "../../src/runs/outcomes.ts"
+import { COULDNT_RESUME, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
 import { CEO } from "../daemon/helpers.ts"
@@ -29,8 +29,8 @@ import {
   session,
   startActor,
   status,
+  TAKE,
   texts,
-  type WaitFrame,
   waitingResult,
 } from "./helpers.ts"
 
@@ -107,6 +107,30 @@ test("a prompt whose send comes back unsent after close is refused as stopping",
   expect(o.kinds).toEqual(["chat"])
 })
 
+test("a send the worker answered is not sent again when its frame reports the channel closed", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const scripted = workers[0]!
+  let unsent!: (sent: boolean) => void
+  scripted.accept = () => new Promise((resolve) => (unsent = resolve))
+  const sent = actor.prompt("hi")
+  await waitFor(() => scripted.deliveries.length === 1, { what: "the send" })
+  // The worker took it and answered, then the channel closed before the frame's write reported back.
+  scripted.handlers.deliverReply(scripted.worker, { type: "deliver_reply", id: scripted.deliveries[0]!.id, seq: 4 })
+  scripted.handlers.result(scripted.worker, waitingResult(runId))
+  unsent(false)
+  scripted.handlers.exited(scripted.worker, 0)
+  expect(await sent).toBe("queued")
+  // Queued after the exit: the exit job has run when it answers.
+  await expect(actor.answer("no-such-question", "x", "text")).rejects.toMatchObject({ status: 404 })
+  expect(o.kinds).toEqual(["chat"])
+})
+
 test("a start after the registry closed is refused as stopping", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
@@ -125,8 +149,7 @@ test("the user message is published live under its send id", async () => {
   const live: LiveEvent[] = []
   o.hooks.turnContext.push(() => "[context]")
   const sid = await newSession(o)
-  const actor = new SessionActor({ ...o.ctx, bus: { publishLive: (event) => void live.push(event) } }, sid)
-  o.actors.push(actor)
+  const actor = makeActor(o, sid, { bus: { publishLive: (event) => void live.push(event) } })
   await actor.start()
   await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
   await actor.prompt("hi")
@@ -398,8 +421,7 @@ test("the provider key never reaches a reason a hook a log or the store", async 
   o.hooks.runFinished.push((...args) => void seen.push(args))
   o.hooks.sessionEnded.push((...args) => void seen.push(args))
   const sid = await newSession(o)
-  const actor = new SessionActor({ ...o.ctx, bus: { publishLive: (event) => void live.push(event) } }, sid)
-  o.actors.push(actor)
+  const actor = makeActor(o, sid, { bus: { publishLive: (event) => void live.push(event) } })
   await actor.start()
   const runId = actor.runId!
   const { worker, handlers } = workers[0]!
@@ -467,6 +489,8 @@ test("a run that stops on every advance fails after one retry", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
   const workers = scriptedWorker(o)
+  const frames: unknown[] = []
+  o.hooks.runFinished.push((_s, _runId, frame) => void frames.push(frame))
   const sid = await newSession(o)
   const actor = makeActor(o, sid)
   await actor.start()
@@ -477,11 +501,13 @@ test("a run that stops on every advance fails after one retry", async () => {
   await waitFor(() => workers.length === 2, { what: "the retry" })
   workers[1]!.handlers.result(workers[1]!.worker, stopped)
   workers[1]!.handlers.exited(workers[1]!.worker, 0)
-  await waitFor(() => workers.length === 3, { what: "the hard stop" })
+  await waitFor(() => workers.length === 3 && frames.length === 1, { what: "the hard stop" })
   expect(status(o, sid)).toBe("failed")
   expect(o.office.store.getRun(runId)?.endReason).toBe(WORKER_STOPPED)
   expect(o.kinds).toEqual(["chat", "advance", "advance"])
   expect(o.jobs[2]).toMatchObject({ advance: false, deliver: [{ op: "cancel" }] })
+  // A stopped run isn't how the run ended: the office stops it.
+  expect(frames).toEqual([null])
 })
 
 test("fail with a live worker cancels through it", async () => {
@@ -497,6 +523,25 @@ test("fail with a live worker cancels through it", async () => {
   await waitFor(() => workers[0]!.deliveries.length === 1, { what: "the cancel" })
   expect(workers[0]!.deliveries.map((d) => d.op)).toEqual(["cancel"])
   expect(o.kinds).toEqual(["chat"])
+})
+
+test("fail with a lingering waiting worker reports no run frame", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const frames: unknown[] = []
+  o.hooks.runFinished.push((_s, _runId, frame) => void frames.push(frame))
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = withLog(o, actor)
+  const { worker, handlers } = workers[0]!
+  handlers.result(worker, waitingResult(runId))
+  await actor.fail()
+  await waitFor(() => frames.length === 1, { what: "run finished" })
+  // A waiting result isn't how the run ended: the office stops it.
+  expect(frames).toEqual([null])
+  expect(o.office.store.getRun(runId)?.endReason).toBe(COULDNT_RESUME)
 })
 
 test("a hard stop waits for the lingering worker and skips a run with no log", async () => {
@@ -597,7 +642,7 @@ test("a settled wait is re-advanced once without progress", async () => {
   const asked = { node: "chat#0/reply", call_id: "q1", tool: "ask_user", inbox: null, deadline: null, settled: true }
   const later = { ...asked, call_id: "q2" }
   /** Ends worker `n` waiting on `waits`. */
-  const waitOn = (n: number, waits: WaitFrame[]) => {
+  const waitOn = (n: number, waits: Wait[]) => {
     const { worker, handlers } = workers[n]!
     handlers.result(worker, waitingResult(runId, waits))
     handlers.exited(worker, 0)
@@ -625,26 +670,32 @@ test("a busy run is retried once then answered run busy", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
   const workers = scriptedWorker(o)
+  const start = Date.parse("2026-10-25T00:00:00.000Z")
+  const { scheduler, sleeps } = steppedScheduler(start)
   const sid = await newSession(o)
-  const actor = makeActor(o, sid)
+  const actor = makeActor(o, sid, { scheduler })
   await actor.start()
   const runId = actor.runId!
-  workers[0]!.handlers.result(workers[0]!.worker, waitingResult(runId))
+  const take = { ...TAKE, deadline: new Date(start + 86_400_000).toISOString() }
+  workers[0]!.handlers.result(workers[0]!.worker, waitingResult(runId, [take]))
   workers[0]!.handlers.exited(workers[0]!.worker, 0)
   await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "asleep at the turn" })
+  expect(sleeps).toHaveLength(1)
   const a = outcome(actor.prompt("a"))
   await waitFor(() => workers.length === 2, { what: "the advance" })
   const b = outcome(actor.prompt("b"))
   await waitFor(() => workers[1]!.deliveries.length === 1, { what: "the second send" })
   const cut = actor.interrupt()
   await waitFor(() => workers[1]!.deliveries.length === 2, { what: "the interrupt" })
-  /** Worker `n` finds the run held by another process: each send fails, then its advance. */
-  const busy = (n: number) => {
+  /** Worker `n` finds the run held by another process: each send fails, then its advance; `between` runs after
+   *  its error, before its exit. */
+  const busy = (n: number, between = () => {}) => {
     const { worker, handlers, job, deliveries } = workers[n]!
     for (const d of [...job.deliver, ...deliveries]) {
       if (d.op === "send") handlers.deliverReply(worker, { type: "deliver_reply", id: d.id, failed: "RunBusyError" })
     }
     handlers.error(worker, { type: "error", message: `RunBusyError: run ${runId} is running`, traceback: "" })
+    between()
     handlers.exited(worker, 1)
   }
   busy(1)
@@ -652,13 +703,17 @@ test("a busy run is retried once then answered run busy", async () => {
   await waitFor(() => workers.length === 3, { what: "the retry" })
   const sends = workers[1]!.given().filter((d) => d.op === "send")
   expect(o.jobs[2]).toMatchObject({ kind: "advance", deliver: sends })
-  busy(2)
+  // A message after the second error waits in the next job, which never comes.
+  let c!: Promise<string>
+  busy(2, () => (c = outcome(actor.prompt("c"))))
   expect(await a).toBe("503 run_busy")
   expect(await b).toBe("503 run_busy")
+  expect(await c).toBe("503 run_busy")
   await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
-  // The session stays as it was.
+  // The session stays as it was, its timer armed again.
   expect(o.kinds).toEqual(["chat", "advance", "advance"])
   expect(status(o, sid)).toBe("idle")
+  await waitFor(() => sleeps.length === 2, { what: "the timer" })
 })
 
 test("the wake at timer advances a timed out question once", async () => {
@@ -707,8 +762,7 @@ test("the wake at timer is armed in chunks and never advances early", async () =
   const start = Date.parse("2026-10-25T00:00:00.000Z")
   const { scheduler, sleeps, clock } = steppedScheduler(start)
   const sid = await newSession(o)
-  const actor = new SessionActor({ ...o.ctx, scheduler }, sid)
-  o.actors.push(actor)
+  const actor = makeActor(o, sid, { scheduler })
   await actor.start()
   const deadline = new Date(start + 30 * 86_400_000).toISOString()
   const asked = { node: "chat#0/reply", call_id: "q1", tool: "ask_user", inbox: null, deadline, settled: false }

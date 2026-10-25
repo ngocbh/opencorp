@@ -698,10 +698,12 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/session_actor.test.ts::a delivery acked after result is advanced	O4a-0a	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a lost ack is resent and a lost interrupt is dropped	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a message after end is refused as ending	4a revision §1	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a send the worker answered is not sent again when its frame reports the channel closed	4a revision §1: only a lost ack is resent (G2); a delivery the worker answered stays answered	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a settled wait is re-advanced once without progress	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a stored question fires question stored once	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::esc on a session asleep while its agent waits on a call spawns one advance that cuts it	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::exit typed ends the session	4a revision §1	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::fail with a lingering waiting worker reports no run frame	4a revision §1 (Finish): runFinished gets only the result that ended the run; Python passed None when the office ended it	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::the wake at timer advances a timed out question once	D38	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::the wake at timer is armed in chunks and never advances early	D38	O4a-3
 —	new	packages/office/tests/chat/state.test.ts::write state with nothing new writes nothing	design §3.2 (mirror): Python's equality check before writing (state.py:56) had no test; it keeps a no-op status write from emitting session.updated	O3-8b

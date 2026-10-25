@@ -11,7 +11,7 @@ import { iterRunRecords, type RunLogEntry } from "@ngocbh/yian/run"
 import { now, OFFICE, Session, WorkItem } from "@opencorp/protocol"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { mainSpec } from "../../src/chat/run_spec.ts"
-import { type ActorContext, type ActorWorker, SessionActor } from "../../src/chat/session_actor.ts"
+import { type ActorContext, type ActorWorker, SessionActor, type Wait } from "../../src/chat/session_actor.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import type { Office } from "../../src/daemon/office.ts"
@@ -565,9 +565,9 @@ export async function newSession(
   return session.id
 }
 
-/** A new actor over session `sid`, closed when the test finishes. */
-export function makeActor(o: ChatOffice, sid: string): SessionActor {
-  const actor = new SessionActor(o.ctx, sid)
+/** A new actor over session `sid`, on `o`'s context with `overrides` on top, closed when the test finishes. */
+export function makeActor(o: ChatOffice, sid: string, overrides: Partial<ActorContext> = {}): SessionActor {
+  const actor = new SessionActor({ ...o.ctx, ...overrides }, sid)
   o.actors.push(actor)
   return actor
 }
@@ -637,18 +637,8 @@ export function state(o: ChatOffice, sid: string): Pick<SessionRecord, "status" 
   return { status, waiting_on, capped }
 }
 
-/** A call a waiting run waits on, as a `result` frame lists it. */
-export interface WaitFrame {
-  node: string
-  call_id: string
-  tool: string
-  inbox: string | null
-  deadline: string | null
-  settled: boolean
-}
-
 /** The turn's unsettled take on the messages inbox. */
-export const TAKE: WaitFrame = {
+export const TAKE: Wait = {
   node: "chat#0/heard",
   call_id: "c1",
   tool: "take",
@@ -658,7 +648,7 @@ export const TAKE: WaitFrame = {
 }
 
 /** A `waiting` result frame of run `runId` waiting on `waits`. */
-export function waitingResult(runId: string, waits: WaitFrame[] = [TAKE]): Record<string, unknown> {
+export function waitingResult(runId: string, waits: Wait[] = [TAKE]): Record<string, unknown> {
   return { type: "result", status: "waiting", run_id: runId, output: null, failure: null, waits }
 }
 

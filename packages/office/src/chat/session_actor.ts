@@ -68,7 +68,7 @@ export const INTERRUPTED_CALL = "interrupted; outcome unknown"
 export type MessageReply = "turn" | "answer" | "steer" | "queued"
 
 /** A call a waiting run waits on, as a `result` frame lists it. */
-interface Wait {
+export interface Wait {
   node: string
   call_id: string
   tool: string
@@ -195,8 +195,10 @@ export class SessionActor implements LiveCalls {
   #lateSend = false
   /** The waits the last spawn started from when it was a plain re-advance for a settled wait, else null. */
   #readvancedFrom: Wait[] | null = null
-  /** How many workers in a row found the run held by another process (`RunBusyError`). */
-  #busy = 0
+  /** Whether a worker found the run held by another process (`RunBusyError`) and its one retry is under way. */
+  #busyRetried = false
+  /** Whether the last worker's run, busy workers aside, came back `waiting`: the timer then waits on `#waits`. */
+  #rested = false
   /** The wake-at timer's sleep, aborted at finish, close, a new result or a spawn. */
   #timer: AbortController | null = null
   /** The deadline the timer last advanced the run at, which it never arms for again. */
@@ -615,7 +617,8 @@ export class SessionActor implements LiveCalls {
         p.reject(error instanceof FrameTooLarge ? tooLarge() : this.#cantWake(errorName(error)))
         return false
       }
-      if (sent) {
+      // A reply means the worker took it, though the channel closed before the frame's write reported back.
+      if (sent || p.reply !== null) {
         if (p.delivery.op === "send") run.turnPending = true
         return false
       }
@@ -679,7 +682,6 @@ export class SessionActor implements LiveCalls {
     this.#readvancedFrom = plain ? this.#waits : null
     const waits = kind === "advance" ? (this.#waits ?? []) : []
     const run = new WorkerRun(runId, kind, pendings, waits, this.#lateSend)
-    this.#lateSend = false
     this.#starting = run
     try {
       // Inside the try: a store read that throws still answers every delivery.
@@ -714,6 +716,8 @@ export class SessionActor implements LiveCalls {
       if (this.#closed) throw stopping()
       run.provider = provider
       run.worker = await this.#ctx.workers.spawn(job, paths.sessionDir(sid), handlers, { env: provider.env })
+      // Only now: a spawn that fails leaves it for the next worker's take.
+      this.#lateSend = false
       this.#run = run
       this.#starting = null
       // The worker's result arms it again.
@@ -776,12 +780,14 @@ export class SessionActor implements LiveCalls {
     this.#calls.clear()
   }
 
-  /** `#spawn`, logging its failure, which it already answered. */
-  async #spawnQuietly(kind: "chat" | "advance", options: { plain?: boolean } = {}): Promise<void> {
+  /** `#spawn`, logging its failure, which it already answered; whether a worker started. */
+  async #spawnQuietly(kind: "chat" | "advance", options: { plain?: boolean } = {}): Promise<boolean> {
     try {
       await this.#spawn(kind, options)
+      return true
     } catch (error) {
       this.#log(`session ${this.sessionId}: a worker can't start (${errorName(error)})`)
+      return false
     }
   }
 
@@ -1005,13 +1011,16 @@ export class SessionActor implements LiveCalls {
     const status = outcome === null ? null : outcome.type === "result" ? String(outcome.status) : "error"
     const busy = status === "error" && String(outcome!.message ?? "").startsWith("RunBusyError:")
     if (status === "waiting" || status === "succeeded") this.#deaths = 0
-    if (!busy) this.#busy = 0
+    if (!busy) {
+      this.#busyRetried = false
+      this.#rested = status === "waiting"
+    }
     if (status === null || status === "stopped" || status === "crashed") {
       await this.#died(run, status)
     } else if (busy) {
       await this.#runBusy(run)
     } else if (status === "waiting") {
-      await this.#waited(run, waitsOf(outcome!), readvance)
+      await this.#waited(run, readvance)
     } else if (status === "succeeded") {
       this.#finish("ended", outcome, null, run)
     } else {
@@ -1022,21 +1031,25 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * `run`'s worker ended with a `waiting` result whose run waits on `waits`. What it never answered (but an
+   * `run`'s worker ended with a `waiting` result, whose waits are `#waits`. What it never answered (but an
    * `interrupt`) and what it refused `not_started` go to the next worker, which is spawned when there is any, when
    * `#next` holds some, or when a delivery came after the result (`readvance`). A settled wait alone is advanced
-   * too, but not again when the last spawn was such a plain re-advance and the run still waits on the same calls:
-   * it made no progress, so it waits for the next command. With no worker started, the timer waits for the earliest
-   * deadline.
+   * too, but not again when the last spawn was such a plain re-advance and the run still waits on the same calls,
+   * each as settled as before: it made no progress, so it waits for the next command. With no worker started, the
+   * timer waits for the earliest deadline.
    */
-  async #waited(run: WorkerRun, waits: Wait[], readvance: boolean): Promise<void> {
+  async #waited(run: WorkerRun, readvance: boolean): Promise<void> {
+    const waits = this.#waits ?? []
     const from = this.#readvancedFrom
     this.#carry(run)
     // Armed before the spawn, which disarms it once its worker starts: a spawn that fails leaves the timer.
     this.#arm(waits)
-    if (readvance || this.#next.length > 0) return this.#spawnQuietly("advance")
+    if (readvance || this.#next.length > 0) {
+      await this.#spawnQuietly("advance")
+      return
+    }
     if (!waits.some((wait) => wait.settled)) return
-    if (from !== null && JSON.stringify(from) === JSON.stringify(waits)) {
+    if (from !== null && sameWaits(from, waits)) {
       const why = "its run made no progress on a settled wait; it waits for the next command"
       this.#log(`session ${this.sessionId}: WARNING: ${why}`)
       return
@@ -1046,18 +1059,20 @@ export class SessionActor implements LiveCalls {
 
   /** `run`'s worker found the run held by another process (`RunBusyError`): the first time, the same spawn goes
    *  again with what it never applied (but an `interrupt`); the second time, every delivery left, `#next`'s
-   *  included, is answered `503 run_busy` and the session stays as it was. */
+   *  included, is answered `503 run_busy`. When no retry runs, the actor stays as it was: a later busy run gets its
+   *  own retry, and a run that rested `waiting` gets its timer back. */
   async #runBusy(run: WorkerRun): Promise<void> {
     this.#log(`session ${this.sessionId}: its run is held by another process (RunBusyError)`)
-    if (this.#busy >= 1) {
-      this.#busy = 0
+    if (!this.#busyRetried) {
+      this.#busyRetried = true
+      this.#carry(run, { failed: true })
+      // The registry reaps a leftover worker of the session before it spawns.
+      if (await this.#spawnQuietly(run.kind)) return
+    } else {
       this.#answerRest([...run.given, ...this.#next.splice(0)], runBusy(), runBusy())
-      return
     }
-    this.#busy += 1
-    this.#carry(run, { failed: true })
-    // The registry reaps a leftover worker of the session before it spawns.
-    await this.#spawnQuietly(run.kind)
+    this.#busyRetried = false
+    if (this.#rested) this.#arm(this.#waits ?? [])
   }
 
   /** Moves the deliveries `run`'s worker never answered (but an `interrupt`), those it refused `not_started` and,
@@ -1087,7 +1102,10 @@ export class SessionActor implements LiveCalls {
     }
     this.#deaths += 1
     this.#carry(run)
-    if (status !== null) return this.#spawnQuietly("advance")
+    if (status !== null) {
+      await this.#spawnQuietly("advance")
+      return
+    }
     try {
       await this.#spawn("advance")
     } catch (error) {
@@ -1099,10 +1117,10 @@ export class SessionActor implements LiveCalls {
   /**
    * Finishes the session with `status` (`ended`: the first `endStatus` result, its work item done; or `failed`) in
    * one transaction with the run's office end reason `why`, written only when no yian outcome ended the run (`outcome`,
-   * else the one `run`'s worker recorded). `runFinished` (the result frame, key redacted) then `sessionEnded` are
-   * notified in order, not awaited. Every delivery not answered gets `409 not_live`. A run yian may still see
-   * unfinished gets a hard stop. Throws `HarnessError` (`404`) when the session row is gone; a store write that
-   * fails is logged by its type.
+   * else the one `run`'s worker recorded). `runFinished` (the result frame of how the run ended, key redacted, else
+   * null) then `sessionEnded` are notified in order, not awaited. Every delivery not answered gets `409 not_live`. A
+   * run yian may still see unfinished gets a hard stop. Throws `HarnessError` (`404`) when the session row is gone; a
+   * store write that fails is logged by its type.
    */
   #finish(status: "ended" | "failed", outcome: Frame | null, why: string | null, run = this.#run): void {
     if (this.#finished) return
@@ -1112,7 +1130,11 @@ export class SessionActor implements LiveCalls {
     const runId = this.#runId
     const recorded = outcome ?? run?.outcome ?? null
     const ended = recorded?.type === "result" && ["succeeded", "failed", "cancelled"].includes(String(recorded.status))
-    // A worker's lingering `waiting` result isn't how the run ended.
+    // `runFinished` gets the result that ended the run: `outcome` when the caller passes one (a `succeeded` run, or
+    // a `failed`, `cancelled` or other result the session fails on, as Python's `_finish` passed it), else a
+    // `succeeded`, `failed` or `cancelled` result `run`'s worker recorded. A recorded `waiting`, `stopped` or
+    // `crashed` result isn't how the run ended (the office ends it here, with a hard stop): null, as Python's death
+    // path passed None. An `error` frame isn't a result: null too.
     const reported = outcome ?? (ended ? recorded : null)
     try {
       const session = this.#session()
@@ -1228,7 +1250,7 @@ export class SessionActor implements LiveCalls {
   // --- the wake-at timer -------------------------------------------------------------------
 
   /** Arms the timer for the earliest deadline of an unsettled call in `waits`, unless it already advanced the run
-   *  at that deadline or there is none. */
+   *  at that deadline or there is none; does nothing once finished or closed. */
   #arm(waits: readonly Wait[]): void {
     this.#disarm()
     const at = wakeAt(waits)
@@ -1241,6 +1263,7 @@ export class SessionActor implements LiveCalls {
     )
   }
 
+  /** Stops the timer's sleep, if one is armed. */
   #disarm(): void {
     this.#timer?.abort()
     this.#timer = null
@@ -1251,13 +1274,7 @@ export class SessionActor implements LiveCalls {
     if (timer !== this.#timer) return
     this.#timer = null
     if (this.#finished || this.hasWorker) return
-    try {
-      await this.#spawn("advance")
-    } catch (error) {
-      this.#log(`session ${this.sessionId}: a worker can't start (${errorName(error)})`)
-      return
-    }
-    this.#spent = at
+    if (await this.#spawnQuietly("advance")) this.#spent = at
   }
 
   // --- the session --------------------------------------------------------------------------
@@ -1365,7 +1382,8 @@ function redactKey(value: unknown, provider: Pick<Provider, "llm_config"> | null
   return typeof key === "string" && key !== "" ? redact(value, [], [key]) : value
 }
 
-/** The earliest deadline of an unsettled call in `waits`, or null (yian's `wakeAt`; record times compare as text). */
+/** The earliest deadline of an unsettled call in `waits`, or null; record times compare as text. Mirrors yian's
+ *  `wakeAt` (`ts/src/runtime/waits.ts`). */
 function wakeAt(waits: readonly Wait[]): string | null {
   let earliest: string | null = null
   for (const wait of waits) {
@@ -1377,7 +1395,8 @@ function wakeAt(waits: readonly Wait[]): string | null {
 }
 
 /** Resolves once `scheduler`'s clock reaches `at` (epoch ms), sleeping at most `SLEEP_CHUNK_MS` at a time and
- *  reading the clock again after each, so a machine that slept still wakes on time; rejects once `signal` aborts. */
+ *  reading the clock again after each, so a machine that slept still wakes on time; rejects once `signal` aborts.
+ *  Copied from yian's `sleepUntil` (`ts/src/cli/chat.ts`). */
 async function sleepUntil(scheduler: Scheduler, at: number, signal: AbortSignal): Promise<void> {
   for (let left = at - scheduler.now(); left > 0; left = at - scheduler.now()) {
     await scheduler.sleep(Math.min(left, SLEEP_CHUNK_MS), signal)
@@ -1387,6 +1406,12 @@ async function sleepUntil(scheduler: Scheduler, at: number, signal: AbortSignal)
 /** The calls a `result` frame says its run waits on. */
 function waitsOf(frame: Frame): Wait[] {
   return Array.isArray(frame.waits) ? (frame.waits as Wait[]) : []
+}
+
+/** Whether `a` and `b` wait on the same calls, each settled or not alike. */
+function sameWaits(a: readonly Wait[], b: readonly Wait[]): boolean {
+  const settled = new Map(a.map((wait) => [wait.call_id, wait.settled]))
+  return a.length === b.length && b.every((wait) => settled.get(wait.call_id) === wait.settled)
 }
 
 /** The error a refused message gets: `409 ending` once the inbox closed or the run ended, `422 too_large`, or
