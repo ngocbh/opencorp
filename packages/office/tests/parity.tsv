@@ -175,7 +175,8 @@ hq/test_api.py	open	—	split: O2-9 → O3-9 → O3-15 → O4b-7; O2-9's tests a
 hq/test_app_fixture.py	ported	packages/office/tests/hq/app_fixture.test.ts	—	O2-7
 hq/test_auth.py	ported	packages/office/tests/hq/auth.test.ts	—	O2-9
 hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7
-hq/test_core.py	open	—	—	O2-10
+hq/test_core.py	ported	packages/office/tests/hq/core.test.ts	—	O2-10
+hq/test_core.py::test_hq_registers_the_snapshot_cache_it_creates	dropped	—	design §2.3 (`extras` goes): `office.snapshots` always exists, so HQ never creates one	O2-10
 hq/test_events.py	ported	packages/office/tests/hq/events.test.ts	—	O2-10
 hq/test_events.py::test_a_failing_recheck_ends_the_stream_quietly_and_keeps_the_session	changed	packages/office/tests/hq/events.test.ts::a failing recheck ends the stream quietly and keeps the session	design §10.1 and §6 rule 13: a commit that doesn't exist makes the fingerprint load fail (no monkeypatching); the log line ends with the error's type, no traceback, and no `internal error` line follows	O2-10
 hq/test_guard.py	ported	packages/office/tests/hq/guard.test.ts	—	O2-9

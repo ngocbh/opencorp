@@ -41,7 +41,7 @@ export async function makeHq(
   fs.mkdirSync(office.paths.office, { recursive: true, mode: 0o700 })
   const data = settings ?? { tcp: false, app_dir: path.join(office.paths.home, "dist") }
   fs.writeFileSync(path.join(office.paths.office, "hq.json"), JSON.stringify(data))
-  const hq = attach(office, { log: (line) => logs?.push(line) })
+  const hq = attach(office, { log: (line) => logs?.push(line), listen: false })
   // makeOffice stops the office when the test finishes.
   await office.start()
   return hq
