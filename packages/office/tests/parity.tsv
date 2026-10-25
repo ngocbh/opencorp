@@ -356,7 +356,7 @@ test_smoke.py	ported	packages/office/tests/smoke.test.ts	the office package impo
 testing/test_codex_spike.py	dropped	—	codex_spike.py stays a dev-only script, retired at cut-over (D29)	O0-9
 testing/test_fake_codex.py	ported	packages/office/tests/testing/fake_codex.test.ts	—	O3-10
 tools/company/test_draft.py	ported	packages/office/tests/tools/company/draft.test.ts	—	O2-16b
-tools/company/test_work.py	open	—	—	O2-22b
+tools/company/test_work.py	ported	packages/office/tests/tools/company/work.test.ts	—	O2-22b
 tools/test_build.py	open	—	—	O2-22b
 tools/test_work_items.py	ported	packages/office/tests/tools/work_items.test.ts	—	O2-22a
 worker/test_channel.py	ported	packages/office/tests/worker/channel.test.ts,packages/office/tests/worker/codec.test.ts	—	O3-1
@@ -780,6 +780,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/store/runs.test.ts::a runs config is recorded at spawn	resume or fresh run reads it (§5.1, §8.4)	O1-3
 —	new	packages/office/tests/store/runs.test.ts::an end time needs an end reason	§5.1	O1-3
 —	new	packages/office/tests/store/sessions.test.ts::a field with no column needs a store migration	CLAUDE.md's store-migration rule (§5.1)	O1-3
+—	new	packages/office/tests/tools/company/work.test.ts::ask manager titles its work item with the question on one line	Python's TITLE_CHARS rule, untested there: whitespace collapsed, 80 code points, "Question" fallback	O2-22b
+—	new	packages/office/tests/tools/company/work.test.ts::ask manager without an on question callback stores nothing	plan choice 2: no onQuestion rejects before anything is stored	O2-22b
+—	new	packages/office/tests/tools/company/work.test.ts::company tool arguments of the wrong type store nothing	design §6 rule 9 (a worker tool call's args are untrusted: only a string id reaches SQLite; no value in errors)	O2-22b
 —	new	packages/office/tests/tools/work_items.test.ts::a work item id that is not a string is no work item	plan decision 7; design §6 rule 9 (a worker tool call's args are untrusted: only a string id reaches SQLite)	O2-22a
 —	new	packages/office/tests/tools/work_items.test.ts::the work item tool specs equal the saved copy	D20	O2-22a
 —	new	packages/office/tests/worker/channel.test.ts::a broken transport closes the channel with a fixed message	design §2.4, §6 rule 1	O3-1
