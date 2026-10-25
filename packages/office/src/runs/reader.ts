@@ -184,8 +184,8 @@ type Stat = fs.BigIntStats
  * is left for the next call. A line it can't read while the file changed under the read is read again once, from the
  * start.
  *
- * Throws UnsupportedSchema or UnreadableLog for a complete line this office can't read, and the `fs` error (`ENOENT`)
- * of a log it can't open.
+ * Throws UnsupportedSchema or UnreadableLog for a complete line this office can't read or any line over LINE_CAP, and
+ * the `fs` error (`ENOENT`) of a log it can't open.
  */
 export async function refresh(
   path: string,
@@ -285,9 +285,8 @@ function pacer(): () => Promise<void> {
 
 /**
  * The end of the last complete line of `path` from `index.offset` on, scanned CHUNK at a time for newlines only, so
- * nothing but one chunk is held. Throws UnreadableLog for a complete line over LINE_CAP. A line still without a newline
- * once it is past LINE_CAP ends the scan before it, so at most LINE_CAP and a chunk of it is read (a complete line
- * whose newline is more than a chunk past LINE_CAP is then left unread rather than refused).
+ * nothing but one chunk is held. Throws UnreadableLog as soon as a line, terminated or not, passes LINE_CAP, so at most
+ * LINE_CAP and a chunk past the last complete line is read.
  */
 async function scan(path: string, index: Index, pace: () => Promise<void>): Promise<number> {
   const fd = fs.openSync(path, "r")
@@ -307,8 +306,10 @@ async function scan(path: string, index: Index, pace: () => Promise<void>): Prom
         lineStart = pos + nl + 1
         line += 1
       }
-      // A line already past LINE_CAP can never be read, so the rest of it isn't read on every refresh.
-      if (pos + count - lineStart > LINE_CAP) return lineStart
+      // A line already past LINE_CAP can never be read, wherever its newline falls, so it is refused before the rest.
+      if (pos + count - lineStart > LINE_CAP) {
+        throw new UnreadableLog(`This log has a record too large to read (line ${line})`)
+      }
       pos += count
       await pace()
     }
@@ -319,10 +320,10 @@ async function scan(path: string, index: Index, pace: () => Promise<void>): Prom
 
 /**
  * Folds each complete record of `path` from `index.offset` on into `index` (the default `ReadOn`). The office scans
- * the new bytes first, so a line over LINE_CAP is refused before yian's reader holds it, and yian's reader is stopped
- * at the last complete line the scan saw, so it never reads a tail being written. Yields to the event loop about every
- * 10 ms, checked every 256 records and every CHUNK bytes of records, so at most one record (up to LINE_CAP) is read
- * past that between yields. The last line read is hashed after the loop: a writer that rewrites that line between the
+ * the new bytes first, so a line over LINE_CAP, complete or a torn tail, is refused before yian's reader holds it, and
+ * yian's reader is stopped at the last complete line the scan saw, so it never reads a tail being written. Yields to
+ * the event loop about every 10 ms, checked every 256 records and every CHUNK bytes of records, so at most one record
+ * (up to LINE_CAP) is read past that between yields. The last line read is hashed after the loop: a writer that rewrites that line between the
  * read and the hash makes the next refresh rebuild once. A writer that replaces or rewrites the scanned bytes between
  * the scan and yian's read can still make yian hold a line over LINE_CAP: only a line cap in yian's reader closes that.
  */

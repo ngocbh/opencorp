@@ -122,23 +122,26 @@ test("a line that isnt a record or a seq out of order makes the log unreadable",
 })
 
 test("a line over the line cap makes the log unreadable before yian reads it", async () => {
-  const error = await refused(logOf(runStarted(0), committed(1, "a", { output: "x".repeat(LINE_CAP + 1024) })))
-  expect(error).toBeInstanceOf(UnreadableLog)
-  expect(error.message).toBe("This log has a record too large to read (line 2)")
-  const file = logOf(runStarted(0), started(1, "a"))
-  const index = await refresh(file, null)
-  fs.appendFileSync(file, committed(2, "a", { output: "x".repeat(LINE_CAP + 1024) }))
-  const again = await refresh(file, index).catch((caught: Error) => caught)
-  expect(again).toBeInstanceOf(UnreadableLog)
-  expect((again as Error).message).toBe("This log has a record too large to read (line 3)")
+  // Past the cap by a little and by more than a chunk, so the newline falls in the same or a later chunk.
+  for (const over of [1024, 3 << 20]) {
+    const error = await refused(logOf(runStarted(0), committed(1, "a", { output: "x".repeat(LINE_CAP + over) })))
+    expect(error).toBeInstanceOf(UnreadableLog)
+    expect(error.message).toBe("This log has a record too large to read (line 2)")
+    const file = logOf(runStarted(0), started(1, "a"))
+    const index = await refresh(file, null)
+    fs.appendFileSync(file, committed(2, "a", { output: "x".repeat(LINE_CAP + over) }))
+    const again = await refresh(file, index).catch((caught: Error) => caught)
+    expect(again).toBeInstanceOf(UnreadableLog)
+    expect((again as Error).message).toBe("This log has a record too large to read (line 3)")
+  }
 })
 
-test("an unterminated tail over the line cap is left unread", async () => {
+test("an unterminated tail over the line cap makes the log unreadable", async () => {
   const file = chatLog(path.join(tempDir(), "r.jsonl"))
-  const whole = fs.readFileSync(file)
   fs.appendFileSync(file, Buffer.alloc(LINE_CAP + 1024, "x"))
-  const index = await refresh(file, null)
-  expect([index.lastSeq, index.offset]).toEqual([19, whole.length])
+  const error = await refused(file)
+  expect(error).toBeInstanceOf(UnreadableLog)
+  expect(error.message).toBe("This log has a record too large to read (line 21)")
 })
 
 test("a torn last line is left for later", async () => {
