@@ -5,7 +5,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-LimitNOFILE=4096
+LimitNOFILE=4096:infinity
 WorkingDirectory=/Users/owner/.opencorp/office
 Environment="HOME=/Users/owner"
 Environment="PATH=/usr/bin:/bin"

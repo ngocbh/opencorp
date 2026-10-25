@@ -23,7 +23,7 @@ function shQuote(word: string): string {
 
 /**
  * The daemon for tmux's shell: `env -i` (by absolute path) so tmux's own environment (and any key in it) is
- * dropped, with room for 4096 open files.
+ * dropped, with a soft limit of 4096 open files.
  *
  * Its output goes to the log; its stdin stays on the pane.
  */
@@ -34,8 +34,9 @@ export function shellCommand(launch: Launch): string {
   const argv = launch.argv.map(shQuote)
   // stdin holds the pane's pty open: tmux 2.7 closes a pane once nothing has its pty open, even
   // while its process runs, and the kernel then hangs up the daemon. The daemon never reads stdin,
-  // and every child it starts gets its own.
-  return `ulimit -n 4096; exec /usr/bin/env -i ${[...env, ...argv].join(" ")} >>${shQuote(launch.log)} 2>&1`
+  // and every child it starts gets its own. `-S` sets only the soft limit, as Python did: no hard cap. `;`, not
+  // `&&`: when the hard limit is below 4096 `ulimit` fails, says why in the log, and the daemon still starts.
+  return `ulimit -Sn 4096; exec /usr/bin/env -i ${[...env, ...argv].join(" ")} >>${shQuote(launch.log)} 2>&1`
 }
 
 /**
@@ -56,8 +57,8 @@ function messageOf(error: unknown): string {
 }
 
 /**
- * Starts the daemon as a detached process leading its own session, its output appended to the log, with room
- * for 4096 open files.
+ * Starts the daemon as a detached process leading its own session, its output appended to the log, with a soft
+ * limit of 4096 open files.
  *
  * Throws `OfficeStartError` for an office dir that isn't ours, and `ServiceError` if the office program isn't an
  * executable file, the log can't be opened, or the daemon can't be started.
@@ -81,9 +82,9 @@ export function startBackground(launch: Launch, host: Host): void {
   try {
     let child: ChildProcess
     try {
-      // `;`, not `&&`: when the hard limit is below 4096 `ulimit` fails, says why in the log, and the daemon
-      // still starts.
-      child = host.spawn(["/bin/sh", "-c", 'ulimit -n 4096; exec "$@"', "sh", ...launch.argv], {
+      // `-S` sets only the soft limit, as Python did: no hard cap. `;`, not `&&`: when the hard limit is below
+      // 4096 `ulimit` fails, says why in the log, and the daemon still starts.
+      child = host.spawn(["/bin/sh", "-c", 'ulimit -Sn 4096; exec "$@"', "sh", ...launch.argv], {
         cwd: launch.cwd,
         env: { ...launch.env },
         stdio: ["ignore", log, log],

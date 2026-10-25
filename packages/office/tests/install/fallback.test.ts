@@ -36,7 +36,7 @@ function refusal(call: () => void): Error {
 
 test("the tmux command runs the daemon with only its env its output to the log and its stdin on the pane", () => {
   expect(fallback.shellCommand(ownerLaunch())).toBe(
-    "ulimit -n 4096; exec /usr/bin/env -i HOME=/Users/owner PATH=/usr/bin:/bin" +
+    "ulimit -Sn 4096; exec /usr/bin/env -i HOME=/Users/owner PATH=/usr/bin:/bin" +
       " /opt/opencorp/bin/opencorp daemon --home /Users/owner/.opencorp" +
       " >>/Users/owner/.opencorp/office/office.log 2>&1",
   )
@@ -81,7 +81,7 @@ test("background detaches the daemon with its output in a private log", () => {
   }
   const one = officeAt(dir, program(dir), { PATH: "/usr/bin", ANTHROPIC_API_KEY: "sk-x" })
   fallback.startBackground(one, makeHost(dir, new Runner(), { spawn }))
-  expect(got.argv).toEqual(["/bin/sh", "-c", 'ulimit -n 4096; exec "$@"', "sh", ...one.argv])
+  expect(got.argv).toEqual(["/bin/sh", "-c", 'ulimit -Sn 4096; exec "$@"', "sh", ...one.argv])
   expect(got.options!.env).toEqual({ PATH: "/usr/bin" })
   expect(got.options!.cwd).toBe(one.cwd)
   expect(got.options!.detached).toBe(true)

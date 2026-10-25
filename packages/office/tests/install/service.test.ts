@@ -58,9 +58,9 @@ function recorder(): { started: (readonly string[])[]; spawn: (argv: readonly [s
   }
 }
 
-/** What `startBackground` hands `spawn` for `one`: its argv under `/bin/sh` with room for 4096 open files. */
+/** What `startBackground` hands `spawn` for `one`: its argv under `/bin/sh` with a soft limit of 4096 open files. */
 function background(one: Launch): string[] {
-  return ["/bin/sh", "-c", 'ulimit -n 4096; exec "$@"', "sh", ...one.argv]
+  return ["/bin/sh", "-c", 'ulimit -Sn 4096; exec "$@"', "sh", ...one.argv]
 }
 
 /** What `promise` rejected with; fails the test when it resolves. */

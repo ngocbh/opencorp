@@ -37,7 +37,8 @@ function arg(value: string): string {
  * The unit: the daemon, restarted only when it fails, output appended to the log, with room for 4096 open files.
  * Throws `RangeError` if a value holds a newline.
  *
- * A daemon that fails five times in two minutes is left stopped rather than restarted forever.
+ * The limit is soft only: the hard limit stays the user manager's, since systemd clamps an unprivileged
+ * `infinity` to it. A daemon that fails five times in two minutes is left stopped rather than restarted forever.
  */
 export function unit(launch: Launch): string {
   const env = Object.keys(launch.env)
@@ -53,7 +54,7 @@ export function unit(launch: Launch): string {
     "\n" +
     "[Service]\n" +
     "Type=simple\n" +
-    "LimitNOFILE=4096\n" +
+    "LimitNOFILE=4096:infinity\n" +
     `WorkingDirectory=${plain(launch.cwd)}\n` +
     env +
     `ExecStart=${launch.argv.map(arg).join(" ")}\n` +
