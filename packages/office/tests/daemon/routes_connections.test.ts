@@ -3,6 +3,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
+import { type AuthRequest, OpenAIAuth } from "@ngocbh/yian/llm_clients"
 import { stringify } from "yaml"
 import { Identity, identityPath, writeIdentity } from "../../src/auth/identity.ts"
 import { newToken } from "../../src/auth/tokens.ts"
@@ -12,7 +13,9 @@ import { type Lister, ownModels } from "../../src/chat/models.ts"
 import { ProviderError } from "../../src/chat/provider.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { writePrivate } from "../../src/secrets.ts"
+import { APPROVED, CATALOG, PENDING, REFRESH, SIGNATURE, TOKENS, USERCODE, testScheduler } from "../chat/helpers.ts"
 import { git } from "../company/helpers.ts"
+import { waitFor } from "../helpers.ts"
 import { recordEvents } from "../store/helpers.ts"
 import { addHuman, bearer, giveDevice, makeOffice, type Reply, request, served } from "./helpers.ts"
 
@@ -471,4 +474,126 @@ test.each(NEEDS_CHECK)("an add that needs a one reply check answers 501 and save
   expect([r.status, errorOf(r)]).toEqual([501, "not_implemented"])
   expect(r.text).not.toContain(body.api_key as string)
   onlyOffice(office)
+})
+
+// Subscription sign-ins.
+
+/** OpenAI's sign-in and model catalog: the device code is approved once `approved` is set. */
+class FakeOpenAI {
+  approved = false
+
+  readonly request: AuthRequest = async (_method, url) => {
+    if (url.endsWith("/usercode")) return USERCODE
+    if (url.endsWith("/deviceauth/token")) return this.approved ? APPROVED : PENDING
+    return url.endsWith("/oauth/token") ? TOKENS : CATALOG
+  }
+}
+
+/** A fake OpenAI, and the `auth` option that signs in to it on a test scheduler. */
+function openai(): { fake: FakeOpenAI; auth: NonNullable<LoginsOptions["auth"]> } {
+  const fake = new FakeOpenAI()
+  return {
+    fake,
+    auth: ({ signal }) => new OpenAIAuth({ request: fake.request, scheduler: testScheduler(), signal }),
+  }
+}
+
+/** The sign-in `id` once it reaches `state` (at most 10 s). */
+function poll(sock: string, id: string, headers: Record<string, string>, state: string): Promise<Reply> {
+  return waitFor(
+    async () => {
+      const r = await get(sock, `/connections/login/${id}`, headers)
+      return json(r).state === state ? r : null
+    },
+    { timeout: 10_000, what: `sign-in ${id} to become ${state}` },
+  )
+}
+
+function noTokens(...texts: string[]): void {
+  for (const text of texts) {
+    expect(text).not.toContain(SIGNATURE)
+    expect(text).not.toContain(REFRESH)
+  }
+}
+
+test("the owner signs in to a subscription", async () => {
+  const { fake, auth } = openai()
+  const { office, sock, listings } = await setup({ auth })
+  const owner = await asOwner(office)
+  const r = await post(sock, "/connections/login", owner, { provider: "openai" })
+  const login = json(r)
+  expect([r.status, login.state, login.url, login.user_code, login.connection]).toEqual([
+    200,
+    "waiting",
+    "https://auth.openai.com/codex/device",
+    "ABCD-EFGH",
+    null,
+  ])
+  const shown = await get(sock, `/connections/login/${login.id}`, owner)
+  expect(shown.json()).toEqual(login)
+  fake.approved = true
+  const done = await poll(sock, login.id as string, owner, "signed_in")
+  expect(json(done).connection).toBe("chatgpt")
+  // Only the warm-up after a sign-in lists the office connection here: Logins got the office's model cache.
+  await waitFor(() => listings.calls.includes("office"), { what: "the warm-up to list office" })
+  const listed = await get(sock, "/connections", owner)
+  expect(json(listed).connections).toContainEqual({
+    name: "chatgpt",
+    provider: "chatgpt",
+    method: "subscription",
+    model: "gpt-5.5",
+    default: false,
+  })
+  const models = await get(sock, "/connections/chatgpt/models", owner)
+  noTokens(
+    r.text,
+    shown.text,
+    done.text,
+    listed.text,
+    models.text,
+    fs.readFileSync(path.join(office.connections.dir, "chatgpt.json"), "utf8"),
+  )
+})
+
+test("a sign in is only for openai", async () => {
+  const { auth } = openai()
+  const { office, sock } = await setup({ auth })
+  const owner = await asOwner(office)
+  const r = await post(sock, "/connections/login", owner, { provider: "anthropic" })
+  expect([r.status, errorOf(r)]).toEqual([422, "invalid_body"])
+  onlyOffice(office)
+})
+
+test("only the starter sees or cancels a sign in", async () => {
+  const { fake, auth } = openai()
+  const { office, sock, company } = await setup({ auth })
+  const owner = await asOwner(office)
+  const ava = asAva(office)
+  commitAsset(company, officeAsset([{ who: "ava", can: ["connections"] }])) // managing isn't enough
+  const login = json(await post(sock, "/connections/login", owner, { provider: "openai" }))
+  const unknown = "01J0000000000000000000000Z"
+  for (const [method, id, headers] of [
+    ["GET", login.id as string, ava],
+    ["DELETE", login.id as string, ava],
+    ["GET", unknown, owner],
+    ["DELETE", unknown, owner],
+  ] as const) {
+    const r = await send(sock, method, `/connections/login/${id}`, headers)
+    expect([method, id, r.status, errorOf(r)]).toEqual([method, id, 404, "not_found"])
+  }
+  let r = await del(sock, `/connections/login/${login.id}`, owner)
+  expect([r.status, r.json()]).toEqual([200, { ok: true }])
+  r = await get(sock, `/connections/login/${login.id}`, owner)
+  expect(json(r).state).toBe("cancelled")
+  fake.approved = true
+  expect(await office.connections.names()).toEqual(["office"])
+})
+
+test("no sign in starts once the office is stopping", async () => {
+  const { auth } = openai()
+  const { office, sock } = await setup({ auth })
+  const owner = await asOwner(office)
+  await office.logins.closeAll()
+  const r = await post(sock, "/connections/login", owner, { provider: "openai" })
+  expect([r.status, errorOf(r)]).toEqual([503, "stopping"])
 })
