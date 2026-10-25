@@ -697,6 +697,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/session_actor.test.ts::a card answer is completed and consumed	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a changed endpoint before a message starts a fresh run	design §8.4	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a delivery acked after result is advanced	O4a-0a	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a fresh run carries a message answer as its message	4a revision §1	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a fresh run that cant spawn at end stops the run it replaced	4a revision §1 (Finish)	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a lost ack is resent and a lost interrupt is dropped	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a message after end is refused as ending	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a not resumed advance starts a fresh run with the deliveries it never applied	O4a-2	O4a-3
@@ -705,10 +707,12 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/session_actor.test.ts::a settled wait is re-advanced once without progress	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a stored question fires question stored once	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::an end whose advance is not resumed still closes the fresh run	4a revision §1	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::an ending session whose fresh run cant spawn fails	4a revision §1: Python's _new_run failing fails the session (_cant_start)	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::esc on a session asleep while its agent waits on a call spawns one advance that cuts it	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::exit typed ends the session	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::fail with a lingering waiting worker reports no run frame	4a revision §1 (Finish): runFinished gets only the result that ended the run; Python passed None when the office ended it	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::the wake at timer advances a timed out question once	D38	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::the wake at timer fires again after a busy run fails twice	D38	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::the wake at timer is armed in chunks and never advances early	D38	O4a-3
 —	new	packages/office/tests/chat/state.test.ts::write state with nothing new writes nothing	design §3.2 (mirror): Python's equality check before writing (state.py:56) had no test; it keeps a no-op status write from emitting session.updated	O3-8b
 —	new	packages/office/tests/chat/template.test.ts::a long history is folded into the summary before the reply	design §8.8; Python's session memory summarised past 32,000 characters keeping 4 turns: the template folds them with yian's compact_history	O4a-1

@@ -934,3 +934,125 @@ test("an end whose advance is not resumed still closes the fresh run", async () 
   await waitFor(() => status(o, sid) === "ended", { what: "the end" })
   expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
 })
+
+/** Makes `o`'s next scripted spawn throw before it starts a worker, recording nothing. */
+function failNextScripted(o: ChatOffice): void {
+  const spawn = o.registry.spawn
+  o.registry.spawn = async () => {
+    o.registry.spawn = spawn
+    throw new Error("the spawn failed")
+  }
+}
+
+/** Points `o`'s office connection at another key, so a run started before no longer matches its record. */
+async function changeKey(o: ChatOffice, fake: Awaited<ReturnType<typeof fakeLlm>>): Promise<void> {
+  const file = path.join(o.office.paths.office, "connections", "office.json")
+  const llm_config = { ...LLM_CONFIG, api_key: "sk-changed" }
+  await writePrivate(file, JSON.stringify({ llm_config, env: fake.env(), prices: {} }))
+}
+
+test("a fresh run that cant spawn at end stops the run it replaced", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const old = actor.runId!
+  workers[0]!.handlers.result(workers[0]!.worker, waitingResult(old))
+  workers[0]!.handlers.exited(workers[0]!.worker, 0)
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "asleep at the turn" })
+  // The key changed: End's advance is a fresh run, which can't spawn.
+  await changeKey(o, fake)
+  failNextScripted(o)
+  expect(await outcome(actor.end())).toBe("503 cant_wake")
+  expect(status(o, sid)).toBe("failed")
+  const fresh = actor.runId!
+  expect(session(o, sid).run_ids).toEqual([old, fresh])
+  expect(o.office.store.getRun(old)?.endReason).toBe(NEW_MODEL)
+  expect(o.office.store.getRun(fresh)?.endReason).toBe(COULDNT_RESUME)
+  // Nothing cancelled the old run, which has a log: one cancel job for it; the fresh run never started.
+  await waitFor(() => workers.length === 2, { what: "the cancel job" })
+  expect(o.jobs.slice(1)).toMatchObject([{ run_id: old, advance: false, deliver: [{ op: "cancel" }] }])
+})
+
+test("an ending session whose fresh run cant spawn fails", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const old = actor.runId!
+  workers[0]!.handlers.result(workers[0]!.worker, waitingResult(old))
+  workers[0]!.handlers.exited(workers[0]!.worker, 0)
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "asleep at the turn" })
+  await actor.end()
+  await waitFor(() => workers.length === 2, { what: "the end's advance" })
+  const second = workers[1]!
+  second.handlers.deliverReply(second.worker, { type: "deliver_reply", id: second.job.deliver[0]!.id, seq: 2 })
+  second.handlers.result(second.worker, notResumed(old))
+  failNextScripted(o)
+  second.handlers.exited(second.worker, 1)
+  // Left ending it could never be ended.
+  await waitFor(() => status(o, sid) === "failed", { what: "the failure" })
+  expect(o.office.store.getRun(actor.runId!)?.endReason).toBe(COULDNT_RESUME)
+  await expect(actor.end()).rejects.toMatchObject({ status: 409, code: "not_live" })
+})
+
+test("a fresh run carries a message answer as its message", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const old = actor.runId!
+  const first = workers[0]!
+  await first.handlers.askUser(first.worker, ASKED, `${old}/c1`)
+  const waits = [{ ...TAKE, node: "chat#0/reply", call_id: `${old}/c1`, tool: "ask_user", inbox: null }]
+  first.handlers.result(first.worker, waitingResult(old, waits))
+  first.handlers.exited(first.worker, 0)
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  await changeKey(o, fake)
+  // The message answers the open question, but the fresh run never asked it: it gets the text as a message.
+  const a = outcome(actor.prompt("A"))
+  await waitFor(() => workers.length === 2, { what: "the fresh run" })
+  const fresh = workers[1]!
+  expect(fresh.job.kind).toBe("chat")
+  expect(fresh.job.deliver.map((d) => d.op)).toEqual(["send"])
+  const sent = fresh.job.deliver[0] as Extract<Delivery, { op: "send" }>
+  expect((sent.event as { parts: { text: string }[] }).parts.at(-1)!.text).toBe("A")
+  fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: fresh.job.deliver[0]!.id, seq: 1 })
+  expect(await a).toBe("queued")
+})
+
+test("the wake at timer fires again after a busy run fails twice", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const start = Date.parse("2026-10-25T00:00:00.000Z")
+  const { scheduler, sleeps, clock } = steppedScheduler(start)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid, { scheduler })
+  await actor.start()
+  const runId = actor.runId!
+  const deadline = new Date(start + 3_600_000).toISOString()
+  const asked = { node: "chat#0/reply", call_id: "q1", tool: "ask_user", inbox: null, deadline, settled: false }
+  workers[0]!.handlers.result(workers[0]!.worker, waitingResult(runId, [asked]))
+  workers[0]!.handlers.exited(workers[0]!.worker, 0)
+  await waitFor(() => sleeps.length === 1, { what: "the timer" })
+  clock.now = Date.parse(deadline)
+  sleeps[0]!.wake()
+  await waitFor(() => workers.length === 2, { what: "the advance at the deadline" })
+  // That worker, and its retry, find the run held by another process.
+  for (const n of [1, 2]) {
+    const { worker, handlers } = workers[n]!
+    handlers.error(worker, { type: "error", message: `RunBusyError: run ${runId} is running`, traceback: "" })
+    handlers.exited(worker, 1)
+    await waitFor(() => workers.length === n + 2, { what: `worker ${n + 1}` })
+  }
+  // The advance never ran: the timer is armed for the same deadline, which has come.
+  expect(o.kinds).toEqual(["chat", "advance", "advance", "advance"])
+  expect(o.jobs[3]).toMatchObject({ kind: "advance", advance: true, deliver: [] })
+})
