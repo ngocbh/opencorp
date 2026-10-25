@@ -162,7 +162,7 @@ export class Cards {
       try {
         this.store.setQuestionStatus(q.id, "stale")
       } catch (error) {
-        // Answered meanwhile.
+        // A store listener may have answered it during this loop.
         if (!(error instanceof InvalidTransition)) throw error
       }
     }

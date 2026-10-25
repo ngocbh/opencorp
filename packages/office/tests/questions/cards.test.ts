@@ -1,7 +1,7 @@
 /** Card actions on the questions extension, through a stand-in for the session actor. */
 import { expect, test } from "bun:test"
 import { inspect } from "node:util"
-import type { Question } from "@opencorp/protocol"
+import { type Question, stamp } from "@opencorp/protocol"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { HarnessError } from "../../src/chat/state.ts"
 import type { Office } from "../../src/daemon/office.ts"
@@ -73,7 +73,7 @@ function card(office: Office, over?: Partial<Question>): QuestionRecord {
 
 /** A fixed timestamp `n` seconds after 2026-01-01, so cards made in one test have a known order. */
 function at(n: number): string {
-  return new Date(Date.UTC(2026, 0, 1, 0, 0, n)).toISOString()
+  return stamp(new Date(Date.UTC(2026, 0, 1, 0, 0, n)))
 }
 
 /** The `HarnessError` that `action` rejected with; fails the test if it resolved or threw something else. */
@@ -137,7 +137,7 @@ test("a typed card gives the actor the converted values", async () => {
 test("a turn question is no card", async () => {
   const office = makeOffice()
   const { cards } = wire(office)
-  const turn = card(office, { source: "ask", node_id: "chat#1/ask" })
+  const turn = card(office, { source: "ask", node_id: "chat#1/ask", created_at: at(1) })
   expect(cards.check(turn, 42, "text")).toBeNull()
   const node = card(office, { source: "ask", node_id: "setup" })
   expect(cards.check(node, 42, "text")).toBe("the answer must be text")
@@ -361,6 +361,19 @@ test("an expired questions discussion is carried into the next card", async () =
   const next4 = office.store.addQuestion(question(s4.id, { created_at: at(2) }))
   await actor.hooks.notify("questionStored", next4)
   expect(carried(next4.id)).toBe(old4.id)
+
+  const s5 = office.store.createSession(session())
+  expired(s5.id, 1, said)
+  office.store.addQuestion(question(s5.id, { created_at: at(2) }))
+  const next5 = office.store.addQuestion(question(s5.id, { created_at: at(3) }))
+  cards.stored(next5)
+  expect(carried(next5.id)).toBeNull()
+
+  const s6 = office.store.createSession(session())
+  const next6 = office.store.addQuestion(question(s6.id, { created_at: at(3) }))
+  expired(s6.id, 4, said)
+  cards.stored(next6)
+  expect(carried(next6.id)).toBeNull()
 })
 
 test("a session that ends expires its open cards", async () => {

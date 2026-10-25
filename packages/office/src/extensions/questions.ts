@@ -11,7 +11,7 @@ export function register(office: Office): void {
   harness.hooks.answerCheck.push(cards.check.bind(cards))
   harness.hooks.questionStored.push(cards.stored.bind(cards))
   harness.hooks.sessionEnded.push(cards.ended.bind(cards))
-  // The sweep must run after the actor's own onStart, which resumes the sessions it can.
+  // Relies on the actor adding its own onStart (its resume) before the extensions load, so the sweep runs after it.
   office.onStart.push(() => cards.sweep())
   office.onStop.push(() => cards.close())
 }
