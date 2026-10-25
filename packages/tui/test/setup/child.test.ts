@@ -14,7 +14,7 @@ let scripts = 0
 function fake(code: string) {
   const script = path.join(dir, `fake-${++scripts}.ts`)
   writeFileSync(script, "const say = (o) => console.log(JSON.stringify(o))\n" + code)
-  return spawnSetup([process.execPath, script], dir)
+  return spawnSetup([process.execPath, script], dir, process.env as Record<string, string>)
 }
 
 /** The prompts `child` has sent so far, kept up to date. */
@@ -156,7 +156,11 @@ test("an answer after the child exited doesn't throw", async () => {
 })
 
 test("the child runs in its own session with git prompts off", async () => {
-  const child = spawnSetup(["/bin/sh", "-c", 'echo "$$ $(ps -o pgid= -p $$ | tr -d " ") $GIT_TERMINAL_PROMPT"'], dir)
+  const child = spawnSetup(
+    ["/bin/sh", "-c", 'echo "$$ $(ps -o pgid= -p $$ | tr -d " ") $GIT_TERMINAL_PROMPT"'],
+    dir,
+    process.env as Record<string, string>,
+  )
   expect(await child.done).toBe(0)
   const [said] = says(collect(child))
   const [pid, pgid, prompt] = said.split(" ")
@@ -164,8 +168,19 @@ test("the child runs in its own session with git prompts off", async () => {
   expect(prompt).toBe("0")
 })
 
+test("the child gets exactly the env it was given, with GIT_TERMINAL_PROMPT=0", async () => {
+  const child = spawnSetup(["/bin/sh", "-c", 'echo "$ONLY_THIS-$GIT_TERMINAL_PROMPT-${HOME:-none}"'], dir, {
+    ONLY_THIS: "yes",
+    PATH: "/usr/bin:/bin",
+  })
+  const prompts = collect(child)
+  await until(() => says(prompts).length > 0, 20_000)
+  expect(says(prompts)).toEqual(["yes-0-none"])
+  expect(await child.done).toBe(0)
+})
+
 test("a grandchild holding the pipes doesn't hold up done", async () => {
-  const child = spawnSetup(["/bin/sh", "-c", "sleep 30 & echo hi"], dir)
+  const child = spawnSetup(["/bin/sh", "-c", "sleep 30 & echo hi"], dir, process.env as Record<string, string>)
   const start = Date.now()
   expect(await child.done).toBe(0)
   expect(Date.now() - start).toBeLessThan(5000)

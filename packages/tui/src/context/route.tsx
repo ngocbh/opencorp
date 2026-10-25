@@ -21,12 +21,7 @@ export type ProfileRoute = {
   from?: string
 }
 
-export type DebriefRoute = {
-  type: "debrief"
-  sessionID: string
-}
-
-export type Route = HomeRoute | SessionRoute | ProfileRoute | DebriefRoute
+export type Route = HomeRoute | SessionRoute | ProfileRoute
 
 export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
   name: "Route",

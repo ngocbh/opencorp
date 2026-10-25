@@ -30,6 +30,11 @@ test("--help lists every command; an unknown command exits 2", async () => {
   expect(unknown.err).toContain("opencorp: unknown command: frobnicate")
 })
 
+test("there is no feedback command", async () => {
+  expect(commands.feedback).toBeUndefined()
+  expect((await capture(["feedback"])).code).toBe(2)
+})
+
 test("the TUI's flags become its args", () => {
   expect(parseTuiArgs([])).toEqual({})
   expect(parseTuiArgs(["-s", "S1", "--person", "minh"])).toEqual({ sessionID: "S1", person: "minh" })

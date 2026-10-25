@@ -6,9 +6,7 @@ import type {
   Connection,
   ConnectionList,
   ConnectionLogin,
-  Debrief,
   Event,
-  Feedback,
   HireRequest,
   HireResponse,
   HqStatus,
@@ -19,14 +17,12 @@ import type {
   PairCodeRequest,
   Person,
   Profile,
-  ProfileProposal,
   PromptRequest,
   RepoIssue,
   Question,
   Session,
   WorkItem,
 } from "@opencorp/protocol"
-import { createTwoFilesPatch } from "diff"
 import { createHash, randomBytes } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
@@ -64,11 +60,8 @@ export type FakeState = {
   messages: Record<string, Message[]>
   questions: Record<string, Question>
   profiles: Record<string, Profile>
-  proposals: Record<string, ProfileProposal>
   workItems: Record<string, WorkItem>
   comments: Record<string, Comment[]>
-  debriefs: Record<string, Debrief>
-  feedback: Feedback[]
   /** Hire previews by handle. */
   hires: Record<string, HireRequest>
   /** The office's model connections, in the order it lists them; `default` comes from `defaultConnection`. */
@@ -148,11 +141,8 @@ export function seed(nextId = counter()): FakeState {
     messages: { [session.id]: [] },
     questions: { [turn.id]: turn },
     profiles: { minh: { person: "minh", text: profile, version: blobId(profile), over_budget: false } },
-    proposals: {},
     workItems: {},
     comments: {},
-    debriefs: {},
-    feedback: [],
     hires: {},
     connections: [
       { name: OFFICE, provider: "azure", method: "api_key", model: "gpt-4o" },
@@ -232,8 +222,6 @@ export function createFakeOffice(
   const queued = new Map<string, string[]>()
   const streams = new Set<Stream>()
   const encoder = new TextEncoder()
-  // The run each debrief was written in; the protocol's Debrief doesn't carry it.
-  const debriefRuns = new Map<string, string>()
 
   const fail = (status: number, error: string, message: string) => new Fail(status, error, message)
   const refused = () => fail(422, "refused", "use /back to return to the question")
@@ -559,30 +547,6 @@ export function createFakeOffice(
     return question(q.id)
   }
 
-  /**
-   * Stores a session's debrief, as the office's debrief flow would, and publishes it. A ready
-   * debrief ends a debriefing session; a pending one leaves it debriefing (the flow may still run).
-   * `run` is the debrief's own run, which feedback may name once the debrief is ready.
-   */
-  function addDebrief(sessionId: string, fields: Partial<Debrief> = {}, opts: { run?: string } = {}) {
-    const type = state.debriefs[sessionId] ? "debrief.updated" : "debrief.created"
-    const s = session(sessionId)
-    if (opts.run) debriefRuns.set(s.id, opts.run)
-    const d: Debrief = { session_id: s.id, state: "ready", updated_at: now(), ...fields }
-    state.debriefs[sessionId] = d
-    publish(type, sessionId, d)
-    if (d.state === "ready" && s.status === "debriefing") setStatus(s.id, "ended")
-    return d
-  }
-  /** Moves a feedback item along the learning queue, as the office's backward job would. */
-  function feedbackStatus(id: string, status: Feedback["status"], fields: Partial<Feedback> = {}) {
-    const i = state.feedback.findIndex((f) => f.id === id)
-    const f: Feedback = { ...need(state.feedback[i], `feedback ${id}`), status, ...fields }
-    state.feedback[i] = f
-    publish("feedback.updated", id, f)
-    return f
-  }
-
   function profile(person: string) {
     need(
       state.people.find((p) => p.handle === person),
@@ -596,40 +560,6 @@ export function createFakeOffice(
     const p = profile(person)
     publish("profile.updated", person, p)
     return p
-  }
-  function updateProposal(p: ProfileProposal, type: "profile_proposal.created" | "profile_proposal.updated") {
-    state.proposals[p.id] = p
-    publish(type, p.id, p)
-    return p
-  }
-  /**
-   * Records the profile manager's proposal for a `profile_manager` session, as its propose tool
-   * would: the diff is against the current profile, and the session's older open proposals are
-   * discarded.
-   */
-  function propose(sessionId: string, text: string) {
-    const s = session(sessionId)
-    const current = profile(s.person)
-    for (const old of Object.values(state.proposals))
-      if (old.session_id === s.id && old.status === "open")
-        updateProposal({ ...old, status: "discarded" }, "profile_proposal.updated")
-    const file = `people/${s.person}/profile.md`
-    // Without the `===` line, like the office's difflib diff.
-    const diff = createTwoFilesPatch(`a/${file}`, `b/${file}`, current.text, text).replace(/^=+\n/, "")
-    return updateProposal(
-      {
-        id: nextId(),
-        session_id: s.id,
-        person: s.person,
-        base_version: current.version,
-        text,
-        diff,
-        status: "open",
-        commit: null,
-        created_at: now(),
-      },
-      "profile_proposal.created",
-    )
   }
 
   /**
@@ -994,7 +924,7 @@ export function createFakeOffice(
         const s = liveSession(params.id)
         if (s.status === "ending") return Response.json({ ok: true })
         setStatus(s.id, "ending")
-        // A main session is debriefed before it ends, and ends once its debrief is written.
+        // A main session is debriefed before it ends.
         const next = s.kind === "main" ? "debriefing" : "ended"
         setTimeout(() => session(s.id).status === "ending" && setStatus(s.id, next), 20)
         return Response.json({ ok: true })
@@ -1061,7 +991,7 @@ export function createFakeOffice(
       ({ params, actor }) => {
         checkManage(actor)
         if (params.name === OFFICE)
-          throw fail(422, "set_up_by_onboard", "office is office/provider.json; `opencorp onboard` changes it")
+          throw fail(422, "set_up_by_onboard", "office is office/connections/office.json; `opencorp onboard` changes it")
         connection(params.name)
         state.connections = state.connections.filter((c) => c.name !== params.name)
         return Response.json({ ok: true })
@@ -1223,119 +1153,6 @@ export function createFakeOffice(
     ],
     [
       "GET",
-      "/profiles/:person/proposals",
-      ({ params }) => {
-        need(
-          state.people.find((p) => p.handle === params.person),
-          `person ${params.person}`,
-        )
-        return Response.json(Object.values(state.proposals).filter((p) => p.person === params.person))
-      },
-    ],
-    [
-      "POST",
-      "/profile-proposals/:id/apply",
-      ({ params }) => {
-        const proposal = need(state.proposals[params.id], `proposal ${params.id}`)
-        if (proposal.status !== "open")
-          throw fail(409, "not_open", `proposal ${proposal.id} is ${proposal.status}, not open`)
-        const current = profile(proposal.person)
-        if (current.version !== proposal.base_version) {
-          updateProposal({ ...proposal, status: "stale" }, "profile_proposal.updated")
-          return Response.json({ expected: proposal.base_version, current: current.version }, { status: 409 })
-        }
-        // The proposal is marked applied before the profile's event, as the office does.
-        const commit = blobId(`commit ${blobId(proposal.text)}`)
-        updateProposal({ ...proposal, status: "applied", commit }, "profile_proposal.updated")
-        return Response.json(writeProfile(proposal.person, proposal.text))
-      },
-    ],
-    [
-      "POST",
-      "/feedback",
-      ({ body }) => {
-        check(str(body?.session_id) && str(body?.text), "session_id and text are required")
-        const s = session(body.session_id)
-        if (s.kind !== "main") throw fail(422, "not_learnable", `${s.id} is a ${s.kind} session`)
-        const runId: string | undefined = body.run_id ?? s.run_ids?.at(-1)
-        const runs = new Set(s.run_ids ?? [])
-        const debriefRun = debriefRuns.get(s.id)
-        if (debriefRun && state.debriefs[s.id]?.state === "ready") runs.add(debriefRun)
-        check(runId, `${s.id} has no runs`)
-        // A run of another session would be learned into the wrong person's profile.
-        check(runs.has(runId!), `run ${runId} is not in ${s.id}`)
-        // A session's latest run is still going (or may be killed) until the session has stopped.
-        const stopped = ["ended", "failed", "debriefing"].includes(s.status)
-        if (runId === s.run_ids?.at(-1) && !stopped) throw fail(409, "run_unfinished", `run ${runId} has not finished`)
-        const f: Feedback = {
-          id: nextId(),
-          session_id: s.id,
-          run_id: runId!,
-          author: human(),
-          text: body.text,
-          status: "queued",
-          attempts: 0,
-          created_at: now(),
-        }
-        state.feedback.push(f)
-        publish("feedback.created", f.id, f)
-        return Response.json(f)
-      },
-    ],
-    [
-      "GET",
-      "/debriefs/:session",
-      ({ params }) => {
-        const s = session(params.session)
-        const d = state.debriefs[s.id]
-        if (d) return Response.json(d)
-        // A debriefing session has a debrief, pending until the flow stores it.
-        if (s.status === "debriefing")
-          return Response.json({ session_id: s.id, state: "pending", updated_at: s.updated_at } satisfies Debrief)
-        throw fail(404, "not_found", `no debrief for ${s.id}`)
-      },
-    ],
-    [
-      "POST",
-      "/debriefs/:session/confirm",
-      ({ params, body }) => {
-        const s = session(params.session)
-        const d = state.debriefs[s.id]
-        if (d?.state !== "ready") throw fail(409, "not_ready", `the debrief for ${s.id} is not ready`)
-        const ups = d.follow_ups ?? []
-        check(
-          Array.isArray(body?.indices) && body.indices.every((i: unknown) => Number.isInteger(i) && ups[i as number]),
-          "indices must name follow-ups",
-        )
-        const picked = new Set<number>(body.indices)
-        // A follow-up is confirmed once: confirming it again keeps its work item.
-        const follow_ups = ups.map((f, i) => {
-          if (!picked.has(i) || f.confirmed) return f
-          const at = now()
-          const item: WorkItem = {
-            id: nextId(),
-            title: f.text,
-            kind: "task",
-            status: "open",
-            // The fake's only client is the local human, so they are the one confirming.
-            requester: human(),
-            assignee: s.person,
-            parent_id: s.work_item_id ?? null,
-            created_at: at,
-            updated_at: at,
-          }
-          state.workItems[item.id] = item
-          publish("work_item.created", item.id, item)
-          return { ...f, confirmed: true, work_item_id: item.id }
-        })
-        const next: Debrief = { ...d, follow_ups, updated_at: now() }
-        state.debriefs[params.session] = next
-        publish("debrief.updated", params.session, next)
-        return Response.json(next)
-      },
-    ],
-    [
-      "GET",
       "/events",
       ({ query }) => {
         let entry: Stream
@@ -1476,9 +1293,6 @@ export function createFakeOffice(
     setStatus,
     /** Changes a session's fields and publishes `session.updated`, as the office does. */
     updateSession: (id: string, fields: Partial<Session>) => upsertSession({ ...session(id), ...fields, updated_at: now() }),
-    propose,
-    addDebrief,
-    feedbackStatus,
     /** Writes an SSE comment line (`: text`) to every stream. */
     comment: (text: string) => write(`: ${text}\n\n`),
     ping: () => write(": ping\n\n"),

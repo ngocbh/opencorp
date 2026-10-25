@@ -93,7 +93,7 @@ test("on home, one Ctrl+C still exits", async () => {
   }
 })
 
-test("/end ends the session and opens its debrief", async () => {
+test("/end ends the session and says so", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
   const app = await bootFrame(createStub(office), { sessionID: s.id })
@@ -102,7 +102,7 @@ test("/end ends the session and opens its debrief", async () => {
     await app.input.typeText("/end")
     await app.until((f) => f.includes("End the session"))
     app.input.pressEnter()
-    await app.until((f) => f.includes("Writing the debrief…") || f.includes("No debrief yet."))
+    await app.until((f) => f.includes("Ending the session"))
     expect(office.requests.filter((r) => r.method === "POST").map((r) => r.path)).toEqual([`/sessions/${s.id}/end`])
   } finally {
     await app.stop()

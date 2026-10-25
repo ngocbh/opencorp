@@ -1,80 +1,122 @@
-// Running the Python side of `opencorp`, and checking that the office is up. Onboarding, the doctor,
-// and starting the office live in `python -m opencorp.install`, run with this checkout's venv;
-// it reads the home from $OPENCORP_HOME, which it inherits, or from a `--home` flag passed
-// through. `opencorp` never starts the office on its own: the service `opencorp init` or `opencorp onboard` installed does.
+// Running the setup commands, and checking that the office is up. Onboarding, the doctor, and starting the office
+// live in the office's `opencorp install` entry, in this same binary; it runs in the home dir with the setup env
+// (this env without the names that change how Bun starts). `opencorp` never starts the office on its own: the
+// service `opencorp init` or `opencorp onboard` installed does.
 import { createOfficeClient } from "@opencorp/client"
 import { readIdentity, type Identity, defaultSocket, identityPath } from "@opencorp/client/node"
+import { selfCommand, selfSpawnCwd, selfSpawnEnv } from "@opencorp/office/platform"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-/** The checkout `opencorp` runs from; the office runs from the same one. */
-export const REPO = path.resolve(import.meta.dir, "../../..")
-
-/** What running the Python side touches; tests pass fakes. */
+/** What running the install touches; tests pass fakes. */
 export interface Deps {
-  exists(file: string): boolean
-  which(command: string): string | null
-  /** Runs `argv` with this terminal's stdin, stdout and stderr; resolves to its exit code. */
-  spawn(argv: string[], cwd?: string): Promise<number>
-  error(message: string): void
+  /** Runs `argv` in `cwd` with exactly `env` and this terminal's stdin, stdout and stderr; resolves to its exit
+   *  code. */
+  spawn(argv: string[], options: { cwd: string; env: Record<string, string> }): Promise<number>
+  /** The folder the install runs in (`selfSpawnCwd`); throws when the home folder doesn't exist. */
+  spawnCwd(): string
 }
 
 export const realDeps: Deps = {
-  exists: (file) => fs.existsSync(file),
-  which: (command) => Bun.which(command),
-  spawn: async (argv, cwd) => {
-    // Bun.spawn's default is the environment bun started with; changes made since (the doctor's OPENCORP_BUN) count.
-    const proc = Bun.spawn(argv, { cwd, env: process.env, stdin: "inherit", stdout: "inherit", stderr: "inherit" })
+  spawn: async (argv, { cwd, env }) => {
+    const proc = Bun.spawn(argv, { cwd, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" })
     return await proc.exited
   },
-  error: (message) => console.error(message),
+  spawnCwd: selfSpawnCwd,
 }
 
-/** The python in the checkout's venv, which `uv sync` makes. */
-export function venvPython(repo = REPO) {
-  return path.join(repo, ".venv", "bin", "python")
+/** How to run one install command: its argv, env and folder. */
+export interface InstallSpec {
+  argv: string[]
+  env: Record<string, string>
+  cwd: string
 }
 
-/**
- * Runs `python -m opencorp.install <command> ...args` from the venv and resolves to its exit
- * code; without a venv, says to run `opencorp onboard` and resolves to 1. It runs in the caller's
- * folder, so a relative `--home` or $OPENCORP_HOME means the same as it does to the TUI.
- */
-export async function runInstall(command: string, args: string[], deps: Deps = realDeps): Promise<number> {
-  const python = venvPython()
-  if (!deps.exists(python)) {
-    deps.error(`opencorp: no Python environment at ${path.dirname(path.dirname(python))}; run \`opencorp onboard\``)
-    return 1
+/** `value` resolved against the caller's folder when it is a relative path; else unchanged: empty, absolute,
+ *  `~` or `~/…` (which the install expands), or when the folder can't be read. */
+function absolute(value: string, cwd: () => string): string {
+  if (value === "" || value === "~" || value.startsWith("~/") || path.isAbsolute(value)) return value
+  try {
+    return path.resolve(cwd(), value)
+  } catch {
+    // Bun's process.cwd() throws from a deleted folder.
+    return value
   }
-  return deps.spawn([python, "-m", "opencorp.install", command, ...args])
+}
+
+/** `value` resolved against the caller's folder when it names an existing local folder by a relative path; a URL,
+ *  an scp-style `host:path` or a `~` path is unchanged. */
+function localFrom(value: string, cwd: () => string): string {
+  if (value.includes("://") || /^[^/]*:/.test(value) || value.startsWith("~")) return value
+  const resolved = absolute(value, cwd)
+  return resolved !== value && fs.existsSync(resolved) ? resolved : value
 }
 
 /**
- * Syncs the checkout's venv with uv (on PATH or in ~/.local/bin) and resolves to uv's exit code; without uv, says
- * so for `opencorp <command>` and resolves to 1.
+ * `args` with each `--home` (and, for onboard, `--from`) value that is a relative path made absolute against the
+ * caller's folder, which `cwd` reads only when one is: the install runs in the home dir, so a relative path typed
+ * here must keep naming the folder it was typed in.
  */
-export async function syncVenv(command: string, deps: Deps = realDeps): Promise<number> {
-  const uv = deps.which("uv") ?? [path.join(os.homedir(), ".local", "bin", "uv")].find((p) => deps.exists(p))
-  if (!uv) {
-    deps.error(`opencorp ${command}: uv not found; install it (https://docs.astral.sh/uv/) and run \`opencorp ${command}\` again`)
-    return 1
+function absoluteArgs(command: string, args: string[], cwd: () => string): string[] {
+  const fixes: Record<string, (value: string, cwd: () => string) => string> = { "--home": absolute }
+  if (command === "onboard") fixes["--from"] = localFrom
+  const out = [...args]
+  for (let i = 0; i < out.length; i++) {
+    const arg = out[i]!
+    const eq = arg.indexOf("=")
+    const flag = eq < 0 ? arg : arg.slice(0, eq)
+    const fix = fixes[flag]
+    if (!fix) continue
+    if (eq >= 0) out[i] = `${flag}=${fix(arg.slice(eq + 1), cwd)}`
+    // A separate value that looks like a flag (`--home -x`) the install's parser rejects as a usage error; `-` is a
+    // value.
+    else if (i + 1 < out.length && !/^-./.test(out[i + 1]!)) out[i + 1] = fix(out[++i]!, cwd)
   }
-  // Quiet keeps uv's progress lines out of the install's prompts; its errors still show.
-  return deps.spawn([uv, "sync", "--frozen", "--quiet"], REPO)
+  return out
 }
 
 /**
- * Syncs the checkout's venv, then runs `runInstall(command, args)`; the venv is what runs it, so it must exist and
- * match the checkout first.
+ * How to run `opencorp install <command> ...args` in this binary: relative `--home`, `--from` (onboard) and
+ * `$OPENCORP_HOME` made absolute against `cwd`, the env `environ` without the names that change how Bun starts,
+ * and `home` (by default the home dir, which throws when it doesn't exist) as its folder.
  */
-export async function syncThenInstall(command: string, args: string[], deps: Deps = realDeps): Promise<number> {
-  const synced = await syncVenv(command, deps)
-  if (synced !== 0) return synced
-  return runInstall(command, args, deps)
+export function installSpawn(
+  command: string,
+  args: string[],
+  environ: Record<string, string | undefined> = process.env,
+  cwd: () => string = () => process.cwd(),
+  home: string = selfSpawnCwd(),
+): InstallSpec {
+  const env = { ...environ }
+  if (env.OPENCORP_HOME !== undefined) env.OPENCORP_HOME = absolute(env.OPENCORP_HOME, cwd)
+  return {
+    argv: [...selfCommand(), "install", command, ...absoluteArgs(command, args, cwd)],
+    env: selfSpawnEnv(env),
+    cwd: home,
+  }
 }
 
-/** Exit code when no office answers, as `python -m opencorp.install start` exits with no office yet. */
+/** `installSpawn(command, args)` in `deps.spawnCwd()`, or undefined after saying on stderr that the home folder
+ *  doesn't exist. */
+export function installSpec(command: string, args: string[], deps: Deps): InstallSpec | undefined {
+  let home: string
+  try {
+    home = deps.spawnCwd()
+  } catch {
+    console.error(`opencorp ${command}: your home folder ${os.homedir()} doesn't exist`)
+    return undefined
+  }
+  return installSpawn(command, args, process.env, () => process.cwd(), home)
+}
+
+/** Runs `opencorp install <command> ...args` and resolves to its exit code; 1 when the home folder doesn't exist. */
+export async function install(command: string, args: string[], deps: Deps = realDeps): Promise<number> {
+  const spec = installSpec(command, args, deps)
+  return spec ? deps.spawn(spec.argv, { cwd: spec.cwd, env: spec.env }) : 1
+}
+
+/** Exit code when no office answers, as the install's `start` exits with no office yet. */
 export const NO_OFFICE = 3
 
 /** Says the office isn't running; returns `NO_OFFICE`. */

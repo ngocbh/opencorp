@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { spawn } from "node:child_process"
+import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
-import { REPO, venvPython } from "../src/office"
+import { selfCommand } from "@opencorp/office/platform"
+import { type InstallSpec, installSpawn } from "../src/office"
 import { type SetupDeps, drawable, setUp } from "../src/setup"
+
+const WRAPPER = path.resolve(import.meta.dir, "../bin/opencorp")
+const HOME_DIR = fs.realpathSync(os.homedir())
 
 const saved = { ...process.env }
 afterEach(() => {
@@ -9,25 +16,26 @@ afterEach(() => {
 })
 
 /**
- * SetupDeps whose programs all exist and exit `codes[program]` (0 if absent), on a terminal or not; the screen exits
- * `screenCode` (or throws `screenThrows`) and the office exits 7, each recording what it got.
+ * SetupDeps whose install exits `code`, on a terminal or not; the screen exits `screenCode` (or throws
+ * `screenThrows`) and the office exits 7, each recording what it got.
  */
-function fake(opts: { codes?: Record<string, number>; terminal?: boolean; screenCode?: number; screenThrows?: Error } = {}) {
-  const calls: { argv: string[]; cwd?: string }[] = []
-  const screens: string[][] = []
+function fake(
+  opts: { code?: number; terminal?: boolean; screenCode?: number; screenThrows?: Error; spawnCwd?: () => string } = {},
+) {
+  const calls: { argv: string[]; cwd: string }[] = []
+  const screens: InstallSpec[] = []
   const offices: (string | undefined)[] = []
   const errors: string[] = []
   const deps: SetupDeps = {
-    exists: () => true,
-    which: (cmd) => `/bin/${cmd}`,
-    spawn: async (argv, cwd) => {
+    spawn: async (argv, { cwd }) => {
       calls.push({ argv, cwd })
-      return opts.codes?.[path.basename(argv[0])] ?? 0
+      return opts.code ?? 0
     },
+    spawnCwd: opts.spawnCwd ?? (() => HOME_DIR),
     error: (m) => void errors.push(m),
     terminal: () => opts.terminal ?? true,
-    screen: async (argv) => {
-      screens.push(argv)
+    screen: async (spec) => {
+      screens.push(spec)
       if (opts.screenThrows) throw opts.screenThrows
       return opts.screenCode ?? 0
     },
@@ -39,35 +47,33 @@ function fake(opts: { codes?: Record<string, number>; terminal?: boolean; screen
   return { deps, calls, screens, offices, errors }
 }
 
-const sync = { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO }
-
 for (const command of ["init", "onboard"] as const) {
   describe(`opencorp ${command}`, () => {
-    const install = (...argv: string[]) => [venvPython(), "-m", "opencorp.install", command, ...argv]
+    const install = (...argv: string[]) => [...selfCommand(), "install", command, ...argv]
 
     for (const flag of ["--provider-stdin", "-h", "--help"]) {
       test(`with ${flag}, runs the install on this terminal, without the screen or the office`, async () => {
-        const { deps, calls, screens, offices } = fake({ codes: { python: 4 } })
+        const { deps, calls, screens, offices } = fake({ code: 4 })
         expect(await setUp(command, ["--service", "tmux", flag], deps)).toBe(4)
-        expect(calls).toEqual([sync, { argv: install("--service", "tmux", flag), cwd: undefined }])
+        expect(calls).toEqual([{ argv: install("--service", "tmux", flag), cwd: HOME_DIR }])
         expect(screens).toEqual([])
         expect(offices).toEqual([])
       })
     }
 
     test("without a terminal, runs the install as given and returns its exit code", async () => {
-      const { deps, calls, screens, offices } = fake({ terminal: false, codes: { python: 5 } })
+      const { deps, calls, screens, offices } = fake({ terminal: false, code: 5 })
       expect(await setUp(command, ["--service", "background"], deps)).toBe(5)
-      expect(calls).toEqual([sync, { argv: install("--service", "background"), cwd: undefined }])
+      expect(calls).toEqual([{ argv: install("--service", "background"), cwd: HOME_DIR }])
       expect(screens).toEqual([])
       expect(offices).toEqual([])
     })
 
-    test("on a terminal, syncs the venv, then runs the install with --json-prompts behind the screen", async () => {
+    test("on a terminal, runs the install with --json-prompts behind the screen and spawns nothing itself", async () => {
       const { deps, calls, screens } = fake()
       await setUp(command, ["--service", "tmux"], deps)
-      expect(calls).toEqual([sync])
-      expect(screens).toEqual([install("--json-prompts", "--service", "tmux")])
+      expect(calls).toEqual([])
+      expect(screens).toEqual([installSpawn(command, ["--json-prompts", "--service", "tmux"])])
     })
 
     test("a screen that exits non-zero returns its code and opens no office", async () => {
@@ -91,10 +97,21 @@ for (const command of ["init", "onboard"] as const) {
       expect(offices).toEqual([])
     })
 
-    test("a failing uv sync returns its code without the screen", async () => {
-      const { deps, calls, screens, offices } = fake({ codes: { uv: 2 } })
-      expect(await setUp(command, [], deps)).toBe(2)
-      expect(calls).toEqual([sync])
+    test("a missing home folder is one line and exit 1, without the screen", async () => {
+      const { deps, screens, offices } = fake({
+        spawnCwd: () => {
+          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+        },
+      })
+      const err: string[] = []
+      const error = console.error
+      console.error = (...a: unknown[]) => void err.push(a.join(" "))
+      try {
+        expect(await setUp(command, [], deps)).toBe(1)
+      } finally {
+        console.error = error
+      }
+      expect(err).toEqual([`opencorp ${command}: your home folder ${os.homedir()} doesn't exist`])
       expect(screens).toEqual([])
       expect(offices).toEqual([])
     })
@@ -104,16 +121,27 @@ for (const command of ["init", "onboard"] as const) {
         process.env.OPENCORP_HOME = "/tmp/elsewhere"
         const { deps, screens, offices } = fake()
         expect(await setUp(command, argv, deps)).toBe(7)
-        expect(screens).toEqual([install("--json-prompts", ...argv)])
+        expect(screens.map((s) => s.argv)).toEqual([install("--json-prompts", ...argv)])
         expect(offices).toEqual(["/tmp/h"])
       })
     }
 
-    test("without --home, OPENCORP_HOME is left as it was", async () => {
+    test("a relative --home reaches the screen absolute and names the same folder for the office that opens", async () => {
+      const { deps, screens, offices } = fake()
+      expect(await setUp(command, ["--home", "rel"], deps)).toBe(7)
+      const absolute = path.resolve(process.cwd(), "rel")
+      expect(screens.map((s) => s.argv)).toEqual([install("--json-prompts", "--home", absolute)])
+      expect(offices).toEqual([absolute])
+    })
+
+    test("without --home, or with an empty one, OPENCORP_HOME is left as it was", async () => {
       process.env.OPENCORP_HOME = "/tmp/elsewhere"
       const set = fake()
       await setUp(command, ["--service", "tmux"], set.deps)
       expect(set.offices).toEqual(["/tmp/elsewhere"])
+      const empty = fake()
+      await setUp(command, ["--home="], empty.deps)
+      expect(empty.offices).toEqual(["/tmp/elsewhere"])
       delete process.env.OPENCORP_HOME
       const unset = fake()
       await setUp(command, [], unset.deps)
@@ -129,3 +157,61 @@ test("the screen draws on a terminal whose TERM moves the cursor, with stdin and
   expect(drawable({ TERM: "xterm-256color" }, false, true)).toBe(false)
   expect(drawable({ TERM: "xterm-256color" }, true, false)).toBe(false)
 })
+
+test(
+  "opencorp init --json-prompts drives the TS setup over its JSON lines",
+  async () => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-init-")))
+    const home = path.join(tmp, "h")
+    // No terminal: the plain path, which runs the install on these pipes.
+    const proc = spawn(WRAPPER, ["init", "--json-prompts", "--home", home], {
+      cwd: tmp,
+      env: { HOME: tmp, PATH: "/usr/bin:/bin", OPENCORP_BUN: process.execPath },
+      stdio: "pipe",
+      detached: true,
+    })
+    try {
+      let out = ""
+      let err = ""
+      proc.stdout.setEncoding("utf8").on("data", (d: string) => (out += d))
+      proc.stderr.setEncoding("utf8").on("data", (d: string) => (err += d))
+      const exited = new Promise<number | null>((resolve) => proc.on("close", (code) => resolve(code)))
+      let read = 0
+      /** The next prompt on stdout that isn't a `say`, within 20 s. */
+      const next = async (): Promise<Record<string, unknown>> => {
+        for (const end = Date.now() + 20_000; ; await Bun.sleep(10)) {
+          const lines = out.split("\n").slice(0, -1)
+          while (read < lines.length) {
+            const line = lines[read++]!
+            let prompt
+            try {
+              prompt = JSON.parse(line)
+            } catch {
+              throw new Error(`not a JSON line: ${line}\nstdout:\n${out}\nstderr:\n${err}`)
+            }
+            if (prompt.type !== "say") return prompt
+          }
+          if (Date.now() > end) throw new Error(`no prompt within 20 s; stdout:\n${out}\nstderr:\n${err}`)
+        }
+      }
+      expect(await next()).toMatchObject({ type: "step", number: 1, title: "Model" })
+      const choose = await next()
+      expect(choose).toMatchObject({ type: "choose", question: "Model provider" })
+      expect(choose.options).toContain("openai")
+      proc.stdin.write('{"answer":"openai"}\n')
+      expect((await next()).type).toBe("secret")
+      proc.stdin.end()
+      const code = await Promise.race([exited, Bun.sleep(20_000).then(() => "timed out" as const)])
+      if (code === "timed out") throw new Error(`no exit within 20 s; stdout:\n${out}\nstderr:\n${err}`)
+      expect(code).toBe(1)
+      expect(err).toContain("opencorp init: no answer to")
+      expect(fs.existsSync(path.join(home, "office", "connections", "office.json"))).toBe(false)
+    } finally {
+      try {
+        process.kill(-proc.pid!, "SIGKILL")
+      } catch {}
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  },
+  60_000,
+)

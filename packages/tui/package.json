@@ -6,7 +6,6 @@
   "license": "MIT",
   "exports": {
     ".": "./src/index.tsx",
-    "./debrief": "./src/routes/debrief/debrief.ts",
     "./editor-launch": "./src/editor-launch.ts",
     "./profile": "./src/routes/profile/profile.ts",
     "./setup": "./src/setup/run.tsx",

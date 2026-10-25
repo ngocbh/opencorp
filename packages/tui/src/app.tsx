@@ -42,7 +42,6 @@ import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
 import { Profile, useProfileCommands } from "./routes/profile"
 import { Session } from "./routes/session"
-import { Debrief, useDebriefCommands } from "./routes/debrief"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
@@ -282,7 +281,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const clipboard = useClipboard()
   useProfileCommands()
   usePickerOnStart()
-  useDebriefCommands()
 
   // Let selection copy/dismiss win ahead of normal bindings when explicit copy is required.
   const offSelectionKeys = keymap.intercept(
@@ -694,11 +692,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           <Match when={route.data.type === "session"}>
             <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
               {(_) => <Session />}
-            </Show>
-          </Match>
-          <Match when={route.data.type === "debrief"}>
-            <Show when={route.data.type === "debrief" ? route.data.sessionID : undefined} keyed>
-              {(_) => <Debrief />}
             </Show>
           </Match>
         </Switch>

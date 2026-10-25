@@ -45,7 +45,7 @@ import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
-import { OPENCORP_BASE_MODE, useBindings, useOpenCorpKeymap } from "../../keymap"
+import { OPENCORP_BASE_MODE, useBindings } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
 import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented, statusLabel } from "@opencorp/client"
@@ -207,7 +207,6 @@ export function Session() {
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
   const toast = useToast()
   const costCap = useCostCap()
-  const keymap = useOpenCorpKeymap()
 
   createEffect(
     on(
@@ -288,14 +287,10 @@ export function Session() {
       slash: { name: "end" },
       run: () => {
         dialog.clear()
-        // The office interrupts a busy session before it ends it, then runs the debrief.
+        // The office interrupts a busy session before it ends it.
         office.client.sessions
           .end(route.sessionID)
-          .then(() => {
-            // The debrief screen shows the debrief once it is written; without it, say so here.
-            if (keymap.dispatchCommand("debrief.show").ok) return
-            toast.show({ message: "Ending the session", variant: "info" })
-          })
+          .then(() => toast.show({ message: "Ending the session", variant: "info" }))
           .catch((error) =>
             isNotImplemented(error)
               ? toast.show({ message: "Ending a session is not available yet", variant: "warning" })

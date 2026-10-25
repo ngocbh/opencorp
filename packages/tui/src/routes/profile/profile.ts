@@ -1,4 +1,4 @@
-import type { Message, ProfileProposal, Session } from "@opencorp/protocol"
+import type { Message, Session } from "@opencorp/protocol"
 
 /** The first seven characters of a version id, as git shows them. */
 export const shortVersion = (version: string) => version.slice(0, 7)
@@ -30,21 +30,6 @@ export function managerSession(sessions: readonly Session[], person: string) {
   return sessions
     .filter((s) => s.kind === "profile_manager" && s.person === person && LIVE.has(s.status))
     .sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
-}
-
-/** The person's newest open proposal (the office keeps one open per manager session). */
-export function openProposal(proposals: readonly ProfileProposal[], person: string) {
-  return proposals
-    .filter((p) => p.person === person && p.status === "open")
-    .sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
-}
-
-/** A unified diff's lines from its first hunk on, so without the file headers. */
-export function diffLines(diff: string) {
-  const lines = diff.split("\n")
-  // Skip only the headers before the first hunk: a removed "-- x" line reads "--- x" too.
-  const start = lines.findIndex((l) => l.startsWith("@@"))
-  return start < 0 ? [] : lines.slice(start).filter((l) => l)
 }
 
 /** The manager chat as lines: text parts as they are, tool calls as `[tool]`. */

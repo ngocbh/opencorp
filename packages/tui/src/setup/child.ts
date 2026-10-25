@@ -71,8 +71,11 @@ async function readText(reader: ReadableStreamDefaultReader<Uint8Array>, onText:
   onText(decoder.decode())
 }
 
-/** Spawns `argv` in `cwd`, in its own session with piped stdio, and reads its stdout as `SetupPrompt` lines. */
-export function spawnSetup(argv: string[], cwd: string): SetupChild {
+/**
+ * Spawns `argv` in `cwd` with exactly `env` (the caller picks it) plus GIT_TERMINAL_PROMPT=0, in its own session
+ * with piped stdio, and reads its stdout as `SetupPrompt` lines.
+ */
+export function spawnSetup(argv: string[], cwd: string, env: Record<string, string>): SetupChild {
   const proc = Bun.spawn(argv, {
     cwd,
     stdin: "pipe",
@@ -81,7 +84,7 @@ export function spawnSetup(argv: string[], cwd: string): SetupChild {
     // Its own session: git and ssh in it find no terminal to prompt on while the screen holds it, so they
     // fail and say so instead of drawing over the screen and fighting it for keys.
     detached: true,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    env: { ...env, GIT_TERMINAL_PROMPT: "0" },
   })
 
   const stdout = proc.stdout.getReader()

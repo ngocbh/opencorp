@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { SPINNER_FRAMES } from "../../src/component/spinner"
+import { commandName } from "../../src/setup/run"
 import { until } from "../fixture/until"
 import { bootSetup, FakeChild } from "./boot"
 
@@ -20,6 +21,12 @@ test("steps and lines show in the transcript; with no question the spinner says 
   } finally {
     await app.stop()
   }
+})
+
+test("the header name is the command after install in the argv", () => {
+  const argv = ["/bin/bun", "--no-install", "--no-env-file", "--config=/dev/null", "/c/main.ts", "install", "init"]
+  expect(commandName([...argv, "--json-prompts"])).toBe("opencorp init")
+  expect(commandName(["/bin/sh", "-c", "true"])).toBe("")
 })
 
 test("the header names the command", async () => {

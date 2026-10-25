@@ -881,7 +881,7 @@ export function Prompt(props: PromptProps) {
   // The open session's model, or Codex for a new chat that will run on it.
   const footerModel = createMemo(() => {
     const s = session()
-    // A Codex session runs on Codex's own model, never the office connection's, which only its debrief uses.
+    // A Codex session runs on Codex's own model, never the office connection's.
     if (s) return s.harness === "codex" ? (s.harness_model ?? "Codex") : sessionModel(s, office.connections()).model
     return local.harness.current() === "codex" ? "Codex" : undefined
   })

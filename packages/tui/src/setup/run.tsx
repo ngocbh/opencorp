@@ -17,15 +17,22 @@ export interface Writer {
   write(text: string): unknown
 }
 
+/** The header's name for the install `argv`: `opencorp <command>`, the command being the argument after `install`;
+ *  empty without one. */
+export function commandName(argv: string[]): string {
+  const at = argv.indexOf("install")
+  const name = at < 0 ? undefined : argv[at + 1]
+  return name ? `opencorp ${name}` : ""
+}
+
 /**
- * Runs the install `argv` in `cwd` behind the setup screen; resolves to its exit code once the screen is gone and
- * its transcript and stderr are printed.
+ * Runs the install `argv` in `cwd` with exactly `env` behind the setup screen; resolves to its exit code once the
+ * screen is gone and its transcript and stderr are printed.
  */
-export async function runSetup(argv: string[], cwd: string): Promise<number> {
-  const child = spawnSetup(argv, cwd)
-  const name = argv[argv.indexOf("opencorp.install") + 1]
+export async function runSetup(argv: string[], cwd: string, env: Record<string, string>): Promise<number> {
+  const child = spawnSetup(argv, cwd, env)
   try {
-    return await runSetupWith(child, process.stdout, process.stderr, name ? `opencorp ${name}` : "")
+    return await runSetupWith(child, process.stdout, process.stderr, commandName(argv))
   } catch (e) {
     // A renderer that fails to start must not leave the install waiting on stdin.
     child.close()
