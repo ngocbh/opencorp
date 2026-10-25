@@ -317,7 +317,7 @@ async function runJob(
   }
   // A chat job makes the run's folder, and throws EEXIST if it is already there: each launch gets a fresh one. An
   // advance job's log must exist.
-  const log = flow === null ? job.log : runLogPath(runs, job.run_id)
+  const log = job.kind === "advance" ? job.log : runLogPath(runs, job.run_id)
   // An off-engine delivery recompiles the recorded flow, so it is confined to the pin as the run is.
   deliveries.bind(applier(log, read, job.pin))
   const onEvent: EventHook = (event) => {

@@ -398,14 +398,17 @@ export interface TestWorker extends JobWorker {
  * `result` or `error` the office stops sending. A throwing notification handler doesn't end the read loop; `wait`
  * rethrows the first such error. Once the office read loop has ended and the worker's code is known, the office end
  * closes and `handlers.exited` runs; a `serve` that rejects is `EXIT_FAILED`. At test end the office end closes and
- * the test fails if `serve` hasn't returned within 10 s.
+ * the test fails if `serve` hasn't returned within 10 s. Each of `early` goes as a `deliver` frame right after the
+ * start frame, both written before the worker reads anything.
  */
 export async function inProcessWorker(
   job: Job,
   handlers: WorkerHandlers<TestWorker>,
-  { env = {}, linger }: { env?: WorkerEnv; linger?: number } = {},
+  { env = {}, linger, early = [] }: { env?: WorkerEnv; linger?: number; early?: Delivery[] } = {},
 ): Promise<TestWorker> {
   const { office, worker: workerSide } = await channelPair()
+  await office.send({ type: "start", job })
+  for (const delivery of early) await office.send({ type: "deliver", ...delivery })
   let settle!: (code: number) => void
   // Resolving twice does nothing, so the first of `exit` and the return value wins.
   const code = new Promise<number>((resolve) => (settle = resolve))
@@ -480,7 +483,6 @@ export async function inProcessWorker(
     clearTimeout(timer)
     if (late) throw new Error("the worker did not return within 10 s of the office closing")
   })
-  await office.send({ type: "start", job })
   return worker
 }
 

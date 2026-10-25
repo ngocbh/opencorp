@@ -349,7 +349,7 @@ function advanceJob(chat: Job, over: Partial<JobInput> = {}): Job {
 }
 
 /** A `Recorder` that also lists, in arrival order, the RunResumed event and each reply's id. */
-class Sequence extends Recorder {
+class ResumeOrder extends Recorder {
   readonly seen: string[] = []
 
   override event(worker: unknown, frame: Frame): void {
@@ -413,7 +413,7 @@ test("an interrupt for a crashed run takes effect after RunResumed", async () =>
   onTestFinished(() => fake.release())
   const chat = await crashedRun(fake)
   fake.script({ content: "late", hold: true })
-  const rec = new Sequence()
+  const rec = new ResumeOrder()
   const job = advanceJob(chat, { deliver: [{ id: "i1", op: "interrupt", inbox: "steers" }] })
   const worker = await inProcessWorker(job, rec, { env: fake.env() })
   expect(await worker.wait()).toBe(EXIT_OK)
@@ -427,11 +427,16 @@ test("an interrupt frame for a crashed run waits for RunResumed", async () => {
   onTestFinished(() => fake.release())
   const chat = await crashedRun(fake)
   fake.script({ content: "late", hold: true })
-  const rec = new Sequence()
-  const worker = await inProcessWorker(advanceJob(chat), rec, { env: fake.env() })
-  expect(await worker.deliver({ id: "i1", op: "interrupt", inbox: "steers" })).toBe(true)
+  const rec = new ResumeOrder()
+  // The frame is buffered with the start frame, so it is queued behind the job's send before the run is inspected:
+  // the send applies offline, and the frame waits for RunResumed rather than following the send straight away.
+  const job = advanceJob(chat, { deliver: [{ id: "s1", op: "send", inbox: "steers", event: "x" }] })
+  const worker = await inProcessWorker(job, rec, {
+    env: fake.env(),
+    early: [{ id: "i1", op: "interrupt", inbox: "steers" }],
+  })
   expect(await worker.wait()).toBe(EXIT_OK)
-  expect(rec.seen).toEqual(["RunResumed", "i1"])
+  expect(rec.seen).toEqual(["s1", "RunResumed", "i1"])
   expect([rec.outcome?.status, rec.outcome?.output]).toEqual(["succeeded", null])
   expect(replyEnded(rec).map((data) => data.interrupted)).toEqual([true])
 })
@@ -447,7 +452,7 @@ test("a stopped run takes its sends before the advance and its close after RunRe
   expect(await first.wait()).toBe(EXIT_FAILED)
   expect(inspectRun(chat.log).status).toBe("stopped")
   fake.script({ content: "Done." })
-  const rec = new Sequence()
+  const rec = new ResumeOrder()
   const job = advanceJob(chat, {
     deliver: [
       { id: "s1", op: "send", inbox: "steers", event: "more" },
@@ -484,6 +489,27 @@ test("an advance that throws before its gate opens refuses the held deliveries",
   expect(await a.wait()).toBe(EXIT_OK)
   expect([first.outcome?.status, first.outcome?.output]).toEqual(["succeeded", "Done."])
   expect(replyEnded(first).map((data) => data.interrupted)).toEqual([false])
+})
+
+test("an advance false job on a running run refuses its deliveries", async () => {
+  const fake = await fakeLlm()
+  onTestFinished(() => fake.release())
+  fake.script({ content: "Done.", hold: true })
+  const chat = makeJob(base(), "flows/cuttable.yaml", { groups: specGroups() })
+  const first = new Recorder()
+  const a = await inProcessWorker(chat, first, { env: fake.env() })
+  await fake.waitForRequests(1, 30_000)
+  const rec = new Recorder()
+  const job = advanceJob(chat, { advance: false, deliver: [{ id: "s1", op: "send", inbox: "steers", event: "x" }] })
+  const b = await inProcessWorker(job, rec, { env: fake.env() })
+  expect(await b.wait()).toBe(EXIT_FAILED)
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", refused: "not_started" }])
+  expect(rec.order).toEqual(["deliver_reply", "error"])
+  expect(String(rec.outcome?.message)).toStartWith("RunBusyError:")
+  fake.release()
+  expect(await a.wait()).toBe(EXIT_OK)
+  expect(first.outcome?.status).toBe("succeeded")
+  expect(sent(chat, "steers")).toEqual([])
 })
 
 test("an advance confines the recorded flow to the pin", async () => {
