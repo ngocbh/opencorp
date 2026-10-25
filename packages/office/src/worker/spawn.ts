@@ -306,6 +306,7 @@ export class Worker implements JobWorker {
 export class WorkerRegistry implements WorkerPool {
   readonly #store: Store
   readonly #log: SpawnLog
+  readonly #workerLog: SpawnLog
   readonly #environ: Env
   readonly #maxFrame: number | undefined
   readonly #spawn: typeof spawnProcess
@@ -329,6 +330,8 @@ export class WorkerRegistry implements WorkerPool {
         log(level, line)
       } catch {}
     }
+    // Each worker wraps the caller's log itself.
+    this.#workerLog = log
     this.#environ = environ
     this.#maxFrame = maxFrame
     this.#spawn = spawn
@@ -355,7 +358,7 @@ export class WorkerRegistry implements WorkerPool {
     const { child, channel } = this.#spawn(sessionDir, spawnEnv, { maxFrame: this.#maxFrame })
     let worker: Worker
     try {
-      worker = new Worker(job, child, channel, handlers, (exited) => this.#exited(exited), { log: this.#log })
+      worker = new Worker(job, child, channel, handlers, (exited) => this.#exited(exited), { log: this.#workerLog })
       this.#store.recordWorker(sessionId, { pid: worker.pid, pgid: worker.pgid, startTime: startTime(worker.pid) ?? 0 })
       this.#workers.set(sessionId, worker)
     } catch (error) {
@@ -408,8 +411,6 @@ export class WorkerRegistry implements WorkerPool {
 
   #exited(worker: Worker): void {
     if (this.#workers.get(worker.sessionId) !== worker) return
-    // The record goes first, while the entry still refuses a new spawn, so a new worker's record is never the one
-    // removed.
     this.#forget(worker)
     this.#workers.delete(worker.sessionId)
   }

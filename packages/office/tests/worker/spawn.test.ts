@@ -538,7 +538,8 @@ test("a failing exit step still finishes the worker", async () => {
   const where = base()
   const fake = await fakeLlm()
   const store = openStore()
-  const registry = makeRegistry(store)
+  const { lines, log } = recordingLog()
+  const registry = makeRegistry(store, { log })
   const sessionDir = path.join(where.root, "sessions", "s1")
   const removeWorker = spyOn(store, "removeWorker").mockImplementation(() => {
     throw new Error("database is locked")
@@ -548,4 +549,36 @@ test("a failing exit step still finishes the worker", async () => {
   const rec = await runWorker(registry, makeJob(where), new Recorder(), sessionDir, { env: fake.env() })
   expect(rec.returncode).toBe(0)
   expect(rec.outcome?.output).toBe("fine")
+  expect(registry.get("s1")).toBeUndefined()
+  expect(lines).toContainEqual(["ERROR", "could not remove the record of worker s1 (Error)"])
+  expect(lines.filter(([, line]) => line.includes("database is locked"))).toEqual([])
+})
+
+test("a record that cannot be written leaves no worker behind", async () => {
+  const where = base()
+  const store = openStore()
+  let child: ChildProcess | undefined
+  let channel: Channel | undefined
+  const registry = makeRegistry(store, {
+    spawn: (...given) => {
+      const out = spawnProcess(...given)
+      child = out.child
+      channel = out.channel
+      return out
+    },
+  })
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const failure = new Error("database is locked")
+  const recordWorker = spyOn(store, "recordWorker").mockImplementation(() => {
+    throw failure
+  })
+  onTestFinished(() => recordWorker.mockRestore())
+  await expect(registry.spawn(makeJob(where), sessionDir, new Recorder())).rejects.toBe(failure)
+  await waitFor(() => child!.exitCode !== null || child!.signalCode !== null)
+  // Killed, not exited on its own after its channel closed.
+  expect(child!.signalCode).toBe("SIGKILL")
+  // Closed by the office, not broken by the child's death.
+  await expect(channel!.send({ type: "pad" })).rejects.toThrow("this end stopped sending")
+  expect(registry.get("s1")).toBeUndefined()
+  expect(store.listWorkers()).toEqual([])
 })

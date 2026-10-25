@@ -952,6 +952,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/rpc.test.ts::object arguments keep a proto key	design §2.4: a model-written argument reaches the office as written (Python's dict kept the key)	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::object method names are never tools or stores	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::reply to never rejects	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/spawn.test.ts::a record that cannot be written leaves no worker behind	design §2.4: a spawn that fails before the worker is registered kills its group and closes its channel	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::a steer left frame without its fields is a bad frame	design §2.4: a frame the office can't read closes the channel, as Python's reader did	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::a waiting run ends its worker normally	O3-3 handoff: a run that quiesces as waiting exits 0 and leaves no entry or record	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::a worker env drops runtime and loader variables from the provider env	design §6.5, §6 rule 3: selfSpawnEnv drops BUN_*, NODE_OPTIONS, LD_* and DYLD_* from the provider env too	O3-4
