@@ -1111,8 +1111,8 @@ export class Store {
     return cols
   }
 
-  /** Inserts a question and emits `question.created`. A second question with the same `(run_id, node_id)`
-   *  throws `DuplicateKey`; questions with a null `node_id` never collide. */
+  /** Inserts a question and emits `question.created`. A second question with the same `call_id`, or the same
+   *  `(run_id, node_id)`, throws `DuplicateKey`; questions with a null `call_id` or `node_id` never collide. */
   addQuestion(question: QuestionRecord): QuestionRecord {
     return this.transaction((tx) => {
       tx.insert(QUESTIONS.name, this.#questionColumns(question))
@@ -1130,6 +1130,12 @@ export class Store {
   /** The `ask` node question stored for a run's node, or undefined. */
   getQuestionByNode(runId: string, nodeId: string): QuestionRecord | undefined {
     const row = this.db.prepare("SELECT * FROM questions WHERE run_id = ? AND node_id = ?").get(runId, nodeId)
+    return row && this.#entity(QUESTIONS, row)
+  }
+
+  /** The question stored for a yian call id, or undefined. */
+  getQuestionByCall(callId: string): QuestionRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM questions WHERE call_id = ?").get(callId)
     return row && this.#entity(QUESTIONS, row)
   }
 
@@ -1212,6 +1218,7 @@ export class Store {
         "session_id",
         "run_id",
         "node_id",
+        "call_id",
         "status",
         "answer",
         "answer_kind",

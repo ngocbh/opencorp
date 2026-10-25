@@ -106,3 +106,12 @@ test("every migration file is in the ladder", () => {
   expect(MIGRATIONS.map((m) => m.name)).toEqual(names)
   for (const m of MIGRATIONS) expect(m.sql).toBe(fs.readFileSync(new URL(m.name, dir), "utf8"))
 })
+
+test("the office migrations bring a fresh database to version 2", () => {
+  const db = open()
+  expect(migrate(db)).toBe(2)
+  const questions = db.prepare("PRAGMA table_info(questions)").all()
+  expect(questions.map((c) => c.name)).toContain("call_id")
+  const turns = db.prepare("PRAGMA table_info(sessions)").all().find((c) => c.name === "turns")
+  expect(turns?.dflt_value).toBe("0")
+})

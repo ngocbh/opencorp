@@ -4,6 +4,7 @@
 import { type Sqlite } from "@ngocbh/yian/platform"
 import { embedded } from "../platform.ts"
 import initial from "./migrations/0001_initial.sql" with { type: "file" }
+import calls from "./migrations/0002_calls_and_turns.sql" with { type: "file" }
 
 const NAME = /^(\d{4})_[a-z0-9_]+\.sql$/
 
@@ -19,7 +20,10 @@ export interface MigrationFile {
 }
 
 /** The office's migrations, in order; a new `.sql` file in `migrations/` is added here too. */
-export const MIGRATIONS: MigrationFile[] = [{ name: "0001_initial.sql", sql: embedded(initial).toString("utf8") }]
+export const MIGRATIONS: MigrationFile[] = [
+  { name: "0001_initial.sql", sql: embedded(initial).toString("utf8") },
+  { name: "0002_calls_and_turns.sql", sql: embedded(calls).toString("utf8") },
+]
 
 /** The database's `PRAGMA user_version`: the last migration applied. */
 export function userVersion(db: Sqlite): number {

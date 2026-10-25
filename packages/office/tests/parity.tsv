@@ -1023,6 +1023,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/secrets.test.ts::write private makes a 0600 file and replaces a symlink without following it	§6 rule 6	O1-1
 —	new	packages/office/tests/store/close.test.ts::a store cannot close inside a transaction	close() refuses inside a transaction (final review)	O1-2
 —	new	packages/office/tests/store/migrate.test.ts::every migration file is in the ladder	the binary embeds the migrations (§2.7, §5.1)	O1-2
+—	new	packages/office/tests/store/migrate.test.ts::the office migrations bring a fresh database to version 2	design §5.1: migration 0002 adds questions.call_id and sessions.turns	O4a-0b
 —	new	packages/office/tests/store/open.test.ts::a fifo at the store path is refused	never blocks on or follows a non-file (§6 rule 6)	O1-2
 —	new	packages/office/tests/store/open.test.ts::a symlink at the store path is refused	O_EXCL and O_NOFOLLOW pre-create (§5.1, §6 rule 6)	O1-2
 —	new	packages/office/tests/store/open.test.ts::an existing store file is tightened to 0600	§5.1, §6 rule 6	O1-2
@@ -1030,11 +1031,15 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/store/open.test.ts::the database files are 0600	§5.1, §6 rule 6	O1-2
 —	new	packages/office/tests/store/outbox.test.ts::a failure outside tx run still blocks later writes	§5.1	O1-2
 —	new	packages/office/tests/store/outbox.test.ts::new ids are monotonic ULIDs	§5.1	O1-2
+—	new	packages/office/tests/store/questions.test.ts::a question is found by its call id	design §5.1: a question is stored and reused by its yian call id (0002)	O4a-0b
+—	new	packages/office/tests/store/questions.test.ts::a questions call id cannot be changed	design §5.1: a question is keyed by its yian call id, so the id is fixed once stored	O4a-0b
+—	new	packages/office/tests/store/questions.test.ts::a second question with one call id is refused	design §5.1: questions.call_id is unique, nullable (0002)	O4a-0b
 —	new	packages/office/tests/store/questions.test.ts::an answer that isnt json is refused	a value JSON can't hold is a StoreError, never a NULL answer or a raw error quoting it (§6 rule 13)	O1-4
 —	new	packages/office/tests/store/questions.test.ts::questions are read by a long run id list in one statement	one json_each bind (O1-3's getRuns); Python's chunked read was pinned by store/test_runs.py	O1-4
 —	new	packages/office/tests/store/runs.test.ts::a runs config is recorded at spawn	resume or fresh run reads it (§5.1, §8.4)	O1-3
 —	new	packages/office/tests/store/runs.test.ts::an end time needs an end reason	§5.1	O1-3
 —	new	packages/office/tests/store/sessions.test.ts::a field with no column needs a store migration	CLAUDE.md's store-migration rule (§5.1)	O1-3
+—	new	packages/office/tests/store/sessions.test.ts::a session counts its turns from zero	design §5.1, 4a-revision §1: sessions.turns counts finished replies (0002)	O4a-0b
 —	new	packages/office/tests/tools/build.test.ts::the office tool specs equal the saved copy	D20 (Python's compare-only tools/test_spec_dump.py: all four groups through groupSpecs equal tests/fixtures/tool_specs.json)	O2-22b
 —	new	packages/office/tests/tools/company/work.test.ts::ask manager titles its work item with the question on one line	Python's TITLE_CHARS rule, untested there: whitespace collapsed, 80 code points, "Question" fallback	O2-22b
 —	new	packages/office/tests/tools/company/work.test.ts::ask manager without an on question callback stores nothing	plan choice 2: no onQuestion rejects before anything is stored	O2-22b

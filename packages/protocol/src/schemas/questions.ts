@@ -46,6 +46,11 @@ export const Question = z.strictObject({
   /** Null for a model ask_user call. */
   node_id: z.string().nullable(),
   /**
+   * The yian call it answers (`<run>/<node>` for a TOOL `ask`, `<run>/<node>/<n>/<index>` for an agent's call); null
+   * for a question no yian call asked (a Codex request).
+   */
+  call_id: z.string().nullable().default(null),
+  /**
    * Where the question comes from. `ask`: a flow's TOOL `ask` node. `harness`: a request from the session's
    * harness (a Codex approval or question). It takes only an `option` or `text` answer; no side chat, send back
    * or stop. It goes `stale` when the harness stops waiting.
