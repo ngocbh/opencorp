@@ -21,6 +21,8 @@ export const MODES = ["launchd", "systemd", "tmux", "background"] as const
 export type Mode = (typeof MODES)[number]
 
 type Step = (launch: Launch, host: Host) => Promise<void> | void
+/** Why the manager doesn't have the office's service, or null if it does. */
+type Check = (launch: Launch, host: Host) => Promise<string | null>
 
 const INSTALL: Record<Mode, Step> = {
   launchd: launchd.install,
@@ -34,7 +36,7 @@ const START: Record<Mode, Step> = {
   tmux: fallback.startTmux,
   background: fallback.startBackground,
 }
-const NOT_MANAGED: Partial<Record<Mode, (launch: Launch, host: Host) => Promise<string | null>>> = {
+const NOT_MANAGED: Partial<Record<Mode, Check>> = {
   launchd: launchd.notLoaded,
   systemd: systemd.notEnabled,
 }
@@ -52,8 +54,8 @@ function isMode(value: unknown): value is Mode {
 /** The mode `install` last recorded for this office, if any. */
 export function recordedMode(launch: Launch): Mode | null {
   try {
-    const record: unknown = JSON.parse(fs.readFileSync(path.join(launch.office, "install.json"), "utf8"))
-    const mode = record !== null && typeof record === "object" ? (record as { mode?: unknown }).mode : undefined
+    const parsed: unknown = JSON.parse(fs.readFileSync(path.join(launch.office, "install.json"), "utf8"))
+    const mode = parsed !== null && typeof parsed === "object" ? (parsed as { mode?: unknown }).mode : undefined
     return isMode(mode) ? mode : null
   } catch {
     return null
@@ -141,7 +143,11 @@ export async function install(launch: Launch, host: Host, mode: Mode | "auto" = 
 /**
  * Starts the installed office the way it was installed, falling back to a background process.
  *
- * A fallback is recorded, so the record always names what runs the office.
+ * A fallback is recorded, so the record always names what runs the office. The office dir is made first, since
+ * each manager starts the daemon in it.
+ *
+ * Throws `OfficeStartError` for an office dir that isn't ours, and `ServiceError` if the background fallback
+ * can't start the daemon.
  */
 export async function start(launch: Launch, host: Host): Promise<Installed> {
   const recorded = recordedMode(launch)

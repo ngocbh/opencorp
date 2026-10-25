@@ -534,8 +534,9 @@ test(
     const names = envNames(pid)
     expect(names).toContain("PATH")
     expect(names).toContain("HOME")
-    // Nothing of the caller's, and nothing `/bin/sh` adds (PWD, SHLVL, _), reaches the daemon.
+    // The poison is already filtered out at `launch()`; this covers the spawn through `/bin/sh` and the re-exec.
     expect(new Set(names)).toEqual(new Set(Object.keys(one.env)))
+    for (const name of ["OPENAI_API_KEY", "BUN_OPTIONS", "PWD", "SHLVL", "_"]) expect(names).not.toContain(name)
     expect(cwdOf(pid)).toBe(fs.realpathSync(one.office))
     // What `/bin/sh` adds makes the daemon re-exec once.
     expect(reexecMarks(pid)).toBe(1)
@@ -569,17 +570,13 @@ test(
     await service.install(one, host, "background")
     await service.wait(one, host)
     const old = pidfile(one)
-    try {
-      expect((await service.restart(one, host)).mode).toBe("background")
-      await service.wait(one, host)
-      const now = pidfile(one)
-      expect(now).not.toBe(old)
-      expect(await officeAnswers(one.socket)).toBe(true)
-      expect(spawned.map((d) => d.pid)).toEqual([old, now])
-      expect(isGone(old, spawned[0]!.started)).toBe(true)
-    } finally {
-      await service.uninstall(one, host)
-    }
+    expect((await service.restart(one, host)).mode).toBe("background")
+    await service.wait(one, host)
+    const now = pidfile(one)
+    expect(now).not.toBe(old)
+    expect(await officeAnswers(one.socket)).toBe(true)
+    expect(spawned.map((d) => d.pid)).toEqual([old, now])
+    expect(isGone(old, spawned[0]!.started)).toBe(true)
   },
   120_000,
 )
