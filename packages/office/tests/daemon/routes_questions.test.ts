@@ -10,13 +10,13 @@ import type { AnswerKind, CardActor, Cards } from "../../src/questions/cards.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { InvalidTransition, type QuestionRecord, type Store } from "../../src/store/store.ts"
 import { question, recordEvents, session } from "../store/helpers.ts"
-import { type Reply, addHuman, bearer, giveDevice, makeOffice, request, served, ULID } from "./helpers.ts"
+import { CEO, type Reply, addHuman, bearer, giveDevice, makeOffice, request, served, ULID } from "./helpers.ts"
 
-// The same stand-in for the session actor as tests/questions/cards.test.ts, less the knobs these tests leave unused.
+// The same stand-in for the session actor as tests/questions/cards.test.ts, less the knobs these tests leave unused;
+// no test here interrupts a session.
 class StandIn implements CardActor {
   readonly hooks: Hooks
   readonly answered: [string, unknown, AnswerKind, string | null][] = []
-  readonly interrupted: string[] = []
 
   constructor(
     readonly store: Store,
@@ -40,16 +40,8 @@ class StandIn implements CardActor {
     }
   }
 
-  async interrupt(sessionId: string) {
-    this.interrupted.push(sessionId)
-    for (const q of this.store.listQuestions({ sessionId, status: "open" })) {
-      if (q.source !== "ask_user" && q.source !== "ask_manager") continue
-      try {
-        this.store.answerQuestion(q.id, INTERRUPTED, "interrupted")
-      } catch (error) {
-        if (!(error instanceof InvalidTransition)) throw error
-      }
-    }
+  async interrupt(_sessionId: string): Promise<void> {
+    throw new Error("interrupt is not used by these tests")
   }
 }
 
@@ -65,6 +57,14 @@ function wire(office: Office, log?: (line: string) => void): { cards: Cards; act
 function openQuestion(office: Office, over?: Partial<Question>): QuestionRecord {
   const s = office.store.createSession(session())
   return office.store.addQuestion(question(s.id, over))
+}
+
+/** Bearer headers for a new device of a new human, ava. */
+function avaHeaders(office: Office): Record<string, string> {
+  addHuman(office.paths.company, "ava")
+  const token = newToken()
+  giveDevice(office.paths.company, "ava", "pc", token)
+  return bearer(token)
 }
 
 /** POSTs `body` as JSON, or nothing when it is null. */
@@ -190,11 +190,9 @@ test("missing question is 404", async () => {
 test("a plain answer is credited to the verified person", async () => {
   const office = makeOffice()
   const { sock } = await served(office, { tokens: true })
-  addHuman(office.paths.company, "ava")
-  const ava = newToken()
-  giveDevice(office.paths.company, "ava", "pc", ava)
+  const ava = avaHeaders(office)
   const q = openQuestion(office)
-  const r = await post(sock, `/questions/${q.id}/answer`, { answer: "a", answer_kind: "text" }, bearer(ava))
+  const r = await post(sock, `/questions/${q.id}/answer`, { answer: "a", answer_kind: "text" }, ava)
   expect(r.status).toBe(200)
   expect((r.json() as { answered_by: string }).answered_by).toBe("ava")
 })
@@ -231,13 +229,11 @@ test("an answer goes through the cards and is credited to the verified person", 
   const office = makeOffice()
   const { actor } = wire(office)
   const { sock } = await served(office, { tokens: true })
-  addHuman(office.paths.company, "ava")
-  const ava = newToken()
-  giveDevice(office.paths.company, "ava", "pc", ava)
+  const ava = avaHeaders(office)
   const q = openQuestion(office, { options: ["Retry", "Back off"] })
-  let r = await post(sock, `/questions/${q.id}/answer`, { answer: "Maybe", answer_kind: "option" }, bearer(ava))
+  let r = await post(sock, `/questions/${q.id}/answer`, { answer: "Maybe", answer_kind: "option" }, ava)
   expect([r.status, errorOf(r)]).toEqual([422, "invalid_answer"])
-  r = await post(sock, `/questions/${q.id}/answer`, { answer: "Back off", answer_kind: "option" }, bearer(ava))
+  r = await post(sock, `/questions/${q.id}/answer`, { answer: "Back off", answer_kind: "option" }, ava)
   expect(r.status).toBe(200)
   expect((r.json() as { answered_by: string }).answered_by).toBe("ava")
   expect(actor.answered).toEqual([[q.id, "Back off", "option", "ava"]])
@@ -251,18 +247,16 @@ test("an answer goes to the harness when there are no cards", async () => {
   const q = openQuestion(office)
   const r = await post(sock, `/questions/${q.id}/answer`, { answer: "Postgres", answer_kind: "text" })
   expect(r.status).toBe(200)
-  expect(actor.answered).toEqual([[q.id, "Postgres", "text", "ngocbh"]])
+  expect(actor.answered).toEqual([[q.id, "Postgres", "text", CEO]])
 })
 
 test("stop is credited to the verified person", async () => {
   const office = makeOffice()
   const { actor } = wire(office)
   const { sock } = await served(office, { tokens: true })
-  addHuman(office.paths.company, "ava")
-  const ava = newToken()
-  giveDevice(office.paths.company, "ava", "pc", ava)
+  const ava = avaHeaders(office)
   const q = openQuestion(office, { source: "ask_manager" })
-  const r = await post(sock, `/questions/${q.id}/stop`, null, bearer(ava))
+  const r = await post(sock, `/questions/${q.id}/stop`, null, ava)
   expect(r.status).toBe(200)
   expect(r.json()).toMatchObject({ answer_kind: "interrupted", answered_by: "ava" })
   expect(actor.answered).toEqual([[q.id, INTERRUPTED, "interrupted", "ava"]])
