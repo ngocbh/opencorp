@@ -526,7 +526,18 @@ test("the office runs codex sessions on the harness hooks", async () => {
   const office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
   try {
     expect(office.harness).toBe(office.codex)
-    expect(office.harness!.hooks).toBe(office.codex!.hooks)
+    // A check added on the harness hooks, as the questions extension adds its own, is one the Codex sessions run.
+    office.harness!.hooks.answerCheck.push(() => "refused by the harness hooks")
+    const row = office.store.createSession(
+      session({ harness: "codex", status: "busy", repo_commit: await office.git.head(), opened_by: "ngocbh" }),
+    )
+    const card = office.store.addQuestion(question(row.id, { source: "harness", options: ["Approve"] }))
+    await expect(office.codex!.answer(card.id, "Approve", "option")).rejects.toMatchObject({
+      status: 422,
+      code: "invalid_answer",
+      message: "refused by the harness hooks",
+    })
+    expect(office.store.getQuestion(card.id)!.status).toBe("open")
   } finally {
     office.store.close()
   }

@@ -46,8 +46,9 @@ export type CodexSessionsOptions = {
  *  office's card actor: an answer or Esc for a session on another harness is handled here as the chat harness
  *  handles one with no live run; the Codex calls stay here after that.
  *
- *  `hooks` are the chat harness's: Codex sessions fire `promptCheck`, `endStatus` and `sessionEnded` (never the run
- *  hooks: Codex turns are not office runs). */
+ *  `hooks` are the chat harness's: Codex sessions fire `promptCheck` on a message, `answerCheck` on an answer,
+ *  `questionStored` when a Codex request becomes a card, and `endStatus` and `sessionEnded` when a session ends (never
+ *  the run hooks: Codex turns are not office runs). */
 export class CodexSessions implements CardActor {
   readonly office: Office
   readonly store: Store
