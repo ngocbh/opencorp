@@ -276,7 +276,7 @@ test("a codex prompt or steer a prompt check refuses is 422 and echoes nothing",
     expect(r.text).not.toContain("nope")
   }
   expect((await post(sock, `/sessions/${sid}/steer`, { text: "Also Rome." })).json()).toEqual({ ok: true })
-  const inputs = () => (h.fake.calls("turn/start") as any[]).map((c) => c.input[0].text as string)
+  const inputs = () => (h.fake.calls("turn/start") as { input: { text: string }[] }[]).map((c) => c.input[0]!.text)
   await waitFor(() => inputs().includes("Also Rome."), { what: "the steer's turn" })
   expect(inputs()).not.toContain("nope")
 })
@@ -328,23 +328,38 @@ test.each(YIAN_CHAT_ACTIONS)(
   },
 )
 
-const REFUSED_BODIES: [string, string, string][] = [
-  ["unknown key", "/sessions", JSON.stringify({ person: "minh", cwd: "/w", "sk-sentinel-key": "sk-sentinel-value" })],
-  ["bad type", "/sessions", JSON.stringify({ person: "minh", cwd: { "sk-sentinel-key": 1 } })],
-  ["empty text", `/sessions/${ULID}/prompt`, JSON.stringify({ text: "" })],
-  ["too deep", `/sessions/${ULID}/prompt`, '{"text":' + "[".repeat(65) + '"sk-sentinel"' + "]".repeat(65) + "}"],
+/** [label, target, raw JSON body, the 422's message]. */
+const REFUSED_BODIES: [string, string, string, string][] = [
+  [
+    "unknown key",
+    "/sessions",
+    JSON.stringify({ person: "minh", cwd: "/w", "sk-sentinel-key": "sk-sentinel-value" }),
+    "an extra field: isn't allowed",
+  ],
+  [
+    "bad type",
+    "/sessions",
+    JSON.stringify({ person: "minh", cwd: { "sk-sentinel-key": 1 } }),
+    "cwd: has the wrong type",
+  ],
+  ["empty text", `/sessions/${ULID}/prompt`, JSON.stringify({ text: "" }), "text: is too short"],
+  [
+    "too deep",
+    `/sessions/${ULID}/prompt`,
+    '{"text":' + "[".repeat(65) + '"sk-sentinel"' + "]".repeat(65) + "}",
+    "the body is nested too deeply",
+  ],
 ]
 
 test.each(REFUSED_BODIES)(
   "session bodies a schema refuses are 422 and echo nothing [%s]",
-  async (label, target, text) => {
+  async (_case, target, text, message) => {
     const office = makeOffice()
     const { sock } = await served(office)
     const r = await request(sock, "POST", target, { headers: { "content-type": "application/json" }, body: text })
     // The body is parsed before the harness is looked up, so no harness still gives 422.
-    expect([r.status, errorOf(r)]).toEqual([422, "invalid_body"])
+    expect([r.status, r.json()]).toEqual([422, { error: "invalid_body", message }])
     expect(r.text).not.toContain("sk-sentinel")
-    if (label === "too deep") expect((r.json() as { message: string }).message).toBe("the body is nested too deeply")
   },
 )
 
