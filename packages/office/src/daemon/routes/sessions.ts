@@ -1,9 +1,19 @@
 /** Session routes: listing, reading, the current turn, and session actions. */
-import { type ErrorCode, Message, Session } from "@opencorp/protocol"
+import {
+  Ack,
+  CostCapRequest,
+  CreateSessionRequest,
+  type ErrorCode,
+  Message,
+  PromptRequest,
+  Session,
+  SetModelRequest,
+} from "@opencorp/protocol"
 import { z } from "zod"
 import { HarnessError } from "../../chat/state.ts"
 import { strip } from "../../perm/redact.ts"
 import type { SessionRecord } from "../../store/store.ts"
+import { actingPerson } from "../auth.ts"
 import { HttpError, type Params, type Route } from "../http.ts"
 import type { RequestContext, SessionHarness } from "../office.ts"
 
@@ -81,9 +91,78 @@ export async function listMessages(ctx: RequestContext, params: Params) {
   return harnessCall(() => actor.messages(session.id))
 }
 
+/** Start a person's main chat in a folder, opened by the request's person, on the model the office chooses. */
+export function createSession(ctx: RequestContext, _params: Params, body: unknown) {
+  const { person, cwd, harness: kind, connection, model } = body as z.output<typeof CreateSessionRequest>
+  const actor = harness(ctx, "POST /sessions")
+  const openedBy = actingPerson(ctx)
+  return harnessCall(() => actor.startSession(person, cwd, { harness: kind, openedBy, connection, model }))
+}
+
+/** Send a message: the next turn, an answer to the model's question, a steer, or queued. */
+export async function prompt(ctx: RequestContext, params: Params, body: unknown) {
+  const { text } = body as z.output<typeof PromptRequest>
+  const actor = harness(ctx, "POST /sessions/:id/prompt")
+  const by = actingPerson(ctx)
+  await harnessCall(() => actor.prompt(params.id!, text, { by }))
+  return { ok: true }
+}
+
+/** Steer the running reply (a prompt when none is running). */
+export async function steer(ctx: RequestContext, params: Params, body: unknown) {
+  const { text } = body as z.output<typeof PromptRequest>
+  const actor = harness(ctx, "POST /sessions/:id/steer")
+  const by = actingPerson(ctx)
+  await harnessCall(() => actor.steer(params.id!, text, { by }))
+  return { ok: true }
+}
+
+/** Esc: stop the running reply and its calls; the session stays open. */
+export async function interrupt(ctx: RequestContext, params: Params) {
+  const actor = harness(ctx, "POST /sessions/:id/interrupt")
+  await harnessCall(() => actor.interrupt(params.id!))
+  return { ok: true }
+}
+
+/** End the session (interrupting a busy reply first); a session already ending is left as it is. */
+export async function end(ctx: RequestContext, params: Params) {
+  const actor = harness(ctx, "POST /sessions/:id/end")
+  await harnessCall(() => actor.end(params.id!))
+  return { ok: true }
+}
+
+/** Continue an ended Codex session on its thread, as a new session opened by the request's person. */
+export function continueSession(ctx: RequestContext, params: Params) {
+  const actor = harness(ctx, "POST /sessions/:id/continue")
+  const by = actingPerson(ctx)
+  return harnessCall(() => actor.continueSession(params.id!, { by }))
+}
+
+/** Set the session's cost cap; it must be above the cost so far. Held turns go on. */
+export function costCap(ctx: RequestContext, params: Params, body: unknown) {
+  const { cost_cap_usd } = body as z.output<typeof CostCapRequest>
+  const actor = harness(ctx, "POST /sessions/:id/cost-cap")
+  return harnessCall(() => actor.setCostCap(params.id!, cost_cap_usd))
+}
+
+/** Switch the session's connection and model; its next turn runs on them. Anyone who may chat may switch. */
+export function setModel(ctx: RequestContext, params: Params, body: unknown) {
+  const { connection, model } = body as z.output<typeof SetModelRequest>
+  const actor = harness(ctx, "POST /sessions/:id/model")
+  return harnessCall(() => actor.setModel(params.id!, connection, model))
+}
+
 /** The session routes. */
 export const ROUTES: readonly Route<RequestContext>[] = [
   { method: "GET", path: "/sessions", reply: z.array(Session), handler: listSessions },
+  { method: "POST", path: "/sessions", body: CreateSessionRequest, reply: Session, handler: createSession },
   { method: "GET", path: "/sessions/:id", reply: Session, handler: getSession },
   { method: "GET", path: "/sessions/:id/messages", reply: z.array(Message), handler: listMessages },
+  { method: "POST", path: "/sessions/:id/prompt", body: PromptRequest, reply: Ack, handler: prompt },
+  { method: "POST", path: "/sessions/:id/steer", body: PromptRequest, reply: Ack, handler: steer },
+  { method: "POST", path: "/sessions/:id/interrupt", reply: Ack, handler: interrupt },
+  { method: "POST", path: "/sessions/:id/end", reply: Ack, handler: end },
+  { method: "POST", path: "/sessions/:id/continue", reply: Session, handler: continueSession },
+  { method: "POST", path: "/sessions/:id/cost-cap", body: CostCapRequest, reply: Session, handler: costCap },
+  { method: "POST", path: "/sessions/:id/model", body: SetModelRequest, reply: Session, handler: setModel },
 ]
