@@ -1,5 +1,6 @@
 /** Card actions on the questions extension, through a stand-in for the session actor. */
 import { expect, test } from "bun:test"
+import { inspect } from "node:util"
 import type { Question } from "@opencorp/protocol"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { HarnessError } from "../../src/chat/state.ts"
@@ -191,7 +192,9 @@ test("a secret pages answer is never in a refusal or a log line", async () => {
     for (const action of [() => cards.answer(q.id, answer, "option"), () => actor.answer(q.id, answer, "option")]) {
       const error = await refusal(action)
       expect([error.status, error.code, error.message]).toEqual([422, "invalid_answer", message])
+      expect(error.cause).toBeUndefined()
       expect(String(error)).not.toContain(SECRET)
+      expect(inspect(error)).not.toContain(SECRET)
     }
   }
   expect(lines.filter((line) => line.includes(SECRET))).toEqual([])

@@ -6,6 +6,7 @@ import type { Office } from "../daemon/office.ts"
 import type { QuestionRecord, SessionRecord, Store } from "../store/store.ts"
 import { InvalidAnswer, checkAnswer } from "./checker.ts"
 
+/** The four ways a question is answered (`option`, `text`, `sent_back`, `interrupted`): the store's `answer_kind`. */
 export type AnswerKind = NonNullable<QuestionRecord["answer_kind"]>
 
 /** What the cards ask of the session actor (Codex sessions now, the chat harness later). */
