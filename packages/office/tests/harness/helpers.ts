@@ -142,11 +142,35 @@ export function makeCodex({ files = {}, ...options }: { files?: Record<string, u
     ...options,
   })
   office.onStop.push(() => sessions.closeAll())
-  return { office, store, hooks, sessions, fake, workspace: tempDir(), lines, events, storeEvents }
+  return { office, store, hooks, sessions, fake, workspace: tempDir(), lines, events, storeEvents, home }
 }
 
 /** What `makeCodex` returns. */
 export type Codex = ReturnType<typeof makeCodex>
+
+/** A second `CodexSessions` over `h`'s office, as a restarted office builds it: new hooks, the same fake, environment
+ *  and log, plus `options`. The office's stop closes it too. */
+export function reopened(h: Codex, options: CodexSessionsOptions = {}): Codex {
+  const log = (line: string) => h.lines.push(line)
+  const hooks = new Hooks({ log })
+  const sessions = new CodexSessions(h.office, hooks, {
+    command: () => h.fake.command(),
+    env: () => ({ PATH: "/usr/bin:/bin", HOME: h.home }),
+    closeGraceMs: 500,
+    log,
+    ...options,
+  })
+  h.office.onStop.push(() => sessions.closeAll())
+  return { ...h, hooks, sessions }
+}
+
+/** Stops `h`'s sessions, then restores them in a `reopened` one (Python's `restarted`). */
+export async function restarted(h: Codex, options: CodexSessionsOptions = {}): Promise<Codex> {
+  await h.sessions.closeAll()
+  const r = reopened(h, options)
+  await r.sessions.restore()
+  return r
+}
 
 /** Stores `handle`'s Codex session in `cwd` (starting, with its work item in progress, at the company's head) and
  *  starts it, as the chat harness's `startSession` does; returns the stored row. `openedBy` null makes the sessions

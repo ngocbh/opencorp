@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { type HarnessPolicy, type Message, Question, now } from "@opencorp/protocol"
 import type { Hooks } from "../chat/hooks.ts"
-import { HarnessError, notWaiting } from "../chat/state.ts"
+import { HarnessError, LIVE, notWaiting } from "../chat/state.ts"
 import { loadRepo } from "../company/loader.ts"
 import type { Office } from "../daemon/office.ts"
 import type { AnswerKind, CardActor } from "../questions/cards.ts"
@@ -13,6 +13,7 @@ import type { HarnessEvent } from "./adapter.ts"
 import { CLOSE_GRACE_MS, CodexProcess, CodexStartError, appServerCommand } from "./codex.ts"
 import { nameOf } from "./rpc.ts"
 import { CodexSession, END_WAIT_MS, REPLY_WAIT_MS, STOP_WAIT_MS } from "./session.ts"
+import { TURNLESS } from "./translate.ts"
 
 /** What `CodexSessions.launch` needs of a session. */
 export type Launchable = Pick<CodexSession, "sessionId" | "cwd" | "launchingAs" | "notified" | "requested" | "exited">
@@ -145,6 +146,57 @@ export class CodexSessions implements CardActor {
     this.#live.clear()
     // In parallel, so the stop stays bounded by one session's wait, whatever the number of sessions.
     await Promise.all(live.map((session) => session.shutdown()))
+  }
+
+  /** After an office restart, for each Codex session that was live. Idle stays idle with no app-server (its next
+   *  message reloads the thread). Busy, or waiting on a turn's card, becomes idle with `[interrupted]`: Codex reports
+   *  that turn interrupted on resume and never reruns it. Waiting only on turnless cards becomes idle without it.
+   *  Starting fails. Ending finishes ending. Open cards go stale. */
+  async restore(): Promise<void> {
+    for (const session of this.store.listSessions({ status: [...LIVE] })) {
+      if (this.#closed) return // the office is stopping: what is left stays as it is, for the next restore
+      if (session.harness !== "codex" || this.#live.has(session.id)) continue
+      try {
+        await this.#restore(session) // one that can't be restored mustn't stop the others, or the office
+      } catch (error) {
+        this.log(`can't restore Codex session ${session.id} (${nameOf(error)})`)
+      }
+    }
+  }
+
+  async #restore(session: SessionRecord): Promise<void> {
+    const cards = this.store.listQuestions({ sessionId: session.id, status: "open" })
+    // Inside a turn, unless it waited only on turnless cards (run ids TURNLESS…): Codex reports that turn
+    // interrupted.
+    const inTurn =
+      session.status === "busy" || (session.status === "waiting" && cards.some((q) => !q.run_id.startsWith(TURNLESS)))
+    for (const q of cards) {
+      try {
+        this.store.setQuestionStatus(q.id, "stale")
+      } catch (error) {
+        if (!(error instanceof InvalidTransition)) throw error // answered meanwhile: no app-server waits on it
+      }
+    }
+    // No stored tool parts to mark: a clean stop emitted them as interrupted; after a crash they are gone with the
+    // stream.
+    const live = new CodexSession(this, session, { author: await this.opener(session) })
+    if (this.#closed) {
+      // Office stop came meanwhile.
+      live.release()
+      return
+    }
+    this.#live.set(session.id, live)
+    if (session.status === "starting" || !session.harness_session_id) {
+      live.translator.error("The office restarted before Codex started. Start a new chat.")
+      live.release()
+      await this.finished(live, "failed")
+    } else if (session.status === "ending") {
+      live.release()
+      await this.finished(live, "ended")
+    } else {
+      if (inTurn) live.translator.turnCompleted("restored", "interrupted", null)
+      live.idleAfterRestore()
+    }
   }
 
   /** Drops `live` and ends its session: `ended` (or the first `endStatus`, such as `debriefing`) or `failed`.

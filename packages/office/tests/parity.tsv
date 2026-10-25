@@ -159,7 +159,17 @@ harness/test_codex.py::test_a_closed_app_server_leaves_no_open_pipes	changed	pac
 harness/test_continue.py	open	—	—	O3-14
 harness/test_debrief.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 harness/test_errors.py	open	—	—	O3-15
-harness/test_restore.py	open	—	—	O3-14
+harness/test_restore.py	ported	packages/office/tests/harness/restore.test.ts	—	O3-14
+harness/test_restore.py::test_a_busy_session_becomes_idle_with_a_marker_and_its_cards_go_stale	changed	packages/office/tests/harness/restore.test.ts::a busy session becomes idle with a marker and its cards go stale	D9, design §7.3: nothing is stored, so the stopped office's stream carries the interrupted tool and the restored session emits the one marker	O3-14
+harness/test_restore.py::test_a_busy_session_whose_newest_message_is_only_the_marker_keeps_one	dropped	—	D9: no stored messages or parts (add_message and _ends_interrupted go)	O3-14
+harness/test_restore.py::test_a_restored_session_whose_first_reload_fails_says_why_and_stays_idle	changed	packages/office/tests/harness/restore.test.ts::a restored session whose first reload fails says why and stays idle	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
+harness/test_restore.py::test_a_session_an_office_crash_left_busy_gets_its_tools_and_turn_marked	changed	packages/office/tests/harness/restore.test.ts::a session an office crash left busy gets its tools and turn marked	D9, design §7.3: the crash stored no tool part to mark; the restored session emits the marker only	O3-14
+harness/test_restore.py::test_a_session_still_starting_fails	changed	packages/office/tests/harness/restore.test.ts::a session still starting fails	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
+harness/test_restore.py::test_an_idle_session_stays_idle_and_reloads_on_its_next_message	changed	packages/office/tests/harness/restore.test.ts::an idle session stays idle and reloads on its next message	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
+harness/test_restore.py::test_office_stop_mid_reply_keeps_all_its_text_and_marks_it_once	changed	packages/office/tests/harness/restore.test.ts::office stop mid reply keeps all its text and marks it once	D9, design §7.3: the stopped office's stream ends with all the text and its marker; the restarted office holds only its restore marker (_ends_interrupted goes)	O3-14
+harness/test_restore.py::test_restore_interrupts_tool_parts_left_running_whatever_the_status[ending]	dropped	—	D9: no stored messages or parts (add_message and _ends_interrupted go)	O3-14
+harness/test_restore.py::test_restore_interrupts_tool_parts_left_running_whatever_the_status[idle]	dropped	—	D9: no stored messages or parts (add_message and _ends_interrupted go)	O3-14
+harness/test_restore.py::test_restore_interrupts_tool_parts_left_running_whatever_the_status[starting]	dropped	—	D9: no stored messages or parts (add_message and _ends_interrupted go)	O3-14
 harness/test_rpc.py	ported	packages/office/tests/harness/rpc.test.ts	—	O3-10
 harness/test_session.py	open	—	split: O3-13 → O4a-4; O3-13's tests are in packages/office/tests/harness/session.test.ts	O4a-4
 harness/test_session.py::test_a_codex_session_starts_with_an_owner_load	changed	packages/office/tests/harness/session.test.ts::a codex session starts with an owner load	the work item and connection are chat/harness.ts's start_session (O4a-4); the test helper's stand-in writes the row	O3-13
@@ -210,7 +220,9 @@ harness/test_translate.py::test_reasoning_summaries_show_as_thinking_text	change
 harness/test_translate.py::test_recorded_sessions_translate_as_their_golden_files	changed	packages/office/tests/harness/translate.test.ts::recorded sessions translate as their golden files	D9, design §7.3: no stored transcript; the parts are read from the translator's live events	O3-11
 harness/test_translate.py::test_the_recorded_steer_keeps_the_running_command_in_the_message_it_started_in	changed	packages/office/tests/harness/translate.test.ts::the recorded steer keeps the running command in the message it started in	D9, design §7.3: no stored transcript; the parts are read from the translator's live events	O3-11
 harness/test_translate.py::test_two_steers_around_a_running_command_keep_it_in_its_message	changed	packages/office/tests/harness/translate.test.ts::two steers around a running command keep it in its message	D9, design §7.3: no stored transcript; the parts are read from the translator's live events	O3-11
-harness/test_waiting.py	open	—	—	O3-14
+harness/test_waiting.py	ported	packages/office/tests/harness/waiting.test.ts	—	O3-14
+harness/test_waiting.py::test_a_session_waiting_only_on_turnless_cards_restores_idle_without_the_marker	changed	packages/office/tests/harness/waiting.test.ts::a session waiting only on turnless cards restores idle without the marker	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
+harness/test_waiting.py::test_a_waiting_session_with_a_turn_card_restores_idle_with_the_marker	changed	packages/office/tests/harness/waiting.test.ts::a waiting session with a turn card restores idle with the marker	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
 hq/test_api.py	open	—	split: O2-9 → O3-9 → O3-15 → O4b-7; O2-9's and O3-9's tests are in packages/office/tests/hq/api.test.ts	O4b-7
 hq/test_app_fixture.py	ported	packages/office/tests/hq/app_fixture.test.ts	—	O2-7
 hq/test_auth.py	ported	packages/office/tests/hq/auth.test.ts	—	O2-9
