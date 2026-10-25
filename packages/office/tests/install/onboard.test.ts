@@ -1,12 +1,19 @@
 /** Onboarding this machine: the owner's defaults, the in-process model check, and the helpers it uses. */
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { Readable, Writable } from "node:stream"
 import { fileURLToPath } from "node:url"
 import { isDeepStrictEqual } from "node:util"
 import { expect, test } from "bun:test"
+import type { Device } from "@opencorp/protocol"
 import { loadFlow } from "@ngocbh/yian"
+import { stringify } from "yaml"
+import { deviceName, Identity, readIdentity, writeIdentity } from "../../src/auth/identity.ts"
+import { hashPassword } from "../../src/auth/passwords.ts"
+import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
 import { Provider } from "../../src/chat/provider.ts"
+import { loadRepo } from "../../src/company/loader.ts"
 import { writeCompany } from "../../src/company_template/index.ts"
 import {
   modelProblem,
@@ -16,8 +23,9 @@ import {
   redact,
   runSetup,
   setupConnectionFile,
+  WHO,
 } from "../../src/install/onboard.ts"
-import { OnboardError, TtyPrompter } from "../../src/install/prompts.ts"
+import { OnboardError, TRIES, TtyPrompter } from "../../src/install/prompts.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { git, gitEnv } from "../company/helpers.ts"
@@ -26,6 +34,7 @@ import { makeHost, NO_LISTING, Runner, Script } from "./helpers.ts"
 
 const KEY = "sk-test-0000000000000000"
 const PROVIDER_JSON = '{"llm_config": {"provider": "openai"}}'
+const PASSWORD = "pw-sentinel-77ab"
 
 const OFFICE = fileURLToPath(new URL("../..", import.meta.url))
 const ONBOARD = fileURLToPath(new URL("../../src/install/onboard.ts", import.meta.url))
@@ -72,9 +81,10 @@ function collector(): { stream: Writable; text: () => string } {
   return { stream, text: () => text }
 }
 
-/** A terminal prompter with no one to ask, reading from an empty pipe. */
-function nonInteractive(): TtyPrompter {
-  return new TtyPrompter({ interactive: false, input: Readable.from([""]), output: collector().stream, env: {} })
+/** A terminal prompter with no one to ask, reading from an empty pipe; `preset` answers questions by their text. */
+function nonInteractive(preset: Record<string, string> = {}): TtyPrompter {
+  const output = collector().stream
+  return new TtyPrompter({ interactive: false, preset, input: Readable.from([""]), output, env: {} })
 }
 
 /** What `promise` rejects with. */
@@ -220,6 +230,217 @@ test("a second onboard from another shell leaves a running systemd unit alone", 
   expect(again.map((call) => call[2])).toEqual(["is-enabled"])
 })
 
+/** Options that stop onboarding once this device is done: the model check throws, before anything is saved. */
+function stopAfterTheDevice(): Pick<OnboardOptions, "stdin" | "checkModel"> {
+  return {
+    stdin: provider(),
+    checkModel: async () => {
+      throw new OnboardError("stop")
+    },
+  }
+}
+
+/** A company whose humans are `humans` (the first is CEO), pushed to a bare repo; resolves the bare repo's path.
+ *  `passwords` and `devices` give humans, by handle, a password's hash and a device list. */
+async function published(
+  dir: string,
+  humans: string[] = ["ceo", "lan"],
+  passwords: Record<string, string> = {},
+  devices: Record<string, Device[]> = {},
+): Promise<string> {
+  const src = await company(path.join(dir, "src"), humans[0])
+  for (const handle of humans.slice(1)) {
+    fs.mkdirSync(path.join(src, "people", handle))
+    const name = handle.slice(0, 1).toUpperCase() + handle.slice(1)
+    fs.writeFileSync(
+      path.join(src, "people", handle, "person.yaml"),
+      `handle: ${handle}\nname: ${name}\nkind: human\ntitle: Engineer\nmanager: ${humans[0]}\n`,
+    )
+  }
+  for (const [handle, password] of Object.entries(passwords)) {
+    const line = `password_hash: ${JSON.stringify(await hashPassword(password))}\n`
+    fs.appendFileSync(path.join(src, "people", handle, "person.yaml"), line)
+  }
+  for (const [handle, listed] of Object.entries(devices)) {
+    fs.appendFileSync(path.join(src, "people", handle, "person.yaml"), stringify({ devices: listed }))
+  }
+  if (humans.length > 1 || Object.keys(passwords).length > 0 || Object.keys(devices).length > 0) {
+    git(src, "add", "-A")
+    git(src, "commit", "-qm", "hire the humans")
+  }
+  const remote = path.join(dir, "acme.git")
+  cloneQuietly(["--bare", src, remote])
+  return remote
+}
+
+/** `git clone -q <args>` without the user's git config; throws on a failure. */
+function cloneQuietly(args: string[]): void {
+  const done = spawnSync("git", ["clone", "-q", ...args], { env: gitEnv(), stdio: ["ignore", "pipe", "pipe"] })
+  if (done.status !== 0) throw new Error(`git clone failed: ${done.stderr?.toString() ?? done.error}`)
+}
+
+test("onboard clones the company and commits this device for the human you pick", async () => {
+  const dir = tempDir()
+  const remote = await published(dir)
+  const home = path.join(dir, "home")
+  const ask = new Script(["lan"])
+  const error = await rejection(onboard(home, ask, { ...base(dir), ...stopAfterTheDevice(), source: remote }))
+  expect(error.message).toBe("stop")
+  const me = (await readIdentity(path.join(home, "identity.json")))!
+  expect([me.handle, me.device]).toEqual(["lan", deviceName()])
+  const root = path.join(home, "company")
+  expect(loadRepo(root).people.get("lan")!.devices).toEqual([{ name: me.device, token_sha256: tokenSha256(me.token) }])
+  expect(git(root, "log", "-1", "--format=%s")).toBe(`devices(@lan): add ${me.device}`)
+  expect(git(root, "rev-parse", "--abbrev-ref", "main@{upstream}")).toBe("origin/main")
+  expect(git(root, "status", "--porcelain")).toBe("")
+  expect(fs.readdirSync(home).sort()).toEqual([".lock", "company", "identity.json", "office"])
+  expect(ask.offered).toEqual([["ceo", "lan"]])
+  expect(ask.seen.filter((line) => line.startsWith("The company's"))).toEqual([])
+  expect(ask.seen.filter((line) => line.includes(me.token))).toEqual([])
+})
+
+test("joining as a human with a password needs it", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const ask = new Script(["lan", "wrong-password", PASSWORD])
+  const source = await published(dir, undefined, { lan: PASSWORD })
+  const error = await rejection(onboard(home, ask, { ...base(dir), ...stopAfterTheDevice(), source }))
+  expect(error.message).toBe("stop")
+  const me = (await readIdentity(path.join(home, "identity.json")))!
+  expect(me.handle).toBe("lan")
+  expect(loadRepo(path.join(home, "company")).people.get("lan")!.devices.map((d) => d.name)).toEqual([me.device])
+  expect(ask.seen.filter((line) => line === "@lan's password (not shown)")).toHaveLength(2)
+  expect(ask.seen).toContain("That doesn't work: wrong password")
+  expect(ask.seen.filter((line) => line.includes(PASSWORD))).toEqual([])
+})
+
+test("a password that never matches stops and leaves no company", async () => {
+  const dir = tempDir()
+  const source = await published(dir, undefined, { lan: PASSWORD })
+  const ask = new Script(["lan", ...Array<string>(TRIES).fill("nope-nope")])
+  const error = await rejection(onboard(path.join(dir, "home"), ask, { ...base(dir), source }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("wrong password for @lan")
+  expect(fs.readdirSync(path.join(dir, "home")).sort()).toEqual(["office"])
+})
+
+test("without a terminal for the password the company joins without this device", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const source = await published(dir, undefined, { lan: PASSWORD })
+  const error = await rejection(
+    onboard(home, nonInteractive({ [WHO]: "lan" }), { ...base(dir), ...stopAfterTheDevice(), source }),
+  )
+  expect(error.message).toBe("stop")
+  expect(fs.existsSync(path.join(home, "identity.json"))).toBe(false)
+  expect(loadRepo(path.join(home, "company")).people.get("lan")!.devices).toEqual([])
+  expect(git(path.join(home, "company"), "log", "-1", "--format=%s")).toBe("hire the humans")
+})
+
+test("a human without a password joins and is told to set one", async () => {
+  const dir = tempDir()
+  const ask = new Script(["lan"])
+  const source = await published(dir)
+  const error = await rejection(onboard(path.join(dir, "home"), ask, { ...base(dir), ...stopAfterTheDevice(), source }))
+  expect(error.message).toBe("stop")
+  expect((await readIdentity(path.join(dir, "home", "identity.json")))!.handle).toBe("lan")
+  expect(ask.seen).toContain(
+    "@lan has no password yet; set one with `opencorp password` so a new device has to give it",
+  )
+})
+
+test("an identity the company already lists is kept and nothing is asked", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  fs.mkdirSync(home)
+  // writeIdentity refuses an existing folder that isn't private.
+  fs.chmodSync(home, 0o700)
+  const me = new Identity("lan", "old-mac", newToken())
+  await writeIdentity(path.join(home, "identity.json"), me)
+  const source = await published(dir, undefined, { lan: PASSWORD }, {
+    lan: [{ name: "old-mac", token_sha256: tokenSha256(me.token) }],
+  })
+  const ask = new Script() // no answers: nothing may be asked
+  const error = await rejection(onboard(home, ask, { ...base(dir), ...stopAfterTheDevice(), source }))
+  expect(error.message).toBe("stop")
+  expect(await readIdentity(path.join(home, "identity.json"))).toEqual(me)
+  expect(git(path.join(home, "company"), "log", "-1", "--format=%s")).toBe("hire the humans")
+  expect(ask.seen).toContain(
+    `This device: old-mac, acting as @lan (its token is in ${path.join(home, "identity.json")})`,
+  )
+})
+
+test("onboard asks for the repo when not given one", async () => {
+  const dir = tempDir()
+  const remote = await published(dir, ["ceo"])
+  const ask = new Script([remote, ""]) // the only human is the default
+  const error = await rejection(onboard(path.join(dir, "home"), ask, { ...base(dir), ...stopAfterTheDevice() }))
+  expect(error.message).toBe("stop")
+  expect((await readIdentity(path.join(dir, "home", "identity.json")))!.handle).toBe("ceo")
+})
+
+test("the human named like this login is the default", async () => {
+  const dir = tempDir()
+  const source = await published(dir)
+  const error = await rejection(
+    onboard(path.join(dir, "home"), new Script([""]), {
+      ...base(dir),
+      ...stopAfterTheDevice(),
+      source,
+      loginDefaults: () => ["Lan", "lan"],
+    }),
+  )
+  expect(error.message).toBe("stop")
+  expect((await readIdentity(path.join(dir, "home", "identity.json")))!.handle).toBe("lan")
+})
+
+test("no human to default to and no answer stops without a company", async () => {
+  const dir = tempDir()
+  const source = await published(dir)
+  const error = await rejection(
+    onboard(path.join(dir, "home"), nonInteractive(), {
+      ...base(dir),
+      source,
+      loginDefaults: () => ["X", "someone-else"],
+    }),
+  )
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("no usable answer")
+  expect(fs.readdirSync(path.join(dir, "home")).sort()).toEqual(["office"])
+})
+
+test("no pick with no default says who to pick and names the flag", async () => {
+  const dir = tempDir()
+  const ask = new Script(Array<string>(TRIES).fill(""))
+  const source = await published(dir)
+  const error = await rejection(
+    onboard(path.join(dir, "home"), ask, { ...base(dir), source, loginDefaults: () => ["X", "someone-else"] }),
+  )
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("no usable answer")
+  const pick = "That doesn't work: say which one you are (@ceo, @lan), or pass --handle"
+  expect(ask.seen.filter((line) => line === pick)).toHaveLength(TRIES)
+})
+
+test("a device name the human already uses gets a suffix", async () => {
+  const dir = tempDir()
+  const source = await published(dir, ["ceo"])
+  const work = path.join(dir, "work")
+  cloneQuietly([source, work])
+  const person = path.join(work, "people/ceo/person.yaml")
+  fs.appendFileSync(person, `devices:\n- name: ${deviceName()}\n  token_sha256: ${"ab".repeat(32)}\n`)
+  git(work, "commit", "-qam", "another office")
+  git(work, "push", "-q", "origin", "main")
+  const error = await rejection(
+    onboard(path.join(dir, "home"), new Script([""]), { ...base(dir), ...stopAfterTheDevice(), source }),
+  )
+  expect(error.message).toBe("stop")
+  const me = (await readIdentity(path.join(dir, "home", "identity.json")))!
+  expect(me.device).toBe(`${deviceName().slice(0, 60)}-2`)
+  const listed = loadRepo(path.join(dir, "home", "company")).people.get("ceo")!.devices.map((d) => d.name)
+  expect(listed).toEqual([deviceName(), me.device])
+})
+
 test.each([
   ["empty", () => new Script([""])],
   ["non-interactive", nonInteractive],
@@ -231,6 +452,31 @@ test.each([
     /no company at .*; run `opencorp init` to create one, or `opencorp onboard --from URL`/,
   )
   expect(fs.existsSync(path.join(dir, "home", "company"))).toBe(false)
+})
+
+test("a repo that cant be cloned leaves nothing behind", async () => {
+  const dir = tempDir()
+  const error = await rejection(
+    onboard(path.join(dir, "home"), new Script(), { ...base(dir), source: path.join(dir, "nowhere.git") }),
+  )
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toMatch(/can't clone .*; if git needs a login or a new host key, set that up in/s)
+  expect(error.message).toMatch(/ a terminal first .*then run `opencorp onboard` again$/s)
+  expect(fs.readdirSync(path.join(dir, "home")).sort()).toEqual(["office"])
+})
+
+test("a repo without a company is refused and removed", async () => {
+  const dir = tempDir()
+  const src = path.join(dir, "src")
+  fs.mkdirSync(src)
+  git(src, "init", "-q", "-b", "main")
+  fs.writeFileSync(path.join(src, "README.md"), "hi\n")
+  git(src, "add", "-A")
+  git(src, "commit", "-qm", "readme")
+  const error = await rejection(onboard(path.join(dir, "home"), new Script(), { ...base(dir), source: src }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("isn't a company repo")
+  expect(fs.readdirSync(path.join(dir, "home")).sort()).toEqual(["office"])
 })
 
 test("a company init left unfinished is not cloned over", async () => {
@@ -246,12 +492,63 @@ test("a company init left unfinished is not cloned over", async () => {
   expect(fs.readdirSync(root)).toEqual(["company.yaml"])
 })
 
+test("a second onboard of a cloned company changes nothing and asks nothing", async () => {
+  const dir = tempDir()
+  const remote = await published(dir)
+  const home = path.join(dir, "home")
+  const first = await rejection(
+    onboard(home, new Script(["lan"]), { ...base(dir), ...stopAfterTheDevice(), source: remote }),
+  )
+  expect(first.message).toBe("stop")
+  const head = git(path.join(home, "company"), "rev-parse", "HEAD")
+  const identity = fs.readFileSync(path.join(home, "identity.json"), "utf8")
+  const again = new Script()
+  const error = await rejection(onboard(home, again, { ...base(dir), ...stopAfterTheDevice(), source: remote }))
+  expect(error.message).toBe("stop")
+  expect(git(path.join(home, "company"), "rev-parse", "HEAD")).toBe(head)
+  expect(fs.readFileSync(path.join(home, "identity.json"), "utf8")).toBe(identity)
+  expect(again.seen.some((line) => line.startsWith("This device: "))).toBe(true)
+})
+
+test("a repo url with credentials is never shown", async () => {
+  const dir = tempDir()
+  // A proxy would take the connection that port 9 refuses.
+  const environ = Object.fromEntries(Object.entries(gitEnv(process.env)).filter(([name]) => !/_proxy$/i.test(name)))
+  const error = await rejection(
+    onboard(path.join(dir, "home"), new Script(), {
+      ...base(dir),
+      environ,
+      source: "https://user:tok-0000@127.0.0.1:9/x.git",
+    }),
+  )
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("https://***@127.0.0.1:9/x.git")
+  expect(error.message).not.toContain("tok-0000")
+  expect(fs.readdirSync(path.join(dir, "home")).sort()).toEqual(["office"])
+}, 30_000)
+
+test("the users git runs in the callers env", async () => {
+  const dir = tempDir()
+  const empty = path.join(dir, "bin")
+  fs.mkdirSync(empty)
+  const error = await rejection(
+    onboard(path.join(dir, "home"), new Script(), {
+      ...base(dir),
+      environ: { PATH: empty },
+      source: path.join(dir, "x.git"),
+    }),
+  )
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("can't run git")
+})
+
 test("an existing home is made private", async () => {
   const dir = tempDir()
   const home = path.join(dir, "home")
   fs.mkdirSync(home)
   fs.chmodSync(home, 0o755)
   const error = await rejection(onboard(home, new Script([""]), base(dir)))
+  expect(error).toBeInstanceOf(OnboardError)
   expect(error.message).toContain("no company at")
   expect(fs.statSync(home).mode & 0o777).toBe(0o700)
   expect(fs.statSync(path.join(home, "office")).mode & 0o777).toBe(0o700)

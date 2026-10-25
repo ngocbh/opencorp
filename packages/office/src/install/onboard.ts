@@ -19,12 +19,14 @@ import {
 } from "@ngocbh/yian/llm_clients"
 import { FileLockError, withWarnings } from "@ngocbh/yian/platform"
 import type { RunFlowOptions, RunResult } from "@ngocbh/yian/run"
+import { addDevice, DeviceRefused } from "../auth/devices.ts"
 import { deviceName, Identity, identityPath, readIdentity, writeIdentity } from "../auth/identity.ts"
+import { checkPassword } from "../auth/passwords.ts"
 import { newToken, tokenSha256 } from "../auth/tokens.ts"
 import { azureBaseUrl, Connections } from "../chat/connections.ts"
 import * as models from "../chat/models.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
-import { CompanyGitError } from "../company/git.ts"
+import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
 import { isNew, missingFiles, type Owner, writeCompany } from "../company_template/index.ts"
@@ -630,8 +632,32 @@ export function removePath(file: string): void {
   fs.rmSync(file, { recursive: true, force: true })
 }
 
-/** Onboarding's steps: the company, this device, the model, and the office. */
-export const STEPS = 4
+/** Clones the company at `url` into `dest` with the user's git in `env`, replacing what an earlier, stopped clone
+ *  left there. Throws `OnboardError` when the clone failed or isn't a company; nothing is left at `dest`. */
+async function clone(url: string, dest: string, env: Env): Promise<void> {
+  removePath(dest)
+  const done = await userGit(["clone", "-q", "--", url, dest], { env })
+  if (done.code !== 0) {
+    removePath(dest)
+    throw new OnboardError(
+      `can't clone ${redact(url)}: ${redact(done.stderr.trim())}; ${GIT_ACCESS}, then run \`opencorp onboard\` again`,
+    )
+  }
+  if (await isNew(dest)) {
+    removePath(dest)
+    throw new OnboardError(`${redact(url)} isn't a company repo: it has no company.yaml at its top`)
+  }
+}
+
+/** This account's default handle, or "" when it has none. */
+function loginHandle(defaults: () => [name: string, handle: string]): string {
+  try {
+    return defaults()[1]
+  } catch (error) {
+    if (error instanceof OnboardError) return ""
+    throw error
+  }
+}
 
 /** The identity saved at `home`, or undefined when there is none. Looked for first, since reading takes the
  *  home's `.lock`, which a failed onboarding must not leave behind. */
@@ -639,6 +665,88 @@ async function knownIdentity(home: string): Promise<Identity | undefined> {
   const file = identityPath(home)
   return lexists(file) ? await readIdentity(file) : undefined
 }
+
+/**
+ * This device's identity in the company at `root`: kept if the company lists it, else made and committed.
+ *
+ * A new identity is for the human you pick: the default is the human whose handle is this login's
+ * (`loginDefaults`), otherwise the only human. A human with a password must give it; without a terminal to ask on,
+ * the device is left out (null) for `opencorp login` to add. A device name the human already lists gets a `-2`
+ * (`-3`, ...) suffix. Throws `OnboardError` when there's no human, no answer names one, the password never
+ * matched, or the device can't be added.
+ */
+async function join(
+  root: string,
+  worktrees: string,
+  home: string,
+  prompter: Prompter,
+  loginDefaults: () => [name: string, handle: string],
+): Promise<Identity | null> {
+  const people = loadRepo(root).people
+  const known = await knownIdentity(home)
+  if (known !== undefined) {
+    const sha = tokenSha256(known.token)
+    if (people.get(known.handle)?.devices.some((d) => d.token_sha256 === sha)) return known
+  }
+  const humans = [...people.values()]
+    .filter((p) => p.kind === "human")
+    .map((p) => p.handle)
+    .sort()
+  if (humans.length === 0) throw new OnboardError("the company has no humans for this device to act as")
+  const login = loginHandle(loginDefaults)
+  const defaultHandle = humans.includes(login) ? login : humans.length === 1 ? humans[0]! : ""
+  // With no one to ask, nothing is listed, so the problem names the humans and the flag.
+  const pick = `say which one you are (${humans.map((h) => "@" + h).join(", ")}), or pass --handle`
+  const handle = await askUntil(
+    prompter,
+    WHO,
+    defaultHandle,
+    (h) => (humans.includes(h) ? null : h ? `@${h} isn't one of them` : pick),
+    humans,
+  )
+  const human = people.get(handle)!
+  const passwordHash = human.password_hash
+  if (passwordHash !== null) {
+    try {
+      await askPassword(prompter, handle, passwordHash)
+    } catch (error) {
+      if (!(error instanceof NoTerminal)) throw error
+      prompter.say(`There's no terminal to ask for @${handle}'s password on, so this device isn't added.`)
+      return null
+    }
+  }
+  const taken = new Set(human.devices.map((d) => d.name))
+  const base = deviceName()
+  let name = base
+  for (let suffix = 2; taken.has(name); suffix++) name = `${base.slice(0, 60)}-${suffix}`
+  const me = new Identity(handle, name, newToken())
+  try {
+    await addDevice(new CompanyGit(root, worktrees), handle, { name, token_sha256: tokenSha256(me.token) }, handle)
+  } catch (error) {
+    if (!(error instanceof DeviceRefused || error instanceof CompanyGitError || strerror(error) !== undefined)) {
+      throw error
+    }
+    throw new OnboardError(`can't add this device to @${handle}: ${(error as Error).message}`)
+  }
+  await saveIdentity(home, me)
+  if (passwordHash === null) {
+    prompter.say(`@${handle} has no password yet; set one with \`opencorp password\` so a new device has to give it`)
+  }
+  return me
+}
+
+/** Asks for `handle`'s password until it matches `passwordHash`, at most `TRIES` times. Throws `NoTerminal` when
+ *  there's no terminal to ask on, and `OnboardError` when no answer matched. */
+async function askPassword(prompter: Prompter, handle: string, passwordHash: string): Promise<void> {
+  for (let i = 0; i < TRIES; i++) {
+    if (await checkPassword(await prompter.secret(`@${handle}'s password (not shown)`), passwordHash)) return
+    prompter.say("That doesn't work: wrong password")
+  }
+  throw new OnboardError(`wrong password for @${handle}`)
+}
+
+/** Onboarding's steps: the company, this device, the model, and the office. */
+export const STEPS = 4
 
 /** How `onboard` runs. */
 export interface OnboardOptions {
@@ -678,7 +786,8 @@ export interface OnboardOptions {
  */
 export async function onboard(home: string, prompter: Prompter, options: OnboardOptions): Promise<void> {
   const host = options.host ?? defaultHost()
-  const one = launch(home, { environ: options.environ ?? process.env, userHome: host.userHome })
+  const environ = options.environ ?? process.env
+  const one = launch(home, { environ, userHome: host.userHome })
   const company = path.join(one.home, "company")
   const worktrees = path.join(one.office, "worktrees")
   makeHome(one.home)
@@ -693,7 +802,7 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
   // top-up waits until it is stopped.
   const running = await host.answers(one.socket)
   const fresh = await isNew(company)
-  const root = company
+  let root = company
   if (fresh) {
     if (running) {
       throw new OnboardError(
@@ -708,9 +817,11 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
     }
     const url = options.source || (await prompter.ask(REPO_URL))
     if (!url) throw new OnboardError(`there's no company at ${company}; ${SET_UP}`)
-    throw new OnboardError("cloning comes in 5b")
+    root = path.join(one.home, CLONE)
+    await clone(url, root, environ)
+    prompter.say(`Company repo: cloned ${redact(url)}`)
   }
-  let me: Identity | undefined
+  let me: Identity | null | undefined
   try {
     let written: string[] = []
     let missing: string[] = []
@@ -718,7 +829,7 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
       if (running) missing = missingFiles(root)
       else written = await writeCompany(root, worktrees)
     } catch (error) {
-      if (!(error instanceof CompanyGitError || error instanceof RangeError || errnoCode(error) !== undefined)) {
+      if (!(error instanceof CompanyGitError || error instanceof RangeError || strerror(error) !== undefined)) {
         throw error
       }
       throw new OnboardError(`can't write the company repo at ${company}: ${(error as Error).message}`)
@@ -738,7 +849,9 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
     }
 
     step(2, "This device", "The office takes requests only from devices its humans list, once any human lists one.")
-    me = await knownIdentity(one.home)
+    me = fresh
+      ? await join(root, worktrees, one.home, prompter, options.loginDefaults ?? loginDefaults)
+      : await knownIdentity(one.home)
     if (fresh) {
       // An empty dir: rename can't put a directory over a full one.
       if (fs.statSync(company, { throwIfNoEntry: false })?.isDirectory()) fs.rmdirSync(company)
@@ -748,7 +861,7 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
     if (fresh) removePath(root)
     throw error
   }
-  if (me !== undefined) {
+  if (me) {
     prompter.say(`This device: ${me.device}, acting as @${me.handle} (its token is in ${identityPath(one.home)})`)
   } else {
     prompter.say("This device has no identity yet; run `opencorp login` to use opencorp from it.")
