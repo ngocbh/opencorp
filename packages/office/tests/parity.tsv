@@ -1107,6 +1107,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/questions/format.test.ts::an astral discussion is cut by code points	design §1.4 deviation: the discussion cap counts code points as Python's len, so the cut never splits a surrogate pair	O3-7
 —	new	packages/office/tests/runs/nodes.test.ts::a recorded run names its node kinds	P15	O4b-5
 —	new	packages/office/tests/runs/nodes.test.ts::a woken node opens again after a clear	yian #1064: advancing a waiting run emits NodeWoken	O4b-5
+—	new	packages/office/tests/runs/nodes.test.ts::kinds wait for the run start to be read	P15: a run start still being written gets kinds once it is read	O4b-5
 —	new	packages/office/tests/runs/nodes.test.ts::node kinds come from the flows static nodes	P15	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a code reference outside the code root shows no derived value and no kinds	§6 rule 10, Y6c	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a commit value shows in its display form	Y5, §5.5: values decoded office-side for clients	O4b-5

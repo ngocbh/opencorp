@@ -129,3 +129,18 @@ test("a recorded run names its node kinds", async () => {
   const bigIndex = await refresh(big, null)
   expect([bigIndex.startEnd! > FLOW_BYTES, await reader.kinds(big, bigIndex, options)]).toEqual([true, null])
 })
+
+test("kinds wait for the run start to be read", async () => {
+  const { log, codeRoot } = await realRun(tempDir(), LOOP_FLOW)
+  const options = { env: () => undefined, codeRoot }
+  const bytes = fs.readFileSync(log)
+  const firstEnd = bytes.indexOf(0x0a)
+  const torn = path.join(tempDir(), "torn.jsonl")
+  fs.writeFileSync(torn, bytes.subarray(0, firstEnd))
+  const reader = new RunLogReader()
+  const index = await refresh(torn, null)
+  expect(await reader.kinds(torn, index, options)).toBeNull()
+  fs.appendFileSync(torn, bytes.subarray(firstEnd))
+  expect(await refresh(torn, index)).toBe(index)
+  expect(kindOf(await reader.kinds(torn, index, options), "l")).toBe("loop")
+})

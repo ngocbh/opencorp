@@ -856,12 +856,13 @@ export class RunLogReader {
     const derived = event?.kind === "pool_commit" && isRecord(payload) && (payload.value ?? null) === null
       && ["from", "take", "steps"].some((form) => (payload[form] ?? null) !== null)
     if (fold === undefined || !derived || index.offset > this.foldBytes) return event
-    const replay = this.folding.then(() => foldRunLog(path, fold))
+    // Replays queue behind each other and each reads the log as it is on its turn, so the size is checked again then.
+    const replay = this.folding.then(() => fs.statSync(path).size > this.foldBytes ? null : foldRunLog(path, fold))
     // The chain keeps neither the replayed log nor its error.
     this.folding = replay.then(() => {}, () => {})
     let value: TypedValue | null
     try {
-      value = (await replay).records[seq]?.value ?? null
+      value = (await replay)?.records[seq]?.value ?? null
     } catch {
       return event
     }
@@ -870,12 +871,13 @@ export class RunLogReader {
 
   /**
    * The node kinds of the flow `path`'s log recorded (`recordedKinds`), compiled once per index and kept on it, a
-   * null result too; null without compiling when the run start is over FLOW_BYTES.
+   * null result too; null without compiling when the run start is over FLOW_BYTES. Null, not kept, until the run
+   * start is indexed.
    */
   kinds(path: string, index: Index, options: FoldOptions): Promise<Map<string, string> | null> {
-    index.kinds ??= index.startEnd !== null && index.startEnd <= FLOW_BYTES
-      ? keptKinds(path, index, options)
-      : Promise.resolve(null)
+    // An empty log or a run start still being written gets its kinds on a later refresh of the same index.
+    if (index.startEnd === null) return Promise.resolve(null)
+    index.kinds ??= index.startEnd <= FLOW_BYTES ? keptKinds(path, index, options) : Promise.resolve(null)
     return index.kinds
   }
 
