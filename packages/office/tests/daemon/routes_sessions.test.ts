@@ -1,12 +1,13 @@
 /** Session routes. */
 import http from "node:http"
-import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { type LiveEvent, Message } from "@opencorp/protocol"
 import { z } from "zod"
 import { newToken } from "../../src/auth/tokens.ts"
 import { HarnessError } from "../../src/chat/state.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import type { Office } from "../../src/daemon/office.ts"
+import type { SessionRecord } from "../../src/store/store.ts"
 import { register } from "../../src/extensions/questions.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { fakeLlm, makeHarness, noWorkersLeft, status as chatStatus } from "../chat/helpers.ts"
@@ -537,4 +538,102 @@ test("a chat is credited to the verified person", async () => {
   ])
   const system = (fake.requests()[0]!.messages as { content: string }[])[0]!.content
   expect(system).toContain("You're talking with Ava (@ava), your peer.")
+})
+
+test("end is ending at once and a second end is a no op", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const { sock } = await served(h.office)
+  fake.script({ content: "Working", hold: 30 }, { content: "never" })
+  const sid = await open(h, sock)
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "hi" })).json()).toEqual({ ok: true })
+  await fake.waitForRequests(1, 30_000)
+
+  expect((await post(sock, `/sessions/${sid}/end`, null)).json()).toEqual({ ok: true })
+  expect(chatStatus(h, sid)).toBe("ending")
+  expect((await post(sock, `/sessions/${sid}/end`, null)).json()).toEqual({ ok: true })
+  for (const action of ["prompt", "steer"]) {
+    const r = await post(sock, `/sessions/${sid}/${action}`, { text: "more" })
+    expect([r.status, errorOf(r)]).toEqual([409, "ending"])
+  }
+  fake.release()
+  await waitFor(() => chatStatus(h, sid) === "ended", { what: "the session to end" })
+  for (const action of ["interrupt", "end"]) {
+    const r = await post(sock, `/sessions/${sid}/${action}`, null)
+    expect([r.status, errorOf(r)]).toEqual([409, "not_live"])
+  }
+})
+
+test("a steer reaches a running reply and a prompt check can refuse", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const { sock } = await served(h.office)
+  h.hooks.promptCheck.push((_s, text) => (text === "nope" ? "not that" : null))
+  fake.script({ content: "Working", hold: 30 }, { content: "Done." })
+  const sid = await open(h, sock)
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "hi" })).json()).toEqual({ ok: true })
+  await fake.waitForRequests(1, 30_000)
+
+  for (const action of ["prompt", "steer"]) {
+    const r = await post(sock, `/sessions/${sid}/${action}`, { text: "nope" })
+    expect([r.status, r.json()]).toEqual([422, { error: "refused", message: "not that" }])
+    expect(r.text).not.toContain("nope")
+  }
+  expect((await post(sock, `/sessions/${sid}/steer`, { text: "Also Rome." })).json()).toEqual({ ok: true })
+  fake.release()
+  const requests = await fake.waitForRequests(2, 30_000)
+  expect(JSON.stringify(requests[1]!.messages)).toContain("Also Rome.")
+  expect(JSON.stringify(fake.requests())).not.toContain("nope")
+})
+
+const BROKEN_SPECS: [string, Error, number, string][] = [
+  ["RuntimeError", new Error("sentinel"), 500, "start_failed"],
+  // The folder vanished after the start's check.
+  ["HarnessError", new HarnessError(422, "invalid_body", "the folder is gone"), 422, "invalid_body"],
+]
+
+test.each(BROKEN_SPECS)("a spec that cant be built fails the session [%s]", async (_case, error, code, name) => {
+  const h = await makeHarness(await fakeLlm())
+  const lines: string[] = []
+  const { sock } = await served(h.office, { log: (line) => lines.push(line) })
+  const ended: string[] = []
+  h.hooks.sessionEnded.push((s: SessionRecord) => void ended.push(s.status))
+  spyOn(h.harness, "spec").mockRejectedValue(error)
+  const r = await post(sock, "/sessions", { person: "minh", cwd: h.folder })
+  expect([r.status, errorOf(r)]).toEqual([code, name])
+  const [s, ...rest] = h.store.listSessions()
+  expect(rest).toEqual([])
+  await waitFor(() => ended.length > 0, { what: "the session to end" })
+  expect([s!.status, ended]).toEqual(["failed", ["failed"]])
+  const late = await post(sock, `/sessions/${s!.id}/prompt`, { text: "hi" })
+  expect([late.status, errorOf(late)]).toEqual([409, "not_live"])
+  // The office log names the error's type only; neither it nor the reply holds the error's text.
+  expect(h.logs.some((line) => line.includes(`can't start (${error.name})`))).toBe(true)
+  expect([...h.logs, ...lines].join("\n")).not.toContain("sentinel")
+  expect(r.text).not.toContain("sentinel")
+})
+
+/** [label, target, body, status, error code]. */
+const BAD_CHAT_REQUESTS: [string, string, unknown, number, string][] = [
+  ["create nobody 404", "/sessions", { person: "nobody", cwd: "/tmp" }, 404, "not_found"],
+  ["create a human 422", "/sessions", { person: "ngocbh", cwd: "/tmp" }, 422, "not_an_agent"],
+  ["create relative cwd 422", "/sessions", { person: "minh", cwd: "relative" }, 422, "invalid_body"],
+  ["create codex 422", "/sessions", { person: "minh", cwd: "/tmp", harness: "codex" }, 422, "unsupported_harness"],
+  ["create root cwd 422", "/sessions", { person: "minh", cwd: "/" }, 422, "unsafe_workspace"],
+  ["prompt missing 404", `/sessions/${ULID}/prompt`, { text: "hi" }, 404, "not_found"],
+  ["prompt empty 422", `/sessions/${ULID}/prompt`, { text: "" }, 422, "invalid_body"],
+  ["interrupt missing 404", `/sessions/${ULID}/interrupt`, null, 404, "not_found"],
+  ["end missing 404", `/sessions/${ULID}/end`, null, 404, "not_found"],
+  ["cost cap missing 404", `/sessions/${ULID}/cost-cap`, { cost_cap_usd: 1 }, 404, "not_found"],
+  ["model missing 404", `/sessions/${ULID}/model`, { connection: "office", model: "stub" }, 404, "not_found"],
+  ["model empty 422", `/sessions/${ULID}/model`, { connection: "office", model: "" }, 422, "invalid_body"],
+  ["model absent 422", `/sessions/${ULID}/model`, { connection: "office" }, 422, "invalid_body"],
+  ["answer missing 404", `/questions/${ULID}/answer`, { answer: "x", answer_kind: "text" }, 404, "not_found"],
+]
+
+test.each(BAD_CHAT_REQUESTS)("chat routes refuse bad requests [%s]", async (_case, target, body, code, name) => {
+  const h = await makeHarness(await fakeLlm())
+  const { sock } = await served(h.office)
+  const r = await post(sock, target, body)
+  expect([r.status, errorOf(r)]).toEqual([code, name])
 })
