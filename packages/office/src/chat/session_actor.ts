@@ -310,11 +310,12 @@ export class SessionActor implements LiveCalls {
    *  for it, and the actor is neither finished nor closed. */
   liveRun(): (LiveRun & { runId: string }) | null {
     const run = this.#starting ?? this.#run
-    if (run === null || this.#runId === null || this.#finished || this.#closed) return null
+    // While a fresh run replaces the current one, the worker being spawned is still the old run's for a moment.
+    if (run === null || run.runId !== this.#runId || this.#finished || this.#closed) return null
     const stored = this.#ctx.store.getSession(this.sessionId)?.status
     const status = stored === "idle" || stored === "waiting" ? stored : "running"
     const nodes = status === "running" ? this.#nodes.current() : [...run.waiting.keys()]
-    return { runId: this.#runId, status, nodes }
+    return { runId: run.runId, status, nodes }
   }
 
   /** The model calls in flight of `runId`, as the live relay shows them (empty while its view is being built) while a
@@ -1218,7 +1219,6 @@ export class SessionActor implements LiveCalls {
     const node = typeof data.node_id === "string" ? data.node_id : null
     switch (frame.name) {
       case "RunStarted":
-        this.#ctx.runChanged?.(run.runId)
         this.#staleReplaced()
         this.#trySettle("after a run started")
         return

@@ -109,7 +109,7 @@ test("a run that has ended sends its end in its trailing event", async () => {
   await actor.start()
   const runId = actor.runId!
   await waitFor(async () => (await read()).length > 0, { what: "the start's run.updated" })
-  // Within a second of the start's: coalesced, so the timer sends the trailing event, built after the end.
+  // The trailing event is built after the end, whether it is sent at once or by the timer.
   await actor.fail()
   expect(actor.liveRun()).toBeNull()
   const last = await waitFor(
@@ -126,7 +126,6 @@ test("office stop stops the run notifier", async () => {
   const office = makeOffice()
   const built: string[] = []
   office.runNotifier.changed("r", () => (built.push("r"), null))
-  office.runNotifier.changed("r", () => (built.push("r again"), null)) // coalesced: arms the timer
   await office.stop()
   office.runNotifier.changed("s", () => (built.push("s"), null))
   expect(built).toEqual(["r"])
@@ -137,7 +136,10 @@ test("a fresh run shows no stale nodes before its worker starts", async () => {
   const o = await chatOffice(fake)
   const workers = scriptedWorker(o)
   const sid = await newSession(o)
-  const actor = makeActor(o, sid)
+  // Each report, with whether the run's end was stored by then.
+  const changed: [string, boolean][] = []
+  const ended = (id: string) => o.office.store.getRun(id)?.endReason != null
+  const actor = makeActor(o, sid, { runChanged: (id) => void changed.push([id, ended(id)]) })
   await actor.start()
   const old = actor.runId!
   const first = workers[0]!
@@ -150,6 +152,8 @@ test("a fresh run shows no stale nodes before its worker starts", async () => {
   await waitFor(() => workers.length === 2 && status(o, sid) === "busy", { what: "the fresh run's worker" })
   expect(actor.runId).not.toBe(old)
   expect(actor.liveRun()).toEqual({ runId: actor.runId!, status: "running", nodes: [] })
+  // The replaced run's end was reported once stored.
+  expect(changed).toContainEqual([old, true])
 })
 
 test("live run is the workers status and nodes and null without a worker", async () => {
@@ -164,6 +168,10 @@ test("live run is the workers status and nodes and null without a worker", async
   const runId = actor.runId!
   expect(actor.liveRun()).toEqual({ runId, status: "running", nodes: [] })
   const { worker, handlers } = workers[0]!
+  // The run's start is reported, by the settle after it.
+  const started = changed.length
+  handlers.event(worker, { type: "event", name: "RunStarted", data: { run_id: runId } })
+  await waitFor(() => changed.length > started, { what: "the run start's report" })
   const n = changed.length
   handlers.event(worker, { type: "event", name: "NodeStarted", data: { node_id: "chat#0/reply" } })
   await waitFor(() => changed.length > n, { what: "the node's change" })
