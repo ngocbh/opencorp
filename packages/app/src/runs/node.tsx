@@ -5,8 +5,20 @@ import { isIndexing } from "@opencorp/client"
 import type { RunDetail, RunEvent, RunNode } from "@opencorp/protocol"
 import Maximize2 from "lucide-solid/icons/maximize-2"
 import Minimize2 from "lucide-solid/icons/minimize-2"
-import { createEffect, createSignal, createUniqueId, For, on, onCleanup, onMount, Show, type JSX } from "solid-js"
+import {
+  createEffect,
+  createSignal,
+  createUniqueId,
+  For,
+  Index,
+  on,
+  onCleanup,
+  onMount,
+  Show,
+  type JSX,
+} from "solid-js"
 import { useOffice } from "../data/office"
+import type { LiveCall } from "./live"
 import { handleText, staticPath } from "./timeline"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
@@ -78,6 +90,8 @@ export function NodeDetail(props: {
   expanded?: boolean
   /** Expands it over the Timeline, or puts it back beside it. */
   onExpand?: (expanded: boolean) => void
+  /** Its model calls in flight with text so far, while its run is running. */
+  live?: LiveCall[]
 }) {
   const office = useOffice()
   const headingId = createUniqueId()
@@ -194,6 +208,14 @@ export function NodeDetail(props: {
       </dl>
       <Show when={props.node.status === "open"}>
         <p class={MUTED}>running: its output appears when it ends</p>
+        <Show when={props.live?.length}>
+          <Part title="Live">
+            {/* By position, so a call's block updates in place as its text grows. */}
+            <div aria-live="polite" class="space-y-2">
+              <Index each={props.live}>{(call) => <pre class={PRE}>{call().text}</pre>}</Index>
+            </div>
+          </Part>
+        </Show>
       </Show>
       <Show when={props.node.status === "restarted"}>
         <p class={MUTED}>interrupted: its partial work is only in the session's transcript</p>

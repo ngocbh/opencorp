@@ -49,7 +49,7 @@ import type {
 } from "@opencorp/protocol"
 import { OfficeError, OfficeTimeout, UnknownDevice } from "./errors"
 import { request, seg, transportOf, where, type Method, type Transport } from "./http"
-import { subscribe, type StreamEvent, type SubscribeOptions } from "./sse"
+import { runLive, subscribe, type RunLiveFrame, type StreamEvent, type SubscribeOptions } from "./sse"
 
 export type OfficeClient = ReturnType<typeof createOfficeClient>
 
@@ -137,6 +137,12 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
       event: (id: string, seq: number) => get<RunEvent>(`${r(id)}/events/${seq}`),
       /** Where the log downloads from, as stored, for a link (HQ only: the browser's cookie authorizes it). */
       logUrl: (id: string) => `${socket}${r(id)}/log`,
+      /**
+       * Reads one live stream of run `id`: its records after seq `after`, then its model calls' frames while its worker
+       * runs; see `runLive`. It never reconnects.
+       */
+      live: (id: string, handler: (f: RunLiveFrame) => void, opts: { after?: number; signal?: AbortSignal } = {}) =>
+        runLive(transport, `${r(id)}/live${query({ after: opts.after })}`, handler, { token, signal: opts.signal }),
     },
     /** Spends a pairing code and signs this browser in (HQ only). */
     pair: (req: PairRequest) => post<BrowserSession>("/pair", req),

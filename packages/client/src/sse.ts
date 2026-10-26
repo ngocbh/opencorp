@@ -1,4 +1,12 @@
-import type { Event, LiveEvent } from "@opencorp/protocol"
+import type {
+  Event,
+  LiveEvent,
+  RunEvent,
+  RunLiveCall,
+  RunLiveChunk,
+  RunLiveEnd,
+  RunLiveStart,
+} from "@opencorp/protocol"
 import { failureKind, OfficeError, UnknownDevice } from "./errors"
 import { authorization, officeFetch, transportOf, type Transport } from "./http"
 
@@ -208,6 +216,106 @@ export function subscribe(
     reconnect() {
       unusable = true
       ctl?.abort()
+    },
+  }
+}
+
+/** A frame of a run's live stream (`GET /runs/{id}/live`), or how the stream ended. */
+export type RunLiveFrame =
+  | { type: "record"; seq: number; record: RunEvent }
+  | ({ type: "call" } & RunLiveCall)
+  | ({ type: "start" } & RunLiveStart)
+  | ({ type: "chunk" } & RunLiveChunk)
+  | ({ type: "end" } & RunLiveEnd)
+  /** The run's worker ended: reconnect when the run runs again. */
+  | { type: "run_end" }
+  /** The office can't go on with this stream: reconnect. */
+  | { type: "reset" }
+  /**
+   * The stream ended or failed without `run_end` or `reset`: an `OfficeError` for a refused status, `UnknownDevice`
+   * for a 401.
+   */
+  | { type: "closed"; error?: unknown }
+
+const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0
+const isText = (v: unknown): v is string => typeof v === "string"
+const isTextOrNull = (v: unknown) => v === null || isText(v)
+
+/** Whether `d` has the fields frame `event` carries, as their types. */
+function liveFields(event: string, d: Record<string, unknown>): boolean {
+  if (event === "record") {
+    const r = d.record as Record<string, unknown> | null
+    return isCount(d.seq) && !!r && typeof r === "object" && r.seq === d.seq && isText(r.kind)
+  }
+  if (!isText(d.node) || !isCount(d.n)) return false
+  if (event === "call") return isText(d.text) && isCount(d.next_index)
+  if (event === "start") return isTextOrNull(d.model) && isText(d.purpose) && isText(d.started_at)
+  if (event === "chunk") return isCount(d.index) && isText(d.text)
+  return isTextOrNull(d.error) // end
+}
+
+/**
+ * Reads one live stream of a run from `path` (`/runs/{id}/live[?after=<seq>]`) over `target`, calling `handler` with
+ * each frame and once with `run_end`, `reset` or `closed` at its end. Unknown events and malformed data are skipped.
+ * It never reconnects: the caller decides when to open another.
+ */
+export function runLive(
+  target: string | Transport,
+  path: string,
+  handler: (f: RunLiveFrame) => void,
+  opts: { signal?: AbortSignal; token?: string } = {},
+): { close(): void } {
+  const t = transportOf(target)
+  const abort = new AbortController()
+  const signal = opts.signal ? AbortSignal.any([opts.signal, abort.signal]) : abort.signal
+  let ended = false
+  const end = (f: RunLiveFrame) => {
+    // A stream the caller stopped reports nothing more.
+    if (ended || opts.signal?.aborted) return
+    ended = true
+    abort.abort()
+    handler(f)
+  }
+  const parser = createParser((m) => {
+    if (ended) return
+    if (m.event === "run_end" || m.event === "reset") return end({ type: m.event })
+    if (m.event !== "record" && m.event !== "call" && m.event !== "start" && m.event !== "chunk" && m.event !== "end")
+      return
+    let data: unknown
+    try {
+      data = JSON.parse(m.data)
+    } catch {
+      return
+    }
+    const d = data as Record<string, unknown> | null
+    if (!d || typeof d !== "object" || Array.isArray(d) || !liveFields(m.event, d)) return
+    handler({ ...d, type: m.event } as RunLiveFrame)
+  })
+  void (async () => {
+    try {
+      const res = await officeFetch(t, path, {
+        signal,
+        headers: { accept: "text/event-stream", ...authorization(opts.token) },
+      })
+      if (res.status === 401)
+        return end({ type: "closed", error: new UnknownDevice("unauthenticated", t.baseUrl !== undefined) })
+      if (!res.ok || !res.body) {
+        const d = (await res.json().catch(() => null)) as Record<string, unknown> | null
+        const code = typeof d?.error === "string" ? d.error : "bad_response"
+        const message = typeof d?.message === "string" ? d.message : `GET ${path}: HTTP ${res.status}`
+        return end({ type: "closed", error: new OfficeError(res.status, code, message) })
+      }
+      const reader = res.body.getReader()
+      for (let r = await reader.read(); !r.done && !ended; r = await reader.read()) parser.feed(r.value)
+      end({ type: "closed" })
+    } catch (error) {
+      end({ type: "closed", error })
+    }
+  })()
+  return {
+    close() {
+      ended = true
+      abort.abort()
     },
   }
 }
