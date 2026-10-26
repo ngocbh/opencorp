@@ -893,8 +893,12 @@ test("the wake at timer advances a timed out question once", async () => {
   )
   const o = await chatOffice(fake)
   const { actor, sid } = await startActor(o)
+  // A worker still at the first turn could take the message after its result, and its exit would spawn the
+  // message's advance after the prompt returns.
+  await waitFor(() => !actor.hasWorker, { what: "the first turn's worker to exit" })
   await actor.prompt("hi")
   // The message's advance has its worker once the prompt returns.
+  expect(o.jobs.at(-1)!.deliver.map((d) => d.op)).toEqual(["send"])
   const before = o.kinds.length
   await waitFor(() => texts(o, sid).includes("No answer, so A.") && status(o, sid) === "idle", {
     what: "the reply after the timeout",
