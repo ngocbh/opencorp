@@ -15,21 +15,24 @@ async function firstTurn(office: RunningOffice, workspace: string): Promise<stri
   return sid
 }
 
-test.todo(
+test(
   "a worker killed mid run is respawned and finishes the turn",
   async () => {
     const office = await openOffice()
     const workspace = folder(path.join(office.root, "project"))
     const fake = office.llm
     const sid = await firstTurn(office, workspace)
-    fake.script({ content: "Lost.", hold: true }, { content: "Recovered." })
+    fake.script({ content: "Lost.", hold: true }, { content: "Recovered.", hold: true })
     await office.prompt(sid, "mid-run")
     await fake.waitForRequests(2, 40_000)
     const killed = await office.worker(sid)
     process.kill(-killed, "SIGKILL")
+    await fake.waitForRequests(3, 40_000)
+    // No worker lives between turns, so the respawned one is looked up while its call is held; the lookup fails
+    // unless a worker other than the killed one runs.
+    await office.worker(sid, { otherThan: killed })
+    fake.release() // both held calls; nobody reads the dead worker's
     await office.settled(sid, ["One.", "Recovered."])
-    fake.release() // the dead worker's call: nobody reads its reply
-    expect(await office.worker(sid)).not.toBe(killed)
     expect(await office.users(sid)).toEqual(["first", "mid-run"])
     expect((await office.session(sid)).run_ids).toHaveLength(1) // resumed, not a new run
     expect(fake.requests()).toHaveLength(3)
@@ -41,7 +44,7 @@ test.todo(
   TIMEOUT,
 )
 
-test.todo(
+test(
   "an office killed mid turn comes back with opencorp start and finishes the turn",
   async () => {
     const office = await openOffice()
@@ -73,7 +76,7 @@ test.todo(
   TIMEOUT,
 )
 
-test.todo(
+test(
   "two clients answer one question and the first answer wins",
   async () => {
     const office = await openOffice()

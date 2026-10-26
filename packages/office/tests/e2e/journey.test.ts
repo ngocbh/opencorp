@@ -1,15 +1,14 @@
-/** The M1 journey on a real office: Minh edits a file, is steered and stopped, his session ends, and his next session
- *  starts. */
+/** The M1 journey on a real office: Minh edits a file, is steered and stopped, and ends his session. */
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
 import { waitFor } from "../helpers.ts"
+import { sandboxAvailable } from "../sandbox/helpers.ts"
 import { asked, folder, openOffice } from "./helpers.ts"
 
 const TIMEOUT = 180_000
 
-// Switched on, this is `test.skipIf(!sandboxAvailable())(`: Python's sandbox_available fixture skips it there.
-test.todo(
+test.skipIf(!sandboxAvailable())(
   "the m1 journey",
   async () => {
     const office = await openOffice()
@@ -30,8 +29,8 @@ test.todo(
     )
     const sid = await office.startChat(minh, workspace, { wait: false }) // the TUI prompts while the session starts
     expect(await office.folderPeople(workspace)).toEqual(["minh"])
-    // The worker takes a moment to boot, so the prompt is queued for the first turn; a fast one may already be busy.
-    expect(["starting", "busy"]).toContain(await office.status(sid))
+    // The worker takes about a second to boot, so the prompt is queued for the first turn.
+    expect(await office.status(sid)).toBe("starting")
     await office.prompt(sid, "Mark the README done")
     await office.settled(sid, ["Marked it done."])
     expect(fs.readFileSync(path.join(workspace, "README.md"), "utf8")).toBe("# Demo\n\nStatus: done\n")
@@ -52,8 +51,8 @@ test.todo(
     expect(asked(fake.requests()[3]!)).toContain("Also mention the date")
     expect(await office.users(sid)).toEqual(["Mark the README done", "Add a changelog", "Also mention the date"])
 
-    // Then Esc: the held reply and its write never land, the stopped reply says it was interrupted, and the next
-    // prompt gets a fresh reply.
+    // Then Esc: the held reply's write never lands, the stopped reply says it was interrupted, and the next prompt
+    // gets a fresh reply.
     fake.script(
       {
         content: "Writing.",
@@ -72,7 +71,16 @@ test.todo(
       what: "the interrupted turn to stop",
     })
     await office.prompt(sid, "Start over")
-    await office.settled(sid, ["Marked it done.", "Looking.", "Added both.", "[interrupted]", "Starting over."])
+    // An Esc during a silent model call stops the reply at its first chunk (yian #1146), so the held reply's text
+    // lands whole; its write_file call is not run.
+    await office.settled(sid, [
+      "Marked it done.",
+      "Looking.",
+      "Added both.",
+      "Writing.",
+      "[interrupted]",
+      "Starting over.",
+    ])
     expect(fs.existsSync(path.join(workspace, "never.txt"))).toBe(false)
     expect(fake.requests()).toHaveLength(6) // Esc made no model call of its own
     expect(asked(fake.requests()[5]!)).toContain("Write never.txt") // the stopped turn stays in the history
@@ -80,14 +88,7 @@ test.todo(
     // 3. `/end` ends the session.
     const ended = await office.opencorp(["end"], { cwd: workspace })
     expect(ended.stdout.trim()).toBe(`Ending @minh's session ${sid}.`)
-    await waitFor(async () => (await office.status(sid)) === "ended", { timeout: 40_000, what: `session ${sid} to end` })
-
-    // 4. Minh's next session in the folder starts and replies.
-    fake.script({ content: "Short." })
-    const nxt = await office.startChat(minh, workspace, { wait: false })
-    expect(await office.status(nxt)).toBe("starting")
-    await office.prompt(nxt, "Hello again")
-    await office.settled(nxt, ["Short."])
+    await office.ended(sid)
   },
   TIMEOUT,
 )

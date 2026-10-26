@@ -11,7 +11,8 @@ import { Browser, folder, openOffice, URL_RE, waitListening } from "./helpers.ts
 const TIMEOUT = 240_000
 const KEY = "conn-key-e2e-7c1d2b9a4f60"
 
-test.todo(
+// The name is kept so results line up with the Python suite's, though a chat no longer has a debrief.
+test(
   "a chat and its debrief in run logs",
   async () => {
     const office = await openOffice({ hq: { tcp: true, port: 0 } })
@@ -27,13 +28,17 @@ test.todo(
     await office.prompt(sid, "remember this")
     await office.settled(sid, [`noted ${KEY}`])
     await office.post(`/sessions/${sid}/end`)
-    await waitFor(async () => (await office.status(sid)) === "ended", { timeout: 40_000, what: `session ${sid} to end` })
+    await office.ended(sid)
 
     const browser = new Browser(`http://127.0.0.1:${port}`)
     expect((await browser.post("/api/pair", { code })).status).toBe(200)
-    const runs = (await browser.get("/api/runs")).json().runs.filter((r: { session_id: string }) => r.session_id === sid)
-    expect(runs).toHaveLength(1)
-    const top = runs[0]
+    const chatFinished = async () => {
+      const runs = (await browser.get("/api/runs")).json().runs.filter((r: any) => r.session_id === sid)
+      expect(runs).toHaveLength(1)
+      return runs[0].status === "finished" ? runs[0] : null
+    }
+    // The run's status follows the ended session, once its run log records success.
+    const top = await waitFor(chatFinished, { timeout: 40_000, what: "the chat's run to finish" })
     expect([top.flow, top.status, top.driver]).toEqual(["chat", "finished", "ngocbh"])
     expect([top.children, top.children_total]).toEqual([[], 0])
     const head = (await browser.get(`/api/runs/${top.run_id}`)).json()

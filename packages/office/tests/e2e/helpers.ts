@@ -417,6 +417,11 @@ export class RunningOffice {
     )
   }
 
+  /** Waits until session `sid`'s status is `ended`. */
+  async ended(sid: string): Promise<void> {
+    await waitFor(async () => (await this.status(sid)) === "ended", { timeout: WAIT, what: `session ${sid} to end` })
+  }
+
   /** Runs `opencorp <args>` in `cwd` against this office and waits for it; with `check`, throws on a non-zero exit.
    *  With `ssh`, the CLI runs as from an SSH login. */
   async opencorp(
@@ -439,15 +444,17 @@ export class RunningOffice {
     return Number.parseInt(fs.readFileSync(this.paths.pidfile, "utf8"), 10)
   }
 
-  /** The pid of session `sid`'s worker: the office's child running in `office/sessions/<sid>/`. */
-  worker(sid: string): Promise<number> {
+  /** The pid of session `sid`'s live worker: the office's child running in `office/sessions/<sid>/`. Skips zombies
+   *  and the child whose pid is `otherThan`, so a just-killed worker is never returned. */
+  worker(sid: string, { otherThan }: { otherThan?: number } = {}): Promise<number> {
     const dir = this.paths.sessionDir(sid)
     return waitFor(
       () => {
         const office = this.pid()
-        for (const line of listed("pid=,ppid=")) {
-          const [pid, ppid] = line.trim().split(/\s+/).map(Number)
-          if (ppid !== office || pid === undefined) continue
+        for (const line of listed("pid=,ppid=,stat=")) {
+          const [first = "", ppid, stat = ""] = line.trim().split(/\s+/)
+          const pid = Number(first)
+          if (Number(ppid) !== office || !pid || pid === otherThan || stat.startsWith("Z")) continue
           try {
             if (cwdOf(pid) === dir) return pid
           } catch {

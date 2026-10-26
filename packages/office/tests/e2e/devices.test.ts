@@ -34,7 +34,7 @@ async function tuiClient(office: RunningOffice): Promise<unknown> {
   return JSON.parse(done.stdout)
 }
 
-test.todo(
+test(
   "opencorp and the tui use the device token and nothing else gets in",
   async () => {
     const owned = await openOffice({ device: true })
