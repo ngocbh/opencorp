@@ -17,7 +17,8 @@ export interface ScriptedToolCall {
 
 /** One scripted answer: any of `content`, `tool_calls`, `usage`; `match`, a substring the request's messages must
  *  contain; `error`, an HTTP status to return instead; `hold`, `true` to wait until `release()`, or at most that
- *  many seconds. */
+ *  many seconds; `cut`, for a streamed request, to end the response after the content and tool calls with no
+ *  `finish_reason` chunk, usage or `[DONE]` (a stream cut short). */
 export interface ScriptedReply {
   content?: string
   tool_calls?: ScriptedToolCall[]
@@ -25,6 +26,7 @@ export interface ScriptedReply {
   match?: string
   error?: number
   hold?: boolean | number
+  cut?: true
 }
 
 /** A JSON body from the wire: `any`, since its shape is whatever the client sent. */
@@ -221,10 +223,14 @@ export class FakeLLM {
       const frames: Obj[] = [chunk({ role: "assistant", content: "" })]
       for (const piece of (reply.content ?? "").match(PIECES) ?? []) frames.push(chunk({ content: piece }))
       calls.forEach((call, index) => frames.push(chunk({ tool_calls: [{ index, ...call }] })))
-      frames.push(chunk({}, finish))
-      if (body.stream_options?.include_usage) frames.push({ ...head, choices: [], usage: usageOf(reply) })
+      let done = ""
+      if (!reply.cut) {
+        frames.push(chunk({}, finish))
+        if (body.stream_options?.include_usage) frames.push({ ...head, choices: [], usage: usageOf(reply) })
+        done = "data: [DONE]\n\n"
+      }
       res.writeHead(200, { "content-type": "text/event-stream" })
-      res.end(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("") + "data: [DONE]\n\n")
+      res.end(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("") + done)
       return
     }
     const message: Obj = { role: "assistant", content: reply.content || (calls.length ? null : "") }

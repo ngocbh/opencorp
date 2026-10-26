@@ -6,6 +6,7 @@ import { Connections, type ConnectionsOptions } from "../chat/connections.ts"
 import { Hiring } from "../chat/hire.ts"
 import { Logins, type LoginsOptions } from "../chat/logins.ts"
 import { ModelCache, type ModelCacheOptions } from "../chat/models.ts"
+import type { Transcript } from "../chat/transcript.ts"
 import type { CompanyGit } from "../company/git.ts"
 import { CompanySnapshots } from "../company/snapshot.ts"
 import type { CodexSessions } from "../harness/sessions.ts"
@@ -19,6 +20,7 @@ import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { SecretStore } from "../secrets.ts"
 import type { SessionRecord, Store } from "../store/store.ts"
 import type { Bus } from "./bus.ts"
+import type { LiveRelay } from "./live.ts"
 
 /** Where the office keeps its files under an OpenCorp home. */
 export class OfficePaths {
@@ -147,6 +149,10 @@ export class Office {
   cards: Cards | undefined
   /** The office's live Codex sessions; set by buildOffice. */
   codex: CodexSessions | undefined
+  /** The office's one transcript of the run logs, set by `buildOffice`; the session actors' context takes it. */
+  transcript: Transcript | undefined
+  /** The office's one live relay, set by `buildOffice`; the session actors' context takes it. */
+  live: LiveRelay | undefined
   /** Builds the profile store for one person, per request; null means the profile routes answer 501. */
   profileStore: ((handle: string) => MarkdownStore) | null
   /** When this office object was built, which is the daemon's start, as a protocol timestamp. */

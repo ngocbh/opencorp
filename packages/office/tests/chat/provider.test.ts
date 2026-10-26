@@ -5,17 +5,20 @@ import path from "node:path"
 import { inspect } from "node:util"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import type { z } from "zod"
+import type { LiveEvent } from "@opencorp/protocol"
 import { checked, loadProvider, Provider, ProviderError, providerSchema } from "../../src/chat/provider.ts"
+import { Transcript } from "../../src/chat/transcript.ts"
+import { LiveRelay } from "../../src/daemon/live.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
 import { decode, encode } from "../../src/worker/codec.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
-import type { SpawnLog } from "../../src/worker/spawn.ts"
+import type { SpawnLog, Worker } from "../../src/worker/spawn.ts"
 import { envText, tempDir } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
 import { base, makeJob, makeRegistry, Recorder, recordFrames, runWorker } from "../worker/helpers.ts"
-import { fakeLlm } from "./helpers.ts"
+import { fakeLlm, send, TemplateOffice, templateJob } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -241,9 +244,26 @@ class LeakyRecorder extends Recorder {
   }
 }
 
+/** `Base`'s handlers that also hand each stream frame to `relay`, and detach the worker from it at its exit, as the
+ *  office's do. */
+function relaying<B extends new (...args: any[]) => Recorder>(Base: B, relay: LiveRelay) {
+  return class extends Base {
+    override stream(worker: unknown, frame: Frame): void {
+      super.stream(worker, frame)
+      relay.frame(worker as Worker, frame.frame)
+    }
+
+    override exited(worker: unknown, returncode: number | null): void {
+      super.exited(worker, returncode)
+      relay.detach(worker as Worker)
+    }
+  }
+}
+
 test("a key in llm config reaches the model and nothing else", async () => {
   // The key travels only in the start frame, never in another frame, a file the run leaves, a log line
-  // (the registry's log stands in for office.log) or the worker's env; on a failed turn too.
+  // (the registry's log stands in for office.log), the worker's env, or the live relay's bus events and log lines; on a
+  // failed turn too.
   const where = base()
   const fake = await fakeLlm()
   const store = openStore()
@@ -252,28 +272,47 @@ test("a key in llm config reaches the model and nothing else", async () => {
   const registry = makeRegistry(store, { log })
   const frames = recordFrames()
   const sessionDir = path.join(where.root, "sessions", "s1")
+  const events: LiveEvent[] = []
+  const relayLines: string[] = []
+  const relay = new LiveRelay({
+    bus: { publishLive: (event) => void events.push(event) },
+    transcript: new Transcript(where.runs),
+    log: (line) => void relayLines.push(line),
+  })
   const envs: string[] = []
+  const inFlight: unknown[] = []
   const echo: OfficeTool = {
     description: "Return text.",
     parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
     call: (args) => {
       // The worker is blocked on this reply, so it is still running.
       envs.push(envText(registry.get("s1")!.pid))
+      inFlight.push(relay.calls("r1"))
       return String(args.text)
     },
   }
   const llmConfig = { ...LLM_CONFIG, api_key: SENTINEL }
 
   fake.script({ tool_calls: [{ name: "echo", arguments: { text: "ping" } }] }, { content: "done" })
-  const ok = new Recorder({ tools: { toolbox: { echo } } })
+  const ok = new (relaying(Recorder, relay))({ tools: { toolbox: { echo } } })
   await runWorker(registry, makeJob(where, "flows/tools.yaml", { llm_config: llmConfig }, ok), ok, sessionDir, {
     env: fake.env(),
   })
   fake.script({ error: 401 })
   // Its handler throws the key, so the log scan meets a real line on an error path.
-  const refused = new LeakyRecorder({ tools: { toolbox: { echo } } })
+  const refused = new (relaying(LeakyRecorder, relay))({ tools: { toolbox: { echo } } })
   const job = makeJob(where, "flows/tools.yaml", { run_id: "r2", llm_config: llmConfig }, refused)
   await runWorker(registry, job, refused, sessionDir, { env: fake.env() })
+  // A template chat turn: the relay shows only a chat's replies, so this run is the one that puts events on the bus.
+  fake.script({ content: "Hello from the chat." })
+  const chatting = new (relaying(TemplateOffice, relay))()
+  const chat = templateJob("chat", chatting, {}, {
+    runs: where.runs,
+    runId: "r3",
+    llm_config: llmConfig,
+    deliver: [send("s1", "hi")],
+  })
+  await runWorker(registry, chat, chatting, sessionDir, { env: fake.env() })
 
   const leaks = [
     ...frames.filter((f) => f.includes(SENTINEL) && !f.startsWith('{"type":"start"')).map((f) => `frame ${f}`),
@@ -284,23 +323,43 @@ test("a key in llm config reaches the model and nothing else", async () => {
     ...lines.filter((line) => line.includes(SENTINEL)).map((line) => `log line ${line}`),
     ...envs.filter((text) => text.includes(SENTINEL)).map(() => "the worker env"),
     ...(encode(refused.outcome?.failure ?? null).includes(SENTINEL) ? ["the failure"] : []),
+    ...events.filter((event) => encode(event).includes(SENTINEL)).map((event) => `bus event ${encode(event)}`),
+    ...relayLines.filter((line) => line.includes(SENTINEL)).map((line) => `relay log line ${line}`),
   ]
   expect(leaks).toEqual([])
-  // The key did travel: in the office's two start frames, and to the model.
-  expect(frames.filter((f) => f.includes(SENTINEL))).toHaveLength(2)
+  // The key did travel: in the office's three start frames, and to the model.
+  expect(frames.filter((f) => f.includes(SENTINEL))).toHaveLength(3)
   // The scan reads both directions: the worker's tool call came in through the office's channel.
   expect(frames.some((f) => (decode(f) as Frame).type === "tool_call")).toBe(true)
+  // ...and its live frames: a snapshot and the records after it.
+  const live = frames.map((f) => decode(f) as Frame).filter((f) => f.type === "stream")
+  const liveTypes = new Set(live.map((f) => (f.frame as Frame).type))
+  expect(liveTypes).toContain("snapshot")
+  expect(liveTypes).toContain("record")
+  // The relay ran on those frames: it followed r1 while its tool ran, and published r3's reply.
+  expect(inFlight).toHaveLength(1)
+  expect(inFlight[0]).not.toBeNull()
+  expect(events.length).toBeGreaterThan(0)
+  // The reply streams as deltas, so no one event holds it whole.
+  const reply = events.flatMap((event) => (event.type === "part.delta" ? [event.data.text as string] : []))
+  expect(reply.join("")).toBe("Hello from the chat.")
+  expect(relayLines).toEqual([])
   // ...and real log lines: the failing handler's, with the error's type only.
   expect(lines).toContain(`ERROR worker s1 handler event failed (Error)`)
   expect(envs).toHaveLength(1)
   expect(envs[0]).toContain("VLLM_BASE_URL")
-  // The scan reads both run logs, run_started included.
-  expect(filesHolding(where.runs, '"kind":"run_started"').sort()).toEqual(["r1/log.jsonl", "r2/log.jsonl"])
+  // The scan reads every run log, run_started included.
+  expect(filesHolding(where.runs, '"kind":"run_started"').sort()).toEqual([
+    "r1/log.jsonl",
+    "r2/log.jsonl",
+    "r3/log.jsonl",
+  ])
   expect(new Set(fake.authorizations())).toEqual(new Set([`Bearer ${SENTINEL}`]))
   expect(encode(ok.frames)).toContain("ToolCallFinished")
   expect(ok.outcome?.status).toBe("succeeded")
   expect(ok.returncode).toBe(0)
   expect(refused.outcome?.status).toBe("failed")
   expect(refused.outcome?.failure).toBeTruthy()
+  expect(chatting.outcome?.status).toBe("waiting")
   expect(fs.existsSync(path.join(sessionDir, "worker.log"))).toBe(true)
 })

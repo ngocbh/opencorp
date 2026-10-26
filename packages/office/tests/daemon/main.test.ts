@@ -11,7 +11,9 @@ import { readRunIndex } from "@ngocbh/yian/run"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { Provider } from "../../src/chat/provider.ts"
+import { Transcript } from "../../src/chat/transcript.ts"
 import { trackRequests } from "../../src/daemon/http.ts"
+import { LiveRelay } from "../../src/daemon/live.ts"
 import {
   AlreadyRunning,
   PidFile,
@@ -486,6 +488,25 @@ test("build office gives the office a worker registry that stops with it", async
   } finally {
     office.store.close()
   }
+})
+
+test("build office puts the live relay on the office", async () => {
+  let office: Office | undefined
+  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const rec = recordingGit(tempDir())
+  office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  expect(office.transcript).toBeInstanceOf(Transcript)
+  expect(office.live).toBeInstanceOf(LiveRelay)
+  const close = spyOn(office.live!, "close")
+  await office.stop()
+  expect(close).toHaveBeenCalledTimes(1)
 })
 
 test("build office runs codex sessions closed on stop", async () => {

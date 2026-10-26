@@ -3,12 +3,13 @@
 import fs from "node:fs"
 import path from "node:path"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
-import type { Message as RunMessage } from "@ngocbh/yian/run"
+import type { LiveViewCall, Message as RunMessage } from "@ngocbh/yian/run"
 import { CompanyDefaults, now, OFFICE, WorkItem } from "@opencorp/protocol"
 import type { z } from "zod"
 import type { CompanyGit } from "../company/git.ts"
 import { loadRepo } from "../company/loader.ts"
 import type { Bus } from "../daemon/bus.ts"
+import type { LiveRelay } from "../daemon/live.ts"
 import type { OfficePaths } from "../daemon/office.ts"
 import type { Env } from "../install/launch.ts"
 import { redact } from "../perm/redact.ts"
@@ -64,6 +65,8 @@ export interface ActorContext {
   readonly hooks: Hooks
   readonly answers: Answers
   readonly transcript: Pick<Transcript, "forget">
+  /** The office's live relay, fed each worker's live frames; the actor's `calls` reads it. */
+  readonly live: Pick<LiveRelay, "frame" | "detach" | "calls" | "forget">
   /** The run spec of `session` (Python's restorers); may throw a `HarnessError`. */
   spec(session: SessionRecord): RunSpec | Promise<RunSpec>
   /** The clock and sleeps of the wake-at timer (yian's `Scheduler`; `realScheduler` in the office). */
@@ -81,7 +84,7 @@ export interface ActorContext {
 const CAP_TITLE = "Raise the cost cap"
 
 /** What the actor uses of a worker; `Worker` fits. */
-export type ActorWorker = Pick<Worker, "job" | "pid" | "deliver" | "stop">
+export type ActorWorker = Pick<Worker, "job" | "pid" | "deliver" | "stop" | "follow">
 
 /** How long, in milliseconds, a run's end report waits for the run index; bounded, so a stuck index thread can't
  *  stall the report. */
@@ -194,6 +197,8 @@ class WorkerRun {
   wakeAt: string | null = null
   /** The seed its `chat` job starts from, which a retry of the job reuses. */
   seed: Seed | null = null
+  /** Whether its worker exited (its handler ran), maybe before the actor's exit job did. */
+  exited = false
 
   /** A `kind` worker of run `runId` given `given`, over a run that waits at `waits`; `sent` says a message reached
    *  the run since its turn last waited. */
@@ -279,9 +284,13 @@ export class SessionActor implements LiveCalls {
     return this.#run !== null || this.#starting !== null
   }
 
-  /** The model calls in flight of `runId` (none are tracked yet): empty while a worker runs it, else null. */
-  calls(runId: string): readonly [] | null {
-    return this.#run !== null && !this.#closed && runId === this.#runId ? [] : null
+  /** The model calls in flight of `runId`, as the live relay shows them (empty while its view is being built) while a
+   *  worker runs it; else null. Null too once the worker has exited, before the actor handles the exit: the relay
+   *  has already sent its cut calls as interrupted, as the transcript will show them. */
+  calls(runId: string): readonly LiveViewCall[] | null {
+    return this.#run !== null && !this.#run.exited && !this.#closed && runId === this.#runId
+      ? (this.#ctx.live.calls(runId) ?? [])
+      : null
   }
 
   /**
@@ -995,11 +1004,14 @@ export class SessionActor implements LiveCalls {
     return carry
   }
 
-  /** Marks the open questions of the runs fresh runs replaced stale: the fresh worker cancelled those runs before
-   *  its own started. */
+  /** Marks the open questions of the runs fresh runs replaced stale, and has the live relay forget those runs: the
+   *  fresh worker cancelled them before its own started. */
   #staleReplaced(): void {
     const { store } = this.#ctx
-    for (const runId of this.#replaced.splice(0)) {
+    const replaced = this.#replaced.splice(0)
+    // Their workers exited before this fresh worker spawned: no frame of theirs can show them again.
+    this.#ctx.live.forget(replaced)
+    for (const runId of replaced) {
       for (const question of store.listQuestions({ runId, status: "open" })) {
         try {
           store.setQuestionStatus(question.id, "stale")
@@ -1096,6 +1108,12 @@ export class SessionActor implements LiveCalls {
         actor.#post("event", () => actor.#event(run, frame))
       }
 
+      override stream(worker: ActorWorker, frame: Frame): void {
+        // Not queued: frames must reach the relay in order with each other and before the worker's exit detaches it,
+        // and a queue job may wait on a spawn.
+        actor.#ctx.live.frame(worker, frame.frame)
+      }
+
       override deliverReply(_worker: unknown, frame: Frame): void {
         actor.#arrived(run, frame)
       }
@@ -1110,8 +1128,13 @@ export class SessionActor implements LiveCalls {
         actor.#post("error", () => actor.#result(run, frame))
       }
 
-      override exited(_worker: unknown, returncode: number | null): void {
+      override exited(worker: ActorWorker, returncode: number | null): void {
+        run.exited = true
+        actor.#ctx.live.detach(worker)
+        // Posted before the forget, which reads the store: a failing read must not leave the actor without its exit.
         actor.#post("exit", () => actor.#exited(run, returncode))
+        // The finished session's last worker: nothing can show its runs again.
+        if (actor.#finished && run === actor.#run) actor.#forgetRuns()
       }
 
       override askUser(_worker: unknown, request: AskRequest, callId: string): Promise<unknown> {
@@ -1594,8 +1617,9 @@ export class SessionActor implements LiveCalls {
    * one transaction with the run's office end reason `why`, written only when no yian outcome ended the run (`outcome`,
    * else the one `run`'s worker recorded). `runFinished` (the result frame of how the run ended, key redacted, else
    * null) then `sessionEnded` are notified in order, not awaited. Every delivery not answered gets `409 not_live`. A
-   * run yian may still see unfinished gets a hard stop, as does each replaced run no fresh worker cancelled. Throws
-   * `HarnessError` (`404`) when the session row is gone; a store write that fails is logged by its type.
+   * run yian may still see unfinished gets a hard stop, as does each replaced run no fresh worker cancelled. The live
+   * relay forgets the session's runs now with no worker alive, else at that worker's exit. Throws `HarnessError`
+   * (`404`) when the session row is gone; a store write that fails is logged by its type.
    */
   #finish(status: "ended" | "failed", outcome: Frame | null, why: string | null, run = this.#run): void {
     if (this.#finished) return
@@ -1630,7 +1654,8 @@ export class SessionActor implements LiveCalls {
         if (runId !== null) await hooks.notify("runFinished", finished, runId, frame)
         await hooks.notify("sessionEnded", finished)
       })()
-      this.#ctx.transcript.forget(finished.run_ids)
+      // With a worker alive, its last frames would show the runs again: its exit forgets them.
+      if (this.#run === null || this.#run.exited) this.#forgetRuns(finished.run_ids)
     } catch (error) {
       if (error instanceof HarnessError) throw error
       this.#log(`session ${this.sessionId}: can't store the end (${errorName(error)})`)
@@ -1639,6 +1664,13 @@ export class SessionActor implements LiveCalls {
       this.#answerRest(given, new HarnessError(409, "not_live", `session ${this.sessionId} has no live run`))
       this.#stopRuns(!ended ? runId : null, this.#replaced.splice(0))
     }
+  }
+
+  /** Drops what the transcript cache and the live relay hold of the session's runs (`runIds`, else read from the
+   *  store). */
+  #forgetRuns(runIds: readonly string[] = this.#ctx.store.getSession(this.sessionId)?.run_ids ?? []): void {
+    this.#ctx.transcript.forget(runIds)
+    this.#ctx.live.forget(runIds)
   }
 
   /** The hard stop of run `runId` (none when null) and of the `replaced` runs, best effort: a `cancel` of `runId`

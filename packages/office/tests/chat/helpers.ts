@@ -14,6 +14,7 @@ import { mainSpec } from "../../src/chat/run_spec.ts"
 import { type ActorContext, type ActorWorker, SessionActor, type Wait } from "../../src/chat/session_actor.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { loadRepo } from "../../src/company/loader.ts"
+import { LiveRelay } from "../../src/daemon/live.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { Monitor } from "../../src/perm/monitor.ts"
@@ -439,6 +440,8 @@ export interface ChatOffice {
   /** Each spawned job, in order. */
   readonly jobs: Job[]
   readonly transcript: Transcript
+  /** The live relay its actors feed, over `transcript` and the office's bus. */
+  readonly live: LiveRelay
   readonly hooks: Hooks
   readonly answers: Answers
   /** The lines the actors, hooks and answers logged. */
@@ -458,9 +461,9 @@ export interface ChatOffice {
 /**
  * An office over the base company with the template's chat flow (and `files` on top), its `office` connection on
  * `fake` (`llmConfig`, the fake's env, `prices`), the company `defaults` merged in, and a registry whose `spawn` is
- * wrapped to record, hold, fail or follow each spawn. Its actors share one `Hooks`, `Answers` and `Transcript`, and a
- * run spec from `mainSpec` over a workspace stand-in, with the tools of `groups` merged into its groups. At test end
- * the actors close, then the workers stop, before the office's store closes.
+ * wrapped to record, hold, fail or follow each spawn. Its actors share one `Hooks`, `Answers`, `Transcript` and
+ * `LiveRelay`, and a run spec from `mainSpec` over a workspace stand-in, with the tools of `groups` merged into its
+ * groups. At test end the actors close, then the workers stop, before the office's store closes.
  */
 export async function chatOffice(
   fake: FakeLLM,
@@ -520,6 +523,7 @@ export async function chatOffice(
   const hooks = new Hooks({ log })
   const answers = new Answers(office.store, { log })
   const transcript = new Transcript(office.paths.runs)
+  const live = new LiveRelay({ bus: office.bus, transcript, log })
   const monitor = new Monitor(office.paths.company, office.store, new SecretStore(office.paths.secrets))
   const workspace = { interrupts: 0 }
   const standIn = {
@@ -537,6 +541,7 @@ export async function chatOffice(
     hooks,
     answers,
     transcript,
+    live,
     spec: async (session) => {
       const repo = loadRepo(await git.pin(session.repo_commit))
       const carried = (q: QuestionRecord) => answers.carried(q)
@@ -560,6 +565,7 @@ export async function chatOffice(
     kinds,
     jobs,
     transcript,
+    live,
     hooks,
     answers,
     logs,
@@ -744,6 +750,7 @@ export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
         return scripted.accept(delivery)
       },
       stop: async () => true,
+      follow: async () => true,
     }
     const scripted: ScriptedWorker = {
       worker,

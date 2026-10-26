@@ -50,7 +50,7 @@ chat/test_models.py	ported	packages/office/tests/chat/models.test.ts	—	O2-20
 chat/test_models.py::test_a_host_that_times_out_in_composer_makes_offers_time_out	changed	packages/office/tests/chat/models.test.ts::a host that times out in composer makes offers time out	Y1: yian's transport ProviderError isn't public, so the timeout comes from a local server that never answers	O2-20
 chat/test_models.py::test_a_request_that_fails_says_why_in_composers_words	changed	packages/office/tests/chat/models.test.ts::a request that fails says why in composers words [%s]	Y1: yian's transport ProviderError isn't public, so the cases come from a throwing sender, a malformed reply and a local server that never answers	O2-20
 chat/test_provider.py	ported	packages/office/tests/chat/provider.test.ts	—	O3-4
-chat/test_provider.py::test_a_key_in_llm_config_reaches_the_model_and_nothing_else	changed	packages/office/tests/chat/provider.test.ts::a key in llm config reaches the model and nothing else	#1001: no session memory; design §6.5's scan: frames other than start, worker.log, the run log, the log lines office.log gets, the worker env; a 401 turn too; the live relay's frames come with #997, §2.6, not built here	O3-4
+chat/test_provider.py::test_a_key_in_llm_config_reaches_the_model_and_nothing_else	changed	packages/office/tests/chat/provider.test.ts::a key in llm config reaches the model and nothing else	#1001: no session memory; design §6.5's scan: frames other than start, worker.log, the run log, the log lines office.log gets, the worker env; a 401 turn too; live stream frames and the relay's bus events and log lines too (§2.6, O4b-2)	O3-4
 chat/test_restart.py	open	—	split: O4a-6 → O4b-1	O4b-1
 chat/test_run_records.py	open	—	—	O4a-5
 chat/test_sandbox.py	open	—	—	O4a-4
@@ -446,7 +446,9 @@ runs/test_debriefs.py	deferred: learning	—	learning is redesigned on TS yian a
 runs/test_detail.py	open	—	—	O4b-7
 runs/test_launches.py	open	—	—	O4a-5
 runs/test_list.py	open	—	—	O4b-7
-runs/test_live.py	open	—	—	O4b-2
+runs/test_live.py	open	—	—	O4b-7
+runs/test_live.py::test_a_debrief_in_flight_is_known_with_its_open_nodes	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-2
+runs/test_live.py::test_a_debrief_is_claimed_while_its_outcome_is_written	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-2
 runs/test_nodes.py	ported	packages/office/tests/runs/nodes.test.ts	—	O4b-5
 runs/test_notify.py	open	—	—	O4b-7
 runs/test_outcome_names.py	ported	packages/office/tests/runs/outcome_names.test.ts	—	O3-1
@@ -712,7 +714,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/session_actor.test.ts::a capped session advances nothing and a raise answers what it queued	4a revision §1, G3	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a card answer is completed and consumed	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a changed endpoint before a message starts a fresh run	design §8.4	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a chat turn streams its reply live as the transcript shows it	design §2.6: the actor feeds its worker's live frames to the relay outside its queue; the folded live events equal the transcript and the actor's live calls are the relay's	O4b-2
 —	new	packages/office/tests/chat/session_actor.test.ts::a delivery acked after result is advanced	O4a-0a	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a finished session forgets its live runs only after its worker exits	design §2.6: the relay keeps what it showed per run until forget, which waits for the session's last worker to exit, so its last frames bring no state back	O4b-2
 —	new	packages/office/tests/chat/session_actor.test.ts::a fresh run carries a message answer as its message	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a fresh run that cant spawn at end stops the run it replaced	O4a-3 plan, Finish	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a hard stop waits for the lingering worker and skips a run with no log	O4a-3 plan, Finish: the hard stop waits for the worker's exit; a run with no log has nothing to cancel	O4a-3
@@ -887,6 +891,16 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/http.test.ts::the guard runs before any body byte is read	design §2.3 step 3, §6 rule 7: the guard runs before the body	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the listener limits are the designs values	D16, design §2.3: listener limits	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the request signal aborts when the client goes away	design §2.3: RequestContext.signal	O2-1
+—	new	packages/office/tests/daemon/live.test.ts::a failed attempt leaves no text behind	design §2.6: a failed attempt's live part is emptied and the retry streams under its own id	O4b-2
+—	new	packages/office/tests/daemon/live.test.ts::a fresh run shows no live calls before its worker starts	design §2.6: a fresh run has no live view until its worker sends a frame	O4b-2
+—	new	packages/office/tests/daemon/live.test.ts::a gap is logged and the view follows again	design §2.6: a seq gap is logged and the view rebuilds from the run log, then follows again	O4b-2
+—	new	packages/office/tests/daemon/live.test.ts::a lagging relay never doubles a reply	design §2.6: a render that reads the run log ahead of the frames publishes no chunk twice	O4b-2
+—	new	packages/office/tests/daemon/live.test.ts::a lagging viewers chunks of one call merge into one	design §2.6: a lagging viewer's queued chunks of one call merge into one frame	O4b-2
+—	new	packages/office/tests/daemon/live.test.ts::a new worker starts with no live calls of the old one	design §2.6: a new worker's live view starts empty, holding none of the old worker's calls	O4b-2
+—	new	packages/office/tests/daemon/live.test.ts::a reply streams live under the transcripts ids	design §2.6: a reply's live chunks are published under the ids the transcript gives it	O4b-2
+—	new	packages/office/tests/daemon/live.test.ts::an answer applied before the workers first frame is published	design §2.6: an answer the next worker applies before its first frame still shows its call completed	O4b-2
+—	new	packages/office/tests/daemon/live.test.ts::an over cap record is read from the log	design §2.6: a record too big for its frame comes as a record frame without its line and is read from the run log	O4b-2
+—	new	packages/office/tests/daemon/live.test.ts::joining mid run gives no gap and no duplicate	design §2.6: a viewer joins with the view's last seq and live calls captured in one step, so no record or chunk is missed or repeated	O4b-2
 —	new	packages/office/tests/daemon/main.test.ts::a broken index skips the start sweep and does not stop the office start	§5.2: a broken or hung index never stops the start; the sweep needs an up-to-date index (choice 13)	O4b-6
 —	new	packages/office/tests/daemon/main.test.ts::a failing start sweep does not stop the office start	§5.2: a broken or hung index never stops the start (choice 13); errors logged by type (§6 rule 13)	O4b-6
 —	new	packages/office/tests/daemon/main.test.ts::a home that cannot be resolved exits 1	design §6.5 realpath: a home that can't be resolved (ELOOP, EACCES) is a start error, not a crash	O2-5
@@ -902,6 +916,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/main.test.ts::build office checks a model in a worker of its registry	design §2.3: buildOffice passes its registry into the office's model check; P2	O3-5
 —	new	packages/office/tests/daemon/main.test.ts::build office gives the office a worker registry that stops with it	design §2.4; O2-5 handoff: the registry on the office, closed when it stops (refuses new starts)	O3-4
 —	new	packages/office/tests/daemon/main.test.ts::build office lists models on start and cancels sign ins on stop	design §2.3 and Python main.py:218-224: the model warm-up (not awaited) and Logins.closeAll are office hooks; one cache and one Logins per Connections; O4a-4 folds it into test_build_office_runs_the_chat_harness	O2-21
+—	new	packages/office/tests/daemon/main.test.ts::build office puts the live relay on the office	design §2.6: one live relay and transcript per office, on the office for the chat harness	O4b-2
 —	new	packages/office/tests/daemon/main.test.ts::build office reaps workers left by an earlier office	design §6.6 and O2-11a: the workers an earlier office left are reaped at start	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::build office restores codex sessions on start before the cards sweep	design §7.1: sessions.ts restore runs on start, before the questions extension's sweep (daemon/main.py)	O3-14
 —	new	packages/office/tests/daemon/main.test.ts::build office runs codex sessions closed on stop	service wiring (plan, O3-13): the office's Codex sessions are closed on stop	O3-13
@@ -1378,6 +1393,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/job.test.ts::group specs builds a spec for each tool under its key	design §2.4	O3-1
 —	new	packages/office/tests/worker/main.test.ts::a delivery to a missing log is refused as not started	design §2.4, 4a revision §1: an advance of a missing log throws before its gate opens, so its deliveries are refused not_started before the error	O4a-0a
 —	new	packages/office/tests/worker/main.test.ts::a frame other than start is an error	design §2.4 step 1	O3-3
+—	new	packages/office/tests/worker/main.test.ts::a record frame over the frame limit goes without its line	design §2.6: a record over the frame limit is sent as a record frame without its line, for the office to read from the log	O4b-2
 —	new	packages/office/tests/worker/main.test.ts::a reserved tool name is refused before any model call	yian #1062 reserved names; a group named ask is refused by the job (yian #1078)	O3-17
 —	new	packages/office/tests/worker/main.test.ts::a reused run id is refused	design §2.4 (#1000 part 1, S5)	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a stop frame stops a run waiting on a question	P1, design §2.4	O3-3
@@ -1390,6 +1406,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/main.test.ts::a worker process runs a job and exits 0	design §2.4, O3-1 handoff (process.exit)	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a worker process with no channel on fd 3 exits 3	design §2.4; Bun keeps a pipe at fd 3	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a worker returns only once its last reply is written	4a revision §1: a deliver_reply written after the result was lost at process.exit, so the actor resent an applied send	O4a-3
+—	new	packages/office/tests/worker/main.test.ts::an advanced run follows from its log without a gap	design §2.6: an advanced run's live frames follow on from its log's records, so the relay sees no gap	O4b-2
 —	new	packages/office/tests/worker/main.test.ts::the office channel must be a socket on fd 3	design §2.4; Bun keeps a pipe at fd 3	O3-3
 —	new	packages/office/tests/worker/reaper.test.ts::reap kills leftover sandboxed calls and harness processes too	design §6.6: call: and harness: rows (O1-10 handoff)	O2-11a
 —	new	packages/office/tests/worker/remote_store.test.ts::a closed channel is a system error	Y3: the MarkdownStore contract's classes	O3-2
