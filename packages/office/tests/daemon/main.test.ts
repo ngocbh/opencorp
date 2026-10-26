@@ -37,8 +37,8 @@ import { OFFICE_STOPPED } from "../../src/runs/outcomes.ts"
 import { Store, newId } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { RegistryClosed, WorkerRegistry } from "../../src/worker/spawn.ts"
-import { fakeLlm } from "../chat/helpers.ts"
-import { company, recordingGit } from "../company/helpers.ts"
+import { CHAT_FILES, fakeLlm } from "../chat/helpers.ts"
+import { company, makeCompany, recordingGit } from "../company/helpers.ts"
 import { cwdOf, envNames, isGone, ps, reexecMarks, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { freePort } from "../hq/helpers.ts"
 import { RUN, committed, runStarted, started, succeeded } from "../runs/helpers.ts"
@@ -495,6 +495,46 @@ test("build office runs the chat harness", async () => {
   expect([logins.mock.calls.length, closed.mock.calls.length]).toEqual([0, 0])
   await office.stop()
   expect([logins.mock.calls.length, closed.mock.calls.length]).toEqual([1, 1])
+})
+
+test("a bad provider file fails sessions resumed at start but the office starts", async () => {
+  let office: Office | undefined
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const dir = shortDir()
+  makeCompany(CHAT_FILES, dir)
+  fs.mkdirSync(path.join(dir, "office", "connections"), { recursive: true, mode: 0o700 })
+  fs.chmodSync(path.join(dir, "office"), 0o700)
+  fs.writeFileSync(path.join(dir, "office", "hq.json"), '{"tcp": false}')
+  // Not private: loading the provider refuses it.
+  fs.writeFileSync(path.join(dir, "office", "connections", "office.json"), "{}", { mode: 0o644 })
+  const out = collect()
+  const git = recordingGit(tempDir()).git
+  office = buildOffice(new OfficePaths(dir), { tools: { git }, guards: {}, write: out.write })
+  const cwd = fs.realpathSync(tempDir())
+  const head = await office.git.head()
+  const made: Record<string, string> = {}
+  for (const left of ["busy", "idle"] as const) {
+    made[left] = office.store.createSession(session({ cwd, repo_commit: head, status: left })).id
+  }
+  // Cut mid-reply: its run must be advanced now.
+  office.store.addSessionRun(made.busy!, RUN)
+  const log = path.join(office.paths.runs, RUN, "log.jsonl")
+  fs.mkdirSync(path.dirname(log), { recursive: true })
+  fs.writeFileSync(log, Buffer.concat([runStarted(0), started(1, "chat#0/reply")]))
+  // Its run never started: it sleeps until its next message.
+  office.store.addSessionRun(made.idle!, newId())
+  await office.start()
+  expect(office.store.getSession(made.busy!)!.status).toBe("failed")
+  expect(out.text()).toContain(`session ${made.busy}: a worker can't start at restore (ProviderError)`)
+  expect(office.store.getSession(made.idle!)!.status).toBe("idle")
+  expect((office.harness as ChatHarness).registry.get(made.idle!)).toBeUndefined()
+  await office.stop()
 })
 
 test("build office gives the office a worker registry that stops with it", async () => {

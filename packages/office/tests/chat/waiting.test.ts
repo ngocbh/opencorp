@@ -1,8 +1,8 @@
 /** The run state the session actor writes: waiting (and on whom), busy, idle (Python's
  *  `tests/chat/test_waiting.py`). */
-import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
+import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { now, Question } from "@opencorp/protocol"
-import type { SessionActor } from "../../src/chat/session_actor.ts"
+import { SessionActor } from "../../src/chat/session_actor.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { newId, type QuestionRecord } from "../../src/store/store.ts"
 import { CEO } from "../daemon/helpers.ts"
@@ -24,6 +24,7 @@ import {
   KAI,
   LAN,
   makeActor,
+  makeHarness,
   newSession,
   noWorkersLeft,
   PRICES,
@@ -34,6 +35,8 @@ import {
   startActor,
   state,
   status,
+  texts,
+  unreadAtRestart,
 } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -357,4 +360,98 @@ test("a failed wake whose settle fails still answers cant wake", async () => {
   await expect(actor.prompt("hi")).rejects.toMatchObject({ status: 503, code: "cant_wake" })
   expect(actor.hasWorker).toBe(false)
   expect(status(o, sid)).toBe("idle")
+})
+
+test("a model question asked before a restart is answered after it", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_USER, { content: "A it is." })
+  const o = await chatOffice(fake)
+  const first = await startActor(o)
+  const { sid } = first
+  await first.actor.prompt("hi")
+  const old = await card(o, sid, "ask_user")
+  await waitFor(() => status(o, sid) === "waiting" && !first.actor.hasWorker, { what: "asleep on the question" })
+  const actor = await reopen(o, first.actor)
+  const before = o.kinds.length
+  const asked = fake.requests().length
+  await actor.restore()
+  // Asleep, its question still open: not asked again.
+  expect(o.kinds.length).toBe(before)
+  expect(actor.hasWorker).toBe(false)
+  expect(waits(o, sid)).toEqual(["waiting", [CEO]])
+  const open = o.office.store.listQuestions({ sessionId: sid, status: "open", source: "ask_user" })
+  expect(open.map((q) => q.id)).toEqual([old.id])
+  expect(await actor.prompt("A")).toBe("answer")
+  await waitFor(() => texts(o, sid).includes("A it is.") && status(o, sid) === "idle", { what: "the reply" })
+  // One request for the answer; none for the call the run recorded.
+  expect(fake.requests()).toHaveLength(asked + 1)
+  expect(JSON.stringify(fake.requests().at(-1)!.messages)).toContain("The user answered: A")
+  expect(o.office.store.getQuestion(old.id)!.status).toBe("consumed")
+})
+
+test("end on a session asleep at a question node stays ending across a restart", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake, { files: GATE_FILES })
+  const first = await atTheGate(o)
+  const { sid, q } = first
+  const second = await reopen(o, first.actor)
+  await second.restore()
+  expect(second.hasWorker).toBe(false)
+  // The node comes before the exit: the close waits in the run.
+  await second.end()
+  expect(waits(o, sid)).toEqual(["ending", []])
+  expect(o.office.store.getQuestion(q.id)!.status).toBe("open")
+  const third = await reopen(o, second)
+  const before = o.kinds.length
+  await third.restore()
+  // An ending session is closed again at every start.
+  expect(o.kinds.slice(before)).toEqual(["advance"])
+  expect(o.jobs.at(-1)!.deliver.map((d) => d.op)).toEqual(["close"])
+  expect(status(o, sid)).toBe("ending")
+  await waitFor(() => !third.hasWorker, { what: "the worker to exit" })
+  expect(o.office.store.getQuestion(q.id)!.status).toBe("open")
+  await third.answer(q.id, GATE_ANSWER, "option", { by: CEO })
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+})
+
+test("restore settles a sleeping session held at its cap", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const first = await startActor(o)
+  const { sid } = first
+  const actor = await reopen(o, first.actor)
+  // Over the $5 cap, but stored idle, as an older office left it.
+  o.office.store.updateSession(sid, { cost: 6 })
+  await actor.restore()
+  expect(actor.hasWorker).toBe(false)
+  expect(state(o, sid)).toEqual({ status: "waiting", waiting_on: [CEO], capped: true })
+})
+
+test("a settle that fails after a resume at restore stops no other session", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "read it" }, { content: "read it" })
+  const h = await makeHarness(fake)
+  const sids: string[] = []
+  for (let i = 0; i < 2; i++) {
+    const s = await h.harness.startSession("minh", h.folder)
+    await waitFor(() => status(h, s.id) === "idle", { what: "the first turn" })
+    sids.push(s.id)
+  }
+  const [a, b] = sids as [string, string]
+  // Resumed at start, not left asleep.
+  await unreadAtRestart(h, a, b)
+  const settle = SessionActor.prototype.settle
+  let broken = true
+  const spy = spyOn(SessionActor.prototype, "settle").mockImplementation(function (this: SessionActor) {
+    if (broken && this.sessionId === a) throw new Error("the pin can't be read")
+    settle.call(this)
+  })
+  onTestFinished(() => spy.mockRestore())
+  const before = h.kinds.length
+  // Logged, not raised.
+  await h.harness.restore()
+  broken = false
+  expect(h.kinds.slice(before)).toEqual(["advance", "advance"])
+  expect(h.logs).toContain(`session ${a}: no state at restore (Error)`)
+  await waitFor(() => sids.every((sid) => texts(h, sid).includes("read it")), { what: "both resumed replies" })
 })

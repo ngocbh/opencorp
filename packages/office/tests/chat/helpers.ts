@@ -936,3 +936,22 @@ export async function makeHarness(
   }
   return h
 }
+
+/** A `makeHarness` office. */
+export type HarnessOffice = Awaited<ReturnType<typeof makeHarness>>
+
+/** Leaves each session's run holding a message it never read, as an office that died just after the message reached
+ *  the run's log would, then stops the office and starts a new one (`h.reopen`), not yet restored: its restore must
+ *  advance each run. */
+export async function unreadAtRestart(h: HarnessOffice, ...sids: string[]): Promise<void> {
+  const exited = (sid: string) => waitFor(() => h.registry.get(sid) === undefined, { what: "the worker to exit" })
+  for (const sid of sids) {
+    await exited(sid)
+    // Over the company's $5 cap the message only reaches the run's log.
+    h.store.updateSession(sid, { cost: 6 })
+    expect(await h.harness.prompt(sid, "hello")).toBe("queued")
+    await exited(sid)
+  }
+  await h.reopen()
+  for (const sid of sids) h.store.updateSession(sid, { cost: 0 })
+}

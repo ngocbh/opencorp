@@ -434,3 +434,22 @@ test("a wake whose fresh run cant spawn stays idle and the next wake starts fres
   // Seeded from the first run, the newest that has a log.
   expect(o.jobs.at(-1)!.seed).toMatchObject({ log: path.join(o.office.paths.runs, runIds[0]!, "log.jsonl") })
 })
+
+test("an answered unread turn resumes at start", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "read it" })
+  const o = await chatOffice(fake)
+  const { actor: first, sid } = await asleep(o)
+  // Over the cap the message only reaches the run's log: sent just before the office died, never read.
+  o.office.store.updateSession(sid, { cost: 6 })
+  expect(await first.prompt("hello")).toBe("queued")
+  const actor = await reopen(o, first)
+  o.office.store.updateSession(sid, { cost: 0 })
+  const before = o.kinds.length
+  await actor.restore()
+  expect(o.kinds.slice(before)).toEqual(["advance"])
+  await waitFor(() => JSON.stringify(texts(o, sid)) === JSON.stringify(["read it"]), {
+    what: "the reply to the unread message",
+  })
+  expect(JSON.stringify(fake.requests()[0]!.messages)).toContain("hello")
+})
