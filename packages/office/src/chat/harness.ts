@@ -1,25 +1,29 @@
-/** The chat harness: the office's one session harness, which checks each request and hands a Codex session's calls to
- *  the Codex sessions. */
+/** The chat harness: the office's one session harness, which checks each request, runs each yian chat through its
+ *  session actor and hands a Codex session's calls to the Codex sessions. */
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { type Scheduler, realScheduler } from "@ngocbh/yian/platform"
-import type { Message } from "@opencorp/protocol"
+import { type Message, Session, WorkItem, now } from "@opencorp/protocol"
 import { loadRepo } from "../company/loader.ts"
 import type { Office, SessionHarness } from "../daemon/office.ts"
-import { type CodexSessions, checkFolder, startConnection } from "../harness/sessions.ts"
+import { type CodexSessions, checkFolder, notSupported, startConnection } from "../harness/sessions.ts"
 import type { Monitor } from "../perm/monitor.ts"
 import { Answers } from "../questions/ask.ts"
 import type { AnswerKind } from "../questions/cards.ts"
-import type { QuestionRecord, SessionRecord, Store } from "../store/store.ts"
-import type { WorkerRegistry } from "../worker/spawn.ts"
+import { SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
+import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store, newId } from "../store/store.ts"
+import { WorkspaceTools } from "../tools/workspace.ts"
+import { RegistryClosed, type WorkerRegistry } from "../worker/spawn.ts"
 import type { Hooks } from "./hooks.ts"
 import { ProviderError } from "./provider.ts"
-import { HarnessError } from "./state.ts"
+import { type RunSpec, mainSpec } from "./run_spec.ts"
+import { type ActorContext, SessionActor } from "./session_actor.ts"
+import { HarnessError, LIVE } from "./state.ts"
 import { Transcript } from "./transcript.ts"
 
-/** What a yian chat's session calls answer until the chat harness runs them. */
-const NOT_SERVED = "the chat harness doesn't serve yian chats yet"
-
-/** What the chat harness is built on. `workers` is the registry its runs' workers start in; `hooks` are shared with the
- *  Codex sessions; `log` gets its warnings (default `console.error`). */
+/** What the chat harness is built on. `workers` is the registry its runs' workers start in; `hooks` are shared with
+ *  the Codex sessions; `log` gets its warnings (default `console.error`). */
 export type ChatHarnessOptions = {
   monitor: Monitor
   hooks: Hooks
@@ -28,10 +32,14 @@ export type ChatHarnessOptions = {
   log?: (line: string) => void
 }
 
-/** The office's session harness. A call on a Codex session goes to `office.codex`, the Codex sessions; without them it
- *  answers 409 `not_live`, a cost cap or model 422 `not_supported`, and a Codex start or continuation 422
- *  `unsupported_harness`. Every call answers 503
- *  `stopping` once `closeAll` has begun. */
+/**
+ * The office's session harness, the one owner of the session actors: one per live yian chat, made at its start or
+ * at the first call after an office restart, and dropped once its session ended with no worker left.
+ *
+ * A call on a Codex session goes to `office.codex`, the Codex sessions; without them it answers 409 `not_live`, a
+ * cost cap or model 422 `not_supported`, and a Codex start or continuation 422 `unsupported_harness`. Every call
+ * answers 503 `stopping` once `closeAll` has begun.
+ */
 export class ChatHarness implements SessionHarness {
   readonly office: Office
   readonly store: Store
@@ -42,7 +50,11 @@ export class ChatHarness implements SessionHarness {
   readonly transcript: Transcript
   readonly scheduler: Scheduler
   readonly log: (line: string) => void
+  readonly #ctx: ActorContext
+  readonly #actors = new Map<string, SessionActor>()
   #closed = false
+  /** Whether the stop has begun refusing spawns. */
+  #stopping = false
   #closing: Promise<void> | undefined
 
   constructor(
@@ -58,10 +70,36 @@ export class ChatHarness implements SessionHarness {
     this.log = log
     this.answers = new Answers(office.store, { log })
     this.transcript = new Transcript(office.paths.runs)
+    this.#ctx = {
+      store: office.store,
+      git: office.git,
+      paths: office.paths,
+      bus: office.bus,
+      connections: office.connections,
+      workers: {
+        spawn: (job, dir, handlers, options) =>
+          this.#stopping ? Promise.reject(new RegistryClosed()) : this.registry.spawn(job, dir, handlers, options),
+      },
+      hooks,
+      answers: this.answers,
+      transcript: this.transcript,
+      spec: (session) => this.spec(session),
+      scheduler,
+      log,
+    }
+    // A finished session's actor goes once its last worker has; a lingering one is dropped at the next call.
+    hooks.sessionEnded.push((session) => {
+      const actor = this.#actors.get(session.id)
+      if (actor !== undefined && !actor.hasWorker) this.#actors.delete(session.id)
+    })
   }
 
-  /** Starts `handle`'s main chat in `cwd` on `harness`: a Codex chat is the Codex sessions' start; a composer chat is
-   *  checked (`#open`), then answers 501 until the chat harness runs yian chats. Any other harness is 422. */
+  /**
+   * Starts `handle`'s main chat in `cwd` on `harness`: a Codex chat is the Codex sessions' start; a composer chat is
+   * checked (`#open`), stored `starting` with its work item and worked folder, and started by its new actor. Any
+   * other harness is 422. A composer chat that can't start is `failed`, and the start throws: a `HarnessError` as it
+   * is, else 500 `start_failed` naming the session.
+   */
   async startSession(
     handle: string,
     cwd: string,
@@ -81,8 +119,82 @@ export class ChatHarness implements SessionHarness {
     if (harness === "codex")
       return this.#codexOrUnsupported().startSession(handle, cwd, { harness, openedBy, connection, model })
     if (harness !== "composer") throw unsupported(harness)
-    await this.#open(handle, cwd, { connection, model })
-    throw new HarnessError(501, "not_implemented", NOT_SERVED)
+    const opened = await this.#open(handle, cwd, { connection, model })
+    // Checked again before any write: the office may have begun stopping during the checks.
+    this.#running()
+    // One synchronous step from the first write to the actor, so every call on the session finds its actor.
+    const t = now()
+    const item = this.store.createWorkItem(
+      WorkItem.parse({
+        id: newId(),
+        title: `Chat with ${opened.person.name} in ${path.basename(opened.cwd) || opened.cwd}`,
+        kind: "task",
+        status: "in_progress",
+        requester: openedBy || (opened.repo.company ? opened.repo.company.ceo : handle),
+        assignee: handle,
+        created_at: t,
+        updated_at: t,
+      }),
+    )
+    const session = this.store.createSession(
+      Session.parse({
+        id: newId(),
+        person: handle,
+        harness: "composer",
+        office: os.hostname(),
+        cwd: opened.cwd,
+        repo_commit: opened.head,
+        status: "starting",
+        kind: "main",
+        work_item_id: item.id,
+        opened_by: openedBy,
+        connection: opened.connection,
+        model: opened.model,
+        model_note: null,
+        harness_session_id: null,
+        parent_session_id: null,
+        created_at: t,
+        updated_at: t,
+      }),
+    )
+    this.store.touchWorkedFolder(handle, opened.cwd)
+    const actor = new SessionActor(this.#ctx, session.id)
+    this.#actors.set(session.id, actor)
+    await actor.start()
+    return this.store.getSession(session.id)!
+  }
+
+  /**
+   * The run spec of `session`, a main chat: its sandbox over the session's folder, checked again (422 when it is
+   * gone or unsafe), with a private tmp dir under the session's folder, and the workspace tools under it. A side
+   * chat or profile manager answers 501.
+   */
+  async spec(session: SessionRecord): Promise<RunSpec> {
+    if (session.kind !== "main") {
+      throw new HarnessError(501, "not_implemented", `the chat harness doesn't run ${session.kind} sessions yet`)
+    }
+    const { store, git, paths } = this.office
+    const repo = loadRepo(await git.pin(session.repo_commit))
+    const real = checkFolder(this.office, session.cwd)
+    const tmpdir = path.join(paths.sessionDir(session.id), "tmp")
+    fs.mkdirSync(tmpdir, { recursive: true, mode: 0o700 })
+    const policy = repo.people.get(session.person)?.harness_policy
+    let sandbox: SandboxPolicy
+    try {
+      sandbox = new SandboxPolicy({
+        workspace: real,
+        writable: policy?.sandbox === "workspace-write",
+        network: policy?.network === true,
+        tmpdir,
+        office: this.office.guards,
+      })
+    } catch (error) {
+      if (error instanceof UnsafeWorkspace) throw new HarnessError(422, "unsafe_workspace", error.message)
+      throw error
+    }
+    const workspace = new WorkspaceTools(sandbox, { officeHome: paths.home, store })
+    const carried = (question: QuestionRecord) => this.answers.carried(question)
+    return mainSpec({ store, git, repo, session, workspace, monitor: this.monitor, carried })
   }
 
   /** Continues an ended Codex session as a new one opened by `by` (the Codex sessions' continuation). */
@@ -95,34 +207,52 @@ export class ChatHarness implements SessionHarness {
   }
 
   async prompt(sessionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<string> {
-    return this.#codexFor(sessionId).prompt(sessionId, text, { by })
+    const codex = this.#codexFor(sessionId)
+    return codex ? codex.prompt(sessionId, text, { by }) : this.#actor(sessionId).prompt(text, { by })
   }
 
   async steer(sessionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<string> {
-    return this.#codexFor(sessionId).steer(sessionId, text, { by })
+    const codex = this.#codexFor(sessionId)
+    return codex ? codex.steer(sessionId, text, { by }) : this.#actor(sessionId).steer(text, { by })
   }
 
   async end(sessionId: string): Promise<void> {
-    return this.#codexFor(sessionId).end(sessionId)
+    const codex = this.#codexFor(sessionId)
+    return codex ? codex.end(sessionId) : this.#actor(sessionId).end()
   }
 
   async interrupt(sessionId: string): Promise<void> {
-    return this.#codexFor(sessionId).interrupt(sessionId)
+    const codex = this.#codexFor(sessionId)
+    return codex ? codex.interrupt(sessionId) : this.#actor(sessionId).interrupt()
   }
 
   async setCostCap(sessionId: string, usd: number): Promise<SessionRecord> {
-    return this.#codexFor(sessionId, notSupported).setCostCap(sessionId, usd)
+    const codex = this.#codexFor(sessionId, notSupported)
+    return codex ? codex.setCostCap(sessionId, usd) : this.#actor(sessionId).setCostCap(usd)
   }
 
+  /** A Codex session's model is Codex's own; a yian chat's answers 501 until the chat harness switches models. */
   async setModel(sessionId: string, connection: string, model: string): Promise<SessionRecord> {
-    return this.#codexFor(sessionId, notSupported).setModel(sessionId, connection, model)
+    const codex = this.#codexFor(sessionId, notSupported)
+    if (codex === undefined) {
+      throw new HarnessError(501, "not_implemented", "the chat harness doesn't switch a chat's model yet")
+    }
+    return codex.setModel(sessionId, connection, model)
   }
 
+  /** The session's messages: a yian chat's from its runs' logs, with its live actor's calls in flight. */
   messages(sessionId: string): Message[] {
-    return this.#codexFor(sessionId).messages(sessionId)
+    const codex = this.#codexFor(sessionId)
+    if (codex) return codex.messages(sessionId)
+    const session = this.store.getSession(sessionId)!
+    return this.transcript.messages(sessionId, session.run_ids, this.#actors.get(sessionId))
   }
 
-  /** Answers question `questionId` as `by`; a Codex session's card goes to the Codex sessions. */
+  /**
+   * Answers question `questionId` as `by`: a Codex session's card goes to the Codex sessions, a live session's
+   * question to its actor. Any other question is stored answered (by `by`, else its session's opener, else the
+   * pinned CEO), after the `answerCheck` hooks; refused with 409 `not_open` when it isn't open.
+   */
   async answer(
     questionId: string,
     value: unknown,
@@ -132,7 +262,30 @@ export class ChatHarness implements SessionHarness {
     this.#running()
     const question = this.store.getQuestion(questionId)
     if (question === undefined) throw new HarnessError(404, "not_found", `no question ${questionId}`)
-    return this.#codexFor(question.session_id).answer(questionId, value, kind, { by })
+    const sid = question.session_id
+    const session = sid ? this.store.getSession(sid) : undefined
+    if (session?.harness === "codex") return this.#codexFor(session.id)!.answer(questionId, value, kind, { by })
+    if (session !== undefined && LIVE.includes(session.status)) {
+      return this.#actor(session.id).answer(questionId, value, kind, { by })
+    }
+    if (question.status !== "open") {
+      throw new HarnessError(409, "not_open", `question ${questionId} is ${question.status}`)
+    }
+    for (const refusal of this.hooks.fire("answerCheck", question, value, kind)) {
+      if (refusal) throw new HarnessError(422, "invalid_answer", String(refusal))
+    }
+    let answerer = by
+    if (answerer === null && session !== undefined) {
+      answerer = session.opened_by ?? loadRepo(await this.office.git.pin(session.repo_commit)).company?.ceo ?? null
+    }
+    try {
+      return this.store.answerQuestion(questionId, value, kind, answerer)
+    } catch (error) {
+      if (error instanceof InvalidTransition) {
+        throw new HarnessError(409, "not_open", `question ${questionId} is no longer open`)
+      }
+      throw error
+    }
   }
 
   /** After an office restart: the Codex sessions restore theirs. */
@@ -140,10 +293,12 @@ export class ChatHarness implements SessionHarness {
     await this.office.codex?.restore()
   }
 
-  /** Office stop: every later call answers 503; the Codex sessions close, then the workers. Idempotent. */
+  /** Office stop: every later call answers 503; the actors close, then the Codex sessions, then the workers.
+   *  Idempotent. */
   closeAll(): Promise<void> {
     this.#closed = true
     this.#closing ??= (async () => {
+      for (const actor of this.#actors.values()) actor.close()
       try {
         await this.office.codex?.closeAll()
       } finally {
@@ -186,16 +341,35 @@ export class ChatHarness implements SessionHarness {
     }
   }
 
-  /** The Codex sessions, for a call on `sessionId`, a Codex session: 404 for no session, 501 for a yian chat,
-   *  `without()` (409 `not_live` by default) for a Codex session with no Codex sessions, and 503 once closed. */
-  #codexFor(
-    sessionId: string,
-    without = () => new HarnessError(409, "not_live", `session ${sessionId} has no live run`),
-  ): CodexSessions {
+  /** The actor of live session `sessionId`, made if the harness has none (after an office restart): 404 for no
+   *  session, 409 `not_live` for one that isn't live, 503 once closed. */
+  #actor(sessionId: string): SessionActor {
     this.#running()
     const session = this.store.getSession(sessionId)
     if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
-    if (session.harness !== "codex") throw new HarnessError(501, "not_implemented", NOT_SERVED)
+    if (!LIVE.includes(session.status)) {
+      this.#actors.delete(sessionId)
+      throw new HarnessError(409, "not_live", `session ${sessionId} has no live run`)
+    }
+    let actor = this.#actors.get(sessionId)
+    if (actor === undefined) {
+      actor = new SessionActor(this.#ctx, sessionId)
+      this.#actors.set(sessionId, actor)
+    }
+    return actor
+  }
+
+  /** The Codex sessions for a call on `sessionId` if it is a Codex session, else undefined (a yian chat): 404 for no
+   *  session, `without()` (409 `not_live` by default) for a Codex session with no Codex sessions, and 503 once
+   *  closed. */
+  #codexFor(
+    sessionId: string,
+    without = () => new HarnessError(409, "not_live", `session ${sessionId} has no live run`),
+  ): CodexSessions | undefined {
+    this.#running()
+    const session = this.store.getSession(sessionId)
+    if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
+    if (session.harness !== "codex") return undefined
     if (this.office.codex === undefined) throw without()
     return this.office.codex
   }
@@ -210,11 +384,6 @@ export class ChatHarness implements SessionHarness {
   #running(): void {
     if (this.#closed) throw new HarnessError(503, "stopping", "the office is stopping")
   }
-}
-
-/** A Codex session's cost cap and model are Codex's own. */
-function notSupported(): HarnessError {
-  return new HarnessError(422, "not_supported", "a Codex session runs on Codex's own model and login")
 }
 
 function unsupported(harness: string): HarnessError {

@@ -548,7 +548,7 @@ export class CodexSessions implements SessionHarness {
    *  model and login. */
   async #notSupported(sessionId: string): Promise<never> {
     this.#codexSession(sessionId)
-    throw new HarnessError(422, "not_supported", "a Codex session runs on Codex's own model and login")
+    throw notSupported()
   }
 
   #must(sessionId: string): CodexSession {
@@ -585,6 +585,11 @@ export function checkFolder(office: Office, cwd: string): string {
       )
   }
   return real
+}
+
+/** The 422 `not_supported` a Codex session's cost cap or model call answers. */
+export function notSupported(): HarnessError {
+  return new HarnessError(422, "not_supported", "a Codex session runs on Codex's own model and login")
 }
 
 /** The connection a new session starts on: `requested` if it is on this office, else the office's default (`office`

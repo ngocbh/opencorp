@@ -25,10 +25,10 @@ import { newId, type QuestionRecord, type SessionRecord, type WorkItemRecord } f
 import { FakeLLM, LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { type Delivery, Job, type JobInput } from "../../src/worker/job.ts"
 import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
-import { type Worker, WorkerRegistry } from "../../src/worker/spawn.ts"
+import type { Worker, WorkerRegistry } from "../../src/worker/spawn.ts"
 import { baseFiles, person } from "../company/helpers.ts"
 import { CEO, makeOffice } from "../daemon/helpers.ts"
-import { makeCodex } from "../harness/helpers.ts"
+import { type Codex, makeCodex } from "../harness/helpers.ts"
 import { NO_GROUP, tempDir, waitFor } from "../helpers.ts"
 import { advanceJob, inProcessWorker, makeJob, makeRegistry, Recorder, run, waitsOf } from "../worker/helpers.ts"
 
@@ -458,6 +458,9 @@ export interface ChatOffice {
   failNextSpawn(): void
   /** Runs `fn` with the next spawned worker once its spawn has resolved. */
   afterSpawn(fn: (worker: Worker) => void): void
+  /** Another registry over the office, its spawns recorded, held, failed or followed as `registry`'s are; it stops
+   *  when the test finishes. */
+  newRegistry(): WorkerRegistry
 }
 
 /**
@@ -465,7 +468,8 @@ export interface ChatOffice {
  * `fake` (`llmConfig`, the fake's env, `prices`), the company `defaults` merged in, and a registry whose `spawn` is
  * wrapped to record, hold, fail or follow each spawn. Its actors share one `Hooks`, `Answers`, `Transcript` and
  * `LiveRelay`, and a run spec from `mainSpec` over a workspace stand-in, with the tools of `groups` merged into its
- * groups. At test end the actors close, then the workers stop, before the office's store closes.
+ * groups. `office` builds the office from the company files (default `makeOffice`'s). At test end the actors close,
+ * then the workers stop, before the office's store closes.
  */
 export async function chatOffice(
   fake: FakeLLM,
@@ -475,51 +479,60 @@ export async function chatOffice(
     llmConfig = LLM_CONFIG,
     defaults = {},
     groups = {},
+    office: build = (files) => makeOffice({ files }),
   }: {
     files?: Record<string, unknown>
     prices?: Record<string, unknown>
     llmConfig?: Record<string, unknown>
     defaults?: Record<string, unknown>
     groups?: Record<string, Record<string, OfficeTool>>
+    office?: (files: Record<string, unknown>) => Office
   } = {},
 ): Promise<ChatOffice> {
   const actors: SessionActor[] = []
-  let registry: WorkerRegistry | undefined
+  const registries: WorkerRegistry[] = []
   // Registered before makeOffice's, so it runs first.
   onTestFinished(async () => {
     for (const actor of actors) actor.close()
-    await registry?.closeAll(5000)
+    for (const registry of registries) await registry.closeAll(5000)
   })
   const company = baseFiles()["company.yaml"] as { defaults: Record<string, unknown> }
-  const office = makeOffice({
-    files: { ...CHAT_FILES, "company.yaml": { ...company, defaults: { ...company.defaults, ...defaults } }, ...files },
+  const office = build({
+    ...CHAT_FILES,
+    "company.yaml": { ...company, defaults: { ...company.defaults, ...defaults } },
+    ...files,
   })
   office.connections.ensureDir()
   const provider = { llm_config: { ...llmConfig }, env: fake.env(), prices }
   await writePrivate(path.join(office.connections.dir, "office.json"), JSON.stringify(provider))
-  registry = followWorkers(makeRegistry(office.store))
   const kinds: string[] = []
   const jobs: Job[] = []
   const holds: { entered: () => void; released: Promise<void> }[] = []
   const afters: ((worker: Worker) => void)[] = []
   let failNext = false
-  const spawn = registry.spawn.bind(registry)
-  registry.spawn = async (job, sessionDir, handlers, options) => {
-    kinds.push(job.kind)
-    jobs.push(job)
-    const held = holds.shift()
-    if (held !== undefined) {
-      held.entered()
-      await held.released
+  const newRegistry = () => {
+    const registry = followWorkers(makeRegistry(office.store))
+    const spawn = registry.spawn.bind(registry)
+    registry.spawn = async (job, sessionDir, handlers, options) => {
+      kinds.push(job.kind)
+      jobs.push(job)
+      const held = holds.shift()
+      if (held !== undefined) {
+        held.entered()
+        await held.released
+      }
+      if (failNext) {
+        failNext = false
+        throw new Error("the spawn failed")
+      }
+      const worker = await spawn(job, sessionDir, handlers, options)
+      afters.shift()?.(worker)
+      return worker
     }
-    if (failNext) {
-      failNext = false
-      throw new Error("the spawn failed")
-    }
-    const worker = await spawn(job, sessionDir, handlers, options)
-    afters.shift()?.(worker)
-    return worker
+    registries.push(registry)
+    return registry
   }
+  const registry = newRegistry()
   const logs: string[] = []
   const log = (line: string) => void logs.push(line)
   const hooks = new Hooks({ log })
@@ -587,6 +600,7 @@ export async function chatOffice(
     afterSpawn(fn) {
       afters.push(fn)
     },
+    newRegistry,
   }
 }
 
@@ -768,23 +782,67 @@ export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
   return spawned
 }
 
-/** A chat harness over a fresh office with `files` (`makeCompany` overrides), and, with `codex`, `makeCodex`'s Codex
- *  sessions over a fake app-server as `office.codex`, on the harness's hooks (minh may then use Codex unless `files`
- *  replace him). `lines` gets the log lines; `codex` is what `makeCodex` returned. Call inside a test: when it
- *  finishes the office stops, closing the harness before the store closes. */
-export function makeHarness({ files = {}, codex = false }: { files?: Record<string, unknown>; codex?: boolean } = {}) {
-  const c = codex ? makeCodex({ files }) : undefined
-  const office = c?.office ?? makeOffice({ files })
-  const lines = c?.lines ?? []
-  const log = (line: string) => lines.push(line)
-  const hooks = c?.hooks ?? new Hooks({ log })
-  office.codex = c?.sessions
-  const harness = new ChatHarness(office, {
-    monitor: new Monitor(office.paths.company, office.store, office.secrets),
-    hooks,
-    workers: new WorkerRegistry(office.store),
-    log,
+/**
+ * A real `ChatHarness` over a `chatOffice` (its options but `office`) whose first registry it spawns in, with a real
+ * `Monitor` and the real workspace tools of `harness.spec`; `office.harness` and `office.workers` are the harness.
+ * `folder` is a folder to chat in. `connections` (`{name: model}`) adds connections on `fake`, each on `model`. With
+ * `codex`, the office is `makeCodex`'s and its Codex sessions over a fake app-server are `office.codex`, on the
+ * harness's hooks (minh may then use Codex unless `files` replace him); `codex` is what `makeCodex` returned.
+ * `reopen()` closes the harness, the store left open, and puts a second one over the same office in `harness`, on a
+ * new registry: the office stopped and started again. Call inside a test: when it finishes the harness closes
+ * before the store does.
+ */
+export async function makeHarness(
+  fake: FakeLLM,
+  {
+    codex = false,
+    connections = {},
+    ...options
+  }: Omit<NonNullable<Parameters<typeof chatOffice>[1]>, "office"> & {
+    codex?: boolean
+    connections?: Record<string, string>
+  } = {},
+) {
+  let harness: ChatHarness | undefined
+  // Registered first, so it runs before the registries stop and the store closes.
+  onTestFinished(() => harness?.closeAll())
+  let c: Codex | undefined
+  const o = await chatOffice(fake, {
+    ...options,
+    ...(codex ? { office: (files: Record<string, unknown>) => (c = makeCodex({ files })).office } : {}),
   })
-  office.onStop.push(() => harness.closeAll())
-  return { harness, office, store: office.store, hooks, lines, workspace: c?.workspace ?? tempDir(), codex: c }
+  const { office } = o
+  for (const [name, model] of Object.entries(connections)) {
+    const conn = { llm_config: { ...LLM_CONFIG, ...options.llmConfig, model }, env: fake.env() }
+    await writePrivate(path.join(office.connections.dir, `${name}.json`), JSON.stringify(conn))
+  }
+  const codexed = c as Codex | undefined
+  const hooks = codexed?.hooks ?? o.hooks
+  office.codex = codexed?.sessions
+  const make = (workers: WorkerRegistry) => {
+    harness = new ChatHarness(office, {
+      monitor: new Monitor(office.paths.company, office.store, office.secrets),
+      hooks,
+      workers,
+      log: (line) => void o.logs.push(line),
+    })
+    office.harness = harness
+    office.workers = harness
+    return harness
+  }
+  const h = {
+    ...o,
+    harness: make(o.registry),
+    store: office.store,
+    hooks,
+    folder: codexed?.workspace ?? tempDir(),
+    codex: codexed,
+    async reopen(): Promise<ChatHarness> {
+      await h.harness.closeAll()
+      h.registry = o.newRegistry()
+      h.harness = make(h.registry)
+      return h.harness
+    },
+  }
+  return h
 }

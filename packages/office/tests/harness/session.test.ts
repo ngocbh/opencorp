@@ -15,7 +15,7 @@ import { killGroup, startTime } from "../../src/install/proc.ts"
 import { realPath } from "../../src/sandbox/policy.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { workerEnv } from "../../src/worker/spawn.ts"
-import { makeHarness } from "../chat/helpers.ts"
+import { fakeLlm, makeHarness } from "../chat/helpers.ts"
 import { envNames, waitFor } from "../helpers.ts"
 import {
   type Codex,
@@ -457,7 +457,7 @@ test("ending a busy session interrupts its turn first", async () => {
 })
 
 test("model and cost cap are refused on a codex session", async () => {
-  const { harness, codex: h } = makeHarness({ codex: true })
+  const { harness, codex: h } = await makeHarness(await fakeLlm(), { codex: true })
   const sid = await start(h!, h!.workspace)
   for (const call of [() => harness.setModel(sid, "office", "gpt-4o"), () => harness.setCostCap(sid, 50)]) {
     const e = await rejection(call())
