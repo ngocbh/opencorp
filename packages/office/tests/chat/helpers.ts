@@ -8,13 +8,16 @@ import { fileURLToPath } from "node:url"
 import { HttpResponse } from "@ngocbh/yian/llm_clients"
 import { realScheduler, type Scheduler } from "@ngocbh/yian/platform"
 import { iterRunRecords, type RunLogEntry } from "@ngocbh/yian/run"
-import { now, OFFICE, Session, WorkItem } from "@opencorp/protocol"
+import { type LiveEvent, now, OFFICE, Session, WorkItem } from "@opencorp/protocol"
+import { ChatHarness } from "../../src/chat/harness.ts"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { mainSpec } from "../../src/chat/run_spec.ts"
+import { MAIN_CHAT } from "../../src/chat/turns.ts"
 import { type ActorContext, type ActorWorker, SessionActor, type Wait } from "../../src/chat/session_actor.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { LiveRelay } from "../../src/daemon/live.ts"
+import { register as registerQuestions } from "../../src/extensions/questions.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { Monitor } from "../../src/perm/monitor.ts"
@@ -27,6 +30,7 @@ import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
 import type { Worker, WorkerRegistry } from "../../src/worker/spawn.ts"
 import { baseFiles, person } from "../company/helpers.ts"
 import { CEO, makeOffice } from "../daemon/helpers.ts"
+import { type Codex, makeCodex } from "../harness/helpers.ts"
 import { NO_GROUP, tempDir, waitFor } from "../helpers.ts"
 import { advanceJob, inProcessWorker, makeJob, makeRegistry, Recorder, run, waitsOf } from "../worker/helpers.ts"
 
@@ -446,6 +450,8 @@ export interface ChatOffice {
   readonly answers: Answers
   /** The lines the actors, hooks and answers logged. */
   readonly logs: string[]
+  /** Each live event published on the office's bus, in order. */
+  readonly lives: LiveEvent[]
   /** How often the workspace stand-in was interrupted. */
   readonly workspace: { interrupts: number }
   /** The actors made through these helpers; each is closed when the test finishes. */
@@ -456,6 +462,11 @@ export interface ChatOffice {
   failNextSpawn(): void
   /** Runs `fn` with the next spawned worker once its spawn has resolved. */
   afterSpawn(fn: (worker: Worker) => void): void
+  /** How many reply node starts (or wakes) its workers have told their actors of. */
+  replyStarts(): number
+  /** Another registry over the office, its spawns recorded, held, failed or followed as `registry`'s are; it stops
+   *  when the test finishes. */
+  newRegistry(): WorkerRegistry
 }
 
 /**
@@ -463,7 +474,8 @@ export interface ChatOffice {
  * `fake` (`llmConfig`, the fake's env, `prices`), the company `defaults` merged in, and a registry whose `spawn` is
  * wrapped to record, hold, fail or follow each spawn. Its actors share one `Hooks`, `Answers`, `Transcript` and
  * `LiveRelay`, and a run spec from `mainSpec` over a workspace stand-in, with the tools of `groups` merged into its
- * groups. At test end the actors close, then the workers stop, before the office's store closes.
+ * groups. `office` builds the office from the company files (default `makeOffice`'s). At test end the actors close,
+ * then the workers stop, before the office's store closes.
  */
 export async function chatOffice(
   fake: FakeLLM,
@@ -473,51 +485,74 @@ export async function chatOffice(
     llmConfig = LLM_CONFIG,
     defaults = {},
     groups = {},
+    office: build = (files) => makeOffice({ files }),
   }: {
     files?: Record<string, unknown>
     prices?: Record<string, unknown>
     llmConfig?: Record<string, unknown>
     defaults?: Record<string, unknown>
     groups?: Record<string, Record<string, OfficeTool>>
+    office?: (files: Record<string, unknown>) => Office
   } = {},
 ): Promise<ChatOffice> {
   const actors: SessionActor[] = []
-  let registry: WorkerRegistry | undefined
+  const registries: WorkerRegistry[] = []
   // Registered before makeOffice's, so it runs first.
   onTestFinished(async () => {
     for (const actor of actors) actor.close()
-    await registry?.closeAll(5000)
+    for (const registry of registries) await registry.closeAll(5000)
   })
   const company = baseFiles()["company.yaml"] as { defaults: Record<string, unknown> }
-  const office = makeOffice({
-    files: { ...CHAT_FILES, "company.yaml": { ...company, defaults: { ...company.defaults, ...defaults } }, ...files },
+  const office = build({
+    ...CHAT_FILES,
+    "company.yaml": { ...company, defaults: { ...company.defaults, ...defaults } },
+    ...files,
   })
   office.connections.ensureDir()
+  const lives: LiveEvent[] = []
+  const publishLive = office.bus.publishLive.bind(office.bus)
+  office.bus.publishLive = (event) => {
+    lives.push(event)
+    publishLive(event)
+  }
   const provider = { llm_config: { ...llmConfig }, env: fake.env(), prices }
   await writePrivate(path.join(office.connections.dir, "office.json"), JSON.stringify(provider))
-  registry = followWorkers(makeRegistry(office.store))
   const kinds: string[] = []
   const jobs: Job[] = []
   const holds: { entered: () => void; released: Promise<void> }[] = []
   const afters: ((worker: Worker) => void)[] = []
   let failNext = false
-  const spawn = registry.spawn.bind(registry)
-  registry.spawn = async (job, sessionDir, handlers, options) => {
-    kinds.push(job.kind)
-    jobs.push(job)
-    const held = holds.shift()
-    if (held !== undefined) {
-      held.entered()
-      await held.released
+  let replies = 0
+  const newRegistry = () => {
+    const registry = followWorkers(makeRegistry(office.store))
+    const spawn = registry.spawn.bind(registry)
+    registry.spawn = async (job, sessionDir, handlers, options) => {
+      kinds.push(job.kind)
+      jobs.push(job)
+      const held = holds.shift()
+      if (held !== undefined) {
+        held.entered()
+        await held.released
+      }
+      if (failNext) {
+        failNext = false
+        throw new Error("the spawn failed")
+      }
+      const event = handlers.event.bind(handlers)
+      handlers.event = (worker, frame) => {
+        const data = frame.data as { node_id?: unknown } | undefined
+        const starts = frame.name === "NodeStarted" || frame.name === "NodeWoken"
+        if (starts && MAIN_CHAT.isReply(typeof data?.node_id === "string" ? data.node_id : null)) replies += 1
+        event(worker, frame)
+      }
+      const worker = await spawn(job, sessionDir, handlers, options)
+      afters.shift()?.(worker)
+      return worker
     }
-    if (failNext) {
-      failNext = false
-      throw new Error("the spawn failed")
-    }
-    const worker = await spawn(job, sessionDir, handlers, options)
-    afters.shift()?.(worker)
-    return worker
+    registries.push(registry)
+    return registry
   }
+  const registry = newRegistry()
   const logs: string[] = []
   const log = (line: string) => void logs.push(line)
   const hooks = new Hooks({ log })
@@ -569,6 +604,7 @@ export async function chatOffice(
     hooks,
     answers,
     logs,
+    lives,
     workspace,
     actors,
     hold() {
@@ -585,6 +621,8 @@ export async function chatOffice(
     afterSpawn(fn) {
       afters.push(fn)
     },
+    replyStarts: () => replies,
+    newRegistry,
   }
 }
 
@@ -686,6 +724,21 @@ export function texts(o: ChatOffice, sid: string, role = "assistant"): string[] 
     .flatMap((message) => message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])))
 }
 
+/** The messages of the error parts of session `sid`'s live `message.updated` events, in order: the notices, which
+ *  the transcript never returns. */
+export function errors(o: ChatOffice, sid: string): string[] {
+  return o.lives
+    .filter((event) => event.type === "message.updated" && event.session_id === sid)
+    .flatMap((event) => (event.data.parts as { type: string; message?: string }[]).filter((p) => p.type === "error"))
+    .map((part) => part.message!)
+}
+
+/** Waits until `o`'s workers have told their actors of `n` reply starts: the `NodeStarted` reached the actor's queue,
+ *  so a command sent after it finds the reply running. The model getting the request shows only the worker's side. */
+export async function replyRunning(o: ChatOffice, n = 1): Promise<void> {
+  await waitFor(() => o.replyStarts() >= n, { what: "the actor to see the reply start" })
+}
+
 /** Session `sid` as stored. */
 export function session(o: ChatOffice, sid: string): SessionRecord {
   return o.office.store.getSession(sid)!
@@ -764,4 +817,95 @@ export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
     return worker as Worker
   }
   return spawned
+}
+
+/**
+ * A real `ChatHarness` over a `chatOffice` (its options but `office`) whose first registry it spawns in, with a real
+ * `Monitor` and the real workspace tools of `harness.spec`, the tools of `groups` merged into its groups;
+ * `office.harness` and `office.workers` are the harness. `scheduler` is its actors' (default `realScheduler`).
+ * `folder` is a folder to chat in. `connections` (`{name: model}`) adds connections on `fake`, each on `model`. With
+ * `codex`, the office is `makeCodex`'s and its Codex sessions over a fake app-server are `office.codex`, on the
+ * harness's hooks (minh may then use Codex unless `files` replace him); `codex` is what `makeCodex` returned. With
+ * `questions`, the questions extension is registered on each harness (`office.cards`).
+ * `reopen()` closes the harness, the store left open, and puts a second one over the same office in `harness`, on a
+ * new registry: the office stopped and started again. Call inside a test: when it finishes the harness closes
+ * before the store does.
+ */
+export async function makeHarness(
+  fake: FakeLLM,
+  {
+    codex = false,
+    connections = {},
+    scheduler = realScheduler,
+    questions = false,
+    ...options
+  }: Omit<NonNullable<Parameters<typeof chatOffice>[1]>, "office"> & {
+    codex?: boolean
+    connections?: Record<string, string>
+    scheduler?: Scheduler
+    questions?: boolean
+  } = {},
+) {
+  let harness: ChatHarness | undefined
+  // Registered first, so it runs before the registries stop and the store closes.
+  onTestFinished(() => harness?.closeAll())
+  let c: Codex | undefined
+  const o = await chatOffice(fake, {
+    ...options,
+    ...(codex ? { office: (files: Record<string, unknown>) => (c = makeCodex({ files })).office } : {}),
+  })
+  const { office } = o
+  for (const [name, model] of Object.entries(connections)) {
+    const conn = { llm_config: { ...LLM_CONFIG, ...options.llmConfig, model }, env: fake.env() }
+    await writePrivate(path.join(office.connections.dir, `${name}.json`), JSON.stringify(conn))
+  }
+  const codexed = c as Codex | undefined
+  const hooks = codexed?.hooks ?? o.hooks
+  office.codex = codexed?.sessions
+  // The office's one transcript and relay, which the harness's actors share with these helpers.
+  office.transcript = o.transcript
+  office.live = o.live
+  const make = (workers: WorkerRegistry) => {
+    harness = new ChatHarness(office, {
+      monitor: new Monitor(office.paths.company, office.store, office.secrets),
+      hooks,
+      workers,
+      scheduler,
+      log: (line) => void o.logs.push(line),
+    })
+    const { groups } = options
+    if (groups !== undefined) {
+      const spec = harness.spec.bind(harness)
+      harness.spec = async (session) => {
+        const built = await spec(session)
+        return {
+          ...built,
+          groups: (c) => {
+            const all = built.groups(c)
+            for (const [group, named] of Object.entries(groups)) all[group] = { ...all[group], ...named }
+            return all
+          },
+        }
+      }
+    }
+    office.harness = harness
+    office.workers = harness
+    if (questions) registerQuestions(office)
+    return harness
+  }
+  const h = {
+    ...o,
+    harness: make(o.registry),
+    store: office.store,
+    hooks,
+    folder: codexed?.workspace ?? tempDir(),
+    codex: codexed,
+    async reopen(): Promise<ChatHarness> {
+      await h.harness.closeAll()
+      h.registry = o.newRegistry()
+      h.harness = make(h.registry)
+      return h.harness
+    },
+  }
+  return h
 }

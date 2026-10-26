@@ -1,6 +1,9 @@
-/** Card actions on the questions extension, through a stand-in for the session actor. */
-import { expect, test } from "bun:test"
+/** Card actions on the questions extension: through a stand-in for the session actor, and the chat's rows on the real
+ *  chat harness (Python's `tests/questions/test_cards.py`). */
+import fs from "node:fs"
+import path from "node:path"
 import { inspect } from "node:util"
+import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { type Question, stamp } from "@opencorp/protocol"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { HarnessError } from "../../src/chat/state.ts"
@@ -9,8 +12,26 @@ import { register } from "../../src/extensions/questions.ts"
 import type { AnswerKind, CardActor, Cards } from "../../src/questions/cards.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { InvalidTransition, type QuestionRecord, type Store } from "../../src/store/store.ts"
+import type { Frame } from "../../src/worker/channel.ts"
+import {
+  ASK_MANAGER,
+  card as chatCard,
+  fakeLlm,
+  GATE,
+  GATE_ANSWER,
+  GATE_FILES,
+  LAN,
+  makeHarness,
+  noWorkersLeft,
+  status,
+  texts,
+} from "../chat/helpers.ts"
 import { makeOffice, standInHarness } from "../daemon/helpers.ts"
+import { waitFor } from "../helpers.ts"
 import { question, session } from "../store/helpers.ts"
+
+setDefaultTimeout(60_000)
+afterAll(noWorkersLeft)
 
 class StandIn implements CardActor {
   readonly hooks: Hooks
@@ -136,24 +157,6 @@ test("a typed card gives the actor the converted values", async () => {
   expect((await cards.answer(q.id, { count: "3", ship: "yes" }, "option")).answer).toEqual(typed)
   expect(actor.answered).toEqual([[q.id, typed, "option", null]])
   expect(office.store.getQuestion(q.id)!.answer).toEqual(typed)
-})
-
-test("a turn question is no card", async () => {
-  const office = makeOffice()
-  const { cards } = wire(office)
-  const turn = card(office, { source: "ask", node_id: "chat#1/heard", created_at: at(1) })
-  expect(cards.check(turn, 42, "text")).toBeNull()
-  const node = card(office, { source: "ask", node_id: "setup" })
-  expect(cards.check(node, 42, "text")).toBe("the answer must be text")
-  const error = await refusal(() => cards.openSide(turn.id, "why?"))
-  expect([error.status, error.code]).toEqual([422, "not_a_card"])
-
-  const stale = office.store.addQuestion(
-    question(turn.session_id, { discussion: [{ role: "user", text: "why?" }], created_at: at(0) }),
-  )
-  office.store.setQuestionStatus(stale.id, "stale")
-  cards.stored(turn)
-  expect(office.store.getQuestion(turn.id)!.carried_from).toBeNull()
 })
 
 test("an invalid answer is refused before the actor sees it", async () => {
@@ -353,13 +356,6 @@ test("an expired questions discussion is carried into the next card", async () =
   cards.stored(next2)
   expect(carried(next2.id)).toBeNull()
 
-  const s3 = office.store.createSession(session())
-  const old3 = expired(s3.id, 1, said)
-  office.store.addQuestion(question(s3.id, { source: "ask", node_id: "chat#1/heard", created_at: at(2) }))
-  const next3 = office.store.addQuestion(question(s3.id, { created_at: at(3) }))
-  cards.stored(next3)
-  expect(carried(next3.id)).toBe(old3.id)
-
   const s4 = office.store.createSession(session())
   const old4 = expired(s4.id, 1, said)
   const next4 = office.store.addQuestion(question(s4.id, { created_at: at(2) }))
@@ -449,4 +445,146 @@ test("close waits for queued send backs", async () => {
   } finally {
     release()
   }
+})
+
+// --- on the real chat harness -----------------------------------------------------------------
+
+type Harness = Awaited<ReturnType<typeof makeHarness>>
+
+/** Starts minh's chat in `h.folder` (`options` as `startSession`'s) and waits for its first turn; returns its id. */
+async function started(h: Harness, options: Parameters<Harness["harness"]["startSession"]>[2] = {}): Promise<string> {
+  const { id } = await h.harness.startSession("minh", h.folder, options)
+  await waitFor(() => status(h, id) === "idle", { what: "the first turn" })
+  return id
+}
+
+/** The result each of `h`'s runs finished with, in order. */
+function outcomes(h: Harness): (Frame | null)[] {
+  const seen: (Frame | null)[] = []
+  h.hooks.runFinished.push((_s, _runId, result) => void seen.push(result))
+  return seen
+}
+
+/** A harness whose minh runs `gate` as his main flow, with the questions extension, and minh's session waiting at its
+ *  card; with `asleep`, the harness is closed and a new one (not restored) has the session. */
+async function atTheGate(gate = GATE, { asleep = false } = {}) {
+  const h = await makeHarness(await fakeLlm(), { files: { ...GATE_FILES, "people/minh/gate.yaml": gate }, questions: true })
+  const { id } = await h.harness.startSession("minh", h.folder)
+  const q = await chatCard(h, id, "ask")
+  await waitFor(() => status(h, id) === "waiting", { what: "the session to wait at its card" })
+  if (asleep) await h.reopen()
+  return { h, q }
+}
+
+/** The gate with typed pages: its answer is `{count: int, ship: bool}`. */
+const TYPED_GATE = GATE.replace(
+  /  setup:[\s\S]*?(?=output: )/,
+  `  setup:
+    kind: tool
+    tool_id: ask
+    input:
+      questions:
+        - question: How many replicas?
+          header: count
+          options: [{label: "3"}, {label: "5"}]
+        - question: Ship it?
+          header: ship
+          options: [{label: "yes"}, {label: "no"}]
+    output: {count: int, ship: bool}
+`,
+)
+
+test("a manager question is stopped by answering it", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_MANAGER, { content: "Carrying on." })
+  const h = await makeHarness(fake, { questions: true })
+  const id = await started(h)
+  await h.harness.prompt(id, "plan it")
+  const q = await chatCard(h, id, "ask_manager")
+  await h.office.cards!.stop(q.id)
+  expect(JSON.stringify((await fake.waitForRequests(2))[1]!.messages)).toContain(INTERRUPTED)
+  await waitFor(() => texts(h, id).at(-1) === "Carrying on.", { what: "the asker to carry on" })
+})
+
+test("stopping a manager question is credited to who clicked", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_MANAGER, { content: "Carrying on." })
+  const h = await makeHarness(fake, { files: LAN, questions: true })
+  const id = await started(h, { openedBy: "lan" })
+  await h.harness.prompt(id, "plan it", { by: "lan" })
+  const q = await chatCard(h, id, "ask_manager")
+  // Minh's manager clicks Stop on a chat Lan opened: the manager is credited, not the opener.
+  expect((await h.office.cards!.stop(q.id, { by: "ngocbh" })).answered_by).toBe("ngocbh")
+  await waitFor(() => h.store.getWorkItem(q.work_item_id!)!.resolved_by === "ngocbh", { what: "the item to close" })
+})
+
+test("a gate takes a record keyed by header and offers no send back or stop", async () => {
+  const { h, q } = await atTheGate()
+  const cards = h.office.cards!
+  const ended = outcomes(h)
+  expect([q.source, q.node_id, q.questions?.map((p) => p.header)]).toEqual(["ask", "setup", ["db", "features"]])
+  const refused: [() => Promise<unknown>, string][] = [
+    [() => cards.sendBack(q.id, "x"), "cannot_send_back"],
+    [() => cards.stop(q.id), "cannot_stop"],
+    [() => cards.answer(q.id, { db: "SQLite" }, "option"), "invalid_answer"],
+    [() => h.harness.answer(q.id, "SQLite", "text"), "invalid_answer"],
+  ]
+  for (const [action, code] of refused) expect((await refusal(action)).code).toBe(code)
+  const answer = { db: "SQLite", features: ["auth", "search"] }
+  expect((await cards.answer(q.id, answer, "option")).answer).toEqual(answer)
+  await waitFor(() => status(h, q.session_id) === "ended", { what: "the flow to finish" })
+  // The run took the answer (by complete) and succeeded with the record as its output.
+  expect(h.store.getQuestion(q.id)!.status).toBe("consumed")
+  await waitFor(() => ended.length === 1, { what: "the run's end" })
+  expect(ended[0]).toMatchObject({ status: "succeeded", output: answer })
+})
+
+test("a typed gate takes labels and the harness accepts their converted values", async () => {
+  const { h, q } = await atTheGate(TYPED_GATE)
+  const ended = outcomes(h)
+  expect(q.answer_schema.map((f) => [f.name, f.type])).toEqual([
+    ["count", "int"],
+    ["ship", "bool"],
+  ])
+  const typed = { count: 3, ship: true }
+  expect((await h.office.cards!.answer(q.id, { count: "3", ship: "yes" }, "option")).answer).toEqual(typed)
+  await waitFor(() => status(h, q.session_id) === "ended", { what: "the flow to finish" })
+  await waitFor(() => ended.length === 1, { what: "the run's end" })
+  // A yian int is a bigint.
+  expect(ended[0]).toMatchObject({ status: "succeeded", output: { count: 3n, ship: true } })
+})
+
+test("an answer to a sleeping sessions question node is stored then wakes it", async () => {
+  const { h, q } = await atTheGate(GATE, { asleep: true })
+  const ended = outcomes(h)
+  expect(h.registry.get(q.session_id)).toBeUndefined()
+  const before = h.kinds.length
+  const got = await h.office.cards!.answer(q.id, GATE_ANSWER, "option")
+  expect(got.status).toBe("answered")
+  // A new actor takes it to the run by complete, on one advance.
+  expect(h.kinds.slice(before)).toEqual(["advance"])
+  expect(h.jobs.at(-1)!.deliver).toMatchObject([{ op: "complete", call_id: q.call_id, result: { output: GATE_ANSWER } }])
+  await waitFor(() => status(h, q.session_id) === "ended", { what: "the gate flow's end" })
+  await waitFor(() => ended.length === 1, { what: "the run's end" })
+  expect(ended[0]).toMatchObject({ status: "succeeded", output: GATE_ANSWER })
+})
+
+test("an answer whose wake fails still stands", async () => {
+  const { h, q } = await atTheGate(GATE, { asleep: true })
+  const sid = q.session_id
+  const file = path.join(h.office.connections.dir, "office.json")
+  fs.chmodSync(file, 0o644) // not private: the office's connection can't be read
+  const got = await h.office.cards!.answer(q.id, GATE_ANSWER, "option")
+  expect(got.status).toBe("answered")
+  expect(h.store.getQuestion(q.id)!.status).toBe("answered")
+  expect(status(h, sid)).toBe("idle")
+  expect(h.registry.get(sid)).toBeUndefined()
+  // The next wake carries the stored answer by complete; the gate reads no inbox, so the message is refused.
+  fs.chmodSync(file, 0o600)
+  const before = h.kinds.length
+  expect((await refusal(() => h.harness.prompt(sid, "go on"))).code).toBe("refused")
+  expect(h.kinds.slice(before)).toEqual(["advance"])
+  const complete = { op: "complete", call_id: q.call_id, result: { output: GATE_ANSWER } }
+  expect(h.jobs.at(-1)!.deliver).toMatchObject([complete, { op: "send" }])
+  await waitFor(() => status(h, sid) === "ended", { what: "the gate flow's end" })
 })

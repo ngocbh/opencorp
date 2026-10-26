@@ -5,6 +5,8 @@ import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { SessionActor } from "../../src/chat/session_actor.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import { newId } from "../../src/store/store.ts"
+import { session as storedSession } from "../store/helpers.ts"
 import { makeRegistry } from "../worker/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import {
@@ -15,6 +17,7 @@ import {
   fakeLlm,
   followWorkers,
   makeActor,
+  makeHarness,
   newSession,
   noWorkersLeft,
   reopen,
@@ -314,6 +317,49 @@ test("a wake never resumes a session whose finish is in flight", async () => {
   await waitFor(() => ended.length > 0, { what: "the session ended" })
   expect(ended).toEqual(["ended"])
   expect(status(o, sid)).toBe("ended")
+})
+
+test("a wake never resumes a session whose start is in flight", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "early reply" })
+  const h = await makeHarness(fake)
+  const held = h.hold()
+  const starting = h.harness.startSession("minh", h.folder)
+  await held.entered
+  // The session and its actor exist from the store write: the prompt queues on the actor behind the start.
+  const [stored] = h.store.listSessions()
+  const prompted = outcome(h.harness.prompt(stored!.id, "early"))
+  held.release()
+  await starting
+  expect(await prompted).toBe("queued")
+  await waitFor(() => texts(h, stored!.id).includes("early reply") && status(h, stored!.id) === "idle", {
+    what: "the reply",
+  })
+  expect(h.kinds).toEqual(["chat"])
+})
+
+test("a wake into a missing folder answers 422 and leaves the session idle", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const { id } = await h.harness.startSession("minh", h.folder)
+  await waitFor(() => status(h, id) === "idle", { what: "the first turn" })
+  await h.reopen()
+  const before = h.kinds.length
+  fs.rmSync(h.folder, { recursive: true })
+  expect(await outcome(h.harness.prompt(id, "hi"))).toBe("422 invalid_body")
+  expect(status(h, id)).toBe("idle")
+  expect(h.kinds.length).toBe(before)
+})
+
+test("a codex session is never woken as a composer one", async () => {
+  // This harness has no Codex sessions to hand it to.
+  const h = await makeHarness(await fakeLlm())
+  const codex = h.store.createSession(
+    storedSession({ harness: "codex", cwd: h.folder, repo_commit: await h.office.git.head() }),
+  )
+  h.store.addSessionRun(codex.id, newId())
+  expect(await outcome(h.harness.prompt(codex.id, "hi"))).toBe("409 not_live")
+  expect(h.kinds).toEqual([])
 })
 
 test("worker exit right after wake spawn is misread as stopping", async () => {
