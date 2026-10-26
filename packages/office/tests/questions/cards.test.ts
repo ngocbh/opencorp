@@ -4,16 +4,18 @@ import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
 import { iterRunRecords } from "@ngocbh/yian/run"
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import type { Scheduler } from "@ngocbh/yian/platform"
+import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { type Question, stamp } from "@opencorp/protocol"
 import { Hooks } from "../../src/chat/hooks.ts"
-import { HarnessError } from "../../src/chat/state.ts"
+import { HarnessError, notWaiting } from "../../src/chat/state.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { register } from "../../src/extensions/questions.ts"
 import type { AnswerKind, CardActor, Cards } from "../../src/questions/cards.ts"
-import { INTERRUPTED, SENT_BACK } from "../../src/questions/format.ts"
+import { CARRIED_NOTE, INTERRUPTED, SENT_BACK } from "../../src/questions/format.ts"
 import { FRAMING, firstMessage } from "../../src/questions/seed.ts"
 import { BACK_HINT, SEED_FILE } from "../../src/questions/side.ts"
+import { CARD_CLOSED } from "../../src/runs/outcomes.ts"
 import { InvalidTransition, type QuestionRecord, type Store } from "../../src/store/store.ts"
 import type { FakeLLM, ScriptedReply } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
@@ -471,10 +473,12 @@ function outcomes(h: Harness): (Frame | null)[] {
   return seen
 }
 
-/** A harness whose minh runs `gate` as his main flow, with the questions extension, and minh's session waiting at its
- *  card; with `asleep`, the harness is closed and a new one (not restored) has the session. */
-async function atTheGate(gate = GATE, { asleep = false } = {}) {
-  const h = await makeHarness(await fakeLlm(), { files: { ...GATE_FILES, "people/minh/gate.yaml": gate }, questions: true })
+/** A harness over `fake` whose minh runs `gate` as his main flow, with the side chat flow and the questions
+ *  extension, and minh's session waiting at its card; with `asleep`, the harness is closed and a new one (not
+ *  restored) has the session. */
+async function atTheGate(gate = GATE, { asleep = false, fake }: { asleep?: boolean; fake?: FakeLLM } = {}) {
+  const files = { ...SIDE_FILES, ...GATE_FILES, "people/minh/gate.yaml": gate }
+  const h = await makeHarness(fake ?? (await fakeLlm()), { files, questions: true })
   const { id } = await h.harness.startSession("minh", h.folder)
   const q = await chatCard(h, id, "ask")
   await waitFor(() => status(h, id) === "waiting", { what: "the session to wait at its card" })
@@ -738,6 +742,7 @@ test("chat about this opens a seeded side session and the answer carries it", as
   expect(result).toContain('The user chose "Back off" (option 2 of the 2 shown).')
   expect(result).toContain("why not fail fast?")
   expect(result).toContain("Each retry costs a call.")
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
   await waitFor(() => texts(h, sid).at(-1) === "Backing off.", { what: "the asker's reply" })
 })
 
@@ -750,9 +755,10 @@ test("send back needs a discussion and returns it undecided", async () => {
   const error = await refusal(() => cards.sendBack(q.id, ""))
   expect([error.status, error.code]).toEqual([422, "no_discussion"])
 
-  await chat(h, q, "what quota?", 1)
+  const side = await chat(h, q, "what quota?", 1)
   const answered = await cards.sendBack(q.id, "list the quotas as options")
   expect([answered.answer_kind, answered.discussion.at(-1)!.text]).toEqual(["sent_back", "list the quotas as options"])
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
   const result = contentOf(await messagesOf(fake, 3))
   expect(result).toContain(SENT_BACK)
   expect(result).toContain("It depends on the quota.")
@@ -790,11 +796,12 @@ test("stop is esc on the asking chat", async () => {
   fake.script(ASK, { content: "Because of the quota." })
   const h = await sideHarness(fake)
   const { sid, q } = await ask(h)
-  await chat(h, q, "why?", 1)
+  const side = await chat(h, q, "why?", 1)
   const stopped = await h.office.cards!.stop(q.id)
   expect([stopped.answer, stopped.answer_kind]).toEqual([INTERRUPTED, "interrupted"])
   expect(stopped.discussion.map((e) => e.text)).toEqual(["why?", "Because of the quota."])
   await waitFor(() => status(h, sid) === "idle", { what: "the asker to wait for the next message" })
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
 })
 
 const DECIDE: [string, (cards: Cards, q: QuestionRecord) => Promise<QuestionRecord>][] = [
@@ -965,4 +972,345 @@ test("each side chat run nests under the cards run with its opener as driver", a
   }
   // The first run finished at its end; the reopened one runs on.
   expect(ended.map((result) => [result?.run_id, result?.status])).toEqual([[runs[0]!.runId, "succeeded"]])
+})
+
+// --- side chats closing with their cards ----------------------------------------------------------
+
+/** The question `ASK` asks, waiting at most a second for its answer. */
+const ASK_TIMED: ScriptedReply = {
+  tool_calls: [
+    {
+      name: "ask_user",
+      arguments: { question: "Retry or back off?", options: ["Retry", "Back off"], timeout: "1s" },
+    },
+  ],
+}
+
+/** A scheduler on the real clock whose sleeps wait for the next `release()`, then sleep for real: a wake-at timer
+ *  fires only once the test lets it. */
+function heldTimers(): { scheduler: Scheduler; release: () => void } {
+  const held: (() => void)[] = []
+  const scheduler: Scheduler = {
+    now: () => Date.now(),
+    sleep: (ms, signal) =>
+      new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) return reject(signal.reason)
+        let timer: ReturnType<typeof setTimeout> | undefined
+        signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer)
+            reject(signal.reason)
+          },
+          { once: true },
+        )
+        // A margin past the sleep, so the timer's next read of the clock finds its deadline passed.
+        held.push(() => {
+          if (!signal?.aborted) timer = setTimeout(resolve, ms + 20)
+        })
+      }),
+  }
+  return { scheduler, release: () => held.splice(0).forEach((go) => go()) }
+}
+
+/** The kinds of run `runId`'s log records. */
+function recordKinds(h: Harness, runId: string): string[] {
+  const log = path.join(h.office.paths.runs, runId, "log.jsonl")
+  return fs.existsSync(log) ? [...iterRunRecords(log)].map((entry) => entry.kind) : []
+}
+
+/** The texts of question `id`'s discussion. */
+function discussed(h: Harness, id: string): string[] {
+  return h.store.getQuestion(id)!.discussion.map((e) => e.text)
+}
+
+/** End answering 409 `not_live`, as it does for a session stored live with no run to end. */
+function noLiveRun(h: Harness, before: (sid: string) => void = () => {}) {
+  return spyOn(h.harness, "end").mockImplementation(async (sid: string) => {
+    before(sid)
+    throw new HarnessError(409, "not_live", `session ${sid} has no live run`)
+  })
+}
+
+test("a question answered while its side chat starts ends it", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "OK." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const startRun = h.harness.startRun.bind(h.harness)
+  h.harness.startRun = async (sessionId) => {
+    const runId = await startRun(sessionId)
+    h.store.answerQuestion(q.id, "Retry", "option", null) // another client answered meanwhile
+    return runId
+  }
+  const error = await refusal(() => h.office.cards!.openSide(q.id, "why?"))
+  expect([error.status, error.code]).toEqual([409, "not_open"])
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
+  expect(texts(h, sideId, "user")).toEqual([])
+})
+
+test("a card answered after its side runs row commits ends the side chat once", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK)
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const ends: string[] = []
+  h.hooks.sessionEnded.push((session) => void ends.push(session.id))
+  const end = spyOn(h.harness, "end")
+  // The side's start holds at its worker's spawn: its run's row committed, inside its actor's queue.
+  const held = h.hold()
+  const opening = refusal(() => h.office.cards!.openSide(q.id, "why?"))
+  await held.entered
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  expect(h.store.runsOfSession(sideId)).toHaveLength(1)
+  h.store.answerQuestion(q.id, "Retry", "option", null) // another client answered meanwhile
+  await Bun.sleep(100)
+  // The close left the starting side chat to its open.
+  expect(end).not.toHaveBeenCalled()
+  held.release()
+  const error = await opening
+  expect([error.status, error.code]).toEqual([409, "not_open"])
+  await waitFor(() => status(h, sideId) === "ended" && h.registry.get(sideId) === undefined, {
+    what: "the side chat's end",
+  })
+  const rows = h.store.runsOfSession(sideId)
+  expect(rows.map((row) => row.runId)).toEqual(h.store.getSession(sideId)!.run_ids)
+  expect(rows.map((row) => row.endReason)).toEqual([null])
+  expect(end).toHaveBeenCalledTimes(1)
+  await Bun.sleep(100)
+  expect(ends.filter((id) => id === sideId)).toEqual([sideId])
+})
+
+test("an expired question hands its discussion to the next card", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_TIMED, { content: "Retries hide flakes." }, ASK, { content: "OK." })
+  const timers = heldTimers()
+  const h = await sideHarness(fake, { scheduler: timers.scheduler })
+  const cards = h.office.cards!
+  const { sid, q } = await ask(h)
+  const side = await chat(h, q, "why ask?", 1)
+  timers.release() // its call times out, and the agent asks again
+  await waitFor(() => h.store.getQuestion(q.id)!.status === "stale", { what: "the old question to expire" })
+  const q2 = await waitFor(() => h.store.listQuestions({ sessionId: sid, status: "open", source: "ask_user" })[0], {
+    what: "the new question",
+  })
+  await waitFor(() => h.store.getQuestion(q2.id)!.carried_from === q.id, { what: "the carry-over" })
+  await waitFor(() => status(h, side.id) === "ended", { what: "the old side session to end" })
+  expect(discussed(h, q.id)).toEqual(["why ask?", "Retries hide flakes."])
+
+  await cards.answer(q2.id, "Retry", "option")
+  const result = contentOf(await messagesOf(fake, 4))
+  expect(result).toContain(CARRIED_NOTE)
+  expect(result).toContain("Retries hide flakes.")
+})
+
+test("a dismissed carry over stays out of the answer", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_TIMED, { content: "Retries hide flakes." }, ASK, { content: "OK." })
+  const timers = heldTimers()
+  const h = await sideHarness(fake, { scheduler: timers.scheduler })
+  const cards = h.office.cards!
+  const { sid, q } = await ask(h)
+  await chat(h, q, "why ask?", 1)
+  timers.release()
+  const carried = () =>
+    h.store.listQuestions({ sessionId: sid, status: "open", source: "ask_user" }).find((c) => c.carried_from)
+  const q2 = await waitFor(carried, { what: "the carried card" })
+  expect(cards.dismissCarried(q2.id).carried_from).toBeNull()
+  await cards.answer(q2.id, "Retry", "option")
+  expect(contentOf(await messagesOf(fake, 4))).not.toContain(CARRIED_NOTE)
+})
+
+test("a session that fails for good leaves a stale card with its discussion", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_TIMED, { content: "Because." }, ASK_TIMED)
+  const timers = heldTimers()
+  const h = await sideHarness(fake, { scheduler: timers.scheduler })
+  const { sid, q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  timers.release()
+  const q2 = await waitFor(() => h.store.listQuestions({ sessionId: sid, status: "open", source: "ask_user" })[0], {
+    what: "q2",
+  })
+  await waitFor(
+    () => status(h, side.id) === "ended" && status(h, sid) === "waiting" && h.registry.get(sid) === undefined,
+    { what: "the asker to wait at q2" },
+  )
+  // The wake at q2's deadline and its retry both die: the session fails for good.
+  const kill = (worker: { pgid: number }) => process.kill(-worker.pgid, "SIGKILL")
+  h.afterSpawn(kill)
+  h.afterSpawn(kill)
+  timers.release()
+  await waitFor(() => status(h, sid) === "failed", { what: "the failure" })
+  await waitFor(() => h.store.getQuestion(q2.id)!.status === "stale", { what: "the open card to expire" })
+  expect(discussed(h, q.id)).toEqual(["why?", "Because."])
+  expect(status(h, side.id)).toBe("ended")
+})
+
+test("the start sweep expires cards of dead sessions and ends their side chats", async () => {
+  const h = await sideHarness(await fakeLlm())
+  const dead = h.store.createSession(session({ status: "failed", cwd: h.folder }))
+  const q = h.store.addQuestion(question(dead.id))
+  const orphan = h.store.createSession(session({ kind: "side", status: "idle", question_id: q.id, cwd: h.folder }))
+  h.store.updateQuestion(q.id, { side_session_id: orphan.id })
+  h.office.cards!.sweep()
+  expect(h.store.getQuestion(q.id)!.status).toBe("stale")
+  await waitFor(() => status(h, orphan.id) === "ended", { what: "the orphaned side session to end" })
+  expect(h.store.getQuestion(q.id)!.status).toBe("stale")
+  // It has no run, so End can't reach it.
+  expect(h.logs).toContain(`side session ${orphan.id} has no live run to end`)
+})
+
+test("a side chat stored starting at the sweep ends at once", async () => {
+  const h = await sideHarness(await fakeLlm())
+  const asker = h.store.createSession(session({ cwd: h.folder }))
+  const q = h.store.addQuestion(question(asker.id))
+  const side = h.store.createSession(session({ kind: "side", status: "starting", question_id: q.id, cwd: h.folder }))
+  h.store.updateQuestion(q.id, { side_session_id: side.id })
+  const end = spyOn(h.harness, "end")
+  h.office.cards!.sweep()
+  expect(status(h, side.id)).toBe("ended")
+  expect(end).not.toHaveBeenCalled()
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+})
+
+test("a side chat resumes after an office restart", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Postgres scales." }, { content: "SQLite is simpler." })
+  const { h, q } = await atTheGate(GATE, { fake })
+  const side = await chat(h, q, "why Postgres?", 1)
+  await h.reopen()
+  expect(status(h, side.id)).toBe("idle") // left for the next office
+
+  await h.harness.restore() // the harness's own start, then the extension's sweep
+  h.office.cards!.sweep()
+  // Asleep: the next message wakes it.
+  expect([status(h, side.id), h.registry.get(side.id)]).toEqual(["idle", undefined])
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+  await chat(h, q, "and SQLite?", 2)
+  expect(await lastUser(fake, 2)).toBe("and SQLite?")
+  expect(await framings(fake, 2)).toBe(1)
+  const all = ["why Postgres?", "Postgres scales.", "and SQLite?", "SQLite is simpler."]
+  await waitFor(() => JSON.stringify(discussed(h, q.id)) === JSON.stringify(all), { what: "the discussion" })
+})
+
+test("a restored or woken side chat keeps the cards run as its parent", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Postgres scales." }, { content: "SQLite is simpler." }, { content: "Either." })
+  const { h, q } = await atTheGate(GATE, { fake })
+  const side = await chat(h, q, "why Postgres?", 1)
+  await h.reopen()
+  await chat(h, q, "and SQLite?", 2) // woken: an advance of its recorded run
+  await h.harness.end(side.id)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  await chat(h, q, "which then?", 3) // reopened: a fresh run
+  const parent = { run_id: q.run_id, node: q.node_id }
+  const jobs = h.jobs.filter((job) => job.session_id === side.id && job.advance !== false)
+  const chats = jobs.filter((job) => job.kind === "chat")
+  expect(chats.map((job) => job.parent)).toEqual([parent, parent])
+  const runs = h.store.getSession(side.id)!.run_ids
+  expect(chats.map((job) => job.run_id)).toEqual(runs)
+  // The woken advance resumes the first run's log, which records its parent.
+  const woken = jobs.filter((job) => job.kind === "advance" && job.run_id === runs[0])
+  expect(woken.length).toBeGreaterThan(0)
+  for (const job of woken) expect(job.log).toBe(chats[0]!.log)
+  for (const job of chats) {
+    const [started] = iterRunRecords(job.log, { payloads: true })
+    expect(started!.kind).toBe("run_started")
+    const record = started!.envelope.record as unknown as { parent: unknown }
+    expect(record.parent).toEqual({ runId: q.run_id, node: q.node_id })
+  }
+})
+
+test("a side session whose wake for its end fails stays failed", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Postgres scales." })
+  const { h, q } = await atTheGate(GATE, { fake })
+  const side = await chat(h, q, "why Postgres?", 1)
+  await h.reopen() // not restored: the side session sleeps
+  // Not private: its wake can't read the office's connection.
+  fs.chmodSync(path.join(h.office.connections.dir, "office.json"), 0o644)
+  await h.office.cards!.answer(q.id, GATE_ANSWER, "option")
+  await waitFor(() => status(h, side.id) === "failed", { what: "the failed end" })
+  await Bun.sleep(300)
+  expect(status(h, side.id)).toBe("failed") // not relabelled ended
+})
+
+test("a card that closes while its side chat isnt running interrupts the side run", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  noLiveRun(h)
+  h.store.answerQuestion(q.id, "Retry", "option", null)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side chat's end" })
+  const [row, ...rest] = h.store.runsOfSession(side.id)
+  expect(rest).toEqual([])
+  expect(row!.endReason).toBe(CARD_CLOSED)
+  expect(CARD_CLOSED).toBe("its card closed while it wasn't running")
+  await waitFor(() => recordKinds(h, row!.runId).includes("run_cancelled"), { what: "the side run's cancel" })
+  expect(h.logs).toContain(`side session ${side.id} has no live run to end`)
+})
+
+test("a card that closes as its side chat registers leaves the side run alone", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  // Its 409 came just before a start stored the session starting again.
+  const end = noLiveRun(h, (sid) => void h.store.updateSession(sid, notWaiting("starting")))
+  const abandon = spyOn(h.harness, "abandon")
+  h.store.answerQuestion(q.id, "Retry", "option", null)
+  await h.office.cards!.close()
+  expect(end).toHaveBeenCalledTimes(1)
+  expect(abandon).not.toHaveBeenCalled()
+  const [row] = h.store.runsOfSession(side.id)
+  expect([status(h, side.id), row!.endReason]).toEqual(["starting", null])
+  expect(h.logs.filter((line) => line.includes("no live run to end"))).toEqual([])
+})
+
+test("a closed cards side chat and its runs outcome commit together", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  noLiveRun(h)
+  const endRun = h.store.endRun.bind(h.store)
+  spyOn(h.store, "endRun").mockImplementation((runId: string, reason: string, at?: string) => {
+    endRun(runId, reason, at)
+    throw new Error("disk full")
+  })
+  h.store.answerQuestion(q.id, "Retry", "option", null)
+  await h.office.cards!.close()
+  const [row] = h.store.runsOfSession(side.id)
+  expect([status(h, side.id), row!.endReason]).toEqual(["idle", null])
+  expect(h.logs).toContain(`session ${side.id}: can't store the end (Error)`)
+  expect(h.logs.filter((line) => line.includes("disk full"))).toEqual([])
+})
+
+test("a card that closes while its side chat finishes leaves the run finished", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  const ended = outcomes(h)
+  // Inside the side run's own finish, before its end is stored, the card closes.
+  h.hooks.endStatus.push((session) => {
+    if (session.id === side.id) h.store.answerQuestion(q.id, "Retry", "option", null)
+    return null
+  })
+  const abandon = spyOn(h.harness, "abandon")
+  await h.harness.end(side.id) // the exit: the side run finishes on its own
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side chat's end" })
+  await h.office.cards!.close()
+  expect(abandon).not.toHaveBeenCalled()
+  const [row] = h.store.runsOfSession(side.id)
+  expect(row!.endReason).toBeNull()
+  await waitFor(() => ended.length === 1, { what: "the run's end" })
+  expect(ended[0]).toMatchObject({ status: "succeeded" })
 })

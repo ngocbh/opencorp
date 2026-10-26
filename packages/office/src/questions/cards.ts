@@ -4,12 +4,14 @@ import { isDeepStrictEqual } from "node:util"
 import { CompanyDefaults, OFFICE, Session, now } from "@opencorp/protocol"
 import type { Hooks } from "../chat/hooks.ts"
 import type { RunSpec } from "../chat/run_spec.ts"
-import { HarnessError, LIVE, notWaiting } from "../chat/state.ts"
+import { HarnessError, LIVE, SETTLED, notWaiting } from "../chat/state.ts"
 import type { Transcript } from "../chat/transcript.ts"
 import { loadRepo } from "../company/loader.ts"
 import type { Office } from "../daemon/office.ts"
 import { strip } from "../perm/redact.ts"
+import { CARD_CLOSED } from "../runs/outcomes.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store, newId } from "../store/store.ts"
+import { errorName } from "../worker/rpc.ts"
 import type { Answers } from "./ask.ts"
 import { InvalidAnswer, checkAnswer } from "./checker.ts"
 import { INTERRUPTED } from "./format.ts"
@@ -53,6 +55,8 @@ export interface SideActor extends CardActor {
   end(sessionId: string): Promise<void>
   /** Ends live session `sessionId` with its run's office end reason `why`, when End can't reach it. */
   abandon(sessionId: string, why: string): Promise<void>
+  /** Where the side chats' warnings go. */
+  readonly log: (line: string) => void
 }
 
 /** `actor` as a `SideActor`, or undefined when it can't run side chats. */
@@ -61,7 +65,7 @@ function sideActor(actor: CardActor): SideActor | undefined {
   const can =
     a.transcript !== undefined &&
     a.answers !== undefined &&
-    [a.spec, a.startRun, a.prompt, a.end, a.abandon].every((fn) => typeof fn === "function")
+    [a.spec, a.startRun, a.prompt, a.end, a.abandon, a.log].every((fn) => typeof fn === "function")
   return can ? (actor as SideActor) : undefined
 }
 
@@ -73,7 +77,8 @@ const HARNESS_ONLY_ANSWER = "a Codex card takes only an answer; press Esc in the
  *
  * A side chat is a `kind: side` session of the person who asked, in the asker's folder at the asker's pinned
  * commit. Its messages get the seed (kept in its session dir, not on the session) before them until a reply
- * finishes. Its discussion is copied onto the question each time its worker exits and before each answer.
+ * finishes. Its discussion is copied onto the question each time its worker exits and before each answer. It ends
+ * when its question leaves `open`.
  */
 export class Cards {
   readonly office: Office
@@ -85,11 +90,21 @@ export class Cards {
   /** Side chat opens, one at a time, so a question gets one side session. Its own queue: an open waits on the
    *  harness, which a copy must not wait behind. */
   #sides: Promise<unknown> = Promise.resolve()
+  /** Side chat ends, one at a time. Its own queue: an end waits on the harness, which a send-back or an open may be
+   *  waiting on too. */
+  #closing: Promise<unknown> = Promise.resolve()
+  readonly #unlisten: () => void
 
   constructor(office: Office, actor: CardActor) {
     this.office = office
     this.actor = actor
     this.store = office.store
+    // A store listener must not wait: the end goes on the closing queue.
+    this.#unlisten = this.store.addListener((event) => {
+      if (event.type !== "question.updated") return
+      const question = event.data as unknown as QuestionRecord
+      if (question.side_session_id && question.status !== "open") this.#close(question.side_session_id, question)
+    })
   }
 
   /** Answer a card as `by`: check and convert the answer, then answer it through the actor. */
@@ -212,9 +227,11 @@ export class Cards {
     return this.store.updateQuestion(question.id, { discussion: entries })
   }
 
-  /** Waits for queued card work (send-backs, discussion copies and side chat opens) to finish. */
+  /** Stops reacting to question changes, and waits for queued card work (send-backs, discussion copies, side chat
+   *  opens and ends) to finish. */
   async close(): Promise<void> {
-    await Promise.all([this.#discussion, this.#sides])
+    this.#unlisten()
+    await Promise.all([this.#discussion, this.#sides, this.#closing])
   }
 
   /** `answerCheck`: refuse an answer that doesn't fit its card. */
@@ -286,11 +303,24 @@ export class Cards {
     }
   }
 
-  /** At start, after the actor resumed what it could: expire open questions of sessions with no live run. */
+  /**
+   * At start, after the actor resumed what it could: expire open questions of sessions with no live run, and end
+   * side sessions whose question is closed. A side session still `starting` is ended at once: no `openSide` runs at
+   * start, so an office stop came between its reopen and its start, and no run of it is live.
+   */
   sweep(): void {
     for (const q of this.store.listQuestions({ status: "open" })) {
       const session = this.store.getSession(q.session_id)
       if (session !== undefined && !LIVE.includes(session.status)) this.ended(session)
+    }
+    for (const side of this.store.listSessions({ kind: "side", status: [...SETTLED] })) {
+      const question = side.question_id ? this.store.getQuestion(side.question_id) : undefined
+      if (side.status === "starting") {
+        if (question?.status === "stale") this.snapshot(question)
+        this.ended(this.store.updateSession(side.id, notWaiting("ended")))
+      } else if (question === undefined || question.status !== "open") {
+        this.#close(side.id, question)
+      }
     }
   }
 
@@ -300,6 +330,49 @@ export class Cards {
     const run = this.#discussion.then(() => body())
     this.#discussion = run.catch(() => undefined)
     return run
+  }
+
+  /** Ends side session `sideId` of `question` (undefined when it is gone) on the closing queue; an error that isn't
+   *  the harness's refusal is logged by its type. */
+  #close(sideId: string, question: QuestionRecord | undefined): void {
+    const actor = sideActor(this.actor)
+    if (actor === undefined) return
+    this.#closing = this.#closing.then(() =>
+      this.#closeSide(actor, sideId, question).catch((error) => {
+        actor.log(`side session ${sideId} can't be ended (${errorName(error)})`)
+      }),
+    )
+  }
+
+  /**
+   * Ends side session `sideId` because `question` closed: an expired card keeps its discussion; End reaches a live
+   * run, and when it can't, the session ends with its run's end reason `CARD_CLOSED`. A session `starting` is left
+   * alone: `openSide` checks the question after its start and ends it itself (and End on it would make an actor
+   * that takes its earlier, finished run as current).
+   */
+  async #closeSide(actor: SideActor, sideId: string, question: QuestionRecord | undefined): Promise<void> {
+    if (question?.status === "stale") {
+      const current = this.store.getQuestion(question.id)
+      if (current !== undefined) this.snapshot(current)
+    }
+    const side = this.store.getSession(sideId)
+    if (!isLive(side) || side!.status === "starting") return
+    try {
+      await actor.end(sideId)
+    } catch (error) {
+      if (!(error instanceof HarnessError)) throw error
+      // A stopping office leaves it to the next start's sweep; a failed wake for the end has failed it; a run that
+      // finished on its own stored its end; a start still running checks the question itself.
+      const current = this.store.getSession(sideId)
+      if (error.code === "stopping" || !isLive(current) || current!.status === "starting") return
+      actor.log(`side session ${sideId} has no live run to end`)
+      try {
+        await actor.abandon(sideId, CARD_CLOSED)
+      } catch (failure) {
+        // It ended or stopped meanwhile.
+        if (!(failure instanceof HarnessError)) throw failure
+      }
+    }
   }
 
   /** Runs `body` on the side chat queue, after every body queued before it, failed or not. */
