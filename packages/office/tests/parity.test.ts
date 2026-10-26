@@ -9,9 +9,9 @@ const HERE = path.join(ROOT, "packages/office/tests")
 const PY_PREFIX = "packages/corp_office/tests/"
 const NONE = "—"
 const HEADER = "python\tstatus\tts\treason\titem"
-const STATUSES = new Set(["open", "ported", "changed", "dropped", "deferred: learning", "new"])
+const STATUSES = new Set(["open", "ported", "changed", "dropped", "deferred: learning", "deferred: yian", "new"])
 const FILE_STATUSES = new Set(["open", "ported", "dropped", "deferred: learning"])
-const ID_STATUSES = new Set(["changed", "dropped", "deferred: learning"])
+const ID_STATUSES = new Set(["changed", "dropped", "deferred: learning", "deferred: yian"])
 const ITEM = /^(?:O[0-5][ab]?-\d+[abL]?|Y\d[a-c]?)$/
 // The snapshot is of a frozen tree, so a change to these counts is on purpose.
 const PYTHON_IDS = 3513
@@ -122,6 +122,8 @@ test("every Python id is covered", () => {
   expect(new Set(ids.map(fileOf)).size).toBe(PYTHON_FILES)
   const rows = new Set(ledger().map((row) => row.python))
   expect(ids.filter((id) => !rows.has(id) && !rows.has(baseOf(id)) && !rows.has(fileOf(id)))).toEqual([])
+  // One row per Python test file, even when id rows cover all of its tests.
+  expect([...new Set(ids.map(fileOf))].filter((file) => !rows.has(file))).toEqual([])
 })
 
 test("every row is true", () => {
@@ -257,7 +259,8 @@ test("every row is true", () => {
   expect(problems).toEqual([])
 })
 
-// Turned on when the port closes: then every Python test is ported, changed, dropped or deferred.
-test.skip("no row is open", () => {
+// The closing check: every Python test is ported, changed, dropped or deferred
+// (`deferred: learning` for D32, `deferred: yian` for the D37 gap).
+test("no row is open", () => {
   expect(ledger().filter((row) => row.status === "open").map((row) => `line ${row.line}: ${row.python}`)).toEqual([])
 })
