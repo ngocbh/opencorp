@@ -796,15 +796,28 @@ export function lineEvent(bytes: Buffer, seq: number): RunEvent | null {
 
 /**
  * The records of the log `path` from seq `from` through `to` (to its last complete line when null), each as
- * `lineEvent` maps it; a null, then nothing more, at a line that doesn't read as its seq. The file is opened on the
- * first pull and closed when the generator ends or is returned.
+ * `lineEvent` maps it; a null, then nothing more, at a line that doesn't read as its seq. With `index`, the read starts
+ * at its last sparse entry at or before `from` rather than at byte 0, and still reads past what it indexed; a file
+ * rewritten since then yields that null too, at the first line that isn't its seq or when it is now shorter than that
+ * entry. The file is opened on the first pull and closed when the generator ends or is returned.
  */
-export function* logEvents(path: string, from: number, to: number | null): Generator<RunEvent | null> {
+export function* logEvents(
+  path: string,
+  from: number,
+  to: number | null,
+  index: Index | null = null,
+): Generator<RunEvent | null> {
   if (to !== null && from > to) return
+  const [base, start] = index === null ? [0, 0] : window(index, from)
   const fd = fs.openSync(path, "r")
   try {
+    const size = fs.fstatSync(fd).size
+    if (start > size) {
+      yield null
+      return
+    }
     let seq = from
-    for (const line of lines(fd, 0, fs.fstatSync(fd).size, BIG_LINE, from)) {
+    for (const line of lines(fd, start, size, BIG_LINE, from - base)) {
       const event = line.bytes === null ? stub(line.head, seq, line.size) : decode(line.bytes, seq, false)
       yield event
       seq += 1

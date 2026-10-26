@@ -1045,6 +1045,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a ping keeps an idle live stream open	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a rebuilding view is joined again	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a reconnect after the views seq skips the records it has	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a reconnect reads the log from the run index	design §2.6 (P7): a reconnect starts from the index's sparse table, not byte 0	O4b-7
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a run no worker feeds streams its log then run end	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a stream waiting on a rebuild sends pings	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::run changed publishes run updated at once and coalesces the next one	§5.1: run.updated from the status rule and memory, through Office.runChanged and the run notifier (no outbox, O1-3)	O4b-7
@@ -1362,6 +1363,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/reader.test.ts::a waiting node stays open through a resume and a woken one runs on	yian #1057, #1064: a waiting node is non-terminal and a resume doesn't retry it	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::an unterminated tail over the line cap makes the log unreadable	security review: a line over the cap is refused before it is read whole	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::log events read records from a seq through a seq	design §2.6 (P7): the live route maps records as the run page does	O4b-3
+—	new	packages/office/tests/runs/reader.test.ts::log events start from an index at the seq asked for	design §2.6 (P7): a reconnect starts from the index's sparse table, not byte 0	O4b-7
 —	new	packages/office/tests/runs/reader.test.ts::log events yield null at a line that is not its seq and stop	design §2.6 (P7): the live route maps records as the run page does	O4b-3
 —	new	packages/office/tests/runs/records.test.ts::a cancelled run shows interrupted with the office reason	§5.1 status mapping	O4b-6
 —	new	packages/office/tests/runs/records.test.ts::a crashed running or missing index row asks the log and else has no outcome	§5.1 status mapping; rules 4 and 5	O4b-6

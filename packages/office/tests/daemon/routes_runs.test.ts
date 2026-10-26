@@ -8,7 +8,7 @@ import { expect, type Mock, onTestFinished, setDefaultTimeout, spyOn, test } fro
 import type { RunIndexRow } from "@ngocbh/yian/run"
 import type { LiveJoin, LiveRelay, LiveWorker } from "../../src/daemon/live.ts"
 import type { Office } from "../../src/daemon/office.ts"
-import { HUGE_LINE, readEvents, refresh } from "../../src/runs/reader.ts"
+import { HUGE_LINE, type Index, readEvents, refresh } from "../../src/runs/reader.ts"
 import { Live, type LiveRun } from "../../src/runs/records.ts"
 import { WORKER_STOPPED } from "../../src/runs/outcomes.ts"
 import { RunLogs } from "../../src/runs/service.ts"
@@ -590,6 +590,20 @@ test("the live route skips records up to after", async () => {
     ["comment", null, "connected"],
     ["run_end", null, {}],
   ])
+})
+
+test("a reconnect reads the log from the run index", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const { runId, log } = storedRun(office, { turns: 10 })
+  const logIndex = spyOn(office.runs, "logIndex")
+  expect(await all(await open(sock, `/runs/${runId}/live?after=70`))).toEqual(await expected(log, 70))
+  expect(logIndex.mock.calls).toEqual([[log]])
+  const index = await (logIndex.mock.results[0]!.value as Promise<Index | null>)
+  expect(index!.sparse.map(([seq]) => seq)).toEqual([0, 64])
+  // A stream from the start reads from byte 0 anyway: it builds no index.
+  expect(await all(await open(sock, `/runs/${runId}/live`))).toEqual(await expected(log, null))
+  expect(logIndex).toHaveBeenCalledTimes(1)
 })
 
 test("a live stream sends the log to the joins seq then the calls then frames", async () => {

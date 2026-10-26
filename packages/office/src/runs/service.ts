@@ -276,6 +276,16 @@ export class RunLogs {
     return found
   }
 
+  /** The index of the log `file`, brought up to date, for a live stream to start near a seq; null when it can't be
+   *  read (the stream then reads from byte 0). */
+  async logIndex(file: string): Promise<Index | null> {
+    try {
+      return await this.#reader.index(file)
+    } catch {
+      return null
+    }
+  }
+
   /** The whole log as it is now, as stored. It needs no index, so a log this office can't read still downloads.
    *  The log is opened before this resolves, so one removed meanwhile is NoLog, not a cut-off download. */
   async log(runId: string): Promise<Readable> {

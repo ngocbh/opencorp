@@ -227,11 +227,14 @@ export async function* liveStream(
   if (!open()) return
   yield ": connected\n\n"
   let last = after
+  // A reconnect starts near `after` from the run's index (the run page has usually built it), not by skipping lines
+  // from byte 0 in one synchronous read; a stream from the start reads from byte 0 anyway.
+  const index = after >= 0 ? await office.runs.logIndex(log) : null
   /** Record frames for the log's records after `last` through `to` (to its end when null); whether the stream goes
    *  on: false once it is closed or has sent `reset`. */
   async function* records(to: number | null): AsyncGenerator<string, boolean> {
     let sent = 0
-    for (const event of logEvents(log, last + 1, to)) {
+    for (const event of logEvents(log, last + 1, to, index)) {
       if (++sent % BATCH === 0) await new Promise((resolve) => setImmediate(resolve))
       if (!open()) return false
       if (event === null) {
