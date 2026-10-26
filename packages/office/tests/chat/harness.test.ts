@@ -683,6 +683,26 @@ test("a codex session can not continue without the codex sessions", async () => 
   ])
 })
 
+test("restore restores the chat sessions then the codex sessions", async () => {
+  const h = await makeHarness(await fakeLlm(), { codex: true })
+  const s = await start(h)
+  await asleep(h, s.id)
+  // Neither a Codex session nor an ended chat is a chat session's actor's to restore.
+  h.store.createSession(session({ harness: "codex", harness_session_id: "thr_1", status: "idle" }))
+  await stored(h, { status: "ended" })
+  const order: string[] = []
+  const restore = SessionActor.prototype.restore
+  const actors = spyOn(SessionActor.prototype, "restore").mockImplementation(function (this: SessionActor) {
+    order.push(this.sessionId)
+    return restore.call(this)
+  })
+  onTestFinished(() => actors.mockRestore())
+  spyOn(h.codex!.sessions, "restore").mockImplementation(async () => void order.push("codex"))
+  await h.harness.restore()
+  expect(order).toEqual([s.id, "codex"])
+  expect([status(h, s.id), h.registry.get(s.id)]).toEqual(["idle", undefined])
+})
+
 test.each(["setCostCap", "setModel"] as const)(
   "a codex sessions cost cap and model are not supported without the codex sessions [%s]",
   async (call) => {

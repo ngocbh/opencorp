@@ -4,7 +4,14 @@ import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { HarnessError } from "../../src/chat/state.ts"
-import { COULDNT_RESUME, COULDNT_START, NEW_MODEL, WORKER_REPLACED, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
+import {
+  COULDNT_RESUME,
+  COULDNT_START,
+  NEW_MODEL,
+  OFFICE_REPLACED,
+  WORKER_REPLACED,
+  WORKER_STOPPED,
+} from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { newId, type RunRow } from "../../src/store/store.ts"
 import { type FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
@@ -14,12 +21,14 @@ import { session as storedSession } from "../store/helpers.ts"
 import {
   errors,
   fakeLlm,
+  type HarnessOffice,
   LAN,
   makeHarness,
   noWorkersLeft,
   scriptedWorker,
   status,
   texts,
+  unreadAtRestart,
 } from "../chat/helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -28,17 +37,15 @@ afterAll(noWorkersLeft)
 // Shaped like an error type's name, so only redaction keeps it out of a log line's cause.
 const KEY = "sk_outcome_key_0123456789"
 
-type Harness = Awaited<ReturnType<typeof makeHarness>>
-
 /** Starts minh's chat and waits for its first turn; returns its id. */
-async function start(h: Harness): Promise<string> {
+async function start(h: HarnessOffice): Promise<string> {
   const s = await h.harness.startSession("minh", h.folder)
   await waitFor(() => status(h, s.id) === "idle", { what: "the first turn" })
   return s.id
 }
 
 /** The rows of session `sid`'s runs, in order; a run with no row is left out. */
-function rows(h: Harness, sid: string): RunRow[] {
+function rows(h: HarnessOffice, sid: string): RunRow[] {
   return h.store.getSession(sid)!.run_ids.flatMap((runId) => h.store.getRun(runId) ?? [])
 }
 
@@ -56,12 +63,12 @@ async function rejection(promise: Promise<unknown>): Promise<HarnessError> {
 }
 
 /** Waits until session `sid` has no worker: between turns a chat run has none. */
-async function asleep(h: Harness, sid: string): Promise<void> {
+async function asleep(h: HarnessOffice, sid: string): Promise<void> {
   await waitFor(() => h.registry.get(sid) === undefined, { what: "the worker to exit" })
 }
 
 /** Gives the office connection the model key `key`. */
-async function rekey(h: Harness, key: string): Promise<void> {
+async function rekey(h: HarnessOffice, key: string): Promise<void> {
   const file = path.join(h.office.connections.dir, "office.json")
   const provider = JSON.parse(fs.readFileSync(file, "utf8"))
   await writePrivate(file, JSON.stringify({ ...provider, llm_config: { ...provider.llm_config, api_key: key } }))
@@ -141,6 +148,26 @@ test("a second death fails the run with worker stopped", async () => {
   workers[1]!.handlers.exited(workers[1]!.worker, 1)
   await waitFor(() => status(h, s.id) === "failed", { what: "the failure" })
   expect(rows(h, s.id)).toMatchObject([{ endReason: WORKER_STOPPED }])
+})
+
+test("a session restore cant rebuild fails its run", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const sid = await start(h)
+  await unreadAtRestart(h, sid)
+  spyOn(h.harness, "spec").mockRejectedValue(new Error("the pin is gone"))
+  await h.harness.restore()
+  expect(status(h, sid)).toBe("failed")
+  expect(rows(h, sid)).toMatchObject([{ endReason: COULDNT_RESUME }])
+})
+
+test("a restore whose resume cant spawn fails its run with couldnt resume", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const sid = await start(h)
+  await unreadAtRestart(h, sid)
+  h.failNextSpawn()
+  await h.harness.restore()
+  expect(status(h, sid)).toBe("failed")
+  expect(rows(h, sid)).toMatchObject([{ endReason: COULDNT_RESUME }])
 })
 
 test("a wake for its end that fails fails the run with couldnt resume", async () => {
@@ -271,6 +298,60 @@ test("a crash resume on a new key says the worker stopped", async () => {
   const [old, fresh] = rows(h, sid)
   expect(old!.endReason).toBe(WORKER_REPLACED)
   expect(fresh!.replacesRunId).toBe(old!.runId)
+})
+
+test("a wake on a new key interrupts the old run because the office stopped", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Hi." })
+  const h = await keyed(fake)
+  const sid = await start(h)
+  await asleep(h, sid)
+  await h.reopen()
+  await rekey(h, "sk-another-key-0123456789")
+  // The idle session sleeps.
+  await h.harness.restore()
+  expect(h.registry.get(sid)).toBeUndefined()
+  // Its wake finds the key changed: a fresh run.
+  await h.harness.prompt(sid, "hi")
+  await waitFor(() => h.store.getSession(sid)!.run_ids.length === 2, { what: "the fresh run" })
+  const [old, fresh] = rows(h, sid)
+  expect(old!.endReason).toBe(OFFICE_REPLACED)
+  expect(fresh).toMatchObject({ replacesRunId: old!.runId, createdAt: old!.endedAt! })
+})
+
+test("a restore on a new key interrupts the old run because the office stopped", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "read it" })
+  const h = await keyed(fake)
+  const sid = await start(h)
+  await unreadAtRestart(h, sid)
+  await rekey(h, "sk-another-key-0123456789")
+  // Its run must advance, but the key changed: a fresh run.
+  await h.harness.restore()
+  await waitFor(() => h.store.getSession(sid)!.run_ids.length === 2, { what: "the fresh run" })
+  const [old, fresh] = rows(h, sid)
+  expect(old!.endReason).toBe(OFFICE_REPLACED)
+  expect(fresh!.replacesRunId).toBe(old!.runId)
+})
+
+test("a fresh run that never started couldnt start when the next wake replaces it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "b's reply" })
+  const h = await keyed(fake)
+  const sid = await start(h)
+  await asleep(h, sid)
+  await h.reopen()
+  // A fresh run.
+  await rekey(h, "sk-another-key-0123456789")
+  await h.harness.restore()
+  h.failNextSpawn()
+  // Its fresh run is recorded, then can't spawn, so it has no log.
+  await rejection(h.harness.prompt(sid, "a"))
+  await h.harness.prompt(sid, "b")
+  await waitFor(() => texts(h, sid).includes("b's reply") && status(h, sid) === "idle", { what: "the reply to b" })
+  const [a, b, c] = rows(h, sid)
+  expect([a!.endReason, b!.endReason, c!.endReason]).toEqual([OFFICE_REPLACED, COULDNT_START, null])
+  expect([b!.createdAt, c!.createdAt]).toEqual([a!.endedAt!, b!.endedAt!])
 })
 
 test("a fresh run after a run with no row is driven by the opener", async () => {

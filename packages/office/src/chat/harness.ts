@@ -366,8 +366,23 @@ export class ChatHarness implements SessionHarness {
     return new Live(runs)
   }
 
-  /** After an office restart: the Codex sessions restore theirs. */
+  /**
+   * At office start, after the run sweep: each live yian chat's actor restores its session from where yian's log
+   * says its run stands (`SessionActor.restore`), one at a time; then the Codex sessions restore theirs. An actor
+   * fails its own session when it can't restore it, so one session never stops another or the office's start: a
+   * throw (503 `stopping`) is logged by its type and the next session goes on. Stops once the harness is closed.
+   */
   async restore(): Promise<void> {
+    for (const session of this.store.listSessions({ status: [...LIVE] })) {
+      if (this.#closed) return
+      if (session.harness !== "composer") continue
+      try {
+        await this.#actor(session.id).restore()
+      } catch (error) {
+        this.log(`session ${session.id} can't be restored (${errorName(error)})`)
+      }
+    }
+    if (this.#closed) return
     await this.office.codex?.restore()
   }
 
