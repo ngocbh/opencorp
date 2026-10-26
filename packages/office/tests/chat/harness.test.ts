@@ -1,17 +1,45 @@
-/** The chat harness: a start, its run spec, what a start refuses, and how it hands Codex sessions to the Codex
- *  sessions (Python's `tests/chat/test_harness.py`). */
+/** The chat harness: a start, its run spec, what a start refuses, how it hands Codex sessions to the Codex sessions,
+ *  its stop, the cost cap and provider changes (Python's `tests/chat/test_harness.py`). */
 import fs from "node:fs"
 import path from "node:path"
-import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
-import { HarnessError } from "../../src/chat/state.ts"
+import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import type { Scheduler } from "@ngocbh/yian/platform"
+import { WorkItem, now } from "@opencorp/protocol"
+import { INTERRUPTED_CALL, SessionActor } from "../../src/chat/session_actor.ts"
+import { HarnessError, LIVE } from "../../src/chat/state.ts"
 import { MAIN_CHAT } from "../../src/chat/turns.ts"
-import type { SessionRecord } from "../../src/store/store.ts"
-import type { FakeLLM } from "../../src/testing/fake_llm.ts"
+import { writePrivate } from "../../src/secrets.ts"
+import { type SessionRecord, type WorkItemRecord, newId } from "../../src/store/store.ts"
+import { type FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import type { Frame } from "../../src/worker/channel.ts"
+import type { OfficeTool } from "../../src/worker/rpc.ts"
+import type { Worker } from "../../src/worker/spawn.ts"
 import { person } from "../company/helpers.ts"
+import { CEO } from "../daemon/helpers.ts"
 import { CODEX_PERSON, allGone } from "../harness/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
 import { question, session } from "../store/helpers.ts"
-import { ASK_MANAGER, ASK_USER, LAN, card, fakeLlm, makeHarness, noWorkersLeft, status, texts } from "./helpers.ts"
+import {
+  ASK_MANAGER,
+  ASK_USER,
+  ASKED,
+  EMPTY,
+  LAN,
+  PRICES,
+  PRICEY,
+  TAKE,
+  capGate,
+  card,
+  fakeLlm,
+  free,
+  makeHarness,
+  noWorkersLeft,
+  scriptedWorker,
+  state,
+  status,
+  texts,
+  waitingResult,
+} from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 afterAll(async () => {
@@ -666,4 +694,481 @@ test("close closes the workers even when the codex sessions fail to close", asyn
   expect(workers).toHaveBeenCalledTimes(1)
   // The test's end closes this harness again, which would only report the same rejection.
   spyOn(h.harness, "closeAll").mockResolvedValue()
+})
+
+// --- the stop -------------------------------------------------------------------------------
+
+/** Runs `fn` in place of `h`'s registry's next `closeAll`, which `fn` gets to call. */
+function duringClose(h: Harness, fn: (close: () => Promise<void>) => Promise<void>): void {
+  const close = h.registry.closeAll.bind(h.registry)
+  h.registry.closeAll = async (ms) => {
+    h.registry.closeAll = close
+    await fn(() => close(ms))
+  }
+}
+
+/** A worker request from a scripted worker's handlers: what it answers or rejects with. */
+function request(call: () => unknown): Promise<unknown> {
+  return Promise.resolve().then(call)
+}
+
+test("nothing the harness does touches the store after close all", async () => {
+  const h = await makeHarness(await fakeLlm(), { prices: PRICES })
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const exited: unknown[] = []
+  h.hooks.workerExited.push((...args) => void exited.push(args))
+  await h.harness.closeAll()
+  const stored = () =>
+    JSON.stringify([h.store.getSession(s.id), h.store.getRun(s.run_ids[0]!), h.store.listWorkItems()])
+  const before = stored()
+  const { worker, handlers } = workers[0]!
+  // A model call over the cap, then the worker's exit: each would write had the harness not stopped.
+  const usage = { input_tokens: 6, output_tokens: 0 }
+  handlers.event(worker, { type: "event", name: "ModelCallFinished", data: { model: "stub", usage } })
+  handlers.exited(worker, 1)
+  await Bun.sleep(50)
+  expect(stored()).toBe(before)
+  expect(exited).toEqual([])
+})
+
+test("close all refuses and cancels worker requests only once the channels are closed", async () => {
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  const toolbox: Record<string, OfficeTool> = {
+    slow: { description: "Waits.", parameters: EMPTY, call: () => gate.then(() => "late") },
+    quick: { description: "Answers.", parameters: EMPTY, call: () => "ok" },
+  }
+  const h = await makeHarness(await fakeLlm(), { groups: { toolbox } })
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const { worker, handlers } = workers[0]!
+  const call = (name: string, n: number) =>
+    request(() => handlers.toolCall(worker, "toolbox", name, {}, `${s.run_ids[0]}/c${n}`))
+  let answered: unknown = "unanswered"
+  const slow = call("slow", 1).then((result) => (answered = result))
+  const seen: unknown[] = []
+  duringClose(h, async (close) => {
+    // A request arriving before the workers' channels close is served; the office call in flight still runs.
+    seen.push(await call("quick", 2), answered)
+    await close()
+  })
+  let stopped = false
+  const stopping = h.harness.closeAll().then(() => (stopped = true))
+  expect(await slow).toBe(INTERRUPTED_CALL)
+  expect(seen).toEqual(["ok", "unanswered"])
+  await expect(call("quick", 3)).rejects.toThrow("the office is stopping")
+  // The cut call's body still runs, and the stop waits for it.
+  await Bun.sleep(50)
+  expect(stopped).toBe(false)
+  release()
+  await stopping
+})
+
+test("a stopping harness refuses new worker requests", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const { worker, handlers } = workers[0]!
+  await h.harness.closeAll()
+  const asked = request(() => handlers.askUser(worker, ASKED, `${s.run_ids[0]}/c1`))
+  await expect(asked).rejects.toThrow("the office is stopping")
+  const echoed = request(() => handlers.toolCall(worker, "toolbox", "fake__echo", { text: "x" }, `${s.run_ids[0]}/c2`))
+  await expect(echoed).rejects.toThrow("the office is stopping")
+  expect(h.store.listQuestions({ sessionId: s.id, source: "ask_user" })).toEqual([])
+})
+
+test("an office stop leaves its sessions live for the next office", async () => {
+  const fake = await fakeLlm()
+  const working = { content: "Working", tool_calls: [ECHO], hold: true }
+  fake.script(working, working, { content: "spare" })
+  const h = await makeHarness(fake)
+  const ended = endings(h)
+  const { id } = await start(h)
+  await h.harness.prompt(id, "hi")
+  await fake.waitForRequests(1)
+  process.kill(-h.registry.get(id)!.pgid, "SIGKILL")
+  // The first death gets its one retry, which resumes the reply.
+  await fake.waitForRequests(2)
+  expect(h.kinds).toEqual(["chat", "advance", "advance"])
+  await h.office.stop()
+  const s = h.store.getSession(id)!
+  expect(LIVE).toContain(s.status)
+  expect(h.store.getRun(s.run_ids.at(-1)!)?.endReason).toBeNull()
+  expect(ended).toEqual([])
+})
+
+test("a message the worker took as the stop began is answered with its seq", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const scripted = workers[0]!
+  const sent = h.harness.prompt(s.id, "hi")
+  await waitFor(() => scripted.deliveries.length === 1, { what: "the send" })
+  duringClose(h, async (close) => {
+    const id = scripted.deliveries[0]!.id
+    scripted.handlers.deliverReply(scripted.worker, { type: "deliver_reply", id, seq: 3 })
+    await close()
+  })
+  await h.harness.closeAll()
+  expect(["turn", "steer", "queued"]).toContain(await sent)
+})
+
+test("a wake at timer firing during the stop spawns nothing", async () => {
+  const start = Date.parse("2026-10-25T00:00:00.000Z")
+  const clock = { now: start }
+  const sleeps: (() => void)[] = []
+  const scheduler: Scheduler = {
+    now: () => clock.now,
+    sleep: (_ms, signal) =>
+      new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) return reject(signal.reason)
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+        sleeps.push(resolve)
+      }),
+  }
+  const h = await makeHarness(await fakeLlm(), { scheduler })
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const deadline = new Date(start + 3_600_000).toISOString()
+  const { worker, handlers } = workers[0]!
+  handlers.result(worker, waitingResult(s.run_ids[0]!, [{ ...TAKE, deadline }]))
+  handlers.exited(worker, 0)
+  await waitFor(() => sleeps.length === 1, { what: "the timer" })
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  duringClose(h, async (close) => {
+    await held
+    await close()
+  })
+  // The stop has begun, the registry's close is held: the deadline comes.
+  const stopping = h.harness.closeAll()
+  clock.now = Date.parse(deadline)
+  sleeps.at(-1)!()
+  await waitFor(() => h.logs.some((line) => line.includes("a worker can't start (RegistryClosed)")), {
+    what: "the wake refused",
+  })
+  release()
+  await stopping
+  expect(h.kinds).toEqual(["chat"])
+})
+
+test("a finished session leaves no actor for the stop", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const ended = endings(h)
+  const { id } = await start(h)
+  await h.harness.end(id)
+  await waitFor(() => ended.length === 1 && h.registry.get(id) === undefined, { what: "the end" })
+  const close = spyOn(SessionActor.prototype, "close")
+  onTestFinished(() => close.mockRestore())
+  await h.harness.closeAll()
+  expect(close).not.toHaveBeenCalled()
+})
+
+test("a start racing the stop stores nothing", async () => {
+  const h = await makeHarness(await fakeLlm())
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  let entered!: () => void
+  const opening = new Promise<void>((resolve) => (entered = resolve))
+  const commit = h.office.git.commitHandEdits.bind(h.office.git)
+  spyOn(h.office.git, "commitHandEdits").mockImplementation(async () => {
+    entered()
+    await held
+    return commit()
+  })
+  const started = rejection(h.harness.startSession("minh", h.folder))
+  await opening
+  const stopping = h.harness.closeAll()
+  release()
+  const error = await started
+  expect([error.status, error.code]).toEqual([503, "stopping"])
+  await stopping
+  expect(h.store.listSessions()).toEqual([])
+  expect(h.store.listWorkItems()).toEqual([])
+})
+
+// --- the cost cap ---------------------------------------------------------------------------
+
+/** `h`'s "raise the cost cap" work items, oldest first. */
+function capItems(h: Harness): WorkItemRecord[] {
+  return h.store
+    .listWorkItems()
+    .filter((item) => item.title.startsWith("Raise the cost cap"))
+    .sort((a, b) => (a.id < b.id ? -1 : 1))
+}
+
+/** Whether session `sid` is held at its cap with `cost` spent and no worker. */
+function atTheHold(h: Harness, sid: string, cost: number): boolean {
+  const s = h.store.getSession(sid)!
+  return s.cost === cost && s.status === "waiting" && s.capped && h.registry.get(sid) === undefined
+}
+
+/** The actor each session command runs on, by session id: `SessionActor.prototype.prompt`, spied. */
+function actorsOf(): Map<string, SessionActor> {
+  const seen = new Map<string, SessionActor>()
+  const prompt = SessionActor.prototype.prompt
+  const spy = spyOn(SessionActor.prototype, "prompt").mockImplementation(function (
+    this: SessionActor,
+    ...args: Parameters<SessionActor["prompt"]>
+  ) {
+    seen.set(this.sessionId, this)
+    return prompt.apply(this, args)
+  })
+  onTestFinished(() => spy.mockRestore())
+  return seen
+}
+
+/** A harness whose model costs $1 an input token, its `noop` tool answering once the cap stopped its worker. */
+async function cappedHarness(fake: FakeLLM) {
+  const gate = capGate()
+  const h = await makeHarness(fake, { prices: PRICES, groups: gate.groups })
+  return { h, gate }
+}
+
+test("the cost cap holds turns until raised", async () => {
+  const fake = await fakeLlm()
+  fake.script(PRICEY, free("after the raise"), free("spare"))
+  const { h, gate } = await cappedHarness(fake)
+  const { id } = await start(h)
+  gate.watch(h)
+  await h.harness.prompt(id, "hi")
+  await waitFor(() => atTheHold(h, id, 6) && capItems(h).length === 1, { what: "the stop at the cap" })
+  // The reply was stopped, not interrupted.
+  expect(gate.stops()).toBe(1)
+  expect(state(h, id)).toEqual({ status: "waiting", waiting_on: [CEO], capped: true })
+  expect(capItems(h)[0]!.assignee).toBe(CEO)
+  const before = h.jobs.length
+  expect(await h.harness.prompt(id, "held")).toBe("queued")
+  expect(h.jobs.slice(before)).toMatchObject([{ kind: "advance", advance: false, deliver: [{ op: "send" }] }])
+  const low = await rejection(h.harness.setCostCap(id, 6))
+  expect(low.code).toBe("cap_too_low")
+  await h.harness.setCostCap(id, 20)
+  await waitFor(() => same(texts(h, id).slice(-1), ["after the raise"]) && status(h, id) === "idle", {
+    what: "the held turn",
+  })
+  expect(await asked(fake, 2)).toContain("held")
+})
+
+test("raising the cap closes its work item and going over again opens one", async () => {
+  const fake = await fakeLlm()
+  fake.script(...[0, 1, 2].map((n) => ({ content: `reply ${n}`, usage: { prompt_tokens: 6, completion_tokens: 1 } })))
+  fake.script(free("spare"))
+  const h = await makeHarness(fake, { prices: PRICES })
+  const actors = actorsOf()
+  const { id, work_item_id: parent } = await start(h)
+  const statuses = () => capItems(h).map((item) => item.status)
+  for (const [n, cap] of [
+    [0, null],
+    [1, 7],
+    [2, 13],
+  ] as const) {
+    if (cap === null) await h.harness.prompt(id, "hi")
+    else {
+      // Held at the cap: sent, not advanced.
+      expect(await h.harness.prompt(id, `more ${n}`)).toBe("queued")
+      await h.harness.setCostCap(id, cap)
+      // Raising it closes the item.
+      expect(statuses()).toEqual(Array(n).fill("done"))
+    }
+    await waitFor(() => atTheHold(h, id, 6 * (n + 1)) && statuses().length === n + 1, { what: `charge ${n}` })
+    if (n < 2) {
+      // Over again: one open item, however often the cap check runs.
+      await actors.get(id)!.checkCap()
+      expect(statuses()).toEqual([...Array(n).fill("done"), "open"])
+    }
+  }
+  const items = capItems(h)
+  expect(items.map((item) => item.status)).toEqual(["done", "done", "open"])
+  expect(new Set(items.map((item) => item.parent_id))).toEqual(new Set([parent]))
+})
+
+test("a cap item belongs to one session even without a work item", async () => {
+  const h = await makeHarness(await fakeLlm(), { prices: PRICES })
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  h.store.updateSession(s.id, { work_item_id: null })
+  const t = now()
+  const other = h.store.createWorkItem(
+    WorkItem.parse({
+      id: newId(),
+      title: "Raise the cost cap of @someone's session",
+      kind: "task",
+      status: "open",
+      requester: "p-x",
+      parent_id: null,
+      summary: "Session s-other reached its cap.",
+      created_at: t,
+      updated_at: t,
+    }),
+  )
+  // A model call over the cap: the session opens its own item, not s-other's.
+  const { worker, handlers } = workers[0]!
+  const usage = { input_tokens: 6, output_tokens: 0 }
+  handlers.event(worker, { type: "event", name: "ModelCallFinished", data: { model: "stub", usage } })
+  await waitFor(() => capItems(h).length === 2, { what: "the cap item" })
+  const mine = capItems(h).find((item) => item.id !== other.id)!
+  expect(mine).toMatchObject({ status: "open", parent_id: null })
+  expect(mine.summary).toStartWith(`Session ${s.id} `)
+  expect(h.store.getWorkItem(other.id)).toEqual(other)
+})
+
+const SENTINEL = "sk-sentinel-7c2a51"
+
+/** A harness on `fake` whose model key is `SENTINEL`. */
+function keyed(fake: FakeLLM) {
+  return makeHarness(fake, { llmConfig: { ...LLM_CONFIG, api_key: SENTINEL } })
+}
+
+test("the model key goes to the job llm config not its env", async () => {
+  const h = await keyed(await fakeLlm())
+  const envs: unknown[] = []
+  const spawn = h.registry.spawn.bind(h.registry)
+  h.registry.spawn = (job, dir, handlers, options) => {
+    envs.push(options?.env)
+    return spawn(job, dir, handlers, options)
+  }
+  const s = await start(h)
+  expect(h.jobs).toHaveLength(1)
+  expect(h.jobs[0]!.llm_config).toMatchObject({ api_key: SENTINEL })
+  expect(envs).toHaveLength(1)
+  expect(JSON.stringify(envs)).not.toContain(SENTINEL)
+  expect(JSON.stringify(h.store.getSession(s.id))).not.toContain(SENTINEL)
+})
+
+test("the model key appears in no frame event or office file", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "ok" })
+  const h = await keyed(fake)
+  const frames: Frame[] = []
+  const spawn = h.registry.spawn.bind(h.registry)
+  h.registry.spawn = (job, dir, handlers, options) => {
+    const record =
+      (name: "event" | "stream" | "result" | "error") =>
+      (worker: Worker, frame: Frame): void => {
+        frames.push(frame)
+        handlers[name](worker, frame)
+      }
+    const recorded = { ...handlers, event: record("event"), stream: record("stream") }
+    return spawn(job, dir, { ...recorded, result: record("result"), error: record("error") }, options)
+  }
+  const live = spyOn(h.office.bus, "publishLive")
+  const meta = spyOn(h.office.bus, "publishMeta")
+  const hooked: unknown[] = []
+  h.hooks.runFinished.push((...args) => void hooked.push(args))
+  h.hooks.sessionEnded.push((...args) => void hooked.push(args))
+  h.hooks.workerExited.push((...args) => void hooked.push(args))
+  const { id } = await start(h)
+  await h.harness.prompt(id, "hi")
+  // The next turn, not just the text: the text part is stored at its first chunk, before it ends.
+  await waitFor(
+    () =>
+      (same(texts(h, id), ["ok"]) && status(h, id) === "idle") ||
+      h.store.getSession(id)!.run_ids.length > 1 ||
+      status(h, id) === "failed",
+    { what: "the next turn or a failed run" },
+  )
+  await h.harness.closeAll()
+  const hasKey = (value: unknown) =>
+    JSON.stringify(value, (_key, v) => (typeof v === "bigint" ? String(v) : v)).includes(SENTINEL)
+  const leaks: string[] = []
+  for (const frame of frames) if (hasKey(frame)) leaks.push(`frame ${frame.type} ${frame.name ?? ""}`)
+  for (const [event] of [...live.mock.calls, ...meta.mock.calls]) if (hasKey(event)) leaks.push(`live ${event.type}`)
+  // Where the key is kept.
+  const keys = path.join(h.office.connections.dir, "office.json")
+  for (const root of [h.office.paths.home, h.folder]) {
+    for (const rel of fs.readdirSync(root, { recursive: true }) as string[]) {
+      const file = path.join(root, rel)
+      if (file === keys || !fs.statSync(file).isFile()) continue
+      if (fs.readFileSync(file).includes(SENTINEL)) leaks.push(`file ${rel}`)
+    }
+  }
+  if (hasKey(hooked)) leaks.push("hook")
+  if (fake.requests().some(hasKey)) leaks.push("model request")
+  expect(leaks).toEqual([])
+  expect(texts(h, id)).toEqual(["ok"])
+})
+
+test("a held session keeps a queued message until the cap is raised", async () => {
+  const fake = await fakeLlm()
+  fake.script(PRICEY, free("after the raise"), free("spare"))
+  const { h, gate } = await cappedHarness(fake)
+  const { id } = await start(h)
+  gate.watch(h)
+  await h.harness.prompt(id, "hi")
+  await waitFor(() => atTheHold(h, id, 6), { what: "the stop at the cap" })
+  const before = h.jobs.length
+  expect(await h.harness.prompt(id, "please continue")).toBe("queued")
+  await waitFor(() => h.registry.get(id) === undefined, { what: "the delivering worker to exit" })
+  // An unread send in the run's inbox: delivered, not advanced.
+  expect(h.jobs.slice(before)).toMatchObject([{ kind: "advance", advance: false, deliver: [{ op: "send" }] }])
+  expect(state(h, id)).toEqual({ status: "waiting", waiting_on: [CEO], capped: true })
+  expect(fake.requests()).toHaveLength(1)
+  await h.harness.setCostCap(id, 20)
+  await waitFor(() => same(texts(h, id).slice(-1), ["after the raise"]) && status(h, id) === "idle", {
+    what: "the held turn",
+  })
+  expect(await asked(fake, 2)).toContain("please continue")
+})
+
+test("a turn that opens held keeps the messages queued before it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ ...PRICEY, hold: 30 }, free("after the raise"), free("spare"))
+  const { h, gate } = await cappedHarness(fake)
+  const { id } = await start(h)
+  gate.watch(h)
+  await h.harness.prompt(id, "hi")
+  await fake.waitForRequests(1)
+  // The reply runs: it reads the message before its next model call, which the cap's stop comes before.
+  expect(await h.harness.prompt(id, "more")).toBe("steer")
+  fake.release()
+  await waitFor(() => atTheHold(h, id, 6), { what: "the stop at the cap" })
+  expect(fake.requests()).toHaveLength(1)
+  await h.harness.setCostCap(id, 20)
+  await waitFor(() => same(texts(h, id).slice(-1), ["after the raise"]) && status(h, id) === "idle", {
+    what: "the held turn",
+  })
+  expect(await asked(fake, 2)).toContain("more")
+  expect(texts(h, id, "user")).toEqual(["hi", "more"])
+})
+
+// --- provider changes -----------------------------------------------------------------------
+
+/** Gives the office connection the model key `key`. */
+async function rekey(h: Harness, key: string): Promise<void> {
+  const file = path.join(h.office.connections.dir, "office.json")
+  const provider = JSON.parse(fs.readFileSync(file, "utf8"))
+  await writePrivate(file, JSON.stringify({ ...provider, llm_config: { ...provider.llm_config, api_key: key } }))
+}
+
+test("a turn after the provider changes runs on the new provider", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "One." }, { content: "Two." })
+  const h = await makeHarness(fake)
+  const { id } = await start(h)
+  await h.harness.prompt(id, "first")
+  await waitFor(() => same(texts(h, id), ["One."]) && status(h, id) === "idle", { what: "the first reply" })
+  await asleep(h, id)
+  const before = h.jobs.length
+  await rekey(h, "sk-new")
+  expect(await h.harness.prompt(id, "second", { by: "lan" })).toBe("turn")
+  await waitFor(() => same(texts(h, id), ["One.", "Two."]) && status(h, id) === "idle", {
+    what: "the reply on the new provider",
+  })
+  expect(authors(h, id)).toEqual({ first: "ngocbh", second: "lan" })
+  expect(h.jobs.slice(before).map((job) => [job.kind, job.llm_config?.api_key])).toEqual([["chat", "sk-new"]])
+  expect(h.store.getSession(id)!.run_ids).toHaveLength(2)
+  expect(texts(h, id, "user")).toEqual(["first", "second"])
+})
+
+test("ending while a new provider takes over ends the session", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "spare" })
+  const h = await makeHarness(fake)
+  const { id } = await start(h)
+  await rekey(h, "sk-new")
+  expect(await h.harness.prompt(id, "hi")).toBe("turn")
+  await h.harness.end(id)
+  await waitFor(() => status(h, id) === "ended", { what: "the end" })
 })

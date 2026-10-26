@@ -784,7 +784,8 @@ export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
 
 /**
  * A real `ChatHarness` over a `chatOffice` (its options but `office`) whose first registry it spawns in, with a real
- * `Monitor` and the real workspace tools of `harness.spec`; `office.harness` and `office.workers` are the harness.
+ * `Monitor` and the real workspace tools of `harness.spec`, the tools of `groups` merged into its groups;
+ * `office.harness` and `office.workers` are the harness. `scheduler` is its actors' (default `realScheduler`).
  * `folder` is a folder to chat in. `connections` (`{name: model}`) adds connections on `fake`, each on `model`. With
  * `codex`, the office is `makeCodex`'s and its Codex sessions over a fake app-server are `office.codex`, on the
  * harness's hooks (minh may then use Codex unless `files` replace him); `codex` is what `makeCodex` returned.
@@ -797,10 +798,12 @@ export async function makeHarness(
   {
     codex = false,
     connections = {},
+    scheduler = realScheduler,
     ...options
   }: Omit<NonNullable<Parameters<typeof chatOffice>[1]>, "office"> & {
     codex?: boolean
     connections?: Record<string, string>
+    scheduler?: Scheduler
   } = {},
 ) {
   let harness: ChatHarness | undefined
@@ -824,8 +827,24 @@ export async function makeHarness(
       monitor: new Monitor(office.paths.company, office.store, office.secrets),
       hooks,
       workers,
+      scheduler,
       log: (line) => void o.logs.push(line),
     })
+    const { groups } = options
+    if (groups !== undefined) {
+      const spec = harness.spec.bind(harness)
+      harness.spec = async (session) => {
+        const built = await spec(session)
+        return {
+          ...built,
+          groups: (c) => {
+            const all = built.groups(c)
+            for (const [group, named] of Object.entries(groups)) all[group] = { ...all[group], ...named }
+            return all
+          },
+        }
+      }
+    }
     office.harness = harness
     office.workers = harness
     return harness
