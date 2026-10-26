@@ -15,6 +15,7 @@ import { redact } from "../perm/redact.ts"
 import { type Answers, makeAskUser, type OnQuestion } from "../questions/ask.ts"
 import type { AnswerKind } from "../questions/cards.ts"
 import { formatAnswer } from "../questions/format.ts"
+import type { RunIndexer } from "../runs/indexer.ts"
 import {
   COULDNT_RESUME,
   COULDNT_START,
@@ -69,6 +70,9 @@ export interface ActorContext {
   readonly scheduler: Scheduler
   /** The office's environment, for a seed's `workerEnv` (default `process.env`). */
   readonly environ?: Env
+  /** The office's run index, brought up to date before an ended run is reported; the chat harness passes
+   *  `office.runIndex`. */
+  readonly runIndex?: Pick<RunIndexer, "update">
   /** Gets log lines; never an error's message. */
   log(line: string): void
 }
@@ -78,6 +82,13 @@ const CAP_TITLE = "Raise the cost cap"
 
 /** What the actor uses of a worker; `Worker` fits. */
 export type ActorWorker = Pick<Worker, "job" | "pid" | "deliver" | "stop">
+
+/** How long, in milliseconds, a run's end report waits for the run index; bounded, so a stuck index thread can't
+ *  stall the report. */
+export const INDEX_WAIT_MS = 3000
+
+/** The run statuses that end a run, whose report waits for the run index. */
+const ENDING: readonly string[] = ["succeeded", "failed", "cancelled"]
 
 /** What an office tool call answers when Esc, the worker's exit or the office stop cuts it before it returns. */
 export const INTERRUPTED_CALL = "interrupted; outcome unknown"
@@ -1344,9 +1355,19 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  /** A `result` or `error`: a waiting run's waits become the actor's. Acted on at the worker's exit. */
-  #result(run: WorkerRun, frame: Frame): void {
+  /** A `result` or `error`: a waiting run's waits become the actor's. Acted on at the worker's exit. An ending result
+   *  first brings the run index up to date (bounded by `INDEX_WAIT_MS`), so the run's end, reported at the exit
+   *  queued behind this job, never finds the index behind it. */
+  async #result(run: WorkerRun, frame: Frame): Promise<void> {
     if (run !== this.#run || this.#finished) return
+    const { runIndex } = this.#ctx
+    if (runIndex !== undefined && frame.type === "result" && ENDING.includes(String(frame.status))) {
+      const done = new AbortController()
+      await Promise.race([runIndex.update(), this.#ctx.scheduler.sleep(INDEX_WAIT_MS, done.signal).catch(() => {})])
+      done.abort()
+      // A close during the wait ends the job, as `#post` skips the jobs after a close.
+      if (this.#closed) return
+    }
     this.#disarm()
     if (frame.type === "result" && frame.status === "waiting") this.#waits = waitsOf(frame)
     run.turnPending = false

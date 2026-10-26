@@ -132,6 +132,18 @@ test("rows by session and by id", () => {
   expect(store.getRuns([top.runId, "nope"])).toEqual(new Map([[top.runId, top]]))
 })
 
+test("open runs are the rows with no end reason", () => {
+  const store = openStore()
+  const s = store.createSession(session())
+  const [late, early, ended, swept] = ["R4", "R1", "R2", "R3"].map((runId) =>
+    store.addRun(launch(s, { runId })),
+  ) as [RunRow, RunRow, RunRow, RunRow]
+  store.endRun(ended.runId, "finished", T)
+  store.sweepRuns([swept.runId], "the office stopped")
+  const other = store.addRun(launch(store.createSession(session()), { runId: "R0" }))
+  expect(store.openRuns()).toEqual([other, early, late])
+})
+
 test("a runs usage is summed from its model calls", () => {
   const store = openStore()
   const s = store.createSession(session())

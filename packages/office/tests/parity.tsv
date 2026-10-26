@@ -463,8 +463,18 @@ runs/test_reader.py::test_one_record_by_seq_has_its_evidence_and_is_capped	chang
 runs/test_reader.py::test_progress_and_size_never_say_less_than_was_read	dropped	—	§5.5: no progress is reported	O4b-5
 runs/test_reader.py::test_unknown_envelope_fields_before_or_after_seq_and_at_are_ignored	changed	packages/office/tests/runs/reader.test.ts::an unknown envelope field makes the log unreadable	§5.5, design §3.2: the index reads through yian's iterRunRecords, which refuses envelope fields other than its six	O4b-5
 runs/test_reason_cut.py	open	—	—	O4b-7
-runs/test_records.py	open	—	—	O4b-6
-runs/test_sweep.py	open	—	—	O4b-6
+runs/test_records.py	ported	packages/office/tests/runs/records.test.ts	—	O4b-6
+runs/test_records.py::test_a_busy_sessions_current_run_runs_only_with_its_live_run_or_wake	changed	packages/office/tests/runs/records.test.ts::a busy sessions current run runs only with its live run or wake	§5.1 rule 2: the actor's memory, not the stored session status	O4b-6
+runs/test_records.py::test_a_debrief_in_flight_runs_and_a_backward_job_leaves_a_finished_run_finished	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-6
+runs/test_records.py::test_a_fresh_run_replaces_the_run_whose_end_is_its_launch	changed	packages/office/tests/runs/records.test.ts::a fresh run replaces the run whose end is its launch	§5.1: replaces is the office row's replaces_run_id, not equal times	O4b-6
+runs/test_records.py::test_a_starting_sessions_current_run_is_running	changed	packages/office/tests/runs/records.test.ts::a starting sessions current run is running	§5.1 rule 2: the actor's memory, not the stored session status	O4b-6
+runs/test_records.py::test_a_waiting_or_idle_sessions_current_run_has_its_status_awake_or_asleep	changed	packages/office/tests/runs/records.test.ts::a waiting or idle sessions current run has its status awake or asleep	§5.1 rule 2: the actor's memory, not the stored session status	O4b-6
+runs/test_records.py::test_current_nodes_by_status	changed	packages/office/tests/runs/records.test.ts::current nodes by status	O4a-1: turns are takes, not questions; nodes from the actor or the index's waits (O4b-5 handoff)	O4b-6
+runs/test_records.py::test_participants_come_from_answers_and_side_chat_openers	changed	packages/office/tests/runs/records.test.ts::participants come from answers and side chat openers	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask; the side chat's parent comes from yian's index (§5.1)	O4b-6
+runs/test_records.py::test_two_live_reads_merge_so_a_run_live_in_either_is_live	changed	packages/office/tests/runs/records.test.ts::two live reads merge so a run live in either is live	the actor's memory is one map by run id; no waking or debrief sets (D32)	O4b-6
+runs/test_sweep.py	ported	packages/office/tests/runs/sweep.test.ts	—	O4b-6
+runs/test_sweep.py::test_the_start_sweep_interrupts_what_an_earlier_office_left_open	changed	packages/office/tests/runs/sweep.test.ts::the start sweep interrupts what an earlier office left open	rule 1 stand-in: the store and a yian lookup instead of the harness; debriefs return with learning (D32)	O4b-6
+runs/test_sweep.py::test_the_start_sweep_leaves_a_resumed_sessions_current_run_to_restore	changed	packages/office/tests/runs/sweep.test.ts::the start sweep leaves a resumed sessions current run to restore	the resume under the same run is O4a-6's restore; here the current run is left open	O4b-6
 sandbox/test_bwrap.py	ported	packages/office/tests/sandbox/bwrap.test.ts	—	O1-9
 sandbox/test_escape.py	ported	packages/office/tests/sandbox/escape.test.ts	rule 1: through run.ts; file tools through the real __fs-helper under its profile, shell stand-ins for the rest; Bun for the interpreter	O1-10
 sandbox/test_escape.py::test_macos_other_process_environ_is_hidden	changed	packages/office/tests/sandbox/escape.test.ts::macos other process environ is readable	§6.1: Seatbelt doesn't gate KERN_PROCARGS2; the Python xfail pinned as the known leak	O1-10
@@ -621,6 +631,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/cli/test/entry.test.ts::the binary from a folder holding .env and a bunfig.toml preload sees neither	§2.7, §6.2	O2-26
 —	new	packages/cli/test/entry.test.ts::the binary loads the TUI assets from beside it and extracts nothing to TMPDIR	O0-10 P4	O2-26
 —	new	packages/cli/test/entry.test.ts::the binary runs the fs helper in its compiled form	§2.5, O1-11	O2-26
+—	new	packages/cli/test/entry.test.ts::the binary starts the run index thread at the daemon start	§2.7: the thread's file is a compile entry	O4b-6
 —	new	packages/cli/test/entry.test.ts::the build refuses to replace a folder it did not write	§2.7 (the build only replaces its own output)	O2-26
 —	new	packages/cli/test/entry.test.ts::the build writes the opencorp package with the npm shim and the platform package with the binary and every TUI asset	§2.7, O0-10 P4	O2-26
 —	new	packages/cli/test/entry.test.ts::the built binary worker runs a company CODE node that imports a sibling file	§2.7, O0-10 P2	O3-3
@@ -630,6 +641,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/cli/test/entry.test.ts::the npm shim is an executable sh script that never runs bun or node	§2.7, §6.2	O2-26
 —	new	packages/cli/test/entry.test.ts::the npm shim never searches above the package and names the missing package	§2.7 bounded search, O0-10 P5	O2-26
 —	new	packages/cli/test/entry.test.ts::the npm shim refuses an unsupported OS	§2.7	O2-26
+—	new	packages/cli/test/entry.test.ts::the runs indexer shim only imports the run index thread of the office	§2.7	O4b-6
 —	new	packages/cli/test/entry.test.ts::without the assets beside it the binary refuses to start the TUI	O0-10 P4	O2-26
 —	new	packages/office/tests/auth/devices.test.ts::a device name with another hash or a hash someone lists is refused	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
 —	new	packages/office/tests/auth/devices.test.ts::a failed commit restores the person file	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
@@ -722,6 +734,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/session_actor.test.ts::a settled wait is re-advanced once without progress	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a start after the registry closed is refused as stopping	O4a-3 plan, Spawning step 5: RegistryClosed → 503 stopping; Python's start returned while stopping (chat/harness.py)	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a stored question fires question stored once	4a revision §1	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a stuck run index update does not stall a runs end	§5.1 index lag: the actor brings the run index up to date (bounded) before it reports a run's end	O4b-6
 —	new	packages/office/tests/chat/session_actor.test.ts::an answer whose spawn failed goes with the next advance and is consumed	Python: a stored answer is read at the run's next wake (test_waiting.py::test_a_session_waiting_at_a_question_node_sleeps_and_an_answer_wakes_it_to_the_node)	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::an end whose advance is not resumed still closes the fresh run	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::an ending session whose fresh run cant spawn fails	4a revision §1: Python's _new_run failing fails the session (_cant_start)	O4a-3
@@ -737,6 +750,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/session_actor.test.ts::fail with a live worker cancels through it	O4a-3 plan, Finish: fail cancels through the live worker, spawning nothing	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::live calls is empty while a worker runs the run and null otherwise	O4a-7a	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::no office code outside the worker calls a yian host function	design §8.2	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::the actor brings the run index up to date before it reports a runs end	§5.1 index lag: the actor brings the run index up to date (bounded) before it reports a run's end	O4b-6
 —	new	packages/office/tests/chat/session_actor.test.ts::the status is busy as soon as a message is accepted	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::the status is busy when a message is accepted after the result	4a revision §1: busy from acceptance holds when the send is acked after the worker's result	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::the user message is published live under its send id	O4a-7a	O4a-3
@@ -873,6 +887,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/http.test.ts::the guard runs before any body byte is read	design §2.3 step 3, §6 rule 7: the guard runs before the body	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the listener limits are the designs values	D16, design §2.3: listener limits	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the request signal aborts when the client goes away	design §2.3: RequestContext.signal	O2-1
+—	new	packages/office/tests/daemon/main.test.ts::a broken index skips the start sweep and does not stop the office start	§5.2: a broken or hung index never stops the start; the sweep needs an up-to-date index (choice 13)	O4b-6
+—	new	packages/office/tests/daemon/main.test.ts::a failing start sweep does not stop the office start	§5.2: a broken or hung index never stops the start (choice 13); errors logged by type (§6 rule 13)	O4b-6
 —	new	packages/office/tests/daemon/main.test.ts::a home that cannot be resolved exits 1	design §6.5 realpath: a home that can't be resolved (ELOOP, EACCES) is a start error, not a crash	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::a home that does not exist yet resolves through its real parent	Python's non-strict Path.resolve() (design §6.5 realpath): the nearest existing ancestor is resolved	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::a lock file that is not private is refused	design §2.3, §6 rule 6: the lock file follows yian's private rules (Y4)	O2-5
@@ -882,12 +898,14 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/main.test.ts::a symlinked office dir stops the daemon start [%s]	design §2.3, §6 rule 6: the office dir is checked through main(), as Python's test_a_symlinked_office_dir_is_refused did	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::an uncaught error in the daemon is logged as office crashed [%s]	design §2.3, §6 rule 13: an uncaught exception or rejection writes the crash marker (type and frames, never the message) and exits 1	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::bad arguments exit 2	argparse's exit 2 for bad arguments, kept	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::build office brings the run index up to date and sweeps on start	§5.1, §5.2: the index is updated at start; the start sweep runs after the start update	O4b-6
 —	new	packages/office/tests/daemon/main.test.ts::build office checks a model in a worker of its registry	design §2.3: buildOffice passes its registry into the office's model check; P2	O3-5
 —	new	packages/office/tests/daemon/main.test.ts::build office gives the office a worker registry that stops with it	design §2.4; O2-5 handoff: the registry on the office, closed when it stops (refuses new starts)	O3-4
 —	new	packages/office/tests/daemon/main.test.ts::build office lists models on start and cancels sign ins on stop	design §2.3 and Python main.py:218-224: the model warm-up (not awaited) and Logins.closeAll are office hooks; one cache and one Logins per Connections; O4a-4 folds it into test_build_office_runs_the_chat_harness	O2-21
 —	new	packages/office/tests/daemon/main.test.ts::build office reaps workers left by an earlier office	design §6.6 and O2-11a: the workers an earlier office left are reaped at start	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::build office restores codex sessions on start before the cards sweep	design §7.1: sessions.ts restore runs on start, before the questions extension's sweep (daemon/main.py)	O3-14
 —	new	packages/office/tests/daemon/main.test.ts::build office runs codex sessions closed on stop	service wiring (plan, O3-13): the office's Codex sessions are closed on stop	O3-13
+—	new	packages/office/tests/daemon/main.test.ts::build office updates the run index when a worker exits	§5.2: the index is updated at start and on worker exit	O4b-6
 —	new	packages/office/tests/daemon/main.test.ts::office stop waits for the send backs queued on the office harness and returns	design §7.1: the actor's answers settle at office stop, with card work queued (O3-9's duty)	O3-14
 —	new	packages/office/tests/daemon/main.test.ts::opencorp daemon from a shell re-execs into the office env and folder	design §6.5 (R2 I1)	O2-11b
 —	new	packages/office/tests/daemon/main.test.ts::release removes the pidfile and frees the lock	design §2.3: the pidfile is removed on stop	O2-5
@@ -1175,6 +1193,15 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/questions/format.test.ts::an astral discussion is cut by code points	design §1.4 deviation: the discussion cap counts code points as Python's len, so the cut never splits a surrogate pair	O3-7
 —	new	packages/office/tests/questions/seed.test.ts::a cut never splits a character	design §1.4 overridden for the seed: lengths are code points (as Python), since yian refuses a message with an unpaired surrogate	O4a-8
 —	new	packages/office/tests/questions/side.test.ts::a seed is a private file read back as written	DRIVER-OFFICE.md security rule 6: seed.md holds transcript text, so it is replaced atomically as a 0600 file, never written or read through a link	O4a-8
+—	new	packages/office/tests/runs/indexer.test.ts::a busy index resolves false and logs only the error name	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
+—	new	packages/office/tests/runs/indexer.test.ts::a call made during an update waits for an update that starts after it	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
+—	new	packages/office/tests/runs/indexer.test.ts::a missing runs folder is an empty index	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
+—	new	packages/office/tests/runs/indexer.test.ts::a thread that cannot start fails the update without rejecting	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
+—	new	packages/office/tests/runs/indexer.test.ts::a thread that dies fails its update and a new thread serves the next	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
+—	new	packages/office/tests/runs/indexer.test.ts::an update brings the index up to date on its thread	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
+—	new	packages/office/tests/runs/indexer.test.ts::close stops the thread and later updates resolve false	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
+—	new	packages/office/tests/runs/indexer.test.ts::skipped logs are logged by their path only	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
+—	new	packages/office/tests/runs/indexer.test.ts::updates asked for while one runs share the next update	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
 —	new	packages/office/tests/runs/nodes.test.ts::a recorded run names its node kinds	P15	O4b-5
 —	new	packages/office/tests/runs/nodes.test.ts::a woken node opens again after a clear	yian #1064: advancing a waiting run emits NodeWoken	O4b-5
 —	new	packages/office/tests/runs/nodes.test.ts::kinds wait for the run start to be read	P15: a run start still being written gets kinds once it is read	O4b-5
@@ -1191,6 +1218,18 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/reader.test.ts::a sparse entry marks every few mib of records	security review: a page's synchronous reads are bounded (Python read pages in a thread)	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a waiting node stays open through a resume and a woken one runs on	yian #1057, #1064: a waiting node is non-terminal and a resume doesn't retry it	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::an unterminated tail over the line cap makes the log unreadable	security review: a line over the cap is refused before it is read whole	O4b-5
+—	new	packages/office/tests/runs/records.test.ts::a cancelled run shows interrupted with the office reason	§5.1 status mapping	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a crashed running or missing index row asks the log and else has no outcome	§5.1 status mapping; rules 4 and 5	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a failed run shows failed with yians failure and node	§5.1 status mapping	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a run whose end only its log shows has the logs end time	§5.1: end times come from yian, also while the index lags	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a run with no outcome is warned about once	§5.1 rule 5: logged once per run	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a stale waiting or stopped row asks the log	§5.1 index lag: a row whose offset is not its log size is stale and goes to rule 4	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a stopped run shows interrupted stopped	§5.1 status mapping	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a succeeded run shows finished	§5.1 status mapping	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a waiting run shows idle when only its turn waits and waiting otherwise	§5.1 status mapping	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::an ended runs inspection is read once	§5.1 rule 4: the answer is cached per run, since an ended log does not change	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::reading the index logs its warnings by path and an unreadable index is empty	§5.1 readRunIndex on the main thread; §6 rule 13: paths and error type names only	O4b-6
+—	new	packages/office/tests/runs/sweep.test.ts::the start sweep leaves a run yian ended to its outcome	§5.1 rule 1: the office end never hides yian's outcome (O1-3 handoff)	O4b-6
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv equals the Python argv	§6.1 golden argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::the checkout helper binds bun and its entry read only	§2.5, O0-10 P7	O1-9
@@ -1278,6 +1317,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/store/questions.test.ts::questions are read by a long run id list in one statement	one json_each bind (O1-3's getRuns); Python's chunked read was pinned by store/test_runs.py	O1-4
 —	new	packages/office/tests/store/runs.test.ts::a runs config is recorded at spawn	resume or fresh run reads it (§5.1, §8.4)	O1-3
 —	new	packages/office/tests/store/runs.test.ts::an end time needs an end reason	§5.1	O1-3
+—	new	packages/office/tests/store/runs.test.ts::open runs are the rows with no end reason	§5.1: the start sweep's office-row query	O4b-6
 —	new	packages/office/tests/store/sessions.test.ts::a field with no column needs a store migration	CLAUDE.md's store-migration rule (§5.1)	O1-3
 —	new	packages/office/tests/store/sessions.test.ts::a session counts its turns from zero	design §5.1, 4a-revision §1: sessions.turns counts finished replies (0002)	O4a-0b
 —	new	packages/office/tests/tools/build.test.ts::the office tool specs equal the saved copy	D20 (Python's compare-only tools/test_spec_dump.py: all four groups through groupSpecs equal tests/fixtures/tool_specs.json)	O2-22b
@@ -1399,6 +1439,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/spawn.test.ts::an async handler that rejects does not stop the reader	§6 rule 13; design §2.4: a failing handler never stops the reader	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::close does not wait on a worker that stopped reading	P1, design §6.6: the stop is never awaited, so a worker that stopped reading is killed after the deadline	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::close stops the run first	P1, O3-3 handoff: close sends stop first, so the run ends as stopped	O3-4
+—	new	packages/office/tests/worker/spawn.test.ts::the registry calls on exit once a worker is gone	§5.2: the index is updated at start and on worker exit	O4b-6
 —	new	packages/office/tests/worker/spawn.test.ts::the worker env names are the launch allowlist	design §6.5 (one allowlist for daemon and worker)	O2-11b
 —	new	packages/office/tests/worker/spawn.test.ts::the worker log gets the workers output and keeps it across spawns	design §2.4: the worker's stdout and stderr are appended to the session's worker.log (0600, no symlink), kept across spawns	O3-4
 —	new	packages/office/tests/worker/spawn.test.ts::the worker log is never followed through a link	design §2.4: worker.log is opened 0600 with O_NOFOLLOW, so a planted link is refused (ELOOP) and its target untouched	O3-4

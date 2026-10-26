@@ -326,11 +326,13 @@ export class WorkerRegistry implements WorkerPool {
   readonly #environ: Env
   readonly #maxFrame: number | undefined
   readonly #spawn: typeof spawnProcess
+  readonly #onExit: (worker: Worker) => void
   readonly #workers = new Map<string, Worker>()
   #closed = false
 
   /** A registry recording its workers in `store`. Workers start with `workerEnv(environ)`, frames capped at
-   *  `maxFrame`, through `spawn`; `log` gets the spawn code's lines. */
+   *  `maxFrame`, through `spawn`; `log` gets the spawn code's lines; `onExit` runs once a started worker is gone and
+   *  forgotten, before its `handlers.exited`. */
   constructor(
     store: Store,
     {
@@ -338,7 +340,14 @@ export class WorkerRegistry implements WorkerPool {
       environ = process.env,
       maxFrame,
       spawn = spawnProcess,
-    }: { log?: SpawnLog; environ?: Env; maxFrame?: number; spawn?: typeof spawnProcess } = {},
+      onExit = () => {},
+    }: {
+      log?: SpawnLog
+      environ?: Env
+      maxFrame?: number
+      spawn?: typeof spawnProcess
+      onExit?: (worker: Worker) => void
+    } = {},
   ) {
     this.#store = store
     this.#log = (level, line) => {
@@ -351,6 +360,7 @@ export class WorkerRegistry implements WorkerPool {
     this.#environ = environ
     this.#maxFrame = maxFrame
     this.#spawn = spawn
+    this.#onExit = onExit
   }
 
   /**
@@ -429,6 +439,11 @@ export class WorkerRegistry implements WorkerPool {
     if (this.#workers.get(worker.sessionId) !== worker) return
     this.#forget(worker)
     this.#workers.delete(worker.sessionId)
+    try {
+      this.#onExit(worker)
+    } catch (error) {
+      this.#log("ERROR", `worker ${worker.sessionId} on exit callback failed (${errorName(error)})`)
+    }
   }
 
   #forget(worker: Worker): void {

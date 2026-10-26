@@ -745,6 +745,36 @@ test("a waiting run ends its worker normally", async () => {
   expect(store.listWorkers()).toEqual([])
 })
 
+test("the registry calls on exit once a worker is gone", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const { lines, log } = recordingLog()
+  const seen: { worker: Worker; live: Worker | undefined; records: number; returncode: number | null }[] = []
+  const registry = makeRegistry(store, {
+    log,
+    onExit: (worker) => {
+      seen.push({
+        worker,
+        live: registry.get(worker.sessionId),
+        records: store.listWorkers().length,
+        returncode: worker.returncode,
+      })
+      throw new Error("callback bug")
+    },
+  })
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const job = makeJob(where, "flows/nap.yaml", { inputs: {} })
+  const worker = await registry.spawn(job, sessionDir, new Recorder(), { env: fake.env() })
+  expect(await worker.wait()).toBe(0)
+  // Once, after the registry forgot the worker and its record.
+  expect(seen).toHaveLength(1)
+  expect(seen[0]!.worker).toBe(worker)
+  expect([seen[0]!.live, seen[0]!.records, seen[0]!.returncode]).toEqual([undefined, 0, 0])
+  expect(lines).toContainEqual(["ERROR", "worker s1 on exit callback failed (Error)"])
+  expect(lines.filter(([, line]) => line.includes("callback bug"))).toEqual([])
+})
+
 test("a failing exit step still finishes the worker", async () => {
   const where = base()
   const fake = await fakeLlm()

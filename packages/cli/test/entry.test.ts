@@ -312,6 +312,17 @@ test("the CODE worker shim only imports the code-worker entry of yian", () => {
   expect(fs.realpathSync(resolved)).toBe(path.join(CHECKOUT, "packages/yian/ts/src/nodes/code/worker.ts"))
 })
 
+test("the runs indexer shim only imports the run index thread of the office", () => {
+  const shim = path.join(CHECKOUT, "packages/cli/src/runs_indexer.ts")
+  expect(fs.existsSync(shim)).toBe(true)
+  const transpiler = new Bun.Transpiler({ loader: "ts" })
+  expect(transpiler.scanImports(fs.readFileSync(shim, "utf8")).map((entry) => entry.path)).toEqual([
+    "@opencorp/office/runs/index_thread",
+  ])
+  const resolved = Bun.resolveSync("@opencorp/office/runs/index_thread", path.join(CHECKOUT, "packages/cli"))
+  expect(fs.realpathSync(resolved)).toBe(path.join(CHECKOUT, "packages/office/src/runs/index_thread.ts"))
+})
+
 test(
   "opencorp __worker and __fs-helper reach the office's modes",
   () => {
@@ -822,6 +833,107 @@ describe("the built binary", () => {
     expect(await exited, stderr).toBe(0)
     expect(stderr).not.toContain("Cannot find module")
   }, 120_000)
+
+  test("the binary starts the run index thread at the daemon start", async () => {
+    // A short folder: macOS caps a socket path at 104 bytes.
+    const short = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
+    // Outside `built`, so afterAll's removal doesn't cover it.
+    cleanups.push(() => fs.rmSync(short, { recursive: true, force: true }))
+    const files = {
+      "company.yaml": "name: test-corp\nceo: ngocbh\ndefaults:\n  cost_cap_usd: 5\n  max_turns: 500\n",
+      "people/ngocbh/person.yaml": "handle: ngocbh\nname: Hong Ngoc Bui\nkind: human\ntitle: CEO\nmanager: null\n",
+    }
+    const company = path.join(short, "company")
+    for (const [rel, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(company, rel)), { recursive: true })
+      fs.writeFileSync(path.join(company, rel), text)
+    }
+    const gitEnv = {
+      PATH: "/usr/bin:/bin",
+      HOME: home,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_AUTHOR_NAME: "t",
+      GIT_AUTHOR_EMAIL: "t@t",
+      GIT_COMMITTER_NAME: "t",
+      GIT_COMMITTER_EMAIL: "t@t",
+    }
+    for (const args of [["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "init"]]) {
+      const git = spawnSync("git", ["-C", company, "-c", "commit.gpgsign=false", ...args], {
+        env: gitEnv,
+        encoding: "utf8",
+        timeout: 30_000,
+      })
+      expect(git.status, `git ${args[0]}: ${git.stderr}`).toBe(0)
+    }
+    const office = path.join(short, "office")
+    fs.mkdirSync(path.join(office, "runs"), { recursive: true, mode: 0o700 })
+    fs.chmodSync(office, 0o700)
+    fs.writeFileSync(path.join(office, "hq.json"), '{"tcp": false}')
+
+    const errFile = path.join(built, `daemon-${path.basename(short)}.err`)
+    const errFd = fs.openSync(errFile, "w")
+    const tmpdir = freshTmp()
+    const child = spawn(bin, ["daemon", "--home", short], {
+      cwd: fs.mkdtempSync(path.join(built, "cwd-")),
+      env: { HOME: home, PATH: "/usr/bin:/bin", TMPDIR: tmpdir, BUN_TMPDIR: tmpdir },
+      detached: true,
+      stdio: ["ignore", "ignore", errFd],
+    })
+    fs.closeSync(errFd)
+    const exited = new Promise<number | null>((resolve, reject) => {
+      // A spawn that failed emits `error` instead of `exit`; with no listener it would crash the runner.
+      child.once("error", reject)
+      child.once("exit", (code) => resolve(code))
+    })
+    // An `error` while the test waits below must not be an unhandled rejection; the waits check the exit themselves.
+    exited.catch(() => {})
+    const pid = child.pid
+    if (pid === undefined) {
+      await exited
+      throw new Error("the daemon did not start")
+    }
+    // The daemon re-execs itself with the same pid and start time, so the group stays the one spawned here.
+    leaders.push({ pid, started: lstart(pid) })
+    const stderr = () => fs.readFileSync(errFile, "utf8")
+
+    /** Whether the office socket answers `GET /health` with 200. */
+    const healthy = () =>
+      new Promise<boolean>((resolve) => {
+        const req = http.get({ socketPath: path.join(office, "office.sock"), path: "/health", timeout: 2000 }, (res) => {
+          res.resume()
+          resolve(res.statusCode === 200)
+        })
+        req.on("timeout", () => req.destroy())
+        req.on("error", () => resolve(false))
+      })
+    // Longer than the daemon's own bound on the start's index update, so a slow update that succeeds still passes.
+    const deadline = Date.now() + 90_000
+    while (!(await healthy())) {
+      if (child.exitCode !== null || child.signalCode !== null)
+        throw new Error(`the daemon exited before it served:\n${stderr()}`)
+      if (Date.now() > deadline) throw new Error(`the daemon did not serve within 90 s:\n${stderr()}`)
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    // The socket listens only after the start's index update, and yian makes the index before it reads the folder.
+    expect(fs.existsSync(path.join(office, "runs/index.sqlite")), stderr()).toBe(true)
+    expect(stderr()).not.toContain("run index thread stopped")
+    process.kill(pid, "SIGTERM")
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const stopped = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`the daemon did not stop within 30 s of SIGTERM:\n${stderr()}`)),
+        30_000,
+      )
+    })
+    try {
+      await Promise.race([exited, stopped])
+    } finally {
+      clearTimeout(timer)
+    }
+    // Once the leader is reaped the cleanup can't match its start, so anything left in its group goes now.
+    killGroup(pid)
+  }, 150_000)
 
   test("the binary loads the TUI assets from beside it and extracts nothing to TMPDIR", async () => {
     const result = await runTui(bin)
