@@ -4,6 +4,10 @@ import { createFakeOffice, createStub, seed } from "./fixture/fake-office"
 import { bootFrame } from "./fixture/frame"
 
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString()
+/** Session ids shaped as ULIDs, as the office serves them. */
+const S1 = "000000000000000000000000S1"
+const S2 = "000000000000000000000000S2"
+const S3 = "000000000000000000000000S3"
 
 /** An office with @minh's session in /tmp/proj 5m ago, @lan's there 2h ago, and @minh's elsewhere 1m ago. */
 function office(sessions = ["proj", "lan", "other"]) {
@@ -11,16 +15,16 @@ function office(sessions = ["proj", "lan", "other"]) {
   state.people.push({ handle: "lan", name: "Lan", kind: "agent", title: "Designer", manager: "ngocbh" })
   const base = state.sessions[0]
   const all: Record<string, Session> = {
-    proj: { ...base, id: "S1", updated_at: ago(5 * 60_000) },
-    lan: { ...base, id: "S2", person: "lan", updated_at: ago(2 * 3600_000) },
-    other: { ...base, id: "S3", cwd: "/tmp/other", updated_at: ago(60_000) },
+    proj: { ...base, id: S1, updated_at: ago(5 * 60_000) },
+    lan: { ...base, id: S2, person: "lan", updated_at: ago(2 * 3600_000) },
+    other: { ...base, id: S3, cwd: "/tmp/other", updated_at: ago(60_000) },
   }
   state.sessions = sessions.map((k) => all[k])
   state.messages = Object.fromEntries(state.sessions.map((s) => [s.id, []]))
-  state.messages.S1 = [
+  state.messages[S1] = [
     {
       id: "M1",
-      session_id: "S1",
+      session_id: S1,
       role: "user",
       created_at: ago(5 * 60_000),
       parts: [{ id: "a", type: "text", text: "fix the flaky test" }],
@@ -52,7 +56,7 @@ test("the session list shows this folder's sessions, newest first, and opens one
     expect(f).not.toContain("/tmp/other")
     app.input.pressEnter()
     await app.until((f) => f.includes("fix the flaky test"))
-    expect(fake.requests.some((r) => r.path === "/sessions/S1/messages")).toBe(true)
+    expect(fake.requests.some((r) => r.path === `/sessions/${S1}/messages`)).toBe(true)
   } finally {
     await app.stop()
     fake.stop()
