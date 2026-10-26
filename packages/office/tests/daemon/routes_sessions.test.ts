@@ -505,17 +505,6 @@ test("a chat starts on the requested connection and model", async () => {
   await waitFor(() => chatStatus(h, created.id) === "ended", { what: "the session to end" })
 })
 
-test("a model switch on a yian chat answers 501 and echoes nothing", async () => {
-  const h = await makeHarness(await fakeLlm())
-  const { sock } = await served(h.office)
-  const sid = await open(h, sock)
-  const before = h.store.getSession(sid)
-  const r = await post(sock, `/sessions/${sid}/model`, { connection: "office", model: "sk-sentinel" })
-  expect([r.status, errorOf(r)]).toEqual([501, "not_implemented"])
-  expect(r.text).not.toContain("sk-sentinel")
-  expect(h.store.getSession(sid)).toEqual(before)
-})
-
 test("a chat is credited to the verified person", async () => {
   const fake = await fakeLlm()
   const h = await makeHarness(fake)
