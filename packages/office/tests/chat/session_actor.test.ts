@@ -5,7 +5,13 @@ import { fileURLToPath } from "node:url"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveEvent, Message } from "@opencorp/protocol"
-import { type ActorContext, INDEX_WAIT_MS, INTERRUPTED_CALL, type Wait } from "../../src/chat/session_actor.ts"
+import {
+  type ActorContext,
+  INDEX_WAIT_MS,
+  INTERRUPTED_CALL,
+  type SessionActor,
+  type Wait,
+} from "../../src/chat/session_actor.ts"
 import { PING } from "../../src/daemon/bus.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { COULDNT_RESUME, COULDNT_START, ENDED_OVER_CAP, NEW_MODEL, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
@@ -26,6 +32,7 @@ import {
   type ChatOffice,
   chatOffice,
   EMPTY,
+  errors,
   fakeLlm,
   free,
   makeActor,
@@ -1390,6 +1397,67 @@ test("end over the cost cap on a stopped reply ends the session at once", async 
   expect(o.office.store.getRun(runId)?.endReason).toBe(ENDED_OVER_CAP)
   await waitFor(() => o.kinds.length === before + 1, { what: "the cancel job" })
   expect(o.jobs.at(-1)).toMatchObject({ run_id: runId, advance: false, deliver: [{ op: "cancel" }] })
+  expect(fake.requests()).toHaveLength(requests)
+})
+
+/** Starts a session on `o` whose reply to "hi" fails (`fake`'s held 500) after its cost reached the cap, and waits
+ *  until the actor has handled the failure; returns the actor, the session, its failed run and the spawns so far. */
+async function failedOverCap(
+  o: ChatOffice,
+  fake: Awaited<ReturnType<typeof fakeLlm>>,
+): Promise<{ actor: SessionActor; sid: string; old: string; before: number }> {
+  const { actor, sid } = await startActor(o)
+  const old = actor.runId!
+  expect(await actor.prompt("hi")).toBe("turn")
+  await fake.waitForRequests(1, 30_000)
+  // The reply's spending reached the cap before its next model call failed.
+  o.office.store.updateSession(sid, { cost: 6 })
+  const before = o.kinds.length
+  fake.release()
+  await waitFor(() => errors(o, sid).length === 1 && !actor.hasWorker && status(o, sid) === "waiting", {
+    what: "the failed reply",
+  })
+  expect(errors(o, sid)[0]).toStartWith("The reply failed (")
+  return { actor, sid, old, before }
+}
+
+test("a reply that fails over the cost cap holds its fresh run until the cap is raised", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 500, hold: true }, free("Got it."))
+  const o = await chatOffice(fake)
+  const { actor, sid, old, before } = await failedOverCap(o, fake)
+  // No fresh run yet: its reply would call the model over the cap.
+  expect(o.kinds.slice(before)).toEqual([])
+  expect(session(o, sid).run_ids).toEqual([old])
+  await actor.checkCap()
+  expect(capItem(o)).toBeDefined()
+  expect(state(o, sid)).toEqual({ status: "waiting", waiting_on: [CEO], capped: true })
+  // A message meanwhile is queued for the fresh run at once.
+  expect(await actor.prompt("more")).toBe("queued")
+  expect(o.kinds.slice(before)).toEqual([])
+  await actor.setCostCap(20)
+  expect(o.kinds.slice(before)).toEqual(["chat"])
+  const runId = actor.runId!
+  expect(runId).not.toBe(old)
+  expect(o.office.store.getRun(runId)?.replacesRunId).toBe(old)
+  expect(o.jobs.at(-1)).toMatchObject({ kind: "chat", run_id: runId, advance: true, deliver: [{ op: "send" }] })
+  await waitFor(() => texts(o, sid).includes("Got it.") && status(o, sid) === "idle", { what: "the fresh reply" })
+  expect(texts(o, sid, "user")).toEqual(["hi", "more"])
+  // The message is still shown live once the fresh run takes it.
+  const shown = o.lives.filter((event) => event.type === "message.updated" && event.data.role === "user")
+  expect(shown.map((event) => (event.data.parts as { text: string }[]).at(-1)!.text)).toEqual(["hi", "more"])
+})
+
+test("end while a failed replys fresh run is held closes the fresh run without a model call", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 500, hold: true })
+  const o = await chatOffice(fake)
+  const { actor, sid, old, before } = await failedOverCap(o, fake)
+  const requests = fake.requests().length
+  await actor.end()
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  expect(o.jobs.slice(before)).toMatchObject([{ kind: "chat", deliver: [{ op: "close" }] }])
+  expect(o.office.store.getRun(actor.runId!)?.replacesRunId).toBe(old)
   expect(fake.requests()).toHaveLength(requests)
 })
 

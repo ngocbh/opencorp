@@ -281,6 +281,10 @@ export class SessionActor implements LiveCalls {
   #readvance = false
   /** Whether the run needs an `advance` that the cost cap held back (a job over the cap only delivers). */
   #needsAdvance = false
+  /** The fresh run the cost cap holds back, which the next spawn after a raise (or at End) starts. */
+  // A `chat` job can't only deliver, and its reply would call the model: over the cap the fresh run waits for a
+  // raise, as Python held a capped session's turns.
+  #heldFresh: Fresh | null = null
   /** Whether a worker accepted a message after its `result`, or in a job that only delivers: the next worker's take
    *  will read it. */
   #lateSend = false
@@ -589,10 +593,10 @@ export class SessionActor implements LiveCalls {
     const run = this.#run
     const capped = this.#capped()
     const rests = this.#rested && !this.#wakesAgent(this.#waits ?? [])
-    if (capped && run === null && !rests) {
+    if (capped && run === null && !rests && this.#heldFresh === null) {
       // The reply was stopped at the cap, crashed or is unknown, or a settled call would wake the agent: an advance
       // would spend, so the run is cancelled and the session ends. A settled turn take doesn't: it reads its
-      // messages with the close, and the flow skips the reply once closed.
+      // messages with the close, and the flow skips the reply once closed. Nor does a held fresh run's.
       this.#finish("ended", null, ENDED_OVER_CAP)
       return
     }
@@ -846,7 +850,9 @@ export class SessionActor implements LiveCalls {
    * (`#startedWorker`). On failure, the job's deliveries are answered with the error (`#wakeError`) and dropped, and
    * the error is thrown. `plain` marks a re-advance only for a settled wait. Over the cost cap, unless ending, an
    * `advance` only delivers (`advance: false`, no record check), and none starts without deliveries; the advance
-   * waits for a raise (`#needsAdvance`). Whether a worker started.
+   * waits for a raise (`#needsAdvance`). A fresh run (`replace`) over the cap, unless ending, is held instead
+   * (`#heldFresh`): every spawn until a raise or End keeps `#next` for it, as the fresh run would carry it, and
+   * answers its messages `queued` at once; the first spawn after starts the held fresh run. Whether a worker started.
    */
   async #spawn(
     kind: "chat" | "advance",
@@ -859,6 +865,19 @@ export class SessionActor implements LiveCalls {
   ): Promise<boolean> {
     const { store, paths } = this.#ctx
     const sid = this.sessionId
+    if ((replace !== null || this.#heldFresh !== null) && !this.#ending && this.#capped()) {
+      // Never delivered to the old run: its reply failed, or it can't be resumed.
+      this.#heldFresh ??= replace
+      this.#needsAdvance = true
+      this.#next = this.#freshCarry(this.#next)
+      for (const p of this.#next) if (p.delivery.op === "send") p.resolve(p.acked)
+      return false
+    }
+    if (this.#heldFresh !== null) {
+      kind = "chat"
+      replace = this.#heldFresh
+      this.#heldFresh = null
+    }
     // A job over the cap never calls the model, so no endpoint is replayed: no record check.
     const advance = kind === "chat" || this.#ending || !this.#capped()
     if (!advance) {
@@ -1435,11 +1454,13 @@ export class SessionActor implements LiveCalls {
 
   /** Answers `p`'s caller from its reply: acknowledged (after closing the questions of the calls it closed, and
    *  marking the question a `complete` answered consumed), or refused. A `not_started` refusal, and a failure before
-   *  any node event (the run may not have resumed), are held for the worker's exit. */
+   *  any node event (the run may not have resumed), are held for the worker's exit. A delivery already answered is
+   *  acted on only when it is a message the run took, which is shown, and the session hasn't finished. */
   #replied(run: WorkerRun, p: Pending): void {
-    if (p.done) return
     const reply = p.reply!
     const op = p.delivery.op
+    // A message a held fresh run carried was answered `queued` at once; it is still shown once taken.
+    if (p.done && !(op === "send" && Object.hasOwn(reply, "seq") && !this.#finished)) return
     if (Object.hasOwn(reply, "seq")) {
       const closed = Array.isArray(reply.closed) ? reply.closed.map(String) : []
       for (const callId of closed) this.#closedCall(run.runId, callId, op === "cancel" ? "cancelled" : "interrupted")
@@ -1787,6 +1808,7 @@ export class SessionActor implements LiveCalls {
   #finish(status: "ended" | "failed", outcome: Frame | null, why: string | null, run = this.#run): void {
     if (this.#finished) return
     this.#finished = true
+    this.#heldFresh = null
     const { store, hooks } = this.#ctx
     this.#disarm()
     const runId = this.#runId
