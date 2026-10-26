@@ -714,7 +714,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/session_actor.test.ts::a capped session advances nothing and a raise answers what it queued	4a revision §1, G3	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a card answer is completed and consumed	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a changed endpoint before a message starts a fresh run	design §8.4	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a chat turn streams its reply live as the transcript shows it	design §2.6: the actor feeds its worker's live frames to the relay outside its queue; the folded live events equal the transcript and the actor's live calls are the relay's	O4b-2
 —	new	packages/office/tests/chat/session_actor.test.ts::a delivery acked after result is advanced	O4a-0a	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a finished session forgets its live runs only after its worker exits	design §2.6: the relay keeps what it showed per run until forget, which waits for the session's last worker to exit, so its last frames bring no state back	O4b-2
 —	new	packages/office/tests/chat/session_actor.test.ts::a fresh run carries a message answer as its message	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a fresh run that cant spawn at end stops the run it replaced	O4a-3 plan, Finish	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a hard stop waits for the lingering worker and skips a run with no log	O4a-3 plan, Finish: the hard stop waits for the worker's exit; a run with no log has nothing to cancel	O4a-3
@@ -914,6 +916,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/main.test.ts::build office checks a model in a worker of its registry	design §2.3: buildOffice passes its registry into the office's model check; P2	O3-5
 —	new	packages/office/tests/daemon/main.test.ts::build office gives the office a worker registry that stops with it	design §2.4; O2-5 handoff: the registry on the office, closed when it stops (refuses new starts)	O3-4
 —	new	packages/office/tests/daemon/main.test.ts::build office lists models on start and cancels sign ins on stop	design §2.3 and Python main.py:218-224: the model warm-up (not awaited) and Logins.closeAll are office hooks; one cache and one Logins per Connections; O4a-4 folds it into test_build_office_runs_the_chat_harness	O2-21
+—	new	packages/office/tests/daemon/main.test.ts::build office puts the live relay on the office	design §2.6: one live relay and transcript per office, on the office for the chat harness	O4b-2
 —	new	packages/office/tests/daemon/main.test.ts::build office reaps workers left by an earlier office	design §6.6 and O2-11a: the workers an earlier office left are reaped at start	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::build office restores codex sessions on start before the cards sweep	design §7.1: sessions.ts restore runs on start, before the questions extension's sweep (daemon/main.py)	O3-14
 —	new	packages/office/tests/daemon/main.test.ts::build office runs codex sessions closed on stop	service wiring (plan, O3-13): the office's Codex sessions are closed on stop	O3-13

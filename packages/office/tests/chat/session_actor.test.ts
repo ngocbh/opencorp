@@ -2,10 +2,11 @@
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
-import type { LiveEvent } from "@opencorp/protocol"
-import { INDEX_WAIT_MS, INTERRUPTED_CALL, type Wait } from "../../src/chat/session_actor.ts"
+import type { LiveEvent, Message } from "@opencorp/protocol"
+import { type ActorContext, INDEX_WAIT_MS, INTERRUPTED_CALL, type Wait } from "../../src/chat/session_actor.ts"
+import { PING } from "../../src/daemon/bus.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { COULDNT_RESUME, COULDNT_START, ENDED_OVER_CAP, NEW_MODEL, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
@@ -13,6 +14,7 @@ import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Delivery, STOP_REASON } from "../../src/worker/job.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
 import { CEO } from "../daemon/helpers.ts"
+import { fold } from "../harness/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import {
   ASK_USER,
@@ -224,6 +226,63 @@ test("live calls is empty while a worker runs the run and null otherwise", async
   await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
   expect(actor.calls(runId)).toBeNull()
   expect(o.kinds).toEqual(["chat"])
+})
+
+test("a chat turn streams its reply live as the transcript shows it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one two three four five", hold: true })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  const sub = o.office.bus.subscribe(sid)
+  onTestFinished(() => sub.close())
+  await actor.prompt("hi")
+  const runId = actor.runId!
+  await fake.waitForRequests(1, 30_000)
+  await waitFor(() => o.live.calls(runId)?.length === 1, { what: "the reply call live" })
+  expect(actor.calls(runId)).toEqual(o.live.calls(runId)!)
+  expect(actor.calls(runId)).toMatchObject([{ text: "" }])
+  fake.release()
+  await waitFor(() => texts(o, sid).includes("one two three four five"), { what: "the reply" })
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  const events: LiveEvent[] = []
+  while (sub.queued > 0) {
+    const item = await sub.next(0)
+    if (item !== null && item !== PING && item[0] === "live") events.push(item[1])
+  }
+  expect(events.some((event) => event.type === "part.delta")).toBe(true)
+  // The actor publishes the user message with its send time; the transcript has the log's.
+  const timeless = (messages: Message[]) => messages.map(({ created_at: _, ...message }) => message)
+  const shown = o.transcript.messages(sid, session(o, sid).run_ids, actor)
+  expect(shown.map((message) => message.role)).toEqual(["user", "assistant"])
+  expect(timeless(fold(events))).toEqual(timeless(shown))
+})
+
+test("a finished session forgets its live runs only after its worker exits", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const seen: string[] = []
+  const live: ActorContext["live"] = {
+    frame: (worker, frame) => o.live.frame(worker, frame),
+    calls: (runId) => o.live.calls(runId),
+    detach: (worker) => {
+      seen.push("detach")
+      o.live.detach(worker)
+    },
+    forget: (runIds) => {
+      seen.push(`forget ${[...runIds].join(" ")}`)
+      o.live.forget(runIds)
+    },
+  }
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid, { live })
+  await actor.start()
+  await actor.fail()
+  expect(status(o, sid)).toBe("failed")
+  expect(seen).toEqual([])
+  const { worker, handlers } = workers[0]!
+  handlers.exited(worker, 0)
+  expect(seen).toEqual(["detach", `forget ${session(o, sid).run_ids.join(" ")}`])
 })
 
 test("turn text changes what the turn gets but not the transcript", async () => {

@@ -7,6 +7,7 @@ import path from "node:path"
 import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform"
 import { oneReplyProblem } from "../chat/check.ts"
 import { Hooks } from "../chat/hooks.ts"
+import { Transcript } from "../chat/transcript.ts"
 import { CompanyGit } from "../company/git.ts"
 import { HeadWatcher } from "../company/watch.ts"
 import { EXTENSIONS, type Extension, ExtensionError, loadExtensions } from "../extensions/index.ts"
@@ -22,6 +23,7 @@ import { WorkerRegistry } from "../worker/spawn.ts"
 import { DeviceTokens } from "./auth.ts"
 import { Bus } from "./bus.ts"
 import { HANDLER_WAIT_MS, type Level, createServer, logLine, requestListener, trackRequests } from "./http.ts"
+import { LiveRelay } from "./live.ts"
 import { Office, OfficePaths } from "./office.ts"
 import { allRoutes } from "./routes/index.ts"
 import { OfficeStartError, checkSocketPath, listenUnix, makeOfficeDir, removeStaleSocket } from "./sockets.ts"
@@ -245,10 +247,11 @@ async function sweepOnStart(office: Office, log: ReturnType<typeof officeLogger>
  *  assembles the office with its tools, its workspace guards, its worker registry (closed when the office stops,
  *  refusing new workers from then on; the chat harness will be built around it here, and the one-reply model
  *  check runs over it; each worker's exit updates the run index), the run index brought up to date on start and
- *  the start sweep after it, its Codex sessions (on the chat hooks, the office's card actor until the chat harness,
- *  restored on start after the start sweep and before the extensions' start callbacks, closed on stop), its HEAD
- *  watcher (started and stopped with the office), a model warm-up on start (not awaited) and the cancelling of
- *  sign-ins still waiting on stop. `OfficeStartError` when `tools` has no git. */
+ *  the start sweep after it, its run transcript and live relay (for the session actors; the relay's viewers end on
+ *  stop), its Codex sessions (on the chat hooks, the office's card actor until the chat harness, restored on start
+ *  after the start sweep and before the extensions' start callbacks, closed on stop), its HEAD watcher (started and
+ *  stopped with the office), a model warm-up on start (not awaited) and the cancelling of sign-ins still waiting on
+ *  stop. `OfficeStartError` when `tools` has no git. */
 export function buildOffice(
   paths: OfficePaths,
   { tools, guards, write }: { tools: Tools; guards: SandboxOfficePaths; write: Write },
@@ -283,6 +286,14 @@ export function buildOffice(
     office.onStart.push(() => void office.models.warm())
     // Bounded: closeAll waits at most STOP_WAIT_MS for the sign-ins to stop.
     office.onStop.push(() => office.logins.closeAll())
+    office.transcript = new Transcript(paths.runs)
+    office.live = new LiveRelay({
+      bus: office.bus,
+      transcript: office.transcript,
+      log: log("WARNING", "opencorp.daemon.live"),
+    })
+    // Ends the run viewers; the workers that fed the relay are stopped by then.
+    office.onStop.push(() => office.live?.close())
     const hooks = new Hooks({ log: log("ERROR", "opencorp.chat.hooks") })
     const codex = (office.codex = new CodexSessions(office, hooks, { log: log("WARNING", "opencorp.harness.session") }))
     // No chat harness yet: the Codex sessions are the office's harness (card actions and session routes), on the
