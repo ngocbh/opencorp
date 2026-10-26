@@ -4,7 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveViewCall, Message as RunMessage } from "@ngocbh/yian/run"
-import { CompanyDefaults, now, OFFICE, WorkItem } from "@opencorp/protocol"
+import { CompanyDefaults, type Message, now, OFFICE, WorkItem } from "@opencorp/protocol"
 import type { z } from "zod"
 import type { CompanyGit } from "../company/git.ts"
 import { loadRepo } from "../company/loader.ts"
@@ -24,6 +24,7 @@ import {
   flowLabel,
   NEW_MODEL,
   OFFICE as OFFICE_DRIVER,
+  WORKER_REPLACED,
   WORKER_STOPPED,
 } from "../runs/outcomes.ts"
 import {
@@ -89,6 +90,19 @@ export type ActorWorker = Pick<Worker, "job" | "pid" | "deliver" | "stop" | "fol
 /** How long, in milliseconds, a run's end report waits for the run index; bounded, so a stuck index thread can't
  *  stall the report. */
 export const INDEX_WAIT_MS = 3000
+
+/** How many characters of why a run failed a notice or a reason keeps. */
+export const WHY_CHARS = 500
+
+/** The error types of a model refusing the connection's key. */
+const AUTH_CAUSES = ["AuthenticationError", "PermissionDeniedError", "AuthError"]
+
+/** A fresh run that replaces the current one: the office end reason written on the old run (none when yian ended
+ *  it), and the result frame `runFinished` gets for it (key redacted), if any. */
+interface Fresh {
+  why: string | null
+  finished: Frame | null
+}
 
 /** The run statuses that end a run, whose report waits for the run index. */
 const ENDING: readonly string[] = ["succeeded", "failed", "cancelled"]
@@ -772,21 +786,22 @@ export class SessionActor implements LiveCalls {
   /**
    * Spawns the session's next worker, a `kind` job whose deliveries are `#next`. The connection and model are
    * checked first, before anything is written (a removed connection moves the session to the default). An `advance`
-   * whose run's record no longer gives what the run ran on is a fresh run instead (`#recordCheck`), as is any
-   * spawn given a `replace` reason, carrying what `#freshCarry` keeps; otherwise an `advance` job starts with a
-   * `complete` for each stored answer that never reached the run. A `chat` job records what its run starts on, and
-   * starts from `seed` (a retry's) unless it is a fresh run's. On failure, the job's deliveries are answered with the
-   * error (`#wakeError`) and dropped, and the error is thrown. `plain` marks a re-advance only for a settled wait.
-   * Over the cost cap, unless ending, an `advance` only delivers (`advance: false`, no record check), and none
-   * starts without deliveries; the advance waits for a raise (`#needsAdvance`). Whether a worker started.
+   * whose run's record no longer gives what the run ran on is a fresh run instead (`#recordCheck`; a run that moved
+   * ends `moved`), as is any spawn given `replace`, carrying what `#freshCarry` keeps; otherwise an `advance` job
+   * starts with a `complete` for each stored answer that never reached the run. A `chat` job records what its run
+   * starts on, and starts from `seed` (a retry's) unless it is a fresh run's. On failure, the job's deliveries are
+   * answered with the error (`#wakeError`) and dropped, and the error is thrown. `plain` marks a re-advance only for
+   * a settled wait. Over the cost cap, unless ending, an `advance` only delivers (`advance: false`, no record check),
+   * and none starts without deliveries; the advance waits for a raise (`#needsAdvance`). Whether a worker started.
    */
   async #spawn(
     kind: "chat" | "advance",
     {
       plain = false,
       replace = null,
+      moved = NEW_MODEL,
       seed = null,
-    }: { plain?: boolean; replace?: string | null; seed?: Seed | null } = {},
+    }: { plain?: boolean; replace?: Fresh | null; moved?: string; seed?: Seed | null } = {},
   ): Promise<boolean> {
     const { store, paths } = this.#ctx
     const sid = this.sessionId
@@ -809,10 +824,11 @@ export class SessionActor implements LiveCalls {
       const { session, name, model, provider } = await this.#checkProvider()
       const spec = await this.#specOf(session)
       const checked = kind === "advance" && advance
-      const why = replace ?? (checked ? this.#recordCheck(run.runId, name, model, provider) : null)
-      if (why !== null) {
+      const why = checked ? this.#recordCheck(run.runId, name, model, provider) : null
+      const fresh = replace ?? (why === null ? null : { why: why === NEW_MODEL ? moved : why, finished: null })
+      if (fresh !== null) {
         seed = await this.#seed(session)
-        await this.#replace(session, spec, why)
+        await this.#replace(session, spec, fresh.why, fresh.finished)
         pendings = this.#freshCarry(pendings)
         // Its deliveries, which `close` answers through `#starting`.
         run = new WorkerRun(this.#runId!, "chat", pendings, [], this.#lateSend)
@@ -929,10 +945,11 @@ export class SessionActor implements LiveCalls {
     return { log: this.#logOf(runId), env: { ...workerEnv(this.#ctx.environ), ...env }, cancel: true }
   }
 
-  /** Ends the current run with `why` and makes a new run of `session` (built from `spec`) its replacement, in one
-   *  transaction; then notifies `runFinished` for the old run. The old run's open questions go stale once the fresh
-   *  run starts. Throws `503 stopping` when the office stopped meanwhile, having written nothing. */
-  async #replace(session: SessionRecord, spec: RunSpec, why: string): Promise<void> {
+  /** Ends the current run with the office end reason `why` (none when null: yian ended it) and makes a new run of
+   *  `session` (built from `spec`) its replacement, in one transaction; then notifies `runFinished` for the old run
+   *  with `finished`, not awaited. The old run's open questions go stale once the fresh run starts. Throws `503
+   *  stopping` when the office stopped meanwhile, having written nothing. */
+  async #replace(session: SessionRecord, spec: RunSpec, why: string | null, finished: Frame | null): Promise<void> {
     const { store, hooks } = this.#ctx
     const old = this.#runId!
     const owner = await this.#owner(session)
@@ -942,17 +959,17 @@ export class SessionActor implements LiveCalls {
     const at = now()
     store.transaction(() => {
       // The old run's end is the new run's launch: that is how a run page knows one replaced the other.
-      store.endRun(old, why, at)
+      if (why !== null) store.endRun(old, why, at)
       this.#addRun(session, spec, owner, runId, old, at)
     })
-    this.#log(`session ${this.sessionId} starts a fresh run (${why})`)
+    this.#log(`session ${this.sessionId} starts a fresh run (${why ?? "its reply failed"})`)
     this.#runId = runId
     this.#replaced.push(old)
     // What the old run waited on, and its deadlines, say nothing about the new one.
     this.#waits = null
     this.#readvancedFrom = null
     this.#disarm()
-    void hooks.notify("runFinished", this.#session(), old, null)
+    void hooks.notify("runFinished", this.#session(), old, finished)
   }
 
   /** Adds run `runId` of `session` (built from `spec`), launched `at`, to the session and stores its row, which
@@ -1079,7 +1096,7 @@ export class SessionActor implements LiveCalls {
    *  Whether a worker started. */
   async #spawnQuietly(
     kind: "chat" | "advance",
-    options: { plain?: boolean; replace?: string; seed?: Seed | null } = {},
+    options: { plain?: boolean; replace?: Fresh | null; moved?: string; seed?: Seed | null } = {},
   ): Promise<boolean> {
     try {
       return await this.#spawn(kind, options)
@@ -1381,6 +1398,24 @@ export class SessionActor implements LiveCalls {
     }
   }
 
+  /** Tells the session's clients `text` as a live assistant message with one error part, which is never stored: the
+   *  transcript never returns it. */
+  #notice(text: string): void {
+    const message: Message = {
+      id: newId(),
+      session_id: this.sessionId,
+      role: "assistant",
+      author: null,
+      parts: [{ id: newId(), type: "error", message: text }],
+      created_at: now(),
+    }
+    try {
+      this.#ctx.bus.publishLive({ type: "message.updated", session_id: this.sessionId, data: message })
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a notice can't be shown (${errorName(error)})`)
+    }
+  }
+
   /** A `result` or `error`: a waiting run's waits become the actor's. Acted on at the worker's exit. An ending result
    *  first brings the run index up to date (bounded by `INDEX_WAIT_MS`), so the run's end, reported at the exit
    *  queued behind this job, never finds the index behind it. */
@@ -1405,8 +1440,8 @@ export class SessionActor implements LiveCalls {
    * run ends the session; a worker gone with no outcome, or a `stopped` or `crashed` run, is replaced once
    * (`#died`), but a run the cap stopped, a delivering job's, or one stopped or crashed over the cap isn't a death:
    * its deliveries go on, with a real advance once the cap is raised; an ending session over the cap ends
-   * `ENDED_OVER_CAP`; a run another process holds is tried once more (`#runBusy`); any other outcome fails
-   * the session.
+   * `ENDED_OVER_CAP`; a run another process holds is tried once more (`#runBusy`); a run whose reply failed is
+   * replaced by a fresh run (`#replyFailed`); any other outcome fails the session.
    * Every delivery not carried is answered. A finished actor only starts its run's hard stop that waited for this
    * exit.
    */
@@ -1463,6 +1498,8 @@ export class SessionActor implements LiveCalls {
       this.#finish("ended", outcome, null, run)
     } else if (status === "not_resumed") {
       await this.#notResumed(run)
+    } else if (status === "failed" && this.#chat.isReply(failureOf(outcome!).node_id as string | undefined)) {
+      await this.#replyFailed(run, outcome!)
     } else {
       this.#log(`session ${this.sessionId}: its run ended (${status})`)
       this.#finish("failed", outcome, null, run)
@@ -1560,11 +1597,52 @@ export class SessionActor implements LiveCalls {
   }
 
   /** `run`'s advance was refused before it appended anything (`not_resumed`): a fresh run replaces the run
-   *  (`COULDNT_RESUME`), carrying what `#freshCarry` keeps of the deliveries the run never applied (no reply, refused
-   *  `not_started`, or failed); the sends it applied move with the seed. Every other delivery it was given is answered
-   *  by the closing rule. */
+   *  (`COULDNT_RESUME`), carrying what `#carryFresh` keeps. */
   async #notResumed(run: WorkerRun): Promise<void> {
     this.#log(`session ${this.sessionId}: its run can't be resumed (${typeName(run.outcome!.error_type)})`)
+    this.#carryFresh(run)
+    await this.#spawnQuietly("chat", { replace: { why: COULDNT_RESUME, finished: null } })
+  }
+
+  /**
+   * `run`'s reply failed (its `failed` result `outcome`): the session is told why ("The reply failed (…). Send your
+   * message again.", with which connection to check when the model refused its key), the death count starts over,
+   * and a fresh run replaces it, carrying what `#carryFresh` keeps; yian recorded the failure, so the old run gets no
+   * office end reason, and `runFinished` gets `outcome`, key redacted. A fresh run that can't start fails the session
+   * (`COULDNT_START`).
+   */
+  async #replyFailed(run: WorkerRun, outcome: Frame): Promise<void> {
+    const failure = failureOf(outcome)
+    this.#log(`session ${this.sessionId}: its reply failed (${typeName(failure.cause_type)})`)
+    const reason = whyFailed(outcome, run.provider)
+    const hint = refusedKey(failure, reason)
+      ? ` Check connection '${this.#ranOn(run.runId)}', or pick another model with /model.`
+      : ""
+    this.#notice(`The reply failed (${reason}). Send your message again.${hint}`)
+    this.#deaths = 0
+    this.#carryFresh(run)
+    try {
+      await this.#spawn("chat", { replace: { why: null, finished: redactKey(outcome, run.provider) as Frame } })
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a worker can't start (${errorName(error)})`)
+      if (error instanceof RegistryClosed || this.#closed) return
+      // Before the fresh run was stored, the failed result is how the session's run ended; after, the fresh run
+      // never started.
+      const stored = this.#runId !== run.runId
+      this.#finish("failed", stored ? null : outcome, COULDNT_START, stored ? null : run)
+    }
+  }
+
+  /** The connection run `runId` ran on, by its row; the session's when the row can't tell. */
+  #ranOn(runId: string): string {
+    const { store } = this.#ctx
+    return store.getRun(runId)?.connection ?? store.getSession(this.sessionId)?.connection ?? OFFICE
+  }
+
+  /** Puts what a fresh run carries (`#freshCarry`) of the deliveries `run` never applied (no reply, refused
+   *  `not_started`, or failed) in front of `#next`; the sends it applied move with the seed. Every other delivery it
+   *  was given is answered by the closing rule. */
+  #carryFresh(run: WorkerRun): void {
     const unapplied = run.given.filter((p) => {
       const reply = p.reply
       const answered = reply !== null && reply.refused !== "not_started" && typeof reply.failed !== "string"
@@ -1576,7 +1654,6 @@ export class SessionActor implements LiveCalls {
     )
     // Filtered now, while the replies the closing rule reads are still there.
     this.#requeue(this.#freshCarry(unapplied))
-    await this.#spawnQuietly("chat", { replace: COULDNT_RESUME })
   }
 
   /** Puts `carry` in front of `#next`, each one's reply from the worker that dropped it forgotten, so the next
@@ -1590,7 +1667,8 @@ export class SessionActor implements LiveCalls {
   }
 
   /** `run`'s worker is gone with no outcome (`status` null), or its run `stopped` or `crashed`: the first time, a
-   *  plain `advance` takes over with what it carried. After a worker gone with no outcome, one that can't start fails
+   *  plain `advance` takes over with what it carried (a fresh run, the old one ending `WORKER_REPLACED`, when the
+   *  run's record no longer gives what it ran on). After a worker gone with no outcome, one that can't start fails
    *  the session (`#cantStartWhy`); after a `stopped` or `crashed` run, a failed spawn is only logged and the session
    *  waits for the next message (an ending one fails, as `#spawnQuietly` says). Again before a `waiting` or
    *  `succeeded` result, the session fails (`WORKER_STOPPED`). */
@@ -1604,11 +1682,11 @@ export class SessionActor implements LiveCalls {
     this.#deaths += 1
     this.#carry(run)
     if (status !== null) {
-      await this.#spawnQuietly("advance")
+      await this.#spawnQuietly("advance", { moved: WORKER_REPLACED })
       return
     }
     try {
-      await this.#spawn("advance")
+      await this.#spawn("advance", { moved: WORKER_REPLACED })
     } catch (error) {
       this.#log(`session ${this.sessionId}: a worker can't start (${errorName(error)})`)
       if (!(error instanceof RegistryClosed) && !this.#closed) this.#finish("failed", null, this.#cantStartWhy(), run)
@@ -1618,11 +1696,12 @@ export class SessionActor implements LiveCalls {
   /**
    * Finishes the session with `status` (`ended`: the first `endStatus` result, its work item done; or `failed`) in
    * one transaction with the run's office end reason `why`, written only when no yian outcome ended the run (`outcome`,
-   * else the one `run`'s worker recorded). `runFinished` (the result frame of how the run ended, key redacted, else
-   * null) then `sessionEnded` are notified in order, not awaited. Every delivery not answered gets `409 not_live`. A
-   * run yian may still see unfinished gets a hard stop, as does each replaced run no fresh worker cancelled. The live
-   * relay forgets the session's runs now with no worker alive, else at that worker's exit. Throws `HarnessError`
-   * (`404`) when the session row is gone; a store write that fails is logged by its type.
+   * else the one `run`'s worker recorded). A failed session is told why ("The session failed (…). Start a new
+   * chat."). `runFinished` (the result frame of how the run ended, key redacted, else null) then `sessionEnded` are
+   * notified in order, not awaited. Every delivery not answered gets `409 not_live`. A run yian may still see
+   * unfinished gets a hard stop, as does each replaced run no fresh worker cancelled. The live relay forgets the
+   * session's runs now with no worker alive, else at that worker's exit. Throws `HarnessError` (`404`) when the
+   * session row is gone; a store write that fails is logged by its type.
    */
   #finish(status: "ended" | "failed", outcome: Frame | null, why: string | null, run = this.#run): void {
     if (this.#finished) return
@@ -1640,6 +1719,9 @@ export class SessionActor implements LiveCalls {
     const reported = outcome ?? (ended ? recorded : null)
     try {
       const session = this.#session()
+      if (status === "failed") {
+        this.#notice(`The session failed (${whyFailed(reported, run?.provider ?? null)}). Start a new chat.`)
+      }
       let final: SessionRecord["status"] = status
       if (status === "ended") {
         final = hooks.fire("endStatus", session).find((result) => !!result) ?? "ended"
@@ -1932,6 +2014,31 @@ function checkedReply(frame: Frame): Frame {
   if (typeof reason === "string" && !/^[a-z_]{1,40}$/.test(reason)) return { ...frame, refused: "refused" }
   if (typeof frame.failed === "string") return { ...frame, failed: typeName(frame.failed) }
   return frame
+}
+
+/** The `failure` of a result frame, `{}` when it has none. */
+function failureOf(frame: Frame): Record<string, unknown> {
+  const failure = frame.failure
+  return typeof failure === "object" && failure !== null ? (failure as Record<string, unknown>) : {}
+}
+
+/** Why a run failed, by its outcome (a `result` or `error` frame; null when its worker stopped or couldn't start),
+ *  without `provider`'s model key and in at most `WHY_CHARS` characters. */
+export function whyFailed(outcome: Frame | null, provider: Pick<Provider, "llm_config"> | null): string {
+  if (outcome === null) return "its worker stopped or couldn't start; see the office log"
+  const failure = failureOf(outcome)
+  const cause = failure.cause_type
+  const message = failure.message || outcome.message || "no reason given"
+  const why = redactKey(cause ? `${cause}: ${message}` : String(message), provider) as string
+  const chars = [...why]
+  return chars.length <= WHY_CHARS ? why : `${chars.slice(0, WHY_CHARS - 1).join("")}…`
+}
+
+/** Whether a run failed (its `failure`, and `why` as `whyFailed` says it) because the model refused the connection's
+ *  key: an auth error type, a standalone 401, or yian's `auth` or `permission` provider-error kind. */
+export function refusedKey(failure: Record<string, unknown>, why: string): boolean {
+  const cause = typeof failure.cause_type === "string" ? failure.cause_type : ""
+  return AUTH_CAUSES.some((type) => cause.endsWith(type)) || /\b401\b|\((?:auth|permission)\)/.test(why)
 }
 
 /** `value` with `provider`'s model key replaced by `[redacted]` wherever it appears. */
