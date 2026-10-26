@@ -5,9 +5,11 @@ import { type LiveEvent, Message } from "@opencorp/protocol"
 import { z } from "zod"
 import { newToken } from "../../src/auth/tokens.ts"
 import { HarnessError } from "../../src/chat/state.ts"
+import { Transcript } from "../../src/chat/transcript.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { register } from "../../src/extensions/questions.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
+import { fakeLlm, makeHarness, noWorkersLeft, status as chatStatus } from "../chat/helpers.ts"
 import { allGone, approvalTurn, makeCodex, openCard, requestsValid, start, status, texts } from "../harness/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import { session } from "../store/helpers.ts"
@@ -29,8 +31,9 @@ import {
   within,
 } from "./helpers.ts"
 
-setDefaultTimeout(30_000)
+setDefaultTimeout(60_000)
 afterAll(allGone)
+afterAll(noWorkersLeft)
 
 /** POSTs `body` as JSON, or nothing when it is null. */
 function post(sock: string, target: string, body: unknown, headers: Record<string, string> = {}): Promise<Reply> {
@@ -403,4 +406,135 @@ test("an unexpected harness error is a 500 that logs its type only", async () =>
   expect(lines.some((l) => l.includes("internal error on POST /sessions/:id/continue: Error"))).toBe(true)
   expect(lines.join("\n")).not.toContain("sk-sentinel")
   expect(r.text).not.toContain("sk-sentinel")
+})
+
+type Chat = Awaited<ReturnType<typeof makeHarness>>
+
+/** Opens minh's chat in `h.folder` over the routes, with `headers`, and waits for its first turn; returns its id. */
+async function open(h: Chat, sock: string, headers: Record<string, string> = {}): Promise<string> {
+  const r = await post(sock, "/sessions", { person: "minh", cwd: h.folder }, headers)
+  expect(r.status).toBe(200)
+  const sid = (r.json() as { id: string }).id
+  await waitFor(() => chatStatus(h, sid) === "idle", { what: "the first turn" })
+  return sid
+}
+
+/** Session `sid`'s messages over the routes, each checked as a protocol `Message`. */
+async function messagesOf(sock: string, sid: string, headers: Record<string, string> = {}) {
+  const r = await request(sock, "GET", `/sessions/${sid}/messages`, { headers })
+  expect(r.status).toBe(200)
+  return z.array(Message).parse(r.json())
+}
+
+/** Each message's role, its text and its author. */
+function said(messages: z.output<typeof Message>[]): [string, string, string | null | undefined][] {
+  return messages.map((m) => [
+    m.role,
+    m.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""),
+    m.author,
+  ])
+}
+
+/** Waits until session `sid` has `n` messages and is idle. */
+async function settled(h: Chat, sock: string, sid: string, n: number, headers: Record<string, string> = {}) {
+  await waitFor(async () => (await messagesOf(sock, sid, headers)).length === n && chatStatus(h, sid) === "idle", {
+    what: `${n} messages`,
+  })
+}
+
+test("messages in order", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const { sock } = await served(h.office)
+  fake.script({ content: "hello" }, { content: "ok" })
+  const sid = await open(h, sock)
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "hi" })).json()).toEqual({ ok: true })
+  await settled(h, sock, sid, 2)
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "again" })).json()).toEqual({ ok: true })
+  await settled(h, sock, sid, 4)
+  const r = await get(sock, `/sessions/${sid}/messages`)
+  const messages = z.array(Message).parse(r.json())
+  expect(said(messages).map(([role, text]) => [role, text])).toEqual([
+    ["user", "hi"],
+    ["assistant", "hello"],
+    ["user", "again"],
+    ["assistant", "ok"],
+  ])
+  const ids = messages.map((m) => m.id)
+  expect(ids).toEqual([...ids].sort())
+  const runs = new Transcript(h.office.paths.runs).messages(sid, h.store.getSession(sid)!.run_ids)
+  expect(r.json()).toEqual(JSON.parse(JSON.stringify(runs)))
+})
+
+test("a chat over the routes", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const { sock } = await served(h.office)
+  fake.script({ content: "Hi there." })
+  const r = await post(sock, "/sessions", { person: "minh", cwd: h.folder })
+  expect(r.status).toBe(200)
+  expect((r.json() as { person: string }).person).toBe("minh")
+  const sid = (r.json() as { id: string }).id
+  await waitFor(() => chatStatus(h, sid) === "idle", { what: "the first turn" })
+
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "hello" })).json()).toEqual({ ok: true })
+  await settled(h, sock, sid, 2)
+  expect(said(await messagesOf(sock, sid))).toEqual([
+    ["user", "hello", CEO],
+    ["assistant", "Hi there.", null],
+  ])
+
+  const low = await post(sock, `/sessions/${sid}/cost-cap`, { cost_cap_usd: 0 })
+  expect([low.status, errorOf(low)]).toEqual([422, "cap_too_low"])
+  const capped = await post(sock, `/sessions/${sid}/cost-cap`, { cost_cap_usd: 9 })
+  expect((capped.json() as { cost_cap_usd: number }).cost_cap_usd).toBe(9)
+  expect((await post(sock, `/sessions/${sid}/interrupt`, null)).json()).toEqual({ ok: true })
+  expect((await post(sock, `/sessions/${sid}/end`, null)).json()).toEqual({ ok: true })
+  await waitFor(() => chatStatus(h, sid) === "ended", { what: "the session to end" })
+  const late = await post(sock, `/sessions/${sid}/prompt`, { text: "late" })
+  expect([late.status, errorOf(late)]).toEqual([409, "not_live"])
+})
+
+test("a chat starts on the requested connection and model", async () => {
+  const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
+  const { sock } = await served(h.office)
+  const r = await post(sock, "/sessions", { person: "minh", cwd: h.folder, connection: "second", model: "stub-5" })
+  expect(r.status).toBe(200)
+  const created = r.json() as { id: string; connection: string; model: string; model_note: string | null }
+  expect([created.connection, created.model, created.model_note]).toEqual(["second", "stub-5", null])
+  await waitFor(() => chatStatus(h, created.id) === "idle", { what: "the first turn" })
+  expect((await post(sock, `/sessions/${created.id}/end`, null)).json()).toEqual({ ok: true })
+  await waitFor(() => chatStatus(h, created.id) === "ended", { what: "the session to end" })
+})
+
+test("a chat is credited to the verified person", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const company = h.office.paths.company
+  addHuman(company, "ava")
+  const ava = newToken()
+  const ceo = newToken()
+  giveDevice(company, "ava", "pc", ava)
+  giveDevice(company, CEO, "mac", ceo)
+  const { sock } = await served(h.office, { tokens: true })
+  fake.script({ content: "Hi Ava." }, { content: "Hi Ngoc." })
+  const r = await post(sock, "/sessions", { person: "minh", cwd: h.folder }, bearer(ava))
+  expect(r.status).toBe(200)
+  const created = r.json() as { id: string; opened_by: string; work_item_id: string }
+  expect(created.opened_by).toBe("ava")
+  expect(h.store.getWorkItem(created.work_item_id)!.requester).toBe("ava")
+  const sid = created.id
+  await waitFor(() => chatStatus(h, sid) === "idle", { what: "the first turn" })
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "hello" }, bearer(ava))).status).toBe(200)
+  await settled(h, sock, sid, 2, bearer(ceo))
+  // Someone else in the same chat is credited as themselves; a steer with no reply running is a prompt.
+  expect((await post(sock, `/sessions/${sid}/steer`, { text: "hi too" }, bearer(ceo))).status).toBe(200)
+  await settled(h, sock, sid, 4, bearer(ceo))
+  const users = said(await messagesOf(sock, sid, bearer(ceo))).filter(([role]) => role === "user")
+  expect(users.map(([, text, author]) => [text, author])).toEqual([
+    ["hello", "ava"],
+    ["hi too", CEO],
+  ])
+  const system = (fake.requests()[0]!.messages as { content: string }[])[0]!.content
+  expect(system).toContain("You're talking with Ava (@ava), your peer.")
 })
