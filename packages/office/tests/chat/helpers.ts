@@ -17,6 +17,7 @@ import { type ActorContext, type ActorWorker, SessionActor, type Wait } from "..
 import { Transcript } from "../../src/chat/transcript.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { LiveRelay } from "../../src/daemon/live.ts"
+import { register as registerQuestions } from "../../src/extensions/questions.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { Monitor } from "../../src/perm/monitor.ts"
@@ -824,7 +825,8 @@ export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
  * `office.harness` and `office.workers` are the harness. `scheduler` is its actors' (default `realScheduler`).
  * `folder` is a folder to chat in. `connections` (`{name: model}`) adds connections on `fake`, each on `model`. With
  * `codex`, the office is `makeCodex`'s and its Codex sessions over a fake app-server are `office.codex`, on the
- * harness's hooks (minh may then use Codex unless `files` replace him); `codex` is what `makeCodex` returned.
+ * harness's hooks (minh may then use Codex unless `files` replace him); `codex` is what `makeCodex` returned. With
+ * `questions`, the questions extension is registered on each harness (`office.cards`).
  * `reopen()` closes the harness, the store left open, and puts a second one over the same office in `harness`, on a
  * new registry: the office stopped and started again. Call inside a test: when it finishes the harness closes
  * before the store does.
@@ -835,11 +837,13 @@ export async function makeHarness(
     codex = false,
     connections = {},
     scheduler = realScheduler,
+    questions = false,
     ...options
   }: Omit<NonNullable<Parameters<typeof chatOffice>[1]>, "office"> & {
     codex?: boolean
     connections?: Record<string, string>
     scheduler?: Scheduler
+    questions?: boolean
   } = {},
 ) {
   let harness: ChatHarness | undefined
@@ -886,6 +890,7 @@ export async function makeHarness(
     }
     office.harness = harness
     office.workers = harness
+    if (questions) registerQuestions(office)
     return harness
   }
   const h = {
