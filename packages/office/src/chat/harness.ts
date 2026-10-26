@@ -298,7 +298,7 @@ export class ChatHarness implements SessionHarness {
       if (!(await this.office.connections.names()).includes(connection)) throw unknown()
       own = (await this.office.connections.resolve(connection, null)).llm_config?.model
     } catch (error) {
-      if (error instanceof ConnectionGone || error instanceof BadConnectionName) throw unknown()
+      if (error instanceof ConnectionGone) throw unknown()
       if (!(error instanceof ProviderError)) throw error
       // Its error may name the office's files; the log says which connection, the client gets no path.
       this.log(`connection ${connection} can't be used; session ${sessionId} stays where it is`)

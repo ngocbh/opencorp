@@ -5,7 +5,7 @@ import { AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
 import { AUTH_FILE_ENV, ConnectionFile } from "../../src/chat/connections.ts"
 import { DEFAULT_PRICE } from "../../src/chat/cost.ts"
 import { type Lister, TIMED_OUT, ownModels } from "../../src/chat/models.ts"
-import { type ActorContext, WOKEN_NOTE, refusedKey } from "../../src/chat/session_actor.ts"
+import { WOKEN_NOTE, refusedKey } from "../../src/chat/session_actor.ts"
 import { HarnessError } from "../../src/chat/state.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { writePrivate } from "../../src/secrets.ts"
@@ -15,20 +15,14 @@ import { waitFor } from "../helpers.ts"
 import {
   ACCESS,
   type ChatOffice,
-  chatOffice,
   errors,
   fakeLlm,
-  makeActor,
   makeHarness,
-  newSession,
   noWorkersLeft,
   REFRESH,
   replyRunning,
   type ScriptedWorker,
-  say,
   scriptedWorker,
-  session,
-  startActor,
   status,
   texts,
 } from "./helpers.ts"
@@ -36,24 +30,15 @@ import {
 setDefaultTimeout(60_000)
 afterAll(noWorkersLeft)
 
-/** Session `sid`'s connection, model and note. */
-function chose(o: ChatOffice, sid: string): [string | null, string | null, string | null] {
-  const { connection, model, model_note } = session(o, sid)
-  return [connection, model, model_note]
-}
-
-/** Workers for an actor's context that spawn through `o`'s registry, recording each spawn's env. */
-function recordEnvs(o: ChatOffice): { workers: ActorContext["workers"]; envs: Record<string, string>[] } {
+/** Records the env of each spawn through `o`'s registry; returns them, in order. */
+function recordEnvs(o: ChatOffice): Record<string, string>[] {
   const envs: Record<string, string>[] = []
-  return {
-    envs,
-    workers: {
-      spawn: (job, sessionDir, handlers, options) => {
-        envs.push(options.env)
-        return o.ctx.workers.spawn(job, sessionDir, handlers, options)
-      },
-    },
+  const spawn = o.registry.spawn.bind(o.registry)
+  o.registry.spawn = (job, sessionDir, handlers, options) => {
+    envs.push(options?.env ?? {})
+    return spawn(job, sessionDir, handlers, options)
   }
+  return envs
 }
 
 /** Reports a model call of `model` on `scripted`'s run that took `input` and gave `output` tokens. */
@@ -321,25 +306,20 @@ test("resolution has one deadline and falls back with a note", async () => {
 
 test("changing the default never moves an existing chat", async () => {
   const fake = await fakeLlm()
-  const o = await chatOffice(fake, { connections: { second: "stub-2" } })
+  const h = await makeHarness(fake, { connections: { second: "stub-2" } })
   fake.script({ content: "still one" })
-  const { actor, sid } = await startActor(o)
-  await o.office.connections.setDefault("second")
-  expect(await say(o, actor, sid, "hi")).toBe("still one")
+  const s = await start(h)
+  await h.office.connections.setDefault("second")
+  expect(await tell(h, s.id, "hi")).toBe("still one")
   expect(fake.requests().at(-1)!.model).toBe("stub")
-  expect(chose(o, sid)).toEqual(["office", null, null])
-  expect(session(o, sid).run_ids).toHaveLength(1)
+  expect(picked(h.store.getSession(s.id)!)).toEqual(["office", null, null])
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(1)
 })
 
 test("a new chat on a second connection records it", async () => {
-  const fake = await fakeLlm()
-  const o = await chatOffice(fake, { connections: { second: "stub-2" } })
-  scriptedWorker(o)
-  const sid = await newSession(o, { connection: "second", model: "stub-5" })
-  await makeActor(o, sid).start()
-  const run = o.office.store.getRun(session(o, sid).run_ids.at(-1)!)!
-  expect([run.connection, run.model]).toEqual(["second", "stub-5"])
-  expect(o.jobs[0]!.llm_config).toMatchObject({ model: "stub-5" })
+  const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
+  const s = await start(h, { connection: "second", model: "stub-5" })
+  expect(recordOf(h, s.id)).toEqual(["second", "stub-5"])
 })
 
 test("set model takes effect on the next turn with a fresh run", async () => {
@@ -531,22 +511,20 @@ async function subscribe(o: ChatOffice, name = "chatgpt", prices: Record<string,
 
 test("a subscription chat runs on its own sign in without a key", async () => {
   const fake = await fakeLlm()
-  const o = await chatOffice(fake)
-  const auth = await subscribe(o)
-  const { workers, envs } = recordEnvs(o)
-  const sid = await newSession(o, { connection: "chatgpt" })
-  await makeActor(o, sid, { workers }).start()
-  await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
-  const [job] = o.jobs
+  const h = await makeHarness(fake)
+  const auth = await subscribe(h)
+  const envs = recordEnvs(h)
+  const s = await start(h, { connection: "chatgpt" })
+  const [job] = h.jobs
   const [env] = envs
-  expect(o.jobs).toHaveLength(1)
+  expect(h.jobs).toHaveLength(1)
   expect(env![AUTH_FILE_ENV]).toBe(auth)
   expect(job!.llm_config).toEqual({ provider: "openai", model: "gpt-sub" })
-  for (const text of [JSON.stringify(env), JSON.stringify(job!.llm_config), o.logs.join("\n")]) {
+  for (const text of [JSON.stringify(env), JSON.stringify(job!.llm_config), h.logs.join("\n")]) {
     expect(text).not.toContain(ACCESS)
     expect(text).not.toContain(REFRESH)
   }
-  expect(chose(o, sid)).toEqual(["chatgpt", null, null])
+  expect(picked(h.store.getSession(s.id)!)).toEqual(["chatgpt", null, null])
   expect(fake.requests()).toEqual([])
 })
 
@@ -554,42 +532,36 @@ test.each([
   ["unpriced", {}, 0],
   ["priced", { "gpt-sub": { input: 1, output: 2 } }, 3],
 ] as const)("a subscriptions usage is free unless its file prices it [%s]", async (_case, prices, usd) => {
-  const fake = await fakeLlm()
-  const o = await chatOffice(fake)
-  await subscribe(o, "chatgpt", prices)
-  const workers = scriptedWorker(o)
-  const sid = await newSession(o, { connection: "chatgpt" })
-  await makeActor(o, sid).start()
+  const h = await makeHarness(await fakeLlm())
+  await subscribe(h, "chatgpt", prices)
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder, { connection: "chatgpt" })
   modelCall(workers[0]!, "gpt-sub", 1_000_000, 1_000_000)
-  const [model, price] = await charged(o, sid)
+  const [model, price] = await charged(h, s.id)
   expect(model).toBe("gpt-sub")
   expect(price).toBeCloseTo(usd)
-  expect(session(o, sid).cost).toBeCloseTo(usd)
+  expect(h.store.getSession(s.id)!.cost).toBeCloseTo(usd)
 })
 
 test("a subscription run is recorded on it and resumed and learned from on the same sign in", async () => {
-  const fake = await fakeLlm()
-  const o = await chatOffice(fake)
-  const auth = await subscribe(o)
-  const workers = scriptedWorker(o)
-  const { workers: recording, envs } = recordEnvs(o)
-  const sid = await newSession(o, { connection: "chatgpt" })
-  const actor = makeActor(o, sid, { workers: recording })
-  await actor.start()
-  const runId = actor.runId!
-  const run = o.office.store.getRun(runId)!
-  expect([run.connection, run.model]).toEqual(["chatgpt", null])
+  const h = await makeHarness(await fakeLlm())
+  const auth = await subscribe(h)
+  const workers = scriptedWorker(h)
+  const envs = recordEnvs(h)
+  const s = await h.harness.startSession("minh", h.folder, { connection: "chatgpt" })
+  const runId = s.run_ids.at(-1)!
+  expect(recordOf(h, s.id)).toEqual(["chatgpt", null])
   // The worker is killed: its retry advances the same run on the same sign-in.
   workers[0]!.handlers.exited(workers[0]!.worker, 1)
   await waitFor(() => workers.length === 2, { what: "the retry" })
   expect(workers[1]!.job).toMatchObject({ kind: "advance", run_id: runId })
-  expect(o.kinds.map((kind, i) => [kind, envs[i]![AUTH_FILE_ENV]])).toEqual([
+  expect(h.kinds.map((kind, i) => [kind, envs[i]![AUTH_FILE_ENV]])).toEqual([
     ["chat", auth],
     ["advance", auth],
   ])
   // Still free: a model its file doesn't price costs nothing on the retried run.
   modelCall(workers[1]!, "gpt-sub", 1_000_000, 0)
-  expect(await charged(o, sid)).toEqual(["gpt-sub", 0])
+  expect(await charged(h, s.id)).toEqual(["gpt-sub", 0])
 })
 
 test("a chat moved off a subscription pays for its unpriced models again", async () => {
@@ -608,24 +580,24 @@ test("a chat moved off a subscription pays for its unpriced models again", async
 })
 
 test("a connection removed as its chat starts is priced as a key", async () => {
-  const fake = await fakeLlm()
-  const o = await chatOffice(fake, { connections: { second: "stub-2" } })
-  const workers = scriptedWorker(o)
-  const connections = o.office.connections
+  const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
+  const workers = scriptedWorker(h)
+  const connections = h.office.connections
   const resolve = connections.resolve.bind(connections)
+  const calls: (string | null)[] = []
   connections.resolve = async (name, model) => {
     const provider = await resolve(name, model)
-    // Removed between the spawn resolving it and pricing it.
-    if (name === "second") await connections.remove(name)
+    calls.push(name)
+    // The spawn's resolve, after the start checked it can be used: removed between resolving it and pricing it.
+    if (calls.filter((c) => c === "second").length === 2) await connections.remove("second")
     return provider
   }
-  const sid = await newSession(o, { connection: "second" })
-  await makeActor(o, sid).start()
-  expect(session(o, sid).connection).toBe("second")
+  const s = await h.harness.startSession("minh", h.folder, { connection: "second" })
+  expect(h.store.getSession(s.id)!.connection).toBe("second")
   expect(await connections.names()).not.toContain("second")
   // Under the company's $5 cap.
   modelCall(workers[0]!, "unpriced", 100_000, 0)
-  const [, usd] = await charged(o, sid)
+  const [, usd] = await charged(h, s.id)
   expect(usd).toBeCloseTo(DEFAULT_PRICE.input / 10)
 })
 
