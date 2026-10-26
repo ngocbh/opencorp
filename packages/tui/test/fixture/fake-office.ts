@@ -1,5 +1,7 @@
-// A stand-in office for tests and `bun run dev`: an in-memory office on a unix socket that
-// speaks the office's HTTP routes and SSE framing, with no Python.
+// A fake office for the frame tests and the CLI's scripted cases: an in-memory office on a unix
+// socket that speaks the office's HTTP routes and SSE framing. `bun run dev` and the tests that
+// check office behaviour use the real office; `test/office/contract.test.ts` checks this fake
+// against the real office.
 import type {
   BrowserSession,
   Comment,
@@ -28,9 +30,9 @@ import { createTwoFilesPatch } from "diff"
 import { createHash, randomBytes } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
-import type { TuiInput } from "../src/app"
-import { HANDLE, harnessesOf } from "../src/routes/picker/people"
-import { createTuiResolvedConfig } from "../test/fixture/tui-runtime"
+import type { TuiInput } from "../../src/app"
+import { HANDLE, harnessesOf } from "../../src/routes/picker/people"
+import { createTuiResolvedConfig } from "./tui-runtime"
 
 /** Returns `run()` input (minus `args`) wired to `office`, or to a socket nothing listens on. */
 export function createStub(office?: FakeOffice): Omit<TuiInput, "args"> {

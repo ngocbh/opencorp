@@ -1,7 +1,7 @@
 import { beforeEach, expect, test } from "bun:test"
 import { existsSync, readFileSync, rmSync } from "node:fs"
 import path from "node:path"
-import { createFakeOffice, createStub } from "../script/stub"
+import { createFakeOffice, createStub } from "./fixture/fake-office"
 import { Global } from "../src/core/global"
 import type { CapturedLine } from "@opentui/core"
 import { bootFrame } from "./fixture/frame"

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { Person } from "@opencorp/protocol"
-import { createFakeOffice, createStub, seed } from "../../../script/stub"
+import { createFakeOffice, createStub, seed } from "../../fixture/fake-office"
 import { bootFrame } from "../../fixture/frame"
 import { typeInto } from "./type"
 

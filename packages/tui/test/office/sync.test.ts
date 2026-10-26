@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import type { Message, Question } from "@opencorp/protocol"
-import { createFakeOffice, type FakeOffice } from "../../script/stub"
+import { createFakeOffice, type FakeOffice } from "../fixture/fake-office"
 import { createOfficeClient, emptyState, openQuestions, createOfficeSync } from "@opencorp/client"
 import { until } from "../fixture/until"
 

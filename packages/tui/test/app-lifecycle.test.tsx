@@ -2,7 +2,7 @@ import { expect, mock, test } from "bun:test"
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { Effect } from "effect"
 import { Global } from "../src/core/global"
-import { createFakeOffice, createStub } from "../script/stub"
+import { createFakeOffice, createStub } from "./fixture/fake-office"
 
 async function renderUntil(setup: TestRendererSetup, text: string) {
   const deadline = Date.now() + 5000

@@ -1,6 +1,6 @@
 import type { Message } from "@opencorp/protocol"
 import { expect, test } from "bun:test"
-import { createFakeOffice, createStub } from "../script/stub"
+import { createFakeOffice, createStub } from "./fixture/fake-office"
 import { bootFrame } from "./fixture/frame"
 
 test("a waiting session's header names who it waits on, and a capped one says so", async () => {

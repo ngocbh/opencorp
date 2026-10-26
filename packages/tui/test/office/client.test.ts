@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test"
-import { createFakeOffice, type FakeOffice } from "../../script/stub"
+import { createFakeOffice, type FakeOffice } from "../fixture/fake-office"
 import {
   ADD_CONNECTION_TIMEOUT_MS,
   CREATE_TIMEOUT_MS,

@@ -1,6 +1,6 @@
 import type { Session } from "@opencorp/protocol"
 import { expect, test } from "bun:test"
-import { createFakeOffice, createStub, seed } from "../script/stub"
+import { createFakeOffice, createStub, seed } from "./fixture/fake-office"
 import { bootFrame } from "./fixture/frame"
 
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString()

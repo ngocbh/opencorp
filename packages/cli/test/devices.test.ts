@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import { readIdentity, tokenSha256 } from "@opencorp/client/node"
-import { createFakeOffice, type FakeOffice } from "@opencorp/tui/stub"
+import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
 import { main } from "../src/main"
 import { usePrompter, type Prompter } from "../src/prompt"
 

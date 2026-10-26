@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { createFakeOffice, createStub } from "../../../script/stub"
+import { createFakeOffice, createStub } from "../../fixture/fake-office"
 import { bootFrame } from "../../fixture/frame"
 
 const stops = (office: ReturnType<typeof createFakeOffice>, id: string) =>

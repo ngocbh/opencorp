@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { createFakeOffice, type FakeOffice } from "../../script/stub"
+import { createFakeOffice, type FakeOffice } from "../fixture/fake-office"
 import { BASE } from "@opencorp/client"
 import { until } from "../fixture/until"
 

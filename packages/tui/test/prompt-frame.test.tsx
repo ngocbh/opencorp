@@ -1,6 +1,6 @@
 import type { Message } from "@opencorp/protocol"
 import { expect, test } from "bun:test"
-import { createFakeOffice, createStub } from "../script/stub"
+import { createFakeOffice, createStub } from "./fixture/fake-office"
 import { INTERRUPTED_TEXT } from "../src/routes/chat/freeze"
 import { bootFrame } from "./fixture/frame"
 import { until } from "./fixture/until"

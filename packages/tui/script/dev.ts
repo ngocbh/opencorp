@@ -1,13 +1,15 @@
-// Runs the TUI in this terminal: `bun run dev` against a seeded fake office that streams a
-// scripted reply to each prompt; `bun run dev --office` against the office at the default
-// socket, or `--socket PATH` against the one at PATH (both in the current folder).
-import type { Message } from "@opencorp/protocol"
+// Runs the TUI in this terminal: `bun run dev` against a real office on a temp home whose model
+// is the fake LLM, replying with a scripted reply; `bun run dev --office` against the office at
+// the default socket, or `--socket PATH` against the one at PATH (both in the current folder).
+import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
 import { Effect } from "effect"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { parseArgs } from "node:util"
 import { run } from "../src/app"
 import { Global } from "../src/core/global"
 import { readIdentity, defaultSocket, identityPath } from "@opencorp/client/node"
-import { createFakeOffice, type FakeOffice } from "./stub"
 
 const { values } = parseArgs({
   options: {
@@ -21,64 +23,37 @@ const { values } = parseArgs({
 
 const REPLY = "Looked at it. The flaky test waits on a timer; I'd swap it for a fake clock and rerun."
 
-/**
- * Answers every prompt with REPLY, streamed a word at a time, then ends the reply.
- * Esc stops the reply and ends it at once.
- */
-function scriptReplies(office: FakeOffice) {
-  // The running reply per session; an interrupt or a newer reply ends it.
-  const replies = new Map<string, object>()
-  office.onInterrupt((sessionId) => {
-    if (!replies.delete(sessionId)) return
-    office.replyEnded(sessionId)
-  })
-  office.onPrompt(async (sessionId) => {
-    const reply = {}
-    replies.set(sessionId, reply)
-    const messageId = office.nextId()
-    const partId = office.nextId()
-    const message: Message = {
-      id: messageId,
-      session_id: sessionId,
-      role: "assistant",
-      parts: [{ id: partId, type: "text", text: "" }],
-      created_at: new Date().toISOString(),
-    }
-    office.state.messages[sessionId] = [...(office.state.messages[sessionId] ?? []), message]
-    office.live({ type: "message.updated", session_id: sessionId, data: structuredClone(message) as never })
-    for (const word of REPLY.split(/(?= )/)) {
-      await Bun.sleep(2000 / REPLY.split(" ").length)
-      if (replies.get(sessionId) !== reply) return
-      const part = message.parts[0] as { text: string }
-      part.text += word
-      office.live({
-        type: "part.delta",
-        session_id: sessionId,
-        data: { message_id: messageId, part_id: partId, text: word },
-      })
-    }
-    replies.delete(sessionId)
-    office.replyEnded(sessionId)
-  })
-}
-
 const real = values.socket ?? (values.office ? defaultSocket() : undefined)
-const fake = real ? undefined : createFakeOffice()
-if (fake) scriptReplies(fake)
-// The fake's seeded sessions and people are in /tmp/proj.
-const cwd = fake ? "/tmp/proj" : process.cwd()
-const socket = real ?? fake!.socket
+let office: TestOffice | undefined
+let cwd = process.cwd()
+if (!real) {
+  const started = startOffice()
+  // A signal while the office starts, or one the TUI doesn't end on, still stops it.
+  for (const sig of ["SIGINT", "SIGTERM"] as const)
+    process.once(sig, async () => {
+      await (await started.catch(() => undefined))?.stop()
+      process.exit(128 + os.constants.signals[sig])
+    })
+  office = await started
+  // Enough replies that every model call gets one.
+  office.llm.script(...Array.from({ length: 300 }, () => ({ content: REPLY })))
+  // The TUI keeps its own state under OPENCORP_HOME: the temp home's, not ~/.opencorp.
+  process.env.OPENCORP_HOME = office.home
+  cwd = path.join(office.root, "proj")
+  fs.mkdirSync(cwd)
+  fs.writeFileSync(path.join(cwd, "README.md"), "# proj\n\nA project folder for `bun run dev`.\n")
+}
 
 try {
   await Effect.runPromise(
     run({
-      socket,
-      // A real office may need this device's token; the fake takes none.
+      socket: real ?? office!.socket,
+      // A real office may need this device's token; the temp office has no devices, so it takes none.
       token: real ? readIdentity(identityPath())?.token : undefined,
       cwd,
       args: { sessionID: values.session, continue: values.continue, person: values.person },
     }).pipe(Effect.provide(Global.layer)),
   )
 } finally {
-  fake?.stop()
+  await office?.stop()
 }

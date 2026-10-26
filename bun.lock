@@ -99,6 +99,9 @@
         "solid-js": "catalog:",
         "strip-ansi": "catalog:",
       },
+      "devDependencies": {
+        "@opencorp/office": "workspace:*",
+      },
     },
     "packages/yian/ts": {
       "name": "@ngocbh/yian",

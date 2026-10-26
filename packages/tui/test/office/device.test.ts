@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { createFakeOffice, serveUnix, type FakeOffice } from "../../script/stub"
+import { createFakeOffice, serveUnix, type FakeOffice } from "../fixture/fake-office"
 import {
   createOfficeClient,
   OfficeError,

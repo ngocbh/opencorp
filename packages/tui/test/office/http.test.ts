@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { serveUnix } from "../../script/stub"
+import { serveUnix } from "../fixture/fake-office"
 import {
   OfficeError,
   OfficeTimeout,
