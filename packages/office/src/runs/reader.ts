@@ -783,6 +783,39 @@ export function readEvents(
   return { events, next_after: nextAfter, cut }
 }
 
+/** A newline, appended to a line given without one. */
+const NL = Buffer.from("\n")
+
+/** Record `seq`'s line `bytes` (with or without its newline) as a page shows it, a stub with its size when it is over
+ *  BIG_LINE; null when it doesn't read as record `seq`. */
+export function lineEvent(bytes: Buffer, seq: number): RunEvent | null {
+  // Pages count a line's size with its newline: the stub size and the BIG_LINE boundary must match theirs.
+  const line = bytes.at(-1) === 0x0a ? bytes : Buffer.concat([bytes, NL])
+  return line.length > BIG_LINE ? stub(line.subarray(0, 256), seq, line.length) : decode(line, seq, false)
+}
+
+/**
+ * The records of the log `path` from seq `from` through `to` (to its last complete line when null), each as
+ * `lineEvent` maps it; a null, then nothing more, at a line that doesn't read as its seq. The file is opened on the
+ * first pull and closed when the generator ends or is returned.
+ */
+export function* logEvents(path: string, from: number, to: number | null): Generator<RunEvent | null> {
+  if (to !== null && from > to) return
+  const fd = fs.openSync(path, "r")
+  try {
+    let seq = from
+    for (const line of lines(fd, 0, fs.fstatSync(fd).size, BIG_LINE, from)) {
+      const event = line.bytes === null ? stub(line.head, seq, line.size) : decode(line.bytes, seq, false)
+      yield event
+      seq += 1
+      // Stopping here, not at the next line, leaves that line unread.
+      if (event === null || (to !== null && seq > to)) return
+    }
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
 /**
  * The record with `seq`: its strings cut only when its payload is over EVENT_BYTES, and a stub with its size when it
  * is still over after that, or when its line is over HUGE_LINE (never held or parsed). Null if there is none, and

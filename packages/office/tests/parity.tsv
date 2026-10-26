@@ -940,7 +940,23 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/routes_questions.test.ts::an answer goes to the harness when there are no cards	routes/questions.py's "harness" in office.extras branch (an actor without the cards extension), through the stand-in (rule 1)	O3-9
 —	new	packages/office/tests/daemon/routes_questions.test.ts::an answer to a codex card codex no longer waits on is 200 and stale	design §7.1: daemon/routes/questions.py's answer contract for Codex cards	O3-14
 —	new	packages/office/tests/daemon/routes_questions.test.ts::stop is credited to the verified person	through the stand-in (rule 1): the chat run that test_stopping_a_manager_question_is_credited_to_the_verified_person needs is O4a-9's	O3-9
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a client that leaves closes its viewer	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a dropped viewer gets reset	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a live stream sends the log to the joins seq then the calls then frames	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a log behind the view gets reset and closes the viewer	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a merged chunk carries its last index	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a ping keeps an idle live stream open	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a rebuilding view is joined again	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a reconnect after the views seq skips the records it has	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a run no worker feeds streams its log then run end	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a stream waiting on a rebuild sends pings	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::every runs route answers 501 not implemented	design §4.3: GET /runs* answers 501 until the run views (O4b-3, O4b-7 replace it)	O2-6
+—	new	packages/office/tests/daemon/routes_runs.test.ts::run end reads the log past the last seq sent	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::the live route answers 404 for a run the store does not hold	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::the live route answers 404 no log for a run without a log	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::the live route refuses an after that is not a seq without echoing it	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::the live route refuses head	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::the live route skips records up to after	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_sessions.test.ts::a codex prompt or steer a prompt check refuses is 422 and echoes nothing	design §6 rules 1 and 7, §7.1: chat/harness.py hands a Codex session's prompt and steer to the Codex sessions, whose promptCheck refusal says only the hook's text	O3-15
 —	new	packages/office/tests/daemon/routes_sessions.test.ts::a codex session over the routes	design §7.1, §7.3: daemon/routes/sessions.py over chat/harness.py's Codex dispatch: create, prompt, a live part on /events, a card answered through the question routes, Esc, end, then 409 not_live; the yian-chat version stays open for O4a-7b	O3-15
 —	new	packages/office/tests/daemon/routes_sessions.test.ts::a cost cap or a model on a codex session is 422 not supported	design §7.1: chat/harness.py set_cost_cap and set_model refuse a Codex session (422 not_supported)	O3-15
@@ -991,8 +1007,15 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/harness/translate.test.ts::a typed form answer that isnt a number makes no reply	design §7.1: the adapter builds the reply from its own card; numbers parse as decimals only (translate.py:444-451's int()/float(), strict)	O3-11
 —	new	packages/office/tests/harness/translate.test.ts::abort marks an unfinished text part and interrupts running tools	D9, §7.3: the slice of chat/transcript.py's abort the translator needs; chat/test_transcript.py stays with O4a-7a	O3-13
 —	new	packages/office/tests/harness/translate.test.ts::an answer that isnt an offered option makes no reply	design §7.1 and security rule 11: an answer that isn't an offered label is refused	O3-11
+—	new	packages/office/tests/hq/api.test.ts::a company update that drops the person ends the live stream	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/hq/api.test.ts::a revoke ends an open live stream	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/hq/api.test.ts::a wrong method under api is a json 404	design §6.4: a wrong method under /api is 404 no_route, as Starlette's catch-all route was	O2-9
+—	new	packages/office/tests/hq/api.test.ts::an expired session ends the live stream at its next frame	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/hq/api.test.ts::get office isnt on the hq allowlist	design §6, rule 7 (P14): GET /office is office.sock only	O2-9
+—	new	packages/office/tests/hq/api.test.ts::the hq live route answers 404 for an unknown run	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/hq/api.test.ts::the hq live route refuses head	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/hq/api.test.ts::the hq live route streams a runs log then run end	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/hq/api.test.ts::the live route is on the allowlist and needs a session	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/hq/auth.test.ts::only the first cookie header counts	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
 —	new	packages/office/tests/hq/auth.test.ts::the open requests and the app need no session	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
 —	new	packages/office/tests/hq/auth.test.ts::the session check reads the cookie named for the host port	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
@@ -1226,6 +1249,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/reader.test.ts::a deeply nested payload is cut at its depth	security review: bounded recursion	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a derived commit shows its value when opened	#362 PR 8b, §5.5	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a line over the line cap makes the log unreadable before yian reads it	security review: a log must not exhaust memory; yian's reader joins whole lines	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a line over the page cap maps to a stub with its size	design §2.6 (P7): the live route maps records as the run page does	O4b-3
+—	new	packages/office/tests/runs/reader.test.ts::a line that is not its seq maps to null	design §2.6 (P7): the live route maps records as the run page does	O4b-3
+—	new	packages/office/tests/runs/reader.test.ts::a live record line maps as a page shows it	design §2.6 (P7): the live route maps records as the run page does	O4b-3
 —	new	packages/office/tests/runs/reader.test.ts::a log over the fold cap shows no derived value	security review: the fold holds the whole log	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a page stops after its scan budget	security review: a page's synchronous reads are bounded (Python read pages in a thread)	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a payload whose cuts would name too much is a size stub	security review: bounded output	O4b-5
@@ -1233,6 +1259,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/reader.test.ts::a sparse entry marks every few mib of records	security review: a page's synchronous reads are bounded (Python read pages in a thread)	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a waiting node stays open through a resume and a woken one runs on	yian #1057, #1064: a waiting node is non-terminal and a resume doesn't retry it	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::an unterminated tail over the line cap makes the log unreadable	security review: a line over the cap is refused before it is read whole	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::log events read records from a seq through a seq	design §2.6 (P7): the live route maps records as the run page does	O4b-3
+—	new	packages/office/tests/runs/reader.test.ts::log events yield null at a line that is not its seq and stop	design §2.6 (P7): the live route maps records as the run page does	O4b-3
 —	new	packages/office/tests/runs/records.test.ts::a cancelled run shows interrupted with the office reason	§5.1 status mapping	O4b-6
 —	new	packages/office/tests/runs/records.test.ts::a crashed running or missing index row asks the log and else has no outcome	§5.1 status mapping; rules 4 and 5	O4b-6
 —	new	packages/office/tests/runs/records.test.ts::a failed run shows failed with yians failure and node	§5.1 status mapping	O4b-6

@@ -92,7 +92,10 @@ test("a failing stop callback does not skip the rest", async () => {
 
 // [method, route pattern] for the routes that stream; GET /events is tested over a socket in
 // routes_events.test.ts.
-const STREAMS: [string, string][] = [["GET", "/events"]]
+const STREAMS: [string, string][] = [
+  ["GET", "/events"],
+  ["GET", "/runs/:id/live"],
+]
 
 // [method, route pattern, concrete path, body] for every other route; null is no body. Python's table
 // (tests/daemon/test_app.py) covered the people, work-item, question, profile and session routes; GET /health,

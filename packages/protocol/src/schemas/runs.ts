@@ -181,6 +181,58 @@ export const RunEventPage = z.strictObject({
 })
 export type RunEventPage = z.input<typeof RunEventPage>
 
+/** A `record` frame of GET /runs/{id}/live: one run-log record, as GET /runs/{id}/events pages show it. */
+export const RunLiveRecord = z.strictObject({
+  seq: z.int().min(0),
+  record: RunEvent,
+})
+export type RunLiveRecord = z.input<typeof RunLiveRecord>
+
+/** A `call` frame of GET /runs/{id}/live: a model call in flight when the stream joined, with its text so far. */
+export const RunLiveCall = z.strictObject({
+  /** The agent node making the call. */
+  node: z.string(),
+  /** The call's number within the node's attempt. */
+  n: z.int().min(0),
+  text: z.string(),
+  /** The `index` of the call's next chunk. */
+  next_index: z.int().min(0),
+})
+export type RunLiveCall = z.input<typeof RunLiveCall>
+
+/** A `start` frame of GET /runs/{id}/live: a model call started. */
+export const RunLiveStart = z.strictObject({
+  node: z.string(),
+  n: z.int().min(0),
+  /** The model it calls; null when not known. */
+  model: z.string().nullable(),
+  /** What the call is for. */
+  purpose: z.string(),
+  started_at: z.string(),
+})
+export type RunLiveStart = z.input<typeof RunLiveStart>
+
+/**
+ * A `chunk` frame of GET /runs/{id}/live: text a model call streamed. Merged chunks carry the last one's `index`:
+ * append the text; the next chunk's index is `index + 1`.
+ */
+export const RunLiveChunk = z.strictObject({
+  node: z.string(),
+  n: z.int().min(0),
+  index: z.int().min(0),
+  text: z.string(),
+})
+export type RunLiveChunk = z.input<typeof RunLiveChunk>
+
+/** An `end` frame of GET /runs/{id}/live: a model call ended. */
+export const RunLiveEnd = z.strictObject({
+  node: z.string(),
+  n: z.int().min(0),
+  /** Why the call failed; null when it succeeded. */
+  error: z.string().nullable(),
+})
+export type RunLiveEnd = z.input<typeof RunLiveEnd>
+
 /** The data of a run.updated event: from the store and memory, node ids only. */
 export const RunUpdated = z.strictObject({
   run_id: Ulid,

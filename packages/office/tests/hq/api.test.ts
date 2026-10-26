@@ -2,11 +2,30 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
+import { RunLiveRecord } from "@opencorp/protocol"
 import { parse, stringify } from "yaml"
 import { hashPassword } from "../../src/auth/passwords.ts"
 import { SECRET_KEYS } from "../../src/company/secret_keys.ts"
+import type { Office } from "../../src/daemon/office.ts"
+import type { Hq } from "../../src/hq/core.ts"
+import { TTL } from "../../src/hq/sessions.ts"
+import { readEvents, refresh } from "../../src/runs/reader.ts"
 import { git } from "../company/helpers.ts"
-import { CEO, makeOffice, parse as parseReply, raw } from "../daemon/helpers.ts"
+import { waitFor } from "../helpers.ts"
+import {
+  CEO,
+  type Frame,
+  ULID,
+  checkedLive,
+  frames,
+  joinedRun,
+  makeOffice,
+  parse as parseReply,
+  raw,
+  storedRun,
+  take,
+  within,
+} from "../daemon/helpers.ts"
 import { question, session, workItem } from "../store/helpers.ts"
 import { HOST, ORIGIN, PORT, dist, makeHq, signedIn, web } from "./helpers.ts"
 
@@ -184,4 +203,105 @@ test("a wrong method under api is a json 404", async () => {
     expect([r.status, (JSON.parse(r.body) as Body).error, target]).toEqual([404, "no_route", target])
     expect(r.head.toLowerCase()).not.toContain("\r\nallow:")
   }
+})
+
+test("the live route is on the allowlist and needs a session", async () => {
+  const office = makeOffice()
+  const client = await signedIn(await makeHq(office))
+  const { runId } = storedRun(office)
+  const res = await client.stream(`/api/runs/${runId}/live`)
+  expect(res.statusCode).toBe(200)
+  expect(res.headers["content-type"]).toBe("text/event-stream; charset=utf-8")
+  res.destroy()
+  client.cookies.clear()
+  const r = await client.get(`/api/runs/${runId}/live`)
+  expect([r.status, (r.json() as Body).error]).toEqual([401, "sign_in_required"])
+})
+
+test("the hq live route refuses head", async () => {
+  const office = makeOffice()
+  const client = await signedIn(await makeHq(office))
+  const { runId } = storedRun(office)
+  const r = await client.request("HEAD", `/api/runs/${runId}/live`)
+  expect([r.status, r.headers.allow]).toEqual([405, "GET"])
+})
+
+test("the hq live route streams a runs log then run end", async () => {
+  const office = makeOffice()
+  const hq = await makeHq(office)
+  const client = await signedIn(hq)
+  const sid = office.store.listHqSessions()[0]!.id
+  const { runId, log } = storedRun(office)
+  const got = await within(Array.fromAsync(frames(await client.stream(`/api/runs/${runId}/live`))))
+  const page = readEvents(log, await refresh(log, null), { after: null, limit: 10_000 })
+  const records = page.events.map((e): Frame => ["record", null, JSON.parse(JSON.stringify({ seq: e.seq, record: e }))])
+  expect(got).toEqual([["comment", null, "connected"], ...records, ["run_end", null, {}]])
+  for (const [event, , data] of got) if (event === "record") RunLiveRecord.parse(data)
+  await waitFor(() => office.bus.subscriberCount === 0 && hq.sessions.streams(sid) === 0, {
+    timeout: 5000,
+    what: "the stream to be unregistered",
+  })
+})
+
+test("the hq live route answers 404 for an unknown run", async () => {
+  const client = await signedIn(await makeHq(makeOffice()))
+  const r = await client.get(`/api/runs/${ULID}/live`)
+  expect(r.status).toBe(404)
+  expect(r.json()).toEqual({ error: "not_found", message: `no run ${ULID}` })
+})
+
+/** An HQ live stream of a run a worker feeds, read past its log to its first ping (every 50 ms): the stream is open.
+ *  Returns its frames' iterator, the HQ session's id, HQ and the office. */
+async function openLive(): Promise<{ office: Office; hq: Hq; sid: string; it: AsyncIterator<Frame> }> {
+  const office = makeOffice()
+  const hq = await makeHq(office)
+  hq.pingMs = 50
+  const client = await signedIn(hq)
+  const sid = office.store.listHqSessions()[0]!.id
+  const { runId, lastSeq } = joinedRun(office)
+  const it = frames(await client.stream(`/api/runs/${runId}/live`))
+  const head = checkedLive(await take(it, 3 + lastSeq))
+  expect(head[0]).toEqual(["comment", null, "connected"])
+  expect(head.at(-1)).toEqual(["comment", null, "ping"])
+  expect(hq.sessions.streams(sid)).toBe(1)
+  return { office, hq, sid, it }
+}
+
+/** Reads `it` until the stream ends, within 5 s, expecting only pings; then waits until HQ holds no stream of `sid`
+ *  and the bus no subscriber. */
+async function endsWithPings(it: AsyncIterator<Frame>, office: Office, hq: Hq, sid: string): Promise<void> {
+  const got: Frame[] = []
+  await within(
+    (async () => {
+      for (let step = await it.next(); !step.done; step = await it.next()) got.push(step.value)
+    })(),
+  )
+  expect(checkedLive(got).filter(([, , data]) => data !== "ping")).toEqual([])
+  await waitFor(() => office.bus.subscriberCount === 0 && hq.sessions.streams(sid) === 0, {
+    timeout: 5000,
+    what: "the stream to be unregistered",
+  })
+}
+
+test("a revoke ends an open live stream", async () => {
+  const { office, hq, sid, it } = await openLive()
+  await hq.sessions.revoke(sid)
+  await endsWithPings(it, office, hq, sid)
+})
+
+test("a company update that drops the person ends the live stream", async () => {
+  const { office, hq, sid, it } = await openLive()
+  git(office.paths.company, "rm", "-q", `people/${CEO}/person.yaml`)
+  git(office.paths.company, "commit", "-qm", "drop the ceo")
+  const sha = await office.git.readHead()
+  office.store.emit("company.updated", sha, { sha })
+  await endsWithPings(it, office, hq, sid)
+  expect(office.store.getHqSession(sid)).toBeUndefined()
+})
+
+test("an expired session ends the live stream at its next frame", async () => {
+  const { office, hq, sid, it } = await openLive()
+  // Past any session issued now.
+  hq.sessions.clock = () => new Date(Date.now() + 2 * TTL)
+  await endsWithPings(it, office, hq, sid)
 })
