@@ -14,7 +14,14 @@ import {
 } from "../../src/chat/session_actor.ts"
 import { PING } from "../../src/daemon/bus.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
-import { COULDNT_RESUME, COULDNT_START, ENDED_OVER_CAP, NEW_MODEL, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
+import {
+  CARD_CLOSED,
+  COULDNT_RESUME,
+  COULDNT_START,
+  ENDED_OVER_CAP,
+  NEW_MODEL,
+  WORKER_STOPPED,
+} from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Delivery, STOP_REASON } from "../../src/worker/job.ts"
@@ -715,6 +722,48 @@ test("fail with a live worker cancels through it", async () => {
   expect(o.kinds).toEqual(["chat"])
 })
 
+test("fail leaves a session whose stored status is no longer live", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, sid } = await startActor(o)
+  const runId = actor.runId!
+  // Ended in the store before this actor finished it.
+  o.office.store.updateSession(sid, { status: "ended" })
+  await actor.fail()
+  expect(status(o, sid)).toBe("ended")
+  expect(o.office.store.getRun(runId)!.endReason).toBeNull()
+})
+
+test("a cancel the live worker doesnt take is sent again by a hard stop at its exit", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  for (const took of [false, true]) {
+    const sid = await newSession(o)
+    const actor = makeActor(o, sid)
+    await actor.start()
+    const runId = actor.runId!
+    const scripted = workers.at(-1)!
+    await actor.abandon(CARD_CLOSED)
+    await waitFor(() => scripted.deliveries.length === 1, { what: "the cancel" })
+    const [cancel] = scripted.deliveries
+    expect(cancel!.op).toBe("cancel")
+    const before = o.kinds.length
+    // A run that never resumed refuses it; a run that took it gives its seq.
+    const reply = took ? { seq: 3, closed: [] } : { refused: "not_started" }
+    scripted.handlers.deliverReply(scripted.worker, { type: "deliver_reply", id: cancel!.id, ...reply })
+    scripted.handlers.exited(scripted.worker, 1)
+    if (took) {
+      // Time for a hard stop's cancel job to have spawned.
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      expect(o.kinds.length).toBe(before)
+    } else {
+      await waitFor(() => o.kinds.length === before + 1, { what: "the cancel job" })
+      const job = o.jobs.at(-1)
+      expect(job).toMatchObject({ kind: "advance", run_id: runId, advance: false, deliver: [{ op: "cancel" }] })
+    }
+  }
+})
+
 test("fail with a lingering waiting worker reports no run frame", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
@@ -738,13 +787,13 @@ test("a hard stop waits for the lingering worker and skips a run with no log", a
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
   const workers = scriptedWorker(o)
-  // The stop job reads the session's connection right after its log check, inside the exit's job.
+  // The stop job reads the run's connection right after its log check, inside the exit's job.
   const { connections } = o.ctx
-  const choice = connections.choice.bind(connections)
-  let choices = 0
-  connections.choice = (...args) => {
-    choices += 1
-    return choice(...args)
+  const resolve = connections.resolve.bind(connections)
+  let resolves = 0
+  connections.resolve = (...args) => {
+    resolves += 1
+    return resolve(...args)
   }
   // One session whose run has a log, then one whose run has none.
   for (const logged of [true, false]) {
@@ -760,16 +809,16 @@ test("a hard stop waits for the lingering worker and skips a run with no log", a
     await actor.fail()
     await waitFor(() => scripted.deliveries.length === 1, { what: "the cancel" })
     expect(o.kinds.length).toBe(before)
-    const read = choices
+    const read = resolves
     scripted.handlers.exited(scripted.worker, 0)
     // Queued after the exit: the exit job has run when it answers.
     await expect(actor.end()).rejects.toMatchObject({ status: 409, code: "not_live" })
     if (logged) {
-      expect(choices).toBe(read + 1)
+      expect(resolves).toBe(read + 1)
       await waitFor(() => o.kinds.length === before + 1, { what: "the cancel job" })
       expect(o.jobs.at(-1)).toMatchObject({ kind: "advance", advance: false, deliver: [{ op: "cancel" }] })
     } else {
-      expect(choices).toBe(read)
+      expect(resolves).toBe(read)
       expect(o.kinds.length).toBe(before)
     }
   }

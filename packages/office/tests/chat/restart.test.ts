@@ -3,6 +3,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
+import { inspectRun } from "@ngocbh/yian/run"
 import { now, Question } from "@opencorp/protocol"
 import type { SessionActor } from "../../src/chat/session_actor.ts"
 import type { LiveCalls } from "../../src/chat/transcript.ts"
@@ -338,6 +339,52 @@ test("a run log that was never written sleeps and its next message starts a fres
   expect(o.kinds.slice(before)).toEqual(["chat"])
   expect(session(o, sid).run_ids).toEqual([old, actor.runId!])
   expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_START)
+})
+
+test("end on a restored session whose folder is gone fails it", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  for (const logged of [false, true]) {
+    const s = await h.harness.startSession("minh", h.folder)
+    await waitFor(() => status(h, s.id) === "idle" && h.registry.get(s.id) === undefined, {
+      what: "the first turn",
+    })
+    const old = session(h, s.id).run_ids.at(-1)!
+    const log = path.join(h.office.paths.runs, old, "log.jsonl")
+    // Restore builds no run spec for a run with no log, nor for one whose log can't be read.
+    if (logged) fs.writeFileSync(log, "")
+    else fs.rmSync(log)
+    await h.reopen()
+    await h.harness.restore()
+    expect(status(h, s.id)).toBe("idle")
+    fs.renameSync(h.folder, `${h.folder}.moved`)
+    try {
+      await expect(h.harness.end(s.id)).rejects.toMatchObject({ status: 422 })
+    } finally {
+      fs.renameSync(`${h.folder}.moved`, h.folder)
+    }
+    expect(status(h, s.id)).toBe("failed")
+    expect(h.store.getRun(old)?.endReason).toBe(logged ? COULDNT_RESUME : COULDNT_START)
+  }
+})
+
+test("a session whose connection cant be resolved at restore still cancels its run", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "slow", hold: true })
+  const o = await chatOffice(fake)
+  const { actor: first, sid } = await startActor(o)
+  await heldReply(fake, first, "a")
+  const runId = first.runId!
+  const actor = await stopMidReply(o, first)
+  // The connection file can't be used any more, as a removed sign-in.
+  fs.chmodSync(officeJson(o), 0o644)
+  const before = o.kinds.length
+  await actor.restore()
+  expect(status(o, sid)).toBe("failed")
+  await waitFor(() => o.kinds.length === before + 1, { what: "the cancel job" })
+  expect(o.jobs.at(-1)).toMatchObject({ kind: "advance", run_id: runId, advance: false, deliver: [{ op: "cancel" }] })
+  const log = path.join(o.office.paths.runs, runId, "log.jsonl")
+  await waitFor(() => inspectRun(log).status === "cancelled", { what: "the run cancelled" })
 })
 
 test("an ending session whose run yian ended ends at restore", async () => {
