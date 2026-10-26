@@ -54,6 +54,7 @@
         "@opencorp/protocol": "workspace:*",
       },
       "devDependencies": {
+        "@opencorp/office": "workspace:*",
         "@types/bun": "^1.1.0",
       },
     },
