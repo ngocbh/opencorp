@@ -7,7 +7,7 @@ import { type Scheduler, realScheduler } from "@ngocbh/yian/platform"
 import { type Message, OFFICE, Session, WorkItem, now } from "@opencorp/protocol"
 import { loadRepo } from "../company/loader.ts"
 import type { Office, SessionHarness } from "../daemon/office.ts"
-import { type CodexSessions, checkFolder, notSupported, startConnection } from "../harness/sessions.ts"
+import { type CodexSessions, checkFolder, notSupported } from "../harness/sessions.ts"
 import type { Monitor } from "../perm/monitor.ts"
 import { MANAGER_FLOW, profileTools } from "../profile/manager.ts"
 import { GitProfileStore } from "../profile/store.ts"
@@ -248,8 +248,9 @@ export class ChatHarness implements SessionHarness {
 
   /**
    * Opens a profile-manager session over `handle`'s profile, opened by `by`, with `text` as its first message: stored
-   * `starting` at the company's current commit on the office's default connection, with no work item, then started
-   * by `startRun` and prompted. Refused 404 `not_found` for no person, 422 `no_manager_flow` when the company has no
+   * `starting` at the company's current commit on the office's default connection and its own model (with a note when
+   * that is `office` only because the default can't be read), with no work item, then started by `startRun` and
+   * prompted. Refused 404 `not_found` for no person, 422 `no_manager_flow` when the company has no
    * profile manager flow, 503 once closed; a start that fails is `startRun`'s.
    */
   async startManager(handle: string, text: string, { by = null }: { by?: string | null } = {}): Promise<SessionRecord> {
@@ -262,7 +263,9 @@ export class ChatHarness implements SessionHarness {
     if (!isFile(path.join(pin, MANAGER_FLOW))) {
       throw new HarnessError(422, "no_manager_flow", `the company has no ${MANAGER_FLOW}`)
     }
-    const connection = await startConnection(this.office, null, this.log)
+    const [connection, unread] = await this.#default()
+    const uses = unread ? await named(this.office.connections, OFFICE, null) : null
+    const note = uses === null ? null : `${UNREAD_DEFAULT}; this chat uses ${uses}.`
     // Checked again before any write: the office may have begun stopping during the checks.
     this.#running()
     const t = now()
@@ -280,7 +283,7 @@ export class ChatHarness implements SessionHarness {
         opened_by: by,
         connection,
         model: null,
-        model_note: null,
+        model_note: note,
         harness_session_id: null,
         parent_session_id: null,
         created_at: t,

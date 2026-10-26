@@ -15,6 +15,7 @@ import {
   profileTools,
 } from "../../src/profile/manager.ts"
 import { GitProfileStore } from "../../src/profile/store.ts"
+import { writePrivate } from "../../src/secrets.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
 import { fakeLlm, makeHarness, ROOT, status, texts } from "../chat/helpers.ts"
 import { company, git } from "../company/helpers.ts"
@@ -234,6 +235,22 @@ test("the profile manager stores the default", async () => {
   expect([s.connection, s.model]).toEqual(["second", null])
   await waitFor(() => texts(h, s.id).join() === "Hello.", { what: "the reply" })
   expect(fake.requests()[0]!.model).toBe("stub-2")
+  await endChat(h, s.id)
+})
+
+test("the profile manager says when the default cant be read", async () => {
+  const fake = await fakeLlm()
+  const h = await managerHarness(fake)
+  await writePrivate(path.join(h.office.connections.dir, "_default.json"), "[]")
+  fake.script({ content: "Hello." })
+  const s = await h.harness.startManager("minh", "Hi.")
+  expect([s.connection, s.model, s.model_note]).toEqual([
+    "office",
+    null,
+    "The office's default connection can't be read; this chat uses office/stub.",
+  ])
+  expect(h.logs.join("\n")).toContain("default connection can't be read")
+  await waitFor(() => texts(h, s.id).join() === "Hello.", { what: "the reply" })
   await endChat(h, s.id)
 })
 
