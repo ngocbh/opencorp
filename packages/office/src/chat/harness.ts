@@ -14,7 +14,7 @@ import type { AnswerKind } from "../questions/cards.ts"
 import { SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store, newId } from "../store/store.ts"
 import { WorkspaceTools } from "../tools/workspace.ts"
-import type { JobWorker, OfficeTool, WorkerHandlers } from "../worker/rpc.ts"
+import { type JobWorker, type OfficeTool, type WorkerHandlers, errorName } from "../worker/rpc.ts"
 import { RegistryClosed, type WorkerRegistry } from "../worker/spawn.ts"
 import type { Hooks } from "./hooks.ts"
 import { ProviderError } from "./provider.ts"
@@ -319,8 +319,8 @@ export class ChatHarness implements SessionHarness {
    * worker exits are dropped, so no actor retries a death or fails a session on the stop's own exits; the Codex
    * sessions close, then the workers. Once the workers' channels are closed, worker requests are refused and every
    * actor closes (a request arriving before then is served). Then it waits, within `STOP_WAIT_MS`, for the worker
-   * requests and office tool bodies still running and for the job each actor ran at its close; a step that throws
-   * leaves the later ones to run, and the stop rejects with its error.
+   * requests and office tool bodies still running and for the job each actor ran at its close. A step that fails is
+   * logged by its error's type and the later ones still run, so the stop always resolves.
    */
   closeAll(): Promise<void> {
     this.#closed = true
@@ -330,16 +330,20 @@ export class ChatHarness implements SessionHarness {
 
   async #stop(): Promise<void> {
     this.#stopping = true
-    try {
+    await this.#step("the codex sessions didn't close", async () => {
       await this.office.codex?.closeAll()
-    } finally {
-      try {
-        await this.registry.closeAll()
-      } finally {
-        this.#refusing = true
-        const tails = [...this.#actors.values()].map((actor) => actor.close())
-        await this.#drain(tails)
-      }
+    })
+    await this.#step("the workers didn't close", () => this.registry.closeAll())
+    this.#refusing = true
+    await this.#step("the sessions didn't close", () => this.#drain([...this.#actors.values()].map((a) => a.close())))
+  }
+
+  /** Runs one stop step; a failure is logged by its type only (the message may quote a reply) and the stop goes on. */
+  async #step(what: string, run: () => Promise<void>): Promise<void> {
+    try {
+      await run()
+    } catch (error) {
+      this.log(`the chat harness's stop: ${what} (${errorName(error)})`)
     }
   }
 

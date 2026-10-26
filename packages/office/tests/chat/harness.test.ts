@@ -695,11 +695,11 @@ test("close closes the workers even when the codex sessions fail to close", asyn
   const h = await makeHarness(await fakeLlm(), { codex: true })
   spyOn(h.codex!.sessions, "closeAll").mockRejectedValueOnce(new Error("sentinel"))
   const workers = spyOn(h.harness.registry, "closeAll")
-  await expect(h.harness.closeAll()).rejects.toThrow("sentinel")
-  await expect(h.harness.closeAll()).rejects.toThrow("sentinel")
+  await h.harness.closeAll()
+  await h.harness.closeAll()
   expect(workers).toHaveBeenCalledTimes(1)
-  // The test's end closes this harness again, which would only report the same rejection.
-  spyOn(h.harness, "closeAll").mockResolvedValue()
+  expect(h.logs.filter((line) => line.includes("the codex sessions didn't close (Error)"))).toHaveLength(1)
+  expect(h.logs.some((line) => line.includes("sentinel"))).toBe(false)
 })
 
 // --- the stop -------------------------------------------------------------------------------
