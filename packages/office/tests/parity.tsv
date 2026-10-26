@@ -484,9 +484,19 @@ questions/test_side.py::test_a_side_chat_flow_linked_from_outside_the_pin_is_ref
 questions/test_side.py::test_a_side_run_gets_the_askers_identity_and_who_opened_it	changed	packages/office/tests/questions/side.test.ts::a side run gets the askers identity and who opened it	O4a-1: the side chat's inputs also carry max_turns and history_budget (the seed's room), so the whole-inputs equality includes them	O4a-8
 questions/test_side_chat_flow.py	ported	packages/office/tests/questions/side_chat_flow.test.ts	—	O4a-1
 questions/test_side_chat_flow.py::test_side_chat_template_loads_and_has_the_chat_shape	changed	packages/office/tests/questions/side_chat_flow.test.ts::side chat template loads and has the chat shape	4a-revision §1: a take on the messages inbox and an Optional reply with steer_inbox replace human_input, the exit case and session memory; the profile memory moved from the flow onto the reply, so the summariser doesn't recall the profile	O4a-1
-runs/test_as_stored.py	open	—	—	O4b-7
+runs/test_as_stored.py	ported	packages/office/tests/runs/as_stored.test.ts	—	O4b-7
+runs/test_as_stored.py::test_records_come_back_as_stored	changed	packages/office/tests/runs/as_stored.test.ts::records come back as stored	#362: no evidence field or evidence_left_out in schema 22; the payload comes back as stored	O4b-7
 runs/test_debriefs.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
-runs/test_detail.py	open	—	—	O4b-7
+runs/test_detail.py	ported	packages/office/tests/runs/detail.test.ts	—	O4b-7
+runs/test_detail.py::test_a_chats_page_has_what_its_log_and_the_store_say	changed	packages/office/tests/runs/detail.test.ts::a chats page has what its log and the store say	rule 1: store rows and a log instead of the harness; §5.1 status; usage tokens from yian's index row	O4b-7
+runs/test_detail.py::test_a_connection_key_a_reply_echoes_is_shown_as_stored	changed	packages/office/tests/runs/detail.test.ts::a connection key a reply echoes is shown as stored	rule 1: store rows and a log instead of the harness; §5.1 status; the echoed key is in the reply's commit record (#362: no evidence in schema 22)	O4b-7
+runs/test_detail.py::test_a_debrief_has_no_usage_recorded	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-7
+runs/test_detail.py::test_a_first_read_of_a_large_log_answers_indexing	dropped	—	§5.5: no first-build wait; a request awaits the index	O4b-7
+runs/test_detail.py::test_nodes_and_records_answer_indexing_and_one_record_says_so	dropped	—	§5.5: no first-build wait; a request awaits the index	O4b-7
+runs/test_detail.py::test_reasons_in_the_header_parent_and_children_are_shown_as_stored	changed	packages/office/tests/runs/detail.test.ts::reasons in the header parent and children are shown as stored	rule 1: store rows and a log instead of the harness; §5.1 status; the child's parent from yian's index, its reason an office end	O4b-7
+runs/test_detail.py::test_records_page_with_evidence_left_out_and_one_record_has_it	changed	packages/office/tests/runs/detail.test.ts::records page and one record is whole	#362: no evidence in schema 22	O4b-7
+runs/test_detail.py::test_the_list_never_opens_a_log	changed	packages/office/tests/runs/detail.test.ts::the list never opens a log	rule 1: store rows and a log instead of the harness; §5.1 status; the list never asks the run log reader or yian's inspect	O4b-7
+runs/test_detail.py::test_the_timeline_is_node_attempts_newest_first_with_no_kind_yet	changed	packages/office/tests/runs/detail.test.ts::the timeline is node attempts newest first with their kinds	P15: kinds from staticNodes of the recorded flow, under the session's pinned worktree; a real run so kinds are known	O4b-7
 runs/test_launches.py	open	—	—	O4a-5
 runs/test_list.py	ported	packages/office/tests/runs/list.test.ts	—	O4b-7
 runs/test_list.py::test_a_codex_debrief_is_top_level_and_says_so	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-7
@@ -1306,6 +1316,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/questions/format.test.ts::an astral discussion is cut by code points	design §1.4 deviation: the discussion cap counts code points as Python's len, so the cut never splits a surrogate pair	O3-7
 —	new	packages/office/tests/questions/seed.test.ts::a cut never splits a character	design §1.4 overridden for the seed: lengths are code points (as Python), since yian refuses a message with an unpaired surrogate	O4a-8
 —	new	packages/office/tests/questions/side.test.ts::a seed is a private file read back as written	DRIVER-OFFICE.md security rule 6: seed.md holds transcript text, so it is replaced atomically as a 0600 file, never written or read through a link	O4a-8
+—	new	packages/office/tests/runs/detail.test.ts::run updated is built from the runs summary	§5.1: run.updated from the status rule and memory (no outbox, O1-3)	O4b-7
 —	new	packages/office/tests/runs/indexer.test.ts::a busy index resolves false and logs only the error name	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
 —	new	packages/office/tests/runs/indexer.test.ts::a call made during an update waits for an update that starts after it	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
 —	new	packages/office/tests/runs/indexer.test.ts::a missing runs folder is an empty index	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6

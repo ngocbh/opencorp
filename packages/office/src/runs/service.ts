@@ -1,8 +1,34 @@
 /** The Run Logs reads: the list of runs, from the office's rows, the session actor's memory and yian's run index
- *  (no run log is read for it). */
-import type { RunPage, RunSummary } from "@opencorp/protocol"
+ *  (no run log is read for it); and, per run, its page, from its log. */
+import fs from "node:fs"
+import path from "node:path"
+import type { Readable } from "node:stream"
+import type {
+  Event,
+  RunDetail,
+  RunEvent,
+  RunEventPage,
+  RunNode,
+  RunNodePage,
+  RunPage,
+  RunSummary,
+} from "@opencorp/protocol"
 import type { RunIndexRow, RunStatus } from "@ngocbh/yian/run"
-import { NotFound, type RunRow, type Store } from "../store/store.ts"
+import { NotFound, cutReason, type RunRow, type SessionRecord, type Store } from "../store/store.ts"
+import { errorName } from "../worker/rpc.ts"
+import { kindOf } from "./nodes.ts"
+import { runUpdated } from "./notify.ts"
+import { COULDNT_RESUME, COULDNT_START, WORKER_STOPPED } from "./outcomes.ts"
+import {
+  ERROR_CHARS,
+  type FoldOptions,
+  type Index,
+  logStream,
+  nodePage,
+  readEvents,
+  RunLogReader,
+  UnreadableLog,
+} from "./reader.ts"
 import { Inspections, Live, readIndex, Summaries, YianRuns } from "./records.ts"
 
 export const PAGE = 50
@@ -13,7 +39,22 @@ export const SCAN_CAP = 1_000
 /** The statuses of a run with no end yet (an interrupted one may have either). */
 export const OPEN_STATUSES: ReadonlySet<string> = new Set(["running", "waiting", "idle"])
 
+export const NOT_STARTED = "no run log: the run didn't start"
+export const NOT_STARTED_YET = "not started yet"
+export const LOG_GONE = "the run log is gone"
+
 const ENDED: ReadonlySet<RunStatus> = new Set(["succeeded", "failed", "cancelled"])
+/** The office ends of a run that never wrote its log. */
+const NEVER_STARTED: ReadonlySet<string> = new Set([COULDNT_START, COULDNT_RESUME, WORKER_STOPPED])
+
+/** The run has no log to read: it didn't start, or the file is gone. */
+export class NoLog extends Error {
+  override name = "NoLog"
+}
+
+function isMissing(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === "ENOENT"
+}
 
 /** A list request's filters and paging. */
 export interface RunFilters {
@@ -87,9 +128,14 @@ interface ListRead {
   summaries: Summaries
 }
 
-/** The Run Logs list. Logs and reasons are shown as stored, reasons cut only for length. */
+/** The Run Logs list and run pages. Logs and reasons are shown as stored, reasons and node errors cut only for
+ *  length. */
 export class RunLogs {
   readonly #store: Store
+  readonly #runsDir: string
+  // Kept for the office's life, so a log is read whole once while its index stays cached.
+  readonly #reader: RunLogReader
+  readonly #pin: ((commit: string) => Promise<string>) | undefined
   readonly #live: () => Live
   readonly #index: () => Map<string, RunIndexRow>
   // Kept for the office's life, so ended runs' inspections stay cached.
@@ -107,8 +153,14 @@ export class RunLogs {
     batch?: number
     scanCap?: number
     log?: (line: string) => void
+    reader?: RunLogReader
+    /** The session's pinned company worktree for a commit: the code root a log's recorded flow compiles under. */
+    pin?: (commit: string) => Promise<string>
   }) {
     this.#store = options.store
+    this.#runsDir = options.runsDir
+    this.#reader = options.reader ?? new RunLogReader()
+    this.#pin = options.pin
     this.#log = options.log ?? (() => {})
     this.#live = options.live ?? (() => new Live())
     this.#index = options.index ?? (() => readIndex(options.runsDir, this.#log))
@@ -127,6 +179,158 @@ export class RunLogs {
    *  row. */
   children(parent: string, filters: RunFilters = {}): RunPage {
     return this.#page(new RunFilter(filters), parent, filters.before ?? null, filters.limit ?? PAGE)
+  }
+
+  /** Where a run's log is: derived from the runs folder, never stored. */
+  logPath(runId: string): string {
+    return path.join(this.#runsDir, runId, "log.jsonl")
+  }
+
+  /** A run page's header: the run with its parent and children, usage, what its log's first record says, and
+   *  whether the log can be read; NotFound if there is no such run. */
+  async detail(runId: string): Promise<RunDetail> {
+    const { row, session } = this.#one(runId)
+    const { yian, summaries } = this.#read()
+    const run = summaries.build([row], { children: summaries.children([runId]) }).get(runId)!
+    const indexRow = yian.row(runId)
+    const parentId = indexRow?.parentRunId ?? null
+    const parentRow = parentId === null ? undefined : this.#store.getRun(parentId)
+    const parent = parentRow ? (summaries.build([parentRow]).get(parentRow.runId) ?? null) : null
+    return {
+      run,
+      parent,
+      repo_commit: session.repo_commit,
+      usage: {
+        input_tokens: indexRow?.inputTokens ?? 0,
+        output_tokens: indexRow?.outputTokens ?? 0,
+        usd: this.#store.runUsageUsd(runId),
+      },
+      ...(await this.#logState(row, indexRow)),
+    }
+  }
+
+  async #logState(
+    row: RunRow,
+    indexRow: RunIndexRow | undefined,
+  ): Promise<Pick<RunDetail, "log_state" | "log_message" | "flow_fingerprint" | "learnable" | "models">> {
+    const file = this.logPath(row.runId)
+    const gone = { log_state: "missing", log_message: LOG_GONE } as const
+    if (!fs.existsSync(file)) {
+      if (row.endReason === null && indexRow === undefined) {
+        return { log_state: "not_started", log_message: NOT_STARTED_YET }
+      }
+      if (row.endReason !== null && NEVER_STARTED.has(row.endReason)) {
+        return { log_state: "not_started", log_message: NOT_STARTED }
+      }
+      return gone
+    }
+    let index: Index
+    try {
+      index = await this.#reader.index(file)
+    } catch (error) {
+      // An unknown or retired schema, a line that isn't a record, seqs out of order.
+      if (error instanceof UnreadableLog) return { log_state: "unsupported_schema", log_message: error.message }
+      if (isMissing(error)) return gone
+      throw error
+    }
+    return { log_state: "ok", flow_fingerprint: index.fingerprint, learnable: index.learnable, models: index.models }
+  }
+
+  /** Node attempts that started before seq `before`, newest first, with their kinds, errors cut to ERROR_CHARS;
+   *  NotFound without the run, NoLog without its log, UnreadableLog for a log this office can't read. */
+  async nodes(runId: string, { before, limit }: { before: number | null; limit: number }): Promise<RunNodePage> {
+    const { file, index, session } = await this.#logIndex(runId)
+    const fold = await this.#fold(session)
+    const kinds = fold ? await this.#reader.kinds(file, index, fold) : null
+    const page = nodePage(index, { before, limit })
+    return {
+      nodes: page.nodes.map((a): RunNode => ({
+        seq: a.seq,
+        end_seq: a.endSeq,
+        node_id: a.nodeId,
+        kind: kindOf(kinds, a.nodeId),
+        // The protocol has no waiting node: a waiting node is in progress.
+        status: a.status === "waiting" ? "open" : a.status,
+        handle: a.handle,
+        error: a.error === null ? null : cutReason(a.error, ERROR_CHARS),
+      })),
+      dividers: page.dividers.map(([seq, retried]) => ({ seq, retried })),
+      next_before: page.nextBefore,
+      dropped: page.dropped,
+    }
+  }
+
+  /** Records after seq `after`, as stored but cut for size; NotFound, NoLog or UnreadableLog as `nodes`. */
+  async events(runId: string, { after, limit }: { after: number | null; limit: number }): Promise<RunEventPage> {
+    const { file, index } = await this.#logIndex(runId)
+    return readEvents(file, index, { after, limit })
+  }
+
+  /** The record with `seq`, a derived commit with the value it accepted; NotFound if there is none. */
+  async event(runId: string, seq: number): Promise<RunEvent> {
+    const { file, index, session } = await this.#logIndex(runId)
+    const found = await this.#reader.readEvent(file, index, seq, { fold: await this.#fold(session) })
+    if (found === null) throw new NotFound(`run ${runId} has no record ${seq}`)
+    return found
+  }
+
+  /** The whole log as it is now, as stored. It needs no index, so a log this office can't read still downloads.
+   *  The log is opened before this resolves, so one removed meanwhile is NoLog, not a cut-off download. */
+  async log(runId: string): Promise<Readable> {
+    this.#one(runId)
+    try {
+      return await logStream(this.logPath(runId))
+    } catch (error) {
+      if (isMissing(error)) throw new NoLog(`run ${runId} has no log`)
+      throw error
+    }
+  }
+
+  /** The run's run.updated, from its summary (one live read, one index read); null without its row or session. */
+  runUpdated(runId: string): Event | null {
+    const row = this.#store.getRun(runId)
+    if (row === undefined) return null
+    const run = this.#read().summaries.build([row]).get(runId)
+    if (!run) return null
+    return runUpdated(runId, run.session_id, run.parent_run_id ?? null, run.status, run.current_nodes ?? [])
+  }
+
+  /** The run's row and its session; NotFound without either. */
+  #one(runId: string): { row: RunRow; session: SessionRecord } {
+    const row = this.#store.getRun(runId)
+    const session = row && this.#store.getSession(row.sessionId)
+    if (!row || !session) throw new NotFound(`no run ${runId}`)
+    return { row, session }
+  }
+
+  /** One read of memory and of yian's index, for summaries. */
+  #read(): { yian: YianRuns; summaries: Summaries } {
+    const live = this.#live()
+    const yian = new YianRuns(this.#index(), this.#inspections)
+    return { yian, summaries: new Summaries(this.#store, live, yian, { fresh: this.#live, log: this.#log }) }
+  }
+
+  /** The run's log, its index brought up to date, and its session; NoLog when the log doesn't exist. */
+  async #logIndex(runId: string): Promise<{ file: string; index: Index; session: SessionRecord }> {
+    const { session } = this.#one(runId)
+    const file = this.logPath(runId)
+    try {
+      return { file, index: await this.#reader.index(file), session }
+    } catch (error) {
+      if (isMissing(error)) throw new NoLog(`run ${runId} has no log`)
+      throw error
+    }
+  }
+
+  /** How a log of `session`'s is replayed: under its pinned company worktree; undefined without one. */
+  async #fold(session: SessionRecord): Promise<FoldOptions | undefined> {
+    if (!this.#pin) return undefined
+    try {
+      return { env: () => undefined, codeRoot: await this.#pin(session.repo_commit) }
+    } catch (error) {
+      this.#log(`pin for a run page failed (${errorName(error)})`)
+      return undefined
+    }
   }
 
   /** A page of top-level runs, or of `parent`'s children.

@@ -174,20 +174,21 @@ export const CODED_LOOP_HELPERS = 'export function fn(): string {\n  return "rea
 
 /**
  * Runs `flow` to its end in this process, with no model: writes it as `flow.yaml` and each of `files` (name -> text)
- * in `dir`, loads it with its CODE references kept inside `dir`, and runs it as run `r1` to a log under `dir/runs`.
- * Returns the log and the code root.
+ * in `dir`, loads it with its CODE references kept inside `dir`, and runs it as run `runId` (`r1` by default) to a log
+ * under `dir/runs`. Returns the log and the code root.
  */
 export async function realRun(
   dir: string,
   flow: string,
   files: Record<string, string> = {},
+  runId = "r1",
 ): Promise<{ log: string; codeRoot: string }> {
   for (const [name, text] of Object.entries({ "flow.yaml": flow, ...files })) {
     fs.writeFileSync(path.join(dir, name), text)
   }
   const loaded = await loadFlow(flow, { sourceLabel: "flow.yaml", baseDir: dir, codeRoot: dir })
-  const log = runLogPath(path.join(dir, "runs"), "r1")
-  const result = await runFlow(loaded, {}, { log, runId: "r1", numWorkers: 0, env: () => undefined })
+  const log = runLogPath(path.join(dir, "runs"), runId)
+  const result = await runFlow(loaded, {}, { log, runId, numWorkers: 0, env: () => undefined })
   if (result.status !== "succeeded") throw new Error(`the run ended ${result.status}`)
   return { log, codeRoot: dir }
 }
