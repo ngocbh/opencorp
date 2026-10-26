@@ -3,7 +3,7 @@ import path from "node:path"
 
 /** The OpenCorp home: `$OPENCORP_HOME`, default `~/.opencorp`. */
 export function opencorpHome() {
-  // Read as Python's install commands read it: empty is unset, and a leading `~` is expanded.
+  // Empty is unset and a leading `~` is expanded, as the office's install commands read it.
   const home = process.env.OPENCORP_HOME || path.join(os.homedir(), ".opencorp")
   return home === "~" || home.startsWith("~/") ? path.join(os.homedir(), home.slice(1)) : home
 }

@@ -66,8 +66,10 @@ The office is being ported to TypeScript on TS Yian (#302). Until the cut-over:
 
 - **The Python office is frozen.** `packages/corp_office` gets no new features; they land in the
   TS office. It gets bug fixes only, each through its own issue. Its code and tests are the spec
-  the port is checked against. Nobody runs the office itself during the port, so `main`'s TUI, CLI
-  and HQ app may stop working with it as soon as the protocol changes. Run its tests
+  the port is checked against. The clients (TUI, CLI, HQ app) run on the TS office: through the
+  wrapper `packages/cli/bin/opencorp` in a checkout, the compiled binary when installed. Their
+  tests run against a real TS office on a temp home (`@opencorp/office/testing/office`). A fake
+  office is kept only for scripted frame tests, and a contract test checks it. Run the Python tests
   (`uv run pytest -q packages/corp_office/tests --ignore=packages/corp_office/tests/e2e`) in any PR
   that touches it; the CLI now runs the TS install, so its e2e suite runs only per milestone.
   Touch `packages/corp_office`, `pyproject.toml` or `uv.lock` only for such a fix or when a port

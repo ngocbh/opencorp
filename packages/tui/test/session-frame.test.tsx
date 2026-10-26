@@ -1,5 +1,5 @@
 import type { Message } from "@opencorp/protocol"
-import { expect, test } from "bun:test"
+import { expect, onTestFinished, test } from "bun:test"
 import { createFakeOffice, createStub } from "./fixture/fake-office"
 import { bootFrame } from "./fixture/frame"
 
@@ -63,6 +63,46 @@ test("a session shows text and tool parts, and streams deltas", async () => {
     await app.stop()
     office.stop()
   }
+})
+
+test("an assistant message whose only text part is empty draws nothing until a delta fills it", async () => {
+  const at = "2026-01-01T00:00:00Z"
+  const user = (id: string, text: string): Message => ({
+    id,
+    session_id: "",
+    role: "user",
+    created_at: at,
+    parts: [{ id: id + "t", type: "text", text }],
+  })
+  const blank: Message = {
+    id: "M2",
+    session_id: "",
+    role: "assistant",
+    created_at: at,
+    parts: [{ id: "b", type: "text", text: "" }],
+  }
+  const boot = async (messages: Message[]) => {
+    const office = createFakeOffice()
+    const s = office.state.sessions[0]
+    office.state.messages[s.id] = messages.map((m) => ({ ...m, session_id: s.id }))
+    const app = await bootFrame(createStub(office), { sessionID: s.id })
+    onTestFinished(async () => {
+      await app.stop()
+      office.stop()
+    })
+    return { office, s, app }
+  }
+  const without = await boot([user("M1", "first question"), user("M3", "second question")])
+  const expected = await without.app.until((f) => f.includes("first question") && f.includes("second question"))
+  await without.app.stop()
+  without.office.stop()
+
+  const { office, s, app } = await boot([user("M1", "first question"), blank, user("M3", "second question")])
+  const frame = await app.until((f) => f.includes("first question") && f.includes("second question"))
+  expect(frame).toBe(expected)
+  expect(frame).not.toContain("On it")
+  office.live({ type: "part.delta", session_id: s.id, data: { message_id: "M2", part_id: "b", text: "On it" } })
+  await app.until((f) => f.includes("On it"))
 })
 
 test("a new message and a status change arrive live", async () => {

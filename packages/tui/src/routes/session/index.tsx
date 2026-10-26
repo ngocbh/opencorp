@@ -102,6 +102,11 @@ function use() {
   return ctx
 }
 
+/** Whether a message has a text part with more than whitespace: the view draws nothing for a blank one. */
+function hasText(message: Message) {
+  return message.parts.some((part) => part.type === "text" && part.text.trim())
+}
+
 /** The text of a message's text parts, joined. */
 function messageText(message: Message) {
   return message.parts
@@ -249,7 +254,7 @@ export function Session() {
       .getChildren()
       .filter((c) => {
         const message = c.id && messages().find((m) => m.id === c.id)
-        return !!message && message.parts.some((part) => part.type === "text")
+        return !!message && hasText(message)
       })
       .sort((a, b) => a.y - b.y)
     if (visibleMessages.length === 0) return null
@@ -390,7 +395,7 @@ export function Session() {
       category: "Session",
       hidden: true,
       run: () => {
-        const message = messages().findLast((m) => m.role === "user" && m.parts.some((part) => part.type === "text"))
+        const message = messages().findLast((m) => m.role === "user" && hasText(m))
         const child = message && scroll.getChildren().find((child) => child.id === message.id)
         if (child) scroll.scrollBy(child.y - scroll.y - 1)
       },
