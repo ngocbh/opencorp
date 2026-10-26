@@ -21,7 +21,7 @@ import { ProviderError } from "./provider.ts"
 import { type RunSpec, mainSpec } from "./run_spec.ts"
 import { type ActorContext, SessionActor } from "./session_actor.ts"
 import { HarnessError, LIVE } from "./state.ts"
-import { Transcript } from "./transcript.ts"
+import type { Transcript } from "./transcript.ts"
 
 /** How long, in milliseconds, the stop waits for worker requests, office tool bodies and actor jobs still running. */
 const STOP_WAIT_MS = 10_000
@@ -79,7 +79,11 @@ export class ChatHarness implements SessionHarness {
     this.scheduler = scheduler
     this.log = log
     this.answers = new Answers(office.store, { log })
-    this.transcript = new Transcript(office.paths.runs)
+    // The office's own: a second transcript or relay would miss the first one's state.
+    if (office.transcript === undefined || office.live === undefined) {
+      throw new Error("the office has no transcript or live relay")
+    }
+    this.transcript = office.transcript
     this.#ctx = {
       store: office.store,
       git: office.git,
@@ -95,6 +99,7 @@ export class ChatHarness implements SessionHarness {
       hooks,
       answers: this.answers,
       transcript: this.transcript,
+      live: office.live,
       spec: async (session) => {
         const spec = await this.spec(session)
         return { ...spec, groups: (ctx) => this.#counted(spec.groups(ctx)) }

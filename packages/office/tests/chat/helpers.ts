@@ -822,6 +822,9 @@ export async function makeHarness(
   const codexed = c as Codex | undefined
   const hooks = codexed?.hooks ?? o.hooks
   office.codex = codexed?.sessions
+  // The office's one transcript and relay, which the harness's actors share with these helpers.
+  office.transcript = o.transcript
+  office.live = o.live
   const make = (workers: WorkerRegistry) => {
     harness = new ChatHarness(office, {
       monitor: new Monitor(office.paths.company, office.store, office.secrets),
