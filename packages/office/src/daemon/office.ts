@@ -16,6 +16,9 @@ import type { Tools } from "../install/tools.ts"
 import { GitProfileStore } from "../profile/store.ts"
 import type { CardActor, Cards } from "../questions/cards.ts"
 import { RunIndexer } from "../runs/indexer.ts"
+import { RunNotifier } from "../runs/notify.ts"
+import { Live } from "../runs/records.ts"
+import { RunLogs } from "../runs/service.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { SecretStore } from "../secrets.ts"
 import type { SessionRecord, Store } from "../store/store.ts"
@@ -93,6 +96,8 @@ export interface SessionHarness extends CardActor {
   setModel(sessionId: string, connection: string, model: string): Promise<SessionRecord>
   /** What a client reads of the session before following its live events. */
   messages(sessionId: string): Message[] | Promise<Message[]>
+  /** What memory says about its runs, for Run Logs; the chat harness implements it. */
+  live?(): Live
 }
 
 /** The worker registry, as the office sees it. */
@@ -140,6 +145,10 @@ export class Office {
   readonly checkModel: ModelCheck
   /** yian's run index over `paths.runs`, kept up to date from here; closed on stop. */
   readonly runIndex: RunIndexer
+  /** Run Logs: the list of runs and one run's page. Assignable, so a test can give it a fake run index. */
+  runs: RunLogs
+  /** run.updated for what the store doesn't see, coalesced per run; closed on stop. */
+  readonly runNotifier: RunNotifier
   workers: WorkerPool | undefined
   /** HQ, once `attach` put it here. */
   hq: Hq | undefined
@@ -209,6 +218,14 @@ export class Office {
     this.logins = new Logins(this.connections, { log, ...logins, models: this.models })
     this.checkModel = checkModel
     this.runIndex = new RunIndexer(paths.runs, { log, ...runIndex })
+    this.runs = new RunLogs({
+      store,
+      runsDir: paths.runs,
+      live: () => this.harness?.live?.() ?? new Live(),
+      pin: (commit) => git.pin(commit),
+      log,
+    })
+    this.runNotifier = new RunNotifier((event) => this.bus.publishMeta(event), { log })
     this.workers = workers
     this.profileStore = profileStore === undefined ? (handle) => new GitProfileStore(git, handle) : profileStore
     this.tools = tools
@@ -232,14 +249,21 @@ export class Office {
     }
   }
 
+  /** A run's status, nodes or end may have changed: publishes its run.updated, coalesced per run. */
+  runChanged(runId: string): void {
+    this.runNotifier.changed(runId, () => this.runs.runUpdated(runId))
+  }
+
   /**
-   * End SSE streams, stop the workers, run `onStop` in reverse order, and close the run index.
+   * Stop run.updated, end SSE streams, stop the workers, run `onStop` in reverse order, and close the run index.
    *
    * Every `onStop` callback runs: one that throws is logged and the rest still run. `stop` also runs after a failed
    * `start`, so an `onStop` callback must cope with its `onStart` never having run. It is not idempotent: a second
    * call runs the callbacks again.
    */
   async stop(): Promise<void> {
+    // First: a pending run.updated reads the store, and would go to a closed bus.
+    this.runNotifier.close()
     this.bus.close()
     this.#unlisten?.()
     this.#unlisten = undefined

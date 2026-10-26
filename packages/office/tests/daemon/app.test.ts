@@ -99,7 +99,7 @@ const STREAMS: [string, string][] = [
 
 // [method, route pattern, concrete path, body] for every other route; null is no body. Python's table
 // (tests/daemon/test_app.py) covered the people, work-item, question, profile and session routes; GET /health,
-// GET /office, GET /whoami, the device routes, GET /costs, the GET /runs* stubs, the connection routes and HQ's
+// GET /office, GET /whoami, the device routes, GET /costs, the GET /runs* routes, the connection routes and HQ's
 // socket routes (/hq*) weren't in it.
 const TABLE: [string, string, string, unknown][] = [
   ["GET", "/health", "/health", null],

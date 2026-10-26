@@ -4,10 +4,11 @@ import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import type { Scheduler } from "@ngocbh/yian/platform"
-import { WorkItem, now } from "@opencorp/protocol"
+import { type RunUpdated, WorkItem, now } from "@opencorp/protocol"
 import { INTERRUPTED_CALL, SessionActor } from "../../src/chat/session_actor.ts"
 import { HarnessError, LIVE } from "../../src/chat/state.ts"
 import { MAIN_CHAT } from "../../src/chat/turns.ts"
+import { PING } from "../../src/daemon/bus.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { type SessionRecord, type WorkItemRecord, newId } from "../../src/store/store.ts"
 import { type FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
@@ -1298,4 +1299,50 @@ test("a session whose worker keeps dying says so", async () => {
   expect(errors(h, s.id)).toEqual([
     "The session failed (its worker stopped or couldn't start; see the office log). Start a new chat.",
   ])
+})
+
+/** Whether `nodes` holds a reply node. */
+function replying(nodes: readonly string[] | undefined): boolean {
+  return (nodes ?? []).some((n) => n.endsWith("/reply"))
+}
+
+test("the harness gives run logs its live runs", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Hello.", hold: true })
+  const h = await makeHarness(fake)
+  const s = await start(h)
+  const runId = s.run_ids[0]!
+  await h.harness.prompt(s.id, "hi")
+  await fake.waitForRequests(1, 30_000)
+  await waitFor(() => replying(h.harness.live().runs.get(runId)?.nodes), { what: "the reply's start" })
+  expect(h.harness.live().runs.get(runId)!.status).toBe("running")
+  // Its running nodes come only from the harness's memory.
+  const listed = h.office.runs.page().runs.find((r) => r.run_id === runId)
+  expect([listed?.status, replying(listed?.current_nodes)]).toEqual(["running", true])
+  fake.release()
+  await waitFor(() => status(h, s.id) === "idle", { what: "the next turn" })
+})
+
+test("the harness actors tell the office when their run changed", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Hello.", hold: true })
+  const h = await makeHarness(fake)
+  const sub = h.office.bus.subscribe(null, { types: ["run.updated"] })
+  const s = await start(h)
+  const runId = s.run_ids[0]!
+  await h.harness.prompt(s.id, "hi")
+  await fake.waitForRequests(1, 30_000)
+  const seen: RunUpdated[] = []
+  await waitFor(
+    async () => {
+      while (sub.queued > 0) {
+        const item = await sub.next(0)
+        if (item !== null && item !== PING) seen.push(item[1].data as RunUpdated)
+      }
+      return seen.some((u) => u.run_id === runId && replying(u.current_nodes))
+    },
+    { what: "the run's run.updated" },
+  )
+  fake.release()
+  await waitFor(() => status(h, s.id) === "idle", { what: "the next turn" })
 })

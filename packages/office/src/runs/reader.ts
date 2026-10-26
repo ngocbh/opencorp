@@ -796,15 +796,32 @@ export function lineEvent(bytes: Buffer, seq: number): RunEvent | null {
 
 /**
  * The records of the log `path` from seq `from` through `to` (to its last complete line when null), each as
- * `lineEvent` maps it; a null, then nothing more, at a line that doesn't read as its seq. The file is opened on the
- * first pull and closed when the generator ends or is returned.
+ * `lineEvent` maps it; a null, then nothing more, at a line that doesn't read as its seq (a line over BIG_LINE isn't
+ * parsed, so its seq isn't checked: it is its line number). With `index` of the same file (device and inode), the read
+ * starts at its last sparse entry at or before `from` rather than at byte 0, and still reads past what it indexed; a
+ * file edited since then yields that null too when it is now shorter than that entry. An index of another file is
+ * ignored. The file is opened on the first pull and closed when the generator ends or is returned.
  */
-export function* logEvents(path: string, from: number, to: number | null): Generator<RunEvent | null> {
+export function* logEvents(
+  path: string,
+  from: number,
+  to: number | null,
+  index: Index | null = null,
+): Generator<RunEvent | null> {
   if (to !== null && from > to) return
   const fd = fs.openSync(path, "r")
   try {
+    const st = fs.fstatSync(fd, { bigint: true })
+    const size = Number(st.size)
+    // An index of a replaced file could start mid-line and count a stub (never checked) as the wrong seq.
+    const same = index !== null && st.dev === index.dev && st.ino === index.ino
+    const [base, start] = same ? window(index, from) : [0, 0]
+    if (start > size) {
+      yield null
+      return
+    }
     let seq = from
-    for (const line of lines(fd, 0, fs.fstatSync(fd).size, BIG_LINE, from)) {
+    for (const line of lines(fd, start, size, BIG_LINE, from - base)) {
       const event = line.bytes === null ? stub(line.head, seq, line.size) : decode(line.bytes, seq, false)
       yield event
       seq += 1

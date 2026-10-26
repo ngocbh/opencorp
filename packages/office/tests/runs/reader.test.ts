@@ -1,5 +1,5 @@
 /** The run-log reader: a lazy, bounded index per log with its node table; node and record pages; plain reads only. */
-import { expect, test } from "bun:test"
+import { expect, onTestFinished, spyOn, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import {
@@ -28,6 +28,7 @@ import {
   RunLogReader,
   SCHEMA,
   SPARSE_BYTES,
+  SPARSE_EVERY,
   UnreadableLog,
   UnsupportedSchema,
 } from "../../src/runs/reader.ts"
@@ -538,6 +539,39 @@ test("log events yield null at a line that is not its seq and stop", () => {
   fs.writeFileSync(file, Buffer.concat([...data.slice(0, 4), started(9, "rewritten"), ...data.slice(5)]))
   expect([...logEvents(file, 2, null)].map((e) => e?.seq ?? null)).toEqual([2, 3, null])
 })
+
+test("log events start from an index at the seq asked for", async () => {
+  const file = chatLog(path.join(tempDir(), "r.jsonl"), 30) // seqs 0..243
+  const index = await new RunLogReader().index(file)
+  const [base, start] = index.sparse.findLast(([seq]) => seq <= 200)!
+  expect([SPARSE_EVERY, base]).toEqual([64, 192])
+  const read = spyOn(fs, "readSync")
+  onTestFinished(() => read.mockRestore())
+  // The position readSync was first called at (its fifth argument).
+  const first = () => (read.mock.calls[0] as unknown[])[4]
+  const plain = [...logEvents(file, 200, null)]
+  expect(first()).toBe(0)
+  read.mockClear()
+  expect([...logEvents(file, 200, null, index)]).toEqual(plain)
+  expect(first()).toBe(start)
+  expect([...logEvents(file, 200, 201, index)].map((e) => e?.seq)).toEqual([200, 201])
+  // A file shorter than the index read was rewritten: its records can't be trusted.
+  fs.writeFileSync(file, fs.readFileSync(file).subarray(0, start - 10))
+  expect([...logEvents(file, 200, null, index)]).toEqual([null])
+})
+
+test("log events ignore an index of a replaced file", async () => {
+  const file = chatLog(path.join(tempDir(), "r.jsonl"), 30)
+  const index = await refresh(file, null)
+  const [base, start] = index.sparse.findLast(([seq]) => seq <= 200)!
+  // A new inode whose line over BIG_LINE spans the old sparse entry: read from it, its tail would be a stub of seq 192.
+  const big = commitOfSize(1, "big", 2 * BIG_LINE, "b")
+  expect(start).toBeLessThan(BIG_LINE)
+  fs.writeFileSync(`${file}.new`, Buffer.concat([runStarted(0), big, started(2, "after")]))
+  fs.renameSync(`${file}.new`, file)
+  for (const from of [1, base]) expect([...logEvents(file, from, null, index)]).toEqual([...logEvents(file, from, null)])
+  expect([...logEvents(file, 1, null, index)].map((e) => e?.seq)).toEqual([1, 2])
+}, 60_000)
 
 test("the download is every complete line as stored", async () => {
   const file = logOf(runStarted(0), started(1, "a"), committed(2, "a", { output: "d".repeat(3 << 20) }))

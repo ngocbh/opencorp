@@ -178,3 +178,162 @@ test("an end time needs an end reason", () => {
   insert("the office stopped", null)
   insert("finished", T)
 })
+
+/** The run ids of `rows`. */
+const ids = (rows: RunRow[]) => rows.map((r) => r.runId)
+
+test("a run page is top level rows newest first after before", () => {
+  const store = openStore()
+  const s = store.createSession(session())
+  const [a, b, child, c] = [0, 1, 2, 3].map(() => store.addRun(launch(s))) as [RunRow, RunRow, RunRow, RunRow]
+  const links = new Map([[child.runId, b.runId]])
+  expect(ids(store.runPage({ before: null, limit: 10, parent: null, links }))).toEqual([c.runId, b.runId, a.runId])
+  expect(ids(store.runPage({ before: null, limit: 2, parent: null, links }))).toEqual([c.runId, b.runId])
+  expect(ids(store.runPage({ before: b.runId, limit: 2, parent: null, links }))).toEqual([a.runId])
+  // With no links every row is top level.
+  expect(ids(store.runPage({ before: c.runId, limit: 10, parent: null, links: new Map() }))).toEqual([
+    child.runId,
+    b.runId,
+    a.runId,
+  ])
+})
+
+test("a run page of one parent lists its linked children", () => {
+  const store = openStore()
+  const s = store.createSession(session())
+  const rows = [0, 1, 2, 3, 4].map(() => store.addRun(launch(s)))
+  const [top, k1, other, k2, k3] = rows as [RunRow, RunRow, RunRow, RunRow, RunRow]
+  const links = new Map([
+    [k1.runId, top.runId],
+    [k2.runId, top.runId],
+    [k3.runId, other.runId],
+    ["no-row", top.runId],
+  ])
+  expect(ids(store.runPage({ before: null, limit: 10, parent: top.runId, links }))).toEqual([k2.runId, k1.runId])
+  expect(ids(store.runPage({ before: k2.runId, limit: 10, parent: top.runId, links }))).toEqual([k1.runId])
+  expect(ids(store.runPage({ before: null, limit: 1, parent: other.runId, links }))).toEqual([k3.runId])
+  expect(store.runPage({ before: null, limit: 10, parent: k1.runId, links })).toEqual([])
+})
+
+test("a launch range keeps a top level row whose child launched in it", () => {
+  const store = openStore()
+  const s = store.createSession(session())
+  const at = (day: number) => `2026-10-${day}T10:00:00.000Z`
+  const old = store.addRun(launch(s, { createdAt: at(10) }))
+  const parent = store.addRun(launch(s, { createdAt: at(11) }))
+  const atSince = store.addRun(launch(s, { createdAt: at(12) }))
+  const atUntil = store.addRun(launch(s, { createdAt: at(14) }))
+  const kid = store.addRun(launch(s, { createdAt: at(13) }))
+  const oldKid = store.addRun(launch(s, { createdAt: at(10) }))
+  const links = new Map([
+    [kid.runId, parent.runId],
+    [oldKid.runId, old.runId],
+  ])
+  const range = { since: at(12), until: at(14) }
+  expect(ids(store.runPage({ before: null, limit: 10, parent: null, links, ...range }))).toEqual([
+    atSince.runId,
+    parent.runId,
+  ])
+  expect(ids(store.runPage({ before: null, limit: 10, parent: parent.runId, links, ...range }))).toEqual([kid.runId])
+  expect(store.runPage({ before: null, limit: 10, parent: old.runId, links, ...range })).toEqual([])
+  // An open bound on either side.
+  expect(ids(store.runPage({ before: null, limit: 10, parent: null, links, since: at(14) }))).toEqual([atUntil.runId])
+  expect(ids(store.runPage({ before: null, limit: 10, parent: null, links, until: at(11) }))).toEqual([old.runId])
+})
+
+test("recent keeps open rows of any age and rows launched since", () => {
+  const store = openStore()
+  const s = store.createSession(session())
+  const OLD = "2026-10-01T10:00:00.000Z"
+  const recent = "2026-10-20T00:00:00.000Z"
+  const openOld = store.addRun(launch(s, { createdAt: OLD }))
+  const endedOld = store.addRun(launch(s, { createdAt: OLD }))
+  const yianEndedOld = store.addRun(launch(s, { createdAt: OLD }))
+  const endedNew = store.addRun(launch(s))
+  const parentOfOpen = store.addRun(launch(s, { createdAt: OLD }))
+  const openKid = store.addRun(launch(s, { createdAt: OLD }))
+  const parentOfNew = store.addRun(launch(s, { createdAt: OLD }))
+  const newKid = store.addRun(launch(s))
+  const parentOfClosed = store.addRun(launch(s, { createdAt: OLD }))
+  const closedKid = store.addRun(launch(s, { createdAt: OLD }))
+  store.endRun(endedOld.runId, "the office stopped", OLD)
+  store.endRun(endedNew.runId, "the office stopped")
+  for (const r of [parentOfOpen, parentOfNew, parentOfClosed]) store.endRun(r.runId, "the office stopped", OLD)
+  store.endRun(newKid.runId, "the office stopped")
+  const ended = [yianEndedOld.runId, closedKid.runId]
+  const links = new Map([
+    [openKid.runId, parentOfOpen.runId],
+    [newKid.runId, parentOfNew.runId],
+    [closedKid.runId, parentOfClosed.runId],
+  ])
+  const page = (parent: string | null) => ids(store.runPage({ before: null, limit: 20, parent, links, recent, ended }))
+  expect(page(null)).toEqual([parentOfNew.runId, parentOfOpen.runId, endedNew.runId, openOld.runId])
+  expect(page(parentOfOpen.runId)).toEqual([openKid.runId])
+  expect(page(parentOfNew.runId)).toEqual([newKid.runId])
+  expect(page(parentOfClosed.runId)).toEqual([])
+  // With nothing in ended, the row yian ended reads as open.
+  expect(ids(store.runPage({ before: null, limit: 20, parent: null, links, recent }))).toContain(yianEndedOld.runId)
+})
+
+test("a launch range with recent is refused", () => {
+  const store = openStore()
+  for (const range of [{ since: T }, { until: T }]) {
+    const error = thrown(() =>
+      store.runPage({ before: null, limit: 10, parent: null, links: new Map(), recent: T, ...range }),
+    )
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe("a launch range and recent can't be combined")
+  }
+})
+
+test("runs among filters a list of ids", () => {
+  const store = openStore()
+  const s = store.createSession(session())
+  const OLD = "2026-10-01T10:00:00.000Z"
+  const openOld = store.addRun(launch(s, { createdAt: OLD }))
+  const closedOld = store.addRun(launch(s, { createdAt: OLD }))
+  const yianEnded = store.addRun(launch(s))
+  const fresh = store.addRun(launch(s))
+  const outside = store.addRun(launch(s))
+  store.endRun(closedOld.runId, "the office stopped", OLD)
+  const among = [openOld, closedOld, yianEnded, fresh].map((r) => r.runId).concat("no-row")
+  const ended = [yianEnded.runId]
+  expect(ids(store.runsAmong(among))).toEqual([fresh.runId, yianEnded.runId, closedOld.runId, openOld.runId])
+  expect(ids(store.runsAmong(among, { since: T }))).toEqual([fresh.runId, yianEnded.runId])
+  expect(ids(store.runsAmong(among, { until: T }))).toEqual([closedOld.runId, openOld.runId])
+  expect(ids(store.runsAmong(among, { recent: "2026-10-19T00:00:00.000Z", ended }))).toEqual([
+    fresh.runId,
+    yianEnded.runId,
+    openOld.runId,
+  ])
+  expect(ids(store.runsAmong(among, { openOnly: true, ended }))).toEqual([fresh.runId, openOld.runId])
+  expect(ids(store.runsAmong(among, { openOnly: true, since: T, ended }))).toEqual([fresh.runId])
+  expect(ids(store.runsAmong([]))).toEqual([])
+  expect(ids(store.runsAmong(among))).not.toContain(outside.runId)
+})
+
+test("a run page binds thirty three thousand links at once", () => {
+  // A `?` per link would pass SQLite's variable limit (32,766).
+  const store = openStore()
+  const s = store.createSession(session())
+  const top = store.addRun(launch(s))
+  const kids = Array.from({ length: 33_000 }, () => newId())
+  store.transaction((tx) => {
+    for (const runId of kids)
+      tx.insert("runs", {
+        run_id: runId,
+        session_id: s.id,
+        driver: "ngocbh",
+        flow: "chat",
+        flow_path: "shared/flows/chat.yaml",
+        created_at: T,
+      })
+  })
+  const links = new Map(kids.map((kid) => [kid, top.runId]))
+  expect(ids(store.runPage({ before: null, limit: 10, parent: null, links }))).toEqual([top.runId])
+  expect(store.runPage({ before: null, limit: 50_000, parent: top.runId, links }).length).toBe(33_000)
+  expect(ids(store.runPage({ before: null, limit: 10, parent: null, links, recent: T, ended: kids }))).toEqual([
+    top.runId,
+  ])
+  expect(store.runsAmong(kids, { ended: kids, openOnly: true })).toEqual([])
+})

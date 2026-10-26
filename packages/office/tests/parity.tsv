@@ -196,7 +196,12 @@ daemon/test_routes_people.py	ported	packages/office/tests/daemon/routes_people.t
 daemon/test_routes_people.py::test_hiring_needs_a_hiring_desk	dropped	—	design §2.3: extras goes; Office.hiring is a typed field every office is built with, so no office lacks a hiring desk	O2-6
 daemon/test_routes_profiles.py	ported	packages/office/tests/daemon/routes_profiles.test.ts	—	O2-23
 daemon/test_routes_questions.py	open	—	split: O3-9 → O4a-9; O3-9's tests are in packages/office/tests/daemon/routes_questions.test.ts	O4a-9
-daemon/test_routes_runs.py	open	—	—	O4b-7
+daemon/test_routes_runs.py	ported	packages/office/tests/daemon/routes_runs.test.ts	—	O4b-7
+daemon/test_routes_runs.py::test_a_log_removed_before_it_streams_has_no_log	changed	packages/office/tests/daemon/routes_runs.test.ts::a log removed before it streams has no log	design §2.3: RunLogs.log opens the log with its lookup (a 404 rather than a cut-off download), no seam between them, so one removed after it opened still downloads whole and one removed before is no_log	O4b-7
+daemon/test_routes_runs.py::test_get_runs_without_run_logs_is_not_implemented	dropped	—	the office always has Run Logs (Office.runs)	O4b-7
+daemon/test_routes_runs.py::test_one_huge_record_is_a_size_stub	changed	packages/office/tests/daemon/routes_runs.test.ts::one huge record is a size stub	#362: a node's output is in its pool_commit record in schema 22, so the stub is that record; the reader has no cap option, so the record is over the real HUGE_LINE (16 MiB), read in about 0.5 s	O4b-7
+daemon/test_routes_runs.py::test_one_runs_routes	changed	packages/office/tests/daemon/routes_runs.test.ts::one runs routes	#362: the schema-22 chat log has a pool_commit before each success (20 records, not 16), so the page cursor, seqs and line count shift	O4b-7
+daemon/test_routes_runs.py::test_one_runs_routes_while_its_log_is_first_read	dropped	—	§5.5: no first-build wait; a request awaits the index	O4b-7
 daemon/test_routes_sessions.py	open	—	split: O3-15 → O4a-7b → O4a-5; test_anyone_who_may_chat_may_switch_its_model waits for O4a-5's set_model; the other tests are in packages/office/tests/daemon/routes_sessions.test.ts	O4a-5
 daemon/test_routes_sessions.py::test_a_chat_is_credited_to_the_verified_person	changed	packages/office/tests/daemon/routes_sessions.test.ts::a chat is credited to the verified person	4a-revision §1, O4a-7a: no turn question; the sender is each user message's author in the run log, read from GET /messages, not a turn question's answered_by	O4a-7b
 daemon/test_routes_sessions.py::test_a_chat_over_the_routes	changed	packages/office/tests/daemon/routes_sessions.test.ts::a chat over the routes	4a-revision §1: no turn question; the message is a prompt, credited by its author on the transcript	O4a-7b
@@ -306,7 +311,7 @@ harness/test_translate.py::test_two_steers_around_a_running_command_keep_it_in_i
 harness/test_waiting.py	ported	packages/office/tests/harness/waiting.test.ts	—	O3-14
 harness/test_waiting.py::test_a_session_waiting_only_on_turnless_cards_restores_idle_without_the_marker	changed	packages/office/tests/harness/waiting.test.ts::a session waiting only on turnless cards restores idle without the marker	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
 harness/test_waiting.py::test_a_waiting_session_with_a_turn_card_restores_idle_with_the_marker	changed	packages/office/tests/harness/waiting.test.ts::a waiting session with a turn card restores idle with the marker	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
-hq/test_api.py	open	—	split: O2-9 → O3-9 → O3-15 → O4b-7; O2-9's, O3-9's and O3-15's tests are in packages/office/tests/hq/api.test.ts	O4b-7
+hq/test_api.py	ported	packages/office/tests/hq/api.test.ts	—	O4b-7
 hq/test_app_fixture.py	ported	packages/office/tests/hq/app_fixture.test.ts	—	O2-7
 hq/test_auth.py	ported	packages/office/tests/hq/auth.test.ts	—	O2-9
 hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7
@@ -484,16 +489,39 @@ questions/test_side.py::test_a_side_chat_flow_linked_from_outside_the_pin_is_ref
 questions/test_side.py::test_a_side_run_gets_the_askers_identity_and_who_opened_it	changed	packages/office/tests/questions/side.test.ts::a side run gets the askers identity and who opened it	O4a-1: the side chat's inputs also carry max_turns and history_budget (the seed's room), so the whole-inputs equality includes them	O4a-8
 questions/test_side_chat_flow.py	ported	packages/office/tests/questions/side_chat_flow.test.ts	—	O4a-1
 questions/test_side_chat_flow.py::test_side_chat_template_loads_and_has_the_chat_shape	changed	packages/office/tests/questions/side_chat_flow.test.ts::side chat template loads and has the chat shape	4a-revision §1: a take on the messages inbox and an Optional reply with steer_inbox replace human_input, the exit case and session memory; the profile memory moved from the flow onto the reply, so the summariser doesn't recall the profile	O4a-1
-runs/test_as_stored.py	open	—	—	O4b-7
+runs/test_as_stored.py	ported	packages/office/tests/runs/as_stored.test.ts	—	O4b-7
+runs/test_as_stored.py::test_records_come_back_as_stored	changed	packages/office/tests/runs/as_stored.test.ts::records come back as stored	#362: no evidence field or evidence_left_out in schema 22; the payload comes back as stored	O4b-7
 runs/test_debriefs.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
-runs/test_detail.py	open	—	—	O4b-7
+runs/test_detail.py	ported	packages/office/tests/runs/detail.test.ts	—	O4b-7
+runs/test_detail.py::test_a_chats_page_has_what_its_log_and_the_store_say	changed	packages/office/tests/runs/detail.test.ts::a chats page has what its log and the store say	rule 1: store rows and a log instead of the harness; §5.1 status; usage tokens from yian's index row	O4b-7
+runs/test_detail.py::test_a_connection_key_a_reply_echoes_is_shown_as_stored	changed	packages/office/tests/runs/detail.test.ts::a connection key a reply echoes is shown as stored	rule 1: store rows and a log instead of the harness; §5.1 status; the echoed key is in the reply's commit record (#362: no evidence in schema 22)	O4b-7
+runs/test_detail.py::test_a_debrief_has_no_usage_recorded	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-7
+runs/test_detail.py::test_a_first_read_of_a_large_log_answers_indexing	dropped	—	§5.5: no first-build wait; a request awaits the index	O4b-7
+runs/test_detail.py::test_nodes_and_records_answer_indexing_and_one_record_says_so	dropped	—	§5.5: no first-build wait; a request awaits the index	O4b-7
+runs/test_detail.py::test_reasons_in_the_header_parent_and_children_are_shown_as_stored	changed	packages/office/tests/runs/detail.test.ts::reasons in the header parent and children are shown as stored	rule 1: store rows and a log instead of the harness; §5.1 status; the child's parent from yian's index, its reason an office end	O4b-7
+runs/test_detail.py::test_records_page_with_evidence_left_out_and_one_record_has_it	changed	packages/office/tests/runs/detail.test.ts::records page and one record is whole	#362: no evidence in schema 22	O4b-7
+runs/test_detail.py::test_the_list_never_opens_a_log	changed	packages/office/tests/runs/detail.test.ts::the list never opens a log	rule 1: store rows and a log instead of the harness; §5.1 status; the list never asks the run log reader or yian's inspect	O4b-7
+runs/test_detail.py::test_the_timeline_is_node_attempts_newest_first_with_no_kind_yet	changed	packages/office/tests/runs/detail.test.ts::the timeline is node attempts newest first with their kinds	P15: kinds from staticNodes of the recorded flow, under the session's pinned worktree; a real run so kinds are known	O4b-7
 runs/test_launches.py	open	—	—	O4a-5
-runs/test_list.py	open	—	—	O4b-7
-runs/test_live.py	open	—	—	O4b-7
+runs/test_list.py	ported	packages/office/tests/runs/list.test.ts	—	O4b-7
+runs/test_list.py::test_a_codex_debrief_is_top_level_and_says_so	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-7
+runs/test_list.py::test_a_run_that_finishes_while_listed_shows_running_not_interrupted	changed	packages/office/tests/runs/list.test.ts::a run that finishes while listed shows running not interrupted	§5.1: status from the office end reason or yian's index; parents from yian's index; the end lands in yian's log, read after memory said running	O4b-7
+runs/test_list.py::test_children_are_read_only_when_they_can_match	changed	packages/office/tests/runs/list.test.ts::children are read only when they can match	§5.1: status from the office end reason or yian's index; parents from yian's index; children are read by id from yian's links through runsAmong, whose filters are asserted	O4b-7
+runs/test_list.py::test_open_or_recent_lists_open_runs_of_any_age_and_runs_launched_since	changed	packages/office/tests/runs/list.test.ts::open or recent lists open runs of any age and runs launched since	§5.1: status from the office end reason or yian's index; parents from yian's index; an open run is idle in the actor's memory, a closed one ended in yian's index	O4b-7
+runs/test_list.py::test_the_default_first_request_scans_only_open_and_recent_runs	changed	packages/office/tests/runs/list.test.ts::the default first request scans only open and recent runs	§5.1: status from the office end reason or yian's index; parents from yian's index; the open run waits in the actor's memory and the store leaves out the runs yian's index ended	O4b-7
+runs/test_list.py::test_the_list_never_opens_a_log	changed	packages/office/tests/runs/list.test.ts::the list never opens a log	§5.1: status from the office end reason or yian's index; parents from yian's index; the list never asks the run log reader: yian's inspect is not called for a run with a settled index row or an office end	O4b-7
+runs/test_live.py	ported	packages/office/tests/runs/live.test.ts	—	O4b-7
 runs/test_live.py::test_a_debrief_in_flight_is_known_with_its_open_nodes	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-2
 runs/test_live.py::test_a_debrief_is_claimed_while_its_outcome_is_written	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-2
+runs/test_live.py::test_a_harness_run_is_claimed_from_its_row_until_its_live_run_is_registered	dropped	—	§5.1: no outbox; the status rule reads memory before and after the store in one pass, and the actor's memory holds the run until its exit job reports the end	O4b-7
+runs/test_live.py::test_a_harness_run_is_claimed_while_its_outcome_is_written	dropped	—	§5.1: no outbox; the status rule reads memory before and after the store in one pass, and the actor's memory holds the run until its exit job reports the end	O4b-7
+runs/test_live.py::test_a_run_that_has_ended_sends_no_trailing_running	changed	packages/office/tests/runs/live.test.ts::a run that has ended sends its end in its trailing event	plan decision 6: run.updated is computed from the status rule when sent, not suppressed, so a trailing event after the end says the run failed	O4b-7
+runs/test_live.py::test_close_all_stops_the_notifier	changed	packages/office/tests/runs/live.test.ts::office stop stops the run notifier	design §3.3: threads become async; Office.stop closes the run notifier, whose timer replaces the thread: a later change builds nothing	O4b-7
 runs/test_nodes.py	ported	packages/office/tests/runs/nodes.test.ts	—	O4b-5
-runs/test_notify.py	open	—	—	O4b-7
+runs/test_notify.py	ported	packages/office/tests/runs/notify.test.ts	—	O4b-7
+runs/test_notify.py::test_a_failing_build_is_logged_and_the_next_still_goes	changed	packages/office/tests/runs/notify.test.ts::a failing build is logged and the next still goes	design §6 rule 13: the log names the error type, never its message	O4b-7
+runs/test_notify.py::test_close_stops_the_thread_and_drops_what_waits	changed	packages/office/tests/runs/notify.test.ts::close stops the timer and drops what waits	design §3.3: threads become async; a timer replaces the notifier thread	O4b-7
+runs/test_notify.py::test_runs_long_quiet_are_forgotten_even_when_nothing_is_coalesced	changed	packages/office/tests/runs/notify.test.ts::runs long quiet are forgotten even when nothing is coalesced	design §3.3: threads become async; a timer replaces the notifier thread: no timer is armed and no old run is remembered	O4b-7
 runs/test_outcome_names.py	ported	packages/office/tests/runs/outcome_names.test.ts	—	O3-1
 runs/test_outcomes.py	open	—	split: O4a-4 → O4a-6; O4a-4's tests are in packages/office/tests/runs/outcomes.test.ts	O4a-6
 runs/test_outcomes.py::test_a_crash_resume_on_a_new_key_says_the_worker_stopped	changed	packages/office/tests/runs/outcomes.test.ts::a crash resume on a new key says the worker stopped	design §5.1: the office row holds only office facts; asserts the death retry's record check starts a fresh run on the new key, the old endReason WORKER_REPLACED	O4a-4
@@ -519,7 +547,7 @@ runs/test_reader.py::test_one_huge_record_is_read_without_holding_its_line	chang
 runs/test_reader.py::test_one_record_by_seq_has_its_evidence_and_is_capped	changed	packages/office/tests/runs/reader.test.ts::one record by seq is whole and is capped	§5.5, #362: no evidence in schema 22	O4b-5
 runs/test_reader.py::test_progress_and_size_never_say_less_than_was_read	dropped	—	§5.5: no progress is reported	O4b-5
 runs/test_reader.py::test_unknown_envelope_fields_before_or_after_seq_and_at_are_ignored	changed	packages/office/tests/runs/reader.test.ts::an unknown envelope field makes the log unreadable	§5.5, design §3.2: the index reads through yian's iterRunRecords, which refuses envelope fields other than its six	O4b-5
-runs/test_reason_cut.py	open	—	—	O4b-7
+runs/test_reason_cut.py	ported	packages/office/tests/runs/reason_cut.test.ts	—	O4b-7
 runs/test_records.py	ported	packages/office/tests/runs/records.test.ts	—	O4b-6
 runs/test_records.py::test_a_busy_sessions_current_run_runs_only_with_its_live_run_or_wake	changed	packages/office/tests/runs/records.test.ts::a busy sessions current run runs only with its live run or wake	§5.1 rule 2: the actor's memory, not the stored session status	O4b-6
 runs/test_records.py::test_a_debrief_in_flight_runs_and_a_backward_job_leaves_a_finished_run_finished	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-6
@@ -737,6 +765,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/harness.test.ts::a wake at timer firing during the stop spawns nothing	design §8.2/§2.3 stop order (Python close_all: no new worker spawns from the start): the spawn wrapper refuses once stopping	O4a-4
 —	new	packages/office/tests/chat/harness.test.ts::an office stop leaves its sessions live for the next office	design §8.2/§2.3 stop order (Python close_all: _exited returns once _stopping): the stop's own worker exits are dropped, so no death is retried and no session fails	O4a-4
 —	new	packages/office/tests/chat/harness.test.ts::close closes the workers even when the codex sessions fail to close	design §2.3 (each stop step isolated, logged by type): the workers close and the stop resolves even when the Codex sessions fail to close	O4a-4
+—	new	packages/office/tests/chat/harness.test.ts::the harness actors tell the office when their run changed	§5.1 rule 2: the actor's memory reaches Run Logs through the harness	O4b-7
+—	new	packages/office/tests/chat/harness.test.ts::the harness gives run logs its live runs	§5.1 rule 2: the actor's memory reaches Run Logs through the harness	O4b-7
 —	new	packages/office/tests/chat/harness.test.ts::the run spec keeps its tmp dir private under the session folder	design §6.4: the sandbox tmp dir is the session's, 0700	O4a-4
 —	new	packages/office/tests/chat/hire.test.ts::a handle folder made after the draft is refused as taken	design §6.4 (O1-14 handoff): the confirm's write only makes a folder of its own; Python's duplicate-handle words	O2-24
 —	new	packages/office/tests/chat/hire.test.ts::a hires person file is laid out as python wrote it	design §3.2 (mirror): init (O2-17) and hire write the same files as the Python office	O2-24
@@ -1015,10 +1045,12 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a ping keeps an idle live stream open	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a rebuilding view is joined again	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a reconnect after the views seq skips the records it has	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a reconnect reads the log from the run index	design §2.6 (P7): a reconnect starts from the index's sparse table, not byte 0	O4b-7
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a run no worker feeds streams its log then run end	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a stream waiting on a rebuild sends pings	design §2.6 (P7): GET /runs/{id}/live	O4b-3
-—	new	packages/office/tests/daemon/routes_runs.test.ts::every runs route answers 501 not implemented	design §4.3: GET /runs* answers 501 until the run views (O4b-3, O4b-7 replace it)	O2-6
+—	new	packages/office/tests/daemon/routes_runs.test.ts::run changed publishes run updated at once and coalesces the next one	§5.1: run.updated from the status rule and memory, through Office.runChanged and the run notifier (no outbox, O1-3)	O4b-7
 —	new	packages/office/tests/daemon/routes_runs.test.ts::run end reads the log past the last seq sent	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::the download has no head so a head never opens the log	design §2.3: HEAD never opens the log; a handler can't tell HEAD from GET, so the download serves GET only (405)	O4b-7
 —	new	packages/office/tests/daemon/routes_runs.test.ts::the live route answers 404 for a run the store does not hold	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::the live route answers 404 no log for a run without a log	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::the live route refuses an after that is not a seq without echoing it	design §2.6 (P7): GET /runs/{id}/live	O4b-3
@@ -1297,6 +1329,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/questions/format.test.ts::an astral discussion is cut by code points	design §1.4 deviation: the discussion cap counts code points as Python's len, so the cut never splits a surrogate pair	O3-7
 —	new	packages/office/tests/questions/seed.test.ts::a cut never splits a character	design §1.4 overridden for the seed: lengths are code points (as Python), since yian refuses a message with an unpaired surrogate	O4a-8
 —	new	packages/office/tests/questions/side.test.ts::a seed is a private file read back as written	DRIVER-OFFICE.md security rule 6: seed.md holds transcript text, so it is replaced atomically as a 0600 file, never written or read through a link	O4a-8
+—	new	packages/office/tests/runs/detail.test.ts::run updated is built from the runs summary	§5.1: run.updated from the status rule and memory (no outbox, O1-3)	O4b-7
+—	new	packages/office/tests/runs/detail.test.ts::run updated reads the index once until the index changes	design §5.2: one index read per change of the index, not per run.updated	O4b-7
 —	new	packages/office/tests/runs/indexer.test.ts::a busy index resolves false and logs only the error name	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
 —	new	packages/office/tests/runs/indexer.test.ts::a call made during an update waits for an update that starts after it	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
 —	new	packages/office/tests/runs/indexer.test.ts::a missing runs folder is an empty index	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
@@ -1306,10 +1340,12 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/indexer.test.ts::close stops the thread and later updates resolve false	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
 —	new	packages/office/tests/runs/indexer.test.ts::skipped logs are logged by their path only	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
 —	new	packages/office/tests/runs/indexer.test.ts::updates asked for while one runs share the next update	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
+—	new	packages/office/tests/runs/live.test.ts::live run is the workers status and nodes and null without a worker	§5.1: the status rule reads the actor's live run (Live) in place of the harness's live runs and open nodes	O4b-7
 —	new	packages/office/tests/runs/nodes.test.ts::a recorded run names its node kinds	P15	O4b-5
 —	new	packages/office/tests/runs/nodes.test.ts::a woken node opens again after a clear	yian #1064: advancing a waiting run emits NodeWoken	O4b-5
 —	new	packages/office/tests/runs/nodes.test.ts::kinds wait for the run start to be read	P15: a run start still being written gets kinds once it is read	O4b-5
 —	new	packages/office/tests/runs/nodes.test.ts::node kinds come from the flows static nodes	P15	O4b-5
+—	new	packages/office/tests/runs/notify.test.ts::a run due sooner re arms the timer	design §3.3: the timer, unlike the thread's condition wait, is re-armed when a sooner run joins	O4b-7
 —	new	packages/office/tests/runs/outcomes.test.ts::a failed reply whose fresh run cant resolve its connection fails the session on the failed result	design §8.2: a failed reply starts a fresh run in the same session; one that can't start fails the session (Python _new_run → _cant_start); §5.1: no office end reason on the run yian ended	O4a-4
 —	new	packages/office/tests/runs/outcomes.test.ts::a failed reply whose fresh run cant start fails the session and the fresh run	design §8.2: a failed reply starts a fresh run in the same session; one that can't start fails the session (Python _new_run → _cant_start); §5.1: no office end reason on the run yian ended	O4a-4
 —	new	packages/office/tests/runs/reader.test.ts::a code reference outside the code root shows no derived value and no kinds	§6 rule 10, Y6c	O4b-5
@@ -1327,7 +1363,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/reader.test.ts::a sparse entry marks every few mib of records	security review: a page's synchronous reads are bounded (Python read pages in a thread)	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a waiting node stays open through a resume and a woken one runs on	yian #1057, #1064: a waiting node is non-terminal and a resume doesn't retry it	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::an unterminated tail over the line cap makes the log unreadable	security review: a line over the cap is refused before it is read whole	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::log events ignore an index of a replaced file	design §2.6 (P7): a reconnect starts from the index's sparse table, not byte 0; a stub's seq isn't checked, so only the same file's index is used	O4b-7
 —	new	packages/office/tests/runs/reader.test.ts::log events read records from a seq through a seq	design §2.6 (P7): the live route maps records as the run page does	O4b-3
+—	new	packages/office/tests/runs/reader.test.ts::log events start from an index at the seq asked for	design §2.6 (P7): a reconnect starts from the index's sparse table, not byte 0	O4b-7
 —	new	packages/office/tests/runs/reader.test.ts::log events yield null at a line that is not its seq and stop	design §2.6 (P7): the live route maps records as the run page does	O4b-3
 —	new	packages/office/tests/runs/records.test.ts::a cancelled run shows interrupted with the office reason	§5.1 status mapping	O4b-6
 —	new	packages/office/tests/runs/records.test.ts::a crashed running or missing index row asks the log and else has no outcome	§5.1 status mapping; rules 4 and 5	O4b-6
@@ -1426,9 +1464,16 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/store/questions.test.ts::a second question with one call id is refused	design §5.1: questions.call_id is unique, nullable (0002)	O4a-0b
 —	new	packages/office/tests/store/questions.test.ts::an answer that isnt json is refused	a value JSON can't hold is a StoreError, never a NULL answer or a raw error quoting it (§6 rule 13)	O1-4
 —	new	packages/office/tests/store/questions.test.ts::questions are read by a long run id list in one statement	one json_each bind (O1-3's getRuns); Python's chunked read was pinned by store/test_runs.py	O1-4
+—	new	packages/office/tests/store/runs.test.ts::a launch range keeps a top level row whose child launched in it	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
+—	new	packages/office/tests/store/runs.test.ts::a launch range with recent is refused	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
+—	new	packages/office/tests/store/runs.test.ts::a run page binds thirty three thousand links at once	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
+—	new	packages/office/tests/store/runs.test.ts::a run page is top level rows newest first after before	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
+—	new	packages/office/tests/store/runs.test.ts::a run page of one parent lists its linked children	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
 —	new	packages/office/tests/store/runs.test.ts::a runs config is recorded at spawn	resume or fresh run reads it (§5.1, §8.4)	O1-3
 —	new	packages/office/tests/store/runs.test.ts::an end time needs an end reason	§5.1	O1-3
 —	new	packages/office/tests/store/runs.test.ts::open runs are the rows with no end reason	§5.1: the start sweep's office-row query	O4b-6
+—	new	packages/office/tests/store/runs.test.ts::recent keeps open rows of any age and rows launched since	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
+—	new	packages/office/tests/store/runs.test.ts::runs among filters a list of ids	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
 —	new	packages/office/tests/store/sessions.test.ts::a field with no column needs a store migration	CLAUDE.md's store-migration rule (§5.1)	O1-3
 —	new	packages/office/tests/store/sessions.test.ts::a session counts its turns from zero	design §5.1, 4a-revision §1: sessions.turns counts finished replies (0002)	O4a-0b
 —	new	packages/office/tests/tools/build.test.ts::the office tool specs equal the saved copy	D20 (Python's compare-only tools/test_spec_dump.py: all four groups through groupSpecs equal tests/fixtures/tool_specs.json)	O2-22b

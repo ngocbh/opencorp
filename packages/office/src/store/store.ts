@@ -1092,6 +1092,95 @@ export class Store {
     return this.db.prepare("SELECT * FROM runs WHERE end_reason IS NULL ORDER BY run_id").all().map(runRow)
   }
 
+  /** A page of rows, newest first, after run `before` when given and at most `limit`: the top-level ones (not a
+   *  child in `links`, which maps a child run id to its parent's), or `parent`'s linked children. With a launch
+   *  range (`since` inclusive, `until` exclusive), only rows launched in it; with `recent`, only rows open (no end
+   *  reason and not in `ended`, the runs yian ended) or launched at or after it. A top-level row is also on the
+   *  page when a linked child of it is. A launch range with `recent` throws. */
+  runPage(query: {
+    before: string | null
+    limit: number
+    parent: string | null
+    links: ReadonlyMap<string, string>
+    since?: string | null
+    until?: string | null
+    recent?: string | null
+    ended?: Iterable<string>
+  }): RunRow[] {
+    const { since = null, until = null, recent = null } = query
+    const ranged = since !== null || until !== null
+    if (ranged && recent !== null) throw new Error("a launch range and recent can't be combined")
+    // `links` and `ended` are each one JSON parameter rather than a `?` per id: a long list would pass SQLite's
+    // variable limit.
+    const params: SqliteParam[] = [
+      JSON.stringify(Object.fromEntries(query.links)),
+      JSON.stringify([...(query.ended ?? [])]),
+    ]
+    // The filter on row alias `r`; it pushes its binds as it is built, so fragments are built in SQL text order.
+    // '' sorts before every Timestamp and '~' after every ULID and Timestamp, so a missing bound keeps every row.
+    const kept = (r: string) => {
+      if (ranged) {
+        params.push(since, until)
+        return `(${r}.created_at >= COALESCE(?, '') AND ${r}.created_at < COALESCE(?, '~'))`
+      }
+      params.push(recent)
+      return `((${r}.end_reason IS NULL AND ${r}.run_id NOT IN (SELECT run_id FROM ended)) OR ${r}.created_at >= ?)`
+    }
+    let where: string
+    if (query.parent !== null) {
+      params.push(query.parent)
+      where = "r.run_id IN (SELECT child FROM link WHERE parent = ?)"
+      if (ranged || recent !== null) where += ` AND ${kept("r")}`
+    } else {
+      where = "r.run_id NOT IN (SELECT child FROM link)"
+      if (ranged || recent !== null) {
+        const self = kept("r")
+        const child = kept("c")
+        where += ` AND (${self} OR r.run_id IN (SELECT link.parent FROM link JOIN runs c ON c.run_id = link.child ` +
+          `WHERE ${child}))`
+      }
+    }
+    params.push(query.before, query.limit)
+    const sql =
+      "WITH link AS (SELECT key AS child, value AS parent FROM json_each(?)), " +
+      "ended AS (SELECT value AS run_id FROM json_each(?)) " +
+      `SELECT r.* FROM runs r WHERE ${where} AND r.run_id < COALESCE(?, '~') ORDER BY r.run_id DESC LIMIT ?`
+    return this.db.prepare(sql).all(...params).map(runRow)
+  }
+
+  /** The rows of those of `runIds` that have one, newest first: only those launched in the range when given
+   *  (`since` inclusive, `until` exclusive), open (no end reason and not in `ended`, the runs yian ended) or
+   *  launched at or after `recent` when given, and open when `openOnly`. */
+  runsAmong(
+    runIds: Iterable<string>,
+    filters: {
+      since?: string | null
+      until?: string | null
+      recent?: string | null
+      ended?: Iterable<string>
+      openOnly?: boolean
+    } = {},
+  ): RunRow[] {
+    const { since = null, until = null, recent = null } = filters
+    // One JSON parameter per list rather than a `?` per id: a long list would pass SQLite's variable limit.
+    const params: SqliteParam[] = [JSON.stringify([...(filters.ended ?? [])]), JSON.stringify([...runIds])]
+    const open = "(end_reason IS NULL AND run_id NOT IN (SELECT run_id FROM ended))"
+    let where = "run_id IN (SELECT value FROM json_each(?))"
+    if (since !== null || until !== null) {
+      where += " AND created_at >= COALESCE(?, '') AND created_at < COALESCE(?, '~')"
+      params.push(since, until)
+    }
+    if (recent !== null) {
+      where += ` AND (${open} OR created_at >= ?)`
+      params.push(recent)
+    }
+    if (filters.openOnly) where += ` AND ${open}`
+    const sql =
+      "WITH ended AS (SELECT value AS run_id FROM json_each(?)) " +
+      `SELECT * FROM runs WHERE ${where} ORDER BY run_id DESC`
+    return this.db.prepare(sql).all(...params).map(runRow)
+  }
+
   /** A session's rows, oldest first. */
   runsOfSession(sessionId: string): RunRow[] {
     return this.db

@@ -1,28 +1,163 @@
-/** The run routes: GET /runs/{id}/live streams a run's records and live frames; the others answer 501
- *  not_implemented until the run views land. */
+/** Run Logs routes: the list of runs, one run's children, and one run's page (its header, node attempts, records, one
+ *  record and its log), plus GET /runs/{id}/live, which streams a run's records and live frames. Read-only, on the
+ *  office socket and HQ's /api allowlist. */
 import fs from "node:fs"
 import path from "node:path"
-import { lineEvent, logEvents } from "../../runs/reader.ts"
+import { RunDetail, RunEvent, RunEventPage, RunNodePage, RunPage } from "@opencorp/protocol"
+import { lineEvent, logEvents, UnreadableLog } from "../../runs/reader.ts"
+import { NoLog, PAGE } from "../../runs/service.ts"
+import { NotFound } from "../../store/store.ts"
 import { PING } from "../bus.ts"
-import { HttpError, RawReply, type Route } from "../http.ts"
+import { HttpError, type Params, RawReply, type Route } from "../http.ts"
 import type { LiveJoin, ViewerFrame } from "../live.ts"
 import type { Office, RequestContext } from "../office.ts"
+import { utcTimestamp } from "./costs.ts"
 import { PING_MS, RESET } from "./events.ts"
+
+export const RUN_STATUSES: readonly string[] = ["running", "waiting", "idle", "finished", "failed", "interrupted"]
+export const MAX_LIMIT = 200
+export const SEQ_MAX = 2 ** 62
+
+/** Query parameter `name`: its last value, as Starlette's `query_params.get`. */
+function param(ctx: RequestContext, name: string): string | undefined {
+  return ctx.query.getAll(name).at(-1)
+}
+
+/** `raw` as an integer from `low` to `high` (`fallback` when absent); 422 otherwise, never quoting it. */
+export function intParam<F extends number | null>(
+  raw: string | undefined,
+  name: string,
+  low: number,
+  high: number,
+  fallback: F,
+): number | F {
+  if (raw === undefined) return fallback
+  // ASCII digits only (Number also takes signs, spaces, exponents and hex), at most 9 of them: always a safe
+  // integer, and never over 2^62, which isn't one.
+  const value = /^[0-9]{1,9}$/.test(raw) ? Number(raw) : low - 1
+  if (value < low || value > high) {
+    // BigInt prints 2^62 exactly.
+    throw new HttpError(422, "invalid_body", `${name} must be an integer from ${low} to ${BigInt(high)}`)
+  }
+  return value
+}
+
+/** `?status=`, a comma-separated list of run statuses (none when absent or empty); 422 on an unknown one. */
+export function statuses(raw: string | undefined): string[] {
+  if (!raw) return []
+  const found = raw.split(",")
+  if (found.some((status) => !RUN_STATUSES.includes(status))) {
+    throw new HttpError(422, "invalid_body", `status must be a comma-separated list of ${RUN_STATUSES.join(", ")}`)
+  }
+  return found
+}
+
+/** `raw`, an ISO-8601 time with an offset, as a Timestamp; null when absent or empty. */
+export function timeParam(raw: string | undefined, name: string): string | null {
+  return raw ? utcTimestamp(raw, name) : null
+}
+
+/** Top-level runs, newest first, each with how many runs it started; `?parent=<run_id>` lists that run's children
+ *  instead. Both filter by `flow`, `person`, `status` (any of a comma-separated list), `q` (any part of a run id)
+ *  and launch time (`since` inclusive, `until` exclusive), or `recent` (open runs of any age and runs launched since
+ *  then, the list's default), `limit` at a time after `before`. */
+export function listRuns(ctx: RequestContext): RunPage {
+  // An empty value is no filter.
+  const text = (name: string) => param(ctx, name) || null
+  const filters = {
+    flow: text("flow"),
+    person: text("person"),
+    status: statuses(param(ctx, "status")),
+    q: text("q"),
+    since: timeParam(param(ctx, "since"), "since"),
+    until: timeParam(param(ctx, "until"), "until"),
+    recent: timeParam(param(ctx, "recent"), "recent"),
+    before: text("before"),
+    limit: intParam(param(ctx, "limit"), "limit", 1, MAX_LIMIT, PAGE),
+  }
+  if (filters.recent && (filters.since || filters.until)) {
+    throw new HttpError(422, "invalid_body", "recent can't be combined with since or until")
+  }
+  const parent = text("parent")
+  if (parent === null) return ctx.office.runs.page(filters)
+  try {
+    return ctx.office.runs.children(parent, filters)
+  } catch (error) {
+    if (error instanceof NotFound) throw new HttpError(404, "not_found", `no run ${parent}`)
+    throw error
+  }
+}
+
+/** A run page read; its expected failures become API errors (anything else is a 500, as it should be). */
+async function runCall<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read()
+  } catch (error) {
+    if (error instanceof NoLog || (error as { code?: unknown } | null)?.code === "ENOENT") {
+      throw new HttpError(404, "no_log", "this run has no log: it didn't start, or its log is gone")
+    }
+    // Store and reader messages name ids, never values or the log's text.
+    if (error instanceof NotFound) throw new HttpError(404, "not_found", error.message)
+    // An unknown or retired schema, a line that isn't a record, seqs out of order.
+    if (error instanceof UnreadableLog) throw new HttpError(409, "unsupported_schema", error.message)
+    throw error
+  }
+}
+
+/** One run's header: its summary, parent, children, fingerprint, pinned commit, models, usage and log state. */
+export function getRun(ctx: RequestContext, params: Params): Promise<RunDetail> {
+  return runCall(() => ctx.office.runs.detail(params.id!))
+}
+
+/** A run's node attempts, newest start first, `limit` (at most 1,000) at a time from `before`. */
+export function runNodes(ctx: RequestContext, params: Params): Promise<RunNodePage> {
+  const before = intParam(param(ctx, "before"), "before", 0, SEQ_MAX, null)
+  const limit = intParam(param(ctx, "limit"), "limit", 1, 1000, 1000)
+  return runCall(() => ctx.office.runs.nodes(params.id!, { before, limit }))
+}
+
+/** A run's records after seq `after`: at most `limit` (500) or 256 KiB. */
+export function runEvents(ctx: RequestContext, params: Params): Promise<RunEventPage> {
+  const after = intParam(param(ctx, "after"), "after", 0, SEQ_MAX, null)
+  const limit = intParam(param(ctx, "limit"), "limit", 1, 500, 500)
+  return runCall(() => ctx.office.runs.events(params.id!, { after, limit }))
+}
+
+/** One record of a run by seq. */
+export function runEvent(ctx: RequestContext, params: Params): Promise<RunEvent> {
+  const seq = intParam(params.seq, "seq", 0, SEQ_MAX, 0)
+  return runCall(() => ctx.office.runs.event(params.id!, seq))
+}
+
+/** A run's whole log as stored, as a JSONL attachment no cache keeps. The log is opened before the reply, so a run
+ *  without one, or whose log went meanwhile, is a 404 rather than a cut-off download. */
+export async function runLog(ctx: RequestContext, params: Params): Promise<RawReply> {
+  const runId = params.id!
+  const stream = await runCall(() => ctx.office.runs.log(runId))
+  // A body never pulled (the client left before the reply) never runs its `finally`, so this closes the file then.
+  if (ctx.signal.aborted) stream.destroy()
+  else ctx.signal.addEventListener("abort", () => stream.destroy(), { once: true })
+  async function* chunks(): AsyncGenerator<Uint8Array> {
+    try {
+      for await (const chunk of stream) yield chunk as Uint8Array
+    } finally {
+      stream.destroy()
+    }
+  }
+  // runId is a stored run's id (the lookup above found it), so it is safe in the header.
+  const headers = {
+    "content-type": "application/x-ndjson",
+    "content-disposition": `attachment; filename="${runId}.jsonl"`,
+    "cache-control": "no-store",
+  }
+  return new RawReply(200, headers, chunks())
+}
 
 /** Milliseconds between joins while the relay rebuilds its view of a run. */
 export const REJOIN_MS = 50
 
 /** Records sent between two yields to the event loop, so a long log doesn't hold the office. */
 const BATCH = 64
-
-const PATHS = [
-  "/runs",
-  "/runs/:id",
-  "/runs/:id/nodes",
-  "/runs/:id/events",
-  "/runs/:id/events/:seq",
-  "/runs/:id/log",
-] as const
 
 /**
  * The log of run `id` and the last seq the client already has (`after`, -1 without one): 422 `invalid_body` when
@@ -92,11 +227,17 @@ export async function* liveStream(
   if (!open()) return
   yield ": connected\n\n"
   let last = after
+  // A reconnect starts near `after` from the run's index (the run page has usually built it), not by skipping lines
+  // from byte 0 in one synchronous read; a stream from the start reads from byte 0 anyway, and so does a reconnect
+  // when the log's index can't be read (`logIndex` is null). Built alongside the join, so a long build doesn't hold
+  // the rejoin loop's pings.
+  const indexing = after >= 0 ? office.runs.logIndex(log) : null
   /** Record frames for the log's records after `last` through `to` (to its end when null); whether the stream goes
    *  on: false once it is closed or has sent `reset`. */
   async function* records(to: number | null): AsyncGenerator<string, boolean> {
     let sent = 0
-    for (const event of logEvents(log, last + 1, to)) {
+    const index = await indexing
+    for (const event of logEvents(log, last + 1, to, index)) {
       if (++sent % BATCH === 0) await new Promise((resolve) => setImmediate(resolve))
       if (!open()) return false
       if (event === null) {
@@ -208,17 +349,16 @@ function live(pingMs: number): Route<RequestContext> {
   }
 }
 
-/** The run routes, the live stream pinging after `pingMs` idle. A stub's message names the route pattern because a
- *  handler can't see its request path. */
+/** The run routes, the live stream pinging after `pingMs` idle. */
 export function runRoutes(pingMs: number = PING_MS): Route<RequestContext>[] {
   return [
-    ...PATHS.map((path) => ({
-      method: "GET" as const,
-      path,
-      handler: () => {
-        throw new HttpError(501, "not_implemented", `GET ${path} is not implemented yet`)
-      },
-    })),
+    { method: "GET", path: "/runs", reply: RunPage, handler: listRuns },
+    { method: "GET", path: "/runs/:id", reply: RunDetail, handler: getRun },
+    { method: "GET", path: "/runs/:id/nodes", reply: RunNodePage, handler: runNodes },
+    { method: "GET", path: "/runs/:id/events", reply: RunEventPage, handler: runEvents },
+    { method: "GET", path: "/runs/:id/events/:seq", reply: RunEvent, handler: runEvent },
+    // No HEAD: a handler can't tell it from GET, and this one opens the log.
+    { method: "GET", path: "/runs/:id/log", head: false, handler: runLog },
     live(pingMs),
   ]
 }

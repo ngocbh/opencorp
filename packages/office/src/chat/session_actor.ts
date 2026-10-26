@@ -17,6 +17,7 @@ import { type Answers, makeAskUser, type OnQuestion } from "../questions/ask.ts"
 import type { AnswerKind } from "../questions/cards.ts"
 import { formatAnswer } from "../questions/format.ts"
 import type { RunIndexer } from "../runs/indexer.ts"
+import { OpenNodes } from "../runs/nodes.ts"
 import {
   COULDNT_RESUME,
   COULDNT_START,
@@ -27,6 +28,7 @@ import {
   WORKER_REPLACED,
   WORKER_STOPPED,
 } from "../runs/outcomes.ts"
+import type { LiveRun } from "../runs/records.ts"
 import {
   InvalidTransition,
   newId,
@@ -77,6 +79,9 @@ export interface ActorContext {
   /** The office's run index, brought up to date before an ended run is reported; the chat harness passes
    *  `office.runIndex`. */
   readonly runIndex?: Pick<RunIndexer, "update">
+  /** Called when run `runId`'s status, nodes or end may have changed; the office coalesces the calls and publishes
+   *  run.updated. The chat harness passes `office.runChanged`. */
+  readonly runChanged?: (runId: string) => void
   /** Gets log lines; never an error's message. */
   log(line: string): void
 }
@@ -277,6 +282,8 @@ export class SessionActor implements LiveCalls {
   #pins: Pins | null = null
   /** The office tool calls in flight, each answered `INTERRUPTED_CALL` when called. */
   readonly #calls = new Set<() => void>()
+  /** The nodes the current worker's run executes now, from its frames. */
+  readonly #nodes = new OpenNodes()
 
   /** The actor of stored session `sessionId`, over its current run. Throws `HarnessError` (`404`) for no such
    *  session. */
@@ -296,6 +303,19 @@ export class SessionActor implements LiveCalls {
   /** Whether a worker runs the session's run, or is being spawned. */
   get hasWorker(): boolean {
     return this.#run !== null || this.#starting !== null
+  }
+
+  /** The session's live run: its status (the stored session's `idle` or `waiting`, else `running`) and its open
+   *  nodes while running, else the nodes it waits at. Null unless a worker runs the current run or is being spawned
+   *  for it, and the actor is neither finished nor closed. */
+  liveRun(): (LiveRun & { runId: string }) | null {
+    const run = this.#starting ?? this.#run
+    // While a fresh run replaces the current one, the worker being spawned is still the old run's for a moment.
+    if (run === null || run.runId !== this.#runId || this.#finished || this.#closed) return null
+    const stored = this.#ctx.store.getSession(this.sessionId)?.status
+    const status = stored === "idle" || stored === "waiting" ? stored : "running"
+    const nodes = status === "running" ? this.#nodes.current() : [...run.waiting.keys()]
+    return { runId: run.runId, status, nodes }
   }
 
   /** The model calls in flight of `runId`, as the live relay shows them (empty while its view is being built) while a
@@ -636,6 +656,7 @@ export class SessionActor implements LiveCalls {
       const running = spawning || (run !== null && run.outcome === null && !this.#runAtTurn(run))
       writeState(store, this.sessionId, runState({ waiting: asks.length > 0 || held, running }), who, { capped: held })
     })
+    if (this.#runId !== null) this.#ctx.runChanged?.(this.#runId)
   }
 
   /** Who an `ask_manager` question waits on: its work item's assignee. */
@@ -819,6 +840,9 @@ export class SessionActor implements LiveCalls {
     const waits = kind === "advance" ? (this.#waits ?? []) : []
     let run = new WorkerRun(this.#runId!, kind, pendings, waits, this.#lateSend)
     this.#starting = run
+    // No worker runs now: a resumed worker re-emits the starts of the nodes it re-runs, and a fresh run (`#replace`,
+    // only ever called below) has run nothing yet.
+    this.#nodes.clear()
     try {
       if (this.#closed) throw stopping()
       const { session, name, model, provider } = await this.#checkProvider()
@@ -964,6 +988,7 @@ export class SessionActor implements LiveCalls {
     })
     this.#log(`session ${this.sessionId} starts a fresh run (${why ?? "its reply failed"})`)
     this.#runId = runId
+    this.#ctx.runChanged?.(old)
     this.#replaced.push(old)
     // What the old run waited on, and its deadlines, say nothing about the new one.
     this.#waits = null
@@ -1190,6 +1215,7 @@ export class SessionActor implements LiveCalls {
       return
     }
     if (this.#finished) return
+    if (this.#nodes.apply(String(frame.name), data)) this.#ctx.runChanged?.(run.runId)
     const node = typeof data.node_id === "string" ? data.node_id : null
     switch (frame.name) {
       case "RunStarted":
@@ -1754,6 +1780,9 @@ export class SessionActor implements LiveCalls {
       const given = [...(run?.given ?? []), ...(this.#run?.given ?? []), ...this.#next.splice(0)]
       this.#answerRest(given, new HarnessError(409, "not_live", `session ${this.sessionId} has no live run`))
       this.#stopRuns(!ended ? runId : null, this.#replaced.splice(0))
+      // Its end is stored, or yian's index has it (the ending result's job brought it up to date); a replaced run's
+      // end was told when `#replace` stored it.
+      if (runId !== null) this.#ctx.runChanged?.(runId)
     }
   }
 

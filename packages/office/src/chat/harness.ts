@@ -11,6 +11,7 @@ import { type CodexSessions, checkFolder, notSupported, startConnection } from "
 import type { Monitor } from "../perm/monitor.ts"
 import { Answers } from "../questions/ask.ts"
 import type { AnswerKind } from "../questions/cards.ts"
+import { Live, type LiveRun } from "../runs/records.ts"
 import { SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store, newId } from "../store/store.ts"
 import { WorkspaceTools } from "../tools/workspace.ts"
@@ -106,6 +107,7 @@ export class ChatHarness implements SessionHarness {
       },
       scheduler,
       runIndex: office.runIndex,
+      runChanged: (runId) => office.runChanged(runId),
       log,
     }
     // A finished session's actor goes once its last worker has; a lingering one is dropped at the next call.
@@ -307,6 +309,17 @@ export class ChatHarness implements SessionHarness {
       }
       throw error
     }
+  }
+
+  /** What its actors hold now, for Run Logs: each live actor's run with its status and nodes. Codex sessions have no
+   *  yian runs, so they add none. */
+  live(): Live {
+    const runs = new Map<string, LiveRun>()
+    for (const actor of this.#actors.values()) {
+      const run = actor.liveRun()
+      if (run !== null) runs.set(run.runId, { status: run.status, nodes: run.nodes })
+    }
+    return new Live(runs)
   }
 
   /** After an office restart: the Codex sessions restore theirs. */
