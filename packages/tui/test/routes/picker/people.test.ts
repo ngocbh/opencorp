@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test"
-import type { Person, Session } from "@opencorp/protocol"
-import path from "node:path"
+import { Handle, type Person, type Session } from "@opencorp/protocol"
 import { HANDLE, blocks, confirmRequest, harnessesOf, hireRequest, pickerRows } from "../../../src/routes/picker/people"
 
 const person = (handle: string, kind: Person["kind"] = "agent"): Person => ({
@@ -59,9 +58,10 @@ test("confirm resends the previewed fields, with no id", () => {
   expect(confirmRequest(previewed)).toEqual({ ...previewed, confirm: true })
 })
 
-test("HANDLE matches the protocol schema's Handle pattern", async () => {
-  const schema = await Bun.file(path.join(import.meta.dir, "../../../../protocol/schema/protocol.schema.json")).json()
-  expect(HANDLE.source).toBe(schema.$defs.Handle.pattern)
+test("HANDLE takes the handles the protocol's Handle takes", () => {
+  // The protocol keeps its pattern an inline literal, so this checks the two agree by what they accept.
+  const cases = ["a", "7", "a-b", "a1-2b", "a".repeat(32), "a".repeat(33), "-a", "a-", "a--b", "A", "a_b", "", "añ"]
+  expect(cases.map((handle) => HANDLE.test(handle))).toEqual(cases.map((handle) => Handle.safeParse(handle).success))
 })
 
 test("a person's harnesses: the list, else composer; only those the TUI can open", () => {
