@@ -57,22 +57,15 @@ test("each meta type lands in its slice; unknown types are ignored", () => {
   const s = emptyState()
   applyMeta(s, meta("question.created", { id: "Q", session_id: S, status: "open", created_at: "t", updated_at: "t" }))
   applyMeta(s, meta("profile.updated", { person: "minh", text: "x", version: "v" }, "minh"))
-  applyMeta(s, meta("debrief.created", { session_id: S, state: "pending", updated_at: "t" }, S))
   applyMeta(s, meta("work_item.created", { id: "W", title: "w", updated_at: "t" }))
   applyMeta(s, meta("profile_proposal.created", { id: "P", person: "minh" }))
-  applyMeta(s, meta("feedback.created", { id: "F", session_id: S }))
   const comment = { id: "C", work_item_id: "W", author: "minh", body: "b", created_at: "t" }
   applyMeta(s, meta("comment.created", comment))
   applyMeta(s, meta("comment.created", comment))
   applyMeta(s, { ...meta("session.created", session()), type: "person.hired" as Event["type"] })
   expect(openQuestions(s, S).map((q) => q.id)).toEqual(["Q"])
-  expect([s.profiles.minh.version, s.debriefs[S].state, s.comments.W.length, s.sessions.length]).toEqual([
-    "v",
-    "pending",
-    1,
-    0,
-  ])
-  expect([s.workItems.W.title, s.proposals.P.person, s.feedback.F.session_id]).toEqual(["w", "minh", S])
+  expect([s.profiles.minh.version, s.comments.W.length, s.sessions.length]).toEqual(["v", 1, 0])
+  expect([s.workItems.W.title, s.proposals.P.person]).toEqual(["w", "minh"])
 })
 
 test("openQuestions: only open ones for the session, oldest first; sessionsIn: main sessions in a folder", () => {
@@ -141,7 +134,6 @@ test("malformed meta data is skipped", () => {
   applyMeta(s, meta("session.created", { ...session(), updated_at: undefined }))
   applyMeta(s, meta("question.created", { id: "Q" }))
   applyMeta(s, meta("work_item.updated", { title: "x" }, "W"))
-  applyMeta(s, meta("debrief.created", { id: "D" }))
   applyMeta(s, meta("comment.created", { id: "C" }))
   applyMeta(s, { ...meta("profile_proposal.created", {}, "P"), data: "nope" as never })
   applyMeta(s, { ...meta("profile.updated", {}), subject_id: undefined as never })

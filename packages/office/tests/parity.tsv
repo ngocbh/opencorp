@@ -1616,6 +1616,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/store/runs.test.ts::runs among filters a list of ids	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
 —	new	packages/office/tests/store/sessions.test.ts::a field with no column needs a store migration	CLAUDE.md's store-migration rule (§5.1)	O1-3
 —	new	packages/office/tests/store/sessions.test.ts::a session counts its turns from zero	design §5.1, 4a-revision §1: sessions.turns counts finished replies (0002)	O4a-0b
+—	new	packages/office/tests/testing/office.test.ts::a device office sends its token	§10.3: the client packages test against the real office	O5-2
+—	new	packages/office/tests/testing/office.test.ts::a started office answers on its socket and stop leaves no process or home	§10.3: the client packages test against the real office	O5-2
 —	new	packages/office/tests/tools/build.test.ts::the office tool specs equal the saved copy	D20 (Python's compare-only tools/test_spec_dump.py: all four groups through groupSpecs equal tests/fixtures/tool_specs.json)	O2-22b
 —	new	packages/office/tests/tools/company/work.test.ts::an office stop leaves an ask manager item open	O2-22b's third ending: nothing waits, D3 spec of Python's AnswersClosed	O4a-0b
 —	new	packages/office/tests/tools/company/work.test.ts::ask manager called twice with one call id stores one question and one work item	4a-revision §1	O4a-0b

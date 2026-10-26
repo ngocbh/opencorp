@@ -10,7 +10,7 @@ import { restart } from "../src/commands/restart"
 import { start } from "../src/commands/start"
 import { main } from "../src/main"
 import { type Deps, install, installSpawn, officeAnswers, realDeps } from "../src/office"
-import { createFakeOffice } from "@opencorp/tui/stub"
+import { createFakeOffice } from "@opencorp/tui/fake-office"
 
 const WRAPPER = path.resolve(import.meta.dir, "../bin/opencorp")
 

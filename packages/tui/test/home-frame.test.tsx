@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { createFakeOffice, createStub, seed, type FakeOffice } from "../script/stub"
+import { createFakeOffice, createStub, seed, type FakeOffice } from "./fixture/fake-office"
 import { bootFrame } from "./fixture/frame"
 
 test("the home screen against a running office shows the logo, the prompt, and the person", async () => {

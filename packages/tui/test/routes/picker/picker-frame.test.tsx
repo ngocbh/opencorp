@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { Person } from "@opencorp/protocol"
-import { createFakeOffice, createStub, seed } from "../../../script/stub"
+import { createFakeOffice, createStub, seed } from "../../fixture/fake-office"
 import { bootFrame } from "../../fixture/frame"
 import { typeInto } from "./type"
 
@@ -25,7 +25,7 @@ async function settled(app: Awaited<ReturnType<typeof bootFrame>>) {
 function office() {
   const s = seed()
   s.people.push(agent("lan", "QA engineer"), agent("kai", "Designer"))
-  s.sessions.unshift({ ...s.sessions[0], id: "01JA0000000000000000000LAN", person: "lan", cwd: "/tmp/other" })
+  s.sessions.unshift({ ...s.sessions[0], id: "01JA0000000000000000000XAN", person: "lan", cwd: "/tmp/other" })
   return createFakeOffice({ seed: s })
 }
 

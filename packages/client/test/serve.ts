@@ -1,4 +1,5 @@
-// Test servers for the client's transport tests: they record each request and answer it.
+// A request recorder for the client's transport tests: what the client sends, and how it reads scripted answers.
+// The client's tests against a real office are in office.test.ts.
 
 export type Seen = { method: string; path: string; query: string; type: string | null; body: string }
 

@@ -22,6 +22,7 @@ import { useOffice } from "../data/office"
 import { useDesktop, useShell } from "../shell"
 import { flowText, shortId, STATUS_DOT, took, where } from "./format"
 import { CopyId, RunsUnavailable } from "./list"
+import { liveFollow, shownCalls, type LiveCall } from "./live"
 import { NodeDetail } from "./node"
 import { LogLine, Raw, reading, type LogStatus, type Progress, type RawApi } from "./raw"
 import { readQueue } from "./queue"
@@ -166,6 +167,8 @@ export function RunPage(props: { id: string }) {
 
   /** Shows `nodes`, `dividers` and the older pages' cursor, each node and divider updated in place by its seq. */
   function show(s: { nodes: RunNode[]; dividers: RunDivider[]; next: number | null; dropped: boolean }) {
+    for (const n of s.nodes) live.seen(n.end_seq ?? n.seq)
+    for (const d of s.dividers) live.seen(d.seq)
     setLog("nodes", reconcile(s.nodes, { key: "seq" }))
     setLog("dividers", reconcile(s.dividers, { key: "seq" }))
     setLog({ next: s.next, dropped: s.dropped, loaded: true })
@@ -251,12 +254,26 @@ export function RunPage(props: { id: string }) {
     refresh()
     rawApi?.refresh()
   }, REFETCH_MS)
+
+  // While the run is running the page follows its live stream: a record re-reads the page (the office maps records to
+  // nodes), and the model calls in flight show in node detail. It starts once the Timeline has read the log, so a
+  // stream doesn't send the records the page already has.
+  const [liveCalls, setLiveCalls] = createSignal<LiveCall[]>([])
+  const live = liveFollow({
+    open: (after, handler) => office.client.runs.live(props.id, handler, { after }),
+    onRecord: () => refetch.call(),
+    onCalls: setLiveCalls,
+  })
+  onCleanup(() => live.dispose())
+  createEffect(on(() => (log.loaded ? detail.value?.run.status : undefined), (s) => s && live.status(s)))
+
   onMount(() => {
     refetch.call()
     // An office without the runs routes won't grow them until it restarts: live updates don't read it again.
-    const off = office.on("run.updated", (e) =>
-      !unavailable() && (e.data.run_id === props.id || e.data.parent_run_id === props.id) ? refetch.call() : undefined,
-    )
+    const off = office.on("run.updated", (e) => {
+      if (e.data.run_id === props.id && log.loaded && typeof e.data.status === "string") live.status(e.data.status)
+      if (!unavailable() && (e.data.run_id === props.id || e.data.parent_run_id === props.id)) refetch.call()
+    })
     onCleanup(off)
   })
   // Events missed while the office was away, or an office without the runs routes restarted (updated, perhaps): read
@@ -403,6 +420,7 @@ export function RunPage(props: { id: string }) {
                     returnTo={returnTo}
                     expanded={expanded()}
                     onExpand={setExpanded}
+                    live={d().run.status === "running" ? shownCalls(liveCalls(), node().node_id) : []}
                   />
                 </div>
               )}

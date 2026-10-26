@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { createFakeOffice, type FakeOffice } from "../../script/stub"
+import { createFakeOffice, type FakeOffice } from "../fixture/fake-office"
 import { BASE } from "@opencorp/client"
 import { until } from "../fixture/until"
 
@@ -62,44 +62,4 @@ test("hold delays a route until release", async () => {
   expect(done).toBe(false)
   release()
   expect((await res).status).toBe(200)
-})
-
-test("the fake mints HQ links as the office does: a URL only while TCP listens, a file only when asked", async () => {
-  office = createFakeOffice({ hq: { tcp: true, listening: true, port: 49380 } })
-  const post = (body: unknown) =>
-    fetch(BASE + "/hq/pair", {
-      method: "POST",
-      unix: office.socket,
-      body: JSON.stringify(body),
-      headers: { "content-type": "application/json" },
-    }).then((r) => r.json())
-  const status = () => fetch(BASE + "/hq", { unix: office.socket }).then((r) => r.json())
-  expect((await status()).url).toBe("http://127.0.0.1:49380/")
-  const a = await post({ open_file: true })
-  expect(a.url).toBe(`http://127.0.0.1:49380${a.path}`)
-  expect(a.open_file).toMatch(/pair-\w+\.html$/)
-  expect(a.path).toMatch(/^\/pair#[A-Za-z0-9_-]{22}$/)
-  expect((await post({})).open_file).toBeNull()
-  office.stop()
-  office = createFakeOffice({ hq: { tcp: false } })
-  expect((await status()).tcp).toMatchObject({ enabled: false, listening: false })
-  const b = await post({ open_file: true })
-  expect([b.url, b.open_file, b.socket.endsWith("hq.sock")]).toEqual([null, null, true])
-  expect((await post({ handle: "minh" })).error).toBe("not_a_human")
-})
-
-test("the fake lists and removes browser sessions with the office's rules", async () => {
-  office = createFakeOffice()
-  const b = office.addBrowser({ person: "ngocbh", issued_by: "ngocbh", label: "Safari on Mac" })
-  const call = (p: string, method = "GET") => fetch(BASE + p, { method, unix: office.socket }).then((r) => r.json())
-  expect(b).toMatchObject({ person: "ngocbh", via: "pair", last_used_at: null })
-  expect(b.name).toMatch(/^web-[a-z0-9]{6}$/)
-  expect((await call("/hq/browsers")).map((x: { id: string }) => x.id)).toEqual([b.id])
-  expect((await call("/hq/browsers?person=minh")).error).toBe("not_a_human")
-  expect((await call("/hq/browsers?person=nobody")).error).toBe("not_found")
-  expect(await call(`/hq/browsers/${b.id}`, "DELETE")).toEqual({ ok: true })
-  expect(await call(`/hq/browsers/${b.id}`, "DELETE")).toEqual({
-    error: "not_found",
-    message: `no browser session ${b.id}`,
-  })
 })

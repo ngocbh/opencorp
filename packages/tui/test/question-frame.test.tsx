@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { createFakeOffice, createStub } from "../script/stub"
+import { createFakeOffice, createStub } from "./fixture/fake-office"
 import { bootFrame } from "./fixture/frame"
 
 test("an open question shows its options; picking one answers it", async () => {
@@ -256,14 +256,12 @@ test("stopping calls stop; a 501 toasts 'not available yet' and the question sta
   }
 })
 
-test("the chat's own turn question is the prompt, not a card", async () => {
+test("an ask node question in the chat is a card", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
-  office.addQuestion({ session_id: s.id, source: "ask", node_id: "chat#1/ask", question: "You:" })
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
     await app.until((f) => f.includes("@minh · idle") && f.includes("@minh · Software engineer"))
-    expect(app.frame()).not.toContain("Type your answer here")
     office.addQuestion({ session_id: s.id, source: "ask", node_id: "chat#1/review", question: "Ship it?" })
     await app.until((f) => f.includes("Ship it?") && f.includes("Type your answer here"))
   } finally {

@@ -6,9 +6,7 @@ import type {
   Company,
   CompanyView,
   CostReport,
-  Debrief,
   Event,
-  Feedback,
   Group,
   LiveEvent,
   Message,
@@ -35,13 +33,10 @@ export type OfficeState = {
   questions: Record<string, Question>
   workItems: Record<string, WorkItem>
   proposals: Record<string, ProfileProposal>
-  feedback: Record<string, Feedback>
   /** By work item id, oldest first. */
   comments: Record<string, Comment[]>
   /** By handle. */
   profiles: Record<string, Profile>
-  /** By session id. */
-  debriefs: Record<string, Debrief>
   /** The company file at `sha` (HQ); null when it's missing or doesn't parse, or before the first snapshot. */
   company: Company | null
   groups: Group[]
@@ -62,10 +57,8 @@ export function emptyState(): OfficeState {
     questions: {},
     workItems: {},
     proposals: {},
-    feedback: {},
     comments: {},
     profiles: {},
-    debriefs: {},
     company: null,
     groups: [],
     sha: null,
@@ -127,13 +120,6 @@ export function applyMeta(s: OfficeState, e: Event) {
     case "profile_proposal.updated":
       s.proposals[data.id] = data as ProfileProposal
       return
-    case "feedback.created":
-    case "feedback.updated":
-      s.feedback[data.id] = data as Feedback
-      return
-    case "debrief.created":
-    case "debrief.updated":
-      return upsert(s.debriefs, data.session_id, data as Debrief)
     case "profile.updated":
       if (typeof e.subject_id === "string") s.profiles[e.subject_id] = data as Profile
       return

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
 import { z } from "zod"
-import { CHAT_TURN_PATH, ERROR_CODES, OFFICE, validationMessage } from "@opencorp/protocol"
+import { ERROR_CODES, OFFICE, validationMessage } from "@opencorp/protocol"
 import * as Schemas from "@opencorp/protocol/schemas"
 
 const FIXTURES = new URL("./fixtures/", import.meta.url)
@@ -70,7 +70,6 @@ test("422 text names the field and a fixed phrase", () => {
 
 test("the shared constants keep their values", () => {
   expect(OFFICE).toBe("office")
-  expect(CHAT_TURN_PATH).toBe("chat/ask")
 })
 
 test("every code a client branches on is a protocol error code", () => {

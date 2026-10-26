@@ -9,7 +9,7 @@
     "./editor-launch": "./src/editor-launch.ts",
     "./profile": "./src/routes/profile/profile.ts",
     "./setup": "./src/setup/run.tsx",
-    "./stub": "./script/stub.ts"
+    "./fake-office": "./test/fixture/fake-office.ts"
   },
   "scripts": {
     "dev": "bun run script/dev.ts",
@@ -31,5 +31,8 @@
     "remeda": "catalog:",
     "solid-js": "catalog:",
     "strip-ansi": "catalog:"
+  },
+  "devDependencies": {
+    "@opencorp/office": "workspace:*"
   }
 }

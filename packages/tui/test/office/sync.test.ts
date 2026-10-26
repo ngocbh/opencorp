@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import type { Message, Question } from "@opencorp/protocol"
-import { createFakeOffice, type FakeOffice } from "../../script/stub"
-import { createOfficeClient, emptyState, openQuestions, createOfficeSync, isTurn } from "@opencorp/client"
+import { createFakeOffice, type FakeOffice } from "../fixture/fake-office"
+import { createOfficeClient, emptyState, openQuestions, createOfficeSync } from "@opencorp/client"
 import { until } from "../fixture/until"
 
 const fast = { minDelayMs: 10, maxDelayMs: 40 }
@@ -99,11 +99,12 @@ test("reset re-runs the bootstrap and picks up changes it missed", async () => {
   await until(() => sync.status() === "online")
   const id = office.state.sessions[0].id
   await sync.syncSession(id)
-  office.state.sessions.unshift({ ...office.state.sessions[0], id: "S-NEW", updated_at: "2099-01-01T00:00:00Z" }) // no event
+  const fresh = office.nextId()
+  office.state.sessions.unshift({ ...office.state.sessions[0], id: fresh, updated_at: "2099-01-01T00:00:00.000Z" }) // no event
   office.state.messages[id].push({ id: "M9", session_id: id, role: "user", parts: [], created_at: "t" })
   office.reset()
   await until(() => count(office!, "GET /sessions?limit=50") === 2)
-  await until(() => state.sessions[0]?.id === "S-NEW" && state.messages[id].some((m) => m.id === "M9"))
+  await until(() => state.sessions[0]?.id === fresh && state.messages[id].some((m) => m.id === "M9"))
 })
 
 test("after a reconnect, questions opened and answered while away are current", async () => {
@@ -112,8 +113,7 @@ test("after a reconnect, questions opened and answered while away are current", 
   await until(() => sync.status() === "online")
   const id = office.state.sessions[0].id
   await sync.syncSession(id)
-  // The session's open turn is a question too; leave it out.
-  const asked = () => openQuestions(state, id).filter((q) => !isTurn(q))
+  const asked = () => openQuestions(state, id)
   const seen = office.addQuestion({})
   await until(() => asked().length === 1)
   office.dropStreams()
@@ -327,22 +327,23 @@ async function quietly(fn: () => Promise<void>) {
 test("a session that fails to reload doesn't fail the bootstrap, and retries on its own", async () => {
   office = createFakeOffice()
   const s1 = office.state.sessions[0]
-  office.state.sessions.push({ ...s1, id: "S2" })
-  office.state.messages.S2 = [textMessage("S2", "M1")]
+  const s2 = office.nextId()
+  office.state.sessions.push({ ...s1, id: s2 })
+  office.state.messages[s2] = [textMessage(s2, "M1")]
   const { state, sync } = start(office.socket)
   await until(() => sync.status() === "online")
-  await Promise.all([sync.syncSession(s1.id), sync.syncSession("S2")])
+  await Promise.all([sync.syncSession(s1.id), sync.syncSession(s2)])
   const logged = await quietly(async () => {
-    // S2's history can't be read now.
-    office!.notImplemented.add("GET /sessions/S2/messages")
+    // The second session's history can't be read now.
+    office!.notImplemented.add(`GET /sessions/${s2}/messages`)
     office!.state.messages[s1.id].push(textMessage(s1.id, "M9"))
     office!.reset()
     await until(() => count(office!, "GET /sessions?limit=50") === 2)
     await until(() => sync.status() === "online" && state.messages[s1.id].some((m) => m.id === "M9"))
     // Once for syncSession, once in the bootstrap, once more on its own after it.
-    await until(() => count(office!, "GET /sessions/S2/messages") === 3)
+    await until(() => count(office!, `GET /sessions/${s2}/messages`) === 3)
     // Still failing, so it stops being synced and its stale transcript goes.
-    await until(() => state.messages.S2 === undefined)
+    await until(() => state.messages[s2] === undefined)
   })
   expect(sync.status()).toBe("online")
   expect(logged.length).toBeGreaterThan(0)

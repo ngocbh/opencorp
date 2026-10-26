@@ -1,5 +1,8 @@
-// A stand-in office for tests and `bun run dev`: an in-memory office on a unix socket that
-// speaks the office's HTTP routes and SSE framing, with no Python.
+// A fake office for the frame tests and the CLI's scripted cases: an in-memory office on a unix
+// socket that speaks the office's HTTP routes and SSE framing. `bun run dev` and the tests that
+// check office behaviour use the real office; `test/office/contract.test.ts` checks this fake
+// against the real office.
+import { Person as PersonSchema, Session as SessionSchema } from "@opencorp/protocol"
 import type {
   BrowserSession,
   Comment,
@@ -28,10 +31,9 @@ import { createTwoFilesPatch } from "diff"
 import { createHash, randomBytes } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
-import type { TuiInput } from "../src/app"
-import { isTurn } from "@opencorp/client"
-import { HANDLE, harnessesOf } from "../src/routes/picker/people"
-import { createTuiResolvedConfig } from "../test/fixture/tui-runtime"
+import type { TuiInput } from "../../src/app"
+import { HANDLE, harnessesOf } from "../../src/routes/picker/people"
+import { createTuiResolvedConfig } from "./tui-runtime"
 
 /** Returns `run()` input (minus `args`) wired to `office`, or to a socket nothing listens on. */
 export function createStub(office?: FakeOffice): Omit<TuiInput, "args"> {
@@ -78,6 +80,13 @@ export type FakeState = {
 
 const now = () => new Date().toISOString()
 
+/** `person` as the office serves them: every field, defaults filled, and never a password hash. */
+const served = (person: Person): Person => PersonSchema.parse({ ...person, password_hash: null })
+/** `session` as the office serves it: every field, defaults filled. */
+const servedSession = (session: Session): Session => SessionSchema.parse(session)
+/** `message` as the office serves it: a message with no author has a null one. */
+const servedMessage = (message: Message): Message => ({ author: null, ...message })
+
 /** Words a side chat refuses, in any case: only the office ends a side run. */
 const SIDE_EXIT = new Set(["/end", "/exit", "/quit"])
 /** The connection the office sets up at onboarding, which can't be removed. */
@@ -101,7 +110,7 @@ function counter() {
 
 /**
  * A seeded office: @minh (agent, worked in /tmp/proj), @ngocbh (human, who manages connections),
- * one idle main session waiting on its first turn, and two Azure connections.
+ * one idle main session, and two Azure connections.
  */
 export function seed(nextId = counter()): FakeState {
   const at = now()
@@ -123,26 +132,13 @@ export function seed(nextId = counter()): FakeState {
     created_at: at,
     updated_at: at,
   }
-  // An idle chat waits on its open turn, the chat flow's `chat#1/ask` ask node.
-  const turn: Question = {
-    id: nextId(),
-    session_id: session.id,
-    run_id: "run-1",
-    node_id: "chat#1/ask",
-    source: "ask",
-    asker: "minh",
-    question: "You:",
-    status: "open",
-    created_at: at,
-    updated_at: at,
-  }
   const profile = "# Minh\n\nWrites small, tested changes.\n"
   return {
     people,
     folders: { "/tmp/proj": ["minh"] },
     sessions: [session],
     messages: { [session.id]: [] },
-    questions: { [turn.id]: turn },
+    questions: {},
     profiles: { minh: { person: "minh", text: profile, version: blobId(profile), over_budget: false } },
     proposals: {},
     workItems: {},
@@ -222,8 +218,11 @@ export function createFakeOffice(
   const CODE = { url: "https://auth.openai.com/codex/device", user_code: "ABCD-EFGH" }
   const prompts: ((sessionId: string, req: PromptRequest) => void)[] = []
   const interrupts: ((sessionId: string) => void)[] = []
-  // Messages sent with no open turn and no reply running, by session; the next turn takes them.
+  // Messages sent while a session is neither idle nor busy, or while its reply is being stopped, by session; the
+  // next reply takes them.
   const queued = new Map<string, string[]>()
+  // Sessions whose reply was interrupted and hasn't ended yet.
+  const interrupted = new Set<string>()
   const streams = new Set<Stream>()
   const encoder = new TextEncoder()
 
@@ -364,7 +363,7 @@ export function createFakeOffice(
   function setStatus(id: string, status: Session["status"]) {
     return upsertSession({ ...session(id), status, updated_at: now() })
   }
-  /** Creates a session (an idle composer one waits on its first turn), as `POST /sessions` would. */
+  /** Creates a session, as `POST /sessions` would. */
   function newSession(fields: Partial<Session> & Pick<Session, "person" | "cwd">): Session {
     const at = now()
     const s = upsertSession(
@@ -383,18 +382,17 @@ export function createFakeOffice(
       },
       "session.created",
     )
-    // A Codex session has no turn questions: every message is a Codex turn.
-    if (s.status === "idle" && s.harness !== "codex") openTurn(s.id)
     return s
   }
+  /** Adds a user message from `author` (the first human by default), as the office names every sender. */
   function userMessage(sessionId: string, text: string, author?: string) {
     const msg: Message = {
       id: nextId(),
       session_id: sessionId,
       role: "user",
+      author: author ?? human(),
       parts: [{ id: nextId(), type: "text", text }],
       created_at: now(),
-      ...(author ? { author } : {}),
     }
     state.messages[sessionId] = [...(state.messages[sessionId] ?? []), msg]
     live({ type: "message.updated", session_id: sessionId, data: structuredClone(msg) as unknown as LiveEvent["data"] })
@@ -413,8 +411,9 @@ export function createFakeOffice(
     updateQuestion({ ...q, discussion: [...(q.discussion ?? []), { role: "user", text }], updated_at: now() })
   }
   /**
-   * The office's prompt: answers the open turn and starts a reply; while a reply runs it is a
-   * steer (written to the transcript, no new reply); otherwise it is queued for the next turn.
+   * The office's prompt: to a waiting session with an open `ask_user` question it answers that question; to an idle
+   * session it starts a reply; while a reply runs (busy) it is a steer (written to the transcript, no new reply);
+   * otherwise, or while an interrupted reply ends, it is queued for the next reply.
    */
   function turn(id: string, body: any, actor?: string) {
     check(str(body?.text), "text must be a non-empty string")
@@ -427,25 +426,31 @@ export function createFakeOffice(
       return Response.json({ ok: true })
     }
     if (s.kind === "side" && SIDE_EXIT.has(body.text.trim().toLowerCase())) throw refused()
-    userMessage(id, body.text)
+    const asked = Object.values(state.questions)
+      .filter((q) => q.session_id === id && q.status === "open" && q.source === "ask_user")
+      .toSorted((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))[0]
+    if (s.status === "waiting" && asked) {
+      close(asked.id, { answer: body.text, answer_kind: "text", answered_by: actor ?? human() })
+      return Response.json({ ok: true })
+    }
+    userMessage(id, body.text, actor)
     if (s.kind === "side") discuss(s, body.text)
-    const open = Object.values(state.questions).find((q) => q.session_id === id && q.status === "open" && isTurn(q))
-    if (open) takeTurn(open, body.text)
-    else if (s.status !== "busy") queued.set(id, [...(queued.get(id) ?? []), body.text])
+    if (s.status === "idle") startReply(id, body.text)
+    else if (s.status !== "busy" || interrupted.has(id)) queued.set(id, [...(queued.get(id) ?? []), body.text])
     return Response.json({ ok: true })
   }
-  /** Answers a turn with `text` and starts its reply. */
-  function takeTurn(q: Question, text: string) {
-    const answered = { status: "answered", answer: text, answer_kind: "text", answered_by: human() } as const
-    updateQuestion({ ...q, ...answered, updated_at: now() })
-    setStatus(q.session_id, "busy")
-    for (const fn of prompts) fn(q.session_id, { text })
+  /** Sets the session busy and starts a reply to `text`. */
+  function startReply(sessionId: string, text: string) {
+    setStatus(sessionId, "busy")
+    for (const fn of prompts) fn(sessionId, { text })
   }
   /**
    * Esc: answers the open `ask_user` questions (of one run, when given) and stops the reply. The
-   * session stays busy until the stopped reply's next turn opens; `onInterrupt` drivers open it.
+   * session stays busy until the stopped reply ends (`onInterrupt` drivers call `replyEnded`), and
+   * messages sent meanwhile wait for the next reply.
    */
   function interrupt(s: Session, runId?: string) {
+    if (s.status === "busy") interrupted.add(s.id)
     for (const q of Object.values(state.questions))
       if (q.session_id === s.id && q.status === "open" && q.source === "ask_user" && (!runId || q.run_id === runId))
         close(q.id, { answer: "[interrupted by the user]", answer_kind: "interrupted" })
@@ -538,17 +543,15 @@ export function createFakeOffice(
     return updateQuestion(q, "question.created")
   }
   /**
-   * Opens a session's next turn, as the chat flow's `chat#N/ask` ask node does when a reply ends:
-   * the session goes idle, or the queued messages take the turn at once.
+   * Ends a session's reply (or its start): the session goes idle, or the queued messages start one
+   * reply at once, joined by a blank line.
    */
-  function openTurn(sessionId: string) {
-    const n = Object.values(state.questions).filter((q) => q.session_id === sessionId && isTurn(q)).length + 1
-    const q = addQuestion({ session_id: sessionId, source: "ask", node_id: `chat#${n}/ask`, question: "You:" })
+  function replyEnded(sessionId: string) {
+    interrupted.delete(sessionId)
     const pending = queued.get(sessionId)
     queued.delete(sessionId)
-    if (pending) takeTurn(q, pending.join("\n\n"))
+    if (pending) startReply(sessionId, pending.join("\n\n"))
     else if (["busy", "starting"].includes(session(sessionId).status)) setStatus(sessionId, "idle")
-    return question(q.id)
   }
 
   function profile(person: string) {
@@ -629,7 +632,7 @@ export function createFakeOffice(
     const diff = `+++ b/${file}\n+name: ${person.name}\n+handle: ${person.handle}\n+kind: agent\n+title: ${person.title}\n+manager: ${person.manager}\n`
     if (!body.confirm) {
       state.hires[body.handle] = body
-      return Response.json({ person, diff, issues, commit: null } satisfies HireResponse)
+      return Response.json({ person: served(person), diff, issues, commit: null } satisfies HireResponse)
     }
     const previewed = state.hires[body.handle]
     // The office keeps previews in memory, so a hire it never previewed (or lost on restart) is a lint failure.
@@ -640,7 +643,7 @@ export function createFakeOffice(
     if (issues.length) throw fail(422, "lint_failed", issues[0].message)
     delete state.hires[body.handle]
     state.people.push(person)
-    return Response.json({ person, diff, issues, commit: blobId(diff) } satisfies HireResponse)
+    return Response.json({ person: served(person), diff, issues, commit: blobId(diff) } satisfies HireResponse)
   }
 
   const connection = (name: string) =>
@@ -717,7 +720,8 @@ export function createFakeOffice(
     const s = liveSession(id)
     if (s.status === "ending") throw fail(409, "ending", `session ${id} is ending`)
     const c = state.connections.find((x) => x.name === body.connection)
-    if (!c) throw fail(422, "unknown_connection", `no connection '${body.connection}' on this office`)
+    // As the office: a 422 echoes nothing of the request.
+    if (!c) throw fail(422, "unknown_connection", "no such connection on this office")
     const model = body.model === c.model ? null : body.model
     return upsertSession({ ...s, connection: c.name, model, model_note: null, updated_at: now() })
   }
@@ -758,6 +762,7 @@ export function createFakeOffice(
       },
       url: hqListening() ? `http://127.0.0.1:${hqOpts.port}/` : null,
       health: { ok: true, office: { api: "0.0.1+fake" }, app: null },
+      socket_error: null,
       warnings: [],
     }
   }
@@ -838,25 +843,29 @@ export function createFakeOffice(
         return Response.json({ ok: true })
       },
     ],
-    ["POST", "/people/:handle/devices", ({ params, body, actor }) => Response.json(addDevice(params.handle, body, actor))],
-    ["POST", "/login", ({ body }) => Response.json(login(body))],
+    [
+      "POST",
+      "/people/:handle/devices",
+      ({ params, body, actor }) => Response.json(served(addDevice(params.handle, body, actor))),
+    ],
+    ["POST", "/login", ({ body }) => Response.json(served(login(body)))],
     [
       "PUT",
       "/people/:handle/password",
-      ({ params, body, actor }) => Response.json(setPassword(params.handle, body, actor)),
+      ({ params, body, actor }) => Response.json(served(setPassword(params.handle, body, actor))),
     ],
     [
       "DELETE",
       "/people/:handle/devices/:name",
-      ({ params, actor }) => Response.json(removeDevice(params.handle, params.name, actor)),
+      ({ params, actor }) => Response.json(served(removeDevice(params.handle, params.name, actor))),
     ],
-    ["GET", "/people", () => Response.json(state.people)],
+    ["GET", "/people", () => Response.json(state.people.map(served))],
     [
       "GET",
       "/folders/:cwd/people",
       ({ params }) =>
         Response.json(
-          (state.folders[params.cwd] ?? []).flatMap((handle) => state.people.filter((p) => p.handle === handle)),
+          (state.folders[params.cwd] ?? []).flatMap((handle) => state.people.filter((p) => p.handle === handle).map(served)),
         ),
     ],
     ["POST", "/people", ({ body }) => hire(body)],
@@ -872,13 +881,13 @@ export function createFakeOffice(
         const list = state.sessions
           .filter((s) => (!person || s.person === person) && (!kind || s.kind === kind) && (!cwd || s.cwd === cwd))
           .toSorted((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id.localeCompare(a.id))
-        return Response.json(list.slice(0, limit))
+        return Response.json(list.slice(0, limit).map(servedSession))
       },
     ],
     [
       "POST",
       "/sessions",
-      ({ body }) => {
+      ({ body, actor }) => {
         check(str(body?.person) && str(body?.cwd), "person and cwd must be non-empty strings")
         const person = need(
           state.people.find((p) => p.handle === body.person),
@@ -890,15 +899,22 @@ export function createFakeOffice(
           throw fail(422, "unsupported_harness", `@${person.handle} doesn't use the ${harness} harness`)
         state.folders[body.cwd] = [body.person, ...(state.folders[body.cwd] ?? []).filter((p) => p !== body.person)]
         if (harness === "codex") {
-          const s = newSession({ person: body.person, cwd: body.cwd, harness, status: "starting" })
-          // The office's owner load: the session goes idle with no turn question.
+          const s = newSession({ person: body.person, cwd: body.cwd, harness, status: "starting", opened_by: actor })
+          // The office's owner load: the session goes idle.
           setTimeout(() => session(s.id).status === "starting" && setStatus(s.id, "idle"), 10)
-          return Response.json(s)
+          return Response.json(servedSession(s))
         }
-        const s = newSession({ person: body.person, cwd: body.cwd, harness, status: "starting", ...choose(body) })
-        // Like the office, the session starts its run first and goes idle when that run opens its first turn.
-        setTimeout(() => session(s.id).status === "starting" && openTurn(s.id), 10)
-        return Response.json(s)
+        const s = newSession({
+          person: body.person,
+          cwd: body.cwd,
+          harness,
+          status: "starting",
+          opened_by: actor,
+          ...choose(body),
+        })
+        // Like the office, the session starts its run first and goes idle once that run is ready.
+        setTimeout(() => session(s.id).status === "starting" && replyEnded(s.id), 10)
+        return Response.json(servedSession(s))
       },
     ],
     [
@@ -936,14 +952,14 @@ export function createFakeOffice(
         })
         // Like the office, the session resumes the thread and goes idle.
         setTimeout(() => session(s.id).status === "starting" && setStatus(s.id, "idle"), 10)
-        return Response.json(s)
+        return Response.json(servedSession(s))
       },
     ],
-    ["GET", "/sessions/:id", ({ params }) => Response.json(session(params.id))],
+    ["GET", "/sessions/:id", ({ params }) => Response.json(servedSession(session(params.id)))],
     [
       "GET",
       "/sessions/:id/messages",
-      ({ params }) => (session(params.id), Response.json(state.messages[params.id] ?? [])),
+      ({ params }) => (session(params.id), Response.json((state.messages[params.id] ?? []).map(servedMessage))),
     ],
     ["POST", "/sessions/:id/prompt", ({ params, body, actor }) => turn(params.id, body, actor)],
     ["POST", "/sessions/:id/steer", ({ params, body, actor }) => turn(params.id, body, actor)],
@@ -962,9 +978,7 @@ export function createFakeOffice(
         const s = liveSession(params.id)
         if (s.status === "ending") return Response.json({ ok: true })
         setStatus(s.id, "ending")
-        // A main session is debriefed before it ends.
-        const next = s.kind === "main" ? "debriefing" : "ended"
-        setTimeout(() => session(s.id).status === "ending" && setStatus(s.id, next), 20)
+        setTimeout(() => session(s.id).status === "ending" && setStatus(s.id, "ended"), 20)
         return Response.json({ ok: true })
       },
     ],
@@ -972,18 +986,19 @@ export function createFakeOffice(
       "POST",
       "/sessions/:id/cost-cap",
       ({ params, body }) => {
+        // Like the office, the body is checked before the session is looked up.
+        check(typeof body?.cost_cap_usd === "number" && body.cost_cap_usd >= 0, "cost_cap_usd must be a number from 0")
         const s = session(params.id)
-        check(typeof body?.cost_cap_usd === "number", "cost_cap_usd must be a number")
         // As the office: Codex prices nothing here, so its sessions have no cap to raise.
         if (s.harness === "codex")
           throw fail(422, "not_supported", "a Codex session runs on Codex's own model and login")
         if (body.cost_cap_usd <= (s.cost ?? 0)) {
           throw fail(422, "cap_too_low", `the cap must be above the session's cost of $${s.cost ?? 0}`)
         }
-        return Response.json(upsertSession({ ...s, cost_cap_usd: body.cost_cap_usd, updated_at: now() }))
+        return Response.json(servedSession(upsertSession({ ...s, cost_cap_usd: body.cost_cap_usd, updated_at: now() })))
       },
     ],
-    ["POST", "/sessions/:id/model", ({ params, body }) => Response.json(setModel(params.id, body))],
+    ["POST", "/sessions/:id/model", ({ params, body }) => Response.json(servedSession(setModel(params.id, body)))],
     ["GET", "/connections", ({ actor }) => Response.json(connectionList(actor))],
     [
       "GET",
@@ -1104,7 +1119,6 @@ export function createFakeOffice(
         check(str(body?.text), "text must be a non-empty string")
         const q = question(params.id)
         if (q.status !== "open") throw fail(409, "not_open", `question ${q.id} is ${q.status}, not open`)
-        if (isTurn(q)) throw fail(422, "not_a_card", "a chat turn is not a question card; reply in the chat")
         if (SIDE_EXIT.has(body.text.trim().toLowerCase())) throw refused()
         // One side session per question: later messages reach it too, and an ended one restarts.
         let side = state.sessions.find((x) => x.id === q.side_session_id)
@@ -1115,13 +1129,9 @@ export function createFakeOffice(
           updateQuestion({ ...q, side_session_id: side.id, updated_at: now() })
         } else if (!LIVE.includes(side.status)) {
           setStatus(side.id, "idle")
-          const waiting = Object.values(state.questions).some(
-            (x) => x.session_id === side!.id && x.status === "open" && isTurn(x),
-          )
-          if (!waiting) openTurn(side.id)
         }
         turn(side.id, body)
-        return Response.json(session(side.id))
+        return Response.json(servedSession(session(side.id)))
       },
     ],
     [
@@ -1183,10 +1193,10 @@ export function createFakeOffice(
           `person ${params.person}`,
         )
         const s = newSession({ person: params.person, cwd: "/", kind: "profile_manager", status: "starting" })
-        // The first message is the chat's first turn; the session answers while still starting.
+        // The first message starts the chat's first reply; the session answers while still starting.
         userMessage(s.id, body.text)
         for (const fn of prompts) fn(s.id, { text: body.text })
-        return Response.json(session(s.id))
+        return Response.json(servedSession(session(s.id)))
       },
     ],
     [
@@ -1355,7 +1365,7 @@ export function createFakeOffice(
     live,
     addQuestion,
     newSession,
-    openTurn,
+    replyEnded,
     expire,
     setStatus,
     /** Changes a session's fields and publishes `session.updated`, as the office does. */
@@ -1388,7 +1398,7 @@ export function createFakeOffice(
         release()
       }
     },
-    /** Calls `fn` after an interrupt, as the reply's driver: it stops the reply and opens the next turn. */
+    /** Calls `fn` after an interrupt, as the reply's driver: it stops the reply and calls `replyEnded`. */
     onInterrupt(fn: (sessionId: string) => void) {
       interrupts.push(fn)
     },

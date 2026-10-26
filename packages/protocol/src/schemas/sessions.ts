@@ -126,8 +126,8 @@ export const Message = z.strictObject({
   session_id: Ulid,
   role: z.enum(["user", "assistant"]),
   /**
-   * The human who sent a user message. A harness session names every sender; null for assistant messages, for
-   * composer sessions, and for rows from before this field.
+   * The human who sent a user message: harness and composer sessions both name the sender. Null for assistant
+   * messages and for a user message whose sender wasn't recorded.
    */
   author: Handle.nullable().default(null),
   parts: z.array(Part),

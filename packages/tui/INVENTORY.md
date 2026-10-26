@@ -101,7 +101,7 @@ change that rewires a kept file.
 | Workspaces and session moves | `component/dialog-workspace-{create,list,file-changes,unavailable}.tsx`, `component/dialog-move-session.tsx`, `component/workspace-label.tsx`, `component/prompt/{workspace,move}.tsx`, `component/dialog-session-delete-failed.tsx` (workspace recovery), flag `OPENCODE_EXPERIMENTAL_WORKSPACES` | drop | No OpenCode workspaces. `context/project.tsx` keeps its workspace state for now. |
 | Agent, skill and tag dialogs | `component/dialog-{agent,skill,tag}.tsx` | drop | The employee picker replaces agent selection; skills are the office's; `dialog-tag` is unused upstream. |
 | Fork and subagent dialogs | `routes/session/dialog-fork-from-timeline.tsx`, `routes/session/dialog-subagent.tsx` | drop | No forking for now; `dialog-subagent` is unused upstream. The message dialog's Fork action and `--fork` went with the data layer. |
-| Tests | `test/**` | keep, except the tests of dropped features | The fake office (`script/stub.ts`) replaced `test/fixture/tui-sdk.ts`. |
+| Tests | `test/**` | keep, except the tests of dropped features | The fake office (`test/fixture/fake-office.ts`) replaced `test/fixture/tui-sdk.ts`; `test/office/contract.test.ts` checks it against the real office. `bun run dev` runs a real office. |
 | Unused leftovers | `routes/home/session-destination.tsx`, `component/prompt/cwd.ts` | drop | Nothing reads the destination context once workspaces are gone; `cwd.ts` is empty upstream. |
 | SST glue | `sst-env.d.ts` | drop | Not copied. |
 

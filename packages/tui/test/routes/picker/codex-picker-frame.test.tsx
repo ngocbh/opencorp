@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
-import { createFakeOffice, createStub, seed } from "../../../script/stub"
+import { createFakeOffice, createStub, seed } from "../../fixture/fake-office"
 import { Global } from "../../../src/core/global"
 import { bootFrame } from "../../fixture/frame"
 import { typeInto } from "./type"

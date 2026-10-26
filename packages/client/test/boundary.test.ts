@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { CHAT_TURN_PATH } from "@opencorp/protocol"
+import { OFFICE } from "@opencorp/protocol"
 import { readdirSync, readFileSync } from "node:fs"
 import path from "node:path"
 
@@ -59,7 +59,7 @@ test("the browser bundle leaves zod out", async () => {
   // schemas the root re-exports.
   const out = await Bun.build({ entrypoints: [path.join(SRC, "index.ts")], target: "browser" })
   const text = await out.outputs[0]!.text()
-  expect(text).toContain(CHAT_TURN_PATH)
+  expect(text).toContain(JSON.stringify(OFFICE))
   expect(text).not.toMatch(/ZodError|strictObject/)
 })
 

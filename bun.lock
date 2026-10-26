@@ -54,6 +54,7 @@
         "@opencorp/protocol": "workspace:*",
       },
       "devDependencies": {
+        "@opencorp/office": "workspace:*",
         "@types/bun": "^1.1.0",
       },
     },
@@ -98,6 +99,9 @@
         "remeda": "catalog:",
         "solid-js": "catalog:",
         "strip-ansi": "catalog:",
+      },
+      "devDependencies": {
+        "@opencorp/office": "workspace:*",
       },
     },
     "packages/yian/ts": {
