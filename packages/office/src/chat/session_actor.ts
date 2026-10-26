@@ -41,7 +41,7 @@ import { type Frame, FrameTooLarge } from "../worker/channel.ts"
 import { type Delivery, type Job, type Seed, STOP_REASON } from "../worker/job.ts"
 import { type AskRequest, BaseHandlers, errorName, type OfficeTool, type WorkerHandlers } from "../worker/rpc.ts"
 import { RegistryClosed, type Worker, workerEnv } from "../worker/spawn.ts"
-import { type Connections, runRecord } from "./connections.ts"
+import { BadConnectionName, type Connections, runRecord } from "./connections.ts"
 import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "./cost.ts"
 import type { Hooks } from "./hooks.ts"
 import { type Price, type Provider, ProviderError } from "./provider.ts"
@@ -84,6 +84,32 @@ export interface ActorContext {
   readonly runChanged?: (runId: string) => void
   /** Gets log lines; never an error's message. */
   log(line: string): void
+}
+
+/** The note of a chat that continues on a fresh run after its worker died, as its model or connection changed. */
+export const FRESH_NOTE =
+  "This chat continues on a fresh run because its model or connection changed. " +
+  "If your last message got no reply, send it again."
+
+/** A wake's fresh-run note: the message that woke the session is still delivered, so it needn't be sent again. */
+export const WOKEN_NOTE = "This chat continues on a fresh run because its model or connection changed."
+
+/** Connection `name`'s configured model; null without one, or if it can't be read. */
+export async function ownModel(connections: Connections, name: string): Promise<string | null> {
+  try {
+    const model = (await connections.get(name)).llm_config?.model
+    return typeof model === "string" ? model : null
+  } catch (error) {
+    // Resolving it at the spawn reports the error.
+    if (error instanceof ProviderError || error instanceof BadConnectionName) return null
+    throw error
+  }
+}
+
+/** How a note names connection `name` on `model` (null: its own): `name/model`, or `name` alone. */
+export async function named(connections: Connections, name: string, model: string | null): Promise<string> {
+  const shown = model || (await ownModel(connections, name))
+  return shown ? `${name}/${shown}` : name
 }
 
 /** How the work item that asks to raise a session's cost cap is titled. */
@@ -280,6 +306,10 @@ export class SessionActor implements LiveCalls {
   #replaced: string[] = []
   #spec: RunSpec | null = null
   #pins: Pins | null = null
+  /** Whether this actor has started a worker. A new actor stands for a session woken after a restart, as Python's
+   *  `_resume` saw it, so only its fresh run for a changed model or connection gets `WOKEN_NOTE`; one after a switch
+   *  or key change on a session this actor already ran gets no note, as Python's restart of a live worker did. */
+  #startedWorker = false
   /** The office tool calls in flight, each answered `INTERRUPTED_CALL` when called. */
   readonly #calls = new Set<() => void>()
   /** The nodes the current worker's run executes now, from its frames. */
@@ -810,10 +840,13 @@ export class SessionActor implements LiveCalls {
    * whose run's record no longer gives what the run ran on is a fresh run instead (`#recordCheck`; a run that moved
    * ends `moved`), as is any spawn given `replace`, carrying what `#freshCarry` keeps; otherwise an `advance` job
    * starts with a `complete` for each stored answer that never reached the run. A `chat` job records what its run
-   * starts on, and starts from `seed` (a retry's) unless it is a fresh run's. On failure, the job's deliveries are
-   * answered with the error (`#wakeError`) and dropped, and the error is thrown. `plain` marks a re-advance only for
-   * a settled wait. Over the cost cap, unless ending, an `advance` only delivers (`advance: false`, no record check),
-   * and none starts without deliveries; the advance waits for a raise (`#needsAdvance`). Whether a worker started.
+   * starts on, and starts from `seed` (a retry's) unless it is a fresh run's. A fresh run the record check asks for
+   * on a changed connection or model, unless `#checkProvider` moved the chat, writes its note first: `FRESH_NOTE`
+   * after a worker death (`moved` is `WORKER_REPLACED`), else `WOKEN_NOTE` when this actor never started a worker
+   * (`#startedWorker`). On failure, the job's deliveries are answered with the error (`#wakeError`) and dropped, and
+   * the error is thrown. `plain` marks a re-advance only for a settled wait. Over the cost cap, unless ending, an
+   * `advance` only delivers (`advance: false`, no record check), and none starts without deliveries; the advance
+   * waits for a raise (`#needsAdvance`). Whether a worker started.
    */
   async #spawn(
     kind: "chat" | "advance",
@@ -845,12 +878,17 @@ export class SessionActor implements LiveCalls {
     this.#nodes.clear()
     try {
       if (this.#closed) throw stopping()
-      const { session, name, model, provider } = await this.#checkProvider()
+      const { session, name, model, provider, moved: removed } = await this.#checkProvider()
       const spec = await this.#specOf(session)
       const checked = kind === "advance" && advance
       const why = checked ? this.#recordCheck(run.runId, name, model, provider) : null
       const fresh = replace ?? (why === null ? null : { why: why === NEW_MODEL ? moved : why, finished: null })
       if (fresh !== null) {
+        // A moved chat has its removal note, which says more; a run that never started needs none.
+        const note = moved === WORKER_REPLACED ? FRESH_NOTE : this.#startedWorker ? null : WOKEN_NOTE
+        if (replace === null && why === NEW_MODEL && !removed && note !== null) {
+          store.updateSession(sid, { model_note: note })
+        }
         seed = await this.#seed(session)
         await this.#replace(session, spec, fresh.why, fresh.finished)
         pendings = this.#freshCarry(pendings)
@@ -894,6 +932,7 @@ export class SessionActor implements LiveCalls {
       run.defaultPrice = defaultPrice
       run.seed = seed
       run.worker = await this.#ctx.workers.spawn(job, paths.sessionDir(sid), handlers, { env: provider.env })
+      this.#startedWorker = true
       // Only now: a spawn that fails leaves it for the next worker's take.
       this.#lateSend = false
       if (advance) this.#needsAdvance = false
@@ -926,16 +965,26 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  /** The session, and the connection, model and provider its next run uses; a session whose connection was
-   *  removed is moved to the default's own model once that resolves. Throws when they can't be resolved, having
-   *  written nothing. */
-  async #checkProvider(): Promise<{ session: SessionRecord; name: string; model: string | null; provider: Provider }> {
+  /** The session, the connection, model and provider its next run uses, and whether it moved: a session whose
+   *  connection was removed is moved to the default's own model once that resolves, with a note. Throws when they
+   *  can't be resolved, having written nothing. */
+  async #checkProvider(): Promise<{
+    session: SessionRecord
+    name: string
+    model: string | null
+    provider: Provider
+    moved: boolean
+  }> {
     const { store, connections } = this.#ctx
     let session = this.#session()
     const [name, model, moved] = await connections.choice(session.connection, session.model)
     const provider = await connections.resolve(name, model)
-    if (moved) session = store.updateSession(this.sessionId, { connection: name, model })
-    return { session, name, model, provider }
+    if (moved) {
+      const uses = await named(connections, name, model)
+      const note = `Connection '${session.connection}' was removed; this chat now uses ${uses}.`
+      session = store.updateSession(this.sessionId, { connection: name, model, model_note: note })
+    }
+    return { session, name, model, provider, moved }
   }
 
   /**

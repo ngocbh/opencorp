@@ -9,6 +9,7 @@ import { HttpResponse } from "@ngocbh/yian/llm_clients"
 import { realScheduler, type Scheduler } from "@ngocbh/yian/platform"
 import { iterRunRecords, type RunLogEntry } from "@ngocbh/yian/run"
 import { type LiveEvent, now, OFFICE, Session, WorkItem } from "@opencorp/protocol"
+import { ConnectionFile } from "../../src/chat/connections.ts"
 import { ChatHarness } from "../../src/chat/harness.ts"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { mainSpec } from "../../src/chat/run_spec.ts"
@@ -471,11 +472,12 @@ export interface ChatOffice {
 
 /**
  * An office over the base company with the template's chat flow (and `files` on top), its `office` connection on
- * `fake` (`llmConfig`, the fake's env, `prices`), the company `defaults` merged in, and a registry whose `spawn` is
- * wrapped to record, hold, fail or follow each spawn. Its actors share one `Hooks`, `Answers`, `Transcript` and
- * `LiveRelay`, and a run spec from `mainSpec` over a workspace stand-in, with the tools of `groups` merged into its
- * groups. `office` builds the office from the company files (default `makeOffice`'s). At test end the actors close,
- * then the workers stop, before the office's store closes.
+ * `fake` (`llmConfig`, the fake's env, `prices`), each of `connections` (name to model) added on `fake` too, the
+ * company `defaults` merged in, and a registry whose `spawn` is wrapped to record, hold, fail or follow each spawn.
+ * Its actors share one `Hooks`, `Answers`, `Transcript` and `LiveRelay`, and a run spec from `mainSpec` over a
+ * workspace stand-in, with the tools of `groups` merged into its groups. `office` builds the office from the company
+ * files (default `makeOffice`'s). At test end the actors close, then the workers stop, before the office's store
+ * closes.
  */
 export async function chatOffice(
   fake: FakeLLM,
@@ -486,6 +488,7 @@ export async function chatOffice(
     defaults = {},
     groups = {},
     office: build = (files) => makeOffice({ files }),
+    connections = {},
   }: {
     files?: Record<string, unknown>
     prices?: Record<string, unknown>
@@ -493,6 +496,7 @@ export async function chatOffice(
     defaults?: Record<string, unknown>
     groups?: Record<string, Record<string, OfficeTool>>
     office?: (files: Record<string, unknown>) => Office
+    connections?: Record<string, string>
   } = {},
 ): Promise<ChatOffice> {
   const actors: SessionActor[] = []
@@ -517,6 +521,9 @@ export async function chatOffice(
   }
   const provider = { llm_config: { ...llmConfig }, env: fake.env(), prices }
   await writePrivate(path.join(office.connections.dir, "office.json"), JSON.stringify(provider))
+  for (const [name, model] of Object.entries(connections)) {
+    await office.connections.put(name, ConnectionFile.parse({ llm_config: { ...llmConfig, model }, env: fake.env() }))
+  }
   const kinds: string[] = []
   const jobs: Job[] = []
   const holds: { entered: () => void; released: Promise<void> }[] = []
@@ -627,10 +634,15 @@ export async function chatOffice(
 }
 
 /** Stores a `starting` main chat of minh's in a fresh folder, with its work item, as a start opens one; `openedBy`
- *  is the human who opened it. Returns its id. */
+ *  is the human who opened it, `connection` and `model` what it runs on (`office` and its own model by default).
+ *  Returns its id. */
 export async function newSession(
   o: ChatOffice,
-  { openedBy = null }: { openedBy?: string | null } = {},
+  {
+    openedBy = null,
+    connection = OFFICE,
+    model = null,
+  }: { openedBy?: string | null; connection?: string; model?: string | null } = {},
 ): Promise<string> {
   const { store, git } = o.office
   const cwd = tempDir()
@@ -659,8 +671,8 @@ export async function newSession(
       kind: "main",
       work_item_id: item.id,
       opened_by: openedBy,
-      connection: OFFICE,
-      model: null,
+      connection,
+      model,
       created_at: t,
       updated_at: t,
     }),
@@ -835,13 +847,11 @@ export async function makeHarness(
   fake: FakeLLM,
   {
     codex = false,
-    connections = {},
     scheduler = realScheduler,
     questions = false,
     ...options
   }: Omit<NonNullable<Parameters<typeof chatOffice>[1]>, "office"> & {
     codex?: boolean
-    connections?: Record<string, string>
     scheduler?: Scheduler
     questions?: boolean
   } = {},
@@ -855,10 +865,6 @@ export async function makeHarness(
     ...(codex ? { office: (files: Record<string, unknown>) => (c = makeCodex({ files })).office } : {}),
   })
   const { office } = o
-  for (const [name, model] of Object.entries(connections)) {
-    const conn = { llm_config: { ...LLM_CONFIG, ...options.llmConfig, model }, env: fake.env() }
-    await writePrivate(path.join(office.connections.dir, `${name}.json`), JSON.stringify(conn))
-  }
   const codexed = c as Codex | undefined
   const hooks = codexed?.hooks ?? o.hooks
   office.codex = codexed?.sessions
