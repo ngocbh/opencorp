@@ -74,7 +74,7 @@ function rest(ms: number, signal: AbortSignal): Promise<void> {
  *   for each model call in flight with its text so far, then each frame the view applies (`record`, `start`, `chunk`,
  *   `end`; a merged chunk carries its last chunk's index) and `: ping` after `pingMs` idle. When the worker ends it
  *   sends the log after the last record sent, then `run_end`. While the relay rebuilds its view the stream joins
- *   again every `REJOIN_MS`.
+ *   again every `REJOIN_MS`, with `: ping` after each `pingMs` of waiting.
  *
  * `run_end` means the worker ended, not the run: a client reconnects with `after` when the run runs again. `reset`
  * means the stream can't go on as the view says (a line that doesn't read as its seq, a log behind the view, a record
@@ -110,9 +110,16 @@ export async function* liveStream(
   }
 
   let joined: LiveJoin | "rebuilding" | null = office.live?.join(runId) ?? null
+  // A rebuild is normally one follow round trip, but a client still gets a ping per `pingMs` if it drags on.
+  let waited = 0
   while (joined === "rebuilding") {
     await rest(REJOIN_MS, signal)
     if (!open()) return
+    waited += REJOIN_MS
+    if (waited >= pingMs) {
+      waited = 0
+      yield ": ping\n\n"
+    }
     joined = office.live?.join(runId) ?? null
   }
   if (joined === null) {
@@ -205,13 +212,13 @@ function live(pingMs: number): Route<RequestContext> {
  *  handler can't see its request path. */
 export function runRoutes(pingMs: number = PING_MS): Route<RequestContext>[] {
   return [
-  ...PATHS.map((path) => ({
-    method: "GET" as const,
-    path,
-    handler: () => {
-      throw new HttpError(501, "not_implemented", `GET ${path} is not implemented yet`)
-    },
-  })),
-  live(pingMs),
+    ...PATHS.map((path) => ({
+      method: "GET" as const,
+      path,
+      handler: () => {
+        throw new HttpError(501, "not_implemented", `GET ${path} is not implemented yet`)
+      },
+    })),
+    live(pingMs),
   ]
 }

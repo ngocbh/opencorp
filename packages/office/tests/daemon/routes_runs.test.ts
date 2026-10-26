@@ -1,8 +1,9 @@
 /** The run routes: GET /runs/{id}/live over a real socket; the other run routes are a 501 stub until the run views
  *  land. */
+import fs from "node:fs"
 import http from "node:http"
 import { RunLiveRecord } from "@opencorp/protocol"
-import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import { expect, type Mock, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import type { LiveJoin, LiveRelay, LiveWorker } from "../../src/daemon/live.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { readEvents, refresh } from "../../src/runs/reader.ts"
@@ -318,10 +319,10 @@ test("a rebuilding view is joined again", async () => {
   const { runId, log, lastSeq, relay, worker } = joinedRun(office)
   relay.frame(worker, { type: "record", seq: lastSeq + 100, line: "" })
   expect(relay.join(runId)).toBe("rebuilding")
+  const join = spyOn(relay, "join")
   const it = frames(await open(sock, `/runs/${runId}/live`))
   expect(await read(it, 1)).toEqual([["comment", null, "connected"]])
-  // Long enough for the stream to try a join or two more.
-  await new Promise((resolve) => setTimeout(resolve, 150))
+  await waitFor(() => join.mock.calls.length >= 2, { timeout: 5000, what: "a second join" })
   relay.frame(worker, { type: "snapshot", snapshot: { last_seq: lastSeq, calls: [] } })
   const records = await recordFrames(log)
   expect(await read(it, records.length)).toEqual(records)
@@ -330,6 +331,61 @@ test("a rebuilding view is joined again", async () => {
   relay.frame(worker, { type: "start", ...start })
   relay.detach(worker)
   expect(await rest(it)).toEqual([["start", null, start], ["run_end", null, {}]])
+})
+
+test("a stream waiting on a rebuild sends pings", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { pingMs: 50 })
+  const { runId, lastSeq, relay, worker } = joinedRun(office)
+  relay.frame(worker, { type: "record", seq: lastSeq + 100, line: "" })
+  const it = frames(await open(sock, `/runs/${runId}/live`))
+  expect(await read(it, 3)).toEqual([
+    ["comment", null, "connected"],
+    ["comment", null, "ping"],
+    ["comment", null, "ping"],
+  ])
+  expect(relay.join(runId)).toBe("rebuilding")
+})
+
+test("a reconnect after the views seq skips the records it has", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const { runId, sessionId, log } = storedRun(office)
+  const relay = liveRelay(office)
+  const worker = stubWorker(runId, sessionId, log)
+  const records = await recordFrames(log)
+  const from = records.length - 5
+  relay.frame(worker, { type: "snapshot", snapshot: { last_seq: from, calls: [] } })
+  const join = spyOn(relay, "join")
+  const it = frames(await open(sock, `/runs/${runId}/live?after=${from + 2}`))
+  expect(await read(it, 1)).toEqual([["comment", null, "connected"]])
+  await waitFor(() => join.mock.calls.length > 0, { timeout: 5000, what: "the join" })
+  // Without their lines: the relay reads each from the log.
+  for (let seq = from + 1; seq <= from + 4; seq++) relay.frame(worker, { type: "record", seq })
+  relay.detach(worker)
+  expect(await rest(it)).toEqual([records[from + 3]!, records[from + 4]!, ["run_end", null, {}]])
+})
+
+test("a log behind the view gets reset and closes the viewer", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const { runId, log, lastSeq, relay } = joinedRun(office)
+  const records = await recordFrames(log)
+  // The log loses its last three records after the view took them.
+  const lines = fs.readFileSync(log, "utf8").split("\n")
+  fs.writeFileSync(log, `${lines.slice(0, lastSeq - 2).join("\n")}\n`)
+  const join = relay.join.bind(relay)
+  const closes: Mock<() => void>[] = []
+  spyOn(relay, "join").mockImplementation((id) => {
+    const joined = join(id)
+    if (joined !== null && joined !== "rebuilding") closes.push(spyOn(joined.viewer, "close"))
+    return joined
+  })
+  const it = frames(await open(sock, `/runs/${runId}/live`))
+  const kept = records.slice(0, lastSeq - 2)
+  expect(await rest(it)).toEqual([["comment", null, "connected"], ...kept, ["reset", null, null]])
+  expect(closes).toHaveLength(1)
+  expect(closes[0]).toHaveBeenCalled()
 })
 
 test("a client that leaves closes its viewer", async () => {

@@ -943,10 +943,13 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a client that leaves closes its viewer	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a dropped viewer gets reset	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a live stream sends the log to the joins seq then the calls then frames	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a log behind the view gets reset and closes the viewer	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a merged chunk carries its last index	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a ping keeps an idle live stream open	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a rebuilding view is joined again	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a reconnect after the views seq skips the records it has	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a run no worker feeds streams its log then run end	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a stream waiting on a rebuild sends pings	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::every runs route answers 501 not implemented	design §4.3: GET /runs* answers 501 until the run views (O4b-3, O4b-7 replace it)	O2-6
 —	new	packages/office/tests/daemon/routes_runs.test.ts::run end reads the log past the last seq sent	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::the live route answers 404 for a run the store does not hold	design §2.6 (P7): GET /runs/{id}/live	O4b-3
