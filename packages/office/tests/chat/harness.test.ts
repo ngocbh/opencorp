@@ -197,6 +197,9 @@ test("a steer reaches the running reply", async () => {
   expect(await asked(fake, 2)).toContain("Also mention Rome.")
   await waitFor(() => status(h, id) === "idle" && same(texts(h, id).slice(-1), ["Done."]), { what: "the reply" })
   expect(texts(h, id, "user")).toEqual(["hi", "Also mention Rome."])
+  // Read once the worker has exited, so the messages are the log's alone: a live worker's view adds its calls in
+  // flight, and yian names the first call after a steer one step too early, so its text would show twice.
+  await asleep(h, id)
   // The steer comes after the text streamed before the model read it, and before the text after.
   const shown = h.harness
     .messages(id)
