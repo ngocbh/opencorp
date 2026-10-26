@@ -280,6 +280,26 @@ test("connections that is not a directory fails with what it is", async () => {
   })
 })
 
+test("a home or office that is a regular file is reported not thrown", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  fs.writeFileSync(home, "")
+  let got = byName(await runChecks(dir, new OfficePaths(home)))
+  expect(got.home).toEqual({ name: "home", status: "fail", detail: `${home} is not a directory` })
+  expect(got.connections!.status).toBe("fail")
+  const paths = await onboarded(path.join(dir, "second"))
+  fs.rmSync(paths.office, { recursive: true })
+  fs.writeFileSync(paths.office, "")
+  got = byName(await runChecks(dir, paths))
+  expect(got.home).toEqual({ name: "home", status: "ok", detail: paths.home })
+  const folder = path.join(paths.office, "connections")
+  expect(got.connections).toEqual({
+    name: "connections",
+    status: "fail",
+    detail: `can't read ${folder}: Not a directory`,
+  })
+})
+
 test("a connection removed during the check is skipped", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir, PROVIDER)

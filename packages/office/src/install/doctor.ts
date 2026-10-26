@@ -223,8 +223,10 @@ function connectionsCheck(paths: OfficePaths, lstat: (p: string) => fs.Stats): C
   try {
     st = lstat(folder)
   } catch (error) {
-    if (errnoCode(error) === "ENOENT") return null
-    throw error
+    const code = errnoCode(error)
+    if (code === "ENOENT") return null
+    if (code === undefined) throw error
+    return { name: "connections", status: "fail", detail: `can't read ${folder}: ${strerror(error) ?? code}` }
   }
   if (st.isSymbolicLink()) {
     return { name: "connections", status: "fail", detail: `${folder} must be a directory, not a symlink` }
