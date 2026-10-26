@@ -50,6 +50,7 @@ export function alive(pid: number): boolean {
   return stat !== "" && !stat.startsWith("Z")
 }
 
+/** A finished command's exit code (null when killed) and output. */
 export type Ran = { code: number | null; stdout: string; stderr: string }
 
 /** Runs `argv` with `input` on stdin; resolves with its exit code and output, killing it after `timeout` ms. Async,
@@ -127,7 +128,7 @@ function within(dir: string): number[] {
 }
 
 /** Stops the office on `<root>/h` (SIGTERM, then SIGKILL after 15 s), then SIGKILLs every process whose command
- *  names `root` or whose cwd is under the office's `sessions/`; fails if one is still listed after 5 s. */
+ *  names `root` or whose cwd is under it; fails if one is still listed after 5 s. */
 async function stopAll(root: string): Promise<void> {
   const home = path.join(root, "h")
   const paths = new OfficePaths(home)
@@ -150,7 +151,7 @@ async function stopAll(root: string): Promise<void> {
     }
   }
   // A safety net: workers exit by themselves when their office goes.
-  const left = () => [...new Set([...naming(root), ...within(paths.sessions)])].filter((pid) => pid !== process.pid)
+  const left = () => [...new Set([...naming(root), ...within(root)])]
   for (const pid of left()) {
     try {
       process.kill(pid, "SIGKILL")
@@ -298,6 +299,8 @@ export class RunningOffice {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
+      // A stuck office fails the test instead of hanging it.
+      signal: AbortSignal.timeout(30_000),
     })
   }
 
@@ -353,6 +356,7 @@ export class RunningOffice {
     return (await this.session(sid)).status
   }
 
+  /** The `kind` parts of session `sid`'s `role` messages, oldest first. */
   async #parts(sid: string, role: string, kind: string): Promise<any[]> {
     const messages: { role: string; parts: { type: string }[] }[] = await this.get(`/sessions/${sid}/messages`)
     return messages.filter((m) => m.role === role).flatMap((m) => m.parts.filter((p) => p.type === kind))
@@ -468,6 +472,7 @@ export class RunningOffice {
   }
 }
 
+/** A reply to a `Browser` request, its body read in full. */
 export type BrowserReply = { status: number; headers: http.IncomingHttpHeaders; text: string; json(): any }
 
 /** A browser stand-in for HQ at `origin` (Python's `web()` and `over_hq_sock()`): same-origin requests with cookies
@@ -524,6 +529,7 @@ export class Browser {
     })
   }
 
+  /** The `node:http` options for `method target`: the browser's Host, Origin and cookies, then `headers`. */
   #options(method: string, target: string, headers: Record<string, string>): http.RequestOptions {
     const url = new URL(this.origin)
     const cookie = [...this.#jar].map(([name, value]) => `${name}=${value}`).join("; ")
@@ -547,6 +553,7 @@ export class Browser {
     }
   }
 
+  /** Sends `method target` with `body` and resolves with the whole reply, keeping its cookies. */
   #send(method: string, target: string, headers: Record<string, string>, body?: string): Promise<BrowserReply> {
     return new Promise((resolve, reject) => {
       const req = http.request(this.#options(method, target, headers), (res) => {
