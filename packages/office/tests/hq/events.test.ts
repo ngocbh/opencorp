@@ -63,9 +63,8 @@ test("only hq event types arrive", async () => {
   expect(others).toEqual(
     expect.arrayContaining([
       "profile.updated",
-      "feedback.created",
-      "debrief.updated",
       "profile_proposal.created",
+      "profile_proposal.updated",
       "comment.created",
     ]),
   )

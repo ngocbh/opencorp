@@ -1,5 +1,0 @@
-{
-  "connections": [{ "name": "office", "provider": "azure", "method": "api_key", "model": "gpt-4o", "default": true }],
-  "default": "office",
-  "can_manage": true
-}

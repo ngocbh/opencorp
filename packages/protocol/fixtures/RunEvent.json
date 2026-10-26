@@ -1,1 +1,0 @@
-{"seq": 57, "kind": "node_failed", "node_id": "chat#2/reply", "payload": {"failure": {"code": "agent_error", "message": "401 from the provider: key (hidden)", "node_id": "chat#2/reply"}, "evidence": null}, "cut": ["/failure/traceback"], "evidence_left_out": true}
