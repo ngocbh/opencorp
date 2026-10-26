@@ -14,6 +14,7 @@ import type { AnswerKind } from "../questions/cards.ts"
 import { SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store, newId } from "../store/store.ts"
 import { WorkspaceTools } from "../tools/workspace.ts"
+import type { JobWorker, OfficeTool, WorkerHandlers } from "../worker/rpc.ts"
 import { RegistryClosed, type WorkerRegistry } from "../worker/spawn.ts"
 import type { Hooks } from "./hooks.ts"
 import { ProviderError } from "./provider.ts"
@@ -21,6 +22,9 @@ import { type RunSpec, mainSpec } from "./run_spec.ts"
 import { type ActorContext, SessionActor } from "./session_actor.ts"
 import { HarnessError, LIVE } from "./state.ts"
 import { Transcript } from "./transcript.ts"
+
+/** How long, in milliseconds, the stop waits for worker requests, office tool bodies and actor jobs still running. */
+const STOP_WAIT_MS = 10_000
 
 /** What the chat harness is built on. `workers` is the registry its runs' workers start in; `hooks` are shared with
  *  the Codex sessions; `log` gets its warnings (default `console.error`). */
@@ -53,9 +57,15 @@ export class ChatHarness implements SessionHarness {
   readonly #ctx: ActorContext
   readonly #actors = new Map<string, SessionActor>()
   #closed = false
-  /** Whether the stop has begun refusing spawns. */
+  /** Whether the stop has begun: no spawn, and worker exits are dropped. */
   #stopping = false
+  /** Whether the workers' channels are closed, so worker requests are refused. */
+  #refusing = false
   #closing: Promise<void> | undefined
+  /** Worker requests and office tool bodies running, for the stop to wait on. */
+  #inFlight = 0
+  /** Wakes the stop once `#inFlight` reaches zero. */
+  #idle: (() => void) | undefined
 
   constructor(
     office: Office,
@@ -78,13 +88,19 @@ export class ChatHarness implements SessionHarness {
       connections: office.connections,
       workers: {
         spawn: (job, dir, handlers, options) =>
-          this.#stopping ? Promise.reject(new RegistryClosed()) : this.registry.spawn(job, dir, handlers, options),
+          this.#stopping
+            ? Promise.reject(new RegistryClosed())
+            : this.registry.spawn(job, dir, this.#guard(handlers), options),
       },
       hooks,
       answers: this.answers,
       transcript: this.transcript,
-      spec: (session) => this.spec(session),
+      spec: async (session) => {
+        const spec = await this.spec(session)
+        return { ...spec, groups: (ctx) => this.#counted(spec.groups(ctx)) }
+      },
       scheduler,
+      runIndex: office.runIndex,
       log,
     }
     // A finished session's actor goes once its last worker has; a lingering one is dropped at the next call.
@@ -293,19 +309,97 @@ export class ChatHarness implements SessionHarness {
     await this.office.codex?.restore()
   }
 
-  /** Office stop: every later call answers 503; the actors close, then the Codex sessions, then the workers.
-   *  Idempotent. */
+  /**
+   * The office's stop, in Python's order; idempotent. Every later call answers 503 `stopping`; no worker spawns and
+   * worker exits are dropped, so no actor retries a death or fails a session on the stop's own exits; the Codex
+   * sessions close, then the workers. Once the workers' channels are closed, worker requests are refused and every
+   * actor closes (a request arriving before then is served). Then it waits, within `STOP_WAIT_MS`, for the worker
+   * requests and office tool bodies still running and for the job each actor ran at its close; a step that throws
+   * leaves the later ones to run, and the stop rejects with its error.
+   */
   closeAll(): Promise<void> {
     this.#closed = true
-    this.#closing ??= (async () => {
-      for (const actor of this.#actors.values()) actor.close()
-      try {
-        await this.office.codex?.closeAll()
-      } finally {
-        await this.registry.closeAll()
-      }
-    })()
+    this.#closing ??= this.#stop()
     return this.#closing
+  }
+
+  async #stop(): Promise<void> {
+    this.#stopping = true
+    try {
+      await this.office.codex?.closeAll()
+    } finally {
+      try {
+        await this.registry.closeAll()
+      } finally {
+        this.#refusing = true
+        const tails = [...this.#actors.values()].map((actor) => actor.close())
+        await this.#drain(tails)
+      }
+    }
+  }
+
+  /** Waits up to `STOP_WAIT_MS` for `#inFlight` to reach zero and for `tails` to settle; logs what was left. */
+  async #drain(tails: Promise<void>[]): Promise<void> {
+    let running = tails.length
+    const settled = tails.map((tail) => tail.finally(() => void (running -= 1)))
+    const idle = this.#inFlight === 0 ? Promise.resolve() : new Promise<void>((resolve) => (this.#idle = resolve))
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const bound = new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), STOP_WAIT_MS)))
+    const done = await Promise.race([Promise.all([idle, ...settled]).then(() => true), bound])
+    clearTimeout(timer)
+    if (!done) {
+      const left = `${this.#inFlight} worker requests or tool calls and ${running} session jobs`
+      this.log(`chat harness: ${left} still running at the stop`)
+    }
+  }
+
+  /** `handlers` as the stop needs them: each call goes to `handlers`; `exited` is dropped once the stop began, and
+   *  the requests are counted in flight, and refused once the workers' channels are closed. */
+  #guard<W extends JobWorker>(handlers: WorkerHandlers<W>): WorkerHandlers<W> {
+    return {
+      event: (worker, frame) => handlers.event(worker, frame),
+      stream: (worker, frame) => handlers.stream(worker, frame),
+      deliverReply: (worker, frame) => handlers.deliverReply(worker, frame),
+      result: (worker, frame) => handlers.result(worker, frame),
+      error: (worker, frame) => handlers.error(worker, frame),
+      exited: (worker, returncode) => {
+        if (!this.#stopping) handlers.exited(worker, returncode)
+      },
+      askUser: (worker, request, callId) => this.#inCall(() => handlers.askUser(worker, request, callId)),
+      toolCall: (worker, group, name, args, callId) =>
+        this.#inCall(() => handlers.toolCall(worker, group, name, args, callId)),
+      storeRead: (worker, store, version) => this.#inCall(() => handlers.storeRead(worker, store, version)),
+      storeWrite: (worker, store, text, baseVersion, provenance) =>
+        this.#inCall(() => handlers.storeWrite(worker, store, text, baseVersion, provenance)),
+    }
+  }
+
+  /** `groups` with each tool's body counted in flight: a call Esc or the stop answered keeps running, and the stop
+   *  waits for it. */
+  #counted(groups: Record<string, Record<string, OfficeTool>>): Record<string, Record<string, OfficeTool>> {
+    return Object.fromEntries(
+      Object.entries(groups).map(([group, named]) => [
+        group,
+        Object.fromEntries(
+          Object.entries(named).map(([name, tool]) => [
+            name,
+            { ...tool, call: (args, options) => this.#inCall(() => tool.call(args, options)) } satisfies OfficeTool,
+          ]),
+        ),
+      ]),
+    )
+  }
+
+  /** Runs `call`, counted in flight until it settles; refused once the workers' channels are closed. */
+  async #inCall<T>(call: () => T): Promise<Awaited<T>> {
+    if (this.#refusing) throw new Error("the office is stopping")
+    this.#inFlight += 1
+    try {
+      return await call()
+    } finally {
+      this.#inFlight -= 1
+      if (this.#inFlight === 0) this.#idle?.()
+    }
   }
 
   /** Checks `handle` and `cwd` at the company's current commit, and chooses the connection and model the chat starts

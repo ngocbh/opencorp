@@ -634,16 +634,19 @@ export class SessionActor implements LiveCalls {
    * Office stop: the workspace is interrupted and every delivery not yet answered is answered: with its recorded
    * reply when the worker sent one, else by the closing rule with `503 stopping`. Later commands are refused `503
    * stopping`, later worker frames are ignored and later `askUser` and `toolCall` requests are refused (store requests
-   * still run); the office's registry stops the workers.
+   * still run); the office's registry stops the workers. Returns a promise that settles once the job running at the
+   * close returns.
    */
-  close(): void {
-    if (this.#closed) return
+  close(): Promise<void> {
+    const tail = this.#tail.then(() => {})
+    if (this.#closed) return tail
     this.#closed = true
     this.#disarm()
     this.#interruptWorkspace()
     this.#answerCalls()
     const given = [...(this.#starting?.given ?? []), ...(this.#run?.given ?? []), ...this.#next.splice(0)]
     this.#answerRest(given, stopping())
+    return tail
   }
 
   // --- the queue ------------------------------------------------------------------------
