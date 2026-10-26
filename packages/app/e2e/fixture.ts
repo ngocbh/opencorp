@@ -8,8 +8,15 @@ import type { BrowserSession, RunDetail, RunEvent, RunSummary } from "@opencorp/
 import { acme, source, type Data, type Source } from "./company"
 import { runLogs, runPages, summaryOf, wholeEvents, type RunPages, type Runs } from "./runs"
 
-const DIST = path.join(import.meta.dir, "dist")
-const port = Number(process.argv[process.argv.indexOf("--port") + 1] || 4791)
+/** The value after the command-line flag `name`, or undefined. */
+function arg(name: string): string | undefined {
+  const at = process.argv.indexOf(name)
+  return at < 0 ? undefined : process.argv[at + 1]
+}
+
+/** The built app served: `--dist <dir>`, by default e2e/dist. */
+const DIST = path.resolve(arg("--dist") ?? path.join(import.meta.dir, "dist"))
+const port = Number(arg("--port") || 4791)
 const build = JSON.parse(readFileSync(path.join(DIST, "build.json"), "utf8"))
 
 /** `path` with its %-escapes decoded; an escape that isn't valid UTF-8 stays as it is, as uvicorn decodes paths. */
