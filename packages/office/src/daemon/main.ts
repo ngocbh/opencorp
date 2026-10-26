@@ -6,6 +6,7 @@ import os from "node:os"
 import path from "node:path"
 import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform"
 import { oneReplyProblem } from "../chat/check.ts"
+import { ChatHarness } from "../chat/harness.ts"
 import { Hooks } from "../chat/hooks.ts"
 import { Transcript } from "../chat/transcript.ts"
 import { CompanyGit } from "../company/git.ts"
@@ -15,6 +16,7 @@ import { CodexSessions } from "../harness/sessions.ts"
 import { attach } from "../hq/core.ts"
 import { daemonArgs, daemonEnv, resolveHome } from "../install/launch.ts"
 import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
+import { Monitor } from "../perm/monitor.ts"
 import { Inspections, YianRuns, readIndex, sweep } from "../runs/records.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { Store } from "../store/store.ts"
@@ -244,14 +246,14 @@ async function sweepOnStart(office: Office, log: ReturnType<typeof officeLogger>
 }
 
 /** Opens the store and the company clone (run by `tools.git`), kills the processes an earlier office left, and
- *  assembles the office with its tools, its workspace guards, its worker registry (closed when the office stops,
- *  refusing new workers from then on; the chat harness will be built around it here, and the one-reply model
- *  check runs over it; each worker's exit updates the run index), the run index brought up to date on start and
- *  the start sweep after it, its run transcript and live relay (for the session actors; the relay's viewers end on
- *  stop), its Codex sessions (on the chat hooks, the office's card actor until the chat harness, restored on start
- *  after the start sweep and before the extensions' start callbacks, closed on stop), its HEAD watcher (started and
- *  stopped with the office), a model warm-up on start (not awaited) and the cancelling of sign-ins still waiting on
- *  stop. `OfficeStartError` when `tools` has no git. */
+ *  assembles the office with its tools, its workspace guards, its worker registry (each worker's exit updates the
+ *  run index; the one-reply model check runs over it), its run transcript and live relay (for the session actors;
+ *  the relay's viewers end on stop), its Codex sessions on the chat hooks, and the chat harness over the registry
+ *  with a `Monitor`: the harness is the office's workers and its session harness, so the office's stop closes it
+ *  first (the Codex sessions, then the workers). On start: the run index brought up to date and the start sweep,
+ *  then the harness's restore (before the extensions' start callbacks), then a model warm-up (not awaited) and the
+ *  HEAD watcher; on stop, the sign-ins still waiting are cancelled and the watcher stops. `OfficeStartError` when
+ *  `tools` has no git. */
 export function buildOffice(
   paths: OfficePaths,
   { tools, guards, write }: { tools: Tools; guards: SandboxOfficePaths; write: Write },
@@ -274,7 +276,6 @@ export function buildOffice(
       bus: new Bus(),
       tools,
       guards,
-      workers,
       log: log("ERROR", "opencorp.daemon.office"),
       connections: { log: log("WARNING", "opencorp.chat.connections") },
       models: { log: log("WARNING", "opencorp.chat.models") },
@@ -282,8 +283,6 @@ export function buildOffice(
       checkModel: (provider) => oneReplyProblem(workers, provider, { log: log("WARNING", "opencorp.chat.check") }),
       runIndex: { log: log("WARNING", "opencorp.runs.indexer") },
     })
-    // Not awaited: a slow provider must not hold up the start. warm never rejects.
-    office.onStart.push(() => void office.models.warm())
     // Bounded: closeAll waits at most STOP_WAIT_MS for the sign-ins to stop.
     office.onStop.push(() => office.logins.closeAll())
     office.transcript = new Transcript(paths.runs)
@@ -295,16 +294,19 @@ export function buildOffice(
     // Ends the run viewers; the workers that fed the relay are stopped by then.
     office.onStop.push(() => office.live?.close())
     const hooks = new Hooks({ log: log("ERROR", "opencorp.chat.hooks") })
-    const codex = (office.codex = new CodexSessions(office, hooks, { log: log("WARNING", "opencorp.harness.session") }))
-    // No chat harness yet: the Codex sessions are the office's harness (card actions and session routes), on the
-    // same hooks.
-    office.harness = codex
-    // Before the restores, as Python's restore swept first: the sweep must never end a run a restore resumes or starts.
+    office.codex = new CodexSessions(office, hooks, { log: log("WARNING", "opencorp.harness.session") })
+    const monitor = new Monitor(paths.company, store, office.secrets)
+    // After the transcript and the relay, which its actors share.
+    const harness = new ChatHarness(office, { monitor, hooks, workers, log: log("WARNING", "opencorp.chat.harness") })
+    // Office.stop closes its workers first: the harness's stop closes the Codex sessions, then the registry.
+    office.workers = harness
+    office.harness = harness
+    // Before the restore, as Python's restore swept first: the sweep must never end a run a restore resumes or starts.
     office.onStart.push(() => sweepOnStart(office, log))
     // Before loadExtensions adds the cards' sweep, so the sweep sees the statuses restore settled.
-    office.onStart.push(() => codex.restore())
-    // Bounded: the sessions close in parallel, each kill waiting at most 5 s and each queue at most stopWaitMs.
-    office.onStop.push(() => codex.closeAll())
+    office.onStart.push(() => harness.restore())
+    // Not awaited: a slow provider must not hold up the start. warm never rejects.
+    office.onStart.push(() => void office.models.warm())
     const watcher = new HeadWatcher(office, { log: log("ERROR", "opencorp.company.watch") })
     office.onStart.push(() => watcher.start())
     office.onStop.push(() => watcher.stop())

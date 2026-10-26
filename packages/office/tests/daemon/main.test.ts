@@ -9,8 +9,10 @@ import { fileURLToPath } from "node:url"
 import { isLocked } from "@ngocbh/yian/platform"
 import { readRunIndex } from "@ngocbh/yian/run"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import { ChatHarness } from "../../src/chat/harness.ts"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { Provider } from "../../src/chat/provider.ts"
+import { HarnessError } from "../../src/chat/state.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { trackRequests } from "../../src/daemon/http.ts"
 import { LiveRelay } from "../../src/daemon/live.ts"
@@ -444,7 +446,7 @@ test("the office holds the company snapshots and the secret store", () => {
   expect(office.paths.lock).toBe(path.join(office.paths.home, "office", "office.lock"))
 })
 
-test("build office lists models on start and cancels sign ins on stop", async () => {
+test("build office runs the chat harness", async () => {
   let office: Office | undefined
   // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
   onTestFinished(async () => {
@@ -456,29 +458,51 @@ test("build office lists models on start and cancels sign ins on stop", async ()
   })
   const rec = recordingGit(tempDir())
   office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  const harness = office.harness as ChatHarness
+  expect(harness).toBeInstanceOf(ChatHarness)
+  expect(office.workers).toBe(harness)
+  expect(harness.office.connections).toBe(office.connections)
+  expect(harness.hooks).toBe(office.codex!.hooks)
   expect(office.models.connections).toBe(office.connections)
   expect(office.logins.connections).toBe(office.connections)
   expect(office.connections.office).toBe(office.paths.office)
+  const started: string[] = []
+  const update = office.runIndex.update.bind(office.runIndex)
+  // The start sweep brings the run index up to date first.
+  spyOn(office.runIndex, "update").mockImplementation(() => {
+    started.push("sweep")
+    return update()
+  })
+  const restore = harness.restore.bind(harness)
+  spyOn(harness, "restore").mockImplementation(() => {
+    started.push("restore")
+    return restore()
+  })
   // Never settles: start must not wait for the warm-up.
-  const warm = spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
-  const close = spyOn(office.logins, "closeAll").mockResolvedValue(undefined)
+  spyOn(office.models, "warm").mockImplementation(() => {
+    started.push("warm")
+    return new Promise(() => {})
+  })
+  const logins = spyOn(office.logins, "closeAll").mockResolvedValue(undefined)
+  // Calls through, so the harness really closes.
+  const closed = spyOn(harness, "closeAll")
   let timer: ReturnType<typeof setTimeout> | undefined
   const held = new Promise((resolve) => (timer = setTimeout(() => resolve("held"), 2000)))
-  const started = await Promise.race([office.start().then(() => "started"), held])
+  const result = await Promise.race([office.start().then(() => "started"), held])
   clearTimeout(timer)
-  expect(started).toBe("started")
-  expect(warm).toHaveBeenCalledTimes(1)
-  expect(close).not.toHaveBeenCalled()
+  expect(result).toBe("started")
+  expect(started).toEqual(["sweep", "restore", "warm"])
+  expect([logins.mock.calls.length, closed.mock.calls.length]).toEqual([0, 0])
   await office.stop()
-  expect(close).toHaveBeenCalledTimes(1)
+  expect([logins.mock.calls.length, closed.mock.calls.length]).toEqual([1, 1])
 })
 
 test("build office gives the office a worker registry that stops with it", async () => {
   const rec = recordingGit(tempDir())
   const office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
   try {
-    expect(office.workers).toBeInstanceOf(WorkerRegistry)
-    const workers = office.workers as WorkerRegistry
+    const workers = (office.harness as ChatHarness).registry
+    expect(workers).toBeInstanceOf(WorkerRegistry)
     await office.start()
     await office.stop()
     const where = base()
@@ -527,10 +551,12 @@ test("build office runs codex sessions closed on stop", async () => {
   spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
   // Calls through, so the sessions really close.
   const close = spyOn(codex, "closeAll")
+  const harness = spyOn(office.harness as ChatHarness, "closeAll")
   await office.start()
   expect(close).not.toHaveBeenCalled()
   await office.stop()
-  expect(close).toHaveBeenCalledTimes(1)
+  // Once, by the harness's stop.
+  expect([close.mock.calls.length, harness.mock.calls.length]).toEqual([1, 1])
   const row = office.store.createSession(
     session({
       harness: "codex",
@@ -549,7 +575,7 @@ test("the office runs codex sessions on the harness hooks", async () => {
   const rec = recordingGit(tempDir())
   const office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
   try {
-    expect(office.harness).toBe(office.codex)
+    expect(office.harness!.hooks).toBe(office.codex!.hooks)
     // A check added on the harness hooks, as the questions extension adds its own, is one the Codex sessions run.
     office.harness!.hooks.answerCheck.push(() => "refused by the harness hooks")
     const row = office.store.createSession(
@@ -626,7 +652,6 @@ test("build office restores codex sessions on start before the cards sweep", asy
 test("office stop waits for the send backs queued on the office harness and returns", async () => {
   const rec = recordingGit(tempDir())
   const office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
-  let release: (() => void) | undefined
   let stopping: Promise<unknown> | undefined
   try {
     spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
@@ -636,40 +661,35 @@ test("office stop waits for the send backs queued on the office harness and retu
     const discussion = [{ role: "user" as const, text: "why?" }]
     const q1 = office.store.addQuestion(question(s.id, { source: "ask_user", discussion }))
     const q2 = office.store.addQuestion(question(s.id, { source: "ask_user", discussion }))
-    const gate = new Promise<void>((r) => (release = r))
-    const codex = office.codex!
-    const answer = codex.answer.bind(codex)
-    // The cards call the actor's answer on this same object.
-    const held = spyOn(codex, "answer").mockImplementation(async (...args) => {
-      await gate
-      return answer(...args)
-    })
-    const first = office.cards!.sendBack(q1.id, "use sqlite", { by: "ngocbh" })
-    const second = office.cards!.sendBack(q2.id, "use sqlite", { by: "ngocbh" })
-    // The first is inside the actor and the second is queued in the cards' tail.
-    await waitFor(() => held.mock.calls.length === 1, { what: "the first send-back in the actor" })
     const order: string[] = []
-    void first.then(() => order.push("first"))
-    void second.then(() => order.push("second"))
+    // Each send-back is answered or refused by the stop, never left hanging.
+    const settled = [q1, q2].map((q, i) =>
+      office.cards!.sendBack(q.id, "use sqlite", { by: "ngocbh" }).then(
+        () => void order.push(`sent ${i}`),
+        (error: unknown) => {
+          expect(error).toBeInstanceOf(HarnessError)
+          expect([(error as HarnessError).status, (error as HarnessError).code]).toEqual([503, "stopping"])
+          order.push(`refused ${i}`)
+        },
+      ),
+    )
     stopping = office.stop().then(() => order.push("stopped"))
-    await sleep(200)
-    expect(order).toEqual([])
-    release!()
     await Promise.race([
       stopping,
       sleep(5000).then(() => {
         throw new Error("stop hung")
       }),
     ])
-    expect(order).toEqual(["first", "second", "stopped"])
-    for (const q of [q1, q2]) {
+    await Promise.all(settled)
+    expect(order).toHaveLength(3)
+    expect(order.at(-1)).toBe("stopped")
+    for (const [i, q] of [q1, q2].entries()) {
+      if (!order.includes(`sent ${i}`)) continue
       const got = office.store.getQuestion(q.id)!
       expect([got.status, got.answer_kind, got.answered_by]).toEqual(["answered", "sent_back", "ngocbh"])
     }
   } finally {
-    // A failure before the stop must not leave the first send-back on the gate or the office running; the happy
-    // path stops it once.
-    release?.()
+    // A failure before the stop must not leave the office running; the happy path stops it once.
     try {
       await (stopping ?? office.stop())
     } finally {
