@@ -485,8 +485,14 @@ export function waitListening(office: RunningOffice): Promise<any> {
   )
 }
 
-/** A reply to a `Browser` request, its body read in full. */
-export type BrowserReply = { status: number; headers: http.IncomingHttpHeaders; text: string; json(): any }
+/** A reply to a `Browser` request, its body read in full: `body` as received, `text` that body decoded as UTF-8. */
+export type BrowserReply = {
+  status: number
+  headers: http.IncomingHttpHeaders
+  body: Buffer
+  text: string
+  json(): any
+}
 
 /** A browser stand-in for HQ at `origin` (Python's `web()` and `over_hq_sock()`): same-origin requests with cookies
  *  kept, over TCP to `origin`, or over `socket` (hq.sock through an SSH forward whose local end is `origin`). */
@@ -566,8 +572,8 @@ export class Browser {
     }
   }
 
-  /** Sends `method target` with `body` and resolves with the whole reply, keeping its cookies. */
-  #send(method: string, target: string, headers: Record<string, string>, body?: string): Promise<BrowserReply> {
+  /** Sends `method target` with `payload` and resolves with the whole reply, keeping its cookies. */
+  #send(method: string, target: string, headers: Record<string, string>, payload?: string): Promise<BrowserReply> {
     return new Promise((resolve, reject) => {
       const req = http.request(this.#options(method, target, headers), (res) => {
         this.#keep(res)
@@ -575,13 +581,14 @@ export class Browser {
         res.on("data", (part: Buffer) => parts.push(part))
         res.on("error", reject)
         res.on("end", () => {
-          const text = Buffer.concat(parts).toString()
-          resolve({ status: res.statusCode!, headers: res.headers, text, json: () => JSON.parse(text) })
+          const body = Buffer.concat(parts)
+          const text = body.toString()
+          resolve({ status: res.statusCode!, headers: res.headers, body, text, json: () => JSON.parse(text) })
         })
       })
       req.on("timeout", () => req.destroy(new Error(`${method} ${target} timed out`)))
       req.on("error", reject)
-      req.end(body)
+      req.end(payload)
     })
   }
 }

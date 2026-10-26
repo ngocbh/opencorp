@@ -4,16 +4,14 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
 import { waitFor } from "../helpers.ts"
-import { sandboxAvailable } from "../sandbox/helpers.ts"
 import { asked, folder, openOffice } from "./helpers.ts"
 
 const TIMEOUT = 180_000
 
+// Switched on, this is `test.skipIf(!sandboxAvailable())(`: Python's sandbox_available fixture skips it there.
 test.todo(
   "the m1 journey",
   async () => {
-    // Python's sandbox_available fixture: the test skips where the sandbox can't run.
-    if (!sandboxAvailable()) return
     const office = await openOffice()
     const workspace = folder(path.join(office.root, "project"))
     const fake = office.llm

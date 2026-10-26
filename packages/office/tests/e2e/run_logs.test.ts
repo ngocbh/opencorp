@@ -38,19 +38,19 @@ test.todo(
     expect([top.children, top.children_total]).toEqual([[], 0])
     const head = (await browser.get(`/api/runs/${top.run_id}`)).json()
     expect(head.run.children).toEqual([])
-    const nodes: { node_id: string; kind: string | null; status: string }[] = (
+    const nodes: { node_id: string; kind?: string | null; status: string }[] = (
       await browser.get(`/api/runs/${top.run_id}/nodes`)
     ).json().nodes
     const replies = nodes.filter((n) => n.node_id.endsWith("/reply"))
     expect(replies.some((n) => n.status === "succeeded")).toBe(true)
     expect(replies.every((n) => n.kind === "agent")).toBe(true)
-    expect(nodes.filter((n) => n.kind === null)).toEqual([])
+    expect(nodes.filter((n) => typeof n.kind !== "string" || n.kind === "")).toEqual([])
     const events: { payload: unknown }[] = (await browser.get(`/api/runs/${top.run_id}/events`)).json().events
     expect(events.some((e) => JSON.stringify(e.payload).includes(`noted ${KEY}`))).toBe(true)
     const log = await browser.get(`/api/runs/${top.run_id}/log`)
     const stored = path.join(office.paths.runs, top.run_id, "log.jsonl")
     expect(log.status).toBe(200)
-    expect(log.text).toBe(fs.readFileSync(stored, "utf8"))
+    expect(log.body.equals(fs.readFileSync(stored))).toBe(true)
   },
   TIMEOUT,
 )
