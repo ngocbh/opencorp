@@ -22,9 +22,11 @@ import type { ModelCheck } from "../../src/install/onboard.ts"
 import type { Tools } from "../../src/install/tools.ts"
 import { blobId } from "../../src/profile/store.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../../src/sandbox/policy.ts"
-import { Store } from "../../src/store/store.ts"
+import { Store, newId } from "../../src/store/store.ts"
 import { git, makeCompany } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
+import { chatLog } from "../runs/helpers.ts"
+import { session } from "../store/helpers.ts"
 
 /** The base company's CEO. */
 export const CEO = "ngocbh"
@@ -221,6 +223,34 @@ export async function served(
       })
   const { sock, server } = await serve([...allRoutes({ pingMs }), ...extra], { context, log })
   return { sock, server }
+}
+
+/** A chat run of the CEO stored under a new session, with a chat log of `turns` turns at its log path unless `turns`
+ *  is null; returns its id and log path. */
+export function launchRun(
+  office: Office,
+  { turns = 2 }: { turns?: number | null } = {},
+): { runId: string; log: string } {
+  const sessionId = office.store.createSession(session()).id
+  const runId = newId()
+  office.store.addRun({
+    runId,
+    sessionId,
+    flow: "chat",
+    flowPath: "shared/flows/chat.yaml",
+    driver: CEO,
+    createdAt: "2026-10-20T10:00:00.000Z",
+    connection: null,
+    model: null,
+    configSha256: null,
+    replacesRunId: null,
+  })
+  const log = path.join(office.paths.runs, runId, "log.jsonl")
+  if (turns !== null) {
+    fs.mkdirSync(path.dirname(log), { recursive: true })
+    chatLog(log, turns)
+  }
+  return { runId, log }
 }
 
 /** An `Authorization` header carrying `token`. */

@@ -26,6 +26,7 @@ import { costs } from "../daemon/routes/costs.ts"
 import { whoami } from "../daemon/routes/devices.ts"
 import { RESET, frame } from "../daemon/routes/events.ts"
 import { listQuestions } from "../daemon/routes/questions.ts"
+import { liveStream, liveTarget } from "../daemon/routes/runs.ts"
 import { listSessions } from "../daemon/routes/sessions.ts"
 import { getWorkItem } from "../daemon/routes/work_items.ts"
 import { browserAuth, cookieName, cookieValue } from "./auth.ts"
@@ -139,6 +140,48 @@ async function* hqEvents(ctx: HqContext): AsyncGenerator<string> {
   }
 }
 
+/**
+ * HQ's live stream of run `runId`: the /runs/{id}/live contract, ended as `hqEvents` ends its stream: when the session
+ * is revoked or expires, or its person no longer checks out at a new commit.
+ */
+async function* hqLive(ctx: HqContext, runId: string, log: string, after: number): AsyncGenerator<string> {
+  const { hq } = ctx
+  const sid = ctx.session!
+  // Subscribed here, on the first pull, so a reply that never starts leaves no subscription behind.
+  const sub = hq.office.bus.subscribe(null, { types: ["company.updated"] })
+  hq.sessions.register(sid, sub)
+  const stop = new AbortController()
+  // Watches the session beside the stream, which waits on the log or the worker rather than on the bus.
+  void (async () => {
+    for (;;) {
+      const item = await sub.next(hq.pingMs)
+      if (item === null) return stop.abort()
+      if (item === PING || item[1].type !== "company.updated") continue
+      const [, event] = item
+      try {
+        if (!(await hq.sessions.stillValid(sid, event.subject_id))) return stop.abort()
+      } catch (error) {
+        // The type only: a message can quote what it failed on.
+        const type = error instanceof Error ? error.constructor.name : typeof error
+        const text = `couldn't re-check HQ session ${sid} at ${event.subject_id}; ending its live stream: ${type}`
+        hq.log(logLine("ERROR", "opencorp.hq.api", text))
+        return stop.abort()
+      }
+    }
+  })()
+  try {
+    yield* liveStream(hq.office, runId, log, after, {
+      signal: AbortSignal.any([ctx.signal, stop.signal]),
+      pingMs: hq.pingMs,
+      alive: () => hq.sessions.alive(sid),
+    })
+  } finally {
+    hq.sessions.unregister(sid, sub)
+    // Wakes the watcher, which then ends.
+    sub.end()
+  }
+}
+
 /** Everything under /api that isn't on the allowlist: the pipeline's own 404, for any method. */
 function noRoute(ctx: HqContext): never {
   const raw = ctx.req.url ?? "/"
@@ -189,7 +232,24 @@ export const ROUTES: readonly Route<HqContext>[] = [
   },
   { method: "GET", path: "/api/sessions", reply: z.array(Session), handler: listSessions },
   { method: "GET", path: "/api/questions", reply: z.array(Question), handler: listQuestions },
-  // The runs, ported later, go here.
+  // The other run routes, ported later, go here. A run's live stream (`hqLive`); HEAD is refused here, as on
+  // /api/events.
+  {
+    method: "GET",
+    path: "/api/runs/:id/live",
+    handler: (ctx, params) => {
+      if (ctx.req.method !== "GET")
+        return errorReply(405, "method_not_allowed", `${ctx.req.method} is not allowed on /api/runs/:id/live`, {
+          allow: "GET",
+        })
+      const { log, after } = liveTarget(ctx, params.id!)
+      return new RawReply(
+        200,
+        { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
+        hqLive(ctx, params.id!, log, after),
+      )
+    },
+  },
   { method: "GET", path: "/api/work-items/:id", reply: WorkItem, handler: getWorkItem },
   { method: "GET", path: "/api/costs", reply: CostReport, handler: costs },
   // HQ's event stream (`hqEvents`). HEAD is refused here rather than by `head: false`, which would let the GET
