@@ -1,11 +1,11 @@
 /** GET /events over a real socket. */
 import http from "node:http"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import { type Event, type LiveEvent, now } from "@opencorp/protocol"
+import { type Event, type LiveEvent, Message, now } from "@opencorp/protocol"
 import { newId } from "../../src/store/store.ts"
 import { waitFor } from "../helpers.ts"
 import { recordEvents, session } from "../store/helpers.ts"
-import { Conn, ends, frames, makeOffice, served, take } from "./helpers.ts"
+import { Conn, ends, frames, makeOffice, request, served, standInHarness, take } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -81,6 +81,29 @@ test("idle stream gets pings", async () => {
     ["comment", null, "connected"],
     ["comment", null, "ping"],
   ])
+})
+
+test("late subscriber gets history from messages not replay", async () => {
+  const office = makeOffice()
+  const s = office.store.createSession(session())
+  const m = Message.parse({
+    id: newId(),
+    session_id: s.id,
+    role: "assistant",
+    parts: [{ id: newId(), type: "text", text: "done" }],
+    created_at: now(),
+  })
+  office.harness = standInHarness({ messages: () => [m] })
+  const { sock } = await served(office)
+  office.bus.publishLive({ type: "message.updated", session_id: s.id, data: m })
+  await Bun.sleep(100)
+  const it = frames(await openEvents(sock, `/events?session=${s.id}`))
+  await take(it, 1)
+  office.store.updateSession(s.id, { status: "idle" })
+  const [[kind, , data]] = await take(it, 1)
+  // The earlier live event is not replayed.
+  expect([kind, (data as Event).type]).toEqual(["meta", "session.updated"])
+  expect((await request(sock, "GET", `/sessions/${s.id}/messages`)).json()).toEqual([m])
 })
 
 test("shutdown ends open streams", async () => {

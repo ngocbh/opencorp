@@ -189,7 +189,8 @@ daemon/test_routes_connections.py::test_models_route_lists_and_unknown_connectio
 daemon/test_routes_connections.py::test_others_are_refused_before_the_body_is_read	changed	packages/office/tests/daemon/routes_connections.test.ts::others are refused before the body is read	P3: the office connection is office/connections/office.json; D13: its .lock sits beside it, so nothing else written replaces Python's missing connections folder	O2-21
 daemon/test_routes_connections.py::test_the_owner_signs_in_to_a_subscription	changed	packages/office/tests/daemon/routes_connections.test.ts::the owner signs in to a subscription	asserts the warm-up after a sign-in lists office, which pins that Logins got the office's model cache (typed Office fields, design §2.3)	O2-21
 daemon/test_routes_costs.py	ported	packages/office/tests/daemon/routes_costs.test.ts	—	O2-6
-daemon/test_routes_events.py	open	—	split: O2-2 → O4a-7b	O4a-7b
+daemon/test_routes_events.py	ported	packages/office/tests/daemon/routes_events.test.ts	—	O4a-7b
+daemon/test_routes_events.py::test_late_subscriber_gets_history_from_messages_not_replay	changed	packages/office/tests/daemon/routes_events.test.ts::late subscriber gets history from messages not replay	design §8.3: the office stores no messages; GET /sessions/:id/messages reads the harness's transcript, here a stand-in harness's	O4a-7b
 daemon/test_routes_learning.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 daemon/test_routes_people.py	ported	packages/office/tests/daemon/routes_people.test.ts	—	O2-6
 daemon/test_routes_people.py::test_hiring_needs_a_hiring_desk	dropped	—	design §2.3: extras goes; Office.hiring is a typed field every office is built with, so no office lacks a hiring desk	O2-6
