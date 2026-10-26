@@ -99,7 +99,9 @@ test("an assistant message whose only text part is empty draws nothing until a d
 
   const { office, s, app } = await boot([user("M1", "first question"), blank, user("M3", "second question")])
   const frame = await app.until((f) => f.includes("first question") && f.includes("second question"))
-  expect(frame).toBe(expected)
+  // Only the gap between the two questions: the model name in the footer loads on its own.
+  const gap = (f: string) => f.slice(f.indexOf("first question"), f.indexOf("second question"))
+  expect(gap(frame)).toBe(gap(expected))
   expect(frame).not.toContain("On it")
   office.live({ type: "part.delta", session_id: s.id, data: { message_id: "M2", part_id: "b", text: "On it" } })
   await app.until((f) => f.includes("On it"))
