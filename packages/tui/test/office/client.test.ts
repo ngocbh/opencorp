@@ -99,6 +99,12 @@ test("reads give up after timeoutMs with an OfficeTimeout", async () => {
   expect(err.message).toContain("/messages")
 })
 
+test("a models refresh asks with ?refresh=1", async () => {
+  office = createFakeOffice()
+  await client().connections.models("azure-2", { refresh: true })
+  expect(office.requests.at(-1)?.raw).toBe("/connections/azure-2/models?refresh=1")
+})
+
 test("managing connections: add, set the default, remove; office can't be removed; others get 403", async () => {
   office = createFakeOffice()
   const added = await client().connections.add({ provider: "openai", api_key: "sk-test", model: "gpt-4.1" })

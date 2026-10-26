@@ -1,6 +1,6 @@
 // The client against a real office on a temp home: one office for the file, each test in its own folder and with
 // its own handles, so no test depends on another's order. Tests that need the fake's knobs are in client.test.ts.
-import { afterAll, beforeAll, expect, spyOn, test } from "bun:test"
+import { afterAll, beforeAll, expect, onTestFinished, spyOn, test } from "bun:test"
 import { CREATE_TIMEOUT_MS, createOfficeClient, request, VersionConflictError } from "@opencorp/client"
 import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
 import fs from "node:fs"
@@ -64,12 +64,19 @@ test("create a session, prompt it, list it by person", async () => {
 
 test("interrupt, end, and the cost cap", async () => {
   const { id } = await chat("interrupt")
+  const before = office.llm.requests().length
   office.llm.script({ content: "never sent", hold: true })
+  onTestFinished(() => office.llm.release())
   await client().sessions.prompt(id, { text: "go" })
-  await reach(id, "busy")
+  // Interrupt only once the model has the request, so the held reply is taken, not left queued for the next test.
+  await office.llm.waitForRequests(before + 1)
   await client().sessions.interrupt(id)
+  // The run ends once its model call does: the held reply arrives after the interrupt and must not land.
   office.llm.release()
   await reach(id, "idle")
+  expect(office.llm.pending()).toEqual([])
+  const texts = (await client().sessions.messages(id)).flatMap((m) => m.parts.map((p) => (p.type === "text" ? p.text : "")))
+  expect(texts.some((t) => t.includes("never sent"))).toBe(false)
   expect((await client().sessions.costCap(id, { cost_cap_usd: 5 })).cost_cap_usd).toBe(5)
   // A cap at or below the cost so far is the office's cap_too_low; a cap that isn't a number is invalid_body.
   expect((await failure(client().sessions.costCap(id, { cost_cap_usd: 0 }))).code).toBe("cap_too_low")
@@ -145,7 +152,7 @@ test("unknown paths and wrong methods", async () => {
   expect((await failure(request(office.socket, "POST", "/sessions", { person: 1 }))).code).toBe("invalid_body")
 })
 
-test("connections: the list with can_manage for the asker, a connection's models, and ?refresh=1", async () => {
+test("connections: the list with can_manage for the asker, a connection's models, and a refresh", async () => {
   const list = await client().connections.list()
   expect(list.connections.map((c) => `${c.name} (${c.provider})`)).toEqual(["office (vllm)"])
   expect([list.default, list.can_manage]).toEqual(["office", true])
