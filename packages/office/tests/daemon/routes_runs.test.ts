@@ -1,16 +1,24 @@
-/** The run routes: GET /runs/{id}/live over a real socket; the other run routes are a 501 stub until the run views
- *  land. */
+/** The run routes over a real socket: GET /runs and one run's routes (store rows and a fake run index stand in for
+ *  the chat harness), the office's run.updated, and GET /runs/{id}/live. */
 import fs from "node:fs"
 import http from "node:http"
+import path from "node:path"
 import { RunLiveRecord } from "@opencorp/protocol"
 import { expect, type Mock, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import type { RunIndexRow } from "@ngocbh/yian/run"
 import type { LiveJoin, LiveRelay, LiveWorker } from "../../src/daemon/live.ts"
 import type { Office } from "../../src/daemon/office.ts"
-import { readEvents, refresh } from "../../src/runs/reader.ts"
+import { HUGE_LINE, readEvents, refresh } from "../../src/runs/reader.ts"
+import { Live, type LiveRun } from "../../src/runs/records.ts"
+import { WORKER_STOPPED } from "../../src/runs/outcomes.ts"
+import { RunLogs } from "../../src/runs/service.ts"
+import { newId } from "../../src/store/store.ts"
 import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
 import type { Frame as WorkerFrame } from "../../src/worker/channel.ts"
 import { fakeLlm, send, TemplateOffice, waitingChat } from "../chat/helpers.ts"
 import { waitFor } from "../helpers.ts"
+import { chatLog, committed, failed, line, runStarted, started } from "../runs/helpers.ts"
+import { session } from "../store/helpers.ts"
 import { advanceJob, run } from "../worker/helpers.ts"
 import {
   type Frame,
@@ -20,8 +28,10 @@ import {
   joinedRun,
   liveRelay,
   makeOffice,
+  type Reply,
   request,
   served,
+  standInHarness,
   storedRun,
   stubWorker,
   take,
@@ -30,22 +40,407 @@ import {
 
 setDefaultTimeout(30_000)
 
-test("every runs route answers 501 not implemented", async () => {
+const T = "2026-10-20T10:00:00.000Z"
+const KEY = "conn-key-5f3a9c1e7b2d4a60"
+const NOBODY = "01K0000000000000000000000Z"
+
+/** A served office whose Run Logs read `index` as yian's run index and `live` as the actor's memory. */
+async function servedRuns(): Promise<{
+  office: Office
+  sock: string
+  index: Map<string, RunIndexRow>
+  live: Map<string, LiveRun>
+}> {
   const office = makeOffice()
+  const index = new Map<string, RunIndexRow>()
+  const live = new Map<string, LiveRun>()
+  office.runs = new RunLogs({
+    store: office.store,
+    runsDir: office.paths.runs,
+    index: () => index,
+    live: () => new Live(new Map(live)),
+  })
   const { sock } = await served(office)
-  const cases: [string, string][] = [
-    ["/runs", "/runs"],
-    ["/runs/R1", "/runs/:id"],
-    ["/runs/R1/nodes", "/runs/:id/nodes"],
-    ["/runs/R1/events", "/runs/:id/events"],
-    ["/runs/R1/events/3", "/runs/:id/events/:seq"],
-    ["/runs/R1/log", "/runs/:id/log"],
-  ]
-  for (const [target, pattern] of cases) {
-    const r = await request(sock, "GET", target)
-    expect(r.status).toBe(501)
-    expect(r.json()).toEqual({ error: "not_implemented", message: `GET ${pattern} is not implemented yet` })
+  return { office, sock, index, live }
+}
+
+function indexRow(runId: string, over: Partial<RunIndexRow> = {}): RunIndexRow {
+  return {
+    runId,
+    flow: "shared/flows/chat.yaml",
+    status: "succeeded",
+    startedAt: T,
+    endedAt: null,
+    parentRunId: null,
+    lastSeq: 3,
+    result: null,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    reasoningTokens: 0,
+    offset: 10,
+    waits: [],
+    ready: false,
+    wakeAt: null,
+    ...over,
   }
+}
+
+/** A run row of a new ended session, launched `at`; with `parent`, a run yian's index links to it (cancelled, so
+ *  interrupted). */
+function aRun(
+  office: Office,
+  index: Map<string, RunIndexRow>,
+  { flow = "chat", driver = "ngocbh", parent, at = T }: { flow?: string; driver?: string; parent?: string; at?: string } =
+    {},
+): string {
+  const s = office.store.createSession(session({ status: "ended" }))
+  const runId = newId()
+  office.store.addRun({
+    runId,
+    sessionId: s.id,
+    driver,
+    flow,
+    flowPath: `shared/flows/${flow}.yaml`,
+    connection: null,
+    model: null,
+    configSha256: null,
+    replacesRunId: null,
+    createdAt: at,
+  })
+  if (parent !== undefined) {
+    index.set(runId, indexRow(runId, { flow: `shared/flows/${flow}.yaml`, parentRunId: parent, status: "cancelled" }))
+  }
+  return runId
+}
+
+function get(sock: string, target: string, params: Record<string, string> = {}): Promise<Reply> {
+  const query = new URLSearchParams(params).toString()
+  return request(sock, "GET", query ? `${target}?${query}` : target)
+}
+
+function body(r: Reply): Record<string, unknown> {
+  return r.json() as Record<string, unknown>
+}
+
+function ids(r: Reply): string[] {
+  return (body(r).runs as { run_id: string }[]).map((x) => x.run_id)
+}
+
+test("get runs lists top level runs and one runs children", async () => {
+  const { office, sock, index } = await servedRuns()
+  const top = aRun(office, index)
+  const kid = aRun(office, index, { flow: "side_chat", parent: top })
+  const r = await get(sock, "/runs")
+  expect([r.status, ids(r), body(r).next]).toEqual([200, [top], null])
+  const [run] = body(r).runs as { children: unknown[]; children_total: number }[]
+  expect([run!.children, run!.children_total]).toEqual([[], 1])
+  const kids = await get(sock, "/runs", { parent: top })
+  expect([kids.status, ids(kids), body(kids).next]).toEqual([200, [kid], null])
+  const missing = await get(sock, "/runs", { parent: newId() })
+  expect([missing.status, body(missing).error]).toEqual([404, "not_found"])
+})
+
+test("get runs filters by statuses and a launch range and pages", async () => {
+  const { office, sock, index } = await servedRuns()
+  const old = aRun(office, index, { at: "2026-10-01T10:00:00.000Z" })
+  const failedRuns = [0, 1, 2].map(() => aRun(office, index))
+  for (const runId of [old, ...failedRuns]) office.store.endRun(runId, WORKER_STOPPED)
+  const done = aRun(office, index)
+  index.set(done, indexRow(done))
+  aRun(office, index, { at: "2026-10-22T10:00:00.000Z" })
+  const query = { status: "failed,finished", since: "2026-10-13T10:00:00Z", until: "2026-10-21T00:00:00+00:00" }
+  const one = await get(sock, "/runs", { ...query, limit: "2" })
+  expect([ids(one), body(one).next]).toEqual([[done, failedRuns[2]], failedRuns[2]])
+  const two = await get(sock, "/runs", { ...query, limit: "2", before: body(one).next as string })
+  expect([ids(two), body(two).next]).toEqual([[failedRuns[1], failedRuns[0]], null])
+  expect(ids(await get(sock, "/runs", { ...query, q: failedRuns[0]!.slice(-6).toLowerCase() }))).toEqual([
+    failedRuns[0],
+  ])
+  const kid = aRun(office, index, { flow: "side_chat", parent: done, driver: "lan" })
+  for (const params of [{ person: "lan" }, { person: "lan", ...query }])
+    expect(ids(await get(sock, "/runs", params))).toEqual([done])
+  expect(ids(await get(sock, "/runs", { parent: done, ...query }))).toEqual([])
+  expect(ids(await get(sock, "/runs", { parent: done, status: "running,interrupted" }))).toEqual([kid])
+})
+
+test("a failure reaches get runs as stored", async () => {
+  const { office, sock, index } = await servedRuns()
+  const runId = aRun(office, index)
+  office.store.endRun(runId, "AuthError: Bearer abcdefgh12345")
+  const r = await get(sock, "/runs")
+  expect(r.status).toBe(200)
+  expect((body(r).runs as { reason: string }[])[0]!.reason).toBe("AuthError: Bearer abcdefgh12345")
+})
+
+const BAD_LISTS: Record<string, string>[] = [
+  { status: "busy" },
+  { status: "failed," },
+  { status: "failed,busy" },
+  { limit: "0" },
+  { limit: "201" },
+  { limit: "x" },
+  { limit: "+5" },
+  { limit: " 5" },
+  { limit: "1_0" },
+  { limit: "9".repeat(5000) },
+  { since: "yesterday" },
+  { until: "2026-10-20T10:00:00" },
+  { since: "2026-13-01T00:00:00Z" },
+  { parent: NOBODY, status: "busy" },
+  { parent: NOBODY, limit: "0" },
+]
+
+test.each(BAD_LISTS.map((params) => [JSON.stringify(params).slice(0, 60), params] as const))(
+  "get runs refuses a bad status limit or time [%s]",
+  async (_, params) => {
+    const { sock } = await servedRuns()
+    const r = await get(sock, "/runs", params)
+    expect([r.status, body(r).error]).toEqual([422, "invalid_body"])
+  },
+)
+
+test("a parent with more children than sqlite binds at once lists", async () => {
+  const { office, sock, index } = await servedRuns()
+  const top = aRun(office, index)
+  const side = office.store.createSession(session({ kind: "side", status: "ended" }))
+  const kids = Array.from({ length: 33_000 }, () => newId())
+  office.store.transaction((tx) => {
+    for (const runId of kids)
+      tx.insert("runs", {
+        run_id: runId,
+        session_id: side.id,
+        flow: "side_chat",
+        flow_path: "shared/flows/side_chat.yaml",
+        driver: "lan",
+        created_at: T,
+      })
+  })
+  for (const kid of kids) {
+    index.set(kid, indexRow(kid, { flow: "shared/flows/side_chat.yaml", parentRunId: top, status: "cancelled" }))
+  }
+  let r = await get(sock, "/runs", { person: "lan", since: "2026-10-13T10:00:00.000Z" })
+  expect([r.status, ids(r)]).toEqual([200, [top]])
+  expect((body(r).runs as { children_total: number }[])[0]!.children_total).toBe(33_000)
+  r = await get(sock, "/runs", { parent: top, status: "interrupted", limit: "200" })
+  expect([r.status, ids(r).length]).toEqual([200, 200])
+}, 30_000)
+
+test("get runs recent is open runs of any age and runs started since", async () => {
+  const { office, sock, index, live } = await servedRuns()
+  const s = office.store.createSession(session({ status: "idle" }))
+  const oldOpen = newId()
+  office.store.addSessionRun(s.id, oldOpen)
+  office.store.addRun({
+    runId: oldOpen,
+    sessionId: s.id,
+    driver: "ngocbh",
+    flow: "chat",
+    flowPath: "shared/flows/chat.yaml",
+    connection: null,
+    model: null,
+    configSha256: null,
+    replacesRunId: null,
+    createdAt: "2026-09-01T10:00:00.000Z",
+  })
+  live.set(oldOpen, { status: "idle", nodes: [] })
+  const oldClosed = aRun(office, index, { at: "2026-09-01T10:00:00.000Z" })
+  index.set(oldClosed, indexRow(oldClosed))
+  const recent = aRun(office, index)
+  office.store.endRun(recent, WORKER_STOPPED)
+  let r = await get(sock, "/runs", { recent: "2026-10-13T10:00:00Z", limit: "50" })
+  expect([r.status, ids(r)]).toEqual([200, [recent, oldOpen]])
+  r = await get(sock, "/runs", { recent: "2026-10-13T10:00:00Z", status: "failed" })
+  expect(ids(r)).toEqual([recent])
+  const kid = aRun(office, index, { flow: "side_chat", parent: oldClosed, at: "2026-10-15T10:00:00.000Z" })
+  r = await get(sock, "/runs", { parent: oldClosed, recent: "2026-10-13T10:00:00Z" })
+  expect(ids(r)).toEqual([kid])
+})
+
+const BAD_RECENT: Record<string, string>[] = [
+  { recent: "2026-10-13T10:00:00Z", since: "2026-10-13T10:00:00Z" },
+  { recent: "2026-10-13T10:00:00Z", until: "2026-10-13T10:00:00Z" },
+  { recent: "last week" },
+  { recent: "2026-10-13T10:00:00" },
+  { parent: NOBODY, recent: "2026-10-13T10:00:00Z", since: "2026-10-13T10:00:00Z" },
+]
+
+test.each(BAD_RECENT.map((params) => [JSON.stringify(params), params] as const))(
+  "get runs refuses a bad recent or recent with a range [%s]",
+  async (_, params) => {
+    const { sock } = await servedRuns()
+    const r = await get(sock, "/runs", params)
+    expect([r.status, body(r).error]).toEqual([422, "invalid_body"])
+  },
+)
+
+/** A served office with its own Run Logs; its log (a run with no outcome is told) is dropped. */
+async function servedQuietly(): Promise<{ office: Office; sock: string }> {
+  const office = makeOffice({ log: () => {} })
+  const { sock } = await served(office)
+  return { office, sock }
+}
+
+/** A run of a new ended session at the company's head, its log (under the office's own Run Logs) a synthetic chat
+ *  log of two turns, one line in `schema`, the bytes `log`, or none. */
+async function withLog(
+  office: Office,
+  { schema = 22n, log = true }: { schema?: bigint; log?: Buffer | boolean } = {},
+): Promise<string> {
+  const s = office.store.createSession(session({ status: "ended", repo_commit: await office.git.head() }))
+  const runId = newId()
+  office.store.addRun({
+    runId,
+    sessionId: s.id,
+    driver: "ngocbh",
+    flow: "chat",
+    flowPath: "shared/flows/chat.yaml",
+    connection: null,
+    model: null,
+    configSha256: null,
+    replacesRunId: null,
+    createdAt: T,
+  })
+  if (log !== false) {
+    const file = office.runs.logPath(runId)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    if (Buffer.isBuffer(log)) fs.writeFileSync(file, log)
+    else if (schema === 22n) chatLog(file)
+    else fs.writeFileSync(file, line(0, "run_started", {}, { schema }))
+  }
+  return runId
+}
+
+test("one runs routes", async () => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  expect(body(await get(sock, `/runs/${runId}`)).log_state).toBe("ok")
+  const nodes = body(await get(sock, `/runs/${runId}/nodes`, { limit: "2" })) as {
+    nodes: { node_id: string; kind: string | null }[]
+    next_before: number | null
+  }
+  expect([nodes.nodes.map((n) => n.node_id), nodes.next_before]).toEqual([["chat#2/ask", "chat#1/reply"], 16])
+  expect(new Set(nodes.nodes.map((n) => n.kind))).toEqual(new Set([null]))
+  const events = body(await get(sock, `/runs/${runId}/events`, { after: "16" })) as {
+    events: { seq: number }[]
+    next_after: number | null
+  }
+  expect([events.events.map((e) => e.seq), events.next_after]).toEqual([[17, 18, 19], null])
+  expect(body(await get(sock, `/runs/${runId}/events/3`)).kind).toBe("node_started")
+  const log = await get(sock, `/runs/${runId}/log`)
+  expect(log.status).toBe(200)
+  expect(log.headers["content-type"]).toBe("application/x-ndjson")
+  expect(log.headers["content-disposition"]).toBe(`attachment; filename="${runId}.jsonl"`)
+  expect(log.headers["cache-control"]).toBe("no-store")
+  expect(log.text).toBe(fs.readFileSync(office.runs.logPath(runId), "utf8")) // as stored
+  expect(log.text.split("\n").filter(Boolean)).toHaveLength(20)
+})
+
+test("one runs routes say what went wrong", async () => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  expect((await get(sock, `/runs/${newId()}`)).status).toBe(404)
+  expect(body(await get(sock, `/runs/${runId}/events/99`)).error).toBe("not_found")
+  expect((await get(sock, `/runs/${runId}/events`, { limit: "501" })).status).toBe(422)
+  const old = await withLog(office, { schema: 8n })
+  const r = await get(sock, `/runs/${old}/nodes`)
+  expect([r.status, body(r).error]).toEqual([409, "unsupported_schema"])
+  expect((await get(sock, `/runs/${old}/log`)).status).toBe(200) // the download doesn't need the schema
+  const none = await withLog(office, { log: false })
+  const gone = await get(sock, `/runs/${none}/events`)
+  expect([gone.status, body(gone).error]).toEqual([404, "no_log"])
+})
+
+test("the download has no head so a head never opens the log", async () => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  let opened = 0
+  const open = office.runs.log.bind(office.runs)
+  office.runs.log = (id) => {
+    opened += 1
+    return open(id)
+  }
+  const head = await request(sock, "HEAD", `/runs/${runId}/log`)
+  expect([head.status, head.headers.allow, head.text, opened]).toEqual([405, "GET", "", 0])
+})
+
+test("one huge record is a size stub", async () => {
+  const { office, sock } = await servedQuietly()
+  const big = committed(2, "a", { output: "b".repeat(HUGE_LINE) })
+  const runId = await withLog(office, { log: Buffer.concat([runStarted(0), started(1, "a"), big]) })
+  const r = await get(sock, `/runs/${runId}/events/2`)
+  expect(r.status).toBe(200)
+  const got = body(r)
+  expect([got.kind, got.payload, got.size]).toEqual(["pool_commit", null, big.length])
+}, 30_000)
+
+test("a node error is shown as stored cut to 200", async () => {
+  const { office, sock } = await servedQuietly()
+  const log = Buffer.concat([runStarted(0), started(1, "a"), failed(2, "a", "x".repeat(186) + KEY)])
+  const runId = await withLog(office, { log })
+  const r = await get(sock, `/runs/${runId}/nodes`)
+  expect((body(r).nodes as { error: string }[])[0]!.error).toBe(("x".repeat(186) + KEY).slice(0, 199) + "…")
+})
+
+test("a log removed before it streams has no log", async () => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  const file = office.runs.logPath(runId)
+  const stored = fs.readFileSync(file, "utf8")
+  const open = office.runs.log.bind(office.runs)
+  office.runs.log = async (id) => {
+    const stream = await open(id)
+    fs.rmSync(file) // after the lookup opened it
+    return stream
+  }
+  const whole = await get(sock, `/runs/${runId}/log`)
+  expect([whole.status, whole.text]).toEqual([200, stored])
+  const r = await get(sock, `/runs/${runId}/log`)
+  expect([r.status, body(r).error]).toEqual([404, "no_log"])
+})
+
+test("a schema that isnt a number isnt echoed", async () => {
+  const { office, sock } = await servedQuietly()
+  const log = Buffer.from(`{"kind":"run_started","payload":{},"schema":"${KEY}","seq":0}\n`)
+  const runId = await withLog(office, { log })
+  const head = await get(sock, `/runs/${runId}`)
+  const nodes = await get(sock, `/runs/${runId}/nodes`)
+  expect([nodes.status, body(nodes).error]).toEqual([409, "unsupported_schema"])
+  expect(head.text + nodes.text).not.toContain(KEY)
+  expect(body(head).log_message).toBe("This log uses a run-log schema this office can't read")
+})
+
+test("run changed publishes run updated at once then coalesced", async () => {
+  const office = makeOffice()
+  const s = office.store.createSession(session())
+  const runId = newId()
+  office.store.addSessionRun(s.id, runId)
+  office.store.addRun({
+    runId,
+    sessionId: s.id,
+    driver: "ngocbh",
+    flow: "chat",
+    flowPath: "shared/flows/chat.yaml",
+    connection: null,
+    model: null,
+    configSha256: null,
+    replacesRunId: null,
+    createdAt: T,
+  })
+  office.harness = standInHarness({
+    live: () => new Live(new Map([[runId, { status: "running", nodes: ["chat#0/reply"] }]])),
+  })
+  const sub = office.bus.subscribe(null, { types: ["run.updated"] })
+  office.runChanged(runId)
+  office.runChanged(runId) // within a second: coalesced, sent by the timer
+  expect(sub.queued).toBe(1)
+  const got = await sub.next(1000)
+  expect(got).not.toBeNull()
+  const [, event] = got as readonly ["meta", { subject_id: string; data: unknown }]
+  expect([event.subject_id, event.data]).toEqual([
+    runId,
+    { run_id: runId, session_id: s.id, parent_run_id: null, status: "running", current_nodes: ["chat#0/reply"] },
+  ])
 })
 
 /** Opens `target` with a `node:http` request; resolves with the response. The request is destroyed when the test

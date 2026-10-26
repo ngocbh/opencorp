@@ -202,6 +202,13 @@ daemon/test_routes_sessions.py::test_a_chat_is_credited_to_the_verified_person	c
 daemon/test_routes_sessions.py::test_a_chat_over_the_routes	changed	packages/office/tests/daemon/routes_sessions.test.ts::a chat over the routes	4a-revision §1: no turn question; the message is a prompt, credited by its author on the transcript	O4a-7b
 daemon/test_routes_sessions.py::test_a_spec_that_cant_be_built_fails_the_session	changed	packages/office/tests/daemon/routes_sessions.test.ts::a spec that cant be built fails the session [%s]	design §6 rules 7 and 13: the office log names the error's type only, never its message; the failed session is checked through what a client sees (a later prompt answers 409 not_live), not the harness's private state	O4a-7b
 daemon/test_routes_sessions.py::test_messages_in_order	changed	packages/office/tests/daemon/routes_sessions.test.ts::messages in order	design §8.3, D9: a yian chat's messages are the projection of its run logs, read through the chat harness, not store rows	O4a-7b
+daemon/test_routes_runs.py	ported	packages/office/tests/daemon/routes_runs.test.ts	—	O4b-7
+daemon/test_routes_runs.py::test_a_log_removed_before_it_streams_has_no_log	changed	packages/office/tests/daemon/routes_runs.test.ts::a log removed before it streams has no log	design §2.3: RunLogs.log opens the log with its lookup (a 404 rather than a cut-off download), no seam between them, so one removed after it opened still downloads whole and one removed before is no_log	O4b-7
+daemon/test_routes_runs.py::test_get_runs_without_run_logs_is_not_implemented	dropped	—	the office always has Run Logs (Office.runs)	O4b-7
+daemon/test_routes_runs.py::test_one_huge_record_is_a_size_stub	changed	packages/office/tests/daemon/routes_runs.test.ts::one huge record is a size stub	#362: a node's output is in its pool_commit record in schema 22, so the stub is that record; the reader has no cap option, so the record is over the real HUGE_LINE (16 MiB), read in about 0.5 s	O4b-7
+daemon/test_routes_runs.py::test_one_runs_routes	changed	packages/office/tests/daemon/routes_runs.test.ts::one runs routes	#362: the schema-22 chat log has a pool_commit before each success (20 records, not 16), so the page cursor, seqs and line count shift	O4b-7
+daemon/test_routes_runs.py::test_one_runs_routes_while_its_log_is_first_read	dropped	—	§5.5: no first-build wait; a request awaits the index	O4b-7
+daemon/test_routes_sessions.py	open	—	split: O3-15 → O4a-7b; O3-15's tests are in packages/office/tests/daemon/routes_sessions.test.ts	O4a-7b
 daemon/test_routes_work_items.py	ported	packages/office/tests/daemon/routes_work_items.test.ts	—	O2-6
 e2e/test_devices.py	open	—	—	O5-1
 e2e/test_failures.py	open	—	—	O5-1
@@ -1036,8 +1043,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a reconnect after the views seq skips the records it has	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a run no worker feeds streams its log then run end	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a stream waiting on a rebuild sends pings	design §2.6 (P7): GET /runs/{id}/live	O4b-3
-—	new	packages/office/tests/daemon/routes_runs.test.ts::every runs route answers 501 not implemented	design §4.3: GET /runs* answers 501 until the run views (O4b-3, O4b-7 replace it)	O2-6
+—	new	packages/office/tests/daemon/routes_runs.test.ts::run changed publishes run updated at once then coalesced	§5.1: run.updated from the status rule and memory, through Office.runChanged and the run notifier (no outbox, O1-3)	O4b-7
 —	new	packages/office/tests/daemon/routes_runs.test.ts::run end reads the log past the last seq sent	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::the download has no head so a head never opens the log	design §2.3: HEAD never opens the log; a handler can't tell HEAD from GET, so the download serves GET only (405)	O4b-7
 —	new	packages/office/tests/daemon/routes_runs.test.ts::the live route answers 404 for a run the store does not hold	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::the live route answers 404 no log for a run without a log	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::the live route refuses an after that is not a seq without echoing it	design §2.6 (P7): GET /runs/{id}/live	O4b-3
