@@ -5,7 +5,13 @@ import { fileURLToPath } from "node:url"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveEvent, Message } from "@opencorp/protocol"
-import { type ActorContext, INDEX_WAIT_MS, INTERRUPTED_CALL, type Wait } from "../../src/chat/session_actor.ts"
+import {
+  type ActorContext,
+  INDEX_WAIT_MS,
+  INTERRUPTED_CALL,
+  type SessionActor,
+  type Wait,
+} from "../../src/chat/session_actor.ts"
 import { PING } from "../../src/daemon/bus.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { COULDNT_RESUME, COULDNT_START, ENDED_OVER_CAP, NEW_MODEL, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
@@ -26,6 +32,7 @@ import {
   type ChatOffice,
   chatOffice,
   EMPTY,
+  errors,
   fakeLlm,
   free,
   makeActor,
@@ -1392,6 +1399,135 @@ test("end over the cost cap on a stopped reply ends the session at once", async 
   expect(o.jobs.at(-1)).toMatchObject({ run_id: runId, advance: false, deliver: [{ op: "cancel" }] })
   expect(fake.requests()).toHaveLength(requests)
 })
+
+/** Starts a session on `o` whose reply to "hi" fails (`fake`'s held 500) after its cost reached the cap, and waits
+ *  until the actor has handled the failure; returns the actor, the session, its failed run and the spawns so far. */
+async function failedOverCap(
+  o: ChatOffice,
+  fake: Awaited<ReturnType<typeof fakeLlm>>,
+): Promise<{ actor: SessionActor; sid: string; old: string; before: number }> {
+  const { actor, sid } = await startActor(o)
+  const old = actor.runId!
+  expect(await actor.prompt("hi")).toBe("turn")
+  await fake.waitForRequests(1, 30_000)
+  // The reply's spending reached the cap before its next model call failed.
+  o.office.store.updateSession(sid, { cost: 6 })
+  const before = o.kinds.length
+  fake.release()
+  await waitFor(() => errors(o, sid).length === 1 && !actor.hasWorker && status(o, sid) === "waiting", {
+    what: "the failed reply",
+  })
+  expect(errors(o, sid)[0]).toStartWith("The reply failed (")
+  return { actor, sid, old, before }
+}
+
+test("a reply that fails over the cost cap holds its fresh run until the cap is raised", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 500, hold: true }, free("Got it."))
+  const o = await chatOffice(fake)
+  const { actor, sid, old, before } = await failedOverCap(o, fake)
+  // No fresh run yet: its reply would call the model over the cap.
+  expect(o.kinds.slice(before)).toEqual([])
+  expect(session(o, sid).run_ids).toEqual([old])
+  await actor.checkCap()
+  expect(capItem(o)).toBeDefined()
+  expect(state(o, sid)).toEqual({ status: "waiting", waiting_on: [CEO], capped: true })
+  // A message meanwhile is queued for the fresh run at once.
+  expect(await actor.prompt("more")).toBe("queued")
+  expect(o.kinds.slice(before)).toEqual([])
+  await actor.setCostCap(20)
+  expect(o.kinds.slice(before)).toEqual(["chat"])
+  const runId = actor.runId!
+  expect(runId).not.toBe(old)
+  expect(o.office.store.getRun(runId)?.replacesRunId).toBe(old)
+  expect(o.jobs.at(-1)).toMatchObject({ kind: "chat", run_id: runId, advance: true, deliver: [{ op: "send" }] })
+  await waitFor(() => texts(o, sid).includes("Got it.") && status(o, sid) === "idle", { what: "the fresh reply" })
+  expect(texts(o, sid, "user")).toEqual(["hi", "more"])
+  // The message is still shown live once the fresh run takes it.
+  const shown = o.lives.filter((event) => event.type === "message.updated" && event.data.role === "user")
+  expect(shown.map((event) => (event.data.parts as { text: string }[]).at(-1)!.text)).toEqual(["hi", "more"])
+})
+
+test("end while the fresh run of a failed reply is held closes it without a model call", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 500, hold: true })
+  const o = await chatOffice(fake)
+  const { actor, sid, old, before } = await failedOverCap(o, fake)
+  const requests = fake.requests().length
+  await actor.end()
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  expect(o.jobs.slice(before)).toMatchObject([{ kind: "chat", deliver: [{ op: "close" }] }])
+  expect(o.office.store.getRun(actor.runId!)?.replacesRunId).toBe(old)
+  expect(fake.requests()).toHaveLength(requests)
+})
+
+test("a message held for the fresh run of a failed reply reaches the next run when the fresh worker dies", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const old = actor.runId!
+  o.office.store.updateSession(sid, { cost: 6 })
+  const first = workers[0]!
+  first.handlers.result(first.worker, failedReply(old))
+  first.handlers.exited(first.worker, 1)
+  await waitFor(() => errors(o, sid).length === 1 && !actor.hasWorker, { what: "the failed reply" })
+  expect(await actor.prompt("more")).toBe("queued")
+  await actor.setCostCap(20)
+  expect(workers).toHaveLength(2)
+  const fresh = workers[1]!
+  expect(fresh.job.kind).toBe("chat")
+  const [send] = fresh.job.deliver
+  expect(send).toMatchObject({ op: "send" })
+  // Gone before it took the message: the message its caller heard was queued goes to the retry.
+  fresh.handlers.exited(fresh.worker, 1)
+  await waitFor(() => workers.length === 3, { what: "the retry" })
+  expect(workers[2]!.job).toMatchObject({ kind: "advance", run_id: actor.runId, deliver: [send] })
+})
+
+test("a held fresh run that cant start after the raise fails the session", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 500, hold: true })
+  const o = await chatOffice(fake)
+  const frames: unknown[] = []
+  o.hooks.runFinished.push((_s, _runId, frame) => void frames.push(frame))
+  const { actor, sid, old, before } = await failedOverCap(o, fake)
+  // The connection can't be resolved: the fresh run fails before anything is stored.
+  fs.chmodSync(path.join(o.office.connections.dir, "office.json"), 0o644)
+  await actor.setCostCap(20)
+  expect(status(o, sid)).toBe("failed")
+  expect(o.kinds.slice(before)).toEqual([])
+  expect(session(o, sid).run_ids).toEqual([old])
+  expect(errors(o, sid).at(-1)).toStartWith("The session failed (")
+  // Yian failed the run: no office end reason, and its failed result is how it ended.
+  expect(o.office.store.getRun(old)?.endReason).toBeNull()
+  await waitFor(() => frames.length === 1, { what: "the run's end" })
+  expect(frames).toMatchObject([{ type: "result", status: "failed" }])
+})
+
+test("a session failed while the fresh run of a failed reply is held reports the failed run as yian ended it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 500, hold: true })
+  const o = await chatOffice(fake)
+  const frames: unknown[] = []
+  o.hooks.runFinished.push((_s, _runId, frame) => void frames.push(frame))
+  const { actor, sid, old, before } = await failedOverCap(o, fake)
+  await actor.fail()
+  expect(status(o, sid)).toBe("failed")
+  expect(o.office.store.getRun(old)?.endReason).toBeNull()
+  await waitFor(() => frames.length === 1, { what: "the run's end" })
+  expect(frames).toMatchObject([{ type: "result", status: "failed" }])
+  // Nothing to hard stop: yian ended the run.
+  expect(o.kinds.slice(before)).toEqual([])
+})
+
+/** A `failed` result of run `runId` whose reply failed. */
+function failedReply(runId: string): Record<string, unknown> {
+  const failure = { node_id: "chat#0/reply", message: "boom" }
+  return { type: "result", status: "failed", run_id: runId, output: null, failure, waits: [] }
+}
 
 /** Counts the stops sent to `scripted`'s worker. */
 function countStops(scripted: ScriptedWorker): () => number {

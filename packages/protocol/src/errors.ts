@@ -66,6 +66,7 @@ export const ERROR_CODES = [
   "too_large",
   "too_many_attempts",
   "unauthenticated",
+  "unknown_connection",
   "unsafe_workspace",
   "unsupported_harness",
   "unsupported_schema",

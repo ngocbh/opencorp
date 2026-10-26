@@ -41,7 +41,7 @@ import { type Frame, FrameTooLarge } from "../worker/channel.ts"
 import { type Delivery, type Job, type Seed, STOP_REASON } from "../worker/job.ts"
 import { type AskRequest, BaseHandlers, errorName, type OfficeTool, type WorkerHandlers } from "../worker/rpc.ts"
 import { RegistryClosed, type Worker, workerEnv } from "../worker/spawn.ts"
-import { type Connections, runRecord } from "./connections.ts"
+import { BadConnectionName, type Connections, runRecord } from "./connections.ts"
 import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "./cost.ts"
 import type { Hooks } from "./hooks.ts"
 import { type Price, type Provider, ProviderError } from "./provider.ts"
@@ -84,6 +84,32 @@ export interface ActorContext {
   readonly runChanged?: (runId: string) => void
   /** Gets log lines; never an error's message. */
   log(line: string): void
+}
+
+/** The note of a chat that continues on a fresh run after its worker died, as its model or connection changed. */
+export const FRESH_NOTE =
+  "This chat continues on a fresh run because its model or connection changed. " +
+  "If your last message got no reply, send it again."
+
+/** A wake's fresh-run note: the message that woke the session is still delivered, so it needn't be sent again. */
+export const WOKEN_NOTE = "This chat continues on a fresh run because its model or connection changed."
+
+/** Connection `name`'s configured model; null without one, or if it can't be read. */
+export async function ownModel(connections: Connections, name: string): Promise<string | null> {
+  try {
+    const model = (await connections.get(name)).llm_config?.model
+    return typeof model === "string" ? model : null
+  } catch (error) {
+    // Resolving it at the spawn reports the error.
+    if (error instanceof ProviderError || error instanceof BadConnectionName) return null
+    throw error
+  }
+}
+
+/** How a note names connection `name` on `model` (null: its own): `name/model`, or `name` alone. */
+export async function named(connections: Connections, name: string, model: string | null): Promise<string> {
+  const shown = model || (await ownModel(connections, name))
+  return shown ? `${name}/${shown}` : name
 }
 
 /** How the work item that asks to raise a session's cost cap is titled. */
@@ -148,6 +174,8 @@ class Pending {
   late = false
   /** Whether the caller has its answer. */
   done = false
+  /** Whether a held fresh run's message was answered `queued` before any run took it: it is still carried. */
+  early = false
   /** The question a `complete` answers, marked consumed once the run takes it. */
   readonly questionId: string | null
   /** The `send` a message's `complete` falls back on when its call settled first. */
@@ -255,6 +283,10 @@ export class SessionActor implements LiveCalls {
   #readvance = false
   /** Whether the run needs an `advance` that the cost cap held back (a job over the cap only delivers). */
   #needsAdvance = false
+  /** The fresh run the cost cap holds back, which the next spawn after a raise (or at End) starts. */
+  // A `chat` job can't only deliver, and its reply would call the model: over the cap the fresh run waits for a
+  // raise, as Python held a capped session's turns.
+  #heldFresh: Fresh | null = null
   /** Whether a worker accepted a message after its `result`, or in a job that only delivers: the next worker's take
    *  will read it. */
   #lateSend = false
@@ -280,6 +312,10 @@ export class SessionActor implements LiveCalls {
   #replaced: string[] = []
   #spec: RunSpec | null = null
   #pins: Pins | null = null
+  /** Whether this actor has started a worker. A new actor stands for a session woken after a restart, as Python's
+   *  `_resume` saw it, so only its fresh run for a changed model or connection gets `WOKEN_NOTE`; one after a switch
+   *  or key change on a session this actor already ran gets no note, as Python's restart of a live worker did. */
+  #startedWorker = false
   /** The office tool calls in flight, each answered `INTERRUPTED_CALL` when called. */
   readonly #calls = new Set<() => void>()
   /** The nodes the current worker's run executes now, from its frames. */
@@ -559,10 +595,10 @@ export class SessionActor implements LiveCalls {
     const run = this.#run
     const capped = this.#capped()
     const rests = this.#rested && !this.#wakesAgent(this.#waits ?? [])
-    if (capped && run === null && !rests) {
+    if (capped && run === null && !rests && this.#heldFresh === null) {
       // The reply was stopped at the cap, crashed or is unknown, or a settled call would wake the agent: an advance
       // would spend, so the run is cancelled and the session ends. A settled turn take doesn't: it reads its
-      // messages with the close, and the flow skips the reply once closed.
+      // messages with the close, and the flow skips the reply once closed. Nor does a held fresh run's.
       this.#finish("ended", null, ENDED_OVER_CAP)
       return
     }
@@ -810,10 +846,16 @@ export class SessionActor implements LiveCalls {
    * whose run's record no longer gives what the run ran on is a fresh run instead (`#recordCheck`; a run that moved
    * ends `moved`), as is any spawn given `replace`, carrying what `#freshCarry` keeps; otherwise an `advance` job
    * starts with a `complete` for each stored answer that never reached the run. A `chat` job records what its run
-   * starts on, and starts from `seed` (a retry's) unless it is a fresh run's. On failure, the job's deliveries are
-   * answered with the error (`#wakeError`) and dropped, and the error is thrown. `plain` marks a re-advance only for
-   * a settled wait. Over the cost cap, unless ending, an `advance` only delivers (`advance: false`, no record check),
-   * and none starts without deliveries; the advance waits for a raise (`#needsAdvance`). Whether a worker started.
+   * starts on, and starts from `seed` (a retry's) unless it is a fresh run's. A fresh run the record check asks for
+   * on a changed connection or model, unless `#checkProvider` moved the chat, writes its note first: `FRESH_NOTE`
+   * after a worker death (`moved` is `WORKER_REPLACED`), else `WOKEN_NOTE` when this actor never started a worker
+   * (`#startedWorker`). On failure, the job's deliveries are answered with the error (`#wakeError`) and dropped, and
+   * the error is thrown. `plain` marks a re-advance only for a settled wait. Over the cost cap, unless ending, an
+   * `advance` only delivers (`advance: false`, no record check), and none starts without deliveries; the advance
+   * waits for a raise (`#needsAdvance`). A fresh run (`replace`) over the cap, unless ending, is held instead
+   * (`#heldFresh`): every spawn until a raise or End keeps `#next` for it, as the fresh run would carry it, and
+   * answers its messages `queued` at once; the first spawn after starts the held fresh run, and one that fails fails
+   * the session (`COULDNT_START`), as a failed reply's fresh run does. Whether a worker started.
    */
   async #spawn(
     kind: "chat" | "advance",
@@ -826,6 +868,25 @@ export class SessionActor implements LiveCalls {
   ): Promise<boolean> {
     const { store, paths } = this.#ctx
     const sid = this.sessionId
+    if ((replace !== null || this.#heldFresh !== null) && !this.#ending && this.#capped()) {
+      // Never delivered to the old run: its reply failed, or it can't be resumed.
+      this.#heldFresh ??= replace
+      this.#needsAdvance = true
+      this.#next = this.#freshCarry(this.#next)
+      for (const p of this.#next) {
+        if (p.delivery.op !== "send" || p.done) continue
+        p.early = true
+        p.resolve("queued")
+      }
+      return false
+    }
+    const released = this.#heldFresh
+    const from = this.#runId
+    if (released !== null) {
+      kind = "chat"
+      replace = released
+      this.#heldFresh = null
+    }
     // A job over the cap never calls the model, so no endpoint is replayed: no record check.
     const advance = kind === "chat" || this.#ending || !this.#capped()
     if (!advance) {
@@ -845,12 +906,17 @@ export class SessionActor implements LiveCalls {
     this.#nodes.clear()
     try {
       if (this.#closed) throw stopping()
-      const { session, name, model, provider } = await this.#checkProvider()
+      const { session, name, model, provider, moved: removed } = await this.#checkProvider()
       const spec = await this.#specOf(session)
       const checked = kind === "advance" && advance
       const why = checked ? this.#recordCheck(run.runId, name, model, provider) : null
       const fresh = replace ?? (why === null ? null : { why: why === NEW_MODEL ? moved : why, finished: null })
       if (fresh !== null) {
+        // A moved chat has its removal note, which says more; a run that never started needs none.
+        const note = moved === WORKER_REPLACED ? FRESH_NOTE : this.#startedWorker ? null : WOKEN_NOTE
+        if (replace === null && why === NEW_MODEL && !removed && note !== null) {
+          store.updateSession(sid, { model_note: note })
+        }
         seed = await this.#seed(session)
         await this.#replace(session, spec, fresh.why, fresh.finished)
         pendings = this.#freshCarry(pendings)
@@ -894,6 +960,7 @@ export class SessionActor implements LiveCalls {
       run.defaultPrice = defaultPrice
       run.seed = seed
       run.worker = await this.#ctx.workers.spawn(job, paths.sessionDir(sid), handlers, { env: provider.env })
+      this.#startedWorker = true
       // Only now: a spawn that fails leaves it for the next worker's take.
       this.#lateSend = false
       if (advance) this.#needsAdvance = false
@@ -908,6 +975,12 @@ export class SessionActor implements LiveCalls {
     } catch (error) {
       const refusal = this.#wakeError(error)
       for (const p of pendings) p.reject(refusal)
+      if (released !== null && !(error instanceof RegistryClosed) && !this.#closed) {
+        // As a failed reply's fresh run that can't start: before the fresh run was stored, the failed result is how
+        // the session's run ended; after, the fresh run never started.
+        const stored = this.#runId !== from
+        this.#finish("failed", stored ? null : released.finished, COULDNT_START, null)
+      }
       throw error
     } finally {
       if (this.#starting === run) this.#starting = null
@@ -926,16 +999,26 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  /** The session, and the connection, model and provider its next run uses; a session whose connection was
-   *  removed is moved to the default's own model once that resolves. Throws when they can't be resolved, having
-   *  written nothing. */
-  async #checkProvider(): Promise<{ session: SessionRecord; name: string; model: string | null; provider: Provider }> {
+  /** The session, the connection, model and provider its next run uses, and whether it moved: a session whose
+   *  connection was removed is moved to the default's own model once that resolves, with a note. Throws when they
+   *  can't be resolved, having written nothing. */
+  async #checkProvider(): Promise<{
+    session: SessionRecord
+    name: string
+    model: string | null
+    provider: Provider
+    moved: boolean
+  }> {
     const { store, connections } = this.#ctx
     let session = this.#session()
     const [name, model, moved] = await connections.choice(session.connection, session.model)
     const provider = await connections.resolve(name, model)
-    if (moved) session = store.updateSession(this.sessionId, { connection: name, model })
-    return { session, name, model, provider }
+    if (moved) {
+      const uses = await named(connections, name, model)
+      const note = `Connection '${session.connection}' was removed; this chat now uses ${uses}.`
+      session = store.updateSession(this.sessionId, { connection: name, model, model_note: note })
+    }
+    return { session, name, model, provider, moved }
   }
 
   /**
@@ -1386,11 +1469,13 @@ export class SessionActor implements LiveCalls {
 
   /** Answers `p`'s caller from its reply: acknowledged (after closing the questions of the calls it closed, and
    *  marking the question a `complete` answered consumed), or refused. A `not_started` refusal, and a failure before
-   *  any node event (the run may not have resumed), are held for the worker's exit. */
+   *  any node event (the run may not have resumed), are held for the worker's exit. A delivery already answered is
+   *  acted on only when it is a message the run took, which is shown, and the session hasn't finished. */
   #replied(run: WorkerRun, p: Pending): void {
-    if (p.done) return
     const reply = p.reply!
     const op = p.delivery.op
+    // A message a held fresh run carried was answered `queued` at once; it is still shown once taken.
+    if (p.done && !(p.early && Object.hasOwn(reply, "seq") && !this.#finished)) return
     if (Object.hasOwn(reply, "seq")) {
       const closed = Array.isArray(reply.closed) ? reply.closed.map(String) : []
       for (const callId of closed) this.#closedCall(run.runId, callId, op === "cancel" ? "cancelled" : "interrupted")
@@ -1614,10 +1699,11 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Moves the deliveries `run`'s worker never answered (but an `interrupt`), those it refused `not_started` and,
-   *  with `failed`, those that failed (but an `interrupt`), to the front of `#next`; answers the rest it was given. */
+   *  with `failed`, those that failed (but an `interrupt`), to the front of `#next`; answers the rest it was given. A
+   *  message a held fresh run answered early counts as never answered until a run takes it. */
   #carry(run: WorkerRun, { failed = false }: { failed?: boolean } = {}): void {
     const carry = run.given.filter((p) => {
-      if (p.done) return false
+      if (p.done && !p.early) return false
       if (p.reply === null || (failed && typeof p.reply.failed === "string")) return p.delivery.op !== "interrupt"
       return p.reply.refused === "not_started"
     })
@@ -1672,13 +1758,13 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Puts what a fresh run carries (`#freshCarry`) of the deliveries `run` never applied (no reply, refused
-   *  `not_started`, or failed) in front of `#next`; the sends it applied move with the seed. Every other delivery it
-   *  was given is answered by the closing rule. */
+   *  `not_started`, or failed; a message answered early included) in front of `#next`; the sends it applied move
+   *  with the seed. Every other delivery it was given is answered by the closing rule. */
   #carryFresh(run: WorkerRun): void {
     const unapplied = run.given.filter((p) => {
       const reply = p.reply
       const answered = reply !== null && reply.refused !== "not_started" && typeof reply.failed !== "string"
-      return !p.done && !answered
+      return (!p.done || p.early) && !answered
     })
     this.#answerRest(
       run.given.filter((p) => !unapplied.includes(p)),
@@ -1733,11 +1819,19 @@ export class SessionActor implements LiveCalls {
    * notified in order, not awaited. Every delivery not answered gets `409 not_live`. A run yian may still see
    * unfinished gets a hard stop, as does each replaced run no fresh worker cancelled. The live relay forgets the
    * session's runs now with no worker alive, else at that worker's exit. Throws `HarnessError` (`404`) when the
-   * session row is gone; a store write that fails is logged by its type.
+   * session row is gone; a store write that fails is logged by its type. While a fresh run is held, the run is
+   * reported with the held run's result and end reason, as the fresh run would have reported it.
    */
   #finish(status: "ended" | "failed", outcome: Frame | null, why: string | null, run = this.#run): void {
     if (this.#finished) return
     this.#finished = true
+    // The failed run is reported as its held fresh run would have reported it.
+    const held = this.#heldFresh
+    if (held !== null) {
+      outcome ??= held.finished
+      why = held.why ?? why
+      this.#heldFresh = null
+    }
     const { store, hooks } = this.#ctx
     this.#disarm()
     const runId = this.#runId
