@@ -174,6 +174,8 @@ class Pending {
   late = false
   /** Whether the caller has its answer. */
   done = false
+  /** Whether a held fresh run's message was answered `queued` before any run took it: it is still carried. */
+  early = false
   /** The question a `complete` answers, marked consumed once the run takes it. */
   readonly questionId: string | null
   /** The `send` a message's `complete` falls back on when its call settled first. */
@@ -852,7 +854,8 @@ export class SessionActor implements LiveCalls {
    * `advance` only delivers (`advance: false`, no record check), and none starts without deliveries; the advance
    * waits for a raise (`#needsAdvance`). A fresh run (`replace`) over the cap, unless ending, is held instead
    * (`#heldFresh`): every spawn until a raise or End keeps `#next` for it, as the fresh run would carry it, and
-   * answers its messages `queued` at once; the first spawn after starts the held fresh run. Whether a worker started.
+   * answers its messages `queued` at once; the first spawn after starts the held fresh run, and one that fails fails
+   * the session (`COULDNT_START`), as a failed reply's fresh run does. Whether a worker started.
    */
   async #spawn(
     kind: "chat" | "advance",
@@ -870,12 +873,18 @@ export class SessionActor implements LiveCalls {
       this.#heldFresh ??= replace
       this.#needsAdvance = true
       this.#next = this.#freshCarry(this.#next)
-      for (const p of this.#next) if (p.delivery.op === "send") p.resolve(p.acked)
+      for (const p of this.#next) {
+        if (p.delivery.op !== "send" || p.done) continue
+        p.early = true
+        p.resolve("queued")
+      }
       return false
     }
-    if (this.#heldFresh !== null) {
+    const released = this.#heldFresh
+    const from = this.#runId
+    if (released !== null) {
       kind = "chat"
-      replace = this.#heldFresh
+      replace = released
       this.#heldFresh = null
     }
     // A job over the cap never calls the model, so no endpoint is replayed: no record check.
@@ -966,6 +975,12 @@ export class SessionActor implements LiveCalls {
     } catch (error) {
       const refusal = this.#wakeError(error)
       for (const p of pendings) p.reject(refusal)
+      if (released !== null && !(error instanceof RegistryClosed) && !this.#closed) {
+        // As a failed reply's fresh run that can't start: before the fresh run was stored, the failed result is how
+        // the session's run ended; after, the fresh run never started.
+        const stored = this.#runId !== from
+        this.#finish("failed", stored ? null : released.finished, COULDNT_START, null)
+      }
       throw error
     } finally {
       if (this.#starting === run) this.#starting = null
@@ -1460,7 +1475,7 @@ export class SessionActor implements LiveCalls {
     const reply = p.reply!
     const op = p.delivery.op
     // A message a held fresh run carried was answered `queued` at once; it is still shown once taken.
-    if (p.done && !(op === "send" && Object.hasOwn(reply, "seq") && !this.#finished)) return
+    if (p.done && !(p.early && Object.hasOwn(reply, "seq") && !this.#finished)) return
     if (Object.hasOwn(reply, "seq")) {
       const closed = Array.isArray(reply.closed) ? reply.closed.map(String) : []
       for (const callId of closed) this.#closedCall(run.runId, callId, op === "cancel" ? "cancelled" : "interrupted")
@@ -1684,10 +1699,11 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Moves the deliveries `run`'s worker never answered (but an `interrupt`), those it refused `not_started` and,
-   *  with `failed`, those that failed (but an `interrupt`), to the front of `#next`; answers the rest it was given. */
+   *  with `failed`, those that failed (but an `interrupt`), to the front of `#next`; answers the rest it was given. A
+   *  message a held fresh run answered early counts as never answered until a run takes it. */
   #carry(run: WorkerRun, { failed = false }: { failed?: boolean } = {}): void {
     const carry = run.given.filter((p) => {
-      if (p.done) return false
+      if (p.done && !p.early) return false
       if (p.reply === null || (failed && typeof p.reply.failed === "string")) return p.delivery.op !== "interrupt"
       return p.reply.refused === "not_started"
     })
@@ -1742,13 +1758,13 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Puts what a fresh run carries (`#freshCarry`) of the deliveries `run` never applied (no reply, refused
-   *  `not_started`, or failed) in front of `#next`; the sends it applied move with the seed. Every other delivery it
-   *  was given is answered by the closing rule. */
+   *  `not_started`, or failed; a message answered early included) in front of `#next`; the sends it applied move
+   *  with the seed. Every other delivery it was given is answered by the closing rule. */
   #carryFresh(run: WorkerRun): void {
     const unapplied = run.given.filter((p) => {
       const reply = p.reply
       const answered = reply !== null && reply.refused !== "not_started" && typeof reply.failed !== "string"
-      return !p.done && !answered
+      return (!p.done || p.early) && !answered
     })
     this.#answerRest(
       run.given.filter((p) => !unapplied.includes(p)),
@@ -1803,12 +1819,19 @@ export class SessionActor implements LiveCalls {
    * notified in order, not awaited. Every delivery not answered gets `409 not_live`. A run yian may still see
    * unfinished gets a hard stop, as does each replaced run no fresh worker cancelled. The live relay forgets the
    * session's runs now with no worker alive, else at that worker's exit. Throws `HarnessError` (`404`) when the
-   * session row is gone; a store write that fails is logged by its type.
+   * session row is gone; a store write that fails is logged by its type. While a fresh run is held, the run is
+   * reported with the held run's result and end reason, as the fresh run would have reported it.
    */
   #finish(status: "ended" | "failed", outcome: Frame | null, why: string | null, run = this.#run): void {
     if (this.#finished) return
     this.#finished = true
-    this.#heldFresh = null
+    // The failed run is reported as its held fresh run would have reported it.
+    const held = this.#heldFresh
+    if (held !== null) {
+      outcome ??= held.finished
+      why = held.why ?? why
+      this.#heldFresh = null
+    }
     const { store, hooks } = this.#ctx
     this.#disarm()
     const runId = this.#runId

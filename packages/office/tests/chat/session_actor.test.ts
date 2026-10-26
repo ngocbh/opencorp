@@ -1448,7 +1448,7 @@ test("a reply that fails over the cost cap holds its fresh run until the cap is 
   expect(shown.map((event) => (event.data.parts as { text: string }[]).at(-1)!.text)).toEqual(["hi", "more"])
 })
 
-test("end while a failed replys fresh run is held closes the fresh run without a model call", async () => {
+test("end while the fresh run of a failed reply is held closes it without a model call", async () => {
   const fake = await fakeLlm()
   fake.script({ error: 500, hold: true })
   const o = await chatOffice(fake)
@@ -1460,6 +1460,74 @@ test("end while a failed replys fresh run is held closes the fresh run without a
   expect(o.office.store.getRun(actor.runId!)?.replacesRunId).toBe(old)
   expect(fake.requests()).toHaveLength(requests)
 })
+
+test("a message held for the fresh run of a failed reply reaches the next run when the fresh worker dies", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const old = actor.runId!
+  o.office.store.updateSession(sid, { cost: 6 })
+  const first = workers[0]!
+  first.handlers.result(first.worker, failedReply(old))
+  first.handlers.exited(first.worker, 1)
+  await waitFor(() => errors(o, sid).length === 1 && !actor.hasWorker, { what: "the failed reply" })
+  expect(await actor.prompt("more")).toBe("queued")
+  await actor.setCostCap(20)
+  expect(workers).toHaveLength(2)
+  const fresh = workers[1]!
+  expect(fresh.job.kind).toBe("chat")
+  const [send] = fresh.job.deliver
+  expect(send).toMatchObject({ op: "send" })
+  // Gone before it took the message: the message its caller heard was queued goes to the retry.
+  fresh.handlers.exited(fresh.worker, 1)
+  await waitFor(() => workers.length === 3, { what: "the retry" })
+  expect(workers[2]!.job).toMatchObject({ kind: "advance", run_id: actor.runId, deliver: [send] })
+})
+
+test("a held fresh run that cant start after the raise fails the session", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 500, hold: true })
+  const o = await chatOffice(fake)
+  const frames: unknown[] = []
+  o.hooks.runFinished.push((_s, _runId, frame) => void frames.push(frame))
+  const { actor, sid, old, before } = await failedOverCap(o, fake)
+  // The connection can't be resolved: the fresh run fails before anything is stored.
+  fs.chmodSync(path.join(o.office.connections.dir, "office.json"), 0o644)
+  await actor.setCostCap(20)
+  expect(status(o, sid)).toBe("failed")
+  expect(o.kinds.slice(before)).toEqual([])
+  expect(session(o, sid).run_ids).toEqual([old])
+  expect(errors(o, sid).at(-1)).toStartWith("The session failed (")
+  // Yian failed the run: no office end reason, and its failed result is how it ended.
+  expect(o.office.store.getRun(old)?.endReason).toBeNull()
+  await waitFor(() => frames.length === 1, { what: "the run's end" })
+  expect(frames).toMatchObject([{ type: "result", status: "failed" }])
+})
+
+test("a session failed while the fresh run of a failed reply is held reports the failed run as yian ended it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 500, hold: true })
+  const o = await chatOffice(fake)
+  const frames: unknown[] = []
+  o.hooks.runFinished.push((_s, _runId, frame) => void frames.push(frame))
+  const { actor, sid, old, before } = await failedOverCap(o, fake)
+  await actor.fail()
+  expect(status(o, sid)).toBe("failed")
+  expect(o.office.store.getRun(old)?.endReason).toBeNull()
+  await waitFor(() => frames.length === 1, { what: "the run's end" })
+  expect(frames).toMatchObject([{ type: "result", status: "failed" }])
+  // Nothing to hard stop: yian ended the run.
+  expect(o.kinds.slice(before)).toEqual([])
+})
+
+/** A `failed` result of run `runId` whose reply failed. */
+function failedReply(runId: string): Record<string, unknown> {
+  const failure = { node_id: "chat#0/reply", message: "boom" }
+  return { type: "result", status: "failed", run_id: runId, output: null, failure, waits: [] }
+}
 
 /** Counts the stops sent to `scripted`'s worker. */
 function countStops(scripted: ScriptedWorker): () => number {
