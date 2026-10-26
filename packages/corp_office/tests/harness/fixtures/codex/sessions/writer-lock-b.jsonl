@@ -1,4 +1,0 @@
-{"dir": "out", "msg": {"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "opencorp_spike", "title": "OpenCorp spike", "version": "0"}, "capabilities": {"experimentalApi": true}}}}
-{"dir": "in", "msg": {"id": 1, "result": {"userAgent": "opencorp_spike/0.162.1 (Red Hat Enterprise Linux 8.10.0; x86_64) unknown (opencorp_spike; 0)", "codexHome": "/home/owner/.codex", "platformFamily": "unix", "platformOs": "linux"}}}
-{"dir": "out", "msg": {"id": 2, "method": "thread/resume", "params": {"threadId": "01a1456b-695d-7440-bc59-6b401d4bb3ea", "cwd": "/work/spike/ws", "sandbox": "read-only", "approvalPolicy": "on-request", "approvalsReviewer": "user", "config": {"sandbox_workspace_write": {"network_access": false}}}}}
-{"dir": "in", "msg": {"error": {"code": -32600, "message": "thread 01a1456b-695d-7440-bc59-6b401d4bb3ea already has an active writer"}, "id": 2}}
