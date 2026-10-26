@@ -22,22 +22,6 @@ export const LIVE: readonly Status[] = ["starting", "idle", "busy", "waiting", "
 /** The statuses the run state replaces; ending, debriefing and finished ones are written only by their own steps. */
 export const SETTLED: readonly Status[] = ["starting", "idle", "busy", "waiting"]
 
-/** Changes the session's fields only while its status is one of `statuses`, in one store transaction. Returns the
- *  changed session, or undefined when there is no such session or its status had moved on (say, a finish wrote
- *  `failed` meanwhile). */
-export function guardedUpdate(
-  store: Store,
-  sessionId: string,
-  statuses: readonly Status[],
-  changes: Partial<SessionRecord>,
-): SessionRecord | undefined {
-  return store.transaction(() => {
-    const current = store.getSession(sessionId)
-    if (current === undefined || !statuses.includes(current.status)) return undefined
-    return store.updateSession(sessionId, changes)
-  })
-}
-
 /** What the run waits in decides its state: someone must act (waiting), else a node runs (busy), else idle. */
 export function runState({ waiting, running }: { waiting: boolean; running: boolean }): "waiting" | "busy" | "idle" {
   return waiting ? "waiting" : running ? "busy" : "idle"
