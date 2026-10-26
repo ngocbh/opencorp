@@ -493,7 +493,9 @@ runs/test_live.py	open	—	—	O4b-7
 runs/test_live.py::test_a_debrief_in_flight_is_known_with_its_open_nodes	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-2
 runs/test_live.py::test_a_debrief_is_claimed_while_its_outcome_is_written	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-2
 runs/test_nodes.py	ported	packages/office/tests/runs/nodes.test.ts	—	O4b-5
-runs/test_notify.py	open	—	—	O4b-7
+runs/test_notify.py	ported	packages/office/tests/runs/notify.test.ts	—	O4b-7
+runs/test_notify.py::test_close_stops_the_thread_and_drops_what_waits	changed	packages/office/tests/runs/notify.test.ts::close stops the timer and drops what waits	design §3.3: threads become async; a timer replaces the notifier thread	O4b-7
+runs/test_notify.py::test_runs_long_quiet_are_forgotten_even_when_nothing_is_coalesced	changed	packages/office/tests/runs/notify.test.ts::runs long quiet are forgotten even when nothing is coalesced	design §3.3: threads become async; a timer replaces the notifier thread: no timer is armed and no old run is remembered	O4b-7
 runs/test_outcome_names.py	ported	packages/office/tests/runs/outcome_names.test.ts	—	O3-1
 runs/test_outcomes.py	open	—	split: O4a-4 → O4a-6; O4a-4's tests are in packages/office/tests/runs/outcomes.test.ts	O4a-6
 runs/test_outcomes.py::test_a_crash_resume_on_a_new_key_says_the_worker_stopped	changed	packages/office/tests/runs/outcomes.test.ts::a crash resume on a new key says the worker stopped	design §5.1: the office row holds only office facts; asserts the death retry's record check starts a fresh run on the new key, the old endReason WORKER_REPLACED	O4a-4
@@ -1312,6 +1314,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/nodes.test.ts::node kinds come from the flows static nodes	P15	O4b-5
 —	new	packages/office/tests/runs/outcomes.test.ts::a failed reply whose fresh run cant resolve its connection fails the session on the failed result	design §8.2: a failed reply starts a fresh run in the same session; one that can't start fails the session (Python _new_run → _cant_start); §5.1: no office end reason on the run yian ended	O4a-4
 —	new	packages/office/tests/runs/outcomes.test.ts::a failed reply whose fresh run cant start fails the session and the fresh run	design §8.2: a failed reply starts a fresh run in the same session; one that can't start fails the session (Python _new_run → _cant_start); §5.1: no office end reason on the run yian ended	O4a-4
+—	new	packages/office/tests/runs/notify.test.ts::a run due sooner re arms the timer	design §3.3: the timer, unlike the thread's condition wait, is re-armed when a sooner run joins	O4b-7
 —	new	packages/office/tests/runs/reader.test.ts::a code reference outside the code root shows no derived value and no kinds	§6 rule 10, Y6c	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a commit value shows in its display form	Y5, §5.5: values decoded office-side for clients	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a deeply nested payload is cut at its depth	security review: bounded recursion	O4b-5
