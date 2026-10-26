@@ -2,6 +2,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
+import type { RunIndexRow } from "@ngocbh/yian/run"
 import { RunLiveRecord } from "@opencorp/protocol"
 import { parse, stringify } from "yaml"
 import { hashPassword } from "../../src/auth/passwords.ts"
@@ -10,6 +11,8 @@ import type { Office } from "../../src/daemon/office.ts"
 import type { Hq } from "../../src/hq/core.ts"
 import { TTL } from "../../src/hq/sessions.ts"
 import { readEvents, refresh } from "../../src/runs/reader.ts"
+import { RunLogs } from "../../src/runs/service.ts"
+import { newId } from "../../src/store/store.ts"
 import { git } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import {
@@ -22,10 +25,12 @@ import {
   makeOffice,
   parse as parseReply,
   raw,
+  type Reply,
   storedRun,
   take,
   within,
 } from "../daemon/helpers.ts"
+import { chatLog } from "../runs/helpers.ts"
 import { question, session, workItem } from "../store/helpers.ts"
 import { HOST, ORIGIN, PORT, dist, makeHq, signedIn, web } from "./helpers.ts"
 
@@ -304,4 +309,82 @@ test("an expired session ends the live stream at its next frame", async () => {
   // Past any session issued now.
   hq.sessions.clock = () => new Date(Date.now() + 2 * TTL)
   await endsWithPings(it, office, hq, sid)
+})
+
+const T = "2026-10-20T10:00:00.000Z"
+
+/** A run row of a new ended session at `commit`, launched at T. */
+function addRun(office: Office, flow: string, driver: string, commit?: string): string {
+  const s = office.store.createSession(session({ status: "ended", ...(commit && { repo_commit: commit }) }))
+  const runId = newId()
+  office.store.addRun({
+    runId,
+    sessionId: s.id,
+    driver,
+    flow,
+    flowPath: `shared/flows/${flow}.yaml`,
+    connection: null,
+    model: null,
+    configSha256: null,
+    replacesRunId: null,
+    createdAt: T,
+  })
+  return runId
+}
+
+test("runs are on the allowlist", async () => {
+  const office = makeOffice({ log: () => {} })
+  const client = await signedIn(await makeHq(office))
+  // yian's run index links the child to its parent; neither has an outcome, so both read interrupted.
+  const index = new Map<string, RunIndexRow>()
+  office.runs = new RunLogs({ store: office.store, runsDir: office.paths.runs, index: () => index })
+  const runId = addRun(office, "chat", CEO)
+  const kid = addRun(office, "side_chat", "lan")
+  index.set(kid, {
+    runId: kid,
+    flow: "shared/flows/side_chat.yaml",
+    status: "cancelled",
+    startedAt: T,
+    endedAt: null,
+    parentRunId: runId,
+    lastSeq: 3,
+    result: null,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    reasoningTokens: 0,
+    offset: 10,
+    waits: [],
+    ready: false,
+    wakeAt: null,
+  })
+  const ids = (r: Reply) => (r.json() as { runs: { run_id: string }[] }).runs.map((x) => x.run_id)
+  let r = await client.get("/api/runs", {
+    query: { status: "interrupted,failed", since: "2026-10-13T10:00:00.000Z", limit: "50" },
+  })
+  expect([r.status, ids(r)]).toEqual([200, [runId]])
+  expect((r.json() as { runs: { children_total: number }[] }).runs[0]!.children_total).toBe(1)
+  r = await client.get("/api/runs", { query: { parent: runId } })
+  expect(ids(r)).toEqual([kid])
+  expect((await client.get("/api/runs", { query: { status: "busy" } })).status).toBe(422)
+  r = await client.get("/api/runs", { query: { recent: "2026-10-13T10:00:00.000Z", limit: "50" } })
+  expect(ids(r)).toEqual([runId])
+  const both = { recent: "2026-10-13T10:00:00.000Z", since: "2026-10-13T10:00:00Z" }
+  expect((await client.get("/api/runs", { query: both })).status).toBe(422)
+})
+
+test("runs need a session", async () => {
+  expect((await (await web(await makeHq(makeOffice()))).get("/api/runs")).status).toBe(401)
+})
+
+test("one runs routes are on the allowlist", async () => {
+  const office = makeOffice({ log: () => {} })
+  const client = await signedIn(await makeHq(office))
+  // A run of a new ended session at the company's head whose log is a synthetic chat log.
+  const runId = addRun(office, "chat", CEO, await office.git.head())
+  const file = office.runs.logPath(runId)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  chatLog(file)
+  for (const suffix of ["", "/nodes", "/events", "/events/0", "/log"])
+    expect([(await client.get(`/api/runs/${runId}${suffix}`)).status, suffix]).toEqual([200, suffix])
 })

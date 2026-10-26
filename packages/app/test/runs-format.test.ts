@@ -34,7 +34,7 @@ test("where / took by status", () => {
   expect(where(run({ status: "interrupted", reason: "the office stopped" }))).toBe("the office stopped")
 })
 
-test("a Codex session's debrief says so under the flow", () => {
-  expect(flowText(run({ flow: "debrief", codex: true }))).toBe("debrief of a Codex session")
+test("the flow column is the run's flow", () => {
+  expect(flowText(run({ flow: "debrief", codex: true }))).toBe("debrief")
   expect(flowText(run({ flow: "side_chat" }))).toBe("side_chat")
 })

@@ -313,7 +313,7 @@ harness/test_translate.py::test_two_steers_around_a_running_command_keep_it_in_i
 harness/test_waiting.py	ported	packages/office/tests/harness/waiting.test.ts	—	O3-14
 harness/test_waiting.py::test_a_session_waiting_only_on_turnless_cards_restores_idle_without_the_marker	changed	packages/office/tests/harness/waiting.test.ts::a session waiting only on turnless cards restores idle without the marker	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
 harness/test_waiting.py::test_a_waiting_session_with_a_turn_card_restores_idle_with_the_marker	changed	packages/office/tests/harness/waiting.test.ts::a waiting session with a turn card restores idle with the marker	D9, design §7.3: no stored transcript; the parts are read from the live events on the bus	O3-14
-hq/test_api.py	open	—	split: O2-9 → O3-9 → O3-15 → O4b-7; O2-9's, O3-9's and O3-15's tests are in packages/office/tests/hq/api.test.ts	O4b-7
+hq/test_api.py	ported	packages/office/tests/hq/api.test.ts	—	O4b-7
 hq/test_app_fixture.py	ported	packages/office/tests/hq/app_fixture.test.ts	—	O2-7
 hq/test_auth.py	ported	packages/office/tests/hq/auth.test.ts	—	O2-9
 hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7

@@ -40,9 +40,8 @@ export function where(run: RunSummary): string {
   }
 }
 
-/** The flow column; a Codex session's debrief says what it debriefs, since the session itself isn't listed. */
-export const flowText = (run: Pick<RunSummary, "flow" | "codex">) =>
-  run.codex ? "debrief of a Codex session" : run.flow
+/** The flow column: the run's flow. */
+export const flowText = (run: Pick<RunSummary, "flow">) => run.flow
 
 /** Each status's dot, in the Org page's colors (company/person.tsx); waiting keeps its halo. */
 export const STATUS_DOT: Record<RunSummary["status"], string> = {

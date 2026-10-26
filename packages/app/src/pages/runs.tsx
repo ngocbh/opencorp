@@ -184,9 +184,6 @@ export default function Runs() {
         </Show>
       </div>
       <Show when={!unavailable()} fallback={<RunsUnavailable />}>
-        <p class="px-3 pt-3 text-xs text-neutral-500 dark:text-neutral-400">
-          Codex sessions themselves aren't listed: they have no run log yet. Their debriefs are.
-        </p>
         <Show when={error()}>
           {(message) => (
             <div class="flex items-center gap-2 px-3 pt-3 text-sm">

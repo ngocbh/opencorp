@@ -13,6 +13,11 @@ import {
   PairRequest,
   Person,
   Question,
+  RunDetail,
+  RunEvent,
+  RunEventPage,
+  RunNodePage,
+  RunPage,
   Session,
   WorkItem,
 } from "@opencorp/protocol"
@@ -26,7 +31,16 @@ import { costs } from "../daemon/routes/costs.ts"
 import { whoami } from "../daemon/routes/devices.ts"
 import { RESET, frame } from "../daemon/routes/events.ts"
 import { listQuestions } from "../daemon/routes/questions.ts"
-import { liveStream, liveTarget } from "../daemon/routes/runs.ts"
+import {
+  getRun,
+  listRuns,
+  liveStream,
+  liveTarget,
+  runEvent,
+  runEvents,
+  runLog,
+  runNodes,
+} from "../daemon/routes/runs.ts"
 import { listSessions } from "../daemon/routes/sessions.ts"
 import { getWorkItem } from "../daemon/routes/work_items.ts"
 import { browserAuth, cookieName, cookieValue } from "./auth.ts"
@@ -232,8 +246,15 @@ export const ROUTES: readonly Route<HqContext>[] = [
   },
   { method: "GET", path: "/api/sessions", reply: z.array(Session), handler: listSessions },
   { method: "GET", path: "/api/questions", reply: z.array(Question), handler: listQuestions },
-  // The other run routes, ported later, go here. A run's live stream (`hqLive`); HEAD is refused here, as on
-  // /api/events.
+  // Run Logs: every signed-in human reads every run, its records and its log as stored.
+  { method: "GET", path: "/api/runs", reply: RunPage, handler: listRuns },
+  { method: "GET", path: "/api/runs/:id", reply: RunDetail, handler: getRun },
+  { method: "GET", path: "/api/runs/:id/nodes", reply: RunNodePage, handler: runNodes },
+  { method: "GET", path: "/api/runs/:id/events", reply: RunEventPage, handler: runEvents },
+  { method: "GET", path: "/api/runs/:id/events/:seq", reply: RunEvent, handler: runEvent },
+  // No HEAD, as on the socket: the handler opens the log. The GET catch-all then answers HEAD with 404.
+  { method: "GET", path: "/api/runs/:id/log", head: false, handler: runLog },
+  // A run's live stream (`hqLive`); HEAD is refused here, as on /api/events.
   {
     method: "GET",
     path: "/api/runs/:id/live",
