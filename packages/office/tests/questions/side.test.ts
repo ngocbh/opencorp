@@ -4,7 +4,8 @@ import fs from "node:fs"
 import path from "node:path"
 import type { RunLogEntry } from "@ngocbh/yian/run"
 import type { Message, Part, Session } from "@opencorp/protocol"
-import { sideSpec } from "../../src/chat/run_spec.ts"
+import { type RunSpec, sideSpec } from "../../src/chat/run_spec.ts"
+import { HarnessError } from "../../src/chat/state.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { FlowOutsideRepo, loadConfined } from "../../src/company/flows.ts"
 import { CompanyGit } from "../../src/company/git.ts"
@@ -12,11 +13,13 @@ import { loadRepo } from "../../src/company/loader.ts"
 import { Monitor } from "../../src/perm/monitor.ts"
 import { discussion, readSeed, SEED_FILE, writeSeed } from "../../src/questions/side.ts"
 import { PrivateFileError, SecretStore } from "../../src/secrets.ts"
-import { newId } from "../../src/store/store.ts"
+import { newId, type SessionRecord } from "../../src/store/store.ts"
+import { READ_TOOLS } from "../../src/tools/workspace.ts"
 import type { Delivery } from "../../src/worker/job.ts"
-import { fakeLlm, logPrefix, ROOT, send, TemplateOffice, waitingChat } from "../chat/helpers.ts"
-import { baseFiles, writeRepo } from "../company/helpers.ts"
+import { fakeLlm, logPrefix, makeHarness, ROOT, send, TemplateOffice, waitingChat } from "../chat/helpers.ts"
+import { baseFiles, person, writeRepo } from "../company/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
+import { sandboxAvailable } from "../sandbox/helpers.ts"
 import { openStore, question, session } from "../store/helpers.ts"
 import { advanceJob, run, type TestWorker } from "../worker/helpers.ts"
 
@@ -243,4 +246,72 @@ test.each(LINKS)("a side chat flow linked from outside the pin is refused [%s]",
   if (link === "shared/flows") fs.rmSync(path.join(pin, "shared/flows"), { recursive: true })
   fs.symlinkSync(link === SIDE_CHAT_FLOW ? path.join(flows, "side_chat.yaml") : flows, path.join(pin, link))
   await expect(loadConfined(pin, path.join(pin, SIDE_CHAT_FLOW))).rejects.toBeInstanceOf(FlowOutsideRepo)
+})
+
+const SIDE_FLOW = fs.readFileSync(path.join(ROOT, SIDE_CHAT_FLOW), "utf8")
+
+type Harness = Awaited<ReturnType<typeof makeHarness>>
+
+/** A `starting` side session in `cwd` about a question from a main chat of minh's, both at the company's head, with
+ *  `over`. */
+async function sideOf(h: Harness, cwd: string, over: Partial<Session> = {}): Promise<SessionRecord> {
+  const head = await h.office.git.head()
+  const asker = h.store.createSession(session({ cwd, repo_commit: head }))
+  const asked = h.store.addQuestion(question(asker.id))
+  return h.store.createSession(
+    session({ cwd, repo_commit: head, kind: "side", question_id: asked.id, status: "starting", ...over }),
+  )
+}
+
+/** The HTTP status `spec`'s workspace shell gets from the fake LLM at `url`, followed by the shell's `[exit N]` line
+ *  when curl fails: the output starts with `000` when it can't connect. */
+async function curl(workspace: RunSpec["workspace"], url: string): Promise<string> {
+  return (await workspace!.call("shell", { command: `curl -s -m 5 -o /dev/null -w '%{http_code}' ${url}` })).output
+}
+
+/** A harness whose company gives minh a workspace-write, online `harness_policy` and ships the side chat flow, a
+ *  `notes.txt` in its folder, and a `starting` side session there. */
+async function sideInFolder(fake: Awaited<ReturnType<typeof fakeLlm>>) {
+  const minh = person("minh", { harness_policy: { sandbox: "workspace-write", network: true } })
+  const h = await makeHarness(fake, {
+    files: { [SIDE_CHAT_FLOW]: SIDE_FLOW, "people/minh/person.yaml": minh },
+    defaults: { side_seed_max_chars: 1000 },
+  })
+  const notes = path.join(h.folder, "notes.txt")
+  fs.writeFileSync(notes, "the build is red\n")
+  return { h, notes, side: await sideOf(h, h.folder) }
+}
+
+test("a side run reads the workspace but cannot change it", async () => {
+  // minh's own harness_policy is workspace-write and online; a side chat is read-only and offline anyway (its tools
+  // run under the sandbox, so the sandbox test below checks them).
+  const { h, side } = await sideInFolder(await fakeLlm())
+  const spec = await h.harness.spec(side)
+  expect([spec.flow, spec.chat.turn]).toEqual([SIDE_CHAT_FLOW, "chat/heard"])
+  expect(spec.inputs.history_budget).toBe(1000 + 32000)
+  const groups = spec.groups({ session: side, runId: "run-1" })
+  expect(Object.keys(groups).sort()).toEqual(["work_items", "workspace"])
+  expect(Object.keys(groups.workspace!)).toEqual([...READ_TOOLS])
+})
+
+test.if(sandboxAvailable())("a side chats workspace refuses the writes and network a main chat has", async () => {
+  const fake = await fakeLlm()
+  const { h, notes, side } = await sideInFolder(fake)
+  const spec = await h.harness.spec(side)
+  const read = spec.groups({ session: side, runId: "run-1" }).workspace!.read_file!
+  expect(String(await read.call({ path: "notes.txt" }))).toContain("the build is red")
+  await spec.workspace!.call("write_file", { path: "notes.txt", content: "fixed\n" })
+  expect(fs.readFileSync(notes, "utf8")).toBe("the build is red\n")
+  expect(await curl(spec.workspace, fake.baseUrl)).toMatch(/^000/)
+  const main = await h.harness.spec({ ...side, kind: "main", question_id: null })
+  await main.workspace!.call("write_file", { path: "notes.txt", content: "fixed\n" })
+  expect(fs.readFileSync(notes, "utf8")).toBe("fixed\n")
+  expect(await curl(main.workspace, fake.baseUrl)).toMatch(/^[1-5]\d\d\n\[exit 0\]$/)
+})
+
+test("a side run in the office files is refused", async () => {
+  const h = await makeHarness(await fakeLlm(), { files: { [SIDE_CHAT_FLOW]: SIDE_FLOW } })
+  const error = await h.harness.spec(await sideOf(h, h.office.paths.company)).catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(HarnessError)
+  expect([(error as HarnessError).status, (error as HarnessError).code]).toEqual([422, "unsafe_workspace"])
 })

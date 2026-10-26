@@ -1,4 +1,4 @@
-import type { Profile as ProfileData } from "@opencorp/protocol"
+import type { Profile as ProfileData, ProfileProposal } from "@opencorp/protocol"
 import type { InputRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js"
@@ -12,7 +12,17 @@ import { OPENCORP_BASE_MODE, clearFirst, useBindings } from "../../keymap"
 import { OfficeUnavailable, VersionConflictError } from "@opencorp/client"
 import { Toast, useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
-import { conflictText, LIVE, managerSession, shortVersion, transcript, withoutConflict } from "./profile"
+import { diffColor } from "../picker/dialog-hire"
+import {
+  conflictText,
+  diffLines,
+  LIVE,
+  managerSession,
+  openProposal,
+  shortVersion,
+  transcript,
+  withoutConflict,
+} from "./profile"
 
 /** Registers `/profile`: opens the profile of the session's person, or of the selected person. */
 export function useProfileCommands() {
@@ -43,7 +53,7 @@ export function useProfileCommands() {
 
 /**
  * A person's profile: the rendered `profile.md`, its version, and whether it is over budget; `e`
- * edits it and `m` asks the profile manager for a change.
+ * edits it, `m` asks the profile manager for a change, and `a` applies the change it proposes.
  */
 export function Profile() {
   const data = useRouteData("profile")
@@ -55,13 +65,32 @@ export function Profile() {
   const { theme, syntax } = useTheme()
   const person = data.person
   const [profile, setProfile] = createSignal<ProfileData>()
+  const [proposals, setProposals] = createSignal<ProfileProposal[]>([])
   // Each read clears only its own error, so one succeeding doesn't hide another failing.
   const [profileError, setProfileError] = createSignal<string>()
+  const [proposalsError, setProposalsError] = createSignal<string>()
   const [chatError, setChatError] = createSignal<string>()
+  const proposal = createMemo(() => openProposal(proposals(), person))
 
   // A re-read can answer after newer events: the profile read is dropped if a newer version
-  // arrived meanwhile.
+  // arrived meanwhile, and proposals seen from events while a read is out win over its list.
   let profileEvents = 0
+  let reading = 0
+  const seen = new Map<string, ProfileProposal>()
+  async function loadProposals() {
+    reading++
+    try {
+      const list = await office.client.profiles.proposals(person)
+      const merged = new Map(list.map((p) => [p.id, p]))
+      for (const p of seen.values()) merged.set(p.id, p)
+      setProposals([...merged.values()])
+      setProposalsError(undefined)
+    } catch (e) {
+      setProposalsError(errorMessage(e))
+    } finally {
+      if (--reading === 0) seen.clear()
+    }
+  }
   // The event stream has no replay, so re-read whenever the office comes (back) online.
   createEffect(
     on(office.status, (status) => {
@@ -74,6 +103,7 @@ export function Profile() {
         },
         (e) => setProfileError(errorMessage(e)),
       )
+      void loadProposals()
     }),
   )
   onCleanup(
@@ -83,6 +113,35 @@ export function Profile() {
       setProfile(e.data as unknown as ProfileData)
     }),
   )
+  const putProposal = (e: { data: unknown }) => {
+    const p = e.data as ProfileProposal
+    if (p.person !== person) return
+    if (reading) seen.set(p.id, p)
+    setProposals((list) => [...list.filter((x) => x.id !== p.id), p])
+  }
+  onCleanup(office.on("profile_proposal.created", putProposal))
+  onCleanup(office.on("profile_proposal.updated", putProposal))
+
+  let applying = false
+  /** Applies the open proposal; the office refuses it (409) if the profile changed since it was made. */
+  async function apply() {
+    const p = proposal()
+    if (applying || !p) return
+    applying = true
+    try {
+      setProfile(await office.client.proposals.apply(p.id))
+      toast.show({ variant: "success", message: "Proposal applied" })
+    } catch (e) {
+      if (e instanceof VersionConflictError)
+        toast.show({ variant: "warning", message: "The profile changed after this proposal; ask the manager again" })
+      else toast.show({ variant: "error", message: errorMessage(e) })
+    } finally {
+      applying = false
+      // The office marks the proposal applied or stale; don't wait for the event to hide it.
+      await loadProposals()
+    }
+  }
+
   // The manager chat: the one this view started while it is live (or not listed yet), else
   // the person's newest live one.
   const [started, setStarted] = createSignal<string>()
@@ -175,6 +234,7 @@ export function Profile() {
     bindings: [
       { key: "e", group: "Profile", cmd: () => void edit() },
       { key: "m", group: "Profile", cmd: () => input?.focus() },
+      { key: "a", group: "Profile", cmd: () => void apply() },
       { key: "escape", group: "Profile", cmd: back },
     ],
   }))
@@ -194,6 +254,12 @@ export function Profile() {
     ],
   }))
 
+  // The diff gets eight rows: all of it if it fits, else seven lines and a count of the rest.
+  const shown = (p: ProfileProposal) => {
+    const lines = diffLines(p.diff)
+    return lines.length > 8 ? lines.slice(0, 7) : lines
+  }
+
   return (
     <box flexGrow={1} minHeight={0} paddingLeft={2} paddingRight={2} paddingTop={1} gap={1}>
       <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
@@ -210,7 +276,7 @@ export function Profile() {
           Over budget: this profile is longer than its budget.
         </text>
       </Show>
-      <Show when={profileError() ?? chatError()}>
+      <Show when={profileError() ?? proposalsError() ?? chatError()}>
         {(e) => <text fg={theme.error}>{e()}</text>}
       </Show>
       <scrollbox flexGrow={1} minHeight={0}>
@@ -232,6 +298,25 @@ export function Profile() {
           )}
         </Show>
       </scrollbox>
+      <Show when={proposal()}>
+        {(p) => (
+          <box flexShrink={0}>
+            <text fg={theme.text}>
+              <span style={{ bold: true }}>Proposed change</span>
+              <Show
+                when={!profile() || p().base_version === profile()?.version}
+                fallback={<span style={{ fg: theme.warning }}> · out of date; ask the manager again</span>}
+              >
+                <span style={{ fg: theme.textMuted }}> · a apply</span>
+              </Show>
+            </text>
+            <For each={shown(p())}>{(line) => <text fg={diffColor(theme, line)}>{line}</text>}</For>
+            <Show when={diffLines(p().diff).length - shown(p()).length}>
+              {(more) => <text fg={theme.textMuted}>… {more()} more lines</text>}
+            </Show>
+          </box>
+        )}
+      </Show>
       <Show when={lines().length}>
         <box flexShrink={0}>
           <For each={lines().slice(-4)}>

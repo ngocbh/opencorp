@@ -227,6 +227,17 @@ test("a waiting run ends normally with its status", async () => {
   expect(fake.requests()).toEqual([])
 })
 
+test("a chat jobs parent is in its run started record", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Hi." })
+  const job = makeJob(base(), "flows/echo.yaml", { parent: { run_id: "run-card", node: "ask" } })
+  const rec = await run(job, new Recorder(), { env: fake.env() })
+  expect(rec.outcome?.status).toBe("succeeded")
+  const [first] = iterRunRecords(job.log, { payloads: true })
+  expect(first!.kind).toBe("run_started")
+  expect((first!.envelope.record as unknown as { parent: unknown }).parent).toEqual({ runId: "run-card", node: "ask" })
+})
+
 test("a stop frame stops the run", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "hi", hold: true })

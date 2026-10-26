@@ -165,6 +165,38 @@ test("the side spec has read only lookups and room for its seed", async () => {
   expect(refusal(missing)).toEqual([422, "not_found"])
 })
 
+test("the side specs parent is the cards run and node", async () => {
+  const o = await office()
+  const asked = o.store.addQuestion(question(o.session.id, { run_id: "run-card", node_id: "chat#0/ask" }))
+  const spec = sideSpec({ ...o, workspace: NO_WORKSPACE, question: asked })
+  expect(spec.parent).toEqual({ run_id: "run-card", node: "chat#0/ask" })
+  expect(job(o, spec, spec.groups({ session: o.session, runId: "r1" })).parent).toEqual(spec.parent!)
+  const unasked = sideSpec({ ...o, workspace: NO_WORKSPACE, question: undefined })
+  expect(unasked.parent).toBeNull()
+  expect(job(o, unasked, unasked.groups({ session: o.session, runId: "r1" })).parent).toBeNull()
+  const mainChat = main(o)
+  expect(mainChat.parent ?? null).toBeNull()
+  expect(job(o, mainChat, mainChat.groups({ session: o.session, runId: "r1" })).parent).toBeNull()
+  expect(managerSpec({ repo: o.repo, tools: {} }).parent ?? null).toBeNull()
+})
+
+test("an advance job carries no parent", async () => {
+  const o = await office()
+  const asked = o.store.addQuestion(question(o.session.id, { run_id: "run-card", node_id: "chat#0/ask" }))
+  const spec = sideSpec({ ...o, workspace: NO_WORKSPACE, question: asked })
+  const built = chatJob(spec, spec.groups({ session: o.session, runId: "r1" }), {
+    kind: "advance",
+    session: o.session,
+    runId: "r1",
+    pin: o.root,
+    log: path.join(o.dir, "runs", "r1", "log.jsonl"),
+    llmConfig: { ...LLM_CONFIG },
+    turns: 1,
+  })
+  expect(built.kind).toBe("advance")
+  expect(built.parent).toBeNull()
+})
+
 test("the manager spec has only the profile tools", async () => {
   const o = await office()
   const profile: Record<string, OfficeTool> = { read_profile: { description: "Reads.", call: () => "" } }

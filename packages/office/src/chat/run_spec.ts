@@ -6,19 +6,28 @@ import type { z } from "zod"
 import type { CompanyGit } from "../company/git.ts"
 import type { CompanyRepo } from "../company/loader.ts"
 import type { Monitor } from "../perm/monitor.ts"
+import { MANAGER_FLOW } from "../profile/manager.ts"
 import { GitProfileStore } from "../profile/store.ts"
 import type { Carried, OnQuestion } from "../questions/ask.ts"
 import type { QuestionRecord, SessionRecord, Store } from "../store/store.ts"
 import { build } from "../tools/index.ts"
 import type { WorkspaceTools } from "../tools/workspace.ts"
-import { type Delivery, groupSpecs, type Job, parseJob, personFlow, type ProfileMemorySpec, type Seed } from "../worker/job.ts"
+import {
+  type Delivery,
+  groupSpecs,
+  type Job,
+  type Parent,
+  parseJob,
+  personFlow,
+  type ProfileMemorySpec,
+  type Seed,
+} from "../worker/job.ts"
 import type { OfficeTool } from "../worker/rpc.ts"
 import { personInputs, talkingTo } from "./identity.ts"
 import { HarnessError } from "./state.ts"
 import { type ChatFlow, MAIN_CHAT } from "./turns.ts"
 
 const SIDE_CHAT_FLOW = "shared/flows/side_chat.yaml"
-const MANAGER_FLOW = "shared/flows/profile_manager.yaml"
 // Room in a side chat's history beyond its seed, so compaction doesn't fold the seed.
 const SIDE_HISTORY_CHARS = 32000
 
@@ -39,8 +48,9 @@ export interface GroupContext {
  * flow. `groups` builds the office tools of one run, `{group: {tool name: tool}}`. `memory` names the profile
  * memories the flow may use, each over the store of that name in `stores`; history lives in the flow's `summary`
  * and `history` inputs, not in a memory. `names` are what the person answers to (handle, then name).
- * `workspace` is the workspace the run's workspace tools call, if it has one. Python's `learnable` is dropped:
- * learning is deferred.
+ * `workspace` is the workspace the run's workspace tools call, if it has one. `parent` is the run (and node) the
+ * session's fresh runs nest under in yian's run index, if any. Python's `learnable` is dropped: learning is
+ * deferred.
  */
 export interface RunSpec {
   readonly flow: string
@@ -52,6 +62,7 @@ export interface RunSpec {
   readonly skills: string[]
   readonly names: readonly string[]
   readonly workspace?: Workspace
+  readonly parent?: Parent | null
 }
 
 /** The company defaults of `repo`; the schema's defaults without any. */
@@ -127,7 +138,8 @@ export function mainSpec({
  * The side chat flow, who the asker is and who they're talking with, their profile as memory, and read-only
  * lookups: the workspace's read tools and the work items. The caller passes a `workspace` built read-only and
  * offline whatever the person's `harness_policy` says: a side chat explains, it doesn't act. Its history budget
- * leaves room for the seed, the first turn. Throws `HarnessError` (`422`) when the asker isn't in `repo`.
+ * leaves room for the seed, the first turn. Its runs nest under the question's run and node; with no question, under
+ * none. Throws `HarnessError` (`422`) when the asker isn't in `repo`.
  */
 export function sideSpec({
   store,
@@ -164,6 +176,7 @@ export function sideSpec({
     skills: [],
     names: [person.handle, person.name],
     workspace,
+    parent: question === undefined ? null : { run_id: question.run_id, node: question.node_id },
   }
 }
 
@@ -197,7 +210,8 @@ export function managerSpec({
  * `spec.groups` built for this run).
  *
  * A new chat starts with an empty history at `turns`, the session's turns so far; with a `seed` (the run it
- * replaces) the worker replaces the empty `summary` and `history` with that run's. A profile memory with no model
+ * replaces) the worker replaces the empty `summary` and `history` with that run's. Only a `chat` job carries
+ * `spec.parent`: an `advance` resumes a log that already records it. A profile memory with no model
  * config of its own uses `llmConfig`. Throws `JobError`, whose message holds no value, when a field is invalid.
  */
 export function chatJob(
@@ -246,5 +260,6 @@ export function chatJob(
     seed,
     deliver,
     advance,
+    parent: kind === "chat" ? (spec.parent ?? null) : null,
   })
 }

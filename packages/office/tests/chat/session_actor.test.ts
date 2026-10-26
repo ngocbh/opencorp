@@ -18,6 +18,7 @@ import { COULDNT_RESUME, COULDNT_START, ENDED_OVER_CAP, NEW_MODEL, WORKER_STOPPE
 import { writePrivate } from "../../src/secrets.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Delivery, STOP_REASON } from "../../src/worker/job.ts"
+import { WorkerExists } from "../../src/worker/spawn.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
 import { CEO } from "../daemon/helpers.ts"
 import { fold } from "../harness/helpers.ts"
@@ -312,6 +313,28 @@ test("a finished session forgets its live runs only after its worker exits", asy
   await failing
   const runs2 = session(o, sid2).run_ids.join(" ")
   expect(seen).toEqual(["detach", `transcript ${runs2}`, `forget ${runs2}`])
+})
+
+test("a finished actors lingering worker forgets only the runs it finished at its exit", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const seen: string[] = []
+  const live = spyLive(o, seen)
+  const transcript = { forget: (runIds: Iterable<string>) => void seen.push(`transcript ${[...runIds].join(" ")}`) }
+  const sid = await newSession(o)
+  const old = makeActor(o, sid, { live, transcript })
+  await old.start()
+  const first = old.runId!
+  await old.fail()
+  // Reopened while the failed run's worker still lingers: a new actor starts a new run.
+  o.office.store.updateSession(sid, { status: "starting" })
+  const fresh = makeActor(o, sid, { live, transcript })
+  await fresh.start()
+  expect(session(o, sid).run_ids).toEqual([first, fresh.runId!])
+  const { worker, handlers } = workers[0]!
+  handlers.exited(worker, 0)
+  expect(seen).toEqual(["detach", `transcript ${first}`, `forget ${first}`])
 })
 
 test("turn text changes what the turn gets but not the transcript", async () => {
@@ -750,6 +773,51 @@ test("a hard stop waits for the lingering worker and skips a run with no log", a
       expect(o.kinds.length).toBe(before)
     }
   }
+})
+
+test("a start after a replaced actors hard stop waits for it", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  // As the registry does: one worker per session at a time.
+  const gone = new Set<unknown>()
+  const spawn = o.registry.spawn.bind(o.registry)
+  o.registry.spawn = async (job, ...rest) => {
+    const last = workers.at(-1)
+    if (last !== undefined && !gone.has(last.worker)) throw new WorkerExists(job.session_id)
+    return spawn(job, ...rest)
+  }
+  const exit = (n: number, code: number) => {
+    gone.add(workers[n]!.worker)
+    workers[n]!.handlers.exited(workers[n]!.worker, code)
+  }
+  const sid = await newSession(o)
+  const old = makeActor(o, sid)
+  await old.start()
+  exit(0, 1)
+  await waitFor(() => workers.length === 2, { what: "the retry" })
+  exit(1, 1)
+  await waitFor(() => status(o, sid) === "failed", { what: "the session to fail" })
+  // Reopened at once: the failed run's cancel job spawns under the session's id first.
+  o.office.store.updateSession(sid, { status: "starting" })
+  const after = old.stopped
+  let waiting = false
+  const then = after.then.bind(after)
+  // Called once the start waits on it.
+  after.then = (...args) => {
+    waiting = true
+    return then(...args)
+  }
+  const fresh = makeActor(o, sid)
+  const starting = fresh.start({ after })
+  await waitFor(() => workers.length === 3 && waiting, { what: "the cancel job and the start waiting for it" })
+  expect(o.jobs[2]).toMatchObject({ kind: "advance", advance: false, deliver: [{ op: "cancel" }] })
+  exit(2, 0)
+  await starting
+  await old.stopped
+  expect(o.kinds).toEqual(["chat", "advance", "advance", "chat"])
+  expect(session(o, sid).run_ids).toHaveLength(2)
+  expect(o.logs.filter((line) => line.includes("WorkerExists"))).toEqual([])
 })
 
 test("a delivery acked after result is advanced", async () => {
@@ -1781,4 +1849,23 @@ test("no office code outside the worker calls a yian host function", () => {
     .filter((file) => file.endsWith(".ts") && !file.startsWith("worker/") && file !== "chat/history.ts")
   expect(files).toContain("chat/session_actor.ts")
   expect(files.flatMap((file) => hostImports(file, fs.readFileSync(path.join(SRC, file), "utf8")))).toEqual([])
+})
+
+test("abandon after the session finished leaves its own end", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, sid } = await startActor(o)
+  const runId = actor.runId!
+  const ended: string[] = []
+  o.hooks.sessionEnded.push((s) => void ended.push(s.status))
+  // A finish queued before the abandon wins: its run keeps its own end.
+  const failed = actor.fail()
+  await actor.abandon("its card closed")
+  await failed
+  expect(status(o, sid)).toBe("failed")
+  expect(o.office.store.getRun(runId)!.endReason).toBe(COULDNT_RESUME)
+  await actor.abandon("later")
+  expect(status(o, sid)).toBe("failed")
+  expect(o.office.store.getRun(runId)!.endReason).toBe(COULDNT_RESUME)
+  await waitFor(() => ended.length > 0, { what: "the end hook" })
+  expect(ended).toEqual(["failed"])
 })

@@ -308,7 +308,12 @@ export class SessionActor implements LiveCalls {
   #timer: AbortController | null = null
   /** The deadline the timer last advanced the run at, which it never arms for again. */
   #spent: string | null = null
+  /** Whether `start` has run on this actor. */
+  #started = false
   #finished = false
+  /** The session's runs when it finished, which the finished actor's lingering worker forgets at its exit: a run
+   *  started after (a reopened session's) is a new actor's. */
+  #finishedRuns: readonly string[] = []
   #closed = false
   #ending = false
   /** Workers that exited with no outcome, or with a `stopped` or `crashed` run, since the last `waiting` or
@@ -316,6 +321,12 @@ export class SessionActor implements LiveCalls {
   #deaths = 0
   /** The runs whose hard stop waits for the lingering worker's exit. */
   #stopAfterExit: string[] = []
+  /** Settles once the hard stops this actor started have finished; settled while it has none. */
+  #stopped: Promise<void> = Promise.resolve()
+  /** Settles `#stopped` when it waits for the lingering worker's exit. */
+  #stoppedAfterExit: () => void = () => {}
+  /** Settles at `close`. */
+  readonly #closing = Promise.withResolvers<void>()
   /** The runs fresh runs replaced, whose open questions go stale once a fresh worker's run starts. */
   #replaced: string[] = []
   #spec: RunSpec | null = null
@@ -352,6 +363,20 @@ export class SessionActor implements LiveCalls {
     return this.#runId
   }
 
+  /** Whether this actor has started the session and not finished it. */
+  get active(): boolean {
+    return this.#started && !this.#finished
+  }
+
+  /**
+   * Settles (never rejects) once the hard stops of this actor's finished runs are done: the cancel jobs started at
+   * once, or the lingering worker's exit and the cancel jobs queued for it. Settled when it started none. A hard stop
+   * spawns under the session's id, as a new run's worker does, so a new actor's start waits for it.
+   */
+  get stopped(): Promise<void> {
+    return this.#stopped
+  }
+
   /** Whether a worker runs the session's run, or is being spawned. */
   get hasWorker(): boolean {
     return this.#run !== null || this.#starting !== null
@@ -380,23 +405,34 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * Starts the session's first run: stores the run and its row, then spawns its `chat` worker. A start that fails
-   * fails the session (its stored run ends `COULDNT_START`) and throws: a `HarnessError` as it is (the run spec
-   * couldn't be built), else `500 start_failed`.
+   * Starts the session's run: stores the run and its row, then spawns its `chat` worker. A session with earlier runs
+   * (a side chat that ended or failed, then was set back to `starting`) gets a fresh run, driven by its owner and
+   * seeded from its newest logged run, so it continues that run's history. A start that fails fails the session (a
+   * run it stored ends `COULDNT_START`) and throws: a `HarnessError` as it is (the run spec couldn't be built), else
+   * `500 start_failed`. Refused `409 live` once this actor has started. The start waits for `after` (the replaced
+   * actor's `stopped`) before it builds anything; the office's stop ends that wait.
    */
-  start(): Promise<void> {
+  start({ after }: { after?: Promise<void> } = {}): Promise<void> {
+    const sid = this.sessionId
+    if (this.#started) return Promise.reject(new HarnessError(409, "live", `session ${sid} already has a run`))
+    // Claimed before the job is queued, so `active` holds at once for a caller that checks it.
+    this.#started = true
     return this.#command(async () => {
-      const sid = this.sessionId
-      if (this.#runId !== null) throw new HarnessError(409, "live", `session ${sid} already has a run`)
+      // An earlier run isn't this start's: a failure here must not end it.
+      this.#runId = null
       const runId = newId()
       try {
+        // The replaced actor's hard stop spawns under the session's id: this start's worker would be refused.
+        if (after !== undefined) await Promise.race([after, this.#closing.promise])
+        if (this.#closed) throw stopping()
         const session = this.#session()
         // Built first, so a spec that can't be built records no run.
         const spec = await this.#specOf(session)
         const owner = await this.#owner(session)
+        const seed = await this.#seed(session)
         this.#ctx.store.transaction(() => this.#addRun(session, spec, owner, runId, null, now()))
         this.#runId = runId
-        await this.#spawn("chat")
+        await this.#spawn("chat", { seed })
       } catch (error) {
         this.#log(`session ${sid} can't start (${errorName(error)})`)
         // The office stops: the session stays as it was, for the next office to start.
@@ -783,6 +819,19 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
+   * Ends the session with its run's office end reason `why`, as `#finish` ends it (deliveries answered `409
+   * not_live`, the run's hard stop); nothing when the actor already finished or the stored session isn't live. A
+   * finish queued or in flight before it wins, its run keeping its own end. Refused `404 not_found` (the session row
+   * is gone) or `503 stopping` after `close`.
+   */
+  abandon(why: string): Promise<void> {
+    return this.#command(async () => {
+      if (this.#finished || !LIVE.includes(this.#session().status)) return
+      this.#finish("ended", null, why)
+    })
+  }
+
+  /**
    * Sets the session's cost cap to `usd`, closes its "raise the cost cap" item and returns the stored session. With
    * no worker, an `advance` the cap held back starts now: when one was needed, deliveries wait, a settled call waits,
    * or the run's waits are unknown (with a worker, its exit decides). A spawn or settle that fails is logged, and the
@@ -866,6 +915,7 @@ export class SessionActor implements LiveCalls {
     const tail = this.#tail.then(() => {})
     if (this.#closed) return tail
     this.#closed = true
+    this.#closing.resolve()
     this.#disarm()
     this.#interruptWorkspace()
     this.#answerCalls()
@@ -1434,10 +1484,9 @@ export class SessionActor implements LiveCalls {
       override exited(worker: ActorWorker, returncode: number | null): void {
         run.exited = true
         actor.#ctx.live.detach(worker)
-        // Posted before the forget, which reads the store: a failing read must not leave the actor without its exit.
         actor.#post("exit", () => actor.#exited(run, returncode))
         // The finished session's last worker: nothing can show its runs again.
-        if (actor.#finished && run === actor.#run) actor.#forgetRuns()
+        if (actor.#finished && run === actor.#run) actor.#forgetRuns(actor.#finishedRuns)
       }
 
       override askUser(_worker: unknown, request: AskRequest, callId: string): Promise<unknown> {
@@ -1740,7 +1789,7 @@ export class SessionActor implements LiveCalls {
     this.#interruptWorkspace()
     this.#answerCalls()
     if (this.#finished) {
-      if (this.#stopAfterExit.length > 0) void this.#stopJobs(this.#stopAfterExit.splice(0))
+      void this.#stopJobs(this.#stopAfterExit.splice(0)).then(this.#stoppedAfterExit)
       return
     }
     // Read and cleared first: an outcome that spawns nothing leaves no re-advance behind.
@@ -2021,6 +2070,7 @@ export class SessionActor implements LiveCalls {
     const reported = outcome ?? (ended ? recorded : null)
     try {
       const session = this.#session()
+      this.#finishedRuns = session.run_ids
       if (status === "failed") {
         this.#notice(`The session failed (${whyFailed(reported, run?.provider ?? null)}). Start a new chat.`)
       }
@@ -2042,7 +2092,7 @@ export class SessionActor implements LiveCalls {
         await hooks.notify("sessionEnded", finished)
       })()
       // With a worker alive, its last frames would show the runs again: its exit forgets them.
-      if (this.#run === null || this.#run.exited) this.#forgetRuns(finished.run_ids)
+      if (this.#run === null || this.#run.exited) this.#forgetRuns(this.#finishedRuns)
     } catch (error) {
       if (error instanceof HarnessError) throw error
       this.#log(`session ${this.sessionId}: can't store the end (${errorName(error)})`)
@@ -2056,9 +2106,8 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  /** Drops what the transcript cache and the live relay hold of the session's runs (`runIds`, else read from the
-   *  store). */
-  #forgetRuns(runIds: readonly string[] = this.#ctx.store.getSession(this.sessionId)?.run_ids ?? []): void {
+  /** Drops what the transcript cache and the live relay hold of runs `runIds`. */
+  #forgetRuns(runIds: readonly string[]): void {
     this.#ctx.transcript.forget(runIds)
     this.#ctx.live.forget(runIds)
   }
@@ -2070,10 +2119,11 @@ export class SessionActor implements LiveCalls {
     const run = this.#run
     const runIds = runId === null ? replaced : [...replaced, runId]
     if (run === null || run.worker === null) {
-      void this.#stopJobs(runIds)
+      this.#stopped = this.#stopJobs(runIds)
       return
     }
     this.#stopAfterExit = runIds
+    this.#stopped = new Promise((resolve) => (this.#stoppedAfterExit = resolve))
     if (runId === null || run.outcome !== null) return
     run.worker.deliver({ id: newId(), op: "cancel" }).then(
       (sent) => {
@@ -2083,7 +2133,7 @@ export class SessionActor implements LiveCalls {
     )
   }
 
-  /** `#stopJob` for each of `runIds`, one after another: a session has one worker at a time. */
+  /** `#stopJob` for each of `runIds`, one after another: a session has one worker at a time. Never rejects. */
   async #stopJobs(runIds: readonly string[]): Promise<void> {
     for (const runId of runIds) await this.#stopJob(runId)
   }
@@ -2092,9 +2142,9 @@ export class SessionActor implements LiveCalls {
    *  worker exits; skipped when the run has no log (it never started). A failure is logged by its type. */
   async #stopJob(runId: string): Promise<void> {
     const { connections, paths } = this.#ctx
-    const log = this.#logOf(runId)
-    if (!fs.existsSync(log)) return
     try {
+      const log = this.#logOf(runId)
+      if (!fs.existsSync(log)) return
       const session = this.#session()
       const [name, model] = await connections.choice(session.connection, session.model)
       const provider = await connections.resolve(name, model)

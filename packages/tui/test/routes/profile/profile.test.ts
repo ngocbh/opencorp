@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test"
-import type { Message, Session } from "@opencorp/protocol"
+import type { Message, ProfileProposal, Session } from "@opencorp/protocol"
 import {
   CONFLICT_MARKER,
   conflictText,
+  diffLines,
   managerSession,
+  openProposal,
   shortVersion,
   transcript,
   withoutConflict,
@@ -39,6 +41,27 @@ test("managerSession is the person's newest live profile manager session", () =>
   ]
   expect(managerSession(sessions, "minh")?.id).toBe("2")
   expect(managerSession([session("1", { status: "failed" })], "minh")).toBeUndefined()
+})
+
+const proposal = (id: string, fields: Partial<ProfileProposal>) =>
+  ({ id, person: "minh", status: "open", created_at: id, ...fields }) as ProfileProposal
+
+test("openProposal is the person's newest open proposal", () => {
+  const list = [
+    proposal("1", {}),
+    proposal("3", { status: "applied" }),
+    proposal("2", {}),
+    proposal("4", { person: "lan" }),
+  ]
+  expect(openProposal(list, "minh")?.id).toBe("2")
+  expect(openProposal([proposal("1", { status: "stale" })], "minh")).toBeUndefined()
+})
+
+test("diffLines drops the file headers and keeps hunks", () => {
+  // The office's header: difflib with git's a/ and b/ paths.
+  const diff = "--- a/people/minh/profile.md\n+++ b/people/minh/profile.md\n@@ -1,2 +1,2 @@\n # Minh\n-old\n+new\n"
+  expect(diffLines(diff)).toEqual(["@@ -1,2 +1,2 @@", " # Minh", "-old", "+new"])
+  expect(diffLines("--- a\n+++ b\n@@ -1 +1 @@\n--- x\n+++ y\n")).toEqual(["@@ -1 +1 @@", "--- x", "+++ y"])
 })
 
 test("transcript keeps text and names tools", () => {

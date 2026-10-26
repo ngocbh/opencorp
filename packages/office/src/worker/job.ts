@@ -50,6 +50,10 @@ export type Delivery = z.output<typeof Delivery>
 export const Seed = z.strictObject({ log: absolute, env: z.record(z.string(), z.string()), cancel: z.boolean() })
 export type Seed = z.output<typeof Seed>
 
+/** The run a `chat` run nests under in yian's run index, and that run's node, if one node started it. */
+export const Parent = z.strictObject({ run_id: z.string().min(1), node: z.string().min(1).nullable().default(null) })
+export type Parent = z.output<typeof Parent>
+
 /**
  * What one worker runs: a flow from a pinned company worktree, and how to run it.
  *
@@ -59,8 +63,9 @@ export type Seed = z.output<typeof Seed>
  * `llm_config`, and reads no other field but `session_id`). `flow` is relative to `pin`. `deliver` lists host calls applied to the run in order, each answered by
  * one `deliver_reply`; `advance: false` applies them without moving the run. `seed` names the run of the same
  * session a fresh `chat` run replaces (its log, the env that run had, whether to cancel it); the worker seeds the
- * flow's `summary` and `history` inputs from it and moves its unread messages. A `Job` holds the provider key in
- * `llm_config`, so it is never logged.
+ * flow's `summary` and `history` inputs from it and moves its unread messages. `parent` names the run (and node) a
+ * fresh `chat` run nests under in yian's run index; an `advance` resumes a log that already records it. A `Job`
+ * holds the provider key in `llm_config`, so it is never logged.
  */
 export const Job = z
   .strictObject({
@@ -86,12 +91,17 @@ export const Job = z
     deliver: z.array(Delivery).default(() => []),
     advance: z.boolean().default(true),
     seed: Seed.nullable().default(null),
+    parent: Parent.nullable().default(null),
   })
   .refine((job) => job.advance || job.kind === "advance", {
     message: "advance false needs kind advance",
     path: ["advance"],
   })
   .refine((job) => job.seed === null || job.kind === "chat", { message: "a seed needs kind chat", path: ["seed"] })
+  .refine((job) => job.parent === null || job.kind === "chat", {
+    message: "a parent needs kind chat",
+    path: ["parent"],
+  })
 export type Job = z.output<typeof Job>
 export type JobInput = z.input<typeof Job>
 

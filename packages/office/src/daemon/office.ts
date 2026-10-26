@@ -82,6 +82,9 @@ export interface SessionHarness extends CardActor {
       model: string | null
     },
   ): Promise<SessionRecord>
+  /** Opens a profile-manager session over `handle`'s profile, opened by `by`, with `text` as its first message.
+   *  Only the chat harness runs one; Codex sessions don't. */
+  startManager?(handle: string, text: string, options?: { by?: string | null }): Promise<SessionRecord>
   /** A message from `by` (the opener when null): a turn, a steer, an answer or queued. */
   prompt(sessionId: string, text: string, options?: { by?: string | null }): Promise<string>
   /** Steers the running reply as `by`; with no reply running it is a `prompt`. */

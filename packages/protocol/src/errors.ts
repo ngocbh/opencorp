@@ -41,6 +41,7 @@ export const ERROR_CODES = [
   "no_discussion",
   "no_file",
   "no_log",
+  "no_manager_flow",
   "no_password",
   "no_route",
   "not_a_card",

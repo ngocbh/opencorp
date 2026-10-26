@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test"
 import { now } from "@opencorp/protocol"
 import { DuplicateKey, NotFound, StoreError, newId, type SessionRecord, type Store } from "../../src/store/store.ts"
-import { openStore, recordEvents, session, thrown } from "./helpers.ts"
+import { openStore, proposal, recordEvents, session, thrown } from "./helpers.ts"
 
 const NO_SESSION = "01K6A0000000000000000000ZZ"
 
@@ -123,10 +123,11 @@ const OWNED_WRITES: Record<string, (store: Store) => unknown> = {
       }),
     )
   },
+  proposal: (store) => store.addProfileProposal(proposal(NO_SESSION)),
   run: (store) => store.addSessionRun(NO_SESSION, "run-9"),
 }
 
-test.each(["question", "run"])("session owned rows need their session [%s]", (write) => {
+test.each(["question", "proposal", "run"])("session owned rows need their session [%s]", (write) => {
   const store = openStore()
   const events = recordEvents(store)
   expect(thrown(() => OWNED_WRITES[write]!(store))).toBeInstanceOf(NotFound)

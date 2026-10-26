@@ -7,8 +7,10 @@ import { type Scheduler, realScheduler } from "@ngocbh/yian/platform"
 import { type Message, OFFICE, Session, WorkItem, now } from "@opencorp/protocol"
 import { loadRepo } from "../company/loader.ts"
 import type { Office, SessionHarness } from "../daemon/office.ts"
-import { type CodexSessions, checkFolder, notSupported } from "../harness/sessions.ts"
+import { type CodexSessions, checkFolder, notSupported, startConnection } from "../harness/sessions.ts"
 import type { Monitor } from "../perm/monitor.ts"
+import { MANAGER_FLOW, profileTools } from "../profile/manager.ts"
+import { GitProfileStore } from "../profile/store.ts"
 import { Answers } from "../questions/ask.ts"
 import type { AnswerKind } from "../questions/cards.ts"
 import { Live, type LiveRun } from "../runs/records.ts"
@@ -21,7 +23,7 @@ import { BadConnectionName, ConnectionGone } from "./connections.ts"
 import type { Hooks } from "./hooks.ts"
 import { DEADLINE_MS, ListTimeout, type ModelCache } from "./models.ts"
 import { ProviderError } from "./provider.ts"
-import { type RunSpec, mainSpec } from "./run_spec.ts"
+import { type RunSpec, mainSpec, managerSpec, sideSpec } from "./run_spec.ts"
 import { type ActorContext, SessionActor, named, ownModel } from "./session_actor.ts"
 import { HarnessError, LIVE } from "./state.ts"
 import type { Transcript } from "./transcript.ts"
@@ -134,10 +136,18 @@ export class ChatHarness implements SessionHarness {
       runChanged: (runId) => office.runChanged(runId),
       log,
     }
-    // A finished session's actor goes once its last worker has; a lingering one is dropped at the next call.
+    // A finished session's actor goes once its last worker and its hard stops have; a lingering one is dropped at
+    // the next call.
     hooks.sessionEnded.push((session) => {
       const actor = this.#actors.get(session.id)
-      if (actor !== undefined && !actor.hasWorker) this.#actors.delete(session.id)
+      if (actor !== undefined && !actor.hasWorker) this.#drop(actor)
+    })
+  }
+
+  /** Drops finished `actor` once its hard stops are done: until then a new run of its session waits for them. */
+  #drop(actor: SessionActor): void {
+    void actor.stopped.then(() => {
+      if (this.#actors.get(actor.sessionId) === actor) this.#actors.delete(actor.sessionId)
     })
   }
 
@@ -212,36 +222,126 @@ export class ChatHarness implements SessionHarness {
   }
 
   /**
-   * The run spec of `session`, a main chat: its sandbox over the session's folder, checked again (422 when it is
-   * gone or unsafe), with a private tmp dir under the session's folder, and the workspace tools under it. A side
-   * chat or profile manager answers 501.
+   * Starts a new run of stored session `sessionId`, which must be `starting`: a session the cards or the profile
+   * manager stored, or a side chat set back to `starting` to reopen it. Its new actor replaces any it had, and starts
+   * it as `SessionActor.start` does once the replaced actor's hard stops are done; returns the new run's id. Refused
+   * 404 for no session, 409 `live` for one that isn't `starting`, or that this harness already started and hasn't
+   * finished (a session stays `starting` until its first result), 503 once closed.
+   */
+  async startRun(sessionId: string): Promise<string> {
+    this.#running()
+    const session = this.store.getSession(sessionId)
+    if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
+    if (session.status !== "starting") {
+      throw new HarnessError(409, "live", `session ${sessionId} is ${session.status}`)
+    }
+    // Still `starting` while a start runs: a second actor would start a second run.
+    if (this.#actors.get(sessionId)?.active) {
+      throw new HarnessError(409, "live", `session ${sessionId} is already starting`)
+    }
+    const previous = this.#actors.get(sessionId)
+    const actor = new SessionActor(this.#ctx, sessionId)
+    this.#actors.set(sessionId, actor)
+    await actor.start({ after: previous?.stopped })
+    return actor.runId!
+  }
+
+  /**
+   * Opens a profile-manager session over `handle`'s profile, opened by `by`, with `text` as its first message: stored
+   * `starting` at the company's current commit on the office's default connection, with no work item, then started
+   * by `startRun` and prompted. Refused 404 `not_found` for no person, 422 `no_manager_flow` when the company has no
+   * profile manager flow, 503 once closed; a start that fails is `startRun`'s.
+   */
+  async startManager(handle: string, text: string, { by = null }: { by?: string | null } = {}): Promise<SessionRecord> {
+    this.#running()
+    const { git } = this.office
+    await git.commitHandEdits()
+    const head = await git.head()
+    const pin = await git.pin(head)
+    if (!loadRepo(pin).people.has(handle)) throw new HarnessError(404, "not_found", `no person ${handle}`)
+    if (!isFile(path.join(pin, MANAGER_FLOW))) {
+      throw new HarnessError(422, "no_manager_flow", `the company has no ${MANAGER_FLOW}`)
+    }
+    const connection = await startConnection(this.office, null, this.log)
+    // Checked again before any write: the office may have begun stopping during the checks.
+    this.#running()
+    const t = now()
+    const session = this.store.createSession(
+      Session.parse({
+        id: newId(),
+        person: handle,
+        harness: "composer",
+        office: os.hostname(),
+        cwd: fs.realpathSync(git.root),
+        repo_commit: head,
+        status: "starting",
+        kind: "profile_manager",
+        work_item_id: null,
+        opened_by: by,
+        connection,
+        model: null,
+        model_note: null,
+        harness_session_id: null,
+        parent_session_id: null,
+        created_at: t,
+        updated_at: t,
+      }),
+    )
+    await this.startRun(session.id)
+    await this.prompt(session.id, text, { by }) // the first turn takes it
+    return this.store.getSession(session.id)!
+  }
+
+  /** Ends live session `sessionId` with its run's office end reason `why` (`SessionActor.abandon`): the fallback when
+   *  End can't reach it. Refused 404 for no session, 409 `not_live` for one that isn't live, 503 once closed. */
+  async abandon(sessionId: string, why: string): Promise<void> {
+    return this.#actor(sessionId).abandon(why)
+  }
+
+  /**
+   * The run spec of `session` at its pinned commit, by its kind. A main chat's and a side chat's workspace tools run
+   * under a sandbox over the session's folder, checked again (422 when it is gone or unsafe), with a private tmp dir
+   * under the session's folder: a main chat's as the person's `harness_policy` says, a side chat's read-only and
+   * offline whatever it says. A side chat's runs see its question, if it has one. A profile manager has only its
+   * profile tools, over the person's profile, and no workspace.
    */
   async spec(session: SessionRecord): Promise<RunSpec> {
-    if (session.kind !== "main") {
-      throw new HarnessError(501, "not_implemented", `the chat harness doesn't run ${session.kind} sessions yet`)
-    }
-    const { store, git, paths } = this.office
+    const { store, git } = this.office
     const repo = loadRepo(await git.pin(session.repo_commit))
+    if (session.kind === "profile_manager") {
+      return managerSpec({ repo, tools: profileTools(store, new GitProfileStore(git, session.person), session) })
+    }
+    const monitor = this.monitor
+    if (session.kind === "side") {
+      // A side chat explains, it doesn't act.
+      const workspace = this.#workspace(session, { writable: false, network: false })
+      const question = session.question_id === null ? undefined : store.getQuestion(session.question_id)
+      return sideSpec({ store, git, repo, session, workspace, monitor, question })
+    }
+    const policy = repo.people.get(session.person)?.harness_policy
+    const workspace = this.#workspace(session, {
+      writable: policy?.sandbox === "workspace-write",
+      network: policy?.network === true,
+    })
+    const carried = (question: QuestionRecord) => this.answers.carried(question)
+    return mainSpec({ store, git, repo, session, workspace, monitor, carried })
+  }
+
+  /** The workspace tools of `session`'s folder, checked again (422 when it is gone or unsafe), under a sandbox
+   *  `writable` and with `network` as given, with a private tmp dir under the session's folder. */
+  #workspace(session: SessionRecord, { writable, network }: { writable: boolean; network: boolean }): WorkspaceTools {
+    const { store, paths } = this.office
     const real = checkFolder(this.office, session.cwd)
     const tmpdir = path.join(paths.sessionDir(session.id), "tmp")
     fs.mkdirSync(tmpdir, { recursive: true, mode: 0o700 })
-    const policy = repo.people.get(session.person)?.harness_policy
     let sandbox: SandboxPolicy
     try {
-      sandbox = new SandboxPolicy({
-        workspace: real,
-        writable: policy?.sandbox === "workspace-write",
-        network: policy?.network === true,
-        tmpdir,
-        office: this.office.guards,
-      })
+      sandbox = new SandboxPolicy({ workspace: real, writable, network, tmpdir, office: this.office.guards })
     } catch (error) {
       if (error instanceof UnsafeWorkspace) throw new HarnessError(422, "unsafe_workspace", error.message)
       throw error
     }
-    const workspace = new WorkspaceTools(sandbox, { officeHome: paths.home, store })
-    const carried = (question: QuestionRecord) => this.answers.carried(question)
-    return mainSpec({ store, git, repo, session, workspace, monitor: this.monitor, carried })
+    return new WorkspaceTools(sandbox, { officeHome: paths.home, store })
   }
 
   /** Continues an ended Codex session as a new one opened by `by` (the Codex sessions' continuation). */
@@ -616,7 +716,8 @@ export class ChatHarness implements SessionHarness {
     const session = this.store.getSession(sessionId)
     if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
     if (!LIVE.includes(session.status)) {
-      this.#actors.delete(sessionId)
+      const finished = this.#actors.get(sessionId)
+      if (finished !== undefined) this.#drop(finished)
       throw new HarnessError(409, "not_live", `session ${sessionId} has no live run`)
     }
     let actor = this.#actors.get(sessionId)
@@ -651,6 +752,15 @@ export class ChatHarness implements SessionHarness {
   /** 503 `stopping` once `closeAll` has begun. */
   #running(): void {
     if (this.#closed) throw new HarnessError(503, "stopping", "the office is stopping")
+  }
+}
+
+/** Whether `file` is a regular file, following symlinks; a path that can't name one is not. */
+function isFile(file: string): boolean {
+  try {
+    return fs.statSync(file).isFile()
+  } catch {
+    return false
   }
 }
 
