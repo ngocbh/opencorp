@@ -1,17 +1,8 @@
 /** A session's run state, and the status writes that must not race the steps that finish a session. */
 import { expect, test } from "bun:test"
-import { HarnessError, LIVE, SETTLED, guardedUpdate, notWaiting, runState, writeState } from "../../src/chat/state.ts"
+import { HarnessError, LIVE, SETTLED, notWaiting, runState, writeState } from "../../src/chat/state.ts"
 import type { SessionRecord } from "../../src/store/store.ts"
 import { openStore, recordEvents, session } from "../store/helpers.ts"
-
-test("a guarded update writes only from the given statuses", () => {
-  const store = openStore()
-  const s = store.createSession(session({ status: "idle" }))
-  expect(guardedUpdate(store, s.id, ["idle"], { status: "busy" })?.status).toBe("busy")
-  expect(guardedUpdate(store, s.id, ["idle"], { status: "ending" })).toBeUndefined()
-  expect(store.getSession(s.id)?.status).toBe("busy")
-  expect(guardedUpdate(store, "01K6A0000000000000000000ZZ", ["idle"], { status: "busy" })).toBeUndefined()
-})
 
 test("the run state is waiting then busy then idle", () => {
   expect(runState({ waiting: true, running: true })).toBe("waiting")

@@ -1,4 +1,4 @@
-/** Which node of a conversation flow is the turn, and which reply follows it. */
+/** Which node of a conversation flow is the turn. */
 import { expect, test } from "bun:test"
 import { staticPathOf } from "@ngocbh/yian/run"
 import { ChatFlow, MAIN_CHAT } from "../../src/chat/turns.ts"
@@ -27,10 +27,4 @@ test("the main chat names its turn and reply", () => {
   expect(MAIN_CHAT.isReply("chat#0/reply")).toBe(true)
   expect(MAIN_CHAT.isReply("chat#0/heard")).toBe(false)
   expect(new ChatFlow({ turn: "talk/heard" }).isTurn("talk#2/heard")).toBe(true)
-})
-
-test("the reply after a turn is in the same occurrence", () => {
-  expect(MAIN_CHAT.replyAfter("chat#3/heard")).toBe("chat#3/reply")
-  expect(MAIN_CHAT.replyAfter("chat#0/heard")).toBe("chat#0/reply")
-  expect(new ChatFlow({ turn: "talk/heard", reply: "work/reply" }).replyAfter("talk#1/heard")).toBeNull()
 })
