@@ -74,7 +74,7 @@ export class RunNotifier {
   changed(runId: string, build: BuildEvent): void {
     if (this.#closed) return
     const at = this.#scheduler.now()
-    if (!this.#pending.has(runId) && at - (this.#sent.get(runId) ?? -Infinity) >= this.#every) {
+    if (!this.#pending.has(runId) && this.#due(runId, at)) {
       this.#sent.set(runId, at)
       if (++this.#atOnce >= PRUNE_EVERY) this.#prune(at)
       this.#send(build)
@@ -101,7 +101,8 @@ export class RunNotifier {
     this.#timer?.abort.abort()
     const timer = { at, abort: new AbortController() }
     this.#timer = timer
-    this.#scheduler.sleep(Math.max(0, at - this.#scheduler.now()), timer.abort.signal).then(
+    const wait = Math.min(this.#every, Math.max(0, at - this.#scheduler.now()))
+    this.#scheduler.sleep(wait, timer.abort.signal).then(
       () => {
         if (this.#timer !== timer) return
         this.#timer = null
@@ -118,13 +119,20 @@ export class RunNotifier {
     const at = this.#scheduler.now()
     const due: BuildEvent[] = []
     for (const [runId, build] of this.#pending) {
-      if (at - (this.#sent.get(runId) ?? -Infinity) < this.#every) continue
+      if (!this.#due(runId, at)) continue
       this.#sent.set(runId, at)
       this.#pending.delete(runId)
       due.push(build)
     }
     if (due.length > 0) this.#prune(at)
     for (const build of due) this.#send(build)
+  }
+
+  /** Whether `runId` may send at `at`: never sent, sent `every` ago or more, or sent "later" than `at`. */
+  #due(runId: string, at: number): boolean {
+    const sent = this.#sent.get(runId)
+    // The scheduler's clock is the wall clock, which can step back; a run must not wait out the step.
+    return sent === undefined || at - sent >= this.#every || at < sent
   }
 
   /** Forgets runs long quiet, so the map stays small. */

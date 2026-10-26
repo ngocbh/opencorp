@@ -494,6 +494,7 @@ runs/test_live.py::test_a_debrief_in_flight_is_known_with_its_open_nodes	deferre
 runs/test_live.py::test_a_debrief_is_claimed_while_its_outcome_is_written	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-2
 runs/test_nodes.py	ported	packages/office/tests/runs/nodes.test.ts	—	O4b-5
 runs/test_notify.py	ported	packages/office/tests/runs/notify.test.ts	—	O4b-7
+runs/test_notify.py::test_a_failing_build_is_logged_and_the_next_still_goes	changed	packages/office/tests/runs/notify.test.ts::a failing build is logged and the next still goes	design §6 rule 13: the log names the error type, never its message	O4b-7
 runs/test_notify.py::test_close_stops_the_thread_and_drops_what_waits	changed	packages/office/tests/runs/notify.test.ts::close stops the timer and drops what waits	design §3.3: threads become async; a timer replaces the notifier thread	O4b-7
 runs/test_notify.py::test_runs_long_quiet_are_forgotten_even_when_nothing_is_coalesced	changed	packages/office/tests/runs/notify.test.ts::runs long quiet are forgotten even when nothing is coalesced	design §3.3: threads become async; a timer replaces the notifier thread: no timer is armed and no old run is remembered	O4b-7
 runs/test_outcome_names.py	ported	packages/office/tests/runs/outcome_names.test.ts	—	O3-1
