@@ -702,25 +702,25 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/session_actor.test.ts::a changed endpoint before a message starts a fresh run	design §8.4	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a delivery acked after result is advanced	O4a-0a	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a fresh run carries a message answer as its message	4a revision §1	O4a-3
-—	new	packages/office/tests/chat/session_actor.test.ts::a fresh run that cant spawn at end stops the run it replaced	4a revision §1 (Finish)	O4a-3
-—	new	packages/office/tests/chat/session_actor.test.ts::a hard stop waits for the lingering worker and skips a run with no log	4a revision §1 (Finish): the hard stop waits for the worker's exit; a run with no log has nothing to cancel	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a fresh run that cant spawn at end stops the run it replaced	O4a-3 plan, Finish	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a hard stop waits for the lingering worker and skips a run with no log	O4a-3 plan, Finish: the hard stop waits for the worker's exit; a run with no log has nothing to cancel	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a lost ack is resent and a lost interrupt is dropped	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a message after end is refused as ending	4a revision §1	O4a-3
-—	new	packages/office/tests/chat/session_actor.test.ts::a message whose answer is unanswered at close is refused as stopping	4a revision §1: every caller is answered across close (Answering deliveries)	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a message whose answer is unanswered at close is refused as stopping	O4a-3 plan, Answering deliveries: every caller is answered across close	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a model call that finishes after the session finished is charged	4a revision §1: a model call is paid for even when it finishes after the session finished	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a model call with no token counts is logged unpriced	design §6 rule 13: a malformed usage is logged by type, never charged or thrown	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a new actor over a capped session sends without advancing	4a revision §1, G3	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a not resumed advance starts a fresh run with the deliveries it never applied	O4a-2	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a profile edited between two messages does not stop the next advance	Y3	O4a-3
-—	new	packages/office/tests/chat/session_actor.test.ts::a prompt whose send comes back unsent after close is refused as stopping	4a revision §1: every caller is answered across close (Answering deliveries)	O4a-3
-—	new	packages/office/tests/chat/session_actor.test.ts::a run that stops on every advance fails after one retry	4a revision §1: a stopped run is retried once, then the session fails	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a prompt whose send comes back unsent after close is refused as stopping	O4a-3 plan, Answering deliveries: every caller is answered across close	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a run that stops on every advance fails after one retry	design §8.2 (Failures): a worker that dies without an outcome is resumed once, then the session fails; a run that stops or crashes on every advance is bounded the same way	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a run the cap stopped is not a death when the cap is raised before its worker exits	4a revision §1, G3: a cap stop is decided by how the run stopped, not by the cap at exit	O4a-3
-—	new	packages/office/tests/chat/session_actor.test.ts::a second worker death fails the session	4a revision §1: a worker death is retried once, then the session fails	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a second worker death fails the session	design §8.2 (Failures): a worker that dies without an outcome is resumed once, then the session fails (worker stopped)	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a send the worker answered is not sent again when its frame reports the channel closed	4a revision §1: only a lost ack is resent (G2); a delivery the worker answered stays answered	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a settled wait is re-advanced once without progress	4a revision §1	O4a-3
-—	new	packages/office/tests/chat/session_actor.test.ts::a start after the registry closed is refused as stopping	design §8.2: a start after close is refused as stopping and leaves the session starting	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a start after the registry closed is refused as stopping	O4a-3 plan, Spawning step 5: RegistryClosed → 503 stopping; Python's start returned while stopping (chat/harness.py)	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a stored question fires question stored once	4a revision §1	O4a-3
-—	new	packages/office/tests/chat/session_actor.test.ts::an answer whose spawn failed goes with the next advance and is consumed	4a revision §1: a stored answer is redelivered with the next advance	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::an answer whose spawn failed goes with the next advance and is consumed	Python: a stored answer is read at the run's next wake (test_waiting.py::test_a_session_waiting_at_a_question_node_sleeps_and_an_answer_wakes_it_to_the_node)	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::an end whose advance is not resumed still closes the fresh run	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::an ending session whose fresh run cant spawn fails	4a revision §1: Python's _new_run failing fails the session (_cant_start)	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::an ending session whose run is busy twice fails	4a revision §1: left ending it could never be ended (Python fails a session it cannot wake)	O4a-3
@@ -730,8 +730,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/session_actor.test.ts::end while a reply runs then a call over the cap ends the session over its cap	4a revision §1: hard stop over the cap (coordinator choice)	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::esc on a session asleep while its agent waits on a call spawns one advance that cuts it	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::exit typed ends the session	4a revision §1	O4a-3
-—	new	packages/office/tests/chat/session_actor.test.ts::fail with a lingering waiting worker reports no run frame	4a revision §1 (Finish): runFinished gets only the result that ended the run; Python passed None when the office ended it	O4a-3
-—	new	packages/office/tests/chat/session_actor.test.ts::fail with a live worker cancels through it	4a revision §1 (Finish): fail cancels through the live worker, spawning nothing	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::fail with a lingering waiting worker reports no run frame	O4a-3 plan, Finish: runFinished gets only the result that ended the run; Python passed None when the office ended it	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::fail with a live worker cancels through it	O4a-3 plan, Finish: fail cancels through the live worker, spawning nothing	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::live calls is empty while a worker runs the run and null otherwise	O4a-7a	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::no office code outside the worker calls a yian host function	design §8.2	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::the status is busy as soon as a message is accepted	4a revision §1	O4a-3

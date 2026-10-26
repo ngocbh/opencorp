@@ -1337,29 +1337,39 @@ const SRC = fileURLToPath(new URL("../../src/", import.meta.url))
 // The yian functions that drive a run: only a worker calls them, on the run it hosts.
 const HOST_CALLS = new Set(["send", "complete", "close", "interrupt", "cancel", "advance"])
 const HOST_MODULES = new Set(["@ngocbh/yian", "@ngocbh/yian/run"])
+// Modules that call host functions and run in the worker: only src/worker/ loads them.
+const WORKER_ONLY = new Set(["worker/main", "chat/history"])
+// Strings are matched so that a `//` or `/*` inside one isn't read as a comment.
+const COMMENT = /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g
 // A static import's clause runs from `import` to `from`, across lines; a side-effect import names nothing.
 const STATIC_IMPORT = /^[ \t]*import\s+(type\s+)?([^;"'`]*?)\s+from\s+["']([^"']+)["']/gm
+const RE_EXPORT = /^[ \t]*export\s+(type\s+)?(\*(?:\s+as\s+[\w$]+)?|\{[^}]*\})\s*from\s+["']([^"']+)["']/gm
 const DYNAMIC_IMPORT = /\bimport\(\s*["'`]([^"'`]+)["'`]\s*\)/g
 
-/** The yian host functions `text` imports, and its loads of the worker's main module; `file` is relative to src. */
+/** The yian host functions `text` imports or re-exports, and its loads of worker-only modules; `file` is relative to src. */
 function hostImports(file: string, text: string): string[] {
-  const workerMain = (spec: string) =>
-    spec.startsWith(".") && path.posix.join(path.posix.dirname(file), spec) === "worker/main.ts"
+  /** The src-relative module a relative `spec` names, without its extension; `null` for a package. */
+  const local = (spec: string) =>
+    spec.startsWith(".") ? path.posix.join(path.posix.dirname(file), spec).replace(/\.[jt]s$/, "") : null
+  // Block comments keep their line breaks so that the next line still starts a line.
+  const code = text.replace(COMMENT, (match, string) => string ?? match.replace(/[^\n]/g, ""))
   const found: string[] = []
-  for (const [, typeOnly, clause, spec] of text.matchAll(STATIC_IMPORT)) {
+  for (const [, typeOnly, clause, spec] of [...code.matchAll(STATIC_IMPORT), ...code.matchAll(RE_EXPORT)]) {
     if (typeOnly) continue
-    if (workerMain(spec!)) found.push(`${file}: worker/main.ts`)
+    const mod = local(spec!)
+    if (mod && WORKER_ONLY.has(mod)) found.push(`${file}: ${mod}.ts`)
     if (!HOST_MODULES.has(spec!)) continue
-    if (/\*\s*as\b/.test(clause!)) found.push(`${file}: * from ${spec}`)
+    if (clause!.includes("*")) found.push(`${file}: * from ${spec}`)
     for (const specifier of (clause!.match(/\{([^}]*)\}/)?.[1] ?? "").split(",")) {
       const words = specifier.trim().split(/\s+/)
       if (words.length > 1 && words[0] === "type") continue
       if (HOST_CALLS.has(words[0]!)) found.push(`${file}: ${words[0]} from ${spec}`)
     }
   }
-  for (const [, spec] of text.matchAll(DYNAMIC_IMPORT)) {
+  for (const [, spec] of code.matchAll(DYNAMIC_IMPORT)) {
+    const mod = local(spec!)
     // The office's own entry point loads the worker's main for the `__worker` mode.
-    if (workerMain(spec!) && !(file === "main.ts" && spec === "./worker/main.ts")) found.push(`${file}: worker/main.ts`)
+    if (mod && WORKER_ONLY.has(mod) && !(file === "main.ts" && mod === "worker/main")) found.push(`${file}: ${mod}.ts`)
     if (HOST_MODULES.has(spec!)) found.push(`${file}: import(${spec})`)
   }
   return found
@@ -1374,14 +1384,43 @@ test("no office code outside the worker calls a yian host function", () => {
   ])
   expect(hostImports("a/b.ts", 'import * as run from "@ngocbh/yian/run"')).toEqual(["a/b.ts: * from @ngocbh/yian/run"])
   expect(hostImports("a/b.ts", 'const y = await import("@ngocbh/yian")')).toEqual(["a/b.ts: import(@ngocbh/yian)"])
-  expect(hostImports("a/b.ts", 'import { STOP } from "../worker/main.ts"')).toEqual(["a/b.ts: worker/main.ts"])
+  // Comments inside an import clause, one with an apostrophe.
+  expect(hostImports("a/b.ts", 'import {\n  loadFlow,\n  // drives the run\n  advance,\n} from "@ngocbh/yian/run"')).toEqual([
+    "a/b.ts: advance from @ngocbh/yian/run",
+  ])
+  expect(hostImports("a/b.ts", "import {\n  loadFlow, // the run's flow\n  send,\n} from \"@ngocbh/yian\"")).toEqual([
+    "a/b.ts: send from @ngocbh/yian",
+  ])
+  expect(hostImports("a/b.ts", 'import { /* host */ cancel } from "@ngocbh/yian"')).toEqual([
+    "a/b.ts: cancel from @ngocbh/yian",
+  ])
+  expect(hostImports("a/b.ts", 'const glob = "src/*"\nimport { send } from "@ngocbh/yian"\nconst end = "*/"')).toEqual([
+    "a/b.ts: send from @ngocbh/yian",
+  ])
+  // Re-exports.
+  expect(hostImports("a/b.ts", 'export { advance as run } from "@ngocbh/yian/run"')).toEqual([
+    "a/b.ts: advance from @ngocbh/yian/run",
+  ])
+  expect(hostImports("a/b.ts", 'export * from "@ngocbh/yian"')).toEqual(["a/b.ts: * from @ngocbh/yian"])
+  expect(hostImports("a/b.ts", 'export * as run from "@ngocbh/yian/run"')).toEqual(["a/b.ts: * from @ngocbh/yian/run"])
+  // The worker-only modules, in each spelling.
+  for (const spec of ["../worker/main.ts", "../worker/main.js", "../worker/main"])
+    expect(hostImports("a/b.ts", `import { STOP } from "${spec}"`)).toEqual(["a/b.ts: worker/main.ts"])
   expect(hostImports("a/b.ts", 'await import("../worker/main.ts")')).toEqual(["a/b.ts: worker/main.ts"])
+  expect(hostImports("chat/b.ts", 'import { readSeed } from "./history.js"')).toEqual(["chat/b.ts: chat/history.ts"])
+  expect(hostImports("a/b.ts", 'export { readSeed } from "../chat/history"')).toEqual(["a/b.ts: chat/history.ts"])
+  expect(hostImports("a/b.ts", 'export * from "../chat/history.ts"')).toEqual(["a/b.ts: chat/history.ts"])
   for (const allowed of [
     'import type { send } from "@ngocbh/yian"',
     'import { type cancel, loadFlow } from "@ngocbh/yian"',
     'import { sendMessage } from "@ngocbh/yian"',
     'import { send } from "@ngocbh/yian/tools"',
     'import type { WorkerEnv } from "../worker/main.ts"',
+    'import type { Seeded } from "../chat/history.ts"',
+    'export type { FoldedRun } from "@ngocbh/yian/run"',
+    'export { loadFlow } from "@ngocbh/yian"',
+    '// import { send } from "@ngocbh/yian"',
+    '/*\nimport { send } from "@ngocbh/yian"\n*/',
   ])
     expect(hostImports("a/b.ts", allowed)).toEqual([])
   expect(hostImports("main.ts", 'await import("./worker/main.ts")')).toEqual([])
