@@ -228,8 +228,9 @@ export async function* liveStream(
   yield ": connected\n\n"
   let last = after
   // A reconnect starts near `after` from the run's index (the run page has usually built it), not by skipping lines
-  // from byte 0 in one synchronous read; a stream from the start reads from byte 0 anyway. Built alongside the join,
-  // so a long build doesn't hold the rejoin loop's pings.
+  // from byte 0 in one synchronous read; a stream from the start reads from byte 0 anyway, and so does a reconnect
+  // when the log's index can't be read (`logIndex` is null). Built alongside the join, so a long build doesn't hold
+  // the rejoin loop's pings.
   const indexing = after >= 0 ? office.runs.logIndex(log) : null
   /** Record frames for the log's records after `last` through `to` (to its end when null); whether the stream goes
    *  on: false once it is closed or has sent `reset`. */

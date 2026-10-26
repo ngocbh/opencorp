@@ -1332,6 +1332,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/questions/seed.test.ts::a cut never splits a character	design §1.4 overridden for the seed: lengths are code points (as Python), since yian refuses a message with an unpaired surrogate	O4a-8
 —	new	packages/office/tests/questions/side.test.ts::a seed is a private file read back as written	DRIVER-OFFICE.md security rule 6: seed.md holds transcript text, so it is replaced atomically as a 0600 file, never written or read through a link	O4a-8
 —	new	packages/office/tests/runs/detail.test.ts::run updated is built from the runs summary	§5.1: run.updated from the status rule and memory (no outbox, O1-3)	O4b-7
+—	new	packages/office/tests/runs/detail.test.ts::run updated reads the index once until the index changes	design §5.2: one index read per change of the index, not per run.updated	O4b-7
 —	new	packages/office/tests/runs/indexer.test.ts::a busy index resolves false and logs only the error name	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
 —	new	packages/office/tests/runs/indexer.test.ts::a call made during an update waits for an update that starts after it	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
 —	new	packages/office/tests/runs/indexer.test.ts::a missing runs folder is an empty index	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6

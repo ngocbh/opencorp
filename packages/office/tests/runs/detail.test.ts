@@ -5,10 +5,10 @@ import fs from "node:fs"
 import path from "node:path"
 import type { Readable } from "node:stream"
 import { expect, test } from "bun:test"
-import type { RunIndexRow, RunInspection } from "@ngocbh/yian/run"
+import { type RunIndexRow, type RunInspection, updateRunIndex } from "@ngocbh/yian/run"
 import { COULDNT_START } from "../../src/runs/outcomes.ts"
 import { refresh, RunLogReader, UnreadableLog, UnsupportedSchema } from "../../src/runs/reader.ts"
-import { Inspections, Live, type LiveRun } from "../../src/runs/records.ts"
+import { Inspections, Live, type LiveRun, readIndex } from "../../src/runs/records.ts"
 import { LOG_GONE, NoLog, NOT_STARTED, NOT_STARTED_YET, RunLogs } from "../../src/runs/service.ts"
 import { NotFound, newId, type RunRow, type Store } from "../../src/store/store.ts"
 import { tempDir } from "../helpers.ts"
@@ -330,4 +330,28 @@ test("run updated is built from the runs summary", async () => {
     current_nodes: ["side_chat#0/reply"],
   })
   expect(runsFor(o).runUpdated(newId())).toBeNull()
+})
+
+test("run updated reads the index once until the index changes", () => {
+  const o = office()
+  aRun(o, { runId: RUN })
+  const file = chatLog(logFile(o, RUN), 1)
+  updateRunIndex(o.runsDir)
+  let reads = 0
+  const runs = new RunLogs({
+    store: o.store,
+    runsDir: o.runsDir,
+    live: () => new Live(),
+    readIndex: (runsDir, log) => {
+      reads += 1
+      return readIndex(runsDir, log)
+    },
+  })
+  runs.runUpdated(RUN)
+  runs.runUpdated(RUN)
+  expect(reads).toBe(1)
+  chatLog(file, 2)
+  updateRunIndex(o.runsDir)
+  runs.runUpdated(RUN)
+  expect(reads).toBe(2)
 })

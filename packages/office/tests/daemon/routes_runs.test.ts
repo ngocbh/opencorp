@@ -441,6 +441,12 @@ test("run changed publishes run updated at once and coalesces the next one", asy
     runId,
     { run_id: runId, session_id: s.id, parent_run_id: null, status: "running", current_nodes: ["chat#0/reply"] },
   ])
+  const next = await sub.next(2000)
+  expect(next).not.toBeNull()
+  expect((next as readonly ["meta", { type: string; subject_id: string }])[1]).toMatchObject({
+    type: "run.updated",
+    subject_id: runId,
+  })
 })
 
 /** Opens `target` with a `node:http` request; resolves with the response. The request is destroyed when the test
