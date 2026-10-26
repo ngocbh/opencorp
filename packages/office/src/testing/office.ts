@@ -9,12 +9,13 @@ import path from "node:path"
 import { OfficePaths } from "../daemon/office.ts"
 import { CHECKOUT } from "../hq/version.ts"
 import { args } from "../install/proc.ts"
+import { selfCommand, selfSpawnEnv } from "../platform.ts"
 import { FakeLLM, LLM_CONFIG } from "./fake_llm.ts"
 
 const OPENCORP = path.join(CHECKOUT, "packages/cli/bin/opencorp")
-// The caller's own session (a Codex override, an SSH login) would change what init sets up; Bun's and Node's
-// options would change how the office runs.
-const DROPPED = new Set(["NODE_OPTIONS", "OPENCORP_CODEX_BIN", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"])
+// The caller's own session (a Codex override, an SSH login) would change what init sets up; `selfSpawnEnv` drops
+// what would change how the office runs.
+const DROPPED = new Set(["OPENCORP_CODEX_BIN", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"])
 
 /** A command's exit code (null when a signal ended it) and output. */
 export interface Ran {
@@ -116,18 +117,19 @@ export class TestOffice {
     this.#pidfile = paths.pidfile
     this.llm = llm
     this.#ps = ps
-    const env: Record<string, string> = {}
+    const env: Record<string, string | undefined> = {}
     for (const [key, value] of Object.entries(process.env)) {
-      if (value === undefined || key.startsWith("GIT_") || key.startsWith("BUN_") || DROPPED.has(key)) continue
+      if (key.startsWith("GIT_") || DROPPED.has(key)) continue
       env[key] = value
     }
-    this.env = {
+    this.env = selfSpawnEnv({
       ...env,
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_CONFIG_GLOBAL: os.devNull,
       OPENCORP_HOME: this.home,
-      OPENCORP_BUN: process.execPath,
-    }
+      // In a checkout, the Bun running this process.
+      OPENCORP_BUN: selfCommand()[0],
+    })
   }
 
   /** Runs `opencorp <argv>` through the checkout wrapper with `env`, in `cwd` (default the home); killed after 90 s. */
