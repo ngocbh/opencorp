@@ -734,6 +734,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/session_actor.test.ts::a settled wait is re-advanced once without progress	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a start after the registry closed is refused as stopping	O4a-3 plan, Spawning step 5: RegistryClosed → 503 stopping; Python's start returned while stopping (chat/harness.py)	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::a stored question fires question stored once	4a revision §1	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::a stuck run index update does not stall a runs end	§5.1 index lag: the actor brings the run index up to date (bounded) before it reports a run's end	O4b-6
 —	new	packages/office/tests/chat/session_actor.test.ts::an answer whose spawn failed goes with the next advance and is consumed	Python: a stored answer is read at the run's next wake (test_waiting.py::test_a_session_waiting_at_a_question_node_sleeps_and_an_answer_wakes_it_to_the_node)	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::an end whose advance is not resumed still closes the fresh run	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::an ending session whose fresh run cant spawn fails	4a revision §1: Python's _new_run failing fails the session (_cant_start)	O4a-3
@@ -749,6 +750,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/session_actor.test.ts::fail with a live worker cancels through it	O4a-3 plan, Finish: fail cancels through the live worker, spawning nothing	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::live calls is empty while a worker runs the run and null otherwise	O4a-7a	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::no office code outside the worker calls a yian host function	design §8.2	O4a-3
+—	new	packages/office/tests/chat/session_actor.test.ts::the actor brings the run index up to date before it reports a runs end	§5.1 index lag: the actor brings the run index up to date (bounded) before it reports a run's end	O4b-6
 —	new	packages/office/tests/chat/session_actor.test.ts::the status is busy as soon as a message is accepted	4a revision §1	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::the status is busy when a message is accepted after the result	4a revision §1: busy from acceptance holds when the send is acked after the worker's result	O4a-3
 —	new	packages/office/tests/chat/session_actor.test.ts::the user message is published live under its send id	O4a-7a	O4a-3

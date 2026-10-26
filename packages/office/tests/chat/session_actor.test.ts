@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveEvent } from "@opencorp/protocol"
-import { INTERRUPTED_CALL, type Wait } from "../../src/chat/session_actor.ts"
+import { INDEX_WAIT_MS, INTERRUPTED_CALL, type Wait } from "../../src/chat/session_actor.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { COULDNT_RESUME, COULDNT_START, ENDED_OVER_CAP, NEW_MODEL, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
@@ -430,6 +430,42 @@ test("exit typed ends the session", async () => {
   expect(ended).toEqual(["ended"])
   expect(fake.requests()).toEqual([])
   expect(texts(o, sid, "user")).toEqual([])
+})
+
+test("the actor brings the run index up to date before it reports a runs end", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  let calls = 0
+  let updated!: (ok: boolean) => void
+  const runIndex = {
+    update: () => {
+      calls += 1
+      return new Promise<boolean>((resolve) => (updated = resolve))
+    },
+  }
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid, { runIndex })
+  await actor.start()
+  await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
+  expect(await actor.prompt("/exit")).toBe("turn")
+  // The registry drops the worker at its exit; the actor's own exit job waits behind the update.
+  await waitFor(() => calls > 0 && o.registry.get(sid) === undefined, { what: "the update and the worker's exit" })
+  expect(status(o, sid)).not.toBe("ended")
+  updated(true)
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  expect(calls).toBe(1)
+})
+
+test("a stuck run index update does not stall a runs end", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const runIndex = { update: () => new Promise<boolean>(() => {}) }
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid, { runIndex })
+  await actor.start()
+  await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
+  expect(await actor.prompt("/exit")).toBe("turn")
+  await waitFor(() => status(o, sid) === "ended", { what: "the end", timeout: INDEX_WAIT_MS + 30_000 })
 })
 
 test("a message after end is refused as ending", async () => {
