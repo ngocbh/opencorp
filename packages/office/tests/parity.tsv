@@ -488,7 +488,13 @@ runs/test_as_stored.py	open	—	—	O4b-7
 runs/test_debriefs.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 runs/test_detail.py	open	—	—	O4b-7
 runs/test_launches.py	open	—	—	O4a-5
-runs/test_list.py	open	—	—	O4b-7
+runs/test_list.py	ported	packages/office/tests/runs/list.test.ts	—	O4b-7
+runs/test_list.py::test_a_codex_debrief_is_top_level_and_says_so	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-7
+runs/test_list.py::test_a_run_that_finishes_while_listed_shows_running_not_interrupted	changed	packages/office/tests/runs/list.test.ts::a run that finishes while listed shows running not interrupted	§5.1: status from the office end reason or yian's index; parents from yian's index; the end lands in yian's log, read after memory said running	O4b-7
+runs/test_list.py::test_children_are_read_only_when_they_can_match	changed	packages/office/tests/runs/list.test.ts::children are read only when they can match	§5.1: status from the office end reason or yian's index; parents from yian's index; children are read by id from yian's links through runsAmong, whose filters are asserted	O4b-7
+runs/test_list.py::test_open_or_recent_lists_open_runs_of_any_age_and_runs_launched_since	changed	packages/office/tests/runs/list.test.ts::open or recent lists open runs of any age and runs launched since	§5.1: status from the office end reason or yian's index; parents from yian's index; an open run is idle in the actor's memory, a closed one ended in yian's index	O4b-7
+runs/test_list.py::test_the_default_first_request_scans_only_open_and_recent_runs	changed	packages/office/tests/runs/list.test.ts::the default first request scans only open and recent runs	§5.1: status from the office end reason or yian's index; parents from yian's index; the open run waits in the actor's memory and the store leaves out the runs yian's index ended	O4b-7
+runs/test_list.py::test_the_list_never_opens_a_log	changed	packages/office/tests/runs/list.test.ts::the list never opens a log	§5.1: status from the office end reason or yian's index; parents from yian's index; the list never asks the run log reader: yian's inspect is not called for a run with a settled index row or an office end	O4b-7
 runs/test_live.py	open	—	—	O4b-7
 runs/test_live.py::test_a_debrief_in_flight_is_known_with_its_open_nodes	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-2
 runs/test_live.py::test_a_debrief_is_claimed_while_its_outcome_is_written	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-2
@@ -522,7 +528,7 @@ runs/test_reader.py::test_one_huge_record_is_read_without_holding_its_line	chang
 runs/test_reader.py::test_one_record_by_seq_has_its_evidence_and_is_capped	changed	packages/office/tests/runs/reader.test.ts::one record by seq is whole and is capped	§5.5, #362: no evidence in schema 22	O4b-5
 runs/test_reader.py::test_progress_and_size_never_say_less_than_was_read	dropped	—	§5.5: no progress is reported	O4b-5
 runs/test_reader.py::test_unknown_envelope_fields_before_or_after_seq_and_at_are_ignored	changed	packages/office/tests/runs/reader.test.ts::an unknown envelope field makes the log unreadable	§5.5, design §3.2: the index reads through yian's iterRunRecords, which refuses envelope fields other than its six	O4b-5
-runs/test_reason_cut.py	open	—	—	O4b-7
+runs/test_reason_cut.py	ported	packages/office/tests/runs/reason_cut.test.ts	—	O4b-7
 runs/test_records.py	ported	packages/office/tests/runs/records.test.ts	—	O4b-6
 runs/test_records.py::test_a_busy_sessions_current_run_runs_only_with_its_live_run_or_wake	changed	packages/office/tests/runs/records.test.ts::a busy sessions current run runs only with its live run or wake	§5.1 rule 2: the actor's memory, not the stored session status	O4b-6
 runs/test_records.py::test_a_debrief_in_flight_runs_and_a_backward_job_leaves_a_finished_run_finished	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-6
