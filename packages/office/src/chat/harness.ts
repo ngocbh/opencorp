@@ -137,10 +137,10 @@ export class ChatHarness implements SessionHarness {
       log,
     }
     // A finished session's actor goes once its last worker and its hard stops have; a lingering one is dropped at
-    // the next call.
+    // the next call. An active actor is a reopen's new one, already in the map, never the one that finished.
     hooks.sessionEnded.push((session) => {
       const actor = this.#actors.get(session.id)
-      if (actor !== undefined && !actor.hasWorker) this.#drop(actor)
+      if (actor !== undefined && !actor.active && !actor.hasWorker) this.#drop(actor)
     })
   }
 
