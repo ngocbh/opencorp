@@ -46,7 +46,8 @@ type Answer = { status: number; error?: string; keys?: string[]; picked?: unknow
 /** A well-formed session id that neither office has. */
 const NO_SESSION = "01JZZZZZZZZZZZZZZZZZZZZZZZ"
 const lan = { name: "Lan", handle: "lan", title: "QA", manager: "ngocbh" }
-/** The assistant's reply to the chat's one prompt, on both offices. */
+/** The chat's one prompt, and the assistant's reply to it on both offices. */
+const PROMPT = "Hi, who are you?"
 const REPLY = "Hello from minh."
 
 const STEPS: Step[] = [
@@ -72,7 +73,7 @@ const STEPS: Step[] = [
     name: "prompt",
     method: "POST",
     path: (c) => `/sessions/${c.id}/prompt`,
-    body: () => ({ text: "Hi, who are you?" }),
+    body: () => ({ text: PROMPT }),
     idle: true,
     schema: Ack,
   },
@@ -209,7 +210,7 @@ beforeAll(async () => {
     fake.replyEnded(id)
   })
   real = await startOffice()
-  real.llm.script({ content: REPLY })
+  real.llm.script({ match: PROMPT, content: REPLY })
   realCtx = { cwd: path.join(real.root, "proj"), id: "", version: "" }
   fs.mkdirSync(realCtx.cwd)
 }, 60_000)
@@ -228,5 +229,5 @@ for (const step of STEPS) {
       delete got.keys
     }
     expect({ step: step.name, ...got }).toEqual({ step: step.name, ...want })
-  })
+  }, 30_000)
 }

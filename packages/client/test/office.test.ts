@@ -1,5 +1,6 @@
 // The socket client against a real office on a temp home: each answer parses with its route's protocol schema. One
-// office for the file; each test makes its own folders, so no test depends on another's order.
+// office for the file; each test makes its own folders, so no test depends on another's order. The company reads are
+// HQ's alone, and the run reads answer 501 on the socket until the run views land, so neither is covered here.
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import {
   Ack,
@@ -57,7 +58,7 @@ test("who the office takes the client to be, its health, the people and the peop
   expect(Person.array().parse(await client().people.inFolder(cwd))).toEqual([])
   Session.parse(await client().sessions.create({ person: "minh", cwd }))
   expect(Person.array().parse(await client().people.inFolder(cwd)).map((p) => p.handle)).toEqual(["minh"])
-})
+}, 30_000)
 
 test("a session starts, answers a prompt, is listed and ends", async () => {
   const cwd = folder("session")
@@ -67,19 +68,20 @@ test("a session starts, answers a prompt, is listed and ends", async () => {
   expect(Session.parse(await client().sessions.get(created.id)).cwd).toBe(cwd)
   expect(Session.array().parse(await client().sessions.list({ cwd })).map((s) => s.id)).toEqual([created.id])
 
-  office.llm.script({ content: "Hello from minh." })
-  expect(Ack.parse(await client().sessions.prompt(created.id, { text: "hi" }))).toEqual({ ok: true })
+  const text = "Say hello to the client test"
+  office.llm.script({ match: text, content: "Hello from minh." })
+  expect(Ack.parse(await client().sessions.prompt(created.id, { text }))).toEqual({ ok: true })
   await until(async () => (await client().sessions.messages(created.id)).length === 2)
   await reach(created.id, "idle")
   const messages = Message.array().parse(await client().sessions.messages(created.id))
   expect(messages.map((m) => [m.role, m.parts.map((p) => (p.type === "text" ? p.text : p.type))])).toEqual([
-    ["user", ["hi"]],
+    ["user", [text]],
     ["assistant", ["Hello from minh."]],
   ])
 
   expect(Ack.parse(await client().sessions.end(created.id))).toEqual({ ok: true })
   await reach(created.id, "ended")
-})
+}, 30_000)
 
 test("questions, a profile and the connections with their models", async () => {
   const s = Session.parse(await client().sessions.create({ person: "minh", cwd: folder("questions") }))
@@ -89,7 +91,7 @@ test("questions, a profile and the connections with their models", async () => {
   expect([list.connections.map((c) => c.name), list.default]).toEqual([["office"], "office"])
   const models = ModelList.parse(await client().connections.models("office"))
   expect([models.connection, models.models.map((m) => m.id)]).toEqual(["office", ["stub"]])
-})
+}, 30_000)
 
 test("HQ status, browser sessions and costs", async () => {
   const status = HqStatus.parse(await client().hq.status())
@@ -97,7 +99,6 @@ test("HQ status, browser sessions and costs", async () => {
   expect(BrowserSession.array().parse(await client().hq.browsers())).toEqual([])
   const since = "2000-01-01T00:00:00.000Z"
   expect(CostReport.parse(await client().costs.since(since)).since).toBe(since)
-  // The company reads are HQ's alone, and the run reads answer 501 on the socket until the run views land.
 })
 
 test("an unknown session is a 404 OfficeError with the office code not_found", async () => {

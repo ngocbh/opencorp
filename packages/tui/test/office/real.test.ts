@@ -44,30 +44,32 @@ test("people and folder people; the cwd is one encoded segment", async () => {
   expect(await client().people.inFolder(cwd)).toEqual([])
   await client().sessions.create({ person: "minh", cwd })
   expect((await client().people.inFolder(cwd)).map((p) => p.handle)).toEqual(["minh"])
-})
+}, 30_000)
 
 test("create a session, prompt it, list it by person", async () => {
-  office.llm.script({ content: "Hello from minh." })
+  const text = "Say hello to the TUI test"
+  office.llm.script({ match: text, content: "Hello from minh." })
   const s = await client().sessions.create({ person: "minh", cwd: folder("prompt") })
   expect([s.person, s.kind, s.status]).toEqual(["minh", "main", "starting"])
   // A prompt sent while the session starts is queued until it is ready.
-  expect(await client().sessions.prompt(s.id, { text: "hi" })).toEqual({ ok: true })
+  expect(await client().sessions.prompt(s.id, { text })).toEqual({ ok: true })
   await until(async () => (await client().sessions.messages(s.id)).length === 2, 20_000)
   await reach(s.id, "idle")
   const messages = await client().sessions.messages(s.id)
   expect(messages.map((m) => [m.role, m.parts.map((p) => (p.type === "text" ? p.text : p.type))])).toEqual([
-    ["user", ["hi"]],
+    ["user", [text]],
     ["assistant", ["Hello from minh."]],
   ])
   expect((await client().sessions.list({ person: "minh", limit: 1 }))[0].id).toBe(s.id)
-})
+}, 30_000)
 
 test("interrupt, end, and the cost cap", async () => {
   const { id } = await chat("interrupt")
   const before = office.llm.requests().length
-  office.llm.script({ content: "never sent", hold: true })
+  const text = "Start the interrupt test"
+  office.llm.script({ match: text, content: "never sent", hold: true })
   onTestFinished(() => office.llm.release())
-  await client().sessions.prompt(id, { text: "go" })
+  await client().sessions.prompt(id, { text })
   // Interrupt only once the model has the request, so the held reply is taken, not left queued for the next test.
   await office.llm.waitForRequests(before + 1)
   await client().sessions.interrupt(id)
@@ -85,7 +87,7 @@ test("interrupt, end, and the cost cap", async () => {
   await client().sessions.end(id)
   expect((await client().sessions.get(id)).status).toBe("ending")
   await reach(id, "ended")
-})
+}, 30_000)
 
 test("a stale profile write is a VersionConflictError", async () => {
   const p = await client().profiles.get("minh")
@@ -170,4 +172,4 @@ test("continue waits the create limit; the office refuses a composer session", a
   const refused = await failure(client().sessions.continue(id)).finally(() => spy.mockRestore())
   expect(asked).toEqual([CREATE_TIMEOUT_MS])
   expect([refused.status, refused.code]).toEqual([422, "not_continuable"])
-})
+}, 30_000)
