@@ -175,6 +175,9 @@ const NO_WORKSPACE = {
   call: (): never => {
     throw new Error("the workspace is never called")
   },
+  interrupt: (): never => {
+    throw new Error("the workspace is never interrupted")
+  },
 }
 
 /** The base company with human lan (no side chat flow in it), its git, a store, a monitor, and `side`: a side
