@@ -369,7 +369,7 @@ export const ROUTES: readonly Route<HqContext>[] = [
     },
   },
   // Any method, so a wrong method under /api is 404, never 405, as Starlette's catch-all route was.
-  ...(["GET", "POST", "PUT", "DELETE"] as const).flatMap((method) =>
+  ...(["GET", "POST", "PUT", "PATCH", "DELETE"] as const).flatMap((method) =>
     ["/api", "/api/*rest"].map((path): Route<HqContext> => ({ method, path, handler: noRoute })),
   ),
 ]
