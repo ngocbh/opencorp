@@ -1316,7 +1316,9 @@ test("the harness gives run logs its live runs", async () => {
   await fake.waitForRequests(1, 30_000)
   await waitFor(() => replying(h.harness.live().runs.get(runId)?.nodes), { what: "the reply's start" })
   expect(h.harness.live().runs.get(runId)!.status).toBe("running")
-  expect(h.office.runs.page().runs.find((r) => r.run_id === runId)?.status).toBe("running")
+  // Its running nodes come only from the harness's memory.
+  const listed = h.office.runs.page().runs.find((r) => r.run_id === runId)
+  expect([listed?.status, replying(listed?.current_nodes)]).toEqual(["running", true])
   fake.release()
   await waitFor(() => status(h, s.id) === "idle", { what: "the next turn" })
 })

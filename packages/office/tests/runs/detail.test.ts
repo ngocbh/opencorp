@@ -9,7 +9,7 @@ import { type RunIndexRow, type RunInspection, updateRunIndex } from "@ngocbh/yi
 import { COULDNT_START } from "../../src/runs/outcomes.ts"
 import { refresh, RunLogReader, UnreadableLog, UnsupportedSchema } from "../../src/runs/reader.ts"
 import { Inspections, Live, type LiveRun, readIndex } from "../../src/runs/records.ts"
-import { LOG_GONE, NoLog, NOT_STARTED, NOT_STARTED_YET, RunLogs } from "../../src/runs/service.ts"
+import { INDEX_TTL_MS, LOG_GONE, NoLog, NOT_STARTED, NOT_STARTED_YET, RunLogs } from "../../src/runs/service.ts"
 import { NotFound, newId, type RunRow, type Store } from "../../src/store/store.ts"
 import { tempDir } from "../helpers.ts"
 import { openStore, session } from "../store/helpers.ts"
@@ -332,11 +332,14 @@ test("run updated is built from the runs summary", async () => {
   expect(runsFor(o).runUpdated(newId())).toBeNull()
 })
 
-test("run updated reads the index once until the index changes", () => {
+test("run updated reads the index once until the index changes", async () => {
   const o = office()
   aRun(o, { runId: RUN })
   const file = chatLog(logFile(o, RUN), 1)
   updateRunIndex(o.runsDir)
+  // Written well before the first read, so that read is trusted past INDEX_TTL_MS.
+  const old = new Date(Date.now() - 10 * INDEX_TTL_MS)
+  fs.utimesSync(path.join(o.runsDir, "index.sqlite"), old, old)
   let reads = 0
   const runs = new RunLogs({
     store: o.store,
@@ -348,6 +351,8 @@ test("run updated reads the index once until the index changes", () => {
     },
   })
   runs.runUpdated(RUN)
+  runs.runUpdated(RUN)
+  await Bun.sleep(INDEX_TTL_MS + 100)
   runs.runUpdated(RUN)
   expect(reads).toBe(1)
   chatLog(file, 2)

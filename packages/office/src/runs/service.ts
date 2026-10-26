@@ -38,7 +38,7 @@ export const BATCH = 100
 export const SCAN_CAP = 1_000
 /** The statuses of a run with no end yet (an interrupted one may have either). */
 export const OPEN_STATUSES: ReadonlySet<string> = new Set(["running", "waiting", "idle"])
-/** How long a read of yian's run index is reused while its file is unchanged, in milliseconds. */
+/** How long a read of yian's run index taken within this long of the file's last write is reused, in milliseconds. */
 export const INDEX_TTL_MS = 1000
 
 export const NOT_STARTED = "no run log: the run didn't start"
@@ -314,13 +314,14 @@ export class RunLogs {
     return runUpdated(runId, run.session_id, run.parent_run_id ?? null, run.status, run.current_nodes ?? [])
   }
 
-  /** yian's run index, read again only when its file changed or the last read is over INDEX_TTL_MS old; empty
-   *  without the file. */
+  /** yian's run index, read again only when its file changed (or, for a read taken within INDEX_TTL_MS of the file's
+   *  last write, once that read is over INDEX_TTL_MS old); empty without the file. */
   #sharedIndex(): Map<string, RunIndexRow> {
     // Safe to share: the daemon is the index's only writer, so its rows change only when the file does, and the
     // actor awaits the index update before it reports an end, so that end's run.updated sees a changed file. A
     // cached `running` that came from a log lock isn't settled, so YianRuns asks the log; a run a worker just started
-    // is in the actor's memory; the TTL bounds anything else to a second.
+    // is in the actor's memory. A read taken within INDEX_TTL_MS of the file's mtime could have missed a second
+    // write in the same tick with the same size, so it is trusted only for INDEX_TTL_MS (git's racy-clean rule).
     const stat = fs.statSync(path.join(this.#runsDir, "index.sqlite"), { bigint: true, throwIfNoEntry: false })
     if (stat === undefined) {
       this.#cachedIndex = null
@@ -329,7 +330,8 @@ export class RunLogs {
     const key = `${stat.ino}:${stat.size}:${stat.mtimeNs}`
     const now = Date.now()
     const cached = this.#cachedIndex
-    if (cached !== null && cached.key === key && now - cached.at <= INDEX_TTL_MS) return cached.rows
+    const settled = (c: { at: number }) => c.at - Number(stat.mtimeMs) > INDEX_TTL_MS || now - c.at <= INDEX_TTL_MS
+    if (cached !== null && cached.key === key && settled(cached)) return cached.rows
     const rows = this.#readIndex(this.#runsDir, this.#log)
     this.#cachedIndex = { key, at: now, rows }
     return rows
