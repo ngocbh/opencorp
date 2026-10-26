@@ -1,9 +1,11 @@
-/** The run routes: GET /runs/{id}/live streams a run's records; the others answer 501 not_implemented until the run
- *  views land. */
+/** The run routes: GET /runs/{id}/live streams a run's records and live frames; the others answer 501
+ *  not_implemented until the run views land. */
 import fs from "node:fs"
 import path from "node:path"
-import { logEvents } from "../../runs/reader.ts"
+import { lineEvent, logEvents } from "../../runs/reader.ts"
+import { PING } from "../bus.ts"
 import { HttpError, RawReply, type Route } from "../http.ts"
+import type { LiveJoin, ViewerFrame } from "../live.ts"
 import type { Office, RequestContext } from "../office.ts"
 import { PING_MS, RESET } from "./events.ts"
 
@@ -45,66 +47,164 @@ export function liveTarget(ctx: RequestContext, id: string): { log: string; afte
   return { log, after }
 }
 
-/** The relay's view of the worker feeding run `runId`; null when no worker feeds it. */
-function join(_office: Office, _runId: string): null {
-  // The relay joins here once the office holds one; until then no run has a worker to join.
-  return null
-}
-
 /** One SSE frame of event `type` with `data` as its JSON. */
 function liveFrame(type: string, data: object): string {
   return `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`
 }
 
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+function rest(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      signal.removeEventListener("abort", done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal.addEventListener("abort", done)
+  })
+}
+
 /**
- * The live stream of run `runId`: `: connected`, then, with no worker feeding the run, a `record` frame for each
- * record of `log` after seq `after` and `run_end`. A line that doesn't read as its seq sends `reset` instead. It ends
- * when `signal` aborts or `alive` turns false.
+ * The live stream of run `runId`, whose log is `log`, for a client that has its records through seq `after` (-1 for
+ * none). It sends `: connected`, then:
+ *
+ * - with no worker feeding the run: a `record` frame for each record of the log after `after`, then `run_end`;
+ * - with one: the log's records after `after` through the seq the relay's view of the run stands at, a `call` frame
+ *   for each model call in flight with its text so far, then each frame the view applies (`record`, `start`, `chunk`,
+ *   `end`; a merged chunk carries its last chunk's index) and `: ping` after `pingMs` idle. When the worker ends it
+ *   sends the log after the last record sent, then `run_end`. While the relay rebuilds its view the stream joins
+ *   again every `REJOIN_MS`.
+ *
+ * `run_end` means the worker ended, not the run: a client reconnects with `after` when the run runs again. `reset`
+ * means the stream can't go on as the view says (a line that doesn't read as its seq, a log behind the view, a record
+ * past the next seq, a viewer the relay dropped): the client reconnects. Any of these ends the stream, as do `signal`
+ * aborting and `alive` turning false (checked before every frame).
  */
 export async function* liveStream(
   office: Office,
   runId: string,
   log: string,
   after: number,
-  { signal, alive = () => true }: { signal: AbortSignal; pingMs: number; alive?: () => boolean },
+  { signal, pingMs, alive = () => true }: { signal: AbortSignal; pingMs: number; alive?: () => boolean },
 ): AsyncGenerator<string> {
   const open = () => !signal.aborted && alive()
   if (!open()) return
   yield ": connected\n\n"
-  if (join(office, runId) === null) {
+  let last = after
+  /** Record frames for the log's records after `last` through `to` (to its end when null); whether the stream goes
+   *  on: false once it is closed or has sent `reset`. */
+  async function* records(to: number | null): AsyncGenerator<string, boolean> {
     let sent = 0
-    for (const event of logEvents(log, after + 1, null)) {
+    for (const event of logEvents(log, last + 1, to)) {
       if (++sent % BATCH === 0) await new Promise((resolve) => setImmediate(resolve))
-      if (!open()) return
+      if (!open()) return false
       if (event === null) {
         yield RESET
-        return
+        return false
       }
       yield liveFrame("record", { seq: event.seq, record: event })
+      last = event.seq
     }
+    return open()
+  }
+
+  let joined: LiveJoin | "rebuilding" | null = office.live?.join(runId) ?? null
+  while (joined === "rebuilding") {
+    await rest(REJOIN_MS, signal)
     if (!open()) return
-    yield liveFrame("run_end", {})
+    joined = office.live?.join(runId) ?? null
+  }
+  if (joined === null) {
+    if (yield* records(null)) yield liveFrame("run_end", {})
+    return
+  }
+  const { lastSeq, calls, viewer } = joined
+  // Wakes a viewer.next() that waits, so a client that leaves doesn't hold the stream until the next ping.
+  const close = () => viewer.close()
+  signal.addEventListener("abort", close)
+  try {
+    if (!(yield* records(lastSeq))) return
+    if (last < lastSeq) {
+      // The log is behind the view.
+      yield RESET
+      return
+    }
+    for (const { node, n, text, nextIndex } of calls) {
+      if (!open()) return
+      yield liveFrame("call", { node, n, text, next_index: nextIndex })
+    }
+    for (;;) {
+      const item: ViewerFrame | typeof PING | null = await viewer.next(pingMs)
+      if (!open()) return
+      if (item === null) {
+        if (viewer.dropped) yield RESET
+        return
+      }
+      if (item === PING) {
+        yield ": ping\n\n"
+        continue
+      }
+      switch (item.type) {
+        case "record": {
+          if (item.seq <= last) continue
+          const event = item.seq === last + 1 ? lineEvent(Buffer.from(item.line, "utf8"), item.seq) : null
+          if (event === null) {
+            yield RESET
+            return
+          }
+          yield liveFrame("record", { seq: event.seq, record: event })
+          last = item.seq
+          break
+        }
+        case "start": {
+          const { node, n, model, purpose, started_at } = item
+          yield liveFrame("start", { node, n, model, purpose, started_at })
+          break
+        }
+        case "chunk": {
+          const { node, n, index, text } = item
+          yield liveFrame("chunk", { node, n, index, text })
+          break
+        }
+        case "end": {
+          const { node, n, error } = item
+          yield liveFrame("end", { node, n, error })
+          break
+        }
+        case "run_end":
+          if (yield* records(null)) yield liveFrame("run_end", {})
+          return
+      }
+    }
+  } finally {
+    signal.removeEventListener("abort", close)
+    viewer.close()
   }
 }
 
-/** `GET /runs/{id}/live[?after=<seq>]`: the run's records as SSE (`liveStream`). HEAD is refused (405): a HEAD reply
- *  to a stream would hold the connection. */
-const LIVE: Route<RequestContext> = {
-  method: "GET",
-  path: "/runs/:id/live",
-  head: false,
-  handler: (ctx, params) => {
-    const { log, after } = liveTarget(ctx, params.id!)
-    return new RawReply(
-      200,
-      { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
-      liveStream(ctx.office, params.id!, log, after, { signal: ctx.signal, pingMs: PING_MS }),
-    )
-  },
+/** `GET /runs/{id}/live[?after=<seq>]`: the run's records and its worker's live frames as SSE (`liveStream`), pinging
+ *  after `pingMs` idle. HEAD is refused (405): a HEAD reply to a stream would hold the connection. */
+function live(pingMs: number): Route<RequestContext> {
+  return {
+    method: "GET",
+    path: "/runs/:id/live",
+    head: false,
+    handler: (ctx, params) => {
+      const { log, after } = liveTarget(ctx, params.id!)
+      return new RawReply(
+        200,
+        { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
+        liveStream(ctx.office, params.id!, log, after, { signal: ctx.signal, pingMs }),
+      )
+    },
+  }
 }
 
-/** The run routes. A stub's message names the route pattern because a handler can't see its request path. */
-export const ROUTES: readonly Route<RequestContext>[] = [
+/** The run routes, the live stream pinging after `pingMs` idle. A stub's message names the route pattern because a
+ *  handler can't see its request path. */
+export function runRoutes(pingMs: number = PING_MS): Route<RequestContext>[] {
+  return [
   ...PATHS.map((path) => ({
     method: "GET" as const,
     path,
@@ -112,5 +212,6 @@ export const ROUTES: readonly Route<RequestContext>[] = [
       throw new HttpError(501, "not_implemented", `GET ${path} is not implemented yet`)
     },
   })),
-  LIVE,
-]
+  live(pingMs),
+  ]
+}

@@ -940,8 +940,15 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/routes_questions.test.ts::an answer goes to the harness when there are no cards	routes/questions.py's "harness" in office.extras branch (an actor without the cards extension), through the stand-in (rule 1)	O3-9
 —	new	packages/office/tests/daemon/routes_questions.test.ts::an answer to a codex card codex no longer waits on is 200 and stale	design §7.1: daemon/routes/questions.py's answer contract for Codex cards	O3-14
 —	new	packages/office/tests/daemon/routes_questions.test.ts::stop is credited to the verified person	through the stand-in (rule 1): the chat run that test_stopping_a_manager_question_is_credited_to_the_verified_person needs is O4a-9's	O3-9
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a client that leaves closes its viewer	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a dropped viewer gets reset	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a live stream sends the log to the joins seq then the calls then frames	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a merged chunk carries its last index	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a ping keeps an idle live stream open	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/daemon/routes_runs.test.ts::a rebuilding view is joined again	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a run no worker feeds streams its log then run end	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::every runs route answers 501 not implemented	design §4.3: GET /runs* answers 501 until the run views (O4b-3, O4b-7 replace it)	O2-6
+—	new	packages/office/tests/daemon/routes_runs.test.ts::run end reads the log past the last seq sent	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::the live route answers 404 for a run the store does not hold	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::the live route answers 404 no log for a run without a log	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::the live route refuses an after that is not a seq without echoing it	design §2.6 (P7): GET /runs/{id}/live	O4b-3
@@ -997,7 +1004,10 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/harness/translate.test.ts::a typed form answer that isnt a number makes no reply	design §7.1: the adapter builds the reply from its own card; numbers parse as decimals only (translate.py:444-451's int()/float(), strict)	O3-11
 —	new	packages/office/tests/harness/translate.test.ts::abort marks an unfinished text part and interrupts running tools	D9, §7.3: the slice of chat/transcript.py's abort the translator needs; chat/test_transcript.py stays with O4a-7a	O3-13
 —	new	packages/office/tests/harness/translate.test.ts::an answer that isnt an offered option makes no reply	design §7.1 and security rule 11: an answer that isn't an offered label is refused	O3-11
+—	new	packages/office/tests/hq/api.test.ts::a company update that drops the person ends the live stream	design §2.6 (P7): GET /runs/{id}/live	O4b-3
+—	new	packages/office/tests/hq/api.test.ts::a revoke ends an open live stream	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/hq/api.test.ts::a wrong method under api is a json 404	design §6.4: a wrong method under /api is 404 no_route, as Starlette's catch-all route was	O2-9
+—	new	packages/office/tests/hq/api.test.ts::an expired session ends the live stream at its next frame	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/hq/api.test.ts::get office isnt on the hq allowlist	design §6, rule 7 (P14): GET /office is office.sock only	O2-9
 —	new	packages/office/tests/hq/api.test.ts::the hq live route answers 404 for an unknown run	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/hq/api.test.ts::the hq live route refuses head	design §2.6 (P7): GET /runs/{id}/live	O4b-3

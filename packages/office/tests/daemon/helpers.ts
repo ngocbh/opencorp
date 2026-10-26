@@ -4,8 +4,9 @@ import http, { type IncomingHttpHeaders } from "node:http"
 import net from "node:net"
 import path from "node:path"
 import { type MarkdownStore, MarkdownVersionMismatch } from "@ngocbh/yian"
-import type { JsonObject } from "@ngocbh/yian/run"
-import { onTestFinished } from "bun:test"
+import { iterRunRecords, type JsonObject } from "@ngocbh/yian/run"
+import { RunLiveCall, RunLiveChunk, RunLiveEnd, RunLiveRecord, RunLiveStart } from "@opencorp/protocol"
+import { expect, onTestFinished } from "bun:test"
 import { parse as parseYaml, stringify } from "yaml"
 import { tokenSha256 } from "../../src/auth/tokens.ts"
 import { Hooks } from "../../src/chat/hooks.ts"
@@ -15,6 +16,7 @@ import { CompanyGit } from "../../src/company/git.ts"
 import { DeviceTokens } from "../../src/daemon/auth.ts"
 import { Bus } from "../../src/daemon/bus.ts"
 import { type Limits, type RequestInfo, type Route, createServer, requestListener } from "../../src/daemon/http.ts"
+import { LiveRelay, type LiveWorker } from "../../src/daemon/live.ts"
 import { Office, OfficePaths, type RequestContext, type SessionHarness } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
@@ -226,11 +228,11 @@ export async function served(
 }
 
 /** A chat run of the CEO stored under a new session, with a chat log of `turns` turns at its log path unless `turns`
- *  is null; returns its id and log path. */
-export function launchRun(
+ *  is null; returns its id, its session's id and its log path. */
+export function storedRun(
   office: Office,
   { turns = 2 }: { turns?: number | null } = {},
-): { runId: string; log: string } {
+): { runId: string; sessionId: string; log: string } {
   const sessionId = office.store.createSession(session()).id
   const runId = newId()
   office.store.addRun({
@@ -250,7 +252,60 @@ export function launchRun(
     fs.mkdirSync(path.dirname(log), { recursive: true })
     chatLog(log, turns)
   }
-  return { runId, log }
+  return { runId, sessionId, log }
+}
+
+/** Sets `office.live` to a relay over a transcript that shows nothing; its viewers end when the test finishes. */
+export function liveRelay(office: Office): LiveRelay {
+  const relay = new LiveRelay({ bus: office.bus, transcript: { messages: () => [] }, log: () => {} })
+  office.live = relay
+  onTestFinished(() => relay.close())
+  return relay
+}
+
+/** A stand-in worker of the stored run `runId` in session `sessionId` with the log `log`: what the relay uses of a
+ *  worker. */
+export function stubWorker(runId: string, sessionId: string, log: string): LiveWorker {
+  return { job: { run_id: runId, session_id: sessionId, log }, follow: () => Promise.resolve(true) }
+}
+
+/** A stored run (`storedRun`) whose stand-in worker has sent the relay on `office.live` (`liveRelay`) a snapshot at
+ *  its log's last seq, with no calls in flight; the worker stays attached. */
+export function joinedRun(office: Office): {
+  runId: string
+  log: string
+  lastSeq: number
+  relay: LiveRelay
+  worker: LiveWorker
+} {
+  const { runId, sessionId, log } = storedRun(office)
+  const relay = liveRelay(office)
+  const worker = stubWorker(runId, sessionId, log)
+  const lastSeq = [...iterRunRecords(log, { payloads: false })].at(-1)!.seq
+  relay.frame(worker, { type: "snapshot", snapshot: { last_seq: lastSeq, calls: [] } })
+  return { runId, log, lastSeq, relay, worker }
+}
+
+/** The data schema of each frame of GET /runs/{id}/live that carries one. */
+const LIVE_DATA: Record<string, { parse(data: unknown): unknown }> = {
+  record: RunLiveRecord,
+  call: RunLiveCall,
+  start: RunLiveStart,
+  chunk: RunLiveChunk,
+  end: RunLiveEnd,
+}
+
+/** `got`, after checking each frame of a live stream: a comment says connected or ping, `run_end` is `{}`, `reset` has
+ *  no data, and every other frame's data parses with its protocol schema. */
+export function checkedLive(got: Frame[]): Frame[] {
+  for (const [event, , data] of got) {
+    if (event === "comment") expect(["connected", "ping"]).toContain(data as string)
+    else if (event === "run_end") expect(data).toEqual({})
+    else if (event === "reset") expect(data).toBeNull()
+    else if (LIVE_DATA[event] === undefined) throw new Error(`not a live frame: ${event}`)
+    else LIVE_DATA[event].parse(data)
+  }
+  return got
 }
 
 /** An `Authorization` header carrying `token`. */
