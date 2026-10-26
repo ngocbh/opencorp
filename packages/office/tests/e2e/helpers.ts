@@ -23,6 +23,8 @@ const SERVICE_TOOLS = ["launchctl", "systemctl", "loginctl", "tmux"]
 const SSH_VARS = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
 /** Python's `wait_for` default. */
 const WAIT = 40_000
+/** The pairing URL `opencorp pair` prints for HQ's TCP listener: its port and code. */
+export const URL_RE = /http:\/\/127\.0\.0\.1:(\d+)\/pair#([A-Za-z0-9_-]+)/
 
 /** `s` single-quoted for sh. */
 const q = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`
@@ -470,6 +472,17 @@ export class RunningOffice {
   stop(): Promise<void> {
     return stopAll(this.root)
   }
+}
+
+/** HQ's status once its TCP listener is up. */
+export function waitListening(office: RunningOffice): Promise<any> {
+  return waitFor(
+    async () => {
+      const status = await office.hqStatus()
+      return status.tcp.listening && status
+    },
+    { timeout: 10_000, what: "HQ's TCP listener" },
+  )
 }
 
 /** A reply to a `Browser` request, its body read in full. */

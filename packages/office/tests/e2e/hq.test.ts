@@ -5,11 +5,10 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
 import { type Check, report } from "../../src/install/doctor.ts"
-import { ps, waitFor } from "../helpers.ts"
-import { Browser, openOffice, type RunningOffice } from "./helpers.ts"
+import { ps } from "../helpers.ts"
+import { Browser, openOffice, type RunningOffice, URL_RE, waitListening } from "./helpers.ts"
 
 const TIMEOUT = 240_000
-const URL_RE = /http:\/\/127\.0\.0\.1:(\d+)\/pair#([A-Za-z0-9_-]+)/
 const CODE = /\/pair#([A-Za-z0-9_-]+)/
 /** The local port `opencorp pair` prints for an hq.sock forward. */
 const LOCAL_PORT = 49381
@@ -20,17 +19,6 @@ const webOffice = () => openOffice({ hq: { tcp: true, port: 0 } })
 
 /** A running office with HQ's TCP listener off: hq.sock only. */
 const sockOffice = () => openOffice({ hq: { tcp: false } })
-
-/** HQ's status once its TCP listener is up. */
-function waitListening(office: RunningOffice): Promise<any> {
-  return waitFor(
-    async () => {
-      const status = await office.hqStatus()
-      return status.tcp.listening && status
-    },
-    { timeout: 10_000, what: "HQ's TCP listener" },
-  )
-}
 
 /** A browser stand-in reaching hq.sock through an SSH forward whose local end makes the Host header `host`. */
 function overHqSock(office: RunningOffice, host: string): Browser {
@@ -123,6 +111,7 @@ test(
     const retryAfter = Number(locked.headers["retry-after"])
     expect(retryAfter).toBeGreaterThan(0)
     expect(retryAfter).toBeLessThanOrEqual(60)
+    expect(Number.isInteger(retryAfter)).toBe(true)
     expect(locked.json().message).toContain("opencorp pair")
     // The lock is per handle: another handle's refusals still say only "wrong handle or password".
     expect((await signIn("nobody", PASSWORD)).status).toBe(401)
@@ -207,12 +196,8 @@ test(
     const cwd = scratch(office)
     const out = (await office.opencorp(["pair", "--no-open"], { cwd })).stdout
     const code = out.match(CODE)![1]!
-    const commands = execFileSync(ps(), ["-wwaxo", "command="], {
-      env: { LC_ALL: "C.UTF-8" },
-      encoding: "utf8",
-      timeout: 5000,
-    }).split("\n")
-    expect(commands.filter((line) => line.includes(code))).toEqual([])
+    const commands = execFileSync(ps(), ["-wwaxo", "command="], { env: {}, encoding: "utf8", timeout: 5000 })
+    expect(commands.split("\n").filter((line) => line.includes(code))).toEqual([])
     expect(officeLog(office)).not.toContain(code)
   },
   TIMEOUT,
