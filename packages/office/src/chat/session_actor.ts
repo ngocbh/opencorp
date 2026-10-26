@@ -92,7 +92,7 @@ export type ActorWorker = Pick<Worker, "job" | "pid" | "deliver" | "stop" | "fol
 export const INDEX_WAIT_MS = 3000
 
 /** How many characters of why a run failed a notice or a reason keeps. */
-export const WHY_CHARS = 500
+const WHY_CHARS = 500
 
 /** The error types of a model refusing the connection's key. */
 const AUTH_CAUSES = ["AuthenticationError", "PermissionDeniedError", "AuthError"]
@@ -1498,13 +1498,19 @@ export class SessionActor implements LiveCalls {
       this.#finish("ended", outcome, null, run)
     } else if (status === "not_resumed") {
       await this.#notResumed(run)
-    } else if (status === "failed" && this.#chat.isReply(failureOf(outcome!).node_id as string | undefined)) {
+    } else if (status === "failed" && this.#failedReply(outcome!)) {
       await this.#replyFailed(run, outcome!)
     } else {
       this.#log(`session ${this.sessionId}: its run ended (${status})`)
       this.#finish("failed", outcome, null, run)
     }
     this.#trySettle("after a worker exit")
+  }
+
+  /** Whether the failed result `outcome` failed at a reply node. */
+  #failedReply(outcome: Frame): boolean {
+    const id = failureOf(outcome).node_id
+    return typeof id === "string" && this.#chat.isReply(id)
   }
 
   /**
@@ -1613,7 +1619,7 @@ export class SessionActor implements LiveCalls {
    */
   async #replyFailed(run: WorkerRun, outcome: Frame): Promise<void> {
     const failure = failureOf(outcome)
-    this.#log(`session ${this.sessionId}: its reply failed (${typeName(failure.cause_type)})`)
+    this.#log(`session ${this.sessionId}: its reply failed (${typeName(redactKey(failure.cause_type, run.provider))})`)
     const reason = whyFailed(outcome, run.provider)
     const hint = refusedKey(failure, reason)
       ? ` Check connection '${this.#ranOn(run.runId)}', or pick another model with /model.`
@@ -2024,7 +2030,7 @@ function failureOf(frame: Frame): Record<string, unknown> {
 
 /** Why a run failed, by its outcome (a `result` or `error` frame; null when its worker stopped or couldn't start),
  *  without `provider`'s model key and in at most `WHY_CHARS` characters. */
-export function whyFailed(outcome: Frame | null, provider: Pick<Provider, "llm_config"> | null): string {
+function whyFailed(outcome: Frame | null, provider: Pick<Provider, "llm_config"> | null): string {
   if (outcome === null) return "its worker stopped or couldn't start; see the office log"
   const failure = failureOf(outcome)
   const cause = failure.cause_type

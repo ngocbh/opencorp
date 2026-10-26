@@ -35,6 +35,7 @@ import {
   free,
   makeHarness,
   noWorkersLeft,
+  replyRunning,
   scriptedWorker,
   state,
   status,
@@ -189,6 +190,7 @@ test("a steer reaches the running reply", async () => {
   const { id } = await start(h)
   await h.harness.prompt(id, "hi")
   await fake.waitForRequests(1)
+  await replyRunning(h)
   expect(await h.harness.steer(id, "Also mention Rome.")).toBe("steer")
   fake.release()
   expect(await asked(fake, 2)).toContain("Also mention Rome.")
@@ -213,6 +215,7 @@ test("a steer the reply never reads is the next turn", async () => {
   const { id } = await start(h)
   await h.harness.prompt(id, "hi")
   await fake.waitForRequests(1)
+  await replyRunning(h)
   expect(await h.harness.steer(id, "one more thing")).toBe("steer")
   fake.release()
   expect(await asked(fake, 2)).toContain("one more thing")
@@ -258,6 +261,7 @@ test("end while busy interrupts then exits", async () => {
   const { id } = await start(h)
   await h.harness.prompt(id, "hi")
   await fake.waitForRequests(1)
+  await replyRunning(h)
   await h.harness.end(id)
   expect(status(h, id)).toBe("ending")
   const more = await rejection(h.harness.prompt(id, "more"))
@@ -359,6 +363,7 @@ test.each([
     } else {
       await h.harness.prompt(id, "hi")
       await fake.waitForRequests(1)
+      await replyRunning(h)
       sent = h.harness[send](id, "one more thing", { by: "lan" })
     }
     expect(await sent).toBe(reply)
@@ -812,7 +817,8 @@ test("a message the worker took as the stop began is answered with its seq", asy
     await close()
   })
   await h.harness.closeAll()
-  expect(["turn", "steer", "queued"]).toContain(await sent)
+  // No node event came: the run isn't at its turn, so the message waits for one.
+  expect(await sent).toBe("queued")
 })
 
 test("a wake at timer firing during the stop spawns nothing", async () => {
@@ -1121,6 +1127,7 @@ test("a turn that opens held keeps the messages queued before it", async () => {
   gate.watch(h)
   await h.harness.prompt(id, "hi")
   await fake.waitForRequests(1)
+  await replyRunning(h)
   // The reply runs: it reads the message before its next model call, which the cap's stop comes before.
   expect(await h.harness.prompt(id, "more")).toBe("steer")
   fake.release()
@@ -1195,6 +1202,8 @@ test("a failed run says so and starts a new run", async () => {
   expect(error).toStartWith("The reply failed (")
   expect(error).toEndWith("Send your message again.")
   expect(texts(h, id)).toEqual([])
+  // The notice is never in the transcript.
+  expect(h.harness.messages(id).flatMap((m) => m.parts.filter((p) => p.type === "error"))).toEqual([])
   await h.harness.prompt(id, "again")
   await waitFor(() => same(texts(h, id).slice(-1), ["Back."]), { what: "the reply" })
 })
@@ -1206,6 +1215,7 @@ test("a message sent during a reply that then fails is answered by the fresh run
   const { id } = await start(h)
   await h.harness.prompt(id, "hi")
   await fake.waitForRequests(1)
+  await replyRunning(h)
   expect(await h.harness.prompt(id, "more")).toBe("steer")
   fake.release()
   // The reply failed at its first model call, so it never read the message, which moves to the fresh run.

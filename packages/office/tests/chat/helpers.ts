@@ -12,6 +12,7 @@ import { type LiveEvent, now, OFFICE, Session, WorkItem } from "@opencorp/protoc
 import { ChatHarness } from "../../src/chat/harness.ts"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { mainSpec } from "../../src/chat/run_spec.ts"
+import { MAIN_CHAT } from "../../src/chat/turns.ts"
 import { type ActorContext, type ActorWorker, SessionActor, type Wait } from "../../src/chat/session_actor.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { loadRepo } from "../../src/company/loader.ts"
@@ -460,6 +461,8 @@ export interface ChatOffice {
   failNextSpawn(): void
   /** Runs `fn` with the next spawned worker once its spawn has resolved. */
   afterSpawn(fn: (worker: Worker) => void): void
+  /** How many reply node starts (or wakes) its workers have told their actors of. */
+  replyStarts(): number
   /** Another registry over the office, its spawns recorded, held, failed or followed as `registry`'s are; it stops
    *  when the test finishes. */
   newRegistry(): WorkerRegistry
@@ -518,6 +521,7 @@ export async function chatOffice(
   const holds: { entered: () => void; released: Promise<void> }[] = []
   const afters: ((worker: Worker) => void)[] = []
   let failNext = false
+  let replies = 0
   const newRegistry = () => {
     const registry = followWorkers(makeRegistry(office.store))
     const spawn = registry.spawn.bind(registry)
@@ -532,6 +536,13 @@ export async function chatOffice(
       if (failNext) {
         failNext = false
         throw new Error("the spawn failed")
+      }
+      const event = handlers.event.bind(handlers)
+      handlers.event = (worker, frame) => {
+        const data = frame.data as { node_id?: unknown } | undefined
+        const starts = frame.name === "NodeStarted" || frame.name === "NodeWoken"
+        if (starts && MAIN_CHAT.isReply(typeof data?.node_id === "string" ? data.node_id : null)) replies += 1
+        event(worker, frame)
       }
       const worker = await spawn(job, sessionDir, handlers, options)
       afters.shift()?.(worker)
@@ -609,6 +620,7 @@ export async function chatOffice(
     afterSpawn(fn) {
       afters.push(fn)
     },
+    replyStarts: () => replies,
     newRegistry,
   }
 }
@@ -718,6 +730,12 @@ export function errors(o: ChatOffice, sid: string): string[] {
     .filter((event) => event.type === "message.updated" && event.session_id === sid)
     .flatMap((event) => (event.data.parts as { type: string; message?: string }[]).filter((p) => p.type === "error"))
     .map((part) => part.message!)
+}
+
+/** Waits until `o`'s workers have told their actors of `n` reply starts: the `NodeStarted` reached the actor's queue,
+ *  so a command sent after it finds the reply running. The model getting the request shows only the worker's side. */
+export async function replyRunning(o: ChatOffice, n = 1): Promise<void> {
+  await waitFor(() => o.replyStarts() >= n, { what: "the actor to see the reply start" })
 }
 
 /** Session `sid` as stored. */

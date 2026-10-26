@@ -25,7 +25,8 @@ import {
 setDefaultTimeout(60_000)
 afterAll(noWorkersLeft)
 
-const KEY = "sk-outcome-key-0123456789"
+// Shaped like an error type's name, so only redaction keeps it out of a log line's cause.
+const KEY = "sk_outcome_key_0123456789"
 
 type Harness = Awaited<ReturnType<typeof makeHarness>>
 
@@ -97,7 +98,9 @@ test("a failed run says why and where without the providers key", async () => {
   const s = await h.harness.startSession("minh", h.folder)
   const { worker, handlers } = workers[0]!
   const message = `bad key ${KEY}; sent Bearer abcdefgh12345`
-  handlers.result(worker, failedResult(s.run_ids[0]!, { node_id: "chat#0/reply", cause_type: "AuthError", message }))
+  // The worker may put the key anywhere: the cause's type and the details too.
+  const failure = { node_id: "chat#0/reply", cause_type: `${KEY}AuthError`, message, details: [{ api_key: KEY }, KEY] }
+  handlers.result(worker, failedResult(s.run_ids[0]!, failure))
   handlers.exited(worker, 1)
   await waitFor(() => workers.length === 2 && finished.length === 1, { what: "the fresh run" })
   const [old, fresh] = rows(h, s.id)
@@ -105,11 +108,20 @@ test("a failed run says why and where without the providers key", async () => {
   expect(fresh).toMatchObject({ replacesRunId: old!.runId, endReason: null })
   expect(h.kinds).toEqual(["chat", "chat"])
   // Only the provider's key.
-  const why = "AuthError: bad key [redacted]; sent Bearer abcdefgh12345"
+  const why = "[redacted]AuthError: bad key [redacted]; sent Bearer abcdefgh12345"
   expect(errors(h, s.id)).toEqual([
     `The reply failed (${why}). Send your message again. Check connection 'office', or pick another model with /model.`,
   ])
-  expect((finished[0]!.failure as { message: string }).message).toBe("bad key [redacted]; sent Bearer abcdefgh12345")
+  expect(finished[0]!.failure).toEqual({
+    node_id: "chat#0/reply",
+    cause_type: "[redacted]AuthError",
+    message: "bad key [redacted]; sent Bearer abcdefgh12345",
+    details: [{ api_key: "[redacted]" }, "[redacted]"],
+  })
+  // A cause that isn't a type's name is logged as Error.
+  expect(h.logs).toContain(`session ${s.id}: its reply failed (Error)`)
+  const stored = [h.logs, h.store.getSession(s.id), rows(h, s.id), h.store.listQuestions({ sessionId: s.id })]
+  expect(JSON.stringify(stored)).not.toContain(KEY)
 })
 
 test("a worker that cant start fails its run with couldnt start", async () => {
@@ -174,6 +186,9 @@ test("a failed reply fails its run and the fresh run replaces it", async () => {
   const fake = await fakeLlm()
   fake.script({ error: 500 }, { content: "Back." })
   const h = await makeHarness(fake)
+  const seen: string[] = []
+  h.hooks.runStarted.push((_s, runId) => void seen.push(`started ${runId}`))
+  h.hooks.runFinished.push((_s, runId) => void seen.push(`finished ${runId}`))
   const sid = await start(h)
   await h.harness.prompt(sid, "hi")
   await waitFor(() => h.store.getSession(sid)!.run_ids.length === 2 && status(h, sid) === "idle", {
@@ -183,6 +198,51 @@ test("a failed reply fails its run and the fresh run replaces it", async () => {
   // yian recorded the failure: the office writes no end of its own.
   expect(old).toMatchObject({ endReason: null, endedAt: null })
   expect(fresh).toMatchObject({ replacesRunId: old!.runId, driver: old!.driver, endReason: null })
+  // The old run is reported finished before the fresh one starts.
+  await waitFor(() => seen.includes(`started ${fresh!.runId}`), { what: "the fresh run's start" })
+  const finishedOld = seen.indexOf(`finished ${old!.runId}`)
+  expect(finishedOld).toBeGreaterThanOrEqual(0)
+  expect(finishedOld).toBeLessThan(seen.indexOf(`started ${fresh!.runId}`))
+})
+
+test("a failed reply whose fresh run cant start fails the session and the fresh run", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const { worker, handlers } = workers[0]!
+  // The fresh run's spawn, after it was stored.
+  spyOn(h.registry, "spawn").mockRejectedValueOnce(new Error("the spawn failed"))
+  handlers.result(worker, failedResult(s.run_ids[0]!, { node_id: "chat#0/reply", message: "boom" }))
+  handlers.exited(worker, 1)
+  await waitFor(() => status(h, s.id) === "failed", { what: "the failure" })
+  const [old, fresh] = rows(h, s.id)
+  expect(old).toMatchObject({ endReason: null })
+  expect(fresh).toMatchObject({ replacesRunId: old!.runId, endReason: COULDNT_START })
+  expect(errors(h, s.id)).toEqual([
+    "The reply failed (boom). Send your message again.",
+    "The session failed (its worker stopped or couldn't start; see the office log). Start a new chat.",
+  ])
+})
+
+test("a failed reply whose fresh run cant resolve its connection fails the session on the failed result", async () => {
+  const h = await keyed(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const finished: [string, Frame | null][] = []
+  h.hooks.runFinished.push((_s, runId, result) => void finished.push([runId, result]))
+  const s = await h.harness.startSession("minh", h.folder)
+  const { worker, handlers } = workers[0]!
+  // Not private: the connection is refused before anything of the fresh run is written.
+  fs.chmodSync(path.join(h.office.connections.dir, "office.json"), 0o644)
+  const result = failedResult(s.run_ids[0]!, { node_id: "chat#0/reply", message: `bad key ${KEY}` })
+  handlers.result(worker, result)
+  handlers.exited(worker, 1)
+  await waitFor(() => status(h, s.id) === "failed" && finished.length === 1, { what: "the failure" })
+  expect(h.store.getSession(s.id)!.run_ids).toEqual(s.run_ids)
+  // The failed result ended the run: no office end reason.
+  expect(rows(h, s.id)).toMatchObject([{ endReason: null, endedAt: null }])
+  const redacted = { ...result, failure: { node_id: "chat#0/reply", message: "bad key [redacted]" } }
+  expect(finished).toEqual([[s.run_ids[0]!, redacted]])
+  expect(h.kinds).toEqual(["chat"])
 })
 
 test("a provider change interrupts the run it replaces", async () => {

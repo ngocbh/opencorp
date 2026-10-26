@@ -359,7 +359,8 @@ export class ChatHarness implements SessionHarness {
   }
 
   /** `handlers` as the stop needs them: each call goes to `handlers`; `exited` is dropped once the stop began, and
-   *  the requests are counted in flight, and refused once the workers' channels are closed. */
+   *  the requests are counted in flight, and refused once the workers' channels are closed. A hard stop in flight
+   *  when the office stops never sees its worker's exit (dropped), which is harmless: nothing awaits it in a queue. */
   #guard<W extends JobWorker>(handlers: WorkerHandlers<W>): WorkerHandlers<W> {
     return {
       event: (worker, frame) => handlers.event(worker, frame),
