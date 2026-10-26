@@ -254,6 +254,30 @@ test("the profile manager says when the default cant be read", async () => {
   await endChat(h, s.id)
 })
 
+test("a profile manager survives a restart", async () => {
+  const fake = await fakeLlm()
+  const h = await managerHarness(fake)
+  fake.script({ content: "Hello." }, { content: "Still here." })
+  const s = await h.harness.startManager("minh", "Hi.", { by: "lan" })
+  await waitFor(() => texts(h, s.id).join() === "Hello." && status(h, s.id) === "idle", { what: "the reply" })
+  await waitFor(() => h.registry.get(s.id) === undefined, { what: "the worker to exit" })
+  await h.reopen()
+
+  await h.harness.restore()
+  expect([status(h, s.id), h.registry.get(s.id)]).toEqual(["idle", undefined])
+  await h.harness.prompt(s.id, "Are you there?", { by: "lan" })
+  await waitFor(() => texts(h, s.id).at(-1) === "Still here." && status(h, s.id) === "idle", { what: "the next reply" })
+  // The same run continues, with its history and its profile tools.
+  const sent = JSON.stringify(fake.requests()[1]!.messages)
+  expect(sent).toContain("Hi.")
+  expect(sent).toContain("Hello.")
+  expect(JSON.stringify(fake.requests()[1]!.tools ?? [])).toContain("propose_edit")
+  const runs = h.store.getSession(s.id)!.run_ids
+  expect(runs).toHaveLength(1)
+  expect(h.store.getRun(runs[0]!)!.driver).toBe("lan")
+  await endChat(h, s.id)
+})
+
 test("the profile manager needs a known person", async () => {
   const h = await managerHarness(await fakeLlm())
   const error = await rejection(h.harness.startManager("nobody", "hi"))

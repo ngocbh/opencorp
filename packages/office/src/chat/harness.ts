@@ -480,7 +480,7 @@ export class ChatHarness implements SessionHarness {
       if (this.#closed) return
       if (session.harness !== "composer") continue
       try {
-        await this.#actor(session.id).restore()
+        await this.#actor(session.id, { restoring: true }).restore()
       } catch (error) {
         this.log(`session ${session.id} can't be restored (${errorName(error)})`)
       }
@@ -713,8 +713,9 @@ export class ChatHarness implements SessionHarness {
   }
 
   /** The actor of live session `sessionId`, made if the harness has none (after an office restart): 404 for no
-   *  session, 409 `not_live` for one that isn't live, 503 once closed. */
-  #actor(sessionId: string): SessionActor {
+   *  session, 409 `not_live` for one that isn't live, or for one `starting` that it holds no actor for (unless
+   *  `restoring`), 503 once closed. */
+  #actor(sessionId: string, { restoring = false }: { restoring?: boolean } = {}): SessionActor {
     this.#running()
     const session = this.store.getSession(sessionId)
     if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
@@ -725,6 +726,12 @@ export class ChatHarness implements SessionHarness {
     }
     let actor = this.#actors.get(sessionId)
     if (actor === undefined) {
+      // Every start here holds its actor from its first write: a session `starting` with none is no start of this
+      // harness's (an office stopped inside it), and an actor made now would take its last, finished run as current.
+      // Only the office's restore picks it up.
+      if (session.status === "starting" && !restoring) {
+        throw new HarnessError(409, "not_live", `session ${sessionId} has no live run`)
+      }
       actor = new SessionActor(this.#ctx, sessionId)
       this.#actors.set(sessionId, actor)
     }

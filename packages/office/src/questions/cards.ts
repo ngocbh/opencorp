@@ -305,8 +305,10 @@ export class Cards {
 
   /**
    * At start, after the actor resumed what it could: expire open questions of sessions with no live run, and end
-   * side sessions whose question is closed. A side session still `starting` is ended at once: no `openSide` runs at
-   * start, so an office stop came between its reopen and its start, and no run of it is live.
+   * side sessions whose question is closed. A side session still `starting` is ended at once, in the store: no
+   * `openSide` runs at start, so an office stop came inside its start, and restore found no run of it to resume (one
+   * it resumed is no longer `starting`). A run that start stored but never ran keeps no office end reason, as Python
+   * left it.
    */
   sweep(): void {
     for (const q of this.store.listQuestions({ status: "open" })) {
@@ -346,9 +348,9 @@ export class Cards {
 
   /**
    * Ends side session `sideId` because `question` closed: an expired card keeps its discussion; End reaches a live
-   * run, and when it can't, the session ends with its run's end reason `CARD_CLOSED`. A session `starting` is left
-   * alone: `openSide` checks the question after its start and ends it itself (and End on it would make an actor
-   * that takes its earlier, finished run as current).
+   * run, and when it can't, the session ends with its run's end reason `CARD_CLOSED`. End on a side chat still
+   * `starting` waits behind its start and ends the new run; one the harness holds no start of answers 409 and is
+   * left alone.
    */
   async #closeSide(actor: SideActor, sideId: string, question: QuestionRecord | undefined): Promise<void> {
     if (question?.status === "stale") {
@@ -356,13 +358,13 @@ export class Cards {
       if (current !== undefined) this.snapshot(current)
     }
     const side = this.store.getSession(sideId)
-    if (!isLive(side) || side!.status === "starting") return
+    if (!isLive(side)) return
     try {
       await actor.end(sideId)
     } catch (error) {
       if (!(error instanceof HarnessError)) throw error
       // A stopping office leaves it to the next start's sweep; a failed wake for the end has failed it; a run that
-      // finished on its own stored its end; a start still running checks the question itself.
+      // finished on its own stored its end; a session `starting` with no start in this harness has no run to end.
       const current = this.store.getSession(sideId)
       if (error.code === "stopping" || !isLive(current) || current!.status === "starting") return
       actor.log(`side session ${sideId} has no live run to end`)

@@ -412,7 +412,7 @@ export class SessionActor implements LiveCalls {
    * `500 start_failed`. Refused `409 live` once this actor has started. The start waits for `after` (the replaced
    * actor's `stopped`) before it builds anything; the office's stop ends that wait.
    */
-  start({ after }: { after?: Promise<void> } = {}): Promise<void> {
+  start({ after }: { after?: PromiseLike<void> } = {}): Promise<void> {
     const sid = this.sessionId
     if (this.#started) return Promise.reject(new HarnessError(409, "live", `session ${sid} already has a run`))
     // Claimed before the job is queued, so `active` holds at once for a caller that checks it.

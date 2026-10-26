@@ -800,13 +800,13 @@ test("a start after a replaced actors hard stop waits for it", async () => {
   await waitFor(() => status(o, sid) === "failed", { what: "the session to fail" })
   // Reopened at once: the failed run's cancel job spawns under the session's id first.
   o.office.store.updateSession(sid, { status: "starting" })
-  const after = old.stopped
   let waiting = false
-  const then = after.then.bind(after)
-  // Called once the start waits on it.
-  after.then = (...args) => {
-    waiting = true
-    return then(...args)
+  // Not a native promise, so both `await` and `Promise.race` call its `then` once the start waits on it.
+  const after: PromiseLike<void> = {
+    then: (ok, no) => {
+      waiting = true
+      return old.stopped.then(ok, no)
+    },
   }
   const fresh = makeActor(o, sid)
   const starting = fresh.start({ after })
