@@ -66,6 +66,8 @@ function run(
   const child = spawn(argv[0]!, argv.slice(1), { cwd, env, stdio: [stdin, "pipe", "pipe"] })
   let stdout = ""
   let stderr = ""
+  child.stdout!.setEncoding("utf8")
+  child.stderr!.setEncoding("utf8")
   child.stdout!.on("data", (chunk) => (stdout += chunk))
   child.stderr!.on("data", (chunk) => (stderr += chunk))
   if (child.stdin) {
