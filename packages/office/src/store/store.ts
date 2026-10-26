@@ -17,6 +17,7 @@ import {
   Comment,
   CostReport,
   Event,
+  ProfileProposal,
   Question,
   Session,
   WorkItem,
@@ -78,6 +79,9 @@ export type SessionRecord = z.output<typeof Session>
 
 /** A stored question, defaults filled. */
 export type QuestionRecord = z.output<typeof Question>
+
+/** A stored profile proposal, defaults filled. */
+export type ProfileProposalRecord = z.output<typeof ProfileProposal>
 
 /** The longest reason a run shows. */
 export const REASON_CHARS = 200
@@ -182,14 +186,33 @@ const QUESTIONS: Table<typeof Question> = {
   derived: new Set(),
 }
 
+const PROPOSALS: Table<typeof ProfileProposal> = {
+  name: "profile_proposals",
+  label: "ProfileProposal",
+  key: "id",
+  schema: ProfileProposal,
+  json: new Set(),
+  bools: new Set(),
+  derived: new Set(),
+}
+
 /** The statuses whose question keeps its answer. */
 const ANSWERED = new Set(["answered", "consumed"])
 /** The status moves a question may make. */
 const QUESTION_MOVES: Record<string, string[]> = { open: ["answered", "stale"], answered: ["consumed"] }
+/** The status moves a profile proposal may make. */
+const PROPOSAL_MOVES: Record<string, string[]> = { open: ["applied", "discarded", "stale"] }
 
 /** Throws `InvalidTransition` unless `moves` lets a `kind` go from `from` to `to`. */
 function checkMove(kind: string, moves: Record<string, string[]>, from: string, to: string): void {
   if (!moves[from]?.includes(to)) throw new InvalidTransition(`${kind} cannot move from ${from} to ${to}`)
+}
+
+/** A move to `applied` records the company-repo commit; no other move takes one. Throws `StoreError` otherwise. */
+function checkCommit(kind: string, status: string, commit: string | undefined): void {
+  if ((status === "applied") !== (commit !== undefined)) {
+    throw new StoreError(`${kind} moving to ${status} ${status === "applied" ? "needs a commit" : "takes no commit"}`)
+  }
 }
 
 /** `name` quoted as an SQL identifier (a column may be a keyword, like `groups`). */
@@ -1320,6 +1343,47 @@ export class Store {
         "created_at",
       ])
       return this.#writeQuestion(tx, question)
+    })
+  }
+
+  // Profile proposals.
+
+  /** Inserts a proposal and emits `profile_proposal.created`; a missing session → NotFound. */
+  addProfileProposal(proposal: ProfileProposalRecord): ProfileProposalRecord {
+    return this.transaction((tx) => {
+      tx.insert(PROPOSALS.name, this.#columns(PROPOSALS, proposal))
+      const stored = this.#must(PROPOSALS, proposal.id)
+      tx.emit("profile_proposal.created", proposal.id, stored)
+      return stored
+    })
+  }
+
+  /** The proposal, or undefined. */
+  getProfileProposal(proposalId: string): ProfileProposalRecord | undefined {
+    return this.#get(PROPOSALS, proposalId)
+  }
+
+  /** A person's proposals, oldest first, optionally of some statuses. */
+  listProfileProposals(person: string, filter?: { status?: string | string[] }): ProfileProposalRecord[] {
+    return this.#list(PROPOSALS, { person, status: filter?.status }, "created_at, rowid")
+  }
+
+  /** Moves an open proposal to `applied`, `discarded` or `stale` and emits `profile_proposal.updated`.
+   *  `commit` is required with `applied` and refused otherwise. */
+  setProfileProposalStatus(
+    proposalId: string,
+    status: ProfileProposalRecord["status"],
+    options?: { commit?: string },
+  ): ProfileProposalRecord {
+    return this.transaction((tx) => {
+      const current = this.#must(PROPOSALS, proposalId)
+      checkMove("profile proposal", PROPOSAL_MOVES, current.status, status)
+      checkCommit("profile proposal", status, options?.commit)
+      const proposal = this.#changed(PROPOSALS, current, { status, commit: options?.commit }, [])
+      tx.update(PROPOSALS.name, PROPOSALS.key, this.#columns(PROPOSALS, proposal))
+      const stored = this.#must(PROPOSALS, proposalId)
+      tx.emit("profile_proposal.updated", proposalId, stored)
+      return stored
     })
   }
 

@@ -2,7 +2,7 @@
 import path from "node:path"
 import type { z } from "zod"
 import { onTestFinished } from "bun:test"
-import { Comment, Event, Question, Session, WorkItem, now } from "@opencorp/protocol"
+import { Comment, Event, ProfileProposal, Question, Session, WorkItem, now } from "@opencorp/protocol"
 import { Store, newId, type StoreOptions } from "../../src/store/store.ts"
 import { tempDir } from "../helpers.ts"
 
@@ -80,6 +80,22 @@ export function question(sessionId: string, over?: Partial<Question>): z.output<
     status: "open",
     created_at: t,
     updated_at: t,
+    ...over,
+  })
+}
+
+/** A ProfileProposal in `sessionId` with Python's defaults (`proposal` in conftest): person minh, base COMMIT,
+ *  text "# Minh\n", diff "+# Minh\n", open, now(), overridden by `over`; parsed, so defaults are filled. */
+export function proposal(sessionId: string, over?: Partial<ProfileProposal>): z.output<typeof ProfileProposal> {
+  return ProfileProposal.parse({
+    id: newId(),
+    session_id: sessionId,
+    person: "minh",
+    base_version: COMMIT,
+    text: "# Minh\n",
+    diff: "+# Minh\n",
+    status: "open",
+    created_at: now(),
     ...over,
   })
 }

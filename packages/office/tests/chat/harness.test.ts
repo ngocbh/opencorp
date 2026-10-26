@@ -4,11 +4,13 @@ import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import type { Scheduler } from "@ngocbh/yian/platform"
+import { iterRunRecords } from "@ngocbh/yian/run"
 import { type RunUpdated, WorkItem, now } from "@opencorp/protocol"
 import { INTERRUPTED_CALL, SessionActor } from "../../src/chat/session_actor.ts"
 import { HarnessError, LIVE } from "../../src/chat/state.ts"
 import { MAIN_CHAT } from "../../src/chat/turns.ts"
 import { PING } from "../../src/daemon/bus.ts"
+import { CARD_CLOSED } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { type SessionRecord, type WorkItemRecord, newId } from "../../src/store/store.ts"
 import { type FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
@@ -1368,4 +1370,101 @@ test("the harness actors tell the office when their run changed", async () => {
   )
   fake.release()
   await waitFor(() => status(h, s.id) === "idle", { what: "the next turn" })
+})
+
+test("a profile manager spec has only the profile tools and no workspace", async () => {
+  const h = await makeHarness(await fakeLlm())
+  // Its folder is the company's own, which no chat's workspace may be: a profile manager has none to check.
+  const s = await stored(h, { kind: "profile_manager", cwd: h.office.paths.company, status: "starting" })
+  const spec = await h.harness.spec(s)
+  expect([spec.flow, spec.workspace, spec.memory]).toEqual(["shared/flows/profile_manager.yaml", undefined, {}])
+  const groups = spec.groups({ session: s, runId: "run-1" })
+  expect(Object.entries(groups).map(([group, tools]) => [group, Object.keys(tools)])).toEqual([
+    ["profile", ["read", "propose_edit"]],
+  ])
+  expect(((await groups.profile!.read!.call({})) as { text: string }).text).toBe("# Minh, Engineer\n")
+})
+
+test("start run starts a stored starting session and refuses one that is not starting", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Hello." })
+  const h = await makeHarness(fake)
+  const s = await stored(h, { status: "starting" })
+  const starting = h.harness.startRun(s.id)
+  // Claimed at once: a second call while the first starts would start a second run.
+  const twice = await rejection(h.harness.startRun(s.id))
+  expect([twice.status, twice.code, twice.message]).toEqual([409, "live", `session ${s.id} is already starting`])
+  const runId = await starting
+  expect(h.store.getSession(s.id)!.run_ids).toEqual([runId])
+  expect(h.store.getRun(runId)).toMatchObject({ driver: CEO, replacesRunId: null })
+  await waitFor(() => status(h, s.id) === "idle", { what: "the first turn" })
+  const again = await rejection(h.harness.startRun(s.id))
+  expect([again.status, again.code, again.message]).toEqual([409, "live", `session ${s.id} is idle`])
+  await h.harness.prompt(s.id, "hi")
+  await waitFor(() => same(texts(h, s.id), ["Hello."]), { what: "the reply" })
+  const missing = await rejection(h.harness.startRun(newId()))
+  expect([missing.status, missing.code]).toEqual([404, "not_found"])
+})
+
+test("a reopened session starts a fresh run seeded from its last run and driven by its opener", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "First." }, { content: "Second." })
+  const h = await makeHarness(fake, { files: LAN })
+  const s = await start(h)
+  const [first] = s.run_ids
+  await h.harness.prompt(s.id, "remember-this-text")
+  await waitFor(() => same(texts(h, s.id), ["First."]) && status(h, s.id) === "idle", { what: "the reply" })
+  await h.harness.end(s.id)
+  await waitFor(() => status(h, s.id) === "ended", { what: "the end" })
+  await asleep(h, s.id)
+  h.store.updateSession(s.id, { status: "starting", opened_by: "lan" })
+  const second = await h.harness.startRun(s.id)
+  expect(h.store.getSession(s.id)!.run_ids).toEqual([first!, second])
+  expect(h.store.getRun(first!)!.driver).toBe(CEO)
+  expect(h.store.getRun(second)).toMatchObject({ driver: "lan", replacesRunId: null })
+  await waitFor(() => status(h, s.id) === "idle", { what: "the reopened run's turn" })
+  await h.harness.prompt(s.id, "and now")
+  // The second run's first model request holds the first run's turn.
+  const request = await asked(fake, 2)
+  expect(request).toContain("remember-this-text")
+  expect(request).toContain("First.")
+  await waitFor(() => same(texts(h, s.id), ["First.", "Second."]), { what: "the second reply" })
+})
+
+test("a reopened session whose start fails leaves its earlier run untouched", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const s = await start(h)
+  const [first] = s.run_ids
+  await h.harness.end(s.id)
+  await waitFor(() => status(h, s.id) === "ended", { what: "the end" })
+  await asleep(h, s.id)
+  expect(h.store.getRun(first!)!.endReason).toBeNull()
+  // Reopened in the office's own files: its spec is refused.
+  h.store.updateSession(s.id, { status: "starting", cwd: h.office.paths.company })
+  const error = await rejection(h.harness.startRun(s.id))
+  expect([error.status, error.code]).toEqual([422, "unsafe_workspace"])
+  expect(status(h, s.id)).toBe("failed")
+  expect(h.store.getSession(s.id)!.run_ids).toEqual([first!])
+  expect(h.store.getRun(first!)!.endReason).toBeNull()
+})
+
+/** The kinds of the records in run `runId`'s log. */
+function recordKinds(h: Harness, runId: string): string[] {
+  const log = path.join(h.office.paths.runs, runId, "log.jsonl")
+  return fs.existsSync(log) ? [...iterRunRecords(log)].map((entry) => entry.kind) : []
+}
+
+test("abandon ends a live session with the reason and cancels its run", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const ended = endings(h)
+  const s = await start(h)
+  const [runId] = s.run_ids
+  await h.harness.abandon(s.id, CARD_CLOSED)
+  expect(status(h, s.id)).toBe("ended")
+  expect(h.store.getRun(runId!)!.endReason).toBe(CARD_CLOSED)
+  await waitFor(() => recordKinds(h, runId!).includes("run_cancelled"), { what: "the run's cancel" })
+  expect(ended).toEqual(["ended"])
+  const late = await rejection(h.harness.abandon(s.id, CARD_CLOSED))
+  expect([late.status, late.code]).toEqual([409, "not_live"])
 })

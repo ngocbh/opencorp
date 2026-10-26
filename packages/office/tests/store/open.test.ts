@@ -17,6 +17,7 @@ const TABLES = new Set([
   "session_runs",
   "runs",
   "questions",
+  "profile_proposals",
   "worked_folders",
   "audit",
   "usage",

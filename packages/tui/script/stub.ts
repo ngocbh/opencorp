@@ -17,12 +17,14 @@ import type {
   PairCodeRequest,
   Person,
   Profile,
+  ProfileProposal,
   PromptRequest,
   RepoIssue,
   Question,
   Session,
   WorkItem,
 } from "@opencorp/protocol"
+import { createTwoFilesPatch } from "diff"
 import { createHash, randomBytes } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
@@ -60,6 +62,7 @@ export type FakeState = {
   messages: Record<string, Message[]>
   questions: Record<string, Question>
   profiles: Record<string, Profile>
+  proposals: Record<string, ProfileProposal>
   workItems: Record<string, WorkItem>
   comments: Record<string, Comment[]>
   /** Hire previews by handle. */
@@ -141,6 +144,7 @@ export function seed(nextId = counter()): FakeState {
     messages: { [session.id]: [] },
     questions: { [turn.id]: turn },
     profiles: { minh: { person: "minh", text: profile, version: blobId(profile), over_budget: false } },
+    proposals: {},
     workItems: {},
     comments: {},
     hires: {},
@@ -560,6 +564,40 @@ export function createFakeOffice(
     const p = profile(person)
     publish("profile.updated", person, p)
     return p
+  }
+  function updateProposal(p: ProfileProposal, type: "profile_proposal.created" | "profile_proposal.updated") {
+    state.proposals[p.id] = p
+    publish(type, p.id, p)
+    return p
+  }
+  /**
+   * Records the profile manager's proposal for a `profile_manager` session, as its propose tool
+   * would: the diff is against the current profile, and the session's older open proposals are
+   * discarded.
+   */
+  function propose(sessionId: string, text: string) {
+    const s = session(sessionId)
+    const current = profile(s.person)
+    for (const old of Object.values(state.proposals))
+      if (old.session_id === s.id && old.status === "open")
+        updateProposal({ ...old, status: "discarded" }, "profile_proposal.updated")
+    const file = `people/${s.person}/profile.md`
+    // Without the `===` line, like the office's difflib diff.
+    const diff = createTwoFilesPatch(`a/${file}`, `b/${file}`, current.text, text).replace(/^=+\n/, "")
+    return updateProposal(
+      {
+        id: nextId(),
+        session_id: s.id,
+        person: s.person,
+        base_version: current.version,
+        text,
+        diff,
+        status: "open",
+        commit: null,
+        created_at: now(),
+      },
+      "profile_proposal.created",
+    )
   }
 
   /**
@@ -1153,6 +1191,35 @@ export function createFakeOffice(
     ],
     [
       "GET",
+      "/profiles/:person/proposals",
+      ({ params }) => {
+        need(
+          state.people.find((p) => p.handle === params.person),
+          `person ${params.person}`,
+        )
+        return Response.json(Object.values(state.proposals).filter((p) => p.person === params.person))
+      },
+    ],
+    [
+      "POST",
+      "/profile-proposals/:id/apply",
+      ({ params }) => {
+        const proposal = need(state.proposals[params.id], `profile proposal ${params.id}`)
+        if (proposal.status !== "open")
+          throw fail(409, "not_open", `profile proposal ${proposal.id} is ${proposal.status}`)
+        const current = profile(proposal.person)
+        if (current.version !== proposal.base_version) {
+          updateProposal({ ...proposal, status: "stale" }, "profile_proposal.updated")
+          return Response.json({ expected: proposal.base_version, current: current.version }, { status: 409 })
+        }
+        // The proposal is marked applied before the profile's event, as the office does.
+        const commit = blobId(`commit ${blobId(proposal.text)}`)
+        updateProposal({ ...proposal, status: "applied", commit }, "profile_proposal.updated")
+        return Response.json(writeProfile(proposal.person, proposal.text))
+      },
+    ],
+    [
+      "GET",
       "/events",
       ({ query }) => {
         let entry: Stream
@@ -1293,6 +1360,7 @@ export function createFakeOffice(
     setStatus,
     /** Changes a session's fields and publishes `session.updated`, as the office does. */
     updateSession: (id: string, fields: Partial<Session>) => upsertSession({ ...session(id), ...fields, updated_at: now() }),
+    propose,
     /** Writes an SSE comment line (`: text`) to every stream. */
     comment: (text: string) => write(`: ${text}\n\n`),
     ping: () => write(": ping\n\n"),

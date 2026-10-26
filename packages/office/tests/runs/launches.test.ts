@@ -1,7 +1,11 @@
 /** Each launch writes one row in runs, in the transaction that adds the session's run; a resume writes none
  *  (Python's `tests/runs/test_launches.py`). */
+import fs from "node:fs"
+import path from "node:path"
+import { iterRunRecords } from "@ngocbh/yian/run"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import type { SessionActor } from "../../src/chat/session_actor.ts"
+import { MANAGER_FLOW } from "../../src/profile/manager.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
 import type { Worker } from "../../src/worker/spawn.ts"
 import {
@@ -10,11 +14,14 @@ import {
   fakeLlm,
   LAN,
   makeActor,
+  makeHarness,
   newSession,
   noWorkersLeft,
+  ROOT,
   session,
   startActor,
   status,
+  texts,
 } from "../chat/helpers.ts"
 import { waitFor } from "../helpers.ts"
 
@@ -49,6 +56,23 @@ test("the opener drives the run", async () => {
   const o = await chatOffice(await fakeLlm(), { files: LAN })
   const { sid } = await startActor(o, { openedBy: "lan" })
   expect(o.office.store.runsOfSession(sid)[0]!.driver).toBe("lan")
+})
+
+test("the profile manager is driven by who opened it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Noted." })
+  const files = { [MANAGER_FLOW]: fs.readFileSync(path.join(ROOT, MANAGER_FLOW), "utf8") }
+  const h = await makeHarness(fake, { files })
+  const s = await h.harness.startManager("minh", "tighten the profile", { by: "lan" })
+  const [row, ...rest] = h.store.runsOfSession(s.id)
+  expect(rest).toEqual([])
+  expect([row!.flow, row!.flowPath, row!.driver]).toEqual(["profile_manager", MANAGER_FLOW, "lan"])
+  expect(MANAGER_FLOW).toBe("shared/flows/profile_manager.yaml")
+  await waitFor(() => texts(h, s.id).join() === "Noted." && status(h, s.id) === "idle", { what: "the reply" })
+  // Yian records a run's parent; the manager's run has none.
+  const [started] = iterRunRecords(path.join(h.office.paths.runs, row!.runId, "log.jsonl"), { payloads: true })
+  expect(started!.kind).toBe("run_started")
+  expect((started!.envelope.record as unknown as { parent: unknown }).parent).toBeNull()
 })
 
 test("a start whose live run cant be built records no run", async () => {

@@ -478,6 +478,7 @@ async function runJob(
       runId: job.run_id,
       numWorkers: job.num_workers,
       llmConfig: job.llm_config,
+      parent: job.parent && { runId: job.parent.run_id, node: job.parent.node },
     })
   } else {
     const inspection = inspectRun(log)

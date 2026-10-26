@@ -1,0 +1,191 @@
+/** The profile manager: a chat that proposes edits to one person's profile, and applying a proposal. */
+import { MarkdownVersionMismatch } from "@ngocbh/yian"
+import { now, Profile } from "@opencorp/protocol"
+import { structuredPatch } from "diff"
+import type { CompanyGit } from "../company/git.ts"
+import { InvalidTransition, newId, type ProfileProposalRecord, type SessionRecord, type Store } from "../store/store.ts"
+import type { OfficeTool } from "../worker/rpc.ts"
+import { GitProfileStore } from "./store.ts"
+
+/** The profile manager's flow, relative to the session's pinned commit. */
+export const MANAGER_FLOW = "shared/flows/profile_manager.yaml"
+
+/** No profile proposal has the id. */
+export class ProposalNotFound extends Error {
+  override name = "ProposalNotFound"
+}
+
+/** The profile proposal is no longer open: applied, discarded, or stale. */
+export class ProposalNotOpen extends Error {
+  override name = "ProposalNotOpen"
+}
+
+/** A profile tool: an office tool whose call is async. */
+export interface ProfileTool extends OfficeTool {
+  readonly description: string
+  readonly parameters: Record<string, unknown>
+  call(args: Record<string, unknown>): Promise<unknown>
+}
+
+const READ = "Read the profile: its current text and version."
+const PROPOSE_EDIT =
+  "Propose the complete new text of the profile, as an edit of the version you read.\n\n" +
+  "The owner reviews the diff and applies it."
+
+/** The `profile` tool group of a profile-manager session: `read` and `propose_edit`. */
+export function profileTools(
+  store: Store,
+  profile: GitProfileStore,
+  session: SessionRecord,
+): { read: ProfileTool; propose_edit: ProfileTool } {
+  // Both schemas as the Python office's pydantic wrote them.
+  return {
+    read: {
+      description: READ,
+      parameters: { description: READ, properties: {}, title: "read", type: "object" },
+      call: async () => {
+        const [text, version] = await profile.read()
+        return { text, version }
+      },
+    },
+    propose_edit: {
+      description: PROPOSE_EDIT,
+      parameters: {
+        description: PROPOSE_EDIT,
+        properties: {
+          text: { title: "Text", type: "string" },
+          base_version: { title: "Base Version", type: "string" },
+        },
+        required: ["text", "base_version"],
+        title: "propose_edit",
+        type: "object",
+      },
+      call: async (args) => {
+        const { text, base_version: baseVersion } = args
+        if (typeof text !== "string" || typeof baseVersion !== "string") {
+          throw new TypeError("text and base_version must be strings")
+        }
+        const [base] = await profile.read(baseVersion) // a RangeError for a version the model made up
+        const proposal = await propose(store, session, profile, baseVersion, base, text)
+        return `Proposed edit ${proposal.id}. The owner can apply it from the profile view.`
+      },
+    },
+  }
+}
+
+/** Store a proposal of `text` over `base`; the session's earlier open proposals are discarded. */
+export function propose(
+  store: Store,
+  session: SessionRecord,
+  profile: GitProfileStore,
+  baseVersion: string,
+  base: string,
+  text: string,
+): Promise<ProfileProposalRecord> {
+  const diff = unifiedDiff(profile, base, text)
+  // Waits for an apply in progress, which then isn't discarded under it.
+  return serial(profile.git, () => {
+    for (const older of store.listProfileProposals(profile.handle, { status: "open" })) {
+      if (older.session_id !== session.id) continue
+      try {
+        store.setProfileProposalStatus(older.id, "discarded")
+      } catch (error) {
+        if (!(error instanceof InvalidTransition)) throw error // else applied meanwhile
+      }
+    }
+    return store.addProfileProposal({
+      id: newId(),
+      session_id: session.id,
+      person: profile.handle,
+      base_version: baseVersion,
+      text,
+      diff,
+      status: "open",
+      commit: null,
+      created_at: now(),
+    })
+  })
+}
+
+/**
+ * Writes an open proposal over its base version and commits it as `<owner> via profile manager`.
+ *
+ * Throws `ProposalNotFound` for an unknown proposal, `ProposalNotOpen` for one that isn't open, and
+ * `MarkdownVersionMismatch` when the profile has moved on (the proposal is then `stale`); the profile
+ * store's own errors pass through. Emits `profile.updated`.
+ */
+export async function applyProposal(
+  store: Store,
+  git: CompanyGit,
+  proposalId: string,
+  { owner, maxChars }: { owner: string; maxChars: number },
+): Promise<Profile> {
+  // Held from the check to the status change, so a newer propose_edit can't discard the proposal after it is
+  // committed. `git.locked` can't be held instead: the profile store's write takes it, and it isn't reentrant.
+  const [proposal, version] = await serial(git, async () => {
+    const proposal = store.getProfileProposal(proposalId)
+    if (proposal === undefined) throw new ProposalNotFound(`no profile proposal ${proposalId}`)
+    if (proposal.status !== "open") throw new ProposalNotOpen(`profile proposal ${proposalId} is ${proposal.status}`)
+    const profile = new GitProfileStore(git, proposal.person)
+    const commitId = `proposal-${proposal.id}`
+    let version: string
+    try {
+      version = await profile.write(proposal.text, {
+        baseVersion: proposal.base_version,
+        provenance: { source: `${owner} via profile manager`, commit_id: commitId },
+      })
+    } catch (error) {
+      if (error instanceof MarkdownVersionMismatch) store.setProfileProposalStatus(proposal.id, "stale")
+      throw error
+    }
+    // A proposal of the text as it was commits nothing; its commit is then the current one. The write has released
+    // `git.locked` by now, so another commit could land first; head is close enough, as only such a proposal
+    // takes the fallback and CompanyGit has no read of a file's last commit.
+    const commit = (await git.findCommit(profile.path, `Commit-Id: ${commitId}`)) ?? (await git.head())
+    store.setProfileProposalStatus(proposal.id, "applied", { commit })
+    return [proposal, version] as const
+  })
+  const applied = Profile.parse({
+    person: proposal.person,
+    text: proposal.text,
+    version,
+    over_budget: [...proposal.text].length > maxChars, // code points, as Python's len
+  })
+  store.emit("profile.updated", proposal.person, applied)
+  return applied
+}
+
+/** The tail of each company repo's queue of proposal changes. */
+const queues = new WeakMap<CompanyGit, Promise<unknown>>()
+
+/** Runs `fn` once every earlier `serial` call on `git` has settled. */
+function serial<T>(git: CompanyGit, fn: () => T | Promise<T>): Promise<T> {
+  const run = (queues.get(git) ?? Promise.resolve()).then(fn)
+  queues.set(git, run.catch(() => {}))
+  return run
+}
+
+/** A hunk header's range from 1-based line `start`, `length` lines long, as difflib writes it. */
+function range(start: number, length: number): string {
+  if (length === 1) return `${start}`
+  return `${length ? start : start - 1},${length}`
+}
+
+/** The unified diff of `profile` from `base` to `text`, with difflib's headers and hunk ranges. Its hunks can pair
+ *  lines differently from difflib's on ambiguous edits (reordered blocks, repeated lines), and only `\n` ends a
+ *  line. */
+function unifiedDiff(profile: GitProfileStore, base: string, text: string): string {
+  const { hunks } = structuredPatch(`a/${profile.path}`, `b/${profile.path}`, base, text, undefined, undefined, {
+    context: 3,
+  })
+  if (hunks.length === 0) return ""
+  let out = `--- a/${profile.path}\n+++ b/${profile.path}\n`
+  for (const hunk of hunks) {
+    out += `@@ -${range(hunk.oldStart, hunk.oldLines)} +${range(hunk.newStart, hunk.newLines)} @@\n`
+    hunk.lines.forEach((line, k) => {
+      // A "\\ No newline at end of file" marker follows a last line without its end, which difflib writes as it is.
+      if (!line.startsWith("\\")) out += hunk.lines[k + 1]?.startsWith("\\") ? line : `${line}\n`
+    })
+  }
+  return out
+}

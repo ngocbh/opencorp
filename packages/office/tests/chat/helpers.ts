@@ -851,9 +851,9 @@ export function listed(listings: Record<string, string[]>): Lister {
  * `questions`, the questions extension is registered on each harness (`office.cards`).
  * The harness's start choice lists models through `lister`, else `listed(listings)`, never the network, and
  * waits `chooseDeadlineMs` if given.
- * `reopen()` closes the harness, the store left open, and puts a second one over the same office in `harness`, on a
- * new registry: the office stopped and started again. Call inside a test: when it finishes the harness closes
- * before the store does.
+ * `reopen()` closes the harness and the cards, the store left open, and puts a second harness over the same office
+ * in `harness`, on a new registry: the office stopped and started again. Call inside a test: when it finishes the
+ * harness closes before the store does.
  */
 export async function makeHarness(
   fake: FakeLLM,
@@ -928,7 +928,9 @@ export async function makeHarness(
     folder: codexed?.workspace ?? tempDir(),
     codex: codexed,
     async reopen(): Promise<ChatHarness> {
+      // The office's stop, in its order: the harness, then its cards.
       await h.harness.closeAll()
+      await office.cards?.close()
       h.registry = o.newRegistry()
       h.harness = make(h.registry)
       return h.harness

@@ -215,3 +215,33 @@ test("a seed needs a chat job with an absolute log", () => {
   expect(inspect(error)).not.toContain("sk-SECRET")
   expect(error.message).toContain("seed")
 })
+
+test("a job with a parent needs kind chat", () => {
+  const parent = { run_id: "run-card", node: "ask" }
+  const job = parseJob({ ...BASE, parent })
+  expect(job.parent).toEqual(parent)
+  expect(parseJob({ ...BASE, parent: { run_id: "run-card" } }).parent).toEqual({ run_id: "run-card", node: null })
+  expect(parseJob(BASE).parent).toBeNull()
+  expect(parseJob(JSON.parse(JSON.stringify(job)))).toEqual(job)
+  const cases: Record<string, unknown>[] = [
+    { kind: "advance", parent },
+    { kind: "check", parent },
+    { parent: { run_id: "" } },
+    { parent: { run_id: "x", node: "" } },
+    { parent: { ...parent, extra: 1 } },
+  ]
+  for (const change of cases) {
+    const label = JSON.stringify(change)
+    expect(() => parseJob({ ...BASE, ...change }), label).toThrow(JobError)
+    expect(() => parseJob({ ...BASE, ...change }), label).toThrow(/^parent: /)
+  }
+  let caught: unknown
+  try {
+    parseJob({ ...BASE, kind: "advance", parent: { run_id: "sk-SECRET-run", node: "sk-SECRET-node" } })
+  } catch (error) {
+    caught = error
+  }
+  expect(caught).toBeInstanceOf(JobError)
+  expect((caught as JobError).message).not.toContain("sk-SECRET")
+  expect(inspect(caught)).not.toContain("sk-SECRET")
+})

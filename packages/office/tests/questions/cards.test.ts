@@ -3,15 +3,21 @@
 import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import { iterRunRecords } from "@ngocbh/yian/run"
+import type { Scheduler } from "@ngocbh/yian/platform"
+import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { type Question, stamp } from "@opencorp/protocol"
 import { Hooks } from "../../src/chat/hooks.ts"
-import { HarnessError } from "../../src/chat/state.ts"
+import { HarnessError, notWaiting } from "../../src/chat/state.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { register } from "../../src/extensions/questions.ts"
 import type { AnswerKind, CardActor, Cards } from "../../src/questions/cards.ts"
-import { INTERRUPTED } from "../../src/questions/format.ts"
+import { CARRIED_NOTE, INTERRUPTED, SENT_BACK } from "../../src/questions/format.ts"
+import { FRAMING, firstMessage } from "../../src/questions/seed.ts"
+import { BACK_HINT, SEED_FILE } from "../../src/questions/side.ts"
+import { CARD_CLOSED } from "../../src/runs/outcomes.ts"
 import { InvalidTransition, type QuestionRecord, type Store } from "../../src/store/store.ts"
+import type { FakeLLM, ScriptedReply } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
 import {
   ASK_MANAGER,
@@ -23,12 +29,13 @@ import {
   LAN,
   makeHarness,
   noWorkersLeft,
+  ROOT,
   status,
   texts,
 } from "../chat/helpers.ts"
-import { makeOffice, standInHarness } from "../daemon/helpers.ts"
+import { CEO, makeOffice, standInHarness } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
-import { question, session } from "../store/helpers.ts"
+import { question, recordEvents, session } from "../store/helpers.ts"
 
 setDefaultTimeout(60_000)
 afterAll(noWorkersLeft)
@@ -169,12 +176,13 @@ test("an invalid answer is refused before the actor sees it", async () => {
   expect(actor.answered).toEqual([])
 })
 
-test("chat about this answers 501 until side chats land", async () => {
+test("chat about this answers 501 without a side chat harness", async () => {
   const office = makeOffice()
   const { cards } = wire(office)
   const q = card(office)
   const error = await refusal(() => cards.openSide(q.id, "why?"))
   expect([error.status, error.code]).toEqual([501, "not_implemented"])
+  expect(office.store.getQuestion(q.id)!.side_session_id).toBeNull()
 })
 
 test("no harness means no cards", () => {
@@ -465,10 +473,12 @@ function outcomes(h: Harness): (Frame | null)[] {
   return seen
 }
 
-/** A harness whose minh runs `gate` as his main flow, with the questions extension, and minh's session waiting at its
- *  card; with `asleep`, the harness is closed and a new one (not restored) has the session. */
-async function atTheGate(gate = GATE, { asleep = false } = {}) {
-  const h = await makeHarness(await fakeLlm(), { files: { ...GATE_FILES, "people/minh/gate.yaml": gate }, questions: true })
+/** A harness over `fake` whose minh runs `gate` as his main flow, with the side chat flow and the questions
+ *  extension, and minh's session waiting at its card; with `asleep`, the harness is closed and a new one (not
+ *  restored) has the session. */
+async function atTheGate(gate = GATE, { asleep = false, fake }: { asleep?: boolean; fake?: FakeLLM } = {}) {
+  const files = { ...SIDE_FILES, ...GATE_FILES, "people/minh/gate.yaml": gate }
+  const h = await makeHarness(fake ?? (await fakeLlm()), { files, questions: true })
   const { id } = await h.harness.startSession("minh", h.folder)
   const q = await chatCard(h, id, "ask")
   await waitFor(() => status(h, id) === "waiting", { what: "the session to wait at its card" })
@@ -587,4 +597,834 @@ test("an answer whose wake fails still stands", async () => {
   const complete = { op: "complete", call_id: q.call_id, result: { output: GATE_ANSWER } }
   expect(h.jobs.at(-1)!.deliver).toMatchObject([complete, { op: "send" }])
   await waitFor(() => status(h, sid) === "ended", { what: "the gate flow's end" })
+})
+
+// --- side chats on the real chat harness --------------------------------------------------------
+
+const SIDE_FLOW = "shared/flows/side_chat.yaml"
+
+/** The template's side chat flow, by repo path. */
+const SIDE_FILES = {
+  [SIDE_FLOW]: fs.readFileSync(path.join(ROOT, SIDE_FLOW), "utf8"),
+}
+
+const ASK: ScriptedReply = {
+  tool_calls: [{ name: "ask_user", arguments: { question: "Retry or back off?", options: ["Retry", "Back off"] } }],
+}
+
+/** A harness over `fake` whose company has the side chat flow (and `files`), with the questions extension. */
+function sideHarness(fake: FakeLLM, options: Parameters<typeof makeHarness>[1] = {}) {
+  return makeHarness(fake, { ...options, files: { ...SIDE_FILES, ...options.files }, questions: true })
+}
+
+/** Starts minh's chat (`options` as `startSession`'s) and has its reply ask the scripted question; returns the
+ *  session id and the question. */
+async function ask(h: Harness, options: Parameters<Harness["harness"]["startSession"]>[2] = {}) {
+  const sid = await started(h, options)
+  await h.harness.prompt(sid, "fix the build")
+  return { sid, q: await chatCard(h, sid, "ask_user") }
+}
+
+/** Sends `text` from `by` in the question's side chat and waits for its reply number `replies`. */
+async function chat(h: Harness, q: QuestionRecord, text: string, replies: number, by: string | null = null) {
+  const side = await h.office.cards!.openSide(q.id, text, { by })
+  await waitFor(() => texts(h, side.id).length === replies && status(h, side.id) === "idle", {
+    what: "the side reply",
+  })
+  return side
+}
+
+/** A request message's text: its content, or its text parts joined with "\n". */
+function contentText(message: Record<string, unknown>): string {
+  const content = message.content
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content.map((part: { text?: unknown }) => (typeof part.text === "string" ? part.text : "")).join("\n")
+}
+
+/** Every string in `value`, nested or not, joined with "\n": text to search, where JSON would escape quotes. */
+function contentOf(value: unknown): string {
+  if (typeof value === "string") return value
+  if (Array.isArray(value)) return value.map(contentOf).join("\n")
+  if (value !== null && typeof value === "object") return Object.values(value).map(contentOf).join("\n")
+  return ""
+}
+
+/** The messages of request `n` (from 1). */
+async function messagesOf(fake: FakeLLM, n: number): Promise<Record<string, unknown>[]> {
+  return (await fake.waitForRequests(n))[n - 1]!.messages as Record<string, unknown>[]
+}
+
+/** The text of request `n`'s last user message, inside its author wrapper. */
+async function lastUser(fake: FakeLLM, n: number): Promise<string> {
+  const text = contentText((await messagesOf(fake, n)).filter((m) => m.role === "user").at(-1)!)
+  return text.replace(/^<authored_message author="[^"]*">\n([\s\S]*)\n<\/authored_message>$/, "$1")
+}
+
+/** How many times request `n`'s messages carry the side chat's framing. */
+async function framings(fake: FakeLLM, n: number): Promise<number> {
+  return (await messagesOf(fake, n)).reduce((sum, m) => sum + contentText(m).split(FRAMING).length - 1, 0)
+}
+
+/** The authors of session `sid`'s user messages whose text is `text` (any text when null). */
+function authors(h: Harness, sid: string, text: string | null = null): (string | null | undefined)[] {
+  return h.harness
+    .messages(sid)
+    .filter((m) => m.role === "user" && (text === null || m.parts.some((p) => p.type === "text" && p.text === text)))
+    .map((m) => m.author)
+}
+
+test("chat about this opens a seeded side session and the answer carries it", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    ASK,
+    { content: "The sandbox is rate-limited." },
+    { content: "Each retry costs a call." },
+    { content: "Backing off." },
+  )
+  const h = await sideHarness(fake)
+  const events = recordEvents(h.store)
+  const cards = h.office.cards!
+  const { sid, q } = await ask(h)
+
+  const side = await chat(h, q, "why not fail fast?", 1)
+  expect([side.kind, side.question_id, side.person, side.cwd, side.cost_cap_usd]).toEqual([
+    "side",
+    q.id,
+    "minh",
+    fs.realpathSync(h.folder),
+    1,
+  ])
+  const seedFile = path.join(h.office.paths.sessionDir(side.id), SEED_FILE)
+  const seed = fs.readFileSync(seedFile, "utf8")
+  expect(seed).toStartWith(FRAMING)
+  expect(seed).toContain("Retry or back off?")
+  expect(fs.statSync(seedFile).mode & 0o777).toBe(0o600)
+  expect(h.store.getQuestion(q.id)!.side_session_id).toBe(side.id)
+  // The seed and the message go as two text parts, inside the author's wrapper; joined, they read as Python's.
+  const sent = (await messagesOf(fake, 2)).filter((m) => m.role === "user").at(-1)!.content as { text: string }[]
+  expect(sent).toHaveLength(2)
+  expect(sent[0]!.text).toMatch(/^<authored_message author="[^"]*">\n/)
+  expect(sent[0]!.text).toEndWith(`\n${seed}\n\n# Their first message to you\n`)
+  expect(sent[1]!.text).toBe("why not fail fast?\n</authored_message>")
+  const first = await lastUser(fake, 2)
+  expect(first).toStartWith(FRAMING)
+  expect(first).toEndWith("why not fail fast?")
+  expect(first).toBe(firstMessage(seed, "why not fail fast?"))
+  expect(JSON.stringify((await fake.waitForRequests(2))[1]!.tools ?? [])).not.toContain("ask_user")
+
+  await chat(h, q, "and retries?", 2)
+  expect(await lastUser(fake, 3)).toBe("and retries?")
+  expect(await framings(fake, 3)).toBe(1) // the seed, once, from the side session's history
+  expect(texts(h, side.id, "user")).toEqual(["why not fail fast?", "and retries?"])
+  const said = () => h.store.getQuestion(q.id)!.discussion.map((e) => [e.role, e.text])
+  const discussed = [
+    ["user", "why not fail fast?"],
+    ["assistant", "The sandbox is rate-limited."],
+    ["user", "and retries?"],
+    ["assistant", "Each retry costs a call."],
+  ]
+  await waitFor(() => JSON.stringify(said()) === JSON.stringify(discussed), { what: "the discussion" })
+
+  for (const say of [() => cards.openSide(q.id, "/exit"), () => h.harness.prompt(side.id, " /Quit ")]) {
+    const error = await refusal(say)
+    expect([error.status, error.code, error.message]).toEqual([422, "refused", BACK_HINT])
+  }
+
+  // The seed stays out of the session, so its updates don't carry it to every client, and out of the log lines.
+  const updates = events.filter((e) => e.type === "session.updated" && e.subject_id === side.id).map((e) => e.data)
+  expect(updates.length).toBeGreaterThan(2)
+  expect(updates.filter((d) => contentOf(d).includes(FRAMING))).toEqual([])
+  expect(h.logs.filter((line) => line.includes(FRAMING) || line.includes("Retry or back off?"))).toEqual([])
+
+  await cards.answer(q.id, "Back off", "option")
+  const result = contentOf(await messagesOf(fake, 4))
+  expect(result).toContain('The user chose "Back off" (option 2 of the 2 shown).')
+  expect(result).toContain("why not fail fast?")
+  expect(result).toContain("Each retry costs a call.")
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  await waitFor(() => texts(h, sid).at(-1) === "Backing off.", { what: "the asker's reply" })
+})
+
+test("send back needs a discussion and returns it undecided", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "It depends on the quota." }, { content: "I'll ask better." })
+  const h = await sideHarness(fake)
+  const cards = h.office.cards!
+  const { q } = await ask(h)
+  const error = await refusal(() => cards.sendBack(q.id, ""))
+  expect([error.status, error.code]).toEqual([422, "no_discussion"])
+
+  const side = await chat(h, q, "what quota?", 1)
+  const answered = await cards.sendBack(q.id, "list the quotas as options")
+  expect([answered.answer_kind, answered.discussion.at(-1)!.text]).toEqual(["sent_back", "list the quotas as options"])
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  const result = contentOf(await messagesOf(fake, 3))
+  expect(result).toContain(SENT_BACK)
+  expect(result).toContain("It depends on the quota.")
+  expect(result).toContain("list the quotas as options")
+  const again = await refusal(() => cards.sendBack(q.id, ""))
+  expect([again.status, again.code]).toEqual([409, "not_open"])
+})
+
+test("a side worker exit during send back keeps the note", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "It depends on the quota." }, { content: "I'll ask better." })
+  const h = await sideHarness(fake)
+  const cards = h.office.cards!
+  const { q } = await ask(h)
+  const side = await chat(h, q, "what quota?", 1)
+  const answer = h.harness.answer.bind(h.harness)
+  let late: Promise<void> | undefined
+  h.harness.answer = async (questionId, value, kind, options) => {
+    // The side worker exits after the note is added and before the answer lands.
+    late = h.hooks.notify("workerExited", h.store.getSession(side.id)!, 0)
+    await Bun.sleep(300)
+    return answer(questionId, value, kind, options)
+  }
+  await cards.sendBack(q.id, "list the quotas as options")
+  await late
+  expect(h.store.getQuestion(q.id)!.discussion.map((e) => e.text)).toEqual([
+    "what quota?",
+    "It depends on the quota.",
+    "list the quotas as options",
+  ])
+})
+
+test("stop is esc on the asking chat", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Because of the quota." })
+  const h = await sideHarness(fake)
+  const { sid, q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  const stopped = await h.office.cards!.stop(q.id)
+  expect([stopped.answer, stopped.answer_kind]).toEqual([INTERRUPTED, "interrupted"])
+  expect(stopped.discussion.map((e) => e.text)).toEqual(["why?", "Because of the quota."])
+  await waitFor(() => status(h, sid) === "idle", { what: "the asker to wait for the next message" })
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+})
+
+const DECIDE: [string, (cards: Cards, q: QuestionRecord) => Promise<QuestionRecord>][] = [
+  ["answer", (cards, q) => cards.answer(q.id, "Back off", "option", { by: "lan" })],
+  ["send_back", (cards, q) => cards.sendBack(q.id, "", { by: "lan" })],
+]
+
+test.each(DECIDE)("a side chat and the decision are credited to who acted [%s]", async (_name, decide) => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Rate limits." }, { content: "OK." })
+  const h = await sideHarness(fake, { files: LAN })
+  const cards = h.office.cards!
+  const { q } = await ask(h)
+  const side = await cards.openSide(q.id, "why?", { by: "lan" })
+  expect(side.opened_by).toBe("lan")
+  await waitFor(() => texts(h, side.id).join() === "Rate limits." && status(h, side.id) === "idle", {
+    what: "the side reply",
+  })
+  expect(contentText((await messagesOf(fake, 2))[0]!)).toContain("You're talking with Lan (@lan), your peer.")
+  expect(authors(h, side.id)).toEqual(["lan"])
+  expect(h.store.getRun(h.store.getSession(side.id)!.run_ids[0]!)!.driver).toBe("lan")
+  expect((await decide(cards, q)).answered_by).toBe("lan")
+})
+
+test("a side chat reopened by someone else is theirs", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." }, { content: "Per hour." })
+  const h = await sideHarness(fake, { files: LAN })
+  const cards = h.office.cards!
+  const { q } = await ask(h)
+  const side = await cards.openSide(q.id, "why?", { by: "ngocbh" })
+  await waitFor(() => texts(h, side.id).join() === "Quota." && status(h, side.id) === "idle", {
+    what: "the side reply",
+  })
+  await h.harness.end(side.id)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  const again = await cards.openSide(q.id, "how often?", { by: "lan" })
+  expect([again.id, again.opened_by]).toEqual([side.id, "lan"])
+  await waitFor(() => texts(h, side.id).at(-1) === "Per hour." && status(h, side.id) === "idle", {
+    what: "the reply",
+  })
+  expect(contentText((await messagesOf(fake, 3))[0]!)).toContain("You're talking with Lan (@lan), your peer.")
+  expect(authors(h, side.id, "how often?")).toEqual(["lan"])
+})
+
+test("a refused reopen stores nothing", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake, { files: LAN })
+  const cards = h.office.cards!
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1, "ngocbh")
+  await h.harness.end(side.id)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  const before = h.store.getSession(side.id)!
+  fs.rmSync(h.folder, { recursive: true })
+  const error = await refusal(() => cards.openSide(q.id, "how often?", { by: "lan" }))
+  expect(error.status).toBe(422)
+  const after = h.store.getSession(side.id)!
+  expect([after.status, after.opened_by, after.run_ids]).toEqual(["ended", "ngocbh", before.run_ids])
+  expect(after.updated_at).toBe(before.updated_at)
+})
+
+test("the seed goes once when no ceo answers for the human", async () => {
+  // An unreadable company.yaml leaves no CEO to answer for the human: "first" rests on the session's turns.
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." }, { content: "Per hour." })
+  const h = await sideHarness(fake, { files: { "company.yaml": "ceo: [unclosed\n" } })
+  const { q } = await ask(h)
+  await chat(h, q, "why?", 1)
+  expect(await lastUser(fake, 2)).toStartWith(FRAMING)
+  await chat(h, q, "how often?", 2)
+  expect(await lastUser(fake, 3)).toBe("how often?")
+})
+
+test("an ended side chat restarts on its memory without the seed again", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." }, { content: "Per hour." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  await h.harness.end(side.id)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+
+  const again = await chat(h, q, "how often?", 2)
+  expect(again.id).toBe(side.id)
+  expect(h.store.getSession(side.id)!.run_ids).toHaveLength(2)
+  expect(await lastUser(fake, 3)).toBe("how often?")
+  expect(await framings(fake, 3)).toBe(1) // from the first run's history
+})
+
+test("a first reply that dies leaves the seed for the next turn", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { error: 500 }, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await h.office.cards!.openSide(q.id, "why?")
+  expect(await lastUser(fake, 2)).toStartWith(FRAMING)
+  // The failed reply finished no turn, so the session's turns stay 0: a fresh run waits on the next message.
+  await waitFor(() => h.store.getSession(side.id)!.run_ids.length === 2 && status(h, side.id) === "idle", {
+    what: "the side session's next run",
+  })
+  await chat(h, q, "why, again?", 1)
+  const first = await lastUser(fake, 3)
+  expect(first).toStartWith(FRAMING)
+  expect(first).toEndWith("why, again?")
+})
+
+test("a failed side chat restarts on the next message", async () => {
+  const fake = await fakeLlm()
+  const held = { content: "Thinking.", hold: true }
+  fake.script(ASK, { content: "Quota." }, held, held, { content: "Per hour." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  await h.harness.prompt(side.id, "and then?")
+  // Two worker deaths in a row during the held reply fail the side session.
+  for (const n of [3, 4]) {
+    await fake.waitForRequests(n)
+    await waitFor(() => h.registry.get(side.id), { what: `worker ${n - 2}` })
+    process.kill(-h.registry.get(side.id)!.pgid, "SIGKILL")
+  }
+  await waitFor(() => status(h, side.id) === "failed", { what: "the side session to fail" })
+
+  // Reopened at once: the new run's worker waits for the failed run's hard stop, which runs under the session's id.
+  const again = await chat(h, q, "how often?", 2)
+  expect(again.id).toBe(side.id)
+  const runs = h.store.getSession(side.id)!.run_ids
+  expect(runs).toHaveLength(2)
+  expect(await lastUser(fake, 5)).toBe("how often?")
+  const cancels = h.jobs.filter((job) => job.run_id === runs[0] && !job.advance)
+  expect(cancels.map((job) => job.deliver.map((d) => d.op))).toEqual([["cancel"]])
+})
+
+test("a side chat uses its askers model", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "On five." })
+  const h = await sideHarness(fake, { connections: { second: "stub-2" } })
+  const { q } = await ask(h, { connection: "second", model: "stub-5" })
+  const side = await chat(h, q, "why?", 1)
+  expect([side.connection, side.model]).toEqual(["second", "stub-5"])
+  expect((await fake.waitForRequests(2))[1]!.model).toBe("stub-5")
+})
+
+test("each side chat run nests under the cards run with its opener as driver", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." }, { content: "Per hour." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  const ended = outcomes(h)
+  await h.harness.end(side.id)
+  await waitFor(() => status(h, side.id) === "ended" && ended.length === 1, { what: "the side session to end" })
+  await chat(h, q, "how often?", 2) // a reopen is a new run of the same side session
+  const runs = h.store.runsOfSession(side.id)
+  expect(runs.map((r) => [r.flow, r.flowPath, r.driver])).toEqual([
+    ["side_chat", SIDE_FLOW, CEO],
+    ["side_chat", SIDE_FLOW, CEO],
+  ])
+  const logs = h.jobs.filter((job) => job.kind === "chat" && job.session_id === side.id).map((job) => job.log)
+  expect(logs).toHaveLength(2)
+  for (const log of logs) {
+    const [started] = iterRunRecords(log, { payloads: true })
+    expect(started!.kind).toBe("run_started")
+    const record = started!.envelope.record as unknown as { parent: unknown }
+    expect(record.parent).toEqual({ runId: q.run_id, node: q.node_id })
+  }
+  // The first run finished at its end; the reopened one runs on.
+  expect(ended.map((result) => [result?.run_id, result?.status])).toEqual([[runs[0]!.runId, "succeeded"]])
+})
+
+// --- side chats closing with their cards ----------------------------------------------------------
+
+/** The question `ASK` asks, waiting at most a second for its answer. */
+const ASK_TIMED: ScriptedReply = {
+  tool_calls: [
+    {
+      name: "ask_user",
+      arguments: { question: "Retry or back off?", options: ["Retry", "Back off"], timeout: "1s" },
+    },
+  ],
+}
+
+/** A scheduler on the real clock whose sleeps wait for the next `release()`, then sleep for real: a wake-at timer
+ *  fires only once the test lets it. `held()` counts the sleeps waiting for a release and not aborted. */
+function heldTimers(): { scheduler: Scheduler; release: () => void; held: () => number } {
+  const held: { signal: AbortSignal | undefined; go: () => void }[] = []
+  const scheduler: Scheduler = {
+    now: () => Date.now(),
+    sleep: (ms, signal) =>
+      new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) return reject(signal.reason)
+        let timer: ReturnType<typeof setTimeout> | undefined
+        signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer)
+            reject(signal.reason)
+          },
+          { once: true },
+        )
+        // A margin past the sleep, so the timer's next read of the clock finds its deadline passed.
+        held.push({
+          signal,
+          go: () => {
+            if (!signal?.aborted) timer = setTimeout(resolve, ms + 20)
+          },
+        })
+      }),
+  }
+  return {
+    scheduler,
+    release: () => held.splice(0).forEach(({ go }) => go()),
+    held: () => held.filter(({ signal }) => !signal?.aborted).length,
+  }
+}
+
+/** Releases `timers` once a sleep is held: a release before the timer is armed would release nothing. */
+async function releaseHeld(timers: ReturnType<typeof heldTimers>): Promise<void> {
+  await waitFor(() => timers.held() > 0, { what: "the wake-at timer" })
+  timers.release()
+}
+
+/** The kinds of run `runId`'s log records. */
+function recordKinds(h: Harness, runId: string): string[] {
+  const log = path.join(h.office.paths.runs, runId, "log.jsonl")
+  return fs.existsSync(log) ? [...iterRunRecords(log)].map((entry) => entry.kind) : []
+}
+
+/** The texts of question `id`'s discussion. */
+function discussed(h: Harness, id: string): string[] {
+  return h.store.getQuestion(id)!.discussion.map((e) => e.text)
+}
+
+/** End answering 409 `not_live`, as it does for a session stored live with no run to end. */
+function noLiveRun(h: Harness, before: (sid: string) => void = () => {}) {
+  return spyOn(h.harness, "end").mockImplementation(async (sid: string) => {
+    before(sid)
+    throw new HarnessError(409, "not_live", `session ${sid} has no live run`)
+  })
+}
+
+test("a question answered while its side chat starts ends it", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "OK." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const startRun = h.harness.startRun.bind(h.harness)
+  h.harness.startRun = async (sessionId) => {
+    const runId = await startRun(sessionId)
+    h.store.answerQuestion(q.id, "Retry", "option", null) // another client answered meanwhile
+    return runId
+  }
+  const error = await refusal(() => h.office.cards!.openSide(q.id, "why?"))
+  expect([error.status, error.code]).toEqual([409, "not_open"])
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
+  expect(texts(h, sideId, "user")).toEqual([])
+})
+
+test("a card answered after its side runs row commits ends the side chat once", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK)
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const ends: string[] = []
+  h.hooks.sessionEnded.push((session) => void ends.push(session.id))
+  const end = spyOn(h.harness, "end")
+  // The side's start holds at its worker's spawn: its run's row committed, inside its actor's queue.
+  const held = h.hold()
+  const opening = refusal(() => h.office.cards!.openSide(q.id, "why?"))
+  await held.entered
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  expect(h.store.runsOfSession(sideId)).toHaveLength(1)
+  h.store.answerQuestion(q.id, "Retry", "option", null) // another client answered meanwhile
+  // The close's End waits behind the start in the side's actor.
+  await waitFor(() => end.mock.calls.length > 0, { what: "the close's End", timeout: 5000 })
+  expect(status(h, sideId)).toBe("starting")
+  held.release()
+  const error = await opening
+  expect([error.status, error.code]).toEqual([409, "not_open"])
+  await waitFor(() => status(h, sideId) === "ended" && h.registry.get(sideId) === undefined, {
+    what: "the side chat's end",
+  })
+  const rows = h.store.runsOfSession(sideId)
+  expect(rows.map((row) => row.runId)).toEqual(h.store.getSession(sideId)!.run_ids)
+  expect(rows.map((row) => row.endReason)).toEqual([null])
+  await Bun.sleep(100)
+  expect(ends.filter((id) => id === sideId)).toEqual([sideId])
+})
+
+test("a card that closes during its side chats first reply ends the side chat", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota.", hold: true })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const ends: string[] = []
+  h.hooks.sessionEnded.push((session) => void ends.push(session.id))
+  const side = await h.office.cards!.openSide(q.id, "why?")
+  await fake.waitForRequests(2)
+  // Its first reply runs: the side chat stays starting until that reply finishes.
+  expect(status(h, side.id)).toBe("starting")
+  h.store.answerQuestion(q.id, "Retry", "option", null) // another client answered meanwhile
+  await waitFor(() => status(h, side.id) === "ending", { what: "the close's End", timeout: 5000 })
+  fake.release()
+  await waitFor(() => status(h, side.id) === "ended" && h.registry.get(side.id) === undefined, {
+    what: "the side chat's end",
+  })
+  const rows = h.store.runsOfSession(side.id)
+  expect(rows.map((row) => row.runId)).toEqual(h.store.getSession(side.id)!.run_ids)
+  expect(rows.map((row) => row.endReason)).toEqual([null])
+  await Bun.sleep(100)
+  expect(ends.filter((id) => id === side.id)).toEqual([side.id])
+})
+
+test("an expired question hands its discussion to the next card", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_TIMED, { content: "Retries hide flakes." }, ASK, { content: "OK." })
+  const timers = heldTimers()
+  const h = await sideHarness(fake, { scheduler: timers.scheduler })
+  const cards = h.office.cards!
+  const { sid, q } = await ask(h)
+  const side = await chat(h, q, "why ask?", 1)
+  await releaseHeld(timers) // its call times out, and the agent asks again
+  await waitFor(() => h.store.getQuestion(q.id)!.status === "stale", { what: "the old question to expire" })
+  const q2 = await waitFor(() => h.store.listQuestions({ sessionId: sid, status: "open", source: "ask_user" })[0], {
+    what: "the new question",
+  })
+  await waitFor(() => h.store.getQuestion(q2.id)!.carried_from === q.id, { what: "the carry-over" })
+  await waitFor(() => status(h, side.id) === "ended", { what: "the old side session to end" })
+  expect(discussed(h, q.id)).toEqual(["why ask?", "Retries hide flakes."])
+
+  await cards.answer(q2.id, "Retry", "option")
+  const result = contentOf(await messagesOf(fake, 4))
+  expect(result).toContain(CARRIED_NOTE)
+  expect(result).toContain("Retries hide flakes.")
+})
+
+test("a dismissed carry over stays out of the answer", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_TIMED, { content: "Retries hide flakes." }, ASK, { content: "OK." })
+  const timers = heldTimers()
+  const h = await sideHarness(fake, { scheduler: timers.scheduler })
+  const cards = h.office.cards!
+  const { sid, q } = await ask(h)
+  await chat(h, q, "why ask?", 1)
+  await releaseHeld(timers)
+  const carried = () =>
+    h.store.listQuestions({ sessionId: sid, status: "open", source: "ask_user" }).find((c) => c.carried_from)
+  const q2 = await waitFor(carried, { what: "the carried card" })
+  expect(cards.dismissCarried(q2.id).carried_from).toBeNull()
+  await cards.answer(q2.id, "Retry", "option")
+  expect(contentOf(await messagesOf(fake, 4))).not.toContain(CARRIED_NOTE)
+})
+
+test("a session that fails for good leaves a stale card with its discussion", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_TIMED, { content: "Because." }, ASK_TIMED)
+  const timers = heldTimers()
+  const h = await sideHarness(fake, { scheduler: timers.scheduler })
+  const { sid, q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  await releaseHeld(timers)
+  const q2 = await waitFor(() => h.store.listQuestions({ sessionId: sid, status: "open", source: "ask_user" })[0], {
+    what: "q2",
+  })
+  await waitFor(
+    () => status(h, side.id) === "ended" && status(h, sid) === "waiting" && h.registry.get(sid) === undefined,
+    { what: "the asker to wait at q2" },
+  )
+  // The wake at q2's deadline and its retry both die: the session fails for good.
+  const kill = (worker: { pgid: number }) => process.kill(-worker.pgid, "SIGKILL")
+  h.afterSpawn(kill)
+  h.afterSpawn(kill)
+  await releaseHeld(timers)
+  await waitFor(() => status(h, sid) === "failed", { what: "the failure" })
+  await waitFor(() => h.store.getQuestion(q2.id)!.status === "stale", { what: "the open card to expire" })
+  expect(discussed(h, q.id)).toEqual(["why?", "Because."])
+  expect(status(h, side.id)).toBe("ended")
+})
+
+test("the start sweep expires cards of dead sessions and ends their side chats", async () => {
+  const h = await sideHarness(await fakeLlm())
+  const dead = h.store.createSession(session({ status: "failed", cwd: h.folder }))
+  const q = h.store.addQuestion(question(dead.id))
+  const orphan = h.store.createSession(session({ kind: "side", status: "idle", question_id: q.id, cwd: h.folder }))
+  h.store.updateQuestion(q.id, { side_session_id: orphan.id })
+  h.office.cards!.sweep()
+  expect(h.store.getQuestion(q.id)!.status).toBe("stale")
+  await waitFor(() => status(h, orphan.id) === "ended", { what: "the orphaned side session to end" })
+  expect(h.store.getQuestion(q.id)!.status).toBe("stale")
+  // It has no run, so End can't reach it.
+  expect(h.logs).toContain(`side session ${orphan.id} has no live run to end`)
+})
+
+test("a side chat stored starting at the sweep ends at once", async () => {
+  const h = await sideHarness(await fakeLlm())
+  const asker = h.store.createSession(session({ cwd: h.folder }))
+  const q = h.store.addQuestion(question(asker.id))
+  const side = h.store.createSession(session({ kind: "side", status: "starting", question_id: q.id, cwd: h.folder }))
+  h.store.updateQuestion(q.id, { side_session_id: side.id })
+  const end = spyOn(h.harness, "end")
+  h.office.cards!.sweep()
+  expect(status(h, side.id)).toBe("ended")
+  expect(end).not.toHaveBeenCalled()
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+})
+
+test("a side chat resumes after an office restart", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Postgres scales." }, { content: "SQLite is simpler." })
+  const { h, q } = await atTheGate(GATE, { fake })
+  const side = await chat(h, q, "why Postgres?", 1)
+  await h.reopen()
+  expect(status(h, side.id)).toBe("idle") // left for the next office
+
+  await h.harness.restore() // the harness's own start, then the extension's sweep
+  h.office.cards!.sweep()
+  // Asleep: the next message wakes it.
+  expect([status(h, side.id), h.registry.get(side.id)]).toEqual(["idle", undefined])
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+  await chat(h, q, "and SQLite?", 2)
+  expect(await lastUser(fake, 2)).toBe("and SQLite?")
+  expect(await framings(fake, 2)).toBe(1)
+  const all = ["why Postgres?", "Postgres scales.", "and SQLite?", "SQLite is simpler."]
+  await waitFor(() => JSON.stringify(discussed(h, q.id)) === JSON.stringify(all), { what: "the discussion" })
+})
+
+test("a restored or woken side chat keeps the cards run as its parent", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Postgres scales." }, { content: "SQLite is simpler." }, { content: "Either." })
+  const { h, q } = await atTheGate(GATE, { fake })
+  const side = await chat(h, q, "why Postgres?", 1)
+  await h.reopen()
+  await chat(h, q, "and SQLite?", 2) // woken: an advance of its recorded run
+  await h.harness.end(side.id)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  await chat(h, q, "which then?", 3) // reopened: a fresh run
+  const parent = { run_id: q.run_id, node: q.node_id }
+  const jobs = h.jobs.filter((job) => job.session_id === side.id && job.advance !== false)
+  const chats = jobs.filter((job) => job.kind === "chat")
+  expect(chats.map((job) => job.parent)).toEqual([parent, parent])
+  const runs = h.store.getSession(side.id)!.run_ids
+  expect(chats.map((job) => job.run_id)).toEqual(runs)
+  // The woken advance resumes the first run's log, which records its parent.
+  const woken = jobs.filter((job) => job.kind === "advance" && job.run_id === runs[0])
+  expect(woken.length).toBeGreaterThan(0)
+  for (const job of woken) expect(job.log).toBe(chats[0]!.log)
+  for (const job of chats) {
+    const [started] = iterRunRecords(job.log, { payloads: true })
+    expect(started!.kind).toBe("run_started")
+    const record = started!.envelope.record as unknown as { parent: unknown }
+    expect(record.parent).toEqual({ runId: q.run_id, node: q.node_id })
+  }
+})
+
+test("a side chat survives a restart", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    { content: "Postgres scales." },
+    { content: "never seen", hold: true },
+    { content: "SQLite is simpler." },
+    { content: "Either." },
+  )
+  const { h, q } = await atTheGate(GATE, { fake })
+  const side = await chat(h, q, "why Postgres?", 1)
+  // The office stops in the middle of its second reply.
+  await h.harness.prompt(side.id, "and SQLite?")
+  await fake.waitForRequests(2)
+  await h.reopen()
+  fake.release()
+
+  await h.harness.restore() // the harness's own start, then the extension's sweep
+  h.office.cards!.sweep()
+  // The reply resumes in the same run, with the history.
+  await waitFor(() => texts(h, side.id).at(-1) === "SQLite is simpler." && status(h, side.id) === "idle", {
+    what: "the resumed reply",
+  })
+  expect(await lastUser(fake, 3)).toBe("and SQLite?")
+  expect(contentOf(await messagesOf(fake, 3))).toContain("Postgres scales.")
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+  await chat(h, q, "which then?", 3)
+  expect(await lastUser(fake, 4)).toBe("which then?")
+  expect(await framings(fake, 4)).toBe(1) // the seed, once, from the side session's history
+  const all = ["why Postgres?", "Postgres scales.", "and SQLite?", "SQLite is simpler.", "which then?", "Either."]
+  await waitFor(() => JSON.stringify(discussed(h, q.id)) === JSON.stringify(all), { what: "the discussion" })
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+
+  // One run: its chat job carries the card's run as parent, and each advance resumes the log that records it.
+  const runs = h.store.getSession(side.id)!.run_ids
+  expect(runs).toHaveLength(1)
+  const jobs = h.jobs.filter((job) => job.session_id === side.id && job.advance !== false)
+  const chats = jobs.filter((job) => job.kind === "chat")
+  expect(chats.map((job) => [job.run_id, job.parent])).toEqual([[runs[0], { run_id: q.run_id, node: q.node_id }]])
+  const advances = jobs.filter((job) => job.kind === "advance")
+  expect(advances.length).toBeGreaterThan(1)
+  for (const job of advances) expect([job.run_id, job.log]).toEqual([runs[0], chats[0]!.log])
+  const [started] = iterRunRecords(chats[0]!.log, { payloads: true })
+  expect(started!.kind).toBe("run_started")
+  expect((started!.envelope.record as unknown as { parent: unknown }).parent).toEqual({
+    runId: q.run_id,
+    node: q.node_id,
+  })
+})
+
+test("a side chat survives a restart during its first reply", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "never seen", hold: true }, { content: "Postgres scales." })
+  const { h, q } = await atTheGate(GATE, { fake })
+  const side = await h.office.cards!.openSide(q.id, "why Postgres?")
+  await fake.waitForRequests(1)
+  expect(status(h, side.id)).toBe("starting")
+  await h.reopen()
+  fake.release()
+
+  await h.harness.restore()
+  // Restore resumed it, so the sweep leaves it running.
+  expect(status(h, side.id)).toBe("busy")
+  h.office.cards!.sweep()
+  await waitFor(() => texts(h, side.id).join() === "Postgres scales." && status(h, side.id) === "idle", {
+    what: "the resumed first reply",
+  })
+  expect(await lastUser(fake, 2)).toEndWith("why Postgres?")
+  expect(await framings(fake, 2)).toBe(1)
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+  const runs = h.store.getSession(side.id)!.run_ids
+  expect(runs).toHaveLength(1)
+  const [started] = iterRunRecords(path.join(h.office.paths.runs, runs[0]!, "log.jsonl"), { payloads: true })
+  expect((started!.envelope.record as unknown as { parent: unknown }).parent).toEqual({
+    runId: q.run_id,
+    node: q.node_id,
+  })
+})
+
+test("a side session whose wake for its end fails stays failed", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Postgres scales." })
+  const { h, q } = await atTheGate(GATE, { fake })
+  const side = await chat(h, q, "why Postgres?", 1)
+  await h.reopen() // not restored: the side session sleeps
+  // Not private: its wake can't read the office's connection.
+  fs.chmodSync(path.join(h.office.connections.dir, "office.json"), 0o644)
+  await h.office.cards!.answer(q.id, GATE_ANSWER, "option")
+  await waitFor(() => status(h, side.id) === "failed", { what: "the failed end" })
+  await Bun.sleep(300)
+  expect(status(h, side.id)).toBe("failed") // not relabelled ended
+})
+
+test("a card that closes while its side chat isnt running interrupts the side run", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  noLiveRun(h)
+  h.store.answerQuestion(q.id, "Retry", "option", null)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side chat's end" })
+  const [row, ...rest] = h.store.runsOfSession(side.id)
+  expect(rest).toEqual([])
+  expect(row!.endReason).toBe(CARD_CLOSED)
+  expect(CARD_CLOSED).toBe("its card closed while it wasn't running")
+  await waitFor(() => recordKinds(h, row!.runId).includes("run_cancelled"), { what: "the side run's cancel" })
+  expect(h.logs).toContain(`side session ${side.id} has no live run to end`)
+})
+
+test("a card that closes as its side chat registers leaves the side run alone", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  // Its 409 came just before a start stored the session starting again.
+  const end = noLiveRun(h, (sid) => void h.store.updateSession(sid, notWaiting("starting")))
+  const abandon = spyOn(h.harness, "abandon")
+  h.store.answerQuestion(q.id, "Retry", "option", null)
+  await h.office.cards!.close()
+  expect(end).toHaveBeenCalledTimes(1)
+  expect(abandon).not.toHaveBeenCalled()
+  const [row] = h.store.runsOfSession(side.id)
+  expect([status(h, side.id), row!.endReason]).toEqual(["starting", null])
+  expect(h.logs.filter((line) => line.includes("no live run to end"))).toEqual([])
+})
+
+test("a closed cards side chat and its runs outcome commit together", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  noLiveRun(h)
+  const endRun = h.store.endRun.bind(h.store)
+  spyOn(h.store, "endRun").mockImplementation((runId: string, reason: string, at?: string) => {
+    endRun(runId, reason, at)
+    throw new Error("disk full")
+  })
+  h.store.answerQuestion(q.id, "Retry", "option", null)
+  await h.office.cards!.close()
+  const [row] = h.store.runsOfSession(side.id)
+  expect([status(h, side.id), row!.endReason]).toEqual(["idle", null])
+  expect(h.logs).toContain(`session ${side.id}: can't store the end (Error)`)
+  expect(h.logs.filter((line) => line.includes("disk full"))).toEqual([])
+})
+
+test("a card that closes while its side chat finishes leaves the run finished", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  const ended = outcomes(h)
+  // Inside the side run's own finish, before its end is stored, the card closes.
+  h.hooks.endStatus.push((session) => {
+    if (session.id === side.id) h.store.answerQuestion(q.id, "Retry", "option", null)
+    return null
+  })
+  const abandon = spyOn(h.harness, "abandon")
+  await h.harness.end(side.id) // the exit: the side run finishes on its own
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side chat's end" })
+  await h.office.cards!.close()
+  expect(abandon).not.toHaveBeenCalled()
+  const [row] = h.store.runsOfSession(side.id)
+  expect(row!.endReason).toBeNull()
+  await waitFor(() => ended.length === 1, { what: "the run's end" })
+  expect(ended[0]).toMatchObject({ status: "succeeded" })
 })
