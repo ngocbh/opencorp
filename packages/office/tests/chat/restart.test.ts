@@ -618,13 +618,14 @@ test("a second kill in a row fails the session", async () => {
   const { actor, sid } = await startActor(o)
   await heldReply(fake, actor, "a")
   const first = o.registry.get(sid)!
-  const before = o.kinds.length
+  const before = o.jobs.length
   kill(o, sid)
   await fake.waitForRequests(2, 30_000)
   expect(o.registry.get(sid)).not.toBe(first)
   kill(o, sid)
   await waitFor(() => status(o, sid) === "failed", { what: "the failure" })
-  expect(o.kinds.slice(before)).toEqual(["advance"])
+  // The failure hard-stops the run with a cancel job the finish doesn't await, so only the respawns count.
+  expect(o.jobs.slice(before).filter((job) => job.advance).map((job) => job.kind)).toEqual(["advance"])
   // Left open for the manager.
   const item = session(o, sid).work_item_id!
   expect(o.office.store.getWorkItem(item)!.status).toBe("in_progress")

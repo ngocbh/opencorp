@@ -5,7 +5,7 @@ import path from "node:path"
 import { inspect } from "node:util"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import type { z } from "zod"
-import type { LiveEvent } from "@opencorp/protocol"
+import type { LiveEvent, Part } from "@opencorp/protocol"
 import { checked, loadProvider, Provider, ProviderError, providerSchema } from "../../src/chat/provider.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { LiveRelay } from "../../src/daemon/live.ts"
@@ -340,9 +340,12 @@ test("a key in llm config reaches the model and nothing else", async () => {
   expect(inFlight).toHaveLength(1)
   expect(inFlight[0]).not.toBeNull()
   expect(events.length).toBeGreaterThan(0)
-  // The reply streams as deltas, so no one event holds it whole.
-  const reply = events.flatMap((event) => (event.type === "part.delta" ? [event.data.text as string] : []))
-  expect(reply.join("")).toBe("Hello from the chat.")
+  // The reply streams as deltas, so no one event holds it whole; a follower that meets the part already
+  // finished publishes it whole in the part's update instead.
+  const deltas = events.flatMap((event) => (event.type === "part.delta" ? [event.data.text as string] : []))
+  const written = events.flatMap((event) => (event.type === "part.updated" ? [event.data.part as Part] : []))
+  const reply = deltas.length > 0 ? deltas.join("") : written.filter((part) => part.type === "text").at(-1)?.text
+  expect(reply).toBe("Hello from the chat.")
   expect(relayLines).toEqual([])
   // ...and real log lines: the failing handler's, with the error's type only.
   expect(lines).toContain(`ERROR worker s1 handler event failed (Error)`)
