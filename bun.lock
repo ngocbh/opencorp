@@ -69,6 +69,7 @@
         "zod": "catalog:",
       },
       "devDependencies": {
+        "@opencorp/client": "workspace:*",
         "ajv": "8.20.0",
       },
     },

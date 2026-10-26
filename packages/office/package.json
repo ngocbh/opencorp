@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "exports": { ".": "./src/main.ts", "./platform": "./src/platform.ts", "./hq/guard": "./src/hq/guard.ts", "./hq/version": "./src/hq/version.ts", "./runs/index_thread": "./src/runs/index_thread.ts" },
-  "scripts": { "test": "bun test", "typecheck": "tsc -p ." },
+  "scripts": { "test": "bun test", "typecheck": "tsc -p . && tsc -p tests/e2e" },
   "dependencies": {
     "@clack/prompts": "1.8.1",
     "@ngocbh/yian": "workspace:*",
@@ -14,5 +14,5 @@
     "yaml": "2.9.1",
     "zod": "catalog:"
   },
-  "devDependencies": { "ajv": "8.20.0" }
+  "devDependencies": { "@opencorp/client": "workspace:*", "ajv": "8.20.0" }
 }
