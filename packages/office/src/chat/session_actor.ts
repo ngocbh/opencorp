@@ -285,9 +285,12 @@ export class SessionActor implements LiveCalls {
   }
 
   /** The model calls in flight of `runId`, as the live relay shows them (empty while its view is being built) while a
-   *  worker runs it; else null. */
+   *  worker runs it; else null. Null too once the worker has exited, before the actor handles the exit: the relay
+   *  has already sent its cut calls as interrupted, as the transcript will show them. */
   calls(runId: string): readonly LiveViewCall[] | null {
-    return this.#run !== null && !this.#closed && runId === this.#runId ? (this.#ctx.live.calls(runId) ?? []) : null
+    return this.#run !== null && !this.#run.exited && !this.#closed && runId === this.#runId
+      ? (this.#ctx.live.calls(runId) ?? [])
+      : null
   }
 
   /**
@@ -1131,7 +1134,7 @@ export class SessionActor implements LiveCalls {
         // Posted before the forget, which reads the store: a failing read must not leave the actor without its exit.
         actor.#post("exit", () => actor.#exited(run, returncode))
         // The finished session's last worker: nothing can show its runs again.
-        if (actor.#finished && run === actor.#run) actor.#forgetLive()
+        if (actor.#finished && run === actor.#run) actor.#forgetRuns()
       }
 
       override askUser(_worker: unknown, request: AskRequest, callId: string): Promise<unknown> {
@@ -1651,9 +1654,8 @@ export class SessionActor implements LiveCalls {
         if (runId !== null) await hooks.notify("runFinished", finished, runId, frame)
         await hooks.notify("sessionEnded", finished)
       })()
-      this.#ctx.transcript.forget(finished.run_ids)
       // With a worker alive, its last frames would show the runs again: its exit forgets them.
-      if (this.#run === null || this.#run.exited) this.#ctx.live.forget(finished.run_ids)
+      if (this.#run === null || this.#run.exited) this.#forgetRuns(finished.run_ids)
     } catch (error) {
       if (error instanceof HarnessError) throw error
       this.#log(`session ${this.sessionId}: can't store the end (${errorName(error)})`)
@@ -1664,10 +1666,11 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  /** Drops what the live relay showed of the session's runs. */
-  #forgetLive(): void {
-    const session = this.#ctx.store.getSession(this.sessionId)
-    if (session !== undefined) this.#ctx.live.forget(session.run_ids)
+  /** Drops what the transcript cache and the live relay hold of the session's runs (`runIds`, else read from the
+   *  store). */
+  #forgetRuns(runIds: readonly string[] = this.#ctx.store.getSession(this.sessionId)?.run_ids ?? []): void {
+    this.#ctx.transcript.forget(runIds)
+    this.#ctx.live.forget(runIds)
   }
 
   /** The hard stop of run `runId` (none when null) and of the `replaced` runs, best effort: a `cancel` of `runId`

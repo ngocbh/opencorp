@@ -279,25 +279,32 @@ test("a finished session forgets its live runs only after its worker exits", asy
   const workers = scriptedWorker(o)
   const seen: string[] = []
   const live = spyLive(o, seen)
+  const transcript = { forget: (runIds: Iterable<string>) => void seen.push(`transcript ${[...runIds].join(" ")}`) }
   const sid = await newSession(o)
-  const actor = makeActor(o, sid, { live })
+  const actor = makeActor(o, sid, { live, transcript })
   await actor.start()
   await actor.fail()
   expect(status(o, sid)).toBe("failed")
   expect(seen).toEqual([])
   const { worker, handlers } = workers[0]!
   handlers.exited(worker, 0)
-  expect(seen).toEqual(["detach", `forget ${session(o, sid).run_ids.join(" ")}`])
+  const runs = session(o, sid).run_ids.join(" ")
+  expect(seen).toEqual(["detach", `transcript ${runs}`, `forget ${runs}`])
   // A finish queued before the exit job: it runs after the exit handler, so it forgets.
   seen.length = 0
   const sid2 = await newSession(o)
-  const second = makeActor(o, sid2, { live })
+  const second = makeActor(o, sid2, { live, transcript })
   await second.start()
+  const runId = second.runId!
+  expect(second.calls(runId)).toEqual([])
   const next = workers[1]!
   const failing = second.fail()
   next.handlers.exited(next.worker, 0)
+  // The worker is gone before the exit job runs: no call of it is live.
+  expect(second.calls(runId)).toBeNull()
   await failing
-  expect(seen).toEqual(["detach", `forget ${session(o, sid2).run_ids.join(" ")}`])
+  const runs2 = session(o, sid2).run_ids.join(" ")
+  expect(seen).toEqual(["detach", `transcript ${runs2}`, `forget ${runs2}`])
 })
 
 test("turn text changes what the turn gets but not the transcript", async () => {
