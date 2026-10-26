@@ -20,7 +20,8 @@ const NAMES = [
   "Feedback", "Event", "LiveEvent", "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest",
   "RepoIssue", "CompanyView", "CommitInfo", "CompanyTreeEntry", "CompanyTree", "CompanyFile", "RunSummary",
   "RunPage", "RunUsage", "RunDetail", "RunNode", "RunDivider", "RunNodePage", "RunEvent", "RunEventPage",
-  "RunUpdated", "PersonCost", "CostReport", "ApiVersion", "AppBuild", "Health", "HqTcp", "HqStatus",
+  "RunLiveRecord", "RunLiveCall", "RunLiveStart", "RunLiveChunk", "RunLiveEnd", "RunUpdated", "PersonCost",
+  "CostReport", "ApiVersion", "AppBuild", "Health", "HqTcp", "HqStatus",
   "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession", "HqLoginRequest", "HireRequest",
   "HireResponse", "ApiError", "AnswerRequest", "SideChatRequest", "SendBackRequest", "ProfileWriteRequest",
   "VersionConflict", "ProfileManagerRequest", "FeedbackRequest", "ConfirmFollowUpsRequest",
@@ -214,6 +215,12 @@ const RUN_STATUSES = ["running", "waiting", "idle", "finished", "failed", "inter
 test("run defs have fixtures", () => {
   expect(stems(FIXTURES)).toEqual(expect.arrayContaining(RUNS))
   expect(invalidDefs()).toEqual(expect.arrayContaining(RUNS))
+})
+
+const LIVE = ["RunLiveRecord", "RunLiveCall", "RunLiveStart", "RunLiveChunk", "RunLiveEnd"]
+
+test("live frames have fixtures", () => {
+  expect(stems(FIXTURES)).toEqual(expect.arrayContaining(LIVE))
 })
 
 test("run statuses node statuses and log states", () => {

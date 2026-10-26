@@ -13,6 +13,8 @@ import {
   FIELD_CHARS,
   HUGE_LINE,
   LINE_CAP,
+  lineEvent,
+  logEvents,
   logStream,
   LRU_LOGS,
   nodePage,
@@ -485,6 +487,52 @@ test("a file changed under a page stops it there", async () => {
   fs.writeFileSync(file, Buffer.concat([...data.slice(0, 4), started(9, "rewritten"), ...data.slice(5)]))
   const page = readEvents(file, index, { after: null, limit: 100 })
   expect([page.events.map((e) => e.seq), page.next_after]).toEqual([[0, 1, 2, 3], 3])
+})
+
+test("a live record line maps as a page shows it", async () => {
+  const file = logOf(
+    runStarted(0), started(1, "a"), committed(2, "a", { output: "x".repeat(10_000) }),
+    committed(3, "a", 2n ** 60n, "int"),
+  )
+  const page = readEvents(file, await refresh(file, null), { after: null, limit: 10 })
+  const data = linesOf(fs.readFileSync(file))
+  expect(data.map((bytes, seq) => lineEvent(bytes, seq))).toEqual(page.events)
+  // The same cut strings and decoded values, with or without the newline.
+  expect([page.events[2]!.cut, page.events[3]!.payload!.value]).toEqual([["/value/output"], "1152921504606846976"])
+  expect(lineEvent(data[2]!.subarray(0, -1), 2)).toEqual(page.events[2]!)
+})
+
+test("a line over the page cap maps to a stub with its size", async () => {
+  const huge = committed(1, "big", { output: "y".repeat(BIG_LINE + 10) })
+  const file = logOf(runStarted(0), huge, started(2, "next"))
+  const page = readEvents(file, await refresh(file, null), { after: 0, limit: 10 })
+  expect(lineEvent(huge, 1)).toEqual({ seq: 1, kind: "pool_commit", size: huge.length })
+  expect([...logEvents(file, 1, null)]).toEqual(page.events)
+})
+
+test("a line that is not its seq maps to null", () => {
+  expect(lineEvent(started(5, "a"), 4)).toBeNull()
+  expect(lineEvent(Buffer.from("not json\n"), 0)).toBeNull()
+  expect(lineEvent(Buffer.from([0xff, 0x0a]), 0)).toBeNull()
+})
+
+test("log events read records from a seq through a seq", async () => {
+  const file = chatLog(path.join(tempDir(), "r.jsonl"), 1) // seqs 0..11
+  const events = readEvents(file, await refresh(file, null), { after: null, limit: 100 }).events
+  fs.appendFileSync(file, '{"torn')
+  expect([...logEvents(file, 3, 5)]).toEqual(events.slice(3, 6))
+  expect([...logEvents(file, 0, null)]).toEqual(events)
+  // The incomplete tail line is not read.
+  expect([...logEvents(file, 9, null)].map((e) => e?.seq)).toEqual([9, 10, 11])
+  expect([[...logEvents(file, 12, null)], [...logEvents(file, 3, 2)]]).toEqual([[], []])
+})
+
+test("log events yield null at a line that is not its seq and stop", () => {
+  const file = chatLog(path.join(tempDir(), "r.jsonl"), 1)
+  const data = linesOf(fs.readFileSync(file))
+  // Line 4 is no longer seq 4.
+  fs.writeFileSync(file, Buffer.concat([...data.slice(0, 4), started(9, "rewritten"), ...data.slice(5)]))
+  expect([...logEvents(file, 2, null)].map((e) => e?.seq ?? null)).toEqual([2, 3, null])
 })
 
 test("the download is every complete line as stored", async () => {

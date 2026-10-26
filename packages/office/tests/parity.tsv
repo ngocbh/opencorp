@@ -1226,6 +1226,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/reader.test.ts::a deeply nested payload is cut at its depth	security review: bounded recursion	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a derived commit shows its value when opened	#362 PR 8b, §5.5	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a line over the line cap makes the log unreadable before yian reads it	security review: a log must not exhaust memory; yian's reader joins whole lines	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::a line over the page cap maps to a stub with its size	design §2.6 (P7): the live route maps records as the run page does	O4b-3
+—	new	packages/office/tests/runs/reader.test.ts::a line that is not its seq maps to null	design §2.6 (P7): the live route maps records as the run page does	O4b-3
+—	new	packages/office/tests/runs/reader.test.ts::a live record line maps as a page shows it	design §2.6 (P7): the live route maps records as the run page does	O4b-3
 —	new	packages/office/tests/runs/reader.test.ts::a log over the fold cap shows no derived value	security review: the fold holds the whole log	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a page stops after its scan budget	security review: a page's synchronous reads are bounded (Python read pages in a thread)	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a payload whose cuts would name too much is a size stub	security review: bounded output	O4b-5
@@ -1233,6 +1236,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/reader.test.ts::a sparse entry marks every few mib of records	security review: a page's synchronous reads are bounded (Python read pages in a thread)	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a waiting node stays open through a resume and a woken one runs on	yian #1057, #1064: a waiting node is non-terminal and a resume doesn't retry it	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::an unterminated tail over the line cap makes the log unreadable	security review: a line over the cap is refused before it is read whole	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::log events read records from a seq through a seq	design §2.6 (P7): the live route maps records as the run page does	O4b-3
+—	new	packages/office/tests/runs/reader.test.ts::log events yield null at a line that is not its seq and stop	design §2.6 (P7): the live route maps records as the run page does	O4b-3
 —	new	packages/office/tests/runs/records.test.ts::a cancelled run shows interrupted with the office reason	§5.1 status mapping	O4b-6
 —	new	packages/office/tests/runs/records.test.ts::a crashed running or missing index row asks the log and else has no outcome	§5.1 status mapping; rules 4 and 5	O4b-6
 —	new	packages/office/tests/runs/records.test.ts::a failed run shows failed with yians failure and node	§5.1 status mapping	O4b-6
