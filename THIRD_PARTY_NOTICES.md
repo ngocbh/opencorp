@@ -186,9 +186,15 @@ Agreement.
 - **Ours:** `packages/office/src/company_template/template/shared/flows/compact_history.yaml`.
 - **License:** Apache-2.0; the full text is in `packages/yian/LICENSE`. Yian's NOTICE
   (`packages/yian/ts/NOTICE`) says "yian, Copyright 2026 Ngoc Bui".
+- **What:** the session actor's wake-at timer: `sleepUntil` is Yian's `sleepUntil`
+  (`ts/src/cli/chat.ts`), copied unchanged, and `wakeAt` follows Yian's `wakeAt`
+  (`ts/src/runtime/waits.ts`) over the office's own `Wait` list.
+- **Upstream:** https://github.com/ngocbh/yian at commit `0fa15307`.
+- **Ours:** `packages/office/src/chat/session_actor.ts`.
+- **License:** Apache-2.0, as above.
 
 ## Dependencies
 
 Yian (`packages/yian`, Apache-2.0) and the packages in `uv.lock` and `bun.lock` are dependencies
-installed alongside OpenCorp, under their own licenses. Apart from the Yian file listed above, none
+installed alongside OpenCorp, under their own licenses. Apart from the Yian code listed above, none
 of their code is copied here.

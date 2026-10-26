@@ -504,10 +504,11 @@ export class SessionActor implements LiveCalls {
     const inbox = (await this.#specOf(session)).chat.inbox
     const run = this.#run
     const capped = this.#capped()
-    const rests = this.#rested && !(this.#waits ?? []).some((wait) => wait.settled)
+    const rests = this.#rested && !this.#wakesAgent(this.#waits ?? [])
     if (capped && run === null && !rests) {
       // The reply was stopped at the cap, crashed or is unknown, or a settled call would wake the agent: an advance
-      // would spend, so the run is cancelled and the session ends.
+      // would spend, so the run is cancelled and the session ends. A settled turn take doesn't: it reads its
+      // messages with the close, and the flow skips the reply once closed.
       this.#finish("ended", null, ENDED_OVER_CAP)
       return
     }
@@ -1298,7 +1299,7 @@ export class SessionActor implements LiveCalls {
   #arrived(run: WorkerRun, frame: Frame): void {
     const p = run.given.find((given) => given.delivery.id === frame.id && given.reply === null)
     if (p === undefined) return
-    p.reply = frame
+    p.reply = checkedReply(frame)
     p.late = run.outcome !== null
     this.#post("deliver_reply", () => this.#replied(run, p))
   }
@@ -1401,6 +1402,8 @@ export class SessionActor implements LiveCalls {
       // The cap stopped it (or it crashed over the cap): not a death. Only its deliveries go on until a raise; after
       // one, a real advance resumes it.
       this.#log(`session ${this.sessionId}: its run ${status} at its cost cap`)
+      // A run that reached the cap made progress, as a new turn did in Python.
+      this.#deaths = 0
       this.#carry(run)
       await this.#spawnQuietly("advance")
     } else if (status === null || stopped) {
@@ -1428,11 +1431,11 @@ export class SessionActor implements LiveCalls {
    * each as settled as before: it made no progress, so it waits for the next command. With no worker started, the
    * timer waits for the earliest deadline. Over the cost cap, unless ending, only deliveries are taken to the run,
    * and the advance waits for a raise; an advance the cap held back is spawned once it is raised. An ending session
-   * over the cap with a settled wait ends `ENDED_OVER_CAP`.
+   * over the cap with a settled wait other than its turn's ends `ENDED_OVER_CAP`.
    */
   async #waited(run: WorkerRun, readvance: boolean): Promise<void> {
     const waits = this.#waits ?? []
-    if (this.#ending && this.#capped() && waits.some((wait) => wait.settled)) {
+    if (this.#ending && this.#capped() && this.#wakesAgent(waits)) {
       // A settled call would wake the agent and spend, as in End's path with no worker.
       this.#log(`session ${this.sessionId}: ends over its cost cap`)
       this.#finish("ended", null, ENDED_OVER_CAP, run)
@@ -1458,6 +1461,11 @@ export class SessionActor implements LiveCalls {
       return
     }
     await this.#spawnQuietly("advance", { plain: true })
+  }
+
+  /** Whether a call in `waits` other than a turn's take is settled: advancing would wake the agent and spend. */
+  #wakesAgent(waits: readonly Wait[]): boolean {
+    return waits.some((wait) => wait.settled && !this.#chat.isTurn(wait.node))
   }
 
   /** `run`'s worker found the run held by another process (`RunBusyError`): the first time, the same spawn goes
@@ -1664,8 +1672,9 @@ export class SessionActor implements LiveCalls {
       // Its frames are ignored, but a cancel that didn't take is logged by its reason or error type only.
       const handlers = new (class extends BaseHandlers {
         override deliverReply(_worker: unknown, frame: Frame): void {
-          if (typeof frame.refused === "string") note(`was refused (${frame.refused})`)
-          else if (typeof frame.failed === "string") note(`failed (${frame.failed})`)
+          const reply = checkedReply(frame)
+          if (typeof reply.refused === "string") note(`was refused (${reply.refused})`)
+          else if (typeof reply.failed === "string") note(`failed (${reply.failed})`)
         }
 
         override error(_worker: unknown, frame: Frame): void {
@@ -1857,7 +1866,16 @@ function errorType(frame: Frame): string {
 
 /** `value` when it reads as an error type's name, else `Error`: a log line carries nothing else a worker sent. */
 function typeName(value: unknown): string {
-  return typeof value === "string" && /^[A-Za-z_][\w.]*$/.test(value) ? value : "Error"
+  return typeof value === "string" && /^[A-Za-z_][\w.]{0,99}$/.test(value) ? value : "Error"
+}
+
+/** `frame` with its `refused` reason kept only when it reads as one (else `refused`) and its `failed` only when it
+ *  reads as an error type (else `Error`): both reach logs and client errors, and a worker may write anything. */
+function checkedReply(frame: Frame): Frame {
+  const reason = frame.refused
+  if (typeof reason === "string" && !/^[a-z_]{1,40}$/.test(reason)) return { ...frame, refused: "refused" }
+  if (typeof frame.failed === "string") return { ...frame, failed: typeName(frame.failed) }
+  return frame
 }
 
 /** `value` with `provider`'s model key replaced by `[redacted]` wherever it appears. */

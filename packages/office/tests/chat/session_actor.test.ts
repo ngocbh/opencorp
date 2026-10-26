@@ -141,6 +141,36 @@ test("a send the worker answered is not sent again when its frame reports the ch
   expect(o.kinds).toEqual(["chat"])
 })
 
+test("a reply reason or error type that does not read as one never reaches a log or an error", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const scripted = workers[0]!
+  const junk = `Not a reason: ${"x".repeat(1000)}`
+  const refused = actor.prompt("hi")
+  await waitFor(() => scripted.deliveries.length === 1, { what: "the send" })
+  const refusedId = scripted.deliveries[0]!.id
+  scripted.handlers.deliverReply(scripted.worker, { type: "deliver_reply", id: refusedId, refused: junk })
+  const refusal = await refused.catch((error: Error) => error)
+  expect(refusal).toMatchObject({ status: 422, code: "refused" })
+  // The run started a node, so a failed delivery is answered at once.
+  scripted.handlers.event(scripted.worker, { type: "event", name: "NodeStarted", data: { node_id: "chat#0/reply" } })
+  const failed = actor.prompt("again")
+  await waitFor(() => scripted.deliveries.length === 2, { what: "the second send" })
+  const failedId = scripted.deliveries[1]!.id
+  scripted.handlers.deliverReply(scripted.worker, { type: "deliver_reply", id: failedId, failed: junk })
+  const failure = await failed.catch((error: Error) => error)
+  expect(failure).toMatchObject({ status: 503, code: "cant_wake" })
+  for (const text of [String((refusal as Error).message), String((failure as Error).message), ...o.logs]) {
+    expect(text).not.toContain("Not a reason")
+  }
+  expect(o.logs.some((line) => line.includes("was refused (refused)"))).toBe(true)
+  expect(o.logs.some((line) => line.includes("failed (Error)"))).toBe(true)
+})
+
 test("a start after the registry closed is refused as stopping", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
@@ -1184,6 +1214,28 @@ test("end over the cost cap on a waiting run closes it without a model call", as
   expect(fake.requests()).toHaveLength(0)
 })
 
+test("end over the cost cap after a message sent while capped closes the run without a model call", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const frames: unknown[] = []
+  o.hooks.runFinished.push((_s, _runId, frame) => void frames.push(frame))
+  const { actor, sid } = await startActor(o)
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  const runId = actor.runId!
+  o.office.store.updateSession(sid, { cost: 6 })
+  const before = o.kinds.length
+  expect(await actor.prompt("hi")).toBe("queued")
+  await waitFor(() => !actor.hasWorker, { what: "the delivering worker to exit" })
+  expect(o.jobs.slice(before)).toMatchObject([{ kind: "advance", advance: false, deliver: [{ op: "send" }] }])
+  // The message settled the turn's take; the take reads it with the close and the flow skips the reply.
+  await actor.end()
+  await waitFor(() => status(o, sid) === "ended" && frames.length === 1, { what: "the end" })
+  expect(o.jobs.slice(before + 1)).toMatchObject([{ kind: "advance", advance: true, deliver: [{ op: "close" }] }])
+  expect(o.office.store.getRun(runId)?.endReason).not.toBe(ENDED_OVER_CAP)
+  expect(frames).toMatchObject([{ type: "result", status: "succeeded" }])
+  expect(fake.requests()).toHaveLength(0)
+})
+
 test("end over the cost cap on a stopped reply ends the session at once", async () => {
   const fake = await fakeLlm()
   fake.script(PRICEY, free("spare"))
@@ -1268,6 +1320,32 @@ test("a run the cap stopped is not a death when the cap is raised before its wor
   workers[1]!.handlers.exited(workers[1]!.worker, 1)
   await waitFor(() => workers.length === 3, { what: "the retry" })
   expect(workers[2]!.job).toMatchObject({ kind: "advance", advance: true })
+  expect(status(o, sid)).not.toBe("failed")
+})
+
+test("a run the cap stopped resets the death bound", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake, { prices: PRICES })
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  workers[0]!.handlers.exited(workers[0]!.worker, 1)
+  await waitFor(() => workers.length === 2, { what: "the retry" })
+  const second = workers[1]!
+  const stops = countStops(second)
+  // The retry made progress: its reply ran to the cap.
+  modelCall(second, 6)
+  await waitFor(() => stops() === 1 && capItem(o) !== undefined, { what: "the stop at the cap" })
+  second.handlers.error(second.worker, STOPPED_ERROR)
+  second.handlers.exited(second.worker, 1)
+  await waitFor(() => !actor.hasWorker, { what: "the stopped worker to exit" })
+  await actor.setCostCap(20)
+  await waitFor(() => workers.length === 3, { what: "the resumed worker" })
+  // A death after the raise is a first one again: it gets the one retry.
+  workers[2]!.handlers.exited(workers[2]!.worker, 1)
+  await waitFor(() => workers.length === 4, { what: "the retry after the raise" })
+  expect(workers[3]!.job).toMatchObject({ kind: "advance", advance: true })
   expect(status(o, sid)).not.toBe("failed")
 })
 
