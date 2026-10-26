@@ -83,8 +83,8 @@ export async function harnessCall<T>(fn: () => T | Promise<T>): Promise<T> {
   }
 }
 
-/** What a client reads of a session before following its live events: a Codex session's current turn. 404 comes
- *  first: Python's transcript read was a store read, with no harness. */
+/** What a client reads of a session before following its live events: a yian chat's transcript or a Codex
+ *  session's current turn. 404 comes first: Python's transcript read was a store read, with no harness. */
 export async function listMessages(ctx: RequestContext, params: Params) {
   const session = stored(ctx, params.id!)
   const actor = harness(ctx, "GET /sessions/:id/messages")

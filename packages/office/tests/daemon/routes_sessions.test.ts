@@ -7,7 +7,6 @@ import { newToken } from "../../src/auth/tokens.ts"
 import { HarnessError } from "../../src/chat/state.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import type { Office } from "../../src/daemon/office.ts"
-import type { SessionRecord } from "../../src/store/store.ts"
 import { register } from "../../src/extensions/questions.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { fakeLlm, makeHarness, noWorkersLeft, status as chatStatus } from "../chat/helpers.ts"
@@ -160,19 +159,19 @@ test("missing session is 404", async () => {
 })
 
 test("messages are a live codex sessions current turn then empty", async () => {
-  const h = makeCodex()
-  h.office.harness = h.sessions
+  const h = await makeHarness(await fakeLlm(), { codex: true })
+  const c = h.codex!
   const { sock } = await served(h.office)
-  h.fake.script([fc.agentMessage("m1", "Hi")])
-  const sid = await start(h, h.workspace)
-  await h.sessions.prompt(sid, "hello")
-  await waitFor(() => texts(h, sid).join() === "Hi" && status(h, sid) === "idle")
+  c.fake.script([fc.agentMessage("m1", "Hi")])
+  const sid = await start(c, h.folder)
+  await c.sessions.prompt(sid, "hello")
+  await waitFor(() => texts(c, sid).join() === "Hi" && status(c, sid) === "idle")
   const r = await get(sock, `/sessions/${sid}/messages`)
   expect(r.status).toBe(200)
-  expect(r.json()).toEqual(JSON.parse(JSON.stringify(z.array(Message).parse(h.sessions.currentTurn(sid)))))
+  expect(r.json()).toEqual(JSON.parse(JSON.stringify(z.array(Message).parse(c.sessions.currentTurn(sid)))))
   expect((r.json() as { role: string }[]).map((m) => m.role)).toEqual(["user", "assistant"])
-  await h.sessions.end(sid)
-  await waitFor(() => status(h, sid) === "ended")
+  await c.sessions.end(sid)
+  await waitFor(() => status(c, sid) === "ended")
   expect((await get(sock, `/sessions/${sid}/messages`)).json()).toEqual([])
 })
 
@@ -224,18 +223,18 @@ test("a refused continue is its api error", async () => {
 })
 
 test("a codex session over the routes", async () => {
-  const h = makeCodex()
-  h.office.harness = h.sessions
+  const h = await makeHarness(await fakeLlm(), { codex: true })
+  const c = h.codex!
   // Before served, so the office's start runs the cards' sweep.
   register(h.office)
   const { sock } = await served(h.office)
-  h.fake.script([approvalTurn()])
-  const r = await post(sock, "/sessions", { person: "minh", cwd: h.workspace, harness: "codex" })
+  c.fake.script([approvalTurn()])
+  const r = await post(sock, "/sessions", { person: "minh", cwd: h.folder, harness: "codex" })
   expect(r.status).toBe(200)
   const created = r.json() as { id: string }
   expect(created).toMatchObject({ person: "minh", harness: "codex", opened_by: CEO })
   const sid = created.id
-  await waitFor(() => status(h, sid) === "idle", { what: "the Codex session to load" })
+  await waitFor(() => status(c, sid) === "idle", { what: "the Codex session to load" })
   const it = frames(await openEvents(sock, `/events?session=${sid}`))
   expect(await take(it, 1)).toEqual([["comment", null, "connected"]])
   expect((await post(sock, `/sessions/${sid}/prompt`, { text: "make a" })).json()).toEqual({ ok: true })
@@ -251,20 +250,20 @@ test("a codex session over the routes", async () => {
     })(),
   )
   expect(live.session_id).toBe(sid)
-  const card = await openCard(h, sid)
+  const card = await openCard(c, sid)
   const answered = await post(sock, `/questions/${card.id}/answer`, { answer: "Approve", answer_kind: "option" })
   expect(answered.status).toBe(200)
   expect(answered.json()).toMatchObject({ status: "consumed", answered_by: CEO })
-  await waitFor(() => JSON.stringify(h.fake.replies()[1]) === JSON.stringify({ decision: "accept" }), {
+  await waitFor(() => JSON.stringify(c.fake.replies()[1]) === JSON.stringify({ decision: "accept" }), {
     what: "the reply",
   })
-  await waitFor(() => status(h, sid) === "idle", { what: "the turn to end" })
+  await waitFor(() => status(c, sid) === "idle", { what: "the turn to end" })
   expect((await post(sock, `/sessions/${sid}/interrupt`, null)).json()).toEqual({ ok: true })
   expect((await post(sock, `/sessions/${sid}/end`, null)).json()).toEqual({ ok: true })
-  await waitFor(() => status(h, sid) === "ended", { what: "the session to end" })
+  await waitFor(() => status(c, sid) === "ended", { what: "the session to end" })
   const late = await post(sock, `/sessions/${sid}/prompt`, { text: "late" })
   expect([late.status, errorOf(late)]).toEqual([409, "not_live"])
-  requestsValid(h.fake)
+  requestsValid(c.fake)
 })
 
 test("a codex prompt or steer a prompt check refuses is 422 and echoes nothing", async () => {
@@ -302,35 +301,6 @@ test("a cost cap or a model on a codex session is 422 not supported", async () =
     expect([missing.status, errorOf(missing)]).toEqual([404, "not_found"])
   }
 })
-
-/** [label, method, the target for a session id, the body for a workspace]. */
-const YIAN_CHAT_ACTIONS: [string, "GET" | "POST", (id: string) => string, (workspace: string) => unknown][] = [
-  // The schema defaults a create's harness to composer.
-  ["create", "POST", () => "/sessions", (cwd) => ({ person: "minh", cwd })],
-  ["prompt", "POST", (id) => `/sessions/${id}/prompt`, () => ({ text: "sk-sentinel" })],
-  ["steer", "POST", (id) => `/sessions/${id}/steer`, () => ({ text: "sk-sentinel" })],
-  ["end", "POST", (id) => `/sessions/${id}/end`, () => null],
-  ["cost-cap", "POST", (id) => `/sessions/${id}/cost-cap`, () => ({ cost_cap_usd: 10 })],
-  ["model", "POST", (id) => `/sessions/${id}/model`, () => ({ connection: "office", model: "sk-sentinel" })],
-  ["messages", "GET", (id) => `/sessions/${id}/messages`, () => null],
-]
-
-test.each(YIAN_CHAT_ACTIONS)(
-  "a yian chat answers 501 until the chat harness serves it [%s]",
-  async (_case, method, target, body) => {
-    // No app-server starts.
-    const h = makeCodex()
-    h.office.harness = h.sessions
-    const { sock } = await served(h.office)
-    const s = h.store.createSession(session({ harness: "composer", status: "idle" }))
-    const r = method === "GET" ? await get(sock, target(s.id)) : await post(sock, target(s.id), body(h.workspace))
-    expect([r.status, errorOf(r)]).toEqual([501, "not_implemented"])
-    expect(r.text).not.toContain("sk-sentinel")
-    // The create's 501 comes before anything is written.
-    expect(h.store.listSessions()).toEqual([s])
-    expect(h.store.listWorkItems()).toEqual([])
-  },
-)
 
 /** [label, target, raw JSON body, the 422's message]. */
 const REFUSED_BODIES: [string, string, string, string][] = [
@@ -508,6 +478,17 @@ test("a chat starts on the requested connection and model", async () => {
   await waitFor(() => chatStatus(h, created.id) === "ended", { what: "the session to end" })
 })
 
+test("a model switch on a yian chat answers 501 and echoes nothing", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const { sock } = await served(h.office)
+  const sid = await open(h, sock)
+  const before = h.store.getSession(sid)
+  const r = await post(sock, `/sessions/${sid}/model`, { connection: "office", model: "sk-sentinel" })
+  expect([r.status, errorOf(r)]).toEqual([501, "not_implemented"])
+  expect(r.text).not.toContain("sk-sentinel")
+  expect(h.store.getSession(sid)).toEqual(before)
+})
+
 test("a chat is credited to the verified person", async () => {
   const fake = await fakeLlm()
   const h = await makeHarness(fake)
@@ -597,7 +578,7 @@ test.each(BROKEN_SPECS)("a spec that cant be built fails the session [%s]", asyn
   const lines: string[] = []
   const { sock } = await served(h.office, { log: (line) => lines.push(line) })
   const ended: string[] = []
-  h.hooks.sessionEnded.push((s: SessionRecord) => void ended.push(s.status))
+  h.hooks.sessionEnded.push((s) => void ended.push(s.status))
   spyOn(h.harness, "spec").mockRejectedValue(error)
   const r = await post(sock, "/sessions", { person: "minh", cwd: h.folder })
   expect([r.status, errorOf(r)]).toEqual([code, name])
