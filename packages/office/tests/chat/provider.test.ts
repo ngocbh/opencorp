@@ -305,14 +305,14 @@ test("a key in llm config reaches the model and nothing else", async () => {
   await runWorker(registry, job, refused, sessionDir, { env: fake.env() })
   // A template chat turn: the relay shows only a chat's replies, so this run is the one that puts events on the bus.
   fake.script({ content: "Hello from the chat." })
-  const rec3 = new (relaying(TemplateOffice, relay))()
-  const chat = templateJob("chat", rec3, {}, {
+  const chatting = new (relaying(TemplateOffice, relay))()
+  const chat = templateJob("chat", chatting, {}, {
     runs: where.runs,
     runId: "r3",
     llm_config: llmConfig,
     deliver: [send("s1", "hi")],
   })
-  await runWorker(registry, chat, rec3, sessionDir, { env: fake.env() })
+  await runWorker(registry, chat, chatting, sessionDir, { env: fake.env() })
 
   const leaks = [
     ...frames.filter((f) => f.includes(SENTINEL) && !f.startsWith('{"type":"start"')).map((f) => `frame ${f}`),
@@ -340,6 +340,10 @@ test("a key in llm config reaches the model and nothing else", async () => {
   expect(inFlight).toHaveLength(1)
   expect(inFlight[0]).not.toBeNull()
   expect(events.length).toBeGreaterThan(0)
+  // The reply streams as deltas, so no one event holds it whole.
+  const reply = events.flatMap((event) => (event.type === "part.delta" ? [event.data.text as string] : []))
+  expect(reply.join("")).toBe("Hello from the chat.")
+  expect(relayLines).toEqual([])
   // ...and real log lines: the failing handler's, with the error's type only.
   expect(lines).toContain(`ERROR worker s1 handler event failed (Error)`)
   expect(envs).toHaveLength(1)
@@ -356,6 +360,6 @@ test("a key in llm config reaches the model and nothing else", async () => {
   expect(ok.returncode).toBe(0)
   expect(refused.outcome?.status).toBe("failed")
   expect(refused.outcome?.failure).toBeTruthy()
-  expect(rec3.outcome?.status).toBe("waiting")
+  expect(chatting.outcome?.status).toBe("waiting")
   expect(fs.existsSync(path.join(sessionDir, "worker.log"))).toBe(true)
 })

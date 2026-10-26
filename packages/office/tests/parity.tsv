@@ -890,7 +890,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/http.test.ts::the listener limits are the designs values	D16, design §2.3: listener limits	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the request signal aborts when the client goes away	design §2.3: RequestContext.signal	O2-1
 —	new	packages/office/tests/daemon/live.test.ts::a failed attempt leaves no text behind	design §2.6: a failed attempt's live part is emptied and the retry streams under its own id	O4b-2
-—	new	packages/office/tests/daemon/live.test.ts::a fresh run shows no live calls before its worker starts	design §2.6: a fresh run's live view is empty until its worker sends a frame	O4b-2
+—	new	packages/office/tests/daemon/live.test.ts::a fresh run shows no live calls before its worker starts	design §2.6: a fresh run has no live view until its worker sends a frame	O4b-2
 —	new	packages/office/tests/daemon/live.test.ts::a gap is logged and the view follows again	design §2.6: a seq gap is logged and the view rebuilds from the run log, then follows again	O4b-2
 —	new	packages/office/tests/daemon/live.test.ts::a lagging relay never doubles a reply	design §2.6: a render that reads the run log ahead of the frames publishes no chunk twice	O4b-2
 —	new	packages/office/tests/daemon/live.test.ts::a lagging viewers chunks of one call merge into one	design §2.6: a lagging viewer's queued chunks of one call merge into one frame	O4b-2
