@@ -1344,9 +1344,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/nodes.test.ts::a woken node opens again after a clear	yian #1064: advancing a waiting run emits NodeWoken	O4b-5
 —	new	packages/office/tests/runs/nodes.test.ts::kinds wait for the run start to be read	P15: a run start still being written gets kinds once it is read	O4b-5
 —	new	packages/office/tests/runs/nodes.test.ts::node kinds come from the flows static nodes	P15	O4b-5
+—	new	packages/office/tests/runs/notify.test.ts::a run due sooner re arms the timer	design §3.3: the timer, unlike the thread's condition wait, is re-armed when a sooner run joins	O4b-7
 —	new	packages/office/tests/runs/outcomes.test.ts::a failed reply whose fresh run cant resolve its connection fails the session on the failed result	design §8.2: a failed reply starts a fresh run in the same session; one that can't start fails the session (Python _new_run → _cant_start); §5.1: no office end reason on the run yian ended	O4a-4
 —	new	packages/office/tests/runs/outcomes.test.ts::a failed reply whose fresh run cant start fails the session and the fresh run	design §8.2: a failed reply starts a fresh run in the same session; one that can't start fails the session (Python _new_run → _cant_start); §5.1: no office end reason on the run yian ended	O4a-4
-—	new	packages/office/tests/runs/notify.test.ts::a run due sooner re arms the timer	design §3.3: the timer, unlike the thread's condition wait, is re-armed when a sooner run joins	O4b-7
 —	new	packages/office/tests/runs/reader.test.ts::a code reference outside the code root shows no derived value and no kinds	§6 rule 10, Y6c	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a commit value shows in its display form	Y5, §5.5: values decoded office-side for clients	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a deeply nested payload is cut at its depth	security review: bounded recursion	O4b-5
