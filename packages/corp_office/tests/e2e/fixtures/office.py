@@ -188,6 +188,10 @@ class RunningOffice:
 
         return wait_for(ready, f"session {sid}'s debrief")
 
+    def ended(self, sid: str) -> None:
+        """Wait until session ``sid``'s status is ``ended``."""
+        wait_for(lambda: self.status(sid) == "ended", f"session {sid} to end")
+
     def _cli_env(self) -> dict[str, str]:
         return dict(os.environ, OPENCORP_HOME=str(self.home))
 

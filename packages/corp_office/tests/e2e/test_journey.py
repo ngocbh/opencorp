@@ -1,14 +1,10 @@
-"""The M1 journey on a real office: Minh edits a file, is steered and stopped, debriefs, learns, and starts his next session changed."""
+"""The M1 journey on a real office: Minh edits a file, is steered and stopped, and ends his session."""
 
 import pytest
-
-from tests.profile.conftest import OUTPUT, debrief_reply, learner_reply
 
 from .fixtures.office import asked, wait_for
 
 pytestmark = pytest.mark.timeout(180)
-
-LEARNED = "- Keep replies short."
 
 
 def test_the_m1_journey(office, workspace, sandbox_available):
@@ -44,7 +40,7 @@ def test_the_m1_journey(office, workspace, sandbox_available):
     assert "Also mention the date" in asked(fake.requests()[3])
     assert office.users(sid) == ["Mark the README done", "Add a changelog", "Also mention the date"]
 
-    # Then Esc: the held reply and its write never land, the stopped reply says it was interrupted,
+    # Then Esc: the held reply's write never lands, the stopped reply says it was interrupted,
     # and the next prompt gets a fresh reply.
     fake.script({"content": "Writing.", "tool_calls": [{"name": "write_file", "arguments": {"path": "never.txt", "content": "x"}}], "hold": True},
                 {"content": "Starting over."})
@@ -55,33 +51,14 @@ def test_the_m1_journey(office, workspace, sandbox_available):
     fake.release()
     wait_for(lambda: office.status(sid) == "idle", "the interrupted turn to stop")
     office.prompt(sid, "Start over")
-    office.settled(sid, ["Marked it done.", "Looking.", "Added both.", "[interrupted]", "Starting over."])
+    # An Esc during a silent model call stops the reply at its first chunk (yian #1146), so the held
+    # reply's text lands whole; its write_file call is not run.
+    office.settled(sid, ["Marked it done.", "Looking.", "Added both.", "Writing.", "[interrupted]", "Starting over."])
     assert not (workspace / "never.txt").exists()
     assert len(fake.requests()) == 6  # Esc made no model call of its own
     assert "Write never.txt" in asked(fake.requests()[5])  # the stopped turn stays in the history
 
-    # 3. `/end`, the debrief, then `opencorp feedback` on the ended session's run.
-    fake.script(debrief_reply())
+    # 3. `/end` ends the session.
     ended = office.opencorp("end", cwd=workspace)
-    assert ended.stdout.strip() == f"Ending @minh's session {sid}; its debrief follows."
-    assert office.debriefed(sid)["summary"] == OUTPUT["summary"]
-    before = office.get(f"/profiles/{minh}")["text"]
-    fake.script(learner_reply(before + f"\n{LEARNED}\n"))
-    feedback = office.opencorp("feedback", "-m", "Keep replies short.", cwd=workspace)
-    [run_id] = office.session(sid)["run_ids"]
-    assert f"is queued for @minh (session {sid}, run {run_id})" in feedback.stdout
-
-    # 4. The learned rule is a commit, and Minh's next session starts from it.
-    subject = f"profile(@minh): from feedback on run {run_id} (ngocbh)"
-    wait_for(lambda: subject in office.git_log(), "the profile commit")
-    learned = office.get(f"/profiles/{minh}")["text"]
-    assert learned == before + f"\n{LEARNED}\n"
-    fake.script({"content": "Short."})
-    calls = len(fake.requests())
-    nxt = office.start_chat(minh, workspace, wait=False)
-    assert office.status(nxt) == "starting"
-    office.prompt(nxt, "Hello again")
-    office.settled(nxt, ["Short."])
-    # The profile rides in the first call as a JSON memory block, so compare line by line.
-    assert all(line in asked(fake.requests()[calls]) for line in learned.splitlines() if line)
-    assert LEARNED not in asked(fake.requests()[0])
+    assert ended.stdout.strip() == f"Ending @minh's session {sid}."
+    office.ended(sid)
