@@ -87,3 +87,18 @@ test("notifications are awaited in order", async () => {
   expect(pushes).toEqual(["a", "b"])
   expect(lines).toEqual(["runFinished callback reject failed: Error"])
 })
+
+test("turn context gets the session the text and whether it is the first turn", () => {
+  const hooks = new Hooks()
+  const calls: [string, string, boolean][] = []
+  hooks.turnContext.push((s, text, { first }) => {
+    calls.push([s.id, text, first])
+    return first ? "first" : null
+  })
+  expect(hooks.fire("turnContext", S, "hi", { first: true })).toEqual(["first"])
+  expect(hooks.fire("turnContext", S, "again", { first: false })).toEqual([null])
+  expect(calls).toEqual([
+    ["S", "hi", true],
+    ["S", "again", false],
+  ])
+})

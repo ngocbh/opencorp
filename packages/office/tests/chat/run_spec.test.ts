@@ -41,6 +41,9 @@ const NO_WORKSPACE = {
   call: (): never => {
     throw new Error("the workspace is never called")
   },
+  interrupt: (): never => {
+    throw new Error("the workspace is never interrupted")
+  },
 }
 
 /** A template company (a git repo) with agent minh, his profile and a granted skill; a store with a session of
@@ -234,6 +237,26 @@ test("a job built with a seed carries it and an empty history", async () => {
   expect(built.inputs.history).toEqual([])
   expect(built.inputs.summary).toBe("")
   expect(chatJob(spec, tools, args).seed).toBeNull()
+})
+
+test("chat job carries its deliveries and advance", async () => {
+  const o = await office()
+  const spec = main(o)
+  const tools = spec.groups({ session: o.session, runId: "r1" })
+  const args = {
+    kind: "advance" as const,
+    session: o.session,
+    runId: "r1",
+    pin: o.root,
+    log: path.join(o.dir, "runs", "r1", "log.jsonl"),
+    llmConfig: { ...LLM_CONFIG },
+    turns: 1,
+  }
+  const send = { id: "d1", op: "send" as const, inbox: "chat", event: { role: "user", parts: ["hi"] } }
+  const built = chatJob(spec, tools, { ...args, deliver: [send], advance: false })
+  expect([built.deliver, built.advance]).toEqual([[send], false])
+  const plain = chatJob(spec, tools, args)
+  expect([plain.deliver, plain.advance]).toEqual([[], true])
 })
 
 test("a job built from a spec runs its flow in a worker", async () => {

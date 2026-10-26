@@ -27,7 +27,7 @@ import { cancelReplaced, readSeed } from "../chat/history.ts"
 import { MAIN_CHAT } from "../chat/turns.ts"
 import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
-import { Delivery, type Job, parseJob } from "./job.ts"
+import { Delivery, type Job, parseJob, STOP_REASON } from "./job.ts"
 import { RemoteMarkdownStore } from "./remote_store.ts"
 import { askUserStub, errorMessage, errorName, remoteTool, REPLY_TYPES, Rpc } from "./rpc.ts"
 
@@ -96,10 +96,12 @@ class Deliveries {
   #busy = false
   #idle: (() => void)[] = []
   #apply: ((delivery: Delivery) => Promise<Outcome>) | null = null
-  readonly #reply: (frame: Frame) => void
+  readonly #reply: (frame: Frame) => Promise<void>
+  /** Settles once the last reply is written (or couldn't be). */
+  #written: Promise<void> = Promise.resolve()
 
-  /** Deliveries answered through `reply`. */
-  constructor(reply: (frame: Frame) => void) {
+  /** Deliveries answered through `reply`, which settles once the frame is written or can't be. */
+  constructor(reply: (frame: Frame) => Promise<void>) {
     this.#reply = reply
   }
 
@@ -147,11 +149,13 @@ class Deliveries {
     }
   }
 
-  /** Resolves once nothing is queued or being applied; on a held queue with deliveries queued, only after `open()`
-   *  or `refuse()`. */
-  drained(): Promise<void> {
-    if (!this.#busy && this.#queue.length === 0) return Promise.resolve()
-    return new Promise((resolve) => this.#idle.push(resolve))
+  /** Resolves once nothing is queued or being applied and every reply is written; on a held queue with deliveries
+   *  queued, only after `open()` or `refuse()`. */
+  async drained(): Promise<void> {
+    if (this.#busy || this.#queue.length > 0) await new Promise<void>((resolve) => this.#idle.push(resolve))
+    // The worker exits soon after, and a write still in flight at exit is lost. Frames are written in order, so the
+    // last reply written means every one is.
+    await this.#written
   }
 
   #pump(): void {
@@ -177,7 +181,7 @@ class Deliveries {
   /** Sends `queued`'s `deliver_reply`; for a quiet one, a stderr line when it wasn't applied. */
   #answer({ delivery, quiet }: Queued, outcome: Outcome): void {
     if (!quiet) {
-      this.#reply({ type: "deliver_reply", id: delivery.id, ...outcome })
+      this.#written = this.#reply({ type: "deliver_reply", id: delivery.id, ...outcome })
     } else if ("refused" in outcome || "failed" in outcome) {
       // The reason or the error's type only: the message's text is the person's.
       const why = "refused" in outcome ? outcome.refused : outcome.failed
@@ -289,7 +293,7 @@ export async function serve(
   }
   const rpc = new Rpc(channel)
   // A reply that can't be sent (a closed channel) has nobody to read it.
-  const deliveries = new Deliveries((frame) => void channel.send(frame).catch(() => {}))
+  const deliveries = new Deliveries((frame) => channel.send(frame).catch(() => {}))
   const stopper = new AbortController()
   const state: WorkerState = { finished: false }
   const officeClosed = readFrames(channel, rpc, deliveries, stopper, state, exit)
@@ -495,7 +499,7 @@ async function readFrames(
         // Never awaited here: a delivery can wait on the run, which may need store replies only this loop delivers.
         deliveries.push(parsed.data)
       } else if (frame.type === "stop") {
-        if (!state.finished) stopper.abort(new Error("the office stopped the run"))
+        if (!state.finished) stopper.abort(new Error(STOP_REASON))
       } else if (typeof frame.type === "string" && REPLY_TYPES.has(frame.type)) {
         rpc.deliver(frame)
       }
