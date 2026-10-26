@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, onTestFinished, test } from "bun:test"
 import { createFakeOffice, serveUnix, type FakeOffice } from "../fixture/fake-office"
 import {
   createOfficeClient,
@@ -11,6 +11,7 @@ import {
   createOfficeSync,
 } from "@opencorp/client"
 import { newToken, tokenSha256 } from "@opencorp/client/node"
+import { startOffice } from "@opencorp/office/testing/office"
 import { until } from "../fixture/until"
 
 const cleanup: (() => void)[] = []
@@ -92,32 +93,13 @@ test("the TUI's sync shows a refused device as an error, not as no office", asyn
   expect(sync.error()).toBe("the office doesn't know this device: run `opencorp login`")
 })
 
-test("the stub office: open as the CEO until a human has a device, then a token is needed", async () => {
-  const office = fake()
-  const open = createOfficeClient({ socket: office.socket })
-  expect(await open.whoami()).toEqual({ person: "ngocbh", device: null })
-  const token = newToken()
-  // The first device needs no token: the bootstrap.
-  const person = await open.devices.add("ngocbh", { name: "mac", token_sha256: tokenSha256(token) })
-  expect(person.devices).toEqual([{ name: "mac", token_sha256: tokenSha256(token) }])
-  expect((await failure(open.people.list())).code).toBe("unauthenticated")
-  expect((await failure(createOfficeClient({ socket: office.socket, token: newToken() }).whoami())).code).toBe(
-    "bad_token",
-  )
-  const me = createOfficeClient({ socket: office.socket, token })
-  expect(await me.whoami()).toEqual({ person: "ngocbh", device: "mac" })
-  expect(await request<unknown>(office.socket, "GET", "/health")).toEqual({ ok: true })
-  // The same device again changes nothing; the name with another token is refused.
-  expect((await me.devices.add("ngocbh", { name: "mac", token_sha256: tokenSha256(token) })).devices).toHaveLength(1)
-  expect((await failure(me.devices.add("ngocbh", { name: "mac", token_sha256: tokenSha256(newToken()) }))).code).toBe(
-    "device_exists",
-  )
-  expect((await failure(me.devices.add("minh", { name: "x", token_sha256: tokenSha256(newToken()) }))).code).toBe(
-    "not_a_human",
-  )
-  expect((await failure(me.devices.remove("ngocbh", "nope"))).status).toBe(404)
-  expect((await me.devices.remove("ngocbh", "mac")).devices).toEqual([])
-  // With no devices left, the office is open again.
-  expect(await open.whoami()).toEqual({ person: "ngocbh", device: null })
-  expect(office.requests.find((r) => r.method === "DELETE")?.raw).toBe("/people/ngocbh/devices/nope")
-})
+test("a real office with a device for the CEO refuses a request without a token, and answers with one", async () => {
+  const office = await startOffice({ device: true })
+  onTestFinished(() => office.stop())
+  const refused = await failure(createOfficeClient({ socket: office.socket }).people.list())
+  expect(refused).toBeInstanceOf(UnknownDevice)
+  expect([refused.status, refused.message]).toEqual([401, "the office doesn't know this device: run `opencorp login`"])
+  const me = createOfficeClient({ socket: office.socket, token: office.token })
+  const who = await me.whoami()
+  expect([who.person, typeof who.device]).toEqual(["ngocbh", "string"])
+}, 60_000)
