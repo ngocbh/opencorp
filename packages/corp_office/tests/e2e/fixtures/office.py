@@ -204,14 +204,19 @@ class RunningOffice:
         return subprocess.run(["git", "-C", str(self.paths.company), "log", "--format=%s"],
                               check=True, capture_output=True, text=True).stdout.splitlines()
 
-    def worker(self, sid: str) -> psutil.Process:
-        """Session ``sid``'s worker: the office's child running in ``office/sessions/<sid>/``."""
+    def worker(self, sid: str, other_than: int | None = None) -> psutil.Process:
+        """Session ``sid``'s live worker: the office's child running in ``office/sessions/<sid>/``.
+
+        Skips zombies and the child whose pid is ``other_than``, so a just-killed worker is never returned.
+        """
         session_dir = str(self.sessions / sid)
 
         def find():
             for child in psutil.Process(self.pid()).children():
+                if child.pid == other_than:
+                    continue
                 try:
-                    if child.cwd() == session_dir:
+                    if child.status() != psutil.STATUS_ZOMBIE and child.cwd() == session_dir:
                         return child
                 except psutil.Error:
                     pass
