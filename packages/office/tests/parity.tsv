@@ -257,7 +257,7 @@ daemon/test_routes_work_items.py	ported	packages/office/tests/daemon/routes_work
 e2e/test_devices.py	open	—	—	O5-1
 e2e/test_failures.py	open	—	—	O5-1
 e2e/test_failures.py::test_two_feedbacks_learned_at_once_both_land_in_the_profile	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
-e2e/test_hq.py	open	—	—	O5-1
+e2e/test_hq.py	ported	packages/office/tests/e2e/hq.test.ts	—	O5-1
 e2e/test_journey.py	open	—	—	O5-1
 e2e/test_run_logs.py	open	—	—	O5-1
 harness/test_approvals.py	ported	packages/office/tests/harness/approvals.test.ts	—	O3-14
