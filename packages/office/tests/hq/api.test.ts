@@ -335,7 +335,8 @@ function addRun(office: Office, flow: string, driver: string, commit?: string): 
 test("runs are on the allowlist", async () => {
   const office = makeOffice({ log: () => {} })
   const client = await signedIn(await makeHq(office))
-  // yian's run index links the child to its parent; neither has an outcome, so both read interrupted.
+  // yian's run index links the child to its parent. The top run has no outcome and the child's index row is
+  // cancelled, so both read interrupted.
   const index = new Map<string, RunIndexRow>()
   office.runs = new RunLogs({ store: office.store, runsDir: office.paths.runs, index: () => index })
   const runId = addRun(office, "chat", CEO)
@@ -387,4 +388,6 @@ test("one runs routes are on the allowlist", async () => {
   chatLog(file)
   for (const suffix of ["", "/nodes", "/events", "/events/0", "/log"])
     expect([(await client.get(`/api/runs/${runId}${suffix}`)).status, suffix]).toEqual([200, suffix])
+  // No HEAD on the download: HQ's GET catch-all answers it, as any method HQ doesn't serve.
+  expect((await client.request("HEAD", `/api/runs/${runId}/log`)).status).toBe(404)
 })
