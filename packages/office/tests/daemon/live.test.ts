@@ -210,6 +210,7 @@ test("a follow that fails is logged by its type", async () => {
     worker.follows++
     return Promise.reject(new TypeError("secret text"))
   }
+  relay.frame(worker, snapshot(lastSeq(job.log)))
   expect(() => relay.frame(worker, { type: "nope" })).not.toThrow()
   await Promise.resolve()
   expect(lines).toEqual([gapLine("unknown"), "run r1: live follow failed (TypeError)"])
@@ -276,11 +277,11 @@ test("a malformed frame is logged and ignored", async () => {
   const last = lastSeq(job.log)
   const { relay, lines } = makeRelay()
   const worker = new StubWorker(job)
-  // Before any view, a malformed frame still asks for a snapshot.
+  // Before its snapshot the relay doesn't hold the worker, so a malformed frame is ignored.
   relay.frame(worker, null)
-  expect(lines).toEqual([gapLine("unknown")])
-  expect(worker.follows).toBe(1)
-  expect(relay.calls("r1")).toEqual([])
+  expect(lines).toEqual([])
+  expect(worker.follows).toBe(0)
+  expect(relay.calls("r1")).toBeNull()
   const live = snapshot(last, [{ node: REPLY, n: 1, chunks: ["Hi"], next_index: 1 }])
   const bad: [unknown, string][] = [
     [null, "unknown"],
@@ -301,7 +302,48 @@ test("a malformed frame is logged and ignored", async () => {
     expect(lines).toEqual([gapLine(type)])
     expect(relay.calls("r1")).toEqual([])
   }
-  expect(worker.follows).toBe(1 + bad.length)
+  expect(worker.follows).toBe(bad.length)
+})
+
+test("only a snapshot opens a workers view", async () => {
+  const job = await waitingRun()
+  const last = lastSeq(job.log)
+  const { relay, lines } = makeRelay()
+  const a = new StubWorker(job)
+  const b = new StubWorker(job)
+  const end = { type: "end", node: REPLY, n: 1, error: null }
+  relay.frame(a, end)
+  expect(relay.join("r1")).toBeNull()
+  relay.frame(a, snapshot(last, [{ node: REPLY, n: 1, chunks: ["Hi"], next_index: 1 }]))
+  const viewer = joinOf(relay).viewer
+  // A frame of a worker the relay doesn't hold leaves the held one as it was.
+  relay.frame(b, end)
+  relay.frame(b, { type: "chunk", node: REPLY, n: 1, index: 1, text: "!" })
+  expect(relay.calls("r1")).toEqual([{ node: REPLY, n: 1, text: "Hi", nextIndex: 1 }])
+  expect(viewer.queued).toBe(0)
+  relay.detach(a)
+  relay.frame(a, end)
+  expect(relay.join("r1")).toBeNull()
+  expect(relay.calls("r1")).toBeNull()
+  expect(lines).toEqual([])
+  expect(a.follows + b.follows).toBe(0)
+})
+
+test("a checked frame keeps only its own fields", async () => {
+  const job = await waitingRun()
+  const last = lastSeq(job.log)
+  const { relay } = makeRelay()
+  const worker = new StubWorker(job)
+  const call = { node: REPLY, n: 1, chunks: [], next_index: 0, extra: "x" }
+  relay.frame(worker, { type: "snapshot", snapshot: { last_seq: last, calls: [call], extra: "x" }, extra: "x" })
+  expect(relay.calls("r1")).toEqual([{ node: REPLY, n: 1, text: "", nextIndex: 0 }])
+  const { viewer } = joinOf(relay)
+  relay.frame(worker, { type: "chunk", node: REPLY, n: 1, index: 0, text: "Hi", extra: "x" })
+  relay.frame(worker, { type: "end", node: REPLY, n: 1, error: null, extra: "x" })
+  expect(await drainQueued(viewer)).toEqual([
+    { type: "chunk", node: REPLY, n: 1, index: 0, text: "Hi" },
+    { type: "end", node: REPLY, n: 1, error: null },
+  ])
 })
 
 // Bus events: the transcript's projection of a worker's run, published as it changes.
@@ -335,9 +377,12 @@ function putPart(message: Message, part: Part): void {
 }
 
 /** The messages a client builds from `events`, as its store does: messages inserted by id and merged by part id,
- *  parts put by id (under a placeholder message when the message is unknown), deltas appended to a known text part. */
-function fold(events: readonly LiveEvent[]): Message[] {
-  const list: Message[] = []
+ *  parts put by id (under a placeholder message when the message is unknown), deltas appended to a known text part.
+ *  A client that read the session as `fetched` before `events` starts from it and, as its store's `replay` does,
+ *  skips a part's deltas until a full copy of the part came after the read. */
+function fold(events: readonly LiveEvent[], fetched?: Message[]): Message[] {
+  const list: Message[] = structuredClone(fetched ?? [])
+  const whole = fetched === undefined ? null : new Set<string>()
   const find = (id: string) => list.find((message) => message.id === id)
   const insert = (message: Message) => {
     const at = list.findIndex((m) => m.id > message.id)
@@ -346,6 +391,7 @@ function fold(events: readonly LiveEvent[]): Message[] {
   for (const { type, session_id, data } of events) {
     if (type === "message.updated") {
       const { parts, ...rest } = data as unknown as Message
+      for (const part of parts) whole?.add(part.id)
       const local = find(rest.id)
       if (local === undefined) insert(structuredClone({ ...rest, parts }))
       else {
@@ -354,6 +400,7 @@ function fold(events: readonly LiveEvent[]): Message[] {
       }
     } else if (type === "part.updated") {
       const { message_id, part } = data as { message_id: string; part: Part }
+      whole?.add(part.id)
       let local = find(message_id)
       if (local === undefined) {
         local = { id: message_id, session_id, role: "assistant", author: null, parts: [], created_at: "" }
@@ -362,6 +409,7 @@ function fold(events: readonly LiveEvent[]): Message[] {
       putPart(local, part)
     } else {
       const { message_id, part_id, text } = data as { message_id: string; part_id: string; text: string }
+      if (whole !== null && !whole.has(part_id)) continue
       const part = find(message_id)?.parts.find((p) => p.id === part_id)
       if (part?.type === "text") part.text += text
     }
@@ -436,6 +484,34 @@ test("a chunk of a shown live part is published as a delta", async () => {
   expect(deltas.every((data) => data.message_id === messageOf && data.part_id === partId)).toBe(true)
   expect(deltas.map((data) => data.text).join("")).toBe(content)
   expect(fold(events).flatMap((m) => m.parts)).toEqual([{ id: partId, type: "text", text: content }])
+  expect(lines).toEqual([])
+})
+
+test("a part whose call ends is sent whole once", async () => {
+  const content = "Hello there my good friend"
+  const { job, frames } = await recordedTurn(content)
+  // The log as the worker had it at each frame, cut step by step, so no render reads ahead of the frames.
+  const cut = tempDir()
+  const upTo = (seq: number) => logPrefix(job.log, (entry) => entry.seq <= seq, cut)
+  const log = upTo((frames[0]!.snapshot as LiveSnapshot).last_seq)
+  const { relay, events, lines, transcript } = makeRelay(cut)
+  const worker = new StubWorker({ ...job, log })
+  // A client's reads of the session between two chunks of the reply, each with the events published after it.
+  const reads: { messages: Message[]; from: number }[] = []
+  for (const frame of frames) {
+    if (frame.type === "record") upTo(frame.seq as number)
+    relay.frame(worker, frame)
+    if (frame.type !== "chunk") continue
+    const messages = transcript.messages(job.session_id, [job.run_id], relay).filter((m) => m.role === "assistant")
+    reads.push({ messages, from: events.length })
+  }
+  expect(reads.length).toBeGreaterThan(1)
+  const partId = `r1:${REPLY}:${frames.find((frame) => frame.type === "start")!.n}`
+  const whole = events.map(partOf).filter((part) => part?.id === partId)
+  expect(whole).toEqual([{ id: partId, type: "text", text: content }])
+  const want = fetched(new Transcript(runsOf(job)), job)
+  expect(want.flatMap((m) => m.parts)).toEqual([{ id: partId, type: "text", text: content }])
+  for (const { messages, from } of reads) expect(fold(events.slice(from), messages)).toEqual(want)
   expect(lines).toEqual([])
 })
 
@@ -857,9 +933,6 @@ test("join while the view is rebuilt says so", async () => {
   const { relay } = makeRelay()
   const worker = new StubWorker(job)
   expect(relay.join("r1")).toBeNull()
-  // A worker's frames before its snapshot build nothing.
-  relay.frame(worker, { type: "end", node: REPLY, n: 1, error: null })
-  expect(relay.join("r1")).toBe("rebuilding")
   relay.frame(worker, snapshot(last))
   expect(joinOf(relay)).toMatchObject({ lastSeq: last, calls: [] })
   relay.frame(worker, { type: "record", seq: last + 5, line: "" })
@@ -878,7 +951,9 @@ test("close ends every viewer", async () => {
   const one = joinOf(relay, "r1").viewer
   const two = joinOf(relay, "r2").viewer
   const closed = joinOf(relay, "r1").viewer
+  const woken = closed.next(5000)
   closed.close()
+  expect(await woken).toBeNull()
   // A run's frames reach only that run's viewers.
   relay.frame(w2, { type: "start", node: REPLY, n: 2, model: null, purpose: "reply", started_at: "2026-01-01T00:00:00Z" })
   expect(one.queued).toBe(0)

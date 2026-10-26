@@ -897,7 +897,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/live.test.ts::a new worker starts with no live calls of the old one	design §2.6: a new worker's live view starts empty, holding none of the old worker's calls	O4b-2
 —	new	packages/office/tests/daemon/live.test.ts::a reply streams live under the transcripts ids	design §2.6: a reply's live chunks are published under the ids the transcript gives it	O4b-2
 —	new	packages/office/tests/daemon/live.test.ts::an answer applied before the workers first frame is published	design §2.6: an answer the next worker applies before its first frame still shows its call completed	O4b-2
-—	new	packages/office/tests/daemon/live.test.ts::an over cap record is read from the log	design §2.6: a record too big for its frame comes as a size stub and is read from the run log	O4b-2
+—	new	packages/office/tests/daemon/live.test.ts::an over cap record is read from the log	design §2.6: a record too big for its frame comes as a record frame without its line and is read from the run log	O4b-2
 —	new	packages/office/tests/daemon/live.test.ts::joining mid run gives no gap and no duplicate	design §2.6: a viewer joins with the view's last seq and live calls captured in one step, so no record or chunk is missed or repeated	O4b-2
 —	new	packages/office/tests/daemon/main.test.ts::a broken index skips the start sweep and does not stop the office start	§5.2: a broken or hung index never stops the start; the sweep needs an up-to-date index (choice 13)	O4b-6
 —	new	packages/office/tests/daemon/main.test.ts::a failing start sweep does not stop the office start	§5.2: a broken or hung index never stops the start (choice 13); errors logged by type (§6 rule 13)	O4b-6
@@ -1390,7 +1390,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/job.test.ts::group specs builds a spec for each tool under its key	design §2.4	O3-1
 —	new	packages/office/tests/worker/main.test.ts::a delivery to a missing log is refused as not started	design §2.4, 4a revision §1: an advance of a missing log throws before its gate opens, so its deliveries are refused not_started before the error	O4a-0a
 —	new	packages/office/tests/worker/main.test.ts::a frame other than start is an error	design §2.4 step 1	O3-3
-—	new	packages/office/tests/worker/main.test.ts::a record frame over the frame limit goes without its line	design §2.6: a record over the frame limit is sent as a size stub without its line, for the office to read from the log	O4b-2
+—	new	packages/office/tests/worker/main.test.ts::a record frame over the frame limit goes without its line	design §2.6: a record over the frame limit is sent as a record frame without its line, for the office to read from the log	O4b-2
 —	new	packages/office/tests/worker/main.test.ts::a reserved tool name is refused before any model call	yian #1062 reserved names; a group named ask is refused by the job (yian #1078)	O3-17
 —	new	packages/office/tests/worker/main.test.ts::a reused run id is refused	design §2.4 (#1000 part 1, S5)	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a stop frame stops a run waiting on a question	P1, design §2.4	O3-3

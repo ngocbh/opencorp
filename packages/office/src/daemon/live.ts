@@ -77,8 +77,9 @@ export class LiveViewer {
           }
         })
         if (!woken) return PING
+        if (this.#done) return null
       }
-      // Never empty here: a wake follows a push, and no other reader can take that item first.
+      // Never empty here: a wake that isn't a close follows a push, and no other reader can take that item first.
       const item = this.#queue.shift()!
       if (item === null) this.#done = true
       return item
@@ -87,10 +88,11 @@ export class LiveViewer {
     }
   }
 
-  /** Stop receiving frames. A waiting `next()` is not woken; it returns `PING` at its timeout. */
+  /** Stop receiving frames. A waiting `next()` returns null at once, as does every later one. */
   close(): void {
     this.#done = true
     this.#remove(this)
+    this.#wake?.()
   }
 
   /** Queue `frame`, or merge a chunk into the latest queued chunk of its call while only chunks were queued after it;
@@ -150,6 +152,8 @@ interface Shown {
    *  an assistant message. */
   floor: string
   messages: Map<string, Map<string, Part>>
+  /** The ids of the live calls' parts in the last render. */
+  live: Set<string>
 }
 
 /** A run's live state, held for the one worker that feeds it. */
@@ -198,20 +202,24 @@ export class LiveRelay implements LiveCalls {
     this.#queueSize = options.queueSize ?? 1000
   }
 
-  /** A `stream` frame's `frame` from `worker`. Synchronous; never throws. */
+  /** A `stream` frame's `frame` from `worker`. Only a snapshot opens a view of a worker the relay doesn't hold for its
+   *  run; any other frame of such a worker is ignored. Synchronous; never throws. */
   frame(worker: LiveWorker, frame: unknown): void {
     try {
       // The run comes from the worker's own job, never from the frame, so a worker feeds only its run's view.
       const runId = worker.job.run_id
+      const checked = check(frame)
       let entry = this.#runs.get(runId)
       if (entry?.worker !== worker) {
+        // A worker sends its snapshot first, so any other frame of a worker the relay doesn't hold (a detached one, a
+        // stray) has no view to apply to; an entry for it would say "rebuilding" with nothing to rebuild it.
+        if (checked?.type !== "snapshot") return
         // One view per running worker: a new worker's view is built from its own snapshot, with nothing of the old.
         if (entry !== undefined) this.#endViewers(entry, true)
         entry = { runId, worker, view: null, failedBuilds: 0, viewers: new Set() }
         this.#runs.set(runId, entry)
       }
       if (entry.failedBuilds >= MAX_FAILED_BUILDS) return
-      const checked = check(frame)
       if (checked === null) {
         const type = typeName(frame)
         if (type === "snapshot") this.#failedBuild(entry)
@@ -323,8 +331,8 @@ export class LiveRelay implements LiveCalls {
   }
 
   /** Renders `worker`'s run with the relay's live calls of the run (none once no worker feeds it) and publishes its
-   *  assistant messages' changes since it was last shown, then moves its floor. A render or publish that throws is
-   *  logged. */
+   *  assistant messages' changes since it was last shown, and whole once each part whose live call ended since then,
+   *  then moves its floor. A render or publish that throws is logged. */
   #show(worker: LiveWorker): void {
     const { run_id: runId, session_id: sessionId } = worker.job
     try {
@@ -334,9 +342,13 @@ export class LiveRelay implements LiveCalls {
       let shown = this.#shown.get(runId)
       if (shown === undefined) {
         // A client fetched the run after this office started, and what was below the floor then was final.
-        shown = { floor, messages: new Map() }
+        shown = { floor, messages: new Map(), live }
         this.#shown.set(runId, shown)
       }
+      // A client that fetched mid-call skips the call's deltas until it gets a full copy of its part (as Python sent at
+      // the last chunk), so a part whose call ended is sent whole once, even unchanged.
+      const ended = new Set([...shown.live].filter((id) => !live.has(id)))
+      shown.live = live
       const byId = new Map<string, Message>()
       for (const message of rendered) {
         if (message.id < shown.floor) continue
@@ -349,7 +361,7 @@ export class LiveRelay implements LiveCalls {
         }
         for (const part of message.parts) {
           const was = parts.get(part.id)
-          if (was !== undefined && JSON.stringify(was) === JSON.stringify(part)) continue
+          if (was !== undefined && !ended.has(part.id) && JSON.stringify(was) === JSON.stringify(part)) continue
           this.#publish(worker, "part.updated", { message_id: message.id, part })
           parts.set(part.id, part)
         }
@@ -442,46 +454,67 @@ function typeName(frame: unknown): string {
   return typeof type === "string" && TYPES.has(type) ? type : "unknown"
 }
 
-/** `frame` as a worker frame, or null when its type is unknown or a field has the wrong shape. */
+/** `frame` as a worker frame rebuilt from its checked fields alone, or null when its type is unknown or a field has the
+ *  wrong shape. */
 function check(frame: unknown): WorkerFrame | null {
   if (typeof frame !== "object" || frame === null) return null
   const f = frame as Record<string, unknown>
   switch (f.type) {
-    case "snapshot":
-      return isSnapshot(f.snapshot) ? (f as WorkerFrame) : null
-    case "record":
-      return isCount(f.seq) && (f.line === undefined || typeof f.line === "string") ? (f as WorkerFrame) : null
-    case "start":
-      return isStep(f) &&
-        typeof f.purpose === "string" &&
-        (f.model === null || typeof f.model === "string") &&
-        typeof f.started_at === "string"
-        ? (f as WorkerFrame)
-        : null
-    case "chunk":
-      return isStep(f) && isCount(f.index) && typeof f.text === "string" ? (f as WorkerFrame) : null
-    case "end":
-      return isStep(f) && (f.error === null || typeof f.error === "string") ? (f as WorkerFrame) : null
+    case "snapshot": {
+      const snapshot = snapshotOf(f.snapshot)
+      return snapshot === null ? null : { type: "snapshot", snapshot }
+    }
+    case "record": {
+      const { seq, line } = f
+      if (!isCount(seq)) return null
+      if (line === undefined) return { type: "record", seq }
+      return typeof line === "string" ? { type: "record", seq, line } : null
+    }
+    case "start": {
+      const { model, purpose, started_at } = f
+      const step = stepOf(f)
+      if (step === null || typeof purpose !== "string" || typeof started_at !== "string") return null
+      return model === null || typeof model === "string" ? { type: "start", ...step, model, purpose, started_at } : null
+    }
+    case "chunk": {
+      const { index, text } = f
+      const step = stepOf(f)
+      if (step === null || !isCount(index) || typeof text !== "string") return null
+      return { type: "chunk", ...step, index, text }
+    }
+    case "end": {
+      const { error } = f
+      const step = stepOf(f)
+      return step !== null && (error === null || typeof error === "string") ? { type: "end", ...step, error } : null
+    }
     default:
       return null
   }
 }
 
-/** Whether `value` is a snapshot: `last_seq` an integer from -1, and each call a step with string chunks. */
-function isSnapshot(value: unknown): value is LiveSnapshot {
-  if (typeof value !== "object" || value === null) return false
+/** `value` as a snapshot rebuilt from its checked fields alone (`last_seq` an integer from -1, each call a step with
+ *  string chunks), or null. */
+function snapshotOf(value: unknown): LiveSnapshot | null {
+  if (typeof value !== "object" || value === null) return null
   const { last_seq: last, calls } = value as Record<string, unknown>
-  if (!Number.isSafeInteger(last) || (last as number) < -1 || !Array.isArray(calls)) return false
-  return calls.every((call: unknown) => {
-    if (typeof call !== "object" || call === null) return false
+  if (!Number.isSafeInteger(last) || (last as number) < -1 || !Array.isArray(calls)) return null
+  const checked: LiveSnapshot["calls"] = []
+  for (const call of calls as unknown[]) {
+    if (typeof call !== "object" || call === null) return null
     const c = call as Record<string, unknown>
-    return isStep(c) && isCount(c.next_index) && Array.isArray(c.chunks) && c.chunks.every((s) => typeof s === "string")
-  })
+    const { chunks, next_index: next } = c
+    const step = stepOf(c)
+    if (step === null || !isCount(next) || !Array.isArray(chunks)) return null
+    if (!chunks.every((chunk: unknown) => typeof chunk === "string")) return null
+    checked.push({ ...step, chunks: [...chunks] as string[], next_index: next })
+  }
+  return { last_seq: last as number, calls: checked }
 }
 
-/** Whether `f` names a step: `node` a string and `n` a count. */
-function isStep(f: Record<string, unknown>): boolean {
-  return typeof f.node === "string" && isCount(f.n)
+/** The step `f` names (`node` a string and `n` a count), or null. */
+function stepOf(f: Record<string, unknown>): { node: string; n: number } | null {
+  const { node, n } = f
+  return typeof node === "string" && isCount(n) ? { node, n } : null
 }
 
 /** Whether `value` is a safe integer from 0. */
