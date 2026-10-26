@@ -257,12 +257,9 @@ test("a chat turn streams its reply live as the transcript shows it", async () =
   expect(timeless(fold(events))).toEqual(timeless(shown))
 })
 
-test("a finished session forgets its live runs only after its worker exits", async () => {
-  const fake = await fakeLlm()
-  const o = await chatOffice(fake)
-  const workers = scriptedWorker(o)
-  const seen: string[] = []
-  const live: ActorContext["live"] = {
+/** The office's live relay, recording each `detach` and `forget` in `seen`. */
+function spyLive(o: ChatOffice, seen: string[]): ActorContext["live"] {
+  return {
     frame: (worker, frame) => o.live.frame(worker, frame),
     calls: (runId) => o.live.calls(runId),
     detach: (worker) => {
@@ -274,6 +271,14 @@ test("a finished session forgets its live runs only after its worker exits", asy
       o.live.forget(runIds)
     },
   }
+}
+
+test("a finished session forgets its live runs only after its worker exits", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const seen: string[] = []
+  const live = spyLive(o, seen)
   const sid = await newSession(o)
   const actor = makeActor(o, sid, { live })
   await actor.start()
@@ -283,6 +288,16 @@ test("a finished session forgets its live runs only after its worker exits", asy
   const { worker, handlers } = workers[0]!
   handlers.exited(worker, 0)
   expect(seen).toEqual(["detach", `forget ${session(o, sid).run_ids.join(" ")}`])
+  // A finish queued before the exit job: it runs after the exit handler, so it forgets.
+  seen.length = 0
+  const sid2 = await newSession(o)
+  const second = makeActor(o, sid2, { live })
+  await second.start()
+  const next = workers[1]!
+  const failing = second.fail()
+  next.handlers.exited(next.worker, 0)
+  await failing
+  expect(seen).toEqual(["detach", `forget ${session(o, sid2).run_ids.join(" ")}`])
 })
 
 test("turn text changes what the turn gets but not the transcript", async () => {
@@ -975,7 +990,8 @@ test("a not resumed advance starts a fresh run with the deliveries it never appl
   const o = await chatOffice(fake)
   const workers = scriptedWorker(o)
   const sid = await newSession(o)
-  const actor = makeActor(o, sid)
+  const seen: string[] = []
+  const actor = makeActor(o, sid, { live: spyLive(o, seen) })
   await actor.start()
   const old = actor.runId!
   const first = workers[0]!
@@ -1039,8 +1055,11 @@ test("a not resumed advance starts a fresh run with the deliveries it never appl
   // The replaced run's open question goes stale once the fresh run starts.
   const open3 = asked.find((q) => q.call_id === `${old}/c3`)!
   expect(o.office.store.getQuestion(open3.id)!.status).toBe("open")
+  // The replaced run is forgotten once the fresh run starts, and only then.
+  expect(seen.filter((entry) => entry.startsWith("forget"))).toEqual([])
   fresh.handlers.event(fresh.worker, { type: "event", name: "RunStarted", data: { run_id: runId } })
   await waitFor(() => o.office.store.getQuestion(open3.id)!.status === "stale", { what: "the stale question" })
+  expect(seen.filter((entry) => entry.startsWith("forget"))).toEqual([`forget ${old}`])
   expect(o.office.store.getQuestion(card2.id)!.status).toBe("answered")
   fresh.job.deliver.forEach((d, n) => {
     fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: d.id, seq: n + 1 })

@@ -1128,9 +1128,10 @@ export class SessionActor implements LiveCalls {
       override exited(worker: ActorWorker, returncode: number | null): void {
         run.exited = true
         actor.#ctx.live.detach(worker)
+        // Posted before the forget, which reads the store: a failing read must not leave the actor without its exit.
+        actor.#post("exit", () => actor.#exited(run, returncode))
         // The finished session's last worker: nothing can show its runs again.
         if (actor.#finished && run === actor.#run) actor.#forgetLive()
-        actor.#post("exit", () => actor.#exited(run, returncode))
       }
 
       override askUser(_worker: unknown, request: AskRequest, callId: string): Promise<unknown> {

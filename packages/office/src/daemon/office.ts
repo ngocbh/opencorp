@@ -149,9 +149,9 @@ export class Office {
   cards: Cards | undefined
   /** The office's live Codex sessions; set by buildOffice. */
   codex: CodexSessions | undefined
-  /** The office's one transcript of the run logs, set by `buildOffice`; the chat harness passes it to its actors. */
+  /** The office's one transcript of the run logs, set by `buildOffice`; the session actors' context takes it. */
   transcript: Transcript | undefined
-  /** The office's one live relay, set by `buildOffice`; the chat harness passes it to its actors. */
+  /** The office's one live relay, set by `buildOffice`; the session actors' context takes it. */
   live: LiveRelay | undefined
   /** Builds the profile store for one person, per request; null means the profile routes answer 501. */
   profileStore: ((handle: string) => MarkdownStore) | null
