@@ -31,8 +31,9 @@ def test_a_worker_killed_mid_run_is_respawned_and_finishes_the_turn(office, work
     killed = office.worker(sid)
     os.killpg(killed.pid, signal.SIGKILL)
     fake.wait_for_requests(3, timeout=40)
-    # No worker lives between turns, so the respawned one is checked while its call is held.
-    assert office.worker(sid, other_than=killed.pid).pid != killed.pid
+    # No worker lives between turns, so the respawned one is looked up while its call is held; the lookup fails
+    # unless a worker other than the killed one runs.
+    office.worker(sid, other_than=killed.pid)
     fake.release()  # both held calls; nobody reads the dead worker's
     office.settled(sid, ["One.", "Recovered."])
     assert office.users(sid) == ["first", "mid-run"]
