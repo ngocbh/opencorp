@@ -1430,9 +1430,16 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/store/questions.test.ts::a second question with one call id is refused	design §5.1: questions.call_id is unique, nullable (0002)	O4a-0b
 —	new	packages/office/tests/store/questions.test.ts::an answer that isnt json is refused	a value JSON can't hold is a StoreError, never a NULL answer or a raw error quoting it (§6 rule 13)	O1-4
 —	new	packages/office/tests/store/questions.test.ts::questions are read by a long run id list in one statement	one json_each bind (O1-3's getRuns); Python's chunked read was pinned by store/test_runs.py	O1-4
+—	new	packages/office/tests/store/runs.test.ts::a launch range keeps a top level row whose child launched in it	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
+—	new	packages/office/tests/store/runs.test.ts::a launch range with recent is refused	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
+—	new	packages/office/tests/store/runs.test.ts::a run page binds thirty three thousand links at once	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
+—	new	packages/office/tests/store/runs.test.ts::a run page is top level rows newest first after before	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
+—	new	packages/office/tests/store/runs.test.ts::a run page of one parent lists its linked children	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
 —	new	packages/office/tests/store/runs.test.ts::a runs config is recorded at spawn	resume or fresh run reads it (§5.1, §8.4)	O1-3
 —	new	packages/office/tests/store/runs.test.ts::an end time needs an end reason	§5.1	O1-3
 —	new	packages/office/tests/store/runs.test.ts::open runs are the rows with no end reason	§5.1: the start sweep's office-row query	O4b-6
+—	new	packages/office/tests/store/runs.test.ts::recent keeps open rows of any age and rows launched since	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
+—	new	packages/office/tests/store/runs.test.ts::runs among filters a list of ids	§5.1: parents and yian's ends come from its index; the store pages office rows	O4b-7
 —	new	packages/office/tests/store/sessions.test.ts::a field with no column needs a store migration	CLAUDE.md's store-migration rule (§5.1)	O1-3
 —	new	packages/office/tests/store/sessions.test.ts::a session counts its turns from zero	design §5.1, 4a-revision §1: sessions.turns counts finished replies (0002)	O4a-0b
 —	new	packages/office/tests/tools/build.test.ts::the office tool specs equal the saved copy	D20 (Python's compare-only tools/test_spec_dump.py: all four groups through groupSpecs equal tests/fixtures/tool_specs.json)	O2-22b
