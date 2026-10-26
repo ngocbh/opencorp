@@ -783,10 +783,15 @@ export function readEvents(
   return { events, next_after: nextAfter, cut }
 }
 
+/** A newline, appended to a line given without one. */
+const NL = Buffer.from("\n")
+
 /** Record `seq`'s line `bytes` (with or without its newline) as a page shows it, a stub with its size when it is over
  *  BIG_LINE; null when it doesn't read as record `seq`. */
 export function lineEvent(bytes: Buffer, seq: number): RunEvent | null {
-  return bytes.length > BIG_LINE ? stub(bytes.subarray(0, 256), seq, bytes.length) : decode(bytes, seq, false)
+  // Pages count a line's size with its newline: the stub size and the BIG_LINE boundary must match theirs.
+  const line = bytes.at(-1) === 0x0a ? bytes : Buffer.concat([bytes, NL])
+  return line.length > BIG_LINE ? stub(line.subarray(0, 256), seq, line.length) : decode(line, seq, false)
 }
 
 /**

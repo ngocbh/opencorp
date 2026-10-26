@@ -504,10 +504,14 @@ test("a live record line maps as a page shows it", async () => {
 
 test("a line over the page cap maps to a stub with its size", async () => {
   const huge = committed(1, "big", { output: "y".repeat(BIG_LINE + 10) })
-  const file = logOf(runStarted(0), huge, started(2, "next"))
+  const edge = commitOfSize(2, "edge", BIG_LINE + 1, "e")
+  const file = logOf(runStarted(0), huge, edge, started(3, "next"))
   const page = readEvents(file, await refresh(file, null), { after: 0, limit: 10 })
   expect(lineEvent(huge, 1)).toEqual({ seq: 1, kind: "pool_commit", size: huge.length })
   expect([...logEvents(file, 1, null)]).toEqual(page.events)
+  // A line given without its newline is sized with it, as pages size it: just over the cap is a stub too.
+  expect(page.events[1]).toEqual({ seq: 2, kind: "pool_commit", size: BIG_LINE + 1 })
+  expect([lineEvent(huge.subarray(0, -1), 1), lineEvent(edge.subarray(0, -1), 2)]).toEqual(page.events.slice(0, 2))
 })
 
 test("a line that is not its seq maps to null", () => {
