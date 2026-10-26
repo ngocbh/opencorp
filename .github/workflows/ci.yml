@@ -10,75 +10,9 @@ concurrency:
 permissions:
   contents: read
 jobs:
-  office:
-    runs-on: macos-latest
-    timeout-minutes: 20
-    env:
-      UV_LOCKED: 1   # fail if uv.lock is stale, for both `uv sync` and `uv run`
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          token: ${{ secrets.COMPOSER_READ_TOKEN }}   # yian is private
-          persist-credentials: false
-      # setup-uv publishes no floating major tags, so pin the release.
-      - uses: astral-sh/setup-uv@v10.2.0
-      - run: uv sync
-      # tests/e2e needs bun and runs in the e2e job, on both OSes.
-      - run: uv run pytest -q packages/corp_office/tests --ignore=packages/corp_office/tests/e2e
-  sandbox-linux:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      UV_LOCKED: 1
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          token: ${{ secrets.COMPOSER_READ_TOKEN }}   # yian is private
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@v10.2.0
-      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
-      # Ubuntu 24.04 blocks unprivileged user namespaces through AppArmor; bwrap needs them.
-      - run: |
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-      - run: uv sync
-      - run: uv run pytest -q packages/corp_office/tests/sandbox
-  e2e:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    env:
-      UV_LOCKED: 1
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          token: ${{ secrets.COMPOSER_READ_TOKEN }}   # yian is private
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@v10.2.0
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
-      # Ubuntu 24.04 blocks unprivileged user namespaces through AppArmor; bwrap needs them.
-      - if: runner.os == 'Linux'
-        run: |
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-      - run: uv sync
-      - run: bun install --frozen-lockfile
-      - run: uv run pytest -q packages/corp_office/tests/e2e
   ts:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
@@ -111,4 +45,25 @@ jobs:
         working-directory: packages/cli
       - if: ${{ hashFiles('packages/office/**/*.test.ts', '!packages/office/node_modules/**') != '' }}
         run: bun test
+        working-directory: packages/office
+      - if: ${{ hashFiles('packages/app/**/*.test.ts', '!packages/app/node_modules/**') != '' }}
+        run: bun test ./test
+        working-directory: packages/app
+  # The office is the platform-sensitive package (sandbox, service, platform), and its suite holds
+  # the e2e tests, so it runs on macOS too. The other packages are platform-independent and macOS
+  # runner minutes are billed at ten times the Linux rate.
+  office-macos:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          token: ${{ secrets.COMPOSER_READ_TOKEN }}   # yian is private
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - run: bun test
         working-directory: packages/office
