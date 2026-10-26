@@ -86,7 +86,7 @@ function opener() {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-function follow() {
+function follow(delays = { minDelayMs: 20, maxDelayMs: 40 }) {
   const { opens, open } = opener()
   const records: number[] = []
   let calls: LiveCall[] = []
@@ -94,8 +94,7 @@ function follow() {
     open,
     onRecord: (seq) => records.push(seq),
     onCalls: (c) => (calls = c),
-    minDelayMs: 20,
-    maxDelayMs: 40,
+    ...delays,
   })
   return { opens, records, calls: () => calls, live }
 }
@@ -145,16 +144,17 @@ test("a reset reopens at once; a second reset in a row waits", async () => {
 })
 
 test("after run_end a run still running is retried after a delay that doubles", async () => {
-  const { opens, live } = follow()
+  // Wide delays: each check sits 50 ms from the retry it waits for, so a loaded machine doesn't flake it.
+  const { opens, live } = follow({ minDelayMs: 100, maxDelayMs: 400 })
   live.status("running")
   opens[0]!.send({ type: "run_end" })
   expect(opens.length).toBe(1)
-  await sleep(30)
+  await sleep(150)
   expect(opens.length).toBe(2)
   opens[1]!.send({ type: "run_end" })
-  await sleep(30)
+  await sleep(150)
   expect(opens.length).toBe(2)
-  await sleep(20)
+  await sleep(100)
   expect(opens.length).toBe(3)
   live.dispose()
 })

@@ -27,7 +27,7 @@ export function applyLive(calls: LiveCall[], f: RunLiveFrame): LiveCall[] {
   else if (f.index < was.next) return calls
   // A merged chunk carries its last chunk's index.
   else now = { ...was, text: was.text + f.text, next: f.index + 1 }
-  return i < 0 ? [...calls, now] : calls.with(i, now)
+  return i < 0 ? [...calls, now] : calls.map((c, j) => (j === i ? now : c))
 }
 
 /** The calls of `node` to show: those with text that isn't blank. */
