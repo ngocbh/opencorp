@@ -342,6 +342,33 @@ const BIG_HEAD =
   `POST /sessions/${ULID}/prompt HTTP/1.1\r\nhost: office\r\ncontent-type: application/json\r\n` +
   "content-length: 2097152\r\n\r\n"
 
+test("anyone who may chat may switch its model", async () => {
+  const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
+  const company = h.office.paths.company
+  addHuman(company, "ava")
+  const ava = newToken()
+  const ceo = newToken()
+  giveDevice(company, "ava", "pc", ava)
+  giveDevice(company, CEO, "mac", ceo)
+  const { sock } = await served(h.office, { tokens: true })
+  const started = await post(sock, "/sessions", { person: "minh", cwd: h.folder }, bearer(ceo))
+  expect(started.status).toBe(200)
+  const sid = (started.json() as { id: string }).id
+  await waitFor(() => h.store.getSession(sid)!.status === "idle", { what: "the first turn" })
+  let r = await post(sock, `/sessions/${sid}/model`, { connection: "second", model: "stub-5" }, bearer(ava))
+  expect(r.status).toBe(200)
+  const switched = r.json() as { connection: string; model: string | null; model_note: string | null }
+  expect([switched.connection, switched.model, switched.model_note]).toEqual(["second", "stub-5", null])
+  r = await post(sock, `/sessions/${sid}/model`, { connection: "gone", model: "stub-5" }, bearer(ava))
+  expect([r.status, errorOf(r)]).toEqual([422, "unknown_connection"])
+  // Security: the refusal echoes nothing of the request.
+  expect(r.text).not.toContain("gone")
+  const stored = h.store.getSession(sid)!
+  expect([stored.connection, stored.model]).toEqual(["second", "stub-5"])
+  expect((await post(sock, `/sessions/${sid}/end`, null, bearer(ceo))).json()).toEqual({ ok: true })
+  await waitFor(() => h.store.getSession(sid)!.status === "ended", { what: "the end" })
+})
+
 test("session writes are refused before their body is read", async () => {
   const office = makeOffice()
   withToken(office)

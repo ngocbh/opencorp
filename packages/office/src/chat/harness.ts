@@ -4,10 +4,10 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { type Scheduler, realScheduler } from "@ngocbh/yian/platform"
-import { type Message, Session, WorkItem, now } from "@opencorp/protocol"
+import { type Message, OFFICE, Session, WorkItem, now } from "@opencorp/protocol"
 import { loadRepo } from "../company/loader.ts"
 import type { Office, SessionHarness } from "../daemon/office.ts"
-import { type CodexSessions, checkFolder, notSupported, startConnection } from "../harness/sessions.ts"
+import { type CodexSessions, checkFolder, notSupported } from "../harness/sessions.ts"
 import type { Monitor } from "../perm/monitor.ts"
 import { Answers } from "../questions/ask.ts"
 import type { AnswerKind } from "../questions/cards.ts"
@@ -17,24 +17,36 @@ import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store,
 import { WorkspaceTools } from "../tools/workspace.ts"
 import { type JobWorker, type OfficeTool, type WorkerHandlers, errorName } from "../worker/rpc.ts"
 import { RegistryClosed, type WorkerRegistry } from "../worker/spawn.ts"
+import { BadConnectionName, ConnectionGone } from "./connections.ts"
 import type { Hooks } from "./hooks.ts"
+import { DEADLINE_MS, ListTimeout, type ModelCache } from "./models.ts"
 import { ProviderError } from "./provider.ts"
 import { type RunSpec, mainSpec } from "./run_spec.ts"
-import { type ActorContext, SessionActor } from "./session_actor.ts"
+import { type ActorContext, SessionActor, named, ownModel } from "./session_actor.ts"
 import { HarnessError, LIVE } from "./state.ts"
 import type { Transcript } from "./transcript.ts"
 
 /** How long, in milliseconds, the stop waits for worker requests, office tool bodies and actor jobs still running. */
 const STOP_WAIT_MS = 10_000
 
+/** Why a chat is on `office`: the office's default can't be read. */
+const UNREAD_DEFAULT = "The office's default connection can't be read"
+
+/** The connection and model a new chat starts on (`model` null: the connection's own), and a note when it isn't what
+ *  was asked for. */
+export type Choice = { connection: string; model: string | null; note: string | null }
+
 /** What the chat harness is built on. `workers` is the registry its runs' workers start in; `hooks` are shared with
- *  the Codex sessions; `log` gets its warnings (default `console.error`). */
+ *  the Codex sessions; `log` gets its warnings (default `console.error`). A new chat's choice lists models through
+ *  `models` (default `office.models`) within `chooseDeadlineMs`. */
 export type ChatHarnessOptions = {
   monitor: Monitor
   hooks: Hooks
   workers: WorkerRegistry
   scheduler?: Scheduler
   log?: (line: string) => void
+  models?: ModelCache
+  chooseDeadlineMs?: number
 }
 
 /**
@@ -55,6 +67,8 @@ export class ChatHarness implements SessionHarness {
   readonly transcript: Transcript
   readonly scheduler: Scheduler
   readonly log: (line: string) => void
+  readonly models: ModelCache
+  readonly chooseDeadlineMs: number
   readonly #ctx: ActorContext
   readonly #actors = new Map<string, SessionActor>()
   #closed = false
@@ -70,7 +84,15 @@ export class ChatHarness implements SessionHarness {
 
   constructor(
     office: Office,
-    { monitor, hooks, workers, scheduler = realScheduler, log = (line) => console.error(line) }: ChatHarnessOptions,
+    {
+      monitor,
+      hooks,
+      workers,
+      scheduler = realScheduler,
+      log = (line) => console.error(line),
+      models = office.models,
+      chooseDeadlineMs = DEADLINE_MS,
+    }: ChatHarnessOptions,
   ) {
     this.office = office
     this.store = office.store
@@ -79,6 +101,8 @@ export class ChatHarness implements SessionHarness {
     this.registry = workers
     this.scheduler = scheduler
     this.log = log
+    this.models = models
+    this.chooseDeadlineMs = chooseDeadlineMs
     this.answers = new Answers(office.store, { log })
     // The office's own: a second transcript or relay would miss the first one's state.
     if (office.transcript === undefined || office.live === undefined) {
@@ -173,7 +197,7 @@ export class ChatHarness implements SessionHarness {
         opened_by: openedBy,
         connection: opened.connection,
         model: opened.model,
-        model_note: null,
+        model_note: opened.note,
         harness_session_id: null,
         parent_session_id: null,
         created_at: t,
@@ -254,13 +278,33 @@ export class ChatHarness implements SessionHarness {
     return codex ? codex.setCostCap(sessionId, usd) : this.#actor(sessionId).setCostCap(usd)
   }
 
-  /** A Codex session's model is Codex's own; a yian chat's answers 501 until the chat harness switches models. */
+  /**
+   * Switches the session to `connection`/`model`; its next turn runs on them in a fresh run, and a reply already
+   * running finishes where it is. A model equal to the connection's own is stored as null, and the note is cleared.
+   * It writes the store, not through the actor: the next spawn reads it. A Codex session's model is Codex's own.
+   * 409 `not_live` or `ending` for a session that ended or is ending; 422 `unknown_connection` for a connection not
+   * on this office; 409 `connection_unusable` for one that can't be used now.
+   */
   async setModel(sessionId: string, connection: string, model: string): Promise<SessionRecord> {
     const codex = this.#codexFor(sessionId, notSupported)
-    if (codex === undefined) {
-      throw new HarnessError(501, "not_implemented", "the chat harness doesn't switch a chat's model yet")
+    if (codex !== undefined) return codex.setModel(sessionId, connection, model)
+    const session = this.store.getSession(sessionId)!
+    if (!LIVE.includes(session.status)) throw new HarnessError(409, "not_live", `session ${sessionId} has ended`)
+    if (session.status === "ending") throw new HarnessError(409, "ending", `session ${sessionId} is ending`)
+    // Never the requested name: a 422 echoes nothing of the request.
+    const unknown = () => new HarnessError(422, "unknown_connection", "no such connection on this office")
+    let own: unknown
+    try {
+      if (!(await this.office.connections.names()).includes(connection)) throw unknown()
+      own = (await this.office.connections.resolve(connection, null)).llm_config?.model
+    } catch (error) {
+      if (error instanceof ConnectionGone || error instanceof BadConnectionName) throw unknown()
+      if (!(error instanceof ProviderError)) throw error
+      // Its error may name the office's files; the log says which connection, the client gets no path.
+      this.log(`connection ${connection} can't be used; session ${sessionId} stays where it is`)
+      throw new HarnessError(409, "connection_unusable", `connection '${connection}' can't be used on this office now`)
     }
-    return codex.setModel(sessionId, connection, model)
+    return this.store.updateSession(sessionId, { connection, model: model === own ? null : model, model_note: null })
   }
 
   /** The session's messages: a yian chat's from its runs' logs, with its live actor's calls in flight. */
@@ -440,22 +484,114 @@ export class ChatHarness implements SessionHarness {
     if (!harnesses.includes("composer"))
       throw new HarnessError(422, "unsupported_harness", `${handle} doesn't use the composer harness`)
     const real = checkFolder(this.office, cwd)
-    const chosen = await startConnection(this.office, connection, this.log)
-    // The picked model goes with the picked connection (a model alone is on the default).
-    const picked = connection === null || chosen === connection ? model : null
-    return { head, repo, person, cwd: real, connection: chosen, model: await this.#unlessOwn(chosen, picked) }
+    return { head, repo, person, cwd: real, ...(await this.choose(person, connection, model)) }
+  }
+
+  /**
+   * The connection and model a new chat of `person` starts on, and a note when it isn't what was asked for.
+   *
+   * The pick (`connection` and `model`; a model alone is on the default) if its connection is on this office and can
+   * be used; else the first connection that offers `person.model`, the default first and then the others by name;
+   * else the default on its own model. Everything is decided within one `chooseDeadlineMs`. A model equal to the
+   * chosen connection's own is null.
+   */
+  async choose(
+    person: { handle: string; model: string | null },
+    connection: string | null,
+    model: string | null,
+  ): Promise<Choice> {
+    const end = performance.now() + this.chooseDeadlineMs
+    const connections = this.office.connections
+    let names: string[]
+    try {
+      names = await connections.names()
+    } catch (error) {
+      // The spawn reads the names too, and reports why they can't be read.
+      if (error instanceof ProviderError) return { connection: OFFICE, model: null, note: null }
+      throw error
+    }
+    const [fallback, unread] = await this.#default()
+    const why: string[] = []
+    const picked = connection ?? fallback
+    if (connection !== null || model !== null) {
+      if (!names.includes(picked)) {
+        why.push(`Your last pick '${picked}' isn't on this office`)
+      } else if (!(await this.#usable(picked, model))) {
+        why.push(`Your last pick '${picked}' can't be used on this office`)
+      } else {
+        const own = await this.#unlessOwn(picked, model)
+        // A model picked alone is on the default, which may be office only because the default can't be read.
+        const onUnread = connection === null && unread
+        const note = onUnread ? `${UNREAD_DEFAULT}; this chat uses ${await named(connections, OFFICE, own)}.` : null
+        return { connection: picked, model: own, note }
+      }
+    }
+    let name = fallback
+    let chosen: string | null = null
+    if (person.model) {
+      try {
+        let found: string | undefined
+        for (const n of [fallback, ...names.filter((n) => n !== fallback).sort()]) {
+          if (await this.#offers(n, person.model, end)) {
+            found = n
+            break
+          }
+        }
+        if (found === undefined) {
+          why.push(`@${person.handle} asks for ${person.model}, which no connection on this office offers`)
+        } else {
+          name = found
+          chosen = await this.#unlessOwn(found, person.model)
+        }
+      } catch (error) {
+        if (!(error instanceof ListTimeout)) throw error
+        why.push(`Couldn't check in time which connection offers ${person.model}`)
+      }
+    }
+    if (unread && name === fallback) why.push(UNREAD_DEFAULT)
+    const note = why.length ? `${why.join(". ")}; this chat uses ${await named(connections, name, chosen)}.` : null
+    return { connection: name, model: chosen, note }
+  }
+
+  /** The default connection, and whether it is `office` only because `_default.json` can't be read. */
+  async #default(): Promise<[string, boolean]> {
+    try {
+      return [await this.office.connections.default(), false]
+    } catch (error) {
+      if (!(error instanceof ProviderError)) throw error
+      // The spawn never reads _default.json, so nothing else would say why chats left the default.
+      this.log("the office's default connection can't be read; new chats take office as the default")
+      return [OFFICE, true]
+    }
+  }
+
+  /** Whether a run on connection `name` and `model` can be resolved now. */
+  async #usable(name: string, model: string | null): Promise<boolean> {
+    try {
+      await this.office.connections.resolve(name, model)
+      return true
+    } catch (error) {
+      if (!(error instanceof ProviderError || error instanceof BadConnectionName)) throw error
+      this.log(`connection ${name} can't be used; a new chat doesn't start on it`)
+      return false
+    }
+  }
+
+  /** Whether connection `name` offers `model`, listing it by `end` (a `performance.now()`) if need be. A connection
+   *  that can't be read offers nothing; rejects with `ListTimeout` if `end` passes. */
+  async #offers(name: string, model: string, end: number): Promise<boolean> {
+    try {
+      return (await this.models.offers([name], model, { deadlineMs: end - performance.now() })).length > 0
+    } catch (error) {
+      if (!(error instanceof ProviderError || error instanceof BadConnectionName)) throw error
+      this.log(`connection ${name} can't be read; a new chat doesn't start on it`)
+      return false
+    }
   }
 
   /** `model`, or null when it is connection `name`'s own, so the chat follows that connection's changes. */
   async #unlessOwn(name: string, model: string | null): Promise<string | null> {
-    if (model === null) return null
-    try {
-      return (await this.office.connections.get(name)).llm_config?.model === model ? null : model
-    } catch (error) {
-      // Resolving it at the spawn reports why it can't be read.
-      if (error instanceof ProviderError) return model
-      throw error
-    }
+    return model !== null && model === (await ownModel(this.office.connections, name)) ? null : model
   }
 
   /** The actor of live session `sessionId`, made if the harness has none (after an office restart): 404 for no

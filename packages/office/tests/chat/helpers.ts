@@ -12,6 +12,7 @@ import { type LiveEvent, now, OFFICE, Session, WorkItem } from "@opencorp/protoc
 import { ConnectionFile } from "../../src/chat/connections.ts"
 import { ChatHarness } from "../../src/chat/harness.ts"
 import { Hooks } from "../../src/chat/hooks.ts"
+import { type Lister, ModelCache, ownModels } from "../../src/chat/models.ts"
 import { mainSpec } from "../../src/chat/run_spec.ts"
 import { MAIN_CHAT } from "../../src/chat/turns.ts"
 import { type ActorContext, type ActorWorker, SessionActor, type Wait } from "../../src/chat/session_actor.ts"
@@ -831,6 +832,15 @@ export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
   return spawned
 }
 
+/** A lister that gives each connection in `listings` (name to model ids) as listed, and any other connection only
+ *  its configured model; it never reaches the network. */
+export function listed(listings: Record<string, string[]>): Lister {
+  return async (conn, name) =>
+    Object.hasOwn(listings, name)
+      ? { connection: name, models: listings[name]!.map((id) => ({ id, name: null })), listed: true, error: null }
+      : ownModels(conn, name)
+}
+
 /**
  * A real `ChatHarness` over a `chatOffice` (its options but `office`) whose first registry it spawns in, with a real
  * `Monitor` and the real workspace tools of `harness.spec`, the tools of `groups` merged into its groups;
@@ -839,6 +849,8 @@ export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
  * `codex`, the office is `makeCodex`'s and its Codex sessions over a fake app-server are `office.codex`, on the
  * harness's hooks (minh may then use Codex unless `files` replace him); `codex` is what `makeCodex` returned. With
  * `questions`, the questions extension is registered on each harness (`office.cards`).
+ * The harness's start choice lists models through `lister`, else `listed(listings)`, never the network, and
+ * waits `chooseDeadlineMs` if given.
  * `reopen()` closes the harness, the store left open, and puts a second one over the same office in `harness`, on a
  * new registry: the office stopped and started again. Call inside a test: when it finishes the harness closes
  * before the store does.
@@ -849,11 +861,17 @@ export async function makeHarness(
     codex = false,
     scheduler = realScheduler,
     questions = false,
+    listings = {},
+    lister = listed(listings),
+    chooseDeadlineMs,
     ...options
   }: Omit<NonNullable<Parameters<typeof chatOffice>[1]>, "office"> & {
     codex?: boolean
     scheduler?: Scheduler
     questions?: boolean
+    listings?: Record<string, string[]>
+    lister?: Lister
+    chooseDeadlineMs?: number
   } = {},
 ) {
   let harness: ChatHarness | undefined
@@ -871,6 +889,7 @@ export async function makeHarness(
   // The office's one transcript and relay, which the harness's actors share with these helpers.
   office.transcript = o.transcript
   office.live = o.live
+  const models = new ModelCache(office.connections, { lister })
   const make = (workers: WorkerRegistry) => {
     harness = new ChatHarness(office, {
       monitor: new Monitor(office.paths.company, office.store, office.secrets),
@@ -878,6 +897,8 @@ export async function makeHarness(
       workers,
       scheduler,
       log: (line) => void o.logs.push(line),
+      models,
+      ...(chooseDeadlineMs === undefined ? {} : { chooseDeadlineMs }),
     })
     const { groups } = options
     if (groups !== undefined) {
