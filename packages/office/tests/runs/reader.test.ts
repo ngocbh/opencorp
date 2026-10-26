@@ -560,6 +560,19 @@ test("log events start from an index at the seq asked for", async () => {
   expect([...logEvents(file, 200, null, index)]).toEqual([null])
 })
 
+test("log events ignore an index of a replaced file", async () => {
+  const file = chatLog(path.join(tempDir(), "r.jsonl"), 30)
+  const index = await refresh(file, null)
+  const [base, start] = index.sparse.findLast(([seq]) => seq <= 200)!
+  // A new inode whose line over BIG_LINE spans the old sparse entry: read from it, its tail would be a stub of seq 192.
+  const big = commitOfSize(1, "big", 2 * BIG_LINE, "b")
+  expect(start).toBeLessThan(BIG_LINE)
+  fs.writeFileSync(`${file}.new`, Buffer.concat([runStarted(0), big, started(2, "after")]))
+  fs.renameSync(`${file}.new`, file)
+  for (const from of [1, base]) expect([...logEvents(file, from, null, index)]).toEqual([...logEvents(file, from, null)])
+  expect([...logEvents(file, 1, null, index)].map((e) => e?.seq)).toEqual([1, 2])
+}, 60_000)
+
 test("the download is every complete line as stored", async () => {
   const file = logOf(runStarted(0), started(1, "a"), committed(2, "a", { output: "d".repeat(3 << 20) }))
   const whole = fs.readFileSync(file)

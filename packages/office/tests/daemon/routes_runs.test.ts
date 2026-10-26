@@ -8,7 +8,7 @@ import { expect, type Mock, onTestFinished, setDefaultTimeout, spyOn, test } fro
 import type { RunIndexRow } from "@ngocbh/yian/run"
 import type { LiveJoin, LiveRelay, LiveWorker } from "../../src/daemon/live.ts"
 import type { Office } from "../../src/daemon/office.ts"
-import { HUGE_LINE, type Index, readEvents, refresh } from "../../src/runs/reader.ts"
+import { HUGE_LINE, readEvents, refresh } from "../../src/runs/reader.ts"
 import { Live, type LiveRun } from "../../src/runs/records.ts"
 import { WORKER_STOPPED } from "../../src/runs/outcomes.ts"
 import { RunLogs } from "../../src/runs/service.ts"
@@ -596,11 +596,19 @@ test("a reconnect reads the log from the run index", async () => {
   const office = makeOffice()
   const { sock } = await served(office)
   const { runId, log } = storedRun(office, { turns: 10 })
+  const want = await expected(log, 70)
+  // Built as the run page would have, so the stream's own reads are only its index refresh and its records.
+  const index = (await office.runs.logIndex(log))!
+  expect(index.sparse.map(([seq]) => seq)).toEqual([0, 64])
   const logIndex = spyOn(office.runs, "logIndex")
-  expect(await all(await open(sock, `/runs/${runId}/live?after=70`))).toEqual(await expected(log, 70))
+  const read = spyOn(fs, "readSync")
+  onTestFinished(() => read.mockRestore())
+  expect(await all(await open(sock, `/runs/${runId}/live?after=70`))).toEqual(want)
   expect(logIndex.mock.calls).toEqual([[log]])
-  const index = await (logIndex.mock.results[0]!.value as Promise<Index | null>)
-  expect(index!.sparse.map(([seq]) => seq)).toEqual([0, 64])
+  // The records are read from the sparse entry of seq 64, and nothing is read from byte 0.
+  const positions = read.mock.calls.map((call) => (call as unknown[])[4])
+  expect([positions.includes(index.sparse[1]![1]), positions.includes(0)]).toEqual([true, false])
+  read.mockRestore()
   // A stream from the start reads from byte 0 anyway: it builds no index.
   expect(await all(await open(sock, `/runs/${runId}/live`))).toEqual(await expected(log, null))
   expect(logIndex).toHaveBeenCalledTimes(1)

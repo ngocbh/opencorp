@@ -1362,6 +1362,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/reader.test.ts::a sparse entry marks every few mib of records	security review: a page's synchronous reads are bounded (Python read pages in a thread)	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::a waiting node stays open through a resume and a woken one runs on	yian #1057, #1064: a waiting node is non-terminal and a resume doesn't retry it	O4b-5
 —	new	packages/office/tests/runs/reader.test.ts::an unterminated tail over the line cap makes the log unreadable	security review: a line over the cap is refused before it is read whole	O4b-5
+—	new	packages/office/tests/runs/reader.test.ts::log events ignore an index of a replaced file	design §2.6 (P7): a reconnect starts from the index's sparse table, not byte 0; a stub's seq isn't checked, so only the same file's index is used	O4b-7
 —	new	packages/office/tests/runs/reader.test.ts::log events read records from a seq through a seq	design §2.6 (P7): the live route maps records as the run page does	O4b-3
 —	new	packages/office/tests/runs/reader.test.ts::log events start from an index at the seq asked for	design §2.6 (P7): a reconnect starts from the index's sparse table, not byte 0	O4b-7
 —	new	packages/office/tests/runs/reader.test.ts::log events yield null at a line that is not its seq and stop	design §2.6 (P7): the live route maps records as the run page does	O4b-3
