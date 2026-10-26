@@ -60,56 +60,33 @@ Research notes on these live in `docs/plans/research/` (local only).
 OpenCorp is MIT-licensed. When you copy or substantially port code from another project, credit it in
 `THIRD_PARTY_NOTICES.md` (project, license, upstream paths and commit, our paths).
 
-## TS port in progress
+## The office
 
-The office is being ported to TypeScript on TS Yian (#302). Until the cut-over:
+The office lives in `packages/office` (`@opencorp/office`): a module is
+`packages/office/src/<pkg>/<mod>.ts` and its tests are `packages/office/tests/<pkg>/<mod>.test.ts`,
+each test's name in words. Run them with `(cd packages/office && bun test <file>)`. `bun test` has
+no fixtures: inject dependencies, give children an explicit env, and never change `process.env` in
+a test.
 
-- **The Python office is frozen.** `packages/corp_office` gets no new features; they land in the
-  TS office. It gets bug fixes only, each through its own issue. Its code and tests are the spec
-  the port is checked against. The clients (TUI, CLI, HQ app) run on the TS office: through the
-  wrapper `packages/cli/bin/opencorp` in a checkout, the compiled binary when installed. Their
-  tests run against a real TS office on a temp home (`@opencorp/office/testing/office`). Fakes are
-  kept only for scripted tests (the TUI's frame tests, HQ's Playwright tests), and a contract test
-  checks each against the real office. Run the Python tests
-  (`uv run pytest -q packages/corp_office/tests --ignore=packages/corp_office/tests/e2e`) in any PR
-  that touches the Python office; the CLI now runs the TS install, so its e2e suite runs only per milestone.
-  Touch `packages/corp_office`, `pyproject.toml` or `uv.lock` only for such a fix or when a port
-  issue names them. The cut-over deletes it, with no migration of its data.
-- **The TS office** lives in `packages/office` (`@opencorp/office`) and mirrors the Python
-  packages: `opencorp/<pkg>/<mod>.py` becomes `packages/office/src/<pkg>/<mod>.ts`, and
-  `tests/<pkg>/test_<mod>.py` becomes `packages/office/tests/<pkg>/<mod>.test.ts`, keeping each
-  test's name in words (no apostrophes, so the parity ledger can match them). Run its tests with
-  `(cd packages/office && bun test <file>)`. `bun test` has no fixtures: inject dependencies, give
-  children an explicit env, and never change `process.env` in a test.
-- **Two yian pins.** The `packages/yian` submodule pointer is the TS office's pin. The Python
-  office takes yian from its own git rev in `pyproject.toml` (`[tool.uv.sources]`), not from the
-  submodule; that rev isn't bumped except for a Python bug fix that needs a yian fix (then only the
-  `rev` and `uv.lock` change, in their own commit). A submodule bump is its own commit inside the PR
-  that needs it: move the pointer forward to a yian `main` commit (never a branch), run
-  `bun run typecheck` and the office tests on it, fix the office in the same PR if yian changed
-  under it, and name in the PR the yian PRs the bump brings in. If `main`'s pointer is newer when
-  you rebase, keep the newer one and re-run the checks.
-- **Protocol rules suspended.** The schema-only-PR rule and the additive-only rule in "Protocol
-  schema" don't apply during the port. The zod schemas in `packages/protocol/src/schemas/` are
-  the only protocol source the TS side follows, and a PR may add, rename or remove
-  protocol fields if it updates every package that uses it (client, TUI, CLI, HQ app) in the same
-  PR. The frozen `protocol.schema.json`, `models.py` and their fixtures are left as they are. The
-  rules can return after the port (for example once there are outside clients).
-- **Run `opencorp` in a checkout through `packages/cli/bin/opencorp`**: it runs Bun with
-  `--no-install --no-env-file --config=/dev/null`, so the current folder's `.env` and
-  `bunfig.toml` aren't read (see Setup).
+The clients (TUI, CLI, HQ app) reach it through the wrapper `packages/cli/bin/opencorp` in a
+checkout, and the compiled binary when installed. Their tests run against a real office on a temp
+home (`@opencorp/office/testing/office`). Fakes are kept only for scripted tests (the TUI's frame
+tests, HQ's Playwright tests), and a contract test checks each against the real office.
+
+**Run `opencorp` in a checkout through `packages/cli/bin/opencorp`**: it runs Bun with
+`--no-install --no-env-file --config=/dev/null`, so the current folder's `.env` and
+`bunfig.toml` aren't read (see Setup).
 
 ## Layout
 
 ```
-pyproject.toml                        # Python project "opencorp" (import opencorp)
-packages/corp_office/src/opencorp/    # office daemon, run worker, sandbox launcher, permission layer, harness adapters
-packages/corp_office/tests/           # Python tests, mirroring packages/corp_office/src/opencorp/
-packages/office/                      # the TS office (see "TS port in progress")
-packages/yian/                        # submodule; the TS side's yian (see "TS port in progress")
-packages/protocol/                    # zod schemas (the TS types); frozen JSON Schema → pydantic
+packages/office/                      # office daemon, run worker, sandbox launcher, permission layer, harness adapters
+packages/yian/                        # submodule; the Yian engine the office runs flows on
+packages/protocol/                    # zod schemas: the protocol the office and the clients share
+packages/client/                      # the TS client the TUI, CLI and HQ app reach the office with
 packages/tui/                         # the TUI (forked from OpenCode)
 packages/cli/                         # the `opencorp` CLI (npm package "opencorp")
+packages/app/                         # OpenCorp HQ, the web app (#184)
 docs/plans/                           # design docs and plans (local only, gitignored)
 ```
 
@@ -120,7 +97,6 @@ the shared record of the design decisions.
 
 ```
 git clone --recurse-submodules https://github.com/ngocbh/opencorp.git && cd opencorp
-uv sync        # the frozen Python office's tests; uses a uv-managed Python 3.12
 bun install
 ```
 
@@ -139,38 +115,27 @@ a model-written project could then shadow `bun` or `opencorp` itself.
 
 ## Tests
 
-- Python: `uv run pytest -q packages/corp_office/tests/<path>` (all:
-  `uv run pytest -q packages/corp_office/tests --ignore=packages/corp_office/tests/e2e`).
-- TS: `(cd packages/<pkg> && bun test)`; from the root, `bun run test` and `bun run typecheck`
+- `(cd packages/<pkg> && bun test)`; from the root, `bun run test` and `bun run typecheck`
   run each package's own `test` and `typecheck` scripts, except yian's (`@ngocbh/yian` in
   `packages/yian/ts`), which the yian repo tests.
 - CI runs a package's `bun test` only once it has a `*.test.ts(x)` file.
-- `packages/corp_office/tests/<pkg>/` mirrors `packages/corp_office/src/opencorp/<pkg>/`.
-  Every test directory has an empty `__init__.py` so same-named test modules in different
-  directories don't collide.
+- `packages/office/tests/<pkg>/` mirrors `packages/office/src/<pkg>/`. The office's e2e tests
+  (`tests/e2e/`) and its sandbox tests run with the rest of its suite; a sandbox test skips where it
+  can't sandbox, unless `CI` or `OPENCORP_TEST_SANDBOX` is set.
 
 ## Protocol schema
 
-The schema-only-PR rule and the additive-only rule below are suspended during the TS port (see
-"TS port in progress"). The TS side's protocol types come from the zod schemas in
-`packages/protocol/src/schemas/`; no TS is generated from `protocol.schema.json`.
+The protocol is the zod schemas in `packages/protocol/src/schemas/`: the office and every client
+take their types from them, and nothing is generated.
 
-`packages/protocol/schema/protocol.schema.json` changes only in a schema-only PR that:
-
-- edits the schema and its fixtures, and regenerates
-  `packages/corp_office/src/opencorp/protocol/models.py` in the same commit (its drift test
-  fails otherwise);
-- only adds fields, `$defs`, and enum members; never renames, removes, narrows, or changes the
-  type of anything merged code uses;
-- while the PyPI releases are 0.0.x placeholders (see Releases), may also remove a field once
-  the code that read it has merged without it, and says in the PR what stops loading;
-- adds the matching store migration (`packages/corp_office/src/opencorp/store/migrations/`)
-  when a new field lands on a `$def` the store persists, since inserts fail until the column
-  exists;
-- merges before dependent work continues.
+A PR may add, rename or remove a protocol field as long as it updates every package that uses it
+(office, client, TUI, CLI, HQ app) in the same PR, and adds the matching store migration
+(`packages/office/src/store/migrations/`) when a field lands on a schema the store persists, since
+inserts fail until the column exists. The additive-only rule and the schema-only-PR rule the port
+suspended stay off until there are outside clients to keep compatible.
 
 Clients ignore enum values and event types they don't know. Make timestamps with `now()` from
-`@opencorp/protocol` (`opencorp.protocol.now()` in Python).
+`@opencorp/protocol`.
 
 ## GitHub workflow
 
@@ -183,28 +148,25 @@ Clients ignore enum values and event types they don't know. Make timestamps with
 Work is complete only when the PR merges.
 
 Yian changes go to the yian repo (github.com/ngocbh/yian) as their own issue and PR; never edit
-the submodule (`packages/yian/`) here. Bump the submodule pointer in a separate commit. When you
-bump it, also check that the root `typescript` and `@types/bun` pins still equal yian's:
+the submodule (`packages/yian/`) here. The submodule pointer is the office's yian, and a bump is its
+own commit inside the PR that needs it: move the pointer forward to a yian `main` commit (never a
+branch), run `bun run typecheck` and the office tests on it, fix the office in the same PR if yian
+changed under it, and name in the PR the yian PRs the bump brings in. If `main`'s pointer is newer
+when you rebase, keep the newer one and re-run the checks. When you bump it, also check that the
+root `typescript` and `@types/bun` pins still equal yian's:
 `grep -c '"typescript@' bun.lock` and `grep -c '"bun-types@' bun.lock` (the package behind
 `@types/bun`) each print 1, so yian resolves the same versions, and
 `(cd packages/yian/ts && bun run typecheck)` passes (the root typecheck skips yian).
 
 ## Releases
 
-The Python package `opencorp` goes to PyPI from `.github/workflows/publish.yml`, through PyPI
-Trusted Publishing (the `pypi` environment); no token is stored.
+Nothing is published. `(cd packages/cli && bun run build)` writes the compiled binary and the npm
+packages under `packages/cli/dist/npm/` for whoever runs it (see Setup), and that is the only way to
+get a build today.
 
-1. Bump `version` in `pyproject.toml` in a PR and merge it.
-2. Publish a GitHub Release tagged `v<version>`. The workflow fails if the tag and the version
-   differ.
-
-Actions must be enabled for the workflow to run; run it by hand (`workflow_dispatch`) for a
-build-only dry run.
-
-The published package depends on `yian[all]>=0.0.3` from PyPI, not the git rev in
-`[tool.uv.sources]`. yian 0.0.3 predates that rev, so an install from PyPI can't load the flows
-the office ships yet. The 0.0.x releases are placeholders until yian publishes a matching build;
-then raise the floor.
+What ships, where, and how it is trusted is #525. The PyPI package `opencorp` was the Python
+office's and went with it; yian is a private submodule, so a published build has to vendor it or
+wait for yian to publish.
 
 ## Code style
 
