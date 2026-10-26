@@ -52,6 +52,7 @@ export class NoLog extends Error {
   override name = "NoLog"
 }
 
+/** Whether `error` is the `fs` error of a file that doesn't exist. */
 function isMissing(error: unknown): boolean {
   return (error as { code?: unknown } | null)?.code === "ENOENT"
 }
@@ -209,6 +210,7 @@ export class RunLogs {
     }
   }
 
+  /** The header's log fields: whether the run's log can be read, and what its first record says. */
   async #logState(
     row: RunRow,
     indexRow: RunIndexRow | undefined,

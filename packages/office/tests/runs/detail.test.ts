@@ -19,10 +19,12 @@ import {
   line,
   LOOP_FLOW,
   realRun,
+  resumed,
   RUN,
   runStarted,
   started,
   succeeded,
+  waiting,
 } from "./helpers.ts"
 
 const T = "2026-10-20T10:00:00.000Z"
@@ -228,6 +230,16 @@ test("the timeline is node attempts newest first with their kinds", async () => 
   expect(new Set((await runsFor(o).nodes(row.runId, { before: null, limit: 3 })).nodes.map((n) => n.kind))).toEqual(
     new Set([null]),
   )
+  // A chat waiting at its next turn, then resumed: a waiting node is open, a case shows its handle.
+  aRun(o, { runId: RUN })
+  const file = chatLog(logFile(o, RUN))
+  fs.appendFileSync(file, Buffer.concat([waiting(20, "chat#2/ask"), resumed(21, ["chat#2/ask"])]))
+  const chat = await runsFor(o).nodes(RUN, { before: null, limit: 1000 })
+  const at = (nodeId: string) => chat.nodes.find((n) => n.node_id === nodeId)!
+  expect([chat.nodes[0]!.node_id, chat.nodes[0]!.status]).toEqual(["chat#2/ask", "open"])
+  expect([at("chat#0/route").status, at("chat#0/route").handle]).toEqual(["routed", "reply"])
+  expect([chat.nodes.at(-1)!.node_id, chat.nodes.at(-1)!.status]).toEqual(["chat", "expanded"])
+  expect(chat.dividers).toEqual([{ seq: 21, retried: ["chat#2/ask"] }])
 })
 
 test("a run with no log has no records", async () => {
