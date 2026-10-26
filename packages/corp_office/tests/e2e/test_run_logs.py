@@ -12,7 +12,7 @@ pytestmark = pytest.mark.timeout(240)
 KEY = "conn-key-e2e-7c1d2b9a4f60"
 
 
-# The name is kept for the parity ledger although the debrief is gone (D32).
+# The name is kept so results line up with the Python suite's, though a chat no longer has a debrief.
 def test_a_chat_and_its_debrief_in_run_logs(web_office, workspace, tmp_path, local):  # noqa: F811
     office = web_office
     wait_listening(office)
