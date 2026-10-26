@@ -25,14 +25,16 @@ def first_turn(office, workspace):
 def test_a_worker_killed_mid_run_is_respawned_and_finishes_the_turn(office, workspace):
     fake = office.fake
     sid = first_turn(office, workspace)
-    fake.script({"content": "Lost.", "hold": True}, {"content": "Recovered."})
+    fake.script({"content": "Lost.", "hold": True}, {"content": "Recovered.", "hold": True})
     office.prompt(sid, "mid-run")
     fake.wait_for_requests(2, timeout=40)
     killed = office.worker(sid)
     os.killpg(killed.pid, signal.SIGKILL)
+    fake.wait_for_requests(3, timeout=40)
+    # No worker lives between turns, so the respawned one is checked while its call is held.
+    assert office.worker(sid, other_than=killed.pid).pid != killed.pid
+    fake.release()  # both held calls; nobody reads the dead worker's
     office.settled(sid, ["One.", "Recovered."])
-    fake.release()  # the dead worker's call: nobody reads its reply
-    assert office.worker(sid).pid != killed.pid
     assert office.users(sid) == ["first", "mid-run"]
     assert len(office.session(sid)["run_ids"]) == 1  # resumed, not a new run
     assert len(fake.requests()) == 3 and "mid-run" in asked(fake.requests()[2])
