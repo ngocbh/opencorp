@@ -596,8 +596,9 @@ test("the provider key never reaches a reason a hook a log or the store", async 
   const { worker, handlers } = workers[0]!
   // The worker's start frame is the one place the key travels.
   expect(worker.job.llm_config).toMatchObject({ api_key: key })
+  // Not the reply: a failed reply starts a fresh run, and this run's failure fails the session.
   const failure = {
-    node_id: "chat#0/reply",
+    node_id: "chat",
     cause_type: "AuthError",
     message: `bad key ${key} ${"x".repeat(900)}`,
     details: [{ input: { api_key: key } }, key],

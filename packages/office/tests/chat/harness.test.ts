@@ -30,6 +30,7 @@ import {
   TAKE,
   capGate,
   card,
+  errors,
   fakeLlm,
   free,
   makeHarness,
@@ -1171,4 +1172,120 @@ test("ending while a new provider takes over ends the session", async () => {
   expect(await h.harness.prompt(id, "hi")).toBe("turn")
   await h.harness.end(id)
   await waitFor(() => status(h, id) === "ended", { what: "the end" })
+})
+
+// --- failures -------------------------------------------------------------------------------
+
+/** A `failed` result frame of run `runId`, failed with `failure`. */
+function failedResult(runId: string, failure: Record<string, unknown>): Frame {
+  return { type: "result", status: "failed", run_id: runId, output: null, failure, waits: [] }
+}
+
+test("a failed run says so and starts a new run", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 500 }, { content: "Back." })
+  const h = await makeHarness(fake)
+  const { id } = await start(h)
+  await h.harness.prompt(id, "hi")
+  await waitFor(() => h.store.getSession(id)!.run_ids.length === 2 && status(h, id) === "idle", {
+    what: "the new run",
+  })
+  const [error, ...rest] = errors(h, id)
+  expect(rest).toEqual([])
+  expect(error).toStartWith("The reply failed (")
+  expect(error).toEndWith("Send your message again.")
+  expect(texts(h, id)).toEqual([])
+  await h.harness.prompt(id, "again")
+  await waitFor(() => same(texts(h, id).slice(-1), ["Back."]), { what: "the reply" })
+})
+
+test("a message sent during a reply that then fails is answered by the fresh run", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 500, hold: true }, { content: "Got it." })
+  const h = await makeHarness(fake)
+  const { id } = await start(h)
+  await h.harness.prompt(id, "hi")
+  await fake.waitForRequests(1)
+  expect(await h.harness.prompt(id, "more")).toBe("steer")
+  fake.release()
+  // The reply failed at its first model call, so it never read the message, which moves to the fresh run.
+  await waitFor(
+    () => h.store.getSession(id)!.run_ids.length === 2 && same(texts(h, id), ["Got it."]) && status(h, id) === "idle",
+    { what: "the fresh run's reply" },
+  )
+  expect(errors(h, id)).toHaveLength(1)
+  expect(errors(h, id)[0]).toStartWith("The reply failed (")
+  expect(await asked(fake, 2)).toContain("more")
+})
+
+test("a failed reply is no longer the running reply", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const scripted = workers[0]!
+  const { worker, handlers } = scripted
+  /** Sends `text` and answers its delivery as the run taking it at `seq`; resolves to its reply. */
+  const sent = async (text: string, seq: number) => {
+    const reply = h.harness.prompt(s.id, text)
+    await waitFor(() => scripted.deliveries.length === seq, { what: `the send of ${text}` })
+    handlers.deliverReply(worker, { type: "deliver_reply", id: scripted.deliveries[seq - 1]!.id, seq })
+    return reply
+  }
+  handlers.event(worker, { type: "event", name: "NodeStarted", data: { node_id: "chat#0/reply" } })
+  expect(await sent("more", 1)).toBe("steer")
+  const failure = { node_id: "chat#0/reply", message: "boom" }
+  handlers.event(worker, { type: "event", name: "NodeFailed", data: { failure } })
+  expect(await sent("again", 2)).not.toBe("steer")
+})
+
+test("run finished hooks never see the model key", async () => {
+  const h = await keyed(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const seen: Frame[] = []
+  h.hooks.runFinished.push((_s, _runId, result) => void seen.push(result as Frame))
+  const s = await h.harness.startSession("minh", h.folder)
+  const { worker, handlers } = workers[0]!
+  // Not the reply: a failed reply starts a fresh run, and this run's failure fails the session.
+  const failure = {
+    node_id: "chat",
+    message: `1 validation error: api_key Input: '${SENTINEL}'`,
+    details: [{ input: { api_key: SENTINEL } }, SENTINEL],
+  }
+  handlers.result(worker, failedResult(s.run_ids[0]!, failure))
+  handlers.exited(worker, 1)
+  await waitFor(() => seen.length === 1, { what: "the run's end" })
+  expect(JSON.stringify(seen)).not.toContain(SENTINEL)
+  const reported = seen[0]!.failure as typeof failure
+  expect(reported.message).toBe("1 validation error: api_key Input: '[redacted]'")
+  expect(reported.details).toEqual([{ input: { api_key: "[redacted]" } }, "[redacted]"])
+})
+
+test("a failed session says why without the model key", async () => {
+  const h = await keyed(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const { worker, handlers } = workers[0]!
+  const failure = { node_id: "chat", cause_type: "AuthError", message: `bad key ${SENTINEL} ${"x".repeat(900)}` }
+  handlers.result(worker, failedResult(s.run_ids[0]!, failure))
+  handlers.exited(worker, 1)
+  await waitFor(() => status(h, s.id) === "failed", { what: "the failure" })
+  const [error, ...rest] = errors(h, s.id)
+  expect(rest).toEqual([])
+  expect(error).toStartWith("The session failed (AuthError: bad key [redacted] xxx")
+  expect(error).not.toContain(SENTINEL)
+  expect(error!.length).toBeLessThan(600)
+  expect(error).toEndWith("Start a new chat.")
+})
+
+test("a session whose worker keeps dying says so", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  workers[0]!.handlers.exited(workers[0]!.worker, 1)
+  await waitFor(() => workers.length === 2, { what: "the retry" })
+  workers[1]!.handlers.exited(workers[1]!.worker, 1)
+  await waitFor(() => status(h, s.id) === "failed", { what: "the failure" })
+  expect(errors(h, s.id)).toEqual([
+    "The session failed (its worker stopped or couldn't start; see the office log). Start a new chat.",
+  ])
 })

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url"
 import { HttpResponse } from "@ngocbh/yian/llm_clients"
 import { realScheduler, type Scheduler } from "@ngocbh/yian/platform"
 import { iterRunRecords, type RunLogEntry } from "@ngocbh/yian/run"
-import { now, OFFICE, Session, WorkItem } from "@opencorp/protocol"
+import { type LiveEvent, now, OFFICE, Session, WorkItem } from "@opencorp/protocol"
 import { ChatHarness } from "../../src/chat/harness.ts"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { mainSpec } from "../../src/chat/run_spec.ts"
@@ -448,6 +448,8 @@ export interface ChatOffice {
   readonly answers: Answers
   /** The lines the actors, hooks and answers logged. */
   readonly logs: string[]
+  /** Each live event published on the office's bus, in order. */
+  readonly lives: LiveEvent[]
   /** How often the workspace stand-in was interrupted. */
   readonly workspace: { interrupts: number }
   /** The actors made through these helpers; each is closed when the test finishes. */
@@ -503,6 +505,12 @@ export async function chatOffice(
     ...files,
   })
   office.connections.ensureDir()
+  const lives: LiveEvent[] = []
+  const publishLive = office.bus.publishLive.bind(office.bus)
+  office.bus.publishLive = (event) => {
+    lives.push(event)
+    publishLive(event)
+  }
   const provider = { llm_config: { ...llmConfig }, env: fake.env(), prices }
   await writePrivate(path.join(office.connections.dir, "office.json"), JSON.stringify(provider))
   const kinds: string[] = []
@@ -584,6 +592,7 @@ export async function chatOffice(
     hooks,
     answers,
     logs,
+    lives,
     workspace,
     actors,
     hold() {
@@ -700,6 +709,15 @@ export function texts(o: ChatOffice, sid: string, role = "assistant"): string[] 
     .messages(sid, session(o, sid).run_ids)
     .filter((message) => message.role === role)
     .flatMap((message) => message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])))
+}
+
+/** The messages of the error parts of session `sid`'s live `message.updated` events, in order: the notices, which
+ *  the transcript never returns. */
+export function errors(o: ChatOffice, sid: string): string[] {
+  return o.lives
+    .filter((event) => event.type === "message.updated" && event.session_id === sid)
+    .flatMap((event) => (event.data.parts as { type: string; message?: string }[]).filter((p) => p.type === "error"))
+    .map((part) => part.message!)
 }
 
 /** Session `sid` as stored. */
