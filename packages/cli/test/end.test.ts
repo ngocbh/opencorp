@@ -78,12 +78,12 @@ test("opencorp end ID ends that session; no office exits 3, its refusal 1", asyn
     const id = office.state.sessions[0].id
     const r = await capture(["end", id])
     expect([r.code, r.out]).toEqual([0, `Ending @minh's session ${id}.`])
-    // Ending an ending session is a no-op; once it is debriefing, the office refuses.
+    // Ending an ending session is a no-op; once it is ended, the office refuses.
     office.state.sessions[0] = { ...office.state.sessions[0], status: "ending" }
     const ending = await capture(["end", id])
     expect([ending.code, ending.out]).toEqual([0, `Ending @minh's session ${id}.`])
     expect(office.state.sessions[0].status).toBe("ending")
-    office.setStatus(id, "debriefing")
+    office.setStatus(id, "ended")
     const again = await capture(["end", id])
     expect([again.code, again.err]).toEqual([1, `opencorp end: session ${id} has no live run`])
   } finally {

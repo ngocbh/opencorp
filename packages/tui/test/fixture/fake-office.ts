@@ -2,6 +2,7 @@
 // socket that speaks the office's HTTP routes and SSE framing. `bun run dev` and the tests that
 // check office behaviour use the real office; `test/office/contract.test.ts` checks this fake
 // against the real office.
+import { Person as PersonSchema } from "@opencorp/protocol"
 import type {
   BrowserSession,
   Comment,
@@ -78,6 +79,9 @@ export type FakeState = {
 }
 
 const now = () => new Date().toISOString()
+
+/** `person` as the office serves them: every field, defaults filled, and never a password hash. */
+const served = (person: Person): Person => PersonSchema.parse({ ...person, password_hash: null })
 
 /** Words a side chat refuses, in any case: only the office ends a side run. */
 const SIDE_EXIT = new Set(["/end", "/exit", "/quit"])
@@ -210,8 +214,11 @@ export function createFakeOffice(
   const CODE = { url: "https://auth.openai.com/codex/device", user_code: "ABCD-EFGH" }
   const prompts: ((sessionId: string, req: PromptRequest) => void)[] = []
   const interrupts: ((sessionId: string) => void)[] = []
-  // Messages sent while a session is neither idle nor busy, by session; the next reply takes them.
+  // Messages sent while a session is neither idle nor busy, or while its reply is being stopped, by session; the
+  // next reply takes them.
   const queued = new Map<string, string[]>()
+  // Sessions whose reply was interrupted and hasn't ended yet.
+  const interrupted = new Set<string>()
   const streams = new Set<Stream>()
   const encoder = new TextEncoder()
 
@@ -399,8 +406,9 @@ export function createFakeOffice(
     updateQuestion({ ...q, discussion: [...(q.discussion ?? []), { role: "user", text }], updated_at: now() })
   }
   /**
-   * The office's prompt: to an idle session it starts a reply; while a reply runs (busy) it is a
-   * steer (written to the transcript, no new reply); otherwise it is queued for the next reply.
+   * The office's prompt: to a waiting session with an open `ask_user` question it answers that question; to an idle
+   * session it starts a reply; while a reply runs (busy) it is a steer (written to the transcript, no new reply);
+   * otherwise, or while an interrupted reply ends, it is queued for the next reply.
    */
   function turn(id: string, body: any, actor?: string) {
     check(str(body?.text), "text must be a non-empty string")
@@ -413,10 +421,17 @@ export function createFakeOffice(
       return Response.json({ ok: true })
     }
     if (s.kind === "side" && SIDE_EXIT.has(body.text.trim().toLowerCase())) throw refused()
+    const asked = Object.values(state.questions)
+      .filter((q) => q.session_id === id && q.status === "open" && q.source === "ask_user")
+      .toSorted((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))[0]
+    if (s.status === "waiting" && asked) {
+      close(asked.id, { answer: body.text, answer_kind: "text", answered_by: actor ?? human() })
+      return Response.json({ ok: true })
+    }
     userMessage(id, body.text)
     if (s.kind === "side") discuss(s, body.text)
     if (s.status === "idle") startReply(id, body.text)
-    else if (s.status !== "busy") queued.set(id, [...(queued.get(id) ?? []), body.text])
+    else if (s.status !== "busy" || interrupted.has(id)) queued.set(id, [...(queued.get(id) ?? []), body.text])
     return Response.json({ ok: true })
   }
   /** Sets the session busy and starts a reply to `text`. */
@@ -426,9 +441,11 @@ export function createFakeOffice(
   }
   /**
    * Esc: answers the open `ask_user` questions (of one run, when given) and stops the reply. The
-   * session stays busy until the stopped reply ends; `onInterrupt` drivers call `replyEnded`.
+   * session stays busy until the stopped reply ends (`onInterrupt` drivers call `replyEnded`), and
+   * messages sent meanwhile wait for the next reply.
    */
   function interrupt(s: Session, runId?: string) {
+    if (s.status === "busy") interrupted.add(s.id)
     for (const q of Object.values(state.questions))
       if (q.session_id === s.id && q.status === "open" && q.source === "ask_user" && (!runId || q.run_id === runId))
         close(q.id, { answer: "[interrupted by the user]", answer_kind: "interrupted" })
@@ -525,6 +542,7 @@ export function createFakeOffice(
    * reply at once, joined by a blank line.
    */
   function replyEnded(sessionId: string) {
+    interrupted.delete(sessionId)
     const pending = queued.get(sessionId)
     queued.delete(sessionId)
     if (pending) startReply(sessionId, pending.join("\n\n"))
@@ -609,7 +627,7 @@ export function createFakeOffice(
     const diff = `+++ b/${file}\n+name: ${person.name}\n+handle: ${person.handle}\n+kind: agent\n+title: ${person.title}\n+manager: ${person.manager}\n`
     if (!body.confirm) {
       state.hires[body.handle] = body
-      return Response.json({ person, diff, issues, commit: null } satisfies HireResponse)
+      return Response.json({ person: served(person), diff, issues, commit: null } satisfies HireResponse)
     }
     const previewed = state.hires[body.handle]
     // The office keeps previews in memory, so a hire it never previewed (or lost on restart) is a lint failure.
@@ -620,7 +638,7 @@ export function createFakeOffice(
     if (issues.length) throw fail(422, "lint_failed", issues[0].message)
     delete state.hires[body.handle]
     state.people.push(person)
-    return Response.json({ person, diff, issues, commit: blobId(diff) } satisfies HireResponse)
+    return Response.json({ person: served(person), diff, issues, commit: blobId(diff) } satisfies HireResponse)
   }
 
   const connection = (name: string) =>
@@ -738,6 +756,7 @@ export function createFakeOffice(
       },
       url: hqListening() ? `http://127.0.0.1:${hqOpts.port}/` : null,
       health: { ok: true, office: { api: "0.0.1+fake" }, app: null },
+      socket_error: null,
       warnings: [],
     }
   }
@@ -818,25 +837,29 @@ export function createFakeOffice(
         return Response.json({ ok: true })
       },
     ],
-    ["POST", "/people/:handle/devices", ({ params, body, actor }) => Response.json(addDevice(params.handle, body, actor))],
-    ["POST", "/login", ({ body }) => Response.json(login(body))],
+    [
+      "POST",
+      "/people/:handle/devices",
+      ({ params, body, actor }) => Response.json(served(addDevice(params.handle, body, actor))),
+    ],
+    ["POST", "/login", ({ body }) => Response.json(served(login(body)))],
     [
       "PUT",
       "/people/:handle/password",
-      ({ params, body, actor }) => Response.json(setPassword(params.handle, body, actor)),
+      ({ params, body, actor }) => Response.json(served(setPassword(params.handle, body, actor))),
     ],
     [
       "DELETE",
       "/people/:handle/devices/:name",
-      ({ params, actor }) => Response.json(removeDevice(params.handle, params.name, actor)),
+      ({ params, actor }) => Response.json(served(removeDevice(params.handle, params.name, actor))),
     ],
-    ["GET", "/people", () => Response.json(state.people)],
+    ["GET", "/people", () => Response.json(state.people.map(served))],
     [
       "GET",
       "/folders/:cwd/people",
       ({ params }) =>
         Response.json(
-          (state.folders[params.cwd] ?? []).flatMap((handle) => state.people.filter((p) => p.handle === handle)),
+          (state.folders[params.cwd] ?? []).flatMap((handle) => state.people.filter((p) => p.handle === handle).map(served)),
         ),
     ],
     ["POST", "/people", ({ body }) => hire(body)],
@@ -950,8 +973,9 @@ export function createFakeOffice(
       "POST",
       "/sessions/:id/cost-cap",
       ({ params, body }) => {
+        // Like the office, the body is checked before the session is looked up.
+        check(typeof body?.cost_cap_usd === "number" && body.cost_cap_usd >= 0, "cost_cap_usd must be a number from 0")
         const s = session(params.id)
-        check(typeof body?.cost_cap_usd === "number", "cost_cap_usd must be a number")
         // As the office: Codex prices nothing here, so its sessions have no cap to raise.
         if (s.harness === "codex")
           throw fail(422, "not_supported", "a Codex session runs on Codex's own model and login")

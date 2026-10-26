@@ -116,7 +116,7 @@ test("the stub office: open as the CEO until a human has a device, then a token 
     "not_a_human",
   )
   expect((await failure(me.devices.remove("ngocbh", "nope"))).status).toBe(404)
-  expect((await me.devices.remove("ngocbh", "mac")).devices).toBeUndefined()
+  expect((await me.devices.remove("ngocbh", "mac")).devices).toEqual([])
   // With no devices left, the office is open again.
   expect(await open.whoami()).toEqual({ person: "ngocbh", device: null })
   expect(office.requests.find((r) => r.method === "DELETE")?.raw).toBe("/people/ngocbh/devices/nope")

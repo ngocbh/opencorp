@@ -42,6 +42,8 @@ if (!real) {
   cwd = path.join(office.root, "proj")
   fs.mkdirSync(cwd)
   fs.writeFileSync(path.join(cwd, "README.md"), "# proj\n\nA project folder for `bun run dev`.\n")
+  // Theme discovery walks up from the process's folder: from here it never reaches ~/.opencorp/themes.
+  process.chdir(cwd)
 }
 
 try {

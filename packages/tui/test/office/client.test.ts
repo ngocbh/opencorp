@@ -63,6 +63,37 @@ test("interrupt, end, and the cost cap", async () => {
   await until(() => office.state.sessions[0].status === "ended")
 })
 
+test("a prompt sent while an interrupted reply ends waits for the next reply", async () => {
+  office = createFakeOffice()
+  const prompts: string[] = []
+  office.onPrompt((_, req) => prompts.push(req.text))
+  const id = office.state.sessions[0].id
+  await client().sessions.prompt(id, { text: "go" })
+  await client().sessions.interrupt(id)
+  await client().sessions.prompt(id, { text: "then this" })
+  expect(prompts).toEqual(["go"])
+  office.replyEnded(id)
+  expect(prompts).toEqual(["go", "then this"])
+})
+
+test("a prompt to a waiting session answers its open ask_user question", async () => {
+  office = createFakeOffice()
+  const prompts: string[] = []
+  office.onPrompt((_, req) => prompts.push(req.text))
+  const id = office.state.sessions[0].id
+  const q = office.addQuestion({ session_id: id, source: "ask_user" })
+  office.updateSession(id, { status: "waiting", waiting_on: ["ngocbh"] })
+  await client().sessions.prompt(id, { text: "yes, go on" })
+  const answered = await client().questions.get(q.id)
+  expect([answered.status, answered.answer, answered.answer_kind, answered.answered_by]).toEqual([
+    "answered",
+    "yes, go on",
+    "text",
+    "ngocbh",
+  ])
+  expect(prompts).toEqual([])
+})
+
 test("the first answer wins; the second gets 409 not_open", async () => {
   office = createFakeOffice()
   const q = office.addQuestion({ options: ["yes", "no"] })
