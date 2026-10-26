@@ -65,7 +65,7 @@ test("the browser bundle leaves zod out", async () => {
 
 test("the client never imports office, TUI, CLI or app code", () => {
   const offenders = readdirSync(SRC).flatMap((f) =>
-    imports(path.join(SRC, f)).filter((s) => /corp_office|@opencorp\/(tui|cli|app)\b|\.\.\/\.\./.test(s)),
+    imports(path.join(SRC, f)).filter((s) => /@opencorp\/(office|tui|cli|app)\b|\.\.\/\.\./.test(s)),
   )
   expect(offenders).toEqual([])
 })

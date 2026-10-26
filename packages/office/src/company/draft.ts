@@ -55,8 +55,8 @@ export function fieldProblems(draft: Draft): FieldProblem[] {
   if (strip(owner.name) === "") found.push(["owner.name", "the owner needs a name"])
   const ownerWhy = handleProblem(owner.handle)
   if (ownerWhy) found.push(["owner.handle", `@${owner.handle} can't be a handle: ${ownerWhy}`])
-  // This catch and the hire check below can't fail once the checks before them pass; they are kept to match
-  // Python's office and are untested there too.
+  // This catch and the hire check below can't fail once the checks before them pass; they are kept as a
+  // guard and have no test.
   if (found.length === 0) {
     try {
       templateFiles(draft.company, owner) // validates without writing
