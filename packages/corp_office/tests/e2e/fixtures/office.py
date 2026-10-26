@@ -177,6 +177,17 @@ class RunningOffice:
         """Wait until session ``sid`` is idle with exactly ``texts`` as Minh's replies."""
         wait_for(lambda: self.status(sid) == "idle" and self.texts(sid) == texts, f"replies {texts}")
 
+    def debriefed(self, sid: str) -> dict:
+        """Wait until session ``sid`` has ended and its debrief is ready; return the debrief."""
+        # GET /debriefs/{sid} can answer 404 until the session has ended.
+        wait_for(lambda: self.status(sid) == "ended", f"session {sid} to end")
+
+        def ready():
+            debrief = self.get(f"/debriefs/{sid}")
+            return debrief if debrief["state"] == "ready" else None
+
+        return wait_for(ready, f"session {sid}'s debrief")
+
     def ended(self, sid: str) -> None:
         """Wait until session ``sid``'s status is ``ended``."""
         wait_for(lambda: self.status(sid) == "ended", f"session {sid} to end")
