@@ -720,7 +720,8 @@ export function createFakeOffice(
     const s = liveSession(id)
     if (s.status === "ending") throw fail(409, "ending", `session ${id} is ending`)
     const c = state.connections.find((x) => x.name === body.connection)
-    if (!c) throw fail(422, "unknown_connection", `no connection '${body.connection}' on this office`)
+    // As the office: a 422 echoes nothing of the request.
+    if (!c) throw fail(422, "unknown_connection", "no such connection on this office")
     const model = body.model === c.model ? null : body.model
     return upsertSession({ ...s, connection: c.name, model, model_note: null, updated_at: now() })
   }

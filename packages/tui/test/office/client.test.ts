@@ -193,7 +193,7 @@ test("the office refuses a connection it can't use with a 422, and adds nothing"
   expect([custom.name, custom.provider, custom.model]).toEqual(["custom", "custom", "my-model"])
 })
 
-test("setModel switches a live session and publishes it; unknown connections and ended sessions fail", async () => {
+test("setModel switches a live session to a second connection, whose own model is stored as null", async () => {
   office = createFakeOffice()
   const id = office.state.sessions[0].id
   const s = await client().sessions.setModel(id, { connection: "azure-2", model: "o3-mini" })
@@ -203,13 +203,7 @@ test("setModel switches a live session and publishes it; unknown connections and
     path: `/sessions/${id}/model`,
     body: { connection: "azure-2", model: "o3-mini" },
   })
-  // The connection's own model is stored as null, so it follows that connection.
   expect((await client().sessions.setModel(id, { connection: "azure-2", model: "gpt-4o-mini" })).model).toBeNull()
-  const unknown = await failure(client().sessions.setModel(id, { connection: "nope", model: "x" }))
-  expect([unknown.status, unknown.code]).toEqual([422, "unknown_connection"])
-  office.setStatus(id, "ended")
-  const over = await failure(client().sessions.setModel(id, { connection: "office", model: "gpt-4o" }))
-  expect([over.status, over.code]).toEqual([409, "not_live"])
 })
 
 test("create sends the pick and waits 30 s; a timeout says the chat may have started", async () => {

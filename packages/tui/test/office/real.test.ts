@@ -89,6 +89,20 @@ test("interrupt, end, and the cost cap", async () => {
   await reach(id, "ended")
 }, 30_000)
 
+test("setModel switches a live session; unknown connections and ended sessions fail", async () => {
+  const { id } = await chat("model")
+  const s = await client().sessions.setModel(id, { connection: "office", model: "other-model" })
+  expect([s.connection, s.model, s.model_note]).toEqual(["office", "other-model", null])
+  // The connection's own model is stored as null, so it follows that connection.
+  expect((await client().sessions.setModel(id, { connection: "office", model: "stub" })).model).toBeNull()
+  const unknown = await failure(client().sessions.setModel(id, { connection: "nope", model: "x" }))
+  expect([unknown.status, unknown.code]).toEqual([422, "unknown_connection"])
+  await client().sessions.end(id)
+  await reach(id, "ended")
+  const over = await failure(client().sessions.setModel(id, { connection: "office", model: "stub" }))
+  expect([over.status, over.code]).toEqual([409, "not_live"])
+}, 30_000)
+
 test("a stale profile write is a VersionConflictError", async () => {
   const p = await client().profiles.get("minh")
   await client().profiles.put("minh", { text: "v2", base_version: p.version })

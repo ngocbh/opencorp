@@ -261,7 +261,7 @@ test("a refused switch shows the office's message and leaves the dialog open", a
     // The connection goes away after the dialog listed it.
     office.state.connections = office.state.connections.filter((c) => c.name !== "azure-2")
     app.input.pressEnter()
-    const f = await app.until((f) => f.includes("no connection 'azure-2' on this office"))
+    const f = await app.until((f) => f.includes("no such connection on this office"))
     expect(f).toContain("Select model")
     expect(f).not.toContain("Next reply uses")
     for (let i = 0; i < 2; i++) app.input.pressBackspace()

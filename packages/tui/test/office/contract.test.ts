@@ -112,6 +112,21 @@ const STEPS: Step[] = [
     path: () => `/sessions/${NO_SESSION}/cost-cap`,
     body: () => ({ cost_cap_usd: "5" }),
   },
+  // Both offices have a connection named office; a model other than either one's own is stored as asked.
+  {
+    name: "switch the chat's model",
+    method: "POST",
+    path: (c) => `/sessions/${c.id}/model`,
+    body: () => ({ connection: "office", model: "other-model" }),
+    schema: Session,
+    pick: (s) => [s.connection, s.model, s.model_note],
+  },
+  {
+    name: "switch the chat to a connection neither office has",
+    method: "POST",
+    path: (c) => `/sessions/${c.id}/model`,
+    body: () => ({ connection: "nowhere", model: "other-model" }),
+  },
   {
     name: "open questions",
     method: "GET",
