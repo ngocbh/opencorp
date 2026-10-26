@@ -50,8 +50,8 @@ test("Ctrl+O opens a side chat: Enter goes to the side session, Esc interrupts i
     // Esc stops the side reply and never leaves the side chat.
     app.input.pressEscape()
     await app.until(() => office.requests.some((r) => r.path === `/sessions/${side}/interrupt`))
-    // The stopped reply's next turn opens: the side session is idle again.
-    office.openTurn(side)
+    // The stopped reply ends: the side session is idle again.
+    office.replyEnded(side)
     await app.until((f) => f.includes("Side chat with @minh · idle"))
     expect(posts(office)).toEqual([
       [`/questions/${q.id}/side`, { text: "why?" }],
@@ -223,7 +223,6 @@ test("a side session another client started loads when the side chat opens, and 
   // Written straight into the office's state: as if made before this TUI connected.
   office.state.sessions.push(side)
   office.state.messages[side.id] = []
-  office.openTurn(side.id)
   say(office, side.id, "Staging went green an hour ago")
   const q = office.addQuestion({
     session_id: s.id,
@@ -310,8 +309,8 @@ test("a side send that fails puts the freeze back", async () => {
     await app.until((f) => f.includes("Side chat with @minh · busy") && f.includes("Explaining"))
     app.input.pressEscape()
     await app.until(() => office.requests.some((r) => r.path === `/sessions/${side.id}/interrupt`))
-    // The stopped reply's next turn opens: the side session is idle again.
-    office.openTurn(side.id)
+    // The stopped reply ends: the side session is idle again.
+    office.replyEnded(side.id)
     await app.until((f) => f.includes("Side chat with @minh · idle"))
     app.input.typeText("more")
     app.input.pressEnter()

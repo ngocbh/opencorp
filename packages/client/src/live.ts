@@ -37,8 +37,6 @@ const META_FIELDS: Record<string, string[]> = {
   question: ["id", "session_id", "status", "created_at"],
   work_item: ["id"],
   profile_proposal: ["id"],
-  feedback: ["id"],
-  debrief: ["session_id"],
   profile: [],
   comment: ["id", "work_item_id"],
 }

@@ -8,16 +8,12 @@ import type {
   CompanyFile,
   CompanyTree,
   CompanyView,
-  ConfirmFollowUpsRequest,
   Connection,
   ConnectionList,
   ConnectionLogin,
   CostCapRequest,
   CostReport,
   CreateSessionRequest,
-  Debrief,
-  Feedback,
-  FeedbackRequest,
   Health,
   HireRequest,
   HireResponse,
@@ -263,12 +259,6 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
       proposals: (person: string) => get<ProfileProposal[]>(`/profiles/${seg(person)}/proposals`),
     },
     proposals: { apply: (id: string) => post<Profile>(`/profile-proposals/${seg(id)}/apply`) },
-    feedback: { create: (req: FeedbackRequest) => post<Feedback>("/feedback", req) },
-    debriefs: {
-      get: (session: string) => get<Debrief>(`/debriefs/${seg(session)}`),
-      confirm: (session: string, req: ConfirmFollowUpsRequest) =>
-        post<Debrief>(`/debriefs/${seg(session)}/confirm`, req),
-    },
     events: {
       /** Follows `GET /events`, reconnecting until `close()`; see `subscribe`. */
       subscribe: (handler: (e: StreamEvent) => void, opts?: SubscribeOptions) => subscribe(transport, handler, { token, ...opts }),

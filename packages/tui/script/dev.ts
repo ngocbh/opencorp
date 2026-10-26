@@ -22,15 +22,15 @@ const { values } = parseArgs({
 const REPLY = "Looked at it. The flaky test waits on a timer; I'd swap it for a fake clock and rerun."
 
 /**
- * Answers every prompt with REPLY, streamed a word at a time, then opens the session's next turn.
- * Esc stops the reply and opens the next turn at once.
+ * Answers every prompt with REPLY, streamed a word at a time, then ends the reply.
+ * Esc stops the reply and ends it at once.
  */
 function scriptReplies(office: FakeOffice) {
   // The running reply per session; an interrupt or a newer reply ends it.
   const replies = new Map<string, object>()
   office.onInterrupt((sessionId) => {
     if (!replies.delete(sessionId)) return
-    office.openTurn(sessionId)
+    office.replyEnded(sessionId)
   })
   office.onPrompt(async (sessionId) => {
     const reply = {}
@@ -58,7 +58,7 @@ function scriptReplies(office: FakeOffice) {
       })
     }
     replies.delete(sessionId)
-    office.openTurn(sessionId)
+    office.replyEnded(sessionId)
   })
 }
 

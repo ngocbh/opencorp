@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import type { Message, Question } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "../../script/stub"
-import { createOfficeClient, emptyState, openQuestions, createOfficeSync, isTurn } from "@opencorp/client"
+import { createOfficeClient, emptyState, openQuestions, createOfficeSync } from "@opencorp/client"
 import { until } from "../fixture/until"
 
 const fast = { minDelayMs: 10, maxDelayMs: 40 }
@@ -112,8 +112,7 @@ test("after a reconnect, questions opened and answered while away are current", 
   await until(() => sync.status() === "online")
   const id = office.state.sessions[0].id
   await sync.syncSession(id)
-  // The session's open turn is a question too; leave it out.
-  const asked = () => openQuestions(state, id).filter((q) => !isTurn(q))
+  const asked = () => openQuestions(state, id)
   const seen = office.addQuestion({})
   await until(() => asked().length === 1)
   office.dropStreams()

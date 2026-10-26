@@ -48,12 +48,11 @@ import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { OPENCORP_BASE_MODE, useBindings } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
-import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented, statusLabel } from "@opencorp/client"
+import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented, openQuestions, statusLabel } from "@opencorp/client"
 import { answerShown } from "../chat/answer"
 import { QuestionCard } from "../chat/card"
 import { HarnessCard } from "../chat/harness-card"
 import { SideChat, SideHeader } from "../chat/side"
-import { cardQuestions } from "../chat/turn"
 import { freeze, frozenView, unfreeze, type Freeze } from "../chat/freeze"
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
@@ -127,7 +126,7 @@ export function Session() {
   const { theme } = useTheme()
   const promptRef = usePromptRef()
   const session = createMemo(() => office.state.sessions.find((s) => s.id === route.sessionID))
-  const cards = createMemo(() => cardQuestions(office.state, route.sessionID))
+  const cards = createMemo(() => openQuestions(office.state, route.sessionID))
   const question = createMemo(() => cards()[0])
   // A Codex session shows every open card above a prompt that stays; the first card or the prompt has the keys.
   const codex = createMemo(() => session()?.harness === "codex")

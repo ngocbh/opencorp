@@ -57,8 +57,8 @@ test("one Esc while busy interrupts, and the reply stops showing at once", async
     reply("late words")
     // A session event after the late words: once the header shows it, they have arrived too.
     office.state.sessions[0] = { ...office.state.sessions[0], cost: 0.5 }
-    // The stopped reply's next turn opens, and the session is idle again.
-    office.openTurn(id)
+    // The stopped reply ends, and the session is idle again.
+    office.replyEnded(id)
     await app.until((f) => f.includes("@minh · idle · $0.50"))
     for (let i = 0; i < 10; i++) await app.setup.renderOnce()
     expect(app.frame()).toContain("Looking")
@@ -95,7 +95,7 @@ test("after Esc, the stopped reply's interrupted marker shows, and nothing else 
     await app.until(() => office.requests.some((r) => r.path === `/sessions/${id}/interrupt`))
     const part = { ...first.parts[0], text: "Looking at it" + INTERRUPTED_TEXT }
     office.live({ type: "part.updated", session_id: id, data: { message_id: first.id, part } as never })
-    office.openTurn(id)
+    office.replyEnded(id)
     // The marker shows as "[interrupted]" until markdown highlighting conceals a link's brackets, then as "interrupted".
     await app.until((f) => /^\s*\[?interrupted\]?\s*$/m.test(f) && f.includes("@minh · idle"))
     expect(app.frame()).not.toContain("at it")
@@ -173,7 +173,7 @@ test("after Esc, a new reply that streams in before the prompt call returns show
     await app.until((f) => f.includes("Looking") && f.includes("@minh · busy · $0.50"))
     app.input.pressEscape()
     await app.until(() => office.requests.some((r) => r.path === `/sessions/${id}/interrupt`))
-    office.openTurn(id)
+    office.replyEnded(id)
     await app.until((f) => f.includes("@minh · idle · $0.50"))
     // The office answers the next prompt only after its reply has streamed.
     const release = office.hold("POST /sessions/:id/prompt", "reply")

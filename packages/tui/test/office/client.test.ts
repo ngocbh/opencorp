@@ -37,7 +37,7 @@ test("create a session, prompt it, list it by person", async () => {
   office.onPrompt((_, req) => prompts.push(req.text))
   const s = await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })
   expect([s.person, s.kind, s.status]).toEqual(["minh", "main", "starting"])
-  // A prompt sent before the first turn opens waits for it.
+  // A prompt sent while the session starts is queued until it is ready.
   expect(await client().sessions.prompt(s.id, { text: "hi" })).toEqual({ ok: true })
   await until(() => prompts.length > 0)
   expect(prompts).toEqual(["hi"])
@@ -51,7 +51,7 @@ test("interrupt, end, and the cost cap", async () => {
   const id = office.state.sessions[0].id
   await client().sessions.prompt(id, { text: "go" })
   await client().sessions.interrupt(id)
-  // The session stays busy until the stopped reply's next turn opens.
+  // The session stays busy until the stopped reply ends.
   expect((await client().sessions.get(id)).status).toBe("busy")
   expect((await client().sessions.costCap(id, { cost_cap_usd: 5 })).cost_cap_usd).toBe(5)
   // A cap at or below the cost so far is the office's cap_too_low; a cap that isn't a number is invalid_body.
@@ -59,9 +59,8 @@ test("interrupt, end, and the cost cap", async () => {
   const notNumber = request(office.socket, "POST", `/sessions/${id}/cost-cap`, { cost_cap_usd: "5" })
   expect((await failure(notNumber)).code).toBe("invalid_body")
   await client().sessions.end(id)
-  // A main session is debriefed before it ends.
   expect((await client().sessions.get(id)).status).toBe("ending")
-  await until(() => office.state.sessions[0].status === "debriefing")
+  await until(() => office.state.sessions[0].status === "ended")
 })
 
 test("the first answer wins; the second gets 409 not_open", async () => {
@@ -76,18 +75,12 @@ test("the first answer wins; the second gets 409 not_open", async () => {
 test("open questions are listed by session and status", async () => {
   office = createFakeOffice()
   const id = office.state.sessions[0].id
-  // The seeded session's open turn is listed first.
-  const [turn] = Object.keys(office.state.questions)
   const a = office.addQuestion({})
   const b = office.addQuestion({})
   office.addQuestion({ session_id: "OTHER" })
   await client().questions.answer(b.id, { answer: "x", answer_kind: "text" })
-  expect((await client().questions.list({ session: id, status: "open" })).map((q) => q.id)).toEqual([turn, a.id])
-  expect((await client().questions.list({ session: id, status: ["open", "answered"] })).map((q) => q.id)).toEqual([
-    turn,
-    a.id,
-    b.id,
-  ])
+  expect((await client().questions.list({ session: id, status: "open" })).map((q) => q.id)).toEqual([a.id])
+  expect((await client().questions.list({ session: id, status: ["open", "answered"] })).map((q) => q.id)).toEqual([a.id, b.id])
   expect(office.requests.at(-1)?.raw).toBe(`/questions?session=${id}&status=open%2Canswered`)
 })
 

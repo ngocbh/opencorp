@@ -1,4 +1,3 @@
-import { isTurn } from "@opencorp/client"
 import type { CostReport, Question, Session } from "@opencorp/protocol"
 import type { TreeNode } from "./tree"
 
@@ -18,8 +17,8 @@ export type OfficeFilter = string | null
 export const inOffice = (sessions: Session[], office: OfficeFilter) =>
   office === null ? sessions : sessions.filter((x) => x.office === office)
 
-/** Open questions shown as cards: an idle chat keeps one open at its turn node, which is its input box, not a card. */
-export const cards = (questions: Iterable<Question>) => [...questions].filter((q) => q.status === "open" && !isTurn(q))
+/** Open questions, which show as cards. */
+export const cards = (questions: Iterable<Question>) => [...questions].filter((q) => q.status === "open")
 
 /**
  * Each person's status by their active main and side sessions and their cards; idle sessions don't count, so a person

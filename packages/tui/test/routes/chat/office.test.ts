@@ -16,15 +16,14 @@ const failure = (p: Promise<unknown>): Promise<any> =>
   )
 const status = async (id: string) => (await client().sessions.get(id)).status
 
-test("the seeded idle session has an open turn; a prompt answers it; while busy it steers", async () => {
+test("the seeded session is idle with no open question; a prompt starts a reply; while busy it steers", async () => {
   office = createFakeOffice()
   const id = office.state.sessions[0].id
   const turns: string[] = []
   office.onPrompt((_, req) => turns.push(req.text))
-  const [turn] = await client().questions.list({ session: id, status: ["open"] })
-  expect([turn.source, turn.node_id]).toEqual(["ask", "chat#1/ask"])
+  expect(await status(id)).toBe("idle")
+  expect(await client().questions.list({ session: id, status: ["open"] })).toEqual([])
   await client().sessions.prompt(id, { text: "fix it" })
-  expect(office.state.questions[turn.id]).toMatchObject({ status: "answered", answer: "fix it", answer_kind: "text" })
   expect(await status(id)).toBe("busy")
   await client().sessions.prompt(id, { text: "use a fake clock" })
   expect(turns).toEqual(["fix it"])
@@ -32,18 +31,18 @@ test("the seeded idle session has an open turn; a prompt answers it; while busy 
     { text: "fix it" },
     { text: "use a fake clock" },
   ])
+  expect(Object.keys(office.state.questions)).toEqual([])
 })
 
-test("a new session is starting; it goes idle when its first turn opens", async () => {
+test("a new session is starting; it goes idle when it is ready, with no question", async () => {
   office = createFakeOffice()
   const s = await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })
   expect(s.status).toBe("starting")
   await until(() => office.state.sessions.find((x) => x.id === s.id)?.status === "idle")
-  const turns = await client().questions.list({ session: s.id, status: ["open"] })
-  expect(turns.map((q) => [q.source, q.node_id])).toEqual([["ask", "chat#1/ask"]])
+  expect(await client().questions.list({ session: s.id, status: ["open"] })).toEqual([])
 })
 
-test("interrupt answers the open ask_user questions; the session stays busy until its next turn opens", async () => {
+test("interrupt answers the open ask_user questions; the session stays busy until its reply ends", async () => {
   office = createFakeOffice()
   const id = office.state.sessions[0].id
   const interrupts: string[] = []
@@ -54,28 +53,26 @@ test("interrupt answers the open ask_user questions; the session stays busy unti
   expect(await status(id)).toBe("busy")
   expect(interrupts).toEqual([id])
   expect(office.state.questions[asked.id]).toMatchObject({ status: "answered", answer_kind: "interrupted" })
-  expect(office.openTurn(id).node_id).toBe("chat#2/ask")
+  office.replyEnded(id)
   expect(await status(id)).toBe("idle")
 })
 
-test("a prompt with no open turn and no reply running is queued; the next turn takes the queue", async () => {
+test("a prompt while the session starts is queued; when the reply ends one reply takes the queue", async () => {
   office = createFakeOffice()
-  const id = office.state.sessions[0].id
+  const id = office.newSession({ person: "minh", cwd: "/tmp/proj", status: "starting" }).id
   const turns: string[] = []
   office.onPrompt((_, req) => turns.push(req.text))
-  await client().sessions.prompt(id, { text: "go" })
-  // The reply ended; the next turn has not opened yet.
-  office.setStatus(id, "idle")
   await client().sessions.prompt(id, { text: "one" })
   await client().sessions.prompt(id, { text: "two" })
-  expect(await status(id)).toBe("idle")
-  expect(turns).toEqual(["go"])
-  const texts = office.state.messages[id].map((m) => m.parts[0])
-  expect(texts).toMatchObject([{ text: "go" }, { text: "one" }, { text: "two" }])
-  const next = office.openTurn(id)
-  expect(office.state.questions[next.id]).toMatchObject({ status: "answered", answer: "one\n\ntwo" })
+  expect(await status(id)).toBe("starting")
+  expect(turns).toEqual([])
+  expect(office.state.messages[id].map((m) => m.parts[0])).toMatchObject([{ text: "one" }, { text: "two" }])
+  office.replyEnded(id)
   expect(await status(id)).toBe("busy")
-  expect(turns).toEqual(["go", "one\n\ntwo"])
+  expect(turns).toEqual(["one\n\ntwo"])
+  office.replyEnded(id)
+  expect(await status(id)).toBe("idle")
+  expect(turns).toEqual(["one\n\ntwo"])
 })
 
 test("an answer the question doesn't take is 422 invalid_answer", async () => {
@@ -110,7 +107,7 @@ test("an answer the question doesn't take is 422 invalid_answer", async () => {
   expect((await client().questions.answer(asked.id, { answer: "yes", answer_kind: "option" })).status).toBe("answered")
 })
 
-test("end goes ending, then debriefing; prompts are refused from the start", async () => {
+test("end goes ending, then ended; prompts are refused from the start", async () => {
   office = createFakeOffice()
   const id = office.state.sessions[0].id
   await client().sessions.end(id)
@@ -118,7 +115,7 @@ test("end goes ending, then debriefing; prompts are refused from the start", asy
   const ending = await failure(client().sessions.prompt(id, { text: "hi" }))
   expect([ending.status, ending.code]).toEqual([409, "ending"])
   await client().sessions.end(id)
-  await until(() => office.state.sessions[0].status === "debriefing")
+  await until(() => office.state.sessions[0].status === "ended")
   const over = await failure(client().sessions.prompt(id, { text: "hi" }))
   expect([over.status, over.code]).toEqual([409, "not_live"])
   const again = await failure(client().sessions.end(id))
@@ -150,13 +147,6 @@ test("one side session per question: it records the discussion, refuses exit wor
   }
   await client().questions.answer(q.id, { answer: "yes", answer_kind: "option" })
   expect(await status(side.id)).toBe("ended")
-})
-
-test("a chat turn is not a card, so it has no side chat", async () => {
-  office = createFakeOffice()
-  const [turn] = await client().questions.list({ session: office.state.sessions[0].id, status: ["open"] })
-  const e = await failure(client().questions.side(turn.id, { text: "why?" }))
-  expect([e.status, e.code]).toEqual([422, "not_a_card"])
 })
 
 test("send back needs a discussion; neither send back nor stop is offered on an ask node question", async () => {
@@ -203,7 +193,7 @@ test("stopping a busy chat's ask_user is Esc on that chat: every open ask_user i
   expect(office.state.questions[also.id]).toMatchObject({ status: "answered", answer_kind: "interrupted" })
   expect(office.state.questions[otherRun.id].status).toBe("open")
   expect(interrupts).toEqual([id])
-  // As with Esc, the chat stays busy until its next turn opens.
+  // As with Esc, the chat stays busy until its reply ends.
   expect(await status(id)).toBe("busy")
   const again = await failure(client().questions.stop(asked.id))
   expect([again.status, again.code]).toEqual([409, "not_open"])
