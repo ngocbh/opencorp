@@ -266,6 +266,40 @@ test("a run that ended while its session was live sleeps and its next message st
   expect(lastAsked(fake, "one")).toBe(true)
 })
 
+test("a message over the cap to a session whose run yian ended is held for the fresh run a raise starts", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const { actor: first, sid } = await startActor(o)
+  expect(await say(o, first, sid, "a")).toBe("one")
+  const old = first.runId!
+  await first.end()
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  // The office died after the run ended, before the session's end was stored.
+  o.office.store.updateSession(sid, { status: "idle" })
+  const actor = await reopen(o, first)
+  // Over the company's $5 cap.
+  o.office.store.updateSession(sid, { cost: 6 })
+  const before = o.kinds.length
+  await actor.restore()
+  expect(o.kinds.length).toBe(before)
+  expect(await actor.prompt("b")).toBe("queued")
+  expect(o.kinds.length).toBe(before)
+  expect(actor.hasWorker).toBe(false)
+  expect(o.office.store.getRun(old)?.endReason ?? null).toBeNull()
+  await actor.setCostCap(20)
+  expect(o.kinds.slice(before)).toEqual(["chat"])
+  await waitFor(() => texts(o, sid).includes("two") && status(o, sid) === "idle", { what: "the held message's reply" })
+  expect(session(o, sid).run_ids).toEqual([old, actor.runId!])
+  // The old run keeps yian's end; the fresh run links to it.
+  expect(o.office.store.getRun(old)?.endReason ?? null).toBeNull()
+  expect(o.office.store.getRun(actor.runId!)?.replacesRunId).toBe(old)
+  expect(o.jobs.at(-1)!.seed).toMatchObject({ log: path.join(o.office.paths.runs, old, "log.jsonl") })
+  // The fresh run carried the conversation and the held message.
+  expect(lastAsked(fake, "one")).toBe(true)
+  expect(lastAsked(fake, "\\nb\\n")).toBe(true)
+})
+
 test("an unreadable run log sleeps and its next message starts a fresh run", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "one" }, { content: "two" })
