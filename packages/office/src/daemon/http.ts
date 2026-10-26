@@ -82,10 +82,10 @@ function send(res: ServerResponse, status: number, text: string, headers: Record
 
 /** A reply the handler shapes itself, sent as is (no reply schema): `status`, `headers` (lower-case names), and a
  *  body that is either text, sent whole with its length (`content-type` defaults to `application/json`), or chunks
- *  (text or bytes) streamed as they come. A streamed body that waits must end once `ctx.signal` aborts: an async generator can't be
- *  stopped from outside while it awaits. A streamed body should take its resources (a subscription, a file) inside
- *  the generator body, which runs only on the first pull: HEAD, and a client that left before the reply, never
- *  start it. */
+ *  (text or bytes) streamed as they come. A streamed body that waits must end once `ctx.signal` aborts: an async
+ *  generator can't be stopped from outside while it awaits. A streamed body should take its resources (a
+ *  subscription, a file) inside the generator body, which runs only on the first pull: HEAD, and a client that left
+ *  before the reply, never start it. */
 export class RawReply {
   constructor(
     readonly status: number,

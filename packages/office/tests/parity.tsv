@@ -1043,7 +1043,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a reconnect after the views seq skips the records it has	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a run no worker feeds streams its log then run end	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::a stream waiting on a rebuild sends pings	design §2.6 (P7): GET /runs/{id}/live	O4b-3
-—	new	packages/office/tests/daemon/routes_runs.test.ts::run changed publishes run updated at once then coalesced	§5.1: run.updated from the status rule and memory, through Office.runChanged and the run notifier (no outbox, O1-3)	O4b-7
+—	new	packages/office/tests/daemon/routes_runs.test.ts::run changed publishes run updated at once and coalesces the next one	§5.1: run.updated from the status rule and memory, through Office.runChanged and the run notifier (no outbox, O1-3)	O4b-7
 —	new	packages/office/tests/daemon/routes_runs.test.ts::run end reads the log past the last seq sent	design §2.6 (P7): GET /runs/{id}/live	O4b-3
 —	new	packages/office/tests/daemon/routes_runs.test.ts::the download has no head so a head never opens the log	design §2.3: HEAD never opens the log; a handler can't tell HEAD from GET, so the download serves GET only (405)	O4b-7
 —	new	packages/office/tests/daemon/routes_runs.test.ts::the live route answers 404 for a run the store does not hold	design §2.6 (P7): GET /runs/{id}/live	O4b-3

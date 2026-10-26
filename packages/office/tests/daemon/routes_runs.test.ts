@@ -410,7 +410,7 @@ test("a schema that isnt a number isnt echoed", async () => {
   expect(body(head).log_message).toBe("This log uses a run-log schema this office can't read")
 })
 
-test("run changed publishes run updated at once then coalesced", async () => {
+test("run changed publishes run updated at once and coalesces the next one", async () => {
   const office = makeOffice()
   const s = office.store.createSession(session())
   const runId = newId()
