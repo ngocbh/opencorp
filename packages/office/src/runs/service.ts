@@ -80,7 +80,7 @@ export class RunFilter {
 }
 
 /** What one request reads once: yian's facts, its parent links (child run id to parent's) and the runs it ended. */
-interface Request {
+interface ListRead {
   yian: YianRuns
   links: Map<string, string>
   ended: string[]
@@ -151,7 +151,7 @@ export class RunLogs {
     return this.#rows(wanted, parent, before, limit, { yian, links, ended, summaries })
   }
 
-  #rows(wanted: RunFilter, parent: string | null, before: string | null, limit: number, request: Request): RunPage {
+  #rows(wanted: RunFilter, parent: string | null, before: string | null, limit: number, request: ListRead): RunPage {
     const read = (cursor: string | null, ask: number) =>
       this.#store.runPage({
         before: cursor,
@@ -195,7 +195,7 @@ export class RunLogs {
 
   /** The ids of those of `rows` with a child that matches `wanted` (none to check without filters). The store
    *  leaves out the children the launch range, `recent` or an open-only status filter can't match. */
-  #matchingChildren(rows: RunRow[], wanted: RunFilter, request: Request): Set<string> {
+  #matchingChildren(rows: RunRow[], wanted: RunFilter, request: ListRead): Set<string> {
     if (rows.length === 0 || !wanted.summariesNeeded) return new Set()
     const childIds = [...request.yian.children(rows.map((r) => r.runId)).values()].flat()
     const kids = this.#store.runsAmong(childIds, {
