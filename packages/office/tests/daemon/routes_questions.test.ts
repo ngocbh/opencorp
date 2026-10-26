@@ -1,5 +1,7 @@
 /** Question routes. */
-import { expect, test } from "bun:test"
+import fs from "node:fs"
+import path from "node:path"
+import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import type { Question } from "@opencorp/protocol"
 import { newToken } from "../../src/auth/tokens.ts"
 import { Hooks } from "../../src/chat/hooks.ts"
@@ -10,6 +12,9 @@ import { CodexSessions } from "../../src/harness/sessions.ts"
 import type { AnswerKind, CardActor, Cards } from "../../src/questions/cards.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { InvalidTransition, type QuestionRecord, type Store } from "../../src/store/store.ts"
+import type { FakeLLM, ScriptedReply } from "../../src/testing/fake_llm.ts"
+import { ASK_MANAGER, card, fakeLlm, makeHarness, noWorkersLeft, ROOT, status, texts } from "../chat/helpers.ts"
+import { waitFor } from "../helpers.ts"
 import { question, recordEvents, session } from "../store/helpers.ts"
 import {
   CEO,
@@ -23,6 +28,9 @@ import {
   standInHarness,
   ULID,
 } from "./helpers.ts"
+
+setDefaultTimeout(60_000)
+afterAll(noWorkersLeft)
 
 // The same stand-in for the session harness as tests/questions/cards.test.ts, less the knobs these tests leave unused;
 // no test here interrupts a session.
@@ -314,4 +322,148 @@ test("a secret pages refused answer is not echoed", async () => {
   expect([r.status, r.json()]).toEqual([422, { error: "invalid_answer", message: "'pin' must be a whole number" }])
   expect(r.text).not.toContain(SECRET)
   expect(lines.filter((line) => line.includes(SECRET))).toEqual([])
+})
+
+// --- card actions on a real chat harness over the fake LLM ------------------------------------------
+
+const SIDE_FLOW = "shared/flows/side_chat.yaml"
+
+const ASK: ScriptedReply = {
+  tool_calls: [{ name: "ask_user", arguments: { question: "Retry or back off?", options: ["Retry", "Back off"] } }],
+}
+
+/** A chat harness over `fake` whose company has the side chat flow, with the questions extension, served
+ *  (`tokens` as `served`'s). */
+async function cardsOffice(fake: FakeLLM, { tokens = false } = {}) {
+  const files = { [SIDE_FLOW]: fs.readFileSync(path.join(ROOT, SIDE_FLOW), "utf8") }
+  const h = await makeHarness(fake, { files, questions: true })
+  const { sock } = await served(h.office, { tokens })
+  return { h, sock }
+}
+
+type CardsOffice = Awaited<ReturnType<typeof cardsOffice>>
+
+/** Starts minh's chat over the routes, waits for its first turn and sends it `text`; returns its id. */
+async function chatting({ h, sock }: CardsOffice, text: string): Promise<string> {
+  const r = await post(sock, "/sessions", { person: "minh", cwd: h.folder })
+  expect(r.status).toBe(200)
+  const sid = (r.json() as { id: string }).id
+  await waitFor(() => status(h, sid) === "idle", { what: "the first turn" })
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text })).status).toBe(200)
+  return sid
+}
+
+/** Starts minh's chat and has it ask the scripted question; returns the session id and the question id. */
+async function asked(o: CardsOffice): Promise<{ sid: string; qid: string }> {
+  const sid = await chatting(o, "fix the build")
+  return { sid, qid: (await card(o.h, sid, "ask_user")).id }
+}
+
+/** The system prompt of the fake's request `n` (from 1). */
+function systemOf(fake: FakeLLM, n: number): string {
+  const [first] = fake.requests()[n - 1]!.messages as { content: unknown }[]
+  return typeof first!.content === "string" ? first!.content : JSON.stringify(first!.content)
+}
+
+test("chat about a question then answer it", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Retries hide flakes." }, { content: "And cost calls." }, { content: "OK." })
+  const o = await cardsOffice(fake)
+  const { h, sock } = o
+  const { sid, qid } = await asked(o)
+
+  let r = await post(sock, `/questions/${qid}/side`, { text: "why ask?" })
+  expect(r.status).toBe(200)
+  const side = r.json() as { id: string; kind: string; question_id: string; person: string }
+  expect([side.kind, side.question_id, side.person]).toEqual(["side", qid, "minh"])
+  expect(h.store.getQuestion(qid)!.side_session_id).toBe(side.id)
+  await waitFor(() => texts(h, side.id).join() === "Retries hide flakes." && status(h, side.id) === "idle", {
+    what: "the side reply",
+  })
+  expect(systemOf(fake, 1)).toStartWith("You are Minh (@minh), Engineer at test-corp.")
+  expect(systemOf(fake, 2)).toStartWith("You are Minh (@minh), Engineer at test-corp.")
+  expect(systemOf(fake, 2)).toContain("side conversation")
+  // Later messages go to the side session itself.
+  expect((await post(sock, `/sessions/${side.id}/prompt`, { text: "and?" })).status).toBe(200)
+  await waitFor(() => h.store.getQuestion(qid)!.discussion.length === 4, { what: "the discussion" })
+  r = await post(sock, `/sessions/${side.id}/prompt`, { text: "/exit" })
+  expect([r.status, errorOf(r)]).toEqual([422, "refused"])
+  r = await post(sock, `/questions/${qid}/side`, { text: "/exit" })
+  expect([r.status, errorOf(r)]).toEqual([422, "refused"])
+
+  r = await post(sock, `/questions/${qid}/answer`, { answer: "Maybe", answer_kind: "option" })
+  expect([r.status, errorOf(r)]).toEqual([422, "invalid_answer"])
+  r = await post(sock, `/questions/${qid}/answer`, { answer: "Back off", answer_kind: "option" })
+  expect(r.status).toBe(200)
+  const answered = r.json() as { discussion: { text: string }[] }
+  const all = ["why ask?", "Retries hide flakes.", "and?", "And cost calls."]
+  expect(answered.discussion.map((e) => e.text)).toEqual(all)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  await waitFor(() => texts(h, sid).at(-1) === "OK.", { what: "the asker's reply" })
+  r = await post(sock, `/questions/${qid}/side`, { text: "late" })
+  expect([r.status, errorOf(r)]).toEqual([409, "not_open"])
+})
+
+test("send back and stop", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Retries hide flakes." }, ASK) // the sent-back reply asks again
+  const o = await cardsOffice(fake)
+  const { h, sock } = o
+  const { sid, qid } = await asked(o)
+  let r = await post(sock, `/questions/${qid}/send-back`, { note: "" })
+  expect([r.status, errorOf(r)]).toEqual([422, "no_discussion"])
+  const side = (await post(sock, `/questions/${qid}/side`, { text: "why ask?" })).json() as { id: string }
+  await waitFor(() => status(h, side.id) === "idle" && texts(h, side.id).length > 0, { what: "the side reply" })
+  r = await post(sock, `/questions/${qid}/send-back`, { note: "give me numbers" })
+  expect(r.status).toBe(200)
+  const sent = r.json() as { answer_kind: string; discussion: { text: string }[] }
+  expect([sent.answer_kind, sent.discussion.at(-1)!.text]).toEqual(["sent_back", "give me numbers"])
+
+  const again = await card(h, sid, "ask_user")
+  expect(again.id).not.toBe(qid)
+  r = await post(sock, `/questions/${again.id}/stop`, null)
+  expect(r.status).toBe(200)
+  expect((r.json() as { answer_kind: string }).answer_kind).toBe("interrupted")
+  await waitFor(() => status(h, sid) === "idle", { what: "the asker to wait for the next message" })
+})
+
+test.each([
+  ["answer", { answer: "Back off", answer_kind: "option" }],
+  ["send-back", { note: "" }],
+])("a side chat and its decision are credited to the verified person [%s]", async (action, body) => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Retries hide flakes." }, { content: "OK." })
+  const o = await cardsOffice(fake, { tokens: true })
+  const { h, sock } = o
+  addHuman(h.office.paths.company, "ava") // before the chat starts, so the asker's pinned commit knows her
+  const { qid } = await asked(o)
+  const token = newToken()
+  giveDevice(h.office.paths.company, "ava", "pc", token)
+  const ava = bearer(token)
+  let r = await post(sock, `/questions/${qid}/side`, { text: "why ask?" }, ava)
+  expect(r.status).toBe(200)
+  const side = r.json() as { id: string; opened_by: string }
+  expect(side.opened_by).toBe("ava")
+  await waitFor(() => texts(h, side.id).join() === "Retries hide flakes." && status(h, side.id) === "idle", {
+    what: "the side reply",
+  })
+  expect(systemOf(fake, 2)).toContain("You're talking with Ava (@ava), your peer.")
+  r = await post(sock, `/questions/${qid}/${action}`, body, ava)
+  expect(r.status).toBe(200)
+  expect((r.json() as { answered_by: string }).answered_by).toBe("ava")
+})
+
+test("stopping a manager question is credited to the verified person", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_MANAGER, { content: "Carrying on." })
+  const o = await cardsOffice(fake, { tokens: true })
+  const { h, sock } = o
+  // Opened while no one has a device: the chat is the CEO's.
+  const sid = await chatting(o, "plan it")
+  const q = await card(h, sid, "ask_manager")
+  const ava = avaHeaders(h.office)
+  const r = await post(sock, `/questions/${q.id}/stop`, null, ava)
+  expect(r.status).toBe(200)
+  expect((r.json() as { answered_by: string }).answered_by).toBe("ava")
+  await waitFor(() => h.store.getWorkItem(q.work_item_id!)!.resolved_by === "ava", { what: "the item to close" })
 })
