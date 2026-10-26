@@ -435,6 +435,7 @@ test("exit typed ends the session", async () => {
 test("the actor brings the run index up to date before it reports a runs end", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
+  const { scheduler } = steppedScheduler(Date.now())
   let calls = 0
   let updated!: (ok: boolean) => void
   const runIndex = {
@@ -444,7 +445,7 @@ test("the actor brings the run index up to date before it reports a runs end", a
     },
   }
   const sid = await newSession(o)
-  const actor = makeActor(o, sid, { runIndex })
+  const actor = makeActor(o, sid, { runIndex, scheduler })
   await actor.start()
   await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
   expect(await actor.prompt("/exit")).toBe("turn")
@@ -459,13 +460,24 @@ test("the actor brings the run index up to date before it reports a runs end", a
 test("a stuck run index update does not stall a runs end", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
-  const runIndex = { update: () => new Promise<boolean>(() => {}) }
+  const { scheduler, sleeps } = steppedScheduler(Date.now())
+  let calls = 0
+  const runIndex = {
+    update: () => {
+      calls += 1
+      return new Promise<boolean>(() => {})
+    },
+  }
   const sid = await newSession(o)
-  const actor = makeActor(o, sid, { runIndex })
+  const actor = makeActor(o, sid, { runIndex, scheduler })
   await actor.start()
   await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
   expect(await actor.prompt("/exit")).toBe("turn")
-  await waitFor(() => status(o, sid) === "ended", { what: "the end", timeout: INDEX_WAIT_MS + 30_000 })
+  await waitFor(() => sleeps.some(({ ms }) => ms === INDEX_WAIT_MS), { what: "the bounded wait" })
+  expect(status(o, sid)).not.toBe("ended")
+  sleeps.find(({ ms }) => ms === INDEX_WAIT_MS)!.wake()
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  expect(calls).toBe(1)
 })
 
 test("a message after end is refused as ending", async () => {

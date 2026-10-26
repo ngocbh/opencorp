@@ -88,7 +88,7 @@ export type ActorWorker = Pick<Worker, "job" | "pid" | "deliver" | "stop">
 export const INDEX_WAIT_MS = 3000
 
 /** The run statuses that end a run, whose report waits for the run index. */
-const ENDING = ["succeeded", "failed", "cancelled"]
+const ENDING: readonly string[] = ["succeeded", "failed", "cancelled"]
 
 /** What an office tool call answers when Esc, the worker's exit or the office stop cuts it before it returns. */
 export const INTERRUPTED_CALL = "interrupted; outcome unknown"
@@ -1362,12 +1362,9 @@ export class SessionActor implements LiveCalls {
     if (run !== this.#run || this.#finished) return
     const { runIndex } = this.#ctx
     if (runIndex !== undefined && frame.type === "result" && ENDING.includes(String(frame.status))) {
-      let timer: ReturnType<typeof setTimeout> | undefined
-      const waited = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, INDEX_WAIT_MS)
-      })
-      await Promise.race([runIndex.update(), waited])
-      clearTimeout(timer)
+      const done = new AbortController()
+      await Promise.race([runIndex.update(), this.#ctx.scheduler.sleep(INDEX_WAIT_MS, done.signal).catch(() => {})])
+      done.abort()
       // A close during the wait ends the job, as `#post` skips the jobs after a close.
       if (this.#closed) return
     }
