@@ -512,9 +512,13 @@ runs/test_list.py::test_children_are_read_only_when_they_can_match	changed	packa
 runs/test_list.py::test_open_or_recent_lists_open_runs_of_any_age_and_runs_launched_since	changed	packages/office/tests/runs/list.test.ts::open or recent lists open runs of any age and runs launched since	§5.1: status from the office end reason or yian's index; parents from yian's index; an open run is idle in the actor's memory, a closed one ended in yian's index	O4b-7
 runs/test_list.py::test_the_default_first_request_scans_only_open_and_recent_runs	changed	packages/office/tests/runs/list.test.ts::the default first request scans only open and recent runs	§5.1: status from the office end reason or yian's index; parents from yian's index; the open run waits in the actor's memory and the store leaves out the runs yian's index ended	O4b-7
 runs/test_list.py::test_the_list_never_opens_a_log	changed	packages/office/tests/runs/list.test.ts::the list never opens a log	§5.1: status from the office end reason or yian's index; parents from yian's index; the list never asks the run log reader: yian's inspect is not called for a run with a settled index row or an office end	O4b-7
-runs/test_live.py	open	—	—	O4b-7
+runs/test_live.py	ported	packages/office/tests/runs/live.test.ts	—	O4b-7
 runs/test_live.py::test_a_debrief_in_flight_is_known_with_its_open_nodes	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-2
 runs/test_live.py::test_a_debrief_is_claimed_while_its_outcome_is_written	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O4b-2
+runs/test_live.py::test_a_harness_run_is_claimed_from_its_row_until_its_live_run_is_registered	dropped	—	§5.1: no outbox; the status rule reads memory before and after the store in one pass, and the actor's memory holds the run until its exit job reports the end	O4b-7
+runs/test_live.py::test_a_harness_run_is_claimed_while_its_outcome_is_written	dropped	—	§5.1: no outbox; the status rule reads memory before and after the store in one pass, and the actor's memory holds the run until its exit job reports the end	O4b-7
+runs/test_live.py::test_a_run_that_has_ended_sends_no_trailing_running	changed	packages/office/tests/runs/live.test.ts::a run that has ended sends its end in its trailing event	plan decision 6: run.updated is computed from the status rule when sent, not suppressed, so a trailing event after the end says the run failed	O4b-7
+runs/test_live.py::test_close_all_stops_the_notifier	changed	packages/office/tests/runs/live.test.ts::office stop stops the run notifier	design §3.3: threads become async; Office.stop closes the run notifier, whose timer replaces the thread: a later change builds nothing	O4b-7
 runs/test_nodes.py	ported	packages/office/tests/runs/nodes.test.ts	—	O4b-5
 runs/test_notify.py	ported	packages/office/tests/runs/notify.test.ts	—	O4b-7
 runs/test_notify.py::test_a_failing_build_is_logged_and_the_next_still_goes	changed	packages/office/tests/runs/notify.test.ts::a failing build is logged and the next still goes	design §6 rule 13: the log names the error type, never its message	O4b-7
@@ -1334,6 +1338,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/indexer.test.ts::close stops the thread and later updates resolve false	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
 —	new	packages/office/tests/runs/indexer.test.ts::skipped logs are logged by their path only	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
 —	new	packages/office/tests/runs/indexer.test.ts::updates asked for while one runs share the next update	§5.2: updateRunIndex runs on one thread, calls queued and coalesced	O4b-6
+—	new	packages/office/tests/runs/live.test.ts::live run is the workers status and nodes and null without a worker	§5.1: the status rule reads the actor's live run (Live) in place of the harness's live runs and open nodes	O4b-7
 —	new	packages/office/tests/runs/nodes.test.ts::a recorded run names its node kinds	P15	O4b-5
 —	new	packages/office/tests/runs/nodes.test.ts::a woken node opens again after a clear	yian #1064: advancing a waiting run emits NodeWoken	O4b-5
 —	new	packages/office/tests/runs/nodes.test.ts::kinds wait for the run start to be read	P15: a run start still being written gets kinds once it is read	O4b-5
