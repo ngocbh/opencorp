@@ -284,7 +284,7 @@ const SECRET_REFUSED: unknown[] = [
   "sk-typed",
 ]
 
-test.each(SECRET_REFUSED)("a secret page's refusal names only the page [%s]", (answer) => {
+test.each(SECRET_REFUSED)("a secret page's refusal names only the page [%j]", (answer) => {
   expect(checkAnswer(SECRET, { Token: { key: "k" } }, "text")).toEqual({ Token: { key: "k" } })
   const error = refused(() => checkAnswer(SECRET, { Token: answer }, "text"))
   expect(error.message).toBe("'Token' isn't a valid answer")
