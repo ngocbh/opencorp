@@ -270,6 +270,26 @@ test("a harness card with pages takes a record with typed numbers", () => {
   expect(stopped.message).not.toContain("s3cret")
 })
 
+/** A one-page gate whose secret `Token` page takes a record with a `key` field. */
+const SECRET = q("ask", {
+  questions: [{ question: "Token?", header: "Token", options: [], secret: true }],
+  answer_schema: fields(["Token", "object", true, { fields: fields(["key", "str", true], ["n", "int", false]) }]),
+})
+
+const SECRET_REFUSED: unknown[] = [
+  { key: "k", "sk-stray": "v" },
+  JSON.stringify({ key: "k", "sk-stray": "v" }),
+  { key: ["sk-typed"] },
+  { key: "k", n: "sk-typed" },
+  "sk-typed",
+]
+
+test.each(SECRET_REFUSED)("a secret page's refusal names only the page [%s]", (answer) => {
+  expect(checkAnswer(SECRET, { Token: { key: "k" } }, "text")).toEqual({ Token: { key: "k" } })
+  const error = refused(() => checkAnswer(SECRET, { Token: answer }, "text"))
+  expect(error.message).toBe("'Token' isn't a valid answer")
+})
+
 test("answer keys on the prototype are not answers", () => {
   const gate = q("ask", {
     questions: [{ question: "Which?", header: "constructor", options: [{ label: "a" }] }],

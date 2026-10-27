@@ -19,11 +19,12 @@ export class InvalidAnswer extends Error {
  * Otherwise `sent_back` and `interrupted` answers are the office's own and pass unchanged. A model question
  * (`ask_user`, `ask_manager`) takes text, and an `option` answer must be one of its options. An `ask` node
  * question with pages takes a record keyed by each page's `header`. A page with an `answer_schema` entry takes
- * what that entry takes, and one without takes a label, or a list of labels for a multi-select page. One without
- * pages takes what its `answer_schema` says; text is converted to the field's type (numbers, ISO dates, yes/no,
- * one list item per line). Blank text is no answer: a required field refuses it unless its type is `None`, and an
- * optional one is null (omitted in a record). Nothing looser than the engine's own check is returned, and a
- * converted value converts to itself.
+ * what that entry takes, and one without takes a label, or a list of labels for a multi-select page; a secret page's
+ * refusal names only the page, never a key or value from its answer. One without pages takes what its
+ * `answer_schema` says; text is converted to the field's type (numbers, ISO dates, yes/no, one list item per line).
+ * Blank text is no answer: a required field refuses it unless its type is `None`, and an optional one is null
+ * (omitted in a record). Nothing looser than the engine's own check is returned, and a converted value converts to
+ * itself.
  */
 export function checkAnswer(
   question: QuestionRecord,
@@ -83,7 +84,15 @@ function pages(question: QuestionRecord, answer: unknown): Record<string, unknow
     // The engine checks the record against the schema, so the entry alone decides the page's
     // type and enum; the stored value is already typed when the harness checks it again.
     if (blank(value) && entry.type !== "None") throw new InvalidAnswer(`${repr(page.header)} has no answer`)
-    out.push([page.header, field(entry, value, repr(page.header))])
+    try {
+      out.push([page.header, field(entry, value, repr(page.header))])
+    } catch (error) {
+      // The usual message can quote a key typed inside the answer, so a secret page's names only the page.
+      if (page.secret && error instanceof InvalidAnswer) {
+        throw new InvalidAnswer(`${repr(page.header)} isn't a valid answer`)
+      }
+      throw error
+    }
   }
   return Object.fromEntries(out)
 }
