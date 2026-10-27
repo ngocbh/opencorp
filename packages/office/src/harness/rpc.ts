@@ -64,8 +64,9 @@ export function nameOf(error: unknown): string {
  *  rather than block: a human-paced approval would stall every event. A handler that throws is logged and the reading
  *  goes on; a request whose handler threw is answered with a JSON-RPC internal error (-32603). Lines that aren't JSON
  *  objects, or whose `method` isn't a string, are logged, cut to 200 characters, and skipped. A line over `MAX_LINE`
- *  bytes is a protocol failure: the reading stops, `kill()` runs, pending requests fail. `onClosed()` runs once, when stdout ends or on that failure.
- *  A `kill` or `onClosed` that throws is logged by the error's name, and the pending requests still fail.
+ *  bytes is a protocol failure: the reading stops, `kill()` runs, pending requests fail. `onClosed()` runs once, when
+ *  stdout ends or on that failure. A `kill` or `onClosed` that throws is logged by the error's name, and the pending
+ *  requests still fail.
  *
  *  Writes resolve once the stream took the bytes and reject with `RpcClosed` when stdin is broken. A small write to an
  *  app-server that closed its stdin can still succeed (the bytes sit in the pipe buffer): such a request is settled

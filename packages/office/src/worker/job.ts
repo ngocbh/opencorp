@@ -62,11 +62,10 @@ export type Parent = z.output<typeof Parent>
  * ignored), or `check` (runs the office's one-reply model check (`install/flows/check_model.yaml`) on
  * `llm_config`, and reads no other field but `session_id`). `flow` is relative to `pin`. `deliver` lists host calls
  * applied to the run in order, each answered by one `deliver_reply`; `advance: false` applies them without moving
- * the run. `seed` names the run of the same
- * session a fresh `chat` run replaces (its log, the env that run had, whether to cancel it); the worker seeds the
- * flow's `summary` and `history` inputs from it and moves its unread messages. `parent` names the run (and node) a
- * fresh `chat` run nests under in yian's run index; an `advance` resumes a log that already records it. A `Job`
- * holds the provider key in `llm_config`, so it is never logged.
+ * the run. `seed` names the run of the same session a fresh `chat` run replaces (its log, the env that run had,
+ * whether to cancel it); the worker seeds the flow's `summary` and `history` inputs from it and moves its unread
+ * messages. `parent` names the run (and node) a fresh `chat` run nests under in yian's run index; an `advance`
+ * resumes a log that already records it. A `Job` holds the provider key in `llm_config`, so it is never logged.
  */
 export const Job = z
   .strictObject({
