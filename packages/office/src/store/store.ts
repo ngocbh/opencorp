@@ -946,8 +946,10 @@ export class Store {
     for (const [name, value] of Object.entries(where)) {
       if (value === undefined) continue
       if (Array.isArray(value)) {
-        clauses.push(`${quote(name)} IN (${value.map(() => "?").join(", ")})`)
-        params.push(...value)
+        // One JSON parameter, as in `#list`: a `?` per value makes a new SQL text, and so a new cached statement,
+        // for every list length.
+        clauses.push(`${quote(name)} IN (SELECT value FROM json_each(?))`)
+        params.push(JSON.stringify(value))
       } else {
         clauses.push(`${quote(name)} = ?`)
         params.push(value)

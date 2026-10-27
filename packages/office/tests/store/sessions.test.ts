@@ -92,6 +92,24 @@ test("recent sessions per person", () => {
   expect(ids(store.listSessions({ status: ["busy"] }))).toEqual([old.id])
 })
 
+test("a status list of any length compiles one statement", () => {
+  const store = openStore()
+  const busy = store.createSession(session({ status: "busy" }))
+  store.createSession(session())
+  const db = store.db
+  const prepare = db.prepare.bind(db)
+  const texts = new Set<string>()
+  db.prepare = (sql: string) => {
+    if (sql.startsWith("SELECT * FROM sessions")) texts.add(sql)
+    return prepare(sql)
+  }
+  for (const status of [["busy"], ["busy", "busy"], ["closed", "busy", "busy"]]) {
+    expect(store.listSessions({ status }).map((s) => s.id)).toEqual([busy.id])
+  }
+  // The statement cache never evicts, so a SQL text per list length would grow it without bound.
+  expect(texts.size).toBe(1)
+})
+
 test("worked folders order for the picker", () => {
   const store = openStore()
   const events = recordEvents(store)
