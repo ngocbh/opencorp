@@ -144,7 +144,7 @@ function eventsBefore(messages: readonly Message[], before: string): string[] {
     for (const part of message.parts) {
       if (part.type === "text" && part.text) events.push(`[${by}] ${part.text}`)
       else if (part.type === "tool") {
-        const result = part.error ? part.error : part.output
+        const result = part.error || part.output
         events.push(`[tool ${part.tool}, ${part.state}] input: ${cut(part.input)}\n  output: ${cut(result)}`)
       }
     }

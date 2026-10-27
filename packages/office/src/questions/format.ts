@@ -53,7 +53,7 @@ function choice(question: QuestionRecord): string {
   const { answer_kind: kind, answer, options } = question
   if (kind === "sent_back") return SENT_BACK
   if (kind === "interrupted") return INTERRUPTED
-  const index = options.indexOf(answer as string)
+  const index = typeof answer === "string" ? options.indexOf(answer) : -1
   if (kind === "option" && index >= 0) {
     return `The user chose "${answer}" (option ${index + 1} of the ${options.length} shown).`
   }

@@ -21,7 +21,7 @@ import { BACK_HINT, EXIT_WORDS, discussion, isLive, readSeed, writeSeed } from "
 /** The four ways a question is answered (`option`, `text`, `sent_back`, `interrupted`): the store's `answer_kind`. */
 export type AnswerKind = NonNullable<QuestionRecord["answer_kind"]>
 
-/** What the cards ask of the session actor (Codex sessions now, the chat harness later). */
+/** What the cards ask of the session actor: the chat harness or the Codex sessions. */
 export interface CardActor {
   /** The hooks the questions extension adds the cards' checks and notifications to. */
   readonly hooks: Hooks
@@ -102,7 +102,7 @@ export class Cards {
     // A store listener must not wait: the end goes on the closing queue.
     this.#unlisten = this.store.addListener((event) => {
       if (event.type !== "question.updated") return
-      const question = event.data as unknown as QuestionRecord
+      const question = event.data as QuestionRecord
       if (question.side_session_id && question.status !== "open") this.#close(question.side_session_id, question)
     })
   }
@@ -279,9 +279,8 @@ export class Cards {
   /** `questionStored`: a new card carries the discussion of the card before it in its session if that one expired. */
   stored(question: QuestionRecord): void {
     const session = this.store.getSession(question.session_id)
-    if (session === undefined) return
     // A side run asks nothing.
-    if (session.kind === "side") return
+    if (session === undefined || session.kind === "side") return
     const earlier = this.store
       .listQuestions({ sessionId: question.session_id })
       .filter((q) => q.id !== question.id && q.created_at <= question.created_at)
