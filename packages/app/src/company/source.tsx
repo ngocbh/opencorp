@@ -414,7 +414,7 @@ export default function Source(props: { company: string; path: string; desktop: 
           )}
         </Show>
         <Show when={tree()?.truncated}>
-          <p class={MUTED}>Only the first {tree()!.entries.length.toLocaleString("en")} entries are listed.</p>
+          <p class={MUTED}>Only the first {cap()} entries are listed.</p>
         </Show>
         <Show when={tree()?.skipped}>
           {(n) => (

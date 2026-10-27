@@ -232,7 +232,6 @@ function TopRun(props: {
     if (byReader) setFold({ loading: true })
     queue(
       async () => {
-        if (disposed) return
         // A read that waited while its row left the page, or a first page whose fold was closed since, isn't sent.
         const gone = () => disposed || (how === "first" && !open())
         try {

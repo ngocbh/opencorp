@@ -28,7 +28,7 @@ const FLUSH_MS = 16
 /** How often the not-built page asks again whether the app has been built. */
 const NOT_BUILT_RECHECK_MS = 3_000
 
-/** Costs are read again on session.updated at most this often (the design's 10 s). */
+/** Costs are read again on session.updated at most this often. */
 const COST_EVERY_MS = 10_000
 
 /** How long Sign out waits for the office to end the session before signing out here anyway. */
