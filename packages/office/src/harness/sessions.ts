@@ -191,9 +191,11 @@ export class CodexSessions implements SessionHarness {
    *  (asleep, as the chat harness leaves a session with no run); one that isn't live is 409. */
   async interrupt(sessionId: string): Promise<void> {
     const session = this.store.getSession(sessionId)
-    if (session === undefined || session.harness === "codex") return void (await this.#must(sessionId).interrupt())
-    if (!LIVE.includes(session.status))
-      throw new HarnessError(409, "not_live", `session ${sessionId} has no live run`)
+    if (session === undefined || session.harness === "codex") {
+      await this.#must(sessionId).interrupt()
+      return
+    }
+    if (!LIVE.includes(session.status)) throw new HarnessError(409, "not_live", `session ${sessionId} has no live run`)
     // Asleep, waking or finishing: nothing runs to stop.
   }
 
@@ -221,22 +223,11 @@ export class CodexSessions implements SessionHarness {
     const session = this.store.getSession(question.session_id)!
     if (session.harness !== "codex") {
       // Not a Codex card: stored as the chat harness stores an answer with no live run to hand it to.
-      const owner = by || (await this.opener(session))
-      try {
-        return this.store.answerQuestion(questionId, value, kind, owner)
-      } catch (error) {
-        if (error instanceof InvalidTransition) throw new HarnessError(409, "not_open", error.message)
-        throw error
-      }
+      return this.#storeAnswer(questionId, value, kind, by || (await this.opener(session)))
     }
     const live = this.#live.get(question.session_id)
     const who = by || (live ? live.author : await this.opener(session))
-    try {
-      this.store.answerQuestion(questionId, masked(question, value), kind, who)
-    } catch (error) {
-      if (error instanceof InvalidTransition) throw new HarnessError(409, "not_open", error.message)
-      throw error
-    }
+    this.#storeAnswer(questionId, masked(question, value), kind, who)
     // The secret itself is only ever in this call's arguments, until the reply.
     const replied = live !== undefined && (await live.reply(questionId, value, who))
     if (replied) {
@@ -248,6 +239,16 @@ export class CodexSessions implements SessionHarness {
       }
     } else this.store.loseAnswer(questionId)
     return this.store.getQuestion(questionId)!
+  }
+
+  /** `store.answerQuestion`, with an answer that lost the race to another as 409 `not_open`. */
+  #storeAnswer(questionId: string, value: unknown, kind: AnswerKind, by: string | null): QuestionRecord {
+    try {
+      return this.store.answerQuestion(questionId, value, kind, by)
+    } catch (error) {
+      if (error instanceof InvalidTransition) throw new HarnessError(409, "not_open", error.message)
+      throw error
+    }
   }
 
   /** Ends the session `sessionId`. */
@@ -565,8 +566,7 @@ export class CodexSessions implements SessionHarness {
 export function checkFolder(office: Office, cwd: string): string {
   // A 422 never echoes the request's path: it may not be a folder at all.
   if (!path.isAbsolute(cwd)) throw new HarnessError(422, "invalid_body", "cwd is not an absolute path")
-  if (!isFolder(cwd))
-    throw new HarnessError(422, "invalid_body", "cwd is not a folder")
+  if (!isFolder(cwd)) throw new HarnessError(422, "invalid_body", "cwd is not a folder")
   // Clients match folders by their resolved path (/tmp is /private/tmp on macOS).
   const real = realPath(cwd)
   try {

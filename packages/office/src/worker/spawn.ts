@@ -134,11 +134,7 @@ export class Worker implements JobWorker {
     this.handlers = handlers
     this.#child = child
     this.#onExit = onExit
-    this.#log = (level, line) => {
-      try {
-        log(level, line)
-      } catch {}
-    }
+    this.#log = neverThrows(log)
     if (child.exitCode !== null || child.signalCode !== null) {
       this.#exit = Promise.resolve(returncodeOf(child.exitCode, child.signalCode))
       this.#leaderExited()
@@ -327,7 +323,6 @@ export class Worker implements JobWorker {
 export class WorkerRegistry implements WorkerPool {
   readonly #store: Store
   readonly #log: SpawnLog
-  readonly #workerLog: SpawnLog
   readonly #environ: Env
   readonly #maxFrame: number | undefined
   readonly #spawn: typeof spawnProcess
@@ -355,13 +350,7 @@ export class WorkerRegistry implements WorkerPool {
     } = {},
   ) {
     this.#store = store
-    this.#log = (level, line) => {
-      try {
-        log(level, line)
-      } catch {}
-    }
-    // Each worker wraps the caller's log itself.
-    this.#workerLog = log
+    this.#log = neverThrows(log)
     this.#environ = environ
     this.#maxFrame = maxFrame
     this.#spawn = spawn
@@ -389,7 +378,7 @@ export class WorkerRegistry implements WorkerPool {
     const { child, channel } = this.#spawn(sessionDir, spawnEnv, { maxFrame: this.#maxFrame })
     let worker: Worker
     try {
-      worker = new Worker(job, child, channel, handlers, (exited) => this.#exited(exited), { log: this.#workerLog })
+      worker = new Worker(job, child, channel, handlers, (exited) => this.#exited(exited), { log: this.#log })
       this.#store.recordWorker(sessionId, { pid: worker.pid, pgid: worker.pgid, startTime: startTime(worker.pid) ?? 0 })
       this.#workers.set(sessionId, worker)
     } catch (error) {
@@ -483,6 +472,15 @@ function isDeliverReply(frame: Frame): boolean {
 function returncodeOf(code: number | null, signal: NodeJS.Signals | null): number | null {
   if (code !== null) return code
   return signal === null ? null : -os.constants.signals[signal]
+}
+
+/** `log`, made never to throw: a log line that fails mustn't stop the step that writes it. */
+function neverThrows(log: SpawnLog): SpawnLog {
+  return (level, line) => {
+    try {
+      log(level, line)
+    } catch {}
+  }
 }
 
 function noLog(): void {}
