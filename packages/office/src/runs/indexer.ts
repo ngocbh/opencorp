@@ -125,7 +125,13 @@ export class RunIndexer {
   }
 
   #reply(reply: unknown): void {
-    const { ok, error, skipped } = (reply ?? {}) as { ok?: unknown; error?: unknown; skipped?: unknown }
+    const { ok, error, skipped, rebuilt } = (reply ?? {}) as {
+      ok?: unknown
+      error?: unknown
+      skipped?: unknown
+      rebuilt?: unknown
+    }
+    if (typeof rebuilt === "string") this.#log(`run index damaged (${rebuilt}), rebuilding it`)
     if (Array.isArray(skipped)) {
       for (const path of skipped) {
         if (typeof path !== "string" || this.#skipped.has(path)) continue
