@@ -1,6 +1,7 @@
 /** Callback lists that extensions append to when they register; the harness calls them in order. */
 import type { QuestionRecord, SessionRecord } from "../store/store.ts"
 import type { Frame } from "../worker/channel.ts"
+import { errorName } from "../worker/rpc.ts"
 
 type Status = SessionRecord["status"]
 
@@ -117,17 +118,4 @@ function checkName(name: string, names: Set<string>, kind: string): void {
   if (names.has(name)) return
   if (!CHECKS.has(name) && !NOTIFICATIONS.has(name)) throw new Error(`no hook named '${name}'`)
   throw new Error(`'${name}' is not a ${kind}`)
-}
-
-const NAME = /^[A-Za-z_$][\w$]{0,63}$/
-
-/** A thrown value's name for a log line; never throws (a getter or a revoked `Proxy` can). */
-function errorName(error: unknown): string {
-  try {
-    if (!(error instanceof Error)) return typeof error
-    const name: unknown = error.name
-    return typeof name === "string" && NAME.test(name) ? name : "Error"
-  } catch {
-    return "Error"
-  }
 }
