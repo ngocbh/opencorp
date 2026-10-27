@@ -207,7 +207,7 @@ test("an interrupt after a send and before its reply starts stops that reply and
   expect(stopped.replies.find((reply) => reply.id === "cut")).toEqual({
     type: "deliver_reply",
     id: "cut",
-    seq: expect.any(Number),
+    seq: null,
     closed: [],
   })
   expect(fake.requests()).toEqual([])

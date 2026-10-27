@@ -19,6 +19,7 @@ import {
   statusOf,
 } from "../../src/runs/records.ts"
 import { CARD_CLOSED, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
+import { SCHEMA } from "../../src/runs/reader.ts"
 import { newId, type RunRow, type SessionRecord } from "../../src/store/store.ts"
 import { tempDir } from "../helpers.ts"
 import { openStore, question, session } from "../store/helpers.ts"
@@ -76,7 +77,7 @@ function inspection(over: Partial<RunInspection> = {}): RunInspection {
     inFlight: [],
     crashedAttempts: new Map(),
     runId: null,
-    schema: 22,
+    schema: SCHEMA,
     flowFingerprint: null,
     learnable: false,
     lastSeq: 3,

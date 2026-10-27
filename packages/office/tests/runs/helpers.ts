@@ -5,6 +5,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { loadFlow } from "@ngocbh/yian"
 import { logJson, runFlow, runLogPath } from "@ngocbh/yian/run"
+import { SCHEMA } from "../../src/runs/reader.ts"
 
 export const RUN = "01JA1H000000000000000000R1"
 export const FP = "f".repeat(64)
@@ -15,7 +16,7 @@ export function line(
   seq: number,
   kind: string,
   payload: Record<string, unknown>,
-  { schema = 22n, at = AT, ...extra }: { schema?: unknown; at?: string; [field: string]: unknown } = {},
+  { schema = BigInt(SCHEMA), at = AT, ...extra }: { schema?: unknown; at?: string; [field: string]: unknown } = {},
 ): Buffer {
   return Buffer.from(logJson({ at, kind, payload, run_id: RUN, schema, seq: BigInt(seq), ...extra }) + "\n")
 }

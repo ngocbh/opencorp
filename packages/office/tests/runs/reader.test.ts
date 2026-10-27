@@ -332,7 +332,7 @@ test("the lru evicts the least recently used logs by bytes", async () => {
 })
 
 test("an unreadable log isnt read again until it changes", async () => {
-  const file = logOf(runStarted(0), line(1, "node_started", { node_id: "a" }, { schema: 23n }))
+  const file = logOf(runStarted(0), line(1, "node_started", { node_id: "a" }, { schema: BigInt(SCHEMA) + 1n }))
   const calls: number[] = []
   const counted: typeof refresh = (p, index, options) => {
     calls.push(1)

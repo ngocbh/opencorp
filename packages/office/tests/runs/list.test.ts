@@ -6,6 +6,7 @@ import type { RunPage } from "@opencorp/protocol"
 import type { RunIndexRow, RunInspection } from "@ngocbh/yian/run"
 import { Inspections, Live, type LiveRun } from "../../src/runs/records.ts"
 import { OFFICE_STOPPED, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
+import { SCHEMA } from "../../src/runs/reader.ts"
 import { RunLogs } from "../../src/runs/service.ts"
 import { NotFound, REASON_CHARS, newId, type RunRow, type Store } from "../../src/store/store.ts"
 import { tempDir } from "../helpers.ts"
@@ -73,7 +74,7 @@ function inspection(over: Partial<RunInspection> = {}): RunInspection {
     inFlight: [],
     crashedAttempts: new Map(),
     runId: null,
-    schema: 22,
+    schema: SCHEMA,
     flowFingerprint: null,
     learnable: false,
     lastSeq: 3,
