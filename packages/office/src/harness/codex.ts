@@ -259,9 +259,7 @@ export class CodexProcess {
     // Only the first kill signals the group: once it is gone its id can belong to another group.
     this.#killed = true
     killGroup(proc.pid)
-    try {
-      proc.stdin?.destroy()
-    } catch {}
+    proc.stdin?.destroy()
   }
 
   async #killOnce(): Promise<void> {

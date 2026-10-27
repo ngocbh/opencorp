@@ -593,11 +593,9 @@ export class CodexSession {
   #resolved(requestId: unknown): void {
     const questionId = this.byRequest.get(String(requestId))
     this.byRequest.delete(String(requestId))
-    const pending = questionId !== undefined ? this.requests.get(questionId) : undefined
-    if (pending === undefined) return
-    this.requests.delete(questionId!)
+    if (questionId === undefined || !this.requests.delete(questionId)) return
     this.#settle()
-    this.#expire(questionId!)
+    this.#expire(questionId)
   }
 
   /** Cards of a finished turn that Codex didn't resolve go stale: it waits on them no more. Codex sends no
