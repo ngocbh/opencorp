@@ -3,9 +3,10 @@
  *  keep working; a folder a sandboxed call can write can't plant one. And the paths every workspace must stay
  *  clear of. */
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { selfCommand } from "../platform.ts"
-import { type OfficePaths as SandboxOfficePaths, realPath } from "../sandbox/policy.ts"
+import { type OfficePaths as SandboxOfficePaths, isInside, realPath } from "../sandbox/policy.ts"
 import { type Env, which } from "./launch.ts"
 
 /** The programs the daemon, its workers and Codex run. */
@@ -62,22 +63,40 @@ export function installPaths([program, ...rest]: readonly [string, ...string[]] 
 }
 
 /**
- * What every workspace must stay clear of: the install, each tool's found path and its realpath plus the program
- * running the office (`command[0]`: the binary, or a checkout's Bun), and the absolute entries of `env.PATH`. The
- * policy also refuses every folder or link a tool or `PATH` entry's path walks through; a relative `PATH` entry is
- * already gone (`daemonEnv`), and would refuse every workspace if kept.
+ * The folder a program at the realpath `real` is installed in, whose files it may run or load: under a Homebrew
+ * `Cellar`, `<prefix>/Cellar/<name>` (every version, as an upgrade repoints the pinned link to a new one); in the Nix
+ * store, its `/nix/store/<entry>`; in a `bin` folder, that folder's parent; else its own folder. A candidate holding
+ * `home` (or the whole disk) falls back to the program's own folder, and then to none.
+ */
+export function toolRoot(real: string, home: string = os.homedir()): string | undefined {
+  const parts = real.split("/")
+  const cellar = parts.indexOf("Cellar")
+  const store = parts.findIndex((part, i) => part === "nix" && parts[i + 1] === "store")
+  const bin = path.dirname(real)
+  let root = path.basename(bin) === "bin" ? path.dirname(bin) : bin
+  if (cellar > 0 && cellar + 2 < parts.length) root = parts.slice(0, cellar + 2).join("/")
+  else if (store >= 0 && store + 3 < parts.length) root = parts.slice(0, store + 3).join("/")
+  for (const candidate of [root, bin]) if (!isInside(home, candidate)) return candidate
+  return undefined
+}
+
+/**
+ * What every workspace must stay clear of: the install plus each tool's install folder (`toolRoot`), each tool's
+ * found path and its realpath plus the program running the office (`command[0]`: the binary, or a checkout's Bun),
+ * and the absolute entries of `env.PATH`. The policy also refuses every folder or link a tool or `PATH` entry's path
+ * walks through; a relative `PATH` entry is already gone (`daemonEnv`), and would refuse every workspace if kept.
  */
 export function workspaceGuards(
   tools: Tools,
   env: Env,
   command: readonly [string, ...string[]] = selfCommand(),
+  home: string = os.homedir(),
 ): SandboxOfficePaths {
+  const found = Object.values(tools).filter((tool) => tool !== undefined)
+  const reals = [...found.map((tool) => realPath(tool)), realPath(command[0])]
   return {
-    install: installPaths(command),
-    tools: [
-      ...new Set(Object.values(tools).flatMap((tool) => (tool === undefined ? [] : [tool, realPath(tool)]))),
-      realPath(command[0]),
-    ],
+    install: [...new Set([...installPaths(command), ...reals.flatMap((real) => toolRoot(real, home) ?? [])])],
+    tools: [...new Set(found.flatMap((tool) => [tool, realPath(tool)])), realPath(command[0])],
     path: (env.PATH ?? "").split(":").filter((entry) => entry.startsWith("/")),
   }
 }

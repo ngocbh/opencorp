@@ -28,7 +28,8 @@ export class UnsafeWorkspace extends Error {
 export interface OfficePaths {
   /** The user's home dir; defaults to `os.homedir()`. */
   home?: string
-  /** The office's install folders: refused as, around or inside a workspace; write-denied by Seatbelt. */
+  /** The install folders of the office and of the programs it runs: refused as, around or inside a workspace;
+   *  write-denied by Seatbelt. */
   install?: readonly string[]
   /** Programs the office runs (git, codex, tmux, bwrap, ps, who, and its own runtime in a checkout): refused
    *  in a workspace as found, as realpath, and every folder or link the path walks through. */
@@ -144,9 +145,9 @@ function realEntries(entries: readonly string[] | undefined): string[] {
 }
 
 /** Throws `UnsafeWorkspace` if `workspace` is `/`, contains the home directory, is or lies inside a
- *  sensitive home path (`SENSITIVE_HOME_PATHS`), contains or lies inside the office install, contains
- *  a program the office runs or a folder on its PATH (or a folder or link the path walks through), or if
- *  any office path is relative. */
+ *  sensitive home path (`SENSITIVE_HOME_PATHS`), contains a program the office runs or a folder on its
+ *  PATH (or a folder or link the path walks through), contains or lies inside the install folder of the
+ *  office or such a program, or if any office path is relative. */
 export function checkWorkspace(workspace: string, office: OfficePaths = {}): void {
   const ws = realPath(workspace)
   const home = realPath(office.home ?? os.homedir())
@@ -173,20 +174,18 @@ export function checkWorkspace(workspace: string, office: OfficePaths = {}): voi
     const real = resolvedEntry(entry, kind, visited)
     return within(real, ws) ? real : visited.find((p) => p !== ws && within(p, ws))
   }
-  for (const entry of office.install ?? []) {
-    const install = resolvedEntry(entry, "install")
-    if (within(install, ws)) {
-      throw new UnsafeWorkspace(`workspace ${ws} contains the office install at ${install}; use a project folder`)
-    }
-    if (within(ws, install)) {
-      throw new UnsafeWorkspace(`workspace ${ws} is inside the office install at ${install}; use a project folder`)
-    }
-  }
   for (const entry of office.tools ?? []) {
     const matched = contained(entry, "tool list")
     if (matched !== undefined) {
       throw new UnsafeWorkspace(`workspace ${ws} contains ${matched}, a program the office runs; use a project folder`)
     }
+  }
+  // After the tools, so a workspace holding a program is told which one rather than its install folder.
+  for (const entry of office.install ?? []) {
+    const install = resolvedEntry(entry, "install")
+    const where = `${install}, where the office or a program it runs is installed; use a project folder`
+    if (within(install, ws)) throw new UnsafeWorkspace(`workspace ${ws} contains ${where}`)
+    if (within(ws, install)) throw new UnsafeWorkspace(`workspace ${ws} is inside ${where}`)
   }
   for (const entry of office.path ?? []) {
     const matched = contained(entry, "PATH")

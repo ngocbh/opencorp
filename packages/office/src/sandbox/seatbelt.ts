@@ -69,9 +69,9 @@ export const DNS_SOCKET = "/private/var/run/mDNSResponder"
  * Allowed: system and toolchain paths read-only, the workspace (read, or read-write
  * with `.git`, `.git/hooks`, and `.git/config` read-only), the private tmpdir, the
  * policy's extra read-only paths, the helper's own files when `policy.helper` is set,
- * a few mach services, and IP networking only if `policy.network`. The office install
- * is write-denied. Everything else, including unix sockets, Apple Events, and
- * LaunchServices, is denied.
+ * a few mach services, and IP networking only if `policy.network`. The install folders
+ * of the office and its programs are write-denied. Everything else, including unix
+ * sockets, Apple Events, and LaunchServices, is denied.
  *
  * `canary`, a directory, gets a `file-write-data` rule (a no-op on a directory) that
  * marks processes running under this profile; see `escapees.ts`. `developerDir`

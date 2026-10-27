@@ -1218,7 +1218,7 @@ test("a worked folder holding the install fails the folders check", async () => 
   expect(byName(found).folders).toEqual({
     name: "folders",
     status: "fail",
-    detail: `workspace ${work} contains the office install at ${work}/checkout; use a project folder`,
+    detail: `workspace ${work} contains ${work}/checkout, where the office or a program it runs is installed; use a project folder`,
   })
   expect(found.map((c) => c.name).slice(-3)).toEqual(["sandbox", "folders", "codex"])
   expect(doctor.exitCode(found)).toBe(1)
