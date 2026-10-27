@@ -321,6 +321,8 @@ export class SessionActor implements LiveCalls {
   #deaths = 0
   /** The runs whose hard stop waits for the lingering worker's exit. */
   #stopAfterExit: string[] = []
+  /** The `cancel` the finish sent through the live worker, by delivery id, and its run; null when none was sent. */
+  #stopCancel: { id: string; runId: string } | null = null
   /** Settles once the hard stops this actor started have finished; settled while it has none. */
   #stopped: Promise<void> = Promise.resolve()
   /** Settles `#stopped` when it waits for the lingering worker's exit. */
@@ -651,7 +653,13 @@ export class SessionActor implements LiveCalls {
     }
     this.#ending = true
     this.#ctx.store.updateSession(this.sessionId, notWaiting("ending"))
-    const inbox = (await this.#specOf(session)).chat.inbox
+    let inbox: string
+    try {
+      // Restore may not have built the spec, and a folder gone or unsafe since fails its build.
+      inbox = (await this.#specOf(session)).chat.inbox
+    } catch (error) {
+      throw this.#cantEnd(error)
+    }
     const run = this.#run
     const capped = this.#capped()
     const rests = this.#rested && !this.#wakesAgent(this.#waits ?? [])
@@ -674,12 +682,18 @@ export class SessionActor implements LiveCalls {
       // model call happens.
       await this.#spawn("advance")
     } catch (error) {
-      if (error instanceof RegistryClosed || this.#closed) throw stopping()
-      this.#log(`session ${this.sessionId} can't end (${errorName(error)})`)
-      // Left open it could never be ended.
-      this.#finish("failed", null, this.#cantStartWhy())
-      throw this.#wakeError(error)
+      throw this.#cantEnd(error)
     }
+  }
+
+  /** Fails the ending session whose end can't start (`#cantStartWhy`), unless the office stops, and returns the
+   *  error End throws for `error`. */
+  #cantEnd(error: unknown): HarnessError {
+    if (error instanceof RegistryClosed || this.#closed) return stopping()
+    this.#log(`session ${this.sessionId} can't end (${errorName(error)})`)
+    // Left open it could never be ended.
+    this.#finish("failed", null, this.#cantStartWhy())
+    return this.#wakeError(error)
   }
 
   /**
@@ -812,10 +826,14 @@ export class SessionActor implements LiveCalls {
     })
   }
 
-  /** Fails the session: its run, when the run hasn't ended, ends `COULDNT_RESUME` and gets a hard stop. Refused
-   *  `404 not_found` (the session row is gone) or `503 stopping` after `close`. */
+  /** Fails the session: its run, when the run hasn't ended, ends `COULDNT_RESUME` and gets a hard stop; nothing when
+   *  the actor already finished or the stored session isn't live. Refused `404 not_found` (the session row is gone)
+   *  or `503 stopping` after `close`. */
   fail(): Promise<void> {
-    return this.#command(async () => this.#finish("failed", null, COULDNT_RESUME))
+    return this.#command(async () => {
+      if (this.#finished || !LIVE.includes(this.#session().status)) return
+      this.#finish("failed", null, COULDNT_RESUME)
+    })
   }
 
   /**
@@ -1684,6 +1702,13 @@ export class SessionActor implements LiveCalls {
 
   /** Records a `deliver_reply` on its delivery as it arrives, so the answer is known before its job runs. */
   #arrived(run: WorkerRun, frame: Frame): void {
+    const stop = this.#stopCancel
+    if (stop !== null && frame.id === stop.id) {
+      const reply = checkedReply(frame)
+      if (Object.hasOwn(reply, "seq")) this.#stopAfterExit = this.#stopAfterExit.filter((id) => id !== stop.runId)
+      else this.#log(`session ${this.sessionId}: a cancel didn't take (${String(reply.refused ?? reply.failed)})`)
+      return
+    }
     const p = run.given.find((given) => given.delivery.id === frame.id && given.reply === null)
     if (p === undefined) return
     p.reply = checkedReply(frame)
@@ -2113,8 +2138,8 @@ export class SessionActor implements LiveCalls {
   }
 
   /** The hard stop of run `runId` (none when null) and of the `replaced` runs, best effort: a `cancel` of `runId`
-   *  through its live worker; else one `advance: false` job per run that only cancels it, at once or after the
-   *  lingering worker's exit. */
+   *  through its live worker; one `advance: false` job that only cancels it for every other run, and for `runId`
+   *  unless the worker took that cancel, at once or after the lingering worker's exit. */
   #stopRuns(runId: string | null, replaced: string[]): void {
     const run = this.#run
     const runIds = runId === null ? replaced : [...replaced, runId]
@@ -2125,12 +2150,13 @@ export class SessionActor implements LiveCalls {
     this.#stopAfterExit = runIds
     this.#stopped = new Promise((resolve) => (this.#stoppedAfterExit = resolve))
     if (runId === null || run.outcome !== null) return
-    run.worker.deliver({ id: newId(), op: "cancel" }).then(
-      (sent) => {
-        if (sent) this.#stopAfterExit = this.#stopAfterExit.filter((id) => id !== runId)
-      },
-      (error) => this.#log(`session ${this.sessionId}: a cancel can't be sent (${errorName(error)})`),
-    )
+    // The run keeps its stop job until the worker's reply shows the cancel took (`#arrived`): a run that never
+    // resumed refuses it.
+    const id = newId()
+    this.#stopCancel = { id, runId }
+    run.worker
+      .deliver({ id, op: "cancel" })
+      .catch((error) => this.#log(`session ${this.sessionId}: a cancel can't be sent (${errorName(error)})`))
   }
 
   /** `#stopJob` for each of `runIds`, one after another: a session has one worker at a time. Never rejects. */
@@ -2141,20 +2167,20 @@ export class SessionActor implements LiveCalls {
   /** Spawns one `advance: false` job that cancels run `runId`, whose frames nobody reads, and resolves once its
    *  worker exits; skipped when the run has no log (it never started). A failure is logged by its type. */
   async #stopJob(runId: string): Promise<void> {
-    const { connections, paths } = this.#ctx
+    const { paths } = this.#ctx
     try {
       const log = this.#logOf(runId)
       if (!fs.existsSync(log)) return
       const session = this.#session()
-      const [name, model] = await connections.choice(session.connection, session.model)
-      const provider = await connections.resolve(name, model)
+      // The job only cancels, so it calls no model: a connection that can't be resolved now doesn't stop it.
+      const provider = await this.#ranProvider(runId)
       const job = chatJob(await this.#specOf(session), {}, {
         kind: "advance",
         session,
         runId,
         pin: await this.#ctx.git.pin(session.repo_commit),
         log,
-        llmConfig: provider.llm_config,
+        llmConfig: provider?.llm_config ?? null,
         turns: session.turns,
         deliver: [{ id: newId(), op: "cancel" }],
         advance: false,
@@ -2178,7 +2204,7 @@ export class SessionActor implements LiveCalls {
           exited()
         }
       })()
-      await this.#ctx.workers.spawn(job, paths.sessionDir(this.sessionId), handlers, { env: provider.env })
+      await this.#ctx.workers.spawn(job, paths.sessionDir(this.sessionId), handlers, { env: provider?.env ?? {} })
       await gone
     } catch (error) {
       this.#log(`session ${this.sessionId}: its run can't be stopped (${errorName(error)})`)
