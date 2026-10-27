@@ -312,7 +312,8 @@ test("a finished session forgets its live runs only after its worker exits", asy
   await second.start()
   const runId = second.runId!
   expect(second.calls(runId)).toEqual([])
-  const next = workers[1]!
+  // The first run's cancel got no reply, so its hard stop spawned a cancel job too.
+  const next = workers.find((w) => w.job.session_id === sid2)!
   const failing = second.fail()
   next.handlers.exited(next.worker, 0)
   // The worker is gone before the exit job runs: no call of it is live.
