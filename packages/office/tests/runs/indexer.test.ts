@@ -177,3 +177,66 @@ test("a thread that cannot start fails the update without rejecting", async () =
   expect(await indexer.update()).toBe(false)
   expect(lines).toEqual(["run index update failed (NoThreads)"])
 })
+
+/** A runs folder with one ended run, and its log's path. */
+function oneRun(): { runs: string; log: string } {
+  const runs = tempDir()
+  const log = path.join(runs, RUN, "log.jsonl")
+  fs.mkdirSync(path.dirname(log))
+  fs.writeFileSync(log, Buffer.concat([runStarted(0), started(1, "a"), committed(2, "a", {}), succeeded(3, "a", 2)]))
+  return { runs, log }
+}
+
+test("an index file that isn't a database is rebuilt from the logs", async () => {
+  const { runs } = oneRun()
+  const index = path.join(runs, "index.sqlite")
+  fs.writeFileSync(index, "not a database, and long enough to fill a SQLite header ".repeat(4))
+  // Left from the damaged database: a fresh one must not pick them up.
+  for (const suffix of ["-journal", "-wal", "-shm"]) fs.writeFileSync(index + suffix, "stale")
+  const { indexer, lines } = real(runs)
+  expect(await indexer.update()).toBe(true)
+  expect(readRunIndex(runs).map((row) => row.runId)).toEqual([RUN])
+  expect(lines).toEqual(["run index damaged (SQLITE_NOTADB), rebuilding it"])
+  for (const suffix of ["-journal", "-wal", "-shm"]) expect(fs.existsSync(index + suffix)).toBe(false)
+})
+
+test("a damaged index is rebuilt from the logs", async () => {
+  const { runs } = oneRun()
+  const { indexer, lines } = real(runs)
+  expect(await indexer.update()).toBe(true)
+  const index = path.join(runs, "index.sqlite")
+  // Every page past the first (the header and schema) overwritten: the runs table can't be read.
+  const size = fs.statSync(index).size
+  const fd = fs.openSync(index, "r+")
+  fs.writeSync(fd, Buffer.alloc(size - 4096, 0xa5), 0, size - 4096, 4096)
+  fs.closeSync(fd)
+  expect(await indexer.update()).toBe(true)
+  expect(readRunIndex(runs).map((row) => row.runId)).toEqual([RUN])
+  expect(lines).toEqual(["run index damaged (SQLITE_CORRUPT), rebuilding it"])
+})
+
+test("an index that can't be opened is left as it is", async () => {
+  const { runs } = oneRun()
+  // A folder in the index's place: SQLite can't open it, which isn't damage to rebuild.
+  fs.mkdirSync(path.join(runs, "index.sqlite"))
+  const { indexer, lines } = real(runs)
+  expect(await indexer.update()).toBe(false)
+  expect(fs.statSync(path.join(runs, "index.sqlite")).isDirectory()).toBe(true)
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).toMatch(/^run index update failed \(\w+\)$/)
+})
+
+test("damage the thread reports is logged by its code", async () => {
+  const { indexer, threads, lines } = fake()
+  const update = indexer.update()
+  threads[0]!.reply({ ok: true, skipped: [], rebuilt: "SQLITE_CORRUPT" })
+  expect(await update).toBe(true)
+  const failed = indexer.update()
+  threads[0]!.reply({ ok: false, error: "SQLiteError", skipped: [], rebuilt: "SQLITE_NOTADB" })
+  expect(await failed).toBe(false)
+  expect(lines).toEqual([
+    "run index damaged (SQLITE_CORRUPT), rebuilding it",
+    "run index damaged (SQLITE_NOTADB), rebuilding it",
+    "run index update failed (SQLiteError)",
+  ])
+})

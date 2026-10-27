@@ -850,22 +850,10 @@ test("a failing start sweep does not stop the office start", async () => {
   expect(out.text()).not.toContain(key)
 })
 
-test("a broken index skips the start sweep and does not stop the office start", async () => {
-  let office: Office | undefined
-  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
-  onTestFinished(async () => {
-    try {
-      await office?.stop()
-    } finally {
-      office?.store.close()
-    }
-  })
-  const paths = new OfficePaths(home())
-  fs.mkdirSync(paths.runs, { recursive: true })
-  fs.writeFileSync(path.join(paths.runs, "index.sqlite"), "not a database, only garbage\n".repeat(64))
-  const out = collect()
+/** An office over `paths` with one ended session whose run is still open in the store, and the run's id. */
+function officeWithOpenRun(paths: OfficePaths, write: (line: string) => void): { office: Office; open: string } {
   const rec = recordingGit(tempDir())
-  office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write: out.write })
+  const office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write })
   spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
   const open = newId()
   const ended = office.store.createSession(session({ status: "ended", run_ids: [open] }))
@@ -881,12 +869,55 @@ test("a broken index skips the start sweep and does not stop the office start", 
     replacesRunId: null,
     createdAt: ended.created_at,
   })
+  return { office, open }
+}
+
+test("a damaged index is rebuilt at the start, and the start sweep runs", async () => {
+  let office: Office | undefined
+  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const paths = new OfficePaths(home())
+  fs.mkdirSync(paths.runs, { recursive: true })
+  fs.writeFileSync(path.join(paths.runs, "index.sqlite"), "not a database, only garbage\n".repeat(64))
+  const out = collect()
+  const built = officeWithOpenRun(paths, out.write)
+  office = built.office
+  await office.start()
+  expect(out.text()).toContain("run index damaged (SQLITE_NOTADB), rebuilding it")
+  expect(out.text()).not.toContain("the start sweep was skipped")
+  // SQLite's message names the damage and must not reach the log; the code name is logged on purpose.
+  expect(out.text()).not.toMatch(/not a database|malformed/)
+  expect(office.store.getRun(built.open)!.endReason).not.toBeNull()
+})
+
+test("an index that stays broken skips the start sweep and does not stop the office start", async () => {
+  let office: Office | undefined
+  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const paths = new OfficePaths(home())
+  // A folder in the index's place: SQLite can't open it, and it isn't damage the update rebuilds.
+  fs.mkdirSync(path.join(paths.runs, "index.sqlite"), { recursive: true })
+  const out = collect()
+  const built = officeWithOpenRun(paths, out.write)
+  office = built.office
   await office.start()
   expect(out.text()).toMatch(/run index update failed \([A-Za-z_$][\w$]*\)/)
   expect(out.text()).toContain("the start sweep was skipped (the run index is not up to date)")
-  // SQLite's message names the damage; only its type may reach the log.
-  expect(out.text()).not.toMatch(/not a database|malformed|SQLITE_/)
-  expect(office.store.getRun(open)!.endReason).toBeNull()
+  expect(out.text()).not.toContain("rebuilding it")
+  expect(out.text()).not.toMatch(/unable to open|not a database|malformed/)
+  expect(office.store.getRun(built.open)!.endReason).toBeNull()
 })
 
 /** How a process exited. */
