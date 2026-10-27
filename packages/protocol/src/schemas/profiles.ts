@@ -1,4 +1,3 @@
-// Protocol schemas: profiles.
 import { z } from "zod"
 import { GitId, Handle, Timestamp, Ulid } from "./common"
 

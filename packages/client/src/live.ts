@@ -8,7 +8,7 @@ export type PartUpdated = { message_id: string; part: Part }
 /** `part.delta` data: text appended to a text part. */
 export type PartDelta = { message_id: string; part_id: string; text: string }
 
-const isObject = (v: unknown): v is Record<string, any> => typeof v === "object" && v !== null && !Array.isArray(v)
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v)
 const isString = (v: unknown): v is string => typeof v === "string"
 const isPart = (v: unknown): v is Part => isObject(v) && isString(v.id) && isString(v.type)
 

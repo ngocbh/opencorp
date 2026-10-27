@@ -1,4 +1,3 @@
-// Protocol schemas: questions.
 import { z } from "zod"
 import { Handle, Timestamp, Ulid } from "./common"
 

@@ -1,4 +1,3 @@
-// Protocol schemas: events.
 import { z } from "zod"
 import { Timestamp, Ulid } from "./common"
 

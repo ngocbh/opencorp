@@ -10,8 +10,6 @@ export type Identity = { handle: string; device: string; token: string }
 
 /** A device name: within one person, as the office's `Device.name` allows. */
 export const DEVICE_NAME = /^[a-z0-9][a-z0-9._-]{0,62}$/
-/** A token hash, as `person.yaml` lists it. */
-export const TOKEN_SHA256 = /^[0-9a-f]{64}$/
 
 /** A new device token: `act_` and 32 random bytes in unpadded base64url. */
 export function newToken() {

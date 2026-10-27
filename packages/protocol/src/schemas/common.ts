@@ -1,4 +1,3 @@
-// Protocol schemas: common.
 import { z } from "zod"
 
 /**

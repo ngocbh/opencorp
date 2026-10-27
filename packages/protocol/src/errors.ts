@@ -1,8 +1,8 @@
 import { z } from "zod"
 
 /**
- * Error codes the office sends in `ApiError.error` and clients may branch on; route modules add theirs as they
- * land. `ApiError.error` stays a plain string, so a client ignores a code it doesn't know.
+ * Error codes the office sends in `ApiError.error` and clients may branch on. `ApiError.error` stays a plain string,
+ * so a client ignores a code it doesn't know.
  */
 export const ERROR_CODES = [
   "bad_credentials",

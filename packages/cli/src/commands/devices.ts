@@ -16,7 +16,7 @@ const day = (ts: string) => new Date(ts).toLocaleDateString()
 /**
  * This office's browser sessions for `person`, or none when there's nothing the asker may see: agents have none,
  * and someone else's (403), an unknown person (404), an agent (422), an office without HQ (501) or from before it
- * (no_route) leave the section out, so `devices list` reads as it did before.
+ * (no_route) leave the section out.
  */
 async function browsersOf(office: OfficeClient, person: Person): Promise<BrowserSession[]> {
   if (person.kind !== "human") return []

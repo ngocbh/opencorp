@@ -1,4 +1,3 @@
-// Protocol schemas: people.
 import { z } from "zod"
 import { DeviceName, GitId, Handle, Id, PasswordHash, Timestamp, TokenHash } from "./common"
 import { HarnessPolicy, RepoIssue, Routine, Sop } from "./company"

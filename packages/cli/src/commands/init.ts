@@ -8,7 +8,7 @@ import { type SetupDeps, realSetupDeps, setUp } from "../setup"
  * from an interview with it (refusing if there is one) and onboards this machine; then the office opens
  * as `opencorp` opens it. The flags answer the interview up front; a key is never a flag. With
  * `--provider-stdin` it asks nothing. Without a terminal (or with TERM=dumb), it runs on stdin and
- * stdout as it did before the setup screen.
+ * stdout.
  */
 export function init(argv: string[], deps: SetupDeps = realSetupDeps): Promise<number> {
   return setUp("init", argv, deps)
