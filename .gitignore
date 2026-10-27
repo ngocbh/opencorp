@@ -2,10 +2,6 @@
 node_modules/
 dist/
 *.tsbuildinfo
-.venv/
-__pycache__/
-*.pyc
-.pytest_cache/
 .env
 .DS_Store
 packages/app/test-results/

@@ -157,9 +157,8 @@ test("the socket stream still carries every type", async () => {
   // HQ's stream filters by type; the socket's must not.
   const types: Event["type"][] = [
     "profile.updated",
-    "feedback.created",
-    "debrief.updated",
     "profile_proposal.created",
+    "profile_proposal.updated",
     "comment.created",
     "session.updated",
   ]

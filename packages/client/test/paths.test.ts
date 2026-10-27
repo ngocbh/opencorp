@@ -15,7 +15,7 @@ test("the socket lives under OPENCORP_HOME, defaulting to ~/.opencorp", () => {
   expect(defaultSocket()).toBe(`${os.homedir()}/.opencorp/office/office.sock`)
 })
 
-test("an empty OPENCORP_HOME means the default, and a leading ~/ is the home directory, as in Python", () => {
+test("an empty OPENCORP_HOME means the default, and a leading ~/ is the home directory", () => {
   process.env.OPENCORP_HOME = ""
   expect(opencorpHome()).toBe(`${os.homedir()}/.opencorp`)
   process.env.OPENCORP_HOME = "~/offices/acme"

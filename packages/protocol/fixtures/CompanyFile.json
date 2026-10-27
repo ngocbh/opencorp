@@ -1,7 +1,0 @@
-{
-  "path": "people/ngocbh/person.yaml",
-  "commit": "0123456789abcdef0123456789abcdef01234567",
-  "content": "text",
-  "text": "handle: ngocbh\nname: Ngoc\nkind: human\ntitle: CEO\nmanager: null\n",
-  "rewritten": true
-}

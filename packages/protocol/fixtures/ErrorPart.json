@@ -1,5 +1,0 @@
-{
-  "id": "01JA1P0000000000000000000C",
-  "type": "error",
-  "message": "The run failed: Model invocation failed (OpenAIAuthenticationError). Send your message again."
-}

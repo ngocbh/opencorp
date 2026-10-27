@@ -63,7 +63,7 @@ test("422 text names the field and a fixed phrase", () => {
     [Schemas.SetupPrompt, { text: "hi" }, "type: is required"],
     [z.strictObject({ toString: z.string() }), {}, "toString: is required"],
     [pets, { colour: SECRET, pet: { type: SECRET } }, "colour: isn't an allowed value; pet: isn't an allowed value"],
-    [Schemas.ConfirmFollowUpsRequest, { indices: ["a", "b", "c"] }, "indices: has the wrong type"],
+    [z.strictObject({ indices: z.array(z.int()) }), { indices: ["a", "b", "c"] }, "indices: has the wrong type"],
   ]
   for (const [schema, data, text] of cases) expect([data, message(schema, data)]).toEqual([data, text])
 })

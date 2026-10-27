@@ -9,8 +9,6 @@ export const Event = z.strictObject({
     "work_item.created", "work_item.updated", "comment.created",
     "session.created", "session.updated",
     "question.created", "question.updated",
-    "feedback.created", "feedback.updated",
-    "debrief.created", "debrief.updated",
     "profile.updated",
     "profile_proposal.created", "profile_proposal.updated",
     "company.updated", "run.updated",

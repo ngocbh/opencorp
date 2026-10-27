@@ -1,5 +1,5 @@
 /** Secret scrubbing for asset-tool results and audit rows: every form of a secret the office
- *  knows, as Python's monitor scrubs them (perm/monitor.py), with the Python string functions it relies on. */
+ *  knows, as the Python office's monitor scrubbed them, with the Python string functions it relied on. */
 
 import { Buffer } from "node:buffer"
 import { MIN_VALUE_CHARS } from "../secrets.ts"

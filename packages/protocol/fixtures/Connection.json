@@ -1,1 +1,0 @@
-{ "name": "azure-2", "provider": "azure", "method": "api_key", "model": "gpt-4o", "default": false }

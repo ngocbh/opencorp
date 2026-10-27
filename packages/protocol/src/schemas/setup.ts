@@ -45,8 +45,8 @@ export const SetupStep = z.strictObject({
 export type SetupStep = z.input<typeof SetupStep>
 
 /**
- * One line `python -m opencorp.install init|onboard --json-prompts` writes on stdout: a question for
- * `opencorp`'s setup screen, or something to show.
+ * One line `opencorp init|onboard --json-prompts` writes on stdout: a question for `opencorp`'s setup
+ * screen, or something to show.
  */
 export const SetupPrompt = z.discriminatedUnion("type", [
   SetupAsk, SetupChoose, SetupSecret, SetupSay, SetupStep,

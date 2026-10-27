@@ -16,15 +16,15 @@ const NAMES = [
   "Timestamp", "CompanyDefaults", "Company", "HarnessPolicy", "Sop", "Routine", "Person", "Group",
   "AssetTool", "Grant", "Asset", "WorkItem", "Comment", "Session", "HarnessUsage", "Message", "Part",
   "TextPart", "FilePart", "ToolPart", "ErrorPart", "Permission", "QuestionOption", "QuestionPage",
-  "AnswerField", "DiscussionEntry", "Question", "Profile", "ProfileProposal", "FollowUp", "Debrief",
-  "Feedback", "Event", "LiveEvent", "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest",
+  "AnswerField", "DiscussionEntry", "Question", "Profile", "ProfileProposal", "Event", "LiveEvent",
+  "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest",
   "RepoIssue", "CompanyView", "CommitInfo", "CompanyTreeEntry", "CompanyTree", "CompanyFile", "RunSummary",
   "RunPage", "RunUsage", "RunDetail", "RunNode", "RunDivider", "RunNodePage", "RunEvent", "RunEventPage",
   "RunLiveRecord", "RunLiveCall", "RunLiveStart", "RunLiveChunk", "RunLiveEnd", "RunUpdated", "PersonCost",
   "CostReport", "ApiVersion", "AppBuild", "Health", "HqTcp", "HqStatus",
   "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession", "HqLoginRequest", "HireRequest",
   "HireResponse", "ApiError", "AnswerRequest", "SideChatRequest", "SendBackRequest", "ProfileWriteRequest",
-  "VersionConflict", "ProfileManagerRequest", "FeedbackRequest", "ConfirmFollowUpsRequest",
+  "VersionConflict", "ProfileManagerRequest",
   "AddDeviceRequest", "LoginRequest", "SetPasswordRequest", "Connection", "ConnectionList", "ModelOption",
   "ModelList", "SetModelRequest", "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest",
   "ConnectionLogin", "SetupPrompt", "SetupAsk", "SetupChoose", "SetupSecret", "SetupSay", "SetupStep",
@@ -112,7 +112,7 @@ test("objects are closed and have no format", () => {
 
 const ENTITIES = [
   "Company", "Person", "Group", "Asset", "WorkItem", "Comment", "Session", "Message", "Permission", "Question",
-  "Profile", "ProfileProposal", "Debrief", "Feedback", "Event", "LiveEvent",
+  "Profile", "ProfileProposal", "Event", "LiveEvent",
 ]
 
 test("every entity has a fixture", () => {
@@ -122,7 +122,7 @@ test("every entity has a fixture", () => {
 const BODIES = [
   "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "RepoIssue", "HireRequest", "HireResponse",
   "ApiError", "AnswerRequest", "SideChatRequest", "SendBackRequest", "ProfileWriteRequest", "VersionConflict",
-  "ProfileManagerRequest", "FeedbackRequest", "ConfirmFollowUpsRequest", "AddDeviceRequest", "LoginRequest",
+  "ProfileManagerRequest", "AddDeviceRequest", "LoginRequest",
   "SetPasswordRequest", "Connection", "ConnectionList", "ModelOption", "ModelList", "SetModelRequest",
   "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin", "CompanyView",
   "CostReport", "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
