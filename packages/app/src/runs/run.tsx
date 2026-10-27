@@ -277,8 +277,8 @@ export function RunPage(props: { id: string }) {
     onCleanup(off)
   })
   // Events missed while the office was away, or an office without the runs routes restarted (updated, perhaps): read
-  // again once it's back. Not deferred, so a page opened while the
-  // office is away knows the status it opened with (`before` is undefined only on this first run).
+  // again once it's back. Not deferred, so a page opened while the office is away knows the status it opened with
+  // (`before` is undefined only on this first run).
   createEffect(on(office.status, (now, before) => void (now === "online" && before !== undefined && before !== "online" && refetch.call())))
 
   /** What the log status says while the log can't be read, or nothing once it can. */
