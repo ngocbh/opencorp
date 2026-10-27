@@ -515,6 +515,29 @@ test("a line over the page cap maps to a stub with its size", async () => {
   expect([lineEvent(huge.subarray(0, -1), 1), lineEvent(edge.subarray(0, -1), 2)]).toEqual(page.events.slice(0, 2))
 })
 
+test("a stub whose line is no longer its seq ends the page", async () => {
+  const huge = committed(1, "big", { output: "y".repeat(BIG_LINE + 10) })
+  const file = logOf(runStarted(0), huge, started(2, "next"))
+  const index = await refresh(file, null)
+  // Caught after a rollback and a new append: line 1 now holds seq 5, as long as the line it replaced.
+  const moved = committed(5, "big", { output: "y".repeat(BIG_LINE + 10) })
+  expect(moved.length).toBe(huge.length)
+  fs.writeFileSync(file, Buffer.concat([runStarted(0), moved, started(2, "next")]))
+  expect(readEvents(file, index, { after: 0, limit: 10 })).toEqual({ events: [], next_after: 0, cut: false })
+  expect([...logEvents(file, 1, null, index)]).toEqual([null])
+  expect(lineEvent(moved, 1)).toBeNull()
+  expect(lineEvent(huge, 1)).toEqual({ seq: 1, kind: "pool_commit", size: huge.length })
+})
+
+test("one huge record whose line is no longer its seq is null", async () => {
+  const over = commitOfSize(1, "big", HUGE_LINE + 1, "b")
+  const file = logOf(runStarted(0), over, started(2, "next"))
+  const index = await refresh(file, null)
+  expect(readEvent(file, index, 1)).toEqual({ seq: 1, kind: "pool_commit", size: HUGE_LINE + 1 })
+  fs.writeFileSync(file, Buffer.concat([runStarted(0), commitOfSize(7, "big", HUGE_LINE + 1, "b"), started(2, "next")]))
+  expect(readEvent(file, index, 1)).toBeNull()
+}, 60_000)
+
 test("a line that is not its seq maps to null", () => {
   expect(lineEvent(started(5, "a"), 4)).toBeNull()
   expect(lineEvent(Buffer.from("not json\n"), 0)).toBeNull()

@@ -502,19 +502,23 @@ function window(index: Index, first: number): [number, number, number] {
   return [seq, start, index.offset]
 }
 
-/** One complete line: its bytes, or null when it is longer than the caller's cap; its first 256 bytes; its size; the
- *  byte after it. */
+/** One complete line: its bytes, or null when it is longer than the caller's cap; its first 256 bytes; its last
+ *  TAIL bytes when its bytes are null (else empty); its size; the byte after it. */
 interface Line {
   bytes: Buffer | null
   head: Buffer
+  tail: Buffer
   size: number
   end: number
 }
 
+/** How much of the end of a line too long to hold is read, for its seq. */
+const TAIL = 64
+
 /**
  * The complete lines of `fd` between byte `start` and byte `stop`, one at a time, after skipping `skip` of them. Lines
  * are scanned CHUNK at a time for newlines, keeping only a line's start and first 256 bytes; a line no longer than
- * `cap` is then read whole in one read, and a longer one is never held.
+ * `cap` is then read whole in one read, and of a longer one only its last TAIL bytes are.
  */
 function* lines(fd: number, start: number, stop: number, cap: number, skip: number): Generator<Line> {
   const chunk = Buffer.allocUnsafe(Math.min(CHUNK, stop - start))
@@ -537,11 +541,15 @@ function* lines(fd: number, start: number, stop: number, cap: number, skip: numb
       } else {
         const size = pos + end - at
         let bytes: Buffer | null = null
+        let tail = Buffer.alloc(0)
         if (size <= cap) {
           bytes = Buffer.allocUnsafe(size)
           bytes = bytes.subarray(0, fs.readSync(fd, bytes, 0, size, at))
+        } else {
+          tail = Buffer.allocUnsafe(TAIL)
+          tail = tail.subarray(0, fs.readSync(fd, tail, 0, TAIL, pos + end - TAIL))
         }
-        yield { bytes, head, size, end: pos + end }
+        yield { bytes, head, tail, size, end: pos + end }
         head = Buffer.alloc(0)
       }
       at = pos + end
@@ -658,15 +666,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-// yian writes sorted-key JSON, so a record starts with "at" then "kind": an oversized line's kind can be read without
-// parsing it. Its seq is its line number, so no line's seq is ever read from its text.
+// yian writes sorted-key JSON, so a record starts with "at" then "kind" and ends with "seq": an oversized line's kind
+// and seq can be read without parsing it. Its seq is still its line number: the one at its end only checks it.
 const HEAD = /^\{(?:"at":"[^"]{0,64}",)?"kind":"([a-z_]{1,64})"/
+const SEQ = /,"seq":(0|[1-9][0-9]{0,15})\}\n$/
 
 /** Decodes UTF-8, throwing a TypeError on bytes that aren't UTF-8. */
 const UTF8 = new TextDecoder("utf-8", { fatal: true })
 
-/** Record `seq`, `size` bytes long, as its size and the kind its first bytes `head` name: it isn't parsed. */
-function stub(head: Buffer, seq: number, size: number): RunEvent {
+/** Record `seq`, `size` bytes long, as its size and the kind its first bytes `head` name: it isn't parsed. Null when
+ *  the line's last bytes `tail` (its newline included) don't end with seq `seq` (the file changed since it was
+ *  indexed). */
+function stub(head: Buffer, tail: Buffer, seq: number, size: number): RunEvent | null {
+  if (SEQ.exec(tail.toString("latin1"))?.[1] !== String(seq)) return null
   const found = HEAD.exec(head.subarray(0, 256).toString("latin1"))
   return { seq, kind: found?.[1] ?? "unknown", size }
 }
@@ -757,7 +769,7 @@ export function readEvents(
         nextAfter = events.at(-1)!.seq
         break
       }
-      const event = line.bytes === null ? stub(line.head, seq, line.size) : decode(line.bytes, seq, false)
+      const event = line.bytes === null ? stub(line.head, line.tail, seq, line.size) : decode(line.bytes, seq, false)
       if (event === null) {
         // Rewritten since it was indexed: the next request's refresh rebuilds.
         nextAfter = events.at(-1)?.seq ?? from
@@ -792,13 +804,15 @@ const NL = Buffer.from("\n")
 export function lineEvent(bytes: Buffer, seq: number): RunEvent | null {
   // Pages count a line's size with its newline: the stub size and the BIG_LINE boundary must match theirs.
   const line = bytes.at(-1) === 0x0a ? bytes : Buffer.concat([bytes, NL])
-  return line.length > BIG_LINE ? stub(line.subarray(0, 256), seq, line.length) : decode(line, seq, false)
+  return line.length > BIG_LINE
+    ? stub(line.subarray(0, 256), line.subarray(-TAIL), seq, line.length)
+    : decode(line, seq, false)
 }
 
 /**
  * The records of the log `path` from seq `from` through `to` (to its last complete line when null), each as
  * `lineEvent` maps it; a null, then nothing more, at a line that doesn't read as its seq (a line over BIG_LINE isn't
- * parsed, so its seq isn't checked: it is its line number). With `index` of the same file (device and inode), the read
+ * parsed: the seq at its end is checked). With `index` of the same file (device and inode), the read
  * starts at its last sparse entry at or before `from` rather than at byte 0, and still reads past what it indexed; a
  * file edited since then yields that null too when it is now shorter than that entry. An index of another file is
  * ignored. The file is opened on the first pull and closed when the generator ends or is returned.
@@ -814,7 +828,7 @@ export function* logEvents(
   try {
     const st = fs.fstatSync(fd, { bigint: true })
     const size = Number(st.size)
-    // An index of a replaced file could start mid-line and count a stub (never checked) as the wrong seq.
+    // An index of a replaced file could start mid-line and count a stub (checked only at its end) as the wrong seq.
     const same = index !== null && st.dev === index.dev && st.ino === index.ino
     const [base, start] = same ? window(index, from) : [0, 0]
     if (start > size) {
@@ -823,7 +837,7 @@ export function* logEvents(
     }
     let seq = from
     for (const line of lines(fd, start, size, BIG_LINE, from - base)) {
-      const event = line.bytes === null ? stub(line.head, seq, line.size) : decode(line.bytes, seq, false)
+      const event = line.bytes === null ? stub(line.head, line.tail, seq, line.size) : decode(line.bytes, seq, false)
       yield event
       seq += 1
       // Stopping here, not at the next line, leaves that line unread.
@@ -851,7 +865,7 @@ function eventAt(path: string, index: Index, seq: number, derived: TypedValue | 
   const fd = fs.openSync(path, "r")
   try {
     for (const line of lines(fd, start, stop, HUGE_LINE, seq - base)) {
-      return line.bytes === null ? stub(line.head, seq, line.size) : decode(line.bytes, seq, true, derived)
+      return line.bytes === null ? stub(line.head, line.tail, seq, line.size) : decode(line.bytes, seq, true, derived)
     }
     return null
   } finally {
