@@ -197,7 +197,8 @@ test("a workspace containing the tool path or its realpath is refused", () => {
 
 test("a workspace inside a tool's install tree is refused", () => {
   const root = tempDir()
-  // Homebrew: bin/git and opt/git link into Cellar/git/<version>, whose libexec holds helpers git runs.
+  // Homebrew: bin/git and opt/git link into Cellar/git/<version>, whose libexec holds helpers git runs; a tool also
+  // loads its dependencies' libraries through opt/<dep> links into their kegs.
   const brew = path.join(root, "brew")
   const cellar = path.join(brew, "Cellar", "git")
   fakeTool(path.join(cellar, "2.47.0", "bin", "git"))
@@ -236,6 +237,7 @@ test("a workspace inside a tool's install tree is refused", () => {
     path.join(cellar, "2.47.0", "libexec", "git-core"),
     path.join(cellar, "2.46.0"),
     path.join(brew, "opt", "git", "libexec"),
+    path.join(brew, "Cellar", "libevent", "2.1.12", "lib"),
     path.join(codexPkg, "vendor"),
     path.join(store, "abc-procps-4.0", "lib"),
     path.join(root, "opt", "tmux", "share"),
@@ -248,7 +250,7 @@ test("a workspace inside a tool's install tree is refused", () => {
   }
   const gitCore = fs.realpathSync(path.join(cellar, "2.47.0", "libexec", "git-core"))
   expect(() => checkWorkspace(gitCore, guards)).toThrow(
-    `workspace ${gitCore} is inside ${fs.realpathSync(cellar)}, where the office or a program it runs is installed; use a project folder`,
+    `workspace ${gitCore} is inside ${fs.realpathSync(path.dirname(cellar))}, where the office or a program it runs is installed; use a project folder`,
   )
   const outside = [
     path.join(brew, "var", "project"),

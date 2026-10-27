@@ -64,9 +64,10 @@ export function installPaths([program, ...rest]: readonly [string, ...string[]] 
 
 /**
  * The folder a program at the realpath `real` is installed in, whose files it may run or load: under a Homebrew
- * `Cellar`, `<prefix>/Cellar/<name>` (every version, as an upgrade repoints the pinned link to a new one); in the Nix
- * store, its `/nix/store/<entry>`; in a `bin` folder, that folder's parent; else its own folder. A candidate holding
- * `home` (or the whole disk) falls back to the program's own folder, and then to none.
+ * `Cellar`, `<prefix>/Cellar` (every keg, since a tool loads its dependencies' libraries through `opt/<dep>` links into
+ * the Cellar, and an upgrade repoints the pinned link to a new version); in the Nix store, its `/nix/store/<entry>`; in
+ * a `bin` folder, that folder's parent; else its own folder. A candidate holding `home` (or the whole disk) falls back
+ * to the program's own folder, and then to none.
  */
 export function toolRoot(real: string, home: string = os.homedir()): string | undefined {
   const parts = real.split("/")
@@ -74,7 +75,7 @@ export function toolRoot(real: string, home: string = os.homedir()): string | un
   const store = parts.findIndex((part, i) => part === "nix" && parts[i + 1] === "store")
   const bin = path.dirname(real)
   let root = path.basename(bin) === "bin" ? path.dirname(bin) : bin
-  if (cellar > 0 && cellar + 2 < parts.length) root = parts.slice(0, cellar + 2).join("/")
+  if (cellar > 0 && cellar + 2 < parts.length) root = parts.slice(0, cellar + 1).join("/")
   else if (store >= 0 && store + 3 < parts.length) root = parts.slice(0, store + 3).join("/")
   for (const candidate of [root, bin]) if (!isInside(home, candidate)) return candidate
   return undefined
