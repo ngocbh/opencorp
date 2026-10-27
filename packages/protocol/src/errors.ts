@@ -26,7 +26,6 @@ export const ERROR_CODES = [
   "harness_card",
   "host_not_allowed",
   "http_error",
-  "indexing",
   "internal_error",
   "invalid_answer",
   "invalid_body",

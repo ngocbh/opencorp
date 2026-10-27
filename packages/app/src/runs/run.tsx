@@ -24,13 +24,11 @@ import { flowText, shortId, STATUS_DOT, took, where } from "./format"
 import { CopyId, RunsUnavailable } from "./list"
 import { liveFollow, shownCalls, type LiveCall } from "./live"
 import { NodeDetail } from "./node"
-import { LogLine, Raw, reading, type LogStatus, type Progress, type RawApi } from "./raw"
+import { Raw, type RawApi } from "./raw"
 import { readQueue } from "./queue"
 import { detailBounds, detailWidth, readDetailWidth, saveDetailWidth, Splitter, SPLITTER_PX } from "./split"
 import { dividerText, isBoundary, nodeStatus, takeNewest, timeline, type Group, type Row } from "./timeline"
 
-/** How often a log being read for the first time is asked about again. */
-const POLL_MS = 1_000
 /** Live updates re-read the page at most this often. */
 const REFETCH_MS = 1_000
 /** A failed node's error is cut to this many characters in the Timeline. */
@@ -45,7 +43,6 @@ const LINK = `rounded underline ${RING}`
 /** What a log state says when the office sent no message for it. */
 const LOG_STATE: Record<RunDetail["log_state"], string> = {
   ok: "",
-  indexing: "reading the log",
   missing: "the run log is missing",
   not_started: "no run log: the run didn't start",
   unsupported_schema: "this office can't read this run log",
@@ -75,8 +72,6 @@ export function RunPage(props: { id: string }) {
     dropped: false,
     loaded: false,
   })
-  /** A node page's progress, while it answers "indexing". */
-  const [indexing, setIndexing] = createSignal<Progress>()
   const [failure, setFailure] = createSignal<Failure>()
   /** The office has no runs routes (it's older than Run Logs): live updates don't read again until it reconnects. */
   const [unavailable, setUnavailable] = createSignal(false)
@@ -134,11 +129,7 @@ export function RunPage(props: { id: string }) {
   // queued again.
   const queue = readQueue()
   let disposed = false
-  let poll: ReturnType<typeof setTimeout> | undefined
-  onCleanup(() => {
-    disposed = true
-    clearTimeout(poll)
-  })
+  onCleanup(() => (disposed = true))
 
   /** Queues `read`; its failure shows inline (unless the office has no runs routes), and a later success clears it. */
   function enqueue(read: () => Promise<void>, key?: string) {
@@ -159,12 +150,6 @@ export function RunPage(props: { id: string }) {
     }, key)
   }
 
-  /** Asks again in a second: the log is still being read for the first time. */
-  function again() {
-    clearTimeout(poll)
-    poll = setTimeout(refresh, POLL_MS)
-  }
-
   /** Shows `nodes`, `dividers` and the older pages' cursor, each node and divider updated in place by its seq. */
   function show(s: { nodes: RunNode[]; dividers: RunDivider[]; next: number | null; dropped: boolean }) {
     for (const n of s.nodes) live.seen(n.end_seq ?? n.seq)
@@ -181,15 +166,9 @@ export function RunPage(props: { id: string }) {
       if (disposed) return
       setDetail("value", reconcile(d, { key: "run_id" }))
       if (detail.kids) await readKids()
-      if (d.log_state === "indexing") return again()
       if (d.log_state !== "ok") return
       const page = await office.client.runs.nodes(props.id)
       if (disposed) return
-      if (page.indexing) {
-        setIndexing({ done: page.bytes_done ?? 0, total: page.bytes_total ?? 0 })
-        return again()
-      }
-      setIndexing(undefined)
       show(takeNewest(log.loaded ? unwrap(log) : undefined, page))
     }, "refresh")
   }
@@ -202,10 +181,6 @@ export function RunPage(props: { id: string }) {
       const page = await office.client.runs.nodes(props.id, before)
       // A refresh that read the whole Timeline since has nothing older to add.
       if (disposed || log.next !== before) return
-      if (page.indexing) {
-        setIndexing({ done: page.bytes_done ?? 0, total: page.bytes_total ?? 0 })
-        return again()
-      }
       // The button goes once the oldest page is in: focus moves to the first node it brought, not to the page.
       const handOff = document.activeElement === olderButton && page.next_before == null
       show({
@@ -282,14 +257,12 @@ export function RunPage(props: { id: string }) {
   createEffect(on(office.status, (now, before) => void (now === "online" && before !== undefined && before !== "online" && refetch.call())))
 
   /** What the log status says while the log can't be read, or nothing once it can. */
-  const logStatus = (): LogStatus | undefined => {
+  const logStatus = (): string | undefined => {
     const d = detail.value
     if (!d || d.log_state === "ok") return undefined
-    if (d.log_state === "indexing" && d.bytes_done != null && d.bytes_total != null)
-      return reading({ done: d.bytes_done, total: d.bytes_total })
     const run = d.run
-    if (d.log_state === "not_started" && (run.status === "idle" || run.status === "waiting")) return { text: "idle, not started yet" }
-    return { text: d.log_message || LOG_STATE[d.log_state] }
+    if (d.log_state === "not_started" && (run.status === "idle" || run.status === "waiting")) return "idle, not started yet"
+    return d.log_message || LOG_STATE[d.log_state]
   }
 
   // The Timeline and Raw tabs; Raw reads its first page when it's first shown, and both keep their place after.
@@ -349,7 +322,13 @@ export function RunPage(props: { id: string }) {
                   </a>
                 </Show>
               </div>
-              <Show when={logStatus()}>{(s) => <LogLine status={s()} />}</Show>
+              <Show when={logStatus()}>
+                {(text) => (
+                  <p role="status" aria-label="Log" class={`text-sm ${MUTED}`}>
+                    {text()}
+                  </p>
+                )}
+              </Show>
               <Show when={d().log_state === "ok"}>
                 <div
                   role="tabpanel"
@@ -358,7 +337,6 @@ export function RunPage(props: { id: string }) {
                   hidden={tab() !== "timeline"}
                   class="space-y-2"
                 >
-                  <Show when={indexing()}>{(p) => <LogLine status={reading(p())} />}</Show>
                   <Show when={log.loaded}>
                     <Show when={log.nodes.length} fallback={<p class={`text-sm ${MUTED}`}>No node has started yet.</p>}>
                       <Timeline

@@ -229,7 +229,7 @@ test("run statuses node statuses and log states", () => {
   expect(Schemas.RunNode.shape.status.options).toEqual(
     ["open", "succeeded", "routed", "expanded", "failed", "restarted"])
   expect(Schemas.RunDetail.shape.log_state.options).toEqual(
-    ["ok", "indexing", "missing", "not_started", "unsupported_schema"])
+    ["ok", "missing", "not_started", "unsupported_schema"])
 })
 
 test("run updated is an event type", () => {
@@ -245,14 +245,21 @@ test.each([["RunSummary", "reason"], ["RunNode", "error"]] as const)(
   },
 )
 
-test.each([["RunNodePage", Schemas.RunNodePage], ["RunEventPage", Schemas.RunEventPage]] as const)(
-  "node and record pages can say the log is still being read [%s]",
-  (_, page) => {
-    expect(page.shape.indexing.parse(undefined)).toBe(false)
-    expect(page.shape.indexing.safeParse("yes").success).toBe(false)
-    expect(Object.keys(page.shape)).toEqual(expect.arrayContaining(["bytes_done", "bytes_total"]))
+test.each([["RunDetail", Schemas.RunDetail], ["RunNodePage", Schemas.RunNodePage], ["RunEventPage", Schemas.RunEventPage]] as const)(
+  "no run page says the log is still being read [%s]",
+  (def, page) => {
+    for (const key of ["indexing", "bytes_done", "bytes_total"]) {
+      expect(Object.keys(page.shape)).not.toContain(key)
+      expect(page.safeParse({ ...(load(FIXTURES, def) as object), [key]: 0 }).success).toBe(false)
+    }
   },
 )
+
+test("a record doesn't say evidence was left out", () => {
+  expect(Object.keys(Schemas.RunEvent.shape)).not.toContain("evidence_left_out")
+  expect(Schemas.RunEvent.safeParse({ ...(load(FIXTURES, "RunEvent") as object), evidence_left_out: true }).success)
+    .toBe(false)
+})
 
 test("a node kind is nullable and optional", () => {
   const { kind: _, ...data } = load(FIXTURES, "RunNode") as Record<string, unknown>

@@ -92,6 +92,10 @@ test("every code a client branches on is a protocol error code", () => {
   expect([...found].filter((code) => !own.has(code) && !codes.includes(code))).toEqual([])
 })
 
+test("the office never says a log is still being read", () => {
+  expect<readonly string[]>(ERROR_CODES).not.toContain("indexing")
+})
+
 test("the codex session codes are protocol error codes", () => {
   const codes: readonly string[] = ERROR_CODES
   for (const code of [

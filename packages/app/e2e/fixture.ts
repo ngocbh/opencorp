@@ -351,7 +351,7 @@ function runRoute(url: URL, id: string, rest: string, seq: string | undefined): 
   log.runReads.push(`${id}${rest}${url.search}`)
   const page = state.runPages[id]
   if (!page) return json({ error: "not_found", message: `no run ${id}` }, 404)
-  const { log_state, log_message, bytes_done, bytes_total } = page.detail
+  const { log_state, log_message } = page.detail
   if (rest === "") return json(page.detail)
   // The download comes before the log-state checks: a log this office can't read still downloads.
   if (rest === "/log")
@@ -359,27 +359,22 @@ function runRoute(url: URL, id: string, rest: string, seq: string | undefined): 
       "content-type": "application/x-ndjson", "content-disposition": `attachment; filename="${id}.jsonl"` } })
   if (log_state === "not_started" || log_state === "missing") return json({ error: "no_log", message: "this run has no log" }, 404)
   if (log_state === "unsupported_schema") return json({ error: "unsupported_schema", message: log_message }, 409)
-  const indexing = log_state === "indexing" || page.indexing
-  const progress = { bytes_done: bytes_done ?? 120 << 20, bytes_total: bytes_total ?? 480 << 20 }
   if (rest === "/nodes") {
-    if (indexing) return json({ nodes: [], dividers: [], indexing: true, ...progress })
     const before = url.searchParams.get("before")
     const older = page.nodes.filter((n) => before === null || n.seq < Number(before))
     const shown = older.slice(0, 8) // the office's page is 1,000; 8 here, so unfolding older pages is tested
     const low = shown.length ? shown[shown.length - 1]!.seq : 0
     return json({ nodes: shown, dividers: page.dividers.filter((d) => d.seq >= low && (before === null || d.seq < Number(before))),
-                  next_before: older.length > shown.length ? low : null, dropped: false, indexing: false })
+                  next_before: older.length > shown.length ? low : null, dropped: false })
   }
   if (page.fail) return json({ error: page.fail, message: `${page.fail} here` }, 503)
   if (rest === "/events") {
-    if (indexing) return json({ events: [], indexing: true, ...progress })
     const after = Number(url.searchParams.get("after") ?? -1)
     const events = page.events.filter((e) => e.seq > after)
     // The office's page is 500 records; 4 here, so loading more is tested.
     return json({ events: events.slice(0, 4), next_after: events.length > 4 ? events[3]!.seq : null, cut: false })
   }
   if (seq !== undefined) {
-    if (indexing) return json({ error: "indexing", message: "the log is still being read; try again" }, 503)
     const found = state.wholeEvents[id]?.[Number(seq)] ?? page.events.find((e) => e.seq === Number(seq))
     return found ? json(found) : json({ error: "not_found", message: `run ${id} has no record ${seq}` }, 404)
   }
@@ -418,16 +413,14 @@ async function control(req: Request, url: URL): Promise<Response> {
       return json({ ok: true })
     case "/__fixture/run": {
       // Changes one run's page: `detail` merges into its header (`detail.run` into its summary); `add` puts newer
-      // node attempts before its others; `addEvents` puts newer records after its others; `indexing` sets whether its
-      // node and record pages answer "indexing"; `fail` is an error code its record reads answer with (null for
-      // none). A run with no page gets one from its summary.
+      // node attempts before its others; `addEvents` puts newer records after its others; `fail` is an error code its
+      // record reads answer with (null for none). A run with no page gets one from its summary.
       const summary = summaryOf(state.runs, body.id)!
       const page = (state.runPages[body.id] ??= { nodes: [], dividers: [], events: [], detail: { run: summary,
         parent: null, repo_commit: "a".repeat(40), usage: null, models: {}, log_state: "ok" } as RunDetail })
       const { run, ...rest } = body.detail ?? {}
       page.detail = { ...page.detail, ...rest, run: { ...page.detail.run, ...run } }
       if (body.add) page.nodes = [...body.add, ...page.nodes]
-      if ("indexing" in body) page.indexing = body.indexing
       if ("fail" in body) page.fail = body.fail
       if (body.addEvents) page.events = [...page.events, ...body.addEvents]
       return json({ ok: true })

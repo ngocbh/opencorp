@@ -1,1 +1,1 @@
-{"nodes": [{"seq": 91, "node_id": "chat#3/reply", "status": "open"}, {"seq": 80, "node_id": "chat#3/reply", "status": "restarted"}], "dividers": [{"seq": 90, "retried": ["chat#3/reply"]}], "next_before": 80, "indexing": false}
+{"nodes": [{"seq": 91, "node_id": "chat#3/reply", "status": "open"}, {"seq": 80, "node_id": "chat#3/reply", "status": "restarted"}], "dividers": [{"seq": 90, "retried": ["chat#3/reply"]}], "next_before": 80}

@@ -92,13 +92,9 @@ export const RunDetail = z.strictObject({
   models: z.record(z.string(), z.string()).default(() => ({})),
   /** Null when not recorded: the office records usage only for runs the chat harness runs, not debriefs. */
   usage: RunUsage.nullable().default(null),
-  log_state: z.enum(["ok", "indexing", "missing", "not_started", "unsupported_schema"]),
+  log_state: z.enum(["ok", "missing", "not_started", "unsupported_schema"]),
   /** What to show for any log_state but ok. */
   log_message: z.string().nullable().default(null),
-  /** While indexing: bytes of the log read so far. */
-  bytes_done: z.int().min(0).nullable().default(null),
-  /** While indexing: the log's size in bytes. */
-  bytes_total: z.int().min(0).nullable().default(null),
 })
 export type RunDetail = z.input<typeof RunDetail>
 
@@ -110,8 +106,8 @@ export const RunNode = z.strictObject({
   end_seq: z.int().min(0).nullable().default(null),
   node_id: z.string().min(1),
   /**
-   * The node's kind by static path, such as agent, case, loop, map or call. Always null until Yian lists a
-   * flow's nodes publicly (yian#943); clients show nothing for null.
+   * The node's kind by static path, such as agent, case, loop, map or call, from the flow the run log recorded;
+   * null when that flow doesn't load. Clients show nothing for null.
    */
   kind: z.string().nullable().default(null),
   status: z.enum(["open", "succeeded", "routed", "expanded", "failed", "restarted"]),
@@ -137,12 +133,6 @@ export const RunNodePage = z.strictObject({
   next_before: z.int().min(0).nullable().default(null),
   /** True when older attempts were dropped from the table (past 100,000): see Raw. */
   dropped: z.boolean().default(false),
-  /** True when the log is still being read for the first time: nodes is empty; ask again. */
-  indexing: z.boolean().default(false),
-  /** While indexing: bytes of the log read so far. */
-  bytes_done: z.int().min(0).nullable().default(null),
-  /** While indexing: the log's size in bytes. */
-  bytes_total: z.int().min(0).nullable().default(null),
 })
 export type RunNodePage = z.input<typeof RunNodePage>
 
@@ -155,8 +145,6 @@ export const RunEvent = z.strictObject({
   payload: z.record(z.string(), z.unknown()).nullable().default(null),
   /** JSON pointers (into payload) of strings cut at 4 KiB; fetch the event by seq for the whole. */
   cut: z.array(z.string()).default(() => []),
-  /** True when evidence was left out of a page; fetch the event by seq for it. */
-  evidence_left_out: z.boolean().default(false),
   /** Always null: the office no longer withholds payloads. Kept for compatibility; clients ignore it. */
   withheld: z.string().nullable().default(null),
   /** The record's size in bytes, when it was too large to preview. */
@@ -171,12 +159,6 @@ export const RunEventPage = z.strictObject({
   next_after: z.int().min(0).nullable().default(null),
   /** True when the page stopped at its byte cap. */
   cut: z.boolean().default(false),
-  /** True when the log is still being read for the first time: events is empty; ask again. */
-  indexing: z.boolean().default(false),
-  /** While indexing: bytes of the log read so far. */
-  bytes_done: z.int().min(0).nullable().default(null),
-  /** While indexing: the log's size in bytes. */
-  bytes_total: z.int().min(0).nullable().default(null),
 })
 export type RunEventPage = z.input<typeof RunEventPage>
 

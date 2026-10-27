@@ -160,7 +160,7 @@ test("Expand gives node detail the whole width and back; Escape still closes it 
 })
 
 test("long output scrolls inside node detail and wraps", async ({ page, request }) => {
-  const rec = { cut: [], evidence_left_out: false, withheld: null, size: null }
+  const rec = { cut: [], withheld: null, size: null }
   const long = `${"x".repeat(3000)}\n${Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n")}`
   await request.post("/__fixture/run", { data: { id: rid(2), add: [node(62, "write")], addEvents: [
     { seq: 63, kind: "node_succeeded", node_id: "write", payload: { value: long, evidence: null }, ...rec }] } })
