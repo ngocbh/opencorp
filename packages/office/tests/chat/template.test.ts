@@ -215,8 +215,9 @@ test("an interrupt after a send and before its reply starts stops that reply and
   expect(waitingAt(stopped)).toEqual(["chat#1/heard"])
   const rec = await advance(job, fake, [send("s2", "two")])
   expect(fake.requests().length).toBe(1)
-  expect(requestMessages(fake, 0).slice(-2)).toEqual([
+  expect(requestMessages(fake, 0).slice(1)).toEqual([
     { role: "user", content: "one" },
+    { role: "user", content: "[interrupted by the user]" },
     { role: "user", content: "two" },
   ])
   expect(waitingAt(rec)).toEqual(["chat#2/heard"])

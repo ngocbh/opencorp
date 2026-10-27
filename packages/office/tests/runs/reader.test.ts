@@ -101,8 +101,8 @@ test("an unknown envelope field makes the log unreadable", async () => {
 })
 
 test.each([
-  [23, "This log uses run-log schema 23, which this office can't read"],
-  [21, "This log uses run-log schema 21, which is older than this office supports"],
+  [SCHEMA + 1, `This log uses run-log schema ${SCHEMA + 1}, which this office can't read`],
+  [SCHEMA - 1, `This log uses run-log schema ${SCHEMA - 1}, which is older than this office supports`],
   ["sk-" + "a".repeat(40), "This log uses a run-log schema this office can't read"],
   [true, "This log uses a run-log schema this office can't read"],
 ])("an unknown or retired schema stops that log with a message [%s]", async (schema, message) => {
