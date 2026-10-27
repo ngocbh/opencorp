@@ -323,9 +323,10 @@ async function scan(path: string, index: Index, pace: () => Promise<void>): Prom
  * the new bytes first, so a line over LINE_CAP, complete or a torn tail, is refused before yian's reader holds it, and
  * yian's reader is stopped at the last complete line the scan saw, so it never reads a tail being written. Yields to
  * the event loop about every 10 ms, checked every 256 records and every CHUNK bytes of records, so at most one record
- * (up to LINE_CAP) is read past that between yields. The last line read is hashed after the loop: a writer that rewrites that line between the
- * read and the hash makes the next refresh rebuild once. A writer that replaces or rewrites the scanned bytes between
- * the scan and yian's read can still make yian hold a line over LINE_CAP: only a line cap in yian's reader closes that.
+ * (up to LINE_CAP) is read past that between yields. The last line read is hashed after the loop: a writer that
+ * rewrites that line between the read and the hash makes the next refresh rebuild once. A writer that replaces or
+ * rewrites the scanned bytes between the scan and yian's read can still make yian hold a line over LINE_CAP: only a
+ * line cap in yian's reader closes that.
  */
 export async function readOn(path: string, index: Index, resumed: boolean, nodeCap: number): Promise<void> {
   const pace = pacer()
@@ -365,7 +366,7 @@ function apply(index: Index, entry: RunLogEntry, nodeCap: number): void {
     index.sparse.push([seq, entry.offset])
   }
   if (kind === "run_started") {
-    const start = record as unknown as {
+    const start = record as {
       flowFingerprint: string
       learnable: boolean
       effectiveLlmByStaticPath: Record<string, Record<string, unknown>>
@@ -394,7 +395,7 @@ function apply(index: Index, entry: RunLogEntry, nodeCap: number): void {
       attempt.status = "restarted"
       index.open.delete(id)
     }
-    const ids = (record as unknown as { retryNodeIds: readonly string[] }).retryNodeIds
+    const ids = (record as { retryNodeIds: readonly string[] }).retryNodeIds
     const retried = ids.slice(0, OPEN_CAP).map(own)
     index.dividers.push([seq, retried])
     index.held += retried.reduce((sum, id) => sum + id.length, 0)
