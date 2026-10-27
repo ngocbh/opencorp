@@ -217,7 +217,7 @@ test("a secret pages answer is never in a refusal or a log line", async () => {
   })
   const cases: [QuestionRecord, unknown, string][] = [
     [key, { key: [SECRET] }, "'key' takes one label"],
-    [pin, { pin: SECRET }, "'pin' must be a whole number"],
+    [pin, { pin: SECRET }, "'pin' isn't a valid answer"],
   ]
   for (const [q, answer, message] of cases) {
     for (const action of [() => cards.answer(q.id, answer, "option"), () => actor.answer(q.id, answer, "option")]) {
