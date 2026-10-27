@@ -55,6 +55,18 @@ export function checkFolder(dir: string, label: string): void {
   if (st.mode & 0o077) throw new PrivateFileError(`${label} '${dir}' must be mode 0700`)
 }
 
+/** Creates `dir`, mode 0700, and its missing parents; an existing `dir` is left as is. */
+export function makePrivateFolder(dir: string): void {
+  fs.mkdirSync(path.dirname(dir), { recursive: true })
+  try {
+    fs.mkdirSync(dir, { mode: 0o700 })
+    fs.chmodSync(dir, 0o700) // the umask may have narrowed it
+  } catch (error) {
+    // Another call may create it at the same time.
+    if (errnoCode(error) !== "EEXIST") throw error
+  }
+}
+
 /** Takes `<dir>/.lock`, waiting up to `LOCK_TIMEOUT_MS` for another holder. */
 function lockFolder(dir: string): Promise<FileLock> {
   return waitForLock(path.join(dir, ".lock"), { private: true, timeoutMs: LOCK_TIMEOUT_MS })
@@ -205,14 +217,7 @@ export class SecretStore {
     if (trimmedLength(value) < MIN_VALUE_CHARS) {
       throw new InvalidSecretError(`secret value must be at least ${MIN_VALUE_CHARS} characters`)
     }
-    fs.mkdirSync(path.dirname(this.root), { recursive: true })
-    try {
-      fs.mkdirSync(this.root, { mode: 0o700 })
-      fs.chmodSync(this.root, 0o700) // the umask may have narrowed it
-    } catch (error) {
-      // Another call may create it at the same time.
-      if (errnoCode(error) !== "EEXIST") throw error
-    }
+    makePrivateFolder(this.root)
     checkFolder(this.root, "secret store")
     using _lock = await lockFolder(this.root)
     replaceFile(this.root, name, value)
@@ -256,7 +261,7 @@ export class SecretStore {
 }
 
 function checkName(name: string): void {
-  if (typeof name !== "string" || !NAME.test(name)) {
+  if (!NAME.test(name)) {
     // Neither this message nor set's too-short one echoes its argument: a caller who swapped name and value
     // would put the secret in the message.
     throw new InvalidSecretError(`secret name must match ${NAME.source}`)
