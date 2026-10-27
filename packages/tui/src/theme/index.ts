@@ -168,7 +168,7 @@ export const DEFAULT_THEME = "opencorp"
 /** Built-in themes by their old names, so a theme chosen before a rename still loads. */
 export const RENAMED_THEMES: Record<string, string> = { opencode: "opencorp", agentcorp: "opencorp" }
 
-/** ``name``, or what its built-in theme is called now. */
+/** `name`, or what its built-in theme is called now. */
 export function themeName(name: string) {
   return RENAMED_THEMES[name] ?? name
 }
