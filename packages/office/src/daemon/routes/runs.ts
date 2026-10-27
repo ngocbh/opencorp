@@ -9,7 +9,7 @@ import { NoLog, PAGE } from "../../runs/service.ts"
 import { NotFound } from "../../store/store.ts"
 import { PING } from "../bus.ts"
 import { HttpError, type Params, RawReply, type Route } from "../http.ts"
-import type { LiveJoin, ViewerFrame } from "../live.ts"
+import type { LiveJoin } from "../live.ts"
 import type { Office, RequestContext } from "../office.ts"
 import { utcTimestamp } from "./costs.ts"
 import { PING_MS, RESET } from "./events.ts"
@@ -165,7 +165,7 @@ const BATCH = 64
  * run has no log file. The id is looked up in the store before it is joined into a path.
  */
 export function liveTarget(ctx: RequestContext, id: string): { log: string; after: number } {
-  const raw = ctx.query.getAll("after").at(-1)
+  const raw = param(ctx, "after")
   let after = -1
   if (raw !== undefined) {
     after = Number(raw)
@@ -283,7 +283,7 @@ export async function* liveStream(
       yield liveFrame("call", { node, n, text, next_index: nextIndex })
     }
     for (;;) {
-      const item: ViewerFrame | typeof PING | null = await viewer.next(pingMs)
+      const item = await viewer.next(pingMs)
       if (!open()) return
       if (item === null) {
         if (viewer.dropped) yield RESET

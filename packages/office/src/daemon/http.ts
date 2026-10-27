@@ -351,10 +351,8 @@ export function requestListener<C>(
     // Guarded: a throwing log hook must not make the listener reject.
     const logInternal = (error: unknown) => {
       try {
-        // The type only: a message (or a settable `.name`) can quote a secret or a request's input.
-        const type = error instanceof Error ? error.constructor.name : typeof error
         const where = `${method} ${route?.path ?? "(no route)"}`
-        options.log(logLine("ERROR", "opencorp.daemon.http", `internal error on ${where}: ${type}`))
+        options.log(logLine("ERROR", "opencorp.daemon.http", `internal error on ${where}: ${errorType(error)}`))
       } catch {}
     }
     // A body left unread, or read only in part, stays on the connection, so it can't be reused: what follows on
@@ -504,6 +502,12 @@ export function trackRequests(listener: (req: IncomingMessage, res: ServerRespon
 
 /** A log line's level. */
 export type Level = "INFO" | "WARNING" | "ERROR"
+
+/** The error's type, as the office logs it: a message (or a settable `.name`) can quote a secret or a request's
+ *  input. */
+export function errorType(error: unknown): string {
+  return error instanceof Error ? error.constructor.name : typeof error
+}
 
 /** One formatted log line: `<ISO time> <level> <logger>: <message>`. */
 export function logLine(level: Level, logger: string, message: string, at: Date = new Date()): string {

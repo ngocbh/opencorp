@@ -24,11 +24,26 @@ import { reap } from "../worker/reaper.ts"
 import { WorkerRegistry } from "../worker/spawn.ts"
 import { DeviceTokens } from "./auth.ts"
 import { Bus } from "./bus.ts"
-import { HANDLER_WAIT_MS, type Level, createServer, logLine, requestListener, trackRequests } from "./http.ts"
+import {
+  HANDLER_WAIT_MS,
+  type Level,
+  createServer,
+  errorType,
+  logLine,
+  requestListener,
+  trackRequests,
+} from "./http.ts"
 import { LiveRelay } from "./live.ts"
 import { Office, OfficePaths } from "./office.ts"
 import { allRoutes } from "./routes/index.ts"
-import { OfficeStartError, checkSocketPath, listenUnix, makeOfficeDir, removeStaleSocket } from "./sockets.ts"
+import {
+  OfficeStartError,
+  checkSocketPath,
+  listenUnix,
+  makeOfficeDir,
+  messageOf,
+  removeStaleSocket,
+} from "./sockets.ts"
 
 /** How long a start waits for the home's lock before it reports the office already running: a busy
  *  result can be momentary (a probe or a racing start). */
@@ -41,10 +56,6 @@ export class AlreadyRunning extends OfficeStartError {
   constructor(readonly pid: number | null) {
     super(`office already running (pid ${pid ?? "unknown"})`)
   }
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 /** The pid the pidfile at `file` names, or null when it can't be read or holds no pid. */
@@ -161,17 +172,12 @@ export function officeLogger(write: Write): (level: Level, logger: string) => (m
   return (level, logger) => (message) => write(logLine(level, logger, message) + "\n")
 }
 
-/** The error's type, as the office logs it: a message (or a settable `.name`) can quote a secret. */
-function typeOf(error: unknown): string {
-  return error instanceof Error ? error.constructor.name : typeof error
-}
-
 /** `<what>: <type>` as an ERROR line, then the stack's `at` frames, one per line; never the message. Never
  *  throws: if reading the error does, the report is the first line with the value's `typeof` and no frames. */
 function failureReport(what: string, error: unknown): string {
   const first = (type: string) => logLine("ERROR", "opencorp.daemon.main", `${what}: ${type}`)
   try {
-    const lines = [first(typeOf(error))]
+    const lines = [first(errorType(error))]
     if (error instanceof Error && typeof error.stack === "string") {
       // The stack starts with `<name>: <message>`, and a name or message line can look like a frame, so the
       // header's lines go first.
@@ -239,7 +245,7 @@ async function sweepOnStart(office: Office, log: ReturnType<typeof officeLogger>
     const runs = office.paths.runs
     sweep(office.store, new YianRuns(readIndex(runs, log("WARNING", "opencorp.runs.records")), new Inspections(runs)))
   } catch (error) {
-    log("ERROR", "opencorp.daemon.main")(`the start sweep failed: ${typeOf(error)}`)
+    log("ERROR", "opencorp.daemon.main")(`the start sweep failed: ${errorType(error)}`)
   } finally {
     clearTimeout(timer)
   }
@@ -390,7 +396,7 @@ async function run(
           await office.stop()
           throw error
         }
-        server.on("error", (error) => log("ERROR", "opencorp.daemon.main")(`office socket error: ${typeOf(error)}`))
+        server.on("error", (error) => log("ERROR", "opencorp.daemon.main")(`office socket error: ${errorType(error)}`))
         log("INFO", "opencorp.daemon.main")(`office serving on ${paths.socket}`)
         await stopped
         try {
@@ -425,11 +431,8 @@ export interface MainOptions {
  * Runs the daemon for `--home` (default `~/.opencorp`) until SIGINT, SIGTERM or SIGHUP; resolves to the exit
  * code: 0 after a clean stop or when this home's office is already running (a service manager restarts only on
  * failure, so a duplicate start must not look like one), 1 when it can't start or crashed, 2 for bad arguments.
- *
- * On a signal the office stops first, its bus before anything else (SSE responses never end on their own, so they
- * would hold the server's close); then the server and the socket file, the handlers still running (up to
- * `HANDLER_WAIT_MS`), the store, and the pidfile and lock. Writes are synchronous by default: the process exits as
- * soon as this returns, so nothing may wait in a stream buffer.
+ * The start and stop are `run`'s. Writes are synchronous by default: the process exits as soon as this returns, so
+ * nothing may wait in a stream buffer.
  *
  * The tools are resolved once at start, as the absolute paths found on the daemon's PATH; nothing is looked up by
  * name later.

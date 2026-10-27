@@ -24,7 +24,15 @@ import {
 import { z } from "zod"
 import { blankSecrets } from "../company/secret_keys.ts"
 import { SourceError } from "../company/source.ts"
-import { HttpError, RawReply, type RequestInfo, type Route, logLine, requestListener } from "../daemon/http.ts"
+import {
+  HttpError,
+  RawReply,
+  type RequestInfo,
+  type Route,
+  errorType,
+  logLine,
+  requestListener,
+} from "../daemon/http.ts"
 import { PING } from "../daemon/bus.ts"
 import type { RequestContext } from "../daemon/office.ts"
 import { costs } from "../daemon/routes/costs.ts"
@@ -136,9 +144,8 @@ async function* hqEvents(ctx: HqContext): AsyncGenerator<string> {
         try {
           valid = await hq.sessions.stillValid(sid, event.subject_id)
         } catch (error) {
-          // The app reconnects, and its next request checks the session at HEAD again. The type only: a message
-          // can quote what it failed on.
-          const type = error instanceof Error ? error.constructor.name : typeof error
+          // The app reconnects, and its next request checks the session at HEAD again.
+          const type = errorType(error)
           const text = `couldn't re-check HQ session ${sid} at ${event.subject_id}; ending its stream: ${type}`
           hq.log(logLine("ERROR", "opencorp.hq.api", text))
           return
@@ -175,8 +182,7 @@ async function* hqLive(ctx: HqContext, runId: string, log: string, after: number
       try {
         if (!(await hq.sessions.stillValid(sid, event.subject_id))) return stop.abort()
       } catch (error) {
-        // The type only: a message can quote what it failed on.
-        const type = error instanceof Error ? error.constructor.name : typeof error
+        const type = errorType(error)
         const text = `couldn't re-check HQ session ${sid} at ${event.subject_id}; ending its live stream: ${type}`
         hq.log(logLine("ERROR", "opencorp.hq.api", text))
         return stop.abort()
