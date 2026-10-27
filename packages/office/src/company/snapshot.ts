@@ -20,11 +20,6 @@ function depth(path: string): number {
   return path.split("/").length - 1
 }
 
-/** The keys of `map`, sorted by code unit. */
-function sortedKeys(map: Map<string, string>): string[] {
-  return [...map.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-}
-
 /**
  * The company at commit `sha`, read in one batch from git objects, so uncommitted edits don't count.
  *
@@ -51,7 +46,7 @@ export async function loadCompanyAt(git: CompanyGit, sha: string): Promise<Compa
     company = parseFile("company.yaml", bytes(companyBlob), CompanySchema, issues)
   }
   const found: Person[] = []
-  for (const path of sortedKeys(people)) {
+  for (const path of [...people.keys()].sort()) {
     const person = parseFile(path, bytes(people.get(path)!), PersonSchema, issues)
     const folder = path.split("/")[1]!
     if (person !== null && person.handle !== folder) {
@@ -63,7 +58,7 @@ export async function loadCompanyAt(git: CompanyGit, sha: string): Promise<Compa
     }
   }
   const teams: Group[] = []
-  for (const path of sortedKeys(groups)) {
+  for (const path of [...groups.keys()].sort()) {
     const group = parseFile(path, bytes(groups.get(path)!), GroupSchema, issues)
     const stem = path.slice("groups/".length, -".yaml".length)
     if (group !== null && group.id !== stem) {

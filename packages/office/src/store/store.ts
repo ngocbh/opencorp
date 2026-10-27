@@ -220,6 +220,29 @@ function quote(name: string): string {
   return `"${name.replaceAll('"', '""')}"`
 }
 
+/** The WHERE clause for `where` (with its leading space, or empty when nothing filters) and its binds: an
+ *  undefined or null value is no filter, an array is any of its values. */
+function whereSql(where: Record<string, string | string[] | null | undefined>): {
+  sql: string
+  params: SqliteParam[]
+} {
+  const clauses: string[] = []
+  const params: SqliteParam[] = []
+  for (const [name, value] of Object.entries(where)) {
+    if (value === undefined || value === null) continue
+    if (Array.isArray(value)) {
+      // One JSON parameter rather than a `?` per value: a long list would pass SQLite's variable limit, and a
+      // SQL text per list length would grow the statement cache.
+      clauses.push(`${quote(name)} IN (SELECT value FROM json_each(?))`)
+      params.push(JSON.stringify(value))
+    } else {
+      clauses.push(`${quote(name)} = ?`)
+      params.push(value)
+    }
+  }
+  return { sql: clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "", params }
+}
+
 /** `changes` without its undefined entries: an explicit undefined changes nothing. */
 function defined(changes: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined))
@@ -783,25 +806,10 @@ export class Store {
     order: string,
     limit?: number,
   ): z.output<S>[] {
-    const clauses: string[] = []
-    const params: SqliteParam[] = []
-    for (const [name, value] of Object.entries(where)) {
-      if (value === undefined || value === null) continue
-      if (Array.isArray(value)) {
-        // One JSON parameter rather than a `?` per value: a long list would pass SQLite's variable limit.
-        clauses.push(`${quote(name)} IN (SELECT value FROM json_each(?))`)
-        params.push(JSON.stringify(value))
-      } else {
-        clauses.push(`${quote(name)} = ?`)
-        params.push(value)
-      }
-    }
-    const sql =
-      `SELECT * FROM ${quote(table.name)}${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ` +
-      `ORDER BY ${order} LIMIT ?`
+    const filter = whereSql(where)
     return this.db
-      .prepare(sql)
-      .all(...params, limit ?? -1)
+      .prepare(`SELECT * FROM ${quote(table.name)}${filter.sql} ORDER BY ${order} LIMIT ?`)
+      .all(...filter.params, limit ?? -1)
       .map((row) => this.#entity(table, row))
   }
 
@@ -940,33 +948,11 @@ export class Store {
     cwd?: string
     limit?: number
   }): SessionRecord[] {
-    const clauses: string[] = []
-    const params: SqliteParam[] = []
-    const where = { person: filter?.person, status: filter?.status, kind: filter?.kind, cwd: filter?.cwd }
-    for (const [name, value] of Object.entries(where)) {
-      if (value === undefined) continue
-      if (Array.isArray(value)) {
-        // One JSON parameter, as in `#list`: a `?` per value makes a new SQL text, and so a new cached statement,
-        // for every list length.
-        clauses.push(`${quote(name)} IN (SELECT value FROM json_each(?))`)
-        params.push(JSON.stringify(value))
-      } else {
-        clauses.push(`${quote(name)} = ?`)
-        params.push(value)
-      }
-    }
-    const sql =
-      `SELECT * FROM sessions${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ` +
-      "ORDER BY updated_at DESC, rowid DESC LIMIT ?"
+    const where = whereSql({ person: filter?.person, status: filter?.status, kind: filter?.kind, cwd: filter?.cwd })
     return this.db
-      .prepare(sql)
-      .all(...params, filter?.limit ?? -1)
+      .prepare(`SELECT * FROM sessions${where.sql} ORDER BY updated_at DESC, rowid DESC LIMIT ?`)
+      .all(...where.params, filter?.limit ?? -1)
       .map((row) => this.#session(row))
-  }
-
-  /** A person's sessions, most recently updated first. */
-  recentSessions(person: string, limit = 20): SessionRecord[] {
-    return this.listSessions({ person, limit })
   }
 
   /** The session a run belongs to, or undefined. */
