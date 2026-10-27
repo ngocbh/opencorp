@@ -8,6 +8,7 @@ import { useTheme } from "../../context/theme"
 import { useBindings } from "../../keymap"
 import { useDialog } from "../../ui/dialog"
 import { useToast } from "../../ui/toast"
+import { errorMessage } from "../../util/error"
 import { blocks, confirmRequest, hireRequest, type HireForm } from "./people"
 
 /** The color of a unified diff line: added, removed, or neither. */
@@ -74,7 +75,7 @@ export function DialogHire() {
       if (!shown && edits !== at) return
       // A refused confirm means the office's view changed since the preview; preview again.
       if (shown) setPreview(undefined)
-      return setError(e instanceof Error ? e.message : String(e))
+      return setError(errorMessage(e))
     }
     if (!shown) {
       if (closed) return

@@ -110,7 +110,7 @@ export function Profile() {
     office.on("profile.updated", (e) => {
       if (e.subject_id !== person) return
       profileEvents++
-      setProfile(e.data as unknown as ProfileData)
+      setProfile(e.data as ProfileData)
     }),
   )
   const putProposal = (e: { data: unknown }) => {
