@@ -20,12 +20,12 @@ export function editorCommand(editor: string, file: string, platform: NodeJS.Pla
  */
 export function launchEditor(editor: string, file: string, opts: { cwd?: string; stdin?: EditorStdio } = {}) {
   return new Promise<void>((resolve, reject) => {
-    const options = {
-      cwd: opts.cwd && existsSync(opts.cwd) ? opts.cwd : process.cwd(),
-      stdio: [opts.stdin ?? "inherit", "inherit", "inherit"] as [EditorStdio, "inherit", "inherit"],
-    }
     const { command, args, shell } = editorCommand(editor, file)
-    const child = spawn(command, args, { ...options, shell })
+    const child = spawn(command, args, {
+      cwd: opts.cwd && existsSync(opts.cwd) ? opts.cwd : process.cwd(),
+      stdio: [opts.stdin ?? "inherit", "inherit", "inherit"],
+      shell,
+    })
     // As git's launch_editor does: Ctrl-C (or Ctrl-\) while the editor runs is for the editor,
     // so the caller outlives it and sees it exit, and can clean up rather than die mid-edit.
     const signals: NodeJS.Signals[] = process.platform === "win32" ? ["SIGINT"] : ["SIGINT", "SIGQUIT"]
