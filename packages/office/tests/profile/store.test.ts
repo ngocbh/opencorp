@@ -8,7 +8,7 @@ import { CompanyGit, CompanyGitError, type LockedGit } from "../../src/company/g
 import { blobId, commitMessage, EMPTY_BLOB, GitProfileStore } from "../../src/profile/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
-import { company, git, recordingGit } from "../company/helpers.ts"
+import { company, failingGit, GIT_FAILURES, git, recordingGit } from "../company/helpers.ts"
 import { tempDir } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -134,6 +134,21 @@ test("git failure is a system error", async () => {
   expect(error).toBeInstanceOf(Error)
   expect(error).toMatchObject({ code: "EIO", syscall: "read" })
   expect((error as Error).message).toMatch(/exited/)
+})
+
+test.each(GIT_FAILURES)("a git failure finding the version is a system error, not an empty profile [%s]", async (failure) => {
+  const { dir, root, store } = setup()
+  const first = await store.write("# Minh\nv1\n", { baseVersion: (await store.read())[1], provenance: { commit_id: "c-1" } })
+  const g = new CompanyGit(root, path.join(dir, "worktrees"), { git: failingGit(dir, `:${PROFILE}`, failure) })
+  const failing = new GitProfileStore(g, "minh")
+  expect(await rejection(failing.read())).toMatchObject({ code: "EIO", syscall: "read" })
+  expect(await rejection(failing.committed("c-1"))).toMatchObject({ code: "EIO", syscall: "read" })
+  // A write based on the empty profile must not replace the real one.
+  const write = failing.write("# Minh\nv2\n", { baseVersion: EMPTY_BLOB })
+  expect(await rejection(write)).toMatchObject({ code: "EIO", syscall: "write" })
+  expect(read(root)).toBe("# Minh\nv1\n")
+  expect(await store.read()).toEqual(["# Minh\nv1\n", first])
+  expect(count(root)).toBe(2)
 })
 
 // The commit message

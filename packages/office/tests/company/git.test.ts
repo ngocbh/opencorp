@@ -1,12 +1,13 @@
 /** The office's clone of the company repo (Python's `tests/company/test_git.py`). */
 import { spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { stamp } from "@opencorp/protocol"
 import { CompanyGit, CompanyGitError, type CompanyGitOptions } from "../../src/company/git.ts"
 import { tempDir } from "../helpers.ts"
-import { company, git, gitEnv, gitInput, recordingGit, writeRepo } from "./helpers.ts"
+import { company, failingGit, GIT_FAILURES, git, gitEnv, gitInput, recordingGit, writeRepo } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -83,6 +84,21 @@ test("blob id ignores other files", async () => {
   await g.commit(["groups/eng.yaml"], "edit group")
   expect(await g.blobId(PROFILE)).toBe(before)
   expect(await g.blobId("people/nobody/profile.md")).toBeNull()
+})
+
+test.each(GIT_FAILURES)("blob id throws when git fails instead of reporting a missing file [%s]", async (failure) => {
+  const dir = tempDir()
+  const root = company(dir)
+  const g = new CompanyGit(root, path.join(dir, "worktrees"), { git: failingGit(dir, `:${PROFILE}`, failure) })
+  await expect(g.blobId(PROFILE)).rejects.toThrow(CompanyGitError)
+  expect(await g.blobId("company.yaml")).not.toBeNull()
+  expect(await g.blobId("people/nobody/profile.md")).toBeNull()
+})
+
+test("blob id with no commit yet is null", async () => {
+  const dir = tempDir()
+  git(dir, "init", "-q", "-b", "main")
+  expect(await new CompanyGit(dir, path.join(dir, "wt")).blobId(PROFILE)).toBeNull()
 })
 
 test("read head follows loose and packed refs and a detached head", async () => {
@@ -353,6 +369,85 @@ test("repo signing config is ignored", async () => {
   fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
   await g.commit([PROFILE], "edit")
   expect(git(company, "log", "-1", "--format=%s")).toBe("edit")
+})
+
+/** A script in `dir` that leaves a mark each time it runs, then runs the shell `then`. */
+function tripwire(dir: string, then: string) {
+  const mark = path.join(dir, "tripped")
+  const script = path.join(dir, "tripwire")
+  fs.writeFileSync(script, `#!/bin/sh\necho x >> ${JSON.stringify(mark)}\n${then}\n`, { mode: 0o755 })
+  return { script, tripped: () => fs.existsSync(mark) }
+}
+
+test("a repo fsmonitor does not run", async () => {
+  const { tmp, company, g } = setup()
+  const wire = tripwire(tmp, "exit 1")
+  git(company, "config", "core.fsmonitor", wire.script)
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  expect(await g.commitHandEdits()).toEqual([PROFILE])
+  fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
+  await g.commit(["groups/eng.yaml"], "edit group")
+  await g.unstage(["groups/eng.yaml"])
+  await g.pin("HEAD")
+  expect(wire.tripped()).toBe(false)
+})
+
+test.each(["clean", "smudge", "process"])("a repo filter driver does not run [%s]", async (key) => {
+  const { tmp, company, g } = setup()
+  const wire = tripwire(tmp, "exec cat")
+  // A subsection may hold dots, `=` and capitals, which `-c name=value` can't carry.
+  for (const name of ["evil", "Evil.a=b"]) {
+    git(company, "config", `filter.${name}.${key}`, wire.script)
+    git(company, "config", `filter.${name}.required`, "true")
+  }
+  fs.mkdirSync(path.join(company, ".git/info"), { recursive: true })
+  fs.writeFileSync(path.join(company, ".git/info/attributes"), "*.md filter=evil\n*.yaml filter=Evil.a=b\n")
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  expect(await g.commitHandEdits()).toEqual([PROFILE])
+  fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
+  await g.commit(["groups/eng.yaml"], "edit group")
+  await g.unstage(["groups/eng.yaml"])
+  const pinned = await g.pin("HEAD")
+  expect(wire.tripped()).toBe(false)
+  expect(fs.readFileSync(path.join(pinned, PROFILE), "utf8")).toBe("# edited\n")
+  expect(fs.readFileSync(path.join(pinned, "groups/eng.yaml"), "utf8")).toBe(GROUP)
+})
+
+test("a filter driver whose name isnt utf8 is refused", async () => {
+  const { tmp, company, g } = setup()
+  const wire = tripwire(tmp, "exec cat")
+  const name = Buffer.from("ev\xffl", "latin1")
+  const config = path.join(company, ".git/config")
+  fs.appendFileSync(config, Buffer.concat([Buffer.from('[filter "'), name, Buffer.from(`"]\n\tclean = ${wire.script}\n`)]))
+  fs.mkdirSync(path.join(company, ".git/info"), { recursive: true })
+  const attributes = Buffer.concat([Buffer.from("*.md filter="), name, Buffer.from("\n")])
+  fs.writeFileSync(path.join(company, ".git/info/attributes"), attributes)
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  const error = await g.commit([PROFILE], "edit").catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(CompanyGitError)
+  expect((error as Error).message).toMatch(/isn't UTF-8/)
+  expect(wire.tripped()).toBe(false)
+})
+
+test("the users xdg git attributes and ignore files are not read", async () => {
+  const home = tempDir()
+  const xdg = path.join(home, "xdg")
+  for (const config of [path.join(xdg, "git"), path.join(home, ".config/git")]) {
+    fs.mkdirSync(config, { recursive: true })
+    fs.writeFileSync(path.join(config, "attributes"), "*.md text\n")
+    fs.writeFileSync(path.join(config, "ignore"), "profile.md\n")
+  }
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("XDG_")))
+  for (const extra of [{}, { XDG_CONFIG_HOME: xdg }]) {
+    const { company, g } = setup({ env: { ...env, HOME: home, ...extra } })
+    const added = "people/new/profile.md"
+    const crlf = "# New\r\n"
+    fs.mkdirSync(path.join(company, "people/new"))
+    fs.writeFileSync(path.join(company, added), crlf)
+    expect(await g.commitHandEdits()).toEqual([added])
+    const id = createHash("sha1").update(`blob ${crlf.length}\0${crlf}`).digest("hex")
+    expect(await g.blobId(added)).toBe(id) // committed as is, not normalized to LF
+  }
 })
 
 /** A `name` hook in `repo` that refuses whatever it is run for. */
