@@ -41,11 +41,10 @@ export class Launch {
   }
 }
 
-// The provider env and the key arrive with the run, never from here. SSL_CERT_FILE and SSL_CERT_DIR say where
-// TLS finds CA certificates: some Linuxes (RHEL) don't fill the folder a bundled TLS stack looks in, so the owner
-// points them at the system bundle.
 /** The office env names both a worker and the daemon inherit (besides `LC_*`; the daemon adds `CODEX_ENV`, see
- *  `daemonEnv`). */
+ *  `daemonEnv`). The provider env and the key arrive with the run, never from here. `SSL_CERT_FILE` and
+ *  `SSL_CERT_DIR` say where TLS finds CA certificates: some Linuxes (RHEL) don't fill the folder a bundled TLS
+ *  stack looks in, so the owner points them at the system bundle. */
 export const INHERITED_ENV = [
   "PATH",
   "HOME",

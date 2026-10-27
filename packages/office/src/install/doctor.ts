@@ -23,7 +23,7 @@ import { fsHelper, run } from "../sandbox/run.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, runCommand, which } from "./launch.ts"
 import * as launchd from "./launchd.ts"
-import { checkProvider, SET_UP, setupConnectionFile, stopToTopUp, withDefaultModel } from "./onboard.ts"
+import { checkProvider, lexists, SET_UP, setupConnectionFile, stopToTopUp, withDefaultModel } from "./onboard.ts"
 import { OnboardError } from "./prompts.ts"
 import * as service from "./service.ts"
 import * as systemd from "./systemd.ts"
@@ -61,9 +61,8 @@ const COLOR = /\x1b\[[0-9;]*m/g
 
 /**
  * How Bun words a program that never started: `<code>: <strerror>, posix_spawn '<path>'` (Node's `spawn <path> <code>`
- * differs).
+ * differs). Bun's wording on Linux hasn't been probed here, so a plain `spawn` is accepted too.
  */
-// Bun's wording on Linux hasn't been probed here, so a plain `spawn` is accepted too.
 const SPAWN_ERROR = /^E[A-Z0-9]+: (.*), (?:posix_)?spawn\b/
 
 /** One line of the report: `fail` needs fixing, `warn` is worth knowing. */
@@ -93,17 +92,6 @@ function nameOf(error: unknown): string {
 /** `mode`'s permission bits as four octal digits. */
 function octal(mode: number): string {
   return (mode & 0o7777).toString(8).padStart(4, "0")
-}
-
-/** Whether anything, even a dangling symlink, is at `file`; one that can't be looked at counts as missing (Python's
- *  `os.path.lexists`). */
-function lexists(file: string): boolean {
-  try {
-    fs.lstatSync(file)
-    return true
-  } catch {
-    return false
-  }
 }
 
 function homeCheck(paths: OfficePaths): Check {
