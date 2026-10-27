@@ -20,7 +20,7 @@ import { DialogConnect } from "./dialog-connect"
 type Choice = { connection: string; model: string | null }
 
 /** What a pick on the home screen does while new chats don't start on the last pick: nothing for them. */
-export const HOME_PICK_NOTE =
+const HOME_PICK_NOTE =
   "New chats start on the agent's model or the office default. Turn on 'Start new chats on my last pick' to use this."
 
 const TYPED = "Type a model name…"
@@ -128,7 +128,7 @@ export function DialogModel(props: { connection?: string }) {
     const pickRow = (p: ModelPick, category: string) => ({
       title: p.model,
       description: p.connection,
-      value: { connection: p.connection, model: p.model } as Choice,
+      value: { connection: p.connection, model: p.model },
       category,
     })
     // A pick shows once, in Favorites or Recent, so one row is marked as the session's model.

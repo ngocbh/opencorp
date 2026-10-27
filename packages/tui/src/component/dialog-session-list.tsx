@@ -10,6 +10,7 @@ import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { useLocal } from "../context/local"
 import { Locale } from "../util/locale"
+import { working } from "../util/status"
 import { personLabel } from "../util/transcript"
 import { Spinner } from "./spinner"
 import { useCommandShortcut } from "../keymap"
@@ -64,12 +65,11 @@ export function DialogSessionList() {
     const slotByID = new Map<string, number>(local.session.slots().map((id, i) => [id, i + 1]))
     const option = (s: Session, category: string) => {
       const slot = slotByID.get(s.id)
-      const working = s.status === "starting" || s.status === "busy"
       return {
         title: sessionRow(s, office.state.people, { now }),
         value: s.id,
         category,
-        gutter: working
+        gutter: working(s.status)
           ? () => <Spinner />
           : slot !== undefined
             ? () => <text fg={theme.accent}>{slot}</text>
