@@ -107,7 +107,7 @@ export function readLine(input: Readable): Promise<string | undefined> {
 }
 
 /** Whether `stream` is a terminal. */
-function isTTY(stream: Readable | Writable): boolean {
+export function isTTY(stream: Readable | Writable): boolean {
   return (stream as { isTTY?: boolean }).isTTY === true
 }
 

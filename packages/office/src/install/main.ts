@@ -22,7 +22,7 @@ import { JsonPrompter, type TextOut } from "./json_prompts.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, ServiceError } from "./launch.ts"
 import { Declined, OffboardError, offboard } from "./offboard.ts"
 import { LISTERS, type Listers, type ModelCheck, modelProblem, onboard, SET_UP, WHO } from "./onboard.ts"
-import { KeyboardInterrupt, OnboardError, type Prompter, TtyPrompter } from "./prompts.ts"
+import { isTTY, KeyboardInterrupt, OnboardError, type Prompter, TtyPrompter } from "./prompts.ts"
 import * as service from "./service.ts"
 
 /** The exit code of `start` and `restart` when there's no office yet. */
@@ -438,7 +438,7 @@ async function onboardCommand(args: Args, s: Setup): Promise<number> {
 async function offboardCommand(args: Args, s: Setup): Promise<number> {
   // Without a terminal the confirmation takes its default, No, so only --yes removes anything.
   const asking = new TtyPrompter({
-    interactive: (s.stdin as { isTTY?: boolean }).isTTY === true,
+    interactive: isTTY(s.stdin),
     input: s.stdin,
     output: s.stdout,
     env: s.environ,

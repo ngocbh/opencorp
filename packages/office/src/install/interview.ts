@@ -216,8 +216,13 @@ export async function passwordStep(prompter: Prompter): Promise<string | null> {
 /** Shows the remote step and resolves to the git remote URL: `given` (from `--remote`), or the one the owner
  *  types; empty when they pick none. */
 export async function remoteStep(prompter: Prompter, given: string): Promise<string> {
-  prompter.step(4, STEPS, "Remote", "A git remote, such as a private GitHub repo, lets other machines join the " +
-    "company with `opencorp onboard --from URL`.")
+  prompter.step(
+    4,
+    STEPS,
+    "Remote",
+    "A git remote, such as a private GitHub repo, lets other machines join the company with " +
+      "`opencorp onboard --from URL`.",
+  )
   if (given) return given
   const picked = await prompter.choose(REMOTE, [NO_REMOTE], NO_REMOTE, true)
   return picked === NO_REMOTE ? "" : strip(picked)
