@@ -29,7 +29,7 @@ test("node detail: output, model, evidence, and an error with its traceback fold
 })
 
 test("a case that took its else route says no case matched; __start__ and __end__ are dimmer", async ({ page, request }) => {
-  const rec = { cut: [], evidence_left_out: false, withheld: null, size: null }
+  const rec = { cut: [], withheld: null, size: null }
   await request.post("/__fixture/run", { data: { id: rid(2), add: [
     node(64, "__end__"), node(62, "triage", { status: "routed", handle: "#else" }), node(60, "__start__"),
   ], addEvents: [{ seq: 63, kind: "node_routed", node_id: "triage", payload: { handle: "#else" }, ...rec }] } })
@@ -82,12 +82,11 @@ test("Enter opens the focused node, and Escape closes it with focus on the row",
   await expect(row).toBeFocused()
 })
 
-test("a node read while the log is first read says so and can retry", async ({ page, request }) => {
-  await request.post("/__fixture/run", { data: { id: rid(6), fail: "indexing" } })
+test("a failed node read says why and can retry", async ({ page, request }) => {
+  await request.post("/__fixture/run", { data: { id: rid(6), fail: "internal" } })
   await page.goto(`/runs/${rid(6)}`)
   await timeline(page).getByRole("treeitem", { name: /chat#0\/reply/ }).click()
-  await expect(nodeDetail(page, "chat#0/reply").getByRole("alert")).toHaveText(
-    /The log is still being read; try again\./)
+  await expect(nodeDetail(page, "chat#0/reply").getByRole("alert")).toHaveText(/internal here/)
   await request.post("/__fixture/run", { data: { id: rid(6), fail: null } })
   await nodeDetail(page, "chat#0/reply").getByRole("button", { name: "Retry" }).click()
   await expect(nodeDetail(page, "chat#0/reply")).toContainText("Quota.")
@@ -138,22 +137,13 @@ test("Raw reads newer records on run.updated, and the Timeline is where it was b
   const raw = page.getByRole("list", { name: "Records" })
   await expect(raw.getByRole("listitem")).toHaveCount(1)
   await request.post("/__fixture/run", { data: { id: rid(6), addEvents: [{ seq: 5, kind: "node_started", node_id:
-    "chat#1/reply", payload: {}, cut: [], evidence_left_out: false, withheld: null, size: null }] } })
+    "chat#1/reply", payload: {}, cut: [], withheld: null, size: null }] } })
   await request.post("/__fixture/emit", { data: { event: { type: "run.updated", data: {
     run_id: rid(6), session_id: "S6", status: "running", current_nodes: ["chat#1/reply"] } } } })
   await expect(raw.getByRole("listitem")).toHaveCount(2)
   await expect(raw.getByRole("listitem").last()).toContainText("node_started")
   await page.getByRole("tab", { name: "Timeline" }).click()
   await expect(page.getByRole("tree", { name: "Timeline" }).getByRole("treeitem", { name: /chat#0\/reply/ })).toBeVisible()
-})
-
-test("Raw while the log is first read says so, then shows", async ({ page, request }) => {
-  await request.post("/__fixture/run", { data: { id: rid(5), indexing: true } })
-  await page.goto(`/runs/${rid(5)}`)
-  await page.getByRole("tab", { name: "Raw" }).click()
-  await expect(page.getByRole("status", { name: "Log" })).toHaveText("reading the log: 120 of 480 MB")
-  await request.post("/__fixture/run", { data: { id: rid(5), indexing: false } })
-  await expect(page.getByRole("list", { name: "Records" }).getByRole("listitem")).toHaveCount(4, { timeout: 5_000 })
 })
 
 test("a failed Raw read says why and can retry", async ({ page, request }) => {

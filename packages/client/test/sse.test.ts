@@ -49,7 +49,7 @@ test("an empty data field still dispatches, as the office's reset frame relies o
   expect(parse(["event: reset\ndata:\n\n"]).messages).toEqual([{ event: "reset", data: "" }])
 })
 
-const record = { seq: 4, kind: "node_started", node_id: "a", payload: {}, cut: [], evidence_left_out: false }
+const record = { seq: 4, kind: "node_started", node_id: "a", payload: {}, cut: [] }
 const live = [
   ": connected\n\n",
   `event: record\ndata: ${JSON.stringify({ seq: 4, record })}\n\n`,

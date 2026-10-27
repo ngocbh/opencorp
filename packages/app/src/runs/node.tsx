@@ -1,7 +1,6 @@
 // One node attempt's detail on the run page: its output, route or error, its model, and its evidence, read from the
 // record that ended it. Beside the Timeline on a desktop (or over its whole width, expanded); a modal sheet over
 // everything on a phone.
-import { isIndexing } from "@opencorp/client"
 import type { RunDetail, RunEvent, RunNode } from "@opencorp/protocol"
 import Maximize2 from "lucide-solid/icons/maximize-2"
 import Minimize2 from "lucide-solid/icons/minimize-2"
@@ -26,18 +25,12 @@ const RING = "outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 d
 const ICON_BUTTON = "grid h-8 w-8 place-items-center rounded hover:bg-neutral-100 dark:hover:bg-neutral-800"
 const PRE = "overflow-x-auto rounded bg-neutral-100 p-2 font-mono text-xs whitespace-pre-wrap wrap-anywhere dark:bg-neutral-900"
 
-/** What a failed record read says: the first read of the log says to try again. */
-export function failureText(e: unknown): string {
-  if (isIndexing(e)) return "The log is still being read; try again."
-  return e instanceof Error ? e.message : String(e)
-}
-
-/** A failed read, inline, with a Retry button. */
+/** A failed read, inline, with its message and a Retry button. */
 export function ReadError(props: { error: unknown; onRetry: () => void }) {
   return (
     <div class="flex items-center gap-2 text-sm">
       <p role="alert" class="text-red-700 dark:text-red-400">
-        {failureText(props.error)}
+        {props.error instanceof Error ? props.error.message : String(props.error)}
       </p>
       <button type="button" class={`rounded underline ${RING}`} onClick={() => props.onRetry()}>
         Retry

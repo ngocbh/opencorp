@@ -131,9 +131,9 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
        * `isUnsupportedSchema` or `isNoLog`.
        */
       nodes: (id: string, before?: number) => get<RunNodePage>(`${r(id)}/nodes${query({ before })}`),
-      /** Records after seq `after`, evidence left out; fails as `nodes` does. */
+      /** Records after seq `after`; fails as `nodes` does. */
       events: (id: string, after?: number) => get<RunEventPage>(`${r(id)}/events${query({ after })}`),
-      /** One record by seq, evidence included; fails as `nodes` does, or with `isIndexing`. */
+      /** One record by seq, evidence included; fails as `nodes` does. */
       event: (id: string, seq: number) => get<RunEvent>(`${r(id)}/events/${seq}`),
       /** Where the log downloads from, as stored, for a link (HQ only: the browser's cookie authorizes it). */
       logUrl: (id: string) => `${socket}${r(id)}/log`,

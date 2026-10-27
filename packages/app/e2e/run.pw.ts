@@ -85,23 +85,6 @@ test("an idle run with no log yet says so", async ({ page, request }) => {
   await expect(logStatus(page)).toHaveText("idle, not started yet")
 })
 
-test("a large log shows its reading progress, then its page", async ({ page, request }) => {
-  await request.post("/__fixture/run", { data: { id: rid(5), detail: { log_state: "indexing", log_message:
-    "reading the log: 120 of 480 MB", bytes_done: 120 << 20, bytes_total: 480 << 20 } } })
-  await page.goto(`/runs/${rid(5)}`)
-  await expect(logStatus(page)).toHaveText("reading the log: 120 of 480 MB")
-  await request.post("/__fixture/run", { data: { id: rid(5), detail: { log_state: "ok", log_message: null } } })
-  await expect(timeline(page).getByRole("treeitem").first()).toBeVisible({ timeout: 5_000 })
-})
-
-test("a Timeline read while the log is first read says so, then shows", async ({ page, request }) => {
-  await request.post("/__fixture/run", { data: { id: rid(5), indexing: true } })
-  await page.goto(`/runs/${rid(5)}`)
-  await expect(logStatus(page)).toHaveText("reading the log: 120 of 480 MB")
-  await request.post("/__fixture/run", { data: { id: rid(5), indexing: false } })
-  await expect(timeline(page).getByRole("treeitem").first()).toBeVisible({ timeout: 5_000 })
-})
-
 test("run.updated for this run refetches its page", async ({ page, request }) => {
   await page.goto(`/runs/${rid(3)}`)
   await expect(header(page)).toContainText("waiting")
@@ -165,14 +148,6 @@ test("a divider and a node's error describe the items they belong to", async ({ 
   await timeline(page).getByRole("treeitem", { name: /^iteration chat#1/ }).click()
   await expect(timeline(page).getByRole("treeitem", { name: /^chat#1\/reply/ })).toHaveAccessibleDescription(
     "AuthError: 401 invalid key")
-})
-
-test("an indexing header with no message says its progress from its bytes, which aren't announced", async ({ page, request }) => {
-  await request.post("/__fixture/run", { data: { id: rid(5), detail: { log_state: "indexing", log_message: null,
-    bytes_done: 120 << 20, bytes_total: 480 << 20 } } })
-  await page.goto(`/runs/${rid(5)}`)
-  await expect(logStatus(page)).toHaveText("reading the log: 120 of 480 MB")
-  await expect(logStatus(page).locator('[aria-live="off"]')).toHaveText("120 of 480 MB")
 })
 
 test("run.updated for a child refetches the page", async ({ page, request }) => {
