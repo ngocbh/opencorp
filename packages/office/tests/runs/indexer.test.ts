@@ -197,7 +197,7 @@ test("an index file that isn't a database is rebuilt from the logs", async () =>
   expect(await indexer.update()).toBe(true)
   expect(readRunIndex(runs).map((row) => row.runId)).toEqual([RUN])
   expect(lines).toEqual(["run index damaged (SQLITE_NOTADB), rebuilding it"])
-  for (const suffix of ["-wal", "-shm"]) expect(fs.existsSync(index + suffix)).toBe(false)
+  for (const suffix of ["-journal", "-wal", "-shm"]) expect(fs.existsSync(index + suffix)).toBe(false)
 })
 
 test("a damaged index is rebuilt from the logs", async () => {
