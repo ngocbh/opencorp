@@ -85,10 +85,10 @@ test("recent sessions per person", () => {
   const fresh = store.createSession(session({ updated_at: "2026-09-29T11:00:00.000Z" }))
   store.createSession(session({ person: "lan" }))
   const ids = (sessions: SessionRecord[]) => sessions.map((s) => s.id)
-  expect(ids(store.recentSessions("minh"))).toEqual([fresh.id, old.id])
+  expect(ids(store.listSessions({ person: "minh" }))).toEqual([fresh.id, old.id])
   store.updateSession(old.id, { status: "busy" })
-  expect(ids(store.recentSessions("minh"))).toEqual([old.id, fresh.id])
-  expect(ids(store.recentSessions("minh", 1))).toEqual([old.id])
+  expect(ids(store.listSessions({ person: "minh" }))).toEqual([old.id, fresh.id])
+  expect(ids(store.listSessions({ person: "minh", limit: 1 }))).toEqual([old.id])
   expect(ids(store.listSessions({ status: ["busy"] }))).toEqual([old.id])
 })
 

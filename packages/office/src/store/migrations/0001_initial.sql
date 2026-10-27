@@ -1,4 +1,4 @@
--- The office store (design §5.1). Entity tables have one column per field of their protocol schema
+-- The office store. Entity tables have one column per field of their protocol schema
 -- (packages/protocol/src/schemas/); list and object fields are JSON text.
 -- Enum values are not CHECKed: the protocol may add enum members without a migration.
 
