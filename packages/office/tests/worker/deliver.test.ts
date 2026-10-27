@@ -549,6 +549,22 @@ test("an advance confines the recorded flow to the pin", async () => {
   expect(sent(chat, "messages")).toEqual([])
 })
 
+test.each([
+  { id: "d1", op: "send", inbox: "messages", event: "hi" },
+  { id: "d1", op: "complete", call_id: "c1", result: { output: "done" } },
+  { id: "d1", op: "close", inbox: "messages" },
+  { id: "d1", op: "interrupt", inbox: "messages" },
+  { id: "d1", op: "cancel" },
+] as const)("every delivery confines the recorded flow to the pin [$op]", async (delivery) => {
+  const chat = makeJob(base(), "flows/coded.yaml", { inputs: {} })
+  const started = await run(chat, new Recorder())
+  expect(started.outcome?.status, String(started.outcome?.message)).toBe("waiting")
+  const before = fs.readFileSync(chat.log, "utf8")
+  const rec = await run(advanceJob(chat, { advance: false, pin: tempDir(), deliver: [delivery] }), new Recorder())
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "d1", failed: "LoadError" }])
+  expect(fs.readFileSync(chat.log, "utf8")).toBe(before)
+})
+
 test("an advance job sends the key only to the model", async () => {
   const fake = await fakeLlm()
   const key = "sk-ADV-1"

@@ -1085,7 +1085,7 @@ test("the newest source covers the office protocol cli and yian", () => {
     [entry, 100],
     [path.join(checkout, "packages/office/src/daemon/x.ts"), 200],
     [path.join(checkout, "packages/protocol/src/y.ts"), 300],
-    [path.join(checkout, "packages/yian/ts/src/deep/er/z.ts"), 400],
+    [path.join(checkout, "packages/yian/src/deep/er/z.ts"), 400],
     [path.join(checkout, "packages/app/src/later.ts"), 900], // not code the office runs
   ]
   for (const [file, when] of files) {
@@ -1097,6 +1097,14 @@ test("the newest source covers the office protocol cli and yian", () => {
   fs.utimesSync(entry, 500, 500)
   expect(doctor.newestSource(["/usr/local/bin/bun", entry])).toBe(500_000)
   expect(doctor.newestSource(COMMAND)).toBe(0) // a compiled binary
+})
+
+test("every source root the doctor watches exists in this checkout", () => {
+  const checkout = fs.realpathSync(fileURLToPath(new URL("../../../..", import.meta.url)))
+  const missing = doctor
+    .sourceRoots(checkout)
+    .filter((root) => !fs.statSync(root, { throwIfNoEntry: false })?.isDirectory())
+  expect(missing).toEqual([])
 })
 
 test("an office that cant say what it runs warns on the version line", async () => {
