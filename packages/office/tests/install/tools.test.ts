@@ -194,3 +194,90 @@ test("a workspace containing the tool path or its realpath is refused", () => {
   expect(policy.office.tools).toContain(path.join(a, "git"))
   expect(() => new SandboxPolicy({ ...policy, workspace: a })).toThrow(UnsafeWorkspace)
 })
+
+test("a workspace inside a tool's install tree is refused", () => {
+  const root = tempDir()
+  // Homebrew: bin/git and opt/git link into Cellar/git/<version>, whose libexec holds helpers git runs.
+  const brew = path.join(root, "brew")
+  const cellar = path.join(brew, "Cellar", "git")
+  fakeTool(path.join(cellar, "2.47.0", "bin", "git"))
+  fs.mkdirSync(path.join(brew, "bin"), { recursive: true })
+  fs.symlinkSync("../Cellar/git/2.47.0/bin/git", path.join(brew, "bin", "git"))
+  fs.mkdirSync(path.join(brew, "opt"))
+  fs.symlinkSync("../Cellar/git/2.47.0", path.join(brew, "opt", "git"))
+  // npm: bin/codex links to the package's own bin/, beside the vendor folder it loads.
+  const npm = path.join(root, "npm")
+  const codexPkg = path.join(npm, "lib", "node_modules", "@openai", "codex")
+  fakeTool(path.join(codexPkg, "bin", "codex.js"))
+  fs.mkdirSync(path.join(npm, "bin"), { recursive: true })
+  fs.symlinkSync(path.join(codexPkg, "bin", "codex.js"), path.join(npm, "bin", "codex"))
+  // Nix: a profile's bin/ps links into one store entry.
+  const store = path.join(root, "nix", "store")
+  fakeTool(path.join(store, "abc-procps-4.0", "bin", "ps"))
+  fs.mkdirSync(path.join(root, "profile", "bin"), { recursive: true })
+  fs.symlinkSync(path.join(store, "abc-procps-4.0", "bin", "ps"), path.join(root, "profile", "bin", "ps"))
+  // A plain prefix, a program beside its own files, and the office's runtime.
+  fakeTool(path.join(root, "opt", "tmux", "bin", "tmux"))
+  fakeTool(path.join(root, "tools", "who"))
+  const bun = fakeTool(path.join(root, "bunhome", "bin", "bun"))
+  const entry = path.join(root, "c", "packages", "cli", "src", "main.ts")
+  fs.mkdirSync(path.dirname(entry), { recursive: true })
+  fs.writeFileSync(entry, "")
+  const env = {
+    PATH: [path.join(brew, "bin"), path.join(npm, "bin"), path.join(root, "profile", "bin")].join(":"),
+  }
+  const tools = resolveTools({
+    PATH: [env.PATH, path.join(root, "opt", "tmux", "bin"), path.join(root, "tools")].join(":"),
+  })
+  const home = path.join(root, "home")
+  const guards = { ...workspaceGuards(tools, env, [bun, entry], home), home }
+
+  const inside = [
+    path.join(cellar, "2.47.0", "libexec", "git-core"),
+    path.join(cellar, "2.46.0"),
+    path.join(brew, "opt", "git", "libexec"),
+    path.join(codexPkg, "vendor"),
+    path.join(store, "abc-procps-4.0", "lib"),
+    path.join(root, "opt", "tmux", "share"),
+    path.join(root, "tools", "sub"),
+    path.join(root, "bunhome", "install", "cache"),
+  ]
+  for (const ws of inside) {
+    fs.mkdirSync(ws, { recursive: true })
+    expect(() => checkWorkspace(ws, guards)).toThrow(UnsafeWorkspace)
+  }
+  const gitCore = fs.realpathSync(path.join(cellar, "2.47.0", "libexec", "git-core"))
+  expect(() => checkWorkspace(gitCore, guards)).toThrow(
+    `workspace ${gitCore} is inside ${fs.realpathSync(cellar)}, where the office or a program it runs is installed; use a project folder`,
+  )
+  const outside = [
+    path.join(brew, "var", "project"),
+    path.join(npm, "lib", "node_modules", "other"),
+    path.join(store, "def-other-1.0"),
+    path.join(root, "opt", "other"),
+    path.join(root, "project"),
+  ]
+  for (const ws of outside) {
+    fs.mkdirSync(ws, { recursive: true })
+    expect(() => checkWorkspace(ws, guards)).not.toThrow()
+  }
+})
+
+test("a tool's install tree never takes in the home dir or the disk", () => {
+  const root = tempDir()
+  const home = path.join(root, "home")
+  fakeTool(path.join(home, "bin", "git"))
+  fakeTool(path.join(home, "who"))
+  const bun = fakeTool(path.join(root, "bin", "bun"))
+  const tools = resolveTools({ PATH: [path.join(home, "bin"), home].join(":") })
+  const guards = { ...workspaceGuards(tools, { PATH: "" }, [bun], home), home }
+  const project = path.join(home, "project")
+  fs.mkdirSync(project)
+  expect(() => checkWorkspace(project, guards)).not.toThrow()
+  const sub = path.join(home, "bin", "sub")
+  fs.mkdirSync(sub)
+  expect(() => checkWorkspace(sub, guards)).toThrow(UnsafeWorkspace)
+  expect(guards.install).not.toContain(fs.realpathSync(home))
+  expect(guards.install).not.toContain("/")
+  expect(guards.install).toContain(fs.realpathSync(path.join(home, "bin")))
+})
