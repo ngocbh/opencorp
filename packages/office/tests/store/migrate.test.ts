@@ -107,13 +107,17 @@ test("every migration file is in the ladder", () => {
   for (const m of MIGRATIONS) expect(m.sql).toBe(fs.readFileSync(new URL(m.name, dir), "utf8"))
 })
 
-test("the office migrations bring a fresh database to version 3", () => {
+test("the office migrations bring a fresh database to version 4", () => {
   const db = open()
-  expect(migrate(db)).toBe(3)
+  expect(migrate(db)).toBe(4)
   const questions = db.prepare("PRAGMA table_info(questions)").all()
   expect(questions.map((c) => c.name)).toContain("call_id")
   const turns = db.prepare("PRAGMA table_info(sessions)").all().find((c) => c.name === "turns")
   expect(turns?.dflt_value).toBe("0")
   const indexes = db.prepare("PRAGMA index_list(profile_proposals)").all()
   expect(indexes.map((i) => i.name)).toContain("profile_proposals_person")
+  const runs = db.prepare("PRAGMA index_list(runs)").all().map((i) => i.name)
+  expect(runs).toContain("runs_launched")
+  const launched = db.prepare("PRAGMA index_info(runs_launched)").all()
+  expect(launched.map((c) => c.name)).toEqual(["created_at"])
 })
