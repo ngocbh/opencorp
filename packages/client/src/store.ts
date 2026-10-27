@@ -19,6 +19,7 @@ import type {
   Session,
   WorkItem,
 } from "@opencorp/protocol"
+import { now } from "@opencorp/protocol"
 import { asMessage, asPartDelta, asPartUpdated, isMetaData } from "./live"
 import type { StreamEvent } from "./sse"
 
@@ -105,27 +106,33 @@ export function upsertSession(s: OfficeState, session: Session) {
 /** Applies one metadata event. Unknown types and malformed data are ignored. */
 export function applyMeta(s: OfficeState, e: Event) {
   if (!isMetaData(e)) return
-  const data = e.data as any
   switch (e.type) {
     case "session.created":
     case "session.updated":
-      return upsertSession(s, data as Session)
+      return upsertSession(s, e.data as Session)
     case "question.created":
-    case "question.updated":
-      return upsert(s.questions, data.id, data as Question)
+    case "question.updated": {
+      const q = e.data as Question
+      return upsert(s.questions, q.id, q)
+    }
     case "work_item.created":
-    case "work_item.updated":
-      return upsert(s.workItems, data.id, data as WorkItem)
+    case "work_item.updated": {
+      const item = e.data as WorkItem
+      return upsert(s.workItems, item.id, item)
+    }
     case "profile_proposal.created":
-    case "profile_proposal.updated":
-      s.proposals[data.id] = data as ProfileProposal
+    case "profile_proposal.updated": {
+      const proposal = e.data as ProfileProposal
+      s.proposals[proposal.id] = proposal
       return
+    }
     case "profile.updated":
-      if (typeof e.subject_id === "string") s.profiles[e.subject_id] = data as Profile
+      if (typeof e.subject_id === "string") s.profiles[e.subject_id] = e.data as Profile
       return
     case "comment.created": {
-      const list = (s.comments[data.work_item_id] ??= [])
-      if (!list.some((c) => c.id === data.id)) list.push(data as Comment)
+      const comment = e.data as Comment
+      const list = (s.comments[comment.work_item_id] ??= [])
+      if (!list.some((c) => c.id === comment.id)) list.push(comment)
       return
     }
   }
@@ -178,7 +185,7 @@ export function applyLive(s: OfficeState, e: LiveEvent): string[] {
           session_id: e.session_id,
           role: "assistant",
           parts: [],
-          created_at: new Date().toISOString(),
+          created_at: now(),
         })
         local = findMessage(list, d.message_id)!
       }

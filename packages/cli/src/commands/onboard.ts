@@ -7,7 +7,7 @@ import { type SetupDeps, realSetupDeps, setUp } from "../setup"
  * office for an existing company (cloning it from `--from` when there's none here yet), asking for
  * what it needs, the model key among them; then the office opens as `opencorp` opens it. A key is never a
  * flag. With `--provider-stdin` it asks nothing. Without a terminal (or with TERM=dumb), it runs on
- * stdin and stdout as it did before the setup screen.
+ * stdin and stdout.
  */
 export function onboard(argv: string[], deps: SetupDeps = realSetupDeps): Promise<number> {
   return setUp("onboard", argv, deps)

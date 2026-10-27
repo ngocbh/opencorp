@@ -1,4 +1,3 @@
-// Protocol schemas: connections.
 import { z } from "zod"
 import { ConnectionName } from "./common"
 

@@ -1,4 +1,3 @@
-// Protocol schemas: sessions.
 import { z } from "zod"
 import { ConnectionName, GitId, Handle, Timestamp, Ulid } from "./common"
 

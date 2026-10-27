@@ -1,4 +1,3 @@
-// Protocol schemas: company.
 import { z } from "zod"
 import { GitId, Handle, Id, Timestamp } from "./common"
 

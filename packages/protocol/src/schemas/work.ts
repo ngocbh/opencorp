@@ -1,4 +1,3 @@
-// Protocol schemas: work.
 import { z } from "zod"
 import { Handle, Id, Timestamp, Ulid } from "./common"
 

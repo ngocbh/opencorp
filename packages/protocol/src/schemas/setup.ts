@@ -1,4 +1,3 @@
-// Protocol schemas: setup.
 import { z } from "zod"
 
 /** A typed answer; an empty one means `default`. */

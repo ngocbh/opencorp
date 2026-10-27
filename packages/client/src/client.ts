@@ -197,7 +197,7 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
             limit: opts.limit,
             kind: opts.kind,
             cwd: opts.cwd,
-            status: [opts.status ?? []].flat().join(",") || undefined,
+            status: joined(opts.status),
           })}`,
         ),
       // Starting a chat may wait up to 8 s for the connections' model lists, so it gets a limit of its own.
@@ -249,7 +249,7 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
       /** Questions by session and status, oldest first; several statuses are sent comma-separated. */
       list: (opts: { session?: string; status?: Question["status"] | Question["status"][] } = {}) =>
         get<Question[]>(
-          `/questions${query({ session: opts.session, status: [opts.status ?? []].flat().join(",") || undefined })}`,
+          `/questions${query({ session: opts.session, status: joined(opts.status) })}`,
         ),
       get: (id: string) => get<Question>(q(id)),
       answer: (id: string, req: AnswerRequest) => post<Question>(`${q(id)}/answer`, req),
@@ -289,8 +289,11 @@ export type RunListOptions = {
   limit?: number
 }
 
+/** One value or several, comma-joined; undefined for none. */
+const joined = (value?: string | string[]) => [value ?? []].flat().join(",") || undefined
+
 /** `opts` as query params, the statuses comma-joined. */
-const runParams = (opts: RunListOptions) => ({ ...opts, status: [opts.status ?? []].flat().join(",") || undefined })
+const runParams = (opts: RunListOptions) => ({ ...opts, status: joined(opts.status) })
 
 function query(params: Record<string, string | number | undefined>) {
   const entries = Object.entries(params).filter(([, v]) => v !== undefined) as [string, string | number][]

@@ -162,7 +162,7 @@ export function createOfficeSync(opts: {
       readFolderPeople(),
       client.sessions.list({ limit: SESSION_LIMIT }),
       // This folder's main sessions, so /sessions and --continue find older ones too.
-      opts.cwd ? client.sessions.list({ kind: "main", cwd: opts.cwd, limit: FOLDER_LIMIT }) : Promise.resolve([]),
+      cwd ? client.sessions.list({ kind: "main", cwd, limit: FOLDER_LIMIT }) : Promise.resolve([]),
     ])
     return (s) => {
       s.people = people
@@ -270,7 +270,6 @@ export function createOfficeSync(opts: {
       // A session still loading gets its events here, on this snapshot, and in its window, on
       // the snapshot its load ends with; replaying an event twice is harmless.
       for (const e of events) if (e.type === "live") pending.get(e.event.session_id)?.push(e)
-      const now = events
       mutate((s) => {
         apply(s)
         for (const [id, q] of rechecked) {
@@ -283,10 +282,10 @@ export function createOfficeSync(opts: {
           upsertSession(s, l.session)
           for (const q of l.questions) s.questions[q.id] = q
         }
-        replay(s, now)
+        replay(s, events)
       })
       setStatus("online")
-      fire(now)
+      fire(events)
       // Each in its own window, so one slow or broken history doesn't hold up the rest.
       for (const id of failed)
         if (synced.has(id)) syncSession(id).catch((error) => console.error("Failed to load a session", { id, error }))
