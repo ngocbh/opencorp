@@ -19,7 +19,7 @@ import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store,
 import { WorkspaceTools } from "../tools/workspace.ts"
 import { type JobWorker, type OfficeTool, type WorkerHandlers, errorName } from "../worker/rpc.ts"
 import { RegistryClosed, type WorkerRegistry } from "../worker/spawn.ts"
-import { BadConnectionName, ConnectionGone } from "./connections.ts"
+import { BadConnectionName, ConnectionGone, isFile } from "./connections.ts"
 import type { Hooks } from "./hooks.ts"
 import { DEADLINE_MS, ListTimeout, type ModelCache } from "./models.ts"
 import { ProviderError } from "./provider.ts"
@@ -762,15 +762,6 @@ export class ChatHarness implements SessionHarness {
   /** 503 `stopping` once `closeAll` has begun. */
   #running(): void {
     if (this.#closed) throw new HarnessError(503, "stopping", "the office is stopping")
-  }
-}
-
-/** Whether `file` is a regular file, following symlinks; a path that can't name one is not. */
-function isFile(file: string): boolean {
-  try {
-    return fs.statSync(file).isFile()
-  } catch {
-    return false
   }
 }
 

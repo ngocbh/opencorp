@@ -697,7 +697,7 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * At office start: picks the session up from where yian's log says its run stands (design §8.4). A run yian ended
+   * At office start: picks the session up from where yian's log says its run stands. A run yian ended
    * keeps that end: an ending session ends as the run did; any other sleeps, its questions stale, until a fresh run.
    * An unreadable log fails an ending session (`COULDNT_RESUME`), and a run that never started has an ending session
    * ended again; any other sleeps until a fresh run. A waiting run's questions are reconciled and it sleeps, its
@@ -1597,13 +1597,13 @@ export class SessionActor implements LiveCalls {
    *  acts on the cap; a usage without token counts is logged unpriced. */
   #charge(run: WorkerRun, data: Record<string, unknown>): void {
     const { store } = this.#ctx
-    const usage = data.usage as Record<string, unknown>
+    const usage = data.usage as CallUsage
     if (!Number.isFinite(usage.input_tokens) || !Number.isFinite(usage.output_tokens)) {
       this.#log(`session ${this.sessionId}: a model call is unpriced (its usage has no token counts)`)
       return
     }
     const model = typeof data.model === "string" ? data.model : null
-    const usd = callUsd(run.provider?.prices ?? {}, model, usage as unknown as CallUsage, { default: run.defaultPrice })
+    const usd = callUsd(run.provider?.prices ?? {}, model, usage, { default: run.defaultPrice })
     store.recordUsage({ sessionId: this.sessionId, runId: run.runId, model: model ?? "", usd })
     store.updateSession(this.sessionId, { cost: store.sessionUsageUsd(this.sessionId) })
     this.#overCap()
@@ -2086,7 +2086,7 @@ export class SessionActor implements LiveCalls {
     const runId = this.#runId
     // A run restore found ended in yian keeps that end.
     const recorded = outcome ?? run?.outcome ?? (this.#unresumable?.why === null ? this.#unresumable.finished : null)
-    const ended = recorded?.type === "result" && ["succeeded", "failed", "cancelled"].includes(String(recorded.status))
+    const ended = recorded?.type === "result" && ENDING.includes(String(recorded.status))
     // `runFinished` gets the result that ended the run: `outcome` when the caller passes one (a `succeeded` run, or
     // a `failed`, `cancelled` or other result the session fails on, as Python's `_finish` passed it), else a
     // `succeeded`, `failed` or `cancelled` result `run`'s worker recorded. A recorded `waiting`, `stopped` or

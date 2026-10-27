@@ -521,7 +521,7 @@ function lexists(file: string): boolean {
 }
 
 /** Whether `file` is a regular file, following symlinks. */
-function isFile(file: string): boolean {
+export function isFile(file: string): boolean {
   try {
     return fs.statSync(file).isFile()
   } catch {
