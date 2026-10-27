@@ -319,7 +319,7 @@ test("a secret pages refused answer is not echoed", async () => {
     answer_schema: [{ name: "pin", type: "int", required: true }],
   })
   const r = await post(sock, `/questions/${q.id}/answer`, { answer: { pin: SECRET }, answer_kind: "option" })
-  expect([r.status, r.json()]).toEqual([422, { error: "invalid_answer", message: "'pin' must be a whole number" }])
+  expect([r.status, r.json()]).toEqual([422, { error: "invalid_answer", message: "'pin' isn't a valid answer" }])
   expect(r.text).not.toContain(SECRET)
   expect(lines.filter((line) => line.includes(SECRET))).toEqual([])
 })
