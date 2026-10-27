@@ -91,10 +91,10 @@ function ConnectList(props: { onPick: (provider: Provider) => void }) {
       title: c.name,
       description: c.model ? `${c.provider} · ${c.model}` : c.provider,
       footer: c.default ? "default" : undefined,
-      value: { connection: c.name } as Row,
+      value: { connection: c.name },
       category: "Connected",
     })),
-    ...PROVIDERS.map((p, i) => ({ title: p.title, value: { provider: i } as Row, category: "Add a provider" })),
+    ...PROVIDERS.map((p, i) => ({ title: p.title, value: { provider: i }, category: "Add a provider" })),
   ])
 
   const highlighted = createMemo(() => {
