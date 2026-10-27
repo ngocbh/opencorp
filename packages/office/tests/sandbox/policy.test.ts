@@ -151,7 +151,7 @@ test("a workspace that contains the office install is refused", () => {
   for (const ws of [app, install]) {
     expect(() => policyAt(ws, tmp, { home, install: [install] })).toThrow(UnsafeWorkspace)
     expect(() => policyAt(ws, tmp, { home, install: [install] })).toThrow(
-      `workspace ${ws} contains the office install at ${install}; use a project folder`,
+      `workspace ${ws} contains ${install}, where the office or a program it runs is installed; use a project folder`,
     )
   }
 })
@@ -163,7 +163,7 @@ test("a workspace inside the office install is refused", () => {
   const [ws] = mkdirs(path.join(install, "lib/sub"))
   expect(() => policyAt(ws, tmp, { home, install: [install] })).toThrow(UnsafeWorkspace)
   expect(() => policyAt(ws, tmp, { home, install: [install] })).toThrow(
-    `workspace ${ws} is inside the office install at ${install}; use a project folder`,
+    `workspace ${ws} is inside ${install}, where the office or a program it runs is installed; use a project folder`,
   )
 })
 
@@ -255,7 +255,7 @@ test("office paths are compared resolved", () => {
     [
       realApp,
       { install: [install] },
-      `workspace ${realApp} contains the office install at ${realInstall}; use a project folder`,
+      `workspace ${realApp} contains ${realInstall}, where the office or a program it runs is installed; use a project folder`,
     ],
     [realBin, { tools: [path.join(binLink, "git")] }, tool(realBin, "git")],
     [realBin, { tools: [path.join(binLink, "missing-tool")] }, tool(realBin, "missing-tool")],
