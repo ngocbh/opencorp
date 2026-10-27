@@ -6,7 +6,7 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { stamp } from "@opencorp/protocol"
 import { CompanyGit, CompanyGitError, type CompanyGitOptions } from "../../src/company/git.ts"
 import { tempDir } from "../helpers.ts"
-import { company, git, gitEnv, gitInput, recordingGit, writeRepo } from "./helpers.ts"
+import { company, failingGit, GIT_FAILURES, git, gitEnv, gitInput, recordingGit, writeRepo } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -83,6 +83,21 @@ test("blob id ignores other files", async () => {
   await g.commit(["groups/eng.yaml"], "edit group")
   expect(await g.blobId(PROFILE)).toBe(before)
   expect(await g.blobId("people/nobody/profile.md")).toBeNull()
+})
+
+test.each(GIT_FAILURES)("blob id throws when git fails instead of reporting a missing file [%s]", async (failure) => {
+  const dir = tempDir()
+  const root = company(dir)
+  const g = new CompanyGit(root, path.join(dir, "worktrees"), { git: failingGit(dir, `:${PROFILE}`, failure) })
+  await expect(g.blobId(PROFILE)).rejects.toThrow(CompanyGitError)
+  expect(await g.blobId("company.yaml")).not.toBeNull()
+  expect(await g.blobId("people/nobody/profile.md")).toBeNull()
+})
+
+test("blob id with no commit yet is null", async () => {
+  const dir = tempDir()
+  git(dir, "init", "-q", "-b", "main")
+  expect(await new CompanyGit(dir, path.join(dir, "wt")).blobId(PROFILE)).toBeNull()
 })
 
 test("read head follows loose and packed refs and a detached head", async () => {

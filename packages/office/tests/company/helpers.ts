@@ -226,6 +226,32 @@ export function recordingGit(dir: string) {
   }
 }
 
+/** Shell for a stub git to run instead of answering: each way a git call can fail. */
+export const GIT_FAILURES = [
+  "echo 'fatal: loose object is corrupt' >&2; exit 128",
+  "echo 'error: unable to open loose object: Permission denied' >&2; exit 1",
+  "kill -KILL $$",
+  "exit 0",
+]
+
+/** A `git` script in `dir` that runs the shell `failure` instead of git for a call with an argument
+ *  containing `match`, and the real git for every other call; returns its path. */
+export function failingGit(dir: string, match: string, failure: string): string {
+  const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()
+  const script = path.join(dir, "failing-git")
+  fs.writeFileSync(
+    script,
+    [
+      "#!/bin/sh",
+      `for a in "$@"; do case "$a" in *${JSON.stringify(match)}*) ${failure};; esac; done`,
+      `exec ${JSON.stringify(real)} "$@"`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  )
+  return script
+}
+
 /** A child flow `echo` that a parent calls through `uses:`. */
 export const CHILD = "id: echo\nname: echo\ninput:\n  text: !str\noutput: str\nkind: agent\nprompt: \"${text}\"\n"
 

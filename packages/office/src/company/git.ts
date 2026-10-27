@@ -290,10 +290,17 @@ export class CompanyGit {
     return out.stdout.toString().trim()
   }
 
-  /** The git blob id of `relpath` at `commit`, or null if it is absent. */
+  /** The git blob id of `relpath` at `commit`, or null if it is absent; `CompanyGitError` if git fails, so
+   *  a failed read is never taken for a missing file. */
   async blobId(relpath: string, commit = "HEAD"): Promise<string | null> {
-    const out = await this.#run(["rev-parse", "--verify", "--quiet", `${commit}:${relpath}`], { check: false })
-    return out.stdout.toString().trim() || null
+    const args = ["rev-parse", "--verify", "--quiet", `${commit}:${relpath}`]
+    const out = await this.#run(args, { check: false })
+    const stderr = out.stderr.toString().trim()
+    // --quiet makes "no such object" exit 1 silently; an object git couldn't read exits 1 with an error.
+    if (out.code === 1 && !stderr) return null
+    const id = out.stdout.toString().trim()
+    if (out.code !== 0 || !id) throw new CompanyGitError(`git ${args.join(" ")} exited ${out.code}: ${stderr}`)
+    return id
   }
 
   /** The blob id of every file under `folder` at `commit`, by repo path. */
