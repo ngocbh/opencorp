@@ -200,6 +200,7 @@ test("a wrong method under api is a json 404", async () => {
   for (const [method, target] of [
     ["POST", "/api/health"],
     ["DELETE", "/api/company"],
+    ["PATCH", "/api/company"],
   ]) {
     // Raw: under `bun test` the node:http client drops a DELETE's body.
     const head = [`${method} ${target} HTTP/1.1`, `host: ${HOST}`, `origin: ${ORIGIN}`, `cookie: ${cookie}`]

@@ -27,7 +27,7 @@ export interface RequestInfo {
 
 /** One entry of the route table. */
 export interface Route<C> {
-  method: "GET" | "POST" | "PUT" | "DELETE"
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
   /** Literal segments, `:name` (one segment) and `*name` (one or more segments; at most one per path). */
   path: string
   /** GET routes serve HEAD unless this is false. */
