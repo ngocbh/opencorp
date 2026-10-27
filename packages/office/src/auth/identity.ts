@@ -1,11 +1,10 @@
 /** This device's identity: `<home>/identity.json` (0600) holds the handle, device name and token.
  *
  *  `opencorp` reads and writes the same file. The token in it is never printed, logged or committed. */
-import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { inspect } from "node:util"
-import { readPrivate, writePrivate } from "../secrets.ts"
+import { makePrivateFolder, readPrivate, writePrivate } from "../secrets.ts"
 
 /** Where the device identity lives under an OpenCorp home. */
 export function identityPath(home: string): string {
@@ -46,15 +45,7 @@ export class Identity {
 /** Replaces the identity file with `identity`, atomically, as a 0600 file; creates its folder, mode 0700, if
  *  missing (an existing folder is left as is, and refused unless private). */
 export async function writeIdentity(file: string, identity: Identity): Promise<void> {
-  const dir = path.dirname(path.resolve(file))
-  fs.mkdirSync(path.dirname(dir), { recursive: true })
-  try {
-    fs.mkdirSync(dir, { mode: 0o700 })
-    fs.chmodSync(dir, 0o700) // the umask may have narrowed it
-  } catch (error) {
-    // Another call may create it at the same time.
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-  }
+  makePrivateFolder(path.dirname(path.resolve(file)))
   // Spelled out: toJSON leaves the token out.
   const { handle, device, token } = identity
   await writePrivate(file, JSON.stringify({ handle, device, token }, null, 2) + "\n")

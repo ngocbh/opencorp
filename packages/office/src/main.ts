@@ -11,7 +11,7 @@ export type ModeMain = (argv: string[]) => Promise<number>
  *  can't keep an old daemon running after it released the lock, and at once on a crash. */
 export const daemonMain: ModeMain = async (argv) => {
   // A shell's or a service manager's env and cwd never reach the daemon: it re-execs once into the office's
-  // (same pid), or exits; design §6.5.
+  // (same pid), or exits.
   const pinned = (await import("./install/launch.ts")).pinDaemon(argv)
   if (pinned !== undefined) process.exit(pinned)
   const daemon = await import("./daemon/main.ts")
