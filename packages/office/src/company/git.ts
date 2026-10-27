@@ -8,8 +8,17 @@ import { type CommitInfo, stamp } from "@opencorp/protocol"
 import { selfSpawnEnv } from "../platform.ts"
 
 const IDENTITY = ["-c", "user.name=OpenCorp office", "-c", "user.email=office@opencorp.local"]
-// Repo-local config and hooks still apply after the env is cleaned; never sign or run hooks.
-const NO_HOOKS = ["-c", "commit.gpgsign=false", "-c", `core.hooksPath=${os.devNull}`]
+// Repo-local config and hooks still apply after the env is cleaned; never sign, run hooks or an fsmonitor.
+// With no global config git still reads ~/.config/git/attributes and ignore, so point both at nothing.
+const LOCKDOWN = [
+  "-c", "commit.gpgsign=false",
+  "-c", `core.hooksPath=${os.devNull}`,
+  "-c", "core.fsmonitor=false",
+  "-c", `core.attributesFile=${os.devNull}`,
+  "-c", `core.excludesFile=${os.devNull}`,
+]
+// The commands that read or write working files, where a repo's filter drivers would run.
+const FILTERED = new Set(["add", "commit", "reset", "rm", "status", "worktree"])
 const PIN_MARKER = ".opencorp-pin"
 const WRITE = 0o222
 // `:(glob)` makes `*` match one path segment, so only people/<handle>/profile.md matches.
@@ -190,11 +199,62 @@ export class CompanyGit {
   }
 
   /** Runs git in the clone with stdin `input` (else none); with `check`, a non-zero exit rejects with
-   *  `CompanyGitError`. */
-  #run(args: string[], { check = true, input }: { check?: boolean; input?: Uint8Array } = {}): Promise<GitResult> {
+   *  `CompanyGitError`. A command that touches working files runs with the repo's filter drivers off. */
+  async #run(args: string[], options: { check?: boolean; input?: Uint8Array } = {}): Promise<GitResult> {
+    const env = FILTERED.has(args[0]!) ? { ...this.#env, ...(await this.#noFilters()) } : this.#env
+    return this.#spawn(args, env, options)
+  }
+
+  /**
+   * Config, as `GIT_CONFIG_*` variables, that turns off every filter driver the repo's config defines.
+   *
+   * A driver is attached to paths through `.gitattributes`, so it can't be refused per path; its clean,
+   * smudge and process commands are blanked instead, and `required` is cleared so a blanked driver
+   * isn't a failure. Variables rather than `-c`, which splits at the first `=` a driver name may hold.
+   */
+  async #noFilters(): Promise<Record<string, string>> {
+    const out = await this.#spawn(["config", "-z", "--name-only", "--get-regexp", "^filter\\."], this.#env, {
+      check: false,
+    })
+    // `--get-regexp` exits 1 when nothing matches.
+    if (out.code !== 0 && !(out.code === 1 && !out.stdout.length)) {
+      throw new CompanyGitError(`git config --get-regexp exited ${out.code}: ${out.stderr.toString().trim()}`)
+    }
+    let names: string
+    try {
+      names = UTF8.decode(out.stdout)
+    } catch {
+      // An env value can't carry bytes that aren't UTF-8, so such a driver couldn't be turned off.
+      throw new CompanyGitError("the company repo's config names a filter driver that isn't UTF-8")
+    }
+    const drivers = new Set<string>()
+    for (const name of names.split("\0")) {
+      const last = name.lastIndexOf(".")
+      if (last > "filter.".length) drivers.add(name.slice("filter.".length, last))
+    }
+    const pairs = [...drivers].flatMap((driver) => [
+      [`filter.${driver}.clean`, ""],
+      [`filter.${driver}.smudge`, ""],
+      [`filter.${driver}.process`, ""],
+      [`filter.${driver}.required`, "false"],
+    ])
+    const env: Record<string, string> = { GIT_CONFIG_COUNT: String(pairs.length) }
+    pairs.forEach(([key, value], i) => {
+      env[`GIT_CONFIG_KEY_${i}`] = key!
+      env[`GIT_CONFIG_VALUE_${i}`] = value!
+    })
+    return env
+  }
+
+  /** Runs git in the clone in `env`, as `#run` does. */
+  #spawn(
+    args: string[],
+    env: Record<string, string>,
+    { check = true, input }: { check?: boolean; input?: Uint8Array },
+  ): Promise<GitResult> {
     return new Promise((resolve, reject) => {
-      const child = spawn(this.#git, ["-C", this.root, ...IDENTITY, ...NO_HOOKS, ...args], {
-        env: this.#env,
+      const child = spawn(this.#git, ["-C", this.root, ...IDENTITY, ...LOCKDOWN, ...args], {
+        env,
         stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],
       })
       const stdout: Buffer[] = []
