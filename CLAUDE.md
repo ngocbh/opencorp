@@ -117,7 +117,7 @@ a model-written project could then shadow `bun` or `opencorp` itself.
 
 - `(cd packages/<pkg> && bun test)`; from the root, `bun run test` and `bun run typecheck`
   run each package's own `test` and `typecheck` scripts, except yian's (`@ngocbh/yian` in
-  `packages/yian/ts`), which the yian repo tests.
+  `packages/yian`), which the yian repo tests.
 - CI runs a package's `bun test` only once it has a `*.test.ts(x)` file.
 - `packages/office/tests/<pkg>/` mirrors `packages/office/src/<pkg>/`. The office's e2e tests
   (`tests/e2e/`) and its sandbox tests run with the rest of its suite; a sandbox test skips where it
@@ -156,7 +156,7 @@ when you rebase, keep the newer one and re-run the checks. When you bump it, als
 root `typescript` and `@types/bun` pins still equal yian's:
 `grep -c '"typescript@' bun.lock` and `grep -c '"bun-types@' bun.lock` (the package behind
 `@types/bun`) each print 1, so yian resolves the same versions, and
-`(cd packages/yian/ts && bun run typecheck)` passes (the root typecheck skips yian).
+`(cd packages/yian && bun run typecheck)` passes (the root typecheck skips yian).
 
 ## Releases
 
