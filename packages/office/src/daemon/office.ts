@@ -23,6 +23,7 @@ import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { SecretStore } from "../secrets.ts"
 import type { SessionRecord, Store } from "../store/store.ts"
 import type { Bus } from "./bus.ts"
+import { errorType } from "./http.ts"
 import type { LiveRelay } from "./live.ts"
 
 /** Where the office keeps its files under an OpenCorp home. */
@@ -275,9 +276,7 @@ export class Office {
       try {
         await callback()
       } catch (error) {
-        // The type only: a message (or a settable `.name`) can quote a secret.
-        const type = error instanceof Error ? error.constructor.name : typeof error
-        this.#log(`office on_stop callback failed: ${type}`)
+        this.#log(`office on_stop callback failed: ${errorType(error)}`)
       }
     }
     await this.runIndex.close()

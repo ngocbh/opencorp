@@ -33,7 +33,7 @@ export async function runWho(): Promise<string> {
   }
 }
 
-/** `p` is a directory, following a symlink; false when it can't be checked. */
+/** Whether `p` is a directory, following a symlink; false when it can't be checked. */
 function isDir(p: string): boolean {
   try {
     return fs.statSync(p).isDirectory()

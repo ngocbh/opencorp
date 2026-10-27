@@ -12,7 +12,8 @@ export class OfficeStartError extends Error {
   override name = "OfficeStartError"
 }
 
-function messageOf(error: unknown): string {
+/** The error's message, or the value as a string. */
+export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 

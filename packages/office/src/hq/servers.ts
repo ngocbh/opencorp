@@ -8,10 +8,11 @@ import {
   type Level,
   type Limits,
   createServer,
+  errorType,
   logLine,
   trackRequests,
 } from "../daemon/http.ts"
-import { listenTcp, listenUnix, removeStaleSocket } from "../daemon/sockets.ts"
+import { listenTcp, listenUnix, messageOf, removeStaleSocket } from "../daemon/sockets.ts"
 import { createHqApp } from "./api.ts"
 import type { Hq } from "./core.ts"
 import { BODY_TIMEOUT } from "./guard.ts"
@@ -33,14 +34,6 @@ export interface Served {
 }
 
 type App = (req: IncomingMessage, res: ServerResponse) => Promise<void>
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-function typeOf(error: unknown): string {
-  return error instanceof Error ? error.constructor.name : typeof error
-}
 
 /** Closes `server` and its connections; resolves once closed, whatever its callback reports. */
 function close(server: Server): Promise<void> {
@@ -151,7 +144,7 @@ export class Listeners {
         if (server && bound) await close(server)
         if (!this.#stopping) this.#retry()
       }
-      this.#log("ERROR", `HQ's TCP bind failed: ${typeOf(error)}`)
+      this.#log("ERROR", `HQ's TCP bind failed: ${errorType(error)}`)
     }
   }
 
@@ -173,7 +166,7 @@ export class Listeners {
     served.server.on("error", (error: unknown) => {
       if (this.#stopping || !this.#servers.includes(served)) return
       const where = served.port === null ? this.#hq.socket : `127.0.0.1:${served.port}`
-      const why = `it failed: ${(error instanceof Error && error.message) || typeOf(error)}`
+      const why = `it failed: ${(error instanceof Error && error.message) || errorType(error)}`
       this.#log("ERROR", `HQ's server on ${where} ended (${why})`)
       this.#servers = this.#servers.filter((s) => s !== served)
       void close(served.server)

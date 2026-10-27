@@ -42,7 +42,7 @@ function readUpTo(file: string): Buffer | null {
 export class BuildInfo {
   readonly path: string | null
   // The bytes last read and what they parsed to.
-  private cache: [Buffer, AppBuild | null] | null = null
+  #cache: [Buffer, AppBuild | null] | null = null
 
   constructor(appDir: string | null) {
     this.path = appDir === null ? null : path.join(appDir, "build.json")
@@ -58,10 +58,10 @@ export class BuildInfo {
       raw = readUpTo(this.path)
     } catch {}
     if (raw === null || raw.length > MAX_BUILD_JSON) {
-      this.cache = null
+      this.#cache = null
       return null
     }
-    const cache = this.cache
+    const cache = this.#cache
     if (cache !== null && cache[0].equals(raw)) return cache[1]
     let build: AppBuild | null = null
     try {
@@ -69,7 +69,7 @@ export class BuildInfo {
       const parsed = AppBuild.safeParse(JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw)))
       build = parsed.success ? parsed.data : null
     } catch {} // bad UTF-8 or JSON, or a RangeError from deep nesting
-    this.cache = [raw, build]
+    this.#cache = [raw, build]
     return build
   }
 }
