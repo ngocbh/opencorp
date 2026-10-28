@@ -2,7 +2,7 @@
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { procStartTime } from "../platform.ts"
+import { liveGroupMembers, procStartTime } from "../platform.ts"
 
 /** Whether `n` can be a process or group id the office may read or signal: an integer from 2 to 2^31 − 1
  *  (0 and 1 would make process.kill hit the office's own group or every process; pid_t is 32 bits). */
@@ -65,12 +65,35 @@ export function sameProcess(pid: number, started: number): boolean {
   return found !== null && Math.abs(found - started) < 0.01
 }
 
-/** Sends SIGKILL to process group `pgid`; false when the group is gone, may not be signalled (macOS EPERM for
- *  a group of only zombies), or `pgid` isn't a group id the office may signal or is the office's own pid (a
- *  backstop: callers pass only groups the office spawned detached, and the office leads its own group under its
- *  service). Never throws. */
+// At most this many repeat kills on macOS, about 1 ms apart, so a group forking faster than that can't hold the
+// caller (often an exit listener) for long.
+const SWEEP_ROUNDS = 50
+const pause = new Int32Array(new SharedArrayBuffer(4))
+
+/** Sends SIGKILL to process group `pgid`, and on macOS sends it again while `liveGroupMembers` lists members that
+ *  aren't zombies yet (at most SWEEP_ROUNDS more times, about 1 ms apart). False when the first send fails: the
+ *  group is gone, may not be signalled (macOS EPERM for a group of only zombies), or `pgid` isn't a group id the
+ *  office may signal or is the office's own pid (a backstop: callers pass only groups the office spawned detached,
+ *  and the office leads its own group under its service). Synchronous; never throws. */
 export function killGroup(pgid: number): boolean {
   if (!isPid(pgid) || pgid === process.pid) return false
+  if (!sendKill(pgid)) return false
+  // macOS signals only the processes in the group at that moment, and a child already being created still joins
+  // it, even once its parent has begun to exit, so a child forked during the kill survives it. Re-signalling the
+  // group can't hit a recycled id: a group id isn't reused while the group has members, and it is re-signalled only
+  // right after members were seen. Linux aborts the creation of a child when a group signal is pending, so one send
+  // is enough there.
+  if (process.platform !== "darwin") return true
+  for (let round = 0; round < SWEEP_ROUNDS; round++) {
+    if (liveGroupMembers(pgid).length === 0) break
+    Atomics.wait(pause, 0, 0, 1)
+    if (!sendKill(pgid)) break
+  }
+  return true
+}
+
+/** Sends SIGKILL to group `pgid`; false when the send fails. */
+function sendKill(pgid: number): boolean {
   try {
     process.kill(-pgid, "SIGKILL")
     return true

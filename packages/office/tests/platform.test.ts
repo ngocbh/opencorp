@@ -10,6 +10,7 @@ import {
   embedded,
   helperCommand,
   listAllPids,
+  liveGroupMembers,
   pipe,
   procStartTime,
   sandboxCheck,
@@ -17,7 +18,8 @@ import {
   selfSpawnEnv,
   threadEntry,
 } from "../src/platform.ts"
-import { tempDir } from "./helpers.ts"
+import { args } from "../src/install/proc.ts"
+import { NO_GROUP, ps, psStat, startGroup, tempDir, waitFor } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -337,6 +339,33 @@ test.skipIf(process.platform !== "darwin")("listAllPids includes this process an
   const pids = listAllPids()
   expect(pids).toContain(process.pid)
   expect(pids).toContain(child.pid!)
+})
+
+test.skipIf(process.platform !== "darwin")("liveGroupMembers lists a detached groups leader and grandchild", async () => {
+  const g = startGroup("/bin/sleep 61 & echo $!; exec /bin/sleep 61")
+  const grand = Number(await g.line())
+  g.track(grand, procStartTime(grand))
+  expect(liveGroupMembers(g.pid).sort((a, b) => a - b)).toEqual([g.pid, grand].sort((a, b) => a - b))
+})
+
+test.skipIf(process.platform !== "darwin")("liveGroupMembers leaves out a zombie member", async () => {
+  // As in "startTime reads a zombie": the subshell exits once the gate exists, after sh has exec'd the sleep 61,
+  // which never reaps it.
+  const gate = path.join(tempDir(), "gate")
+  const g = startGroup(`(while [ ! -e '${gate}' ]; do /bin/sleep 0.05; done) & echo $!; exec /bin/sleep 61`)
+  const z = Number(await g.line())
+  g.track(z, procStartTime(z))
+  await waitFor(() => args(g.pid, ps()) === "/bin/sleep 61", { timeout: 10_000, what: "the exec" })
+  expect(liveGroupMembers(g.pid)).toContain(z)
+  fs.writeFileSync(gate, "")
+  await waitFor(() => psStat(z).startsWith("Z"), { timeout: 10_000, what: "a zombie" })
+  // A sleep 0.05 the loop started last may still be exiting.
+  await waitFor(() => liveGroupMembers(g.pid).length === 1, { timeout: 10_000, what: "only the leader live" })
+  expect(liveGroupMembers(g.pid)).toEqual([g.pid])
+})
+
+test.skipIf(process.platform !== "darwin")("liveGroupMembers is empty for a group that does not exist", () => {
+  expect(liveGroupMembers(NO_GROUP)).toEqual([])
 })
 
 test.skipIf(process.platform !== "linux")("pipe gives a close-on-exec fifo pair", () => {

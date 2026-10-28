@@ -1,4 +1,5 @@
 /** Process start times, the reaper's match, group kills, `ps` args and polling stops. */
+import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
@@ -107,6 +108,93 @@ test("killGroup kills the leader and its grandchild", async () => {
   expect(killGroup(g.pid)).toBe(true)
   expect((await g.exited).signal).toBe("SIGKILL")
   await waitFor(() => isGone(grand, grandStarted), { timeout: 10_000, what: "the grandchild gone" })
+})
+
+/** The pids `ps -A` lists in group `pgid`, zombies left out. Reads only. */
+function psGroup(pgid: number): number[] {
+  const out = execFileSync(ps(), ["-A", "-o", "pid=,pgid=,stat="], {
+    env: {},
+    stdio: ["ignore", "pipe", "ignore"],
+    encoding: "utf8",
+    timeout: 15_000,
+  })
+  const pids: number[] = []
+  for (const line of out.split("\n")) {
+    const [pid, group, stat] = line.trim().split(/\s+/)
+    if (Number(group) === pgid && stat !== undefined && !stat.startsWith("Z")) pids.push(Number(pid))
+  }
+  return pids
+}
+
+/** SIGKILLs each member of group `pgid` that `ps` lists both before and after its start time is read and that
+ *  still has that start time, until `ps` lists none (at most 20 rounds). Never signals the group itself. */
+async function killMembers(pgid: number): Promise<void> {
+  for (let round = 0; round < 20; round++) {
+    const seen = psGroup(pgid).map((pid) => ({ pid, started: startTime(pid) }))
+    if (seen.length === 0) return
+    const still = new Set(psGroup(pgid))
+    for (const { pid, started } of seen) {
+      if (started === null || !still.has(pid) || !sameProcess(pid, started)) continue
+      try {
+        process.kill(pid, "SIGKILL")
+      } catch {}
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
+test("killGroup leaves no survivor of a group forking in a loop", async () => {
+  // The kill lands while the leader is forking: on macOS a child forked during the kill joins the group after
+  // the kernel picked whom to signal. The loop stops at 300 children, so a failed kill can't fill the process
+  // table; ps is the oracle, not the code under test.
+  const left: number[][] = []
+  for (let i = 0; i < 20; i++) {
+    const g = startGroup("i=0; while [ $i -lt 300 ]; do /bin/sleep 61 & echo $!; i=$((i+1)); done")
+    // startGroup's own cleanup skips a group whose leader is gone, which is what a survivor looks like.
+    onTestFinished(() => killMembers(g.pid))
+    try {
+      for (let n = 0; n < 3; n++) await g.line()
+      killGroup(g.pid)
+      const deadline = performance.now() + 2000
+      let members = psGroup(g.pid)
+      while (members.length > 0 && performance.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        members = psGroup(g.pid)
+      }
+      if (members.length > 0) left.push(members)
+    } finally {
+      await killMembers(g.pid)
+    }
+  }
+  expect(left).toEqual([])
+}, 240_000)
+
+test("killGroup sends one signal to a group whose only member is the leaders zombie", async () => {
+  // The office reaps its children on its event loop, which can't run while this test spins synchronously, so the
+  // leader stays an unreaped zombie in its group. macOS refuses to signal a group of only zombies (EPERM), which
+  // ends the sweep at once; Linux sends once anyway. The zombie filter in killGroup is pinned by the darwin test
+  // "liveGroupMembers leaves out a zombie member" in platform.test.ts.
+  const g = startGroup("exec /bin/sleep 61")
+  await waitFor(() => args(g.pid, ps()) === "/bin/sleep 61", { timeout: 10_000, what: "the exec" })
+  process.kill(g.pid, "SIGKILL")
+  const deadline = Date.now() + 10_000
+  for (let stat = psStat(g.pid); !stat.startsWith("Z") && stat !== ""; stat = psStat(g.pid)) {
+    if (Date.now() > deadline) throw new Error(`the leader is not a zombie: ${stat}`)
+  }
+  const kill = spyOn(process, "kill")
+  onTestFinished(() => kill.mockRestore())
+  killGroup(g.pid)
+  expect(kill).toHaveBeenCalledTimes(1)
+  expect(kill).toHaveBeenCalledWith(-g.pid, "SIGKILL")
+  expect((await g.exited).signal).toBe("SIGKILL")
+})
+
+test("killGroup signals once a group with no live member", () => {
+  const kill = spyOn(process, "kill").mockImplementation(() => true)
+  onTestFinished(() => kill.mockRestore())
+  expect(killGroup(NO_GROUP)).toBe(true)
+  expect(kill).toHaveBeenCalledTimes(1)
+  expect(kill).toHaveBeenCalledWith(-NO_GROUP, "SIGKILL")
 })
 
 test("killGroup returns false when the group is gone", () => {

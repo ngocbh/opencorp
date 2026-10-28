@@ -176,9 +176,10 @@ export function sandboxCheck(pid: number, operation: string | null, path?: strin
   return check(pid, cString(operation), pathFilter, cString(path!))
 }
 
-/** libproc's `proc_listallpids` and `proc_pidinfo`, as declared through bun:ffi. */
+/** libproc's `proc_listallpids`, `proc_listpgrppids` and `proc_pidinfo`, as declared through bun:ffi. */
 type LibProc = {
   proc_listallpids: (buffer: Int32Array | null, bytes: number) => number
+  proc_listpgrppids: (pgid: number, buffer: Int32Array | null, bytes: number) => number
   proc_pidinfo: (pid: number, flavor: number, arg: bigint, buffer: Uint8Array, bytes: number) => number
 }
 let libProc: LibProc | undefined
@@ -188,6 +189,7 @@ function loadLibProc(): LibProc {
   const { ptr: P, i32: I, u64: U } = FFIType
   libProc ??= dlopen("/usr/lib/libproc.dylib", {
     proc_listallpids: { args: [P, I], returns: I },
+    proc_listpgrppids: { args: [I, P, I], returns: I },
     proc_pidinfo: { args: [I, I, U, P, I], returns: I },
   }).symbols
   return libProc
@@ -224,4 +226,43 @@ export function procStartTime(pid: number): number | null {
   const view = new DataView(info.buffer)
   if (view.getUint32(12, true) !== pid) return null
   return Number(view.getBigUint64(120, true)) + Number(view.getBigUint64(128, true)) / 1e6
+}
+
+const PROC_PIDT_SHORTBSDINFO = 13
+// struct proc_bsdshortinfo: pbsi_pid at 0, pbsi_pgid at 8, pbsi_status at 12, pbsi_ruid at 44, pbsi_svuid at 52
+// (all u32), 64 bytes in all; the same layout on arm64 and x86_64.
+const SHORTINFO_SIZE = 64
+// pbsi_status of a zombie.
+const SZOMB = 5
+
+/** The members of process group `pgid` (libproc `proc_listpgrppids`) that aren't zombies yet and that the office
+ *  may signal; empty when the listing fails or `pgid` is outside 2..2^31 − 1. Each member's
+ *  `proc_pidinfo(PROC_PIDT_SHORTBSDINFO)` leaves out zombies and another user's processes (by the kernel's rule:
+ *  neither its real nor its saved uid is the office's real or effective uid, unless the office is root). A member
+ *  still exiting counts, since one that was forking when it was killed finishes that fork first. A member that
+ *  can't be read counts too: that read needs no privilege, so it fails only for a process in flux (being created
+ *  or exec'ing) or one gone since the listing. macOS only. */
+export function liveGroupMembers(pgid: number): number[] {
+  if (!Number.isInteger(pgid) || pgid < 2 || pgid > 0x7fffffff) return []
+  const lib = loadLibProc()
+  // As in listAllPids: bytes in, a count out; with no buffer the count is an upper bound.
+  const count = lib.proc_listpgrppids(pgid, null, 0)
+  if (count <= 0) return []
+  const pids = new Int32Array(count + 64)
+  const got = lib.proc_listpgrppids(pgid, pids, pids.byteLength)
+  if (got <= 0) return []
+  const uids = [process.getuid!(), process.geteuid!()]
+  const root = uids[1] === 0
+  const info = new Uint8Array(SHORTINFO_SIZE)
+  const view = new DataView(info.buffer)
+  return Array.from(pids.subarray(0, got)).filter((pid) => {
+    // A non-zero `arg` makes xnu look among zombies too, so an unreaped one reads as a zombie.
+    const size = lib.proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 1n, info, SHORTINFO_SIZE)
+    if (size !== SHORTINFO_SIZE || view.getUint32(0, true) !== pid) return true
+    return (
+      view.getUint32(8, true) === pgid &&
+      view.getUint32(12, true) !== SZOMB &&
+      (root || uids.includes(view.getUint32(44, true)) || uids.includes(view.getUint32(52, true)))
+    )
+  })
 }
