@@ -284,7 +284,7 @@ export class CodexSessions implements SessionHarness {
   }
 
   /** After an office restart, for each Codex session that was live. Idle stays idle with no app-server (its next
-   *  message reloads the thread). Busy, or waiting while a turn was open, becomes idle with `[interrupted]`: Codex
+   *  message reloads the thread). Busy, or with a turn stored as open, becomes idle with `[interrupted]`: Codex
    *  reports that turn interrupted on resume and never reruns it. Waiting with no turn open becomes idle without it.
    *  Starting fails. Ending finishes ending. Open cards go stale. */
   async restore(): Promise<void> {
