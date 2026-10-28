@@ -176,9 +176,10 @@ export function sandboxCheck(pid: number, operation: string | null, path?: strin
   return check(pid, cString(operation), pathFilter, cString(path!))
 }
 
-/** libproc's `proc_listallpids` and `proc_pidinfo`, as declared through bun:ffi. */
+/** libproc's `proc_listallpids`, `proc_listpgrppids` and `proc_pidinfo`, as declared through bun:ffi. */
 type LibProc = {
   proc_listallpids: (buffer: Int32Array | null, bytes: number) => number
+  proc_listpgrppids: (pgid: number, buffer: Int32Array | null, bytes: number) => number
   proc_pidinfo: (pid: number, flavor: number, arg: bigint, buffer: Uint8Array, bytes: number) => number
 }
 let libProc: LibProc | undefined
@@ -188,6 +189,7 @@ function loadLibProc(): LibProc {
   const { ptr: P, i32: I, u64: U } = FFIType
   libProc ??= dlopen("/usr/lib/libproc.dylib", {
     proc_listallpids: { args: [P, I], returns: I },
+    proc_listpgrppids: { args: [I, P, I], returns: I },
     proc_pidinfo: { args: [I, I, U, P, I], returns: I },
   }).symbols
   return libProc
@@ -206,14 +208,17 @@ export function listAllPids(): number[] {
 }
 
 const PROC_PIDTBSDINFO = 3
-// struct proc_bsdinfo: pbi_pid (u32) at 12, pbi_start_tvsec (u64) at 120, pbi_start_tvusec (u64) at 128,
-// 136 bytes in all; the same layout and call form on arm64 and x86_64.
+// struct proc_bsdinfo: pbi_flags (u32) at 0, pbi_status (u32) at 4, pbi_pid (u32) at 12, pbi_pgid (u32) at 100,
+// pbi_start_tvsec (u64) at 120, pbi_start_tvusec (u64) at 128, 136 bytes in all; the same layout and call form
+// on arm64 and x86_64.
 const BSDINFO_SIZE = 136
+// pbi_status of a zombie, and the pbi_flags bit of a process that has begun to exit.
+const SZOMB = 5
+const PROC_FLAG_INEXIT = 4
 
-/** The start time of `pid` in seconds since the epoch (µs resolution), from libproc's
- *  `proc_pidinfo(PROC_PIDTBSDINFO)`, zombies included; null when it can't be read: no such process, another
- *  user's process, or an id outside 2..2^31 − 1. macOS only. */
-export function procStartTime(pid: number): number | null {
+/** `proc_pidinfo(PROC_PIDTBSDINFO)` of `pid`, zombies included, or null when it can't be read: no such process,
+ *  another user's process, or an id outside 2..2^31 − 1. */
+function bsdInfo(pid: number): DataView | null {
   // The office-wide pid guard: never 0 or 1 (process.kill would hit our own group or every process),
   // never a value i32 would wrap.
   if (!Number.isInteger(pid) || pid < 2 || pid > 0x7fffffff) return null
@@ -222,6 +227,37 @@ export function procStartTime(pid: number): number | null {
   const size = loadLibProc().proc_pidinfo(pid, PROC_PIDTBSDINFO, 1n, info, BSDINFO_SIZE)
   if (size !== BSDINFO_SIZE) return null
   const view = new DataView(info.buffer)
-  if (view.getUint32(12, true) !== pid) return null
+  return view.getUint32(12, true) === pid ? view : null
+}
+
+/** The start time of `pid` in seconds since the epoch (µs resolution), from libproc's
+ *  `proc_pidinfo(PROC_PIDTBSDINFO)`, zombies included; null when it can't be read: no such process, another
+ *  user's process, or an id outside 2..2^31 − 1. macOS only. */
+export function procStartTime(pid: number): number | null {
+  const view = bsdInfo(pid)
+  if (view === null) return null
   return Number(view.getBigUint64(120, true)) + Number(view.getBigUint64(128, true)) / 1e6
+}
+
+/** The members of process group `pgid` that can still fork (libproc `proc_listpgrppids`): neither zombies nor
+ *  exiting, and readable (another user's process isn't listed). Empty when the listing fails or `pgid` is outside
+ *  2..2^31 − 1. macOS only. */
+export function liveGroupMembers(pgid: number): number[] {
+  if (!Number.isInteger(pgid) || pgid < 2 || pgid > 0x7fffffff) return []
+  const lib = loadLibProc()
+  // As in listAllPids: bytes in, a count out; with no buffer the count is an upper bound.
+  const count = lib.proc_listpgrppids(pgid, null, 0)
+  if (count <= 0) return []
+  const pids = new Int32Array(count + 64)
+  const got = lib.proc_listpgrppids(pgid, pids, pids.byteLength)
+  if (got <= 0) return []
+  return Array.from(pids.subarray(0, got)).filter((pid) => {
+    const view = bsdInfo(pid)
+    return (
+      view !== null &&
+      view.getUint32(100, true) === pgid &&
+      view.getUint32(4, true) !== SZOMB &&
+      (view.getUint32(0, true) & PROC_FLAG_INEXIT) === 0
+    )
+  })
 }
