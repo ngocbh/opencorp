@@ -587,7 +587,8 @@ export function checkFolder(office: Office, cwd: string, log: (line: string) => 
 /** The 422 `unsafe_workspace` for a folder refused because of `why`, which `log` gets: `why` names paths, and a 422
  *  names the field, not its value. */
 export function unsafeWorkspace(why: string, log: (line: string) => void): HarnessError {
-  log(`a session folder was refused: ${why}`)
+  // Quoted, so a folder name with a newline can't add a line to the log.
+  log(`a session folder was refused: ${JSON.stringify(why)}`)
   return new HarnessError(
     422,
     "unsafe_workspace",

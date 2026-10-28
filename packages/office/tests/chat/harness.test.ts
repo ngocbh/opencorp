@@ -1478,7 +1478,9 @@ test("a reopened session whose start fails leaves its earlier run untouched", as
   const error = await rejection(h.harness.startRun(s.id))
   expect([error.status, error.code]).toEqual([422, "unsafe_workspace"])
   expect(error.message).not.toContain(fs.realpathSync(h.office.paths.company))
-  expect(h.logs.some((line) => line.includes(fs.realpathSync(h.office.paths.company)))).toBe(true)
+  // The log line says which session's folder was refused.
+  const company = fs.realpathSync(h.office.paths.company)
+  expect(h.logs.some((line) => line.startsWith(`session ${s.id}: `) && line.includes(company))).toBe(true)
   expect(status(h, s.id)).toBe("failed")
   expect(h.store.getSession(s.id)!.run_ids).toEqual([first!])
   expect(h.store.getRun(first!)!.endReason).toBeNull()

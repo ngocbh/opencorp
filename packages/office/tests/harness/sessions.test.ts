@@ -171,6 +171,18 @@ test.each([
   },
 )
 
+test("a refused folder's name can't add a line to the office log", async () => {
+  const h = makeCodex()
+  const cwd = path.join(h.office.paths.company, "a\nforged line")
+  fs.mkdirSync(cwd, { recursive: true })
+  const error = await rejection(h.sessions.startSession("minh", cwd, { openedBy: "ngocbh" }))
+  expect([error.status, error.code]).toEqual([422, "unsafe_workspace"])
+  const refused = h.lines.filter((line) => line.includes("refused"))
+  expect(refused).toHaveLength(1)
+  expect(refused[0]).toContain("a\\nforged line")
+  expect(refused[0]).not.toContain("\n")
+})
+
 /** Each session call a yian chat isn't served for yet. */
 const CALLS: [string, (h: Codex, id: string) => Promise<unknown>][] = [
   ["prompt", (h, id) => h.sessions.prompt(id, "sk-sentinel")],

@@ -334,14 +334,15 @@ export class ChatHarness implements SessionHarness {
    *  `writable` and with `network` as given, with a private tmp dir under the session's folder. */
   #workspace(session: SessionRecord, { writable, network }: { writable: boolean; network: boolean }): WorkspaceTools {
     const { store, paths } = this.office
-    const real = checkFolder(this.office, session.cwd, this.log)
+    const log = (line: string) => this.log(`session ${session.id}: ${line}`)
+    const real = checkFolder(this.office, session.cwd, log)
     const tmpdir = path.join(paths.sessionDir(session.id), "tmp")
     fs.mkdirSync(tmpdir, { recursive: true, mode: 0o700 })
     let sandbox: SandboxPolicy
     try {
       sandbox = new SandboxPolicy({ workspace: real, writable, network, tmpdir, office: this.office.guards })
     } catch (error) {
-      if (error instanceof UnsafeWorkspace) throw unsafeWorkspace(error.message, this.log)
+      if (error instanceof UnsafeWorkspace) throw unsafeWorkspace(error.message, log)
       throw error
     }
     return new WorkspaceTools(sandbox, { officeHome: paths.home, store })
