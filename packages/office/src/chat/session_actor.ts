@@ -134,9 +134,9 @@ const CAP_TITLE = "Raise the cost cap"
 /** What the actor uses of a worker; `Worker` fits. */
 export type ActorWorker = Pick<Worker, "job" | "pid" | "deliver" | "stop" | "follow" | "closeChannel" | "wait">
 
-/** How long, in ms, a session's worker stays parked between run calls before it is closed: a message within it
- *  replays nothing. */
-export const KEEP_MS = 10 * 60_000
+/** How long, in ms, a session's worker stays parked between run calls before it is closed (2 hours): a message
+ *  within it replays nothing. */
+export const KEEP_MS = 2 * 60 * 60_000
 
 /** How long, in milliseconds, a run's end report waits for the run index; bounded, so a stuck index thread can't
  *  stall the report. */

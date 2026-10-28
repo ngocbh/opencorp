@@ -1963,6 +1963,44 @@ test("the idle timeout closes the parked worker and the next message spawns one"
   expect(session(o, sid).run_ids).toHaveLength(1)
 })
 
+test("a parked worker is kept for 2 hours by default", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const sleeps: { ms: number; signal: AbortSignal | undefined; wake: () => void }[] = []
+  const scheduler: Scheduler = {
+    now: () => Date.now(),
+    sleep: (ms, signal) =>
+      new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) return reject(signal.reason)
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+        sleeps.push({ ms, signal, wake: resolve })
+      }),
+  }
+  // The run index's bounded wait sleeps too; only the idle timer's sleeps count here.
+  const idle = () => sleeps.filter(({ ms }) => ms !== INDEX_WAIT_MS)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid, { scheduler })
+  await actor.start()
+  await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
+  const first = await parkedWorker(o, sid)
+  await waitFor(() => idle().length === 1, { what: "the idle timer" })
+  expect(idle()[0]!.ms).toBe(7_200_000)
+  expect(await say(o, actor, sid, "a")).toBe("one")
+  expect((await parkedWorker(o, sid)).pid).toBe(first.pid)
+  await waitFor(() => idle().length === 2, { what: "the next idle timer" })
+  expect(idle().map(({ ms }) => ms)).toEqual([7_200_000, 7_200_000])
+  expect(idle()[0]!.signal!.aborted).toBe(true)
+  expect(idle()[1]!.signal!.aborted).toBe(false)
+  idle()[1]!.wake()
+  expect(await first.wait(10_000)).toBe(0)
+  expect(o.registry.get(sid)).toBeUndefined()
+  expect(await say(o, actor, sid, "b")).toBe("two")
+  expect((await parkedWorker(o, sid)).pid).not.toBe(first.pid)
+  expect(o.kinds).toEqual(["chat", "advance", "advance"])
+  expect(session(o, sid).run_ids).toHaveLength(1)
+})
+
 test("a parked worker killed between turns is not a death", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "one" }, { content: "two" })
