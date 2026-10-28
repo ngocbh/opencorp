@@ -2,20 +2,20 @@
 import fs from "node:fs"
 import http from "node:http"
 import path from "node:path"
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
 import { parse as parseYaml } from "yaml"
 import { z } from "zod"
 import { checkPassword, hashPassword } from "../../src/auth/passwords.ts"
 import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
-import { OPEN, actingPerson } from "../../src/daemon/auth.ts"
+import { CompanyGit } from "../../src/company/git.ts"
+import { DeviceTokens, OPEN, actingPerson } from "../../src/daemon/auth.ts"
 import type { Route } from "../../src/daemon/http.ts"
 import type { RequestContext } from "../../src/daemon/office.ts"
 import { officeAnswers } from "../../src/install/launch.ts"
 import { git } from "../company/helpers.ts"
 import {
-  Conn,
   addHuman,
   bearer,
   exchange,
@@ -196,36 +196,43 @@ test("tokens work on a real socket", async () => {
   expect(parse(text).status).toBe(200)
 })
 
-test("the check adds well under a millisecond", async () => {
+test("the check reads the head per request and the roster only when it moves", async () => {
+  // Counting the work rather than timing it: a timing limit fails whenever the machine is loaded.
   const office = makeOffice()
-  const { sock } = await served(office, { tokens: true })
   const token = newToken()
   giveDevice(office.paths.company, "ngocbh", "mac", token)
-  await request(sock, "GET", "/whoami", { headers: bearer(token) }) // load the roster
-  const rounds = 10
-  const n = 50
-  const conn = await Conn.open(sock)
-
-  const timed = async (head: string): Promise<number> => {
-    const start = performance.now()
-    for (let i = 0; i < n; i++) {
-      conn.send(head)
-      expect((await conn.response()).status).toBe(200)
+  const spies = Object.getOwnPropertyNames(CompanyGit.prototype)
+    .filter((name) => name !== "constructor")
+    .map((name) => [name, spyOn(office.git, name as keyof CompanyGit)] as const)
+  /** The `CompanyGit` calls `run` makes, by method. */
+  const work = async (run: () => Promise<void>): Promise<Record<string, number>> => {
+    for (const [, spy] of spies) spy.mockClear()
+    await run()
+    return Object.fromEntries(spies.map(([name, spy]) => [name, spy.mock.calls.length]).filter(([, n]) => n !== 0))
+  }
+  const tokens = new DeviceTokens(office)
+  const check = async (): Promise<void> => {
+    const info = {
+      method: "GET",
+      path: "/whoami",
+      query: new URLSearchParams(),
+      headers: bearer(token),
+      signal: new AbortController().signal,
     }
-    return (performance.now() - start) / n
+    expect((await tokens.context(info)).person).toBe("ngocbh")
   }
 
-  // Load on the machine only adds time, so each side's fastest round is its truest cost; alternating rounds puts
-  // both under the same conditions. A check that slows every request (one that reloads the roster each time) still
-  // fails.
-  const open: number[] = []
-  const checked: number[] = []
-  for (let i = 0; i < rounds; i++) {
-    // /health skips the check; otherwise as small a route as /whoami.
-    open.push(await timed("GET /health HTTP/1.1\r\nhost: office\r\n\r\n"))
-    checked.push(await timed(`GET /whoami HTTP/1.1\r\nhost: office\r\nauthorization: Bearer ${token}\r\n\r\n`))
+  expect(await work(check)).toMatchObject({ readHead: 1, files: 1, readBlobs: 1 }) // the first loads the roster
+  const n = 50
+  const checks = async (): Promise<void> => {
+    for (let i = 0; i < n; i++) await check()
   }
-  expect(Math.min(...checked) - Math.min(...open)).toBeLessThan(0.5)
+  // Each request only reads HEAD from the ref files: no git process, no roster reload.
+  expect(await work(checks)).toEqual({ readHead: n })
+  // A commit moves HEAD, so the next check loads the roster again, and only that one.
+  addHuman(office.paths.company, "ava")
+  expect(await work(check)).toMatchObject({ readHead: 1, files: 1, readBlobs: 1 })
+  expect(await work(check)).toEqual({ readHead: 1 })
 })
 
 test("an encoded open path still needs a token", async () => {
