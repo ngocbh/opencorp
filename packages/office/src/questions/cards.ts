@@ -269,8 +269,8 @@ export class Cards {
     return `${seed}\n\n${FIRST_MESSAGE.slice(0, -1)}`
   }
 
-  /** `workerExited`: a side session's worker exits after each run call, so its open card copies the discussion. */
-  sideExited(session: SessionRecord): Promise<void> | undefined {
+  /** `callEnded`: after each run call of a side session, its open card copies the discussion. */
+  sideCallEnded(session: SessionRecord): Promise<void> | undefined {
     const questionId = session.kind === "side" ? session.question_id : null
     if (!questionId) return undefined
     return this.#serial(async () => {

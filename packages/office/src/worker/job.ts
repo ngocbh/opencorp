@@ -65,7 +65,9 @@ export type Parent = z.output<typeof Parent>
  * the run. `seed` names the run of the same session a fresh `chat` run replaces (its log, the env that run had,
  * whether to cancel it); the worker seeds the flow's `summary` and `history` inputs from it and moves its unread
  * messages. `parent` names the run (and node) a fresh `chat` run nests under in yian's run index; an `advance`
- * resumes a log that already records it. A `Job` holds the provider key in `llm_config`, so it is never logged.
+ * resumes a log that already records it. With `keep`, a worker whose run call comes back `waiting` stays up for the
+ * run's next `advance` job (`serve` says how); a `check` job never keeps. A `Job` holds the provider key in
+ * `llm_config`, so it is never logged.
  */
 export const Job = z
   .strictObject({
@@ -92,6 +94,7 @@ export const Job = z
     advance: z.boolean().default(true),
     seed: Seed.nullable().default(null),
     parent: Parent.nullable().default(null),
+    keep: z.boolean().default(false),
   })
   .refine((job) => job.advance || job.kind === "advance", {
     message: "advance false needs kind advance",
@@ -102,6 +105,7 @@ export const Job = z
     message: "a parent needs kind chat",
     path: ["parent"],
   })
+  .refine((job) => !job.keep || job.kind !== "check", { message: "a check job never keeps", path: ["keep"] })
 export type Job = z.output<typeof Job>
 export type JobInput = z.input<typeof Job>
 

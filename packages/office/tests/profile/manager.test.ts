@@ -17,7 +17,7 @@ import {
 import { GitProfileStore } from "../../src/profile/store.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
-import { fakeLlm, makeHarness, ROOT, status, texts } from "../chat/helpers.ts"
+import { fakeLlm, makeHarness, ROOT, running, status, texts } from "../chat/helpers.ts"
 import { company, git } from "../company/helpers.ts"
 import { CEO, request, served } from "../daemon/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
@@ -260,7 +260,7 @@ test("a profile manager survives a restart", async () => {
   fake.script({ content: "Hello." }, { content: "Still here." })
   const s = await h.harness.startManager("minh", "Hi.", { by: "lan" })
   await waitFor(() => texts(h, s.id).join() === "Hello." && status(h, s.id) === "idle", { what: "the reply" })
-  await waitFor(() => h.registry.get(s.id) === undefined, { what: "the worker to exit" })
+  await waitFor(() => !running(h.registry, s.id), { what: "the run call to end" })
   await h.reopen()
 
   await h.harness.restore()

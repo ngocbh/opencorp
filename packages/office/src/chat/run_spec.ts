@@ -212,7 +212,8 @@ export function managerSpec({
  * A new chat starts with an empty history at `turns`, the session's turns so far; with a `seed` (the run it
  * replaces) the worker replaces the empty `summary` and `history` with that run's. Only a `chat` job carries
  * `spec.parent`: an `advance` resumes a log that already records it. A profile memory with no model
- * config of its own uses `llmConfig`. Throws `JobError`, whose message holds no value, when a field is invalid.
+ * config of its own uses `llmConfig`. With `keep`, the worker stays parked after a run call that leaves the run
+ * waiting, for the run's next job. Throws `JobError`, whose message holds no value, when a field is invalid.
  */
 export function chatJob(
   spec: RunSpec,
@@ -228,6 +229,7 @@ export function chatJob(
     seed = null,
     deliver = [],
     advance = true,
+    keep = false,
   }: {
     kind: "chat" | "advance"
     session: SessionRecord
@@ -239,6 +241,7 @@ export function chatJob(
     seed?: Seed | null
     deliver?: Delivery[]
     advance?: boolean
+    keep?: boolean
   },
 ): Job {
   const memory = Object.fromEntries(
@@ -261,5 +264,6 @@ export function chatJob(
     deliver,
     advance,
     parent: kind === "chat" ? (spec.parent ?? null) : null,
+    keep,
   })
 }

@@ -18,13 +18,13 @@ import { SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store, newId } from "../store/store.ts"
 import { WorkspaceTools } from "../tools/workspace.ts"
 import { type JobWorker, type OfficeTool, type WorkerHandlers, errorName } from "../worker/rpc.ts"
-import { RegistryClosed, type WorkerRegistry } from "../worker/spawn.ts"
+import { RegistryClosed, type Worker, type WorkerRegistry } from "../worker/spawn.ts"
 import { BadConnectionName, ConnectionGone, isFile } from "./connections.ts"
 import type { Hooks } from "./hooks.ts"
 import { DEADLINE_MS, ListTimeout, type ModelCache } from "./models.ts"
 import { ProviderError } from "./provider.ts"
 import { type RunSpec, mainSpec, managerSpec, sideSpec } from "./run_spec.ts"
-import { type ActorContext, SessionActor, named, ownModel } from "./session_actor.ts"
+import { type ActorContext, KEEP_MS, SessionActor, named, ownModel } from "./session_actor.ts"
 import { HarnessError, LIVE, notAnAgent } from "./state.ts"
 import type { Transcript } from "./transcript.ts"
 
@@ -40,7 +40,8 @@ export type Choice = { connection: string; model: string | null; note: string | 
 
 /** What the chat harness is built on. `workers` is the registry its runs' workers start in; `hooks` are shared with
  *  the Codex sessions; `log` gets its warnings (default `console.error`). A new chat's choice lists models through
- *  `models` (default `office.models`) within `chooseDeadlineMs`. */
+ *  `models` (default `office.models`) within `chooseDeadlineMs`. A chat's worker stays parked `keepMs` between run
+ *  calls (default `KEEP_MS`; 0 keeps none). */
 export type ChatHarnessOptions = {
   monitor: Monitor
   hooks: Hooks
@@ -49,6 +50,7 @@ export type ChatHarnessOptions = {
   log?: (line: string) => void
   models?: ModelCache
   chooseDeadlineMs?: number
+  keepMs?: number
 }
 
 /**
@@ -94,6 +96,7 @@ export class ChatHarness implements SessionHarness {
       log = (line) => console.error(line),
       models = office.models,
       chooseDeadlineMs = DEADLINE_MS,
+      keepMs = KEEP_MS,
     }: ChatHarnessOptions,
   ) {
     this.office = office
@@ -122,7 +125,14 @@ export class ChatHarness implements SessionHarness {
           this.#stopping
             ? Promise.reject(new RegistryClosed())
             : this.registry.spawn(job, dir, this.#guard(handlers), options),
+        next: (worker, job, handlers) =>
+          this.#stopping
+            ? Promise.reject(new RegistryClosed())
+            : this.registry.next(worker as Worker, job, this.#guard(handlers)),
+        park: (worker, release) => this.registry.park(worker as Worker, release),
+        unpark: (worker) => this.registry.unpark(worker as Worker),
       },
+      keepMs,
       hooks,
       answers: this.answers,
       transcript: this.transcript,
@@ -538,9 +548,10 @@ export class ChatHarness implements SessionHarness {
     }
   }
 
-  /** `handlers` as the stop needs them: each call goes to `handlers`; `exited` is dropped once the stop began, and
-   *  the requests are counted in flight, and refused once the workers' channels are closed. A hard stop in flight
-   *  when the office stops never sees its worker's exit (dropped), which is harmless: nothing awaits it in a queue. */
+  /** `handlers` as the stop needs them: each call goes to `handlers`; `parked` and `exited` are dropped once the stop
+   *  began, and the requests are counted in flight, and refused once the workers' channels are closed. A hard stop in
+   *  flight when the office stops never sees its worker's exit (dropped), which is harmless: nothing awaits it in a
+   *  queue. */
   #guard<W extends JobWorker>(handlers: WorkerHandlers<W>): WorkerHandlers<W> {
     return {
       event: (worker, frame) => handlers.event(worker, frame),
@@ -548,6 +559,9 @@ export class ChatHarness implements SessionHarness {
       deliverReply: (worker, frame) => handlers.deliverReply(worker, frame),
       result: (worker, frame) => handlers.result(worker, frame),
       error: (worker, frame) => handlers.error(worker, frame),
+      parked: (worker) => {
+        if (!this.#stopping) handlers.parked(worker)
+      },
       exited: (worker, returncode) => {
         if (!this.#stopping) handlers.exited(worker, returncode)
       },

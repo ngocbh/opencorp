@@ -350,6 +350,8 @@ export class Recorder extends BaseHandlers {
   readonly order: string[] = []
   outcome: Frame | null = null
   returncode: number | null = null
+  /** How often the worker parked. */
+  parks = 0
 
   constructor({
     answers = [],
@@ -384,6 +386,10 @@ export class Recorder extends BaseHandlers {
 
   override exited(_worker: unknown, returncode: number | null): void {
     this.returncode = returncode
+  }
+
+  override parked(_worker: unknown): void {
+    this.parks += 1
   }
 
   override askUser(_worker: unknown, request: AskRequest): unknown {

@@ -25,8 +25,8 @@ import {
 import { writePrivate } from "../../src/secrets.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Delivery, STOP_REASON } from "../../src/worker/job.ts"
-import { WorkerExists } from "../../src/worker/spawn.ts"
-import type { OfficeTool } from "../../src/worker/rpc.ts"
+import { type Worker, WorkerExists } from "../../src/worker/spawn.ts"
+import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
 import { CEO } from "../daemon/helpers.ts"
 import { fold } from "../harness/helpers.ts"
 import { waitFor } from "../helpers.ts"
@@ -43,6 +43,7 @@ import {
   errors,
   fakeLlm,
   free,
+  livingWorkers,
   makeActor,
   newSession,
   noWorkersLeft,
@@ -501,16 +502,18 @@ test("esc answers an office call in flight", async () => {
   const o = await chatOffice(fake, { groups: { toolbox: { slow } } })
   // What the actor's handlers answer each tool call with.
   const replies: Promise<unknown>[] = []
-  const spawn = o.registry.spawn
-  o.registry.spawn = async (job, sessionDir, handlers, options) => {
+  const recorded = (handlers: WorkerHandlers<Worker>) => {
     const toolCall = handlers.toolCall.bind(handlers)
     handlers.toolCall = (w, group, name, args, callId) => {
       const reply = toolCall(w, group, name, args, callId)
       replies.push(Promise.resolve(reply))
       return reply
     }
-    return spawn(job, sessionDir, handlers, options)
+    return handlers
   }
+  const { spawn, next } = o.registry
+  o.registry.spawn = (job, sessionDir, handlers, options) => spawn(job, sessionDir, recorded(handlers), options)
+  o.registry.next = (worker, job, handlers) => next(worker, job, recorded(handlers))
   const { actor, sid } = await startActor(o)
   await actor.prompt("hi")
   await called
@@ -1918,4 +1921,220 @@ test("abandon after the session finished leaves its own end", async () => {
   expect(o.office.store.getRun(runId)!.endReason).toBe(COULDNT_RESUME)
   await waitFor(() => ended.length > 0, { what: "the end hook" })
   expect(ended).toEqual(["failed"])
+})
+
+// A kept worker: between turns the session's worker stays parked, and the next run call goes to it.
+
+/** Session `sid`'s parked worker, once its run call has ended; fails if a worker runs. */
+async function parkedWorker(o: ChatOffice, sid: string): Promise<Worker> {
+  await waitFor(() => o.registry.get(sid)?.parked === true, { what: "the worker to park" })
+  return o.registry.get(sid)!
+}
+
+test("a message to a waiting session goes to its parked worker", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  const first = await parkedWorker(o, sid)
+  expect(actor.hasWorker).toBe(false)
+  expect(await say(o, actor, sid, "a")).toBe("one")
+  expect(await say(o, actor, sid, "b")).toBe("two")
+  expect(await parkedWorker(o, sid)).toBe(first)
+  expect(o.kinds).toEqual(["chat", "advance", "advance"])
+  expect(o.reused()).toBe(2)
+  expect(livingWorkers().filter((w) => w.pid === first.pid)).toHaveLength(1)
+})
+
+test("the idle timeout closes the parked worker and the next message spawns one", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" })
+  const o = await chatOffice(fake)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid, { keepMs: 300 })
+  await actor.start()
+  await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
+  const first = await parkedWorker(o, sid)
+  expect(await first.wait(10_000)).toBe(0)
+  expect(o.registry.get(sid)).toBeUndefined()
+  expect(await say(o, actor, sid, "a")).toBe("one")
+  expect(o.reused()).toBe(0)
+  expect(o.kinds).toEqual(["chat", "advance"])
+  expect(session(o, sid).run_ids).toHaveLength(1)
+})
+
+test("a parked worker is kept for 2 hours by default", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const sleeps: { ms: number; signal: AbortSignal | undefined; wake: () => void }[] = []
+  const scheduler: Scheduler = {
+    now: () => Date.now(),
+    sleep: (ms, signal) =>
+      new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) return reject(signal.reason)
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+        sleeps.push({ ms, signal, wake: resolve })
+      }),
+  }
+  // The run index's bounded wait sleeps too; only the idle timer's sleeps count here.
+  const idle = () => sleeps.filter(({ ms }) => ms !== INDEX_WAIT_MS)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid, { scheduler })
+  await actor.start()
+  await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
+  const first = await parkedWorker(o, sid)
+  await waitFor(() => idle().length === 1, { what: "the idle timer" })
+  expect(idle()[0]!.ms).toBe(7_200_000)
+  expect(await say(o, actor, sid, "a")).toBe("one")
+  expect((await parkedWorker(o, sid)).pid).toBe(first.pid)
+  await waitFor(() => idle().length === 2, { what: "the next idle timer" })
+  expect(idle().map(({ ms }) => ms)).toEqual([7_200_000, 7_200_000])
+  expect(idle()[0]!.signal!.aborted).toBe(true)
+  expect(idle()[1]!.signal!.aborted).toBe(false)
+  idle()[1]!.wake()
+  expect(await first.wait(10_000)).toBe(0)
+  expect(o.registry.get(sid)).toBeUndefined()
+  expect(await say(o, actor, sid, "b")).toBe("two")
+  expect((await parkedWorker(o, sid)).pid).not.toBe(first.pid)
+  expect(o.kinds).toEqual(["chat", "advance", "advance"])
+  expect(session(o, sid).run_ids).toHaveLength(1)
+})
+
+test("a parked worker killed between turns is not a death", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  for (const reply of ["one", "two"]) {
+    const parked = await parkedWorker(o, sid)
+    process.kill(-parked.pgid, "SIGKILL")
+    await waitFor(() => o.registry.get(sid) === undefined, { what: "the killed worker gone" })
+    expect(await say(o, actor, sid, reply)).toBe(reply)
+  }
+  expect(status(o, sid)).toBe("idle")
+  expect(session(o, sid).run_ids).toHaveLength(1)
+  expect(o.reused()).toBe(0)
+})
+
+test("a model switch closes the parked worker before the fresh runs spawn", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "on the second model" })
+  const o = await chatOffice(fake, { connections: { second: "stub-2" } })
+  const { actor, sid } = await startActor(o)
+  const parked = await parkedWorker(o, sid)
+  o.office.store.updateSession(sid, { connection: "second", model: "stub-2" })
+  expect(await say(o, actor, sid, "a")).toBe("on the second model")
+  expect(o.kinds).toEqual(["chat", "chat"])
+  expect(o.reused()).toBe(0)
+  expect(parked.returncode).toBe(0)
+  expect(session(o, sid).run_ids).toHaveLength(2)
+  expect(o.logs.filter((line) => line.includes("WorkerExists"))).toEqual([])
+})
+
+test("end goes through the parked worker and the session ends", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, sid } = await startActor(o)
+  const parked = await parkedWorker(o, sid)
+  await actor.end()
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  expect(o.reused()).toBe(1)
+  expect(o.jobs.at(-1)!.deliver.map((d) => d.op)).toEqual(["close"])
+  expect(await parked.wait(10_000)).toBe(0)
+  expect(o.registry.get(sid)).toBeUndefined()
+})
+
+test("over the cap a message goes as an advance false job and a raise advances on the parked worker", async () => {
+  const fake = await fakeLlm()
+  fake.script(free("after the raise"))
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  const parked = await parkedWorker(o, sid)
+  // Over the company's $5 while idle at the turn.
+  o.office.store.updateSession(sid, { cost: 6 })
+  expect(await actor.prompt("hi")).toBe("queued")
+  expect(o.jobs.at(-1)).toMatchObject({ kind: "advance", advance: false })
+  expect(await parkedWorker(o, sid)).toBe(parked)
+  expect(fake.requests()).toEqual([])
+  await actor.setCostCap(20)
+  await waitFor(() => texts(o, sid).includes("after the raise") && status(o, sid) === "idle", {
+    what: "the reply after the raise",
+  })
+  expect(o.jobs.at(-1)).toMatchObject({ kind: "advance", advance: true })
+  expect(o.reused()).toBe(2)
+  expect(await parkedWorker(o, sid)).toBe(parked)
+})
+
+test("esc while the agent waits on a question interrupts through the parked worker", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_USER, { content: "spare" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("hi")
+  const q = await card(o, sid, "ask_user")
+  const parked = await parkedWorker(o, sid)
+  const reused = o.reused()
+  await actor.interrupt()
+  const got = o.office.store.getQuestion(q.id)!
+  expect([got.status, got.answer, got.answer_kind]).toEqual(["consumed", INTERRUPTED, "interrupted"])
+  expect(o.jobs.at(-1)!.deliver.map((d) => d.op)).toEqual(["interrupt"])
+  expect(o.reused()).toBe(reused + 1)
+  await waitFor(() => status(o, sid) === "idle", { what: "the run at its next turn" })
+  expect(await parkedWorker(o, sid)).toBe(parked)
+})
+
+test("the wake at timer advances on the parked worker", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    { tool_calls: [{ name: "ask_user", arguments: { question: "Which?", timeout: "1s" } }] },
+    { content: "No answer, so A." },
+  )
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("hi")
+  await card(o, sid, "ask_user")
+  const parked = await parkedWorker(o, sid)
+  const reused = o.reused()
+  await waitFor(() => texts(o, sid).includes("No answer, so A.") && status(o, sid) === "idle", {
+    what: "the reply after the timeout",
+  })
+  expect(o.reused()).toBe(reused + 1)
+  expect(await parkedWorker(o, sid)).toBe(parked)
+})
+
+test("a delivery acked after a kept result is advanced on the parked worker", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const { worker, handlers, deliveries } = workers[0]!
+  expect(workers[0]!.job.keep).toBe(true)
+  const sent = actor.prompt("hi")
+  await waitFor(() => deliveries.length === 1, { what: "the send" })
+  handlers.result(worker, { ...waitingResult(runId), kept: true })
+  // The run took the send after its result: nobody would move it now.
+  handlers.deliverReply(worker, { type: "deliver_reply", id: deliveries[0]!.id, seq: 4 })
+  await sent
+  handlers.parked(worker)
+  await waitFor(() => workers.length === 2, { what: "the re-advance" })
+  expect(workers[1]!.worker).toBe(worker)
+  expect(o.jobs[1]).toMatchObject({ kind: "advance", advance: true, deliver: [], keep: true })
+  expect(status(o, sid)).toBe("busy")
+})
+
+test("a failed session releases its parked worker then runs its hard stop", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, sid } = await startActor(o)
+  const runId = actor.runId!
+  const parked = await parkedWorker(o, sid)
+  await actor.fail()
+  expect(status(o, sid)).toBe("failed")
+  await actor.stopped
+  expect(parked.returncode).toBe(0)
+  expect(o.jobs.at(-1)).toMatchObject({ kind: "advance", run_id: runId, advance: false, deliver: [{ op: "cancel" }] })
+  expect(o.logs.filter((line) => line.includes("can't be stopped"))).toEqual([])
+  expect(o.registry.get(sid)).toBeUndefined()
 })

@@ -13,7 +13,7 @@ export function register(office: Office): void {
   harness.hooks.promptCheck.push(cards.refuseExit.bind(cards))
   harness.hooks.turnContext.push(cards.firstTurn.bind(cards))
   harness.hooks.questionStored.push(cards.stored.bind(cards))
-  harness.hooks.workerExited.push(cards.sideExited.bind(cards))
+  harness.hooks.callEnded.push(cards.sideCallEnded.bind(cards))
   harness.hooks.sessionEnded.push(cards.ended.bind(cards))
   // Relies on the harness adding its own onStart (its resume) before the extensions load, so the sweep runs after it.
   office.onStart.push(() => cards.sweep())

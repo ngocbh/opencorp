@@ -13,8 +13,8 @@ import {
 } from "@ngocbh/yian/run"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
-import type { Frame } from "../../src/worker/channel.ts"
-import { groupSpecs, type JobInput, STOP_REASON } from "../../src/worker/job.ts"
+import { type Channel, ChannelClosed, type Frame } from "../../src/worker/channel.ts"
+import { groupSpecs, type Job, type JobInput, STOP_REASON } from "../../src/worker/job.ts"
 import { EXIT_FAILED, EXIT_OK, EXIT_ORPHANED, isOfficeChannel, report, serve } from "../../src/worker/main.ts"
 import type { AskRequest, OfficeTool } from "../../src/worker/rpc.ts"
 import { fakeLlm, logPrefix, send, TemplateOffice, waitingChat } from "../chat/helpers.ts"
@@ -31,6 +31,7 @@ import {
   spawnWorker,
   startWorker,
   type TestWorker,
+  type WorkerOut,
 } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -521,4 +522,145 @@ test("a live frame too large to send is named on stderr by its type", async () =
   expect(rec.outcome?.status).toBe("succeeded")
   expect(written).toContain("opencorp __worker: a live frame was not sent (FrameTooLarge)\n")
   expect(written.join("")).not.toContain("zzzz")
+})
+
+// A kept worker: after a waiting result it parks, and the office's next start frame runs the run's next advance.
+
+/** Starts an in-process worker on a kept inbox job and reads frames until it has parked; returns the worker, its job
+ *  and the frames after the result. */
+async function parkedWorker(): Promise<{
+  office: Channel
+  done: Promise<void>
+  out: WorkerOut
+  job: Job
+}> {
+  const job = makeJob(base(), "flows/inbox.yaml", { inputs: {}, keep: true })
+  const started = await startWorker()
+  await started.office.send({ type: "start", job })
+  const result = await lastFrame(started.office)
+  expect(result).toMatchObject({ type: "result", status: "waiting", kept: true })
+  await started.office.send({ type: "done" })
+  expect(await started.office.recv()).toEqual({ type: "parked" })
+  return { ...started, job }
+}
+
+test("a kept worker parks after a waiting result and runs the next advance job in the same process", async () => {
+  const job = makeJob(base(), "flows/inbox.yaml", { inputs: {}, keep: true })
+  const { office, exited } = spawnWorker({ cwd: tempDir() })
+  await office!.send({ type: "start", job })
+  expect(await lastFrame(office!)).toMatchObject({ type: "result", status: "waiting", kept: true })
+  await office!.send({ type: "done" })
+  expect(await office!.recv()).toEqual({ type: "parked" })
+  const hi = { id: "d1", op: "send", inbox: "messages", event: "hi" } as const
+  await office!.send({ type: "start", job: advanceJob(job, { deliver: [hi] }) })
+  const frames: Frame[] = []
+  for (;;) {
+    const frame = await office!.recv()
+    frames.push(frame)
+    if (frame.type === "result" || frame.type === "error") break
+  }
+  expect(frames.find((frame) => frame.type === "deliver_reply")).toEqual({
+    type: "deliver_reply",
+    id: "d1",
+    seq: expect.any(Number),
+  })
+  const result = frames.at(-1)!
+  expect(result.type, String(result.message)).toBe("result")
+  expect(result.status).toBe("succeeded")
+  expect(result.kept).toBeUndefined()
+  office!.closeSend()
+  expect(await exited).toEqual({ code: EXIT_OK, signal: null })
+})
+
+test("a delivery acked after a kept result is answered before parked", async () => {
+  const job = makeJob(base(), "flows/inbox.yaml", { inputs: {}, keep: true })
+  const { office } = await startWorker()
+  await office.send({ type: "start", job })
+  expect(await lastFrame(office)).toMatchObject({ type: "result", status: "waiting", kept: true })
+  await office.send({ type: "deliver", id: "late", op: "send", inbox: "messages", event: "hi" })
+  await office.send({ type: "done" })
+  expect(await office.recv()).toEqual({ type: "deliver_reply", id: "late", seq: expect.any(Number) })
+  expect(await office.recv()).toEqual({ type: "parked" })
+})
+
+test("a parked worker exits when the office closes its channel", async () => {
+  const { office, done, out } = await parkedWorker()
+  office.closeSend()
+  await done
+  expect(out.code).toBe(EXIT_OK)
+  expect(out.exit).toBeUndefined()
+})
+
+test("a stop frame while parked ends the worker at once", async () => {
+  const { office, out } = await parkedWorker()
+  await office.send({ type: "stop" })
+  await waitFor(() => out.code !== undefined, { timeout: 1000, what: "the worker to return" })
+  expect(out.code).toBe(EXIT_OK)
+})
+
+test("a stop frame during a kept job whose run still waits ends the worker instead of parking", async () => {
+  const job = makeJob(base(), "flows/inbox.yaml", { inputs: {}, keep: true })
+  const first = await startWorker()
+  await first.office.send({ type: "start", job })
+  expect(await lastFrame(first.office)).toMatchObject({ type: "result", status: "waiting", kept: true })
+  first.office.closeSend()
+  await first.done
+  const { office, done, out } = await startWorker()
+  const hi = { id: "d1", op: "send", inbox: "messages", event: "hi" } as const
+  // The stop comes while the delivery applies, so the job returns the run as its log says: still waiting.
+  await office.send({ type: "start", job: advanceJob(job, { deliver: [hi] }) })
+  await office.send({ type: "stop" })
+  const result = await lastFrame(office)
+  expect(result).toMatchObject({ type: "result", status: "waiting" })
+  expect(result.kept).toBeUndefined()
+  office.closeSend()
+  await done
+  expect(out.code).toBe(EXIT_OK)
+})
+
+test("a next job for another run is refused", async () => {
+  for (const over of [{ run_id: "r2" }, { kind: "chat" as const }, { pin: "/elsewhere" }]) {
+    const { office, done, out, job } = await parkedWorker()
+    const next: Record<string, unknown> = { ...advanceJob(job), ...over }
+    if (over.run_id !== undefined) next.log = path.join(path.dirname(path.dirname(job.log)), "r2", "log.jsonl")
+    await office.send({ type: "start", job: next })
+    const frame = await office.recv()
+    expect(frame.type).toBe("error")
+    expect(frame.message).toBe("TypeError: a kept worker runs only its run's next advance")
+    office.closeSend()
+    await done
+    expect(out.code).toBe(EXIT_FAILED)
+  }
+})
+
+test("a result that is not waiting never parks", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Hi." })
+  const { office, done, out } = await startWorker({ env: fake.env() })
+  await office.send({ type: "start", job: makeJob(base(), "flows/echo.yaml", { keep: true }) })
+  const result = await lastFrame(office)
+  expect(result).toMatchObject({ type: "result", status: "succeeded" })
+  expect(result.kept).toBeUndefined()
+  office.closeSend()
+  await done
+  expect(out.code).toBe(EXIT_OK)
+})
+
+test("a job without keep exits as before", async () => {
+  const { office, done, out } = await startWorker()
+  await office.send({ type: "start", job: makeJob(base(), "flows/inbox.yaml", { inputs: {} }) })
+  const result = await lastFrame(office)
+  expect(result).toMatchObject({ type: "result", status: "waiting" })
+  expect(result.kept).toBeUndefined()
+  office.closeSend()
+  await done
+  expect(out.code).toBe(EXIT_OK)
+})
+
+test("a follow frame while parked sends nothing", async () => {
+  const { office, done } = await parkedWorker()
+  await office.send({ type: "follow" })
+  office.closeSend()
+  await done
+  await expect(office.recv()).rejects.toBeInstanceOf(ChannelClosed)
 })
