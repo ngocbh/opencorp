@@ -230,7 +230,8 @@ export class CompanyGit {
     const drivers = new Set<string>()
     for (const name of names.split("\0")) {
       const last = name.lastIndexOf(".")
-      if (last > "filter.".length) drivers.add(name.slice("filter.".length, last))
+      // `>=`: git runs a driver whose name is empty (`filter..clean`); a bare `filter.<key>` has no driver.
+      if (last >= "filter.".length) drivers.add(name.slice("filter.".length, last))
     }
     const pairs = [...drivers].flatMap((driver) => [
       [`filter.${driver}.clean`, ""],
