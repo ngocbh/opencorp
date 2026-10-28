@@ -64,39 +64,43 @@ export function installPaths([program, ...rest]: readonly [string, ...string[]] 
 
 /**
  * The folder a program at the realpath `real` is installed in, whose files it may run or load: under a Homebrew
- * `Cellar`, `<prefix>/Cellar` (every keg, since a tool loads its dependencies' libraries through `opt/<dep>` links into
- * the Cellar, and an upgrade repoints the pinned link to a new version); in the Nix store, its `/nix/store/<entry>`; in
- * a `bin` folder, that folder's parent; else its own folder. A candidate holding `home` (or the whole disk) falls back
- * to the program's own folder, and then to none.
+ * `Cellar`, the Homebrew prefix (the tool loads its dependencies' libraries through `opt/<dep>` links and reads its
+ * config from `etc`, and an upgrade repoints the pinned link to a new version); in the Nix store, the whole store,
+ * since a tool loads libraries from other entries; in a `bin` folder, that folder's parent; else its own folder. A
+ * candidate holding one of `keep` (the home dir and the office's own folders) or the whole disk falls back to the
+ * program's own folder, and then to none.
  */
-export function toolRoot(real: string, home: string = os.homedir()): string | undefined {
+export function toolRoot(real: string, keep: readonly string[] = [os.homedir()]): string | undefined {
   const parts = real.split("/")
   const cellar = parts.indexOf("Cellar")
   const store = parts.findIndex((part, i) => part === "nix" && parts[i + 1] === "store")
   const bin = path.dirname(real)
   let root = path.basename(bin) === "bin" ? path.dirname(bin) : bin
-  if (cellar > 0 && cellar + 2 < parts.length) root = parts.slice(0, cellar + 1).join("/")
-  else if (store >= 0 && store + 3 < parts.length) root = parts.slice(0, store + 3).join("/")
-  for (const candidate of [root, bin]) if (!isInside(home, candidate)) return candidate
+  if (cellar > 0 && cellar + 2 < parts.length) root = parts.slice(0, cellar).join("/") || "/"
+  else if (store >= 0 && store + 3 < parts.length) root = parts.slice(0, store + 2).join("/")
+  for (const candidate of [root, bin]) {
+    if (path.dirname(candidate) !== candidate && !keep.some((dir) => isInside(dir, candidate))) return candidate
+  }
   return undefined
 }
 
 /**
- * What every workspace must stay clear of: the install plus each tool's install folder (`toolRoot`), each tool's
- * found path and its realpath plus the program running the office (`command[0]`: the binary, or a checkout's Bun),
- * and the absolute entries of `env.PATH`. The policy also refuses every folder or link a tool or `PATH` entry's path
- * walks through; a relative `PATH` entry is already gone (`daemonEnv`), and would refuse every workspace if kept.
+ * What every workspace must stay clear of: the install plus each tool's install folder (`toolRoot`, kept clear of
+ * `keep`), each tool's found path and its realpath plus the program running the office (`command[0]`: the binary, or
+ * a checkout's Bun), and the absolute entries of `env.PATH`. The policy also refuses every folder or link a tool or
+ * `PATH` entry's path walks through; a relative `PATH` entry is already gone (`daemonEnv`), and would refuse every
+ * workspace if kept.
  */
 export function workspaceGuards(
   tools: Tools,
   env: Env,
   command: readonly [string, ...string[]] = selfCommand(),
-  home: string = os.homedir(),
+  keep: readonly string[] = [os.homedir()],
 ): SandboxOfficePaths {
   const found = Object.values(tools).filter((tool) => tool !== undefined)
   const reals = [...found.map((tool) => realPath(tool)), realPath(command[0])]
   return {
-    install: [...new Set([...installPaths(command), ...reals.flatMap((real) => toolRoot(real, home) ?? [])])],
+    install: [...new Set([...installPaths(command), ...reals.flatMap((real) => toolRoot(real, keep) ?? [])])],
     tools: [...new Set(found.flatMap((tool) => [tool, realPath(tool)])), realPath(command[0])],
     path: (env.PATH ?? "").split(":").filter((entry) => entry.startsWith("/")),
   }

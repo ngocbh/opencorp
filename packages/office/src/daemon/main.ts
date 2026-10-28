@@ -17,6 +17,7 @@ import { attach } from "../hq/core.ts"
 import { daemonArgs, daemonEnv, resolveHome } from "../install/launch.ts"
 import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
 import { Monitor } from "../perm/monitor.ts"
+import { selfCommand } from "../platform.ts"
 import { Inspections, YianRuns, readIndex, sweep } from "../runs/records.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { Store } from "../store/store.ts"
@@ -365,7 +366,10 @@ async function run(
       // `main` can run without `pinDaemon` (tests); after the pin this filter changes nothing.
       const env = daemonEnv(process.env)
       const tools = given ?? resolveTools(env)
-      const office = buildOffice(paths, { tools, guards: workspaceGuards(tools, env), write })
+      // A tool's install folder is write-denied in every sandboxed call, so it must not take in the office's
+      // worktrees, the sessions' tmpdirs or the temp folder the calls' canaries go in.
+      const guards = workspaceGuards(tools, env, selfCommand(), [os.homedir(), paths.home, os.tmpdir()])
+      const office = buildOffice(paths, { tools, guards, write })
       try {
         try {
           loadExtensions(office, extensions)
