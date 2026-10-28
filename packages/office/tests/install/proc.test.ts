@@ -169,15 +169,23 @@ test("killGroup leaves no survivor of a group forking in a loop", async () => {
   expect(left).toEqual([])
 }, 240_000)
 
-test("killGroup does not wait on the leaders zombie", async () => {
-  // The office reaps its children on its event loop, which can't run during killGroup, so the leader stays a
-  // zombie in its group until killGroup returns; counting it would resend the kill until the round bound.
+test("killGroup sends one signal to a group whose only member is the leaders zombie", async () => {
+  // The office reaps its children on its event loop, which can't run while this test spins synchronously, so the
+  // leader stays an unreaped zombie in its group. macOS refuses to signal a group of only zombies (EPERM), which
+  // ends the sweep at once; Linux sends once anyway. The zombie filter in killGroup is pinned by the darwin test
+  // "liveGroupMembers leaves out a zombie member" in platform.test.ts.
   const g = startGroup("exec /bin/sleep 61")
   await waitFor(() => args(g.pid, ps()) === "/bin/sleep 61", { timeout: 10_000, what: "the exec" })
+  process.kill(g.pid, "SIGKILL")
+  const deadline = Date.now() + 10_000
+  for (let stat = psStat(g.pid); !stat.startsWith("Z") && stat !== ""; stat = psStat(g.pid)) {
+    if (Date.now() > deadline) throw new Error(`the leader is not a zombie: ${stat}`)
+  }
   const kill = spyOn(process, "kill")
   onTestFinished(() => kill.mockRestore())
-  expect(killGroup(g.pid)).toBe(true)
-  expect(kill.mock.calls.length).toBeLessThan(25)
+  killGroup(g.pid)
+  expect(kill).toHaveBeenCalledTimes(1)
+  expect(kill).toHaveBeenCalledWith(-g.pid, "SIGKILL")
   expect((await g.exited).signal).toBe("SIGKILL")
 })
 
