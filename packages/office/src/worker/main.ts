@@ -263,8 +263,8 @@ export function advanceAppended(log: string, before: number | null): boolean {
 
 /**
  * The worker's follow of its run's live channel: each follow frame goes to the office as `{type: "stream", frame}`.
- * `serve` makes one per job; `runJob` binds it to the run call's channel, which it follows from inside the first frame; the
- * office's `follow` frame restarts it with a fresh snapshot.
+ * `serve` makes one per job; `runJob` binds it to the run call's channel, which it follows from inside the first frame;
+ * the office's `follow` frame restarts it with a fresh snapshot.
  */
 class LiveFollow {
   readonly #channel: Channel
@@ -389,12 +389,12 @@ function nextOf(previous: Job, job: Job): boolean {
  * If the office closes the channel before the job finished, `exit` is called with `EXIT_ORPHANED`: nobody can answer
  * a question or read the result.
  *
- * A `keep` job whose result is `waiting` sends it with `kept: true` and stays up: the office answers `done`, the
- * worker answers every delivery it got before that, then sends `{type: "parked"}`. A parked worker runs the next
- * `start` frame's job, which must be an `advance` of the same session, run, log and pin (any other is an `error` and
- * the worker exits `EXIT_FAILED`), and ignores `follow`; the office closing its side, or a `stop`, ends it with the
- * code of its last job. A `stop` or the office closing its side before `done` ends it once its deliveries are
- * answered.
+ * A `keep` job whose result is `waiting`, and that no `stop` reached, sends it with `kept: true` and stays up: the
+ * office answers `done`, the worker answers every delivery it got before that, then sends `{type: "parked"}`. A parked
+ * worker runs the next `start` frame's job, which must be an `advance` of the same session, run, log and pin (any
+ * other is an `error` and the worker exits `EXIT_FAILED`), and ignores `follow`; the office closing its side, or a
+ * `stop`, ends it with the code of its last job. A `stop` or the office closing its side before `done` ends it once
+ * its deliveries are answered.
  */
 export async function serve(
   channel: Channel,
@@ -513,7 +513,8 @@ async function serveJob(
     } catch {
       // The run call's own fields still describe the run.
     }
-    if (job.keep && last.status === "waiting") last.kept = true
+    // A stop that came during the job still ends the worker, though the run waits.
+    if (job.keep && last.status === "waiting" && !stopper.signal.aborted) last.kept = true
   }
   return { last, code, job }
 }

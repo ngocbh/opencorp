@@ -598,6 +598,26 @@ test("a stop frame while parked ends the worker at once", async () => {
   expect(out.code).toBe(EXIT_OK)
 })
 
+test("a stop frame during a kept job whose run still waits ends the worker instead of parking", async () => {
+  const job = makeJob(base(), "flows/inbox.yaml", { inputs: {}, keep: true })
+  const first = await startWorker()
+  await first.office.send({ type: "start", job })
+  expect(await lastFrame(first.office)).toMatchObject({ type: "result", status: "waiting", kept: true })
+  first.office.closeSend()
+  await first.done
+  const { office, done, out } = await startWorker()
+  const hi = { id: "d1", op: "send", inbox: "messages", event: "hi" } as const
+  // The stop comes while the delivery applies, so the job returns the run as its log says: still waiting.
+  await office.send({ type: "start", job: advanceJob(job, { deliver: [hi] }) })
+  await office.send({ type: "stop" })
+  const result = await lastFrame(office)
+  expect(result).toMatchObject({ type: "result", status: "waiting" })
+  expect(result.kept).toBeUndefined()
+  office.closeSend()
+  await done
+  expect(out.code).toBe(EXIT_OK)
+})
+
 test("a next job for another run is refused", async () => {
   for (const over of [{ run_id: "r2" }, { kind: "chat" as const }, { pin: "/elsewhere" }]) {
     const { office, done, out, job } = await parkedWorker()
