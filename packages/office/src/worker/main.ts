@@ -321,8 +321,9 @@ interface WorkerState {
 
 /**
  * Runs the job the office sends on `channel`; returns the exit code. A `check` job sends only its result frame,
- * `{type: "result", problem}`. A seeded chat job whose replaced run's history can't be read sends
- * `{type: "event", name: "history_not_seeded", data: {error_type}}` before its run starts.
+ * `{type: "result", problem}`, or its `error` frame when a `stop` frame ended it. A seeded chat job whose replaced
+ * run's history can't be read sends `{type: "event", name: "history_not_seeded", data: {error_type}}` before its run
+ * starts.
  *
  * Each delivery (the job's `deliver` list first, then each `deliver` frame) is applied to the run with a yian host
  * call once the run has started, in order, and answered by one `deliver_reply`; ones the run can't take because it
@@ -366,7 +367,7 @@ export async function serve(
       deliveries.refuse()
       // Loaded only here, so a chat worker doesn't load onboarding.
       const { runCheck } = await import("../chat/check.ts")
-      last = { type: "result", problem: await runCheck(job, env) }
+      last = { type: "result", problem: await runCheck(job, env, stopper.signal) }
     } else {
       log = job.log
       last = {

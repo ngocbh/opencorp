@@ -896,7 +896,7 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
 /**
  * Runs `flow` with `provider`'s model as an office run would; resolves its result (null when the run threw), and
  * why it failed (null when it didn't), without the key or URL credentials. The run's environment is `env` (by
- * default a worker's, from this process's) with `provider.env` on top.
+ * default a worker's, from this process's) with `provider.env` on top. Rejects with `signal`'s reason once it aborts.
  */
 export async function runSetup(
   flow: ComposedFlow,
@@ -906,10 +906,12 @@ export async function runSetup(
     tools,
     context,
     env: base,
+    signal,
   }: {
     tools: NonNullable<RunFlowOptions["tools"]>
     context?: unknown
     env?: WorkerEnv
+    signal?: AbortSignal
   },
 ): Promise<{ result: RunResult | null; message: string | null }> {
   // The run gets the environment office runs get, so it authenticates the way they will: a shell variable the
@@ -925,10 +927,12 @@ export async function runSetup(
   try {
     // No workers: the code nodes, and so the terminal, stay in this process.
     result = await withWarnings(handler, () =>
-      runFlow(flow, inputs, { llmConfig: provider.llm_config, tools, numWorkers: 0, context, env }),
+      runFlow(flow, inputs, { llmConfig: provider.llm_config, tools, numWorkers: 0, context, env, signal }),
     )
     if (result.status === "failed") message = result.failure?.message ?? "the run failed"
   } catch (error) {
+    // A stopped run says nothing about the model.
+    signal?.throwIfAborted()
     message = error instanceof Error ? error.message : String(error)
   }
   if (message !== null) {
@@ -940,13 +944,14 @@ export async function runSetup(
 }
 
 /** Why `provider`'s model doesn't answer a one-word request made as an office run makes it, or null when it
- *  answers; the run's environment is as `runSetup`'s, `env` replacing the default base. */
+ *  answers; the run's environment is as `runSetup`'s, `env` replacing the default base. Rejects with `signal`'s
+ *  reason once it aborts. */
 export async function modelProblem(
   provider: Provider,
-  { env }: { env?: WorkerEnv } = {},
+  { env, signal }: { env?: WorkerEnv; signal?: AbortSignal } = {},
 ): Promise<string | null> {
   const flow = await loadFlow(embedded(checkModelYaml).toString("utf8"), {
     sourceLabel: "install/flows/check_model.yaml",
   })
-  return (await runSetup(flow, {}, provider, { tools: {}, env })).message
+  return (await runSetup(flow, {}, provider, { tools: {}, env, signal })).message
 }
