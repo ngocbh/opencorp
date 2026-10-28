@@ -250,6 +250,8 @@ class WorkerRun {
   worker: ActorWorker | null = null
   /** The provider it was spawned with, whose key no hook or reason may show. */
   provider: Provider | null = null
+  /** The connection and model (null: the connection's own) that resolved to `provider`. */
+  ranOn: { name: string; model: string | null } | null = null
   /** The price of a model call `provider` doesn't list. */
   defaultPrice: Price = DEFAULT_PRICE
   /** Whether the cost cap stopped it. */
@@ -1208,6 +1210,7 @@ export class SessionActor implements LiveCalls {
       // The office may have stopped during the awaits above.
       if (this.#closed) throw stopping()
       run.provider = provider
+      run.ranOn = { name, model }
       run.defaultPrice = defaultPrice
       run.seed = seed
       run.worker = await this.#launch(job, handlers, provider.env)
@@ -1249,7 +1252,7 @@ export class SessionActor implements LiveCalls {
    *  keeps one worker per session). */
   async #launch(job: Job, handlers: WorkerHandlers<ActorWorker>, env: Record<string, string>): Promise<ActorWorker> {
     const parked = this.#parked
-    if (parked !== null && reusable(parked.worker.job, parked.env, job, env)) {
+    if (parked !== null && reusable(parked.worker.job, parked.provider?.env ?? {}, job, env)) {
       this.#parked = null
       parked.timer.abort()
       this.#ctx.workers.unpark(parked.worker)
@@ -1277,13 +1280,7 @@ export class SessionActor implements LiveCalls {
   /** Keeps `run`'s `worker`, which parked after its run call, until the idle timer, the registry's cap, a change of
    *  its connection or the next spawn ends it. */
   #keep(run: WorkerRun, worker: ActorWorker): void {
-    const parked: Parked = {
-      worker,
-      env: run.provider?.env ?? {},
-      provider: run.provider,
-      runId: run.runId,
-      timer: new AbortController(),
-    }
+    const parked: Parked = { worker, provider: run.provider, ranOn: run.ranOn, timer: new AbortController() }
     this.#parked = parked
     const release = () => this.#post("parked worker release", () => this.#parked === parked && this.#releaseParked())
     this.#ctx.workers.park(worker, release)
@@ -1305,9 +1302,9 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * Closes the parked worker if its run's connection no longer gives the provider it was spawned with: removed,
-   * re-keyed, edited or unreadable. The office calls it when a connection changes; resolves once that worker has
-   * exited, or at once when it is kept. Never rejects.
+   * Closes the parked worker if its connection no longer gives the provider it was spawned with: removed, re-keyed,
+   * edited or unreadable. The office calls it when a connection changes; resolves once that worker has exited, or at
+   * once when it is kept. A worker that parks after this call is left to its next check. Never rejects.
    */
   connectionsChanged(): Promise<void> {
     const parked = this.#parked
@@ -1318,21 +1315,24 @@ export class SessionActor implements LiveCalls {
   async #checkConnection(parked: Parked): Promise<void> {
     if (!(await this.#connectionChanged(parked))) return
     this.#post("parked worker release", () => this.#parked === parked && this.#releaseParked())
-    // The job just posted, which never rejects and settles at once if the actor is closed.
+    // The job just posted: it never rejects, and is skipped once the actor is closed.
     await this.#tail
   }
 
-  /** Whether `parked`'s run's connection and model resolve to another provider than the one it was spawned with, or
-   *  don't resolve now. */
+  /** Whether `parked`'s connection and model resolve to another provider than the one it was spawned with, or don't
+   *  resolve now. */
   async #connectionChanged(parked: Parked): Promise<boolean> {
     // A worker spawned with no provider holds no key.
-    if (parked.provider === null) return false
+    if (parked.provider === null || parked.ranOn === null) return false
     try {
-      const row = this.#ctx.store.getRun(parked.runId)
-      const current = await this.#ctx.connections.resolve(row?.connection ?? null, row?.model ?? null)
+      const current = await this.#ctx.connections.resolve(parked.ranOn.name, parked.ranOn.model)
       return configHash(current) !== configHash(parked.provider)
-    } catch {
-      // Removed, broken or unreadable: the worker may hold a key that was taken back.
+    } catch (error) {
+      // Removed, broken or unreadable: the worker may hold a key that was taken back. Anything else is logged by its
+      // type, so a bug that would close every parked worker shows.
+      if (!(error instanceof ProviderError || error instanceof BadConnectionName)) {
+        this.#log(`session ${this.sessionId}: its parked worker's connection can't be checked (${errorName(error)})`)
+      }
       return true
     }
   }
@@ -2632,13 +2632,12 @@ async function sleepUntil(scheduler: Scheduler, at: number, signal: AbortSignal)
   }
 }
 
-/** A worker kept after its run call: spawned with `provider` (its `env`) for run `runId`; `timer` aborts once it is
- *  released or reused. */
+/** A worker kept after its run call, spawned with `provider`, which connection and model `ranOn` resolved to;
+ *  `timer` aborts once it is released or reused. */
 type Parked = {
   worker: ActorWorker
-  env: Record<string, string>
   provider: Provider | null
-  runId: string
+  ranOn: { name: string; model: string | null } | null
   timer: AbortController
 }
 
