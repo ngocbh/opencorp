@@ -633,4 +633,10 @@ test.each(BAD_CHAT_REQUESTS)("chat routes refuse bad requests [%s]", async (_cas
   const { sock } = await served(h.office)
   const r = await post(sock, target, body)
   expect([r.status, errorOf(r)]).toEqual([code, name])
+  // A 422 says which field failed, never its value: no handle, and no path at all.
+  if (code === 422 && target === "/sessions") {
+    const { message } = r.json() as { message: string }
+    expect(message).not.toContain((body as { person: string }).person)
+    expect(message).not.toContain("/")
+  }
 })

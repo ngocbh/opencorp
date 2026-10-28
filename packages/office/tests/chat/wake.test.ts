@@ -398,7 +398,11 @@ test("a wake whose provider cant resolve answers 503 and leaves the session idle
   const questions = () => o.office.store.listQuestions({ sessionId: sid }).map((q) => [q.id, q.status])
   const asked = questions()
   const before = o.kinds.length
-  expect(await outcome(actor.prompt("hi"))).toBe("503 cant_wake")
+  const error = await actor.prompt("hi").catch((error: Error) => error)
+  expect(error).toMatchObject({ status: 503, code: "cant_wake" })
+  // The provider error names the connection's file: it goes to the office log, not to the caller.
+  expect((error as Error).message).toBe(`session ${sid} can't wake: its connection can't be used; see the office log`)
+  expect(o.logs.some((line) => line.includes(officeJson(o)))).toBe(true)
   expect(status(o, sid)).toBe("idle")
   expect(actor.hasWorker).toBe(false)
   expect(o.kinds.length).toBe(before)
