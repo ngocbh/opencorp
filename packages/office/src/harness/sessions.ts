@@ -5,7 +5,7 @@ import path from "node:path"
 import { type HarnessPolicy, type Message, OFFICE, Question, Session, WorkItem, now } from "@opencorp/protocol"
 import type { Hooks } from "../chat/hooks.ts"
 import { ProviderError } from "../chat/provider.ts"
-import { HarnessError, LIVE, notWaiting } from "../chat/state.ts"
+import { HarnessError, LIVE, notAnAgent, notWaiting } from "../chat/state.ts"
 import { loadRepo } from "../company/loader.ts"
 import type { Office, SessionHarness } from "../daemon/office.ts"
 import type { AnswerKind } from "../questions/cards.ts"
@@ -494,10 +494,10 @@ export class CodexSessions implements SessionHarness {
     const repo = loadRepo(await this.office.git.pin(head))
     const person = repo.people.get(handle)
     if (person === undefined) throw new HarnessError(404, "not_found", `no person ${handle}`)
-    if (person.kind !== "agent") throw new HarnessError(422, "not_an_agent", `${handle} has no main flow to chat with`)
+    if (person.kind !== "agent") throw notAnAgent()
     if (!person.harnesses.includes("codex"))
-      throw new HarnessError(422, "unsupported_harness", `${handle} doesn't use the codex harness`)
-    const real = checkFolder(this.office, cwd)
+      throw new HarnessError(422, "unsupported_harness", "the person doesn't use the codex harness")
+    const real = checkFolder(this.office, cwd, this.log)
     const chosen = await startConnection(this.office, connection, this.log)
     const t = now()
     const item = this.store.createWorkItem(
@@ -562,8 +562,9 @@ export class CodexSessions implements SessionHarness {
 }
 
 /** The realpath of `cwd`, a new session's folder, once it is checked: 422 `invalid_body` when it isn't an absolute path
- *  to a folder, and 422 `unsafe_workspace` when `checkWorkspace` refuses it or it overlaps the office's own files. */
-export function checkFolder(office: Office, cwd: string): string {
+ *  to a folder, and 422 `unsafe_workspace` (`log` gets why) when `checkWorkspace` refuses it or it overlaps the
+ *  office's own files. */
+export function checkFolder(office: Office, cwd: string, log: (line: string) => void): string {
   // A 422 never echoes the request's path: it may not be a folder at all.
   if (!path.isAbsolute(cwd)) throw new HarnessError(422, "invalid_body", "cwd is not an absolute path")
   if (!isFolder(cwd)) throw new HarnessError(422, "invalid_body", "cwd is not a folder")
@@ -572,19 +573,26 @@ export function checkFolder(office: Office, cwd: string): string {
   try {
     checkWorkspace(real, office.guards)
   } catch (error) {
-    if (error instanceof UnsafeWorkspace) throw new HarnessError(422, "unsafe_workspace", error.message)
+    if (error instanceof UnsafeWorkspace) throw unsafeWorkspace(error.message, log)
     throw error
   }
   // The workspace check guards ~/.opencorp; this office's home may be elsewhere.
   for (const kept of [office.paths.company, office.paths.office]) {
     if (isInside(real, kept) || isInside(kept, real))
-      throw new HarnessError(
-        422,
-        "unsafe_workspace",
-        `workspace ${real} overlaps the office's files at ${realPath(kept)}; use a project folder`,
-      )
+      throw unsafeWorkspace(`workspace ${real} overlaps the office's files at ${realPath(kept)}`, log)
   }
   return real
+}
+
+/** The 422 `unsafe_workspace` for a folder refused because of `why`, which `log` gets: `why` names paths, and a 422
+ *  names the field, not its value. */
+export function unsafeWorkspace(why: string, log: (line: string) => void): HarnessError {
+  log(`a session folder was refused: ${why}`)
+  return new HarnessError(
+    422,
+    "unsafe_workspace",
+    "cwd can't be a workspace; use a project folder (the office log says why)",
+  )
 }
 
 /** The 422 `not_supported` a Codex session's cost cap or model call answers. */

@@ -16,6 +16,12 @@ export class HarnessError extends Error {
   }
 }
 
+/** The 422 `not_an_agent` a chat with a person who has no main flow gets; like every 422, it names the field, not
+ *  its value. */
+export function notAnAgent(): HarnessError {
+  return new HarnessError(422, "not_an_agent", "the person has no main flow to chat with")
+}
+
 /** Session statuses that have (or should have) a live run. */
 export const LIVE: readonly Status[] = ["starting", "idle", "busy", "waiting", "ending"]
 

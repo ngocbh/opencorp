@@ -7,7 +7,7 @@ import { type Scheduler, realScheduler } from "@ngocbh/yian/platform"
 import { type Message, OFFICE, Session, WorkItem, now } from "@opencorp/protocol"
 import { loadRepo } from "../company/loader.ts"
 import type { Office, SessionHarness } from "../daemon/office.ts"
-import { type CodexSessions, checkFolder, notSupported } from "../harness/sessions.ts"
+import { type CodexSessions, checkFolder, notSupported, unsafeWorkspace } from "../harness/sessions.ts"
 import type { Monitor } from "../perm/monitor.ts"
 import { MANAGER_FLOW, profileTools } from "../profile/manager.ts"
 import { GitProfileStore } from "../profile/store.ts"
@@ -25,7 +25,7 @@ import { DEADLINE_MS, ListTimeout, type ModelCache } from "./models.ts"
 import { ProviderError } from "./provider.ts"
 import { type RunSpec, mainSpec, managerSpec, sideSpec } from "./run_spec.ts"
 import { type ActorContext, SessionActor, named, ownModel } from "./session_actor.ts"
-import { HarnessError, LIVE } from "./state.ts"
+import { HarnessError, LIVE, notAnAgent } from "./state.ts"
 import type { Transcript } from "./transcript.ts"
 
 /** How long, in milliseconds, the stop waits for worker requests, office tool bodies and actor jobs still running. */
@@ -334,14 +334,14 @@ export class ChatHarness implements SessionHarness {
    *  `writable` and with `network` as given, with a private tmp dir under the session's folder. */
   #workspace(session: SessionRecord, { writable, network }: { writable: boolean; network: boolean }): WorkspaceTools {
     const { store, paths } = this.office
-    const real = checkFolder(this.office, session.cwd)
+    const real = checkFolder(this.office, session.cwd, this.log)
     const tmpdir = path.join(paths.sessionDir(session.id), "tmp")
     fs.mkdirSync(tmpdir, { recursive: true, mode: 0o700 })
     let sandbox: SandboxPolicy
     try {
       sandbox = new SandboxPolicy({ workspace: real, writable, network, tmpdir, office: this.office.guards })
     } catch (error) {
-      if (error instanceof UnsafeWorkspace) throw new HarnessError(422, "unsafe_workspace", error.message)
+      if (error instanceof UnsafeWorkspace) throw unsafeWorkspace(error.message, this.log)
       throw error
     }
     return new WorkspaceTools(sandbox, { officeHome: paths.home, store })
@@ -595,13 +595,12 @@ export class ChatHarness implements SessionHarness {
     const repo = loadRepo(await this.office.git.pin(head))
     const person = repo.people.get(handle)
     if (person === undefined) throw new HarnessError(404, "not_found", `no person ${handle}`)
-    if (person.kind !== "agent" || !person.main)
-      throw new HarnessError(422, "not_an_agent", `${handle} has no main flow to chat with`)
+    if (person.kind !== "agent" || !person.main) throw notAnAgent()
     // An empty list is the schema's default: the composer harness alone.
     const harnesses = person.harnesses.length ? person.harnesses : ["composer"]
     if (!harnesses.includes("composer"))
-      throw new HarnessError(422, "unsupported_harness", `${handle} doesn't use the composer harness`)
-    const real = checkFolder(this.office, cwd)
+      throw new HarnessError(422, "unsupported_harness", "the person doesn't use the composer harness")
+    const real = checkFolder(this.office, cwd, this.log)
     return { head, repo, person, cwd: real, ...(await this.choose(person, connection, model)) }
   }
 
