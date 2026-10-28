@@ -397,6 +397,11 @@ export class WorkerRegistry implements WorkerPool {
     return worker
   }
 
+  /** Whether `closeAll` ran: the office is stopping. */
+  get closed(): boolean {
+    return this.#closed
+  }
+
   /** The session's live worker, if any. */
   get(sessionId: string): Worker | undefined {
     return this.#workers.get(sessionId)

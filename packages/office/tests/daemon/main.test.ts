@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url"
 import { isLocked } from "@ngocbh/yian/platform"
 import { readRunIndex } from "@ngocbh/yian/run"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import { Identity, identityPath, writeIdentity } from "../../src/auth/identity.ts"
+import { newToken } from "../../src/auth/tokens.ts"
 import { ChatHarness } from "../../src/chat/harness.ts"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { Provider } from "../../src/chat/provider.ts"
@@ -36,7 +38,7 @@ import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { OFFICE_STOPPED } from "../../src/runs/outcomes.ts"
 import { Store, newId } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
-import { RegistryClosed, WorkerRegistry } from "../../src/worker/spawn.ts"
+import { EXIT_GRACE_MS, RegistryClosed, WorkerRegistry } from "../../src/worker/spawn.ts"
 import { CHAT_FILES, fakeLlm } from "../chat/helpers.ts"
 import { company, makeCompany, recordingGit } from "../company/helpers.ts"
 import { cwdOf, envNames, isGone, ps, reexecMarks, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
@@ -757,6 +759,51 @@ test("build office checks a model in a worker of its registry", async () => {
     office.store.close()
   }
 })
+
+test("an add whose check the office stop cuts answers 503 and the stop skips the grace", async () => {
+  // An endpoint that lists no models and never answers a request: the one-reply check holds until the stop.
+  let held!: () => void
+  const reached = new Promise<void>((resolve) => (held = resolve))
+  const server = http.createServer((req, res) => {
+    req.resume()
+    if (req.method === "POST") held()
+    else {
+      res.writeHead(404)
+      res.end()
+    }
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  onTestFinished(
+    () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections()
+        server.close(() => resolve())
+      }),
+  )
+  const endpoint = `http://127.0.0.1:${(server.address() as net.AddressInfo).port}/v1`
+  const paths = new OfficePaths(home())
+  const rec = recordingGit(tempDir())
+  const office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write: collect().write })
+  try {
+    await writeIdentity(identityPath(paths.home), new Identity("ngocbh", "mac", newToken()))
+    const { sock } = await served(office)
+    const body = { provider: "openai", endpoint, api_key: "sk-test-stop-4c9e1b", model: "held" }
+    const adding = request(sock, "POST", "/connections", {
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    // An add answered before its check reached the endpoint fails here with its reply.
+    expect(await Promise.race([reached.then(() => null), adding])).toBeNull()
+    const start = performance.now()
+    await office.stop()
+    expect(performance.now() - start).toBeLessThan(EXIT_GRACE_MS)
+    const r = await adding
+    expect([r.status, (r.json() as { error: string }).error]).toEqual([503, "stopping"])
+  } finally {
+    await office.stop()
+    office.store.close()
+  }
+}, 90_000)
 
 test("build office brings the run index up to date and sweeps on start", async () => {
   let office: Office | undefined

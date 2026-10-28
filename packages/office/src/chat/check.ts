@@ -7,7 +7,7 @@ import type { Frame } from "../worker/channel.ts"
 import { type Job, parseJob } from "../worker/job.ts"
 import type { WorkerEnv } from "../worker/main.ts"
 import { BaseHandlers } from "../worker/rpc.ts"
-import type { WorkerRegistry } from "../worker/spawn.ts"
+import { RegistryClosed, type WorkerRegistry } from "../worker/spawn.ts"
 import { Provider } from "./provider.ts"
 
 /** How long, in ms, the check may take: one short reply from the model. */
@@ -20,7 +20,7 @@ export const NOT_FINISHED = "the check didn't finish"
 export const CLOSE_MS = 1000
 
 /** What the check needs of the worker registry. */
-export type CheckWorkers = Pick<WorkerRegistry, "spawn" | "close">
+export type CheckWorkers = Pick<WorkerRegistry, "spawn" | "close" | "closed">
 
 /** Handlers that keep the worker's last `result` or `error` frame, and refuse every request as `BaseHandlers` does
  *  (a check job has no groups or stores, and nobody answers its questions). */
@@ -42,7 +42,8 @@ class CheckHandlers extends BaseHandlers {
  * Runs a `check` job through `workers` in a fresh folder of its own (removed afterwards, with the worker's log: its
  * stderr is dropped, since yian's errors there could quote the request); the key goes only in the job's
  * `llm_config`. `log` gets the "no result" line, with the exit code only. Rejects as `workers.spawn` does
- * (`RegistryClosed` once the office is stopping).
+ * (`RegistryClosed` once the office is stopping), and with `RegistryClosed` when the office stop ended the check
+ * before it gave a result.
  */
 export async function oneReplyProblem(
   workers: CheckWorkers,
@@ -70,6 +71,8 @@ export async function oneReplyProblem(
       return NOT_FINISHED
     }
     const problem = resultOf(handlers.last)
+    // The stop asked the worker to end, or killed it: the model never had its say.
+    if (problem === NO_RESULT && workers.closed) throw new RegistryClosed()
     if (problem === NO_RESULT) log(`the one-reply check gave no result (exit code ${code})`)
     return problem
   } finally {
@@ -88,7 +91,8 @@ function resultOf(frame: Frame | undefined): string | null {
 }
 
 /** The worker's side of a `check` job: why the model in `job.llm_config` doesn't answer, or null when it does. The
- *  run's environment is `env`, the worker's own, which holds the provider env. */
-export async function runCheck(job: Job, env: WorkerEnv): Promise<string | null> {
-  return modelProblem(Provider.parse({ llm_config: job.llm_config }), { env })
+ *  run's environment is `env`, the worker's own, which holds the provider env. Rejects with `signal`'s reason once
+ *  it aborts. */
+export async function runCheck(job: Job, env: WorkerEnv, signal: AbortSignal): Promise<string | null> {
+  return modelProblem(Provider.parse({ llm_config: job.llm_config }), { env, signal })
 }

@@ -12,9 +12,9 @@ import { args, startTime } from "../../src/install/proc.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
 import { decode } from "../../src/worker/codec.ts"
-import type { Job } from "../../src/worker/job.ts"
+import { type Job, STOP_REASON } from "../../src/worker/job.ts"
 import type { WorkerHandlers } from "../../src/worker/rpc.ts"
-import { RegistryClosed, type SpawnLog, type Worker } from "../../src/worker/spawn.ts"
+import { EXIT_GRACE_MS, RegistryClosed, type SpawnLog, type Worker } from "../../src/worker/spawn.ts"
 import { cwdOf, envText, isGone, ps } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
 import { makeRegistry, recordFrames } from "../worker/helpers.ts"
@@ -35,16 +35,18 @@ interface Spawned {
 }
 
 /** A registry whose worker sends `frames` and exits with `code` (`wait` gives null when `code` is null), or whose
- *  `spawn` rejects with `rejects`; it records spawns, waits and closes. */
+ *  `spawn` rejects with `rejects`; `closed` once the office is stopping. It records spawns, waits and closes. */
 function fakeWorkers({
   frames = [],
   code = 0,
   rejects,
-}: { frames?: Frame[]; code?: number | null; rejects?: Error } = {}) {
+  closed = false,
+}: { frames?: Frame[]; code?: number | null; rejects?: Error; closed?: boolean } = {}) {
   const spawned: Spawned[] = []
   const waits: number[] = []
   const closes: [string, number | undefined][] = []
   const workers: CheckWorkers = {
+    closed,
     async spawn(job, dir, handlers, { env } = {}) {
       const existed = fs.existsSync(dir)
       spawned.push({
@@ -140,6 +142,20 @@ test("a check the registry refuses leaves no folder", async () => {
   expect(fs.existsSync(fake.spawned[0]!.dir)).toBe(false)
 })
 
+test("a check the office stop cut rejects as the registry does", async () => {
+  const stopped = { type: "error", message: `Error: ${STOP_REASON}` }
+  const fake = fakeWorkers({ frames: [stopped], code: 1, closed: true })
+  await expect(oneReplyProblem(fake.workers, PROVIDER)).rejects.toBeInstanceOf(RegistryClosed)
+  expect(fs.existsSync(fake.spawned[0]!.dir)).toBe(false)
+  // A worker killed at the stop's grace sends nothing.
+  await expect(oneReplyProblem(fakeWorkers({ code: -9, closed: true }).workers, PROVIDER)).rejects.toBeInstanceOf(
+    RegistryClosed,
+  )
+  // A check that answered before the stop still gives its answer.
+  const answered = fakeWorkers({ frames: [{ type: "result", problem: "HTTP 404" }], closed: true })
+  expect(await oneReplyProblem(answered.workers, PROVIDER)).toBe("HTTP 404")
+})
+
 test("the child prints only its result on stdout", async () => {
   const fake = await fakeLlm()
   const registry = makeRegistry()
@@ -182,6 +198,23 @@ test("a hung check in a worker is killed and its folder removed", async () => {
   expect(registry.get(worker.sessionId)).toBeUndefined()
   expect(store.listWorkers()).toEqual([])
   expect(fs.existsSync(dir)).toBe(false)
+  fake.release()
+}, 90_000)
+
+test("a held check in a worker stops with the office without its grace", async () => {
+  const fake = await fakeLlm()
+  const registry = makeRegistry()
+  const provider = Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: SENTINEL }, env: fake.env() })
+  fake.script({ hold: true })
+  const frames = recordFrames()
+  const checking = oneReplyProblem(registry, provider, { timeoutMs: 30_000 })
+  await fake.waitForRequests(1, 25_000)
+  const start = performance.now()
+  await registry.closeAll(EXIT_GRACE_MS)
+  expect(performance.now() - start).toBeLessThan(EXIT_GRACE_MS)
+  await expect(checking).rejects.toBeInstanceOf(RegistryClosed)
+  const last = decode(frames.at(-1)!) as Frame
+  expect([last.type, last.message]).toEqual(["error", `Error: ${STOP_REASON}`])
   fake.release()
 }, 90_000)
 
