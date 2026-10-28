@@ -214,6 +214,40 @@ test("a steer reaches the running reply", async () => {
   ])
 })
 
+// Pins ngocbh/yian#1171: the worker's view keeps the call after a steer, named by the steer step's n, so the fetched
+// messages show its text twice while the worker runs. Once yian names the call by its step, expect "Done." once.
+test("a steered replys text shows twice while its worker runs", async () => {
+  const fake = await fakeLlm()
+  // The third call holds the worker after the steered call's step is written.
+  fake.script(
+    { content: "Working", tool_calls: [ECHO], hold: 30 },
+    { content: "Done.", tool_calls: [ECHO] },
+    { content: "", hold: 30 },
+  )
+  onTestFinished(() => fake.release())
+  const h = await makeHarness(fake)
+  const { id } = await start(h)
+  await h.harness.prompt(id, "hi")
+  await fake.waitForRequests(1)
+  await replyRunning(h)
+  expect(await h.harness.steer(id, "Also mention Rome.")).toBe("steer")
+  fake.release()
+  await fake.waitForRequests(3)
+  const results = () =>
+    h.harness.messages(id).flatMap((m) => m.parts.filter((p) => p.type === "tool" && p.state === "completed"))
+  await waitFor(() => results().length === 2, { what: "the second tool result" })
+  expect(h.registry.get(id)).toBeDefined()
+  const shown = h.harness
+    .messages(id)
+    .map((m) => [m.role, m.parts.flatMap((p) => (p.type === "text" && p.text !== "" ? [p.text] : []))])
+  expect(shown).toEqual([
+    ["user", ["hi"]],
+    ["assistant", ["Working"]],
+    ["user", ["Also mention Rome."]],
+    ["assistant", ["Done.", "Done."]],
+  ])
+})
+
 test("a steer the reply never reads is the next turn", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Done.", hold: 30 }, { content: "Second." })
