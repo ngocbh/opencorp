@@ -674,7 +674,7 @@ test.each([
   const h = await makeHarness(await fakeLlm())
   const error = await rejection(h.harness.startSession(handle, cwd ?? h.folder))
   expect(error.code).toBe(code)
-  // A 422 says which field failed, never its value; the office log says why a workspace was refused.
+  // A 422 says which field failed, never its value; the reply keeps the reason and the office log has the paths.
   if (error.status === 422) {
     expect(error.message).not.toContain(handle)
     expect(error.message).not.toContain(cwd ?? h.folder)

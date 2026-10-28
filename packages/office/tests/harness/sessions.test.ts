@@ -159,7 +159,8 @@ test.each([
     expect([error.status, error.code]).toEqual([status, code])
     // A 422 never echoes a path the request gave that isn't a usable folder.
     if (code === "invalid_body") expect(error.message).not.toContain(cwd!)
-    // Nor any other value of the request: it says which field failed, and the office log says why.
+    // Nor any other value of the request: it says which field failed and keeps the reason; the office log has
+    // the paths.
     if (status === 422) {
       expect(error.message).not.toContain(handle!)
       expect(error.message).not.toContain(cwd!)
