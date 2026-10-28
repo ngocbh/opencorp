@@ -7,6 +7,7 @@ import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveEvent, Message } from "@opencorp/protocol"
 import {
   type ActorContext,
+  CHECK_MS,
   INDEX_WAIT_MS,
   INTERRUPTED_CALL,
   type SessionActor,
@@ -1977,8 +1978,8 @@ test("a parked worker is kept for 2 hours by default", async () => {
         sleeps.push({ ms, signal, wake: resolve })
       }),
   }
-  // The run index's bounded wait sleeps too; only the idle timer's sleeps count here.
-  const idle = () => sleeps.filter(({ ms }) => ms !== INDEX_WAIT_MS)
+  // The run index's bounded wait and the connection checks sleep too; only the idle timer's sleeps count here.
+  const idle = () => sleeps.filter(({ ms }) => ms !== INDEX_WAIT_MS && ms !== CHECK_MS)
   const sid = await newSession(o)
   const actor = makeActor(o, sid, { scheduler })
   await actor.start()
@@ -2137,4 +2138,48 @@ test("a failed session releases its parked worker then runs its hard stop", asyn
   expect(o.jobs.at(-1)).toMatchObject({ kind: "advance", run_id: runId, advance: false, deliver: [{ op: "cancel" }] })
   expect(o.logs.filter((line) => line.includes("can't be stopped"))).toEqual([])
   expect(o.registry.get(sid)).toBeUndefined()
+})
+
+test("an edited connection releases its sessions parked worker and leaves the others", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake, { connections: { second: "stub-2" } })
+  const onOffice = await newSession(o)
+  const onSecond = await newSession(o, { connection: "second" })
+  for (const sid of [onOffice, onSecond]) {
+    await makeActor(o, sid, { checkMs: 20 }).start()
+    await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
+  }
+  const rekeyed = await parkedWorker(o, onOffice)
+  const kept = await parkedWorker(o, onSecond)
+  // As `opencorp onboard` re-keys the office's connection, from outside the daemon.
+  const provider = { llm_config: { ...LLM_CONFIG, api_key: "sk-rotated" }, env: fake.env() }
+  await writePrivate(path.join(o.office.connections.dir, "office.json"), JSON.stringify(provider))
+  expect(await rekeyed.wait(10_000)).toBe(0)
+  expect(o.registry.get(onOffice)).toBeUndefined()
+  // Several checks later, the other connection's worker is still parked.
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(o.registry.get(onSecond)).toBe(kept)
+  expect(kept.parked).toBe(true)
+})
+
+test("a removed connection releases its sessions parked worker at once and leaves the others", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake, { connections: { second: "stub-2" } })
+  const onOffice = await newSession(o)
+  const onSecond = await newSession(o, { connection: "second" })
+  const actors = []
+  for (const sid of [onOffice, onSecond]) {
+    const actor = makeActor(o, sid)
+    actors.push(actor)
+    await actor.start()
+    await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
+  }
+  const removed = await parkedWorker(o, onSecond)
+  const kept = await parkedWorker(o, onOffice)
+  await o.office.connections.remove("second")
+  await Promise.all(actors.map((actor) => actor.connectionsChanged()))
+  expect(removed.returncode).toBe(0)
+  expect(o.registry.get(onSecond)).toBeUndefined()
+  expect(o.registry.get(onOffice)).toBe(kept)
+  expect(kept.parked).toBe(true)
 })

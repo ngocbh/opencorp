@@ -102,6 +102,8 @@ export interface SessionHarness extends CardActor {
   messages(sessionId: string): Message[] | Promise<Message[]>
   /** What memory says about its runs, for Run Logs; the chat harness implements it. */
   live?(): Live
+  /** Closes each parked worker whose connection changed; the chat harness implements it. Never rejects. */
+  connectionsChanged?(): Promise<void>
 }
 
 /** The worker registry, as the office sees it. */
