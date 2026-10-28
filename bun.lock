@@ -106,7 +106,7 @@
     },
     "packages/yian": {
       "name": "@ngocbh/yian",
-      "version": "0.1.0",
+      "version": "0.0.4",
       "bin": {
         "yian": "dist/src/cli/index.js",
       },
