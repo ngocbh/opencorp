@@ -442,9 +442,7 @@ export class SessionActor implements LiveCalls {
         // A run stored ends `COULDNT_START`; with none, only the session fails.
         this.#finish("failed", null, COULDNT_START)
         if (error instanceof HarnessError) throw error
-        // A provider error never echoes the file; anything else may hold anything, so it stays in the log.
-        const why = error instanceof ProviderError ? `: ${error.message}` : "; see the office log"
-        throw new HarnessError(500, "start_failed", `session ${sid} failed to start${why}`)
+        throw new HarnessError(500, "start_failed", `session ${sid} failed to start${spawnWhy(error)}`)
       }
     })
   }
@@ -1200,6 +1198,8 @@ export class SessionActor implements LiveCalls {
       if (!this.#closed) this.#trySettle("after a spawn")
       return true
     } catch (error) {
+      // Its text may name a file under office/connections: the log gets it, the caller a fixed reason (`spawnWhy`).
+      if (error instanceof ProviderError) this.#log(`session ${sid}: its connection can't be used (${error.message})`)
       const refusal = this.#wakeError(error)
       for (const p of pendings) p.reject(refusal)
       if (released !== null && !(error instanceof RegistryClosed) && !this.#closed) {
@@ -2355,9 +2355,7 @@ export class SessionActor implements LiveCalls {
   #wakeError(error: unknown): HarnessError {
     if (error instanceof HarnessError) return error
     if (error instanceof RegistryClosed) return stopping()
-    // A provider error never echoes the file; anything else may hold anything, so it stays in the log.
-    const why = error instanceof ProviderError ? `: ${error.message}` : "; see the office log"
-    return new HarnessError(503, "cant_wake", `session ${this.sessionId} can't wake${why}`)
+    return new HarnessError(503, "cant_wake", `session ${this.sessionId} can't wake${spawnWhy(error)}`)
   }
 
   /** `503 cant_wake`, naming the error type the run failed with, if any. */
@@ -2371,6 +2369,13 @@ export class SessionActor implements LiveCalls {
       this.#ctx.log(line)
     } catch {}
   }
+}
+
+/** What a caller is told of a spawn that failed with `error`, after the session's id. Never the error's text: a
+ *  provider error's may name a file under office/connections, and anything else may hold anything; `#spawn` logs a
+ *  provider error's text. */
+function spawnWhy(error: unknown): string {
+  return error instanceof ProviderError ? ": its connection can't be used; see the office log" : "; see the office log"
 }
 
 /** Whether `session`'s cost is at or over its cap, the pinned default if it has none of its own. */

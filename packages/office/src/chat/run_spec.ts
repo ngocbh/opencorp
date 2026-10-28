@@ -24,7 +24,7 @@ import {
 } from "../worker/job.ts"
 import type { OfficeTool } from "../worker/rpc.ts"
 import { personInputs, talkingTo } from "./identity.ts"
-import { HarnessError } from "./state.ts"
+import { HarnessError, notAnAgent } from "./state.ts"
 import { type ChatFlow, MAIN_CHAT } from "./turns.ts"
 
 const SIDE_CHAT_FLOW = "shared/flows/side_chat.yaml"
@@ -110,7 +110,7 @@ export function mainSpec({
   carried: Carried
 }): RunSpec {
   const person = personOf(repo, session)
-  if (!person.main) throw new HarnessError(422, "not_an_agent", `${person.handle} has no main flow to chat with`)
+  if (!person.main) throw notAnAgent()
   const defaults = defaultsOf(repo)
   return {
     flow: personFlow(person.handle, person.main),

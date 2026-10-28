@@ -130,7 +130,8 @@ test("the main spec runs the persons main flow with their tools memory and skill
   expect(spec.workspace).toBe(NO_WORKSPACE)
   const owner = o.store.createSession(session({ person: "ngocbh" }))
   const ownerSpec = () => mainSpec({ ...o, session: owner, workspace: NO_WORKSPACE, carried: () => [] })
-  expect(ownerSpec).toThrow("ngocbh has no main flow to chat with")
+  // A 422 says which field failed, never its value.
+  expect(ownerSpec).toThrow(/^the person has no main flow to chat with$/)
   expect(refusal(ownerSpec)).toEqual([422, "not_an_agent"])
 })
 

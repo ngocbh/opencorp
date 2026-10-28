@@ -159,12 +159,29 @@ test.each([
     expect([error.status, error.code]).toEqual([status, code])
     // A 422 never echoes a path the request gave that isn't a usable folder.
     if (code === "invalid_body") expect(error.message).not.toContain(cwd!)
-    if (name === "office guards") expect(error.message).toContain("a folder on the office's PATH")
-    if (name === "office files") expect(error.message).toContain("overlaps the office's files")
+    // Nor any other value of the request: it says which field failed, and the office log says why.
+    if (status === 422) {
+      expect(error.message).not.toContain(handle!)
+      expect(error.message).not.toContain(cwd!)
+    }
+    if (name === "office guards") expect(h.lines.join("\n")).toContain("a folder on the office's PATH")
+    if (name === "office files") expect(h.lines.join("\n")).toContain("overlaps the office's files")
     expect(h.store.listSessions()).toEqual([])
     expect(h.store.listWorkItems()).toEqual([])
   },
 )
+
+test("a refused folder's name can't add a line to the office log", async () => {
+  const h = makeCodex()
+  const cwd = path.join(h.office.paths.company, "a\nforged line")
+  fs.mkdirSync(cwd, { recursive: true })
+  const error = await rejection(h.sessions.startSession("minh", cwd, { openedBy: "ngocbh" }))
+  expect([error.status, error.code]).toEqual([422, "unsafe_workspace"])
+  const refused = h.lines.filter((line) => line.includes("refused"))
+  expect(refused).toHaveLength(1)
+  expect(refused[0]).toContain("a\\nforged line")
+  expect(refused[0]).not.toContain("\n")
+})
 
 /** Each session call a yian chat isn't served for yet. */
 const CALLS: [string, (h: Codex, id: string) => Promise<unknown>][] = [

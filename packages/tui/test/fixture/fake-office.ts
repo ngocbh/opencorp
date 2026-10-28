@@ -896,7 +896,7 @@ export function createFakeOffice(
         const harness = body.harness ?? "composer"
         // Like the office, refuse a harness the person doesn't use before recording the folder.
         if (!(harnessesOf(person) as string[]).includes(harness))
-          throw fail(422, "unsupported_harness", `@${person.handle} doesn't use the ${harness} harness`)
+          throw fail(422, "unsupported_harness", `the person doesn't use the ${harness} harness`)
         state.folders[body.cwd] = [body.person, ...(state.folders[body.cwd] ?? []).filter((p) => p !== body.person)]
         if (harness === "codex") {
           const s = newSession({ person: body.person, cwd: body.cwd, harness, status: "starting", opened_by: actor })

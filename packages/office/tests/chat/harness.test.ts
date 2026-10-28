@@ -597,9 +597,9 @@ test("a provider error at start fails the session", async () => {
   const [s, ...rest] = h.store.listSessions()
   expect(rest).toEqual([])
   expect([error.status, error.code]).toEqual([500, "start_failed"])
-  expect(error.message.startsWith(`session ${s!.id} failed to start: `)).toBe(true)
-  expect(error.message).toContain(file)
-  expect(error.message).toContain("private")
+  // The provider error names the connection's file: it goes to the office log, not to the caller.
+  expect(error.message).toBe(`session ${s!.id} failed to start: its connection can't be used; see the office log`)
+  expect(h.logs.some((line) => line.includes(file) && line.includes("private"))).toBe(true)
   expect(s!.status).toBe("failed")
   await waitFor(() => ended.length > 0, { what: "the session to end" })
   expect(ended).toEqual(["failed"])
@@ -640,6 +640,12 @@ test.each([
   const h = await makeHarness(await fakeLlm())
   const error = await rejection(h.harness.startSession(handle, cwd ?? h.folder))
   expect(error.code).toBe(code)
+  // A 422 says which field failed, never its value; the office log says why a workspace was refused.
+  if (error.status === 422) {
+    expect(error.message).not.toContain(handle)
+    expect(error.message).not.toContain(cwd ?? h.folder)
+  }
+  if (code === "unsafe_workspace") expect(h.logs.some((line) => line.includes("workspace / "))).toBe(true)
   expect(h.store.listSessions()).toEqual([])
   // Refused before anything of the session is written.
   expect(fs.existsSync(h.office.paths.runs)).toBe(false)
@@ -657,6 +663,8 @@ test.each([
   fs.mkdirSync(cwd, { recursive: true })
   const error = await rejection(h.harness.startSession("minh", cwd))
   expect([error.status, error.code]).toEqual([422, "unsafe_workspace"])
+  expect(error.message).toBe("cwd can't be a workspace; use a project folder (the office log says why)")
+  expect(h.logs.some((line) => line.includes(fs.realpathSync(cwd)))).toBe(true)
   expect(h.store.listSessions()).toEqual([])
   expect(!fs.existsSync(paths.runs) || fs.readdirSync(paths.runs).length === 0).toBe(true)
 })
@@ -1469,6 +1477,10 @@ test("a reopened session whose start fails leaves its earlier run untouched", as
   h.store.updateSession(s.id, { status: "starting", cwd: h.office.paths.company })
   const error = await rejection(h.harness.startRun(s.id))
   expect([error.status, error.code]).toEqual([422, "unsafe_workspace"])
+  expect(error.message).not.toContain(fs.realpathSync(h.office.paths.company))
+  // The log line says which session's folder was refused.
+  const company = fs.realpathSync(h.office.paths.company)
+  expect(h.logs.some((line) => line.startsWith(`session ${s.id}: `) && line.includes(company))).toBe(true)
   expect(status(h, s.id)).toBe("failed")
   expect(h.store.getSession(s.id)!.run_ids).toEqual([first!])
   expect(h.store.getRun(first!)!.endReason).toBeNull()
