@@ -455,11 +455,15 @@ test("a line over the cap signals the group once", async () => {
   const command = ["/bin/sh", "-c", "head -c 17000000 /dev/zero | tr '\\0' a; exec sleep 30"]
   const { p, lines } = proc(dir, store, undefined, { command })
   const kill = spyOn(process, "kill")
+  const groupSignals = () => kill.mock.calls.filter(([pid]) => pid === -p.pid).length
   try {
     expect((await rejection(p.start())).message).toContain("Codex didn't start")
+    // On macOS the one group kill may resend SIGKILL while the group dies, so the count after it is the baseline.
+    const signalled = groupSignals()
+    expect(signalled).toBeGreaterThan(0)
     await p.close(1000)
     await p.kill()
-    expect(kill.mock.calls.filter(([pid]) => pid === -p.pid)).toHaveLength(1)
+    expect(groupSignals()).toBe(signalled)
   } finally {
     kill.mockRestore()
   }
