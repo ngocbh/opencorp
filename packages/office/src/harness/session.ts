@@ -643,7 +643,9 @@ export class CodexSession {
     this.process = null
     if (said === null) this.retiring = proc // office stop kills it while it is being closed
     const turn = this.turnId
-    this.#turnIs(null)
+    // The stored id stays until the turn is marked interrupted, so an office stop or a crash before that still
+    // leaves restore a turn to mark.
+    this.turnId = null
     // Codex waits on none of them any more.
     for (const questionId of [...this.requests.keys()]) {
       this.requests.delete(questionId)
@@ -662,6 +664,7 @@ export class CodexSession {
     // Office stop came meanwhile: restore marks the turn, and nothing is written after the stop.
     if (this.stopped) return
     if (turn !== null) this.translator.turnCompleted(turn, "interrupted", null)
+    this.#turnIs(null)
     if (said) this.translator.error(said)
     if (this.ending) void this.post("close", () => this.#close())
     else this.#settle()

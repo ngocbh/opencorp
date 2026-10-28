@@ -17,6 +17,7 @@ import {
   makeCodex,
   messages,
   requestsValid,
+  restarted,
   start,
   status,
   stored,
@@ -485,6 +486,33 @@ test("closing the app server of an unloaded thread never holds the message or ou
   await live.post("drain", () => {})
   expect(h.store.listWorkers()).toEqual([])
   expect(calls(h, "initialize")).toHaveLength(1)
+})
+
+test("office stop while an unloaded thread's app server closes mid turn still restores the marker", async () => {
+  const h = makeCodex()
+  h.fake.script([
+    [fc.urlElicitation(8, "gh", "Sign in", "https://e.com/l", { wait: false }), { sleep: 0.3 }, fc.threadClosed()],
+  ])
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  const old = live.process!
+  const [closing, closingResolve] = gate()
+  const [released, release] = gate()
+  const realClose = old.close.bind(old)
+  spyOn(old, "close").mockImplementation(async (grace) => {
+    closingResolve()
+    await released
+    await realClose(grace)
+  })
+  await h.sessions.prompt(sid, "sign in")
+  await closing // a turnless card was open mid turn, then Codex unloaded the thread
+  await h.sessions.closeAll() // while the app-server is still being closed
+  release()
+  await live.post("drain", () => {})
+  const r = await restarted(h)
+  expect(status(r, sid)).toBe("idle")
+  expect(texts(r, sid).at(-1)).toEndWith("[interrupted]")
+  expect(r.store.getSession(sid)!.harness_turn_id).toBeNull()
 })
 
 test("a reload whose app server dies before taking the message says so once", async () => {

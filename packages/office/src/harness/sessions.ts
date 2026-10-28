@@ -301,8 +301,9 @@ export class CodexSessions implements SessionHarness {
 
   async #restore(session: SessionRecord): Promise<void> {
     const cards = this.store.listQuestions({ sessionId: session.id, status: "open" })
-    // Inside a turn (waiting on a turnless card can be either): Codex reports that turn interrupted.
-    const inTurn = session.status === "busy" || (session.status === "waiting" && session.harness_turn_id !== null)
+    // Inside a turn (waiting on a turnless card can be either): Codex reports that turn interrupted. The stored id
+    // alone counts too: a crash between writing it and writing busy leaves the row idle.
+    const inTurn = session.status === "busy" || session.harness_turn_id !== null
     for (const q of cards) {
       try {
         this.store.setQuestionStatus(q.id, "stale")

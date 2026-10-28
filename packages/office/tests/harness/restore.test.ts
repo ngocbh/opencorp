@@ -194,3 +194,15 @@ test("restoring an idle session leaves its row alone", async () => {
   // Its updated_at too: a restart doesn't re-sort the sessions.
   expect(r.store.getSession(sid)).toEqual(before)
 })
+
+test("an idle session with a stored turn, as a crash mid turn start leaves it, restores with the marker", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  await h.sessions.closeAll()
+  h.store.updateSession(sid, { harness_turn_id: "turn_1" })
+  const r = reopened(h)
+  await r.sessions.restore()
+  expect(status(r, sid)).toBe("idle")
+  expect(texts(r, sid).at(-1)).toEndWith("[interrupted]")
+  expect(r.store.getSession(sid)!.harness_turn_id).toBeNull()
+})
