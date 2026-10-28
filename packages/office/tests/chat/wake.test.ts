@@ -203,6 +203,13 @@ test.each([true, false])(
       },
       { what: "every accepted message" },
     )
+    // The next reply's request carries every accepted message, so the run kept them all.
+    await actor.prompt("last")
+    const heard = () => {
+      const request = JSON.stringify(fake.requests().at(-1)?.messages ?? [])
+      return ["last", ...accepted].every((text) => request.includes(text))
+    }
+    await waitFor(() => heard() && status(o, sid) === "idle", { what: "the last reply" })
     expect(ended).toEqual([])
   },
 )
