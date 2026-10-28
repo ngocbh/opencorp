@@ -227,7 +227,7 @@ test("the check reads the head per request and the roster only when it moves", a
   const checks = async (): Promise<void> => {
     for (let i = 0; i < n; i++) await check()
   }
-  // Two small file reads per request: no git process, no roster reload.
+  // Each request only reads HEAD from the ref files: no git process, no roster reload.
   expect(await work(checks)).toEqual({ readHead: n })
   // A commit moves HEAD, so the next check loads the roster again, and only that one.
   addHuman(office.paths.company, "ava")
