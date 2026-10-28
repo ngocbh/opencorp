@@ -208,17 +208,14 @@ export function listAllPids(): number[] {
 }
 
 const PROC_PIDTBSDINFO = 3
-// struct proc_bsdinfo: pbi_flags (u32) at 0, pbi_status (u32) at 4, pbi_pid (u32) at 12, pbi_pgid (u32) at 100,
-// pbi_start_tvsec (u64) at 120, pbi_start_tvusec (u64) at 128, 136 bytes in all; the same layout and call form
-// on arm64 and x86_64.
+// struct proc_bsdinfo: pbi_pid (u32) at 12, pbi_start_tvsec (u64) at 120, pbi_start_tvusec (u64) at 128,
+// 136 bytes in all; the same layout and call form on arm64 and x86_64.
 const BSDINFO_SIZE = 136
-// pbi_status of a zombie, and the pbi_flags bit of a process that has begun to exit.
-const SZOMB = 5
-const PROC_FLAG_INEXIT = 4
 
-/** `proc_pidinfo(PROC_PIDTBSDINFO)` of `pid`, zombies included, or null when it can't be read: no such process,
- *  another user's process, or an id outside 2..2^31 − 1. */
-function bsdInfo(pid: number): DataView | null {
+/** The start time of `pid` in seconds since the epoch (µs resolution), from libproc's
+ *  `proc_pidinfo(PROC_PIDTBSDINFO)`, zombies included; null when it can't be read: no such process, another
+ *  user's process, or an id outside 2..2^31 − 1. macOS only. */
+export function procStartTime(pid: number): number | null {
   // The office-wide pid guard: never 0 or 1 (process.kill would hit our own group or every process),
   // never a value i32 would wrap.
   if (!Number.isInteger(pid) || pid < 2 || pid > 0x7fffffff) return null
@@ -227,21 +224,24 @@ function bsdInfo(pid: number): DataView | null {
   const size = loadLibProc().proc_pidinfo(pid, PROC_PIDTBSDINFO, 1n, info, BSDINFO_SIZE)
   if (size !== BSDINFO_SIZE) return null
   const view = new DataView(info.buffer)
-  return view.getUint32(12, true) === pid ? view : null
-}
-
-/** The start time of `pid` in seconds since the epoch (µs resolution), from libproc's
- *  `proc_pidinfo(PROC_PIDTBSDINFO)`, zombies included; null when it can't be read: no such process, another
- *  user's process, or an id outside 2..2^31 − 1. macOS only. */
-export function procStartTime(pid: number): number | null {
-  const view = bsdInfo(pid)
-  if (view === null) return null
+  if (view.getUint32(12, true) !== pid) return null
   return Number(view.getBigUint64(120, true)) + Number(view.getBigUint64(128, true)) / 1e6
 }
 
-/** The members of process group `pgid` that can still fork (libproc `proc_listpgrppids`): neither zombies nor
- *  exiting, and readable (another user's process isn't listed). Empty when the listing fails or `pgid` is outside
- *  2..2^31 − 1. macOS only. */
+const PROC_PIDT_SHORTBSDINFO = 13
+// struct proc_bsdshortinfo: pbsi_pid at 0, pbsi_pgid at 8, pbsi_status at 12, pbsi_ruid at 44, pbsi_svuid at 52
+// (all u32), 64 bytes in all; the same layout on arm64 and x86_64.
+const SHORTINFO_SIZE = 64
+// pbsi_status of a zombie.
+const SZOMB = 5
+
+/** The members of process group `pgid` (libproc `proc_listpgrppids`) that aren't zombies yet and that the office
+ *  may signal; empty when the listing fails or `pgid` is outside 2..2^31 − 1. Each member's
+ *  `proc_pidinfo(PROC_PIDT_SHORTBSDINFO)` leaves out zombies and another user's processes (by the kernel's rule:
+ *  neither its real nor its saved uid is the office's real or effective uid, unless the office is root). A member
+ *  still exiting counts, since one that was forking when it was killed finishes that fork first. A member that
+ *  can't be read counts too: that read needs no privilege, so it fails only for a process in flux (being created
+ *  or exec'ing) or one gone since the listing. macOS only. */
 export function liveGroupMembers(pgid: number): number[] {
   if (!Number.isInteger(pgid) || pgid < 2 || pgid > 0x7fffffff) return []
   const lib = loadLibProc()
@@ -251,13 +251,18 @@ export function liveGroupMembers(pgid: number): number[] {
   const pids = new Int32Array(count + 64)
   const got = lib.proc_listpgrppids(pgid, pids, pids.byteLength)
   if (got <= 0) return []
+  const uids = [process.getuid!(), process.geteuid!()]
+  const root = uids[1] === 0
+  const info = new Uint8Array(SHORTINFO_SIZE)
+  const view = new DataView(info.buffer)
   return Array.from(pids.subarray(0, got)).filter((pid) => {
-    const view = bsdInfo(pid)
+    // A non-zero `arg` makes xnu look among zombies too, so an unreaped one reads as a zombie.
+    const size = lib.proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 1n, info, SHORTINFO_SIZE)
+    if (size !== SHORTINFO_SIZE || view.getUint32(0, true) !== pid) return true
     return (
-      view !== null &&
-      view.getUint32(100, true) === pgid &&
-      view.getUint32(4, true) !== SZOMB &&
-      (view.getUint32(0, true) & PROC_FLAG_INEXIT) === 0
+      view.getUint32(8, true) === pgid &&
+      view.getUint32(12, true) !== SZOMB &&
+      (root || uids.includes(view.getUint32(44, true)) || uids.includes(view.getUint32(52, true)))
     )
   })
 }

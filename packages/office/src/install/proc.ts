@@ -71,17 +71,17 @@ const SWEEP_ROUNDS = 50
 const pause = new Int32Array(new SharedArrayBuffer(4))
 
 /** Sends SIGKILL to process group `pgid`, and on macOS sends it again while the group has members that can still
- *  fork (at most SWEEP_ROUNDS more times, about 1 ms apart). False when the first send fails: the group is gone,
- *  may not be signalled (macOS EPERM for a group of only zombies), or `pgid` isn't a group id the office may
- *  signal or is the office's own pid (a backstop: callers pass only groups the office spawned detached, and the
+ *  start children (at most SWEEP_ROUNDS more times, about 1 ms apart). False when the first send fails: the group
+ *  is gone, may not be signalled (macOS EPERM for a group of only zombies), or `pgid` isn't a group id the office
+ *  may signal or is the office's own pid (a backstop: callers pass only groups the office spawned detached, and the
  *  office leads its own group under its service). Synchronous; never throws. */
 export function killGroup(pgid: number): boolean {
   if (!isPid(pgid) || pgid === process.pid) return false
   if (!sendKill(pgid)) return false
-  // macOS signals only the processes in the group at that moment, and a fork in flight still completes, so a
-  // child forked during the kill survives it. Re-signalling the group can't hit a recycled id: a group id isn't
-  // reused while the group has members, and it is re-signalled only right after members were seen. Linux aborts
-  // a fork when a group signal is pending, so one send is enough there.
+  // macOS signals only the processes in the group at that moment, and a child already being created still joins
+  // it, so a child forked during the kill survives it. Re-signalling the group can't hit a recycled id: a group id
+  // isn't reused while the group has members, and it is re-signalled only right after members were seen. Linux
+  // aborts the creation of a child when a group signal is pending, so one send is enough there.
   if (process.platform !== "darwin") return true
   for (let round = 0; round < SWEEP_ROUNDS; round++) {
     if (liveGroupMembers(pgid).length === 0) break
