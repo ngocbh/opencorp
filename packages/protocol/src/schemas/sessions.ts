@@ -62,6 +62,11 @@ export const Session = z.strictObject({
    */
   harness_model: z.string().nullable().default(null),
   /**
+   * The harness turn running now (a Codex session's turn id); null outside a turn and for composer sessions.
+   * Restore reads it to mark a turn that an office stop cut off as interrupted.
+   */
+  harness_turn_id: z.string().nullable().default(null),
+  /**
    * This session's own token counts so far, as the harness reports them. A continued session counts only its
    * own stretch: add its parent chain's counts for the thread's total. Null until the harness reports any;
    * always null for composer sessions.

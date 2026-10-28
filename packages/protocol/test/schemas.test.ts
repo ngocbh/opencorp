@@ -152,7 +152,7 @@ test("optional fields default", () => {
 test("harness session fields exist", () => {
   expect(Schemas.Question.shape.source.options).toContain("harness")
   expect(Object.keys(Schemas.Session.shape)).toEqual(
-    expect.arrayContaining(["harness_model", "harness_usage", "parent_session_id"]))
+    expect.arrayContaining(["harness_model", "harness_turn_id", "harness_usage", "parent_session_id"]))
   expect(Object.keys(Schemas.Message.shape)).toContain("author")
   expect(Object.keys(Schemas.QuestionPage.shape)).toContain("secret")
 })

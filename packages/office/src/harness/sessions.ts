@@ -23,7 +23,6 @@ import type { HarnessEvent } from "./adapter.ts"
 import { CLOSE_GRACE_MS, CodexProcess, CodexStartError, appServerCommand } from "./codex.ts"
 import { nameOf } from "./rpc.ts"
 import { CodexSession, END_WAIT_MS, REPLY_WAIT_MS, STOP_WAIT_MS } from "./session.ts"
-import { TURNLESS } from "./translate.ts"
 
 /** What a yian chat's session calls answer, until the chat harness serves them. */
 const NOT_SERVED = "yian chats are not served yet"
@@ -285,8 +284,8 @@ export class CodexSessions implements SessionHarness {
   }
 
   /** After an office restart, for each Codex session that was live. Idle stays idle with no app-server (its next
-   *  message reloads the thread). Busy, or waiting on a turn's card, becomes idle with `[interrupted]`: Codex reports
-   *  that turn interrupted on resume and never reruns it. Waiting only on turnless cards becomes idle without it.
+   *  message reloads the thread). Busy, or with a turn stored as open, becomes idle with `[interrupted]`: Codex
+   *  reports that turn interrupted on resume and never reruns it. Waiting with no turn open becomes idle without it.
    *  Starting fails. Ending finishes ending. Open cards go stale. */
   async restore(): Promise<void> {
     for (const session of this.store.listSessions({ status: [...LIVE] })) {
@@ -302,10 +301,9 @@ export class CodexSessions implements SessionHarness {
 
   async #restore(session: SessionRecord): Promise<void> {
     const cards = this.store.listQuestions({ sessionId: session.id, status: "open" })
-    // Inside a turn, unless it waited only on turnless cards (run ids TURNLESS…): Codex reports that turn
-    // interrupted.
-    const inTurn =
-      session.status === "busy" || (session.status === "waiting" && cards.some((q) => !q.run_id.startsWith(TURNLESS)))
+    // Inside a turn (waiting on a turnless card can be either): Codex reports that turn interrupted. The stored id
+    // alone counts too: a crash between writing it and writing busy leaves the row idle.
+    const inTurn = session.status === "busy" || session.harness_turn_id !== null
     for (const q of cards) {
       try {
         this.store.setQuestionStatus(q.id, "stale")
@@ -346,7 +344,8 @@ export class CodexSessions implements SessionHarness {
       // First, so no client sees an ended session with its work still open.
       if (session.work_item_id) this.store.updateWorkItem(session.work_item_id, { status: "done" })
     }
-    const updated = this.store.updateSession(live.sessionId, notWaiting(final))
+    // An end wait that timed out mid turn leaves the turn id: an ended session runs no turn.
+    const updated = this.store.updateSession(live.sessionId, { ...notWaiting(final), harness_turn_id: null })
     await this.hooks.notify("sessionEnded", updated)
   }
 

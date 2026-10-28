@@ -56,6 +56,7 @@ test("a busy session becomes idle with a marker and its cards go stale", async (
   expect(parts.filter((p) => p.type === "text" && p.text.endsWith("[interrupted]")).length).toBe(1)
   expect(r.sessions.currentTurn(sid).flatMap((m) => m.parts.flatMap((p) => (p.type === "text" ? [p.text] : []))))
     .toEqual(["[interrupted]"])
+  expect(r.store.getSession(sid)!.harness_turn_id).toBeNull()
 })
 
 test("a session an office crash left busy gets its tools and turn marked", async () => {
@@ -70,6 +71,7 @@ test("a session an office crash left busy gets its tools and turn marked", async
   const p = live.process!
   live.process = null
   await p.kill()
+  expect(h.store.getSession(sid)!.harness_turn_id).not.toBeNull()
   const n = h.events.length
   const r = reopened(h)
   await r.sessions.restore()
@@ -78,6 +80,7 @@ test("a session an office crash left busy gets its tools and turn marked", async
     ["assistant", ["[interrupted]"]],
   ])
   expect(status(r, sid)).toBe("idle")
+  expect(r.store.getSession(sid)!.harness_turn_id).toBeNull()
 })
 
 test("a session still starting fails", async () => {
@@ -190,4 +193,16 @@ test("restoring an idle session leaves its row alone", async () => {
   await r.sessions.restore()
   // Its updated_at too: a restart doesn't re-sort the sessions.
   expect(r.store.getSession(sid)).toEqual(before)
+})
+
+test("an idle session with a stored turn, as a crash mid turn start leaves it, restores with the marker", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  await h.sessions.closeAll()
+  h.store.updateSession(sid, { harness_turn_id: "turn_1" })
+  const r = reopened(h)
+  await r.sessions.restore()
+  expect(status(r, sid)).toBe("idle")
+  expect(texts(r, sid).at(-1)).toEndWith("[interrupted]")
+  expect(r.store.getSession(sid)!.harness_turn_id).toBeNull()
 })

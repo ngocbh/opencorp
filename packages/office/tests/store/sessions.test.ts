@@ -189,6 +189,16 @@ test("a codex session keeps its model usage and parent", () => {
   expect(store.getSession(s.id)!.harness_usage).toBeNull()
 })
 
+test("a codex session keeps its open turn", () => {
+  const store = openStore()
+  const s = store.createSession(session({ harness: "codex", harness_session_id: "thr_1" }))
+  expect(s.harness_turn_id).toBeNull()
+  expect(store.updateSession(s.id, { harness_turn_id: "turn_1" }).harness_turn_id).toBe("turn_1")
+  expect(store.getSession(s.id)!.harness_turn_id).toBe("turn_1")
+  expect(store.updateSession(s.id, { harness_turn_id: null }).harness_turn_id).toBeNull()
+  expect(store.getSession(s.id)!.harness_turn_id).toBeNull()
+})
+
 test("a session keeps who it waits on and whether its cap holds it", () => {
   const store = openStore()
   const s = store.createSession(session({ status: "waiting", waiting_on: ["ngocbh", "lan"], capped: true }))

@@ -129,6 +129,8 @@ export class CodexSession {
   #turnless: { proc: CodexProcess; runId: string } | null = null
   /** Answers waiting for their reply to be written. */
   readonly #replies = new Set<Waiter>()
+  /** The turn id the store has for the session. */
+  #storedTurn: string | null
 
   constructor(owner: CodexSessions, session: SessionRecord, { author }: { author: string | null }) {
     this.owner = owner
@@ -136,6 +138,7 @@ export class CodexSession {
     this.sessionId = session.id
     this.cwd = session.cwd
     this.threadId = session.harness_session_id
+    this.#storedTurn = session.harness_turn_id
     this.author = author
     this.base = usageBase(this.store, session)
     this.log = path.join(owner.office.paths.runDir(session.id), "codex.log")
@@ -288,6 +291,7 @@ export class CodexSession {
 
   /** Settles with no app-server, as a restarted office finds the session; its next message reloads the thread. */
   idleAfterRestore(): void {
+    this.#turnIs(null)
     this.#settle()
   }
 
@@ -472,12 +476,12 @@ export class CodexSession {
     if (proc !== this.process) return
     if (this.translator.notification(method, params)) return
     if (method === "turn/started") {
-      this.turnId = params.turn.id
+      this.#turnIs(params.turn.id)
       if (!this.ending) this.#settle()
     } else if (method === "turn/completed") {
       const turn = params.turn
       this.translator.turnCompleted(turn.id, turn.status, turn.error ?? null)
-      if (turn.id === this.turnId) this.turnId = null
+      if (turn.id === this.turnId) this.#turnIs(null)
       this.#expireTurn(turn.id)
       if (this.ending) void this.post("close", () => this.#close())
       // Its expired cards may leave a turn that raced it running, no longer waiting.
@@ -639,6 +643,8 @@ export class CodexSession {
     this.process = null
     if (said === null) this.retiring = proc // office stop kills it while it is being closed
     const turn = this.turnId
+    // The stored id stays until the turn is marked interrupted, so an office stop or a crash before that still
+    // leaves restore a turn to mark.
     this.turnId = null
     // Codex waits on none of them any more.
     for (const questionId of [...this.requests.keys()]) {
@@ -658,6 +664,7 @@ export class CodexSession {
     // Office stop came meanwhile: restore marks the turn, and nothing is written after the stop.
     if (this.stopped) return
     if (turn !== null) this.translator.turnCompleted(turn, "interrupted", null)
+    this.#turnIs(null)
     if (said) this.translator.error(said)
     if (this.ending) void this.post("close", () => this.#close())
     else this.#settle()
@@ -674,6 +681,16 @@ export class CodexSession {
     if (this.stopped) return // office stop came during the close: the session stays ending, for restore
     this.translator.abort()
     await this.owner.finished(this, "ended")
+  }
+
+  /** Sets the running turn and stores it, so a restart knows a turn was open even while a turnless card keeps the
+   *  status waiting. Once the office stops the stored id stays as it was, for restore; once closed, `finished`
+   *  clears it. */
+  #turnIs(id: string | null): void {
+    this.turnId = id
+    if (this.stopped || this.closed || id === this.#storedTurn) return
+    this.store.updateSession(this.sessionId, { harness_turn_id: id })
+    this.#storedTurn = id
   }
 
   /** Writes the run state: waiting while Codex waits on a card (on the opener), busy while a turn runs, else idle.

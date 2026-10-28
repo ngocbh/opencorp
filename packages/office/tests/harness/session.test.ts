@@ -493,6 +493,7 @@ test("ending on a codex that never answers the interrupt returns and ends after 
   expect(performance.now() - began).toBeLessThan(5000)
   await waitFor(() => status(h, sid) === "ended", { timeout: 5000, what: "the end after the end wait" })
   expect(h.store.listWorkers()).toEqual([])
+  expect(h.store.getSession(sid)!.harness_turn_id).toBeNull()
 })
 
 test("every load of the thread carries the owner load", async () => {
