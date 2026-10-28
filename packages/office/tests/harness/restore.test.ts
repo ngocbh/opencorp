@@ -56,6 +56,7 @@ test("a busy session becomes idle with a marker and its cards go stale", async (
   expect(parts.filter((p) => p.type === "text" && p.text.endsWith("[interrupted]")).length).toBe(1)
   expect(r.sessions.currentTurn(sid).flatMap((m) => m.parts.flatMap((p) => (p.type === "text" ? [p.text] : []))))
     .toEqual(["[interrupted]"])
+  expect(r.store.getSession(sid)!.harness_turn_id).toBeNull()
 })
 
 test("a session an office crash left busy gets its tools and turn marked", async () => {
@@ -70,6 +71,7 @@ test("a session an office crash left busy gets its tools and turn marked", async
   const p = live.process!
   live.process = null
   await p.kill()
+  expect(h.store.getSession(sid)!.harness_turn_id).not.toBeNull()
   const n = h.events.length
   const r = reopened(h)
   await r.sessions.restore()
@@ -78,6 +80,7 @@ test("a session an office crash left busy gets its tools and turn marked", async
     ["assistant", ["[interrupted]"]],
   ])
   expect(status(r, sid)).toBe("idle")
+  expect(r.store.getSession(sid)!.harness_turn_id).toBeNull()
 })
 
 test("a session still starting fails", async () => {

@@ -82,3 +82,49 @@ test("a session waiting only on turnless cards restores idle without the marker"
   expect(state(r, sid)).toEqual(["idle", []])
   expect(texts(r, sid).some((t) => t.endsWith("[interrupted]"))).toBe(false)
 })
+
+test("a session waiting on a turnless card mid turn restores idle with the marker", async () => {
+  const h = makeCodex()
+  h.fake.script([[fc.urlElicitation(8, "gh", "Sign in", "https://e.com/l", { wait: false }), { sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "sign in")
+  await waitFor(() => status(h, sid) === "waiting" && h.sessions.get(sid)!.turnId !== null, { what: "waiting mid turn" })
+  const r = await restarted(h)
+  expect(state(r, sid)).toEqual(["idle", []])
+  expect(texts(r, sid).at(-1)).toEndWith("[interrupted]")
+  expect(r.store.listQuestions({ sessionId: sid }).map((q) => q.status)).toEqual(["stale"])
+  expect(r.store.getSession(sid)!.harness_turn_id).toBeNull()
+})
+
+test("a turn started while a turnless card waits restores with the marker", async () => {
+  const h = makeCodex()
+  h.fake.script([[fc.urlElicitation(8, "gh", "Sign in", "https://e.com/l", { wait: false })], [{ sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "sign in")
+  await waitFor(() => status(h, sid) === "waiting" && h.sessions.get(sid)!.turnId === null, {
+    what: "waiting after the turn",
+  })
+  await h.sessions.prompt(sid, "go on")
+  await waitFor(() => h.sessions.get(sid)!.turnId !== null, { what: "the second turn" })
+  expect(status(h, sid)).toBe("waiting")
+  const r = await restarted(h)
+  expect(state(r, sid)).toEqual(["idle", []])
+  expect(texts(r, sid).at(-1)).toEndWith("[interrupted]")
+  expect(r.store.getSession(sid)!.harness_turn_id).toBeNull()
+})
+
+test("the stored turn id is the running turn's and clears when it ends", async () => {
+  const h = makeCodex()
+  h.fake.script([approvalTurn()])
+  const sid = await start(h, h.workspace)
+  expect(h.store.getSession(sid)!.harness_turn_id).toBeNull()
+  await h.sessions.prompt(sid, "make a")
+  const q = await openCard(h, sid)
+  await waitFor(() => status(h, sid) === "waiting", { what: "waiting on the card" })
+  const turn = h.sessions.get(sid)!.turnId
+  expect(turn).not.toBeNull()
+  expect(h.store.getSession(sid)!.harness_turn_id).toBe(turn)
+  await h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })
+  await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
+  expect(h.store.getSession(sid)!.harness_turn_id).toBeNull()
+})

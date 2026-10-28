@@ -5,14 +5,14 @@
 import fs from "node:fs"
 import http from "node:http"
 import path from "node:path"
-import type { LiveEvent, Question, Session } from "@opencorp/protocol"
+import type { LiveEvent, Message, Question, Session } from "@opencorp/protocol"
 import { expect, onTestFinished, test } from "bun:test"
 import { parse, stringify } from "yaml"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { git } from "../company/helpers.ts"
 import { frames } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
-import { folder, openOffice } from "./helpers.ts"
+import { type RunningOffice, folder, openOffice } from "./helpers.ts"
 
 test(
   "a codex session on a wrapper started office streams a part takes a card answer and ends",
@@ -38,13 +38,7 @@ test(
     const rpcLog = path.join(root, "codex", "rpc.jsonl")
     const calls = path.join(root, "calls.log")
 
-    // The office loads a session's person from the company's HEAD, so the edit is committed.
-    const company = office.paths.company
-    const personFile = path.join(company, "people", "minh", "person.yaml")
-    const minh = parse(fs.readFileSync(personFile, "utf8")) as Record<string, unknown>
-    minh.harnesses = ["composer", "codex"]
-    fs.writeFileSync(personFile, stringify(minh))
-    git(company, "commit", "-qam", "minh uses codex")
+    minhUsesCodex(office)
 
     // The folder holding the pinned codex's folder is refused as a workspace.
     const refused = await office.request("POST", "/sessions", {
@@ -122,5 +116,63 @@ test(
     expect(await office.get(`/sessions/${sid}/messages`)).toEqual([])
     expect(fs.existsSync(calls)).toBe(false)
   },
+  180_000,
+)
+
+/** Gives Minh the Codex harness, committed since the office loads a person from the company's HEAD. */
+function minhUsesCodex(office: RunningOffice): void {
+  const company = office.paths.company
+  const personFile = path.join(company, "people", "minh", "person.yaml")
+  const minh = parse(fs.readFileSync(personFile, "utf8")) as Record<string, unknown>
+  minh.harnesses = ["composer", "codex"]
+  fs.writeFileSync(personFile, stringify(minh))
+  git(company, "commit", "-qam", "minh uses codex")
+}
+
+/** Starts a Codex session for Minh whose turn opens a turnless sign-in card and keeps running, waits until it is
+ *  waiting, brings the office back with `restart`, and checks the restored session marks the cut-off turn. */
+async function turnCutOffBy(restart: (office: RunningOffice, cwd: string) => Promise<void>): Promise<void> {
+  const office = await openOffice({
+    codexScript: {
+      turns: [[fc.urlElicitation(8, "gh", "Sign in", "https://e.com/l", { wait: false }), { sleep: 30 }]],
+    },
+  })
+  minhUsesCodex(office)
+  const cwd = folder(path.join(office.root, "project"))
+  const sid = ((await office.post("/sessions", { person: "minh", cwd, harness: "codex" })) as Session).id
+  const statusIs = async (want: string) => {
+    const session: Session = await office.get(`/sessions/${sid}`)
+    if (session.status === "failed") throw new Error(`the Codex session failed: ${JSON.stringify(session)}`)
+    return session.status === want
+  }
+  await waitFor(() => statusIs("idle"), { timeout: 60_000, what: "the Codex session to load" })
+  expect(await office.post(`/sessions/${sid}/prompt`, { text: "Sign in" })).toEqual({ ok: true })
+  await waitFor(() => statusIs("waiting"), { timeout: 60_000, what: "the sign-in card" })
+  expect(((await office.get(`/sessions/${sid}`)) as Session).harness_turn_id).not.toBeNull()
+
+  await restart(office, cwd)
+  await waitFor(() => statusIs("idle"), { timeout: 60_000, what: "the restored session" })
+  const restored: Session = await office.get(`/sessions/${sid}`)
+  expect(restored.harness_turn_id).toBeNull()
+  const parts = ((await office.get(`/sessions/${sid}/messages`)) as Message[]).flatMap((m) => m.parts)
+  const last = parts.at(-1)
+  expect(last?.type === "text" && last.text.endsWith("[interrupted]")).toBe(true)
+  const cards: Question[] = await office.get("/questions", { session: sid })
+  expect(cards.map((q) => q.status)).toEqual(["stale"])
+}
+
+test(
+  "a turn a restart cuts off while a turnless card waits comes back interrupted",
+  () => turnCutOffBy(async (office, cwd) => void (await office.opencorp(["restart"], { cwd }))),
+  180_000,
+)
+
+test(
+  "a turn an office crash cuts off while a turnless card waits comes back interrupted",
+  () =>
+    turnCutOffBy(async (office, cwd) => {
+      await office.killOffice()
+      await office.opencorp(["start"], { cwd })
+    }),
   180_000,
 )

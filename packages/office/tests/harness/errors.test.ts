@@ -135,6 +135,7 @@ test("a dead app server leaves the session idle and the next message reloads the
   expect(errors(h, sid)).toEqual(["Codex stopped unexpectedly. Send a message to start it again."])
   expect(h.store.listQuestions({ sessionId: sid }).map((q) => q.status)).toEqual(["stale"])
   expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
+  expect(h.store.getSession(sid)!.harness_turn_id).toBeNull()
   const [child] = h.fake.spawned() // a command the dead app-server left running
   await waitFor(() => startTime(child!) === null, { what: "the command child killed with the group" })
   expect(h.store.listWorkers()).toEqual([])
