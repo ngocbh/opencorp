@@ -1039,3 +1039,84 @@ test("a grandchild of a spawned worker does not hold the channel open", async ()
   expect(grand[0]!.started).not.toBeNull()
   await waitFor(() => isGone(Number(pid), grand[0]!.started), { timeout: 10_000, what: "the grandchild to go" })
 })
+
+/** A registry with a worker parked on a kept inbox job of session s1: the registry, the worker, its job and the
+ *  recorder it parked with. */
+async function parkedInRegistry(): Promise<{
+  registry: ReturnType<typeof makeRegistry>
+  store: ReturnType<typeof openStore>
+  worker: Worker
+  job: Job
+  rec: Recorder
+}> {
+  const where = base()
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const job = makeJob(where, "flows/inbox.yaml", { inputs: {}, keep: true })
+  const rec = new Recorder()
+  const worker = await registry.spawn(job, path.join(where.root, "sessions", "s1"), rec)
+  await waitFor(() => rec.parks === 1, { timeout: 30_000, what: "the worker to park" })
+  return { registry, store, worker, job, rec }
+}
+
+test("a kept result gets done instead of a closed send side", async () => {
+  const { registry, store, worker, rec } = await parkedInRegistry()
+  expect(rec.outcome).toMatchObject({ type: "result", status: "waiting", kept: true })
+  // Parked, not gone: the process lives and stays recorded for the reaper.
+  await Bun.sleep(200)
+  expect(worker.returncode).toBeNull()
+  expect(rec.returncode).toBeNull()
+  expect(registry.get("s1")).toBe(worker)
+  expect(store.listWorkers().map((w) => w.pid)).toEqual([worker.pid])
+  expect(await worker.deliver({ id: "d1", op: "send", inbox: "messages", event: "x" })).toBe(false)
+})
+
+test("next sends the job and swaps job and handlers", async () => {
+  const { registry, worker, job, rec } = await parkedInRegistry()
+  const next = advanceJob(job, { deliver: [{ id: "d1", op: "send", inbox: "messages", event: "hi" }] })
+  const after = new Recorder()
+  expect(await registry.next(worker, next, after)).toBe(true)
+  expect(worker.job).toBe(next)
+  expect(worker.handlers).toBe(after)
+  expect(await worker.wait(30_000)).toBe(0)
+  expect(after.replies).toEqual([{ type: "deliver_reply", id: "d1", seq: expect.any(Number) }])
+  expect(after.outcome).toMatchObject({ type: "result", status: "succeeded" })
+  expect(after.returncode).toBe(0)
+  expect(rec.returncode).toBeNull()
+  expect(registry.get("s1")).toBeUndefined()
+})
+
+test("next is false once the channel closed", async () => {
+  const { registry, worker, job } = await parkedInRegistry()
+  worker.closeChannel()
+  expect(await registry.next(worker, advanceJob(job), new Recorder())).toBe(false)
+  expect(await worker.wait(10_000)).toBe(0)
+  await registry.closeAll()
+  await expect(registry.next(worker, advanceJob(job), new Recorder())).rejects.toBeInstanceOf(RegistryClosed)
+})
+
+test("close all ends parked workers in under a second", async () => {
+  const { registry, worker, rec } = await parkedInRegistry()
+  const began = performance.now()
+  await registry.closeAll()
+  expect(performance.now() - began).toBeLessThan(1000)
+  expect(worker.returncode).toBe(0)
+  expect(rec.returncode).toBe(0)
+})
+
+test("park past the cap releases the least recently parked worker", () => {
+  const registry = makeRegistry(openStore(), { maxParked: 2 })
+  const released: string[] = []
+  const workers = new Map(["a", "b", "c", "d", "e"].map((name) => [name, { sessionId: name } as Worker]))
+  const park = (name: string) => registry.park(workers.get(name)!, () => void released.push(name))
+  park("a")
+  park("b")
+  park("c")
+  expect(released).toEqual(["a"])
+  registry.unpark(workers.get("b")!)
+  park("d")
+  expect(released).toEqual(["a"])
+  park("c")
+  park("e")
+  expect(released).toEqual(["a", "d"])
+})

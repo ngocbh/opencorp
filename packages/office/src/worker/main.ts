@@ -1,4 +1,4 @@
-/** The run worker: read one job from the office, run it with Yian, report, exit. */
+/** The run worker: read jobs from the office, run each with Yian and report it; exit after the last. */
 import fs from "node:fs"
 import path from "node:path"
 import {
@@ -263,12 +263,13 @@ export function advanceAppended(log: string, before: number | null): boolean {
 
 /**
  * The worker's follow of its run's live channel: each follow frame goes to the office as `{type: "stream", frame}`.
- * `serve` makes one; `runJob` binds it to the run call's channel, which it follows from inside the first frame; the
+ * `serve` makes one per job; `runJob` binds it to the run call's channel, which it follows from inside the first frame; the
  * office's `follow` frame restarts it with a fresh snapshot.
  */
 class LiveFollow {
   readonly #channel: Channel
   #again: (() => void) | null = null
+  #close: (() => void) | null = null
 
   /** A follow whose frames go out on `channel`. */
   constructor(channel: Channel) {
@@ -287,12 +288,20 @@ class LiveFollow {
         stop()
         stop = live.follow(this.#forward)
       }
+      this.#close = () => stop()
     })
   }
 
   /** Stops the current follow and follows again, from a fresh snapshot; a no-op until following has started. */
   again(): void {
     this.#again?.()
+  }
+
+  /** Stops the current follow for good: the worker moves on to its next job. */
+  close(): void {
+    this.#close?.()
+    this.#again = null
+    this.#close = null
   }
 
   /** Sends `frame` as a `stream` frame; a `record` frame over the channel's limit goes without its `line`, which the
@@ -313,14 +322,60 @@ class LiveFollow {
   }
 }
 
-/** What `serve` and `readFrames` share: whether the job finished, and the run's live follow. */
+/** One job's state: whether it finished, its deliveries, its stop and its run's live follow. */
+class JobState {
+  finished = false
+  readonly follow: LiveFollow
+  readonly deliveries: Deliveries
+  readonly stopper = new AbortController()
+
+  constructor(channel: Channel) {
+    this.follow = new LiveFollow(channel)
+    // A reply that can't be sent (a closed channel) has nobody to read it.
+    this.deliveries = new Deliveries((frame) => channel.send(frame).catch(() => {}))
+  }
+}
+
+/** The frames that end a kept worker's waits, in order: `done`, `start`, a `stop` once the job finished, and null
+ *  once the office closed the channel. */
+class Mailbox {
+  readonly #frames: (Frame | null)[] = []
+  #waiter: ((frame: Frame | null) => void) | null = null
+
+  put(frame: Frame | null): void {
+    const waiter = this.#waiter
+    this.#waiter = null
+    if (waiter !== null) waiter(frame)
+    else this.#frames.push(frame)
+  }
+
+  take(): Promise<Frame | null> {
+    if (this.#frames.length > 0) return Promise.resolve(this.#frames.shift()!)
+    return new Promise((resolve) => (this.#waiter = resolve))
+  }
+}
+
+/** What `serve` and `readFrames` share: the current job's state, whether the worker is parked, and the mailbox. */
 interface WorkerState {
-  finished: boolean
-  follow: LiveFollow
+  job: JobState
+  parked: boolean
+  readonly mail: Mailbox
+}
+
+/** Whether `job` is the next job a worker kept after `previous` may run: an `advance` of the same session, run, log
+ *  and pin. */
+function nextOf(previous: Job, job: Job): boolean {
+  return (
+    job.kind === "advance" &&
+    job.session_id === previous.session_id &&
+    job.run_id === previous.run_id &&
+    job.log === previous.log &&
+    job.pin === previous.pin
+  )
 }
 
 /**
- * Runs the job the office sends on `channel`; returns the exit code. A `check` job sends only its result frame,
+ * Runs the jobs the office sends on `channel`; returns the exit code. A `check` job sends only its result frame,
  * `{type: "result", problem}`, or its `error` frame when a `stop` frame ended it. A seeded chat job whose replaced
  * run's history can't be read sends `{type: "event", name: "history_not_seeded", data: {error_type}}` before its run
  * starts.
@@ -333,6 +388,13 @@ interface WorkerState {
  * advance yian refused before it appended anything, `{type: "result", status: "not_resumed", run_id, error_type}`.
  * If the office closes the channel before the job finished, `exit` is called with `EXIT_ORPHANED`: nobody can answer
  * a question or read the result.
+ *
+ * A `keep` job whose result is `waiting` sends it with `kept: true` and stays up: the office answers `done`, the
+ * worker answers every delivery it got before that, then sends `{type: "parked"}`. A parked worker runs the next
+ * `start` frame's job, which must be an `advance` of the same session, run, log and pin (any other is an `error` and
+ * the worker exits `EXIT_FAILED`), and ignores `follow`; the office closing its side, or a `stop`, ends it with the
+ * code of its last job. A `stop` or the office closing its side before `done` ends it once its deliveries are
+ * answered.
  */
 export async function serve(
   channel: Channel,
@@ -348,19 +410,77 @@ export async function serve(
     }
   }
   const rpc = new Rpc(channel)
-  // A reply that can't be sent (a closed channel) has nobody to read it.
-  const deliveries = new Deliveries((frame) => channel.send(frame).catch(() => {}))
-  const stopper = new AbortController()
-  const state: WorkerState = { finished: false, follow: new LiveFollow(channel) }
-  const officeClosed = readFrames(channel, rpc, deliveries, stopper, state, exit)
+  const state: WorkerState = { job: new JobState(channel), parked: false, mail: new Mailbox() }
+  const officeClosed = readFrames(channel, rpc, state, exit)
+  let start: Promise<Frame> = started
+  let previous: Job | null = null
+  for (;;) {
+    const ran = await serveJob(channel, rpc, state.job, start, previous, env)
+    const code = await report(channel, [ran.last], ran.code)
+    if (ran.last.kept !== true || code !== EXIT_OK) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        officeClosed.then(() => state.job.deliveries.drained()),
+        new Promise<void>((resolve) => (timer = setTimeout(resolve, linger))),
+      ])
+      clearTimeout(timer)
+      channel.close()
+      return code
+    }
+    const ended = await state.mail.take()
+    // Every delivery the office sent before `done` is answered before `parked`, as before the end of stream.
+    await state.job.deliveries.drained()
+    if (ended?.type !== "done" || !(await sendQuietly(channel, { type: "parked" }))) {
+      channel.close()
+      return code
+    }
+    state.parked = true
+    const next = await state.mail.take()
+    state.parked = false
+    if (next?.type !== "start") {
+      channel.close()
+      return code
+    }
+    state.job.follow.close()
+    state.job = new JobState(channel)
+    start = Promise.resolve(next)
+    previous = ran.job
+  }
+}
+
+/** Sends `frame`; false when it can't be sent. */
+async function sendQuietly(channel: Channel, frame: Frame): Promise<boolean> {
+  try {
+    await channel.send(frame)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Runs the job of the `start` frame `started` resolves to on `state`, once every delivery it got is answered;
+ *  returns its closing frame (with `kept: true` for a `keep` job whose run waits), its exit code and the job. A
+ *  worker kept after `previous` refuses any job but the run's next advance. */
+async function serveJob(
+  channel: Channel,
+  rpc: Rpc,
+  state: JobState,
+  started: Promise<Frame>,
+  previous: Job | null,
+  env: WorkerEnv,
+): Promise<{ last: Frame; code: number; job: Job | null }> {
+  const { deliveries, stopper } = state
   let last: Frame
   let code: number
-  let log: string | undefined
+  let job: Job | null = null
   try {
     // A first frame that couldn't be read rejects again here, as the job's error.
     const start = await started
     if (start.type !== "start") throw new TypeError("expected a start frame")
-    const job = parseJob(start.job)
+    job = parseJob(start.job)
+    if (previous !== null && !nextOf(previous, job)) {
+      throw new TypeError("a kept worker runs only its run's next advance")
+    }
     deliveries.pushFront(job.deliver)
     if (job.kind === "check") {
       // A check job has no run to deliver to.
@@ -369,7 +489,6 @@ export async function serve(
       const { runCheck } = await import("../chat/check.ts")
       last = { type: "result", problem: await runCheck(job, env, stopper.signal) }
     } else {
-      log = job.log
       last = {
         type: "result",
         ...(await runJob(job, channel, rpc, deliveries, state.follow, { env, signal: stopper.signal })),
@@ -386,24 +505,17 @@ export async function serve(
   state.finished = true
   await deliveries.drained()
   // No await from here to the send, so a reply already sent is in what the frame says.
-  if (last.type === "result" && last.status === "waiting" && log !== undefined) {
+  if (last.type === "result" && last.status === "waiting" && job !== null && job.kind !== "check") {
     try {
-      const now = waitingFields(log)
+      const now = waitingFields(job.log)
       // `running`: a delivery after the drain holds the lock; it replies after this frame.
       if (now.status !== "running") Object.assign(last, now)
     } catch {
       // The run call's own fields still describe the run.
     }
+    if (job.keep && last.status === "waiting") last.kept = true
   }
-  code = await report(channel, [last], code)
-  let timer: ReturnType<typeof setTimeout> | undefined
-  await Promise.race([
-    officeClosed.then(() => deliveries.drained()),
-    new Promise<void>((resolve) => (timer = setTimeout(resolve, linger))),
-  ])
-  clearTimeout(timer)
-  channel.close()
-  return code
+  return { last, code, job }
 }
 
 /** Runs `job`, sending its event frames and, through `follow`, its live frames, and lets `deliveries` apply to the run
@@ -544,32 +656,36 @@ function stringRecord(value: unknown): Record<string, string> | null {
 }
 
 /**
- * Routes office frames until the channel closes or a frame can't be read; then rejects pending and later requests
- * and, unless the job has finished, stops the run and calls `exit(EXIT_ORPHANED)`. Never rejects.
+ * Routes office frames until the channel closes or a frame can't be read: a delivery, `stop` and `follow` to the
+ * current job (a `stop` after the job finished, `done` and `start` go to the mailbox; a parked worker ignores
+ * `follow`). Then rejects pending and later requests and, unless the job has finished, stops the run and calls
+ * `exit(EXIT_ORPHANED)`; then puts null in the mailbox. Never rejects.
  */
 async function readFrames(
   channel: Channel,
   rpc: Rpc,
-  deliveries: Deliveries,
-  stopper: AbortController,
   state: WorkerState,
   exit: (code: number) => void,
 ): Promise<void> {
   try {
     for (;;) {
       const frame = await channel.recv()
+      const job = state.job
       if (frame.type === "deliver") {
         const { type: _, ...fields } = frame
         const parsed = Delivery.safeParse(fields)
         if (!parsed.success) throw new TypeError("a deliver frame is malformed")
         // Never awaited here: a delivery can wait on the run, which may need store replies only this loop delivers.
-        deliveries.push(parsed.data)
+        job.deliveries.push(parsed.data)
       } else if (frame.type === "stop") {
-        if (!state.finished) stopper.abort(new Error(STOP_REASON))
+        if (!job.finished) job.stopper.abort(new Error(STOP_REASON))
+        else state.mail.put(frame)
       } else if (frame.type === "follow") {
         // A no-op before the run's first frame and for a check job; after the run call it sends one last snapshot and
         // nothing after it.
-        state.follow.again()
+        if (!state.parked) job.follow.again()
+      } else if (frame.type === "done" || frame.type === "start") {
+        state.mail.put(frame)
       } else if (typeof frame.type === "string" && REPLY_TYPES.has(frame.type)) {
         rpc.deliver(frame)
       }
@@ -581,11 +697,12 @@ async function readFrames(
   }
   // Store requests take no signal; in process, they end here.
   rpc.close(new ChannelClosed())
-  if (!state.finished) {
+  if (!state.job.finished) {
     // So an in-process run stops too; in the worker process `exit` ends everything first.
-    stopper.abort(new Error("the office closed the channel"))
+    state.job.stopper.abort(new Error("the office closed the channel"))
     exit(EXIT_ORPHANED)
   }
+  state.mail.put(null)
 }
 
 /**
@@ -640,7 +757,7 @@ export function isOfficeChannel(fd: number): boolean {
 }
 
 /**
- * The `__worker` mode: serves the one job the office sends on fd 3, then exits with the code. Exits
+ * The `__worker` mode: serves the jobs the office sends on fd 3, then exits with the code. Exits
  * `EXIT_ORPHANED` at once when fd 3 isn't a socket: Bun keeps a pipe of its own at fd 3 when the parent passes
  * none, so an open fd 3 alone doesn't mean an office is there. An fstat error other than EBADF is thrown on purpose:
  * it means a broken process, not a missing channel.

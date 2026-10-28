@@ -242,6 +242,9 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
   result(worker: W, frame: Frame): void
   /** The job threw before it could finish. */
   error(worker: W, frame: Frame): void
+  /** The worker kept its process after the job's `kept` result and answered every delivery sent before; it runs no
+   *  job until `next`, which hands its frames to other handlers. */
+  parked(worker: W): void
   /** The worker process is gone; called once, last. */
   exited(worker: W, returncode: number | null): void
   /**
@@ -297,6 +300,8 @@ export class BaseHandlers implements WorkerHandlers {
   result(_worker: unknown, _frame: Frame): void {}
 
   error(_worker: unknown, _frame: Frame): void {}
+
+  parked(_worker: unknown): void {}
 
   exited(_worker: unknown, _returncode: number | null): void {}
 

@@ -245,3 +245,10 @@ test("a job with a parent needs kind chat", () => {
   expect((caught as JobError).message).not.toContain("sk-SECRET")
   expect(inspect(caught)).not.toContain("sk-SECRET")
 })
+
+test("a job keeps its worker only when asked and never for a check", () => {
+  expect(parseJob(BASE).keep).toBe(false)
+  expect(parseJob({ ...BASE, keep: true }).keep).toBe(true)
+  expect(parseJob({ ...BASE, kind: "advance", keep: true }).keep).toBe(true)
+  expect(() => parseJob({ ...BASE, kind: "check", keep: true })).toThrow(/^keep: /)
+})

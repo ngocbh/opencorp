@@ -48,6 +48,9 @@ export class RegistryClosed extends Error {
 /** How long, in ms, a worker has to exit after its channel closes, before its group is killed. */
 export const EXIT_GRACE_MS = 5000
 
+/** How many workers an office keeps parked at most; each is an idle Bun process. */
+export const MAX_PARKED = 16
+
 /** Where spawn code writes log lines; never handed an error's message. */
 export type SpawnLog = (level: "INFO" | "WARNING" | "ERROR", line: string) => void
 
@@ -95,13 +98,15 @@ export function spawnProcess(
 
 /** A live worker process and the office's end of its channel. */
 export class Worker implements JobWorker {
-  readonly job: Job
+  /** The job it runs, or last ran while parked; `next` replaces it. */
+  job: Job
   readonly sessionId: string
   readonly pid: number
   /** The worker's process group: it leads its own. */
   readonly pgid: number
   readonly channel: Channel
-  readonly handlers: WorkerHandlers<Worker>
+  /** The handlers of its job's frames; `next` replaces them. */
+  handlers: WorkerHandlers<Worker>
   /** The exit code, or minus the signal number; null until the worker is gone. */
   returncode: number | null = null
   readonly #child: ChildProcess
@@ -112,6 +117,10 @@ export class Worker implements JobWorker {
   #settle!: (returncode: number | null) => void
   #killed = false
   #started = false
+  /** Whether its job sent its `result` with `kept: true`, so the worker runs no job until `next`. */
+  #between = false
+  /** Whether it sent `parked`, and no `next` has started a job since. */
+  #parked = false
 
   /** A worker over `child`, a process `spawnProcess` started, and the office's `channel` to it. Build it in the
    *  spawn's tick, before the child's `exit` can be emitted: an `exit` listener added after the event never fires.
@@ -180,16 +189,53 @@ export class Worker implements JobWorker {
     killGroup(this.pgid)
   }
 
+  /** Whether the worker is parked: it kept its last job's process and runs nothing until `next`. */
+  get parked(): boolean {
+    return this.#parked
+  }
+
+  /**
+   * Runs `job` with `handlers` in this parked worker: both replace the current ones, then the `start` frame goes.
+   * False, with nothing changed, unless the worker is parked and the frame was sent (the channel closed meanwhile);
+   * rejects with `FrameTooLarge`, nothing changed, for a frame over the limit.
+   */
+  async next(job: Job, handlers: WorkerHandlers<Worker>): Promise<boolean> {
+    if (!this.#parked) return false
+    const before = { job: this.job, handlers: this.handlers }
+    // Swapped first: the worker's first frames for the job can come before the send reports back.
+    this.job = job
+    this.handlers = handlers
+    this.#parked = false
+    this.#between = false
+    try {
+      if (await this.#send({ type: "start", job })) return true
+    } catch (error) {
+      this.#restore(before)
+      throw error
+    }
+    this.#restore(before)
+    return false
+  }
+
+  #restore({ job, handlers }: { job: Job; handlers: WorkerHandlers<Worker> }): void {
+    this.job = job
+    this.handlers = handlers
+    this.#between = true
+    this.#parked = true
+  }
+
   /** Sends `delivery` to the worker as a `deliver` frame.
    *
    *  Once this returns true, the worker answers it with one `deliver_reply` (before or after `result`) unless it
    *  exits first, in which case the caller resends it per its lost-ack rule; rejects for a malformed delivery or a
-   *  frame over the limit (`FrameTooLarge`); false once the channel is closed. Call it off the read loop: a
-   *  notification handler must not await it. */
+   *  frame over the limit (`FrameTooLarge`); false once the channel is closed, or once a job it keeps the process
+   *  after has sent its result. Call it off the read loop: a notification handler must not await it. */
   async deliver(delivery: Delivery): Promise<boolean> {
     // Checked here, so an actor's bug fails at its call instead of making the worker drop the channel and orphan
     // the run.
     const parsed = Delivery.parse(delivery)
+    // As after the end of stream: a delivery between jobs belongs to the next one.
+    if (this.#between) return false
     return this.#send({ ...parsed, type: "deliver" })
   }
 
@@ -260,10 +306,20 @@ export class Worker implements JobWorker {
       if (!isDeliverReply(frame)) throw new TypeError("a deliver_reply frame is malformed")
       this.#notify("deliverReply", () => this.handlers.deliverReply(this, frame))
     } else if (kind === "event" || kind === "stream" || kind === "result" || kind === "error") {
+      const kept = kind === "result" && frame.kept === true
+      if (kept) this.#between = true
       this.#notify(kind, () => this.handlers[kind](this, frame))
-      // The run is over: later deliveries fail here, and the worker, having answered the ones already sent, sees the
-      // end of stream and exits.
-      if (kind === "result" || kind === "error") this.channel.closeSend()
+      if (kept) {
+        // The worker answers the deliveries already sent, then parks.
+        void this.#send({ type: "done" }).catch(() => {})
+      } else if (kind === "result" || kind === "error") {
+        // The run is over: later deliveries fail here, and the worker, having answered the ones already sent, sees
+        // the end of stream and exits.
+        this.channel.closeSend()
+      }
+    } else if (kind === "parked") {
+      this.#parked = true
+      this.#notify(kind, () => this.handlers.parked(this))
     } else {
       this.#log("WARNING", `worker ${this.sessionId} sent an unknown frame type`)
     }
@@ -328,11 +384,14 @@ export class WorkerRegistry implements WorkerPool {
   readonly #spawn: typeof spawnProcess
   readonly #onExit: (worker: Worker) => void
   readonly #workers = new Map<string, Worker>()
+  readonly #maxParked: number
+  /** The parked workers by session, least recently parked first, with what releases each. */
+  readonly #parked = new Map<string, { worker: Worker; release: () => void }>()
   #closed = false
 
   /** A registry recording its workers in `store`. Workers start with `workerEnv(environ)`, frames capped at
    *  `maxFrame`, through `spawn`; `log` gets the spawn code's lines; `onExit` runs once a started worker is gone and
-   *  forgotten, before its `handlers.exited`. */
+   *  forgotten, before its `handlers.exited`. At most `maxParked` workers stay `park`ed. */
   constructor(
     store: Store,
     {
@@ -341,12 +400,14 @@ export class WorkerRegistry implements WorkerPool {
       maxFrame,
       spawn = spawnProcess,
       onExit = () => {},
+      maxParked = MAX_PARKED,
     }: {
       log?: SpawnLog
       environ?: Env
       maxFrame?: number
       spawn?: typeof spawnProcess
       onExit?: (worker: Worker) => void
+      maxParked?: number
     } = {},
   ) {
     this.#store = store
@@ -355,6 +416,7 @@ export class WorkerRegistry implements WorkerPool {
     this.#maxFrame = maxFrame
     this.#spawn = spawn
     this.#onExit = onExit
+    this.#maxParked = maxParked
   }
 
   /**
@@ -397,6 +459,36 @@ export class WorkerRegistry implements WorkerPool {
     return worker
   }
 
+  /** Runs `job` with `handlers` in the session's parked `worker` (`Worker.next`). Rejects with `RegistryClosed` once
+   *  `closeAll` ran; false when `worker` isn't the session's live worker, or `Worker.next` is. */
+  async next(worker: Worker, job: Job, handlers: WorkerHandlers<Worker>): Promise<boolean> {
+    if (this.#closed) throw new RegistryClosed()
+    if (job.session_id !== worker.sessionId || this.#workers.get(worker.sessionId) !== worker) return false
+    this.unpark(worker)
+    return worker.next(job, handlers)
+  }
+
+  /** Counts `worker` as parked, most recently; past `maxParked`, the least recently parked one is unparked and its
+   *  `release` called, which must end it. */
+  park(worker: Worker, release: () => void): void {
+    this.#parked.delete(worker.sessionId)
+    this.#parked.set(worker.sessionId, { worker, release })
+    for (const [sessionId, oldest] of this.#parked) {
+      if (this.#parked.size <= this.#maxParked) break
+      this.#parked.delete(sessionId)
+      try {
+        oldest.release()
+      } catch (error) {
+        this.#log("ERROR", `worker ${sessionId} could not be released (${errorName(error)})`)
+      }
+    }
+  }
+
+  /** No longer counts `worker` as parked. */
+  unpark(worker: Worker): void {
+    if (this.#parked.get(worker.sessionId)?.worker === worker) this.#parked.delete(worker.sessionId)
+  }
+
   /** Whether `closeAll` ran: the office is stopping. */
   get closed(): boolean {
     return this.#closed
@@ -435,6 +527,7 @@ export class WorkerRegistry implements WorkerPool {
   }
 
   #exited(worker: Worker): void {
+    this.unpark(worker)
     if (this.#workers.get(worker.sessionId) !== worker) return
     this.#forget(worker)
     this.#workers.delete(worker.sessionId)
