@@ -572,26 +572,32 @@ export function checkFolder(office: Office, cwd: string, log: (line: string) => 
   try {
     checkWorkspace(real, office.guards)
   } catch (error) {
-    if (error instanceof UnsafeWorkspace) throw unsafeWorkspace(error.message, log)
+    if (error instanceof UnsafeWorkspace) throw unsafeWorkspace(error, log)
     throw error
   }
   // The workspace check guards ~/.opencorp; this office's home may be elsewhere.
   for (const kept of [office.paths.company, office.paths.office]) {
     if (isInside(real, kept) || isInside(kept, real))
-      throw unsafeWorkspace(`workspace ${real} overlaps the office's files at ${realPath(kept)}`, log)
+      throw unsafeWorkspace(
+        new UnsafeWorkspace(
+          `workspace ${real} overlaps the office's files at ${realPath(kept)}`,
+          "it overlaps the office's files; use a project folder",
+        ),
+        log,
+      )
   }
   return real
 }
 
-/** The 422 `unsafe_workspace` for a folder refused because of `why`, which `log` gets: `why` names paths, and a 422
- *  names the field, not its value. */
-export function unsafeWorkspace(why: string, log: (line: string) => void): HarnessError {
+/** The 422 `unsafe_workspace` for the refusal `refused`: the reply gets its reason, and `log` its message, which names
+ *  paths; a 422 names the field, not its value. */
+export function unsafeWorkspace(refused: UnsafeWorkspace, log: (line: string) => void): HarnessError {
   // Quoted, so a folder name with a newline can't add a line to the log.
-  log(`a session folder was refused: ${JSON.stringify(why)}`)
+  log(`a session folder was refused: ${JSON.stringify(refused.message)}`)
   return new HarnessError(
     422,
     "unsafe_workspace",
-    "cwd can't be a workspace; use a project folder (the office log says why)",
+    `cwd can't be a workspace: ${refused.reason} (the office log has the paths)`,
   )
 }
 

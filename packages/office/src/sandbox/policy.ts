@@ -19,9 +19,17 @@ export const SENSITIVE_HOME_PATHS: readonly string[] = [
   ".netrc",
 ]
 
-/** The workspace would expose the home directory, the whole disk, credentials, or the office's own programs. */
+/** The workspace would expose the home directory, the whole disk, credentials, or the office's own programs.
+ *  `message` names the paths; `reason` says why without any, for a reply to a request that named the folder. */
 export class UnsafeWorkspace extends Error {
   override name = "UnsafeWorkspace"
+
+  constructor(
+    message: string,
+    readonly reason: string,
+  ) {
+    super(message)
+  }
 }
 
 /** The office's own paths a workspace must stay clear of, and the home dir. */
@@ -152,18 +160,25 @@ export function checkWorkspace(workspace: string, office: OfficePaths = {}): voi
   const ws = realPath(workspace)
   const home = realPath(office.home ?? os.homedir())
   if (ws === "/" || within(home, ws)) {
-    throw new UnsafeWorkspace(`workspace ${ws} contains the home directory ${home}; use a project folder`)
+    throw new UnsafeWorkspace(
+      `workspace ${ws} contains the home directory ${home}; use a project folder`,
+      "it contains the home directory; use a project folder",
+    )
   }
   for (const rel of SENSITIVE_HOME_PATHS) {
     const sensitive = realPath(path.join(home, rel))
     if (within(ws, sensitive)) {
-      throw new UnsafeWorkspace(`workspace ${ws} is inside the sensitive path ${sensitive}; use a project folder`)
+      throw new UnsafeWorkspace(
+        `workspace ${ws} is inside the sensitive path ${sensitive}; use a project folder`,
+        "it is inside a sensitive folder of the home directory; use a project folder",
+      )
     }
   }
   const resolvedEntry = (entry: string, kind: string, visited?: string[]): string => {
     if (path.isAbsolute(entry)) return realPath(entry, visited)
     throw new UnsafeWorkspace(
       `workspace ${ws} is refused: the office's ${kind} has a relative entry ${JSON.stringify(entry)}; use absolute paths`,
+      `the office's ${kind} has a relative entry; the office needs absolute paths`,
     )
   }
   // The OS walks a tool or PATH path on every spawn, so any folder or link it enters inside the
@@ -177,21 +192,26 @@ export function checkWorkspace(workspace: string, office: OfficePaths = {}): voi
   for (const entry of office.tools ?? []) {
     const matched = contained(entry, "tool list")
     if (matched !== undefined) {
-      throw new UnsafeWorkspace(`workspace ${ws} contains ${matched}, a program the office runs; use a project folder`)
+      throw new UnsafeWorkspace(
+        `workspace ${ws} contains ${matched}, a program the office runs; use a project folder`,
+        "it contains a program the office runs; use a project folder",
+      )
     }
   }
   // After the tools, so a workspace holding a program is told which one rather than its install folder.
   for (const entry of office.install ?? []) {
     const install = resolvedEntry(entry, "install")
     const where = `${install}, where the office or a program it runs is installed; use a project folder`
-    if (within(install, ws)) throw new UnsafeWorkspace(`workspace ${ws} contains ${where}`)
-    if (within(ws, install)) throw new UnsafeWorkspace(`workspace ${ws} is inside ${where}`)
+    const folder = "a folder where the office or a program it runs is installed; use a project folder"
+    if (within(install, ws)) throw new UnsafeWorkspace(`workspace ${ws} contains ${where}`, `it contains ${folder}`)
+    if (within(ws, install)) throw new UnsafeWorkspace(`workspace ${ws} is inside ${where}`, `it is inside ${folder}`)
   }
   for (const entry of office.path ?? []) {
     const matched = contained(entry, "PATH")
     if (matched !== undefined) {
       throw new UnsafeWorkspace(
         `workspace ${ws} contains ${matched}, a folder on the office's PATH; use a project folder`,
+        "it contains a folder on the office's PATH; use a project folder",
       )
     }
   }

@@ -17,8 +17,9 @@ function hqOf(ctx: RequestContext, what: string): Hq {
 function checkFor(view: CompanyView | null, handle: string, actor: string): void {
   const person = view?.people.find((p) => p.handle === handle)
   if (person === undefined) throw new HttpError(404, "not_found", `no person @${handle}`)
+  // A 422 names the field, not its value.
   if (person.kind !== "human")
-    throw new HttpError(422, "not_a_human", `@${handle} is an agent; agents don't sign in to HQ`)
+    throw new HttpError(422, "not_a_human", "the person is an agent; agents don't sign in to HQ")
   if (actor !== handle && actor !== view?.company?.ceo)
     throw new HttpError(403, "forbidden", `only @${handle} or the CEO can do this for @${handle}`)
 }

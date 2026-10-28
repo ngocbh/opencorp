@@ -22,7 +22,6 @@ import {
   BadConnectionName,
   ConnectionFile,
   ConnectionGone,
-  type Connections,
   providerLabel,
 } from "../../chat/connections.ts"
 import { LoginNotFound, LoginsClosed } from "../../chat/logins.ts"
@@ -56,7 +55,7 @@ async function checkManage(ctx: RequestContext): Promise<void> {
 }
 
 /** `fn()`, with no such connection as a 404 and one that can't be used as a 409. */
-async function guarded<T>(fn: () => Promise<T>): Promise<T> {
+async function guarded<T>(office: Office, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn()
   } catch (error) {
@@ -64,9 +63,17 @@ async function guarded<T>(fn: () => Promise<T>): Promise<T> {
     if (error instanceof ConnectionGone || error instanceof BadConnectionName) {
       throw new HttpError(404, "not_found", error.message)
     }
-    if (error instanceof ProviderError) throw new HttpError(409, "connection_unusable", error.message)
+    if (error instanceof ProviderError) throw unusable(office, error)
     throw error
   }
+}
+
+/** The 409 `connection_unusable` for `error`, whose text the office log gets: it can name a file under
+ *  office/connections, and an error names the field, not its value. */
+function unusable(office: Office, error: ProviderError): HttpError {
+  // Quoted, so a newline in the text can't add a line to the log.
+  office.log(`a connection can't be used: ${JSON.stringify(error.message)}`)
+  return new HttpError(409, "connection_unusable", "the connection can't be used now; see the office log")
 }
 
 /** `fn()`, with no such sign-in, or another person's, as a 404. */
@@ -80,9 +87,9 @@ async function starters<T>(fn: () => T | Promise<T>): Promise<T> {
 }
 
 /** Every connection, the default, and `canManage`. */
-async function connectionList(connections: Connections, canManage: boolean): Promise<ConnectionList> {
+async function connectionList(office: Office, canManage: boolean): Promise<ConnectionList> {
   // The default may be a connection whose file can't be read, and so missing from the list; it is still the default.
-  const [found, defaultName] = await guarded(() => connections.infos())
+  const [found, defaultName] = await guarded(office, () => office.connections.infos())
   return { connections: found, default: defaultName, can_manage: canManage }
 }
 
@@ -174,7 +181,7 @@ async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
   try {
     name = await office.connections.add(label, ConnectionFile.parse({ llm_config: llm }))
   } catch (error) {
-    if (error instanceof ProviderError) throw new HttpError(409, "connection_unusable", error.message)
+    if (error instanceof ProviderError) throw unusable(office, error)
     throw error
   }
   // Not awaited: the reply doesn't wait for the listings; warm never rejects.
@@ -185,13 +192,13 @@ async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
 /** Every connection, without keys, and whether the asking person may manage them. */
 export async function listConnections(ctx: RequestContext): Promise<ConnectionList> {
   const canManage = await mayManage(ctx.office, actingPerson(ctx))
-  return connectionList(ctx.office.connections, canManage)
+  return connectionList(ctx.office, canManage)
 }
 
 /** Adds an API-key connection whose key works; the connection, without its key. */
 export async function add(ctx: RequestContext, _params: Params, body: unknown) {
   const name = await buildAndCheck(ctx.office, body as AddBody)
-  return guarded(() => ctx.office.connections.info(name))
+  return guarded(ctx.office, () => ctx.office.connections.info(name))
 }
 
 /** Removes a connection and its sign-in; `office` can't be removed. */
@@ -205,7 +212,7 @@ export async function remove(ctx: RequestContext, params: Params): Promise<Ack> 
     )
   }
   const { connections, models } = ctx.office
-  await guarded(() => connections.remove(name))
+  await guarded(ctx.office, () => connections.remove(name))
   models.invalidate(name)
   // Not awaited: the reply doesn't wait for the listings; warm never rejects.
   void models.warm()
@@ -215,15 +222,14 @@ export async function remove(ctx: RequestContext, params: Params): Promise<Ack> 
 /** Makes a connection the one new chats start on; every connection afterwards. */
 export async function setDefault(ctx: RequestContext, _params: Params, body: unknown): Promise<ConnectionList> {
   const { connection } = body as SetDefaultBody
-  const connections = ctx.office.connections
-  await guarded(() => connections.setDefault(connection))
-  return connectionList(connections, true)
+  await guarded(ctx.office, () => ctx.office.connections.setDefault(connection))
+  return connectionList(ctx.office, true)
 }
 
 /** The models a connection offers, kept five minutes; `?refresh=1` lists them again. */
 export async function listModels(ctx: RequestContext, params: Params) {
   const refresh = ctx.query.get("refresh") === "1"
-  return guarded(() => ctx.office.models.get(params.name!, { refresh }))
+  return guarded(ctx.office, () => ctx.office.models.get(params.name!, { refresh }))
 }
 
 /** Starts a subscription sign-in that adds a connection once approved; its URL and code to approve it with. */
