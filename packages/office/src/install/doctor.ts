@@ -900,7 +900,7 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   found.push({ name: "sandbox", status: problem ? "fail" : "ok", detail: problem || "sandboxed commands run" })
   const folders = foldersCheck(
     paths.store,
-    guards ?? workspaceGuards(resolveTools(run.env), run.env, command, host.userHome),
+    guards ?? workspaceGuards(resolveTools(run.env), run.env, command, [host.userHome, paths.home, os.tmpdir()]),
     host.userHome,
   )
   if (folders !== null) found.push(folders)

@@ -1255,6 +1255,21 @@ test("the folders check finds tool install folders against the host's home", asy
   })
 })
 
+test("the folders check keeps tool install folders clear of the office home", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  fs.mkdirSync(path.join(paths.home, "bin"))
+  fs.writeFileSync(path.join(paths.home, "bin/git"), "#!/bin/sh\n", { mode: 0o755 })
+  fs.mkdirSync(path.join(paths.worktrees, "w"), { recursive: true })
+  storeWith(paths, path.join(paths.worktrees, "w"))
+  // `<office home>/bin/git` must not make the office home, which holds the run worktrees, an install folder.
+  expect(byName(await runChecks(dir, paths, { environ: { PATH: `${paths.home}/bin` } })).folders).toEqual({
+    name: "folders",
+    status: "ok",
+    detail: "no worked folder holds the office install, a program it runs or a folder on its PATH",
+  })
+})
+
 test("the folders check uses the tools the daemon pinned", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)

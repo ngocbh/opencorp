@@ -6,7 +6,10 @@ import { fileURLToPath } from "node:url"
 import { expect, test } from "bun:test"
 import { installPaths, resolveTools, workspaceGuards } from "../../src/install/tools.ts"
 import { SandboxPolicy, UnsafeWorkspace, checkWorkspace } from "../../src/sandbox/policy.ts"
+import { run } from "../../src/sandbox/run.ts"
+import { profile } from "../../src/sandbox/seatbelt.ts"
 import { tempDir } from "../helpers.ts"
+import { sandboxAvailable } from "../sandbox/helpers.ts"
 
 /** Writes a fake program at `file` (never run), making its folders. */
 function fakeTool(file: string, mode = 0o755): string {
@@ -198,7 +201,7 @@ test("a workspace containing the tool path or its realpath is refused", () => {
 test("a workspace inside a tool's install tree is refused", () => {
   const root = tempDir()
   // Homebrew: bin/git and opt/git link into Cellar/git/<version>, whose libexec holds helpers git runs; a tool also
-  // loads its dependencies' libraries through opt/<dep> links into their kegs.
+  // loads its dependencies' libraries through opt/<dep> links and reads its config from etc.
   const brew = path.join(root, "brew")
   const cellar = path.join(brew, "Cellar", "git")
   fakeTool(path.join(cellar, "2.47.0", "bin", "git"))
@@ -231,15 +234,19 @@ test("a workspace inside a tool's install tree is refused", () => {
     PATH: [env.PATH, path.join(root, "opt", "tmux", "bin"), path.join(root, "tools")].join(":"),
   })
   const home = path.join(root, "home")
-  const guards = { ...workspaceGuards(tools, env, [bun, entry], home), home }
+  const guards = { ...workspaceGuards(tools, env, [bun, entry], [home]), home }
 
   const inside = [
     path.join(cellar, "2.47.0", "libexec", "git-core"),
     path.join(cellar, "2.46.0"),
     path.join(brew, "opt", "git", "libexec"),
+    path.join(brew, "opt"),
+    path.join(brew, "etc"),
+    path.join(brew, "var", "project"),
     path.join(brew, "Cellar", "libevent", "2.1.12", "lib"),
     path.join(codexPkg, "vendor"),
     path.join(store, "abc-procps-4.0", "lib"),
+    path.join(store, "def-other-1.0"),
     path.join(root, "opt", "tmux", "share"),
     path.join(root, "tools", "sub"),
     path.join(root, "bunhome", "install", "cache"),
@@ -250,12 +257,12 @@ test("a workspace inside a tool's install tree is refused", () => {
   }
   const gitCore = fs.realpathSync(path.join(cellar, "2.47.0", "libexec", "git-core"))
   expect(() => checkWorkspace(gitCore, guards)).toThrow(
-    `workspace ${gitCore} is inside ${fs.realpathSync(path.dirname(cellar))}, where the office or a program it runs is installed; use a project folder`,
+    `workspace ${gitCore} is inside ${fs.realpathSync(brew)}, where the office or a program it runs is installed; use a project folder`,
   )
   const outside = [
-    path.join(brew, "var", "project"),
+    path.join(root, "brew-other"),
     path.join(npm, "lib", "node_modules", "other"),
-    path.join(store, "def-other-1.0"),
+    path.join(root, "nix", "var"),
     path.join(root, "opt", "other"),
     path.join(root, "project"),
   ]
@@ -272,7 +279,7 @@ test("a tool's install tree never takes in the home dir or the disk", () => {
   fakeTool(path.join(home, "who"))
   const bun = fakeTool(path.join(root, "bin", "bun"))
   const tools = resolveTools({ PATH: [path.join(home, "bin"), home].join(":") })
-  const guards = { ...workspaceGuards(tools, { PATH: "" }, [bun], home), home }
+  const guards = { ...workspaceGuards(tools, { PATH: "" }, [bun], [home]), home }
   const project = path.join(home, "project")
   fs.mkdirSync(project)
   expect(() => checkWorkspace(project, guards)).not.toThrow()
@@ -282,4 +289,30 @@ test("a tool's install tree never takes in the home dir or the disk", () => {
   expect(guards.install).not.toContain(fs.realpathSync(home))
   expect(guards.install).not.toContain("/")
   expect(guards.install).toContain(fs.realpathSync(path.join(home, "bin")))
+})
+
+test("a tool's install tree never takes in the office's own folders", async () => {
+  const root = tempDir()
+  // A real ~/.local/bin/git, with the office home under ~/.local/share: guarding ~/.local would write-deny the
+  // session's tmpdir and refuse the run worktrees.
+  const local = path.join(root, "local")
+  fakeTool(path.join(local, "bin", "git"))
+  const officeHome = path.join(local, "share", "opencorp")
+  const worktree = path.join(officeHome, "office", "worktrees", "w")
+  const tmpdir = path.join(officeHome, "office", "sessions", "s", "tmp")
+  fs.mkdirSync(worktree, { recursive: true })
+  fs.mkdirSync(tmpdir, { recursive: true })
+  const bun = fakeTool(path.join(root, "bunhome", "bin", "bun"))
+  const home = path.join(root, "home")
+  const tools = resolveTools({ PATH: path.join(local, "bin") })
+  const guards = { ...workspaceGuards(tools, { PATH: "" }, [bun], [home, officeHome]), home }
+  expect(guards.install).not.toContain(fs.realpathSync(local))
+  expect(guards.install).toContain(fs.realpathSync(path.join(local, "bin")))
+
+  const policy = new SandboxPolicy({ workspace: worktree, writable: true, network: false, tmpdir, office: guards })
+  expect(profile(policy, { developerDir: null })).not.toContain(`(subpath "${fs.realpathSync(local)}")`)
+  if (sandboxAvailable()) {
+    const result = await run(policy, ["/bin/sh", "-c", `touch "${tmpdir}/x" "${worktree}/y"`])
+    expect([result.exit, result.stderr.toString()]).toEqual([0, ""])
+  }
 })
