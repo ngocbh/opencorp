@@ -191,7 +191,8 @@ export class BrowserSessions {
   ): Promise<[BrowserSession, string]> {
     const [, { fps }] = await this.#atHead()
     const fp = fps.get(person)
-    if (fp === undefined) throw new HttpError(422, "not_a_human", `@${person} isn't a human in the company at HEAD`)
+    // A 422 names the field, not its value.
+    if (fp === undefined) throw new HttpError(422, "not_a_human", "the person isn't a human in the company at HEAD")
     if (checked !== undefined && fp !== checked)
       throw new HttpError(409, "password_changed", `@${person}'s password changed while signing in`)
     const secret = randomBytes(32).toString("base64url")

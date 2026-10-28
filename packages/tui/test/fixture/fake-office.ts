@@ -264,7 +264,7 @@ export function createFakeOffice(
       state.people.find((p) => p.handle === handle),
       `person @${handle}`,
     )
-    if (person.kind !== "human") throw fail(422, "not_a_human", `@${handle} is an agent; agents have no ${what}`)
+    if (person.kind !== "human") throw fail(422, "not_a_human", `the person is an agent; agents have no ${what}`)
     if (actor !== handle && actor !== ceo())
       throw fail(403, "forbidden", `only @${handle} or the CEO can change @${handle}'s ${what}`)
     return person
@@ -772,7 +772,7 @@ export function createFakeOffice(
       state.people.find((p) => p.handle === handle),
       `person @${handle}`,
     )
-    if (person.kind !== "human") throw fail(422, "not_a_human", `@${handle} is an agent; agents don't sign in to HQ`)
+    if (person.kind !== "human") throw fail(422, "not_a_human", "the person is an agent; agents don't sign in to HQ")
     if (actor !== handle && actor !== ceo())
       throw fail(403, "forbidden", `only @${handle} or the CEO can do this for @${handle}`)
   }

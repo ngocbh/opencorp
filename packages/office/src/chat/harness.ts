@@ -342,7 +342,7 @@ export class ChatHarness implements SessionHarness {
     try {
       sandbox = new SandboxPolicy({ workspace: real, writable, network, tmpdir, office: this.office.guards })
     } catch (error) {
-      if (error instanceof UnsafeWorkspace) throw unsafeWorkspace(error.message, log)
+      if (error instanceof UnsafeWorkspace) throw unsafeWorkspace(error, log)
       throw error
     }
     return new WorkspaceTools(sandbox, { officeHome: paths.home, store })

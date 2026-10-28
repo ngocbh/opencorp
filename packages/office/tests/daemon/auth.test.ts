@@ -437,6 +437,8 @@ test("agents have no devices", async () => {
   const { sock } = await served(office, { tokens: true })
   const r = await send(sock, "POST", "/people/minh/devices", device("box", newToken()))
   expect([r.status, errorOf(r)]).toEqual([422, "not_a_human"])
+  // A 422 says which field failed, never its value.
+  expect((r.json() as { message: string }).message).toBe("the person is an agent; agents have no devices")
 })
 
 test("unknown people and devices are 404", async () => {

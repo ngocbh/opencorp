@@ -34,7 +34,8 @@ function person(repo: CompanyRepo, handle: string, actor: string, what = "device
   const found = repo.people.get(handle)
   if (found === undefined) throw new DeviceRefused(404, "not_found", `no person @${handle}`)
   if (found.kind !== "human") {
-    throw new DeviceRefused(422, "not_a_human", `@${handle} is an agent; agents have no ${what}`)
+    // A 422 names the field, not its value.
+    throw new DeviceRefused(422, "not_a_human", `the person is an agent; agents have no ${what}`)
   }
   const ceo = repo.company?.ceo ?? null
   if (actor !== handle && actor !== ceo) {

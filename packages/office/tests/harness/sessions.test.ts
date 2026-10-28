@@ -159,13 +159,22 @@ test.each([
     expect([error.status, error.code]).toEqual([status, code])
     // A 422 never echoes a path the request gave that isn't a usable folder.
     if (code === "invalid_body") expect(error.message).not.toContain(cwd!)
-    // Nor any other value of the request: it says which field failed, and the office log says why.
+    // Nor any other value of the request: it says which field failed and keeps the reason; the office log has
+    // the paths.
     if (status === 422) {
       expect(error.message).not.toContain(handle!)
       expect(error.message).not.toContain(cwd!)
     }
-    if (name === "office guards") expect(h.lines.join("\n")).toContain("a folder on the office's PATH")
-    if (name === "office files") expect(h.lines.join("\n")).toContain("overlaps the office's files")
+    // The 422 keeps why, without the paths the log has.
+    if (name === "office guards") {
+      expect(h.lines.join("\n")).toContain("a folder on the office's PATH")
+      expect(error.message).toContain("it contains a folder on the office's PATH")
+    }
+    if (name === "office files") {
+      expect(h.lines.join("\n")).toContain("overlaps the office's files")
+      expect(error.message).toContain("it overlaps the office's files")
+    }
+    if (code === "unsafe_workspace") expect(error.message).not.toContain("/")
     expect(h.store.listSessions()).toEqual([])
     expect(h.store.listWorkItems()).toEqual([])
   },

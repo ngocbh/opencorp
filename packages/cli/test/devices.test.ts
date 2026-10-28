@@ -169,7 +169,7 @@ test("devices list shows names, and hashes only on --hashes", async () => {
   expect((await opencorp(trusted, "devices", "list", "nobody")).err).toBe("opencorp devices: no person @nobody")
   expect((await opencorp(trusted, "devices", "frob")).code).toBe(2)
   expect((await opencorp(trusted, "devices", "add", "minh", "x", hash.replace(/./, "0"))).err).toBe(
-    "opencorp devices: @minh is an agent; agents have no devices",
+    "opencorp devices: the person is an agent; agents have no devices",
   )
   expect(await opencorp(trusted, "devices", "remove", "ngocbh", "nope")).toEqual({
     code: 1,
@@ -406,6 +406,6 @@ test("password needs a terminal, and refuses an agent", async () => {
   expect(await opencorp(trusted, "password", "--handle", "minh")).toEqual({
     code: 1,
     out: "",
-    err: "opencorp password: @minh is an agent; agents have no password",
+    err: "opencorp password: the person is an agent; agents have no password",
   })
 })

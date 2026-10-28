@@ -174,7 +174,8 @@ export class Office {
   readonly onStart: (() => unknown)[] = []
   /** Run in reverse order by `stop`, each awaited. */
   readonly onStop: (() => unknown)[] = []
-  readonly #log: (message: string) => void
+  /** Gets raw log messages: the office log. */
+  readonly log: (message: string) => void
   #unlisten: (() => void) | undefined
 
   constructor({
@@ -234,7 +235,7 @@ export class Office {
     this.profileStore = profileStore === undefined ? (handle) => new GitProfileStore(git, handle) : profileStore
     this.tools = tools
     this.guards = guards
-    this.#log = log
+    this.log = log
   }
 
   /**
@@ -276,7 +277,7 @@ export class Office {
       try {
         await callback()
       } catch (error) {
-        this.#log(`office on_stop callback failed: ${errorType(error)}`)
+        this.log(`office on_stop callback failed: ${errorType(error)}`)
       }
     }
     await this.runIndex.close()

@@ -412,3 +412,37 @@ test("a workspace holding a link in a tools chain is refused", () => {
   expectRefused(proj!, tmp, { home, tools: [`${sub}/../../x/git`] }, runs(proj!, sub!))
   expectRefused(proj!, tmp, { home, path: [`${sub}/../../x`] }, onPath(proj!, sub!))
 })
+
+test("each refusal has a reason that names no path", () => {
+  const { root } = makePolicy()
+  const home = path.join(root, "home")
+  const [ssh, opt, bin, install, pBin] = mkdirs(
+    path.join(home, ".ssh"),
+    path.join(root, "opt"),
+    path.join(root, "opt/bin"),
+    path.join(root, "install/lib"),
+    path.join(root, "p/bin"),
+  )
+  const git = path.join(bin!, "git")
+  fs.writeFileSync(git, "")
+  const reasonOf = (ws: string, office: OfficePaths): string => {
+    try {
+      checkWorkspace(ws, office)
+    } catch (error) {
+      if (error instanceof UnsafeWorkspace) return error.reason
+      throw error
+    }
+    throw new Error(`${ws} was not refused`)
+  }
+  const use = "; use a project folder"
+  expect(reasonOf(root, { home })).toBe(`it contains the home directory${use}`)
+  expect(reasonOf(ssh!, { home })).toBe(`it is inside a sensitive folder of the home directory${use}`)
+  expect(reasonOf(opt!, { home, tools: [git] })).toBe(`it contains a program the office runs${use}`)
+  const installed = "a folder where the office or a program it runs is installed"
+  expect(reasonOf(path.dirname(install!), { home, install: [install!] })).toBe(`it contains ${installed}${use}`)
+  expect(reasonOf(install!, { home, install: [path.dirname(install!)] })).toBe(`it is inside ${installed}${use}`)
+  expect(reasonOf(path.dirname(pBin!), { home, path: [pBin!] })).toBe(`it contains a folder on the office's PATH${use}`)
+  expect(reasonOf(opt!, { home, tools: ["git"] })).toBe(
+    "the office's tool list has a relative entry; the office needs absolute paths",
+  )
+})

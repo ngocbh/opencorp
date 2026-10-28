@@ -498,15 +498,35 @@ test("a removed name comes back as a new name", async () => {
   expect((await del(sock, "/connections/azure", owner)).status).toBe(404)
 })
 
+/** The 409 a connection that can't be used answers: the provider error's text goes to the office log. */
+const UNUSABLE = { error: "connection_unusable", message: "the connection can't be used now; see the office log" }
+
 test("a remove that cant get the sign in lock is 409", async () => {
-  const { office, sock } = await setup()
+  const { office, sock, lines } = await setup()
   const owner = await asOwner(office)
   await office.connections.put("azure", azureFile())
   spyOn(office.connections, "remove").mockRejectedValue(
     new ProviderError("the sign-in of connection 'azure' is busy; try again"),
   )
   const r = await del(sock, "/connections/azure", owner)
-  expect([r.status, errorOf(r)]).toEqual([409, "connection_unusable"])
+  expect([r.status, r.json()]).toEqual([409, UNUSABLE])
+  expect(lines.some((l) => l.includes("the sign-in of connection 'azure' is busy"))).toBe(true)
+})
+
+test("a 409 never names the connections file", async () => {
+  const { office, sock, lines } = await setup()
+  const owner = await asOwner(office)
+  const file = path.join(office.connections.dir, "office.json")
+  // A provider error's text can name a file under office/connections.
+  spyOn(office.connections, "infos").mockRejectedValue(new ProviderError(`${file} can't be read`))
+  let r = await get(sock, "/connections", owner)
+  expect([r.status, r.json()]).toEqual([409, UNUSABLE])
+  spyOn(office.connections, "add").mockRejectedValue(new ProviderError(`${office.connections.dir} belongs to another user`))
+  r = await post(sock, "/connections", owner, { provider: "openai", api_key: SENTINEL })
+  expect([r.status, r.json()]).toEqual([409, UNUSABLE])
+  expect(lines.some((l) => l.includes(`${file} can't be read`))).toBe(true)
+  expect(lines.some((l) => l.includes(`${office.connections.dir} belongs to another user`))).toBe(true)
+  expect(lines.filter((l) => l.includes(SENTINEL))).toEqual([])
 })
 
 test("an unexpected value error is a 500 not a 404", async () => {

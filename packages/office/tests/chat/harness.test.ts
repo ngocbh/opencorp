@@ -674,12 +674,17 @@ test.each([
   const h = await makeHarness(await fakeLlm())
   const error = await rejection(h.harness.startSession(handle, cwd ?? h.folder))
   expect(error.code).toBe(code)
-  // A 422 says which field failed, never its value; the office log says why a workspace was refused.
+  // A 422 says which field failed, never its value; the reply keeps the reason and the office log has the paths.
   if (error.status === 422) {
     expect(error.message).not.toContain(handle)
     expect(error.message).not.toContain(cwd ?? h.folder)
   }
-  if (code === "unsafe_workspace") expect(h.logs.some((line) => line.includes("workspace / "))).toBe(true)
+  if (code === "unsafe_workspace") {
+    expect(h.logs.some((line) => line.includes("workspace / "))).toBe(true)
+    expect(error.message).toBe(
+      "cwd can't be a workspace: it contains the home directory; use a project folder (the office log has the paths)",
+    )
+  }
   expect(h.store.listSessions()).toEqual([])
   // Refused before anything of the session is written.
   expect(fs.existsSync(h.office.paths.runs)).toBe(false)
@@ -697,7 +702,10 @@ test.each([
   fs.mkdirSync(cwd, { recursive: true })
   const error = await rejection(h.harness.startSession("minh", cwd))
   expect([error.status, error.code]).toEqual([422, "unsafe_workspace"])
-  expect(error.message).toBe("cwd can't be a workspace; use a project folder (the office log says why)")
+  // Why, without a path: the office log has those.
+  expect(error.message).toBe(
+    "cwd can't be a workspace: it overlaps the office's files; use a project folder (the office log has the paths)",
+  )
   expect(h.logs.some((line) => line.includes(fs.realpathSync(cwd)))).toBe(true)
   expect(h.store.listSessions()).toEqual([])
   expect(!fs.existsSync(paths.runs) || fs.readdirSync(paths.runs).length === 0).toBe(true)
@@ -712,6 +720,19 @@ test("a codex chat is stored then handed to the codex sessions", async () => {
   ])
   expect([s.harness, s.opened_by]).toEqual(["codex", "ngocbh"])
   expect(s.work_item_id).toBeTruthy()
+})
+
+test("the composer needs a person who uses it", async () => {
+  const files = { "people/minh/person.yaml": person("minh", { harnesses: ["codex"] }) }
+  const h = await makeHarness(await fakeLlm(), { codex: true, files })
+  const error = await rejection(h.harness.startSession("minh", h.folder))
+  // A 422 says which field failed, never its value.
+  expect([error.status, error.code, error.message]).toEqual([
+    422,
+    "unsupported_harness",
+    "the person doesn't use the composer harness",
+  ])
+  expect(h.store.listSessions()).toEqual([])
 })
 
 test("codex needs the codex sessions", async () => {
