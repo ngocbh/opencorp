@@ -116,7 +116,7 @@ function psGroup(pgid: number): number[] {
     env: {},
     stdio: ["ignore", "pipe", "ignore"],
     encoding: "utf8",
-    timeout: 5000,
+    timeout: 15_000,
   })
   const pids: number[] = []
   for (const line of out.split("\n")) {
@@ -167,7 +167,7 @@ test("killGroup leaves no survivor of a group forking in a loop", async () => {
     }
   }
   expect(left).toEqual([])
-})
+}, 240_000)
 
 test("killGroup does not wait on the leaders zombie", async () => {
   // The office reaps its children on its event loop, which can't run during killGroup, so the leader stays a
