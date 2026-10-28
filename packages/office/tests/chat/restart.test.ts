@@ -13,6 +13,7 @@ import { newId } from "../../src/store/store.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
+import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { CEO } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import { makeRegistry } from "../worker/helpers.ts"
@@ -30,6 +31,7 @@ import {
   newSession,
   noWorkersLeft,
   reopen,
+  running,
   say,
   session,
   startActor,
@@ -346,9 +348,7 @@ test("end on a restored session whose folder is gone fails it", async () => {
   const h = await makeHarness(fake)
   for (const logged of [false, true]) {
     const s = await h.harness.startSession("minh", h.folder)
-    await waitFor(() => status(h, s.id) === "idle" && h.registry.get(s.id) === undefined, {
-      what: "the first turn",
-    })
+    await waitFor(() => status(h, s.id) === "idle" && !running(h.registry, s.id), { what: "the first turn" })
     const old = session(h, s.id).run_ids.at(-1)!
     const log = path.join(h.office.paths.runs, old, "log.jsonl")
     // Restore builds no run spec for a run with no log, nor for one whose log can't be read.
@@ -875,4 +875,27 @@ test("restore interrupts tool parts a dead office left running", async () => {
     ["tool", "interrupted"],
     ["text", "Resumed."],
   ])
+})
+
+test("an office restarted while workers were parked reaps them and restores each session", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const started = [await startActor(o), await startActor(o)]
+  const parked: { pid: number; started: number | null }[] = []
+  for (const { sid } of started) {
+    await waitFor(() => o.registry.get(sid)?.parked === true, { what: "the worker to park" })
+    const { pid } = o.registry.get(sid)!
+    parked.push({ pid, started: startTime(pid) })
+  }
+  // The office died: a new office has its own registry and actors, while the old workers still run.
+  const registry = o.newRegistry()
+  const actors = started.map(({ sid }) => makeActor(o, sid, { workers: registry }))
+  for (const actor of actors) await actor.restore()
+  for (const [i, reply] of ["one", "two"].entries()) {
+    const sid = started[i]!.sid
+    expect(await say(o, actors[i]!, sid, reply)).toBe(reply)
+    expect(session(o, sid).run_ids).toHaveLength(1)
+    expect(sameProcess(parked[i]!.pid, parked[i]!.started!)).toBe(false)
+  }
 })

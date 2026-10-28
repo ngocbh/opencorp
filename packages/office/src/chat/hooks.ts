@@ -26,8 +26,8 @@ export interface HookFns {
   /** A run ended; `result` is the worker's result frame (`status`, `output`, `failure`) with the model key redacted,
    *  or null after an error frame. */
   runFinished: (session: SessionRecord, runId: string, result: Frame | null) => unknown
-  /** The session's worker is gone. */
-  workerExited: (session: SessionRecord, code: number | null) => unknown
+  /** A run call of the session's worker ended: the worker exited, or parked for the run's next call. */
+  callEnded: (session: SessionRecord) => unknown
   /** The session's run ended normally; the first status returned (say `debriefing`) is stored instead of `ended`. */
   endStatus: (session: SessionRecord) => Status | null | undefined
   /** The session reached ended, the endStatus one, or failed; fires once, also for a session that failed before its
@@ -36,10 +36,10 @@ export interface HookFns {
 }
 
 export type CheckName = "answerCheck" | "promptCheck" | "turnContext" | "endStatus"
-export type NotificationName = "questionStored" | "runStarted" | "runFinished" | "workerExited" | "sessionEnded"
+export type NotificationName = "questionStored" | "runStarted" | "runFinished" | "callEnded" | "sessionEnded"
 
 const CHECKS = new Set<string>(["answerCheck", "promptCheck", "turnContext", "endStatus"])
-const NOTIFICATIONS = new Set<string>(["questionStored", "runStarted", "runFinished", "workerExited", "sessionEnded"])
+const NOTIFICATIONS = new Set<string>(["questionStored", "runStarted", "runFinished", "callEnded", "sessionEnded"])
 
 type AnyFn = (...args: unknown[]) => unknown
 
@@ -57,7 +57,7 @@ export class Hooks {
   readonly turnContext: HookFns["turnContext"][] = []
   readonly runStarted: HookFns["runStarted"][] = []
   readonly runFinished: HookFns["runFinished"][] = []
-  readonly workerExited: HookFns["workerExited"][] = []
+  readonly callEnded: HookFns["callEnded"][] = []
   readonly endStatus: HookFns["endStatus"][] = []
   readonly sessionEnded: HookFns["sessionEnded"][] = []
   readonly #log: (line: string) => void

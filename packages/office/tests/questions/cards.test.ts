@@ -30,6 +30,7 @@ import {
   makeHarness,
   noWorkersLeft,
   ROOT,
+  running,
   status,
   texts,
 } from "../chat/helpers.ts"
@@ -778,7 +779,7 @@ test("a side worker exit during send back keeps the note", async () => {
   let late: Promise<void> | undefined
   h.harness.answer = async (questionId, value, kind, options) => {
     // The side worker exits after the note is added and before the answer lands.
-    late = h.hooks.notify("workerExited", h.store.getSession(side.id)!, 0)
+    late = h.hooks.notify("callEnded", h.store.getSession(side.id)!)
     await Bun.sleep(300)
     return answer(questionId, value, kind, options)
   }
@@ -1248,7 +1249,7 @@ test("a session that fails for good leaves a stale card with its discussion", as
     what: "q2",
   })
   await waitFor(
-    () => status(h, side.id) === "ended" && status(h, sid) === "waiting" && h.registry.get(sid) === undefined,
+    () => status(h, side.id) === "ended" && status(h, sid) === "waiting" && !running(h.registry, sid),
     { what: "the asker to wait at q2" },
   )
   // The wake at q2's deadline and its retry both die: the session fails for good.

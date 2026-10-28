@@ -28,8 +28,8 @@ test(
     const killed = await office.worker(sid)
     process.kill(-killed, "SIGKILL")
     await fake.waitForRequests(3, 40_000)
-    // No worker lives between turns, so the respawned one is looked up while its call is held; the lookup fails
-    // unless a worker other than the killed one runs.
+    // The killed worker is the one parked after the first turn, which took this message. The respawned one is looked
+    // up while its call is held; the lookup fails unless a worker other than the killed one runs.
     await office.worker(sid, { otherThan: killed })
     fake.release() // both held calls; nobody reads the dead worker's
     await office.settled(sid, ["One.", "Recovered."])
@@ -40,6 +40,51 @@ test(
     fake.script({ content: "Next." })
     await office.prompt(sid, "second")
     await office.settled(sid, ["One.", "Recovered.", "Next."])
+  },
+  TIMEOUT,
+)
+
+test(
+  "a worker killed between turns is respawned and finishes the next turn",
+  async () => {
+    const office = await openOffice()
+    const workspace = folder(path.join(office.root, "project"))
+    const fake = office.llm
+    const sid = await firstTurn(office, workspace)
+    // Between turns the session's worker stays parked.
+    const parked = await office.worker(sid)
+    process.kill(-parked, "SIGKILL")
+    await waitFor(() => !alive(parked), { timeout: 40_000, what: "the parked worker to die" })
+    fake.script({ content: "Next." })
+    await office.prompt(sid, "second")
+    await office.settled(sid, ["One.", "Next."])
+    expect(await office.worker(sid, { otherThan: parked })).not.toBe(parked)
+    expect(await office.users(sid)).toEqual(["first", "second"])
+    expect((await office.session(sid)).run_ids).toHaveLength(1) // resumed, not a new run
+    expect(fake.requests()).toHaveLength(2)
+  },
+  TIMEOUT,
+)
+
+test(
+  "an office killed between turns leaves no worker and opencorp start continues the chat",
+  async () => {
+    const office = await openOffice()
+    const workspace = folder(path.join(office.root, "project"))
+    const fake = office.llm
+    const sid = await firstTurn(office, workspace)
+    const parked = await office.worker(sid)
+    await office.killOffice()
+    await waitFor(() => !alive(parked), {
+      timeout: 40_000,
+      what: "the parked worker to exit when its office dies",
+    })
+    await office.opencorp(["start"], { cwd: workspace })
+    fake.script({ content: "Next." })
+    await office.prompt(sid, "second")
+    await office.settled(sid, ["One.", "Next."])
+    expect((await office.session(sid)).run_ids).toHaveLength(1) // resumed, not a new run
+    expect(fake.requests()).toHaveLength(2)
   },
   TIMEOUT,
 )

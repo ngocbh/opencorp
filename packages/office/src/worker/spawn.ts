@@ -48,8 +48,9 @@ export class RegistryClosed extends Error {
 /** How long, in ms, a worker has to exit after its channel closes, before its group is killed. */
 export const EXIT_GRACE_MS = 5000
 
-/** How many workers an office keeps parked at most; each is an idle Bun process. */
-export const MAX_PARKED = 16
+/** How many workers an office keeps parked at most: each is an idle Bun process holding its run, about 280 MiB of
+ *  RSS after 80 turns. */
+export const MAX_PARKED = 8
 
 /** Where spawn code writes log lines; never handed an error's message. */
 export type SpawnLog = (level: "INFO" | "WARNING" | "ERROR", line: string) => void

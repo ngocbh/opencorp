@@ -36,9 +36,11 @@ import {
   errors,
   fakeLlm,
   free,
+  livingWorkers,
   makeHarness,
   noWorkersLeft,
   replyRunning,
+  running,
   scriptedWorker,
   state,
   status,
@@ -112,9 +114,9 @@ function authors(h: Harness, sid: string): Record<string, string | null> {
   return by
 }
 
-/** Waits until session `sid` has no worker: between turns a chat run has none. */
+/** Waits until session `sid`'s worker runs no job: between turns it is parked, or gone. */
 async function asleep(h: Harness, sid: string): Promise<void> {
-  await waitFor(() => h.registry.get(sid) === undefined, { what: "the worker to exit" })
+  await waitFor(() => !running(h.registry, sid), { what: "the run call to end" })
 }
 
 /** Records the status of each session `h`'s hooks see end. */
@@ -790,7 +792,7 @@ test("restore restores the chat sessions then the codex sessions", async () => {
   spyOn(h.codex!.sessions, "restore").mockImplementation(async () => void order.push("codex"))
   await h.harness.restore()
   expect(order).toEqual([s.id, "codex"])
-  expect([status(h, s.id), h.registry.get(s.id)]).toEqual(["idle", undefined])
+  expect([status(h, s.id), running(h.registry, s.id)]).toEqual(["idle", false])
 })
 
 test.each(["setCostCap", "setModel"] as const)(
@@ -837,7 +839,7 @@ test("nothing the harness does touches the store after close all", async () => {
   const workers = scriptedWorker(h)
   const s = await h.harness.startSession("minh", h.folder)
   const exited: unknown[] = []
-  h.hooks.workerExited.push((...args) => void exited.push(args))
+  h.hooks.callEnded.push((...args) => void exited.push(args))
   await h.harness.closeAll()
   const stored = () =>
     JSON.stringify([h.store.getSession(s.id), h.store.getRun(s.run_ids[0]!), h.store.listWorkItems()])
@@ -1020,10 +1022,10 @@ function capItems(h: Harness): WorkItemRecord[] {
     .sort((a, b) => (a.id < b.id ? -1 : 1))
 }
 
-/** Whether session `sid` is held at its cap with `cost` spent and no worker. */
+/** Whether session `sid` is held at its cap with `cost` spent and no worker running. */
 function atTheHold(h: Harness, sid: string, cost: number): boolean {
   const s = h.store.getSession(sid)!
-  return s.cost === cost && s.status === "waiting" && s.capped && h.registry.get(sid) === undefined
+  return s.cost === cost && s.status === "waiting" && s.capped && !running(h.registry, sid)
 }
 
 /** The actor each session command runs on, by session id: `SessionActor.prototype.prompt`, spied. */
@@ -1179,7 +1181,7 @@ test("the model key appears in no frame event or office file", async () => {
   const hooked: unknown[] = []
   h.hooks.runFinished.push((...args) => void hooked.push(args))
   h.hooks.sessionEnded.push((...args) => void hooked.push(args))
-  h.hooks.workerExited.push((...args) => void hooked.push(args))
+  h.hooks.callEnded.push((...args) => void hooked.push(args))
   const { id } = await start(h)
   await h.harness.prompt(id, "hi")
   // The next turn, not just the text: the text part is stored at its first chunk, before it ends.
@@ -1221,7 +1223,7 @@ test("a held session keeps a queued message until the cap is raised", async () =
   await waitFor(() => atTheHold(h, id, 6), { what: "the stop at the cap" })
   const before = h.jobs.length
   expect(await h.harness.prompt(id, "please continue")).toBe("queued")
-  await waitFor(() => h.registry.get(id) === undefined, { what: "the delivering worker to exit" })
+  await waitFor(() => !running(h.registry, id), { what: "the delivering job to end" })
   // An unread send in the run's inbox: delivered, not advanced.
   expect(h.jobs.slice(before)).toMatchObject([{ kind: "advance", advance: false, deliver: [{ op: "send" }] }])
   expect(state(h, id)).toEqual({ status: "waiting", waiting_on: [CEO], capped: true })
@@ -1559,4 +1561,18 @@ test("abandon ends a live session with the reason and cancels its run", async ()
   expect(ended).toEqual(["ended"])
   const late = await rejection(h.harness.abandon(s.id, CARD_CLOSED))
   expect([late.status, late.code]).toEqual([409, "not_live"])
+})
+
+test("the office stop leaves no parked worker", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const s = await h.harness.startSession("minh", h.folder)
+  await waitFor(() => h.registry.get(s.id)?.parked === true, { what: "the worker to park" })
+  const worker = h.registry.get(s.id)!
+  const began = performance.now()
+  await h.harness.closeAll()
+  expect(performance.now() - began).toBeLessThan(2000)
+  expect(worker.returncode).toBe(0)
+  expect(h.registry.get(s.id)).toBeUndefined()
+  expect(livingWorkers().filter((w) => w.pid === worker.pid)).toEqual([])
+  expect(status(h, s.id)).toBe("idle")
 })

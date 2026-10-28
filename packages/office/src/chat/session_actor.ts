@@ -1,5 +1,5 @@
-/** One live chat session: a serial queue that drives the session's yian run through one worker process per run
- *  call, the way `yian chat` does (deliver, then `advance`, again while the run waits). */
+/** One live chat session: a serial queue that drives the session's yian run one worker job per run call, the way
+ *  `yian chat` does (deliver, then `advance`, again while the run waits), its worker process kept between calls. */
 import fs from "node:fs"
 import path from "node:path"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
@@ -71,7 +71,16 @@ export interface ActorContext {
       handlers: WorkerHandlers<ActorWorker>,
       options: { env: Record<string, string> },
     ): Promise<ActorWorker>
+    /** Runs `job` with `handlers` in the session's parked `worker`; false when it is gone. */
+    next(worker: ActorWorker, job: Job, handlers: WorkerHandlers<ActorWorker>): Promise<boolean>
+    /** Counts `worker` as parked; `release` must end it when the office keeps too many. */
+    park(worker: ActorWorker, release: () => void): void
+    /** No longer counts `worker` as parked. */
+    unpark(worker: ActorWorker): void
   }
+  /** How long, in ms, a worker stays parked after a run call that left its run waiting; 0 keeps none (default
+   *  `KEEP_MS`). */
+  readonly keepMs?: number
   readonly hooks: Hooks
   readonly answers: Answers
   readonly transcript: Pick<Transcript, "forget">
@@ -123,7 +132,11 @@ export async function named(connections: Connections, name: string, model: strin
 const CAP_TITLE = "Raise the cost cap"
 
 /** What the actor uses of a worker; `Worker` fits. */
-export type ActorWorker = Pick<Worker, "job" | "pid" | "deliver" | "stop" | "follow">
+export type ActorWorker = Pick<Worker, "job" | "pid" | "deliver" | "stop" | "follow" | "closeChannel" | "wait">
+
+/** How long, in ms, a session's worker stays parked between run calls before it is closed: a message within it
+ *  replays nothing. */
+export const KEEP_MS = 10 * 60_000
 
 /** How long, in milliseconds, a run's end report waits for the run index; bounded, so a stuck index thread can't
  *  stall the report. */
@@ -253,6 +266,8 @@ class WorkerRun {
   seed: Seed | null = null
   /** Whether its worker exited (its handler ran), maybe before the actor's exit job did. */
   exited = false
+  /** Whether its worker parked after its run call (its handler ran), maybe before the actor's park job did. */
+  parked = false
 
   /** A `kind` worker of run `runId` given `given`, over a run that waits at `waits`; `sent` says a message reached
    *  the run since its turn last waited. */
@@ -269,6 +284,10 @@ class WorkerRun {
  * One chat session's live state: its run id, its worker, the calls its run last waited on, the nodes in flight and
  * the deliveries not yet answered.
  *
+ * A run call that leaves the run waiting parks its worker process (`#parked`) for up to `keepMs`: the next run call
+ * of the same run on the same provider goes to it, and replays nothing; any other closes it first. A parked worker
+ * is no worker to the rest of the actor, and one that dies is no death.
+ *
  * Every command, worker notification and timer runs as a job of one serial queue. Worker requests (`askUser`,
  * `toolCall`, `store_*`) run as their own promises. The actor never calls a yian host function itself (it only reads
  * its run's log at restore): a running worker gets a `deliver` frame, and a run at rest gets a new worker whose job
@@ -281,6 +300,8 @@ export class SessionActor implements LiveCalls {
   #tail: Promise<unknown> = Promise.resolve()
   #runId: string | null
   #run: WorkerRun | null = null
+  /** The worker kept after the last run call, the provider env it was spawned with, and its idle timer. */
+  #parked: { worker: ActorWorker; env: Record<string, string>; timer: AbortController } | null = null
   /** The worker being spawned, holding its job's deliveries. */
   #starting: WorkerRun | null = null
   /** The calls the run waited on at its last `waiting` result, or as restore read them; null when unknown. */
@@ -398,10 +419,11 @@ export class SessionActor implements LiveCalls {
   }
 
   /** The model calls in flight of `runId`, as the live relay shows them (empty while its view is being built) while a
-   *  worker runs it; else null. Null too once the worker has exited, before the actor handles the exit: the relay
-   *  has already sent its cut calls as interrupted, as the transcript will show them. */
+   *  worker runs it; else null. Null too once the worker has exited or parked, before the actor handles it: the
+   *  relay has already sent its cut calls as interrupted, as the transcript will show them. */
   calls(runId: string): readonly LiveViewCall[] | null {
-    return this.#run !== null && !this.#run.exited && !this.#closed && runId === this.#runId
+    const run = this.#run
+    return run !== null && !run.exited && !run.parked && !this.#closed && runId === this.#runId
       ? (this.#ctx.live.calls(runId) ?? [])
       : null
   }
@@ -924,8 +946,8 @@ export class SessionActor implements LiveCalls {
    * Office stop: the workspace is interrupted and every delivery not yet answered is answered: with its recorded
    * reply when the worker sent one, else by the closing rule with `503 stopping`. Later commands are refused `503
    * stopping`, later worker frames are ignored and later `askUser` and `toolCall` requests are refused (store requests
-   * still run); the office's registry stops the workers. Returns a promise that settles once the job running at the
-   * close returns.
+   * still run); the office's registry stops the workers, and the parked worker is closed. Returns a promise that
+   * settles once the job running at the close returns.
    */
   close(): Promise<void> {
     const tail = this.#tail.then(() => {})
@@ -933,6 +955,7 @@ export class SessionActor implements LiveCalls {
     this.#closed = true
     this.#closing.resolve()
     this.#disarm()
+    void this.#releaseParked()
     this.#interruptWorkspace()
     this.#answerCalls()
     const given = [...(this.#starting?.given ?? []), ...(this.#run?.given ?? []), ...this.#next.splice(0)]
@@ -1091,7 +1114,7 @@ export class SessionActor implements LiveCalls {
     moved ??= this.#sinceRestore ? OFFICE_REPLACED : NEW_MODEL
     // A run restore found ended or unreadable is never advanced: its fresh run goes as a `replace`, held over the cap.
     if (kind === "advance") replace ??= this.#unresumable
-    const { store, paths } = this.#ctx
+    const { store } = this.#ctx
     const sid = this.sessionId
     if ((replace !== null || this.#heldFresh !== null) && !this.#ending && this.#capped()) {
       // Never delivered to the old run: its reply failed, or it can't be resumed.
@@ -1171,6 +1194,7 @@ export class SessionActor implements LiveCalls {
         seed,
         deliver: pendings.map((p) => p.delivery),
         advance,
+        keep: this.#keepMs() > 0,
       })
       if (run.kind === "chat") store.setRunConfig(runId, runRecord(name, model, provider))
       const defaultPrice = await this.#defaultPrice(name)
@@ -1180,7 +1204,7 @@ export class SessionActor implements LiveCalls {
       run.provider = provider
       run.defaultPrice = defaultPrice
       run.seed = seed
-      run.worker = await this.#ctx.workers.spawn(job, paths.sessionDir(sid), handlers, { env: provider.env })
+      run.worker = await this.#launch(job, handlers, provider.env)
       this.#startedWorker = true
       // Only now: a spawn that fails leaves it for the next worker's take.
       this.#lateSend = false
@@ -1212,6 +1236,57 @@ export class SessionActor implements LiveCalls {
     } finally {
       if (this.#starting === run) this.#starting = null
     }
+  }
+
+  /** Starts `job` with `handlers`: in the parked worker when it ran the same run on the same provider `env`, pin and
+   *  model config, else in a new worker spawned with `env` once the parked one, if any, has exited (the registry
+   *  keeps one worker per session). */
+  async #launch(job: Job, handlers: WorkerHandlers<ActorWorker>, env: Record<string, string>): Promise<ActorWorker> {
+    const parked = this.#parked
+    if (parked !== null && reusable(parked.worker.job, parked.env, job, env)) {
+      this.#parked = null
+      parked.timer.abort()
+      this.#ctx.workers.unpark(parked.worker)
+      let sent = false
+      try {
+        sent = await this.#ctx.workers.next(parked.worker, job, handlers)
+      } finally {
+        // Gone meanwhile, or the start frame can't be sent: it must exit before another worker spawns.
+        if (!sent) {
+          parked.worker.closeChannel()
+          await parked.worker.wait()
+        }
+      }
+      if (sent) return parked.worker
+    }
+    await this.#releaseParked()
+    return this.#ctx.workers.spawn(job, this.#ctx.paths.sessionDir(this.sessionId), handlers, { env })
+  }
+
+  /** How long a worker stays parked; 0 keeps none. */
+  #keepMs(): number {
+    return this.#ctx.keepMs ?? KEEP_MS
+  }
+
+  /** Keeps `run`'s `worker`, which parked after its run call, until the idle timer, the registry's cap or the next
+   *  spawn ends it. */
+  #keep(run: WorkerRun, worker: ActorWorker): void {
+    const parked = { worker, env: run.provider?.env ?? {}, timer: new AbortController() }
+    this.#parked = parked
+    const release = () => this.#post("parked worker release", () => this.#parked === parked && this.#releaseParked())
+    this.#ctx.workers.park(worker, release)
+    this.#ctx.scheduler.sleep(this.#keepMs(), parked.timer.signal).then(release, () => {})
+  }
+
+  /** Closes the parked worker, if any; resolves once it has exited. Never rejects. */
+  #releaseParked(): Promise<void> {
+    const parked = this.#parked
+    if (parked === null) return Promise.resolve()
+    this.#parked = null
+    parked.timer.abort()
+    this.#ctx.workers.unpark(parked.worker)
+    parked.worker.closeChannel()
+    return parked.worker.wait().then(() => {})
   }
 
   /** The price of a model call connection `name`'s file doesn't list: none for a subscription, which already pays
@@ -1499,10 +1574,24 @@ export class SessionActor implements LiveCalls {
         actor.#post("error", () => actor.#result(run, frame))
       }
 
-      override exited(worker: ActorWorker, returncode: number | null): void {
-        run.exited = true
+      override parked(worker: ActorWorker): void {
+        run.parked = true
         actor.#ctx.live.detach(worker)
-        actor.#post("exit", () => actor.#exited(run, returncode))
+        actor.#post("park", () => actor.#park(run, worker))
+        // The finished session's last run call: nothing can show its runs again.
+        if (actor.#finished && run === actor.#run) actor.#forgetRuns(actor.#finishedRuns)
+      }
+
+      override exited(worker: ActorWorker): void {
+        run.exited = true
+        if (actor.#parked?.worker === worker) {
+          // A parked worker that dies (killed, crashed) is no death: the next run call spawns a new one.
+          actor.#parked.timer.abort()
+          actor.#parked = null
+        }
+        if (run.parked) return
+        actor.#ctx.live.detach(worker)
+        actor.#post("exit", () => actor.#exited(run))
         // The finished session's last worker: nothing can show its runs again.
         if (actor.#finished && run === actor.#run) actor.#forgetRuns(actor.#finishedRuns)
       }
@@ -1796,25 +1885,46 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * The worker is gone; its outcome decides what comes next. After a `waiting` result, see `#waited`. A succeeded
-   * run ends the session; a worker gone with no outcome, or a `stopped` or `crashed` run, is replaced once
-   * (`#died`), but a run the cap stopped, a delivering job's, or one stopped or crashed over the cap isn't a death:
-   * its deliveries go on, with a real advance once the cap is raised; an ending session over the cap ends
-   * `ENDED_OVER_CAP`; a run another process holds is tried once more (`#runBusy`); a run whose reply failed is
-   * replaced by a fresh run (`#replyFailed`); any other outcome fails the session.
+   * The worker is gone; its outcome decides what comes next (as after a run call whose worker parked: `#park`).
+   * After a `waiting` result, see `#waited`. A succeeded run ends the session; a worker gone with no outcome, or a
+   * `stopped` or `crashed` run, is replaced once (`#died`), but a run the cap stopped, a delivering job's, or one
+   * stopped or crashed over the cap isn't a death: its deliveries go on, with a real advance once the cap is raised;
+   * an ending session over the cap ends `ENDED_OVER_CAP`; a run another process holds is tried once more
+   * (`#runBusy`); a run whose reply failed is replaced by a fresh run (`#replyFailed`); any other outcome fails the
+   * session.
    * Every delivery not carried is answered. A finished actor only starts its run's hard stop that waited for this
    * exit.
    */
-  async #exited(run: WorkerRun, returncode: number | null): Promise<void> {
+  async #exited(run: WorkerRun): Promise<void> {
     if (run !== this.#run) return
+    await this.#callEnded(run)
+  }
+
+  /** `run`'s worker parked after its run call: it is kept (`#keep`) unless it exited meanwhile, and the call ends as
+   *  at an exit. */
+  async #park(run: WorkerRun, worker: ActorWorker): Promise<void> {
+    if (run !== this.#run) {
+      worker.closeChannel()
+      return
+    }
+    if (!run.exited) this.#keep(run, worker)
+    await this.#callEnded(run)
+  }
+
+  /** `run`'s run call ended, its worker gone or parked: as `#exited` says. */
+  async #callEnded(run: WorkerRun): Promise<void> {
     this.#run = null
     const session = this.#ctx.store.getSession(this.sessionId)
-    if (session !== undefined) void this.#ctx.hooks.notify("workerExited", session, returncode)
+    if (session !== undefined) void this.#ctx.hooks.notify("callEnded", session)
     // Nobody is left to read what these calls return, finished or not.
     this.#interruptWorkspace()
     this.#answerCalls()
     if (this.#finished) {
-      void this.#stopJobs(this.#stopAfterExit.splice(0)).then(this.#stoppedAfterExit)
+      // Its hard stop spawns under the session's id, so a parked worker goes first.
+      const runIds = this.#stopAfterExit.splice(0)
+      void this.#releaseParked()
+        .then(() => this.#stopJobs(runIds))
+        .then(this.#stoppedAfterExit)
       return
     }
     // Read and cleared first: an outcome that spawns nothing leaves no re-advance behind.
@@ -2117,7 +2227,7 @@ export class SessionActor implements LiveCalls {
         await hooks.notify("sessionEnded", finished)
       })()
       // With a worker alive, its last frames would show the runs again: its exit forgets them.
-      if (this.#run === null || this.#run.exited) this.#forgetRuns(this.#finishedRuns)
+      if (this.#run === null || this.#run.exited || this.#run.parked) this.#forgetRuns(this.#finishedRuns)
     } catch (error) {
       if (error instanceof HarnessError) throw error
       this.#log(`session ${this.sessionId}: can't store the end (${errorName(error)})`)
@@ -2139,12 +2249,13 @@ export class SessionActor implements LiveCalls {
 
   /** The hard stop of run `runId` (none when null) and of the `replaced` runs, best effort: a `cancel` of `runId`
    *  through its live worker; one `advance: false` job that only cancels it for every other run, and for `runId`
-   *  unless the worker took that cancel, at once or after the lingering worker's exit. */
+   *  unless the worker took that cancel, once the parked worker is closed, or after the lingering worker's exit. */
   #stopRuns(runId: string | null, replaced: string[]): void {
     const run = this.#run
     const runIds = runId === null ? replaced : [...replaced, runId]
     if (run === null || run.worker === null) {
-      this.#stopped = this.#stopJobs(runIds)
+      // A stop job spawns under the session's id, so a parked worker goes first.
+      this.#stopped = this.#releaseParked().then(() => this.#stopJobs(runIds))
       return
     }
     this.#stopAfterExit = runIds
@@ -2460,6 +2571,20 @@ async function sleepUntil(scheduler: Scheduler, at: number, signal: AbortSignal)
   for (let left = at - scheduler.now(); left > 0; left = at - scheduler.now()) {
     await scheduler.sleep(Math.min(left, SLEEP_CHUNK_MS), signal)
   }
+}
+
+/** Whether a worker parked after `previous`, spawned with `before`, can run `job` with `env`: an `advance` of the same
+ *  run, log and pin, with the same model config and provider env (a worker's env is fixed at its spawn). */
+function reusable(previous: Job, before: Record<string, string>, job: Job, env: Record<string, string>): boolean {
+  const sorted = (record: Record<string, string>) => JSON.stringify(Object.entries(record).sort())
+  return (
+    job.kind === "advance" &&
+    job.run_id === previous.run_id &&
+    job.log === previous.log &&
+    job.pin === previous.pin &&
+    JSON.stringify(job.llm_config) === JSON.stringify(previous.llm_config) &&
+    sorted(env) === sorted(before)
+  )
 }
 
 /** The calls a `result` frame says its run waits on. */

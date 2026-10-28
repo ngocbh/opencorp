@@ -441,9 +441,9 @@ export interface ChatOffice {
   readonly office: Office
   readonly registry: WorkerRegistry
   readonly ctx: ActorContext
-  /** Each spawned job's kind, in order. */
+  /** Each job's kind, spawned or sent to a parked worker, in order. */
   readonly kinds: string[]
-  /** Each spawned job, in order. */
+  /** Each job, spawned or sent to a parked worker, in order. */
   readonly jobs: Job[]
   readonly transcript: Transcript
   /** The live relay its actors feed, over `transcript` and the office's bus. */
@@ -458,14 +458,16 @@ export interface ChatOffice {
   readonly workspace: { interrupts: number }
   /** The actors made through these helpers; each is closed when the test finishes. */
   readonly actors: SessionActor[]
-  /** Holds the next spawn before it starts a worker; `entered` resolves once it is held. */
+  /** Holds the next spawn, or job sent to a parked worker, before it starts; `entered` resolves once it is held. */
   hold(): { entered: Promise<void>; release: () => void }
-  /** Makes the next spawn throw before it starts a worker. */
+  /** Makes the next spawn, or job sent to a parked worker, throw before it starts. */
   failNextSpawn(): void
-  /** Runs `fn` with the next spawned worker once its spawn has resolved. */
+  /** Runs `fn` with the next worker to start a job (spawned, or parked and sent one) once it has started it. */
   afterSpawn(fn: (worker: Worker) => void): void
   /** How many reply node starts (or wakes) its workers have told their actors of. */
   replyStarts(): number
+  /** How many jobs went to a parked worker (`next`) instead of a new one. */
+  reused(): number
   /** Another registry over the office, its spawns recorded, held, failed or followed as `registry`'s are; it stops
    *  when the test finishes. */
   newRegistry(): WorkerRegistry
@@ -531,31 +533,46 @@ export async function chatOffice(
   const afters: ((worker: Worker) => void)[] = []
   let failNext = false
   let replies = 0
+  let reused = 0
+  /** Records `job`, counts the reply starts `handlers` see, then holds or fails the start as asked. */
+  const track = async (job: Job, handlers: WorkerHandlers<Worker>) => {
+    kinds.push(job.kind)
+    jobs.push(job)
+    const held = holds.shift()
+    if (held !== undefined) {
+      held.entered()
+      await held.released
+    }
+    if (failNext) {
+      failNext = false
+      throw new Error("the spawn failed")
+    }
+    const event = handlers.event.bind(handlers)
+    handlers.event = (worker, frame) => {
+      const data = frame.data as { node_id?: unknown } | undefined
+      const starts = frame.name === "NodeStarted" || frame.name === "NodeWoken"
+      if (starts && MAIN_CHAT.isReply(typeof data?.node_id === "string" ? data.node_id : null)) replies += 1
+      event(worker, frame)
+    }
+  }
   const newRegistry = () => {
     const registry = followWorkers(makeRegistry(office.store))
     const spawn = registry.spawn.bind(registry)
     registry.spawn = async (job, sessionDir, handlers, options) => {
-      kinds.push(job.kind)
-      jobs.push(job)
-      const held = holds.shift()
-      if (held !== undefined) {
-        held.entered()
-        await held.released
-      }
-      if (failNext) {
-        failNext = false
-        throw new Error("the spawn failed")
-      }
-      const event = handlers.event.bind(handlers)
-      handlers.event = (worker, frame) => {
-        const data = frame.data as { node_id?: unknown } | undefined
-        const starts = frame.name === "NodeStarted" || frame.name === "NodeWoken"
-        if (starts && MAIN_CHAT.isReply(typeof data?.node_id === "string" ? data.node_id : null)) replies += 1
-        event(worker, frame)
-      }
+      await track(job, handlers)
       const worker = await spawn(job, sessionDir, handlers, options)
       afters.shift()?.(worker)
       return worker
+    }
+    const next = registry.next.bind(registry)
+    registry.next = async (worker, job, handlers) => {
+      await track(job, handlers)
+      const sent = await next(worker, job, handlers)
+      if (sent) {
+        reused += 1
+        afters.shift()?.(worker)
+      }
+      return sent
     }
     registries.push(registry)
     return registry
@@ -630,6 +647,7 @@ export async function chatOffice(
       afters.push(fn)
     },
     replyStarts: () => replies,
+    reused: () => reused,
     newRegistry,
   }
 }
@@ -700,11 +718,13 @@ export async function startActor(
   return { actor, sid }
 }
 
-/** Waits until `actor` has no worker, closes it, and returns a new actor over its session: the session asleep, as an
- *  office that stopped and started again would find it. */
+/** Waits until `actor` has no running worker, closes it and waits for its parked worker to exit, and returns a new
+ *  actor over its session: the session asleep, as an office that stopped and started again would find it. */
 export async function reopen(o: ChatOffice, actor: SessionActor): Promise<SessionActor> {
   await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
   actor.close()
+  // The closed actor's parked worker goes too, as the office stop ends it.
+  await waitFor(() => o.registry.get(actor.sessionId) === undefined, { what: "the parked worker to exit" })
   return makeActor(o, actor.sessionId)
 }
 
@@ -797,27 +817,17 @@ export interface ScriptedWorker {
 
 /** Makes `o`'s spawns return scripted workers (still recording each kind and job) whose `deliver` records the
  *  delivery and returns what the worker's `accept` says; a `chat` job's worker makes its run's log, as a worker
- *  that starts the run does. Returns the workers spawned, in order. */
+ *  that starts the run does. A job sent to a parked scripted worker gets a scripted worker of its own over the same
+ *  worker, and closing a scripted worker's channel exits it 0. Returns the scripted workers, in order. */
 export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
   const spawned: ScriptedWorker[] = []
-  o.registry.spawn = async (job, _sessionDir, handlers) => {
+  /** What a job sent to a parked worker does, by worker. */
+  const nexts = new Map<ActorWorker, (job: Job, handlers: WorkerHandlers<ActorWorker>) => void>()
+  /** The scripted worker of `job` and `handlers` over `worker`, recorded. */
+  const scriptedOf = (worker: ActorWorker, job: Job, handlers: WorkerHandlers<ActorWorker>): ScriptedWorker => {
     o.kinds.push(job.kind)
     o.jobs.push(job)
-    if (job.kind === "chat") {
-      fs.mkdirSync(path.dirname(job.log), { recursive: true })
-      fs.writeFileSync(job.log, "")
-    }
     const deliveries: Delivery[] = []
-    const worker: ActorWorker = {
-      job,
-      pid: NO_GROUP,
-      deliver: async (delivery) => {
-        deliveries.push(delivery)
-        return scripted.accept(delivery)
-      },
-      stop: async () => true,
-      follow: async () => true,
-    }
     const scripted: ScriptedWorker = {
       worker,
       job,
@@ -827,7 +837,44 @@ export function scriptedWorker(o: ChatOffice): ScriptedWorker[] {
       given: () => [...job.deliver, ...deliveries],
     }
     spawned.push(scripted)
+    return scripted
+  }
+  o.registry.spawn = async (job, _sessionDir, handlers) => {
+    if (job.kind === "chat") {
+      fs.mkdirSync(path.dirname(job.log), { recursive: true })
+      fs.writeFileSync(job.log, "")
+    }
+    let current: ScriptedWorker
+    let gone: Promise<number> | null = null
+    const worker: ActorWorker = {
+      job,
+      pid: NO_GROUP,
+      deliver: async (delivery) => {
+        current.deliveries.push(delivery)
+        return current.accept(delivery)
+      },
+      stop: async () => true,
+      follow: async () => true,
+      // As a parked worker that sees its channel close: it exits 0.
+      closeChannel: () => {
+        gone ??= Promise.resolve().then(() => {
+          current.handlers.exited(worker, 0)
+          return 0
+        })
+      },
+      wait: async () => (gone === null ? null : await gone),
+    }
+    current = scriptedOf(worker, job, handlers)
+    // A job sent to the parked worker gets a scripted worker of its own over the same worker.
+    nexts.set(worker, (next, nextHandlers) => {
+      ;(worker as { job: Job }).job = next
+      current = scriptedOf(worker, next, nextHandlers)
+    })
     return worker as Worker
+  }
+  o.registry.next = async (worker, job, handlers) => {
+    nexts.get(worker)!(job, handlers)
+    return true
   }
   return spawned
 }
@@ -939,6 +986,12 @@ export async function makeHarness(
   return h
 }
 
+/** Whether a worker of session `sid` runs a job in `registry`: one parked between jobs doesn't. */
+export function running(registry: WorkerRegistry, sid: string): boolean {
+  const worker = registry.get(sid)
+  return worker !== undefined && !worker.parked
+}
+
 /** A `makeHarness` office. */
 export type HarnessOffice = Awaited<ReturnType<typeof makeHarness>>
 
@@ -946,7 +999,7 @@ export type HarnessOffice = Awaited<ReturnType<typeof makeHarness>>
  *  the run's log would, then stops the office and starts a new one (`h.reopen`), not yet restored: its restore must
  *  advance each run. */
 export async function unreadAtRestart(h: HarnessOffice, ...sids: string[]): Promise<void> {
-  const exited = (sid: string) => waitFor(() => h.registry.get(sid) === undefined, { what: "the worker to exit" })
+  const exited = (sid: string) => waitFor(() => !running(h.registry, sid), { what: "the run call to end" })
   for (const sid of sids) {
     await exited(sid)
     // Over the company's $5 cap the message only reaches the run's log.

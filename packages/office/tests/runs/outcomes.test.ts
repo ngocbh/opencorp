@@ -24,6 +24,7 @@ import {
   type HarnessOffice,
   LAN,
   makeHarness,
+  running,
   noWorkersLeft,
   scriptedWorker,
   status,
@@ -62,9 +63,9 @@ async function rejection(promise: Promise<unknown>): Promise<HarnessError> {
   )
 }
 
-/** Waits until session `sid` has no worker: between turns a chat run has none. */
+/** Waits until session `sid`'s worker runs no job: between turns it is parked, or gone. */
 async function asleep(h: HarnessOffice, sid: string): Promise<void> {
-  await waitFor(() => h.registry.get(sid) === undefined, { what: "the worker to exit" })
+  await waitFor(() => !running(h.registry, sid), { what: "the run call to end" })
 }
 
 /** Gives the office connection the model key `key`. */
