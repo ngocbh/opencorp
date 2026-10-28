@@ -15,8 +15,8 @@ import type { AnswerKind, CardActor, Cards } from "../../src/questions/cards.ts"
 import { CARRIED_NOTE, INTERRUPTED, SENT_BACK } from "../../src/questions/format.ts"
 import { FRAMING, firstMessage } from "../../src/questions/seed.ts"
 import { BACK_HINT, SEED_FILE } from "../../src/questions/side.ts"
-import { CARD_CLOSED } from "../../src/runs/outcomes.ts"
-import { InvalidTransition, type QuestionRecord, type Store } from "../../src/store/store.ts"
+import { CARD_CLOSED, OFFICE_STOPPED } from "../../src/runs/outcomes.ts"
+import { InvalidTransition, type QuestionRecord, type Store, newId } from "../../src/store/store.ts"
 import type { FakeLLM, ScriptedReply } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
 import {
@@ -865,6 +865,84 @@ test("a refused reopen stores nothing", async () => {
   expect(after.updated_at).toBe(before.updated_at)
 })
 
+test("a side chat open waits only behind opens of its own question", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, ASK, { content: "Quota." }, { content: "Per hour." })
+  const h = await sideHarness(fake)
+  const cards = h.office.cards!
+  const a = await ask(h)
+  const b = await ask(h)
+  // Holds the first open of a's side chat inside the side chat queue, as a reopen waiting on a cancel would.
+  let release = () => {}
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const spec = h.harness.spec.bind(h.harness)
+  let holding = true
+  h.harness.spec = async (s) => {
+    if (holding && s.question_id === a.q.id) {
+      holding = false
+      await held
+    }
+    return spec(s)
+  }
+  try {
+    const first = cards.openSide(a.q.id, "why?")
+    const other = await Promise.race([cards.openSide(b.q.id, "and this?"), Bun.sleep(5_000).then(() => null)])
+    expect(other).not.toBeNull()
+    await waitFor(() => texts(h, other!.id).join() === "Quota." && status(h, other!.id) === "idle", {
+      what: "the other side reply",
+    })
+    release()
+    const side = await first
+    await waitFor(() => texts(h, side.id).join() === "Per hour." && status(h, side.id) === "idle", {
+      what: "the held side reply",
+    })
+  } finally {
+    release()
+  }
+})
+
+/** The entries of `h`'s session dirs root. */
+function sessionDirs(h: Harness): string[] {
+  const root = path.dirname(h.office.paths.sessionDir("x"))
+  return fs.existsSync(root) ? fs.readdirSync(root).sort() : []
+}
+
+test("a side chat create refused after its tmp dir is made leaves no session dir", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK)
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const before = sessionDirs(h)
+  const spec = h.harness.spec.bind(h.harness)
+  spyOn(h.harness, "spec").mockImplementation(async (s) => {
+    const built = await spec(s)
+    if (s.kind === "side") throw new HarnessError(422, "unsafe_workspace", "the folder is unsafe")
+    return built
+  })
+  const error = await refusal(() => h.office.cards!.openSide(q.id, "why?"))
+  expect([error.status, error.code]).toEqual([422, "unsafe_workspace"])
+  expect(h.store.getQuestion(q.id)!.side_session_id).toBeNull()
+  expect(sessionDirs(h)).toEqual(before)
+})
+
+test("a side chat whose session can't be stored leaves no seed behind", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK)
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const before = sessionDirs(h)
+  const create = h.store.createSession.bind(h.store)
+  spyOn(h.store, "createSession").mockImplementation((s) => {
+    if (s.kind === "side") throw new Error("disk full")
+    return create(s)
+  })
+  await expect(h.office.cards!.openSide(q.id, "why?")).rejects.toThrow("disk full")
+  expect(h.store.getQuestion(q.id)!.side_session_id).toBeNull()
+  expect(sessionDirs(h)).toEqual(before)
+})
+
 test("the seed goes once when no ceo answers for the human", async () => {
   // An unreadable company.yaml leaves no CEO to answer for the human: "first" rests on the session's turns.
   const fake = await fakeLlm()
@@ -1209,6 +1287,61 @@ test("a side chat stored starting at the sweep ends at once", async () => {
   expect(status(h, side.id)).toBe("ended")
   expect(end).not.toHaveBeenCalled()
   expect(h.store.getQuestion(q.id)!.status).toBe("open")
+})
+
+test("a side chat stored starting at the sweep ends its unstarted run as the office stopped", async () => {
+  const h = await sideHarness(await fakeLlm())
+  const asker = h.store.createSession(session({ cwd: h.folder }))
+  const q = h.store.addQuestion(question(asker.id))
+  const runId = newId()
+  const side = h.store.createSession(
+    session({ kind: "side", status: "starting", question_id: q.id, cwd: h.folder, run_ids: [runId] }),
+  )
+  h.store.updateQuestion(q.id, { side_session_id: side.id })
+  h.store.addRun({
+    runId,
+    sessionId: side.id,
+    driver: "minh",
+    flow: "side_chat",
+    flowPath: SIDE_FLOW,
+    connection: null,
+    model: null,
+    configSha256: null,
+    replacesRunId: null,
+    createdAt: at(1),
+  })
+  h.office.cards!.sweep()
+  expect(status(h, side.id)).toBe("ended")
+  const row = h.store.getRun(runId)!
+  expect([row.endReason, row.endedAt]).toEqual([OFFICE_STOPPED, null])
+})
+
+test("a side chat stored starting at the sweep leaves a run with a log to yian", async () => {
+  const h = await sideHarness(await fakeLlm())
+  const asker = h.store.createSession(session({ cwd: h.folder }))
+  const q = h.store.addQuestion(question(asker.id))
+  const runId = newId()
+  const side = h.store.createSession(
+    session({ kind: "side", status: "starting", question_id: q.id, cwd: h.folder, run_ids: [runId] }),
+  )
+  h.store.updateQuestion(q.id, { side_session_id: side.id })
+  h.store.addRun({
+    runId,
+    sessionId: side.id,
+    driver: "minh",
+    flow: "side_chat",
+    flowPath: SIDE_FLOW,
+    connection: null,
+    model: null,
+    configSha256: null,
+    replacesRunId: null,
+    createdAt: at(1),
+  })
+  fs.mkdirSync(path.join(h.office.paths.runs, runId), { recursive: true })
+  fs.writeFileSync(path.join(h.office.paths.runs, runId, "log.jsonl"), "")
+  h.office.cards!.sweep()
+  expect(status(h, side.id)).toBe("ended")
+  expect(h.store.getRun(runId)!.endReason).toBeNull()
 })
 
 test("a side chat resumes after an office restart", async () => {

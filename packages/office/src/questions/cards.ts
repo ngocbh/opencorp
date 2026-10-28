@@ -1,5 +1,7 @@
 /** Question-card actions (answer, chat about this, send back, stop) and the side chats they open. */
+import fs from "node:fs"
 import os from "node:os"
+import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { CompanyDefaults, OFFICE, Session, now } from "@opencorp/protocol"
 import type { Hooks } from "../chat/hooks.ts"
@@ -9,7 +11,7 @@ import type { Transcript } from "../chat/transcript.ts"
 import { loadRepo } from "../company/loader.ts"
 import type { Office } from "../daemon/office.ts"
 import { strip } from "../perm/redact.ts"
-import { CARD_CLOSED } from "../runs/outcomes.ts"
+import { CARD_CLOSED, OFFICE_STOPPED } from "../runs/outcomes.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store, newId } from "../store/store.ts"
 import { errorName } from "../worker/rpc.ts"
 import type { Answers } from "./ask.ts"
@@ -87,9 +89,10 @@ export class Cards {
   /** Send-backs and discussion copies, one at a time, so a copy can't replace a send-back's note before the answer
    *  lands. */
   #discussion: Promise<unknown> = Promise.resolve()
-  /** Side chat opens, one at a time, so a question gets one side session. Its own queue: an open waits on the
-   *  harness, which a copy must not wait behind. */
-  #sides: Promise<unknown> = Promise.resolve()
+  /** Side chat opens, one at a time per question, so a question gets one side session; by question id. Its own
+   *  queues: an open waits on the harness (a reopen on its last run's cancel), which a copy or another card's open
+   *  must not wait behind. */
+  readonly #sides = new Map<string, Promise<unknown>>()
   /** Side chat ends, one at a time. Its own queue: an end waits on the harness, which a send-back or an open may be
    *  waiting on too. */
   #closing: Promise<unknown> = Promise.resolve()
@@ -139,7 +142,7 @@ export class Cards {
     if (actor === undefined) throw new HarnessError(501, "not_implemented", "this office has no side chats")
     const refusal = this.refuseExit(undefined, text)
     if (refusal) throw new HarnessError(422, "refused", refusal)
-    const side = await this.#serialSide(async () => {
+    const side = await this.#serialSide(questionId, async () => {
       const current = this.#open(questionId)
       const stored = current.side_session_id ? this.store.getSession(current.side_session_id) : undefined
       if (stored === undefined) return this.#createSide(actor, current, by)
@@ -231,7 +234,7 @@ export class Cards {
    *  opens and ends) to finish. */
   async close(): Promise<void> {
     this.#unlisten()
-    await Promise.all([this.#discussion, this.#sides, this.#closing])
+    await Promise.all([this.#discussion, ...this.#sides.values(), this.#closing])
   }
 
   /** `answerCheck`: refuse an answer that doesn't fit its card. */
@@ -306,8 +309,8 @@ export class Cards {
    * At start, after the actor resumed what it could: expire open questions of sessions with no live run, and end
    * side sessions whose question is closed. A side session still `starting` is ended at once, in the store: no
    * `openSide` runs at start, so an office stop came inside its start, and restore found no run of it to resume (one
-   * it resumed is no longer `starting`). A run that start stored but never ran keeps no office end reason, as Python
-   * left it.
+   * it resumed is no longer `starting`). Its run, when stored with no log (its worker never started it), ends as the
+   * office stopped, with no end time.
    */
   sweep(): void {
     for (const q of this.store.listQuestions({ status: "open" })) {
@@ -319,6 +322,11 @@ export class Cards {
       if (side.status === "starting") {
         if (question?.status === "stale") this.snapshot(question)
         this.ended(this.store.updateSession(side.id, notWaiting("ended")))
+        const runId = side.run_ids.at(-1)
+        // A run with a log keeps whatever yian made of it: an office end reason would hide yian's outcome.
+        if (runId !== undefined && !fs.existsSync(path.join(this.office.paths.runs, runId, "log.jsonl"))) {
+          this.store.sweepRuns([runId], OFFICE_STOPPED)
+        }
       } else if (question === undefined || question.status !== "open") {
         this.#close(side.id, question)
       }
@@ -376,16 +384,21 @@ export class Cards {
     }
   }
 
-  /** Runs `body` on the side chat queue, after every body queued before it, failed or not. */
-  #serialSide<T>(body: () => Promise<T>): Promise<T> {
-    const run = this.#sides.then(() => body())
-    this.#sides = run.catch(() => undefined)
+  /** Runs `body` on question `questionId`'s side chat queue, after every body queued on it before, failed or not. */
+  #serialSide<T>(questionId: string, body: () => Promise<T>): Promise<T> {
+    const run = (this.#sides.get(questionId) ?? Promise.resolve()).then(() => body())
+    const tail = run.catch(() => undefined)
+    this.#sides.set(questionId, tail)
+    // Dropped once idle, so the map holds only questions with an open queued or running.
+    void tail.then(() => {
+      if (this.#sides.get(questionId) === tail) this.#sides.delete(questionId)
+    })
     return run
   }
 
   /** Stores `question`'s side session, opened by `by`, with its seed, and starts it. Refused 409 `not_open` when
    *  the question has no session; its spec is built before anything is stored, so a missing flow or a refused
-   *  folder stores nothing. */
+   *  folder stores nothing. A refused spec, or a seed or session that can't be stored, removes the session dir. */
   async #createSide(actor: SideActor, question: QuestionRecord, by: string | null): Promise<SessionRecord> {
     const asker = this.store.getSession(question.session_id)
     if (asker === undefined) throw new HarnessError(409, "not_open", `question ${question.id} has no session`)
@@ -417,9 +430,21 @@ export class Cards {
       created_at: t,
       updated_at: t,
     })
-    await actor.spec(side)
-    writeSeed(this.office.paths.sessionDir(side.id), seed)
-    const created = this.store.createSession(side)
+    const dir = this.office.paths.sessionDir(side.id)
+    let created: SessionRecord
+    try {
+      await actor.spec(side)
+      writeSeed(dir, seed)
+      created = this.store.createSession(side)
+    } catch (error) {
+      // The spec made its tmp dir there, and the seed may be in it; the id is new, so nothing else uses the dir.
+      try {
+        fs.rmSync(dir, { recursive: true, force: true })
+      } catch (failure) {
+        actor.log(`side session ${side.id}'s folder can't be removed (${errorName(failure)})`)
+      }
+      throw error
+    }
     this.store.updateQuestion(question.id, { side_session_id: side.id })
     await actor.startRun(side.id)
     return created
