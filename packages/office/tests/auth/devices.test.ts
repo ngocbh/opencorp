@@ -90,7 +90,7 @@ test("only the person or the ceo changes a humans devices", async () => {
   expect(await refusal(addDevice(g, "minh", device("mac"), "ngocbh"))).toEqual([
     422,
     "not_a_human",
-    "@minh is an agent; agents have no devices",
+    "the person is an agent; agents have no devices",
   ])
   expect(await refusal(addDevice(g, "ngocbh", device("mac"), "ava"))).toEqual([
     403,
@@ -100,7 +100,7 @@ test("only the person or the ceo changes a humans devices", async () => {
   expect(await refusal(setPassword(g, "minh", PASSWORD, "ngocbh"))).toEqual([
     422,
     "not_a_human",
-    "@minh is an agent; agents have no password",
+    "the person is an agent; agents have no password",
   ])
   expect(await refusal(setPassword(g, "ngocbh", PASSWORD, "ava"))).toEqual([
     403,

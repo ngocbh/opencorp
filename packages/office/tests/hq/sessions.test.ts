@@ -120,6 +120,8 @@ test("only a human at head gets a session", async () => {
   for (const handle of ["minh", "nobody"]) {
     const caught = await httpError(s.issue(handle, ISSUE))
     expect([caught.status, caught.code]).toEqual([422, "not_a_human"]) // as on the socket
+    // A 422 says which field failed, never its value.
+    expect(caught.message).toBe("the person isn't a human in the company at HEAD")
   }
 })
 

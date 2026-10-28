@@ -54,7 +54,9 @@ test("pairing never logs the code", async () => {
 
 test("the handle must be a known human", async () => {
   const { sock } = await setup()
-  expect((await sock.post("/hq/pair", { handle: "minh" })).json().error).toBe("not_a_human")
+  const refused = (await sock.post("/hq/pair", { handle: "minh" })).json()
+  // A 422 says which field failed, never its value.
+  expect(refused).toEqual({ error: "not_a_human", message: "the person is an agent; agents don't sign in to HQ" })
   expect((await sock.post("/hq/pair", { handle: "nobody" })).status).toBe(404)
 })
 
