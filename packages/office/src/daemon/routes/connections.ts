@@ -214,6 +214,8 @@ export async function remove(ctx: RequestContext, params: Params): Promise<Ack> 
   const { connections, models } = ctx.office
   await guarded(ctx.office, () => connections.remove(name))
   models.invalidate(name)
+  // Not awaited: a parked worker on it holds its key until it exits, which the reply doesn't wait for.
+  void ctx.office.harness?.connectionsChanged?.()
   // Not awaited: the reply doesn't wait for the listings; warm never rejects.
   void models.warm()
   return { ok: true }

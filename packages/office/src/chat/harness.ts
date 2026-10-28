@@ -480,6 +480,12 @@ export class ChatHarness implements SessionHarness {
     return new Live(runs)
   }
 
+  /** Closes each parked worker whose connection was removed, re-keyed or edited (`SessionActor.connectionsChanged`);
+   *  resolves once those have exited. Never rejects. */
+  async connectionsChanged(): Promise<void> {
+    await Promise.all([...this.#actors.values()].map((actor) => actor.connectionsChanged()))
+  }
+
   /**
    * At office start, after the run sweep: each live yian chat's actor restores its session from where yian's log
    * says its run stands (`SessionActor.restore`), one at a time; then the Codex sessions restore theirs. An actor

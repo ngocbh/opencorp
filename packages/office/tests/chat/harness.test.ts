@@ -1563,6 +1563,23 @@ test("abandon ends a live session with the reason and cancels its run", async ()
   expect([late.status, late.code]).toEqual([409, "not_live"])
 })
 
+test("a connection change releases the parked workers of its sessions only", async () => {
+  const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
+  const onOffice = await start(h)
+  const onSecond = await start(h, { connection: "second" })
+  await waitFor(() => [onOffice, onSecond].every((s) => h.registry.get(s.id)?.parked === true), {
+    what: "the workers to park",
+  })
+  const removed = h.registry.get(onSecond.id)!
+  const kept = h.registry.get(onOffice.id)!
+  await h.office.connections.remove("second")
+  await h.harness.connectionsChanged()
+  expect(removed.returncode).toBe(0)
+  expect(h.registry.get(onSecond.id)).toBeUndefined()
+  expect(h.registry.get(onOffice.id)).toBe(kept)
+  expect(kept.parked).toBe(true)
+})
+
 test("the office stop leaves no parked worker", async () => {
   const h = await makeHarness(await fakeLlm())
   const s = await h.harness.startSession("minh", h.folder)

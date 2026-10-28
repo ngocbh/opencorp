@@ -498,6 +498,16 @@ test("a removed name comes back as a new name", async () => {
   expect((await del(sock, "/connections/azure", owner)).status).toBe(404)
 })
 
+test("a removed connection releases the parked workers that use it", async () => {
+  const { office, sock } = await setup()
+  const owner = await asOwner(office)
+  const changed: string[] = []
+  office.harness = { connectionsChanged: async () => void changed.push("changed") } as unknown as Office["harness"]
+  await office.connections.put("second", azureFile())
+  expect((await del(sock, "/connections/second", owner)).status).toBe(200)
+  expect(changed).toEqual(["changed"])
+})
+
 /** The 409 a connection that can't be used answers: the provider error's text goes to the office log. */
 const UNUSABLE = { error: "connection_unusable", message: "the connection can't be used now; see the office log" }
 
