@@ -672,18 +672,20 @@ function newestUnder(dir: string): number {
   return newest
 }
 
+/** The source folders of the code the office runs from `checkout`: the office, protocol, CLI and Yian sources. */
+export function sourceRoots(checkout: string): string[] {
+  return ["office", "protocol", "cli", "yian"].map((pkg) => path.join(checkout, "packages", pkg, "src"))
+}
+
 /**
  * The newest modification time (ms) of the code the office runs from a checkout command
- * (`[bun, ...flags, <checkout>/packages/cli/src/main.ts]`): the office, protocol and CLI sources and Yian's. 0 for a
- * compiled binary, or when nothing is found.
+ * (`[bun, ...flags, <checkout>/packages/cli/src/main.ts]`): the files under `sourceRoots`. 0 for a compiled binary,
+ * or when nothing is found.
  */
 export function newestSource(command: readonly [string, ...string[]]): number {
   // npm installs date every file 1985, so a binary's dates say nothing; VERSION catches an upgrade.
   if (command.length < 2) return 0
-  const checkout = installPaths(command)[0]!
-  const roots = ["office", "protocol", "cli"].map((pkg) => path.join(checkout, "packages", pkg, "src"))
-  roots.push(path.join(checkout, "packages", "yian", "ts", "src"))
-  return Math.max(0, ...roots.map(newestUnder))
+  return Math.max(0, ...sourceRoots(installPaths(command)[0]!).map(newestUnder))
 }
 
 /** Whether `info` is this office's daemon (`launch`'s home), runs this install's version, and started after its code

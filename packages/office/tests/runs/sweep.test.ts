@@ -5,6 +5,7 @@ import path from "node:path"
 import type { RunIndexRow, RunInspection, RunStatus } from "@ngocbh/yian/run"
 import { Inspections, Live, YianRuns, statusOf, sweep } from "../../src/runs/records.ts"
 import { DEBRIEF, OFFICE, OFFICE_STOPPED } from "../../src/runs/outcomes.ts"
+import { SCHEMA } from "../../src/runs/reader.ts"
 import { newId, type RunRow, type SessionRecord, type Store } from "../../src/store/store.ts"
 import { tempDir } from "../helpers.ts"
 import { openStore, session } from "../store/helpers.ts"
@@ -57,7 +58,7 @@ function inspection(status: RunStatus): RunInspection {
     inFlight: [],
     crashedAttempts: new Map(),
     runId: null,
-    schema: 22,
+    schema: SCHEMA,
     flowFingerprint: null,
     learnable: false,
     lastSeq: 3,

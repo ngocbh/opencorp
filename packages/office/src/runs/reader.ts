@@ -28,7 +28,7 @@ import { cutReason } from "../store/store.ts"
 import { recordedKinds } from "./nodes.ts"
 
 /** The run-log schema this office reads: yian's SCHEMA_VERSION at the submodule pin. */
-export const SCHEMA = 22
+export const SCHEMA = 23
 /** Every this-many records, the index keeps the record's byte offset, so a page seeks near its first record. */
 export const SPARSE_EVERY = 64
 /** The index also keeps the offset of a record that starts this many bytes or more past its last kept one, so a seek

@@ -35,6 +35,14 @@ test("chat template loads", async () => {
   expect((await loadConfined(ROOT, CHAT)).name).toBe("chat")
 })
 
+test.each(fs.readdirSync(path.join(ROOT, "shared", "flows")).filter((name) => name.endsWith(".yaml")))(
+  "every template flow loads [%s]",
+  async (name) => {
+    const file = path.join(ROOT, "shared", "flows", name)
+    expect((await loadConfined(ROOT, file)).name).toBe(read(file).id)
+  },
+)
+
 test("chat template takes the person into the replys system prompt", () => {
   const flow = read(CHAT)
   expect(flow.input).toHaveProperty("person")
@@ -188,6 +196,31 @@ test("an interrupted reply with no text adds no empty assistant message to the n
   expect(fake.requests().length).toBe(2)
   const assistants = requestMessages(fake, 1).filter((m) => m.role === "assistant")
   expect(assistants.filter((m) => !m.content && !m.tool_calls)).toEqual([])
+})
+
+test("an interrupt after a send and before its reply starts stops that reply and the next message is answered", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Answering both." })
+  const job = await waitingChat(fake)
+  const stop = { id: "cut", op: "interrupt", inbox: "messages" } as const
+  const stopped = await advance(job, fake, [send("s1", "one"), stop])
+  expect(stopped.replies.find((reply) => reply.id === "cut")).toEqual({
+    type: "deliver_reply",
+    id: "cut",
+    seq: null,
+    closed: [],
+  })
+  expect(fake.requests()).toEqual([])
+  expect(succeeded(stopped, "chat#0/reply").map((reply) => [reply.interrupted, reply.output])).toEqual([[true, null]])
+  expect(waitingAt(stopped)).toEqual(["chat#1/heard"])
+  const rec = await advance(job, fake, [send("s2", "two")])
+  expect(fake.requests().length).toBe(1)
+  expect(requestMessages(fake, 0).slice(1)).toEqual([
+    { role: "user", content: "one" },
+    { role: "user", content: "[interrupted by the user]" },
+    { role: "user", content: "two" },
+  ])
+  expect(waitingAt(rec)).toEqual(["chat#2/heard"])
 })
 
 test("the author of a message reaches the request", async () => {

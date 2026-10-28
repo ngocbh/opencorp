@@ -249,6 +249,31 @@ test("esc answers the models question and keeps the run", async () => {
   expect(await asked(fake, 2)).toContain("first-turn-text")
 })
 
+test("esc right after sending stops that reply before it calls the model and the next prompt is answered", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Answering both." })
+  const h = await makeHarness(fake)
+  const { id } = await start(h)
+  await asleep(h, id)
+  // Not awaited: the Esc is queued behind the send, so it reaches the run before the reply starts.
+  const sent = h.harness.prompt(id, "first-turn-text")
+  await h.harness.interrupt(id)
+  expect(await sent).toBe("turn")
+  await waitFor(() => status(h, id) === "idle", { what: "the stopped reply" })
+  await asleep(h, id)
+  expect(fake.requests()).toEqual([])
+  expect(texts(h, id)).toEqual(["[interrupted]"])
+  expect(texts(h, id, "user")).toEqual(["first-turn-text"])
+  expect(await h.harness.prompt(id, "again")).toBe("turn")
+  await waitFor(() => same(texts(h, id), ["[interrupted]", "Answering both."]) && status(h, id) === "idle", {
+    what: "the next reply",
+  })
+  expect(fake.requests()).toHaveLength(1)
+  expect(texts(h, id, "user")).toEqual(["first-turn-text", "again"])
+  // The run's memory kept the stopped turn's message.
+  expect(await asked(fake, 1)).toContain("first-turn-text")
+})
+
 test("max turns ends the session", async () => {
   const fake = await fakeLlm()
   const h = await makeHarness(fake, { defaults: { max_turns: 2 } })

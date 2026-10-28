@@ -207,7 +207,7 @@ function applier(log: string, env: Env, codeRoot: string): (delivery: Delivery) 
         case "close":
           return { seq: await closeInbox(log, delivery.inbox, options) }
         case "interrupt":
-          return { seq: null, closed: (await interrupt(log, delivery.inbox, options)).map((call) => call.callId) }
+          return { seq: null, closed: (await interrupt(log, delivery.inbox, options)).calls.map((call) => call.callId) }
         case "cancel":
           return { seq: null, closed: (await cancel(log, options)).map((call) => call.callId) }
       }

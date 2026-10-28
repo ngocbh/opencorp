@@ -104,9 +104,9 @@
         "@opencorp/office": "workspace:*",
       },
     },
-    "packages/yian/ts": {
+    "packages/yian": {
       "name": "@ngocbh/yian",
-      "version": "0.0.0",
+      "version": "0.0.4",
       "bin": {
         "yian": "dist/src/cli/index.js",
       },
@@ -281,7 +281,7 @@
 
     "@msgpackr-extract/msgpackr-extract-win32-x64": ["@msgpackr-extract/msgpackr-extract-win32-x64@3.0.4", "", { "os": "win32", "cpu": "x64" }, "sha512-CmCXPQrkbwExx3j946/PtHWHbYJiCRBRDl4BlkRQcJB/YOwQxJRTpoo7aTsortjgoJ1x7opzTSxn7C+ASSLVjQ=="],
 
-    "@ngocbh/yian": ["@ngocbh/yian@workspace:packages/yian/ts"],
+    "@ngocbh/yian": ["@ngocbh/yian@workspace:packages/yian"],
 
     "@opencorp/app": ["@opencorp/app@workspace:packages/app"],
 

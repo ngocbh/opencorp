@@ -3,7 +3,7 @@
   "license": "MIT",
   "private": true,
   "packageManager": "bun@1.4.2",
-  "workspaces": ["packages/*", "packages/yian/ts"],
+  "workspaces": ["packages/*"],
   "catalog": {
     "@kobalte/core": "0.13.13",
     "@playwright/test": "1.59.1",

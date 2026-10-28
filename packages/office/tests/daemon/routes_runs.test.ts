@@ -8,7 +8,7 @@ import { expect, type Mock, onTestFinished, setDefaultTimeout, spyOn, test } fro
 import type { RunIndexRow } from "@ngocbh/yian/run"
 import type { LiveJoin, LiveRelay, LiveWorker } from "../../src/daemon/live.ts"
 import type { Office } from "../../src/daemon/office.ts"
-import { HUGE_LINE, readEvents, refresh } from "../../src/runs/reader.ts"
+import { HUGE_LINE, readEvents, refresh, SCHEMA } from "../../src/runs/reader.ts"
 import { Live, type LiveRun } from "../../src/runs/records.ts"
 import { WORKER_STOPPED } from "../../src/runs/outcomes.ts"
 import { RunLogs } from "../../src/runs/service.ts"
@@ -285,7 +285,7 @@ async function servedQuietly(): Promise<{ office: Office; sock: string }> {
  *  log of two turns, one line in `schema`, the bytes `log`, or none. */
 async function withLog(
   office: Office,
-  { schema = 22n, log = true }: { schema?: bigint; log?: Buffer | boolean } = {},
+  { schema = BigInt(SCHEMA), log = true }: { schema?: bigint; log?: Buffer | boolean } = {},
 ): Promise<string> {
   const s = office.store.createSession(session({ status: "ended", repo_commit: await office.git.head() }))
   const runId = newId()
@@ -305,7 +305,7 @@ async function withLog(
     const file = office.runs.logPath(runId)
     fs.mkdirSync(path.dirname(file), { recursive: true })
     if (Buffer.isBuffer(log)) fs.writeFileSync(file, log)
-    else if (schema === 22n) chatLog(file)
+    else if (schema === BigInt(SCHEMA)) chatLog(file)
     else fs.writeFileSync(file, line(0, "run_started", {}, { schema }))
   }
   return runId

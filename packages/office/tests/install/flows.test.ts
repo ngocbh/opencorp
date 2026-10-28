@@ -13,7 +13,7 @@ import { fakeLlm } from "../chat/helpers.ts"
 setDefaultTimeout(30_000)
 
 const DIR = fileURLToPath(new URL("../../src/install/flows/", import.meta.url))
-const FLOWS = ["check_model.yaml", "init.yaml"]
+const FLOWS = fs.readdirSync(DIR).filter((name) => name.endsWith(".yaml"))
 
 /** A setup flow as the office loads its embedded text. */
 function load(name: string) {
@@ -31,7 +31,7 @@ function nodes(flow: Record<string, any>): Record<string, any>[] {
   return top.flatMap((node) => [node, ...(node.kind === "loop" && node.nodes ? Object.values<any>(node.nodes) : [])])
 }
 
-test.each(FLOWS)("both setup flows load on ts yian [%s]", async (name) => {
+test.each(FLOWS)("every setup flow loads on ts yian [%s]", async (name) => {
   const base = path.basename(name, ".yaml")
   expect((await loadConfined(DIR, path.join(DIR, name))).name).toBe(base)
   expect((await load(name)).name).toBe(base)

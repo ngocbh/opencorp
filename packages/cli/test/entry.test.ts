@@ -309,7 +309,7 @@ test("the CODE worker shim only imports the code-worker entry of yian", () => {
     "@ngocbh/yian/code-worker",
   ])
   const resolved = Bun.resolveSync("@ngocbh/yian/code-worker", path.join(CHECKOUT, "packages/cli"))
-  expect(fs.realpathSync(resolved)).toBe(path.join(CHECKOUT, "packages/yian/ts/src/nodes/code/worker.ts"))
+  expect(fs.realpathSync(resolved)).toBe(path.join(CHECKOUT, "packages/yian/src/nodes/code/worker.ts"))
 })
 
 test("the runs indexer shim only imports the run index thread of the office", () => {

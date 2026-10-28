@@ -195,15 +195,21 @@ test.each([true, false])(
     const sent = out.filter(([name]) => name !== "interrupt")
     for (const [, got] of sent) expect(["turn", "queued", "steer"]).toContain(got as string)
     const accepted = sent.map(([name]) => name)
+    // Not every message reaches a model request: the interrupt can stop the reply of the turn that took them.
     await waitFor(
       () => {
-        const asked = JSON.stringify(fake.requests())
-        return accepted.every((text) => asked.includes(text)) && status(o, sid) === "idle"
+        const user = texts(o, sid, "user").join(" ")
+        return accepted.every((text) => user.includes(text)) && status(o, sid) === "idle"
       },
       { what: "every accepted message" },
     )
-    const user = texts(o, sid, "user").join(" ")
-    for (const text of accepted) expect(user).toContain(text)
+    // The next reply's request carries every accepted message, so the run kept them all.
+    await actor.prompt("last")
+    const heard = () => {
+      const request = JSON.stringify(fake.requests().at(-1)?.messages ?? [])
+      return ["last", ...accepted].every((text) => request.includes(text))
+    }
+    await waitFor(() => heard() && status(o, sid) === "idle", { what: "the last reply" })
     expect(ended).toEqual([])
   },
 )
