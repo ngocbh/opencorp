@@ -395,22 +395,25 @@ test("a repo fsmonitor does not run", async () => {
 test.each(["clean", "smudge", "process"])("a repo filter driver does not run [%s]", async (key) => {
   const { tmp, company, g } = setup()
   const wire = tripwire(tmp, "exec cat")
-  // A subsection may hold dots, `=` and capitals, which `-c name=value` can't carry.
-  for (const name of ["evil", "Evil.a=b"]) {
+  // A subsection may hold dots, `=` and capitals, which `-c name=value` can't carry, or be empty.
+  for (const name of ["evil", "Evil.a=b", ""]) {
     git(company, "config", `filter.${name}.${key}`, wire.script)
     git(company, "config", `filter.${name}.required`, "true")
   }
   fs.mkdirSync(path.join(company, ".git/info"), { recursive: true })
-  fs.writeFileSync(path.join(company, ".git/info/attributes"), "*.md filter=evil\n*.yaml filter=Evil.a=b\n")
+  const attributes = "*.md filter=evil\n*.yaml filter=Evil.a=b\n*.txt filter=\n"
+  fs.writeFileSync(path.join(company, ".git/info/attributes"), attributes)
   fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
   expect(await g.commitHandEdits()).toEqual([PROFILE])
   fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
-  await g.commit(["groups/eng.yaml"], "edit group")
-  await g.unstage(["groups/eng.yaml"])
+  fs.writeFileSync(path.join(company, "notes.txt"), "notes\n")
+  await g.commit(["groups/eng.yaml", "notes.txt"], "edit group")
+  await g.unstage(["groups/eng.yaml", "notes.txt"])
   const pinned = await g.pin("HEAD")
   expect(wire.tripped()).toBe(false)
   expect(fs.readFileSync(path.join(pinned, PROFILE), "utf8")).toBe("# edited\n")
   expect(fs.readFileSync(path.join(pinned, "groups/eng.yaml"), "utf8")).toBe(GROUP)
+  expect(fs.readFileSync(path.join(pinned, "notes.txt"), "utf8")).toBe("notes\n")
 })
 
 test("a filter driver whose name isnt utf8 is refused", async () => {
