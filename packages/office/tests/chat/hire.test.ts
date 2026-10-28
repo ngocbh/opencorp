@@ -238,7 +238,7 @@ test("a preview leaves hand edits alone", async () => {
   expect([await git.head(), status(git.root)]).toEqual([head, " M people/minh/profile.md\n"])
 })
 
-test("issue messages name the company repo not the scratch copy", async () => {
+test("issue messages name the flow as written and never the scratch copy", async () => {
   const check =
     "  check:\n    kind: code\n    code: ./nope.ts:fn\n    input:\n      x: ${chat.output.summary}\n    output: str\n"
   const end = "output:\n  summary: ${chat.output.summary}\n"
@@ -248,8 +248,13 @@ test("issue messages name the company repo not the scratch copy", async () => {
   const named = preview.issues.filter((i) => i.message.includes("nope.ts"))
   expect(named.length).toBeGreaterThan(0)
   for (const issue of named) {
-    expect(issue.message).toContain(`${fs.realpathSync(git.root)}/shared/flows`)
+    // A confined load's CODE errors name the reference as written, with no absolute path (yian#1051), so the
+    // message carries the flow as person.yaml writes it and the `code:` file as the flow writes it.
+    expect(issue.message).toContain("shared/flows/chat.yaml")
+    expect(issue.message).toContain("'./nope.ts'")
+    // Nothing of the scratch copy, nor of the repo's own location, can leak through it.
     expect(issue.message).not.toContain("opencorp-hire-")
+    expect(issue.message).not.toContain(fs.realpathSync(git.root))
   }
   expect(named.find((i) => i.path === "people/lan/person.yaml")?.severity).toBe("error")
   expect(named.find((i) => i.path === "people/minh/person.yaml")?.severity).toBe("warning")

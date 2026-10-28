@@ -176,7 +176,8 @@ export class Hiring {
       const issues = (await lint(loadRepo(scratch))).map((i) => ({
         ...i,
         severity: known.has(key(i)) && !i.path.startsWith(`${base}/`) ? ("warning" as const) : i.severity,
-        // yian's CODE-root messages carry absolute paths; name the repo, not a deleted temp copy.
+        // A confined load's CODE errors carry no absolute path (yian#1051); this still covers a system
+        // error or a child file's message that names one, so no deleted temp copy is shown.
         message: i.message.replaceAll(scratch, repo),
       }))
       return [person, files, issues]
