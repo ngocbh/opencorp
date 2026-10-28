@@ -1316,6 +1316,34 @@ test("a side chat stored starting at the sweep ends its unstarted run as the off
   expect([row.endReason, row.endedAt]).toEqual([OFFICE_STOPPED, null])
 })
 
+test("a side chat stored starting at the sweep leaves a run with a log to yian", async () => {
+  const h = await sideHarness(await fakeLlm())
+  const asker = h.store.createSession(session({ cwd: h.folder }))
+  const q = h.store.addQuestion(question(asker.id))
+  const runId = newId()
+  const side = h.store.createSession(
+    session({ kind: "side", status: "starting", question_id: q.id, cwd: h.folder, run_ids: [runId] }),
+  )
+  h.store.updateQuestion(q.id, { side_session_id: side.id })
+  h.store.addRun({
+    runId,
+    sessionId: side.id,
+    driver: "minh",
+    flow: "side_chat",
+    flowPath: SIDE_FLOW,
+    connection: null,
+    model: null,
+    configSha256: null,
+    replacesRunId: null,
+    createdAt: at(1),
+  })
+  fs.mkdirSync(path.join(h.office.paths.runs, runId), { recursive: true })
+  fs.writeFileSync(path.join(h.office.paths.runs, runId, "log.jsonl"), "")
+  h.office.cards!.sweep()
+  expect(status(h, side.id)).toBe("ended")
+  expect(h.store.getRun(runId)!.endReason).toBeNull()
+})
+
 test("a side chat resumes after an office restart", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Postgres scales." }, { content: "SQLite is simpler." })
