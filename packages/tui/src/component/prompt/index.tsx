@@ -54,8 +54,8 @@ export type PromptProps = {
   /** While true the prompt stays visible but gives up the keys, even to a click, as a card above it has them. */
   inactive?: boolean
   onSubmit?: () => void
-  /** Called just before the text goes to the office; returns an undo for a send that fails. */
-  onSend?: () => (() => void) | void
+  /** Called with the text just before it goes to the office; returns an undo for a send that fails. */
+  onSend?: (text: string) => (() => void) | void
   /** Called when Esc interrupts the session, before the office is asked to. */
   onInterrupt?: () => void
   ref?: (ref: PromptRef | undefined) => void
@@ -730,7 +730,7 @@ export function Prompt(props: PromptProps) {
         sessionID = next.id
         await office.syncSession(sessionID)
       }
-      undo = props.onSend?.()
+      undo = props.onSend?.(text)
       await office.client.sessions.prompt(sessionID, { text })
       // A capped session holds the message until someone raises the cap.
       if (office.state.sessions.find((s) => s.id === sessionID)?.capped)

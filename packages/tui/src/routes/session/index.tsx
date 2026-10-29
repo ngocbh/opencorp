@@ -15,9 +15,10 @@ import {
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
 import type { ErrorPart, FilePart, Message, Part, TextPart, ToolPart } from "@opencorp/protocol"
+import { now } from "@opencorp/protocol"
 import { createTwoFilesPatch } from "diff"
 import { useRoute, useRouteData } from "../../context/route"
-import { SplitBorder } from "../../ui/border"
+import { EmptyBorder, SplitBorder } from "../../ui/border"
 import { useTuiPaths } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
 import { useTheme } from "../../context/theme"
@@ -54,8 +55,12 @@ import { QuestionCard } from "../chat/card"
 import { HarnessCard } from "../chat/harness-card"
 import { SideChat, SideHeader } from "../chat/side"
 import { freeze, frozenView, unfreeze, type Freeze } from "../chat/freeze"
+import { dropped, noPending, pendingMessage, published, sent } from "../chat/pending"
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
+
+/** A message the office doesn't have yet: a dashed edge where a message it has has a solid one. */
+const UnsentBorder = { ...EmptyBorder, vertical: "┆" }
 
 const sessionBindingCommands = [
   "session.sidebar.toggle",
@@ -175,6 +180,26 @@ export function Session() {
     // A newer Esc, or a switch to or from the side view, has since replaced the lifted freeze.
     return () => {
       if (frozen() === lifted && viewID() === view) setFrozen(f)
+    }
+  }
+  // What the person has sent that the office hasn't published yet, shown under the transcript.
+  const [pending, setPending] = createSignal(noPending())
+  // A pending message belongs to the transcript it was typed in; switching views drops it, as Esc's freeze is.
+  createEffect(on(viewID, () => setPending(noPending()), { defer: true }))
+  // Every user message the view holds, so a resync reconciles as a live `message.updated` does.
+  const userMessageIDs = createMemo(() => messages().flatMap((m) => (m.role === "user" ? [m.id] : [])))
+  createEffect(on(userMessageIDs, (ids) => setPending((p) => published(p, ids))))
+  /**
+   * Shows `text` as a message the office doesn't have yet and ends the freeze, so the person sees
+   * their own words before the office has taken the send; returns an undo for a send that fails.
+   */
+  function send(text: string) {
+    const lifted = lift()
+    const added = sent(pending(), text, now())
+    setPending(added.pending)
+    return () => {
+      lifted?.()
+      setPending((p) => dropped(p, added.id))
     }
   }
   // The side chat closes with its question.
@@ -606,6 +631,16 @@ export function Session() {
                       </Switch>
                     )}
                   </For>
+                  <For each={pending().messages}>
+                    {(message, index) => (
+                      <UserMessage
+                        index={shown().length + index()}
+                        unsent={true}
+                        onMouseUp={() => {}}
+                        message={pendingMessage(viewID() ?? route.sessionID, message)}
+                      />
+                    )}
+                  </For>
                 </scrollbox>
                 <box flexShrink={0}>
                   <Show
@@ -618,7 +653,7 @@ export function Session() {
                           <Prompt
                             visible={true}
                             ref={bind}
-                            onSend={lift}
+                            onSend={send}
                             onSubmit={() => toBottom()}
                             onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
                             sessionID={route.sessionID}
@@ -638,8 +673,8 @@ export function Session() {
                                   question={q()}
                                   session={sideSession()}
                                   onBack={() => setSideOf(undefined)}
-                                  onSend={() => {
-                                    const undo = lift()
+                                  onSend={(text) => {
+                                    const undo = send(text)
                                     toBottom()
                                     return undo
                                   }}
@@ -671,7 +706,7 @@ export function Session() {
                       visible={true}
                       inactive={cardFocused()}
                       ref={bind}
-                      onSend={lift}
+                      onSend={send}
                       onSubmit={() => toBottom()}
                       onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
                       sessionID={route.sessionID}
@@ -708,7 +743,7 @@ export function Session() {
   )
 }
 
-function UserMessage(props: { message: Message; onMouseUp: () => void; index: number }) {
+function UserMessage(props: { message: Message; onMouseUp: () => void; index: number; unsent?: boolean }) {
   const ctx = use()
   const text = createMemo(() =>
     props.message.parts
@@ -726,8 +761,8 @@ function UserMessage(props: { message: Message; onMouseUp: () => void; index: nu
         id={props.message.id}
         ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
         border={["left"]}
-        borderColor={theme.secondary}
-        customBorderChars={SplitBorder.customBorderChars}
+        borderColor={props.unsent ? theme.textMuted : theme.secondary}
+        customBorderChars={props.unsent ? UnsentBorder : SplitBorder.customBorderChars}
         marginTop={props.index === 0 ? 0 : 1}
       >
         <box
