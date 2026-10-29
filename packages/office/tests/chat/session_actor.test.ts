@@ -370,6 +370,31 @@ test("turn text changes what the turn gets but not the transcript", async () => 
   ])
 })
 
+test("turn text is prepended once per turn not once per message", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one", hold: true }, { content: "two" })
+  const o = await chatOffice(fake)
+  let fired = 0
+  o.hooks.turnContext.push(() => {
+    fired += 1
+    return "[context]"
+  })
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("a")
+  // Not `replyRunning`: the model holding the request leaves the actor in the window before it sees the reply
+  // node start, where nothing is in flight though the turn is already running. That is what "b" has to land in.
+  await fake.waitForRequests(1, 30_000)
+  await actor.prompt("b")
+  fake.release()
+  await waitFor(() => texts(o, sid).includes("two") && status(o, sid) === "idle", { what: "both replies" })
+  // "b" joined the turn that was running, so only "a" began one.
+  expect(fired).toBe(1)
+  const [firstAsk, secondAsk] = fake.requests()
+  expect(JSON.stringify(firstAsk!.messages)).toContain("[context]")
+  expect(JSON.stringify((secondAsk!.messages as unknown[]).at(-1))).not.toContain("[context]")
+  expect(texts(o, sid, "user")).toEqual(["a", "b"])
+})
+
 test("esc on a session asleep while its agent waits on a call spawns one advance that cuts it", async () => {
   const fake = await fakeLlm()
   fake.script(ASK_USER, { content: "spare" })
