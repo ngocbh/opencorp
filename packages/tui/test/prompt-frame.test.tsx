@@ -322,3 +322,53 @@ test("Esc on a waiting session interrupts it", async () => {
     office.stop()
   }
 })
+
+/** How often `text` shows in the frame `f`. */
+const count = (f: string, text: string) => f.split(text).length - 1
+
+test("the message a person sends shows at once, and the office's replaces it", async () => {
+  const office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  const app = await bootFrame(createStub(office), { sessionID: id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    // The office takes the send only once released, so nothing of it is published until then.
+    const release = office.hold("POST /sessions/:id/prompt")
+    app.input.typeText("fix the flaky test")
+    app.input.pressEnter()
+    // The transcript shows the typed text, marked unsent, beside the copy the input keeps until the send lands.
+    await app.until((f) => f.includes("┆") && count(f, "fix the flaky test") === 2)
+    release()
+    // The office's own message takes its place: one copy, no unsent mark, and the input is clear.
+    await app.until((f) => !f.includes("┆") && count(f, "fix the flaky test") === 1)
+    for (let i = 0; i < 10; i++) await app.setup.renderOnce()
+    expect(count(app.frame(), "fix the flaky test")).toBe(1)
+    expect(office.state.messages[id].filter((m) => m.role === "user")).toHaveLength(1)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a send the office refuses takes the unsent message with it", async () => {
+  const office = createFakeOffice({ notImplemented: ["POST /sessions/:id/prompt"] })
+  const id = office.state.sessions[0].id
+  const app = await bootFrame(createStub(office), { sessionID: id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    // The office answers the send, with its 501, only once released.
+    const release = office.hold("POST /sessions/:id/prompt")
+    app.input.typeText("try the other branch")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("┆") && count(f, "try the other branch") === 2)
+    release()
+    await app.until((f) => f.includes("not implemented yet"))
+    for (let i = 0; i < 10; i++) await app.setup.renderOnce()
+    // Nothing was sent, so nothing stays in the transcript; the text is back to being a draft.
+    expect(app.frame()).not.toContain("┆")
+    expect(count(app.frame(), "try the other branch")).toBe(1)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
