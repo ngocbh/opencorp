@@ -537,8 +537,8 @@ export class SessionActor implements LiveCalls {
     return p
   }
 
-  /** The `send` of `text` from `by` to the run's inbox, after the `turnContext` part unless the reply runs, and the
-   *  reply it gets if queued now. */
+  /** The `send` of `text` from `by` to the run's inbox, after the `turnContext` part when it starts a turn
+   *  (`#startsTurn`), and the reply it gets if queued now. */
   async #message(
     session: SessionRecord,
     text: string,
@@ -548,7 +548,7 @@ export class SessionActor implements LiveCalls {
     const author = by ?? (await this.#owner(session))
     const reply = this.#replyNow(session)
     const parts = [{ type: "text", text }]
-    if (!this.#replying()) {
+    if (this.#startsTurn(session)) {
       const results = this.#ctx.hooks.fire("turnContext", session, text, { first: session.turns === 0 })
       const context = results.find((result) => typeof result === "string")
       if (typeof context === "string") parts.unshift({ type: "text", text: context })
@@ -1059,6 +1059,23 @@ export class SessionActor implements LiveCalls {
     if (this.#capped()) return "queued"
     if (this.#replying()) return "steer"
     return this.#atTurn(session) ? "turn" : "queued"
+  }
+
+  /**
+   * Whether a message sent now starts a turn, and so gets the `turnContext` part before it. A run waiting at its
+   * turn does, and so does a fresh run that has taken nothing yet: `startManager` and `openSide` prompt one as soon
+   * as it starts, before its turn node waits, and that message is still its first turn's.
+   *
+   * A turn already running takes the message without context, since it joins that turn: its reply may be in flight,
+   * it may wait on a question the model asked, another message may be queued ahead of this one, or its take may
+   * have succeeded with nothing in flight yet -- the window between the take and the reply node starting, where
+   * `turnPending` is what still says a turn runs.
+   */
+  #startsTurn(session: SessionRecord): boolean {
+    if (this.#atTurn(session)) return true
+    const run = this.#run
+    if (run === null || run.outcome !== null || run.turnPending || run.waiting.size > 0) return false
+    return !this.#next.some((p) => p.delivery.op === "send")
   }
 
   /** Whether a reply node runs in the current worker. */
