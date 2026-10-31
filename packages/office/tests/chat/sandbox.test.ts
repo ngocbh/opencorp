@@ -1,4 +1,6 @@
 /** Harness tests that run workspace calls under the OS sandbox (Python's `tests/chat/test_sandbox.py`). */
+import fs from "node:fs"
+import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import type { ToolPart } from "@opencorp/protocol"
 import { waitFor } from "../helpers.ts"
@@ -48,6 +50,19 @@ test.if(sandboxAvailable())("esc kills a running shell call", async () => {
   expect(fake.requests()).toHaveLength(1)
   await h.harness.prompt(id, "again")
   await fake.waitForRequests(2)
+})
+
+test.if(sandboxAvailable())("end kills a running shell call", async () => {
+  const fake = await fakeLlm()
+  fake.script(shell("sleep 60.3; echo done > after_end.txt"), { content: "Next." })
+  const h = await makeHarness(fake)
+  const id = await shellRunning(h)
+  const began = performance.now()
+  await h.harness.end(id)
+  await waitFor(() => status(h, id) === "ended", { what: "the end" })
+  expect(performance.now() - began).toBeLessThan(10_000)
+  expect(await gone("60.3")).toBe(true)
+  expect(fs.existsSync(path.join(h.folder, "after_end.txt"))).toBe(false)
 })
 
 test.if(sandboxAvailable())("close all kills a running shell call", async () => {
