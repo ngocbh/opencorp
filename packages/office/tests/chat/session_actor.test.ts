@@ -544,8 +544,10 @@ test("end answers an office call in flight and interrupts the workspace", async 
   expect(o.workspace.interrupts).toBeGreaterThan(interrupts)
   // Answered by End itself, while the worker still waits on it, not at the worker's exit.
   const answered = replies[0]!.then((reply) => [reply, actor.hasWorker])
-  const late = new Promise((resolve) => setTimeout(() => resolve("unanswered"), 5_000))
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise((resolve) => (timer = setTimeout(() => resolve("unanswered"), 5_000)))
   expect(await Promise.race([answered, late])).toEqual([INTERRUPTED_CALL, true])
+  clearTimeout(timer)
   await waitFor(() => status(o, sid) === "ended", { what: "the end" })
 })
 
