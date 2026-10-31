@@ -18,7 +18,7 @@ import { EXIT_GRACE_MS, RegistryClosed, type SpawnLog, type Worker } from "../..
 import { cwdOf, envText, isGone, ps } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
 import { makeRegistry, recordFrames } from "../worker/helpers.ts"
-import { fakeLlm } from "./helpers.ts"
+import { fakeLlm, keyCopies, MIXED_KEY, refusingLlm } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -271,4 +271,24 @@ test("the key reaches the model and the start frame only", async () => {
   expect(lines).toContain(`ERROR could not remove the record of worker ${job.session_id} (Error)`)
   expect(fs.existsSync(path.join(dir, "worker.log"))).toBe(false)
   expect(fs.existsSync(dir)).toBe(false)
+})
+
+test("a copy of the key in another case or base64 never reaches the problem", async () => {
+  const probe = `probe-${crypto.randomUUID()}`
+  const url = await refusingLlm(`${probe} rejected ${keyCopies(MIXED_KEY).join(" ")}`)
+  const lines: string[] = []
+  const store = openStore()
+  const registry = makeRegistry(store, { log: (level, line) => void lines.push(`${level} ${line}`) })
+  const provider = Provider.parse({
+    llm_config: { provider: "vllm", model: "stub", api_key: MIXED_KEY },
+    env: { VLLM_BASE_URL: `${url}/v1` },
+  })
+
+  const problem = await oneReplyProblem(registry, provider, { log: (line) => void lines.push(line) })
+
+  expect(problem).toContain(`${probe} rejected [redacted] [redacted] [redacted]`)
+  for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) {
+    expect(problem).not.toContain(copy)
+    expect(lines.filter((line) => line.includes(copy))).toEqual([])
+  }
 })

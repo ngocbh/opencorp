@@ -12,10 +12,22 @@ import type { LoginsOptions } from "../../src/chat/logins.ts"
 import { DEADLINE_MS, type Lister, listModels, ownModels } from "../../src/chat/models.ts"
 import { type Provider, ProviderError } from "../../src/chat/provider.ts"
 import type { Office } from "../../src/daemon/office.ts"
-import { type ModelCheck, MAX_KEY_CHARS } from "../../src/install/onboard.ts"
+import { type ModelCheck, MAX_KEY_CHARS, modelProblem } from "../../src/install/onboard.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { RegistryClosed } from "../../src/worker/spawn.ts"
-import { APPROVED, CATALOG, PENDING, REFRESH, SIGNATURE, TOKENS, USERCODE, testScheduler } from "../chat/helpers.ts"
+import {
+  APPROVED,
+  CATALOG,
+  keyCopies,
+  MIXED_KEY,
+  PENDING,
+  REFRESH,
+  refusingLlm,
+  SIGNATURE,
+  TOKENS,
+  USERCODE,
+  testScheduler,
+} from "../chat/helpers.ts"
 import { git } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import { recordEvents } from "../store/helpers.ts"
@@ -66,8 +78,12 @@ class Checks {
 }
 
 /** An office with the office connection (anthropic, keyed `SENTINEL`), served with device tokens; `lister` stands
- *  in for the `Listings` fake. */
-async function setup({ auth, lister }: { auth?: LoginsOptions["auth"]; lister?: Lister } = {}) {
+ *  in for the `Listings` fake, and `checkModel` for the `Checks` fake. */
+async function setup({
+  auth,
+  lister,
+  checkModel,
+}: { auth?: LoginsOptions["auth"]; lister?: Lister; checkModel?: ModelCheck } = {}) {
   const lines: string[] = []
   const listings = new Listings()
   const checks = new Checks()
@@ -75,7 +91,7 @@ async function setup({ auth, lister }: { auth?: LoginsOptions["auth"]; lister?: 
     log: (m) => lines.push(m),
     models: { lister: lister ?? listings.list },
     logins: auth ? { auth } : {},
-    checkModel: checks.check,
+    checkModel: checkModel ?? checks.check,
   })
   // As buildOffice does, so makeOffice's cleanup cancels a sign-in still polling before the store closes.
   office.onStop.push(() => office.logins.closeAll())
@@ -686,6 +702,23 @@ test.each([
     expect(lines.filter((line) => line.includes(key))).toEqual([])
   }
   expect([listings.calls, checks.calls]).toEqual([[], []])
+  onlyOffice(office)
+})
+
+test("a refusal quoting the key in another case or base64 never echoes a copy", async () => {
+  const url = await refusingLlm(`bad key: ${keyCopies(MIXED_KEY).join(" and ")}`)
+  // The real check, in-process, at the fake host.
+  const { office, sock, lines } = await setup({
+    checkModel: (provider) => modelProblem(provider, { env: { ANTHROPIC_BASE_URL: url } }),
+  })
+  const owner = await asOwner(office)
+  const r = await post(sock, "/connections", owner, { provider: "anthropic", api_key: MIXED_KEY, model: "claude-x" })
+  expect([r.status, errorOf(r)]).toEqual([422, "model_refused"])
+  expect(json(r).message).toContain("bad key: [redacted] and [redacted] and [redacted]")
+  for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) {
+    expect(r.text).not.toContain(copy)
+    expect(lines.filter((line) => line.includes(copy))).toEqual([])
+  }
   onlyOffice(office)
 })
 

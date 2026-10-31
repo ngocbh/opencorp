@@ -31,7 +31,7 @@ import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
 import { isNew, missingFiles, type Owner, writeCompany } from "../company_template/index.ts"
 import { makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
-import { repr } from "../perm/redact.ts"
+import { redact as redactSecrets, repr } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
 import { PrivateFileError, writePrivate } from "../secrets.ts"
@@ -956,7 +956,9 @@ export async function runSetup(
   }
   if (message !== null) {
     const key = provider.llm_config?.api_key
-    if (typeof key === "string" && key) message = message.replaceAll(key, "***")
+    // Every form of the key, as chat runs scrub theirs: yian scrubs the key only as written and escaped, and a
+    // provider may quote it in another letter case or base64-encoded.
+    if (typeof key === "string" && key) message = redactSecrets(message, [], [key])
     message = redact(message).replace(/\.+$/, "")
   }
   return { result, message }

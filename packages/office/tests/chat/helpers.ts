@@ -2,6 +2,8 @@
  *  sign-in, faked. */
 import { expect, onTestFinished } from "bun:test"
 import fs from "node:fs"
+import http from "node:http"
+import type { AddressInfo } from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -59,6 +61,33 @@ export async function fakeLlm(): Promise<FakeLLM> {
   const fake = await FakeLLM.start()
   onTestFinished(() => fake.close())
   return fake
+}
+
+/** A started model server that refuses every POST with a 401 whose message is `message`, as a provider that quotes
+ *  the key it refuses does; its URL is `http://127.0.0.1:<port>`. Closed when the current test finishes. */
+export async function refusingLlm(message: string): Promise<string> {
+  const server = http.createServer((req, res) => {
+    req.resume()
+    res.writeHead(req.method === "POST" ? 401 : 404, { "content-type": "application/json" })
+    res.end(JSON.stringify({ type: "error", error: { type: "authentication_error", message } }))
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  onTestFinished(
+    () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections()
+        server.close(() => resolve())
+      }),
+  )
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+}
+
+/** A mixed-case key, so its lowercase and uppercase copies differ from it. */
+export const MIXED_KEY = "sk-MiXeD-7Qd93C10e5B2aZ"
+
+/** Copies of `key` that a provider may quote: in lowercase, in uppercase and base64-encoded. */
+export function keyCopies(key: string): string[] {
+  return [key.toLowerCase(), key.toUpperCase(), Buffer.from(key).toString("base64")]
 }
 
 // OpenAI's device sign-in, faked: its replies and a token whose signature and refresh are fake secrets.
