@@ -2121,13 +2121,19 @@ export class SessionActor implements LiveCalls {
     if (this.#rested) this.#arm(this.#waits ?? [])
   }
 
-  /** Moves the deliveries `run`'s worker never answered (but an `interrupt`), those it refused `not_started` and,
-   *  with `failed`, those that failed (but an `interrupt`), to the front of `#next`; answers the rest it was given. A
-   *  message a held fresh run answered early counts as never answered until a run takes it. */
-  #carry(run: WorkerRun, { failed = false }: { failed?: boolean } = {}): void {
+  /** Moves the deliveries `run`'s worker never answered (an `interrupt` only with `interrupts`), those it refused
+   *  `not_started` and, with `failed`, those that failed (an `interrupt` only with `interrupts`), to the front of
+   *  `#next`; answers the rest it was given. A message a held fresh run answered early counts as never answered until
+   *  a run takes it. */
+  #carry(
+    run: WorkerRun,
+    { failed = false, interrupts = false }: { failed?: boolean; interrupts?: boolean } = {},
+  ): void {
     const carry = run.given.filter((p) => {
       if (p.done && !p.early) return false
-      if (p.reply === null || (failed && typeof p.reply.failed === "string")) return p.delivery.op !== "interrupt"
+      if (p.reply === null || (failed && typeof p.reply.failed === "string")) {
+        return interrupts || p.delivery.op !== "interrupt"
+      }
       return p.reply.refused === "not_started"
     })
     this.#answerRest(
@@ -2208,11 +2214,11 @@ export class SessionActor implements LiveCalls {
   }
 
   /** `run`'s worker is gone with no outcome (`status` null), or its run `stopped` or `crashed`: the first time, a
-   *  plain `advance` takes over with what it carried (a fresh run, the old one ending `WORKER_REPLACED`, when the
-   *  run's record no longer gives what it ran on). After a worker gone with no outcome, one that can't start fails
-   *  the session (`#cantStartWhy`); after a `stopped` or `crashed` run, a failed spawn is only logged and the session
-   *  waits for the next message (an ending one fails, as `#spawnQuietly` says). Again before a `waiting` or
-   *  `succeeded` result, the session fails (`WORKER_STOPPED`). */
+   *  plain `advance` takes over with what it carried, an `interrupt` it never answered included (a fresh run, the old
+   *  one ending `WORKER_REPLACED`, when the run's record no longer gives what it ran on). After a worker gone with no
+   *  outcome, one that can't start fails the session (`#cantStartWhy`); after a `stopped` or `crashed` run, a failed
+   *  spawn is only logged and the session waits for the next message (an ending one fails, as `#spawnQuietly` says).
+   *  Again before a `waiting` or `succeeded` result, the session fails (`WORKER_STOPPED`). */
   async #died(run: WorkerRun, status: string | null): Promise<void> {
     this.#log(`session ${this.sessionId}: ${status === null ? "its worker exited (no outcome)" : `its run ${status}`}`)
     if (this.#deaths >= 1) {
@@ -2221,7 +2227,9 @@ export class SessionActor implements LiveCalls {
       return
     }
     this.#deaths += 1
-    this.#carry(run)
+    // The advance resumes the reply the interrupt was meant to cut; yian keeps a Stop that already took, so the
+    // interrupt sent again does nothing more.
+    this.#carry(run, { interrupts: true })
     if (status !== null) {
       await this.#spawnQuietly("advance", { moved: WORKER_REPLACED })
       return
@@ -2389,8 +2397,9 @@ export class SessionActor implements LiveCalls {
   /**
    * The closing rule: answers each of `pendings` that has no answer yet and isn't carried. A held `not_started` is
    * `503 cant_wake`, a held failure `failure` (by default `503 cant_wake` naming its type); a lost `interrupt` or
-   * `cancel`, or a dropped `complete` of a card's answer (its question stays answered), is resolved; any other
-   * delivery with no reply, a message's `complete` included, gets `fallback`.
+   * `cancel` (not carried: its worker returned a result, a fresh run replaced the run, or the session finished), or
+   * a dropped `complete` of a card's answer (its question stays answered), is resolved; any other delivery with no
+   * reply, a message's `complete` included, gets `fallback`.
    */
   #answerRest(pendings: readonly Pending[], fallback: HarnessError, failure?: HarnessError): void {
     for (const p of pendings) {

@@ -944,6 +944,61 @@ test("a lost ack is resent and a lost interrupt is dropped", async () => {
   expect(await sent).toBe("queued")
 })
 
+test("an esc its worker never answered is resent when the worker dies", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = workers[0]!
+  const sent = actor.prompt("hi")
+  await waitFor(() => first.deliveries.length === 1, { what: "the send" })
+  first.handlers.deliverReply(first.worker, { type: "deliver_reply", id: first.deliveries[0]!.id, seq: 4 })
+  expect(await sent).toBe("queued")
+  let answered = false
+  const cut = actor.interrupt().then(() => void (answered = true))
+  await waitFor(() => first.deliveries.length === 2, { what: "the interrupt" })
+  // The worker dies before it answers the interrupt, with no outcome.
+  first.handlers.exited(first.worker, 1)
+  await waitFor(() => workers.length === 2, { what: "the next worker" })
+  const second = workers[1]!
+  // Its advance resumes the reply the interrupt was meant to cut, so the interrupt goes again.
+  expect(second.job).toMatchObject({ kind: "advance", advance: true })
+  expect(second.job.deliver).toEqual([first.deliveries[1]!])
+  expect(answered).toBe(false)
+  second.handlers.deliverReply(second.worker, { type: "deliver_reply", id: first.deliveries[1]!.id, seq: 6 })
+  await cut
+  expect(answered).toBe(true)
+})
+
+test("an end its worker never answered resends its interrupt and close when the worker dies", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const first = workers[0]!
+  first.handlers.event(first.worker, { type: "event", name: "NodeStarted", data: { node_id: "chat#0/reply" } })
+  await actor.end()
+  expect(first.deliveries.map((d) => d.op)).toEqual(["interrupt", "close"])
+  first.handlers.exited(first.worker, 1)
+  await waitFor(() => workers.length === 2, { what: "the next worker" })
+  const second = workers[1]!
+  // In order: the resumed reply is cut before its turn reads the inbox closed.
+  expect(second.job.deliver).toEqual(first.deliveries)
+  for (const [seq, d] of second.job.deliver.entries()) {
+    second.handlers.deliverReply(second.worker, { type: "deliver_reply", id: d.id, seq: 6 + seq })
+  }
+  const succeeded = { type: "result", status: "succeeded", run_id: runId, output: null, failure: null, waits: [] }
+  second.handlers.result(second.worker, succeeded)
+  second.handlers.exited(second.worker, 0)
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  expect(o.kinds).toEqual(["chat", "advance"])
+})
+
 test("a settled wait is re-advanced once without progress", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
