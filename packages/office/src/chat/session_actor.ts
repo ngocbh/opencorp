@@ -652,7 +652,8 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * End: the session is `ending` at once, and its run gets an `interrupt` (while a reply runs or the agent waits on
+   * End: the session is `ending` at once, the workspace is interrupted and the office tool calls in flight are
+   * answered `INTERRUPTED_CALL` (as by Esc), and its run gets an `interrupt` (while a reply runs or the agent waits on
    * a model question) and a `close` of its inbox, whose turn then reads it closed, so the run succeeds and the
    * session ends. Resolves once they are queued; a second End does nothing. A spawn for them that fails fails the
    * session, and End throws its error. Over the cost cap a waiting run is ended the same way; a reply that runs is
@@ -669,9 +670,9 @@ export class SessionActor implements LiveCalls {
     })
   }
 
-  /** Marks the session ending and queues its run's `interrupt` (while a reply runs, `replying`, or the agent waits)
-   *  and `close`, spawning for them when no worker runs. A run restore found ended in yian ends the session at once,
-   *  as that run did. */
+  /** Marks the session ending, interrupts the workspace and answers the office tool calls in flight (as Esc does),
+   *  and queues its run's `interrupt` (while a reply runs, `replying`, or the agent waits) and `close`, spawning for
+   *  them when no worker runs. A run restore found ended in yian ends the session at once, as that run did. */
   async #end(session: SessionRecord, replying = this.#replying()): Promise<void> {
     if (this.#unresumable?.why === null) {
       // Yian ended the run: nothing is left to close, so the session ends as the run did.
@@ -681,6 +682,10 @@ export class SessionActor implements LiveCalls {
     }
     this.#ending = true
     this.#ctx.store.updateSession(this.sessionId, notWaiting("ending"))
+    // A reply blocked on a sandboxed shell or an office tool call can't read the interrupt until the call returns;
+    // and nobody will read what it returns, even when the end below fails.
+    this.#interruptWorkspace()
+    this.#answerCalls()
     let inbox: string
     try {
       // Restore may not have built the spec, and a folder gone or unsafe since fails its build.

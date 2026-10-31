@@ -487,9 +487,9 @@ test("an answer whose spawn failed goes with the next advance and is consumed", 
   expect(texts(o, sid, "user")).toEqual(["hi", "next"])
 })
 
-test("esc answers an office call in flight", async () => {
-  const fake = await fakeLlm()
-  fake.script({ tool_calls: [{ name: "slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
+/** An office whose `slow` tool call never returns, recording what the actor's handlers answer each tool call with:
+ *  `called` resolves once the call starts. */
+async function slowCallOffice(fake: Awaited<ReturnType<typeof fakeLlm>>) {
   let entered!: () => void
   const called = new Promise<void>((resolve) => (entered = resolve))
   const slow: OfficeTool = {
@@ -501,7 +501,6 @@ test("esc answers an office call in flight", async () => {
     },
   }
   const o = await chatOffice(fake, { groups: { toolbox: { slow } } })
-  // What the actor's handlers answer each tool call with.
   const replies: Promise<unknown>[] = []
   const recorded = (handlers: WorkerHandlers<Worker>) => {
     const toolCall = handlers.toolCall.bind(handlers)
@@ -515,6 +514,13 @@ test("esc answers an office call in flight", async () => {
   const { spawn, next } = o.registry
   o.registry.spawn = (job, sessionDir, handlers, options) => spawn(job, sessionDir, recorded(handlers), options)
   o.registry.next = (worker, job, handlers) => next(worker, job, recorded(handlers))
+  return { o, called, replies }
+}
+
+test("esc answers an office call in flight", async () => {
+  const fake = await fakeLlm()
+  fake.script({ tool_calls: [{ name: "slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
+  const { o, called, replies } = await slowCallOffice(fake)
   const { actor, sid } = await startActor(o)
   await actor.prompt("hi")
   await called
@@ -524,6 +530,23 @@ test("esc answers an office call in flight", async () => {
   expect(o.workspace.interrupts).toBeGreaterThan(interrupts)
   // The run goes on to its next turn.
   await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "the run at its next turn" })
+})
+
+test("end answers an office call in flight and interrupts the workspace", async () => {
+  const fake = await fakeLlm()
+  fake.script({ tool_calls: [{ name: "slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
+  const { o, called, replies } = await slowCallOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("hi")
+  await called
+  const interrupts = o.workspace.interrupts
+  await actor.end()
+  expect(o.workspace.interrupts).toBeGreaterThan(interrupts)
+  // Answered by End itself, while the worker still waits on it, not at the worker's exit.
+  const answered = replies[0]!.then((reply) => [reply, actor.hasWorker])
+  const late = new Promise((resolve) => setTimeout(() => resolve("unanswered"), 5_000))
+  expect(await Promise.race([answered, late])).toEqual([INTERRUPTED_CALL, true])
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
 })
 
 test("a stored question fires question stored once", async () => {
