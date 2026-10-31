@@ -12,7 +12,7 @@ import type { LoginsOptions } from "../../src/chat/logins.ts"
 import { DEADLINE_MS, type Lister, listModels, ownModels } from "../../src/chat/models.ts"
 import { type Provider, ProviderError } from "../../src/chat/provider.ts"
 import type { Office } from "../../src/daemon/office.ts"
-import type { ModelCheck } from "../../src/install/onboard.ts"
+import { type ModelCheck, MAX_KEY_CHARS } from "../../src/install/onboard.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { RegistryClosed } from "../../src/worker/spawn.ts"
 import { APPROVED, CATALOG, PENDING, REFRESH, SIGNATURE, TOKENS, USERCODE, testScheduler } from "../chat/helpers.ts"
@@ -667,6 +667,25 @@ test("a malformed add never echoes the key", async () => {
     body: `{"api_key": "${SENTINEL}"`,
   })
   expect([r.status, r.text.includes(SENTINEL)]).toEqual([422, false])
+  onlyOffice(office)
+})
+
+test.each([
+  ["too long", "k".repeat(MAX_KEY_CHARS + 1), "llm_config.api_key is too long (at most 16384 characters)"],
+  ["a space", " ", "llm_config.api_key must be printable ASCII with no leading or trailing spaces"],
+  ["a trailing newline", "k\n", "llm_config.api_key must be printable ASCII with no leading or trailing spaces"],
+  ["a leading tab", "\tsk-abc", "llm_config.api_key must be printable ASCII with no leading or trailing spaces"],
+  ["non-ascii", "sk-é-0123456789", "llm_config.api_key must be printable ASCII with no leading or trailing spaces"],
+] as const)("a key that cant be sent as a header is refused before any request [%s]", async (_case, key, message) => {
+  const { office, sock, listings, checks, lines } = await setup()
+  const owner = await asOwner(office)
+  const r = await post(sock, "/connections", owner, { provider: "openai", api_key: key, model: "gpt-5.5" })
+  expect([r.status, r.json()]).toEqual([422, { error: "invalid_connection", message }])
+  if (key.length > 8) {
+    expect(r.text).not.toContain(key)
+    expect(lines.filter((line) => line.includes(key))).toEqual([])
+  }
+  expect([listings.calls, checks.calls]).toEqual([[], []])
   onlyOffice(office)
 })
 
