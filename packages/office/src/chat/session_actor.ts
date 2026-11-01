@@ -734,11 +734,12 @@ export class SessionActor implements LiveCalls {
    * At office start: picks the session up from where yian's log says its run stands. A run yian ended
    * keeps that end: an ending session ends as the run did; any other sleeps, its questions stale, until a fresh run.
    * An unreadable log fails an ending session (`COULDNT_RESUME`), and a run that never started has an ending session
-   * ended again; any other sleeps until a fresh run. A waiting run's questions are reconciled and it sleeps, its
-   * timer armed, unless it can wake now. Over the cost cap any run sleeps. Any other run is advanced, and an ending
-   * session ended again. Until the actor's first worker, a run the record check finds moved ends `OFFICE_REPLACED`.
-   * A failure is logged by its type and fails the session, unless the office stops. Does nothing a second time, or
-   * once a worker runs or the session finished; `503 stopping` after `close`.
+   * ended again; any other sleeps until a fresh run, one that never started recorded `COULDNT_START` at once. A
+   * waiting run's questions are reconciled and it sleeps, its timer armed, unless it can wake now. Over the cost cap
+   * any run sleeps. Any other run is advanced, and an ending session ended again. Until the actor's first worker, a
+   * run the record check finds moved ends `OFFICE_REPLACED`. A failure is logged by its type and fails the session,
+   * unless the office stops. Does nothing a second time, or once a worker runs or the session finished; `503
+   * stopping` after `close`.
    */
   restore(): Promise<void> {
     return this.#command(async () => {
@@ -769,8 +770,10 @@ export class SessionActor implements LiveCalls {
     }
     const ending = session.status === "ending"
     if (!fs.existsSync(this.#logOf(runId))) {
-      // Its worker never started it: the record check makes the next advance a fresh run (`COULDNT_START`).
+      // Its worker never started it. Recorded now, so the run lists as failed from the start on, not only once the
+      // next message's fresh run replaces it (that end then writes nothing).
       if (ending) await this.#end(session, false)
+      else this.#ctx.store.endRun(runId, COULDNT_START)
       return
     }
     let inspection: RunInspection | null = null

@@ -334,9 +334,21 @@ test("a run log that was never written sleeps and its next message starts a fres
   // As a run whose worker never started it.
   fs.rmSync(path.join(o.office.paths.runs, old, "log.jsonl"))
   const before = o.kinds.length
-  await actor.restore()
-  expect(o.kinds.length).toBe(before)
-  expect(status(o, sid)).toBe("idle")
+  const errors = spyOn(console, "error")
+  try {
+    await actor.restore()
+    expect(o.kinds.length).toBe(before)
+    expect(status(o, sid)).toBe("idle")
+    // Recorded at restore, so Run Logs lists it failed now, not interrupted until the next message.
+    expect(o.office.store.getRun(old)).toMatchObject({ endReason: COULDNT_START, endedAt: expect.any(String) })
+    expect(o.office.runs.page().runs.find((r) => r.run_id === old)).toMatchObject({
+      status: "failed",
+      reason: COULDNT_START,
+    })
+    expect(errors.mock.calls.some((call) => String(call[0]).includes("has no recorded outcome"))).toBe(false)
+  } finally {
+    errors.mockRestore()
+  }
   expect(await say(o, actor, sid, "a")).toBe("one")
   expect(o.kinds.slice(before)).toEqual(["chat"])
   expect(session(o, sid).run_ids).toEqual([old, actor.runId!])
