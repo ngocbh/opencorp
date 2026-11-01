@@ -24,15 +24,18 @@ export function cookieName(req: IncomingMessage): string {
   return `opencorp_hq_${host.slice(host.lastIndexOf(":") + 1)}`
 }
 
-/** The request's HQ session cookie from its first Cookie header, or undefined. */
+/** The request's HQ session cookie: the last non-empty pair of its name in the first Cookie header, or undefined.
+ *  HQ sets one cookie, at `Path=/`, and browsers send longer paths first, so HQ's cookie comes after any same-named
+ *  one a page on another port planted at a deeper path. */
 export function cookieValue(req: IncomingMessage): string | undefined {
   const name = cookieName(req)
+  let value: string | undefined
   for (const part of (header(req, "cookie") ?? "").split(";")) {
     const pair = part.trim()
     const at = pair.indexOf("=")
-    if (at >= 0 && pair.slice(0, at) === name && at + 1 < pair.length) return pair.slice(at + 1)
+    if (at >= 0 && pair.slice(0, at) === name && at + 1 < pair.length) value = pair.slice(at + 1)
   }
-  return undefined
+  return value
 }
 
 /**
@@ -44,7 +47,8 @@ export function cookieValue(req: IncomingMessage): string | undefined {
  *
  * Takes the `node:http` request rather than the pipeline's `RequestInfo`, whose path is still percent-encoded and
  * whose headers join repeated Cookie values: the open requests are matched on the decoded path, as uvicorn decoded
- * it, and only the first Cookie header counts. The HQ pipeline is built per request and closes over `req`.
+ * it, and only the first Cookie header counts (its last pair of the cookie's name, as `cookieValue` says). The HQ
+ * pipeline is built per request and closes over `req`.
  */
 export async function browserAuth(
   sessions: Pick<BrowserSessions, "check">,

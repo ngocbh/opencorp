@@ -136,6 +136,17 @@ test("signing in with a cookie that proves nothing revokes nothing", async () =>
   expect(office.store.getHqSession(other.id)).toBeDefined()
 })
 
+test("signing in with a planted cookie in front replaces the real session", async () => {
+  const { office, client } = await withPassword()
+  const first = ((await login(client)).json() as Body).id as string
+  const name = `opencorp_hq_${PORT}`
+  const headers = { cookie: `${name}=junk; ${name}=${client.cookies.get(name)}` }
+  const r = await client.post("/api/login", { handle: CEO, password: PASSWORD }, { headers })
+  expect(r.status).toBe(200)
+  expect(office.store.getHqSession(first)).toBeUndefined()
+  expect(office.store.getHqSession((r.json() as Body).id as string)).toBeDefined()
+})
+
 test("a password change ends a signed in session", async () => {
   const { office, client } = await withPassword()
   expect((await login(client)).status).toBe(200)
