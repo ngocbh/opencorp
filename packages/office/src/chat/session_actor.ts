@@ -1062,9 +1062,9 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Sends `p` to the worker while it hasn't sent its `result`, else adds it to `#next`; true when that leaves
-   *  `#next` for a spawn now (no worker runs). Over the cost cap, unless ending, a `send` or `complete` waits in
-   *  `#next` for a job that only delivers when the worker may call the model (a `chat` job starting); otherwise
-   *  nothing goes to the worker past what `#next` holds. */
+   *  `#next` for a spawn now (no worker runs). Over the cost cap, unless ending, a `send` or `complete` for a worker
+   *  whose job may call the model waits in `#next` for a job that only delivers; otherwise nothing goes to the worker
+   *  ahead of what `#next` holds. */
   async #give(p: Pending): Promise<boolean> {
     // The office stopped while the command waited: no worker may start for it.
     if (this.#closed) {
@@ -1841,7 +1841,7 @@ export class SessionActor implements LiveCalls {
         assignee: this.#pins!.manager,
         parent_id: session.work_item_id,
         summary:
-          `Session ${session.id} reached its $${cap.toFixed(2)} cap (cost $${costFigure(session.cost)}). ` +
+          `Session ${session.id} reached its $${cap.toFixed(cap < 0.01 ? 4 : 2)} cap (cost $${costFigure(session.cost)}). ` +
           "Its turns wait until the cap is raised.",
         created_at: t,
         updated_at: t,
