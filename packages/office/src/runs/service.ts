@@ -39,8 +39,6 @@ export const BATCH = 100
 export const SCAN_CAP = 1_000
 /** The statuses of a run with no end yet (an interrupted one may have either). */
 export const OPEN_STATUSES: ReadonlySet<string> = new Set(["running", "waiting", "idle"])
-/** How long a read of yian's run index taken within this long of the file's last write is reused, in milliseconds. */
-export const INDEX_TTL_MS = 1000
 
 export const NOT_STARTED = "no run log: the run didn't start"
 export const NOT_STARTED_YET = "not started yet"
@@ -141,9 +139,7 @@ export class RunLogs {
   readonly #reader: RunLogReader
   readonly #pin: ((commit: string) => Promise<string>) | undefined
   readonly #live: () => Live
-  readonly #index: () => Map<string, RunIndexRow>
-  readonly #readIndex: (runsDir: string, log: (line: string) => void) => Map<string, RunIndexRow>
-  #cachedIndex: { key: string; at: number; rows: Map<string, RunIndexRow> } | null = null
+  readonly #index: () => ReadonlyMap<string, RunIndexRow>
   // Kept for the office's life, so ended runs' inspections stay cached.
   readonly #inspections: Inspections
   readonly #batch: number
@@ -154,9 +150,9 @@ export class RunLogs {
     store: Store
     runsDir: string
     live?: () => Live
-    index?: () => Map<string, RunIndexRow>
-    /** How the default `index` reads yian's run index; records.ts's `readIndex` by default. */
-    readIndex?: (runsDir: string, log: (line: string) => void) => Map<string, RunIndexRow>
+    /** yian's run index by run id: the office's `RunIndexer` rows, which its thread reads after each update. The
+     *  default reads the index file on every call, for tests. */
+    index?: () => ReadonlyMap<string, RunIndexRow>
     inspections?: Inspections
     batch?: number
     scanCap?: number
@@ -171,8 +167,7 @@ export class RunLogs {
     this.#pin = options.pin
     this.#log = options.log ?? (() => {})
     this.#live = options.live ?? (() => new Live())
-    this.#readIndex = options.readIndex ?? readIndex
-    this.#index = options.index ?? (() => this.#sharedIndex())
+    this.#index = options.index ?? (() => readIndex(this.#runsDir, this.#log))
     this.#inspections = options.inspections ?? new Inspections(options.runsDir)
     this.#batch = options.batch ?? BATCH
     this.#scanCap = options.scanCap ?? SCAN_CAP
@@ -315,29 +310,6 @@ export class RunLogs {
     const run = this.#read().summaries.build([row]).get(runId)
     if (!run) return null
     return runUpdated(runId, run.session_id, run.parent_run_id ?? null, run.status, run.current_nodes ?? [])
-  }
-
-  /** yian's run index, read again only when its file changed (or, for a read taken within INDEX_TTL_MS of the file's
-   *  last write, once that read is over INDEX_TTL_MS old); empty without the file. */
-  #sharedIndex(): Map<string, RunIndexRow> {
-    // Safe to share: the daemon is the index's only writer, so its rows change only when the file does, and the
-    // actor awaits the index update before it reports an end, so that end's run.updated sees a changed file. A
-    // cached `running` that came from a log lock isn't settled, so YianRuns asks the log; a run a worker just started
-    // is in the actor's memory. A read taken within INDEX_TTL_MS of the file's mtime could have missed a second
-    // write in the same tick with the same size, so it is trusted only for INDEX_TTL_MS (git's racy-clean rule).
-    const stat = fs.statSync(path.join(this.#runsDir, "index.sqlite"), { bigint: true, throwIfNoEntry: false })
-    if (stat === undefined) {
-      this.#cachedIndex = null
-      return new Map()
-    }
-    const key = `${stat.ino}:${stat.size}:${stat.mtimeNs}`
-    const now = Date.now()
-    const cached = this.#cachedIndex
-    const settled = (c: { at: number }) => c.at - Number(stat.mtimeMs) > INDEX_TTL_MS || now - c.at <= INDEX_TTL_MS
-    if (cached !== null && cached.key === key && settled(cached)) return cached.rows
-    const rows = this.#readIndex(this.#runsDir, this.#log)
-    this.#cachedIndex = { key, at: now, rows }
-    return rows
   }
 
   /** The run's row and its session; NotFound without either. */
