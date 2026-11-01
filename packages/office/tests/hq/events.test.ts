@@ -1,6 +1,6 @@
 /** HQ's /api/events: the /events contract, HQ's event types only, and the session checked on every frame. */
 import net from "node:net"
-import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { Event, type LiveEvent, now } from "@opencorp/protocol"
 import { hashPassword } from "../../src/auth/passwords.ts"
 import type { Office } from "../../src/daemon/office.ts"
@@ -16,6 +16,8 @@ import {
   frames,
   joinedRun,
   makeOffice,
+  socketCapacity,
+  stopsPulling,
   storedRun,
   take,
   within,
@@ -76,12 +78,19 @@ async function paused(client: HqClient, target: string): Promise<{ socket: net.S
   return { socket, closed }
 }
 
-/** Fills `/api/events` streams' sockets: frames far past what a paused client's socket takes, then a wait so each
- *  stream is left waiting for its client to read. */
-async function stall(office: Office): Promise<void> {
-  const big = "x".repeat(4 * 1024 * 1024)
-  for (let i = 0; i < 2; i++) office.bus.publishMeta(meta("session.updated", "S", { big }))
-  await new Promise((resolve) => setTimeout(resolve, 300))
+/** Leaves `/api/events` streams waiting for their paused clients: publishes large frames, paced, until `alive`, which a
+ *  stream checks before every frame, stops being called. Waited for rather than sized, since socket buffers differ by
+ *  host. */
+async function stall(office: Office, hq: Hq): Promise<void> {
+  const alive = spyOn(hq.sessions, "alive")
+  const big = "x".repeat(256 * 1024)
+  const feed = setInterval(() => office.bus.publishMeta(meta("session.updated", "S", { big })), 5)
+  try {
+    await stopsPulling(() => alive.mock.calls.length)
+  } finally {
+    clearInterval(feed)
+    alive.mockRestore()
+  }
 }
 
 /** Reads frames until `it` ends, within 5 s. */
@@ -268,7 +277,7 @@ test("revoking closes a stalled events stream", async () => {
   const { office, hq, client } = await served()
   const sid = office.store.listHqSessions()[0]!.id
   const stream = await paused(client, "/api/events")
-  await stall(office)
+  await stall(office, hq)
   await hq.sessions.revoke(sid)
   // Cut while it waited for the client: the stream's last chunk never went out.
   expect((await within(stream.closed())).endsWith("0\r\n\r\n")).toBe(false)
@@ -278,10 +287,15 @@ test("revoking closes a stalled events stream", async () => {
 test("revoking closes a stalled live stream", async () => {
   const { office, hq, client } = await served()
   const sid = office.store.listHqSessions()[0]!.id
-  // A log far past what a paused client's socket takes, so the stream waits for the client before its end.
-  const { runId } = storedRun(office, { turns: 3000 })
+  // A log far past what a paused client's socket takes (a turn is over 1000 bytes; socket buffers differ by host), so
+  // the stream waits for the client before its end.
+  const capacity = await socketCapacity(Buffer.alloc(64 * 1024))
+  const { runId } = storedRun(office, { turns: Math.max(3000, Math.ceil((2 * capacity) / 1000)) })
+  const alive = spyOn(hq.sessions, "alive")
   const stream = await paused(client, `/api/runs/${runId}/live`)
-  await new Promise((resolve) => setTimeout(resolve, 500))
+  await stopsPulling(() => alive.mock.calls.length)
+  alive.mockRestore()
+  expect(hq.sessions.streams(sid)).toBe(1) // waiting for the client, not done
   await hq.sessions.revoke(sid)
   const got = await within(stream.closed())
   expect(got.endsWith("0\r\n\r\n")).toBe(false)
@@ -293,7 +307,7 @@ test("a password change closes a stalled events stream", async () => {
   const { office, hq, client } = await served()
   const sid = office.store.listHqSessions()[0]!.id
   const stream = await paused(client, "/api/events")
-  await stall(office)
+  await stall(office, hq)
   handEdit(office.paths.company, CEO, { password_hash: await hashPassword("brand new one") })
   const sha = await office.git.readHead()
   office.store.emit("company.updated", sha, { sha })
@@ -307,7 +321,7 @@ test("an unreadable person file closes a stalled events stream but keeps the ses
   const { office, hq, client } = await served()
   const sid = office.store.listHqSessions()[0]!.id
   const stream = await paused(client, "/api/events")
-  await stall(office)
+  await stall(office, hq)
   handEdit(office.paths.company, CEO, { kind: "robot" })
   const sha = await office.git.readHead()
   office.store.emit("company.updated", sha, { sha })
