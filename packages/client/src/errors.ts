@@ -22,7 +22,11 @@ export class OfficeUnavailable extends OfficeError {
     cause?: unknown,
     remote = false,
   ) {
-    super(0, "office_unavailable", remote ? `can't reach the office at ${socket}` : `can't connect to the office at ${socket}`)
+    super(
+      0,
+      "office_unavailable",
+      remote ? `can't reach the office at ${socket}` : `can't connect to the office at ${socket}`,
+    )
     this.name = "OfficeUnavailable"
     this.cause = cause
   }

@@ -1,4 +1,11 @@
-import { OfficeDropped, OfficeError, OfficeTimeout, OfficeUnavailable, UnknownDevice, VersionConflictError } from "./errors"
+import {
+  OfficeDropped,
+  OfficeError,
+  OfficeTimeout,
+  OfficeUnavailable,
+  UnknownDevice,
+  VersionConflictError,
+} from "./errors"
 
 // Bun sends the request over the socket; the host only fills the Host header.
 export const BASE = "http://localhost"
