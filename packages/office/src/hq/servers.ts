@@ -99,7 +99,8 @@ export class Listeners {
     }
   }
 
-  /** Listens on hq.sock, and starts binding TCP in the background. */
+  /** Listens on hq.sock, and makes the first attempt at binding TCP; retries go on in the background. The daemon
+   *  starts HQ before office.sock, so GET /hq already says how that first attempt went when the office answers. */
   async start(): Promise<void> {
     const hq = this.#hq
     try {
@@ -117,7 +118,10 @@ export class Listeners {
       this.#log("ERROR", `HQ can't listen on ${hq.socket}: ${messageOf(error)}`)
       hq.socketError = messageOf(error)
     }
-    if (hq.config.tcp) this.#binding = this.#bindTcp()
+    if (hq.config.tcp) {
+      this.#binding = this.#bindTcp()
+      await this.#binding
+    }
   }
 
   /** One attempt at binding TCP; a failure schedules the next. Never rejects: an unhandled rejection would

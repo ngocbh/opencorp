@@ -228,6 +228,30 @@ test("hq sock is 0600 and tcp listens on the port", async () => {
   expect(hq.boundPort).toBeNull()
 })
 
+test("start waits for the first tcp bind", async () => {
+  const { office, hq } = await setup()
+  shortOffice(office)
+  const listeners = new Listeners(hq, { retryMs: 100 })
+  await listeners.start()
+  try {
+    expect(hq.boundPort).toBe(hq.config.port)
+    expect((await hq.status()).tcp.listening).toBe(true)
+    // The first ::1 attempt has settled too.
+    if (LOOPBACK6) expect(on(listeners, "::1").length === 1 || hq.loopback6Error !== null).toBe(true)
+  } finally {
+    await listeners.stop()
+  }
+  await hold(hq.config.port)
+  const blocked = new Listeners(hq, { retryMs: 100 })
+  await blocked.start()
+  try {
+    expect(hq.boundPort).toBeNull()
+    expect(hq.tcpError).toBeTruthy()
+  } finally {
+    await blocked.stop()
+  }
+})
+
 test("a stale hq sock is replaced", async () => {
   const { office, hq } = await setup()
   shortOffice(office)

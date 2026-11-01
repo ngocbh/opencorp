@@ -12,11 +12,12 @@ import { Console } from "node:console"
 import path from "node:path"
 import type { Readable, Writable } from "node:stream"
 import { parseArgs } from "node:util"
+import { identityPath, readIdentity } from "../auth/identity.ts"
 import { handleProblem } from "../company/naming.ts"
 import { isNew } from "../company_template/index.ts"
 import { OfficeStartError } from "../daemon/sockets.ts"
 import { repr } from "../perm/redact.ts"
-import { type CheckOptions, checks, exitCode, report } from "./doctor.ts"
+import { type CheckOptions, checks, exitCode, hqPortChecks, hqStatus, report } from "./doctor.ts"
 import { init } from "./init.ts"
 import { JsonPrompter, type TextOut } from "./json_prompts.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, ServiceError } from "./launch.ts"
@@ -406,7 +407,7 @@ async function initCommand(args: Args, s: Setup): Promise<number> {
   }
   // With the provider on stdin nothing is asked, and questions without a flag take their defaults.
   const stdin = args["provider-stdin"] ? s.stdin : undefined
-  return setupRun("init", s, () =>
+  const code = await setupRun("init", s, () =>
     s.init(home(args.home, s), prompter(args, stdin === undefined, s), {
       listers: s.listers,
       checkModel: s.checkModel,
@@ -418,11 +419,13 @@ async function initCommand(args: Args, s: Setup): Promise<number> {
       environ: s.environ,
     }),
   )
+  if (code === 0) await reportHq(launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome }), s)
+  return code
 }
 
 async function onboardCommand(args: Args, s: Setup): Promise<number> {
   const stdin = args["provider-stdin"] ? s.stdin : undefined
-  return setupRun("onboard", s, () =>
+  const code = await setupRun("onboard", s, () =>
     s.onboard(home(args.home, s), prompter(args, stdin === undefined, s, { [WHO]: args.handle ?? "" }), {
       listers: s.listers,
       checkModel: s.checkModel,
@@ -433,6 +436,8 @@ async function onboardCommand(args: Args, s: Setup): Promise<number> {
       environ: s.environ,
     }),
   )
+  if (code === 0) await reportHq(launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome }), s)
+  return code
 }
 
 async function offboardCommand(args: Args, s: Setup): Promise<number> {
@@ -493,6 +498,23 @@ async function cameUp(
   return true
 }
 
+/**
+ * Says on stderr what needs a look about HQ on the office that answers on `run.socket`: its socket or web port not
+ * listening (a taken port never stops the office, so nothing else would say so), and HQ's own warnings. Says
+ * nothing when GET /hq can't be read, as without this device's identity; doctor says more.
+ */
+async function reportHq(run: Launch, s: Setup): Promise<void> {
+  try {
+    const status = await (s.doctor.hq ?? hqStatus)(run.socket, await readIdentity(identityPath(run.home)))
+    if (typeof status === "string") return
+    const port = hqPortChecks(status, path.join(run.home, "office")).filter((c) => c.status === "warn")
+    for (const detail of [...port.map((c) => c.detail), ...(status.warnings ?? [])])
+      s.stderr.write(`opencorp: HQ: ${detail}\n`)
+  } catch {
+    // Only a report: the office is up, which is what the command did.
+  }
+}
+
 /** Whether there's no company at the office's home yet; says so on stderr. */
 async function notOnboarded(run: Launch, s: Setup): Promise<boolean> {
   if (!(await isNew(path.join(run.home, "company")))) return false
@@ -504,11 +526,13 @@ async function startCommand(args: Args, s: Setup): Promise<number> {
   const run = launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome })
   if (await s.host.answers(run.socket)) {
     s.stdout.write(`The office is already running (pid ${service.pid(run)}).\n`)
+    await reportHq(run, s)
     return 0
   }
   if (await notOnboarded(run, s)) return NOT_ONBOARDED
   if (!(await cameUp(run, s, service.start))) return 1
   s.stdout.write(`Started the office (pid ${service.pid(run)}).\n`)
+  await reportHq(run, s)
   return 0
 }
 
@@ -519,5 +543,6 @@ async function restartCommand(args: Args, s: Setup): Promise<number> {
   if (!(await cameUp(run, s, service.restart))) return 1
   if (was === null) s.stdout.write(`The office wasn't running; started it (pid ${service.pid(run)}).\n`)
   else s.stdout.write(`Restarted the office (pid ${service.pid(run)}; was ${was}).\n`)
+  await reportHq(run, s)
   return 0
 }

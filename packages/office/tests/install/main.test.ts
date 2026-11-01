@@ -5,9 +5,10 @@ import fs from "node:fs"
 import path from "node:path"
 import readline from "node:readline"
 import { Readable, Writable } from "node:stream"
-import { SetupPrompt } from "@opencorp/protocol"
+import { type HqStatus, SetupPrompt } from "@opencorp/protocol"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { loadRepo } from "../../src/company/loader.ts"
+import type { Unread } from "../../src/install/doctor.ts"
 import * as fallback from "../../src/install/fallback.ts"
 import type { InitOptions } from "../../src/install/init.ts"
 import { launch, officeAnswers } from "../../src/install/launch.ts"
@@ -294,6 +295,101 @@ test("start with a company that has no first commit is exit 3 with a hint", asyn
   expect(s.err()).toContain(SET_UP)
 })
 
+/** An HQ status whose web port is as `tcp` says, with `over` over its other fields. */
+function hqAnswer(tcp: Partial<HqStatus["tcp"]> = {}, over: Partial<HqStatus> = {}): HqStatus {
+  return {
+    socket: "/h/office/hq.sock",
+    tcp: { enabled: true, port: 49380, listening: true, error: null, next_retry_at: null, ...tcp },
+    url: "http://127.0.0.1:49380/",
+    health: { ok: true, office: { api: "0.0.1+aaa" }, app: null },
+    socket_error: null,
+    warnings: [],
+    ...over,
+  }
+}
+
+const TAKEN = { listening: false, error: "Address already in use" }
+
+/** Stand-ins for an onboarded home whose office already answers, its GET /hq answering `status`. */
+function onboardedStandIns(dir: string, status: () => Promise<HqStatus | Unread>) {
+  const company = path.join(dir, "home", "company")
+  fs.mkdirSync(company, { recursive: true })
+  git(company, "init", "-q", "-b", "main")
+  fs.writeFileSync(path.join(company, "company.yaml"), 'name: "Acme"\nceo: "me"\n')
+  git(company, "add", "-A")
+  git(company, "commit", "-qm", "first")
+  const s = standIns(dir)
+  return {
+    ...s,
+    host: makeHost(dir, new Runner(), { answers: async () => true }),
+    doctor: { ...s.doctor, hq: status },
+  }
+}
+
+test("start says when the hq web port isnt listening and still exits 0", async () => {
+  const dir = tempDir()
+  const s = onboardedStandIns(dir, async () => hqAnswer(TAKEN))
+  expect(await main(["start", "--home", path.join(dir, "home")], s)).toBe(0)
+  expect(s.out()).toBe("The office is already running (pid ?).\n")
+  expect(s.err()).toStartWith("opencorp: HQ: port 49380 isn't free (Address already in use)")
+  expect(s.err()).toContain(path.join(dir, "home", "office", "hq.json"))
+  expect(s.err().trimEnd().split("\n")).toHaveLength(1)
+})
+
+test.each([
+  ["listening", async () => hqAnswer()],
+  ["off", async () => hqAnswer({ enabled: false, listening: false })],
+  ["refused", async () => "refused" as const],
+  ["unreachable", async () => "unreachable" as const],
+  ["unreadable", async () => "unreadable" as const],
+  [
+    "failing",
+    async () => {
+      throw new Error("boom")
+    },
+  ],
+])("start says nothing of hq when there is nothing to fix [%s]", async (_name, status) => {
+  const dir = tempDir()
+  const s = onboardedStandIns(dir, status)
+  expect(await main(["start", "--home", path.join(dir, "home")], s)).toBe(0)
+  expect(s.out()).toBe("The office is already running (pid ?).\n")
+  expect(s.err()).toBe("")
+})
+
+test("start passes on hqs warnings and every web port line that needs a look", async () => {
+  const others = "the web port is on and this host has other users (ann): any of them could take the port"
+  const answers: [HqStatus, string[]][] = [
+    [hqAnswer({}, { warnings: [others] }), [`opencorp: HQ: ${others}`]],
+    [
+      hqAnswer(TAKEN, { socket_error: "Permission denied" }),
+      ["opencorp: HQ: not listening on /h/office/hq.sock: Permission denied", "opencorp: HQ: port 49380 isn't free"],
+    ],
+    [hqAnswer({ listening: false }), ["opencorp: HQ: port 49380 isn't listening yet (HQ is binding it)"]],
+  ]
+  for (const [answer, lines] of answers) {
+    const dir = tempDir()
+    const s = onboardedStandIns(dir, async () => answer)
+    expect(await main(["start", "--home", path.join(dir, "home")], s)).toBe(0)
+    const got = s.err().trimEnd().split("\n")
+    expect(got).toHaveLength(lines.length)
+    lines.forEach((line, i) => expect(got[i]).toStartWith(line))
+  }
+})
+
+test.each(["init", "onboard"])("%s says when hqs web port isnt listening", async (command) => {
+  const dir = tempDir()
+  const s = { ...onboardedStandIns(dir, async () => hqAnswer(TAKEN)), init: async () => {}, onboard: async () => {} }
+  expect(await main([command, "--home", path.join(dir, "home")], s)).toBe(0)
+  expect(s.err()).toStartWith("opencorp: HQ: port 49380 isn't free")
+})
+
+test("a failed init says nothing of hq", async () => {
+  const dir = tempDir()
+  const s = { ...onboardedStandIns(dir, async () => hqAnswer(TAKEN)), init: interrupted }
+  expect(await main(["init", "--home", path.join(dir, "home")], s)).toBe(130)
+  expect(s.err()).toBe("\n")
+})
+
 /** A home for a real office, kept off HQ's TCP port, which the owner's own office holds: `install(argv)` runs
  *  `main` with a host that really starts the daemon, each call with its own output; `pid()` reads the pidfile. */
 function realOffice(spawned: ReturnType<typeof killedAtEnd>) {
@@ -330,6 +426,7 @@ test(
       const running = await office.install(["start"]) // already running: nothing to do
       expect(running.code).toBe(0)
       expect(running.out).toBe(`The office is already running (pid ${office.pid()}).\n`)
+      expect(running.err).toBe("") // HQ's web port is off, so there's nothing to say about it
       await office.stop()
       expect(await officeAnswers(office.socket)).toBe(false)
       const started = await office.install(["start"])

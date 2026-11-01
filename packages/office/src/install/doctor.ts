@@ -532,6 +532,9 @@ export async function hqStatus(
 /** How HQ's status starts the TCP error when the web port's server stopped after it bound, not a failed bind. */
 const SERVER_ENDED = "its server ended"
 
+/** Another port to suggest in place of a taken `port`: an example, not checked to be free. */
+const otherPort = (port: number) => (port <= 65525 ? port + 10 : port - 10)
+
 /** What to do about an HQ status doctor couldn't read, by why. */
 export const UNREAD: Record<Unread, string> = {
   refused: "the office doesn't know this device, so it won't say where HQ listens: run `opencorp login`",
@@ -551,6 +554,34 @@ function isDirectory(file: string): boolean {
 /** Where HQ listens, whether the web app is built for this office, and HQ's own warnings. */
 export function hqChecks(status: HqStatus | Unread, officeDir: string, repo: string): Check[] {
   if (typeof status === "string") return [{ name: "hq", status: "warn", detail: UNREAD[status] }]
+  const found = hqPortChecks(status, officeDir)
+  const { app, office } = status.health
+  if (app === null && !isDirectory(path.join(repo, "packages", "app"))) {
+    // Installed from a package, not a checkout.
+    found.push({
+      name: "web app",
+      status: "warn",
+      detail: "this install has no web app; it's built in a checkout of the opencorp repo",
+    })
+  } else if (app === null) {
+    found.push({ name: "web app", status: "warn", detail: `not built: run \`bun run build\` in ${repo}` })
+  } else if (app.api !== office.api) {
+    found.push({
+      name: "web app",
+      status: "warn",
+      detail:
+        `built for ${app.api}, which doesn't match the office's ${office.api}: run \`bun run build\` in ${repo}, ` +
+        "or `opencorp restart`",
+    })
+  } else {
+    found.push({ name: "web app", status: "ok", detail: `built for ${office.api}` })
+  }
+  for (const warning of status.warnings ?? []) found.push({ name: "hq warning", status: "warn", detail: warning })
+  return found
+}
+
+/** Where HQ listens: on hq.sock and on its web port. */
+export function hqPortChecks(status: HqStatus, officeDir: string): Check[] {
   const { tcp } = status
   const error = tcp.error
   const retry = RETRY_MS / 1000
@@ -583,7 +614,8 @@ export function hqChecks(status: HqStatus | Unread, officeDir: string, repo: str
         status: "warn",
         detail:
           `port ${tcp.port} isn't free (${error}); HQ tries it again every ${retry} s. Free it, or set another ` +
-          `"port" in ${path.join(officeDir, "hq.json")} and run \`opencorp restart\``,
+          `"port" in ${path.join(officeDir, "hq.json")} (for example {"port": ${otherPort(tcp.port)}}; it's ` +
+          "created if it doesn't exist) and run `opencorp restart`",
       },
     ]
   }
@@ -602,28 +634,6 @@ export function hqChecks(status: HqStatus | Unread, officeDir: string, repo: str
       ...(tcp.enabled ? [port] : []),
     ]
   }
-  const { app, office } = status.health
-  if (app === null && !isDirectory(path.join(repo, "packages", "app"))) {
-    // Installed from a package, not a checkout.
-    found.push({
-      name: "web app",
-      status: "warn",
-      detail: "this install has no web app; it's built in a checkout of the opencorp repo",
-    })
-  } else if (app === null) {
-    found.push({ name: "web app", status: "warn", detail: `not built: run \`bun run build\` in ${repo}` })
-  } else if (app.api !== office.api) {
-    found.push({
-      name: "web app",
-      status: "warn",
-      detail:
-        `built for ${app.api}, which doesn't match the office's ${office.api}: run \`bun run build\` in ${repo}, ` +
-        "or `opencorp restart`",
-    })
-  } else {
-    found.push({ name: "web app", status: "ok", detail: `built for ${office.api}` })
-  }
-  for (const warning of status.warnings ?? []) found.push({ name: "hq warning", status: "warn", detail: warning })
   return found
 }
 

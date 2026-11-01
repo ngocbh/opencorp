@@ -41,6 +41,9 @@ function expiry(ts: string, now: number) {
   return `in the next ${minutes} minute${minutes === 1 ? "" : "s"} (until ${clock})`
 }
 
+/** Another port to suggest in place of a taken `port`: an example, not checked to be free. */
+const otherPort = (port: number) => (port <= 65525 ? port + 10 : port - 10)
+
 /** HQ's web port as a phrase: "HQ's web port 49380", or without a number for `port: 0` (any free one). */
 const webPort = (port: number) => (port ? `HQ's web port ${port}` : "HQ's web port")
 
@@ -90,6 +93,15 @@ export function pairOutput(
     else if (o.tcp.error)
       lines.push(`${webPort(o.tcp.port)} isn't listening (${o.tcp.error}); \`opencorp doctor\` says more.`)
     else lines.push(`${webPort(o.tcp.port)} isn't listening yet.`)
+    // Here, another port is the fix; port 0 is never taken, so its error is a server that ended.
+    if (!ssh && o.tcp?.enabled && o.tcp.error && o.tcp.port)
+      lines.push(
+        `If another program holds port ${o.tcp.port}, set "port" in ${shellWord(o.hqJson)} to a free one, for ` +
+          `example {"port": ${otherPort(o.tcp.port)}}, or 0 for any free port ` +
+          "(its URL then changes with each restart).",
+        // On Linux the file holds "tcp": true, so replacing it would turn the web port off.
+        "Create the file if it doesn't exist; keep any keys it already has. Then run `opencorp restart`.",
+      )
     lines.push(
       "On the machine with your browser, forward HQ's socket:",
       forward(LOCAL_PORT, shellWord(code.socket), o.host),

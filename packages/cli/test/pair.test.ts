@@ -121,6 +121,31 @@ test("with TCP on but not listening, it says why, forwards hq.sock, and doesn't 
   expect(out.join("\n")).not.toContain('"tcp": true')
 })
 
+test("with the port taken here, it says how to pick another port before the hq.sock forward", () => {
+  const off = code({ url: null, open_file: null })
+  const out = pairOutput(off, { ...opts, tcp: taken, env: {}, platform: "darwin" }).lines
+  const advice = out.findIndex((l) => l.startsWith("If another program holds port 49380"))
+  expect(out[advice]).toBe(
+    'If another program holds port 49380, set "port" in /home/u/.opencorp/office/hq.json to a free one, for ' +
+      'example {"port": 49390}, or 0 for any free port (its URL then changes with each restart).',
+  )
+  expect(out[advice + 1]).toBe(
+    "Create the file if it doesn't exist; keep any keys it already has. Then run `opencorp restart`.",
+  )
+  expect(advice).toBeGreaterThan(0)
+  expect(advice).toBeLessThan(out.indexOf(SOCKET_FORWARD))
+  const ssh = { SSH_CONNECTION: "1 2 3 4" }
+  const remote = pairOutput(off, { ...opts, tcp: taken, env: ssh, platform: "darwin" }).lines
+  expect(remote.join("\n")).not.toContain("If another program holds")
+  const binding = pairOutput(off, { ...opts, tcp: { ...taken, error: null }, env: {}, platform: "darwin" }).lines
+  expect(binding.join("\n")).not.toContain("If another program holds")
+  const local = pairOutput(off, { ...opts, tcp: tcpOff, env: {}, platform: "darwin" }).lines
+  expect(local.join("\n")).not.toContain("If another program holds")
+  const anyPort = { ...taken, port: 0, error: "its server ended (it failed: x)" }
+  const ended = pairOutput(off, { ...opts, tcp: anyPort, env: {}, platform: "darwin" }).lines
+  expect(ended.join("\n")).not.toContain("If another program holds")
+})
+
 test("when HQ's status can't be read, it says so rather than guess, and forwards hq.sock", () => {
   const off = code({ url: null, open_file: null })
   const out = pairOutput(off, { ...opts, tcp: null, env: {}, platform: "darwin" }).lines
