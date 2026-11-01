@@ -548,7 +548,7 @@ test("an office log that isnt a regular file is no crash", async () => {
   expect(got.office!.status).toBe("warn")
 })
 
-test("a stopped office's record that is a FIFO reads as not installed without blocking", async () => {
+test("a stopped offices record that is a FIFO reads as not installed without blocking", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)
   const record = path.join(paths.office, "install.json")
@@ -1106,7 +1106,7 @@ for (const enabled of [true, false]) {
   })
 }
 
-test("the office's own socket error comes before what doctor found at the path", () => {
+test("the offices own socket error comes before what doctor found at the path", () => {
   const dir = tempDir()
   const s = { ...status(), socket_error: "AF_UNIX path too long" }
   const got = byName(doctor.hqChecks(s, dir, dir, "the socket file is gone; run `opencorp restart`"))
@@ -1114,7 +1114,7 @@ test("the office's own socket error comes before what doctor found at the path",
   expect(got.hq!.detail).not.toContain("gone")
 })
 
-test("a running office's hq line says when its socket file is gone or replaced", async () => {
+test("a running offices hq line says when its socket file is gone or replaced", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)
   const running = (sock: Sock) => runningChecks(dir, paths, info(launchFor(dir, paths).home), {}, { sock })
@@ -1175,6 +1175,15 @@ test("the port checks say where the web port is and never mention the web app", 
   const unbuilt = status()
   unbuilt.health.app = null
   expect(doctor.hqPortChecks(unbuilt, dir).some((c) => c.name === "web app")).toBe(false)
+})
+
+test("the port checks say when the socket file is gone from under the office", () => {
+  const dir = tempDir()
+  const gone = "the socket file is gone; run `opencorp restart`"
+  expect(doctor.hqPortChecks(status(), dir, gone)).toEqual([
+    { name: "hq", status: "warn", detail: `not listening on /h/office/hq.sock: ${gone}` },
+    { name: "hq port", status: "ok", detail: "web app at http://127.0.0.1:49380/" },
+  ])
 })
 
 test("a taken port gives the json to write", () => {

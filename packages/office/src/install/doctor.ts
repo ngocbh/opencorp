@@ -556,8 +556,7 @@ function socketProblem(socket: unknown, lstat: (p: string) => fs.Stats): string 
   return st.isSocket() ? null : "something else is at that path; remove it and run `opencorp restart`"
 }
 
-/** Where HQ listens, whether the web app is built for this office, and HQ's own warnings. `socketMissing` is why
- *  the socket isn't at its path when the office itself saw nothing wrong, with what to do about it. */
+/** Where HQ listens (see `hqPortChecks`), whether the web app is built for this office, and HQ's own warnings. */
 export function hqChecks(
   status: HqStatus | Unread,
   officeDir: string,
@@ -565,7 +564,7 @@ export function hqChecks(
   socketMissing: string | null = null,
 ): Check[] {
   if (typeof status === "string") return [{ name: "hq", status: "warn", detail: UNREAD[status] }]
-  const found = hqPortChecks(status, officeDir)
+  const found = hqPortChecks(status, officeDir, socketMissing)
   const { app, office } = status.health
   if (app === null && !isDirectory(path.join(repo, "packages", "app"))) {
     // Installed from a package, not a checkout.
@@ -594,8 +593,9 @@ export function hqChecks(
   return found
 }
 
-/** Where HQ listens: on hq.sock and on its web port. */
-export function hqPortChecks(status: HqStatus, officeDir: string): Check[] {
+/** Where HQ listens: on hq.sock and on its web port. `socketMissing` is why the socket isn't at its path when the
+ *  office itself saw nothing wrong, with what to do about it. */
+export function hqPortChecks(status: HqStatus, officeDir: string, socketMissing: string | null = null): Check[] {
   const { tcp } = status
   const error = tcp.error
   const retry = RETRY_MS / 1000
