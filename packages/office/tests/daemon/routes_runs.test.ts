@@ -1107,3 +1107,26 @@ test("removing a device cuts its live stream while the client is not reading", a
   expect(got.endsWith("0\r\n\r\n")).toBe(false)
   expect(got.includes("event: run_end")).toBe(false)
 })
+
+test("a removed device's /live ends while it waits for the run's index", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true, pingMs: 50 })
+  const [mac, pc] = [newToken(), newToken()]
+  giveDevice(office.paths.company, CEO, "mac", mac)
+  giveDevice(office.paths.company, CEO, "pc", pc)
+  const { runId } = storedRun(office)
+  // An index that doesn't settle while the test runs, so the stream is still waiting on it when the device goes.
+  const { promise, resolve } = Promise.withResolvers<null>()
+  spyOn(office.runs, "logIndex").mockImplementation(() => promise)
+  try {
+    const it = frames(await open(sock, `/runs/${runId}/live`, bearer(mac)))
+    expect(await read(it, 2)).toEqual([
+      ["comment", null, "connected"],
+      ["comment", null, "ping"],
+    ])
+    expect((await request(sock, "DELETE", `/people/${CEO}/devices/mac`, { headers: bearer(pc) })).status).toBe(200)
+    expect((await rest(it)).filter(([, , data]) => data !== "ping")).toEqual([])
+  } finally {
+    resolve(null)
+  }
+})
