@@ -1,5 +1,5 @@
 /** How the office daemon is started: its command, environment, folder and log, the host it runs on, and the
- *  check that pins a running daemon to them. Imports only `node:*`, `platform.ts` and `daemon/sockets.ts`:
+ *  check that pins a running daemon to them. Imports only `node:*`, `platform.ts`, `daemon/sockets.ts` and `proc.ts`:
  *  `daemonMain` runs `pinDaemon` before the daemon module loads. */
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
@@ -9,6 +9,7 @@ import path from "node:path"
 import { parseArgs } from "node:util"
 import { makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
 import { reexec, selfCommand } from "../platform.ts"
+import { killGroup } from "./proc.ts"
 
 /** A service manager refused to install or start the office; the message says why. */
 export class ServiceError extends Error {
@@ -268,16 +269,31 @@ export interface Completed {
  * can't start is exit 127 and one still running after `timeoutMs` is killed and exit 124, not an exception: the output
  * it wrote before the kill is kept, and stderr becomes `<argv[0]> timed out`. One killed by a signal is minus the
  * signal's number.
+ *
+ * With `group`, the command runs in a new session and process group, and the timeout or this process exiting kills
+ * the whole group, so what the command started doesn't outlive it. Leave it off for anything that may prompt on the
+ * terminal (git, ssh): a new session has no controlling terminal, so it can't open /dev/tty.
  */
 export function runCommand(
   argv: readonly [string, ...string[]],
-  { timeoutMs = 60_000, env }: { timeoutMs?: number; env?: Record<string, string> } = {},
+  {
+    timeoutMs = 60_000,
+    env,
+    group = false,
+  }: { timeoutMs?: number; env?: Record<string, string>; group?: boolean } = {},
 ): Promise<Completed> {
   return new Promise((resolve) => {
     const child = spawn(argv[0], argv.slice(1), {
       stdio: ["ignore", "pipe", "pipe"],
+      detached: group,
       ...(env ? { env } : {}),
     })
+    // In its own session the command gets neither a terminal's Ctrl-C nor the setup screen's SIGINT to this
+    // process's group, so this process's exit kills its group instead. The listener stays until `close`, a little
+    // after the command exits: a kill in between can't hit another process while the group has members (a group id
+    // isn't reused while it has any), only if it empties and its id is reused as a new group's in that window.
+    const onExit = () => killGroup(child.pid!)
+    if (group && child.pid !== undefined) process.on("exit", onExit)
     let stdout = ""
     let stderr = ""
     let failed = false
@@ -286,7 +302,9 @@ export function runCommand(
     child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk))
     const timer = setTimeout(() => {
       timedOut = true
-      child.kill("SIGKILL")
+      // The group is killed even once the command has exited: a grandchild holding the pipes is what this catches.
+      if (group) killGroup(child.pid!)
+      else child.kill("SIGKILL")
       // A grandchild may hold the pipes open; closing our ends lets `close` follow the child's own exit.
       child.stdout!.destroy()
       child.stderr!.destroy()
@@ -296,10 +314,12 @@ export function runCommand(
       if (child.pid !== undefined) return
       failed = true
       clearTimeout(timer)
+      process.off("exit", onExit)
       resolve({ code: 127, stdout: "", stderr: error.message })
     })
     child.on("close", (code, signal) => {
       clearTimeout(timer)
+      process.off("exit", onExit)
       if (failed) return
       if (timedOut) resolve({ code: 124, stdout, stderr: `${argv[0]} timed out` })
       else resolve({ code: code ?? (signal ? -os.constants.signals[signal] : 0), stdout, stderr })

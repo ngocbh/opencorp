@@ -1066,6 +1066,38 @@ test(
   60_000,
 )
 
+test("sigterm and sighup end setup at once and run its exit listeners", async () => {
+  for (const [signal, code] of [["SIGTERM", 143], ["SIGHUP", 129]] as const) {
+    const dir = tempDir()
+    const ready = path.join(dir, "ready")
+    const mark = path.join(dir, "mark")
+    // offboard says it is running, then waits; the bounded wait keeps the event loop alive meanwhile.
+    const wait = "await new Promise((r) => setTimeout(r, 30_000))"
+    const script = driver(
+      dir,
+      `{ offboard: async () => { writeFileSync(${JSON.stringify(ready)}, ""); ${wait} } }`,
+      `import { writeFileSync } from "node:fs"\nprocess.on("exit", () => writeFileSync(${JSON.stringify(mark)}, ""))\n`,
+    )
+    const home = path.join(dir, "user", ".opencorp")
+    const result = await spawnChild([...script, "offboard", "--home", home, "--yes"], childEnv(dir), {
+      bound: 20_000,
+      cwd: dir,
+      talk: (child) => {
+        child.stdin.end()
+        let tries = 0
+        const poll = setInterval(() => {
+          if (fs.existsSync(ready) || ++tries > 500) {
+            clearInterval(poll)
+            child.kill(signal)
+          }
+        }, 20)
+      },
+    })
+    expect(result.code, `${signal}: ${result.stderr}`).toBe(code)
+    expect(fs.existsSync(mark), signal).toBe(true)
+  }
+}, 60_000)
+
 test("an input error after a prompt failed is not a crash", async () => {
   const dir = tempDir()
   const prompts = JSON.stringify(path.join(SRC, "install/prompts.ts"))

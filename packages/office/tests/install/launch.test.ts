@@ -22,7 +22,7 @@ import {
 } from "../../src/install/launch.ts"
 import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, unsafeEnvName } from "../../src/platform.ts"
-import { ps, shortDir, tempDir, waitFor } from "../helpers.ts"
+import { isGone, ps, shortDir, tempDir, waitFor } from "../helpers.ts"
 import { Runner, makeHost, SRC, specifiers } from "./helpers.ts"
 
 // Resolved as `launch` resolves it: on a machine without /Users the path comes back as given.
@@ -334,11 +334,16 @@ test("require company throws for a home without a company clone", () => {
   requireCompany(withCompany(home))
 })
 
-test("the pre re-exec check imports only node builtins platform and sockets", () => {
+test("the pre re-exec check imports only node builtins platform sockets and proc", () => {
   const launchImports = specifiers("install/launch.ts")
   expect(launchImports).toContain("../platform.ts")
   expect(launchImports).toContain("../daemon/sockets.ts")
-  for (const name of launchImports) expect(name).toMatch(/^(node:.+|\.\.\/platform\.ts|\.\.\/daemon\/sockets\.ts)$/)
+  for (const name of launchImports) {
+    expect(name).toMatch(/^(node:.+|\.\.\/platform\.ts|\.\.\/daemon\/sockets\.ts|\.\/proc\.ts)$/)
+  }
+  const procImports = specifiers("install/proc.ts")
+  expect(procImports).toContain("../platform.ts")
+  for (const name of procImports) expect(name).toMatch(/^(node:.+|\.\.\/platform\.ts)$/)
   const socketImports = specifiers("daemon/sockets.ts")
   expect(socketImports.length).toBeGreaterThan(0)
   for (const name of socketImports) expect(name).toMatch(/^node:/)
@@ -413,6 +418,73 @@ test("a program that outlives the timeout is exit 124", async () => {
   expect(took).toBeLessThan(3000)
   expect(held.code).toBe(124)
 })
+
+/** A script whose grandchild writes its own pid to `pidFile` and becomes a sleep of `secs` seconds. */
+function grandchildScript(pidFile: string, secs: number): [string, ...string[]] {
+  return ["/bin/sh", "-c", `/bin/sh -c 'echo $$ > ${pidFile}; exec /bin/sleep ${secs}' & wait`]
+}
+
+/** The pid `pidFile` holds once it is complete. */
+function pidIn(pidFile: string): Promise<number> {
+  return waitFor(() => {
+    const text = fs.existsSync(pidFile) ? fs.readFileSync(pidFile, "utf8") : ""
+    return /^\d+\n$/.test(text) ? Number(text) : null
+  }, { timeout: 5000, what: "the grandchild's pid" })
+}
+
+/** Kills `pid` when the test finishes if it still has `started`. */
+function killAtEnd(pid: number, started: number | null) {
+  onTestFinished(() => {
+    if (started !== null && sameProcess(pid, started)) process.kill(pid, "SIGKILL")
+  })
+}
+
+test("a grouped command's timeout kills its whole group", async () => {
+  const pidFile = path.join(tempDir(), "pid")
+  const done = runCommand(grandchildScript(pidFile, 30), { timeoutMs: 3000, group: true })
+  const grandchild = await pidIn(pidFile)
+  const started = startTime(grandchild)
+  expect(started).not.toBeNull()
+  killAtEnd(grandchild, started)
+  expect(await done).toEqual({ code: 124, stdout: "", stderr: "/bin/sh timed out" })
+  await waitFor(() => isGone(grandchild, started), { timeout: 5000, what: "the grandchild gone" })
+}, 30_000)
+
+test("a grouped command ends when this process exits", async () => {
+  const dir = tempDir()
+  const pidFile = path.join(dir, "pid")
+  const out = path.join(dir, "out")
+  const file = path.join(dir, "driver.ts")
+  const at = (name: string) => JSON.stringify(path.join(SRC, name))
+  // It writes the grandchild's pid and start time, then exits with the command still running.
+  fs.writeFileSync(
+    file,
+    `import fs from "node:fs"
+import { runCommand } from ${at("install/launch.ts")}
+import { startTime } from ${at("install/proc.ts")}
+void runCommand(${JSON.stringify(grandchildScript(pidFile, 30))}, { timeoutMs: 60_000, group: true })
+for (let i = 0; i < 250; i++) {
+  const text = fs.existsSync(${JSON.stringify(pidFile)}) ? fs.readFileSync(${JSON.stringify(pidFile)}, "utf8") : ""
+  if (/^\\d+\\n$/.test(text)) {
+    fs.writeFileSync(${JSON.stringify(out)}, \`\${Number(text)} \${startTime(Number(text))}\`)
+    process.exit(0)
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20))
+}
+process.exit(1)
+`,
+  )
+  // The same flags as CHECKOUT_FLAGS in src/platform.ts.
+  execFileSync(process.execPath, ["--no-install", "--no-env-file", "--config=/dev/null", file], {
+    cwd: dir,
+    stdio: "ignore",
+    timeout: 20_000,
+  })
+  const [pid, started] = fs.readFileSync(out, "utf8").split(" ").map(Number) as [number, number]
+  expect(Number.isNaN(started)).toBe(false)
+  killAtEnd(pid, started)
+  await waitFor(() => isGone(pid, started), { timeout: 5000, what: "the grandchild gone" })
+}, 30_000)
 
 test("which finds a runnable program on the absolute path entries only", () => {
   const dir = tempDir()

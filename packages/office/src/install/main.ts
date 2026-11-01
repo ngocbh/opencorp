@@ -314,7 +314,8 @@ function stack(error: unknown): string {
 }
 
 /** Runs `main` as the `opencorp install` process and exits with its code once stdout and stderr have drained: 130
- *  on Ctrl-C, 1 with the stack on stderr for an error nothing expected or a rejection nothing handled. */
+ *  on Ctrl-C, 1 with the stack on stderr for an error nothing expected or a rejection nothing handled. SIGTERM and
+ *  SIGHUP exit at once with 143 and 129. */
 export async function run(argv: string[], setup: Partial<Setup> = {}): Promise<never> {
   let exiting = false
   let ending = false
@@ -347,6 +348,11 @@ export async function run(argv: string[], setup: Partial<Setup> = {}): Promise<n
     process.stderr.write("\n")
     void exit(130)
   })
+  // SIGTERM and SIGHUP end setup at once, as their default action would, but through process.exit, so exit
+  // listeners still run (they kill the process groups of commands still running). Not through `exit`: after a
+  // hangup its drain may write to a terminal that is gone and never end, which would leave setup running.
+  process.on("SIGTERM", () => process.exit(143))
+  process.on("SIGHUP", () => process.exit(129))
   const crashed = (error: unknown) => {
     // Writing after the streams end raises `write after end`, which would land here again.
     if (ending) return
