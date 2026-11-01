@@ -163,6 +163,32 @@ test("a turn replies and end finishes the session", async () => {
   expect(late.code).toBe("not_live")
 })
 
+test("a parked chat's run page shows its turns' tokens", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    { content: "One.", usage: { prompt_tokens: 100, completion_tokens: 10 } },
+    { content: "Two.", usage: { prompt_tokens: 200, completion_tokens: 20 } },
+  )
+  const h = await makeHarness(fake)
+  const s = await start(h)
+  const runId = s.run_ids[0]!
+  for (const [text, reply] of [["one", "One."], ["two", "Two."]] as const) {
+    expect(await h.harness.prompt(s.id, text)).toBe("turn")
+    await waitFor(() => texts(h, s.id).includes(reply) && status(h, s.id) === "idle", { what: `the reply ${reply}` })
+  }
+  // Parked between turns: no worker exit brings the index up to date.
+  await asleep(h, s.id)
+  expect(h.registry.get(s.id)).toBeDefined()
+  let usage: unknown
+  await waitFor(
+    async () => {
+      usage = (await h.office.runs.detail(runId)).usage
+      return same(usage, { input_tokens: 300, output_tokens: 30, usd: h.store.runUsageUsd(runId) })
+    },
+    { what: "the tokens of both turns", timeout: 10_000 },
+  )
+})
+
 test("a main run gets the persons identity and who they talk with", async () => {
   const h = await makeHarness(await fakeLlm())
   const spec = await h.harness.spec(await stored(h))

@@ -654,6 +654,14 @@ test("a stuck run index update does not stall a runs end", async () => {
   expect(calls).toBe(2)
 })
 
+/** Resolves once `calls` stayed the same length for 100 ms: the node events' run.updated calls are over. */
+async function quiet(calls: unknown[]): Promise<void> {
+  for (let n = -1; n !== calls.length; ) {
+    n = calls.length
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+}
+
 test("a turn's waiting result brings the run index up to date without holding the turn", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
@@ -672,7 +680,8 @@ test("a turn's waiting result brings the run index up to date without holding th
   // Idle while the update is still pending: the turn wasn't held for it.
   await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
   expect(calls).toBe(1)
-  const runId = o.store.getSession(sid)!.run_ids.at(-1)!
+  const runId = session(o, sid).run_ids.at(-1)!
+  await quiet(changed)
   const before = changed.length
   updates[0]!(true)
   await waitFor(() => changed.length > before, { what: "the run's run.updated" })
@@ -689,9 +698,10 @@ test("a turn's index update that fails sends no run.updated", async () => {
   const actor = makeActor(o, sid, { runIndex, runChanged: (runId) => void changed.push(runId) })
   await actor.start()
   await waitFor(() => status(o, sid) === "idle" && updates.length === 1, { what: "the first turn" })
+  await quiet(changed)
   const before = changed.length
   updates[0]!(false)
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  await quiet(changed)
   expect(changed.length).toBe(before)
 })
 
@@ -706,11 +716,12 @@ test("an ending update that outlasts the wait still sends the run's run.updated"
   const actor = makeActor(o, sid, { runIndex, scheduler, runChanged: (runId) => void changed.push(runId) })
   await actor.start()
   await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
-  const runId = o.store.getSession(sid)!.run_ids.at(-1)!
+  const runId = session(o, sid).run_ids.at(-1)!
   expect(await actor.prompt("/exit")).toBe("turn")
   await waitFor(() => sleeps.some(({ ms }) => ms === INDEX_WAIT_MS), { what: "the bounded wait" })
   sleeps.find(({ ms }) => ms === INDEX_WAIT_MS)!.wake()
   await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  await quiet(changed)
   const before = changed.length
   updates.at(-1)!(true)
   await waitFor(() => changed.length > before, { what: "the late run.updated" })
