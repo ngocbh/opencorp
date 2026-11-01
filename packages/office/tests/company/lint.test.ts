@@ -56,6 +56,9 @@ test("an agent ceo is an error", async () => {
   const found = await issues(root)
   expect(found).toContain("company.ceo_not_human company.yaml")
   expect(found).not.toContain("company.ceo_has_manager company.yaml")
+  expect((await withCode(root, "company.ceo_not_human")).map((issue) => issue.message)).toEqual([
+    "ceo @minh is an agent, not a human",
+  ])
 })
 
 test("unknown ceo", async () => {

@@ -118,7 +118,9 @@ function* checkCeo(repo: CompanyRepo): Iterable<RepoIssue> {
     return
   }
   // Agents can't sign in or hold devices, and the office acts as the CEO for tokenless requests.
-  if (ceo.kind !== "human") yield repoIssue("company.yaml", "company.ceo_not_human", `${ceo.handle} is an agent`)
+  if (ceo.kind !== "human") {
+    yield repoIssue("company.yaml", "company.ceo_not_human", `ceo @${ceo.handle} is an agent, not a human`)
+  }
   if (ceo.manager !== null) {
     yield repoIssue("company.yaml", "company.ceo_has_manager", `${ceo.handle} reports to ${ceo.manager}`)
   }
