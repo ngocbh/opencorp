@@ -213,7 +213,7 @@ test.skipIf(!sandboxAvailable())("shell output over 1 MiB keeps its real end and
   const { tools: t } = tools()
   for (const [command, cut, end] of cases) {
     const out = (await t.call("shell", { command })).output
-    expect(out.startsWith(command.includes("seq 1 400000 >&2;") ? "[stderr]\n1\n2\n" : "1\n2\n"), command).toBe(true)
+    expect(out.startsWith(command.startsWith("seq 1 400000 >&2") ? "[stderr]\n1\n2\n" : "1\n2\n"), command).toBe(true)
     expect(out, command).toContain(`\n[${cut} bytes of output cut]\n`)
     expect(out.endsWith(end), command).toBe(true)
     expect(out, command).not.toContain("[output truncated]")
