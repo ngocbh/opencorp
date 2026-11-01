@@ -1,11 +1,12 @@
 /** Loading company flows confined to the repo (Python's `tests/company/test_flows.py`). */
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
+import net from "node:net"
 import path from "node:path"
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { loadConfined, MAX_FLOW_FILE } from "../../src/company/flows.ts"
 import { MAX_FILE } from "../../src/company/source.ts"
-import { tempDir } from "../helpers.ts"
+import { shortDir, tempDir } from "../helpers.ts"
 import { CHAT, CHILD, company, leafFlow, makeCompany, parentFlow, usesFlow } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -142,6 +143,56 @@ test("a directory child is refused as not a regular file", async () => {
     .rejects.toThrow(/shared\/flows\/echo\.yaml is not a regular file/)
 })
 
+test("a socket child is refused as not a regular file", async () => {
+  const root = makeCompany({ "shared/flows/chat.yaml": parentFlow("echo") }, shortDir())
+  const server = net.createServer()
+  await new Promise<void>((resolve) => server.listen(path.join(root, "shared/flows/echo.yaml"), resolve))
+  try {
+    const error = await loadConfined(root, path.join(root, "shared/flows/chat.yaml")).catch((e: Error) => e)
+    expect((error as Error).message).toMatch(/shared\/flows\/echo\.yaml is not a regular file/)
+    expect((error as Error).message).not.toContain(root)
+    expect((error as Error).message).not.toContain(fs.realpathSync(root))
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test("a missing uses: child is named repo relative", async () => {
+  const root = makeCompany({ "shared/flows/chat.yaml": parentFlow("echo") })
+  const error = await loadConfined(root, path.join(root, "shared/flows/chat.yaml")).catch((e: Error) => e)
+  expect((error as Error).message).toMatch(/shared\/flows\/echo\.yaml does not exist/)
+  expect((error as Error).message).not.toContain(fs.realpathSync(root))
+  expect((error as Error).message).not.toContain("ENOENT")
+})
+
+test.skipIf(process.getuid?.() === 0)("an unreadable child names its errno, repo relative", async () => {
+  const root = makeCompany({ "shared/flows/chat.yaml": parentFlow("echo"), "shared/flows/echo.yaml": CHILD })
+  const echo = path.join(root, "shared/flows/echo.yaml")
+  fs.chmodSync(echo, 0)
+  try {
+    const error = await loadConfined(root, path.join(root, "shared/flows/chat.yaml")).catch((e: Error) => e)
+    expect((error as Error).message).toMatch(/shared\/flows\/echo\.yaml can't be opened \(EACCES\)/)
+    expect((error as Error).message).not.toContain(fs.realpathSync(root))
+  } finally {
+    fs.chmodSync(echo, 0o644)
+  }
+})
+
+test("a child that grows after its stat but stays under the limit is read in full", async () => {
+  const root = makeCompany({ "shared/flows/chat.yaml": parentFlow("echo"), "shared/flows/echo.yaml": CHILD })
+  const real = fs.fstatSync
+  // The stat sees 10 bytes, too few to load, so a read cut to the stat's size would fail.
+  const fstat = spyOn(fs, "fstatSync").mockImplementation(((fd: number) => {
+    const stats = real(fd)
+    return Object.assign(stats, { size: Math.min(stats.size, 10) })
+  }) as typeof fs.fstatSync)
+  try {
+    expect((await loadConfined(root, path.join(root, "shared/flows/chat.yaml"))).name).toBe("chat")
+  } finally {
+    fstat.mockRestore()
+  }
+})
+
 test("the flow size limit is the source view's file limit", () => {
   // Every flow that runs can then be viewed in HQ.
   expect(MAX_FLOW_FILE).toBe(MAX_FILE)
@@ -154,7 +205,6 @@ test("a diamond of uses: loads each file once", async () => {
   const open = spyOn(fs, "openSync")
   try {
     expect((await loadConfined(root, path.join(root, "shared/flows/l0.yaml"))).name).toBe("l0")
-    expect(opened(open, "/l4.yaml")).toBe(1)
     expect([0, 1, 2, 3, 4].map((i) => opened(open, `/l${i}.yaml`))).toEqual([1, 1, 1, 1, 1])
   } finally {
     open.mockRestore()

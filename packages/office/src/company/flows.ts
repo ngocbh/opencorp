@@ -1,5 +1,6 @@
 /** Loads company flows with child flows and CODE references confined to the repo. */
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { type ComposedFlow, loadFlow, LoadError } from "@ngocbh/yian"
 import { readFlow, YamlError } from "./flow_yaml.ts"
@@ -9,6 +10,9 @@ import { readFlow, YamlError } from "./flow_yaml.ts"
  * `MAX_FILE`), so every flow that runs can also be viewed; a test pins the two.
  */
 export const MAX_FLOW_FILE = 1 << 20
+
+/** `MAX_FLOW_FILE` as messages show it. */
+const LIMIT = `${MAX_FLOW_FILE >> 20} MiB`
 
 /** A flow, or one of its `uses:` children, resolves outside the company repo. */
 export class FlowOutsideRepo extends Error {
@@ -25,10 +29,10 @@ export class FlowOutsideRepo extends Error {
  * @throws {FlowOutsideRepo} For a flow or child outside `root`.
  * @throws {LoadError} For a bad flow, and for a child's other problems below.
  * @throws {RangeError} For a reference cycle, a pinned-version mismatch, a `uses:` ref with a NUL, a flow
- *   that isn't a regular file or is over `MAX_FLOW_FILE` bytes, or a flow that sets `system.paths` or whose
- *   YAML the office can't check for it.
+ *   that is missing, can't be opened (named by its errno only), isn't a regular file or is over
+ *   `MAX_FLOW_FILE` bytes, or a flow that sets `system.paths` or whose YAML the office can't check for it.
  * @throws {TypeError} For a flow that isn't UTF-8 text.
- * @throws {Error} A system error for an unreadable file.
+ * @throws {Error} A system error for a read that fails after the open.
  */
 export async function loadConfined(root: string, file: string): Promise<ComposedFlow> {
   try {
@@ -83,6 +87,20 @@ export function errno(error: unknown): string | undefined {
 }
 
 /**
+ * The errno name of a system error, found by its number so that Node's "Unknown system error -102" gets a
+ * name too; undefined for anything else thrown.
+ */
+function errnoName(error: unknown): string | undefined {
+  const number = error instanceof Error ? (error as NodeJS.ErrnoException).errno : undefined
+  if (typeof number !== "number") return undefined
+  const names = os.constants.errno as Record<string, number>
+  return Object.keys(names).find((name) => names[name] === -number) ?? `errno ${-number}`
+}
+
+// Opening a socket fails rather than giving fstat a descriptor: ENXIO on Linux, EOPNOTSUPP on macOS.
+const NOT_REGULAR = new Set(["ENXIO", "EOPNOTSUPP", "ENOTSUP"])
+
+/**
  * Whether the flow sets `system.paths`, which a custom child resolver would ignore; undefined when the office
  * can't read its YAML.
  */
@@ -101,16 +119,27 @@ function declaresSystemPaths(text: string): boolean | undefined {
 /**
  * The bytes of the flow file at `resolved`, shown in messages as `shown`.
  *
- * @throws {RangeError} When it isn't a regular file or is over `MAX_FLOW_FILE` bytes.
+ * @throws {RangeError} When it is missing, can't be opened, isn't a regular file or is over `MAX_FLOW_FILE`
+ *   bytes.
  */
 function readFlowBytes(resolved: string, shown: string): Buffer {
   const { O_RDONLY, O_NONBLOCK } = fs.constants
   // O_NONBLOCK so a FIFO in its place can't hang the open; fstat then refuses it.
-  const fd = fs.openSync(resolved, O_RDONLY | O_NONBLOCK)
+  let fd: number
+  try {
+    fd = fs.openSync(resolved, O_RDONLY | O_NONBLOCK)
+  } catch (error) {
+    // The system error's message holds the absolute path, so it isn't kept, not even as the cause.
+    const name = errnoName(error)
+    if (name === undefined) throw error
+    if (name === "ENOENT") throw new RangeError(`${shown} does not exist`)
+    if (NOT_REGULAR.has(name)) throw new RangeError(`${shown} is not a regular file`)
+    throw new RangeError(`${shown} can't be opened (${name})`)
+  }
   try {
     const stats = fs.fstatSync(fd)
     if (!stats.isFile()) throw new RangeError(`${shown} is not a regular file`)
-    if (stats.size > MAX_FLOW_FILE) throw new RangeError(`${shown} is over the 1 MiB flow size limit`)
+    if (stats.size > MAX_FLOW_FILE) throw new RangeError(`${shown} is over the ${LIMIT} flow size limit`)
     const buf = Buffer.alloc(MAX_FLOW_FILE + 1)
     let size = 0
     while (size < buf.length) {
@@ -119,7 +148,7 @@ function readFlowBytes(resolved: string, shown: string): Buffer {
       size += n
     }
     // The file grew after the stat.
-    if (size > MAX_FLOW_FILE) throw new RangeError(`${shown} is over the 1 MiB flow size limit`)
+    if (size > MAX_FLOW_FILE) throw new RangeError(`${shown} is over the ${LIMIT} flow size limit`)
     return buf.subarray(0, size)
   } finally {
     fs.closeSync(fd)
