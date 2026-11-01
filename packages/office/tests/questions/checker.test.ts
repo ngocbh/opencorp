@@ -79,7 +79,7 @@ const SHAPES: [unknown, RegExp][] = [
   [{ db: "Postgres", features: "auth" }, /'features' takes a list of labels/],
   [{ db: ["Postgres"], features: [] }, /'db' takes one label/],
   [{ db: " ", features: [] }, /'db' takes one label/],
-  [{ db: "Postgres", features: [], extra: "x" }, /no question has the header 'extra'/],
+  [{ db: "Postgres", features: [], extra: "x" }, /^the answer has a key no question has$/],
 ]
 
 test.each(SHAPES)("pages refuse other shapes [%s]", (answer, message) => {
@@ -217,7 +217,7 @@ test("a record gate converts each field and omits blank optional ones", () => {
   expect(checkAnswer(gate, '{"days": 4, "who": {"name": "Bo"}}', "text")).toEqual({ days: 4, who: { name: "Bo" } })
   const bad: [unknown, RegExp][] = [
     [{ note: "x", who: { name: "A" } }, /answer.days is required/],
-    [{ days: 1, who: { name: "A" }, zzz: 1 }, /no field 'zzz'/],
+    [{ days: 1, who: { name: "A" }, zzz: 1 }, /^answer has a field the question doesn't have$/],
     [{ days: 1, who: {} }, /answer.who.name is required/],
     [{ days: 1, who: { name: "  " } }, /answer.who.name is required/],
   ]
@@ -268,6 +268,43 @@ test("a harness card with pages takes a record with typed numbers", () => {
   }
   const stopped = refused(() => checkAnswer(card, { Token: "s3cret", Env: "dev", points: "3" }, "interrupted"))
   expect(stopped.message).not.toContain("s3cret")
+})
+
+test("a planted key on a harness card with a secret page isn't quoted", () => {
+  const card = q("harness", {
+    questions: [
+      { question: "Token?", header: "Token", options: [], secret: true },
+      { question: "Env?", header: "Env", options: [{ label: "prod" }, { label: "dev" }] },
+      { question: "Points?", header: "points", options: [] },
+    ],
+    answer_schema: fields(["Env", "str", true, { enum: ["prod", "dev"] }], ["points", "int", true]),
+  })
+  const answer = { Token: "s3cret", Env: "dev", points: "3", "sk-planted-KEY1": "x" }
+  const { message } = refused(() => checkAnswer(card, answer, "text"))
+  expect(message).toBe("the answer has a key no question has")
+  expect(message).not.toContain("sk-planted-KEY1")
+  expect(message).not.toContain("s3cret")
+})
+
+test("an option value isn't quoted", () => {
+  const long = "Z".repeat(5000)
+  const { message } = refused(() => checkAnswer(q("ask_user", { options: ["Retry"] }), long, "option"))
+  expect(message).toBe("the answer is not one of the options")
+  expect(message).not.toContain("ZZZZ")
+})
+
+test("an ask record with an unknown field isn't quoted", () => {
+  const gate = q("ask", { answer_schema: fields(["a", "str", true], ["b", "int", false]) })
+  const { message } = refused(() => checkAnswer(gate, { a: "x", "sk-field-KEY2": 1 }, "text"))
+  expect(message).toBe("answer has a field the question doesn't have")
+  expect(message).not.toContain("sk-field-KEY2")
+})
+
+test("a nested record with an unknown sub-key isn't quoted", () => {
+  const gate = q("ask", { answer_schema: fields(["outer", "object", true, { fields: fields(["k", "str", true]) }]) })
+  const { message } = refused(() => checkAnswer(gate, { outer: { k: "v", "sk-sub-KEY3": 1 } }, "text"))
+  expect(message).toBe("answer.outer has a field the question doesn't have")
+  expect(message).not.toContain("sk-sub-KEY3")
 })
 
 /** A one-page gate whose secret `Token` page takes a record with a `key` field. */

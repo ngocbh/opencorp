@@ -172,8 +172,9 @@ test("an invalid answer is refused before the actor sees it", async () => {
   const { cards, actor } = wire(office)
   const q = card(office, { options: ["Retry", "Back off"] })
   const error = await refusal(() => cards.answer(q.id, "Maybe", "option"))
-  const expected = [422, "invalid_answer", "'Maybe' is not one of the options"]
+  const expected = [422, "invalid_answer", "the answer is not one of the options"]
   expect([error.status, error.code, error.message]).toEqual(expected)
+  expect(error.message).not.toContain("Maybe")
   expect(actor.answered).toEqual([])
 })
 
