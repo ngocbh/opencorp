@@ -100,6 +100,9 @@ git clone --recurse-submodules https://github.com/ngocbh/opencorp.git && cd open
 bun install
 ```
 
+To create a company and use it (init, the TUI, hiring, HQ, doctor), follow the
+[Quickstart](README.md#quickstart).
+
 Run `opencorp` from a checkout through `packages/cli/bin/opencorp`. Never run
 `bun packages/cli/src/main.ts`, which reads the folder's `.env` and `bunfig.toml`. Put the wrapper
 on `PATH` with
