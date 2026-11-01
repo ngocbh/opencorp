@@ -486,9 +486,9 @@ export class SessionActor implements LiveCalls {
    *
    * While the model's `ask_user` question is open on the run, the message answers it (`answer`). Otherwise it goes
    * to the run's inbox, and the reply is decided when it is queued: `steer` while a reply node runs, `turn` while the
-   * run waits only at its turn, else `queued`. Refused with `409 not_live` (the session finished), `503 stopping`
-   * (the office stops), `409 ending`, `422 refused` (a `promptCheck` hook), `422 too_large`, or `503 cant_wake` (the
-   * run could not take it).
+   * run waits only at its turn, else `queued` (always over the cost cap, where the manager gets an item to raise it).
+   * Refused with `409 not_live` (the session finished), `503 stopping` (the office stops), `409 ending`, `422 refused`
+   * (a `promptCheck` hook), `422 too_large`, or `503 cant_wake` (the run could not take it).
    */
   async prompt(text: string, { by = null }: { by?: string | null } = {}): Promise<MessageReply> {
     const pending = await this.#command(async () => {
@@ -500,6 +500,8 @@ export class SessionActor implements LiveCalls {
         await this.#end(session)
         return null
       }
+      // A session capped with no charge (a cap of 0, or a side chat reopened at its cap) has no item yet.
+      if (this.#capped()) this.#ensureCapItem()
       const { delivery, reply } = await this.#message(session, text, by)
       return (await this.#answerAsked(session, text, by, delivery)) ?? (await this.#send(delivery, reply))
     })
@@ -919,7 +921,7 @@ export class SessionActor implements LiveCalls {
       const { store } = this.#ctx
       const session = this.#session()
       if (usd <= session.cost) {
-        const why = `the cap must be above the cost so far ($${session.cost.toFixed(4)})`
+        const why = `the cap must be above the cost so far ($${costFigure(session.cost)})`
         throw new HarnessError(422, "cap_too_low", why)
       }
       const item = this.#capItem(session)
@@ -1817,31 +1819,34 @@ export class SessionActor implements LiveCalls {
    *  session settles (waiting on that item's assignee). Under it, or once finished, nothing happens. */
   #overCap(): void {
     if (this.#finished || !this.#capped()) return
-    const { store } = this.#ctx
     if (this.#run !== null) this.#stopAtCap(this.#run)
+    this.#ensureCapItem()
+    this.#trySettle("at its cap")
+  }
+
+  /** Gives the person's manager an item to raise the session's cost cap, unless one is open. */
+  #ensureCapItem(): void {
     const session = this.#session()
     // Else the manager already has one to act on.
-    if (this.#capItem(session) === undefined) {
-      const cap = costCap(session, this.#pins!.defaults)
-      const t = now()
-      store.createWorkItem(
-        WorkItem.parse({
-          id: newId(),
-          title: `${CAP_TITLE} of @${session.person}'s session`,
-          kind: "task",
-          status: "open",
-          requester: session.person,
-          assignee: this.#pins!.manager,
-          parent_id: session.work_item_id,
-          summary:
-            `Session ${session.id} reached its $${cap.toFixed(2)} cap (cost $${session.cost.toFixed(4)}). ` +
-            "Its turns wait until the cap is raised.",
-          created_at: t,
-          updated_at: t,
-        }),
-      )
-    }
-    this.#trySettle("at its cap")
+    if (this.#capItem(session) !== undefined) return
+    const cap = costCap(session, this.#pins!.defaults)
+    const t = now()
+    this.#ctx.store.createWorkItem(
+      WorkItem.parse({
+        id: newId(),
+        title: `${CAP_TITLE} of @${session.person}'s ${session.kind === "side" ? "side chat" : "session"}`,
+        kind: "task",
+        status: "open",
+        requester: session.person,
+        assignee: this.#pins!.manager,
+        parent_id: session.work_item_id,
+        summary:
+          `Session ${session.id} reached its $${cap.toFixed(2)} cap (cost $${costFigure(session.cost)}). ` +
+          "Its turns wait until the cap is raised.",
+        created_at: t,
+        updated_at: t,
+      }),
+    )
   }
 
   /** Stops `run`'s worker, once, while it runs an advance that may call the model: an interrupt would only cut the
@@ -2299,13 +2304,14 @@ export class SessionActor implements LiveCalls {
   /**
    * Finishes the session with `status` (`ended`: the first `endStatus` result, its work item done; or `failed`) in
    * one transaction with the run's office end reason `why`, written only when no yian outcome ended the run (`outcome`,
-   * else the one `run`'s worker recorded, else the end restore found). A failed session is told why ("The session
-   * failed (…). Start a new chat."). `runFinished` (the result frame of how the run ended, key redacted, else null)
-   * then `sessionEnded` are notified in order, not awaited. Every delivery not answered gets `409 not_live`. A run
-   * yian may still see unfinished gets a hard stop, as does each replaced run no fresh worker cancelled. The live
-   * relay forgets the session's runs now with no worker alive, else at that worker's exit. Throws `HarnessError`
-   * (`404`) when the session row is gone; a store write that fails is logged by its type. While a fresh run is held,
-   * the run is reported with the held run's result and end reason, as the fresh run would have reported it.
+   * else the one `run`'s worker recorded, else the end restore found); its open cost cap item is cancelled first. A
+   * failed session is told why ("The session failed (…). Start a new chat."). `runFinished` (the result frame of how
+   * the run ended, key redacted, else null) then `sessionEnded` are notified in order, not awaited. Every delivery not
+   * answered gets `409 not_live`. A run yian may still see unfinished gets a hard stop, as does each replaced run no
+   * fresh worker cancelled. The live relay forgets the session's runs now with no worker alive, else at that worker's
+   * exit. Throws `HarnessError` (`404`) when the session row is gone; a store write that fails is logged by its type.
+   * While a fresh run is held, the run is reported with the held run's result and end reason, as the fresh run would
+   * have reported it.
    */
   #finish(status: "ended" | "failed", outcome: Frame | null, why: string | null, run = this.#run): void {
     if (this.#finished) return
@@ -2333,6 +2339,13 @@ export class SessionActor implements LiveCalls {
     try {
       const session = this.#session()
       this.#finishedRuns = session.run_ids
+      try {
+        // No cap is left to raise; `done` would say someone raised it.
+        const cap = this.#capItem(session)
+        if (cap !== undefined) store.updateWorkItem(cap.id, { status: "cancelled" })
+      } catch (error) {
+        this.#log(`session ${this.sessionId}: can't cancel its cap item (${errorName(error)})`)
+      }
       if (status === "failed") {
         this.#notice(`The session failed (${whyFailed(reported, run?.provider ?? null)}). Start a new chat.`)
       }
@@ -2638,6 +2651,13 @@ function folderRefused(error: unknown): boolean {
 /** Whether `session`'s cost is at or over its cap, the pinned default if it has none of its own. */
 function overCap(session: SessionRecord, pins: Pins): boolean {
   return session.cost >= costCap(session, pins.defaults)
+}
+
+/** `usd` to 4 decimals, never below it: a cap above the figure is above the cost. */
+function costFigure(usd: number): string {
+  let figure = Math.round(usd * 1e4) / 1e4
+  if (figure < usd) figure += 1e-4
+  return figure.toFixed(4)
 }
 
 /** Whether `p` wakes the agent: a message (`send`) or a call's answer (`complete`). */

@@ -511,6 +511,25 @@ test("a chat over the routes", async () => {
   expect([late.status, errorOf(late)]).toEqual([409, "not_live"])
 })
 
+test("a cap too low names the cost so far rounded up, never the cap asked for", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const { sock } = await served(h.office)
+  const sid = ((await post(sock, "/sessions", { person: "minh", cwd: h.folder })).json() as { id: string }).id
+  await waitFor(() => chatStatus(h, sid) === "idle", { what: "the first turn" })
+  const message = (r: Reply) => (r.json() as { message: string }).message
+  h.store.updateSession(sid, { cost: 0.000525 })
+  const low = await post(sock, `/sessions/${sid}/cost-cap`, { cost_cap_usd: 0.00051 })
+  expect([low.status, errorOf(low)]).toEqual([422, "cap_too_low"])
+  // A cap above the figure shown is above the cost.
+  expect(message(low)).toContain("($0.0006)")
+  expect(message(low)).not.toContain("0.00051")
+  expect((await post(sock, `/sessions/${sid}/cost-cap`, { cost_cap_usd: 0.0007 })).status).toBe(200)
+  h.store.updateSession(sid, { cost: 0.0051 })
+  expect(message(await post(sock, `/sessions/${sid}/cost-cap`, { cost_cap_usd: 0.005 }))).toContain("($0.0051)")
+  expect((await post(sock, `/sessions/${sid}/end`, null)).json()).toEqual({ ok: true })
+  await waitFor(() => chatStatus(h, sid) === "ended", { what: "the session to end" })
+})
+
 test("a chat starts on the requested connection and model", async () => {
   const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
   const { sock } = await served(h.office)

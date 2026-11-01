@@ -1182,6 +1182,44 @@ test("a cap item belongs to one session even without a work item", async () => {
   expect(h.store.getWorkItem(other.id)).toEqual(other)
 })
 
+for (const [way, finish] of [
+  ["end", (actor: SessionActor) => actor.end()],
+  ["fail", (actor: SessionActor) => actor.fail()],
+  ["abandon", (actor: SessionActor) => actor.abandon("gone")],
+] as const) {
+  test(`${way} on a session held at its cap cancels its cap item`, async () => {
+    const fake = await fakeLlm()
+    fake.script(PRICEY, free("spare"))
+    const { h, gate } = await cappedHarness(fake)
+    const actors = actorsOf()
+    const { id } = await start(h)
+    gate.watch(h)
+    await h.harness.prompt(id, "hi")
+    await waitFor(() => atTheHold(h, id, 6) && capItems(h).length === 1, { what: "the stop at the cap" })
+    await finish(actors.get(id)!)
+    await waitFor(() => !LIVE.includes(h.store.getSession(id)!.status), { what: "the session to finish" })
+    // Nobody raised it: no cap is left to raise.
+    expect(capItems(h).map((item) => item.status)).toEqual(["cancelled"])
+  })
+}
+
+test("a message over the cap with no cap item opens one, and the end cancels it", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { defaults: { cost_cap_usd: 0 } })
+  const { id } = await h.harness.startSession("minh", h.folder)
+  await waitFor(() => atTheHold(h, id, 0), { what: "the first turn, held at the cap" })
+  expect(await h.harness.prompt(id, "hi")).toBe("queued")
+  expect(capItems(h)).toMatchObject([
+    { status: "open", assignee: CEO, title: "Raise the cost cap of @minh's session", parent_id: h.store.getSession(id)!.work_item_id },
+  ])
+  expect(capItems(h)[0]!.summary).toStartWith(`Session ${id} `)
+  expect(await h.harness.prompt(id, "again")).toBe("queued")
+  expect(capItems(h)).toHaveLength(1)
+  await h.harness.end(id)
+  await waitFor(() => status(h, id) === "ended", { what: "the end" })
+  expect(capItems(h).map((item) => item.status)).toEqual(["cancelled"])
+})
+
 const SENTINEL = "sk-sentinel-7c2a51"
 
 /** A harness on `fake` whose model key is `SENTINEL`. */
