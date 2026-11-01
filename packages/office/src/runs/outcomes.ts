@@ -20,6 +20,7 @@ export const OFFICE_REPLACED = "the office stopped; a fresh run replaced it"
 export const WORKER_REPLACED = "its worker stopped; a fresh run replaced it"
 export const NEW_MODEL = "replaced by a fresh run on the new model"
 export const CARD_CLOSED = "its card closed while it wasn't running"
+export const SIDE_OPEN_FAILED = "its side chat open failed before a message reached it"
 export const BAD_OUTPUT = "bad output"
 /** A session ended by End while its reply was stopped by the cost cap. */
 export const ENDED_OVER_CAP = "ended over its cost cap"

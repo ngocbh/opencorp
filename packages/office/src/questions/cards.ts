@@ -12,7 +12,7 @@ import type { Transcript } from "../chat/transcript.ts"
 import { loadRepo } from "../company/loader.ts"
 import type { Office } from "../daemon/office.ts"
 import { strip } from "../perm/redact.ts"
-import { CARD_CLOSED, OFFICE_STOPPED } from "../runs/outcomes.ts"
+import { CARD_CLOSED, OFFICE_STOPPED, SIDE_OPEN_FAILED } from "../runs/outcomes.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store, newId } from "../store/store.ts"
 import { errorName } from "../worker/rpc.ts"
 import type { Answers } from "./ask.ts"
@@ -150,10 +150,12 @@ export class Cards {
   /**
    * "Chat about this": sends `text` from `by` to the question's side session, starting it if it has none and
    * starting a new run of it if it ended or failed (whoever reopens it is in it now). A side chat that is ending is
-   * waited for, up to `SIDE_END_WAIT_MS`, then started again. Answers 501 when the actor can't run side chats, 422
-   * `refused` for the exit command, 422 for a missing flow or a refused folder (nothing is stored), 409 `not_open`
-   * when the question closed while the side chat started (the side chat is ended), 409 `ending` when the end takes
-   * longer than the wait, and 503 `stopping` when the office stops during the wait.
+   * waited for, up to `SIDE_END_WAIT_MS`, then started again. When the first message of a run this open started is
+   * refused, or can't reach the run, that run is ended and the error passed on: the next open starts a fresh run,
+   * and the seed still goes. A side chat that was already live is left as it is. Answers 501 when the actor can't
+   * run side chats, 422 `refused` for the exit command, 422 for a missing flow or a refused folder (nothing is
+   * stored), 409 `not_open` when the question closed while the side chat started (the side chat is ended), 409
+   * `ending` when the end takes longer than the wait, and 503 `stopping` when the office stops during the wait.
    */
   async openSide(questionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<SessionRecord> {
     const question = this.#open(questionId)
@@ -162,35 +164,64 @@ export class Cards {
     if (actor === undefined) throw new HarnessError(501, "not_implemented", "this office has no side chats")
     const refusal = this.refuseExit(undefined, text)
     if (refusal) throw new HarnessError(422, "refused", refusal)
-    const side = await this.#serialSide(questionId, async () => {
+    const { side, sent } = await this.#serialSide(questionId, async () => {
       let current = this.#open(questionId)
       let stored = current.side_session_id ? this.store.getSession(current.side_session_id) : undefined
-      if (stored === undefined) return this.#createSide(actor, current, by)
-      if (stored.status === "ending") {
+      if (stored?.status === "ending") {
         await this.#untilEnded(actor, stored.id)
         current = this.#open(questionId)
         stored = this.store.getSession(stored.id)!
       }
-      if (!isLive(stored)) {
+      if (stored !== undefined && isLive(stored)) return { side: stored, sent: false }
+      let side: SessionRecord
+      if (stored === undefined) {
+        side = await this.#createSide(actor, current, by)
+      } else {
         const reopened = { ...stored, opened_by: by ?? stored.opened_by }
         // Refuses a missing flow or folder before anything is stored.
         await actor.spec(reopened)
         this.store.updateSession(stored.id, { ...notWaiting("starting"), opened_by: reopened.opened_by })
         await actor.startRun(stored.id)
+        side = stored
       }
-      return stored
+      // On this queue, so an open behind it finds the run ended if the message fails, and starts a fresh one.
+      await this.#firstMessage(actor, questionId, side.id, text, by)
+      return { side, sent: true }
     })
-    if (this.store.getQuestion(questionId)!.status !== "open") {
-      try {
-        await actor.end(side.id)
-      } catch (error) {
-        // Its run is already gone.
-        if (!(error instanceof HarnessError)) throw error
-      }
-      throw new HarnessError(409, "not_open", `question ${questionId} is no longer open`)
+    if (!sent) {
+      if (this.store.getQuestion(questionId)!.status !== "open") await this.#notOpen(actor, questionId, side.id)
+      await actor.prompt(side.id, text, { by })
     }
-    await actor.prompt(side.id, text, { by })
     return this.store.getSession(side.id)!
+  }
+
+  /** Sends `text` from `by` to side session `sideId`, whose run this open of question `questionId` started. A
+   *  message that fails ends that run (a 409 `not_open` when the question closed meanwhile) and passes its error
+   *  on. */
+  async #firstMessage(actor: SideActor, questionId: string, sideId: string, text: string, by: string | null) {
+    if (this.store.getQuestion(questionId)!.status !== "open") await this.#notOpen(actor, questionId, sideId)
+    try {
+      await actor.prompt(sideId, text, { by })
+    } catch (error) {
+      if (error instanceof HarnessError && this.store.getQuestion(questionId)!.status !== "open") {
+        await this.#notOpen(actor, questionId, sideId)
+      }
+      await this.#endSide(actor, sideId, SIDE_OPEN_FAILED).catch((failure) => {
+        actor.log(`side session ${sideId} can't be ended (${errorName(failure)})`)
+      })
+      throw error
+    }
+  }
+
+  /** Ends side session `sideId`, whose question `questionId` closed while it opened, and throws 409 `not_open`. */
+  async #notOpen(actor: SideActor, questionId: string, sideId: string): Promise<never> {
+    try {
+      await actor.end(sideId)
+    } catch (error) {
+      // Its run is already gone.
+      if (!(error instanceof HarnessError)) throw error
+    }
+    throw new HarnessError(409, "not_open", `question ${questionId} is no longer open`)
   }
 
   /** Send the discussion back undecided as `by`; a non-blank `note` is the human's last message in it. A note that
@@ -366,7 +397,8 @@ export class Cards {
    * `openSide` runs at start, so an office stop came inside its start, before its run showed a turn, a question or a
    * reply (one whose first reply was seen running is busy, and restore resumed it). Restore may still have resumed
    * its run: it reads `starting` until the resumed run shows one. Its run, when stored with no log (its worker never
-   * started it), ends as the office stopped, with no end time.
+   * started it), ends as the office stopped, with no end time. A side session of an open card that no human message
+   * reached is ended too, for the same reason: an office stop came inside its open.
    */
   sweep(): void {
     for (const q of this.store.listQuestions({ status: "open" })) {
@@ -385,7 +417,22 @@ export class Cards {
         }
       } else if (question === undefined || question.status !== "open") {
         this.#close(side.id, question)
+      } else if (!this.#heard(side)) {
+        this.#close(side.id, question, SIDE_OPEN_FAILED)
       }
+    }
+  }
+
+  /** Whether side session `side`'s log has a human message; true when it can't be read (the error is logged by its
+   *  type), so the session is kept. */
+  #heard(side: SessionRecord): boolean {
+    const actor = sideActor(this.actor)
+    if (actor === undefined) return true
+    try {
+      return actor.transcript.messages(side.id, side.run_ids).some((message) => message.role === "user")
+    } catch (error) {
+      actor.log(`side session ${side.id}'s log can't be read (${errorName(error)})`)
+      return true
     }
   }
 
@@ -397,29 +444,39 @@ export class Cards {
     return run
   }
 
-  /** Ends side session `sideId` of `question` (undefined when it is gone) on the closing queue; an error that isn't
-   *  the harness's refusal is logged by its type. */
-  #close(sideId: string, question: QuestionRecord | undefined): void {
+  /** Ends side session `sideId` of `question` (undefined when it is gone) on the closing queue, with `why` as its
+   *  run's end reason when End can't reach it; an error that isn't the harness's refusal is logged by its type. */
+  #close(sideId: string, question: QuestionRecord | undefined, why = CARD_CLOSED): void {
     const actor = sideActor(this.actor)
     if (actor === undefined) return
     this.#closing = this.#closing.then(() =>
-      this.#closeSide(actor, sideId, question).catch((error) => {
+      this.#closeSide(actor, sideId, question, why).catch((error) => {
         actor.log(`side session ${sideId} can't be ended (${errorName(error)})`)
       }),
     )
   }
 
-  /**
-   * Ends side session `sideId` because `question` closed: an expired card keeps its discussion; End reaches a live
-   * run, and when it can't, the session ends with its run's end reason `CARD_CLOSED`. End on a side chat still
-   * `starting` waits behind its start and ends the new run; one the harness holds no start of answers 409 and is
-   * left alone.
-   */
-  async #closeSide(actor: SideActor, sideId: string, question: QuestionRecord | undefined): Promise<void> {
+  /** Ends side session `sideId` because `question` closed (`#endSide`, with `why`); an expired card keeps its
+   *  discussion. */
+  async #closeSide(
+    actor: SideActor,
+    sideId: string,
+    question: QuestionRecord | undefined,
+    why = CARD_CLOSED,
+  ): Promise<void> {
     if (question?.status === "stale") {
       const current = this.store.getQuestion(question.id)
       if (current !== undefined) this.snapshot(current)
     }
+    await this.#endSide(actor, sideId, why)
+  }
+
+  /**
+   * Ends side session `sideId` when it is live: End reaches a live run, and when it can't, the session ends with its
+   * run's end reason `why`. End on a side chat still `starting` waits behind its start and ends the new run; one the
+   * harness holds no start of answers 409 and is left alone, as is one a stopping office refuses to end.
+   */
+  async #endSide(actor: SideActor, sideId: string, why: string): Promise<void> {
     const side = this.store.getSession(sideId)
     if (!isLive(side)) return
     try {
@@ -432,7 +489,7 @@ export class Cards {
       if (error.code === "stopping" || !isLive(current) || current!.status === "starting") return
       actor.log(`side session ${sideId} has no live run to end`)
       try {
-        await actor.abandon(sideId, CARD_CLOSED)
+        await actor.abandon(sideId, why)
       } catch (failure) {
         // It ended or stopped meanwhile.
         if (!(failure instanceof HarnessError)) throw failure

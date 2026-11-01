@@ -1517,11 +1517,114 @@ test("a question answered while its side chat starts ends it", async () => {
     h.store.answerQuestion(q.id, "Retry", "option", null) // another client answered meanwhile
     return runId
   }
+  const prompt = spyOn(h.harness, "prompt")
   const error = await refusal(() => h.office.cards!.openSide(q.id, "why?"))
   expect([error.status, error.code]).toEqual([409, "not_open"])
   const sideId = h.store.getQuestion(q.id)!.side_session_id!
   await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
   expect(texts(h, sideId, "user")).toEqual([])
+  expect(prompt).not.toHaveBeenCalled()
+})
+
+/** Makes the harness's next prompt reject with `error`. */
+function promptOnce(h: Harness, error: unknown) {
+  return spyOn(h.harness, "prompt").mockImplementationOnce(() => Promise.reject(error))
+}
+
+/** The error `action` rejected with; fails the test if it resolved. */
+async function rejection(action: () => Promise<unknown>): Promise<unknown> {
+  try {
+    await action()
+  } catch (error) {
+    return error
+  }
+  throw new Error("expected a rejection")
+}
+
+const REFUSED = new HarnessError(422, "refused", "the run refused the message")
+
+test("a refused first message ends the side chat it opened", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const cards = h.office.cards!
+  const { q } = await ask(h)
+  promptOnce(h, REFUSED)
+  expect(await rejection(() => cards.openSide(q.id, "x"))).toBe(REFUSED)
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
+  expect(texts(h, sideId, "user")).toEqual([])
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+  // The next open starts a fresh run of it, and the seed still goes.
+  const side = await chat(h, q, "why?", 1)
+  expect(side.id).toBe(sideId)
+  expect(h.store.getSession(sideId)!.run_ids).toHaveLength(2)
+  expect(await framings(fake, 2)).toBe(1)
+  expect(await lastUser(fake, 2)).toEndWith("why?")
+})
+
+test("a refused message to a reopened side chat ends the new run", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const cards = h.office.cards!
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  await h.harness.end(side.id)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  promptOnce(h, REFUSED)
+  expect(await rejection(() => cards.openSide(q.id, "x"))).toBe(REFUSED)
+  await waitFor(() => status(h, side.id) === "ended" && h.store.getSession(side.id)!.run_ids.length === 2, {
+    what: "the new run to end",
+  })
+  expect(texts(h, side.id, "user")).toEqual(["why?"])
+})
+
+test("a refused message to a live side chat leaves it live", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  const end = spyOn(h.harness, "end")
+  promptOnce(h, REFUSED)
+  expect(await rejection(() => h.office.cards!.openSide(q.id, "x"))).toBe(REFUSED)
+  await Bun.sleep(200)
+  expect(status(h, side.id)).toBe("idle")
+  expect(end).not.toHaveBeenCalled()
+})
+
+test("an open queued behind a failing open reaches a fresh run", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const cards = h.office.cards!
+  const { q } = await ask(h)
+  promptOnce(h, REFUSED)
+  const first = rejection(() => cards.openSide(q.id, "x"))
+  const second = cards.openSide(q.id, "why?")
+  expect(await first).toBe(REFUSED)
+  const side = await second
+  await waitFor(() => texts(h, side.id).join() === "Quota." && status(h, side.id) === "idle", {
+    what: "the side reply",
+  })
+  expect(texts(h, side.id, "user")).toEqual(["why?"])
+  expect(h.store.getSession(side.id)!.run_ids).toHaveLength(2)
+})
+
+test("a message refused because the card closed meanwhile answers 409 not open", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK)
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  spyOn(h.harness, "prompt").mockImplementationOnce(async (sid: string) => {
+    h.store.answerQuestion(q.id, "Retry", "option", null) // another client answered meanwhile
+    throw new HarnessError(409, "ending", `session ${sid} is ending`)
+  })
+  const error = await refusal(() => h.office.cards!.openSide(q.id, "why?"))
+  expect([error.status, error.code]).toEqual([409, "not_open"])
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
 })
 
 test("a card answered after its side runs row commits ends the side chat once", async () => {
@@ -1725,6 +1828,58 @@ test("a side chat stored starting at the sweep leaves a run with a log to yian",
   h.office.cards!.sweep()
   expect(status(h, side.id)).toBe("ended")
   expect(h.store.getRun(runId)!.endReason).toBeNull()
+})
+
+test("the start sweep ends an open cards side chat that never got a message", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK)
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  // The office stops inside the open: the message and the open's End are both refused.
+  const stopping = new HarnessError(503, "stopping", "the office is stopping")
+  promptOnce(h, stopping)
+  spyOn(h.harness, "end").mockImplementationOnce(() => Promise.reject(stopping))
+  expect(await rejection(() => h.office.cards!.openSide(q.id, "why?"))).toBe(stopping)
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  await waitFor(() => status(h, sideId) === "idle", { what: "the side run to wait for a message" })
+  await h.reopen()
+  await h.harness.restore()
+  h.office.cards!.sweep()
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
+  expect(h.store.runsOfSession(sideId).map((row) => row.endReason)).toEqual([null])
+  expect(texts(h, sideId, "user")).toEqual([])
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+})
+
+test("the start sweep keeps a side chat whose only message is blank", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Ask me anything." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "   ", 1)
+  await h.reopen()
+  await h.harness.restore()
+  h.office.cards!.sweep()
+  await Bun.sleep(300)
+  expect(status(h, side.id)).toBe("idle")
+})
+
+test("a start sweep that cant read a side chats log logs its error type and goes on", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  await h.reopen()
+  await h.harness.restore()
+  spyOn(h.harness.transcript, "messages").mockImplementationOnce(() => {
+    throw new TypeError("the side chat said why?")
+  })
+  h.office.cards!.sweep()
+  expect(h.logs).toContain(`side session ${side.id}'s log can't be read (TypeError)`)
+  expect(h.logs.filter((line) => line.includes("why?"))).toEqual([])
+  await Bun.sleep(300)
+  expect(status(h, side.id)).toBe("idle")
 })
 
 test("a side chat resumes after an office restart", async () => {
