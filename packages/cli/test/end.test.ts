@@ -72,7 +72,8 @@ test("opencorp end ID ends that session; no office exits 3, its refusal 1", asyn
   const down = await capture(["end", "S1"])
   expect([down.code, down.err]).toEqual([
     3,
-    "The office isn't running. Run `opencorp start` (or `opencorp doctor` if it won't start).",
+    `The office at ${home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
+      " set $OPENCORP_HOME if your office is elsewhere.",
   ])
 
   mkdirSync(path.dirname(socket), { recursive: true })

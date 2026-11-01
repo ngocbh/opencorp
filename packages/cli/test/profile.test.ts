@@ -302,6 +302,7 @@ test("with no office running, edit says so and exits 3", async () => {
   const r = await profile("edit", "minh")
   expect([r.code, r.err]).toEqual([
     3,
-    "The office isn't running. Run `opencorp start` (or `opencorp doctor` if it won't start).",
+    `The office at ${home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
+      " set $OPENCORP_HOME if your office is elsewhere.",
   ])
 })

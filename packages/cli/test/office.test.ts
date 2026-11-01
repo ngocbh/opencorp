@@ -392,7 +392,10 @@ test("`opencorp` with no office says so and exits 3 before loading the TUI", asy
   console.error = (...a: unknown[]) => void err.push(a.join(" "))
   try {
     expect(await main(["--continue"])).toBe(3)
-    expect(err).toEqual(["The office isn't running. Run `opencorp start` (or `opencorp doctor` if it won't start)."])
+    expect(err).toEqual([
+      `The office at ${home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
+        " set $OPENCORP_HOME if your office is elsewhere.",
+    ])
   } finally {
     console.error = error
     fs.rmSync(home, { recursive: true, force: true })

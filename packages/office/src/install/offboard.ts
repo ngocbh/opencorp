@@ -176,7 +176,7 @@ export async function plan(
   const me = await knownIdentity(run.home)
   const running = await host.answers(run.socket)
   const described = new Map([
-    [run.office, "the office's store, provider.json, connections and sign-ins, logs, and worktrees"],
+    [run.office, "the office's store, connections (the model provider's among them), sign-ins, logs, and worktrees"],
     [identityPath(run.home), "this device's identity and token"],
     [path.join(run.home, "tui"), "opencorp's own state"],
     [path.join(run.home, CLONE), "an unfinished clone of a company"],

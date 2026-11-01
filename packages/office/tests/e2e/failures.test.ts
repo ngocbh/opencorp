@@ -150,7 +150,8 @@ test(
     const down = await office.opencorp(["end"], { cwd: workspace, check: false })
     expect([down.code, down.stderr.trim()]).toEqual([
       3,
-      "The office isn't running. Run `opencorp start` (or `opencorp doctor` if it won't start).",
+      `The office at ${office.home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
+        " set $OPENCORP_HOME if your office is elsewhere.",
     ])
     await office.opencorp(["start"], { cwd: workspace })
     expect(office.pid()).not.toBe(old)

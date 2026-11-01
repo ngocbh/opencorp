@@ -1,6 +1,7 @@
 /**
  * `opencorp install <command>`: what `opencorp init`, `opencorp onboard`, `opencorp offboard`, `opencorp doctor`,
- * `opencorp start`, `opencorp stop` and `opencorp restart` run.
+ * `opencorp start`, `opencorp stop` and `opencorp restart` run, in a child. `install` is hidden, so a command's
+ * usage and errors name it as the user typed it: `opencorp <command>`.
  *
  * `opencorp`'s setup screen runs init and onboard with `--json-prompts`: each question is a JSON line on stdout,
  * each answer a JSON line on stdin. Flags are matched whole; a prefix (`--prov` for `--provider-stdin`) is
@@ -224,18 +225,18 @@ function shown(name: string, flag: Flag): string {
   return flag.short ? `-${flag.short}, ${long}` : long
 }
 
-/** The usage line of `command`, or of `opencorp install` itself. */
+/** The usage line of `opencorp <command>`, or of the hidden `opencorp install` itself. */
 function usage(command?: string): string {
   if (command === undefined) return `usage: opencorp install {${Object.keys(COMMANDS).join(",")}} ...\n`
   const flags = Object.entries(COMMANDS[command]!.flags).filter(([, flag]) => flag.help)
   const parts = flags.map(([name, flag]) => `[${flag.short ? `-${flag.short}` : shown(name, flag)}]`)
-  return `usage: opencorp install ${command} ${parts.join(" ")}\n`
+  return `usage: opencorp ${command} ${parts.join(" ")}\n`
 }
 
 /** The column help text starts at: argparse's `max_help_position`. */
 const HELP_COLUMN = 24
 
-/** The help of `command`, or of `opencorp install` itself, argparse-like. */
+/** The help of `opencorp <command>`, or of the hidden `opencorp install` itself, argparse-like. */
 function help(command?: string): string {
   // Names too wide to leave two spaces before the column go on their own line, as argparse puts them.
   const line = (names: string, text: string) =>
@@ -254,7 +255,7 @@ function help(command?: string): string {
 
 /** Says on stderr how `command` (or `opencorp install`) is used and what was wrong; exit code 2. */
 function usageError(s: Setup, message: string, command?: string): number {
-  s.stderr.write(`${usage(command)}opencorp install${command ? ` ${command}` : ""}: error: ${message}\n`)
+  s.stderr.write(`${usage(command)}opencorp ${command ?? "install"}: error: ${message}\n`)
   return 2
 }
 

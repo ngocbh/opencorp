@@ -3,7 +3,7 @@
 // (this env without the names that change how Bun starts). `opencorp` never starts the office on its own: the
 // service `opencorp init` or `opencorp onboard` installed does.
 import { createOfficeClient } from "@opencorp/client"
-import { readIdentity, type Identity, defaultSocket, identityPath } from "@opencorp/client/node"
+import { readIdentity, type Identity, defaultSocket, identityPath, opencorpHome } from "@opencorp/client/node"
 import { selfCommand, selfSpawnCwd, selfSpawnEnv } from "@opencorp/office/platform"
 import fs from "node:fs"
 import os from "node:os"
@@ -149,9 +149,14 @@ export const bareHandle = (typed: string) => typed.replace(/^@/, "")
 /** Exit code when no office answers, as the install's `start` exits with no office yet. */
 export const NO_OFFICE = 3
 
+/** What to say when the office at this env's home doesn't answer: which home, and that `$OPENCORP_HOME` picks it. */
+export const notRunning = () =>
+  `The office at ${opencorpHome()} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
+  " set $OPENCORP_HOME if your office is elsewhere."
+
 /** Says the office isn't running; returns `NO_OFFICE`. */
 export function officeNotRunning(): number {
-  console.error("The office isn't running. Run `opencorp start` (or `opencorp doctor` if it won't start).")
+  console.error(notRunning())
   return NO_OFFICE
 }
 

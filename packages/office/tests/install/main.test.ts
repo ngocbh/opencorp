@@ -98,8 +98,20 @@ test("a missing or unknown command or flag is a usage error", async () => {
   expect(s.err()).toContain("the following arguments are required: command")
   s = standIns(dir)
   expect(await main(["start", "--bogus"], s)).toBe(2)
-  expect(s.err()).toStartWith("usage: opencorp install start")
-  expect(s.err()).toContain("--bogus")
+  expect(s.err()).toStartWith("usage: opencorp start ")
+  expect(s.err()).toContain("opencorp start: error: Unknown option '--bogus'")
+  expect(s.err()).not.toContain("opencorp install")
+  // Only the hidden command itself goes by `opencorp install`.
+  s = standIns(dir)
+  expect(await main(["--bogus"], s)).toBe(2)
+  expect(s.err()).toStartWith("usage: opencorp install {")
+  expect(s.err()).toContain("opencorp install: error:")
+})
+
+test("a command's help names it as the user typed it", async () => {
+  const s = standIns(tempDir())
+  expect(await main(["start", "--help"], s)).toBe(0)
+  expect(s.out()).toStartWith("usage: opencorp start ")
 })
 
 test("doctor runs the codex check doctor has when it runs", async () => {

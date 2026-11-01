@@ -43,7 +43,8 @@ async function office(home: string, { device = true }: { device?: boolean } = {}
   let owner: Owner = { handle: "me", name: "Me" }
   if (device) owner = await makeDevice(real, owner)
   await writeCompany(paths.company, paths.worktrees, { company: "Acme", owner })
-  fs.writeFileSync(path.join(paths.office, "provider.json"), '{"provider": "anthropic"}')
+  fs.mkdirSync(path.join(paths.office, "connections"), { recursive: true })
+  fs.writeFileSync(path.join(paths.office, "connections", "office.json"), '{"provider": "anthropic"}')
   fs.writeFileSync(path.join(paths.office, "office.log"), "started\n")
   fs.mkdirSync(path.join(real, "tui"))
   return paths
@@ -90,7 +91,7 @@ test("offboard says what it will remove and no keeps everything", async () => {
   const said = ask.seen.join("\n")
   expect(said).toContain(`this device (${deviceName()}) from @me in the company repo`)
   expect(said).toContain(
-    `${paths.office} (the office's store, provider.json, connections and sign-ins, logs, and worktrees)`,
+    `${paths.office} (the office's store, connections (the model provider's among them), sign-ins, logs, and worktrees)`,
   )
   expect(said).toContain(`${path.join(paths.home, "identity.json")} (this device's identity and token)`)
   expect(said).toContain(`${path.join(paths.home, "tui")} (opencorp's own state)`)
@@ -98,7 +99,7 @@ test("offboard says what it will remove and no keeps everything", async () => {
   expect(ask.seen.at(-1)).toBe(CONFIRM)
   expect(ask.offered).toEqual([[KEEP, REMOVE]])
   expect(devices(paths)).toEqual([deviceName()])
-  expect(fs.existsSync(path.join(paths.office, "provider.json"))).toBe(true)
+  expect(fs.existsSync(path.join(paths.office, "connections", "office.json"))).toBe(true)
   expect(fs.existsSync(path.join(paths.home, "identity.json"))).toBe(true)
   expect(fs.existsSync(path.join(paths.home, "tui"))).toBe(true)
 }, 30_000)
@@ -263,7 +264,7 @@ test("an office that wont stop keeps its state", async () => {
   await expect(done).rejects.toThrow("still answers")
   // The online removal finds no server on the temp socket, so the device stays.
   expect(devices(paths)).toEqual([deviceName()])
-  expect(fs.existsSync(path.join(paths.office, "provider.json"))).toBe(true)
+  expect(fs.existsSync(path.join(paths.office, "connections", "office.json"))).toBe(true)
   expect(fs.existsSync(path.join(paths.home, "identity.json"))).toBe(true)
 }, 30_000)
 

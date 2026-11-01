@@ -187,6 +187,73 @@ test("an office started by hand is left alone", async () => {
   expect(ask.seen.some((line) => line.includes("not started by a service"))).toBe(true)
 })
 
+/** Onboards the company made at `home` to the end, beside a running office, with `environ` as the caller's env;
+ *  returns what it said. */
+async function onboardRunning(dir: string, home: string, more: Partial<OnboardOptions> = {}): Promise<string[]> {
+  const ask = new Script()
+  await onboard(home, ask, {
+    ...base(dir),
+    stdin: provider(),
+    host: makeHost(dir, new Runner(), { answers: async () => true }),
+    ...more,
+  })
+  return ask.seen
+}
+
+/** The caller's env without OPENCORP_HOME. */
+function noHomeEnv(): Record<string, string> {
+  const { OPENCORP_HOME: _, ...rest } = gitEnv(process.env)
+  return rest
+}
+
+test("--from on a home that has a company says it was ignored", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  await company(home)
+  const seen = await onboardRunning(dir, home, { source: "https://example.com/acme.git" })
+  const repo = seen.filter((line) => line.startsWith("Company repo:"))
+  expect(repo).toEqual([
+    `Company repo: up to date at ${path.join(fs.realpathSync(home), "company")} (--from ignored: there's a company here already)`,
+  ])
+  expect(seen.join("\n")).not.toContain("example.com")
+  // Nor is a missing template file's line silent about it.
+  const other = path.join(dir, "other")
+  const root = await company(other)
+  fs.unlinkSync(path.join(root, "shared/flows/side_chat.yaml"))
+  git(root, "commit", "-qam", "drop a flow")
+  const running = await onboardRunning(dir, other, { source: "https://example.com/acme.git" })
+  expect(running.filter((line) => line.startsWith("Company repo:"))[0]).toEndWith(
+    "(--from ignored: there's a company here already)",
+  )
+})
+
+test("an office a client here wouldn't find ends with how to reach it", async () => {
+  const dir = tempDir()
+  for (const name of ["home", "my home"]) {
+    const home = path.join(dir, name)
+    await company(home)
+    const seen = await onboardRunning(dir, home, { environ: noHomeEnv() })
+    expect(seen.at(-1)).toBe(
+      "Done. This office isn't the one `opencorp` finds in this shell, so first run " +
+        `\`export OPENCORP_HOME=${fallback.shQuote(fs.realpathSync(home))}\` (add it to your shell profile to keep it), ` +
+        "then run `opencorp` in a project folder to talk to your team.",
+    )
+  }
+  expect(fallback.shQuote(fs.realpathSync(path.join(dir, "my home")))).toStartWith("'")
+})
+
+test("an office a client here finds ends with the plain line", async () => {
+  const dir = tempDir()
+  const plain = "Done. Run `opencorp` in a project folder to talk to your team."
+  const home = path.join(dir, "home")
+  await company(home)
+  expect((await onboardRunning(dir, home, { environ: { ...noHomeEnv(), OPENCORP_HOME: home } })).at(-1)).toBe(plain)
+  // makeHost's user home is `dir`, so `dir/.opencorp` is the default home.
+  const usual = path.join(dir, ".opencorp")
+  await company(usual)
+  expect((await onboardRunning(dir, usual, { environ: noHomeEnv() })).at(-1)).toBe(plain)
+})
+
 test("a running office is not topped up behind its back", async () => {
   const dir = tempDir()
   const home = path.join(dir, "home")
@@ -403,6 +470,7 @@ test("onboard clones the company and commits this device for the human you pick"
   expect(ask.offered).toEqual([["ceo", "lan"]])
   expect(ask.seen.filter((line) => line.startsWith("The company's"))).toEqual([])
   expect(ask.seen.filter((line) => line.includes(me.token))).toEqual([])
+  expect(ask.seen.join("\n")).not.toContain("--from ignored")
 })
 
 test("joining as a human with a password needs it", async () => {
