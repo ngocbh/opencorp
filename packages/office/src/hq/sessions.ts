@@ -271,6 +271,25 @@ export class BrowserSessions {
     return this.store.deleteHqSession(sid)
   }
 
+  /**
+   * `person`'s unexpired sessions, newest first, as checked against commit `sha`: a session whose person's password
+   * changed there is ended (its row deleted, its streams closed) and left out, as `check` would on its next use. A
+   * `person.yaml` that can't be read there ends none, as `check` doesn't.
+   */
+  async listLive(person: string, sha: string): Promise<HqSessionRecord[]> {
+    const now = stamp(this.clock())
+    const rows = this.store.listHqSessions(person).filter((r) => r.expiresAt > now)
+    const humans = await this.#fingerprints.at(sha)
+    if (humans.unreadable.has(person)) return rows
+    const fp = humans.fps.get(person)
+    const live: HqSessionRecord[] = []
+    for (const row of rows) {
+      if (row.passwordFp === fp) live.push(row)
+      else await this.revoke(row.id)
+    }
+    return live
+  }
+
   /** Tracks an open stream of session `sid`, so revoking the session ends it; a revoked or unknown session ends it
    *  now (expiry is left to the stream's `alive` check). */
   register(sid: string, sub: Subscription): void {
