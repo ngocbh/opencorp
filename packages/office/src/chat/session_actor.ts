@@ -3006,7 +3006,7 @@ export class SessionActor implements LiveCalls {
       }
       if (this.#settleFailing === null) this.#log(`session ${this.sessionId}: no state ${when} (${name}); retrying`)
       this.#settleFailing = name
-      if (this.#settleRetry === null) this.#armSettleRetry()
+      if (this.#settleRetry === null && !this.#finished && !this.#closed) this.#armSettleRetry()
       return
     }
     if (this.#settleFailing !== null) {
