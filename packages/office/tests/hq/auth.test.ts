@@ -240,6 +240,17 @@ test("pairing with a cookie that proves nothing revokes nothing", async () => {
   expect(office.store.getHqSession(other.id)).toBeDefined()
 })
 
+test("a pair with a control character label is 422 and keeps the code", async () => {
+  const hq = await makeHq(makeOffice())
+  const client = await web(hq)
+  const code = await pairCode(hq)
+  const r = await client.post("/api/pair", { code, label: "Safari\u001b[2J" })
+  expect([r.status, (r.json() as Body).error]).toEqual([422, "invalid_body"])
+  expect((r.json() as Body).message).toContain("label")
+  for (const echoed of ["\u001b", "Safari", code]) expect(r.text).not.toContain(echoed)
+  expect((await client.post("/api/pair", { code })).status).toBe(200)
+})
+
 test("logout ends the session and clears the cookie", async () => {
   const office = makeOffice()
   const hq = await makeHq(office)

@@ -130,6 +130,15 @@ test("a bad body is 422 and doesnt quote the password", async () => {
   }
 })
 
+test("a control character label is 422 and isnt quoted", async () => {
+  const lines: string[] = []
+  const { client } = await withPassword({ logs: lines })
+  const r = await login(client, CEO, PASSWORD, { label: "evil\r\nINFO forged" })
+  expect([r.status, (r.json() as Body).error]).toEqual([422, "invalid_body"])
+  for (const echoed of ["INFO forged", PASSWORD]) expect(r.text).not.toContain(echoed)
+  expect(messages(lines).filter((m) => m.startsWith("sign-in"))).toEqual([])
+})
+
 test("signing in again revokes the old session", async () => {
   const { office, client } = await withPassword()
   const first = ((await login(client)).json() as Body).id as string
