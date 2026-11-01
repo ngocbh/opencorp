@@ -329,6 +329,160 @@ test("pin leaves files under a symlinked folder alone and survives a symlink loo
   expect(fs.statSync(path.join(pinned, PROFILE)).mode & 0o222).toBe(0)
 })
 
+/** Moves HEAD off its commit with a profile commit through `g`; returns the new HEAD. */
+async function moveHead(company: string, g: CompanyGit, line: string): Promise<string> {
+  fs.appendFileSync(path.join(company, PROFILE), `${line}\n`)
+  return g.commit([PROFILE], `profile(@minh): ${line}`)
+}
+
+/** A pin of `commit` built through another `CompanyGit` on the same clone, so `g` has no stamp for it. */
+function prebuilt(company: string, worktrees: string, commit: string): Promise<string> {
+  return new CompanyGit(company, worktrees).pin(commit)
+}
+
+test("a cached pin refreshes its stamp", async () => {
+  let t = 0
+  const { company, g } = setup({ clock: () => t })
+  const sha = await g.head()
+  const dir = await g.pin(sha)
+  await moveHead(company, g, "a")
+  t = 600
+  expect(await g.pin(sha)).toBe(dir) // cached
+  t = 1100
+  expect(await g.prune(() => [], { graceMs: 1000 })).toEqual({ removed: [], retryInMs: 500 })
+  expect(fs.existsSync(dir)).toBe(true)
+  t = 1600
+  expect(await g.prune(() => [], { graceMs: 1000 })).toEqual({ removed: [sha], retryInMs: null })
+  expect(fs.existsSync(dir)).toBe(false)
+})
+
+test("prune removes an unkept pin and unregisters it", async () => {
+  const { company, g } = setup()
+  const a = await g.head()
+  const dir = await prebuilt(company, g.worktrees, a)
+  await moveHead(company, g, "a")
+  expect(git(company, "worktree", "list", "--porcelain")).toContain(dir)
+  expect(await g.prune(() => [])).toEqual({ removed: [a], retryInMs: null })
+  expect(fs.existsSync(dir)).toBe(false)
+  expect(git(company, "worktree", "list", "--porcelain")).not.toContain(dir)
+})
+
+test("prune keeps a kept sha, head and a recently pinned sha", async () => {
+  let t = 0
+  const { company, g } = setup({ clock: () => t })
+  const k = await g.head()
+  await prebuilt(company, g.worktrees, k)
+  const r = await moveHead(company, g, "r")
+  await g.pin(r) // stamped at 0
+  const h = await moveHead(company, g, "h")
+  await prebuilt(company, g.worktrees, h)
+  t = 10
+  expect(await g.prune(() => [k], { graceMs: 1000 })).toEqual({ removed: [], retryInMs: 990 })
+  for (const sha of [k, r, h]) expect(fs.existsSync(path.join(g.worktrees, sha, ".opencorp-pin"))).toBe(true)
+
+  t = 5000 // r's window is over: only k and HEAD stay, and neither sets a retry
+  expect(await g.prune(() => [k], { graceMs: 1000 })).toEqual({ removed: [r], retryInMs: null })
+  expect(fs.readdirSync(g.worktrees).sort()).toEqual([k, h].sort())
+})
+
+test("prune leaves non-sha entries alone", async () => {
+  const { company, g } = setup()
+  const a = await g.head()
+  await prebuilt(company, g.worktrees, a)
+  await moveHead(company, g, "a")
+  const others = ["notes", "ABCDEF".padEnd(40, "0"), "a".repeat(39)]
+  for (const name of others) fs.mkdirSync(path.join(g.worktrees, name))
+  fs.writeFileSync(path.join(g.worktrees, "b".repeat(40)), "a file named like a sha\n")
+  expect((await g.prune(() => [])).removed).toEqual([a])
+  expect(fs.readdirSync(g.worktrees).sort()).toEqual([...others, "b".repeat(40)].sort())
+})
+
+test("prune unlinks a sha-named symlink and keeps its target", async () => {
+  const { tmp, g } = setup()
+  const outside = path.join(tmp, "outside")
+  fs.mkdirSync(outside)
+  fs.writeFileSync(path.join(outside, "f.txt"), "mine\n")
+  fs.mkdirSync(g.worktrees)
+  const link = path.join(g.worktrees, "c".repeat(40))
+  fs.symlinkSync(outside, link)
+  expect((await g.prune(() => [])).removed).toEqual(["c".repeat(40)])
+  expect(fs.existsSync(link)).toBe(false)
+  expect(fs.readFileSync(path.join(outside, "f.txt"), "utf8")).toBe("mine\n")
+})
+
+test("prune leaves symlink targets inside a removed pin alone", async () => {
+  const { tmp, company, g } = setup()
+  const outside = path.join(tmp, "outside")
+  fs.mkdirSync(outside)
+  fs.writeFileSync(path.join(outside, "f.txt"), "mine\n", { mode: 0o644 })
+  fs.symlinkSync(outside, path.join(company, "linkdir"))
+  await g.commit(["linkdir"], "links")
+  const dir = await prebuilt(company, g.worktrees, await g.head())
+  await moveHead(company, g, "a")
+  expect((await g.prune(() => [])).removed).toEqual([path.basename(dir)])
+  expect(fs.existsSync(dir)).toBe(false)
+  expect(fs.readFileSync(path.join(outside, "f.txt"), "utf8")).toBe("mine\n")
+  expect(fs.statSync(path.join(outside, "f.txt")).mode & 0o777).toBe(0o644)
+})
+
+test("a pruned sha is rebuilt by pin", async () => {
+  const { company, g } = setup()
+  const a = await g.head()
+  const dir = await g.pin(a)
+  await moveHead(company, g, "a")
+  expect((await g.prune(() => [], { graceMs: 0 })).removed).toEqual([a])
+  expect(await g.pin(a)).toBe(dir)
+  expect(fs.readFileSync(path.join(dir, ".opencorp-pin"), "utf8")).toBe(`${a}\n`)
+  expect(fs.readFileSync(path.join(dir, PROFILE), "utf8")).toBe("# Minh, Engineer\n")
+  expect(fs.statSync(path.join(dir, PROFILE)).mode & 0o222).toBe(0)
+})
+
+test("prune with no worktrees dir is a no op", async () => {
+  const { g } = setup()
+  expect(fs.existsSync(g.worktrees)).toBe(false)
+  expect(await g.prune(() => [])).toEqual({ removed: [], retryInMs: null })
+})
+
+test("prune and pin of the same sha serialize on the lock", async () => {
+  const { company, g } = setup()
+  const a = await g.head()
+  const dir = await prebuilt(company, g.worktrees, a)
+  await moveHead(company, g, "a")
+  // Whichever takes the lock first, the pin handed out is whole.
+  const [pinned] = await Promise.all([g.pin(a), g.prune(() => [])])
+  expect(pinned).toBe(dir)
+  expect(fs.readFileSync(path.join(dir, ".opencorp-pin"), "utf8")).toBe(`${a}\n`)
+  expect(fs.readFileSync(path.join(dir, PROFILE), "utf8")).toBe("# Minh, Engineer\n")
+})
+
+test("prune stops at an aborted signal", async () => {
+  const { company, g } = setup()
+  const a = await g.head()
+  const dir = await prebuilt(company, g.worktrees, a)
+  await moveHead(company, g, "a")
+  expect(await g.prune(() => [], { signal: AbortSignal.abort() })).toEqual({ removed: [], retryInMs: null })
+  expect(fs.existsSync(dir)).toBe(true)
+})
+
+test("prune reads keep under the lock", async () => {
+  const { company, g } = setup()
+  const a = await g.head()
+  await prebuilt(company, g.worktrees, a)
+  await moveHead(company, g, "a")
+  const order: string[] = []
+  const held = g.locked(async () => {
+    await sleep(50)
+    order.push("held")
+  })
+  const pruned = g.prune(() => {
+    order.push("keep")
+    return [a]
+  })
+  await Promise.all([held, pruned])
+  expect(order).toEqual(["held", "keep"])
+  expect((await pruned).removed).toEqual([])
+})
+
 test("hand edit is committed with handle", async () => {
   const { company, g } = setup()
   fs.writeFileSync(path.join(company, PROFILE), "# Minh\nlikes tests\n")
