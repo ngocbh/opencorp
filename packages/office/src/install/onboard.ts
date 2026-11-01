@@ -267,7 +267,9 @@ function serverUrlProblem(answer: string): string | null {
   if (url === null || (url.protocol !== "http:" && url.protocol !== "https:") || !url.hostname) {
     return "give an http:// or https:// URL like http://host:8000/v1"
   }
-  if (url.username || url.password) return "keep the user and password out of the URL"
+  // Yian reads the variable as written, and its parsers take only printable ASCII.
+  if (!/^[\x21-\x7e]+$/.test(text)) return "give the URL in ASCII, without spaces"
+  if (url.username || url.password || text.includes("@")) return "keep the user and password out of the URL"
   if (text.includes("?") || text.includes("#")) return "give the URL without a query or fragment"
   return null
 }
@@ -291,7 +293,7 @@ function keyProblem(url: string): string | null {
   // Yian's rule for where a key may be sent, which it applies to llm_config.base_url; VLLM_BASE_URL is used as
   // written, so it is applied here.
   if (!url || keyedBaseUrl(url)) return null
-  if (/^http:/i.test(url) && keyedBaseUrl(url.replace(/^http:/i, "https:"))) return KEY_OVER_HTTP
+  if (url.startsWith("http:") && keyedBaseUrl(`https:${url.slice("http:".length)}`)) return KEY_OVER_HTTP
   return "yian sends a key only to a lowercase ASCII URL whose host has no underscore"
 }
 

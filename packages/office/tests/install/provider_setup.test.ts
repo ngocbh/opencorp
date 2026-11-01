@@ -1150,7 +1150,16 @@ test("an ollama server elsewhere is saved in the providers env", async () => {
   })
 })
 
-test.each(["ftp://h", "not a url", "http://u:hunter2@h:8000/v1", "http://h/v1?x=1", "http://h/v1#f"])(
+test.each([
+  "ftp://h",
+  "not a url",
+  "http://u:hunter2@h:8000/v1",
+  "http://@h:8000/v1",
+  "http://h/v1?x=1",
+  "http://h/v1#f",
+  "http://münchen.lan:11434",
+  "http://h/my v1",
+])(
   "a server URL that isnt usable is asked again without echoing it [%s]",
   async (url) => {
     const office = newOffice()
@@ -1209,6 +1218,16 @@ test("a key isnt sent to a URL yian wouldnt send it to, and says why", async () 
     llm_config: { provider: "vllm", api_key: KEY, model: "m" },
     env: { VLLM_BASE_URL: "https://vllm.lan/v1" },
   })
+})
+
+test("a key to an upper case http URL on this machine says why, not that it needs https", async () => {
+  const office = newOffice()
+  const ask = new Script(["vllm", "HTTP://localhost:8000/v1", KEY, "http://localhost:8000/v1", KEY, "m"])
+  await ensure(office, ask)
+  expect(ask.seen).toContain(
+    "That doesn't work: yian sends a key only to a lowercase ASCII URL whose host has no underscore",
+  )
+  expect(ask.seen.some((line) => line.includes("only over https"))).toBe(false)
 })
 
 test("a keyless vllm server URL may have an underscore", async () => {
