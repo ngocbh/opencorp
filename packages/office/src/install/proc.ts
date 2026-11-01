@@ -65,6 +65,37 @@ export function sameProcess(pid: number, started: number): boolean {
   return found !== null && Math.abs(found - started) < 0.01
 }
 
+/** Whether no process holds `pid` now: `kill(pid, 0)` fails with ESRCH. False for a live process (zombies
+ *  included), one the office may not signal (EPERM), or an id that isn't a pid. Sends no signal. */
+export function noSuchProcess(pid: number): boolean {
+  if (!isPid(pid)) return false
+  try {
+    process.kill(pid, 0)
+    return false
+  } catch (error) {
+    return (error as { code?: unknown }).code === "ESRCH"
+  }
+}
+
+/** Whether the office itself is in process group `pgid`. Linux: field 5 of /proc/self/stat; macOS: whether
+ *  `liveGroupMembers` lists the office. True when it can't be told (another platform, a failed read), so a
+ *  caller that skips the office's own group fails safe. */
+export function inOfficeGroup(pgid: number): boolean {
+  if (process.platform !== "darwin" && process.platform !== "linux") return true
+  try {
+    // The office is live and runs as its own user, so liveGroupMembers lists it if it is in the group.
+    if (process.platform === "darwin") return liveGroupMembers(pgid).includes(process.pid)
+    const stat = fs.readFileSync("/proc/self/stat", "utf8")
+    // As in linuxStartTime: the fields start after the last ")", and rest[0] is field 3, so field 5 is rest[2].
+    const end = stat.lastIndexOf(")")
+    if (end < 0) return true
+    const own = parseDecimal(stat.slice(end + 2).split(" ")[2])
+    return own === null || own === pgid
+  } catch {
+    return true
+  }
+}
+
 // At most this many repeat kills on macOS, about 1 ms apart, so a group forking faster than that can't hold the
 // caller (often an exit listener) for long.
 const SWEEP_ROUNDS = 50

@@ -5,9 +5,11 @@ import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import {
   args,
+  inOfficeGroup,
   isDaemonLine,
   killGroup,
   linuxStartTime,
+  noSuchProcess,
   sameProcess,
   startTime,
   stopProcess,
@@ -104,6 +106,29 @@ test("sameProcess matches the start time within 0.01 s only", async () => {
   await gone.exited
   // If it exited before its start time was read, any start time is a valid probe: the pid runs nothing now.
   expect(sameProcess(gone.pid, gone.started ?? started)).toBe(false)
+})
+
+test("noSuchProcess is true only once no process holds the pid", async () => {
+  expect(noSuchProcess(process.pid)).toBe(false)
+  const live = startGroup("exec /bin/sleep 61")
+  expect(noSuchProcess(live.pid)).toBe(false)
+  const gone = startGroup("exit 0")
+  await gone.exited
+  expect(noSuchProcess(gone.pid)).toBe(true)
+  for (const id of [0, 1, -1, 1.5, NaN, 2 ** 31]) expect(noSuchProcess(id)).toBe(false)
+})
+
+test("noSuchProcess is false for a process it may not signal", () => {
+  mockKill(Object.assign(new Error("EPERM"), { code: "EPERM" }))
+  expect(noSuchProcess(NO_GROUP)).toBe(false)
+})
+
+test("inOfficeGroup tells the office's own group from another", () => {
+  const own = Number(
+    execFileSync(ps(), ["-o", "pgid=", "-p", String(process.pid)], { env: {}, timeout: 5000 }).toString().trim(),
+  )
+  expect(inOfficeGroup(own)).toBe(true)
+  expect(inOfficeGroup(startGroup("exec /bin/sleep 61").pid)).toBe(false)
 })
 
 test("killGroup kills the leader and its grandchild", async () => {
