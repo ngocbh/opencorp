@@ -1183,8 +1183,8 @@ test("a card that closes during its side chats first reply ends the side chat", 
   h.hooks.sessionEnded.push((session) => void ends.push(session.id))
   const side = await h.office.cards!.openSide(q.id, "why?")
   await fake.waitForRequests(2)
-  // Its first reply runs: the side chat stays starting until that reply finishes.
-  expect(status(h, side.id)).toBe("starting")
+  // Its first reply runs; the model can get the request before the actor handles the reply's start.
+  await waitFor(() => status(h, side.id) === "busy", { what: "busy in its first reply" })
   h.store.answerQuestion(q.id, "Retry", "option", null) // another client answered meanwhile
   await waitFor(() => status(h, side.id) === "ending", { what: "the close's End", timeout: 5000 })
   fake.release()
@@ -1449,7 +1449,7 @@ test("a side chat survives a restart during its first reply", async () => {
   const { h, q } = await atTheGate(GATE, { fake })
   const side = await h.office.cards!.openSide(q.id, "why Postgres?")
   await fake.waitForRequests(1)
-  expect(status(h, side.id)).toBe("starting")
+  await waitFor(() => status(h, side.id) === "busy", { what: "busy in its first reply" })
   await h.reopen()
   fake.release()
 

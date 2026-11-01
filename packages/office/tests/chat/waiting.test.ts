@@ -30,6 +30,8 @@ import {
   PRICES,
   PRICEY,
   reopen,
+  say,
+  type ScriptedWorker,
   scriptedWorker,
   session,
   startActor,
@@ -37,6 +39,7 @@ import {
   status,
   texts,
   unreadAtRestart,
+  waitingResult,
 } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -46,6 +49,37 @@ afterAll(noWorkersLeft)
 function waits(o: ChatOffice, sid: string): [string, string[]] {
   const { status, waiting_on } = state(o, sid)
   return [status, waiting_on]
+}
+
+/** Records each status session `sid` is written with from now on, a repeat of the one before left out. */
+function statusesOf(o: ChatOffice, sid: string): string[] {
+  const seen: string[] = []
+  onTestFinished(
+    o.office.store.addListener((event) => {
+      const data = event.data as { id?: string; status?: string }
+      if (event.type === "session.updated" && data.id === sid && data.status !== seen.at(-1)) seen.push(data.status!)
+    }),
+  )
+  return seen
+}
+
+/** Tells the actor over scripted worker `w` of node `nodeId`'s event `name`, with `data` on top. */
+function frame(w: ScriptedWorker, name: string, nodeId: string, data: Record<string, unknown> = {}): void {
+  w.handlers.event(w.worker, { type: "event", name, data: { node_id: nodeId, ...data } })
+}
+
+/** Turn `i`'s first frames as the chat flow sends them: its take waits at once, while its context (compact_history's
+ *  call containers, its case, its fold skipped under budget) runs beside it. */
+function nextTurn(w: ScriptedWorker, i: number): void {
+  frame(w, "NodeStarted", `chat#${i}/context`)
+  frame(w, "NodeStarted", `chat#${i}/heard`)
+  frame(w, "NodeWaiting", `chat#${i}/heard`, { call_ids: [`c${i}`] })
+  frame(w, "NodeExpanded", `chat#${i}/context`)
+  frame(w, "NodeStarted", `chat#${i}/context/compacted`)
+  frame(w, "NodeExpanded", `chat#${i}/context/compacted`)
+  frame(w, "NodeStarted", `chat#${i}/context/compacted/over`)
+  frame(w, "NodeRouted", `chat#${i}/context/compacted/over`)
+  frame(w, "NodeSkipped", `chat#${i}/context/compacted/folded`)
 }
 
 /** Stores an open question at node `gate` of session `sid`'s run, as a flow's question beside the turn. */
@@ -119,6 +153,125 @@ test("the turn alone is idle and a running reply is busy", async () => {
     const now = state(o, sid)
     return now.status === "idle" && now.waiting_on.length === 0
   }, { what: "idle again" })
+})
+
+test("history compaction beside the waiting take leaves the session idle", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  const seen = statusesOf(o, sid)
+  await actor.start()
+  const w = workers[0]!
+  nextTurn(w, 0)
+  await waitFor(() => status(o, sid) === "idle", { what: "idle at the turn" })
+  frame(w, "NodeWoken", "chat#0/heard")
+  frame(w, "NodeSucceeded", "chat#0/heard")
+  frame(w, "NodeStarted", "chat#0/reply")
+  frame(w, "NodeSucceeded", "chat#0/reply")
+  nextTurn(w, 1)
+  await waitFor(() => session(o, sid).turns === 1 && status(o, sid) === "idle", { what: "idle at the next turn" })
+  // One idle per turn: the compaction nodes starting and finishing beside the take don't flip it.
+  expect(seen).toEqual(["starting", "idle", "busy", "idle"])
+})
+
+test("a chat writes busy once and idle once per turn, its history compaction included", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const sid = await newSession(o)
+  const seen = statusesOf(o, sid)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  // The worker parks on the run's waiting result, which comes after every frame of the turn's compaction. Each
+  // message waits for it: one sent as the run suspends is carried to the next job, a blip this row doesn't pin.
+  const parked = () => waitFor(() => status(o, sid) === "idle" && !actor.hasWorker, { what: "the worker to park" })
+  await parked()
+  expect(await say(o, actor, sid, "a")).toBe("one")
+  await parked()
+  expect(await say(o, actor, sid, "b")).toBe("two")
+  await parked()
+  expect(seen).toEqual(["starting", "idle", "busy", "idle", "busy", "idle"])
+})
+
+test("an answered question goes from waiting straight to busy", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_USER, { content: "A it is." })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("hi")
+  const q = await card(o, sid, "ask_user")
+  await waitFor(() => status(o, sid) === "waiting" && !actor.hasWorker, { what: "asleep on the question" })
+  const seen = statusesOf(o, sid)
+  await actor.answer(q.id, "A", "option")
+  await waitFor(() => texts(o, sid).includes("A it is.") && status(o, sid) === "idle" && !actor.hasWorker, {
+    what: "the reply",
+  })
+  expect(seen).toEqual(["busy", "idle"])
+})
+
+test("an answer held until the worker that asked exits reads busy", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const callId = `${runId}/c1`
+  const { worker, handlers } = workers[0]!
+  await handlers.askUser(worker, { ...ASKED, options: ["A", "B"] }, callId)
+  const asked = { node: "chat#0/reply", call_id: callId, tool: "ask_user", inbox: null, deadline: null, settled: false }
+  handlers.result(worker, waitingResult(runId, [asked]))
+  const q = await card(o, sid, "ask_user")
+  await waitFor(() => status(o, sid) === "waiting", { what: "waiting on the question" })
+  await actor.answer(q.id, "A", "option")
+  // Its worker hasn't exited yet: the answer waits for the job after it, which is sure to come.
+  expect(status(o, sid)).toBe("busy")
+  handlers.exited(worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the job that delivers it" })
+  expect(workers[1]!.job.deliver).toMatchObject([{ op: "complete", call_id: callId }])
+})
+
+test("a first message taken at the start reads busy through its reply and an interrupt", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "slow", hold: true })
+  const o = await chatOffice(fake)
+  const sid = await newSession(o)
+  const seen = statusesOf(o, sid)
+  const actor = makeActor(o, sid)
+  // Not awaited in between: the message is queued as the session starts, as the TUI's home sends it.
+  const started = actor.start()
+  const sent = actor.prompt("hi")
+  await started
+  expect(await sent).toBe("queued")
+  await fake.waitForRequests(1, 30_000)
+  // The model can get the request before the actor handles the reply's start.
+  await waitFor(() => status(o, sid) === "busy", { what: "busy in the first reply" })
+  await actor.interrupt()
+  // The held model call is still to end, and the reply with it.
+  expect(status(o, sid)).toBe("busy")
+  fake.release()
+  await waitFor(() => status(o, sid) === "idle" && !actor.hasWorker, { what: "idle at the next turn" })
+  expect(seen).toEqual(["starting", "busy", "idle"])
+})
+
+test("a first turn's reply moves a starting session to busy", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const w = workers[0]!
+  frame(w, "NodeStarted", "chat#0/heard")
+  frame(w, "NodeSucceeded", "chat#0/heard")
+  // Taken straight away, the turn never showed: the session still reads starting.
+  actor.settle()
+  expect(status(o, sid)).toBe("starting")
+  frame(w, "NodeStarted", "chat#0/reply")
+  await waitFor(() => status(o, sid) === "busy", { what: "busy once the reply runs" })
 })
 
 test("ask user waits on the opener else the pinned ceo", async () => {
