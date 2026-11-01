@@ -39,7 +39,11 @@ export function recordFrames(): string[] {
     frame: Frame,
     fallbacks?: () => Frame[],
   ) {
-    frames.push(encode(frame))
+    try {
+      frames.push(encode(frame))
+    } catch {
+      // Too big to encode: `send` sends a fallback or rejects, as it would unspied.
+    }
     return send.call(this, frame, fallbacks)
   })
   const receiving = spyOn(Channel.prototype, "recv").mockImplementation(async function (this: Channel) {

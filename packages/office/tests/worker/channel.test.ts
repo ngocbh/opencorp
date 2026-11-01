@@ -119,23 +119,37 @@ test("fallbacks aren't built for a frame that fits", async () => {
   expect(built).toBe(0)
 }, TIMEOUT)
 
-test("a frame whose encoding throws a RangeError goes as a fallback", async () => {
-  const { left, right } = await pair({ maxFrame: 1024 })
-  const tooLong = new RangeError("Invalid string length")
-  const huge = {
+/** A value whose encoding throws `error`. */
+function throwing(error: Error): { toJSON(): never } {
+  return {
     toJSON() {
-      throw tooLong
+      throw error
     },
   }
-  await left.send({ huge }, () => [{ stub: true }])
+}
+
+test("a frame too big for the engine to encode goes as a fallback", async () => {
+  const { left, right } = await pair({ maxFrame: 1024 })
+  const tooLong = new RangeError("Out of memory")
+  await left.send({ huge: throwing(tooLong) }, () => [{ stub: true }])
   expect(await right.recv()).toEqual({ stub: true })
-  await expect(left.send({ huge })).rejects.toBe(tooLong)
+  await left.send({ deep: throwing(new RangeError("Maximum call stack size exceeded.")) }, () => [{ stub: 2 }])
+  expect(await right.recv()).toEqual({ stub: 2 })
+  await expect(left.send({ huge: throwing(tooLong) })).rejects.toBe(tooLong)
   // Only a size error falls back: another encode error still rejects.
+  const invalid = new RangeError("Invalid time value")
+  await expect(left.send({ when: throwing(invalid) }, () => [{ stub: true }])).rejects.toBe(invalid)
   const cycle: Record<string, unknown> = {}
   cycle.self = cycle
   await expect(left.send(cycle, () => [{ stub: true }])).rejects.toBeInstanceOf(TypeError)
   await left.send({ n: 2 })
   expect(await right.recv()).toEqual({ n: 2 })
+}, TIMEOUT)
+
+test("a fallback too big for the engine to encode is skipped", async () => {
+  const { left, right } = await pair({ maxFrame: 1024 })
+  await left.send({ text: "x".repeat(2000) }, () => [{ huge: throwing(new RangeError("Out of memory")) }, { stub: 1 }])
+  expect(await right.recv()).toEqual({ stub: 1 })
 }, TIMEOUT)
 
 test("a frame must be an object", async () => {

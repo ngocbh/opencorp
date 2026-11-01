@@ -11,7 +11,7 @@ import {
   LiveView,
   type RunLogEntry,
 } from "@ngocbh/yian/run"
-import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import { expect, setDefaultTimeout, test } from "bun:test"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Channel, ChannelClosed, type Frame } from "../../src/worker/channel.ts"
 import { groupSpecs, type Job, type JobInput, STOP_REASON } from "../../src/worker/job.ts"
@@ -21,12 +21,13 @@ import {
   EXIT_ORPHANED,
   eventStubs,
   isOfficeChannel,
+  READ_KEYS,
   report,
   serve,
 } from "../../src/worker/main.ts"
 import type { AskRequest, OfficeTool } from "../../src/worker/rpc.ts"
 import { fakeLlm, logPrefix, send, TemplateOffice, waitingChat } from "../chat/helpers.ts"
-import { shortDir, tempDir, waitFor } from "../helpers.ts"
+import { captureStderr, shortDir, tempDir, waitFor } from "../helpers.ts"
 import {
   advanceJob,
   base,
@@ -513,12 +514,7 @@ test("a record frame over the frame limit goes without its line", async () => {
 })
 
 test("a live frame too large to send is named on stderr by its type", async () => {
-  const written: string[] = []
-  const write = spyOn(process.stderr, "write").mockImplementation((text: string | Uint8Array) => {
-    written.push(String(text))
-    return true
-  })
-  onTestFinished(() => write.mockRestore())
+  const stderr = captureStderr()
   const fake = await fakeLlm()
   // One word, so one chunk frame over the limit.
   const word = "z".repeat(100 * 1024)
@@ -528,8 +524,8 @@ test("a live frame too large to send is named on stderr by its type", async () =
   const worker = await inProcessWorker(job, rec, { env: fake.env(), maxFrame: 96 * 1024 })
   expect(await worker.wait()).toBe(EXIT_OK)
   expect(rec.outcome?.status).toBe("succeeded")
-  expect(written).toContain("opencorp __worker: a live frame was not sent (FrameTooLarge)\n")
-  expect(written.join("")).not.toContain("zzzz")
+  expect(stderr).toContain("opencorp __worker: a live frame was not sent (FrameTooLarge)")
+  expect(stderr.join("\n")).not.toContain("zzzz")
 })
 
 test("an event's stubs drop its values and keep what the office reads", () => {
@@ -570,22 +566,26 @@ test("an event with no value field gets only the minimal stub", () => {
   expect(eventStubs({ error_type: "LoadError" })).toEqual([{ error_type: "LoadError" }])
 })
 
+test("the minimal stub keeps every event field the office reads", () => {
+  // `SessionActor.#event` and `OpenNodes.apply` read an event frame's fields as `data.<field>`.
+  const read = new Set<string>()
+  for (const file of ["chat/session_actor.ts", "runs/nodes.ts"]) {
+    const text = fs.readFileSync(path.join(import.meta.dir, "../../src", file), "utf8")
+    for (const [, field] of text.matchAll(/\bdata\.([a-z_]+)/g)) read.add(field!)
+  }
+  expect(read).toContain("node_id")
+  // `failure` keeps its `node_id`, the only part read.
+  expect([...read].filter((field) => field !== "failure" && !READ_KEYS.includes(field))).toEqual([])
+})
+
 test("a model call's stubs keep its usage and model", () => {
   const usage = { input_tokens: 10, output_tokens: 2, total_tokens: 12 }
   const data = { node_id: "reply", n: 1, purpose: "reply", provider: "p", model: "m", usage, error: "e".repeat(1000) }
-  const stubs = eventStubs(data)
-  expect(stubs.length).toBeGreaterThan(0)
-  for (const stub of stubs) expect(stub).toMatchObject({ usage, model: "m" })
-  expect(stubs.at(-1)).toEqual({ node_id: "reply", usage, model: "m" })
+  expect(eventStubs(data)).toEqual([{ node_id: "reply", usage, model: "m" }])
 })
 
 test("an event frame over the frame limit goes without its values", async () => {
-  const written: string[] = []
-  const write = spyOn(process.stderr, "write").mockImplementation((text: string | Uint8Array) => {
-    written.push(String(text))
-    return true
-  })
-  onTestFinished(() => write.mockRestore())
+  const stderr = captureStderr()
   const fake = await fakeLlm()
   fake.script({ content: `${"w".repeat(1023)} `.repeat(100) })
   const rec = new Recorder()
@@ -600,8 +600,8 @@ test("an event frame over the frame limit goes without its values", async () => 
   expect(rec.frames.find((frame) => frame.name === "ModelCallFinished")?.data).toMatchObject({
     usage: expect.any(Object),
   })
-  expect(written).toContain("opencorp __worker: a NodeSucceeded event frame went without its values\n")
-  expect(written.join("")).not.toContain("wwww")
+  expect(stderr).toContain("opencorp __worker: a NodeSucceeded event frame went without its values")
+  expect(stderr.join("\n")).not.toContain("wwww")
 })
 
 test("a final output over the frame limit still fails the job", async () => {

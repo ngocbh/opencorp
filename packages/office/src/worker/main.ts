@@ -28,7 +28,6 @@ import { cancelReplaced, readSeed } from "../chat/history.ts"
 import { MAIN_CHAT } from "../chat/turns.ts"
 import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
-import { encode } from "./codec.ts"
 import { Delivery, type Job, parseJob, STOP_REASON } from "./job.ts"
 import { RemoteMarkdownStore } from "./remote_store.ts"
 import { askUserStub, errorMessage, errorName, remoteTool, REPLY_TYPES, Rpc } from "./rpc.ts"
@@ -267,7 +266,7 @@ const VALUE_KEYS = ["output", "arguments", "result"]
 
 /** The fields of an event's data the office reads (`SessionActor.#event`, `OpenNodes.apply`), besides `failure`'s
  *  `node_id`. */
-const READ_KEYS = ["node_id", "call_id", "call_ids", "reason", "usage", "model", "error_type"]
+export const READ_KEYS = ["node_id", "call_id", "call_ids", "reason", "usage", "model", "error_type"]
 
 /** The smaller forms of an event's `data` to send when its frame is over the limit, largest first: when it has a
  *  value field, `data` with each value set to null (a `NodeExpanded` keeps its `grow.prune`), then only the fields
@@ -338,15 +337,11 @@ class LiveFollow {
   /** Sends `frame` as a `stream` frame; a `record` frame over the channel's limit goes without its `line`, which the
    *  office reads from the log. */
   readonly #forward = (frame: LiveFollowFrame): void => {
-    const max = this.#channel.maxFrame()
-    let out: Frame = { type: "stream", frame }
-    // A UTF-16 unit is at most 3 UTF-8 bytes once JSON-escaped, so most lines skip the exact count.
-    if (frame.type === "record" && 3 * frame.line.length + 256 > max && Buffer.byteLength(encode(out)) > max) {
-      out = { type: "stream", frame: { type: "record", seq: frame.seq } }
-    }
+    const bare =
+      frame.type === "record" ? () => [{ type: "stream", frame: { type: "record", seq: frame.seq } }] : undefined
     // Not awaited: `send` hands the bytes over before its first await, so frames keep call order with the awaited
     // `event` and `result` frames.
-    this.#channel.send(out).catch((error: unknown) => {
+    this.#channel.send({ type: "stream", frame }, bare).catch((error: unknown) => {
       if (error instanceof ChannelClosed) return
       process.stderr.write(`opencorp __worker: a live frame was not sent (${errorName(error)})\n`)
     })
@@ -583,10 +578,14 @@ async function runJob(
     // A send that fails rejects the run. An event over the frame limit goes without its values: the office reads none
     // of them, and the log keeps them. `send` picks the stub before its first await, so frames keep call order.
     const data: Frame = event.toJSON()
-    return channel.send({ type: "event", name: event.type, data }, () => {
-      // The type only: the values are the run's.
-      process.stderr.write(`opencorp __worker: a ${event.type} event frame went without its values\n`)
+    let stubbed = false
+    const sent = channel.send({ type: "event", name: event.type, data }, () => {
+      stubbed = true
       return eventStubs(data).map((stub) => ({ type: "event", name: event.type, data: stub }))
+    })
+    return sent.then(() => {
+      // The type only: the values are the run's.
+      if (stubbed) process.stderr.write(`opencorp __worker: a ${event.type} event frame went without its values\n`)
     })
   }
   // Each job makes at most one run call, so this is one channel per run call.
