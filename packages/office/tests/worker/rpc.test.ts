@@ -9,6 +9,7 @@ import { groupSpecs, toolSpec } from "../../src/worker/job.ts"
 import {
   answerRequest,
   ASK_KEYS,
+  AskRefused,
   type AskRequest,
   askUserStub,
   BaseHandlers,
@@ -522,6 +523,54 @@ test("ask user sends the six keys and returns the answer", async () => {
   await expect(nobody.invoke("ask_user", { question: "Hello?" }, { callId: "r1/n/1/0" })).rejects.toThrow(
     "ask_user failed: nobody is here to answer",
   )
+})
+
+test("an ask user refusal is its own reply code and other failures stay failed", async () => {
+  let thrown: unknown
+  class Refusing extends BaseHandlers {
+    override askUser(): unknown {
+      throw thrown
+    }
+  }
+  const handlers = new Refusing()
+  const worker = workerFor(handlers)
+  const frame = { type: "ask_user", id: 5, request: { question: " " }, call_id: "r1/n/1/0" }
+  const { calls, log } = recorder()
+  thrown = new AskRefused("ask_user question is blank: write the question to ask the user")
+  expect(await answerRequest(frame, handlers, worker, { log })).toEqual({
+    type: "answer",
+    id: 5,
+    error: "refused",
+    message: "ask_user question is blank: write the question to ask the user",
+  })
+  expect(calls).toEqual([["INFO", "worker ask_user request refused: AskRefused"]])
+  for (const error of [new Error("store is down"), new TypeError("bad question")]) {
+    thrown = error
+    const reply = await answerRequest(frame, handlers, worker)
+    expect([reply.error, reply.message]).toEqual(["failed", error.message])
+  }
+})
+
+test("a refused model ask user is the tool result and a refused ask node or a failure is not", async () => {
+  let reply: Frame = {}
+  class Replying extends BaseHandlers {
+    override askUser(): unknown {
+      if (reply.error === "refused") throw new AskRefused(String(reply.message))
+      throw new Error(String(reply.message))
+    }
+  }
+  const asking = new ToolSet({ ask: askUserStub(await officeEnd(new Replying())) })
+  reply = { error: "refused", message: "ask_user question is blank: write the question to ask the user" }
+  const refused = await rejection(asking.invoke("ask_user", { question: "" }, { callId: "r1/reply/1/0" }))
+  expect(isReportedToolError(refused)).toBe(true)
+  expect((refused as Error).message).toBe("error: ask_user question is blank: write the question to ask the user")
+  const node = await rejection(asking.invokeTrusted("ask", { prompt: "", nodeId: "sop#0/ask" }, { callId: "r1/sop#0/ask" }))
+  expect(isReportedToolError(node)).toBe(false)
+  expect((node as Error).message).toBe("ask_user failed: ask_user question is blank: write the question to ask the user")
+  reply = { error: "failed", message: "store is down" }
+  const failed = await rejection(asking.invoke("ask_user", { question: "Go?" }, { callId: "r1/reply/1/1" }))
+  expect(isReportedToolError(failed)).toBe(false)
+  expect((failed as Error).message).toBe("ask_user failed: store is down")
 })
 
 /** Handlers whose questions and tools all answer later: each returns yian's pending marker. */

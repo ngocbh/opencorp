@@ -433,6 +433,18 @@ test("a message answers the models open question", async () => {
   expect(texts(o, sid, "user")).toEqual(["hi"])
 })
 
+test("a blank model question is a tool error the model reads, and the reply goes on", async () => {
+  const fake = await fakeLlm()
+  fake.script({ tool_calls: [{ name: "ask_user", arguments: { question: "  ", options: [] } }] }, { content: "Asked." })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  expect(await say(o, actor, sid, "hi")).toBe("Asked.")
+  expect(o.office.store.listQuestions({ sessionId: sid })).toEqual([])
+  const messages = fake.requests().at(-1)!.messages as { role: string }[]
+  const tool = messages.find((message) => message.role === "tool")
+  expect(JSON.stringify(tool)).toContain("ask_user question is blank: write the question to ask the user")
+})
+
 test("a message that loses the question to a card answer is the next message", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
