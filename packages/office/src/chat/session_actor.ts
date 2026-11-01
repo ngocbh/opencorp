@@ -664,9 +664,9 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * End: the session is `ending` at once, the workspace is interrupted and the office tool calls in flight are
-   * answered `INTERRUPTED_CALL` (as by Esc), and its run gets an `interrupt` (while a reply runs or the agent waits on
-   * a model question) and a `close` of its inbox, whose turn then reads it closed, so the run succeeds and the
+   * End: the session is `ending` at once, the workspace is interrupted and the office tool calls in flight are answered
+   * `INTERRUPTED_CALL` (as by Esc), and its run gets an `interrupt` (while a reply or its fold runs, or the agent waits
+   * on a model question) and a `close` of its inbox, whose turn then reads it closed, so the run succeeds and the
    * session ends. Resolves once they are queued; a second End does nothing. A spawn for them that fails fails the
    * session, and End throws its error. Over the cost cap a waiting run is ended the same way; a reply that runs is
    * stopped, and a run stopped, crashed or unknown is cancelled, ending the session `ENDED_OVER_CAP`. Refused with
@@ -683,9 +683,10 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Marks the session ending, interrupts the workspace and answers the office tool calls in flight (as Esc does),
-   *  and queues its run's `interrupt` (while a reply runs, `replying`, or the agent waits) and `close`, spawning for
-   *  them when no worker runs. A run restore found ended in yian ends the session at once, as that run did. */
-  async #end(session: SessionRecord, replying = this.#replying()): Promise<void> {
+   *  and queues its run's `interrupt` (while a reply or its fold runs, `replying`, or the agent waits) and `close`,
+   *  spawning for them when no worker runs. A run restore found ended in yian ends the session at once, as that run
+   *  did. */
+  async #end(session: SessionRecord, replying = this.#turnWorks()): Promise<void> {
     if (this.#unresumable?.why === null) {
       // Yian ended the run: nothing is left to close, so the session ends as the run did.
       const ended = this.#unresumable.finished
@@ -852,7 +853,7 @@ export class SessionActor implements LiveCalls {
       return
     }
     if (ending) {
-      await this.#end(session, inspection.inFlight.some((node) => this.#chat.isReply(node)))
+      await this.#end(session, this.#chat.turnWorks(inspection.inFlight))
       return
     }
     try {
@@ -1118,6 +1119,12 @@ export class SessionActor implements LiveCalls {
   #replying(): boolean {
     const run = this.#run
     return run !== null && run.outcome === null && [...run.inFlight].some((node) => this.#chat.isReply(node))
+  }
+
+  /** Whether a reply or the turn's fold runs in the current worker: a person's turn is being worked. */
+  #turnWorks(): boolean {
+    const run = this.#run
+    return run !== null && run.outcome === null && this.#chat.turnWorks(run.inFlight)
   }
 
   /** Whether the run waits only at its turn: a worker's run with no reply in flight, no message pending for the

@@ -1535,6 +1535,37 @@ test("a finished turn over budget leaves the session idle", async () => {
   expect(fake.requests()).toHaveLength(5)
 })
 
+test("esc during a fold stops the turn", async () => {
+  const fake = await fakeLlm()
+  fake.script(...OKS, { match: SUMMARIZER, content: "S", hold: true }, { content: "spare" })
+  const h = await makeHarness(fake)
+  const { id } = await start(h)
+  await longTurns(h, id, 5)
+  await h.harness.prompt(id, "sixth")
+  await fake.waitForRequests(6)
+  expect(status(h, id)).toBe("busy")
+  await h.harness.interrupt(id)
+  fake.release()
+  await waitFor(() => same(texts(h, id).slice(-1), ["[interrupted]"]) && status(h, id) === "idle", {
+    what: "the stopped turn",
+  })
+  expect(fake.requests()).toHaveLength(6)
+})
+
+test("end during a fold ends without a reply call", async () => {
+  const fake = await fakeLlm()
+  fake.script(...OKS, { match: SUMMARIZER, content: "S", hold: true }, { content: "spare" })
+  const h = await makeHarness(fake)
+  const { id } = await start(h)
+  await longTurns(h, id, 5)
+  await h.harness.prompt(id, "sixth")
+  await fake.waitForRequests(6)
+  await h.harness.end(id)
+  fake.release()
+  await waitFor(() => status(h, id) === "ended", { what: "the end" })
+  expect(fake.requests()).toHaveLength(6)
+})
+
 test("a context failure before its turn took a message fails the session", async () => {
   const h = await makeHarness(await fakeLlm())
   const workers = scriptedWorker(h)
