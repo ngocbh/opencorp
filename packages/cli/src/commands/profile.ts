@@ -7,7 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
-import { bareHandle, officeClient, officeNotRunning } from "../office"
+import { bareHandle, localIdentity, officeClient, officeNotRunning } from "../office"
 
 const USAGE = "Usage: opencorp profile edit PERSON"
 
@@ -61,7 +61,7 @@ export const run: CommandRun = async (argv) => {
     if (sub !== "edit" || name === undefined || rest.length > 0) throw new Usage("expected edit PERSON")
     const editor = process.env.VISUAL || process.env.EDITOR
     if (!editor) throw new Usage("set $EDITOR (or $VISUAL)")
-    const client = officeClient()
+    const client = officeClient(localIdentity())
     const who = await person(client, name)
     let base = await client.profiles.get(who.handle)
     // mkdtemp makes the dir private (0700), so other users can't read or swap the file.

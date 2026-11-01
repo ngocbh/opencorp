@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
-import { officeClient, officeNotRunning } from "../office"
+import { localIdentity, officeClient, officeNotRunning } from "../office"
 import type { Session } from "@opencorp/protocol"
 import { type OfficeClient, OfficeUnavailable } from "@opencorp/client"
 
@@ -45,7 +45,7 @@ export const run: CommandRun = async (argv) => {
     console.error("opencorp end: the session id is empty")
     return 2
   }
-  const client = officeClient()
+  const client = officeClient(localIdentity())
   try {
     // The office keys folders by their real path.
     const session = await endSession({ client, cwd: realpathSync(process.cwd()), id })

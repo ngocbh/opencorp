@@ -142,8 +142,8 @@ export function localIdentity(): Identity | undefined {
   }
 }
 
-/** A client for the office on the default socket that sends the token of `me` (this device's identity). */
-export function officeClient(me = localIdentity()) {
+/** A client for the office on the default socket; `me` is this device's identity, or undefined to send no token. */
+export function officeClient(me: Identity | undefined) {
   return createOfficeClient({ socket: defaultSocket(), token: me?.token })
 }
 

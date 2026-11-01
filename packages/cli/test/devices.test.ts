@@ -56,8 +56,8 @@ afterEach(() => {
   restore()
   office.stop()
   const tokens = [trusted, other].flatMap((home) => {
-    const me = readIdentity(path.join(home, "identity.json"), () => {})
-    return me ? [me.token] : []
+    const token = tokenOf(home)
+    return token ? [token] : []
   })
   for (const t of [...tokens, ...issued, PASSWORD]) for (const line of printed) expect(line).not.toContain(t)
   issued.length = 0
@@ -66,6 +66,14 @@ afterEach(() => {
   process.env.OPENCORP_HOME = saved
 })
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }))
+/** The token in `home`'s identity.json, or undefined when there's none or the file isn't an identity. */
+const tokenOf = (home: string) => {
+  try {
+    return readIdentity(path.join(home, "identity.json"), () => {})?.token
+  } catch {
+    return undefined
+  }
+}
 /** Runs `opencorp argv` as the device whose home is `home`, capturing stdout and stderr. */
 async function opencorp(home: string, ...argv: string[]) {
   process.env.OPENCORP_HOME = home
@@ -81,8 +89,8 @@ async function opencorp(home: string, ...argv: string[]) {
     console.log = log
     console.error = error
     printed.push(...out, ...err)
-    const me = readIdentity(path.join(home, "identity.json"), () => {})
-    if (me) issued.push(me.token)
+    const token = tokenOf(home)
+    if (token) issued.push(token)
   }
 }
 const identity = (home: string) => readIdentity(path.join(home, "identity.json"))!
@@ -476,6 +484,20 @@ test("whoami with no identity on an open office; a loose file warns", async () =
   fs.chmodSync(file, 0o644)
   expect((await opencorp(trusted, "whoami")).err).toBe(
     `opencorp: warning: ${file} is readable by others (mode 644); run \`chmod 600 ${file}\``,
+  )
+})
+
+test("an identity file that can't be used warns once per command", async () => {
+  const file = path.join(other, "identity.json")
+  fs.writeFileSync(file, "not json", { mode: 0o600 })
+  const warning = `opencorp: ${file} is not valid JSON; run \`opencorp login --force\``
+  for (const argv of [["whoami"], ["devices", "list"], ["end"]]) {
+    const r = await opencorp(other, ...argv)
+    expect(r.err.split("\n").filter((line) => line === warning)).toHaveLength(1)
+  }
+  // The warning already says what to run, so whoami doesn't add `opencorp login`.
+  expect((await opencorp(other, "whoami")).out).toBe(
+    "The office: @ngocbh, the CEO (no human has a device yet, so it needs no token)",
   )
 })
 
