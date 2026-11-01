@@ -492,11 +492,14 @@ export class SessionActor implements LiveCalls {
    * to the run's inbox, and the reply is decided when it is queued: `steer` while a reply node runs, `turn` while the
    * run waits only at its turn, else `queued` (always over the cost cap, where the manager gets an item to raise it).
    * Refused with `409 not_live` (the session finished), `503 stopping` (the office stops), `409 ending`, `422 refused`
-   * (a `promptCheck` hook), `422 too_large`, or `503 cant_wake` (the run could not take it).
+   * (text that isn't well-formed, or a `promptCheck` hook), `422 too_large`, or `503 cant_wake` (the run could not take
+   * it).
    */
   async prompt(text: string, { by = null }: { by?: string | null } = {}): Promise<MessageReply> {
     const pending = await this.#command(async () => {
       const session = this.#live()
+      // Yian refuses such text, and a question's answer refused that way would be sent again with every spawn.
+      if (!text.isWellFormed()) throw refusalOf("invalid_value")
       for (const refusal of this.#ctx.hooks.fire("promptCheck", session, text)) {
         if (refusal) throw new HarnessError(422, "refused", String(refusal))
       }

@@ -24,13 +24,33 @@ export class InvalidAnswer extends Error {
  * `answer_schema` says; text is converted to the field's type (numbers, ISO dates, yes/no, one list item per line).
  * Blank text is no answer: a required field refuses it unless its type is `None`, and an optional one is null
  * (omitted in a record). Nothing looser than the engine's own check is returned, and a converted value converts to
- * itself.
+ * itself. Any answer, or converted value, holding text that isn't well-formed (a lone surrogate, which yian refuses
+ * to take) is refused first, without quoting it.
  */
 export function checkAnswer(
   question: QuestionRecord,
   answer: unknown,
   kind: "option" | "text" | "sent_back" | "interrupted",
 ): unknown {
+  wellFormed(answer)
+  // Typed JSON text can decode an escape to a lone surrogate.
+  const value = convert(question, answer, kind)
+  wellFormed(value)
+  return value
+}
+
+/** Throws `InvalidAnswer` when a string in `value`, its arrays or its records (keys included) isn't well-formed. */
+function wellFormed(value: unknown): void {
+  const ok = (item: unknown): boolean => {
+    if (typeof item === "string") return item.isWellFormed()
+    if (Array.isArray(item)) return item.every(ok)
+    if (isRecord(item)) return Object.entries(item).every(([key, entry]) => key.isWellFormed() && ok(entry))
+    return true
+  }
+  if (!ok(value)) throw new InvalidAnswer("the answer must be valid text")
+}
+
+function convert(question: QuestionRecord, answer: unknown, kind: "option" | "text" | "sent_back" | "interrupted"): unknown {
   if (question.source === "harness") return harness(question, answer, kind)
   if (kind === "sent_back" || kind === "interrupted") return answer
   if (question.source !== "ask") {

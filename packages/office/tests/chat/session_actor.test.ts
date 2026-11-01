@@ -445,6 +445,29 @@ test("a blank model question is a tool error the model reads, and the reply goes
   expect(JSON.stringify(tool)).toContain("ask_user question is blank: write the question to ask the user")
 })
 
+test("a message with text that is not valid is refused before anything sees it", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const { worker, handlers, deliveries } = workers[0]!
+  const hooked: string[] = []
+  o.hooks.promptCheck.push(() => void hooked.push("promptCheck"))
+  o.hooks.turnContext.push(() => void hooked.push("turnContext"))
+  // With no question open, and with one the message would answer.
+  await expect(actor.prompt("x\ud800y")).rejects.toMatchObject({ status: 422, code: "refused" })
+  const callId = `${actor.runId}/c1`
+  await handlers.askUser(worker, ASKED, callId)
+  const refusal = await actor.prompt("x\ud800y").catch((error: Error) => error)
+  expect(refusal).toMatchObject({ status: 422, code: "refused" })
+  expect((refusal as Error).message.isWellFormed()).toBe(true)
+  expect(o.office.store.getQuestionByCall(callId)!.status).toBe("open")
+  expect(deliveries).toEqual([])
+  expect(hooked).toEqual([])
+})
+
 test("a message that loses the question to a card answer is the next message", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)

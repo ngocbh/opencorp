@@ -63,6 +63,28 @@ test("office answers pass unchanged", () => {
   )
 })
 
+test("an answer with text that is not valid is refused without it", () => {
+  const lone = "x\ud800y"
+  const record = q("ask", { answer_schema: fields(["note", "str", true], ["tags", "list[str]", false]) })
+  const cases: [QuestionRecord, unknown, "option" | "text"][] = [
+    [q("ask_user"), lone, "text"],
+    [q("ask_user", { options: ["A", lone] }), lone, "option"],
+    [q("ask", { questions: PAGES }), { db: lone, features: [] }, "option"],
+    [record, { note: lone }, "text"],
+    [record, { note: "ok", [lone]: "x" }, "text"],
+    [record, { note: "ok", tags: ["a", lone] }, "text"],
+    // Typed JSON text whose escape decodes to a lone surrogate.
+    [record, '{"note": "x\\ud800"}', "text"],
+    [q("harness", { options: ["Approve", lone] }), lone, "option"],
+  ]
+  for (const [question, answer, kind] of cases) {
+    const error = refused(() => checkAnswer(question, answer, kind), /^the answer must be valid text$/)
+    expect(error.message.isWellFormed()).toBe(true)
+  }
+  expect(checkAnswer(q("ask_user"), null, "sent_back")).toBeNull()
+  expect(checkAnswer(q("ask_user"), "[interrupted by the user]", "interrupted")).toBe("[interrupted by the user]")
+})
+
 test("pages take a record keyed by header", () => {
   const gate = q("ask", { questions: PAGES })
   const answer = { db: "Postgres", features: ["auth", "graphs, typed"] }

@@ -178,6 +178,20 @@ test("an invalid answer is refused before the actor sees it", async () => {
   expect(actor.answered).toEqual([])
 })
 
+test("an answer or a note with text that is not valid is refused before the actor sees it", async () => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  const discussion = [{ role: "user" as const, text: "why?" }]
+  const q = card(office, { discussion })
+  const answered = await refusal(() => cards.answer(q.id, "x\ud800y", "text"))
+  expect([answered.status, answered.code, answered.message]).toEqual([422, "invalid_answer", "the answer must be valid text"])
+  const sent = await refusal(() => cards.sendBack(q.id, "x\ud800y"))
+  expect([sent.status, sent.code, sent.message]).toEqual([422, "invalid_answer", "the note must be valid text"])
+  const stored = office.store.getQuestion(q.id)!
+  expect([stored.status, stored.discussion]).toEqual(["open", discussion])
+  expect(actor.answered).toEqual([])
+})
+
 test("chat about this answers 501 without a side chat harness", async () => {
   const office = makeOffice()
   const { cards } = wire(office)

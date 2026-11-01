@@ -168,7 +168,8 @@ export class Cards {
     return this.store.getSession(side.id)!
   }
 
-  /** Send the discussion back undecided as `by`; a non-blank `note` is the human's last message in it. */
+  /** Send the discussion back undecided as `by`; a non-blank `note` is the human's last message in it. A note that
+   *  isn't well-formed text is refused `422 invalid_answer`: the discussion goes to the run with the answer. */
   async sendBack(
     questionId: string,
     note: string,
@@ -179,6 +180,7 @@ export class Cards {
     if (question.source === "ask") {
       throw new HarnessError(422, "cannot_send_back", "a flow's own question can't be sent back")
     }
+    if (!note.isWellFormed()) throw new HarnessError(422, "invalid_answer", "the note must be valid text")
     return this.#serial(async () => {
       const current = this.snapshot(this.#open(questionId))
       if (current.discussion.length === 0 && !current.carried_from) {
