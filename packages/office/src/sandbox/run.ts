@@ -171,8 +171,9 @@ export interface RunOptions {
  * The call runs in a new process group. The group is killed when the call's first
  * process exits (so nothing it started in the background survives), when `timeout`
  * seconds pass, or when `signal` aborts; on macOS it is stopped first, so no process
- * in it runs another step while the kill goes round. On macOS, processes that left the group with
- * `setsid` are then found and killed too; on Linux the pid namespace dies with the call.
+ * in it runs another step while the kill goes round. On macOS, processes that left
+ * the group with `setsid` are then found and killed too; on Linux the pid namespace
+ * dies with the call.
  * Each output stream keeps its first `maxOutput` and last `tailOutput` bytes, and counts
  * all of them. Rejects with the spawn error when the call can't start, `SandboxUnavailable`
  * on an unsupported platform, a `RangeError` for a `timeout` or `tailOutput` out of range
