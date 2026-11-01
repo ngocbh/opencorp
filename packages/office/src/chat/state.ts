@@ -43,8 +43,8 @@ export function notWaiting<S extends Status>(status: S): { status: S; waiting_on
  * Writes `status`, `waiting_on` and `capped` in one transaction, if the stored status allows it.
  *
  * A session that is ending, debriefing or finished is left alone; a starting one moves only to `fromStarting`
- * (the run is starting until it first shows a turn or a question). `waitingOn` (each person once) and `capped` are
- * kept only while waiting. Returns the stored session, or undefined when nothing was written.
+ * (the run is starting until it first shows its turn, a question or a reply). `waitingOn` (each person once) and
+ * `capped` are kept only while waiting. Returns the stored session, or undefined when nothing was written.
  */
 export function writeState(
   store: Store,

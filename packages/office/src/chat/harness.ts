@@ -236,7 +236,7 @@ export class ChatHarness implements SessionHarness {
    * manager stored, or a side chat set back to `starting` to reopen it. Its new actor replaces any it had, and starts
    * it as `SessionActor.start` does once the replaced actor's hard stops are done; returns the new run's id. Refused
    * 404 for no session, 409 `live` for one that isn't `starting`, or that this harness already started and hasn't
-   * finished (a session stays `starting` until its first result), 503 once closed.
+   * finished (a session stays `starting` until its run first shows its turn, a question or a reply), 503 once closed.
    */
   async startRun(sessionId: string): Promise<string> {
     this.#running()

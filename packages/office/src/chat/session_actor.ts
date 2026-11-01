@@ -606,10 +606,11 @@ export class SessionActor implements LiveCalls {
         }
         throw error
       }
-      this.#trySettle("after an answer")
+      // Settled once the answer is on its way: before, nothing open and nothing spawning would read idle.
       if (stored.call_id !== null && stored.run_id === this.#runId && !this.#finished) {
         await this.#deliver(this.#complete(stored, undefined))
       }
+      this.#trySettle("after an answer")
       return stored
     })
   }
@@ -925,8 +926,9 @@ export class SessionActor implements LiveCalls {
    * Writes the session's run state from what its run waits in: waiting while a question is open on its current run
    * (on the `ask_manager` item's assignee, else on the owner), or while its cost is at or over its cap (on the open
    * cap item's assignee, else the pinned manager); else busy while a worker is being spawned or is sure
-   * to be (a re-advance, or a message held for the next job), or while a worker runs the run and it isn't at its
-   * turn; else idle. `writeState` leaves ending and finished sessions alone.
+   * to be (a re-advance, or a message or an answer held for the next job), or while a worker runs the run and it
+   * isn't at its turn; else idle. A starting session moves to busy only once its reply runs: before, a run that
+   * starts is busy whether or not a turn comes. `writeState` leaves ending and finished sessions alone.
    * Called inside queue jobs. Every command reads the pinned company first, so it throws for missing pins only
    * before any command; tests may call it directly when nothing else runs.
    */
@@ -942,9 +944,16 @@ export class SessionActor implements LiveCalls {
       const held = overCap(session, this.#pins)
       if (held) who.push(this.#capItem(session)?.assignee ?? this.#pins.manager)
       const run = this.#run
-      const spawning = this.#starting !== null || this.#readvance || this.#next.some((p) => p.delivery.op === "send")
+      const spawning =
+        this.#starting !== null ||
+        this.#readvance ||
+        this.#next.some((p) => p.delivery.op === "send" || p.delivery.op === "complete")
       const running = spawning || (run !== null && run.outcome === null && !this.#runAtTurn(run))
-      writeState(store, this.sessionId, runState({ waiting: asks.length > 0 || held, running }), who, { capped: held })
+      const fromStarting = this.#replying() ? (["idle", "busy", "waiting"] as const) : undefined
+      writeState(store, this.sessionId, runState({ waiting: asks.length > 0 || held, running }), who, {
+        capped: held,
+        fromStarting,
+      })
     })
     if (this.#runId !== null) this.#ctx.runChanged?.(this.#runId)
   }
@@ -1072,7 +1081,7 @@ export class SessionActor implements LiveCalls {
     return run !== null && run.outcome === null && [...run.inFlight].some((node) => this.#chat.isReply(node))
   }
 
-  /** Whether the run waits only at its turn: a worker's run with nothing in flight, no message pending for the
+  /** Whether the run waits only at its turn: a worker's run with no reply in flight, no message pending for the
    *  take and only turn nodes waiting; with no running worker, a last result whose waits are only the turn's
    *  unsettled take (unknown waits: whether the session is idle). A message held for the next job is pending too. */
   #atTurn(session: SessionRecord): boolean {
@@ -1084,10 +1093,12 @@ export class SessionActor implements LiveCalls {
     return waits.length > 0 && waits.every((wait) => this.#chat.isTurn(wait.node) && !wait.settled)
   }
 
+  /** Whether worker run `run` waits only at its turn. Other nodes may run beside the waiting take (the next turn's
+   *  history compaction runs in parallel with it): the take reads any message sent meanwhile. */
   #runAtTurn(run: WorkerRun): boolean {
     const waiting = [...run.waiting.keys()]
     return (
-      run.inFlight.size === 0 &&
+      ![...run.inFlight].some((node) => this.#chat.isReply(node)) &&
       !run.turnPending &&
       waiting.length > 0 &&
       waiting.every((node) => this.#chat.isTurn(node))

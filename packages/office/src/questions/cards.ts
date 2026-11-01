@@ -308,9 +308,10 @@ export class Cards {
   /**
    * At start, after the actor resumed what it could: expire open questions of sessions with no live run, and end
    * side sessions whose question is closed. A side session still `starting` is ended at once, in the store: no
-   * `openSide` runs at start, so an office stop came inside its start, and restore found no run of it to resume (one
-   * it resumed is no longer `starting`). Its run, when stored with no log (its worker never started it), ends as the
-   * office stopped, with no end time.
+   * `openSide` runs at start, so an office stop came inside its start, before its run showed a turn, a question or a
+   * reply (one whose first reply was seen running is busy, and restore resumed it). Restore may still have resumed
+   * its run: it reads `starting` until the resumed run shows one. Its run, when stored with no log (its worker never
+   * started it), ends as the office stopped, with no end time.
    */
   sweep(): void {
     for (const q of this.store.listQuestions({ status: "open" })) {
