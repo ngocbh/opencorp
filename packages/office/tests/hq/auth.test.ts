@@ -76,6 +76,17 @@ test("the session check reads the cookie named for the host port", async () => {
   const empty = "opencorp_hq_49380=; opencorp_hq_49380=later"
   await browserAuth(s, request("GET", "/api/x", [["Host", HOST], ["Cookie", empty]]))
   expect(s.asked).toEqual(["later"])
+
+  // The last pair of the name wins: HQ's Path=/ cookie comes after a same-named one planted at a deeper path.
+  s = sessions(WHO)
+  const planted = "opencorp_hq_49380=junk; opencorp_hq_49380=sid.secret"
+  await browserAuth(s, request("GET", "/api/x", [["Host", HOST], ["Cookie", planted]]))
+  expect(s.asked).toEqual(["sid.secret"])
+
+  s = sessions(WHO)
+  const trailing = "opencorp_hq_49380=real; opencorp_hq_49380="
+  await browserAuth(s, request("GET", "/api/x", [["Host", HOST], ["Cookie", trailing]]))
+  expect(s.asked).toEqual(["real"])
 })
 
 test("only the first cookie header counts", async () => {
@@ -236,6 +247,32 @@ test("logout ends the session and clears the cookie", async () => {
   expect(r.headers["set-cookie"]![0]).toContain("Max-Age=0")
   expect(office.store.getHqSession(sid)).toBeUndefined()
   expect((await client.get("/api/whoami")).status).toBe(401)
+})
+
+test("a planted cookie in front doesnt block use or logout", async () => {
+  const office = makeOffice()
+  const hq = await makeHq(office)
+  const client = await web(hq)
+  const sid = ((await pair(client, hq)).json() as Body).id as string
+  const name = `opencorp_hq_${PORT}`
+  const headers = { cookie: `${name}=junk; ${name}=${client.cookies.get(name)}` }
+  expect((await client.get("/api/whoami", { headers })).json()).toMatchObject({ person: CEO })
+  const r = await client.post("/api/logout", {}, { headers })
+  expect([r.status, r.json()]).toEqual([200, { ok: true }])
+  expect(office.store.getHqSession(sid)).toBeUndefined()
+})
+
+test("pairing again with a planted cookie in front replaces the real session", async () => {
+  const office = makeOffice()
+  const hq = await makeHq(office)
+  const client = await web(hq)
+  const first = ((await pair(client, hq)).json() as Body).id as string
+  const name = `opencorp_hq_${PORT}`
+  const headers = { cookie: `${name}=junk; ${name}=${client.cookies.get(name)}` }
+  const r = await client.post("/api/pair", { code: await pairCode(hq) }, { headers })
+  expect(r.status).toBe(200)
+  expect(office.store.getHqSession(first)).toBeUndefined()
+  expect(office.store.getHqSession((r.json() as Body).id as string)).toBeDefined()
 })
 
 test("logout needs a session", async () => {
