@@ -469,7 +469,12 @@ export const LIMITS: Readonly<Limits> = {
 /** An HTTP server for `listener` with `limits`; it has no idle socket timeout (`requestTimeout` bounds a
  *  request) and no upgrade listener, so an upgrade request is served as plain HTTP. It never sends `100 Continue`
  *  on its own and serves a request with any `Expect` value: `listener` must call `continueIfExpected` (or
- *  `readBody` with `res`) before it reads a body. */
+ *  `readBody` with `res`) before it reads a body.
+ *
+ *  Under Bun, a client that half-closes (`shutdown(SHUT_WR)`, `nc -N`, socat at EOF) gets no reply from a route
+ *  that awaits: Bun closes the socket, the request's signal aborts and the reply is dropped. A route that reads a
+ *  body fails its read, so it does nothing; one without a body that ignores the signal still does its work, unseen.
+ *  A reply made without awaiting still arrives. This holds for office.sock and both HQ listeners. */
 export function createServer(listener: RequestListener, limits: Limits = LIMITS): http.Server {
   const { maxConnections, ...options } = limits
   const server = http.createServer(options, listener)
