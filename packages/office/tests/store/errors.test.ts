@@ -1,6 +1,7 @@
 /** How the office names SQLite errors, and which of them mean the store can't be written. */
 import { expect, test } from "bun:test"
-import { sqliteName, storeWriteFailure } from "../../src/store/store.ts"
+import { DuplicateKey, StoreUnwritable, sqliteName, storeWriteFailure } from "../../src/store/store.ts"
+import { openStore, workItem } from "./helpers.ts"
 
 /** A bun:sqlite error with result code `errno`. */
 function sqliteError(errno: number): Error {
@@ -24,9 +25,35 @@ test("only a full disk, an I/O error, a read-only or unopenable store can't be w
     [1032, "SQLITE_READONLY"],
     [14, "SQLITE_CANTOPEN"],
   ] as const) {
-    expect(storeWriteFailure(sqliteError(errno))).toBe(name)
+    const error = StoreUnwritable.from(sqliteError(errno))
+    expect(error).toBeInstanceOf(StoreUnwritable)
+    expect(storeWriteFailure(error)).toBe(name)
   }
-  for (const other of [sqliteError(19), sqliteError(2067), sqliteError(5), new Error("x"), "SQLITE_FULL"]) {
-    expect(storeWriteFailure(other)).toBeNull()
+  for (const errno of [19, 2067, 5]) {
+    const error = sqliteError(errno)
+    expect(StoreUnwritable.from(error)).toBe(error)
   }
+  for (const other of [sqliteError(13), new Error("x"), "SQLITE_FULL"]) expect(storeWriteFailure(other)).toBeNull()
+})
+
+test("a store write that SQLite refuses as read-only throws StoreUnwritable, naming no file", () => {
+  const store = openStore()
+  store.db.exec("PRAGMA query_only = 1")
+  let thrown: unknown
+  try {
+    store.createWorkItem(workItem())
+  } catch (error) {
+    thrown = error
+  }
+  expect(thrown).toBeInstanceOf(StoreUnwritable)
+  expect((thrown as StoreUnwritable).code).toBe("SQLITE_READONLY")
+  expect((thrown as Error).message).toBe("the office can't write its store (SQLITE_READONLY)")
+  store.db.exec("PRAGMA query_only = 0")
+  expect(store.createWorkItem(workItem()).title).toBe("Fix the build")
+})
+
+test("a duplicate key is not StoreUnwritable", () => {
+  const store = openStore()
+  const item = store.createWorkItem(workItem())
+  expect(() => store.createWorkItem({ ...item })).toThrow(DuplicateKey)
 })

@@ -59,11 +59,29 @@ export function sqliteName(error: unknown): string | undefined {
   return SQLITE_NAMES[primary] ?? `SQLITE_${primary}`
 }
 
-/** The name (`sqliteName`) of a SQLite error that says the store can't be written, else null. An IOERR can come from
- *  a read too; either way the store can't be used until the disk is fixed. */
+/** A write transaction on the office store failed because the store can't be written (a full disk, an I/O error,
+ *  a read-only or unopenable file). `code` names the SQLite result code and is all a log line may carry: the
+ *  message of the SQLite error (`cause`) can name the store's file. */
+export class StoreUnwritable extends StoreError {
+  override name = "StoreUnwritable"
+  readonly code: string
+
+  constructor(code: string, options?: ErrorOptions) {
+    super(`the office can't write its store (${code})`, options)
+    this.code = code
+  }
+
+  /** `error` as a `StoreUnwritable` when it is a SQLite error that says the store can't be written, else `error`. */
+  static from(error: unknown): unknown {
+    const code = sqliteErrorCode(error)
+    if (code === undefined || !UNWRITABLE.has(code & 0xff)) return error
+    return new StoreUnwritable(sqliteName(error)!, { cause: error })
+  }
+}
+
+/** The SQLite code name of a failed write to the office store (`StoreUnwritable`), else null. */
 export function storeWriteFailure(error: unknown): string | null {
-  const code = sqliteErrorCode(error)
-  return code !== undefined && UNWRITABLE.has(code & 0xff) ? sqliteName(error)! : null
+  return error instanceof StoreUnwritable ? error.code : null
 }
 
 /** The row to change does not exist. */
@@ -673,7 +691,8 @@ export class Store {
 
   /** Runs `fn` in a write transaction (`BEGIN IMMEDIATE`) and returns its result. Store methods called inside
    *  join it; a nested `transaction()` is a savepoint: if it throws, only its own writes and events are undone.
-   *  Events reach listeners after the outermost commit.
+   *  Events reach listeners after the outermost commit. The outermost transaction throws a SQLite error that says
+   *  the store can't be written as `StoreUnwritable`.
    *
    *  The callback must be synchronous: an async one is refused and rolled back, and its continuation's `tx.*`
    *  calls throw "the transaction is over" (a store method it calls later still opens its own transaction:
@@ -681,7 +700,11 @@ export class Store {
   transaction<T>(fn: (tx: Tx) => T): T {
     if (this.#tx) return this.#savepoint(this.#tx, fn)
     const db = this.db
-    db.exec("BEGIN IMMEDIATE")
+    try {
+      db.exec("BEGIN IMMEDIATE")
+    } catch (error) {
+      throw StoreUnwritable.from(error)
+    }
     const tx = new Tx(db)
     this.#tx = tx
     let result: T
@@ -691,7 +714,7 @@ export class Store {
       db.exec("COMMIT")
     } catch (error) {
       if (inTransaction(db)) db.exec("ROLLBACK")
-      throw error
+      throw StoreUnwritable.from(error)
     } finally {
       this.#tx = undefined
       tx.over = true

@@ -447,16 +447,16 @@ export function requestListener<C>(
         } catch {}
         return
       }
+      // The client left, so a handler that honours `ctx.signal` and rejects (an AbortError) is neither answered
+      // nor logged.
+      if (controller.signal.aborted) return
       const unwritable = storeWriteFailure(error)
       if (unwritable !== null) {
         reply(503, apiError("store_unwritable", "the office can't write its store; see the office log"), unread)
         // The SQLite code only: its message can name the store's file.
-        log(`store can't be written on ${where()}: ${errorType(error)} (${unwritable})`)
+        log(`store can't be written on ${where()}: ${unwritable}`)
         return
       }
-      // The client left, so a handler that honours `ctx.signal` and rejects (an AbortError) is neither answered
-      // nor logged.
-      if (controller.signal.aborted) return
       reply(500, apiError("internal_error", "internal error"), { connection: "close" })
       // After the reply, so a throwing log hook can't leave the client waiting.
       logInternal(error)

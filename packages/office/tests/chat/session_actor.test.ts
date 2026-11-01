@@ -13,6 +13,7 @@ import {
   type SessionActor,
   type Wait,
 } from "../../src/chat/session_actor.ts"
+import { HarnessError } from "../../src/chat/state.ts"
 import { PING } from "../../src/daemon/bus.ts"
 import { INTERRUPTED, MAX_ANSWER_BYTES } from "../../src/questions/format.ts"
 import {
@@ -24,7 +25,7 @@ import {
   WORKER_STOPPED,
 } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
-import { sqliteName } from "../../src/store/store.ts"
+import { StoreUnwritable } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Delivery, STOP_REASON } from "../../src/worker/job.ts"
 import { type Worker, WorkerExists } from "../../src/worker/spawn.ts"
@@ -1536,9 +1537,9 @@ function steppedScheduler(start: number) {
   return { scheduler, sleeps, clock }
 }
 
-/** A bun:sqlite error for a full disk. */
+/** What the store throws for a write when the disk is full. */
 function diskFull(): Error {
-  return Object.assign(new Error("database or disk is full"), { name: "SQLiteError", errno: 13 })
+  return new StoreUnwritable("SQLITE_FULL")
 }
 
 /** Makes `o`'s store transactions throw `error()` while `failing.on`; restored when the test finishes. */
@@ -1616,16 +1617,85 @@ test("close and finish stop the retry of a state write", async () => {
 })
 
 test("a state write that fails for another reason isn't retried", async () => {
+  const constraint = () => Object.assign(new Error("x"), { name: "SQLiteError", errno: 2067 })
+  for (const [error, type] of [
+    [() => new TypeError("x"), "TypeError"],
+    [constraint, "SQLiteError"],
+  ] as const) {
+    const o = await chatOffice(await fakeLlm())
+    const { scheduler, sleeps } = steppedScheduler(Date.now())
+    const { actor, sid, workers } = await busyScripted(o, scheduler)
+    failTransactions(o, error)
+    const { worker, handlers } = workers[1]!
+    handlers.result(worker, waitingResult(actor.runId!))
+    handlers.exited(worker, 0)
+    const exit = `session ${sid}: no state after a worker exit (${type})`
+    await waitFor(() => o.logs.includes(exit), { what: "the log" })
+    expect(o.logs).toContainEqual(`session ${sid}: no state after a result (${type})`)
+    expect(sleeps).toEqual([])
+  }
+})
+
+test("a retry that finds no state to write logs nothing and stops", async () => {
   const o = await chatOffice(await fakeLlm())
   const { scheduler, sleeps } = steppedScheduler(Date.now())
   const { actor, sid, workers } = await busyScripted(o, scheduler)
-  failTransactions(o, () => new TypeError("x"))
+  const failing = failTransactions(o)
   const { worker, handlers } = workers[1]!
   handlers.result(worker, waitingResult(actor.runId!))
   handlers.exited(worker, 0)
-  await waitFor(() => o.logs.includes(`session ${sid}: no state after a worker exit (TypeError)`), { what: "the log" })
-  expect(o.logs).toContainEqual(`session ${sid}: no state after a result (TypeError)`)
-  expect(sleeps).toEqual([])
+  await waitFor(() => sleeps.length === 1, { what: "the retry" })
+  failing.on = false
+  o.office.store.updateSession(sid, { status: "ending" })
+  sleeps[0]!.wake()
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  expect(o.logs.filter((line) => line.includes("written again"))).toEqual([])
+  expect(sleeps).toHaveLength(1)
+})
+
+test("a finish whose store write fails is stored by a retry, and End answers store_unwritable meanwhile", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { scheduler, sleeps } = steppedScheduler(Date.now())
+  const { actor, sid } = await busyScripted(o, scheduler)
+  const ended: string[] = []
+  o.hooks.sessionEnded.push((s) => void ended.push(s.status))
+  const failing = failTransactions(o)
+  await actor.fail()
+  expect(status(o, sid)).toBe("busy")
+  await waitFor(() => sleeps.length === 1, { what: "the retry" })
+  expect(o.logs.filter((line) => line.includes("can't store the end"))).toEqual([
+    `session ${sid}: can't store the end (SQLITE_FULL); retrying`,
+  ])
+  const refused = await actor.end().then(
+    () => null,
+    (error) => error,
+  )
+  expect(refused).toBeInstanceOf(HarnessError)
+  expect(refused).toMatchObject({ status: 503, code: "store_unwritable" })
+  sleeps[0]!.wake()
+  await waitFor(() => sleeps.length === 2, { what: "the next retry" })
+  expect(sleeps[1]!.ms).toBe(2000)
+  failing.on = false
+  sleeps[1]!.wake()
+  await waitFor(() => status(o, sid) === "failed", { what: "the end stored" })
+  expect(o.office.store.getRun(actor.runId!)?.endReason).toBe(COULDNT_RESUME)
+  expect(o.logs).toContainEqual(`session ${sid}: its end is stored`)
+  await waitFor(() => ended.length === 1, { what: "sessionEnded" })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  expect(ended).toEqual(["failed"])
+  expect(sleeps).toHaveLength(2)
+})
+
+test("close stops the retry of a finish that wasn't stored", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { scheduler, sleeps } = steppedScheduler(Date.now())
+  const { actor, sid } = await busyScripted(o, scheduler)
+  failTransactions(o)
+  await actor.fail()
+  await waitFor(() => sleeps.length === 1, { what: "the retry" })
+  await actor.close()
+  expect(sleeps[0]!.signal?.aborted).toBe(true)
+  expect(status(o, sid)).toBe("busy")
 })
 
 test("an End whose store write fails can be tried again", async () => {
@@ -1642,7 +1712,7 @@ test("an End whose store write fails can be tried again", async () => {
   onTestFinished(() => {
     store.updateSession = update
   })
-  expect(await actor.end().then(String, (error) => sqliteName(error))).toBe("SQLITE_FULL")
+  expect(await actor.end().then(String, (error) => (error as StoreUnwritable).code)).toBe("SQLITE_FULL")
   expect(status(o, sid)).toBe("busy")
   void outcome(actor.prompt("still here"))
   await waitFor(() => workers[1]!.deliveries.length === 1, { what: "the message" })

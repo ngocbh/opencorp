@@ -597,7 +597,7 @@ test("a settle that fails after a resume at restore stops no other session", asy
   let broken = true
   const spy = spyOn(SessionActor.prototype, "settle").mockImplementation(function (this: SessionActor) {
     if (broken && this.sessionId === a) throw new Error("the pin can't be read")
-    settle.call(this)
+    return settle.call(this)
   })
   onTestFinished(() => spy.mockRestore())
   const before = h.kinds.length

@@ -42,8 +42,8 @@ import {
   newId,
   type QuestionRecord,
   type SessionRecord,
-  sqliteName,
   type Store,
+  StoreUnwritable,
   type WorkItemRecord,
 } from "../store/store.ts"
 import { type Frame, FrameTooLarge } from "../worker/channel.ts"
@@ -174,10 +174,21 @@ interface Fresh {
   finished: Frame | null
 }
 
+/** A finished session's end, as `#finish` stores it: the session's final status, the work item it marks done (if
+ *  any), the office end reason of run `runId` (null when yian ended the run), and the result frame `runFinished`
+ *  gets. */
+interface End {
+  final: SessionRecord["status"]
+  workItem: string | null
+  why: string | null
+  runId: string | null
+  frame: Frame | null
+}
+
 /** The run statuses that end a run, whose report waits for the run index. */
 const ENDING: readonly string[] = ["succeeded", "failed", "cancelled"]
 
-/** The first wait before a state write that failed is tried again, in ms; each wait after doubles, up to
+/** The first wait before a state or end write that failed is tried again, in ms; each wait after doubles, up to
  *  `SETTLE_RETRY_MAX_MS`. */
 const SETTLE_RETRY_MS = 1000
 const SETTLE_RETRY_MAX_MS = 60_000
@@ -380,9 +391,12 @@ export class SessionActor implements LiveCalls {
   #lostLog = false
   /** The SQLite code the last state write failed with, until one succeeds; null while writes succeed. */
   #settleFailing: string | null = null
-  /** The sleep before the next try of a failed state write, aborted at finish and close; null when none waits. */
+  /** The finished session's end the store couldn't write, tried again until it is stored; null when none waits. */
+  #endUnstored: End | null = null
+  /** The sleep before the next try of a failed state or end write, aborted at close (and at finish, for a state
+   *  write); null when none waits. */
   #settleRetry: AbortController | null = null
-  /** How long the next retry of a failed state write waits, in ms. */
+  /** How long the next retry of a failed state or end write waits, in ms. */
   #settleDelay = SETTLE_RETRY_MS
   /** The runs whose hard stop waits for the lingering worker's exit. */
   #stopAfterExit: string[] = []
@@ -843,6 +857,7 @@ export class SessionActor implements LiveCalls {
   end(): Promise<void> {
     return this.#command(async () => {
       const session = this.#session()
+      if (this.#endUnstored !== null) throw storeUnwritable()
       if (this.#finished || !LIVE.includes(session.status) || this.#runId === null) {
         throw new HarnessError(409, "not_live", `session ${this.sessionId} has no live run`)
       }
@@ -1154,11 +1169,11 @@ export class SessionActor implements LiveCalls {
    * Called inside queue jobs. Every command reads the pinned company first, so it throws for missing pins only
    * before any command; tests may call it directly when nothing else runs.
    */
-  settle(): void {
+  settle(): boolean {
     const { store } = this.#ctx
-    store.transaction(() => {
+    const wrote = store.transaction(() => {
       const session = store.getSession(this.sessionId)
-      if (session === undefined || !SETTLED.includes(session.status)) return
+      if (session === undefined || !SETTLED.includes(session.status)) return false
       if (this.#pins === null) throw new Error("the pinned company isn't read yet")
       const owner = session.opened_by ?? this.#pins.ceo
       const asks = this.#runId === null ? [] : store.listQuestions({ runId: this.#runId, status: "open" })
@@ -1176,8 +1191,10 @@ export class SessionActor implements LiveCalls {
         capped: held,
         fromStarting,
       })
+      return true
     })
     if (this.#runId !== null) this.#ctx.runChanged?.(this.#runId)
+    return wrote
   }
 
   /** Who an `ask_manager` question waits on: its work item's assignee. */
@@ -2697,12 +2714,13 @@ export class SessionActor implements LiveCalls {
    * one transaction with the run's office end reason `why`, written only when no yian outcome ended the run (`outcome`,
    * else the one `run`'s worker recorded, else the end restore found); its open cost cap item is cancelled first. A
    * failed session is told why ("The session failed (…). Start a new chat."). `runFinished` (the result frame of how
-   * the run ended, key redacted, else null) then `sessionEnded` are notified in order, not awaited. Every delivery not
-   * answered gets `409 not_live`. A run yian may still see unfinished gets a hard stop, as does each replaced run no
-   * fresh worker cancelled. The live relay forgets the session's runs now with no worker alive, else at that worker's
-   * exit. Throws `HarnessError` (`404`) when the session row is gone; a store write that fails is logged by its type.
-   * While a fresh run is held, the run is reported with the held run's result and end reason, as the fresh run would
-   * have reported it.
+   * the run ended, key redacted, else null) then `sessionEnded` are notified in order, not awaited, once the end is
+   * stored (`#storeEnd`, which retries a store that can't be written). Every delivery not answered gets `409
+   * not_live`. A run yian may still see unfinished gets a hard stop, as does each replaced run no fresh worker
+   * cancelled. The live relay forgets the session's runs now with no worker alive, else at that worker's exit. Throws
+   * `HarnessError` (`404`) when the session row is gone; any other failed store write is logged by its type. While a
+   * fresh run is held, the run is reported with the held run's result and end reason, as the fresh run would have
+   * reported it.
    */
   #finish(status: "ended" | "failed", outcome: Frame | null, why: string | null, run = this.#run): void {
     if (this.#finished) return
@@ -2741,23 +2759,14 @@ export class SessionActor implements LiveCalls {
       if (status === "failed") {
         this.#notice(`The session failed (${whyFailed(reported, run?.provider ?? null)}). Start a new chat.`)
       }
-      let final: SessionRecord["status"] = status
-      if (status === "ended") {
-        final = hooks.fire("endStatus", session).find((result) => !!result) ?? "ended"
-        // First, so no client sees an ended session with its work still open.
-        if (session.work_item_id) store.updateWorkItem(session.work_item_id, { status: "done" })
-      }
-      const finished = store.transaction(() => {
-        const updated = store.updateSession(this.sessionId, notWaiting(final))
-        if (why !== null && !ended && runId !== null) store.endRun(runId, why)
-        return updated
+      const final = status === "ended" ? (hooks.fire("endStatus", session).find((result) => !!result) ?? "ended") : status
+      this.#storeEnd({
+        final,
+        workItem: status === "ended" ? session.work_item_id : null,
+        why: why !== null && !ended ? why : null,
+        runId,
+        frame: reported?.type === "result" ? (redactKey(reported, run?.provider ?? null) as Frame) : null,
       })
-      const frame = reported?.type === "result" ? (redactKey(reported, run?.provider ?? null) as Frame) : null
-      // In order, outside the queue: a slow hook never holds the session's next step.
-      void (async () => {
-        if (runId !== null) await hooks.notify("runFinished", finished, runId, frame)
-        await hooks.notify("sessionEnded", finished)
-      })()
       // With a worker alive, its last frames would show the runs again: its exit forgets them.
       if (this.#run === null || this.#run.exited || this.#run.parked) this.#forgetRuns(this.#finishedRuns)
     } catch (error) {
@@ -2771,6 +2780,46 @@ export class SessionActor implements LiveCalls {
       // end was told when `#replace` stored it.
       if (runId !== null) this.#ctx.runChanged?.(runId)
     }
+  }
+
+  /**
+   * Stores the finished session's `end` in one transaction (its work item done first, so no client sees an ended
+   * session with its work still open), then notifies `runFinished` and `sessionEnded` in order, not awaited. A store
+   * that can't be written keeps the end in `#endUnstored`, logged once, and it is tried again after a wait
+   * (`SETTLE_RETRY_MS`, doubling up to `SETTLE_RETRY_MAX_MS`) until it is stored or the office stops; the next
+   * office's restore ends the session again. Other errors throw.
+   */
+  #storeEnd(end: End): void {
+    const { store, hooks } = this.#ctx
+    let finished: SessionRecord
+    try {
+      finished = store.transaction(() => {
+        if (end.workItem) store.updateWorkItem(end.workItem, { status: "done" })
+        const updated = store.updateSession(this.sessionId, notWaiting(end.final))
+        if (end.why !== null && end.runId !== null) store.endRun(end.runId, end.why)
+        return updated
+      })
+    } catch (error) {
+      if (!(error instanceof StoreUnwritable)) {
+        this.#endUnstored = null
+        throw error
+      }
+      if (this.#endUnstored === null) this.#log(`session ${this.sessionId}: can't store the end (${error.code}); retrying`)
+      this.#endUnstored = end
+      if (this.#settleRetry === null && !this.#closed) this.#armSettleRetry()
+      return
+    }
+    if (this.#endUnstored !== null) {
+      this.#log(`session ${this.sessionId}: its end is stored`)
+      this.#endUnstored = null
+      this.#settleDelay = SETTLE_RETRY_MS
+      if (end.runId !== null) this.#ctx.runChanged?.(end.runId)
+    }
+    // In order, outside the queue: a slow hook never holds the session's next step.
+    void (async () => {
+      if (end.runId !== null) await hooks.notify("runFinished", finished, end.runId, end.frame)
+      await hooks.notify("sessionEnded", finished)
+    })()
   }
 
   /** Drops what the transcript cache and the live relay hold of runs `runIds`. */
@@ -3001,26 +3050,29 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * `settle`, where the step around it must go on. A SQLite error (a full disk, say) is logged once, by its code, for
-   * each streak of failed writes, and the write is tried again after a wait (`SETTLE_RETRY_MS`, doubling up to
-   * `SETTLE_RETRY_MAX_MS`) and at every later settle until one succeeds, so the stored status catches up once the
-   * store can write; marking the session failed would be a store write too. Any other failure is logged by its type.
+   * `settle`, where the step around it must go on. A store that can't be written (`StoreUnwritable`: a full disk,
+   * say) is logged once, by its code, for each streak of failed writes, and the write is tried again after a wait
+   * (`SETTLE_RETRY_MS`, doubling up to `SETTLE_RETRY_MAX_MS`) and at every later settle until one writes, so the
+   * stored status catches up once the store can write; marking the session failed would be a store write too. Any
+   * other failure is logged by its type and not retried. A settle with nothing to write leaves the streak as it is.
    */
   #trySettle(when: string): void {
+    let wrote: boolean
     try {
-      this.settle()
+      wrote = this.settle()
     } catch (error) {
-      const name = sqliteName(error)
-      if (name === undefined) {
+      if (!(error instanceof StoreUnwritable)) {
         this.#log(`session ${this.sessionId}: no state ${when} (${errorName(error)})`)
         return
       }
-      if (this.#settleFailing === null) this.#log(`session ${this.sessionId}: no state ${when} (${name}); retrying`)
-      this.#settleFailing = name
+      if (this.#settleFailing === null) {
+        this.#log(`session ${this.sessionId}: no state ${when} (${error.code}); retrying`)
+      }
+      this.#settleFailing = error.code
       if (this.#settleRetry === null && !this.#finished && !this.#closed) this.#armSettleRetry()
       return
     }
-    if (this.#settleFailing !== null) {
+    if (wrote && this.#settleFailing !== null) {
       this.#log(`session ${this.sessionId}: its state is written again`)
       this.#settleFailing = null
       this.#stopSettleRetry()
@@ -3028,7 +3080,8 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  /** Tries the failed state write again after `#settleDelay`, and doubles the next wait. */
+  /** Tries the failed end write (`#endUnstored`), else the failed state write, again after `#settleDelay`, and
+   *  doubles the next wait. */
   #armSettleRetry(): void {
     const timer = new AbortController()
     this.#settleRetry = timer
@@ -3039,7 +3092,16 @@ export class SessionActor implements LiveCalls {
         this.#post("settle retry", () => {
           if (this.#settleRetry !== timer) return
           this.#settleRetry = null
-          if (!this.#finished && this.#settleFailing !== null) this.#trySettle("on a retry")
+          const end = this.#endUnstored
+          if (end === null) {
+            if (!this.#finished && this.#settleFailing !== null) this.#trySettle("on a retry")
+            return
+          }
+          try {
+            this.#storeEnd(end)
+          } catch (error) {
+            this.#log(`session ${this.sessionId}: can't store the end (${errorName(error)})`)
+          }
         }),
       () => {},
     )
@@ -3055,6 +3117,7 @@ export class SessionActor implements LiveCalls {
   #wakeError(error: unknown): HarnessError {
     if (error instanceof HarnessError) return error
     if (error instanceof RegistryClosed) return stopping()
+    if (error instanceof StoreUnwritable) return storeUnwritable()
     return new HarnessError(503, "cant_wake", `session ${this.sessionId} can't wake${spawnWhy(error)}`)
   }
 
@@ -3069,6 +3132,11 @@ export class SessionActor implements LiveCalls {
       this.#ctx.log(line)
     } catch {}
   }
+}
+
+/** `503 store_unwritable`: the office can't write its store, so the session's state can't change now. */
+function storeUnwritable(): HarnessError {
+  return new HarnessError(503, "store_unwritable", "the office can't write its store; see the office log")
 }
 
 /** What a caller is told of a spawn that failed with `error`, after the session's id. Never the error's text: a

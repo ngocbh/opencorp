@@ -29,7 +29,7 @@ import {
   removeStaleSocket,
 } from "../../src/daemon/sockets.ts"
 import { CompanyRepoBusy } from "../../src/company/git.ts"
-import { NotFound } from "../../src/store/store.ts"
+import { NotFound, StoreUnwritable } from "../../src/store/store.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"
 import {
   Conn,
@@ -476,14 +476,15 @@ describe("routes", () => {
         method: "POST",
         path: "/full",
         handler: () => {
-          throw Object.assign(new Error(SENTINEL), { name: "SQLiteError", errno: 13 })
+          throw StoreUnwritable.from(Object.assign(new Error(SENTINEL), { name: "SQLiteError", errno: 13 }))
         },
       },
       {
         method: "POST",
-        path: "/dup",
+        path: "/raw",
         handler: () => {
-          throw Object.assign(new Error(SENTINEL), { name: "SQLiteError", errno: 2067 })
+          // Not from the office store's write: yian's index, say, or a read.
+          throw Object.assign(new Error(SENTINEL), { name: "SQLiteError", errno: 10 })
         },
       },
     ]
@@ -495,11 +496,35 @@ describe("routes", () => {
       message: "the office can't write its store; see the office log",
     })
     expect(lines).toHaveLength(1)
-    expect(lines[0]).toMatch(/^\S+ ERROR opencorp\.daemon\.http: store can't be written on POST \/full: Error \(SQLITE_FULL\)$/)
-    const dup = await request(sock, "POST", "/dup")
-    expect(dup.status).toBe(500)
-    expect(dup.json()).toEqual({ error: "internal_error", message: "internal error" })
-    expect(full.text + dup.text + lines.join("\n")).not.toContain(SENTINEL)
+    expect(lines[0]).toMatch(/^\S+ ERROR opencorp\.daemon\.http: store can't be written on POST \/full: SQLITE_FULL$/)
+    const raw = await request(sock, "POST", "/raw")
+    expect(raw.status).toBe(500)
+    expect(raw.json()).toEqual({ error: "internal_error", message: "internal error" })
+    expect(full.text + raw.text + lines.join("\n")).not.toContain(SENTINEL)
+  })
+
+  test("a store that can't be written after the client left is neither answered nor logged", async () => {
+    let started = false
+    let thrown = false
+    const slow: Route<Ctx> = {
+      method: "POST",
+      path: "/slow",
+      handler: async (ctx) => {
+        started = true
+        await new Promise((resolve) => ctx.signal.addEventListener("abort", resolve))
+        thrown = true
+        throw StoreUnwritable.from(Object.assign(new Error(SENTINEL), { name: "SQLiteError", errno: 13 }))
+      },
+    }
+    const lines: string[] = []
+    const { sock, settled } = await serve([slow], { log: (line) => lines.push(line) })
+    const conn = await Conn.open(sock)
+    conn.send("POST /slow HTTP/1.1\r\nhost: office\r\ncontent-length: 0\r\n\r\n")
+    await waitFor(() => started, { timeout: 9000, what: "the handler to start" })
+    conn.socket.destroy()
+    await waitFor(() => thrown, { timeout: 9000, what: "the handler to throw" })
+    await waitFor(() => settled() === 1, { timeout: 9000, what: "the request to settle" })
+    expect(lines).toEqual([])
   })
 
   test("an http error is its status code and message", async () => {
