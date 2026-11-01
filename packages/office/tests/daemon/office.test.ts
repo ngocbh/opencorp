@@ -89,6 +89,19 @@ test("a pin used just before the end goes once the window passes", async () => {
   await waitFor(() => !pinned(office, b!), { timeout: 5000, what: "the pin to go" })
 })
 
+test("watch pins frees an ended sessions pin on the end alone", async () => {
+  const office = makeOffice({ pinGraceMs: 0 })
+  const [b] = await commits(office, 2)
+  const s = office.store.createSession(session({ repo_commit: b, status: "idle" }))
+  await office.git.pin(b!)
+  office.watchPins()
+  // The first prune settled, so only the end's listener can remove the pin.
+  await office.prunePins()
+  expect(pinned(office, b!)).toBe(true)
+  office.store.updateSession(s.id, { status: "ended" })
+  await waitFor(() => !pinned(office, b!), { timeout: 5000, what: "the pin to go on the end" })
+})
+
 test("a prune failure logs the error type only and start resolves", async () => {
   const lines: string[] = []
   const office = makeOffice({ log: (line) => lines.push(line) })

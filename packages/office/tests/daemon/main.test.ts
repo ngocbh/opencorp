@@ -1008,6 +1008,28 @@ test("build office updates the run index when a worker exits", async () => {
   await waitFor(() => update.mock.calls.length > 0, { what: "a run index update on the worker's exit" })
 })
 
+test("build office prunes pins when a worker exits", async () => {
+  const fake = await fakeLlm()
+  let office: Office | undefined
+  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const rec = recordingGit(tempDir())
+  office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  await office.start()
+  // After the start, so its own prune isn't counted.
+  const prune = spyOn(office, "prunePins")
+  const provider = Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: "sk-test-prune-4c1d" }, env: fake.env() })
+  fake.script({ content: "OK" })
+  expect(await office.checkModel(provider)).toBeNull()
+  await waitFor(() => prune.mock.calls.length > 0, { what: "a pin prune on the worker's exit" })
+})
+
 test("build office prunes orphan pins on start", async () => {
   let office: Office | undefined
   // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
