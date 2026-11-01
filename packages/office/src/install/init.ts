@@ -26,6 +26,7 @@ import {
   makeHome,
   type ModelCheck,
   modelFailed,
+  officeRunning,
   onboardLocked,
   redact,
   setupConnectionFile,
@@ -141,7 +142,8 @@ async function initLocked(one: Launch, prompter: Prompter, options: InitOptions)
   const defaults = options.loginDefaults ?? loginDefaults
   const company = path.join(one.home, "company")
   const worktrees = path.join(one.office, "worktrees")
-  if (await host.answers(one.socket)) {
+  // One that holds its lock but doesn't answer is running too.
+  if (await officeRunning(one, host)) {
     throw new OnboardError(
       `the office is running, but ${company} has no company yet; run \`opencorp stop\`, then \`opencorp init\` again`,
     )

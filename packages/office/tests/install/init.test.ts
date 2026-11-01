@@ -627,6 +627,22 @@ test("a running office without a company is not written to", async () => {
   expect(fs.existsSync(path.join(dir, "home", "company"))).toBe(false)
 })
 
+test("init over a locked office that doesnt answer refuses", async () => {
+  const dir = tempDir()
+  const seen: string[] = []
+  const host = makeHost(dir, new Runner(), {
+    locked: (lockPath) => {
+      seen.push(lockPath)
+      return true
+    },
+  })
+  const error = await rejection(init(path.join(dir, "home"), new Script(), { ...base(dir), host }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toMatch(/running, but .* has no company yet/)
+  expect(seen).toEqual([path.join(fs.realpathSync(dir), "home", "office", "office.lock")])
+  expect(fs.existsSync(path.join(dir, "home", "company"))).toBe(false)
+})
+
 test("a remote is added and pushed to with main tracking it", async () => {
   const dir = tempDir()
   const remote = bare(path.join(dir, "acme.git"))

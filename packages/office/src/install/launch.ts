@@ -341,6 +341,10 @@ export interface Host {
   clock(): number
   /** Whether the office on `socket` answers within `timeoutMs` (`officeAnswers`). */
   answers(socket: string, timeoutMs?: number): Promise<boolean>
+  /** Whether another process holds the lock file at `lockPath`. Left out, `onboard.ts`'s `officeRunning` uses yian's
+   *  `isLocked`, which this module may not import. Never called inside the daemon: closing another descriptor on the
+   *  lock file would drop the daemon's own lock. */
+  locked?(lockPath: string): boolean
 }
 
 /** Whether `file` is a non-directory this process may execute. */

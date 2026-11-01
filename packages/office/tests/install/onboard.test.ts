@@ -19,15 +19,18 @@ import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
 import { Provider } from "../../src/chat/provider.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { writeCompany } from "../../src/company_template/index.ts"
+import { makeOfficeDir } from "../../src/daemon/sockets.ts"
 import {
   makeHome,
   modelProblem,
+  officeRunning,
   type OnboardOptions,
   onboard,
   ownerDefaults,
   redact,
   runSetup,
   setupConnectionFile,
+  stopToTopUp,
   WHO,
 } from "../../src/install/onboard.ts"
 import * as fallback from "../../src/install/fallback.ts"
@@ -216,6 +219,86 @@ test("a running office without a company is not written to", async () => {
   expect(error).toBeInstanceOf(OnboardError)
   expect(error.message).toMatch(/running, but .* has no company yet/)
   expect(fs.existsSync(path.join(dir, "home", "company"))).toBe(false)
+})
+
+test("onboard over a locked office that doesnt answer writes nothing", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const root = await company(home)
+  fs.unlinkSync(path.join(root, "shared/flows/side_chat.yaml"))
+  git(root, "commit", "-qam", "drop a flow")
+  const head = git(root, "rev-parse", "HEAD")
+  const ask = new Script()
+  const seen: string[] = []
+  const host = makeHost(dir, new Runner(), {
+    locked: (lockPath) => {
+      seen.push(lockPath)
+      return true
+    },
+  })
+  // The office never answers, so the service step fails after its wait; the company must be left alone first.
+  await onboard(home, ask, { ...base(dir), stdin: provider(), host }).catch(() => {})
+  expect(seen).toEqual([path.join(fs.realpathSync(home), "office", "office.lock")])
+  expect(ask.seen.join("\n")).toContain(stopToTopUp(1))
+  expect(fs.existsSync(path.join(root, "shared/flows/side_chat.yaml"))).toBe(false)
+  expect(git(root, "rev-parse", "HEAD")).toBe(head)
+
+  const fresh = path.join(dir, "fresh")
+  const error = await rejection(onboard(fresh, new Script(), { ...base(dir), host }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toMatch(/running, but .* has no company yet/)
+  expect(fs.existsSync(path.join(fresh, "company"))).toBe(false)
+})
+
+test("a lock that cant be checked stops onboard", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const root = await company(home)
+  fs.unlinkSync(path.join(root, "shared/flows/side_chat.yaml"))
+  git(root, "commit", "-qam", "drop a flow")
+  const head = git(root, "rev-parse", "HEAD")
+  const host = makeHost(dir, new Runner(), {
+    locked: () => {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" })
+    },
+  })
+  const error = await rejection(onboard(home, new Script(), { ...base(dir), stdin: provider(), host }))
+  expect(error).toBeInstanceOf(OnboardError)
+  const lock = path.join(fs.realpathSync(home), "office", "office.lock")
+  expect(error.message).toBe(`can't tell whether the office is running: can't check ${lock}: Permission denied`)
+  expect(git(root, "rev-parse", "HEAD")).toBe(head)
+})
+
+test("the default lock check sees a lock held by another process", async () => {
+  const dir = shortDir()
+  const one = launch(path.join(dir, "home"), { environ: {}, userHome: dir })
+  makeOfficeDir(one.office)
+  const host = { ...makeHost(dir, new Runner()), locked: undefined }
+  expect(await officeRunning(one, host)).toBe(false)
+  const lock = path.join(one.office, "office.lock")
+  const code = [
+    'import { lockFile } from "@ngocbh/yian/platform"',
+    `const held = lockFile(${JSON.stringify(lock)}, { private: true })`,
+    'console.log("held")',
+    "setInterval(() => {}, 60_000)",
+  ].join("\n")
+  const child = Bun.spawn([process.execPath, "--no-install", "--no-env-file", "--config=/dev/null", "-e", code], {
+    cwd: OFFICE,
+    env: { PATH: process.env.PATH },
+    stdout: "pipe",
+    stderr: "inherit",
+  })
+  try {
+    const reader = child.stdout.getReader()
+    const { value } = await reader.read()
+    expect(new TextDecoder().decode(value)).toBe("held\n")
+    expect(await officeRunning(one, host)).toBe(true)
+  } finally {
+    child.kill("SIGKILL")
+    await child.exited
+  }
+  expect(child.killed || child.exitCode !== null).toBe(true)
+  expect(await officeRunning(one, host)).toBe(false)
 })
 
 /** Onboards with auto, then again from a shell with another env; returns the second run's commands. */

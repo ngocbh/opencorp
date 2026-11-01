@@ -37,7 +37,8 @@ export class Runner {
 }
 
 /** A host whose home is `dir` and whose commands go to `runner` (a `Runner`, or any stand-in with its `run`);
- *  nothing real runs. Its clock moves only when it sleeps, so waiting takes no real time. */
+ *  nothing real runs, and no office holds its lock unless `locked` says so. Its clock moves only when it sleeps, so
+ *  waiting takes no real time. */
 export function makeHost(
   dir: string,
   runner: Pick<Host, "run">,
@@ -48,11 +49,13 @@ export function makeHost(
       throw new Error("tests never spawn without a stand-in")
     },
     answers = async () => false,
+    locked = () => false,
   }: {
     platform?: NodeJS.Platform
     which?: (name: string) => string | null
     spawn?: (argv: readonly [string, ...string[]], options: SpawnOptions) => ChildProcess
     answers?: (socket: string, timeoutMs?: number) => Promise<boolean>
+    locked?: (lockPath: string) => boolean
   } = {},
 ): Host {
   let now = 0
@@ -68,6 +71,7 @@ export function makeHost(
     },
     clock: () => now,
     answers,
+    locked,
   }
 }
 
