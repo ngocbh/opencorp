@@ -2050,7 +2050,10 @@ export class SessionActor implements LiveCalls {
       await this.#replyFailed(run, outcome!)
     } else {
       this.#log(`session ${this.sessionId}: its run ended (${status})`)
-      this.#finish("failed", outcome, null, run)
+      // An error before yian wrote a log (a flow that won't load): its worker couldn't start the run. With a log,
+      // how yian recorded the run stands, which an office end reason would hide.
+      const unstarted = status === "error" && run.kind === "chat" && !fs.existsSync(this.#logOf(run.runId))
+      this.#finish("failed", outcome, unstarted ? COULDNT_START : null, run)
     }
     this.#trySettle("after a worker exit")
   }
