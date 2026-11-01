@@ -37,7 +37,7 @@ export interface Result {
   /** The exit status (negative for a signal), or `null` when the call was killed for its timeout or by
    *  `signal`. */
   exit: number | null
-  /** The first `maxOutput` bytes of each stream. */
+  /** The first `maxOutput` bytes of `stdout` and of `stderr`. */
   stdout: Buffer
   stderr: Buffer
   /** The last `tailOutput` bytes of each stream after its first `maxOutput`; empty without `tailOutput`. */
@@ -170,8 +170,8 @@ export interface RunOptions {
  *
  * The call runs in a new process group. The group is killed when the call's first
  * process exits (so nothing it started in the background survives), when `timeout`
- * seconds pass, or when `signal` aborts; on macOS it is stopped first, so no process
- * in it runs another step while the kill goes round. On macOS, processes that left
+ * seconds pass, or when `signal` aborts; on macOS it is stopped first, so a shell whose
+ * step dies first can't run its next step before its own kill. On macOS, processes that left
  * the group with `setsid` are then found and killed too; on Linux the pid namespace
  * dies with the call.
  * Each output stream keeps its first `maxOutput` and last `tailOutput` bytes, and counts
