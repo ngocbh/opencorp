@@ -490,25 +490,31 @@ async function doctorCommand(args: Args, s: Setup): Promise<number> {
   return exitCode(found)
 }
 
-/** Starts the office with `how` (`service.start` or `service.restart`) and waits for it to answer; says why on
- *  stderr when it didn't come up. */
+/** Starts the office with `how` (`service.start` or `service.restart`) and waits for it to answer: resolves to
+ *  whether the daemon it started answers (`started`) or an office that already ran does (`already-running`), or
+ *  false after saying why on stderr when none came up. */
 async function cameUp(
   run: Launch,
   s: Setup,
   how: (run: Launch, host: Host) => Promise<service.Installed>,
-): Promise<boolean> {
+  command: "start" | "restart",
+): Promise<"started" | "already-running" | false> {
   try {
     const started = await how(run, s.host)
     for (const note of started.notes) {
       s.stderr.write(`opencorp: ${note}; started the office in the background instead\n`)
     }
-    await service.wait(run, s.host)
+    return await service.wait(run, s.host, undefined, started.child)
   } catch (error) {
     if (!(error instanceof ServiceError || error instanceof OfficeStartError)) throw error
-    s.stderr.write(`opencorp: ${error.message}\n`)
+    // Only a start may suggest a restart: the holder is this office's daemon, and nothing was stopped yet.
+    const message =
+      error instanceof service.LockHeld && command === "start" && error.verified
+        ? `${error.reason}; if it stays that way, run \`opencorp restart\``
+        : error.message
+    s.stderr.write(`opencorp: ${message}\n`)
     return false
   }
-  return true
 }
 
 /**
@@ -572,8 +578,11 @@ async function startCommand(args: Args, s: Setup): Promise<number> {
   }
   const refused = await notOnboarded(run, s)
   if (refused !== null) return refused
-  if (!(await cameUp(run, s, service.start))) return 1
-  s.stdout.write(`Started the office (pid ${service.pid(run)}).\n`)
+  const came = await cameUp(run, s, service.start, "start")
+  if (!came) return 1
+  // Another start can win the race between the check above and this one's daemon.
+  if (came === "already-running") s.stdout.write(`The office is already running (pid ${service.pid(run)}).\n`)
+  else s.stdout.write(`Started the office (pid ${service.pid(run)}).\n`)
   await reportHq(run.home, s)
   return 0
 }
@@ -584,7 +593,7 @@ async function restartCommand(args: Args, s: Setup): Promise<number> {
   const refused = await notOnboarded(run, s)
   if (refused !== null) return refused
   const was = (await s.host.answers(run.socket)) ? service.pid(run) : null
-  if (!(await cameUp(run, s, service.restart))) return 1
+  if (!(await cameUp(run, s, service.restart, "restart"))) return 1
   if (was === null) s.stdout.write(`The office wasn't running; started it (pid ${service.pid(run)}).\n`)
   else s.stdout.write(`Restarted the office (pid ${service.pid(run)}; was ${was}).\n`)
   await reportHq(run.home, s)

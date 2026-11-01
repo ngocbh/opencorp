@@ -2,6 +2,8 @@
  *  works here. Every host's `run` is a stand-in, so no service tool runs; the background-daemon tests start real
  *  daemons on temp homes and kill them by pid and start time when they finish. */
 import type { ChildProcess } from "node:child_process"
+import { execFileSync } from "node:child_process"
+import { EventEmitter } from "node:events"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
@@ -18,10 +20,11 @@ import {
 import * as launchd from "../../src/install/launchd.ts"
 import * as service from "../../src/install/service.ts"
 import * as systemd from "../../src/install/systemd.ts"
+import { logLine } from "../../src/daemon/http.ts"
 import { selfSpawnEnv } from "../../src/platform.ts"
 import { company } from "../company/helpers.ts"
-import { cwdOf, envNames, fifo, isGone, reexecMarks, shortDir, tempDir } from "../helpers.ts"
-import { Runner, daemonHost, killedAtEnd, makeHost } from "./helpers.ts"
+import { cwdOf, envNames, fifo, isGone, ps, reexecMarks, shortDir, tempDir } from "../helpers.ts"
+import { Runner, daemonHost, killedAtEnd, makeHost, standIn } from "./helpers.ts"
 
 /** A `which` that finds every program in `/usr/bin`. */
 const found = (name: string) => `/usr/bin/${name}`
@@ -51,7 +54,7 @@ function recorder(): { started: (readonly string[])[]; spawn: (argv: readonly [s
     started,
     spawn: (argv) => {
       started.push(argv)
-      return { pid: 4242, unref() {}, on() {} } as unknown as ChildProcess
+      return Object.assign(new EventEmitter(), { pid: 4242, unref() {} }) as unknown as ChildProcess
     },
   }
 }
@@ -317,6 +320,181 @@ test("waiting on an office that accepts but never answers stops at the deadline"
     for (const conn of silent) conn.destroy()
     await new Promise((resolve) => hung.close(resolve))
   }
+})
+
+test("the log is read from an offset and never past a symlink or fifo", () => {
+  const { one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  fs.writeFileSync(one.log, "old line\r\nnew line\n")
+  expect(service.readLog(one.log, 10)).toBe("new line\n")
+  // A log shorter than the offset was truncated since, so it is read whole.
+  expect(service.readLog(one.log, 1000)).toBe("old line\nnew line\n")
+  const linked = path.join(one.office, "linked.log")
+  fs.symlinkSync(one.log, linked)
+  expect(service.readLog(linked)).toBe("")
+  const fifo = path.join(one.office, "fifo.log")
+  execFileSync("mkfifo", [fifo])
+  expect(service.readLog(fifo)).toBe("")
+  expect(service.readLog(path.join(one.office, "missing.log"))).toBe("")
+})
+
+test("a long log is read only to its last 64 KiB without the cut line", () => {
+  const { one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  fs.writeFileSync(one.log, `${"x".repeat(70 * 1024)}\nlast line\n`)
+  expect(service.readLog(one.log)).toBe("last line\n")
+})
+
+const failedToStart = [
+  logLine("ERROR", "opencorp.daemon.main", "the office failed to start: TypeError"),
+  "    at start (office.ts:1:1)",
+  "opencorp office: the office failed to start (see the log above)",
+].join("\n")
+const crashed = `${logLine("ERROR", "opencorp.daemon.main", "office crashed: RangeError")}\n    at f (x.ts:1:1)\n`
+
+test("a failed start is read from what the daemon logged and how it exited", () => {
+  const failed = { code: 1, signal: null }
+  expect(service.startFailure(failedToStart, failed)).toEqual({
+    error: "opencorp office: the office failed to start: TypeError",
+  })
+  expect(service.startFailure(crashed, failed)).toEqual({ crash: "RangeError" })
+  expect(service.startFailure("opencorp office: bad --home\n", { code: 2, signal: null })).toEqual({
+    error: "opencorp office: bad --home",
+  })
+  const duplicate = "opencorp office: office already running (pid 42)\n2026 WARNING x: y\n"
+  expect(service.startFailure(duplicate, { code: 0, signal: null })).toEqual({ running: 42 })
+  const unknown = "opencorp office: office already running (pid unknown)\n"
+  expect(service.startFailure(unknown, { code: 0, signal: null })).toEqual({ running: null })
+  expect(service.startFailure("", { code: null, signal: "SIGKILL" })).toEqual({ exited: "signal SIGKILL", tail: "" })
+  const noise = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n")
+  const got = service.startFailure(noise, failed)
+  expect(got).toEqual({ exited: "exit code 1", tail: noise.split("\n").slice(-20).join("\n") })
+  expect(service.startFailure("", { code: null, signal: null, error: true })).toEqual({
+    exited: "it couldn't be started",
+    tail: "",
+  })
+})
+
+test("the last failure in the log names a failed starts type and never a crash message", () => {
+  expect(service.lastFailure(`${failedToStart}\n`)).toBe("opencorp office: the office failed to start: TypeError")
+  expect(service.lastFailure(crashed)).toBe("office crashed: RangeError")
+  expect(service.lastFailure("opencorp office: office already running (pid 7)\n")).toBeNull()
+  const leaky = `${logLine("ERROR", "opencorp.daemon.main", "office crashed: TypeError token=abc")}\n`
+  expect(service.lastFailure(leaky)).toBeNull()
+})
+
+/** A background daemon a test settles by hand: `exit` resolves its exit. */
+function stubChild(pid = 4242, logFrom = 0) {
+  const { promise: exited, resolve: exit } = Promise.withResolvers<fallback.Exit>()
+  return { child: { pid, exited, logFrom }, exit }
+}
+
+/** A host whose clock starts at 0 and whose office answers once `answering()` says so. */
+function waitHost(dir: string, answering: (now: number) => boolean) {
+  const host = makeHost(dir, new Runner())
+  return { ...host, answers: async () => answering(host.clock()) }
+}
+
+test("a background daemon that exits with a start error is reported at once", async () => {
+  const { dir, one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  fs.writeFileSync(one.log, "opencorp office: an older start's error\n")
+  const { child, exit } = stubChild(4242, fs.statSync(one.log).size)
+  fs.appendFileSync(one.log, `opencorp office: ${one.socket} exists and is not a socket\n`)
+  exit({ code: 1, signal: null })
+  const host = waitHost(dir, () => false)
+  const error = await refusal(service.wait(one, host, 20_000, child))
+  expect(error.message).toBe(
+    `the office didn't start: ${one.socket} exists and is not a socket (log: ${one.log})`,
+  )
+  expect(host.clock()).toBeLessThan(1000)
+})
+
+test("an exit with nothing new logged never blames an older starts line", async () => {
+  const { dir, one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  fs.writeFileSync(one.log, `opencorp office: ${one.socket} exists and is not a socket\n`)
+  const { child, exit } = stubChild(4242, fs.statSync(one.log).size)
+  exit({ code: null, signal: "SIGKILL" })
+  const error = await refusal(service.wait(one, waitHost(dir, () => false), 20_000, child))
+  expect(error.message).toContain("exited (signal SIGKILL) before it answered")
+  expect(error.message).not.toContain("not a socket")
+})
+
+test("a daemon that crashed while starting names the type and where its stack is", async () => {
+  const { dir, one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  const { child, exit } = stubChild()
+  fs.writeFileSync(one.log, crashed)
+  exit({ code: 1, signal: null })
+  const error = await refusal(service.wait(one, waitHost(dir, () => false), 20_000, child))
+  expect(error.message).toBe(`the office crashed while starting: RangeError; its stack is in ${one.log}`)
+})
+
+test("a duplicate start waits for the office holding the home", async () => {
+  const { dir, one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  const { child, exit } = stubChild()
+  fs.writeFileSync(one.log, "opencorp office: office already running (pid 42)\n")
+  fs.writeFileSync(path.join(one.office, "office.pid"), "42\n")
+  exit({ code: 0, signal: null })
+  expect(await service.wait(one, waitHost(dir, (now) => now >= 5000), 20_000, child)).toBe("already-running")
+})
+
+test("a home held by an office that never answers is reported at the deadline", async () => {
+  const { dir, one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  const live = await standIn(`daemon --home ${one.home}`)
+  const { child, exit } = stubChild()
+  fs.writeFileSync(one.log, `opencorp office: office already running (pid ${live.pid})\n`)
+  fs.writeFileSync(path.join(one.office, "office.pid"), `${live.pid}\n`)
+  exit({ code: 0, signal: null })
+  const host = waitHost(dir, () => false)
+  const held = await refusal(service.wait(one, host, 20_000, child, { ps: ps() }))
+  expect(held).toBeInstanceOf(service.LockHeld)
+  expect(host.clock()).toBeGreaterThanOrEqual(20_000)
+  expect((held as service.LockHeld).pid).toBe(live.pid)
+  expect((held as service.LockHeld).verified).toBe(true)
+  expect(held.message).toContain(`an office (pid ${live.pid}) holds the lock on ${one.home}`)
+  expect(held.message).toContain("`opencorp doctor`")
+  // Not this office's daemon: its args name another home.
+  const other = await standIn(`daemon --home ${one.home}2`)
+  fs.writeFileSync(path.join(one.office, "office.pid"), `${other.pid}\n`)
+  fs.writeFileSync(one.log, `opencorp office: office already running (pid ${other.pid})\n`)
+  const again = stubChild(4242, 0)
+  again.exit({ code: 0, signal: null })
+  const unverified = await refusal(service.wait(one, waitHost(dir, () => false), 20_000, again.child, { ps: ps() }))
+  expect((unverified as service.LockHeld).verified).toBe(false)
+})
+
+test("who answers is told by the pidfile and the childs exit", async () => {
+  const { dir, one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  const pidfile = path.join(one.office, "office.pid")
+  const answering = waitHost(dir, () => true)
+  const alive = stubChild(4242)
+  fs.writeFileSync(pidfile, "4242\n")
+  expect(await service.wait(one, answering, 20_000, alive.child)).toBe("started")
+  fs.writeFileSync(pidfile, "4343\n")
+  expect(await service.wait(one, answering, 20_000, alive.child)).toBe("already-running")
+  fs.rmSync(pidfile)
+  expect(await service.wait(one, answering, 20_000, alive.child)).toBe("started")
+  const gone = stubChild(4242)
+  gone.exit({ code: 0, signal: null })
+  await gone.child.exited
+  expect(await service.wait(one, answering, 20_000, gone.child)).toBe("already-running")
+  expect(await service.wait(one, answering)).toBe("started")
+})
+
+test("a managed office that never answers still waits the full time", async () => {
+  const { dir, one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  fs.writeFileSync(one.log, "opencorp office: an error\n")
+  const host = waitHost(dir, () => false)
+  const error = await refusal(service.wait(one, host, 20_000))
+  expect(host.clock()).toBeGreaterThanOrEqual(20_000)
+  expect(error.message).toContain("did not answer")
+  expect(error.message).toContain("opencorp office: an error")
 })
 
 test("a broken record counts as no record", () => {

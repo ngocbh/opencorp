@@ -4,7 +4,7 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { onTestFinished } from "bun:test"
+import { expect, onTestFinished } from "bun:test"
 import type { InitOutput } from "../../src/company/draft.ts"
 import { type Completed, type Host, type Launch, launch, officeAnswers } from "../../src/install/launch.ts"
 import type { Listers } from "../../src/install/onboard.ts"
@@ -12,6 +12,7 @@ import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { type Prompter, stepLines } from "../../src/install/prompts.ts"
 import { repr } from "../../src/perm/redact.ts"
 import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
+import { startGroup } from "../helpers.ts"
 
 /** Records commands and answers each from a table of `[argv prefix, code, stderr, stdout?]`: the first matching
  *  prefix answers, else code 0 with empty output. */
@@ -198,6 +199,14 @@ export function daemonHost(dir: string, spawned: Spawned[]): Host {
       return child
     },
   }
+}
+
+/** A stand-in daemon: `sh` whose args end with `tail`; a SIGTERM also ends its `sleep`. Resolves once it runs; it
+ *  is killed when the test finishes. */
+export async function standIn(tail: string): Promise<{ pid: number; started: number | null }> {
+  const group = startGroup(`trap 'kill $! 2>/dev/null; exit 0' TERM; sleep 60 & echo ready; wait; : ${tail}`)
+  expect(await group.line()).toBe("ready")
+  return { pid: group.pid, started: group.started }
 }
 
 /** The office source folder. */

@@ -10,7 +10,7 @@ import * as fallback from "../../src/install/fallback.ts"
 import { type Completed, type Launch, ServiceError, launch, runCommand, which } from "../../src/install/launch.ts"
 import { selfSpawnEnv } from "../../src/platform.ts"
 import { fifo, isGone, ps, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
-import { Runner, makeHost, ownerLaunch } from "./helpers.ts"
+import { Runner, daemonHost, killedAtEnd, makeHost, ownerLaunch, standIn } from "./helpers.ts"
 
 const SESSION = "opencorp-office"
 
@@ -236,12 +236,45 @@ test("background without the office program is a service error", () => {
   expect(spawned).toBe(false)
 })
 
-/** A stand-in daemon: `sh` whose args end with `tail`; a SIGTERM also ends its `sleep`. Resolves once it runs. */
-async function standIn(tail: string): Promise<{ pid: number; started: number | null }> {
-  const group = startGroup(`trap 'kill $! 2>/dev/null; exit 0' TERM; sleep 60 & echo ready; wait; : ${tail}`)
-  expect(await group.line()).toBe("ready")
-  return { pid: group.pid, started: group.started }
+/** A launch whose program is the script `body` in `dir`, for a background daemon that is only a shell. */
+function scripted(dir: string, body: string): Launch {
+  const file = path.join(dir, "opencorp")
+  fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o700 })
+  return officeAt(dir, file, { PATH: "/usr/bin:/bin" })
 }
+
+test("background hands back the daemons exit and the log size before it started", async () => {
+  const spawned = killedAtEnd()
+  const dir = tempDir()
+  const one = scripted(dir, "echo 'opencorp office: boom' >&2; exit 1")
+  makeOfficeDir(one.office)
+  fs.writeFileSync(one.log, "0123456789", { mode: 0o600 })
+  const child = fallback.startBackground(one, daemonHost(dir, spawned))
+  expect(child.pid).toBe(spawned[0]!.pid)
+  expect(child.logFrom).toBe(10)
+  expect(await child.exited).toEqual({ code: 1, signal: null })
+  expect(fs.readFileSync(one.log, "utf8").slice(10)).toBe("opencorp office: boom\n")
+})
+
+test("a late spawn error ends the background daemons exit", async () => {
+  const dir = tempDir()
+  const emitter = Object.assign(new EventEmitter(), { pid: 123, unref() {} })
+  const spawn = () => emitter as unknown as ChildProcess
+  const child = fallback.startBackground(officeAt(dir, program(dir)), makeHost(dir, new Runner(), { spawn }))
+  emitter.emit("error", new Error("EAGAIN"))
+  expect(await child.exited).toEqual({ code: null, signal: null, error: true })
+})
+
+test("the background daemon doesnt hold up its caller", async () => {
+  const spawned = killedAtEnd()
+  const dir = tempDir()
+  const child = fallback.startBackground(scripted(dir, "exec sleep 30"), daemonHost(dir, spawned))
+  let exited = false
+  void child.exited.then(() => (exited = true))
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 20))
+  expect(exited).toBe(false)
+  expect(isGone(child.pid, spawned[0]!.started)).toBe(false)
+})
 
 /** An office at a fresh home, its office dir made. */
 function officeDir(): Launch {

@@ -1066,7 +1066,7 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
   try {
     installed = await service.install(one, host, options.mode ?? "auto")
     for (const note of installed.notes) prompter.say(`  skipped ${note}`)
-    await service.wait(one, host)
+    await service.wait(one, host, undefined, installed.child)
   } catch (error) {
     if (error instanceof ServiceError || error instanceof OfficeStartError) throw new OnboardError(error.message)
     throw error

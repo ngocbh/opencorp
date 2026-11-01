@@ -23,9 +23,9 @@ import { writePrivate } from "../../src/secrets.ts"
 import { Store } from "../../src/store/store.ts"
 import { git } from "../company/helpers.ts"
 import { CEO, giveDevice, makeOffice, served } from "../daemon/helpers.ts"
-import { fifo, shortDir, tempDir } from "../helpers.ts"
+import { fifo, ps, shortDir, tempDir } from "../helpers.ts"
 import { sandboxAvailable } from "../sandbox/helpers.ts"
-import { makeHost, Runner } from "./helpers.ts"
+import { makeHost, Runner, standIn } from "./helpers.ts"
 
 const KEY = "sk-ant-test-0123456789"
 const PROVIDER = { llm_config: { provider: "anthropic", api_key: KEY } }
@@ -530,7 +530,70 @@ test("an office that keeps failing to start is a crash loop", async () => {
   const got = byName(await runChecks(dir, paths))
   expect(got.office!.status).toBe("fail")
   expect(got.office!.detail).toContain("opencorp office: the company repo has no .git")
-  expect(got.office!.detail).toContain("Run `opencorp start`.")
+  expect(got.office!.detail).toContain("Fix that, then run `opencorp start`.")
+})
+
+test("a failed office start names the type the log above it holds", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const log = [
+    logLine("ERROR", "opencorp.daemon.main", "the office failed to start: TypeError"),
+    "    at start (office.ts:1:1)",
+    "opencorp office: the office failed to start (see the log above)",
+  ].join("\n")
+  fs.writeFileSync(path.join(paths.office, "office.log"), `${log}\n`)
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office!.detail).toContain("its last start failed: opencorp office: the office failed to start: TypeError")
+  expect(got.office!.detail).not.toContain("see the log above")
+})
+
+test.each(["file", "directory", "symlink"])("something other than a socket at the socket path fails [%s]", async (kind) => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const sock = path.join(paths.office, "office.sock")
+  if (kind === "file") fs.writeFileSync(sock, "")
+  else if (kind === "directory") fs.mkdirSync(sock)
+  else fs.symlinkSync(path.join(dir, "elsewhere.sock"), sock)
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office).toEqual({
+    name: "office",
+    status: "fail",
+    detail: `${sock} is not a socket; remove it, then run \`opencorp start\``,
+  })
+})
+
+test("a symlink at the socket path is never asked anything even when something answers", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  fs.symlinkSync(path.join(dir, "other.sock"), path.join(paths.office, "office.sock"))
+  const asked: string[] = []
+  const host = makeHost(dir, new Runner(), { answers: async () => true })
+  const found = await doctor.checks(paths.home, {
+    host,
+    command: COMMAND,
+    repo: path.join(dir, "repo"),
+    probe: async () => null,
+    codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
+    environ: {},
+    hq: async () => (asked.push("hq"), "unreachable"),
+    office: async () => (asked.push("office"), "unreachable"),
+  })
+  expect(byName(found).office!.status).toBe("fail")
+  expect(asked).toEqual([])
+})
+
+test("a daemon that holds the home but doesnt answer is named with the restart", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const real = launchFor(dir, paths).home
+  const live = await standIn(`daemon --home ${real}`)
+  fs.writeFileSync(path.join(paths.office, "office.pid"), `${live.pid}\n`)
+  const got = byName(await runChecks(dir, paths, { environ: { PATH: path.dirname(ps()) } }))
+  expect(got.office!.status).toBe("warn")
+  expect(got.office!.detail).toContain(
+    `pid ${live.pid} is running but doesn't answer on ${path.join(paths.office, "office.sock")} (still starting,` +
+      " or hung); if it stays that way, run `opencorp restart`",
+  )
 })
 
 /** A log of a start, then the crash marker with two frames. */
@@ -549,6 +612,7 @@ test("an office that crashed with the crash marker fails", async () => {
   const got = byName(await runChecks(dir, paths))
   expect(got.office!.status).toBe("fail")
   expect(got.office!.detail).toContain("its last start failed: office crashed: TypeError")
+  expect(got.office!.detail).toContain("Its stack is in the log; fix the cause, then run `opencorp start`.")
   expect(got.office!.detail).not.toContain("x.ts")
   expect(got.office!.detail).not.toContain("y.ts")
 })

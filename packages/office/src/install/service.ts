@@ -9,10 +9,11 @@ import fs from "node:fs"
 import path from "node:path"
 import { makeOfficeDir } from "../daemon/sockets.ts"
 import * as fallback from "./fallback.ts"
-import { readRegular, tailRegular, writeIfChanged } from "./files.ts"
-import { type Host, type Launch, ServiceError } from "./launch.ts"
+import { readRegular, writeIfChanged } from "./files.ts"
+import { daemonEnv, type Host, type Launch, ServiceError } from "./launch.ts"
 import * as launchd from "./launchd.ts"
 import * as systemd from "./systemd.ts"
+import { resolveTools } from "./tools.ts"
 
 /** The modes the office runs under, in the order `install` tries them. */
 export const MODES = ["launchd", "systemd", "tmux", "background"] as const
@@ -24,27 +25,29 @@ type Step = (launch: Launch, host: Host) => Promise<void> | void
 /** Why the manager doesn't have the office's service, or null if it does. */
 type Check = (launch: Launch, host: Host) => Promise<string | null>
 
-const INSTALL: Record<Mode, Step> = {
+/** How each managed mode installs and starts the office; the background is `fallback.startBackground`, whose child
+ *  the caller keeps. */
+const INSTALL: Record<Exclude<Mode, "background">, Step> = {
   launchd: launchd.install,
   systemd: systemd.install,
   tmux: fallback.startTmux,
-  background: fallback.startBackground,
 }
-const START: Record<Mode, Step> = {
+const START: Record<Exclude<Mode, "background">, Step> = {
   launchd: launchd.start,
   systemd: systemd.start,
   tmux: fallback.startTmux,
-  background: fallback.startBackground,
 }
 const NOT_MANAGED: Partial<Record<Mode, Check>> = {
   launchd: launchd.notLoaded,
   systemd: systemd.notEnabled,
 }
 
-/** The mode the office runs under (null if it was already running unmanaged) and why others were skipped. */
+/** The mode the office runs under (null if it was already running unmanaged), why others were skipped, and the
+ *  daemon a background start just spawned. */
 export interface Installed {
   mode: Mode | null
   notes: string[]
+  child?: fallback.BackgroundChild
 }
 
 function isMode(value: unknown): value is Mode {
@@ -128,15 +131,17 @@ export async function install(launch: Launch, host: Host, mode: Mode | "auto" = 
   }
   const notes: string[] = []
   for (const candidate of candidates) {
+    let child: fallback.BackgroundChild | undefined
     try {
-      await INSTALL[candidate](launch, host)
+      if (candidate === "background") child = fallback.startBackground(launch, host)
+      else await INSTALL[candidate](launch, host)
     } catch (error) {
       if (!(error instanceof ServiceError) || mode !== "auto" || candidate === candidates.at(-1)) throw error
       notes.push(`${candidate}: ${error.message}`)
       continue
     }
     record(launch, candidate)
-    return { mode: candidate, notes }
+    return child === undefined ? { mode: candidate, notes } : { mode: candidate, notes, child }
   }
   throw new Error("unreachable: the last candidate either returns or throws")
 }
@@ -163,46 +168,227 @@ export async function start(launch: Launch, host: Host): Promise<Installed> {
       notes.push(`${recorded}: ${error.message}`)
     }
   }
-  fallback.startBackground(launch, host)
+  const child = fallback.startBackground(launch, host)
   record(launch, "background")
-  return { mode: "background", notes }
+  return { mode: "background", notes, child }
 }
 
-/** The most of the log's end that `tail` reads. */
-const TAIL_BYTES = 64 * 1024
+/** How the daemon prefixes the one line it prints when it can't start. */
+export const START_ERROR = "opencorp office: "
 
-/** The last `lines` lines of `file`, or `(no log)` when it isn't a regular file that can be read. */
-function tail(file: string, lines = 20): string {
+/**
+ * The crash marker's line (`logLine` from the daemon's `crashReport`), capturing `office crashed: <type>`. The type
+ * may be empty (an anonymous class); a marker with anything after the type doesn't match, so no message shows.
+ */
+const CRASH_MARKER = /^\S+ ERROR opencorp\.daemon\.main: (office crashed: \S*)$/
+
+/** The ERROR line a failed `office.start()` logs before its frames, capturing the error's type. */
+const FAILED_TO_START = /^\S+ ERROR opencorp\.daemon\.main: the office failed to start: (\S*)$/
+
+/** The start error that follows `FAILED_TO_START` and its frames. */
+const SEE_ABOVE = `${START_ERROR}the office failed to start (see the log above)`
+
+/** A duplicate daemon's start error, capturing the pid the pidfile named. */
+const ALREADY_RUNNING = /^opencorp office: office already running \(pid (\d+|unknown)\)$/
+
+/** A stack frame line under the crash marker. */
+const FRAME = /^\s+at /
+
+/** The most of the office log `readLog` reads: far more than one start writes. */
+const LOG_WINDOW = 64 * 1024
+
+/** How many of the log's lines a failed start shows when nothing in it says why. */
+const TAIL_LINES = 20
+
+/**
+ * The office log from byte `from` (from the start when the log is shorter, as after a truncation), at most its last
+ * `LOG_WINDOW` bytes without the partial first line when that cuts one; line ends are `\n`. Empty when the log
+ * isn't a regular file or can't be read. Never follows a symlink, and a FIFO at the path can't hang the open.
+ */
+export function readLog(file: string, from = 0): string {
+  let fd: number
   try {
-    const found = tailRegular(file, TAIL_BYTES)
-    if (found === null) return "(no log)\n"
-    // Python read the log with universal newlines, so a `\r\n` or lone `\r` ends a line too.
-    const text = found.replace(/\r\n?/g, "\n")
-    return text
-      .split(/(?<=\n)/)
-      .filter(Boolean)
-      .slice(-lines)
-      .join("")
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
   } catch {
-    return "(no log)\n"
+    return ""
+  }
+  try {
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile()) return ""
+    const begin = from > stat.size ? 0 : from
+    const start = Math.max(begin, stat.size - LOG_WINDOW)
+    const buf = Buffer.alloc(stat.size - start)
+    // Python read the log with universal newlines, so a `\r\n` or lone `\r` ends a line too.
+    const text = buf
+      .subarray(0, fs.readSync(fd, buf, 0, buf.length, start))
+      .toString("utf8")
+      .replace(/\r\n?/g, "\n")
+    if (start === begin) return text
+    const nl = text.indexOf("\n")
+    return nl < 0 ? "" : text.slice(nl + 1)
+  } catch {
+    return ""
+  } finally {
+    fs.closeSync(fd)
   }
 }
 
-/** Waits up to `timeoutMs` for the office to answer; throws `ServiceError` with the log's tail if it doesn't. */
-export async function wait(launch: Launch, host: Host, timeoutMs = 20_000): Promise<void> {
+/** The non-empty lines of `text`. */
+function logLines(text: string): string[] {
+  return text.split("\n").filter((line) => line.trim())
+}
+
+/** The start error at `lines[i]`; `the office failed to start (see the log above)` names the type the ERROR line
+ *  above its frames logged instead, since the report shows only this line. */
+function startError(lines: string[], i: number): string {
+  if (lines[i] !== SEE_ABOVE) return lines[i]!
+  let j = i - 1
+  while (j >= 0 && FRAME.test(lines[j]!)) j--
+  const type = j >= 0 ? lines[j]!.match(FAILED_TO_START)?.[1] : undefined
+  return type === undefined ? lines[i]! : `${START_ERROR}the office failed to start: ${type}`
+}
+
+/**
+ * Why the daemon's last start failed, from the office log's text, or null if it didn't: the line it printed when it
+ * couldn't start, or `office crashed: <type>` when the log ends with the crash marker and its frames (the frames
+ * stay in the log). A marker with other lines after it belongs to an earlier start, and a duplicate start (exit 0)
+ * is no failure.
+ */
+export function lastFailure(text: string): string | null {
+  const lines = logLines(text)
+  const last = lines.at(-1)
+  if (last === undefined) return null
+  if (last.startsWith(START_ERROR) && !ALREADY_RUNNING.test(last)) return startError(lines, lines.length - 1)
+  const marker = lines.findLast((line) => !FRAME.test(line))
+  return marker?.match(CRASH_MARKER)?.[1] ?? null
+}
+
+/** Why a background daemon ended before it answered: its start error (with the prefix), the type it crashed with,
+ *  the pid of the office already holding the home (null when its pidfile named none), or just how it exited with
+ *  the end of what it logged. */
+export type StartFailure =
+  | { error: string }
+  | { crash: string }
+  | { running: number | null }
+  | { exited: string; tail: string }
+
+/**
+ * Why a background daemon that exited with `exit` failed, from `text`, what the log gained after it was spawned. A
+ * clean exit (0) is a duplicate start when it said the office already runs. Otherwise the first start error or crash
+ * marker in `text` is the reason: a concurrent duplicate exits 0 and only says the office already runs, so its line
+ * is never taken for ours.
+ */
+export function startFailure(text: string, exit: fallback.Exit): StartFailure {
+  const lines = logLines(text)
+  const tail = lines.slice(-TAIL_LINES).join("\n")
+  if (exit.code === 0) {
+    for (const line of lines) {
+      const held = line.match(ALREADY_RUNNING)?.[1]
+      if (held !== undefined) return { running: held === "unknown" ? null : Number(held) }
+    }
+    return { exited: "exit code 0", tail }
+  }
+  for (const [i, line] of lines.entries()) {
+    if (line.startsWith(START_ERROR) && !ALREADY_RUNNING.test(line)) return { error: startError(lines, i) }
+    const crashed = line.match(CRASH_MARKER)?.[1]
+    if (crashed !== undefined) return { crash: crashed.slice("office crashed: ".length) }
+  }
+  const how = exit.error ? "it couldn't be started" : exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code}`
+  return { exited: how, tail }
+}
+
+/** An office already holds this home's lock but didn't answer in time: `pid` is what its pidfile named, and
+ *  `verified` whether that pid is this office's daemon (its start time and args checked). */
+export class LockHeld extends ServiceError {
+  override name = "LockHeld"
+
+  constructor(
+    /** What happened, without what to do about it. */
+    readonly reason: string,
+    readonly pid: number | null,
+    readonly verified: boolean,
+  ) {
+    super(`${reason}; \`opencorp doctor\` shows what it is`)
+  }
+}
+
+/** The error for a background daemon that exited with `failure` before it answered on `launch`'s socket. */
+function failedStart(launch: Launch, failure: Exclude<StartFailure, { running: number | null }>): ServiceError {
+  if ("error" in failure) {
+    return new ServiceError(`the office didn't start: ${failure.error.slice(START_ERROR.length)} (log: ${launch.log})`)
+  }
+  if ("crash" in failure) {
+    return new ServiceError(`the office crashed while starting: ${failure.crash}; its stack is in ${launch.log}`)
+  }
+  const said = failure.tail ? `the end of what it wrote to ${launch.log}:\n${failure.tail}\n` : `nothing in ${launch.log}`
+  return new ServiceError(`the office exited (${failure.exited}) before it answered on ${launch.socket}; ${said}`)
+}
+
+/**
+ * Waits up to `timeoutMs` for the office to answer; resolves to whether `child`, the daemon a background start just
+ * spawned, is the one answering (`started`) or another office already was (`already-running`).
+ *
+ * With `child`, the wait ends as soon as it has exited and one more probe gets no answer: a start error or crash in
+ * what it logged is thrown at once, and a duplicate that found the home held keeps waiting for the holder until the
+ * deadline, then throws `LockHeld`. Without one (a managed mode), or when the child is still starting, it waits
+ * the full time. Throws `ServiceError` with the log's tail when nothing answered.
+ */
+export async function wait(
+  launch: Launch,
+  host: Host,
+  timeoutMs = 20_000,
+  child?: fallback.BackgroundChild,
+  { ps = resolveTools(daemonEnv(process.env)).ps }: { ps?: string } = {},
+): Promise<"started" | "already-running"> {
   const deadline = host.clock() + timeoutMs
+  let exit: fallback.Exit | undefined
+  void child?.exited.then((done) => (exit = done))
+  let seenExit = false
+  let holder: { running: number | null } | undefined
   for (;;) {
     // Each probe gets only the time left, so an office that accepts but hangs can't stretch the wait.
     let left = deadline - host.clock()
-    if (await host.answers(launch.socket, Math.min(2000, Math.max(left, 50)))) return
+    if (await host.answers(launch.socket, Math.min(2000, Math.max(left, 50)))) return whoAnswered(launch, child, exit)
+    if (child !== undefined && exit !== undefined && holder === undefined) {
+      // One more probe after the exit was seen: a concurrent start may have just begun answering.
+      if (!seenExit) {
+        seenExit = true
+        continue
+      }
+      const failure = startFailure(readLog(launch.log, child.logFrom), exit)
+      if (!("running" in failure)) throw failedStart(launch, failure)
+      holder = failure
+    }
     left = deadline - host.clock()
     if (left <= 0) break
     await host.sleep(Math.min(100, left))
   }
+  if (holder !== undefined) {
+    const pid = holder.running
+    const verified = pid !== null && fallback.daemon(launch, ps)?.pid === pid
+    const reason =
+      `an office (pid ${pid ?? "unknown"}) holds the lock on ${launch.home} but hasn't answered on ${launch.socket}` +
+      ` within ${timeoutMs / 1000}s (still starting, or hung)`
+    throw new LockHeld(reason, pid, verified)
+  }
+  const tail = logLines(readLog(launch.log)).slice(-TAIL_LINES)
   throw new ServiceError(
     `the office did not answer on ${launch.socket} within ${timeoutMs / 1000}s;` +
-      ` the end of ${launch.log}:\n${tail(launch.log)}`,
+      ` the end of ${launch.log}:\n${tail.length ? `${tail.join("\n")}\n` : "(no log)\n"}`,
   )
+}
+
+/** Whether the office answering is `child` (`started`) or one that already ran (`already-running`): the pidfile
+ *  names the daemon holding the home; without one, a child that has exited can't be it. */
+function whoAnswered(
+  launch: Launch,
+  child: fallback.BackgroundChild | undefined,
+  exit: fallback.Exit | undefined,
+): "started" | "already-running" {
+  if (child === undefined) return "started"
+  const holder = fallback.pidOf(launch)
+  if (holder !== null) return holder === child.pid ? "started" : "already-running"
+  return exit === undefined ? "started" : "already-running"
 }
 
 /**

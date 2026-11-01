@@ -22,7 +22,7 @@ import { strerror } from "../sandbox/fs_helper.ts"
 import { checkWorkspace, type OfficePaths as Guards, SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
 import { fsHelper, run } from "../sandbox/run.ts"
 import { workerEnv } from "../worker/spawn.ts"
-import { tailRegular } from "./files.ts"
+import * as fallback from "./fallback.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, runCommand, which } from "./launch.ts"
 import * as launchd from "./launchd.ts"
 import {
@@ -39,21 +39,6 @@ import { OnboardError, clean } from "./prompts.ts"
 import * as service from "./service.ts"
 import * as systemd from "./systemd.ts"
 import { installPaths, resolveTools, workspaceGuards } from "./tools.ts"
-
-/** How the daemon prefixes the one line it prints when it can't start. */
-const START_ERROR = "opencorp office: "
-
-/**
- * The crash marker's line (`logLine` from the daemon's `crashReport`), capturing `office crashed: <type>`. The type
- * may be empty (an anonymous class); a marker with anything after the type doesn't match, so no message shows.
- */
-const CRASH_MARKER = /^\S+ ERROR opencorp\.daemon\.main: (office crashed: \S*)$/
-
-/** The end of the office log that `crash` looks at: far more than 40 lines. */
-const LOG_TAIL_BYTES = 64 * 1024
-
-/** A stack frame line under the crash marker. */
-const FRAME = /^\s+at /
 
 /** How `codex login status` starts the line it prints when nobody is signed in, lowercased. */
 const SIGNED_OUT = "not logged in"
@@ -321,47 +306,34 @@ async function serviceCheck(run: Launch, host: Host): Promise<Check> {
   }
 }
 
-/** What to do about an office that isn't answering: `opencorp start`, and where its service's status is. */
-function nextStep(run: Launch, host: Host): string {
+/** What to do about an office that isn't answering, after `failure` (its last start's, or null): fix that or
+ *  `opencorp start`, and where its service's status is. */
+function nextStep(run: Launch, host: Host, failure: string | null): string {
+  const first =
+    failure === null
+      ? "Run `opencorp start`."
+      : failure.startsWith("office crashed:")
+        ? "Its stack is in the log; fix the cause, then run `opencorp start`."
+        : "Fix that, then run `opencorp start`."
   const mode = service.recordedMode(run)
   if (mode === "launchd") {
     const name = launchd.label(run)
-    return (
-      `Run \`opencorp start\`. launchd runs it as ${name}: ` +
-      `\`launchctl print gui/${host.uid}/${name}\` shows its status.`
-    )
+    return `${first} launchd runs it as ${name}: \`launchctl print gui/${host.uid}/${name}\` shows its status.`
   }
   if (mode === "systemd") {
     const name = systemd.unitName(run)
-    return `Run \`opencorp start\`. systemd runs it as ${name}: \`systemctl --user status ${name}\` shows its status.`
+    return `${first} systemd runs it as ${name}: \`systemctl --user status ${name}\` shows its status.`
   }
-  return "Run `opencorp start`."
+  return first
 }
 
-/**
- * Why the daemon's last start failed, from the office log, or null if it didn't: the line it printed when it
- * couldn't start, or `office crashed: <type>` when the log ends with the crash marker and its frames (the frames
- * stay in the log). A marker with other lines after it belongs to an earlier start.
- */
-function crash(log: string): string | null {
-  let text: string
+/** What is at `file`, not following a symlink, or null when nothing is or it can't be looked at. */
+function lstatOrNull(lstat: (p: string) => fs.Stats, file: string): fs.Stats | null {
   try {
-    // A link or a FIFO at the log's path is no log to read.
-    text = tailRegular(log, LOG_TAIL_BYTES) ?? ""
-  } catch (error) {
-    if (errnoCode(error) === undefined) throw error
+    return lstat(file)
+  } catch {
     return null
   }
-  const lines = text
-    .split(/\r?\n/)
-    .filter((line) => line.trim())
-    .slice(-40)
-  const last = lines.at(-1)
-  if (last === undefined) return null
-  // A duplicate start exits 0 and is no crash.
-  if (last.startsWith(START_ERROR) && !last.includes("office already running")) return last
-  const marker = lines.findLast((line) => !FRAME.test(line))
-  return marker?.match(CRASH_MARKER)?.[1] ?? null
 }
 
 /** `s` as one printable line: escapes and control characters gone, whitespace collapsed. */
@@ -923,7 +895,15 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   const added = connectionsCheck(paths, lstat)
   if (added !== null) found.push(added)
   found.push(await serviceCheck(run, host))
-  if (running) {
+  const sock = lstatOrNull(lstat, run.socket)
+  if (sock !== null && !sock.isSocket()) {
+    // Nothing is asked over it: a symlink could lead the device's token to another office.
+    found.push({
+      name: "office",
+      status: "fail",
+      detail: `${run.socket} is not a socket; remove it, then run \`opencorp start\``,
+    })
+  } else if (running) {
     found.push({ name: "office", status: "ok", detail: `answering on ${run.socket} (pid ${service.pid(run)})` })
     const identity = await readIdentity(identityPath(run.home))
     const info = await office(run.socket, identity)
@@ -937,13 +917,24 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
       typeof hqAnswer === "string" || hqAnswer.socket_error ? null : socketProblem(hqAnswer.socket, lstat)
     found.push(...hqChecks(hqAnswer, paths.office, repo, missing))
   } else {
-    const error = crash(run.log)
+    const hung = fallback.daemon(run, resolveTools(run.env).ps)
+    const error = service.lastFailure(service.readLog(run.log))
     const why = error === null ? "" : `; its last start failed: ${error}`
-    found.push({
-      name: "office",
-      status: error === null ? "warn" : "fail",
-      detail: `not answering on ${run.socket}${why} (log: ${run.log}). ${nextStep(run, host)}`,
-    })
+    if (hung !== null) {
+      found.push({
+        name: "office",
+        status: "warn",
+        detail:
+          `pid ${hung.pid} is running but doesn't answer on ${run.socket} (still starting, or hung); if it stays` +
+          ` that way, run \`opencorp restart\` (log: ${run.log})`,
+      })
+    } else {
+      found.push({
+        name: "office",
+        status: error === null ? "warn" : "fail",
+        detail: `not answering on ${run.socket}${why} (log: ${run.log}). ${nextStep(run, host, error)}`,
+      })
+    }
   }
   const problem = await probe(paths.home)
   found.push({ name: "sandbox", status: problem ? "fail" : "ok", detail: problem || "sandboxed commands run" })

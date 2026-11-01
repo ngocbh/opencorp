@@ -1,6 +1,7 @@
 /** `opencorp install …`: the parser, help and usage errors, and each command run in-process through `main` with
  *  stand-ins for the machine. */
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process"
+import { type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions, spawn } from "node:child_process"
+import { EventEmitter } from "node:events"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
@@ -11,6 +12,7 @@ import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { loadRepo } from "../../src/company/loader.ts"
 import { writeCompany } from "../../src/company_template/index.ts"
 import type { Unread } from "../../src/install/doctor.ts"
+import { OfficePaths } from "../../src/daemon/office.ts"
 import * as fallback from "../../src/install/fallback.ts"
 import type { InitOptions } from "../../src/install/init.ts"
 import { launch, officeAnswers } from "../../src/install/launch.ts"
@@ -22,7 +24,7 @@ import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { git, gitEnv } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
-import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner, SRC } from "./helpers.ts"
+import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner, SRC, standIn } from "./helpers.ts"
 
 // onTestFinished hooks inherit it, and a daemon's stop can take 25 s plus a SIGKILL.
 setDefaultTimeout(30_000)
@@ -436,6 +438,45 @@ test("start with a damaged company is exit 1 and says how to fix it", async () =
   expect(runner.calls).toEqual([])
 })
 
+/** An onboarded home under `dir` whose background start spawns a daemon that only logs that `holder` holds the
+ *  home and exits 0, and whose office never answers; resolves to its setup and real home. */
+async function heldHome(dir: string, holder: number) {
+  const home = path.join(dir, "home")
+  const paths = new OfficePaths(home)
+  await writeCompany(paths.company, paths.worktrees, { company: "Acme", owner: { handle: "ngocbh", name: "Ngoc" } })
+  const real = fs.realpathSync(home)
+  fs.mkdirSync(path.join(real, "office"), { mode: 0o700 })
+  fs.writeFileSync(path.join(real, "office", "office.pid"), `${holder}\n`)
+  const spawn = (_argv: readonly [string, ...string[]], options: SpawnOptions): ChildProcess => {
+    fs.writeSync((options.stdio as [string, number, number])[1], `opencorp office: office already running (pid ${holder})\n`)
+    const child = Object.assign(new EventEmitter(), { pid: 4242, unref() {} })
+    // A microtask: the fake clock never lets a timer run while the start waits.
+    queueMicrotask(() => child.emit("exit", 0, null))
+    return child as unknown as ChildProcess
+  }
+  const s = { ...standIns(dir), host: makeHost(dir, new Runner(), { spawn }) }
+  return { s, home, real }
+}
+
+test("a start that finds this offices daemon holding the home but silent suggests a restart", async () => {
+  const dir = tempDir()
+  const real = fs.realpathSync(dir)
+  const live = await standIn(`daemon --home ${path.join(real, "home")}`)
+  const { s, home } = await heldHome(dir, live.pid)
+  expect(await main(["start", "--home", home], s)).toBe(1)
+  expect(s.err()).toContain(`an office (pid ${live.pid}) holds the lock on ${path.join(real, "home")}`)
+  expect(s.err()).toContain("(still starting, or hung); if it stays that way, run `opencorp restart`")
+  expect(s.out()).toBe("")
+})
+
+test("a start that finds an unverified holder points at doctor not restart", async () => {
+  const dir = tempDir()
+  const { s, home } = await heldHome(dir, process.pid)
+  expect(await main(["start", "--home", home], s)).toBe(1)
+  expect(s.err()).toContain("`opencorp doctor` shows what it is")
+  expect(s.err()).not.toContain("opencorp restart")
+})
+
 /** A home for a real office, kept off HQ's TCP port, which the owner's own office holds: `install(argv)` runs
  *  `main` with a host that really starts the daemon, each call with its own output; `pid()` reads the pidfile. */
 function realOffice(spawned: ReturnType<typeof killedAtEnd>) {
@@ -537,6 +578,51 @@ test(
         expect(err.split("\n").filter((line) => line.startsWith(taken))).toHaveLength(1)
         expect(err).not.toContain("isn't listening yet (HQ is binding it)")
       }
+    } finally {
+      await office.stop()
+    }
+  },
+  120_000,
+)
+
+test(
+  "a start with a file at the socket path fails at once and says why",
+  async () => {
+    const office = realOffice(killedAtEnd())
+    try {
+      const made = await office.init()
+      expect(made.code, made.err).toBe(0)
+      await office.stop()
+      fs.writeFileSync(office.socket, "")
+      const began = performance.now()
+      const started = await office.install(["start"])
+      expect(started.code).toBe(1)
+      expect(started.err).toContain(`${office.socket} exists and is not a socket`)
+      expect(performance.now() - began).toBeLessThan(10_000)
+    } finally {
+      await office.stop()
+    }
+  },
+  120_000,
+)
+
+test(
+  "of starts racing on a stopped office one starts it and the others say it runs",
+  async () => {
+    const office = realOffice(killedAtEnd())
+    try {
+      const made = await office.init()
+      expect(made.code, made.err).toBe(0)
+      await office.stop()
+      const runs = await Promise.all([1, 2, 3].map(() => office.install(["start"])))
+      for (const run of runs) expect(run.code, run.err).toBe(0)
+      const pid = office.pid()
+      const outs = runs.map((run) => run.out).sort()
+      expect(outs).toEqual([
+        `Started the office (pid ${pid}).\n`,
+        `The office is already running (pid ${pid}).\n`,
+        `The office is already running (pid ${pid}).\n`,
+      ])
     } finally {
       await office.stop()
     }
