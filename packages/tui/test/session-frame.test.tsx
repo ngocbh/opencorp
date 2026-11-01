@@ -457,3 +457,45 @@ test("after Esc, the answer to a steer shows in a chat whose first message was s
     office.stop()
   }
 })
+
+test("an Esc in the turn that takes a steer straight after the last reply hides that turns late output", async () => {
+  const office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  const say = (m: Message) => {
+    office.state.messages[id] = [...office.state.messages[id].filter((x) => x.id !== m.id), m]
+    office.live({ type: "message.updated", session_id: id, data: m as never })
+  }
+  const reply = (text: string): Message => ({
+    id: office.nextId(),
+    session_id: id,
+    role: "assistant",
+    created_at: new Date().toISOString(),
+    parts: [{ id: office.nextId(), type: "text", text }],
+  })
+  office.onPrompt(() => say(reply("Answer to A.")))
+  // The stopped turn (the one taking B) writes its cut message after Esc.
+  office.onInterrupt(() => {
+    say(reply("Late B" + INTERRUPTED_TEXT))
+    office.replyEnded(id)
+  })
+  const app = await bootFrame(createStub(office), { sessionID: id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    app.input.typeText("A")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Answer to A.") && f.includes("@minh · busy"))
+    app.input.typeText("B steer")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("B steer"))
+    // The reply to A finishes without reading B, so the next turn takes B at once and the session stays busy.
+    // The reply's cost comes in the same update, so the header shows once the count is in.
+    office.updateSession(id, { turns: 1, cost: 0.25 })
+    await app.until((f) => f.includes("$0.25"))
+    app.input.pressEscape()
+    await app.until((f) => f.includes("@minh · idle"))
+    expect(await app.until(() => true)).not.toContain("Late B")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

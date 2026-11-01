@@ -168,7 +168,8 @@ export function Session() {
   // Esc freezes what the transcript shows until the next message is sent.
   const [frozen, setFrozen] = createSignal<Freeze>()
   const shown = createMemo(() => frozenList(frozen(), messages()))
-  const viewStatus = createMemo(() => office.state.sessions.find((s) => s.id === viewID())?.status)
+  const viewSession = createMemo(() => office.state.sessions.find((s) => s.id === viewID()))
+  const viewStatus = createMemo(() => viewSession()?.status)
   /**
    * The viewed session's assistant messages from before its current (or next) turn began. Esc
    * stops that turn, and what a later turn writes after a message sent before Esc still shows.
@@ -184,12 +185,15 @@ export function Session() {
       { defer: true },
     ),
   )
-  // The next turn starts after everything the one that just ended wrote.
+  // The next turn starts after everything the one that just ended wrote. A turn ends when the
+  // session stops working, or when its finished replies grow: a steer the reply didn't read
+  // starts the next turn at once, with no idle between.
   createEffect(
     on(
-      () => interruptible(viewStatus()),
-      (live, was) => {
-        if (was && !live) turnStart = assistantIds(messages())
+      () => [viewID(), interruptible(viewStatus()), viewSession()?.turns ?? 0] as const,
+      ([id, live, turns], prev) => {
+        if (!prev || prev[0] !== id) return
+        if ((prev[1] && !live) || turns > prev[2]) turnStart = assistantIds(messages())
       },
       { defer: true },
     ),
