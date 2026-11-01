@@ -228,9 +228,11 @@ export function repoBusy(error: unknown): CompanyRepoBusy | null {
 
 /** The writes that need the repo lock, given to a `locked` section, which already holds it. */
 export interface LockedGit {
-  /** Stages `paths` and commits them; returns the new HEAD, or HEAD unchanged if nothing changed. */
+  /** Stages `paths` and commits them; returns the new HEAD, or HEAD unchanged if nothing changed. Rejects with
+   *  `CompanyRepoBusy` while the repo is mid-operation, a path is conflicted, or a lock stays taken. */
   commit(paths: string[], message: string): Promise<string>
-  /** Commits each changed, new, or deleted `people/<handle>/profile.md` on its own; returns their paths. */
+  /** Commits each changed, new, or deleted `people/<handle>/profile.md` on its own; returns their paths. Commits
+   *  nothing while the repo is mid-operation, and skips a conflicted profile. */
   commitHandEdits(): Promise<string[]>
 }
 
@@ -548,7 +550,8 @@ export class CompanyGit {
     return null
   }
 
-  /** Stages `paths` and commits them; returns the new HEAD, or HEAD unchanged if nothing changed. */
+  /** Stages `paths` and commits them; returns the new HEAD, or HEAD unchanged if nothing changed. Rejects with
+   *  `CompanyRepoBusy` while the repo is mid-operation, a path is conflicted, or a lock stays taken. */
   commit(paths: string[], message: string): Promise<string> {
     if (!paths.length) return this.head()
     return this.locked((git) => git.commit(paths, message))
@@ -675,7 +678,8 @@ export class CompanyGit {
     await fs.promises.writeFile(marker, sha + "\n")
   }
 
-  /** Commits each changed, new, or deleted `people/<handle>/profile.md` on its own; returns their paths. */
+  /** Commits each changed, new, or deleted `people/<handle>/profile.md` on its own; returns their paths. Commits
+   *  nothing while the repo is mid-operation, and skips a conflicted profile. */
   commitHandEdits(): Promise<string[]> {
     return this.locked((git) => git.commitHandEdits())
   }

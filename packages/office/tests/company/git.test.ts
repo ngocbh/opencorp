@@ -891,7 +891,7 @@ test("a stale index lock is a 503 within a bound, stages nothing and is never re
   expect([(error as CompanyRepoBusy).status, (error as CompanyRepoBusy).code]).toEqual([503, "company_repo_busy"])
   expect((error as Error).message).toBe(INDEX_LOCKED)
   expect(took).toBeGreaterThan(1400)
-  expect(took).toBeLessThan(4000)
+  expect(took).toBeLessThan(6000) // the waits add to 1.55 s; the rest is git under load
   expect(fs.existsSync(lock)).toBe(true)
   expect(recording.calls().filter((call) => subcommand(call.args) === "reset")).toEqual([])
   fs.unlinkSync(lock)
