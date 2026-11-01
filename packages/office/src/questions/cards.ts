@@ -89,8 +89,8 @@ const HARNESS_ONLY_ANSWER = "a Codex card takes only an answer; press Esc in the
  * commit. Its messages get the seed (kept in its session dir, not on the session) before them until a reply
  * finishes. Its discussion is copied onto the question each time its worker exits, and once when the question is
  * answered, whatever answered it (a card, a typed answer in the asking chat, Esc or End there): the copy is made as
- * the answer is stored, before it goes to the asker, so the record holds what the asker's model got. A send-back
- * copies before it adds its note and isn't copied over. It ends when its question leaves `open`.
+ * the answer is stored, before the asker's result is built from the record, and never after. A send-back copies
+ * before it adds its note and isn't copied over. It ends when its question leaves `open`.
  */
 export class Cards {
   readonly office: Office
