@@ -11,7 +11,7 @@ import {
 import type { z } from "zod"
 import { readYaml, writeYaml, YamlError } from "../company/flow_yaml.ts"
 import type { CompanyGit, LockedGit } from "../company/git.ts"
-import { type CompanyRepo, loadRepo } from "../company/loader.ts"
+import { type CompanyRepo, doesntLoad, loadRepo, personFileBroken } from "../company/loader.ts"
 import { checkPassword, DUMMY_HASH, hashPassword, passwordProblem } from "./passwords.ts"
 
 type Person = z.output<typeof PersonSchema>
@@ -32,7 +32,10 @@ export class DeviceRefused extends Error {
 /** The human `handle`, if `actor` may change their `what`: themselves, or the CEO for anyone. */
 function person(repo: CompanyRepo, handle: string, actor: string, what = "devices"): Person {
   const found = repo.people.get(handle)
-  if (found === undefined) throw new DeviceRefused(404, "not_found", `no person @${handle}`)
+  if (found === undefined) {
+    const message = personFileBroken(repo.errors, handle) ? doesntLoad(handle) : `no person @${handle}`
+    throw new DeviceRefused(404, "not_found", message)
+  }
   if (found.kind !== "human") {
     // A 422 names the field, not its value.
     throw new DeviceRefused(422, "not_a_human", `the person is an agent; agents have no ${what}`)

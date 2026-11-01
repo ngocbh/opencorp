@@ -1,6 +1,7 @@
 /** HQ's routes on the office socket, which HQ's listeners never serve: status, one-time links, browser sessions. */
 import { Ack, BrowserSession, type CompanyView, HqStatus, PairCode, PairCodeRequest } from "@opencorp/protocol"
 import { z } from "zod"
+import { doesntLoad, personFileBroken } from "../company/loader.ts"
 import { actingPerson } from "../daemon/auth.ts"
 import { HttpError, type Route } from "../daemon/http.ts"
 import type { RequestContext } from "../daemon/office.ts"
@@ -16,7 +17,10 @@ function hqOf(ctx: RequestContext, what: string): Hq {
 /** Refuses unless `handle` is a human at HEAD and `actor` is them or the CEO (the rule for devices). */
 function checkFor(view: CompanyView | null, handle: string, actor: string): void {
   const person = view?.people.find((p) => p.handle === handle)
-  if (person === undefined) throw new HttpError(404, "not_found", `no person @${handle}`)
+  if (person === undefined) {
+    const message = personFileBroken(view?.issues ?? [], handle) ? doesntLoad(handle) : `no person @${handle}`
+    throw new HttpError(404, "not_found", message)
+  }
   // A 422 names the field, not its value.
   if (person.kind !== "human")
     throw new HttpError(422, "not_a_human", "the person is an agent; agents don't sign in to HQ")
