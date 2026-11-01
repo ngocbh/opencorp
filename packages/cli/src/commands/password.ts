@@ -36,7 +36,7 @@ export const run: CommandRun = async (argv) => {
     // Checked before asking, so a password nobody could set isn't typed first; the office's own check still decides.
     const person = (await office.people.list()).find((p) => p.handle === handle)
     if (!person) throw new Error(`no person @${handle}`)
-    if (person.kind === "agent") throw new Error("the person is an agent; agents have no password")
+    if (person.kind !== "human") throw new Error("the person is an agent; agents have no password")
     for (let tries = 0; tries < TRIES; tries++) {
       const password = await ask.secret(
         `New password for @${handle} (at least ${MIN_LENGTH} characters, one you use nowhere else; not shown)`,

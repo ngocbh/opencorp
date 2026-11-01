@@ -232,7 +232,7 @@ test("devices list shows names, and hashes only on --hashes", async () => {
 
 test("devices list, add and remove take a handle with or without the @", async () => {
   await opencorp(trusted, "login", "--device", "mac")
-  const hash = tokenSha256(identity(trusted).token).replace(/./, "0")
+  const hash = tokenSha256("another device's token")
   const outputs = [
     await opencorp(trusted, "devices", "list", "@ngocbh"),
     await opencorp(trusted, "devices", "add", "@ngocbh", "laptop", hash),
