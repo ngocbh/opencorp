@@ -28,7 +28,7 @@ const NAMES = [
   "AddDeviceRequest", "LoginRequest", "SetPasswordRequest", "Connection", "ConnectionList", "ModelOption",
   "ModelList", "SetModelRequest", "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest",
   "ConnectionLogin", "SetupPrompt", "SetupAsk", "SetupChoose", "SetupSecret", "SetupSay", "SetupStep",
-  "SetupAnswer", "OfficeInfo",
+  "SetupAnswer", "OfficeInfo", "MessageText", "ModelName",
 ]
 
 /** The zod schema exported under `name`. */
@@ -408,12 +408,20 @@ const PATTERNS: {
       "HqLoginRequest.line-separator-label",
     ],
   },
+  {
+    site: "MessageText", def: "PromptRequest", path: ["text"], bad: "  \t",
+    invalid: ["PromptRequest.blank-text", "SideChatRequest.nul-text", "ProfileManagerRequest.blank-text"],
+  },
+  {
+    site: "ModelName", def: "SetModelRequest", path: ["model"], bad: " gpt-4o-mini",
+    invalid: ["SetModelRequest.padded-model"],
+  },
 ]
 
 test("every pattern carries the u flag", () => {
   const text = sources().map(([, source]) => source).join("\n")
   const literals = [...text.matchAll(/\.regex\(\/((?:\\.|[^\/\\\n])+)\/([a-z]*)\)/g)]
-  expect(PATTERNS.length).toBe(14)
+  expect(PATTERNS.length).toBe(16)
   // Each `.regex(` site needs its own PATTERNS row.
   expect(text.split(".regex(").length - 1).toBe(PATTERNS.length)
   expect(literals.length).toBe(PATTERNS.length)
@@ -429,4 +437,55 @@ test.each(PATTERNS)("each pattern is checked against the fixtures [$site]", ({ d
   expect(issues.map((issue) => [issue.code, issue.path])).toEqual([["invalid_format", path]])
   expect(invalid.filter((stem) => schema(stem.split(".", 1)[0]).safeParse(load(INVALID, stem)).success))
     .toEqual([])
+})
+
+/** `text` as a JSON string with every character outside printable ASCII escaped, for a test's name. */
+function escaped(text: string): string {
+  return JSON.stringify(text).replace(/[^\x20-\x7e]/gu, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)
+}
+
+const MESSAGES = ["PromptRequest", "SideChatRequest", "ProfileManagerRequest"] as const
+const BLANK_TEXTS = ["", " ", "\n", "\u0000", "  \t", "\u200b", "\ufeff"]
+
+test.each(MESSAGES.flatMap((def) => BLANK_TEXTS.map((text) => [def, escaped(text), text] as const)))(
+  "a message needs a character that shows [%s %s]",
+  (def, _, text) => {
+    expect(schema(def).safeParse({ text }).success).toBe(false)
+  },
+)
+
+test.each(MESSAGES)("a message is kept as typed [%s]", (def) => {
+  expect(schema(def).parse({ text: "hi " })).toEqual({ text: "hi " })
+  // A private-use glyph shows in some fonts, so it counts.
+  expect(schema(def).parse({ text: "\ue000" })).toEqual({ text: "\ue000" })
+})
+
+const BAD_MODELS = ["", " a", "a ", "a\u0000b", "a\u0085", "\ud800", "x".repeat(257)]
+const GOOD_MODELS = ["x".repeat(256), "__proto__", "../..", "my model", "😀"]
+
+/** A model request for `model` on `def`, built from its valid fixture. */
+function modelRequest(def: "SetModelRequest" | "CreateSessionRequest", model: unknown): unknown {
+  return { ...(load(FIXTURES, def) as object), model }
+}
+
+test.each((["SetModelRequest", "CreateSessionRequest"] as const).flatMap((def) =>
+  BAD_MODELS.map((model) => [def, escaped(model).slice(0, 20), model] as const)))(
+  "a model name is refused [%s %s]",
+  (def, _, model) => {
+    expect(schema(def).safeParse(modelRequest(def, model)).success).toBe(false)
+  },
+)
+
+test.each((["SetModelRequest", "CreateSessionRequest"] as const).flatMap((def) =>
+  GOOD_MODELS.map((model) => [def, escaped(model).slice(0, 20), model] as const)))(
+  "a model name is taken as sent [%s %s]",
+  (def, _, model) => {
+    expect((schema(def).parse(modelRequest(def, model)) as { model: string }).model).toBe(model)
+  },
+)
+
+test("a new chat may leave its model to the office", () => {
+  const { model: _, ...data } = load(FIXTURES, "CreateSessionRequest") as Record<string, unknown>
+  expect(Schemas.CreateSessionRequest.parse(data).model).toBeNull()
+  expect(Schemas.CreateSessionRequest.parse({ ...data, model: null }).model).toBeNull()
 })

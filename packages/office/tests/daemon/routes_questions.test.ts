@@ -133,6 +133,7 @@ test.each(CARD_ACTIONS)("card actions on a missing question are 404 [%s]", async
 
 test.each([
   ["side empty text", `/questions/${ULID}/side`, { text: "" }],
+  ["side blank text", `/questions/${ULID}/side`, { text: " \t" }],
   ["side no text", `/questions/${ULID}/side`, {}],
   ["send-back no note", `/questions/${ULID}/send-back`, {}],
   ["send-back extra field", `/questions/${ULID}/send-back`, { note: "x", extra: 1 }],
@@ -402,6 +403,27 @@ test("chat about a question then answer it", async () => {
   await waitFor(() => texts(h, sid).at(-1) === "OK.", { what: "the asker's reply" })
   r = await post(sock, `/questions/${qid}/side`, { text: "late" })
   expect([r.status, errorOf(r)]).toEqual([409, "not_open"])
+})
+
+test("a blank message never reopens a side chat that ended", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Retries hide flakes." })
+  const o = await cardsOffice(fake)
+  const { h, sock } = o
+  const { qid } = await asked(o)
+  const side = (await post(sock, `/questions/${qid}/side`, { text: "why ask?" })).json() as { id: string }
+  await waitFor(() => status(h, side.id) === "idle" && texts(h, side.id).length > 0, { what: "the side reply" })
+  expect((await post(sock, `/sessions/${side.id}/end`, null)).status).toBe(200)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  const requests = fake.requests().length
+  const discussion = h.store.getQuestion(qid)!.discussion
+  for (const text of ["   ", "\n", "\u0000"]) {
+    const r = await post(sock, `/questions/${qid}/side`, { text })
+    expect([r.status, r.json()]).toEqual([422, { error: "invalid_body", message: "text: isn't in the right format" }])
+  }
+  expect(status(h, side.id)).toBe("ended")
+  expect(fake.requests().length).toBe(requests)
+  expect(h.store.getQuestion(qid)!.discussion).toEqual(discussion)
 })
 
 test("send back and stop", async () => {

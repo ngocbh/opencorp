@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { ConnectionName } from "./common"
+import { ConnectionName, ModelName } from "./common"
 
 /** A model connection on this office. Never holds a key. */
 export const Connection = z.strictObject({
@@ -41,7 +41,7 @@ export type ModelList = z.input<typeof ModelList>
 /** A model equal to the connection's own is stored as null, so it follows that connection's changes. */
 export const SetModelRequest = z.strictObject({
   connection: ConnectionName,
-  model: z.string().min(1),
+  model: ModelName,
 })
 export type SetModelRequest = z.input<typeof SetModelRequest>
 

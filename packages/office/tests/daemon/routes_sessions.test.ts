@@ -317,6 +317,23 @@ const REFUSED_BODIES: [string, string, string, string][] = [
     "cwd: has the wrong type",
   ],
   ["empty text", `/sessions/${ULID}/prompt`, JSON.stringify({ text: "" }), "text: is too short"],
+  ["blank prompt", `/sessions/${ULID}/prompt`, JSON.stringify({ text: "  " }), "text: isn't in the right format"],
+  ["nul prompt", `/sessions/${ULID}/prompt`, JSON.stringify({ text: "\u0000" }), "text: isn't in the right format"],
+  ["blank steer", `/sessions/${ULID}/steer`, JSON.stringify({ text: "  " }), "text: isn't in the right format"],
+  ["nul steer", `/sessions/${ULID}/steer`, JSON.stringify({ text: "\u0000" }), "text: isn't in the right format"],
+  ["empty model", "/sessions", JSON.stringify({ person: "minh", cwd: "/w", model: "" }), "model: is too short"],
+  [
+    "padded model",
+    `/sessions/${ULID}/model`,
+    JSON.stringify({ connection: "office", model: " sk-sentinel" }),
+    "model: isn't in the right format",
+  ],
+  [
+    "long model",
+    "/sessions",
+    JSON.stringify({ person: "minh", cwd: "/w", model: "sk-sentinel".repeat(30) }),
+    "model: is too long",
+  ],
   [
     "too deep",
     `/sessions/${ULID}/prompt`,
@@ -581,6 +598,32 @@ test("a steer reaches a running reply and a prompt check can refuse", async () =
   const requests = await fake.waitForRequests(2, 30_000)
   expect(JSON.stringify(requests[1]!.messages)).toContain("Also Rome.")
   expect(JSON.stringify(fake.requests())).not.toContain("nope")
+})
+
+test("a blank message or a bad model name never reaches a live chat", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const { sock } = await served(h.office)
+  fake.script({ content: "Hi there." })
+  const sid = await open(h, sock)
+  const before = fake.requests().length
+  for (const action of ["prompt", "steer"]) {
+    for (const text of ["  ", "\n", "\u0000"]) {
+      const r = await post(sock, `/sessions/${sid}/${action}`, { text })
+      expect([r.status, r.json()]).toEqual([422, { error: "invalid_body", message: "text: isn't in the right format" }])
+    }
+  }
+  const model = h.store.getSession(sid)!.model
+  for (const bad of [" ", "stub ", "x".repeat(300)]) {
+    const r = await post(sock, `/sessions/${sid}/model`, { connection: "office", model: bad })
+    expect([r.status, errorOf(r)]).toEqual([422, "invalid_body"])
+  }
+  expect(h.store.getSession(sid)!.model).toBe(model)
+  // A message that shows is still sent as typed, trailing space and all.
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "hello " })).json()).toEqual({ ok: true })
+  await settled(h, sock, sid, 2)
+  expect(fake.requests().length).toBe(before + 1)
+  expect(said(await messagesOf(sock, sid))[0]).toEqual(["user", "hello ", CEO])
 })
 
 const BROKEN_SPECS: [string, Error, number, string][] = [

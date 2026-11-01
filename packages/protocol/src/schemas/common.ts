@@ -40,6 +40,22 @@ export const ConnectionName = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0
 export type ConnectionName = z.input<typeof ConnectionName>
 
 /**
+ * A person's message: at least one character that isn't whitespace, a control character or an invisible format
+ * character such as a zero-width space. It is sent as typed, untrimmed.
+ */
+export const MessageText = z.string().min(1, { abort: true }).regex(/[^\s\p{Cc}\p{Cf}]/u)
+export type MessageText = z.input<typeof MessageText>
+
+/**
+ * A model name as a request gives it: no surrounding whitespace, control characters or lone surrogates, so the
+ * name stored is the name sent. At most 256 characters, well above any real name: Azure deployment names are at
+ * most 64, and provider ids and served model names are shorter still.
+ */
+export const ModelName = z.string().min(1, { abort: true }).max(256, { abort: true })
+  .regex(/^(?!\s)[^\p{Cc}\p{Cs}]+(?<!\s)$/u)
+export type ModelName = z.input<typeof ModelName>
+
+/**
  * UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string,
  * so it round-trips unchanged.
  */

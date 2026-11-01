@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { ConnectionName, GitId, Handle, Timestamp, Ulid } from "./common"
+import { ConnectionName, GitId, Handle, MessageText, ModelName, Timestamp, Ulid } from "./common"
 
 /**
  * A harness session's token counts as the harness reports them, on the harness's own login; the office
@@ -163,12 +163,12 @@ export const CreateSessionRequest = z.strictObject({
    * The human's pick of model for the new chat, which falls back as the office decides; null leaves it to the
    * office.
    */
-  model: z.string().nullable().default(null),
+  model: ModelName.nullable().default(null),
 })
 export type CreateSessionRequest = z.input<typeof CreateSessionRequest>
 
 export const PromptRequest = z.strictObject({
-  text: z.string().min(1),
+  text: MessageText,
 })
 export type PromptRequest = z.input<typeof PromptRequest>
 
@@ -178,6 +178,6 @@ export const CostCapRequest = z.strictObject({
 export type CostCapRequest = z.input<typeof CostCapRequest>
 
 export const SideChatRequest = z.strictObject({
-  text: z.string().min(1),
+  text: MessageText,
 })
 export type SideChatRequest = z.input<typeof SideChatRequest>
