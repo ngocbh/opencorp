@@ -1,7 +1,8 @@
 /** The office dir and the sockets the office listens on: 0600 unix sockets in the office dir, and HQ's TCP
- *  socket on 127.0.0.1. */
+ *  sockets on 127.0.0.1 and ::1. */
 import fs from "node:fs"
 import type net from "node:net"
+import os from "node:os"
 import path from "node:path"
 
 /** The size of `sockaddr_un.sun_path`, including its terminating NUL: 104 on darwin, else 108. */
@@ -134,12 +135,22 @@ export async function listenUnix(server: net.Server, socketPath: string): Promis
   }
 }
 
-/** Makes `server` listen on 127.0.0.1:`port` (0: any free port) and resolves to the bound port; errors such as
- *  `EADDRINUSE` propagate as they are.
+/** Makes `server` listen on `host`:`port` (0: any free port), 127.0.0.1 by default, and resolves to the bound port;
+ *  errors such as `EADDRINUSE` propagate as they are.
  *
  *  The runtime sets `SO_REUSEADDR` on TCP listeners, so a restart binds past TIME_WAIT, and, without
  *  `reusePort`, never `SO_REUSEPORT`, which would let another socket share the port. */
-export async function listenTcp(server: net.Server, port: number): Promise<number> {
-  await listening(server, () => server.listen({ host: "127.0.0.1", port }))
+export async function listenTcp(server: net.Server, port: number, host = "127.0.0.1"): Promise<number> {
+  await listening(server, () => server.listen({ host, port }))
   return (server.address() as net.AddressInfo).port
+}
+
+/** Whether this host has an IPv6 loopback address (::1); a container often has none. Checked up front, not read
+ *  from a failed bind's error, whose code differs between runtimes and platforms. */
+export function hasLoopback6(): boolean {
+  try {
+    return Object.values(os.networkInterfaces()).some((addresses) => addresses?.some((a) => a.address === "::1"))
+  } catch {
+    return false
+  }
 }

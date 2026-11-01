@@ -373,10 +373,12 @@ export const ROUTES: readonly Route<HqContext>[] = [
     body: HqLoginRequest,
     handler: async ({ hq, req }, _params, body) => {
       const { handle, password, label } = body as z.output<typeof HqLoginRequest>
-      // HQ listens only on 127.0.0.1 and hq.sock, so the peer is in practice always 127.0.0.1 or "" (hq.sock): the
-      // throttle keyed on it is per handle. Anyone who reaches HQ can lock a handle's password sign-in for a while,
-      // which is why `opencorp pair` never goes through it and stays the way in.
-      const peer = req.socket.remoteAddress ?? ""
+      // HQ listens only on 127.0.0.1, ::1 and hq.sock, so the peer is in practice always 127.0.0.1 or "" (hq.sock):
+      // ::1 counts as 127.0.0.1, or a guesser would get twice the tries. The throttle keyed on it is per handle.
+      // Anyone who reaches HQ can lock a handle's password sign-in for a while, which is why `opencorp pair` never
+      // goes through it and stays the way in.
+      const remote = req.socket.remoteAddress ?? ""
+      const peer = remote === "::1" ? "127.0.0.1" : remote
       const where = peer || "hq.sock"
       const info = (message: string) => hq.log(logLine("INFO", "opencorp.hq.api", message))
       // A failure names the handle only when it names a person: a password typed into the handle field mustn't

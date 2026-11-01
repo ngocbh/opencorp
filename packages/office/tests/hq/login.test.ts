@@ -485,6 +485,14 @@ test("a throttled handle leaves other handles and peers alone", async () => {
   expect((await login(other)).status).toBe(200)
 })
 
+test("the ipv6 loopback shares the throttle of 127.0.0.1", async () => {
+  const { hq, client } = await withPassword()
+  delegating(hq, fast)
+  for (let i = 0; i < 5; i++) await login(client, CEO, "a wrong guess")
+  const v6 = await hqClient(hq, { peer: "::1", headers: { origin: ORIGIN } })
+  expect((await login(v6)).status).toBe(429)
+})
+
 test("pairing still works while a handle is throttled", async () => {
   const { hq, client } = await withPassword()
   delegating(hq, fast)

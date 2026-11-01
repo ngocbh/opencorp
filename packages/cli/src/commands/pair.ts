@@ -2,6 +2,7 @@
 // in a 0600 file the office wrote: never in a process's arguments, where other users could read it.
 import { isMissingRoute, isNotImplemented, OfficeUnavailable } from "@opencorp/client"
 import { opencorpHome } from "@opencorp/client/node"
+import { otherPort, SETTINGS_IGNORED } from "@opencorp/office/hq/config"
 import type { HqTcp, PairCode } from "@opencorp/protocol"
 import os from "node:os"
 import path from "node:path"
@@ -46,11 +47,22 @@ const webPort = (port: number) => (port ? `HQ's web port ${port}` : "HQ's web po
 
 /**
  * What `pair` prints for `code`, and the redirect file to open, if it should open one. `tcp` is HQ's TCP status when
- * there's no URL, or null when it couldn't be read.
+ * there's no URL, or null when it couldn't be read; `warnings` are GET /hq's.
+ *
+ * With TCP off because hq.json was ignored, the fix is to repair the file, not to add `"tcp": true` to it.
  */
 export function pairOutput(
   code: PairCode,
-  o: { env: Env; platform: string; host: string; noOpen: boolean; hqJson: string; tcp: HqTcp | null; now?: number },
+  o: {
+    env: Env
+    platform: string
+    host: string
+    noOpen: boolean
+    hqJson: string
+    tcp: HqTcp | null
+    warnings: readonly string[]
+    now?: number
+  },
 ): { lines: string[]; open?: string } {
   const lines = [`This link signs a browser in once, ${expiry(code.expires_at, o.now ?? Date.now())}.`]
   const ssh = overSsh(o.env)
@@ -74,10 +86,19 @@ export function pairOutput(
     )
   } else {
     if (!o.tcp) lines.push("Couldn't read the web port's status.")
-    else if (!o.tcp.enabled) lines.push("HQ's web port is off here.")
+    else if (!o.tcp.enabled) lines.push("HQ's web port is off here.", ...o.warnings.map((w) => `  ${w}`))
     else if (o.tcp.error)
       lines.push(`${webPort(o.tcp.port)} isn't listening (${o.tcp.error}); \`opencorp doctor\` says more.`)
     else lines.push(`${webPort(o.tcp.port)} isn't listening yet.`)
+    // Here, another port is the fix; port 0 is never taken, so its error is a server that ended.
+    if (!ssh && o.tcp?.enabled && o.tcp.error && o.tcp.port)
+      lines.push(
+        `If another program holds port ${o.tcp.port}, set "port" in ${shellWord(o.hqJson)} to a free one, for ` +
+          `example {"port": ${otherPort(o.tcp.port)}}, or 0 for any free port ` +
+          "(its URL then changes with each restart).",
+        // On Linux the file holds "tcp": true, so replacing it would turn the web port off.
+        "Create the file if it doesn't exist; keep any keys it already has. Then run `opencorp restart`.",
+      )
     lines.push(
       "On the machine with your browser, forward HQ's socket:",
       forward(LOCAL_PORT, shellWord(code.socket), o.host),
@@ -86,7 +107,11 @@ export function pairOutput(
       `(hq.sock takes any port, so any free local port works in place of ${LOCAL_PORT}.)`,
     )
     if (!ssh && o.tcp && !o.tcp.enabled)
-      lines.push(`To open it here instead, add "tcp": true to ${shellWord(o.hqJson)}, then run \`opencorp restart\`.`)
+      lines.push(
+        o.warnings.some((w) => w.startsWith(SETTINGS_IGNORED))
+          ? `To open it here instead, fix ${shellWord(o.hqJson)} so it has "tcp": true, then run \`opencorp restart\`.`
+          : `To open it here instead, add "tcp": true to ${shellWord(o.hqJson)}, then run \`opencorp restart\`.`,
+      )
   }
   lines.push(`(In place of ${o.host}, use however you reach this machine.)`)
   return { lines }
@@ -132,14 +157,15 @@ export async function pair(argv: string[], deps: PairDeps = realPairDeps): Promi
       open_file: !noOpen && canOpen(deps.env, deps.platform),
     })
     // Without a URL, why matters: TCP off (say how to turn it on) or its port taken (say so, and point at doctor).
-    const tcp = code.url ? null : await office.hq.status().then((st) => st.tcp, () => null)
+    const st = code.url ? null : await office.hq.status().catch(() => null)
     const out = pairOutput(code, {
       env: deps.env,
       platform: deps.platform,
       host: deps.hostname(),
       noOpen,
       hqJson: path.join(opencorpHome(), "office", "hq.json"),
-      tcp,
+      tcp: st?.tcp ?? null,
+      warnings: st?.warnings ?? [],
     })
     for (const line of out.lines) deps.print(line)
     if (out.open) {

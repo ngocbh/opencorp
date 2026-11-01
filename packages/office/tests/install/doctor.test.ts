@@ -965,6 +965,32 @@ test("the offices warnings are shown", () => {
   expect(shown.every((c) => c.status === "warn")).toBe(true)
 })
 
+test("the port checks say where the web port is and never mention the web app", () => {
+  const dir = tempDir()
+  const listening = doctor.hqPortChecks(status(), dir)
+  expect(listening.map((c) => [c.name, c.status])).toEqual([["hq", "ok"]])
+  const [taken, ...rest] = doctor.hqPortChecks(status({ listening: false, error: "Address already in use" }), dir)
+  expect(rest).toEqual([])
+  expect(taken!.status).toBe("warn")
+  expect(taken!.detail).toStartWith("port 49380 isn't free (Address already in use)")
+  expect(taken!.detail).toContain(`set another "port" in ${path.join(dir, "hq.json")}`)
+  const both = { ...status({ listening: false, error: "Address already in use" }), socket_error: "Permission denied" }
+  expect(doctor.hqPortChecks(both, dir).map((c) => [c.name, c.status])).toEqual([
+    ["hq", "warn"],
+    ["hq port", "warn"],
+  ])
+  const unbuilt = status()
+  unbuilt.health.app = null
+  expect(doctor.hqPortChecks(unbuilt, dir).some((c) => c.name === "web app")).toBe(false)
+})
+
+test("a taken port gives the json to write", () => {
+  const dir = tempDir()
+  const got = byName(doctor.hqChecks(status({ listening: false, error: "Address already in use" }), dir, dir))
+  expect(got.hq!.detail).toContain('for example {"port": 49390}')
+  expect(got.hq!.detail).toContain("create the file if it doesn't exist; keep any keys it already has")
+})
+
 test("an answer that isnt an hq status is unreadable", async () => {
   const bodies = [
     "<html>",

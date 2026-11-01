@@ -126,7 +126,20 @@ test("status names ignored settings", async () => {
   fs.writeFileSync(path.join(office.paths.office, "hq.json"), "{")
   const hq = attach(office, { log, listen: false })
   hq.otherUsers = async () => []
-  expect((await hq.status()).warnings![0]).toStartWith("settings ignored: ")
+  expect((await hq.status()).warnings![0]).toStartWith(
+    "settings ignored, so the web port stays off until hq.json is fixed (restart to apply): ",
+  )
+})
+
+test("ignored settings are the only warning while tcp is off", async () => {
+  const office = makeOffice()
+  fs.mkdirSync(office.paths.office, { recursive: true })
+  fs.writeFileSync(path.join(office.paths.office, "hq.json"), "{")
+  const hq = attach(office, { log, listen: false })
+  hq.otherUsers = async () => ["bob"]
+  const warnings = (await hq.status()).warnings!
+  expect(warnings).toHaveLength(1)
+  expect(warnings[0]).toStartWith("settings ignored, so the web port stays off")
 })
 
 test("start deletes redirect files a crash left", async () => {
@@ -155,6 +168,20 @@ test("status warns when tcp is on and others use the host", async () => {
   expect((await hq.status()).warnings!.some((w) => w.includes("other users (ann)"))).toBe(true)
   hq.config = { ...hq.config, tcp: false }
   expect((await hq.status()).warnings).toEqual([])
+})
+
+test("status warns that localhost may reach another program only while tcp listens", async () => {
+  const office = makeOffice()
+  const hq = attach(office, { log, listen: false })
+  hq.otherUsers = async () => []
+  hq.config = { ...hq.config, tcp: true }
+  hq.loopback6Error = "listen EADDRINUSE: address already in use ::1:49999"
+  expect((await hq.status()).warnings).toEqual([])
+  hq.boundPort = 49999
+  expect((await hq.status()).warnings).toEqual([
+    "http://localhost:49999/ may reach another program: HQ can't hold [::1]:49999 " +
+      "(listen EADDRINUSE: address already in use ::1:49999); it tries again every 5 s. Open http://127.0.0.1:49999/",
+  ])
 })
 
 test("a listening hq starts and stops its listeners with the office", async () => {
