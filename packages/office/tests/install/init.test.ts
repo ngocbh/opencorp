@@ -134,6 +134,16 @@ async function rejection(promise: Promise<unknown>): Promise<Error> {
   throw new Error("it resolved")
 }
 
+test("a file home is not a directory", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  fs.writeFileSync(home, "")
+  const error = await rejection(init(home, new Script(), { ...base(dir), stdin: providerStdin() }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toBe(`${fs.realpathSync(home)} is not a directory`)
+  expect(fs.readFileSync(home, "utf8")).toBe("")
+})
+
 const ACME: Draft = {
   company: "Acme",
   owner: { handle: "ngocbh", name: "Hong Ngoc Bui", title: "CEO" },

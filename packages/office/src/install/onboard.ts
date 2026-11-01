@@ -727,15 +727,18 @@ export function checkSocket(socket: string): void {
   }
 }
 
-/** Makes the home and office dirs, both 0700. Throws `OnboardError` when they can't be made, or the office dir
- *  isn't this user's. */
+/** Makes the home and office dirs, both 0700. Throws `OnboardError` when they can't be made, the home is there but
+ *  isn't a directory, or the office dir isn't this user's. */
 export function makeHome(home: string): void {
   try {
+    if (fs.statSync(home, { throwIfNoEntry: false })?.isDirectory() === false)
+      throw new OnboardError(`${home} is not a directory`)
     fs.mkdirSync(home, { recursive: true, mode: 0o700 })
     // mkdir leaves an existing home's mode alone; the home holds the company and the office.
     fs.chmodSync(home, 0o700)
     makeOfficeDir(path.join(home, "office"))
   } catch (error) {
+    if (error instanceof OnboardError) throw error
     if (error instanceof OfficeStartError) throw new OnboardError(error.message)
     const text = strerror(error)
     if (text === undefined) throw error

@@ -108,6 +108,18 @@ async function rejection(promise: Promise<unknown>): Promise<Error> {
   throw new Error("it resolved")
 }
 
+test("a file home is not a directory", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  fs.writeFileSync(home, "")
+  const run = new Runner()
+  const error = await rejection(onboard(home, new Script(), { ...base(dir), host: makeHost(dir, run) }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toBe(`${fs.realpathSync(home)} is not a directory`)
+  expect(run.calls).toEqual([])
+  expect(fs.readFileSync(home, "utf8")).toBe("")
+})
+
 test("lint errors stop onboarding before anything runs", async () => {
   const dir = tempDir()
   const home = path.join(dir, "home")
