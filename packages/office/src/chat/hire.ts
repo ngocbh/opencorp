@@ -1,6 +1,5 @@
-/** Hiring: preview a new agent's files and lint them in a scratch copy, then commit them on confirm. */
+/** Hiring: preview a new agent's files and lint the company as if they were added, then commit them on confirm. */
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { type HireRequest, type HireResponse, Person as PersonSchema } from "@opencorp/protocol"
@@ -9,9 +8,9 @@ import { actorLine } from "../company/access.ts"
 import { errno, outsideRoot, resolvePath } from "../company/flows.ts"
 import { writeYaml } from "../company/flow_yaml.ts"
 import { type CompanyGit, CompanyGitError, oneLine } from "../company/git.ts"
-import { repoIssue, type RepoIssue } from "../company/issues.ts"
+import { parseFile, repoIssue, type RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
-import { loadRepo } from "../company/loader.ts"
+import { type CompanyRepo, loadRepo } from "../company/loader.ts"
 import { strip } from "../perm/redact.ts"
 
 /** What a hire from the short form gets besides its name, handle, title, and manager. */
@@ -63,7 +62,8 @@ export class Hiring {
   /** The person, diff, and lint issues the hire would make; nothing is written. Only issues the hire brings
    *  are errors; ones the repo already had are warnings. */
   async preview(request: Request): Promise<HireResult> {
-    // The scratch copy shouldn't catch a commit half done.
+    // The load shouldn't catch an office write half done: password and device writes rewrite person.yaml in
+    // place and may roll it back.
     const [person, files, issues] = await this.git.locked(() => this.#draft(request))
     this.#previews.delete(request.handle)
     this.#previews.set(request.handle, form(request))
@@ -140,50 +140,54 @@ export class Hiring {
     }
   }
 
+  /** The person `request` hires, its files, and the lint issues the company would have with them added. The
+   *  repo is linted in place, with the new person.yaml read into the loaded company; nothing is copied. */
   async #draft(request: Request): Promise<[Person, Record<string, string>, RepoIssue[]]> {
     const [person, files] = agentFiles(request)
     const base = `people/${person.handle}`
-    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-hire-")))
+    const before = loadRepo(this.git.root)
+    const root = before.root // the real path, so a linked company folder is checked where it leads
     try {
-      const scratch = path.join(tmp, "company")
-      // The real path: cp copies a linked root as the link, and the scratch copy would be the live repo.
-      const repo = fs.realpathSync(this.git.root)
-      await fs.promises.cp(repo, scratch, {
-        recursive: true,
-        verbatimSymlinks: true,
-        filter: (src) => path.basename(src) !== ".git",
-      })
-      const before = loadRepo(scratch)
       try {
-        fs.lstatSync(path.join(scratch, base))
+        fs.lstatSync(path.join(root, base))
         const taken = `@${person.handle} is already taken`
-        return [person, files, [repoIssue(`${base}/person.yaml`, "person.duplicate_handle", taken)]]
+        return [person, {}, [repoIssue(`${base}/person.yaml`, "person.duplicate_handle", taken)]]
       } catch (error) {
         if (errno(error) !== "ENOENT") throw error
       }
-      const root = resolvePath(scratch)
-      for (const [rel, text] of Object.entries(files)) {
+      for (const rel of Object.keys(files)) {
         // The office never writes through a link, which may leave the repo: absolute, relative or swapped.
-        const target = resolvePath(path.join(scratch, rel))
-        if (outsideRoot(root, target) || linkOnPath(scratch, path.dirname(rel))) {
+        if (outsideRoot(root, resolvePath(path.join(root, rel))) || linkOnPath(root, path.dirname(rel))) {
           const outside = `${rel} would be written outside the company repo`
-          return [person, files, [repoIssue(rel, "person.outside_repo", outside)]]
+          return [person, {}, [repoIssue(rel, "person.outside_repo", outside)]]
         }
-        fs.mkdirSync(path.dirname(target), { recursive: true })
-        fs.writeFileSync(target, text)
       }
+      const errors = [...before.errors]
+      const yaml = `${base}/person.yaml`
+      const added = parseFile(yaml, new TextEncoder().encode(files[yaml]!), PersonSchema, errors)
+      const people = new Map(before.people)
+      if (added !== null) people.set(added.handle, added)
+      const after: CompanyRepo = { ...before, people, errors }
       // An error the repo already had isn't this hire's to fix; it shows as a warning.
       const key = (i: RepoIssue) => JSON.stringify([i.path, i.code, i.message])
       const known = new Set((await lint(before)).map(key))
-      const issues = (await lint(loadRepo(scratch))).map((i) => ({
-        ...i,
-        severity: known.has(key(i)) && !i.path.startsWith(`${base}/`) ? ("warning" as const) : i.severity,
-        // yian's CODE-root messages carry absolute paths; name the repo, not a deleted temp copy.
-        message: i.message.replaceAll(scratch, repo),
-      }))
+      const issues = (await lint(after))
+        // A confirm writes profile.md with person.yaml.
+        .filter((i) => !(i.code === "person.no_profile" && i.path === `${base}/profile.md`))
+        .map((i) => ({
+          ...i,
+          severity: known.has(key(i)) && !i.path.startsWith(`${base}/`) ? ("warning" as const) : i.severity,
+        }))
       return [person, files, issues]
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true })
+    } catch (error) {
+      // A file lint must read but can't, such as a folder without read access; Node's own ERR_ codes are bugs.
+      const code = errno(error)
+      if (code === undefined || code.startsWith("ERR_")) throw error
+      const at = (error as NodeJS.ErrnoException).path
+      const inside = typeof at === "string" && at !== root && !outsideRoot(root, at)
+      const rel = inside ? path.relative(root, at) : `${base}/person.yaml`
+      // An error even if the repo had it before: lint didn't finish, so the hire can't be checked.
+      return [person, {}, [repoIssue(rel, "repo.unreadable", "can't be read")]]
     }
   }
 }

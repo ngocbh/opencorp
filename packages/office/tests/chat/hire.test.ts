@@ -1,5 +1,5 @@
 /** Hiring: a new agent's files, laid out as the Python office wrote them, and previews of a hire. */
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
@@ -121,6 +121,7 @@ test("a taken handle is refused and names the clash", async () => {
   expect(preview.issues.map((i) => [i.path, i.code, i.message, i.severity])).toEqual([
     ["people/minh/person.yaml", "person.duplicate_handle", "@minh is already taken", "error"],
   ])
+  expect(preview.diff).toBe("") // the files are there already; nothing would be added
   const error = await refused(hiring.hire(req({ ...FORM, handle: "minh" }, true), "ngocbh"))
   expect([error.code, error.message]).toEqual(["lint_failed", "@minh is already taken"])
   const after = fs.readFileSync(path.join(git.root, "people/minh/person.yaml"), "utf8")
@@ -131,7 +132,7 @@ test("a folder left by hand takes the handle", async () => {
   const git = makeGit()
   fs.mkdirSync(path.join(git.root, "people/lan"))
   const preview = await new Hiring(git).hire(req(FORM), "ngocbh")
-  expect(preview.issues.map((i) => i.code)).toEqual(["person.duplicate_handle"])
+  expect([preview.issues.map((i) => i.code), preview.diff]).toEqual([["person.duplicate_handle"], ""])
 })
 
 test("a confirm must repeat the preview", async () => {
@@ -287,6 +288,7 @@ test("a hire is never written outside the repo", async () => {
   const hiring = new Hiring(new CompanyGit(root, path.join(dir, "worktrees")))
   const preview = await hiring.hire(req(FORM), "ngocbh")
   expect(preview.issues.map((i) => [i.code, i.severity])).toEqual([["person.outside_repo", "error"]])
+  expect(preview.diff).toBe("")
   expect((await refused(hiring.hire(req(FORM, true), "ngocbh"))).code).toBe("lint_failed")
   expect(fs.existsSync(path.join(outside, "lan"))).toBe(false)
 })
@@ -303,6 +305,7 @@ test("a relative people link out of the repo counts as outside the repo", async 
   const preview = await hiring.hire(req(FORM), "ngocbh")
   expect(preview.issues.map((i) => [i.path, i.code])).toEqual([["people/lan/person.yaml", "person.outside_repo"]])
   expect(preview.issues.map((i) => i.severity)).toEqual(["error"])
+  expect(preview.diff).toBe("")
   expect((await refused(hiring.hire(req(FORM, true), "ngocbh"))).code).toBe("lint_failed")
   expect(fs.existsSync(path.join(shared, "lan"))).toBe(false)
 })
@@ -331,6 +334,7 @@ test("an in repo people link is refused at preview as at confirm", async () => {
   const hiring = new Hiring(new CompanyGit(root, path.join(dir, "worktrees")))
   const preview = await hiring.hire(req(FORM), "ngocbh")
   expect(preview.issues.map((i) => [i.code, i.severity])).toEqual([["person.outside_repo", "error"]])
+  expect(preview.diff).toBe("")
   expect((await refused(hiring.hire(req(FORM, true), "ngocbh"))).code).toBe("lint_failed")
   expect(fs.existsSync(path.join(root, "staff/lan"))).toBe(false)
 })
@@ -424,4 +428,73 @@ test("concurrent confirms commit a hire once", async () => {
   expect(commits.sort()).toEqual(["hire(@kai-fan): Lan, QA", "hire(@lan): Lan, QA"])
   const people = loadRepo(git.root).people
   expect([people.has("lan"), people.has("kai-fan")]).toEqual([true, true])
+})
+
+test("a hire copies nothing however big the untracked tree", async () => {
+  const git = makeGit()
+  const data = path.join(git.root, "data")
+  fs.mkdirSync(data)
+  for (let i = 0; i < 200; i++) fs.writeFileSync(path.join(data, `${i}.bin`), "x".repeat(1024))
+  const mkdtemp = spyOn(fs, "mkdtempSync")
+  const cp = spyOn(fs.promises, "cp")
+  try {
+    const hiring = new Hiring(git)
+    expect((await hiring.hire(req(FORM), "ngocbh")).issues).toEqual([])
+    expect((await hiring.hire(req(FORM, true), "ngocbh")).commit).toBe(await git.head())
+    expect(mkdtemp.mock.calls.filter((call) => String(call[0]).includes("opencorp-hire-"))).toEqual([])
+    expect(cp).not.toHaveBeenCalled()
+  } finally {
+    mkdtemp.mockRestore()
+    cp.mockRestore()
+  }
+})
+
+test.skipIf(process.getuid?.() === 0)("special files the company doesnt reference are never read", async () => {
+  const git = makeGit()
+  const dir = path.join(git.root, "shared/data")
+  fs.mkdirSync(dir)
+  expect(spawnSync("mkfifo", [path.join(dir, "pipe")]).status).toBe(0)
+  const secret = path.join(dir, "secret")
+  fs.writeFileSync(secret, "x")
+  fs.chmodSync(secret, 0)
+  try {
+    const hiring = new Hiring(git)
+    expect((await hiring.hire(req(FORM), "ngocbh")).issues).toEqual([])
+    expect((await hiring.hire(req(FORM, true), "ngocbh")).commit).toBe(await git.head())
+  } finally {
+    fs.chmodSync(secret, 0o644)
+  }
+})
+
+test.skipIf(process.getuid?.() === 0)("an unreadable shared skills folder is a lint error, not a crash", async () => {
+  const skill = "---\nname: review\ndescription: Reviews.\n---\nReview.\n"
+  const git = makeGit({ ...baseFiles(), ...CHAT_FILES, "shared/skills/review/SKILL.md": skill })
+  const skills = path.join(git.root, "shared/skills")
+  const head = await git.head()
+  fs.chmodSync(skills, 0)
+  try {
+    const hiring = new Hiring(git)
+    const preview = await hiring.hire(req(FORM), "ngocbh")
+    expect(preview.issues.map((i) => [i.path, i.code, i.message, i.severity])).toEqual([
+      ["shared/skills", "repo.unreadable", "can't be read", "error"],
+    ])
+    expect(preview.diff).toBe("")
+    const error = await refused(hiring.hire(req(FORM, true), "ngocbh"))
+    expect([error.code, error.message]).toEqual(["lint_failed", "can't be read"])
+    expect(await git.head()).toBe(head)
+  } finally {
+    fs.chmodSync(skills, 0o755)
+  }
+})
+
+test("a people file where the folder should be is a lint error, not a crash", async () => {
+  const git = makeGit()
+  fs.rmSync(path.join(git.root, "people"), { recursive: true })
+  fs.writeFileSync(path.join(git.root, "people"), "not a folder\n")
+  runGit(git.root, "add", "-A")
+  runGit(git.root, "commit", "-qm", "people is a file")
+  const hiring = new Hiring(git)
+  const preview = await hiring.hire(req(FORM), "ngocbh")
+  expect(preview.issues.map((i) => [i.path, i.code, i.severity])).toEqual([["people/lan", "repo.unreadable", "error"]])
+  expect((await refused(hiring.hire(req(FORM, true), "ngocbh"))).code).toBe("lint_failed")
 })

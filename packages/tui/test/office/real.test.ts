@@ -129,6 +129,7 @@ test("a hire confirm repeats the preview; a taken handle is a lint issue on prev
   const changed = await failure(client().people.hire({ ...req, title: "Lead", confirm: true }))
   expect([changed.status, changed.code]).toEqual([422, "lint_failed"])
   const dup = await client().people.hire({ ...req, handle: "minh", confirm: false })
+  expect(dup.diff).toBe("")
   expect(dup.issues).toEqual([
     { path: "people/minh/person.yaml", code: "person.duplicate_handle", message: "@minh is already taken", severity: "error" },
   ])

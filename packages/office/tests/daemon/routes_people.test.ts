@@ -1,4 +1,5 @@
 /** People routes. */
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
@@ -114,6 +115,24 @@ test("a taken handle is a lint error", async () => {
   r = await post(sock, { ...HIRE, handle: "minh", confirm: true })
   expect([r.status, r.json()]).toEqual([422, { error: "lint_failed", message: "@minh is already taken" }])
   expect(await office.git.head()).toBe(head)
+})
+
+test.skipIf(process.getuid?.() === 0)("a FIFO or unreadable file in the repo doesn't break a hire", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const shared = path.join(office.paths.company, "shared")
+  expect(spawnSync("mkfifo", [path.join(shared, "pipe")]).status).toBe(0)
+  const secret = path.join(shared, "secret")
+  fs.writeFileSync(secret, "x")
+  fs.chmodSync(secret, 0)
+  try {
+    let r = await post(sock, HIRE)
+    expect([r.status, (r.json() as Hired).issues]).toEqual([200, []])
+    r = await post(sock, { ...HIRE, confirm: true })
+    expect([r.status, (r.json() as Hired).commit]).toEqual([200, await office.git.head()])
+  } finally {
+    fs.chmodSync(secret, 0o644)
+  }
 })
 
 const { title: _title, ...UNTITLED } = HIRE
