@@ -511,3 +511,30 @@ test("each check looks at the disk again", () => {
   expect(() => checkWorkspace(proj!, office)).toThrow(message)
   expect(() => policyAt(proj!, tmp, office)).toThrow(message)
 })
+
+test("withHelper resolves only the helper and checks nothing again", () => {
+  const { root, make } = makePolicy()
+  const [real] = mkdirs(path.join(root, "real"))
+  fs.writeFileSync(path.join(real!, "opencorp"), "")
+  const link = path.join(root, "link")
+  fs.symlinkSync(real!, link)
+  // An absent PATH entry: the check is the only thing that looks it up.
+  const marker = path.join(root, "marker-bin")
+  const office = { home: path.join(root, "home"), install: [path.join(link, "install")], path: [marker] }
+  const policy = make({ office })
+  const helper = { binary: path.join(link, "opencorp") }
+  const lstat = spyOn(fs, "lstatSync")
+  onTestFinished(() => lstat.mockRestore())
+  const result = policy.withHelper(helper)
+  expect(lstat.mock.calls.map((c) => String(c[0])).filter((p) => p === marker)).toEqual([])
+  lstat.mockRestore()
+  expect(result).toBeInstanceOf(SandboxPolicy)
+  expect(result.helper).toEqual({ binary: path.join(real!, "opencorp") })
+  const rebuilt = new SandboxPolicy({ ...policy, helper })
+  for (const key of ["office", "workspace", "writable", "network", "tmpdir", "readOnly"] as const) {
+    expect(result[key]).toEqual(rebuilt[key])
+  }
+  expect(result.protectedPaths).toEqual(policy.protectedPaths)
+  expect(policy.helper).toBeUndefined()
+  expect(result.withHelper(undefined).helper).toBeUndefined()
+})

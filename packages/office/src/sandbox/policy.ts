@@ -250,7 +250,8 @@ function check(workspace: string, office: OfficePaths, cache: Lookups): void {
 }
 
 /** What a `SandboxPolicy` is built from; a policy's own fields are a superset, so
- *  `new SandboxPolicy({ ...policy, helper })` rebuilds one with every check re-run. */
+ *  `new SandboxPolicy({ ...policy, helper })` rebuilds one with every check re-run; `withHelper` keeps the
+ *  check and changes only the helper. */
 export interface PolicyInit {
   workspace: string
   writable: boolean
@@ -299,6 +300,13 @@ export class SandboxPolicy {
       path: [...(office.path ?? [])],
     }
     check(this.workspace, this.office, cache)
+  }
+
+  /** This policy with `helper` (resolved) in its place. Every other field is kept and the workspace check is not
+   *  run again: this policy passed it when built from `PolicyInit`, and the check doesn't read the helper. */
+  withHelper(helper: Helper | undefined): SandboxPolicy {
+    const copy: SandboxPolicy = Object.create(SandboxPolicy.prototype)
+    return Object.assign(copy, { ...this, helper: resolveHelper(helper, lookups()) })
   }
 
   /** The workspace paths that stay read-only in a writable workspace. */

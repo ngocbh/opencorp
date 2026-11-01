@@ -1,7 +1,7 @@
 /** Workspace tools: read, write, edit, list, search, and shell, each one sandboxed call. */
 import { startTime } from "../install/proc.ts"
 import { pyJson, repr, strip } from "../perm/redact.ts"
-import { SandboxPolicy } from "../sandbox/policy.ts"
+import type { SandboxPolicy } from "../sandbox/policy.ts"
 import { fsHelper, type Result, run } from "../sandbox/run.ts"
 import { newId, type Store } from "../store/store.ts"
 import type { ToolContext } from "./context.ts"
@@ -234,12 +234,13 @@ export class WorkspaceTools {
   readonly #fileOutputCap: number
   readonly #active = new Set<AbortController>()
 
-  /** Throws `SandboxUnavailable` when the helper lies inside `options.officeHome`. */
+  /** Trusts `policy`'s workspace check; only the helper's paths are resolved. Throws `SandboxUnavailable` when
+   *  the helper lies inside `options.officeHome`. */
   constructor(policy: SandboxPolicy, options: WorkspaceOptions) {
     const { argv, helper } = fsHelper(options.officeHome)
     this.#argv = argv
-    this.#filePolicy = new SandboxPolicy({ ...policy, helper })
-    this.#shellPolicy = policy.helper === undefined ? policy : new SandboxPolicy({ ...policy, helper: undefined })
+    this.#filePolicy = policy.withHelper(helper)
+    this.#shellPolicy = policy.helper === undefined ? policy : policy.withHelper(undefined)
     this.#store = options.store
     this.#fileTimeout = options.fileTimeout ?? 30
     this.#shellTimeout = options.shellTimeout ?? 120
