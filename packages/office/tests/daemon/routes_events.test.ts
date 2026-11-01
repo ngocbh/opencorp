@@ -18,10 +18,12 @@ import {
   frames,
   giveDevice,
   makeOffice,
+  repliesOf,
   request,
   served,
   standInHarness,
   take,
+  waitsForClient,
   within,
 } from "./helpers.ts"
 
@@ -225,14 +227,14 @@ test("the socket stream still carries every type", async () => {
   expect(got.map(([kind, , data]) => [kind, (data as { type: string }).type])).toEqual(expected)
 })
 
-/** An office serving with device tokens, whose CEO has the devices `mac` and `pc`; their tokens. */
-async function twoDevices(): Promise<{ office: Office; sock: string; mac: string; pc: string }> {
+/** An office serving with device tokens, whose CEO has the devices `mac` and `pc`; its server and their tokens. */
+async function twoDevices(): Promise<{ office: Office; server: http.Server; sock: string; mac: string; pc: string }> {
   const office = makeOffice()
-  const { sock } = await served(office, { tokens: true })
+  const { sock, server } = await served(office, { tokens: true })
   const [mac, pc] = [newToken(), newToken()]
   giveDevice(office.paths.company, CEO, "mac", mac)
   giveDevice(office.paths.company, CEO, "pc", pc)
-  return { office, sock, mac, pc }
+  return { office, server, sock, mac, pc }
 }
 
 test("removing a device ends the streams its token opened", async () => {
@@ -294,15 +296,20 @@ test("a tokenless stream ends once the first device is added", async () => {
 })
 
 test("removing a device cuts its stream while the client is not reading", async () => {
-  const { office, sock, mac, pc } = await twoDevices()
+  const { office, server, sock, mac, pc } = await twoDevices()
+  const replies = repliesOf(server)
   const s = office.store.createSession(session())
   const conn = await Conn.open(sock)
   conn.send(`GET /events HTTP/1.1\r\nhost: office\r\nauthorization: Bearer ${mac}\r\nconnection: close\r\n\r\n`)
   await waitFor(() => conn.socket.bytesRead > 0, { timeout: 9000, what: "the stream to start" })
   conn.socket.pause()
-  const big = "x".repeat(4 * 1024 * 1024)
-  for (let i = 0; i < 2; i++) office.bus.publishLive(delta(s.id, big))
-  await sleep(300)
+  const big = "x".repeat(256 * 1024)
+  const feed = setInterval(() => office.bus.publishLive(delta(s.id, big)), 5)
+  try {
+    await waitsForClient(() => replies[0])
+  } finally {
+    clearInterval(feed)
+  }
   expect((await request(sock, "DELETE", `/people/${CEO}/devices/mac`, { headers: bearer(pc) })).status).toBe(200)
   const parts: Buffer[] = []
   await within(

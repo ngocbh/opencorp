@@ -34,12 +34,15 @@ import {
   liveRelay,
   makeOffice,
   type Reply,
+  repliesOf,
   request,
   served,
+  socketCapacity,
   standInHarness,
   storedRun,
   stubWorker,
   take,
+  waitsForClient,
   within,
 } from "./helpers.ts"
 
@@ -862,17 +865,20 @@ test("removing a device ends its live streams", async () => {
 
 test("removing a device cuts its live stream while the client is not reading", async () => {
   const office = makeOffice()
-  const { sock } = await served(office, { tokens: true })
+  const { sock, server } = await served(office, { tokens: true })
+  const replies = repliesOf(server)
   const [mac, pc] = [newToken(), newToken()]
   giveDevice(office.paths.company, CEO, "mac", mac)
   giveDevice(office.paths.company, CEO, "pc", pc)
-  // A log far past what a paused client's socket takes, so the stream waits for the client before its end.
-  const { runId } = storedRun(office, { turns: 3000 })
+  // A log far past what a paused client's socket takes (a turn is over 1000 bytes; socket buffers differ by host), so
+  // the stream waits for the client before its end.
+  const capacity = await socketCapacity(Buffer.alloc(64 * 1024))
+  const { runId } = storedRun(office, { turns: Math.max(3000, Math.ceil((2 * capacity) / 1000)) })
   const conn = await Conn.open(sock)
   conn.send(`GET /runs/${runId}/live HTTP/1.1\r\nhost: office\r\nauthorization: Bearer ${mac}\r\nconnection: close\r\n\r\n`)
   await waitFor(() => conn.socket.bytesRead > 0, { timeout: 9000, what: "the stream to start" })
   conn.socket.pause()
-  await new Promise((resolve) => setTimeout(resolve, 500))
+  await waitsForClient(() => replies[0])
   expect((await request(sock, "DELETE", `/people/${CEO}/devices/mac`, { headers: bearer(pc) })).status).toBe(200)
   const parts: Buffer[] = []
   await within(
