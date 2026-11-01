@@ -476,6 +476,45 @@ describe("server", () => {
     expect(got.text).toStartWith("HTTP/1.1 200")
   })
 
+  test("a half-closed client gets no reply from a route that awaits (Bun closes the socket)", async () => {
+    let started = false
+    let aborted = false
+    const slow: Route<Ctx> = {
+      method: "GET",
+      path: "/slow",
+      handler: (ctx) =>
+        new Promise((resolve) => {
+          started = true
+          const timer = setTimeout(() => resolve({ ok: true }), 2000)
+          ctx.signal.addEventListener(
+            "abort",
+            () => {
+              aborted = true
+              clearTimeout(timer)
+              resolve({ ok: false })
+            },
+            { once: true },
+          )
+        }),
+    }
+    const { sock } = await serve([slow])
+    const got = await raw(sock, "GET /slow HTTP/1.1\r\nhost: office\r\n\r\n", { end: true, timeout: 5000 })
+    // A 200 here means Bun now keeps a half-open socket: createServer's docstring needs updating.
+    expect(got).toEqual({ text: "", closed: true })
+    await waitFor(() => aborted, { timeout: 5000, what: "the signal to abort" })
+    expect(started).toBe(true)
+  })
+
+  test("a half-closed client still gets a reply made without awaiting", async () => {
+    // A bare listener: every route the office's listener serves awaits its context first, so none replies at once.
+    const s = createServer((_req, res) => res.end("ok"))
+    onTestFinished(() => new Promise<void>((resolve) => (s.listening ? s.close(() => resolve()) : resolve())))
+    const sock = path.join(shortDir(), "s.sock")
+    await listenUnix(s, sock)
+    const got = await raw(sock, "GET / HTTP/1.1\r\nhost: office\r\n\r\n", { end: true, timeout: 5000 })
+    expect(got.text).toStartWith("HTTP/1.1 200")
+  })
+
   test("the office server has no upgrade listener", () => {
     expect(createServer(() => {}).listenerCount("upgrade")).toBe(0)
   })

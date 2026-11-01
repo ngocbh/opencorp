@@ -443,11 +443,16 @@ export async function ends(it: AsyncIterator<Frame>): Promise<boolean> {
 }
 
 /** Writes `text` on a new connection and reads until the first line, the end of the head, or EOF. `closed`
- *  is true only when the peer ended the connection (a reset counts). */
+ *  is true only when the peer ended the connection (a reset counts). `end` half-closes the connection after
+ *  writing. */
 export function raw(
   sock: string,
   text: string,
-  { until = "close", timeout = 9000 }: { until?: "line" | "head" | "close"; timeout?: number } = {},
+  {
+    until = "close",
+    timeout = 9000,
+    end = false,
+  }: { until?: "line" | "head" | "close"; timeout?: number; end?: boolean } = {},
 ): Promise<{ text: string; closed: boolean }> {
   return new Promise((resolve, reject) => {
     const socket = net.connect(sock)
@@ -461,7 +466,10 @@ export function raw(
       socket.destroy()
       resolve({ text: got, closed })
     }
-    socket.on("connect", () => socket.write(text))
+    socket.on("connect", () => {
+      socket.write(text)
+      if (end) socket.end()
+    })
     socket.on("data", (data: Buffer) => {
       got += data.toString()
       if ((until === "line" && got.includes("\r\n")) || (until === "head" && got.includes("\r\n\r\n"))) finish(false)

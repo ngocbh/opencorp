@@ -489,15 +489,15 @@ export function createFakeOffice(
     if (q.source !== "ask" && !(q.source === "harness" && q.questions?.length)) {
       if (!label(answer)) throw invalid("the answer must be text")
       if (kind === "option" && !q.options?.includes(answer as string))
-        throw invalid(`${JSON.stringify(answer)} is not one of the options`)
+        throw invalid("the answer is not one of the options")
       return
     }
     if (!q.questions?.length) return
     if (!answer || typeof answer !== "object" || Array.isArray(answer))
       throw invalid("the answer must be a record with one entry per question header")
     const record = answer as Record<string, unknown>
-    const extra = Object.keys(record).find((h) => !q.questions!.some((p) => p.header === h))
-    if (extra) throw invalid(`no question has the header ${JSON.stringify(extra)}`)
+    if (Object.keys(record).some((h) => !q.questions!.some((p) => p.header === h)))
+      throw invalid("the answer has a key no question has")
     for (const page of q.questions) {
       if (!(page.header in record)) throw invalid(`${JSON.stringify(page.header)} has no answer`)
       const value = record[page.header]

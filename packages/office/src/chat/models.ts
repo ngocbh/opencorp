@@ -117,7 +117,8 @@ export async function azureDeployments(
     if (typeof error === "object" && error !== null && (error as { name?: unknown }).name === "TimeoutError") {
       throw new ModelListError(TIMED_OUT)
     }
-    throw new ModelListError(`can't reach ${URL.parse(root)?.hostname || null}`)
+    // Yian's lister's wording: the host is the endpoint the owner typed, which a reply never quotes.
+    throw new ModelListError("can't reach host")
   }
   if (reply.status !== 200) throw new ModelListError(`HTTP ${reply.status}`, reply.status)
   const data = isObject(reply.data) ? reply.data["data"] : undefined

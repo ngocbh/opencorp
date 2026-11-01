@@ -116,6 +116,51 @@ function llmConfig(body: AddBody): LlmConfig {
   return body.model ? { ...llm, model: body.model } : llm
 }
 
+/**
+ * `text` with the endpoint `body` named replaced by "the endpoint" and the model it named by "the model", matched
+ * case-insensitively and as whole tokens only.
+ */
+function scrubInput(text: string, body: AddBody, llm: LlmConfig): string {
+  // Yian refuses a base URL with credentials, so none reaches here. A host printed in its Unicode form isn't matched.
+  const names = new Map<string, string>()
+  // An id with no letter or digit names nothing, and replacing it would garble the provider's text.
+  if (body.model && /[\p{L}\p{N}]/u.test(body.model)) names.set(body.model.toLowerCase(), "the model")
+  const endpoint = (body.endpoint ?? "").trim()
+  const baseUrl = typeof llm.base_url === "string" ? llm.base_url : ""
+  const host = URL.parse(baseUrl)?.hostname ?? ""
+  // The provider may print the URL normalized, e.g. without a default port.
+  const normalized = URL.parse(baseUrl)?.href ?? ""
+  for (const url of [endpoint, baseUrl, normalized, host]) {
+    // Without a trailing `/`, so the path that follows still reads as one: "the endpoint/chat/completions".
+    const name = url.replace(/\/+$/, "")
+    if (name) names.set(name.toLowerCase(), "the endpoint")
+  }
+  if (names.size === 0) return text
+  // One pass, longest first, so a replacement is never matched again. A token doesn't continue into a letter, digit,
+  // `_` or `-`, yet a sentence's closing period still ends it. Only an edge that is itself a token character is
+  // guarded, so a name ending in punctuation still matches before whatever follows it. A model id doesn't continue
+  // into a further `.label` either (`gpt-5` in `gpt-5.4`); an endpoint may, since replacing more of a host is harmless.
+  const alternatives = [...names.keys()]
+    .sort((a, b) => b.length - a.length)
+    .map((name) => {
+      const before = /^[A-Za-z0-9_]/.test(name) ? "(?<![A-Za-z0-9_.-])" : ""
+      const after = /[A-Za-z0-9_]$/.test(name)
+        ? names.get(name) === "the model"
+          ? "(?![A-Za-z0-9_-]|\\.[A-Za-z0-9])"
+          : "(?![A-Za-z0-9_-])"
+        : ""
+      return before + escapeRegExp(name) + after
+    })
+  const pattern = new RegExp(alternatives.join("|"), "gi")
+  // A letter whose lower case is longer than itself can miss the map; it is still input, so it still goes.
+  return text.replace(pattern, (match) => names.get(match.toLowerCase()) ?? "the endpoint")
+}
+
+/** `text` as a regular expression that matches it literally. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
 /** Adds the connection `body` asks for once its key works, and returns its name; nothing is saved otherwise. */
 async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
   const llm = llmConfig(body)
@@ -169,11 +214,14 @@ async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
       throw error
     }
     if (problem) {
-      if (body.model) throw new HttpError(422, "model_refused", `The model didn't answer: ${problem}`)
+      // The provider's reason is worth showing, but a 422 never echoes what the request named.
+      const shown = scrubInput(problem, body, llm)
+      if (body.model) throw new HttpError(422, "model_refused", `The model didn't answer: ${shown}`)
+      // Not input: this model is a default or the listing's first.
       throw new HttpError(
         422,
         "model_refused",
-        `The model '${llm.model}' didn't answer: ${problem}; name another model`,
+        `The model '${llm.model}' didn't answer: ${shown}; name another model`,
       )
     }
   }

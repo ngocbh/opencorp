@@ -19,8 +19,8 @@ export class InvalidAnswer extends Error {
  * Otherwise `sent_back` and `interrupted` answers are the office's own and pass unchanged. A model question
  * (`ask_user`, `ask_manager`) takes text, and an `option` answer must be one of its options. An `ask` node
  * question with pages takes a record keyed by each page's `header`. A page with an `answer_schema` entry takes
- * what that entry takes, and one without takes a label, or a list of labels for a multi-select page; a secret page's
- * refusal names only the page, never a key or value from its answer. One without pages takes what its
+ * what that entry takes, and one without takes a label, or a list of labels for a multi-select page. No refusal quotes
+ * a key or value from the answer, and a secret page's names only the page. One without pages takes what its
  * `answer_schema` says; text is converted to the field's type (numbers, ISO dates, yes/no, one list item per line).
  * Blank text is no answer: a required field refuses it unless its type is `None`, and an optional one is null
  * (omitted in a record). Nothing looser than the engine's own check is returned, and a converted value converts to
@@ -36,7 +36,7 @@ export function checkAnswer(
   if (question.source !== "ask") {
     if (typeof answer !== "string" || strip(answer) === "") throw new InvalidAnswer("the answer must be text")
     if (kind === "option" && !question.options.includes(answer)) {
-      throw new InvalidAnswer(`${repr(answer)} is not one of the options`)
+      throw new InvalidAnswer("the answer is not one of the options")
     }
     return answer
   }
@@ -64,8 +64,9 @@ function pages(question: QuestionRecord, answer: unknown): Record<string, unknow
   if (!isRecord(answer)) throw new InvalidAnswer("the answer must be a record with one entry per question header")
   const list = question.questions ?? []
   const headers = new Set(list.map((page) => page.header))
-  const extra = Object.keys(answer).filter((key) => !headers.has(key)).sort(byCodePoint)
-  if (extra.length > 0) throw new InvalidAnswer(`no question has the header ${repr(extra[0]!)}`)
+  if (Object.keys(answer).some((key) => !headers.has(key))) {
+    throw new InvalidAnswer("the answer has a key no question has")
+  }
   const entries = new Map(question.answer_schema.map((f) => [f.name, f]))
   const out: [string, unknown][] = []
   for (const page of list) {
@@ -87,7 +88,8 @@ function pages(question: QuestionRecord, answer: unknown): Record<string, unknow
     try {
       out.push([page.header, field(entry, value, repr(page.header))])
     } catch (error) {
-      // The usual message can quote a key typed inside the answer, so a secret page's names only the page.
+      // A field's message can name a path in the page's own schema; a secret page's names only the page, so
+      // nothing about its answer shows even if a message ever quotes more.
       if (page.secret && error instanceof InvalidAnswer) {
         throw new InvalidAnswer(`${repr(page.header)} isn't a valid answer`)
       }
@@ -101,8 +103,9 @@ function record(fields: Field[], value: unknown, where: string): Record<string, 
   if (typeof value === "string") value = json(value)
   if (!isRecord(value)) throw new InvalidAnswer(`${where} must be a record`)
   const names = new Set(fields.map((f) => f.name))
-  const extra = Object.keys(value).filter((key) => !names.has(key)).sort(byCodePoint)
-  if (extra.length > 0) throw new InvalidAnswer(`${where} has no field ${repr(extra[0]!)}`)
+  if (Object.keys(value).some((key) => !names.has(key))) {
+    throw new InvalidAnswer(`${where} has a field the question doesn't have`)
+  }
   const out: [string, unknown][] = []
   for (const f of fields) {
     const item = Object.hasOwn(value, f.name) ? value[f.name] : null
@@ -243,15 +246,4 @@ function json(text: string): unknown {
 /** Python's `isinstance(value, dict)` for a JSON value: an object that is not an array. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-/** Order strings by code point, as Python sorts them; JS's default sort compares UTF-16 units. */
-function byCodePoint(a: string, b: string): number {
-  const x = Array.from(a)
-  const y = Array.from(b)
-  for (let i = 0; i < Math.min(x.length, y.length); i++) {
-    const diff = x[i]!.codePointAt(0)! - y[i]!.codePointAt(0)!
-    if (diff !== 0) return diff
-  }
-  return x.length - y.length
 }

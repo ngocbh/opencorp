@@ -57,7 +57,7 @@ class Listings {
     this.calls.push(name)
     const llm = conn.llm_config ?? {}
     if (llm.api_key === REFUSED) return ownModels(conn, name, "HTTP 401", { refused: true })
-    if (llm.api_key === UNREACHABLE) return ownModels(conn, name, "can't reach acme.openai.azure.com")
+    if (llm.api_key === UNREACHABLE) return ownModels(conn, name, "can't reach host")
     const label = providerLabel(llm)
     if (Object.hasOwn(LISTS, label)) {
       return { connection: name, models: LISTS[label]!.map((id) => ({ id, name: null })), listed: true, error: null }
@@ -236,6 +236,120 @@ test("a model the listing doesnt offer gets a one reply check", async () => {
   expect(checks.calls.at(-1)!.llm_config).toEqual({ provider: "openai", api_key: SENTINEL, model: "gpt5-prod" })
 })
 
+/** Those of `needles` that `text` holds, case-insensitively. */
+const leaks = (text: string, ...needles: string[]) =>
+  needles.filter((n) => text.toLowerCase().includes(n.toLowerCase()))
+
+/** The `model_refused` message for `body` when the one-reply check answers `problem`. */
+async function refusedWith(body: Record<string, unknown>, problem: string): Promise<string> {
+  const { office, sock, checks } = await setup()
+  const owner = await asOwner(office)
+  checks.problems.push(problem)
+  const r = await post(sock, "/connections", owner, body)
+  expect([r.status, errorOf(r)]).toEqual([422, "model_refused"])
+  expect(checks.calls).toHaveLength(1)
+  return (r.json() as { message: string }).message
+}
+
+test("a model that doesnt answer never quotes the azure resource it was named", async () => {
+  const body = { provider: "azure", endpoint: "sk-AzureRes-KEY123", api_key: SENTINEL, model: "gpt-5.4-x" }
+  const problem = "openai request failed (connection): getaddrinfo ENOTFOUND sk-azureres-key123.openai.azure.com"
+  const message = await refusedWith(body, problem)
+  expect(message).toBe(
+    "The model didn't answer: openai request failed (connection): getaddrinfo ENOTFOUND the endpoint",
+  )
+  expect(leaks(message, "sk-AzureRes-KEY123")).toEqual([])
+})
+
+test("a model that doesnt answer never quotes the endpoint url, even at a sentence's end", async () => {
+  const endpoint = " https://Sk-Pasted-SECRET9.example.invalid/v1 "
+  const body = { provider: "openai", endpoint, api_key: SENTINEL, model: "m1" }
+  const problem =
+    "request to https://sk-pasted-secret9.example.invalid/v1/chat/completions failed, " +
+    "ENOTFOUND sk-pasted-secret9.example.invalid."
+  const message = await refusedWith(body, problem)
+  expect(message).toBe(
+    "The model didn't answer: request to the endpoint/chat/completions failed, ENOTFOUND the endpoint.",
+  )
+  expect(leaks(message, "Sk-Pasted-SECRET9")).toEqual([])
+})
+
+test("a model that doesnt answer never quotes the path of an endpoint that ends in a slash", async () => {
+  const body = { provider: "openai", endpoint: "https://gw.example/team-sk-123/v1/", api_key: SENTINEL, model: "m1" }
+  const problem = "request to https://gw.example/team-sk-123/v1/chat/completions failed"
+  const message = await refusedWith(body, problem)
+  expect(message).toBe("The model didn't answer: request to the endpoint/chat/completions failed")
+  expect(leaks(message, "team-sk-123")).toEqual([])
+})
+
+test("a model that doesnt answer never quotes the endpoint in its normalized form", async () => {
+  const body = { provider: "openai", endpoint: "https://gw.example.com:443/team-sk-123/v1/", api_key: SENTINEL, model: "m1" }
+  const problem = "request to https://gw.example.com/team-sk-123/v1/chat/completions failed"
+  const message = await refusedWith(body, problem)
+  expect(message).toBe("The model didn't answer: request to the endpoint/chat/completions failed")
+  expect(leaks(message, "team-sk-123")).toEqual([])
+})
+
+test("a model id with no letter or digit is left as is", async () => {
+  const body = { provider: "openai", api_key: SENTINEL, model: "-" }
+  const message = await refusedWith(body, "model - not found; try gpt-5-mini")
+  expect(message).toBe("The model didn't answer: model - not found; try gpt-5-mini")
+})
+
+test("an azure resource is replaced even where another host continues it", async () => {
+  const body = { provider: "azure", endpoint: "sk-AzureRes-KEY123", api_key: SENTINEL, model: "gpt-5.4-x" }
+  const message = await refusedWith(body, "getaddrinfo ENOTFOUND sk-azureres-key123.cognitiveservices.azure.com")
+  expect(message).toBe("The model didn't answer: getaddrinfo ENOTFOUND the endpoint.cognitiveservices.azure.com")
+  expect(leaks(message, "sk-AzureRes-KEY123")).toEqual([])
+})
+
+test("a model that doesnt answer never quotes the model it was named", async () => {
+  const body = { provider: "openai", api_key: SENTINEL, model: "sk-Model-SECRET1" }
+  const message = await refusedWith(body, "Error code: 404 - The model `sk-Model-SECRET1` does not exist")
+  expect(message).toBe("The model didn't answer: Error code: 404 - The model `the model` does not exist")
+})
+
+test("a model id that ends in punctuation is replaced before whatever follows it", async () => {
+  const body = { provider: "openai", api_key: SENTINEL, model: "sk-Org-SECRET2/" }
+  const message = await refusedWith(body, "model sk-org-secret2/latest not found")
+  expect(message).toBe("The model didn't answer: model the modellatest not found")
+})
+
+test("a short model id is replaced only where it stands alone", async () => {
+  const body = { provider: "google", api_key: SENTINEL, model: "o3" }
+  const message = await refusedWith(body, "model o3 not found; try o3-mini")
+  expect(message).toBe("The model didn't answer: model the model not found; try o3-mini")
+})
+
+test("a single-label host is replaced wherever it stands alone", async () => {
+  // On purpose: the host is the endpoint the request named, so the word it equals goes too.
+  const body = { provider: "openai", endpoint: "https://openai:8000/v1", api_key: SENTINEL, model: "m1" }
+  const message = await refusedWith(body, "openai request failed (connection): getaddrinfo ENOTFOUND openai")
+  expect(message).toBe(
+    "The model didn't answer: the endpoint request failed (connection): getaddrinfo ENOTFOUND the endpoint",
+  )
+})
+
+test("an endpoint with credentials is refused before the check, unquoted", async () => {
+  const { office, sock, checks } = await setup()
+  const owner = await asOwner(office)
+  const endpoint = "https://user:pw-SECRET@sk-host-KEY4.example.invalid/v1"
+  const r = await post(sock, "/connections", owner, { provider: "openai", endpoint, api_key: SENTINEL, model: "m1" })
+  expect([r.status, errorOf(r)]).toEqual([422, "invalid_connection"])
+  expect(leaks(r.text, "sk-host-KEY4", "pw-SECRET")).toEqual([])
+  expect(checks.calls).toEqual([])
+})
+
+test("a default model that doesnt answer has nothing scrubbed", async () => {
+  const before = LISTS.openai!
+  LISTS.openai = ["o3"]
+  onTestFinished(() => {
+    LISTS.openai = before
+  })
+  const message = await refusedWith({ provider: "openai", api_key: SENTINEL }, "getaddrinfo ENOTFOUND api.openai.com")
+  expect(message).toBe("The model 'gpt-5.5' didn't answer: getaddrinfo ENOTFOUND api.openai.com; name another model")
+})
+
 test("azure needs an endpoint and gets its v1 url", async () => {
   const { office, sock, checks } = await setup()
   const owner = await asOwner(office)
@@ -359,9 +473,10 @@ test("azure that cant list needs a model to check", async () => {
     {
       error: "models_unlisted",
       message:
-        "Couldn't list the deployments (can't reach acme.openai.azure.com); name a model to check it with one reply",
+        "Couldn't list the deployments (can't reach host); name a model to check it with one reply",
     },
   ])
+  expect(r.text.toLowerCase()).not.toContain("acme.openai.azure.com")
   expect(checks.calls).toEqual([])
   onlyOffice(office)
   r = await post(sock, "/connections", owner, { ...body, model: "gpt-5.4" })
@@ -657,10 +772,11 @@ test("models route lists and unknown connection is 404", async () => {
       connection: "acme",
       models: [{ id: "gpt-5.4", name: null }],
       listed: false,
-      error: "can't reach acme.openai.azure.com",
+      error: "can't reach host",
     },
   ])
   expect(r.text).not.toContain(UNREACHABLE)
+  expect(r.text.toLowerCase()).not.toContain("acme.openai.azure.com")
   r = await get(sock, "/connections/nope/models", ava)
   expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
 })
