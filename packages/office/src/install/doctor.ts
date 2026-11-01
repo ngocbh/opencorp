@@ -1,5 +1,5 @@
-/** `opencorp doctor`: check the office home (there and private), company repo, provider and connections, service,
- *  daemon, HQ, sandbox, worked folders, and Codex. */
+/** `opencorp doctor`: check the office home (there and private), company repo, provider and connections, the run and
+ *  session folders (writable), service, daemon, HQ, sandbox, worked folders, and Codex. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -276,6 +276,43 @@ function connectionsCheck(paths: OfficePaths, lstat: (p: string) => fs.Stats): C
   ]
   if (problems.length) return { name: "connections", status: "fail", detail: problems.join("; ") }
   return { name: "connections", status: "ok", detail: `${folder} is private` }
+}
+
+/** Whether the office can write `folder` (office/runs, office/sessions), as check `name`, or make it under its
+ *  nearest folder that exists when it doesn't exist yet; null when there is no office home at `home`. */
+function writableFolderCheck(name: string, folder: string, home: string): Check | null {
+  if (!fs.existsSync(home)) return null
+  const fail = (detail: string): Check => ({ name, status: "fail", detail })
+  const access = fs.constants.W_OK | fs.constants.X_OK
+  let st: fs.Stats
+  try {
+    st = fs.statSync(folder)
+  } catch (error) {
+    const code = errnoCode(error)
+    if (code === undefined) throw error
+    if (code !== "ENOENT") return fail(`can't read ${folder}: ${strerror(error) ?? code}`)
+    // Init doesn't make it: the office does, at the first run or session.
+    let parent = path.dirname(folder)
+    while (parent !== home && !fs.existsSync(parent)) parent = path.dirname(parent)
+    try {
+      if (!fs.statSync(parent).isDirectory()) return fail(`can't make ${folder}: ${parent} is not a directory`)
+      fs.accessSync(parent, access)
+    } catch (error) {
+      const code = errnoCode(error)
+      if (code === undefined) throw error
+      return fail(`can't make ${folder}: ${strerror(error) ?? code}`)
+    }
+    return { name, status: "ok", detail: `${folder} doesn't exist yet; the office makes it` }
+  }
+  if (!st.isDirectory()) return fail(`${folder} is not a directory`)
+  try {
+    fs.accessSync(folder, access)
+  } catch (error) {
+    const code = errnoCode(error)
+    if (code === undefined) throw error
+    return fail(`can't write ${folder}: ${strerror(error) ?? code}`)
+  }
+  return { name, status: "ok", detail: folder }
 }
 
 /** Whether systemd keeps this user's services running after logout; null if `loginctl` can't say. */
@@ -952,6 +989,13 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   found.push(await providerCheck(paths))
   const added = connectionsCheck(paths, lstat)
   if (added !== null) found.push(added)
+  for (const [name, folder] of [
+    ["runs", paths.runs],
+    ["sessions", paths.sessions],
+  ] as const) {
+    const writable = writableFolderCheck(name, folder, paths.home)
+    if (writable !== null) found.push(writable)
+  }
   found.push(await serviceCheck(run, host))
   const sock = lstatOrNull(lstat, run.socket)
   if (sock !== null && !sock.isSocket()) {

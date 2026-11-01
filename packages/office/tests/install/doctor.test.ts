@@ -465,6 +465,69 @@ test("a home or office that is a regular file is reported not thrown", async () 
   })
 })
 
+test("runs and sessions folders that don't exist yet are ok", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, { llm_config: { provider: "openai" } })
+  const found = await runChecks(dir, paths)
+  const got = byName(found)
+  expect(got.runs).toEqual({ name: "runs", status: "ok", detail: `${paths.runs} doesn't exist yet; the office makes it` })
+  expect(got.sessions!.status).toBe("ok")
+  expect(found.map((c) => c.name).slice(3, 7)).toEqual(["connections", "runs", "sessions", "service"])
+  expect(doctor.exitCode(found)).toBe(0)
+  fs.mkdirSync(paths.runs, { mode: 0o700 })
+  expect(byName(await runChecks(dir, paths)).runs).toEqual({ name: "runs", status: "ok", detail: paths.runs })
+})
+
+for (const name of ["runs", "sessions"] as const) {
+  test(`a ${name} path that is a file fails`, async () => {
+    const dir = tempDir()
+    const paths = await onboarded(dir)
+    fs.writeFileSync(paths[name], "")
+    expect(byName(await runChecks(dir, paths))[name]).toEqual({
+      name,
+      status: "fail",
+      detail: `${paths[name]} is not a directory`,
+    })
+  })
+
+  test.skipIf(process.getuid?.() === 0)(`a ${name} folder the office can't write fails`, async () => {
+    const dir = tempDir()
+    const paths = await onboarded(dir)
+    fs.mkdirSync(paths[name], { mode: 0o500 })
+    try {
+      expect(byName(await runChecks(dir, paths))[name]).toEqual({
+        name,
+        status: "fail",
+        detail: `can't write ${paths[name]}: Permission denied`,
+      })
+    } finally {
+      fs.chmodSync(paths[name], 0o700)
+    }
+  })
+
+  test.skipIf(process.getuid?.() === 0)(`an office folder the office can't write fails a missing ${name} folder`, async () => {
+    const dir = tempDir()
+    const paths = await onboarded(dir)
+    fs.chmodSync(paths.office, 0o500)
+    try {
+      expect(byName(await runChecks(dir, paths))[name]).toEqual({
+        name,
+        status: "fail",
+        detail: `can't make ${paths[name]}: Permission denied`,
+      })
+    } finally {
+      fs.chmodSync(paths.office, 0o700)
+    }
+  })
+}
+
+test("a fresh machine has no runs or sessions row", async () => {
+  const dir = tempDir()
+  const got = byName(await runChecks(dir, new OfficePaths(path.join(dir, "home"))))
+  expect(got.runs).toBeUndefined()
+  expect(got.sessions).toBeUndefined()
+})
+
 test("a connection removed during the check is skipped", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir, PROVIDER)
