@@ -169,6 +169,9 @@ interface Fresh {
 /** The run statuses that end a run, whose report waits for the run index. */
 const ENDING: readonly string[] = ["succeeded", "failed", "cancelled"]
 
+/** The worker events that say its run started or runs again. */
+const STARTS: readonly string[] = ["RunStarted", "RunResumed", "NodeStarted", "NodeWoken"]
+
 /** What an office tool call answers when Esc, End, the worker's exit or the office stop cuts it before it returns. */
 export const INTERRUPTED_CALL = "interrupted; outcome unknown"
 
@@ -358,6 +361,10 @@ export class SessionActor implements LiveCalls {
   /** The turn take that succeeded most recently, by run and loop iteration: a failed fold recovers only once its
    *  turn has taken its messages. */
   #took: { runId: string; iteration: number } | null = null
+  /** The run this actor saw start (a start or wake frame of its worker, or restore reading its log), or null. */
+  #seenStart: string | null = null
+  /** Whether a run's log was lost after it started (`#logGone`) since the last `waiting` or `succeeded` result. */
+  #lostLog = false
   /** The runs whose hard stop waits for the lingering worker's exit. */
   #stopAfterExit: string[] = []
   /** The `cancel` the finish sent through the live worker, by delivery id, and its run; null when none was sent. */
@@ -935,6 +942,7 @@ export class SessionActor implements LiveCalls {
     let inspection: RunInspection | null = null
     try {
       inspection = inspectRun(this.#logOf(runId))
+      this.#seenStart = runId
     } catch (error) {
       this.#log(`session ${this.sessionId}: its run's log can't be read (${errorName(error)})`)
     }
@@ -1428,6 +1436,9 @@ export class SessionActor implements LiveCalls {
         if (replace === null && why === NEW_MODEL && !removed && note !== null) {
           store.updateSession(sid, { model_note: note })
         }
+        if (replace === null && why === COULDNT_RESUME) {
+          this.#notice("This chat's earlier messages are gone (its run log was deleted); a fresh run answers without them.")
+        }
         seed = await this.#seed(session)
         // Read before the replace moves `#runId`: the old run's stored answers no delivery carries.
         const unread = this.#unreadAnswers(pendings)
@@ -1645,13 +1656,20 @@ export class SessionActor implements LiveCalls {
 
   /**
    * Why run `runId` can't be advanced on connection `name` and `model`, which give `provider`, so that a fresh run
-   * replaces it: `COULDNT_START` when it never started (its row has no config, or it has no log), `NEW_MODEL` when it
-   * ran on another connection or model, or `provider` isn't the endpoint, key or config it had (an advance would
-   * replay them with whatever it is given); null when it can be advanced.
+   * replaces it: `COULDNT_START` when it never started (its row has no config, or it has no log and this actor never
+   * saw it start), `COULDNT_RESUME` when this actor saw it start and its log is gone, `NEW_MODEL` when it ran on
+   * another connection or model, or `provider` isn't the endpoint, key or config it had (an advance would replay them
+   * with whatever it is given); null when it can be advanced.
    */
   #recordCheck(runId: string, name: string, model: string | null, provider: Provider): string | null {
     const row = this.#ctx.store.getRun(runId)
-    if (row === undefined || row.configSha256 === null || !fs.existsSync(this.#logOf(runId))) return COULDNT_START
+    if (row === undefined || row.configSha256 === null) return COULDNT_START
+    if (!fs.existsSync(this.#logOf(runId))) {
+      // A chat run's config is stored before its worker starts, so only a start this actor saw tells the two apart.
+      if (this.#seenStart !== runId) return COULDNT_START
+      this.#log(`session ${this.sessionId}: its run's log is gone`)
+      return COULDNT_RESUME
+    }
     if ((row.connection ?? OFFICE) !== name || row.model !== model) return NEW_MODEL
     // The provider in hand, not a second read: that is what the advance would be given.
     if (runRecord(name, model, provider).configSha256 !== row.configSha256) return NEW_MODEL
@@ -1660,8 +1678,11 @@ export class SessionActor implements LiveCalls {
 
   /** What a fresh run of `session` takes its history from: the newest of its runs that has a log, read with the
    *  office's allowed environment and that run's connection's (none when it can't be resolved now), and cancelled
-   *  if it hasn't finished; null when no run has a log. */
+   *  if it hasn't finished; null when no run has a log, or when the current run started and its log is gone. */
   async #seed(session: SessionRecord): Promise<Seed | null> {
+    const current = this.#runId
+    // Its own turns are gone, so an older run's history would be stale context.
+    if (current !== null && this.#seenStart === current && !fs.existsSync(this.#logOf(current))) return null
     const runId = session.run_ids.findLast((id) => fs.existsSync(this.#logOf(id)))
     if (runId === undefined) return null
     const env = (await this.#ranProvider(runId))?.env ?? {}
@@ -1963,6 +1984,8 @@ export class SessionActor implements LiveCalls {
       return
     }
     if (this.#finished) return
+    // A waiting run's advance writes no RunResumed, so its node frames count too.
+    if (STARTS.includes(String(frame.name))) this.#seenStart = run.runId
     if (this.#nodes.apply(String(frame.name), data)) this.#ctx.runChanged?.(run.runId)
     const node = typeof data.node_id === "string" ? data.node_id : null
     switch (frame.name) {
@@ -2334,7 +2357,10 @@ export class SessionActor implements LiveCalls {
     if (status === "error" && run.capStopped && String(outcome!.message ?? "").startsWith(`Error: ${STOP_REASON}`)) {
       status = "stopped"
     }
-    if (status === "waiting" || status === "succeeded") this.#deaths = 0
+    if (status === "waiting" || status === "succeeded") {
+      this.#deaths = 0
+      this.#lostLog = false
+    }
     if (!busy) {
       this.#busyRetried = false
       this.#rested = status === "waiting"
@@ -2366,15 +2392,57 @@ export class SessionActor implements LiveCalls {
       await this.#notResumed(run)
     } else if (status === "failed" && this.#recovers(run, outcome!)) {
       await this.#replyFailed(run, outcome!)
+    } else if (status === "error" && this.#seenStart === run.runId && this.#logLost(run.runId)) {
+      await this.#logGone(run)
     } else {
-      const ended = status === "failed" ? failedAt(outcome!, run.provider) : status
-      this.#log(`session ${this.sessionId}: its run ended (${ended})`)
-      // An error before yian wrote a log (a flow that won't load): its worker couldn't start the run. With a log,
-      // how yian recorded the run stands, which an office end reason would hide.
-      const unstarted = status === "error" && run.kind === "chat" && !fs.existsSync(this.#logOf(run.runId))
-      this.#finish("failed", outcome, unstarted ? COULDNT_START : null, run)
+      const log = this.#logOf(run.runId)
+      const started = this.#seenStart === run.runId
+      const neverMade = status === "error" && !started && !fs.existsSync(log) ? `; its log ${log} was never made` : ""
+      const ended =
+        status === "error"
+          ? `error: ${errorType(outcome!)}${errnoOf(outcome!)}`
+          : status === "failed"
+            ? failedAt(outcome!, run.provider)
+            : status
+      this.#log(`session ${this.sessionId}: its run ended (${ended})${neverMade}`)
+      // An error frame isn't how yian ended the run, so the office records why.
+      const why = status === "error" ? (started ? WORKER_STOPPED : this.#cantStartWhy()) : null
+      this.#finish("failed", outcome, why, run)
     }
     this.#trySettle("after a worker exit")
+  }
+
+  /** Whether run `runId`'s log is gone or can't be read. Read only after a worker's error: it reads the whole log. */
+  #logLost(runId: string): boolean {
+    const log = this.#logOf(runId)
+    if (!fs.existsSync(log)) return true
+    try {
+      inspectRun(log)
+      return false
+    } catch {
+      return true
+    }
+  }
+
+  /**
+   * `run`'s worker failed after the run started, and its log is gone or can't be read, so no one can resume it: the
+   * session is told the reply failed, the run's questions go stale, what it never applied is carried, and the next
+   * spawn starts a fresh run (`COULDNT_RESUME`), at once when something waits for it. A second lost log before a
+   * `waiting` or `succeeded` result fails the session (`COULDNT_RESUME`).
+   */
+  async #logGone(run: WorkerRun): Promise<void> {
+    this.#log(`session ${this.sessionId}: its run's log is gone or can't be read`)
+    if (this.#lostLog) {
+      this.#finish("failed", null, COULDNT_RESUME, run)
+      return
+    }
+    this.#lostLog = true
+    this.#notice("The reply failed (its run log is gone or can't be read). Send your message again.")
+    // Nothing can answer them, so the session doesn't wait on them.
+    this.#staleQuestions([run.runId])
+    this.#carryFresh(run)
+    this.#unresumable = { why: COULDNT_RESUME, finished: null }
+    if (this.#next.length > 0 || this.#ending) await this.#spawnQuietly("advance")
   }
 
   /** Whether `run`'s failed result `outcome` failed at a reply node, or inside the turn's context once that turn's
@@ -2971,6 +3039,14 @@ function wakes(p: Pending): boolean {
 /** The error type an `error` frame names (its message reads `<type>: <message>`), never its message. */
 function errorType(frame: Frame): string {
   return typeName(String(frame.message ?? "").split(":", 1)[0])
+}
+
+/** `, <code> from <syscall>` for an `error` frame's errno fields that read as such (`, EACCES from mkdir`), `,
+ *  <code>` without a syscall, else "". */
+function errnoOf(frame: Frame): string {
+  const { code, syscall } = frame
+  if (typeof code !== "string" || !/^E[A-Z0-9]{1,30}$/.test(code)) return ""
+  return typeof syscall === "string" && /^[a-z_]{1,30}$/.test(syscall) ? `, ${code} from ${syscall}` : `, ${code}`
 }
 
 /** `value` when it reads as an error type's name, else `Error`: a log line carries nothing else a worker sent. */

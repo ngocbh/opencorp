@@ -8,7 +8,7 @@ import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { killGroup } from "../../src/install/proc.ts"
 import { type FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Job, JobInput } from "../../src/worker/job.ts"
-import { advanceAppended, EXIT_FAILED, notResumed } from "../../src/worker/main.ts"
+import { advanceAppended, errnoFields, EXIT_FAILED, notResumed } from "../../src/worker/main.ts"
 import type { WorkerHandlers } from "../../src/worker/rpc.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { openStore } from "../store/helpers.ts"
@@ -200,6 +200,23 @@ test("a delivery-only job on an unreadable log is not resumed", async () => {
     error_type: "RangeError",
     unreadable: true,
   })
+})
+
+test("a chat job whose runs folder is a file sends an error frame with its code and syscall", async () => {
+  const where = base()
+  fs.writeFileSync(where.runs, "")
+  const rec = await run(makeJob(where, "flows/inbox.yaml", { inputs: {} }), new Recorder())
+  expect(rec.outcome?.type).toBe("error")
+  expect(["ENOTDIR", "EEXIST"]).toContain(rec.outcome?.code as string)
+  expect(rec.outcome?.syscall).toBe("mkdir")
+})
+
+test("only an errno code and a syscall that read as one are kept", () => {
+  const error = (fields: Record<string, unknown>) => Object.assign(new Error("x"), fields)
+  expect(errnoFields(error({ code: "EACCES", syscall: "mkdir" }))).toEqual({ code: "EACCES", syscall: "mkdir" })
+  expect(errnoFields(error({ code: "rm -rf /", syscall: "mkdir /x" }))).toEqual({})
+  expect(errnoFields(error({ code: "ERR_INVALID_ARG_TYPE" }))).toEqual({})
+  expect(errnoFields("EACCES")).toEqual({})
 })
 
 test("a refusal after the advance appended a record is an error", () => {

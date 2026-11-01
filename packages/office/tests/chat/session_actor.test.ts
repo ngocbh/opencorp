@@ -27,10 +27,11 @@ import { writePrivate } from "../../src/secrets.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Delivery, STOP_REASON } from "../../src/worker/job.ts"
 import { type Worker, WorkerExists } from "../../src/worker/spawn.ts"
+import type { Frame } from "../../src/worker/channel.ts"
 import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
 import { CEO } from "../daemon/helpers.ts"
 import { fold } from "../harness/helpers.ts"
-import { waitFor } from "../helpers.ts"
+import { tempDir, waitFor } from "../helpers.ts"
 import {
   ASK_USER,
   ASKED,
@@ -60,6 +61,7 @@ import {
   status,
   TAKE,
   texts,
+  waitingChat,
   waitingResult,
 } from "./helpers.ts"
 
@@ -1622,6 +1624,182 @@ test("a run log with a bad line answers the next message from a fresh run", asyn
   expect(texts(o, sid)).toEqual(["one", "two"])
   expect(o.logs).toContainEqual(expect.stringContaining("its run's log can't be read (RangeError); a fresh run replaces it"))
   expect(o.logs.filter((line) => line.includes("has no recorded outcome") || line.includes("garbage"))).toEqual([])
+})
+
+/** An `error` frame as a worker sends it for a throw it didn't expect. */
+const ERROR_FRAME = { type: "error", message: "Error: x", traceback: "" }
+
+const LOG_LOST = "The reply failed (its run log is gone or can't be read). Send your message again."
+
+/** Session `sid` on `o`'s scripted workers, its first worker started and its run's `RunStarted` told. */
+async function startedScripted(o: ChatOffice): Promise<{ actor: SessionActor; sid: string; workers: ScriptedWorker[] }> {
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = workers[0]!
+  first.handlers.event(first.worker, { type: "event", name: "RunStarted", data: { run_id: actor.runId } })
+  return { actor, sid, workers }
+}
+
+/** Removes run `runId`'s folder, then has `scripted` send `frame` and exit 1. */
+function loseLogThenFail(o: ChatOffice, scripted: ScriptedWorker, runId: string, frame: Frame = ERROR_FRAME): void {
+  fs.rmSync(path.join(o.office.paths.runs, runId), { recursive: true, force: true })
+  scripted.handlers.error(scripted.worker, frame)
+  scripted.handlers.exited(scripted.worker, 1)
+}
+
+test("an error after a run started whose log is gone sleeps; the next message starts a fresh run", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, sid, workers } = await startedScripted(o)
+  const old = actor.runId!
+  const first = workers[0]!
+  await first.handlers.askUser(first.worker, ASKED, `${old}/c1`)
+  loseLogThenFail(o, first, old)
+  await waitFor(() => !actor.hasWorker && errors(o, sid).length > 0, { what: "the notice" })
+  expect(status(o, sid)).toBe("idle")
+  expect(errors(o, sid)).toEqual([LOG_LOST])
+  expect(o.office.store.listQuestions({ runId: old, status: "open" })).toEqual([])
+  expect(o.kinds).toEqual(["chat"])
+  expect(o.office.store.getRun(old)?.endReason).toBeNull()
+  void outcome(actor.prompt("again"))
+  await waitFor(() => workers.length === 2, { what: "the fresh run" })
+  expect(workers[1]!.job).toMatchObject({ kind: "chat", seed: null })
+  expect(workers[1]!.given().map((d) => d.op)).toEqual(["send"])
+  expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
+  expect(o.logs).toContainEqual(expect.stringContaining("its run's log is gone or can't be read"))
+})
+
+test("an error after a run started whose log is gone carries an unapplied message to a fresh run at once", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, workers } = await startedScripted(o)
+  const old = actor.runId!
+  const reply = outcome(actor.prompt("b"))
+  await waitFor(() => workers[0]!.deliveries.length === 1, { what: "the message" })
+  loseLogThenFail(o, workers[0]!, old)
+  await waitFor(() => workers.length === 2, { what: "the fresh run" })
+  const fresh = workers[1]!
+  expect(fresh.job.kind).toBe("chat")
+  expect(fresh.given().map((d) => d.op)).toEqual(["send"])
+  expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
+  const send = fresh.given()[0]!
+  fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: send.id, seq: 1 })
+  expect(await reply).toBe("queued")
+})
+
+test("an error before the run started fails it couldn't start; after it started with a readable log, worker stopped", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const never = await newSession(o)
+  const unstarted = makeActor(o, never)
+  await unstarted.start()
+  loseLogThenFail(o, workers[0]!, unstarted.runId!)
+  await waitFor(() => status(o, never) === "failed", { what: "the failure" })
+  expect(o.office.store.getRun(unstarted.runId!)?.endReason).toBe(COULDNT_START)
+
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const scripted = workers.at(-1)!
+  // A log yian can read, in place of the scripted worker's empty one.
+  const real = await waitingChat(fake, "chat", {}, { runs: tempDir(), runId })
+  fs.copyFileSync(real.log, path.join(o.office.paths.runs, runId, "log.jsonl"))
+  scripted.handlers.event(scripted.worker, { type: "event", name: "RunStarted", data: { run_id: runId } })
+  scripted.handlers.error(scripted.worker, ERROR_FRAME)
+  scripted.handlers.exited(scripted.worker, 1)
+  await waitFor(() => status(o, sid) === "failed", { what: "the failure" })
+  expect(o.office.store.getRun(runId)?.endReason).toBe(WORKER_STOPPED)
+  expect(errors(o, sid).filter((text) => text === LOG_LOST)).toEqual([])
+})
+
+test("a run log lost twice without a turn fails the session", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, sid, workers } = await startedScripted(o)
+  void outcome(actor.prompt("b"))
+  await waitFor(() => workers[0]!.deliveries.length === 1, { what: "the message" })
+  loseLogThenFail(o, workers[0]!, actor.runId!)
+  await waitFor(() => workers.length === 2, { what: "the fresh run" })
+  const fresh = workers[1]!
+  const runId = actor.runId!
+  fresh.handlers.event(fresh.worker, { type: "event", name: "RunStarted", data: { run_id: runId } })
+  loseLogThenFail(o, fresh, runId)
+  await waitFor(() => status(o, sid) === "failed", { what: "the failure" })
+  expect(o.office.store.getRun(runId)?.endReason).toBe(COULDNT_RESUME)
+  expect(workers.length).toBe(2)
+})
+
+test("a fresh run whose log can't be made fails once, and the log names the errno and the folder, not the message", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, sid, workers } = await startedScripted(o)
+  void outcome(actor.prompt("b"))
+  await waitFor(() => workers[0]!.deliveries.length === 1, { what: "the message" })
+  loseLogThenFail(o, workers[0]!, actor.runId!)
+  await waitFor(() => workers.length === 2, { what: "the fresh run" })
+  const runId = actor.runId!
+  const message = "Error: EACCES: permission denied, mkdir '/secret/x'"
+  loseLogThenFail(o, workers[1]!, runId, { type: "error", message, traceback: "", code: "EACCES", syscall: "mkdir" })
+  await waitFor(() => status(o, sid) === "failed", { what: "the failure" })
+  expect(o.office.store.getRun(runId)?.endReason).toBe(COULDNT_START)
+  expect(workers.length).toBe(2)
+  const log = path.join(o.office.paths.runs, runId, "log.jsonl")
+  expect(o.logs).toContainEqual(
+    `session ${sid}: its run ended (error: Error, EACCES from mkdir); its log ${log} was never made`,
+  )
+  expect(o.logs.filter((line) => line.includes("/secret"))).toEqual([])
+})
+
+test("an error frame's errno fields reach the log only when they read as one", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const frame = { type: "error", message: "Error: rm -rf", traceback: "", code: "rm -rf", syscall: "mkdir /x" }
+  loseLogThenFail(o, workers[0]!, actor.runId!, frame)
+  await waitFor(() => status(o, sid) === "failed", { what: "the failure" })
+  expect(o.logs).toContainEqual(expect.stringContaining("its run ended (error: Error); its log "))
+  expect(o.logs.filter((line) => line.includes("rm -rf") || line.includes("/x"))).toEqual([])
+})
+
+test("a run folder deleted between turns starts a fresh run, and the old run couldn't resume", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  expect(await say(o, actor, sid, "a")).toBe("one")
+  const old = actor.runId!
+  fs.rmSync(path.join(o.office.paths.runs, old), { recursive: true })
+  await actor.prompt("b")
+  await waitFor(() => texts(o, sid).includes("two") && status(o, sid) === "idle", { what: "the reply to b" })
+  expect(actor.runId).not.toBe(old)
+  expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
+  expect(o.logs).toContainEqual(`session ${sid}: its run's log is gone`)
+  expect(errors(o, sid)).toContain(
+    "This chat's earlier messages are gone (its run log was deleted); a fresh run answers without them.",
+  )
+})
+
+test("a deleted current run log isn't seeded from an older run", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, sid, workers } = await startedScripted(o)
+  const first = workers[0]!
+  first.handlers.result(first.worker, notResumed(actor.runId!))
+  first.handlers.exited(first.worker, 1)
+  await waitFor(() => workers.length === 2, { what: "the fresh run" })
+  const fresh = workers[1]!
+  const runId = actor.runId!
+  expect(fresh.job.seed).not.toBeNull()
+  fresh.handlers.event(fresh.worker, { type: "event", name: "RunStarted", data: { run_id: runId } })
+  fresh.handlers.result(fresh.worker, waitingResult(runId))
+  fresh.handlers.exited(fresh.worker, 0)
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "the run to rest" })
+  fs.rmSync(path.join(o.office.paths.runs, runId), { recursive: true })
+  void outcome(actor.prompt("c"))
+  await waitFor(() => workers.length === 3, { what: "the next fresh run" })
+  expect(workers[2]!.job).toMatchObject({ kind: "chat", seed: null })
+  expect(o.office.store.getRun(runId)?.endReason).toBe(COULDNT_RESUME)
 })
 
 /** A `not_resumed` result frame of run `runId`. */

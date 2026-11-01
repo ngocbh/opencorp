@@ -251,6 +251,16 @@ export function unreadableLog(error: unknown): string | null {
   return error instanceof RangeError ? errorName(error) : null
 }
 
+/** The errno `code` (`EACCES`) and `syscall` (`mkdir`) of a failed system call, each only when it reads as one: the
+ *  office may log them, never the error's message. */
+export function errnoFields(error: unknown): { code?: string; syscall?: string } {
+  const { code, syscall } = (typeof error === "object" && error !== null ? error : {}) as NodeJS.ErrnoException
+  return {
+    ...(typeof code === "string" && /^E[A-Z0-9]{1,30}$/.test(code) ? { code } : {}),
+    ...(typeof syscall === "string" && /^[a-z_]{1,30}$/.test(syscall) ? { syscall } : {}),
+  }
+}
+
 /** The record kinds an `advance` starts each of its appends with; no delivery writes any of them. */
 const ADVANCE_KINDS = ["run_resumed", "node_woken", "node_started"]
 
@@ -417,8 +427,9 @@ function nextOf(previous: Job, job: Job): boolean {
  *
  * Each delivery (the job's `deliver` list first, then each `deliver` frame) is applied to the run with a yian host
  * call once the run has started, in order, and answered by one `deliver_reply`; ones the run can't take because it
- * never started are refused `not_started`. The last frame is `result` (or `error`), sent once every delivery received
- * so far is answered. After it the worker keeps applying and answering deliveries until the office closes its side
+ * never started are refused `not_started`. The last frame is `result` (or `error`: `{type: "error", message,
+ * traceback}`, with the errno `code` and `syscall` of a failed system call), sent once every delivery received so far
+ * is answered. After it the worker keeps applying and answering deliveries until the office closes its side
  * (or `linger` ms pass). A run's result is `{type: "result", status, run_id, output, failure, waits}`, or, for an
  * advance yian refused before it appended anything, `{type: "result", status: "not_resumed", run_id, error_type}`; an
  * advance or delivery job whose log is gone or can't be read sends that result with `unreadable: true`, and refuses its
@@ -536,7 +547,12 @@ async function serveJob(
     code = EXIT_OK
   } catch (error) {
     deliveries.refuse()
-    last = { type: "error", message: `${errorName(error)}: ${errorMessage(error)}`, traceback: stackFrames(error) }
+    last = {
+      type: "error",
+      message: `${errorName(error)}: ${errorMessage(error)}`,
+      traceback: stackFrames(error),
+      ...errnoFields(error),
+    }
     code = EXIT_FAILED
   }
   state.finished = true
