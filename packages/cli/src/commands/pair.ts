@@ -55,11 +55,25 @@ const webPort = (port: number) => (port ? `HQ's web port ${port}` : "HQ's web po
 const APP_MISSING = "HQ's web app isn't built, so the link won't load yet; `opencorp doctor` says why."
 const NO_SOCKET = "(HQ's socket isn't listening here, so there's no fallback through it; `opencorp doctor` says why.)"
 
+/** How to turn TCP on in `hqJson`: fix the file when GET /hq's `warnings` say it was ignored, else add the key. */
+const tcpOn = (hqJson: string, warnings: readonly string[]) =>
+  warnings.some((w) => w.startsWith(SETTINGS_IGNORED))
+    ? `fix ${shellWord(hqJson)} so it has "tcp": true`
+    : `add "tcp": true to ${shellWord(hqJson)}`
+
+/** How to move HQ's web port off `port`, which another program holds, by setting another in `hqJson`. */
+const otherPortHint = (port: number, hqJson: string) => [
+  `If another program holds port ${port}, set "port" in ${shellWord(hqJson)} to a free one, for ` +
+    `example {"port": ${otherPort(port)}}, or 0 for any free port (its URL then changes with each restart).`,
+  // On Linux the file holds "tcp": true, so replacing it would turn the web port off.
+  "Create the file if it doesn't exist; keep any keys it already has. Then run `opencorp restart`.",
+]
+
 /**
  * Why HQ can't be reached at all: hq.sock isn't listening (`socketError`) and neither is its web port (`tcp`, or null
- * when it stopped listening after HQ's status was read), with how to fix it.
+ * when it stopped listening after HQ's status was read), with GET /hq's `warnings` and how to fix it.
  */
-function unreachable(socketError: string, tcp: HqTcp | null, hqJson: string): string[] {
+function unreachable(socketError: string, tcp: HqTcp | null, warnings: readonly string[], hqJson: string): string[] {
   const state = !tcp
     ? "HQ's web port stopped listening just now"
     : !tcp.enabled
@@ -69,8 +83,10 @@ function unreachable(socketError: string, tcp: HqTcp | null, hqJson: string): st
         : `${webPort(tcp.port)} isn't listening yet`
   const lines = [`opencorp pair: HQ can't be reached: hq.sock isn't listening (${socketError}), and ${state}.`]
   // With hq.sock down, the web port is the only way in, over SSH too (by forwarding it).
-  if (tcp && !tcp.enabled)
-    lines.push(`To reach it over TCP, add "tcp": true to ${shellWord(hqJson)}, then run \`opencorp restart\`.`)
+  if (tcp && !tcp.enabled) {
+    lines.push(...warnings.map((w) => `  ${w}`))
+    lines.push(`To reach it over TCP, ${tcpOn(hqJson, warnings)}, then run \`opencorp restart\`.`)
+  } else if (tcp?.error && tcp.port) lines.push(...otherPortHint(tcp.port, hqJson))
   else if (!tcp || !tcp.error) lines.push("Run `opencorp pair` again once the web port is listening.")
   lines.push("`opencorp doctor` says more; run `opencorp restart` once that's fixed.")
   return lines
@@ -132,14 +148,7 @@ export function pairOutput(
       lines.push(`${webPort(tcp.port)} isn't listening (${tcp.error}); \`opencorp doctor\` says more.`)
     else lines.push(`${webPort(tcp.port)} isn't listening yet.`)
     // Here, another port is the fix; port 0 is never taken, so its error is a server that ended.
-    if (!ssh && tcp?.enabled && tcp.error && tcp.port)
-      lines.push(
-        `If another program holds port ${tcp.port}, set "port" in ${shellWord(o.hqJson)} to a free one, for ` +
-          `example {"port": ${otherPort(tcp.port)}}, or 0 for any free port ` +
-          "(its URL then changes with each restart).",
-        // On Linux the file holds "tcp": true, so replacing it would turn the web port off.
-        "Create the file if it doesn't exist; keep any keys it already has. Then run `opencorp restart`.",
-      )
+    if (!ssh && tcp?.enabled && tcp.error && tcp.port) lines.push(...otherPortHint(tcp.port, o.hqJson))
     lines.push(
       "On the machine with your browser, forward HQ's socket:",
       forward(local, shellWord(code.socket), o.host),
@@ -148,11 +157,7 @@ export function pairOutput(
       `(hq.sock takes any port, so any free local port works in place of ${local}.)`,
     )
     if (!ssh && tcp && !tcp.enabled)
-      lines.push(
-        warnings.some((w) => w.startsWith(SETTINGS_IGNORED))
-          ? `To open it here instead, fix ${shellWord(o.hqJson)} so it has "tcp": true, then run \`opencorp restart\`.`
-          : `To open it here instead, add "tcp": true to ${shellWord(o.hqJson)}, then run \`opencorp restart\`.`,
-      )
+      lines.push(`To open it here instead, ${tcpOn(o.hqJson, warnings)}, then run \`opencorp restart\`.`)
   }
   lines.push(`(In place of ${o.host}, use however you reach this machine.)`)
   return { lines }
@@ -198,7 +203,7 @@ export async function pair(argv: string[], deps: PairDeps = realPairDeps): Promi
     const tcp = status?.tcp
     const socketError = status?.socket_error ?? null
     if (socketError && tcp?.listening === false) {
-      for (const line of unreachable(socketError, tcp, hqJson)) deps.error(line)
+      for (const line of unreachable(socketError, tcp, status?.warnings ?? [], hqJson)) deps.error(line)
       return 1
     }
     // A redirect file only when it will be opened: otherwise it would sit in the office dir until it expires. A link
@@ -209,7 +214,7 @@ export async function pair(argv: string[], deps: PairDeps = realPairDeps): Promi
     })
     if (!code.url && socketError) {
       // The web port stopped listening after the read. The code isn't shown, has no file and expires unused.
-      for (const line of unreachable(socketError, null, hqJson)) deps.error(line)
+      for (const line of unreachable(socketError, null, [], hqJson)) deps.error(line)
       return 1
     }
     const out = pairOutput(code, {

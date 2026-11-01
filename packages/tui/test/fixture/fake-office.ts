@@ -192,9 +192,17 @@ export function createFakeOffice(
     profileMaxChars?: number
     /**
      * HQ's TCP listener: off by default; on, it listens unless `listening` is false (`error` says why not). The web
-     * app is built unless `app` is false; `socketError` is why hq.sock isn't listening.
+     * app is built unless `app` is false; `socketError` is why hq.sock isn't listening; `warnings` are GET /hq's.
      */
-    hq?: { tcp?: boolean; listening?: boolean; port?: number; error?: string; app?: boolean; socketError?: string }
+    hq?: {
+      tcp?: boolean
+      listening?: boolean
+      port?: number
+      error?: string
+      app?: boolean
+      socketError?: string
+      warnings?: string[]
+    }
   } = {},
 ) {
   const nextId = counter()
@@ -770,7 +778,7 @@ export function createFakeOffice(
         app: hqOpts.app === false ? null : { build: "fake", api: "0.0.1+fake" },
       },
       socket_error: hqOpts.socketError ?? null,
-      warnings: [],
+      warnings: hqOpts.warnings ?? [],
     }
   }
   /** Refuses unless `handle` is a human and `actor` is them or the CEO: HQ's rule, the one for devices. */

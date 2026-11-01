@@ -432,6 +432,32 @@ test("with hq.sock dead and the web port taken or not up yet, it says why and ex
   expect(errors.join("\n")).not.toContain("pair#")
 })
 
+for (const env of [{}, { SSH_CONNECTION: "1 2 3 4" }] as Record<string, string>[])
+  test(`with hq.sock dead and hq.json ignored, it says to fix the file [${Object.keys(env)}]`, async () => {
+    const warning = "settings ignored, so the web port stays off until hq.json is fixed (restart to apply): x"
+    start({ tcp: false, socketError: "x", warnings: [warning] })
+    const { d, errors } = deps(env)
+    expect(await pair([], d)).toBe(1)
+    const said = errors.join("\n")
+    expect(errors).toContain(`  ${warning}`)
+    expect(said).toContain(`fix ${path.join(home, "office", "hq.json")} so it has "tcp": true`)
+    expect(said).not.toContain('add "tcp": true')
+  })
+
+for (const env of [{}, { SSH_CONNECTION: "1 2 3 4" }] as Record<string, string>[])
+  test(`with hq.sock dead and the web port taken, it says how to pick another port [${Object.keys(env)}]`, async () => {
+    start({ tcp: true, listening: false, error: "Address already in use", socketError: "x" })
+    const { d, errors } = deps(env)
+    expect(await pair([], d)).toBe(1)
+    expect(errors).toContain(
+      `If another program holds port 49380, set "port" in ${path.join(home, "office", "hq.json")} to a free one, ` +
+        'for example {"port": 49390}, or 0 for any free port (its URL then changes with each restart).',
+    )
+    expect(errors).toContain(
+      "Create the file if it doesn't exist; keep any keys it already has. Then run `opencorp restart`.",
+    )
+  })
+
 test("with hq.sock dead but TCP listening, it prints the URL locally and the TCP forward over SSH", async () => {
   start({ tcp: true, listening: true, socketError: "x" })
   let { d, printed } = deps()
