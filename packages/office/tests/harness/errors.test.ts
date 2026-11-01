@@ -462,6 +462,80 @@ test("a message codex says has no thread after another reloaded it goes to the n
   expect(calls(h, "initialize")).toHaveLength(2)
 })
 
+test("esc with a turn running, a message being sent and one queued marks the turn once", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  const old = live.process!
+  const [entered, enter] = gate()
+  const [opened, release] = gate()
+  spyOn(old.rpc!, "request").mockImplementation(async (_method, params) => {
+    if ((params as Entry).input[0].text === "two") {
+      enter()
+      await opened // answered once the reload's turn runs
+    }
+    throw unloaded()
+  })
+  const late = h.sessions.prompt(sid, "two")
+  await entered
+  expect(await h.sessions.prompt(sid, "one")).toBe("queued")
+  await waitFor(() => live.turnId !== null && !live.loading, { what: "the reload and its turn" })
+  const rpc = live.process!.rpc!
+  const real = rpc.request.bind(rpc)
+  const [steered, steer] = gate()
+  const [answered, answer] = gate()
+  spyOn(rpc, "request").mockImplementation(async (method, params, options) => {
+    const res = await real(method, params, options)
+    if (method === "turn/start") {
+      steer()
+      await answered // Codex took "two" as a steer of the running turn; its answer comes after the Esc
+    }
+    return res
+  })
+  release() // "two" goes to the new app-server, behind which "three" waits
+  await steered
+  expect(await h.sessions.prompt(sid, "three")).toBe("queued")
+  await h.sessions.interrupt(sid)
+  answer()
+  expect(await late).toBe("queued")
+  await waitFor(() => live.turnId === null && !live.loading && status(h, sid) === "idle", {
+    what: "the interrupted turn's end",
+  })
+  expect(calls(h, "turn/interrupt")).toEqual([{ threadId: "thr_1", turnId: "turn_1" }])
+  expect(texts(h, sid).join("\n").match(/\[interrupted\]/g)).toHaveLength(1)
+})
+
+test("esc with a message queued behind a load that fails writes the marker before the error", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  const old = live.process!
+  const [entered, enter] = gate()
+  const [opened, release] = gate()
+  spyOn(old.rpc!, "request").mockImplementation(async (_method, params) => {
+    if ((params as Entry).input[0].text === "two") {
+      enter()
+      await opened // still waiting on Codex when the reload fails
+      throw new RpcError(-32600, "busy")
+    }
+    throw unloaded()
+  })
+  const late = h.sessions.prompt(sid, "two")
+  await entered
+  h.fake.script([], { initialize_delay: 0.5, resume_error: { code: -32600, message: "no rollout found" } })
+  expect(await h.sessions.prompt(sid, "one")).toBe("queued")
+  await h.sessions.interrupt(sid) // drops "one"; the marker waits for the turn "two" may start
+  await waitFor(() => errors(h, sid).length > 0, { what: "the failed reload" })
+  release()
+  await expect(late).rejects.toThrow("didn't take the message")
+  await waitFor(() => status(h, sid) === "idle", { what: "the refusal" })
+  const parts = messages(h, sid).flatMap((m) => m.parts)
+  expect(parts.at(-1)!.type).toBe("error")
+  expect(errors(h, sid)).toHaveLength(1)
+  expect(texts(h, sid).join("\n").match(/\[interrupted\]/g)).toHaveLength(1)
+})
+
 test("a message codex says has no thread while the session ends starts no load", async () => {
   const h = makeCodex({ endWaitMs: 1000 })
   h.fake.script([[{ sleep: 30 }]])

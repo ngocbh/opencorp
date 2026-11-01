@@ -137,14 +137,12 @@ export class CodexSession {
   #sending = 0
   /** The app-server that took a `turn/start` whose `turn/started` isn't handled yet. */
   #unstarted: CodexProcess | null = null
-  /** `turn/started` and `turn/completed` notifications handled, to tell whether one came during a `turn/start`. */
-  #turnEvents = 0
-  /** Esc came while a message was being sent and its turn wasn't known yet: that turn is interrupted once it starts. */
-  #interruptWanted = false
-  /** That Esc also dropped queued messages, which get the interrupt marker if no turn starts to carry it. */
-  #markOwed = false
-  /** The last turn Codex said completed, so a `turn/start` answer naming another turn is known to start a new one. */
-  #lastEnded: string | null = null
+  /** The turns a `turn/started` or `turn/completed` was handled for, so a `turn/start` answer naming another one is
+   *  known to start a new turn. */
+  readonly #seenTurns = new Set<string>()
+  /** Esc came while a message was being sent and its turn wasn't known yet: that turn is interrupted once it starts.
+   *  `mark` when that Esc also dropped queued messages, which get the interrupt marker if no turn starts to carry it. */
+  #interruptWanted: { mark: boolean } | null = null
 
   constructor(owner: CodexSessions, session: SessionRecord, { author }: { author: string | null }) {
     this.owner = owner
@@ -207,10 +205,10 @@ export class CodexSession {
     if (!this.ending) {
       const starting = this.#startPending
       const queued = this.pending.length > 0
-      // A turn being started gets the marker once it is interrupted.
+      // A turn being started gets the marker once it is interrupted; a running one's turn/completed carries it, so
+      // only a turn not known yet owes it to what this drops.
       if (queued) this.#dropQueued({ mark: !starting })
-      if (starting && turn === null) this.#interruptWanted = true
-      if (queued && starting) this.#markOwed = true
+      if (starting && turn === null) this.#interruptWanted = { mark: queued || this.#interruptWanted?.mark === true }
       if (turn === null && !starting && !queued) this.#cancelTurnless()
     }
     if (turn !== null && proc !== null) await this.#interruptTurn(proc, turn)
@@ -264,7 +262,7 @@ export class CodexSession {
   /** Ends the transcript with the interrupt marker, for messages Esc dropped before any turn took them. */
   #markInterrupted(): void {
     // One marker covers everything dropped so far.
-    this.#markOwed = false
+    if (this.#interruptWanted !== null) this.#interruptWanted.mark = false
     // A turn id of its own each time: the translator closes an id only once.
     this.translator.turnCompleted(`queued-${newId()}`, "interrupted", null)
   }
@@ -272,10 +270,9 @@ export class CodexSession {
   /** Forgets an Esc waiting for a turn that won't start; the messages it dropped get their marker now, unless the
    *  office stopped (restore marks them) or the session closed. */
   #forgetInterrupt(): void {
-    this.#interruptWanted = false
-    if (!this.#markOwed || this.stopped || this.closed) return
-    this.#markInterrupted()
-    this.#settle()
+    const wanted = this.#interruptWanted
+    this.#interruptWanted = null
+    if (wanted?.mark && !this.stopped && !this.closed) this.#markInterrupted()
   }
 
   /** Ends the session: interrupts a running turn, closes the app-server, then ends through the hooks. */
@@ -288,8 +285,7 @@ export class CodexSession {
     this.ending = true
     this.pending = []
     this.#unstarted = null
-    this.#interruptWanted = false
-    this.#markOwed = false
+    this.#interruptWanted = null
     this.#stopTimer()
     const busy = this.turnId !== null
     this.store.updateSession(this.sessionId, notWaiting("ending"))
@@ -469,11 +465,12 @@ export class CodexSession {
     if (error instanceof CodexStartError || error instanceof RpcError || isTimeout(error))
       this.owner.log(`codex session ${this.sessionId} can't load its thread: ${error.message}${where}`)
     else this.owner.log(`codex session ${this.sessionId} can't load its thread (${nameOf(error)})${where}`)
+    // Before the error, which stays the last thing the transcript says.
+    this.#forgetInterrupt()
     this.translator.error(why(error))
     this.loading = false
     this.pending = []
     this.#unstarted = null
-    this.#forgetInterrupt()
     if (this.ending) return // the end posted meanwhile closes it
     if (this.#loaded) {
       // A reload: say why and wait for the next message.
@@ -516,20 +513,18 @@ export class CodexSession {
   }
 
   /** `turn/start`: a new turn, or a steer of the running one (Codex decides; `turn/started` says which, and the
-   *  answer naming a turn that hasn't completed says a new one started). `queued` when Codex had unloaded the thread:
-   *  the message waits for the reload. */
+   *  answer naming a turn not seen yet says a new one started). `queued` when Codex had unloaded the thread: the
+   *  message waits for the reload. */
   async #send(proc: CodexProcess, text: string, busy: boolean): Promise<"turn" | "steer" | "queued"> {
-    const events = this.#turnEvents
     this.#sending++
     this.#settle()
     try {
       const res = (await proc.rpc!.request("turn/start", { threadId: this.threadId, input: input(text) })) as Obj
       const named = typeof res?.turn?.id === "string" ? (res.turn.id as string) : null
-      // A new turn, unless Codex steered the running one or its turn/started was handled meanwhile: the session is
-      // busy until that comes. A turn that ended meanwhile doesn't count when the answer names another one, which
-      // is a turn Codex started from this message. The id is only compared: notifications alone set the turn.
-      if (this.turnId === null && (this.#turnEvents === events || (named !== null && named !== this.#lastEnded)))
-        this.#unstarted = proc
+      // A new turn, unless Codex steered a turn already seen (running, or ended meanwhile) or this one's turn/started
+      // was handled meanwhile: the session is busy until that comes. The id is only compared: notifications alone set
+      // the turn.
+      if (this.turnId === null && named !== null && !this.#seenTurns.has(named)) this.#unstarted = proc
     } catch (error) {
       if (error instanceof RpcError && NOT_LOADED.test(error.rpcMessage)) {
         this.#reload(proc, text)
@@ -583,13 +578,12 @@ export class CodexSession {
     if (proc !== this.process) return
     if (this.translator.notification(method, params)) return
     if (method === "turn/started") {
-      this.#turnEvents++
+      this.#seenTurns.add(params.turn.id)
       this.#unstarted = null
       this.#turnIs(params.turn.id)
       if (this.#interruptWanted && !this.ending) {
-        this.#interruptWanted = false
         // This turn's turn/completed carries the marker.
-        this.#markOwed = false
+        this.#interruptWanted = null
         // Esc came before Codex said which turn it started. Not awaited: a job never waits on Codex.
         const turn: string = params.turn.id
         void this.#interruptTurn(proc, turn).catch((error) =>
@@ -598,10 +592,9 @@ export class CodexSession {
       }
       if (!this.ending) this.#settle()
     } else if (method === "turn/completed") {
-      this.#turnEvents++
       this.#unstarted = null
       const turn = params.turn
-      this.#lastEnded = turn.id
+      this.#seenTurns.add(turn.id)
       this.translator.turnCompleted(turn.id, turn.status, turn.error ?? null)
       if (turn.id === this.turnId) this.#turnIs(null)
       this.#expireTurn(turn.id)
@@ -771,7 +764,6 @@ export class CodexSession {
   async #lost(proc: CodexProcess, said: string | null): Promise<void> {
     this.process = null
     this.#unstarted = null
-    this.#interruptWanted = false
     if (said === null) this.retiring = proc // office stop kills it while it is being closed
     const turn = this.turnId
     // The stored id stays until the turn is marked interrupted, so an office stop or a crash before that still

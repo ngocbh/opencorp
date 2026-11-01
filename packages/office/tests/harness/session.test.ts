@@ -657,6 +657,35 @@ test("esc after a turn ends while a steer is in flight interrupts the turn codex
   expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
 })
 
+test("a steer answered after its turn and a later one ended leaves the session idle", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 1 }], fc.agentMessage("m2", "Three")])
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  expect(await h.sessions.prompt(sid, "one")).toBe("turn")
+  await waitFor(() => live.turnId !== null, { what: "the first turn" })
+  const rpc = live.process!.rpc!
+  const real = rpc.request.bind(rpc)
+  const [steered, steer] = gate()
+  const [answered, answer] = gate()
+  spyOn(rpc, "request").mockImplementation(async (method, params, options) => {
+    const res = await real(method, params, options)
+    if (method === "turn/start" && (params as { input: { text: string }[] }).input[0]!.text === "two") {
+      steer()
+      await answered // Codex steered turn_1 with it; the answer comes after turn_2 ended too
+    }
+    return res
+  })
+  const sending = h.sessions.prompt(sid, "two")
+  await steered
+  await waitFor(() => live.turnId === null, { what: "the first turn's end" })
+  expect(await h.sessions.prompt(sid, "three")).toBe("turn")
+  await waitFor(() => texts(h, sid).includes("Three") && live.turnId === null, { what: "the second turn's end" })
+  answer()
+  expect(await sending).toBe("steer")
+  expect(status(h, sid)).toBe("idle")
+})
+
 test("office stop during a reload with a message queued stores busy and restore marks it", async () => {
   const h = makeCodex()
   const sid = await start(h, h.workspace)
