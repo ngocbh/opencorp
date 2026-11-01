@@ -1,7 +1,7 @@
 # The profile manager: the owner chats with it to edit one person's profile.md. It reads the
 # profile and proposes edits; the owner applies them from the profile view. It has the same
-# turn and reply node names and the same messages inbox as chat.yaml, so the office drives it
-# like a chat.
+# turn, context and reply node names and the same messages inbox as chat.yaml, so the office
+# drives it like a chat.
 id: profile_manager
 name: profile_manager
 description: Edit a person's profile with the owner.
@@ -43,12 +43,6 @@ defs:
       turns: !int
       max_turns: !int
     nodes:
-      context:
-        kind: call
-        call: context
-        input:
-          summary: ${input.summary}
-          history: ${input.history}
       # The turn: everything sent since the last one. Messages read along with a close aren't answered.
       heard:
         kind: tool
@@ -60,7 +54,15 @@ defs:
         kind: case
         cases:
           - when: ${heard.output.events != [] and not heard.output.closed}
-            then: reply
+            then: context
+      # The fold sits after the take, so it runs only inside a person's turn: a finished turn rests
+      # idle, and an Esc or End during the fold stops that turn.
+      context:
+        kind: call
+        call: context
+        input:
+          summary: ${input.summary}
+          history: ${input.history}
       reply:
         kind: agent
         steer_inbox: ${input.messages}
@@ -85,8 +87,8 @@ defs:
     # The loop carries the messages inbox itself, so the output leaves it out. A close with nothing
     # queued appends an empty turn; the run ends right after.
     output:
-      summary: ${context.output.summary}
-      history: ${context.output.history + [heard.output.events + (reply.new_messages :- [])]}
+      summary: ${context.output?.summary :- input.summary}
+      history: ${(context.output?.history :- input.history) + [heard.output.events + (reply.new_messages :- [])]}
       closed: ${heard.output.closed}
       turns: ${input.turns + 1}
       max_turns: ${input.max_turns}

@@ -268,7 +268,7 @@ test("a live run shows a call without its result as running", async () => {
 
 test("a node that never called a model writes nothing", async () => {
   const fake = await fakeLlm()
-  fake.script({ content: "SUMMARY-OF-TURN-0" }, { content: "Hello." }, { content: "SUMMARY-OF-TURN-1" })
+  fake.script({ content: "SUMMARY-OF-TURN-0" }, { content: "Hello." })
   const history = [0, 1, 2, 3, 4].map((k) => [
     { role: "user", parts: [{ type: "text", text: `u${k}`.padEnd(8000, "u") }] },
     { role: "assistant", parts: [{ type: "text", text: `a${k}`.padEnd(8000, "a") }] },
@@ -276,7 +276,7 @@ test("a node that never called a model writes nothing", async () => {
   const runs = tempDir()
   const job = await waitingChat(fake, "chat", { history }, { runs })
   await advance(job, fake, [send("s1", "next")])
-  expect(fake.requests().length).toBe(3)
+  expect(fake.requests().length).toBe(2)
   expect(texts(messages(runs, newId(), ["r1"]))).toEqual([
     ["user", ["next"]],
     ["assistant", ["Hello."]],
@@ -492,7 +492,7 @@ test("a reply interrupted before it streamed text shows its cut call and the mar
 test("the transcript shows nothing of the runs inputs or other nodes", async () => {
   const hidden = "NOT-IN-THE-TRANSCRIPT"
   const fake = await fakeLlm()
-  fake.script({ content: `${hidden} 0` }, { content: "Hello." }, { content: `${hidden} 1` })
+  fake.script({ content: `${hidden} 0` }, { content: "Hello." })
   const history = [0, 1, 2, 3, 4].map((k) => [
     { role: "user", parts: [{ type: "text", text: `${hidden} u${k}`.padEnd(8000, "u") }] },
     { role: "assistant", parts: [{ type: "text", text: `${hidden} a${k}`.padEnd(8000, "a") }] },
@@ -501,7 +501,7 @@ test("the transcript shows nothing of the runs inputs or other nodes", async () 
   const inputs = { person: { ...PERSON, title: hidden }, summary: hidden, history }
   const job = await waitingChat(fake, "chat", inputs, { runs })
   await advance(job, fake, [send("s1", "next")])
-  expect(fake.requests().length).toBe(3)
+  expect(fake.requests().length).toBe(2)
   const log = fs.readFileSync(job.log, "utf8")
   expect(log).toContain(`${hidden} 0`) // the summariser's reply
   expect(log.split(hidden).length).toBeGreaterThan(10)

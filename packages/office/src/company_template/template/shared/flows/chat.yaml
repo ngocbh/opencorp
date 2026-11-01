@@ -1,7 +1,8 @@
 # A person's main chat: one LOOP iteration per turn. Each turn takes everything sent to `messages`
-# since the last one and the reply answers it; messages sent while the reply works steer it. Older
-# turns fold into `summary` through compact_history (yian's example); the kept turns ride in the LOOP
-# as `history`. The person's profile is memory on the reply. Closing `messages` ends the chat.
+# since the last one, then folds older turns into `summary` through compact_history (yian's example)
+# when the history is over budget, then the reply answers it; messages sent while the reply works
+# steer it. The kept turns ride in the LOOP as `history`. The person's profile is memory on the
+# reply. Closing `messages` ends the chat.
 id: chat
 name: chat
 description: Chat with a person in the office.
@@ -54,12 +55,6 @@ defs:
       turns: !int
       max_turns: !int
     nodes:
-      context:
-        kind: call
-        call: context
-        input:
-          summary: ${input.summary}
-          history: ${input.history}
       # The turn: everything sent since the last one. Messages read along with a close aren't answered.
       heard:
         kind: tool
@@ -71,7 +66,15 @@ defs:
         kind: case
         cases:
           - when: ${heard.output.events != [] and not heard.output.closed}
-            then: reply
+            then: context
+      # The fold sits after the take, so it runs only inside a person's turn: a finished turn rests
+      # idle, and an Esc or End during the fold stops that turn.
+      context:
+        kind: call
+        call: context
+        input:
+          summary: ${input.summary}
+          history: ${input.history}
       reply:
         kind: agent
         long_term_memory: profile
@@ -103,8 +106,8 @@ defs:
     output:
       person: ${input.person}
       talking_to: ${input.talking_to}
-      summary: ${context.output.summary}
-      history: ${context.output.history + [heard.output.events + (reply.new_messages :- [])]}
+      summary: ${context.output?.summary :- input.summary}
+      history: ${(context.output?.history :- input.history) + [heard.output.events + (reply.new_messages :- [])]}
       closed: ${heard.output.closed}
       turns: ${input.turns + 1}
       max_turns: ${input.max_turns}

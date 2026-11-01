@@ -87,7 +87,9 @@ test("every chat template takes its turns and steers from its messages inbox", (
       "!int",
       "!int",
     ])
-    expect(Object.keys(turn.nodes)).toEqual(["context", "heard", "route", "reply"])
+    expect(Object.keys(turn.nodes)).toEqual(["heard", "route", "context", "reply"])
+    expect(turn.nodes.route.cases[0].then).toBe("context")
+    expect(turn.output.summary).toBe("${context.output?.summary :- input.summary}")
     expect(flow.typedefs?.Msg).toBeUndefined()
     expect(flow.input).not.toHaveProperty("steers")
   }
@@ -268,29 +270,70 @@ test("a message read along with the close is kept unanswered", async () => {
   expect(said((rec.outcome?.output as Record<string, any>).history)).toEqual([["user", "bye"]])
 })
 
-test("a long history is folded into the summary before the reply", async () => {
+/** Five turns of 16,000 characters each: over the 32,000-character budget, so the next turn folds the oldest. */
+const LONG = [0, 1, 2, 3, 4].map((k) => [
+  { role: "user", parts: [{ type: "text", text: `u${k}`.padEnd(8000, "u") }] },
+  { role: "assistant", parts: [{ type: "text", text: `a${k}`.padEnd(8000, "a") }] },
+])
+
+/** True when the `index`th model request is the summarizer's. */
+function summarizes(fake: FakeLLM, index: number): boolean {
+  const [system] = requestMessages(fake, index)
+  return system!.role === "system" && String(system!.content).startsWith("You keep a running summary")
+}
+
+test.each([
+  ["chat", {}],
+  ["side_chat", { history_budget: 32000 }],
+  ["profile_manager", {}],
+])("a long history is folded into the summary before the reply [%s]", async (name, budget) => {
   const fake = await fakeLlm()
-  // The second turn starts over budget too, so it folds again beside its take.
-  fake.script({ content: "SUMMARY-OF-TURN-0" }, { content: "Hello." }, { content: "SUMMARY-OF-TURN-1" })
-  const turns = [0, 1, 2, 3, 4].map((k) => [
-    { role: "user", parts: [{ type: "text", text: `u${k}`.padEnd(8000, "u") }] },
-    { role: "assistant", parts: [{ type: "text", text: `a${k}`.padEnd(8000, "a") }] },
-  ])
-  const job = await waitingChat(fake, "chat", { history: turns })
-  expect(fake.requests().length).toBe(1)
-  const rec = await advance(job, fake, [send("s1", "next")])
+  fake.script({ content: "SUMMARY-OF-TURN-0" }, { content: "Hello." })
+  // The fold waits for a turn's take, so a run waiting at its first take has made no model call.
+  const job = await waitingChat(fake, name, { history: LONG, ...budget })
+  expect(fake.requests().length).toBe(0)
+  const rec = await advance(job, fake, [send("s1", "next")], name)
   expect(waitingAt(rec)).toEqual(["chat#1/heard"])
-  expect(fake.requests().length).toBe(3)
-  const [summarise, reply] = [requestMessages(fake, 0), requestMessages(fake, 1)]
-  expect(summarise[0]!.role).toBe("system")
-  expect(String(summarise[0]!.content).startsWith("You keep a running summary")).toBe(true)
+  expect(fake.requests().length).toBe(2)
+  expect(summarizes(fake, 0)).toBe(true)
+  const reply = requestMessages(fake, 1)
   expect(reply[0]!.role).toBe("system")
   expect(String(reply[0]!.content)).toContain("SUMMARY-OF-TURN-0")
+  if (name !== "chat") return
   expect(reply.slice(1)).toEqual([
-    ...turns.slice(1).flatMap(([user, assistant]) => [
+    ...LONG.slice(1).flatMap(([user, assistant]) => [
       { role: "user", content: user!.parts[0]!.text },
       { role: "assistant", content: assistant!.parts[0]!.text },
     ]),
     { role: "user", content: "next" },
   ])
+})
+
+test("an interrupt sent with a message over budget folds once and stops that turns reply", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "SUMMARY-OF-TURN-0" }, { content: "SUMMARY-OF-TURN-1" }, { content: "Hello." })
+  const job = await waitingChat(fake, "chat", { history: LONG })
+  const stop = { id: "cut", op: "interrupt", inbox: "messages" } as const
+  const stopped = await advance(job, fake, [send("s1", "next"), stop])
+  expect(fake.requests().length).toBe(1)
+  expect(summarizes(fake, 0)).toBe(true)
+  expect(succeeded(stopped, "chat#0/reply").map((reply) => [reply.interrupted, reply.output])).toEqual([[true, null]])
+  expect(waitingAt(stopped)).toEqual(["chat#1/heard"])
+  // The interrupted turn kept its fold: the next turn, still over budget, folds onto that summary.
+  const rec = await advance(job, fake, [send("s2", "two")])
+  expect(fake.requests().length).toBe(3)
+  expect(summarizes(fake, 1)).toBe(true)
+  expect(json(requestMessages(fake, 1))).toContain("SUMMARY-OF-TURN-0")
+  expect(String(requestMessages(fake, 2)[0]!.content)).toContain("SUMMARY-OF-TURN-1")
+  expect(requestMessages(fake, 2).at(-1)).toEqual({ role: "user", content: "two" })
+  expect(waitingAt(rec)).toEqual(["chat#2/heard"])
+})
+
+test("a close with a long history makes no model call", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Unused." })
+  const job = await waitingChat(fake, "chat", { history: LONG })
+  const rec = await advance(job, fake, [CLOSE])
+  expect(fake.requests()).toEqual([])
+  expect(rec.outcome?.status).toBe("succeeded")
 })
