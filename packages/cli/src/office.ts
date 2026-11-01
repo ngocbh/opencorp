@@ -13,7 +13,8 @@ import path from "node:path"
 export interface Deps {
   /** Runs `argv` in `cwd` with exactly `env` and this terminal's stdin, stdout and stderr; resolves to its exit
    *  code (128 + the signal's number for one a signal ended). Meanwhile it passes SIGTERM and SIGHUP on to it,
-   *  and SIGINT after INTERRUPT_GRACE_MS. */
+   *  and the first SIGINT after INTERRUPT_GRACE_MS (later ones aren't passed on, so a targeted repeat SIGINT never
+   *  reaches the install's rule that a repeat Ctrl-C exits at once; a terminal's repeat Ctrl-C still does). */
   spawn(argv: string[], options: { cwd: string; env: Record<string, string> }): Promise<number>
   /** The folder the install runs in (`selfSpawnCwd`); throws when the home folder doesn't exist. */
   spawnCwd(): string

@@ -10,7 +10,7 @@ import { restart } from "../src/commands/restart"
 import { start } from "../src/commands/start"
 import { stop } from "../src/commands/stop"
 import { main } from "../src/main"
-import { type Deps, install, installSpawn, officeAnswers, realDeps } from "../src/office"
+import { type Deps, INTERRUPT_GRACE_MS, install, installSpawn, officeAnswers, realDeps } from "../src/office"
 import { createFakeOffice } from "@opencorp/tui/fake-office"
 
 const WRAPPER = path.resolve(import.meta.dir, "../bin/opencorp")
@@ -264,7 +264,8 @@ test("a targeted sigint reaches the install after a grace", async () => {
   const sent = performance.now()
   process.kill(cli.pid, "SIGINT")
   expect(await cli.exited).toBe(130)
-  expect(performance.now() - sent).toBeGreaterThanOrEqual(1800)
+  // Less a little for the timer's slack.
+  expect(performance.now() - sent).toBeGreaterThanOrEqual(INTERRUPT_GRACE_MS - 200)
   expect(await waitGone(child)).toBe(true)
 }, 30_000)
 
@@ -295,7 +296,7 @@ fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))
   // A terminal sends Ctrl-C's SIGINT to its whole foreground group: the CLI and the install both.
   process.kill(-cli.pid, "SIGINT")
   expect(await cli.exited).toBe(130)
-  expect(performance.now() - sent).toBeLessThan(1800)
+  expect(performance.now() - sent).toBeLessThan(INTERRUPT_GRACE_MS - 200)
   expect(fs.readFileSync(countFile, "utf8")).toBe("1")
 }, 30_000)
 
