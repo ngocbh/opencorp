@@ -574,7 +574,8 @@ export class SessionActor implements LiveCalls {
     const author = by ?? (await this.#owner(session))
     const reply = this.#replyNow(session)
     const parts = [{ type: "text", text }]
-    if (!this.#replying()) {
+    // A held message starts the fresh run's turn, though a reply runs now.
+    if (!this.#replying() || this.#holdsSend()) {
       const results = this.#ctx.hooks.fire("turnContext", session, text, { first: session.turns === 0 })
       const context = results.find((result) => typeof result === "string")
       if (typeof context === "string") parts.unshift({ type: "text", text: context })
@@ -1010,8 +1011,8 @@ export class SessionActor implements LiveCalls {
   /**
    * Switches the session to connection `connection` and `model` (null: the connection's own), clears its note and
    * returns the stored session. A reply already running finishes where it is, on the old model; the next run call is
-   * a fresh run on the new pick (`#recordCheck`). The parked worker is closed unless it ran on the new pick.
-   * Refused with `409 not_live`, `409 ending` or `503 stopping`.
+   * a fresh run on the new pick (`#recordCheck`), and a message meanwhile waits for it (`#holdsSend`). The parked
+   * worker is closed unless it ran on the new pick. Refused with `409 not_live`, `409 ending` or `503 stopping`.
    */
   setModel(connection: string, model: string | null): Promise<SessionRecord> {
     return this.#command(async () => {
@@ -1145,7 +1146,7 @@ export class SessionActor implements LiveCalls {
   /** Sends `p` to the worker while it hasn't sent its `result`, else adds it to `#next`; true when that leaves
    *  `#next` for a spawn now (no worker runs). Over the cost cap, unless ending, a `send` or `complete` for a worker
    *  whose job may call the model waits in `#next` for a job that only delivers; otherwise nothing goes to the worker
-   *  ahead of what `#next` holds. */
+   *  ahead of what `#next` holds, and a message `#holdsSend` holds waits there for the fresh run. */
   async #give(p: Pending): Promise<boolean> {
     // The office stopped while the command waited: no worker may start for it.
     if (this.#closed) {
@@ -1154,8 +1155,12 @@ export class SessionActor implements LiveCalls {
     }
     const run = this.#run
     if (run !== null && run.worker !== null && run.outcome === null) {
-      // Over the cap what wakes the agent never reaches a run that may reply; under it, nothing overtakes it.
-      const held = !this.#ending && this.#capped() ? wakes(p) && run.worker.job.advance : this.#next.length > 0
+      // Over the cap what wakes the agent never reaches a run that may reply; under it, nothing overtakes it, and a
+      // message after a switch waits for the fresh run rather than start the worker's next turn on the old pick.
+      const held =
+        !this.#ending && this.#capped()
+          ? wakes(p) && run.worker.job.advance
+          : this.#next.length > 0 || (p.delivery.op === "send" && this.#holdsSend())
       if (held) {
         this.#next.push(p)
         return false
@@ -1185,6 +1190,17 @@ export class SessionActor implements LiveCalls {
     return this.#run === null
   }
 
+  /** Whether a message now waits for the next worker though one runs the run: one already waits (messages keep their
+   *  order), or the session was switched off the worker's connection or model and no reply runs to read it as a
+   *  steer, so the worker's next turn would run it on the old model. The next run call is the fresh run, which
+   *  takes it. */
+  #holdsSend(): boolean {
+    const run = this.#run
+    if (run === null || run.worker === null || run.outcome !== null) return false
+    if (this.#next.some((p) => p.delivery.op === "send")) return true
+    return !this.#replying() && !this.#onPick(run.ranOn)
+  }
+
   /** Whether `ranOn` is the session's connection and model now, compared as the record check compares them. */
   #onPick(ranOn: { name: string; model: string | null } | null): boolean {
     const session = this.#ctx.store.getSession(this.sessionId)
@@ -1192,9 +1208,11 @@ export class SessionActor implements LiveCalls {
     return ranOn.name === (session.connection || OFFICE) && ranOn.model === session.model
   }
 
-  /** The decided reply of a message queued now: `queued` over the cost cap, where no turn runs until a raise. */
+  /** The decided reply of a message queued now: `queued` over the cost cap, where no turn runs until a raise, or
+   *  while messages wait for the next worker. */
   #replyNow(session: SessionRecord): MessageReply {
     if (this.#capped()) return "queued"
+    if (this.#holdsSend()) return "queued"
     if (this.#replying()) return "steer"
     return this.#atTurn(session) ? "turn" : "queued"
   }

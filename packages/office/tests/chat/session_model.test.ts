@@ -6,9 +6,10 @@ import { AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
 import { AUTH_FILE_ENV, ConnectionFile } from "../../src/chat/connections.ts"
 import { DEFAULT_PRICE } from "../../src/chat/cost.ts"
 import { type Lister, TIMED_OUT, ownModels } from "../../src/chat/models.ts"
-import { WOKEN_NOTE, refusedKey } from "../../src/chat/session_actor.ts"
+import { type SessionActor, WOKEN_NOTE, refusedKey } from "../../src/chat/session_actor.ts"
 import { HarnessError } from "../../src/chat/state.ts"
 import { loadRepo } from "../../src/company/loader.ts"
+import { NEW_MODEL } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import type { SessionRecord } from "../../src/store/store.ts"
 import { person } from "../company/helpers.ts"
@@ -16,16 +17,21 @@ import { waitFor } from "../helpers.ts"
 import {
   ACCESS,
   type ChatOffice,
+  chatOffice,
   errors,
   fakeLlm,
+  makeActor,
   makeHarness,
+  newSession,
   noWorkersLeft,
   REFRESH,
   replyRunning,
   type ScriptedWorker,
   scriptedWorker,
+  session,
   status,
   texts,
+  waitingResult,
 } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -602,6 +608,11 @@ test("a new actor after a switch starts a fresh run with the woken note", async 
 
 // A switch on a live chat: the actor reacts to it.
 
+/** Resolves once every job `actor` had queued has run: a command queued after them is refused. */
+async function drained(actor: SessionActor): Promise<void> {
+  await actor.answer("no-such-question", "x", "text").catch(() => {})
+}
+
 /** Waits for session `sid`'s worker to park; returns its pid. */
 async function parkedPid(h: Harness, sid: string): Promise<number> {
   await waitFor(() => h.registry.get(sid)?.parked === true, { what: "the worker to park" })
@@ -647,6 +658,106 @@ test("a reply that finishes after a switch doesnt park its worker", async () => 
   fake.release()
   await waitFor(() => texts(h, s.id).at(-1) === "Done on one." && status(h, s.id) === "idle", { what: "the reply" })
   await waitFor(() => h.registry.get(s.id) === undefined, { what: "the worker to exit" })
+})
+
+test("a message after a switch waits for the fresh run", async () => {
+  const o = await chatOffice(await fakeLlm(), { connections: { second: "stub-2" } })
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = actor.runId!
+  const old = workers[0]!
+  await actor.setModel("second", "stub-5")
+  const sent = actor.prompt("hi")
+  await drained(actor)
+  // The live worker would take it at its turn, on the old model.
+  expect(old.deliveries).toEqual([])
+  old.handlers.result(old.worker, waitingResult(first))
+  old.handlers.exited(old.worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the fresh run's worker" })
+  const fresh = workers[1]!
+  expect(fresh.job.kind).toBe("chat")
+  expect(fresh.job.llm_config?.model).toBe("stub-5")
+  expect(fresh.job.deliver.map((d) => d.op)).toEqual(["send"])
+  fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: fresh.job.deliver[0]!.id, seq: 3 })
+  expect(await sent).toBe("queued")
+  expect(o.office.store.getRun(first)?.endReason).toBe(NEW_MODEL)
+  expect(session(o, sid).run_ids).toEqual([first, fresh.job.run_id])
+})
+
+test("messages held after a switch keep their order", async () => {
+  const o = await chatOffice(await fakeLlm(), { connections: { second: "stub-2" } })
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = actor.runId!
+  const old = workers[0]!
+  // Sent to the live worker before the switch: its reply runs on the old model.
+  const one = actor.prompt("one")
+  await waitFor(() => old.deliveries.length === 1, { what: "the first message" })
+  old.handlers.deliverReply(old.worker, { type: "deliver_reply", id: old.deliveries[0]!.id, seq: 2 })
+  await one
+  await actor.setModel("second", "stub-5")
+  const two = actor.prompt("two")
+  await drained(actor)
+  old.handlers.event(old.worker, { type: "event", name: "NodeStarted", data: { node_id: "chat#0/reply" } })
+  // While a message is held, a later one is held too, though a reply runs.
+  const three = actor.prompt("three")
+  await drained(actor)
+  expect(old.deliveries.map((d) => d.op)).toEqual(["send"])
+  old.handlers.result(old.worker, waitingResult(first))
+  old.handlers.exited(old.worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the fresh run's worker" })
+  const fresh = workers[1]!
+  const said = fresh.job.deliver.map((d) => JSON.stringify(d.op === "send" ? d.event : d.op))
+  expect(said).toHaveLength(2)
+  expect(said[0]).toContain('"two"')
+  expect(said[1]).toContain('"three"')
+  fresh.job.deliver.forEach((d, i) => {
+    fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: d.id, seq: 3 + i })
+  })
+  expect([await two, await three]).toEqual(["queued", "queued"])
+})
+
+test("end after a held message holds its close for the fresh run", async () => {
+  const o = await chatOffice(await fakeLlm(), { connections: { second: "stub-2" } })
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = actor.runId!
+  const old = workers[0]!
+  await actor.setModel("second", "stub-5")
+  const sent = actor.prompt("hi")
+  await actor.end()
+  expect(old.deliveries).toEqual([])
+  old.handlers.result(old.worker, waitingResult(first))
+  old.handlers.exited(old.worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the fresh run's worker" })
+  const fresh = workers[1]!
+  expect(fresh.job.deliver.map((d) => d.op)).toEqual(["send", "close"])
+  fresh.job.deliver.forEach((d, i) => {
+    fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: d.id, seq: 3 + i })
+  })
+  expect(await sent).toBe("queued")
+  const done = { type: "result", status: "succeeded", run_id: fresh.job.run_id, output: null, failure: null }
+  fresh.handlers.result(fresh.worker, done)
+  fresh.handlers.exited(fresh.worker, 0)
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+})
+
+test("a switch right after start runs the first turn on the new model", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+  fake.script({ content: "on five" })
+  const s = await h.harness.startSession("minh", h.folder)
+  await h.harness.setModel(s.id, "second", "stub-5")
+  expect(await tell(h, s.id, "hi")).toBe("on five")
+  expect(fake.requests().map((r) => r.model)).toEqual(["stub-5"])
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  expect(recordOf(h, s.id)).toEqual(["second", "stub-5"])
 })
 
 // Subscriptions.
