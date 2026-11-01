@@ -18,6 +18,7 @@ import * as doctor from "../../src/install/doctor.ts"
 import type { Check } from "../../src/install/doctor.ts"
 import { INHERITED_ENV, launch } from "../../src/install/launch.ts"
 import * as launchd from "../../src/install/launchd.ts"
+import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { SET_UP, setupConnectionFile } from "../../src/install/onboard.ts"
 import * as service from "../../src/install/service.ts"
 import * as systemd from "../../src/install/systemd.ts"
@@ -27,7 +28,7 @@ import { latestVersion } from "../../src/store/migrate.ts"
 import { Store } from "../../src/store/store.ts"
 import { git } from "../company/helpers.ts"
 import { CEO, giveDevice, makeOffice, served } from "../daemon/helpers.ts"
-import { fifo, ps, shortDir, tempDir } from "../helpers.ts"
+import { fifo, isGone, ps, shortDir, tempDir, waitFor } from "../helpers.ts"
 import { sandboxAvailable } from "../sandbox/helpers.ts"
 import { makeHost, Runner, standIn } from "./helpers.ts"
 
@@ -942,6 +943,30 @@ test("a codex that hangs or cant run fails the check", async () => {
   expect(broken.status).toBe("fail")
   expect(broken.detail).toStartWith(`${codex} can't run`)
 })
+
+test("a codex whose login status hangs fails the check and leaves nothing running", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 0)
+  const codex = path.join(dir, "bin", "codex")
+  const pidFile = path.join(dir, "pid")
+  // A login status that starts a background sleep and waits on it, as a hung Codex holding a child does.
+  fs.writeFileSync(
+    codex,
+    `#!/bin/sh\ncase "$1" in --version) echo "codex-cli 0.130.0";;\n` +
+      `login) /bin/sleep 97 & echo $! > "${pidFile}"; wait;; esac\n`,
+  )
+  const check = await doctor.codexCheck(env, {}, null, 500)
+  const text = fs.readFileSync(pidFile, "utf8")
+  expect(text).toMatch(/^\d+\n$/)
+  const grandchild = Number(text)
+  // Null once the group kill has taken it, which isGone counts as gone.
+  const started = startTime(grandchild)
+  onTestFinished(() => {
+    if (started !== null && sameProcess(grandchild, started)) process.kill(grandchild, "SIGKILL")
+  })
+  expect(check).toEqual({ name: "codex", status: "fail", detail: `${codex} login status didn't answer in 0.5 s` })
+  await waitFor(() => isGone(grandchild, started), { timeout: 5000, what: "the background sleep gone" })
+}, 15_000)
 
 test("a codex wrapper whose inner command is missing is a failed version", async () => {
   const dir = tempDir()
