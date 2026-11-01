@@ -181,24 +181,29 @@ test("a failed commit leaves nothing behind and a retry succeeds", async () => {
   expect(done.commit).not.toBe(head)
 })
 
-test("a newline in the title cant forge a commit trailer", async () => {
+test("a newline in a title that skips the schema cant forge a commit trailer", async () => {
   const git = makeGit()
   const hiring = new Hiring(git)
   const form = { ...FORM, title: "QA\n\nCommit-Id: forged" }
-  await hiring.hire(req(form), "ngocbh")
-  await hiring.hire(req(form, true), "ngocbh")
+  await hiring.hire({ ...form, confirm: false }, "ngocbh")
+  await hiring.hire({ ...form, confirm: true }, "ngocbh")
   expect(runGit(git.root, "log", "-1", "--format=%B")).toBe("hire(@lan): Lan, QA Commit-Id: forged\n\nActor: @ngocbh")
 })
 
-test("a hire commit names its actor once and a name cant forge another", async () => {
+test("a hire commit names its actor once and a name that skips the schema cant forge another", async () => {
   const git = makeGit()
   const hiring = new Hiring(git)
   const form = { ...FORM, name: "Lan\n\nActor: @ceo" }
-  await hiring.hire(req(form), "ngocbh")
-  await hiring.hire(req(form, true), "ngocbh")
+  await hiring.hire({ ...form, confirm: false }, "ngocbh")
+  await hiring.hire({ ...form, confirm: true }, "ngocbh")
   const lines = runGit(git.root, "log", "-1", "--format=%B").split("\n")
   expect(lines.filter((line) => line.startsWith("Actor:"))).toEqual(["Actor: @ngocbh"])
   expect(lines[0]).toBe("hire(@lan): Lan Actor: @ceo, QA")
+})
+
+test("a newline in the title or name is refused by the schema", () => {
+  expect(HireRequest.safeParse({ ...FORM, title: "QA\n\nCommit-Id: forged" }).success).toBe(false)
+  expect(HireRequest.safeParse({ ...FORM, name: "Lan\n\nActor: @ceo" }).success).toBe(false)
 })
 
 test("an existing lint error is a warning and doesnt block a hire", async () => {

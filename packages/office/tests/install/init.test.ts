@@ -143,6 +143,16 @@ const ACME: Draft = {
   ],
 }
 
+test("init trims a teammate's name and title as a hire does", async () => {
+  const dir = tempDir()
+  const company = path.join(dir, "home", "company")
+  const padded = { ...ACME, team: [{ name: " Minh ", handle: "minh-dev", title: "Engineer\t", about: "" }] }
+  await expect(runInit(dir, new Script([PASSWORD, PASSWORD, "1"]), FLAGS, interviewed(padded))).rejects.toThrow(STOP)
+  const minh = loadRepo(company).people.get("minh-dev")
+  expect([minh?.name, minh?.title]).toEqual(["Minh", "Engineer"])
+  expect(fs.readFileSync(path.join(company, "people/minh-dev/profile.md"), "utf8")).toBe("# Minh, Engineer\n")
+})
+
 test("init makes the company its ceo and seeded teammates in one commit", async () => {
   const dir = tempDir()
   const home = path.join(dir, "home")

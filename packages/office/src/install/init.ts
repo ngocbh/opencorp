@@ -194,7 +194,9 @@ async function initLocked(one: Launch, prompter: Prompter, options: InitOptions)
 
   const extra: Record<string, Uint8Array> = {}
   for (const t of draft.team) {
-    const [, files] = agentFiles({ name: t.name, handle: t.handle, title: t.title, manager: owner.handle }, t.about)
+    // Trimmed as the hire API trims them, so person.yaml holds what a hire would have written.
+    const hire = { name: t.name.trim(), handle: t.handle, title: t.title.trim(), manager: owner.handle }
+    const [, files] = agentFiles(hire, t.about)
     for (const [rel, text] of Object.entries(files)) extra[rel] = Buffer.from(text)
   }
   try {

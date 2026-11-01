@@ -118,17 +118,25 @@ test("a taken handle is a lint error", async () => {
 const { title: _title, ...UNTITLED } = HIRE
 
 test.each([
-  ["no title", UNTITLED, "title: is required"],
-  ["handle Ava", { ...HIRE, handle: "Ava" }, "handle: isn't in the right format"],
-  ["kind", { ...HIRE, kind: "human" }, "an extra field: isn't allowed"],
-  ["id", { ...HIRE, id: "ava" }, "an extra field: isn't allowed"],
-])("a malformed hire is invalid body [%s]", async (_case, body, message) => {
+  ["no title", UNTITLED, "title: is required", ""],
+  ["handle Ava", { ...HIRE, handle: "Ava" }, "handle: isn't in the right format", ""],
+  ["kind", { ...HIRE, kind: "human" }, "an extra field: isn't allowed", ""],
+  ["id", { ...HIRE, id: "ava" }, "an extra field: isn't allowed", ""],
+  ["a NUL in the name", { ...HIRE, name: "A\u0000va" }, "name: isn't in the right format", "\\u0000"],
+  ["an ANSI escape in the title", { ...HIRE, title: "\u001b[31mR" }, "title: isn't in the right format", "[31m"],
+  ["a newline in the name", { ...HIRE, name: "Ava\nCommit-Id: x" }, "name: isn't in the right format", "Commit-Id"],
+  ["a line separator in the title", { ...HIRE, title: "R\u2028x" }, "title: isn't in the right format", "\u2028"],
+  ["a blank name", { ...HIRE, name: "   " }, "name: is too short", ""],
+  ["an empty title", { ...HIRE, title: "" }, "title: is too short", ""],
+  ["a long name", { ...HIRE, name: "a".repeat(101) }, "name: is too long", "aaaaaaaa"],
+  ["a huge title", { ...HIRE, title: "x".repeat(400_000) }, "title: is too long", "xxxxxxxx"],
+])("a malformed hire is invalid body [%s]", async (_case, body, message, echo) => {
   const office = makeOffice()
   const { sock } = await served(office)
   const head = await office.git.head()
   const r = await post(sock, body)
   expect([r.status, r.json()]).toEqual([422, { error: "invalid_body", message }])
-  for (const echoed of ["Ava", "human", "'ava'", '"ava"']) expect(r.text).not.toContain(echoed)
+  for (const echoed of ["Ava", "human", "'ava'", '"ava"', echo].filter(Boolean)) expect(r.text).not.toContain(echoed)
   expect(await office.git.head()).toBe(head)
 })
 

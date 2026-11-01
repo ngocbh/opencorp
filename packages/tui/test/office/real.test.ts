@@ -149,6 +149,7 @@ test("a hire checks the body like the office; an unknown manager is a lint issue
     { ...req, handle: "Hoa" },
     { ...req, extra: 1 },
     { ...req, id: "minh" },
+    { ...req, name: "Ho\u0000a" },
   ]) {
     const e = await failure(client().people.hire(body as any))
     expect([e.status, e.code]).toEqual([422, "invalid_body"])

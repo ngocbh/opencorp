@@ -1,5 +1,5 @@
 /** A proposed company, as the owner's interview drafts it, and what's wrong with it. */
-import { HireRequest } from "@opencorp/protocol"
+import { HireRequest, validationMessage } from "@opencorp/protocol"
 import { type Owner, templateFiles } from "../company_template/index.ts"
 import { strip } from "../perm/redact.ts"
 import { handleProblem } from "./naming.ts"
@@ -46,6 +46,18 @@ export function draftFromOutput(output: InitOutput): Draft {
 /** A problem after the field it is about, or null when it is about the whole draft. */
 export type FieldProblem = readonly [field: string | null, message: string]
 
+/** What's wrong with teammate `t`'s `field` as a hire checks it, or null; the text never repeats the value. */
+function teammateProblem(t: Teammate, field: "name" | "title"): string | null {
+  const result = HireRequest.shape[field].safeParse(t[field])
+  if (result.success) return null
+  const issue = result.error.issues[0]!
+  if (issue.code === "too_small") return `the teammate @${t.handle} needs a ${field}`
+  if (issue.code === "too_big") {
+    return `the teammate @${t.handle}'s ${field} is too long (at most ${issue.maximum} characters)`
+  }
+  return `the teammate @${t.handle}'s ${field} can't hold line breaks or control characters`
+}
+
 /** Each problem with `draft`, after the field it is about (company, owner.name, owner.handle, teammate.name,
  *  teammate.title or teammate.handle), or null when it is about the whole. */
 export function fieldProblems(draft: Draft): FieldProblem[] {
@@ -55,8 +67,8 @@ export function fieldProblems(draft: Draft): FieldProblem[] {
   if (strip(owner.name) === "") found.push(["owner.name", "the owner needs a name"])
   const ownerWhy = handleProblem(owner.handle)
   if (ownerWhy) found.push(["owner.handle", `@${owner.handle} can't be a handle: ${ownerWhy}`])
-  // This catch and the hire check below can't fail once the checks before them pass; they are kept as a
-  // guard and have no test.
+  // This catch and the whole-hire check below can't fail once the checks before them pass; they are kept as
+  // a guard and have no test.
   if (found.length === 0) {
     try {
       templateFiles(draft.company, owner) // validates without writing
@@ -68,15 +80,20 @@ export function fieldProblems(draft: Draft): FieldProblem[] {
   const taken = new Set([owner.handle])
   for (const t of draft.team) {
     const mine: FieldProblem[] = []
-    if (strip(t.name) === "") mine.push(["teammate.name", `the teammate @${t.handle} needs a name`])
-    if (strip(t.title) === "") mine.push(["teammate.title", `the teammate @${t.handle} needs a title`])
+    for (const field of ["name", "title"] as const) {
+      const why = teammateProblem(t, field)
+      if (why) mine.push([`teammate.${field}`, why])
+    }
     const why = handleProblem(t.handle)
     if (why) mine.push(["teammate.handle", `@${t.handle} can't be a handle: ${why}`])
     else if (taken.has(t.handle)) mine.push(["teammate.handle", `@${t.handle} is taken`])
     taken.add(t.handle)
     if (mine.length === 0 && !ownerWhy) {
-      const hire = HireRequest.safeParse({ name: t.name, handle: t.handle, title: t.title, manager: owner.handle })
-      if (!hire.success) mine.push([null, `@${t.handle} can't be hired: ${hire.error.issues[0]!.message}`])
+      const input = { name: t.name, handle: t.handle, title: t.title, manager: owner.handle }
+      const hire = HireRequest.safeParse(input)
+      if (!hire.success) {
+        mine.push([null, `@${t.handle} can't be hired: ${validationMessage(HireRequest, hire.error, input)}`])
+      }
     }
     found.push(...mine)
   }
