@@ -538,8 +538,8 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Answers the run's open `ask_user` question with `text` and delivers the answer by `complete`, which falls back
-   *  on `fallback`; null when none is open, a card answered it first, or Esc may be closing it. Refused `422
-   *  too_large` when the answer couldn't reach the run. */
+   *  on `fallback`; null when none is open, a card answered it first, Esc may be closing it, or no run would take
+   *  the answer (`#answerDropped`). Refused `422 too_large` when the answer couldn't reach the run. */
   async #answerAsked(
     session: SessionRecord,
     text: string,
@@ -549,6 +549,8 @@ export class SessionActor implements LiveCalls {
     const { store } = this.#ctx
     const asked = store.listQuestions({ runId: this.#runId!, status: "open", source: "ask_user" })[0]
     if (asked === undefined || asked.call_id === null || this.#interrupting()) return null
+    // No run would take the answer: the text is a message, which the fresh run reads.
+    if (await this.#answerDropped(asked)) return null
     const answerer = by ?? (await this.#owner(session))
     this.#checkSize(asked, text, "text", answerer)
     let answered: QuestionRecord
@@ -599,6 +601,83 @@ export class SessionActor implements LiveCalls {
     return new Pending(delivery, acked, { questionId: question.id, fallback })
   }
 
+  /** Whether an answer to `question` would reach no run: a fresh run replaced its run and hasn't started yet, or it
+   *  is the current run's, no worker runs it, and the next run call would be a fresh run (`#wouldReplace`), which
+   *  never makes its call. */
+  async #answerDropped(question: QuestionRecord): Promise<boolean> {
+    if (question.call_id === null) return false
+    if (this.#replaced.includes(question.run_id)) return true
+    if (question.run_id !== this.#runId || this.#finished || this.#ending) return false
+    const run = this.#run
+    if (run !== null && run.worker !== null && run.outcome === null) return false
+    return this.#wouldReplace()
+  }
+
+  /** Whether the next run call would be a fresh run: one is held or due, or the record check replaces the run on the
+   *  session's connection and model now. False when they can't be resolved: the spawn then refuses on its own. */
+  async #wouldReplace(): Promise<boolean> {
+    if (this.#heldFresh !== null || this.#unresumable !== null) return true
+    const { connections } = this.#ctx
+    const session = this.#session()
+    try {
+      const [name, model] = await connections.choice(session.connection, session.model)
+      const provider = await connections.resolve(name, model)
+      return this.#recordCheck(this.#runId!, name, model, provider) !== null
+    } catch (error) {
+      if (error instanceof ProviderError || error instanceof BadConnectionName) return false
+      throw error
+    }
+  }
+
+  /**
+   * For an answer to `question`, which no run would take (`#answerDropped`): the fresh run starts now, and the
+   * questions of the run it replaced go stale; then the answer is refused `409 not_open`. Refused at once when a fresh
+   * run already replaced its run, or when the cost cap holds the fresh run back (the question stays open until a
+   * raise starts it). A spawn that fails before any fresh run is stored refuses it with the spawn's error. Resolves
+   * only when the spawn advanced the run after all, which then takes the answer.
+   */
+  async #replaceFor(question: QuestionRecord): Promise<void> {
+    const old = this.#runId
+    const refused = () =>
+      new HarnessError(409, "not_open", `question ${question.id} can't be answered: the chat continues on a fresh run`)
+    if (question.run_id !== old) throw refused()
+    let failure: unknown = null
+    try {
+      await this.#spawn("advance")
+    } catch (error) {
+      failure = error
+    }
+    if (this.#runId !== old) {
+      // The run has ended: none of its calls can be answered any more.
+      this.#staleQuestions([old!])
+      this.#trySettle("after a fresh run")
+      throw refused()
+    }
+    if (failure !== null) throw this.#wakeError(failure)
+    if (this.#heldFresh !== null || this.#needsAdvance) throw refused()
+  }
+
+  /**
+   * After a switch, or a run call that ended after one: while a question with a call waits on the current run and no
+   * worker runs it, the fresh run the next run call would be starts now (ending the run `NEW_MODEL`), and the
+   * questions of the run it replaced go stale, as a change of model or connection makes them. Over the cost cap the
+   * fresh run is held for a raise (`#heldFresh`), and the questions stay open. Nothing happens while the run stays on
+   * the session's pick, or once finished or ending. Whether a fresh run started.
+   */
+  async #replaceAsked(): Promise<boolean> {
+    const old = this.#runId
+    if (old === null || this.#finished || this.#ending || this.#closed) return false
+    if (this.#run !== null || this.#starting !== null) return false
+    const asked = this.#ctx.store.listQuestions({ runId: old, status: "open" })
+    if (!asked.some((q) => q.call_id !== null) || !(await this.#wouldReplace())) return false
+    // Given as the replacement, so the old run ends `NEW_MODEL` even after a restore, with no woken note.
+    await this.#spawnQuietly("advance", { replace: this.#unresumable ?? { why: NEW_MODEL, finished: null } })
+    if (this.#runId === old) return false
+    // The run has ended: none of its calls can be answered any more.
+    this.#staleQuestions([old])
+    return true
+  }
+
   /**
    * Answers the session's open question `questionId` as `by` (the owner when null), after the `answerCheck` hooks,
    * and returns it as stored. A question of a call of the current run goes back to the run by `complete`, which the
@@ -606,9 +685,11 @@ export class SessionActor implements LiveCalls {
    * refuses it for good (`#lostAnswer`). Refused, for any answer, with `404 not_found` (no such question of this
    * session), `409 not_open` (the question isn't open), `422 invalid_answer` (an `answerCheck` hook refused it) or `503
    * stopping` (the office is stopping); for a question with a call of the current, unfinished run (a model's question
-   * or a flow `ask` node), with `422 too_large` (its result would pass `MAX_ANSWER_BYTES`); and for the model's
-   * questions (`ask_user`, `ask_manager`) of the current run, with `409 ending` (End will interrupt the call) or `409
-   * not_open` while Esc's interrupt, which may close the call, is unanswered.
+   * or a flow `ask` node), with `422 too_large` (its result would pass `MAX_ANSWER_BYTES`); for the model's questions
+   * (`ask_user`, `ask_manager`) of the current run, with `409 ending` (End will interrupt the call) or `409 not_open`
+   * while Esc's interrupt, which may close the call, is unanswered; and for a question whose run a fresh run replaces
+   * (`#answerDropped`), with `409 not_open`, as stale, since no run would take its answer, or `503 cant_wake` when that
+   * fresh run can't start.
    */
   answer(
     questionId: string,
@@ -637,6 +718,7 @@ export class SessionActor implements LiveCalls {
       for (const refusal of hooks.fire("answerCheck", question, value, kind)) {
         if (refusal) throw new HarnessError(422, "invalid_answer", String(refusal))
       }
+      if (await this.#answerDropped(question)) await this.#replaceFor(question)
       const answerer = by ?? (await this.#owner(this.#session()))
       if (question.call_id !== null && question.run_id === this.#runId && !this.#finished) {
         this.#checkSize(question, value, kind, answerer)
@@ -1012,7 +1094,9 @@ export class SessionActor implements LiveCalls {
    * Switches the session to connection `connection` and `model` (null: the connection's own), clears its note and
    * returns the stored session. A reply already running finishes where it is, on the old model; the next run call is
    * a fresh run on the new pick (`#recordCheck`), and a message meanwhile waits for it (`#holdsSend`). The parked
-   * worker is closed unless it ran on the new pick. Refused with `409 not_live`, `409 ending` or `503 stopping`.
+   * worker is closed unless it ran on the new pick. While a question waits on the run and no worker runs it, the
+   * fresh run starts now and the question goes stale (`#replaceAsked`). Refused with `409 not_live`, `409 ending` or
+   * `503 stopping`.
    */
   setModel(connection: string, model: string | null): Promise<SessionRecord> {
     return this.#command(async () => {
@@ -1020,6 +1104,7 @@ export class SessionActor implements LiveCalls {
       this.#ctx.store.updateSession(this.sessionId, { connection, model, model_note: null })
       // A fresh run never reuses it, and it holds the old connection's key.
       if (this.#parked !== null && !this.#onPick(this.#parked.ranOn)) await this.#releaseParked()
+      await this.#replaceAsked()
       this.#trySettle("after a switch")
       return this.#session()
     })
@@ -1345,7 +1430,7 @@ export class SessionActor implements LiveCalls {
         }
         seed = await this.#seed(session)
         await this.#replace(session, spec, fresh.why, fresh.finished)
-        pendings = this.#freshCarry(pendings)
+        pendings = this.#freshCarry(pendings, true)
         // Its deliveries, which `close` answers through `#starting`.
         run = new WorkerRun(this.#runId!, "chat", pendings, [], this.#lateSend)
         this.#starting = run
@@ -1652,11 +1737,13 @@ export class SessionActor implements LiveCalls {
   /** What a fresh run carries of `pendings`, none of which its old run applied: the `send`s and `close`s, and a
    *  message's `complete` as the `send` it falls back on, which answers the complete's caller (the fresh run never
    *  asked the question). The rest (a card's `complete`, an `interrupt`, a `cancel`) is answered by the closing
-   *  rule. */
-  #freshCarry(pendings: readonly Pending[]): Pending[] {
+   *  rule. With `lose` (the old run has ended), the question of each `complete` not carried as itself loses its
+   *  answer, which no run read. */
+  #freshCarry(pendings: readonly Pending[], lose = false): Pending[] {
     const carry: Pending[] = []
     for (const p of pendings) {
       const op = p.delivery.op
+      if (lose && op === "complete" && p.questionId !== null) this.#loseAnswer(p.questionId)
       if (op === "send" || op === "close") {
         carry.push(p)
       } else if (op === "complete" && p.fallback !== null) {
@@ -1671,6 +1758,19 @@ export class SessionActor implements LiveCalls {
       }
     }
     return carry
+  }
+
+  /** Marks the answered question `questionId` stale, its answer dropped: no run read it. A failure is logged by its
+   *  type. */
+  #loseAnswer(questionId: string): void {
+    try {
+      this.#ctx.store.loseAnswer(questionId)
+    } catch (error) {
+      // Consumed or closed meanwhile: it is no longer answered either way.
+      if (!(error instanceof InvalidTransition)) {
+        this.#log(`session ${this.sessionId}: a lost answer can't go stale (${errorName(error)})`)
+      }
+    }
   }
 
   /** Marks the open questions of the runs fresh runs replaced stale, and has the live relay forget those runs: the
@@ -2312,12 +2412,15 @@ export class SessionActor implements LiveCalls {
     if (!this.#ending && this.#capped()) {
       if (readvance || resend || waits.some((wait) => wait.settled)) this.#needsAdvance = true
       if (this.#next.length > 0) await this.#spawnQuietly("advance")
+      else await this.#replaceAsked()
       return
     }
     if (readvance || resend || this.#needsAdvance || this.#next.length > 0) {
       await this.#spawnQuietly("advance")
       return
     }
+    // A switch while the worker ran: its question goes stale now, not once an answer finds the run replaced.
+    if (await this.#replaceAsked()) return
     if (!waits.some((wait) => wait.settled)) return
     if (from !== null && sameWaits(from, waits)) {
       const why = "its run made no progress on a settled wait; it waits for the next command"

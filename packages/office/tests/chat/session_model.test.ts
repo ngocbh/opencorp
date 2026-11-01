@@ -16,7 +16,9 @@ import { person } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import {
   ACCESS,
+  ASK_USER,
   type ChatOffice,
+  card,
   chatOffice,
   errors,
   fakeLlm,
@@ -758,6 +760,106 @@ test("a switch right after start runs the first turn on the new model", async ()
   expect(fake.requests().map((r) => r.model)).toEqual(["stub-5"])
   expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
   expect(recordOf(h, s.id)).toEqual(["second", "stub-5"])
+})
+
+/** Starts minh's chat in `h` and has the model ask its question; returns the session and the question. */
+async function asking(h: Harness) {
+  const s = await start(h)
+  await h.harness.prompt(s.id, "hi")
+  const q = await card(h, s.id, "ask_user")
+  await waitFor(() => status(h, s.id) === "waiting" && h.registry.get(s.id)?.parked !== false, {
+    what: "the run to wait on the question",
+  })
+  return { s, q }
+}
+
+test("a switch while ask user waits starts the fresh run and the answer is refused", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+  fake.script(ASK_USER, { content: "on five" })
+  const { s, q } = await asking(h)
+  const first = h.store.getSession(s.id)!.run_ids[0]!
+  await h.harness.setModel(s.id, "second", "stub-5")
+  // At once, or at the end of the run call that asked, if the actor hadn't handled it yet.
+  await waitFor(() => h.store.getQuestion(q.id)?.status === "stale", { what: "the question to go stale" })
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  expect(h.store.getRun(first)?.endReason).toBe(NEW_MODEL)
+  await waitFor(() => status(h, s.id) === "idle", { what: "the fresh run at its turn" })
+  const refused = await rejection(h.harness.answer(q.id, "A", "option"))
+  expect([refused.status, refused.code]).toEqual([409, "not_open"])
+  expect(await tell(h, s.id, "b")).toBe("on five")
+  expect(fake.requests().at(-1)!.model).toBe("stub-5")
+})
+
+test.each([false, true])(
+  "a switch back after a refused answer doesnt hang the chat [restart %p]",
+  async (restart) => {
+    const fake = await fakeLlm()
+    const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+    fake.script(ASK_USER, { content: "back on one" })
+    const { s, q } = await asking(h)
+    await h.harness.setModel(s.id, "second", "stub-5")
+    await waitFor(() => status(h, s.id) === "idle", { what: "the fresh run at its turn" })
+    expect((await rejection(h.harness.answer(q.id, "A", "option"))).code).toBe("not_open")
+    if (restart) await h.reopen()
+    await h.harness.setModel(s.id, "office", "stub")
+    expect(await tell(h, s.id, "b")).toBe("back on one")
+    expect(fake.requests().at(-1)!.model).toBe("stub")
+    expect(h.store.getSession(s.id)!.run_ids).toHaveLength(3)
+  },
+)
+
+test("over the cap a switch with a question open waits for a raise", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+  fake.script(ASK_USER, { content: "on five" })
+  const { s, q } = await asking(h)
+  // Over the company's $5 cap.
+  h.store.updateSession(s.id, { cost: 6 })
+  await h.harness.setModel(s.id, "second", "stub-5")
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(1)
+  expect(h.store.getQuestion(q.id)?.status).toBe("open")
+  const refused = await rejection(h.harness.answer(q.id, "A", "option"))
+  expect([refused.status, refused.code]).toEqual([409, "not_open"])
+  expect(h.store.getQuestion(q.id)?.status).toBe("open")
+  await h.harness.setCostCap(s.id, 10)
+  await waitFor(() => h.store.getQuestion(q.id)?.status === "stale" && status(h, s.id) === "idle", {
+    what: "the fresh run after the raise",
+  })
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  expect(await tell(h, s.id, "b")).toBe("on five")
+  expect(fake.requests().at(-1)!.model).toBe("stub-5")
+})
+
+test("an answer after the key changed starts the fresh run and is refused", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  fake.script(ASK_USER, { content: "on the new key" })
+  const { s, q } = await asking(h)
+  const provider = { llm_config: { provider: "vllm", model: "stub", api_key: "sk-new-key-3f1a" }, env: fake.env() }
+  await writePrivate(path.join(h.office.connections.dir, "office.json"), JSON.stringify(provider))
+  const refused = await rejection(h.harness.answer(q.id, "A", "option"))
+  expect([refused.status, refused.code]).toEqual([409, "not_open"])
+  expect(h.store.getQuestion(q.id)?.status).toBe("stale")
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  await waitFor(() => status(h, s.id) === "idle", { what: "the fresh run at its turn" })
+  expect(await tell(h, s.id, "b")).toBe("on the new key")
+})
+
+test("a typed reply after the key changed goes to the fresh run as a message", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  fake.script(ASK_USER, { content: "got it" })
+  const { s, q } = await asking(h)
+  const provider = { llm_config: { provider: "vllm", model: "stub", api_key: "sk-new-key-3f1a" }, env: fake.env() }
+  await writePrivate(path.join(h.office.connections.dir, "office.json"), JSON.stringify(provider))
+  const n = texts(h, s.id).length
+  expect(await h.harness.prompt(s.id, "A please")).toBe("queued")
+  await waitFor(() => texts(h, s.id).length > n && status(h, s.id) === "idle", { what: "the reply" })
+  expect(texts(h, s.id).at(-1)).toBe("got it")
+  expect(h.store.getQuestion(q.id)?.status).toBe("stale")
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  expect(userTexts(fake.requests().at(-1)!).at(-1)).toContain("A please")
 })
 
 // Subscriptions.
