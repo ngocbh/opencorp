@@ -173,41 +173,50 @@ export interface LookupOptions {
 }
 
 /**
- * Finds the office's daemon. An office that answers on its socket (a socket, not a symlink to one) is asked for its
- * pid with this device's token; a pidfile that is missing or wrong doesn't hide it then. When it doesn't answer, or
- * won't say, or serves another home, the pidfile names the pid. Either pid counts as the daemon only once its start
- * time and args show it is this office's (`fallback.verify`), so nothing else is ever signalled.
+ * The pid the office says it has: asked with `GET /office` and this device's token when its socket is a socket (not a
+ * symlink to one) and it answers, and only when it serves this home; null otherwise. Nothing is verified here.
  *
  * The identity's read can wait on a busy lock for 30 s; after `identityTimeoutMs` the office is asked without it,
- * which an office with devices refuses, so the pidfile answers.
+ * which an office with devices refuses.
  */
-export async function findDaemon(
+export async function officePid(
   launch: Launch,
   host: Host,
   {
-    ps = resolveTools(daemonEnv(process.env)).ps,
     office = officeInfo,
     identity = () => readIdentity(identityPath(launch.home)),
     identityTimeoutMs = 5000,
-  }: LookupOptions = {},
-): Promise<Lookup> {
-  const checked = typeof ps === "string"
-  const verified = (pid: number) => (typeof ps === "string" ? fallback.verify(pid, launch, ps) : null)
+  }: Omit<LookupOptions, "ps"> = {},
+): Promise<number | null> {
   let isSocket = false
   try {
     isSocket = fs.lstatSync(launch.socket).isSocket()
   } catch {}
-  if (isSocket && (await host.answers(launch.socket))) {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const late = new Promise<undefined>((resolve) => {
-      timer = setTimeout(() => resolve(undefined), identityTimeoutMs)
-    })
-    const me = await Promise.race([identity().catch(() => undefined), late]).finally(() => clearTimeout(timer))
-    const info = await office(launch.socket, me)
-    if (typeof info !== "string" && info.home === launch.home) {
-      return { daemon: verified(info.pid), named: info.pid, from: "office", checked }
-    }
-  }
+  if (!isSocket || !(await host.answers(launch.socket))) return null
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), identityTimeoutMs)
+  })
+  const me = await Promise.race([identity().catch(() => undefined), late]).finally(() => clearTimeout(timer))
+  const info = await office(launch.socket, me)
+  return typeof info !== "string" && info.home === launch.home ? info.pid : null
+}
+
+/**
+ * Finds the office's daemon: the pid `officePid` reads from the office, so a pidfile that is missing or wrong doesn't
+ * hide it, else the pidfile's when the office doesn't answer, won't say, or serves another home. Either pid counts as
+ * the daemon only once its start time and args show it is this office's (`fallback.verify`), so nothing else is ever
+ * signalled.
+ */
+export async function findDaemon(
+  launch: Launch,
+  host: Host,
+  { ps = resolveTools(daemonEnv(process.env)).ps, ...asking }: LookupOptions = {},
+): Promise<Lookup> {
+  const checked = typeof ps === "string"
+  const verified = (pid: number) => (typeof ps === "string" ? fallback.verify(pid, launch, ps) : null)
+  const said = await officePid(launch, host, asking)
+  if (said !== null) return { daemon: verified(said), named: said, from: "office", checked }
   const named = fallback.pidOf(launch)
   if (named === null) return { daemon: null, named: null, from: null, checked }
   return { daemon: verified(named), named, from: "pidfile", checked }
@@ -471,7 +480,7 @@ export async function wait(
   host: Host,
   timeoutMs = 20_000,
   child?: fallback.BackgroundChild,
-  { ps = resolveTools(daemonEnv(process.env)).ps }: { ps?: string } = {},
+  { ps }: { ps?: string } = {},
 ): Promise<"started" | "already-running"> {
   const deadline = host.clock() + timeoutMs
   let exit: fallback.Exit | undefined
@@ -498,6 +507,8 @@ export async function wait(
   }
   if (holder !== undefined) {
     const pid = holder.running
+    // Resolved only here: most waits never need `ps`.
+    ps ??= resolveTools(daemonEnv(process.env)).ps
     const verified = pid !== null && fallback.daemon(launch, ps)?.pid === pid
     const reason =
       `an office (pid ${pid ?? "unknown"}) holds the lock on ${launch.home} but hasn't answered on ${launch.socket}` +
@@ -550,7 +561,7 @@ export async function uninstall(
   const stopped = await fallback.stopProcess(launch, { timeoutMs, found: lookup.daemon })
   if (stopped) done.push(`${recorded ?? "started by hand"}: ${stopped.line}`)
   fs.rmSync(path.join(launch.office, "install.json"), { force: true })
-  await waitStopped(launch, host, lookup)
+  await waitStopped(launch, host, lookup, stopped !== null)
   return done.filter((line): line is string => Boolean(line))
 }
 
@@ -561,21 +572,36 @@ function source(lookup: Lookup): string {
 
 /**
  * Waits up to `timeoutMs` for the office to stop answering; throws `ServiceError` if it still does, saying what
- * `lookup` found: the pid it stopped, one it couldn't verify (so it signalled nothing), or none.
+ * `lookup` found and whether its daemon was `signalled`: the pid it stopped, one it couldn't verify or that was gone
+ * by then (so it signalled nothing), or none.
  */
-async function waitStopped(launch: Launch, host: Host, lookup: Lookup, timeoutMs = 5000): Promise<void> {
+async function waitStopped(
+  launch: Launch,
+  host: Host,
+  lookup: Lookup,
+  signalled: boolean,
+  timeoutMs = 5000,
+): Promise<void> {
   const deadline = host.clock() + timeoutMs
   while (await host.answers(launch.socket, 1000)) {
-    if (host.clock() >= deadline) throw new ServiceError(`the office still answers on ${launch.socket}${why(lookup)}`)
+    if (host.clock() >= deadline) {
+      throw new ServiceError(`the office still answers on ${launch.socket}${why(lookup, signalled)}`)
+    }
     await host.sleep(100)
   }
 }
 
-/** Why an office still answers after a stop, from what `lookup` found. */
-function why(lookup: Lookup): string {
+/** Why an office still answers after a stop, from what `lookup` found and whether its daemon was `signalled`. */
+function why(lookup: Lookup, signalled: boolean): string {
   const { daemon, named } = lookup
-  if (daemon !== null) {
+  if (daemon !== null && signalled) {
     return ` after pid ${daemon.pid} was stopped (another daemon took its place?); \`opencorp doctor\` shows what it is`
+  }
+  if (daemon !== null) {
+    return (
+      ` (pid ${daemon.pid}, from ${source(lookup)}); it had exited before it could be signalled, so nothing was` +
+      " signalled; `opencorp doctor` shows what it is"
+    )
   }
   if (named === null) {
     return ", and neither GET /office nor office.pid names its pid; `opencorp doctor` shows what it is"
@@ -592,9 +618,10 @@ function why(lookup: Lookup): string {
   )
 }
 
-/** What `stop` did: the pid it stopped (null when none ran) and whether it took SIGKILL. */
+/** What `stop` did: the pid of the office it stopped (`?` when its manager stopped one whose pid it couldn't tell;
+ *  null when none ran), and whether it took SIGKILL. */
 export interface Stopped {
-  stopped: number | null
+  stopped: number | "?" | null
   killed: boolean
 }
 
@@ -616,13 +643,17 @@ export async function stop(
   lookup?: Lookup,
 ): Promise<Stopped> {
   lookup ??= await findDaemon(launch, host)
+  const answered = await host.answers(launch.socket)
   const done = await fallback.stopProcess(launch, { timeoutMs, found: lookup.daemon })
   const mode = recordedMode(launch)
-  if (mode === "tmux") await fallback.stopTmux(launch, host)
-  // Best effort: the daemon is already stopped, and a unit systemd doesn't know has nothing to restart.
+  const session = mode === "tmux" ? await fallback.stopTmux(launch, host) : null
+  // Best effort: the daemon is usually stopped by now, and a unit systemd doesn't know has nothing to restart.
   if (mode === "systemd") await host.run(["systemctl", "--user", "stop", systemd.unitName(launch)])
-  await waitStopped(launch, host, lookup)
-  return { stopped: done && lookup.daemon ? lookup.daemon.pid : null, killed: done?.killed ?? false }
+  await waitStopped(launch, host, lookup, done !== null)
+  if (done !== null) return { stopped: done.pid, killed: done.killed }
+  // Its manager stopped an office this command couldn't verify (no `ps`, say).
+  const managed = answered || session !== null
+  return { stopped: managed ? (lookup.named ?? "?") : null, killed: false }
 }
 
 /**
@@ -644,6 +675,6 @@ export async function restart(
   lookup ??= await findDaemon(launch, host)
   const stopped = await fallback.stopProcess(launch, { timeoutMs, found: lookup.daemon })
   if (recordedMode(launch) === "tmux") await fallback.stopTmux(launch, host)
-  await waitStopped(launch, host, lookup)
-  return { ...(await start(launch, host)), stopped: stopped !== null && lookup.daemon ? lookup.daemon.pid : null }
+  await waitStopped(launch, host, lookup, stopped !== null)
+  return { ...(await start(launch, host)), stopped: stopped?.pid ?? null }
 }

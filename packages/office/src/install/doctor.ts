@@ -40,7 +40,6 @@ import {
 } from "./onboard.ts"
 import { OnboardError, clean } from "./prompts.ts"
 import * as service from "./service.ts"
-import { officeInfo, readFromOffice, type Unread } from "./service.ts"
 import * as systemd from "./systemd.ts"
 import { installPaths, resolveTools, workspaceGuards } from "./tools.ts"
 
@@ -64,8 +63,6 @@ const ESCAPE = /\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g
  * differs). Bun's wording on Linux hasn't been probed here, so a plain `spawn` is accepted too.
  */
 const SPAWN_ERROR = /^E[A-Z0-9]+: (.*), (?:posix_)?spawn\b/
-
-export { getJson, officeInfo, type Unread } from "./service.ts"
 
 /** One line of the report: `fail` needs fixing, `warn` is worth knowing. */
 export interface Check {
@@ -458,15 +455,15 @@ export async function hqStatus(
   socket: string,
   identity: Identity | undefined,
   timeoutMs = 2000,
-): Promise<HqStatus | Unread> {
-  return readFromOffice(socket, identity, "/hq", timeoutMs, readByChecks)
+): Promise<HqStatus | service.Unread> {
+  return service.readFromOffice(socket, identity, "/hq", timeoutMs, readByChecks)
 }
 
 /** How HQ's status starts the TCP error when the web port's server stopped after it bound, not a failed bind. */
 const SERVER_ENDED = "its server ended"
 
 /** What to do about an HQ status doctor couldn't read, by why. */
-export const UNREAD: Record<Unread, string> = {
+export const UNREAD: Record<service.Unread, string> = {
   refused: "the office doesn't know this device, so it won't say where HQ listens: run `opencorp login`",
   unreachable: "the office didn't say where HQ listens (an office from before HQ?): run `opencorp restart`",
   unreadable:
@@ -501,7 +498,7 @@ function socketProblem(socket: unknown, lstat: (p: string) => fs.Stats): string 
 
 /** Where HQ listens (see `hqPortChecks`), whether the web app is built for this office, and HQ's own warnings. */
 export function hqChecks(
-  status: HqStatus | Unread,
+  status: HqStatus | service.Unread,
   officeDir: string,
   repo: string,
   socketMissing: string | null = null,
@@ -598,7 +595,7 @@ export function hqPortChecks(status: HqStatus, officeDir: string, socketMissing:
 }
 
 /** What to do about an office that wouldn't say what code it runs, by why. */
-export const VERSION_UNREAD: Record<Unread, string> = {
+export const VERSION_UNREAD: Record<service.Unread, string> = {
   refused: "the office doesn't know this device, so it won't say what it runs: run `opencorp login`",
   unreachable: "the office didn't say what code it runs: run `opencorp restart`",
   unreadable:
@@ -851,10 +848,10 @@ export interface CheckOptions {
   environ?: Env
   /** `GET /hq` from the office on the socket, sent with the identity's token when there is one (default
    *  `hqStatus`). */
-  hq?: (socket: string, identity: Identity | undefined) => Promise<HqStatus | Unread>
+  hq?: (socket: string, identity: Identity | undefined) => Promise<HqStatus | service.Unread>
   /** `GET /office` from the office on the socket, sent with the identity's token when there is one (default
-   *  `officeInfo`). */
-  office?: (socket: string, identity: Identity | undefined) => Promise<OfficeInfo | Unread>
+   *  `service.officeInfo`). */
+  office?: (socket: string, identity: Identity | undefined) => Promise<OfficeInfo | service.Unread>
   /** Looks at a path without following a symlink (default `fs.lstatSync`). */
   lstat?: (p: string) => fs.Stats
 }
@@ -869,7 +866,7 @@ export interface CheckOptions {
  */
 export async function checks(home: string, options: CheckOptions): Promise<Check[]> {
   const { host = defaultHost(), command = selfCommand(), repo = CHECKOUT, environ = process.env } = options
-  const { codex = codexCheck, hq = hqStatus, office = officeInfo, probe = sandboxProblem } = options
+  const { codex = codexCheck, hq = hqStatus, office = service.officeInfo, probe = sandboxProblem } = options
   const lstat = options.lstat ?? ((p: string) => fs.lstatSync(p))
   const run = launch(home, { command, environ, userHome: host.userHome })
   const paths = new OfficePaths(run.home)
@@ -917,7 +914,11 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   } else {
     const hung = fallback.daemon(run, resolveTools(run.env).ps)
     const error = service.lastFailure(service.readLog(run.log))
-    const why = error === null ? "" : `; its last start failed: ${error}`
+    // The log is read without following a link (the daemon never writes through one), so say why it wasn't read.
+    const linked = lstatOrNull(lstat, run.log)?.isSymbolicLink()
+      ? `; ${run.log} is a symlink, which doctor doesn't read`
+      : ""
+    const why = (error === null ? "" : `; its last start failed: ${error}`) + linked
     if (hung !== null) {
       found.push({
         name: "office",

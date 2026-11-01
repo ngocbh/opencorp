@@ -19,6 +19,7 @@ import type { Check } from "../../src/install/doctor.ts"
 import { INHERITED_ENV, launch } from "../../src/install/launch.ts"
 import * as launchd from "../../src/install/launchd.ts"
 import { SET_UP, setupConnectionFile } from "../../src/install/onboard.ts"
+import * as service from "../../src/install/service.ts"
 import * as systemd from "../../src/install/systemd.ts"
 import { helperCommand } from "../../src/platform.ts"
 import { writePrivate } from "../../src/secrets.ts"
@@ -630,6 +631,19 @@ test("a crash marker never shows more than the error type", async () => {
   const got = byName(await runChecks(dir, paths))
   expect(got.office!.status).toBe("warn")
   expect(got.office!.detail).not.toContain("token=abc")
+})
+
+test("a symlinked office log is named, not read", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const target = path.join(dir, "elsewhere.log")
+  fs.writeFileSync(target, "opencorp office: the company repo has no .git\n")
+  fs.symlinkSync(target, path.join(paths.office, "office.log"))
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office!.status).toBe("warn")
+  const log = launchFor(dir, paths).log
+  expect(got.office!.detail).toContain(`${log} is a symlink, which doctor doesn't read`)
+  expect(got.office!.detail).not.toContain("no .git")
 })
 
 test("an office log that isnt a regular file is no crash", async () => {
@@ -1347,7 +1361,7 @@ function fakeStat(sock: Sock): fs.Stats {
 function runningChecks(
   dir: string,
   paths: OfficePaths,
-  office: OfficeInfo | doctor.Unread,
+  office: OfficeInfo | service.Unread,
   environ: Record<string, string> = {},
   { sock = "socket", hq = status() }: { sock?: Sock; hq?: HqStatus } = {},
 ): Promise<Check[]> {
@@ -1509,22 +1523,22 @@ test("office info is read with this devices token", async () => {
   giveDevice(office.paths.company, CEO, "mac", token) // enforced from now on
   await writeIdentity(identityPath(home), new Identity(CEO, "mac", token))
   const { sock } = await served(office, { tokens: true })
-  const got = await doctor.officeInfo(sock, await readIdentity(identityPath(home)), 10_000)
+  const got = await service.officeInfo(sock, await readIdentity(identityPath(home)), 10_000)
   if (typeof got === "string") throw new Error(`unread: ${got}`)
   expect(got.pid).toBe(process.pid)
   expect(got.home).toBe(office.paths.home)
   expect(got.tools).toEqual({ git: "/usr/bin/git" })
   const run = launchFor(home, new OfficePaths(home))
   expect(doctor.report([doctor.versionCheck(run, got, 0), doctor.toolsCheck(got)])).not.toContain(token)
-  expect(await doctor.officeInfo(sock, undefined, 10_000)).toBe("refused") // 401
+  expect(await service.officeInfo(sock, undefined, 10_000)).toBe("refused") // 401
 })
 
 test("an answer that isnt office info is unreadable", async () => {
   for (const body of ["<html>", '{"ok": true}', "[1]"]) {
     const sock = await answering(200, body)
-    expect(await doctor.officeInfo(sock, undefined, 10_000), body).toBe("unreadable")
+    expect(await service.officeInfo(sock, undefined, 10_000), body).toBe("unreadable")
   }
-  expect(await doctor.officeInfo(await answering(404, "{}"), undefined, 10_000)).toBe("unreachable")
+  expect(await service.officeInfo(await answering(404, "{}"), undefined, 10_000)).toBe("unreachable")
 })
 
 /** An executable file in a fresh temp dir. */

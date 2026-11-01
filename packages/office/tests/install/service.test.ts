@@ -23,7 +23,7 @@ import * as service from "../../src/install/service.ts"
 import * as systemd from "../../src/install/systemd.ts"
 import { selfSpawnEnv } from "../../src/platform.ts"
 import { company } from "../company/helpers.ts"
-import { cwdOf, envNames, fifo, isGone, ps, reexecMarks, shortDir, startGroup, tempDir } from "../helpers.ts"
+import { NO_GROUP, cwdOf, envNames, fifo, isGone, ps, reexecMarks, shortDir, startGroup, tempDir } from "../helpers.ts"
 import { Runner, daemonHost, killedAtEnd, makeHost, standIn } from "./helpers.ts"
 
 /** A `which` that finds every program in `/usr/bin`. */
@@ -988,6 +988,27 @@ test("stopping a systemd office stops its unit and leaves it enabled", async () 
   await service.stop(one, makeHost(dir, run, { platform: "linux" }))
   expect(run.calls).toEqual([["systemctl", "--user", "stop", systemd.unitName(one)]])
   expect(recorded(one).mode).toBe("systemd")
+})
+
+test("an office its manager stopped counts as stopped though its pid wasnt verified", async () => {
+  const { dir, one } = fixture()
+  installedAs(one, "systemd")
+  const run = new Runner()
+  const answers = async () => !run.calls.some((argv) => argv[0] === "systemctl" && argv[2] === "stop")
+  const host = makeHost(dir, run, { platform: "linux", answers })
+  const lookup: service.Lookup = { daemon: null, named: 7, from: "office", checked: false }
+  expect(await service.stop(one, host, 1000, lookup)).toEqual({ stopped: 7, killed: false })
+})
+
+test("a daemon gone before it was signalled isnt reported as stopped", async () => {
+  const { dir, one } = fixture()
+  installedAs(one, "launchd")
+  const host = makeHost(dir, new Runner(), { answers: async () => true })
+  // No process has this pid, so nothing is signalled.
+  const daemon = { pid: NO_GROUP, started: 1 }
+  const lookup: service.Lookup = { daemon, named: NO_GROUP, from: "office", checked: true }
+  const error = await refusal(service.restart(one, host, 1000, lookup))
+  expect(error.message).toContain(`(pid ${NO_GROUP}, from GET /office); it had exited before it could be signalled`)
 })
 
 test("stopping a launchd office leaves its agent loaded", async () => {

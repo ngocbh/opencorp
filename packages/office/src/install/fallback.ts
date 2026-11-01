@@ -215,9 +215,10 @@ export function verify(pid: number, launch: Launch, ps: string): { pid: number; 
  *  must close cleanly. */
 export const STOP_TIMEOUT_MS = 25_000
 
-/** Stops the office's daemon with SIGTERM, then SIGKILL after `timeoutMs`; says what was done and whether it took
- *  SIGKILL, or null if none runs. The daemon is `found` when given (a pid already verified, or null for none), else
- *  the pidfile's. Nothing is signalled unless the pid's start time and args are this office's daemon's. */
+/** Stops the office's daemon with SIGTERM, then SIGKILL after `timeoutMs`; says which pid it stopped, how, and
+ *  whether it took SIGKILL, or null if none runs. The daemon is `found` when given (a pid already verified, or null
+ *  for none), else the pidfile's. Nothing is signalled unless the pid's start time and args are this office's
+ *  daemon's. */
 export async function stopProcess(
   launch: Launch,
   {
@@ -225,9 +226,9 @@ export async function stopProcess(
     ps = resolveTools(daemonEnv(process.env)).ps,
     found = daemon(launch, ps),
   }: { timeoutMs?: number; ps?: string; found?: { pid: number; started: number } | null } = {},
-): Promise<{ line: string; killed: boolean } | null> {
+): Promise<{ pid: number; line: string; killed: boolean } | null> {
   if (found === null) return null
   const how = await stopPid(found.pid, found.started, { timeout: timeoutMs })
   if (!how) return null
-  return { line: `stopped the office (pid ${found.pid})`, killed: how === "killed" }
+  return { pid: found.pid, line: `stopped the office (pid ${found.pid})`, killed: how === "killed" }
 }

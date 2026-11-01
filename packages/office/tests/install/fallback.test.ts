@@ -330,6 +330,7 @@ test("stop process signals only the daemon it is given", async () => {
   const given = await standIn(`daemon --home ${one.home}`)
   const found = { pid: given.pid, started: given.started! }
   expect(await fallback.stopProcess(one, { ps: ps(), found })).toEqual({
+    pid: given.pid,
     line: `stopped the office (pid ${given.pid})`,
     killed: false,
   })
