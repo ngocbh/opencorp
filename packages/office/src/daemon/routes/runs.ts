@@ -16,11 +16,21 @@ import { PING_MS, RESET } from "./events.ts"
 
 export const RUN_STATUSES: readonly string[] = ["running", "waiting", "idle", "finished", "failed", "interrupted"]
 export const MAX_LIMIT = 200
-export const SEQ_MAX = 2 ** 62
+/** The largest seq a route takes: the largest safe integer, as a JSON number holds it exactly. */
+export const SEQ_MAX = Number.MAX_SAFE_INTEGER
 
 /** Query parameter `name`: its last value, as Starlette's `query_params.get`. */
 function param(ctx: RequestContext, name: string): string | undefined {
   return ctx.query.getAll(name).at(-1)
+}
+
+/** `raw` as a non-negative safe integer, written in ASCII digits (leading zeros allowed); null otherwise. */
+export function seqDigits(raw: string): number | null {
+  // Digits only, as Number also takes signs, spaces, exponents and hex; and a safe integer, as 2^53 and up can't be
+  // told from its neighbours.
+  if (!/^[0-9]+$/.test(raw)) return null
+  const value = Number(raw)
+  return Number.isSafeInteger(value) ? value : null
 }
 
 /** `raw` as an integer from `low` to `high` (`fallback` when absent); 422 otherwise, never quoting it. */
@@ -32,12 +42,9 @@ export function intParam<F extends number | null>(
   fallback: F,
 ): number | F {
   if (raw === undefined) return fallback
-  // ASCII digits only (Number also takes signs, spaces, exponents and hex), at most 9 of them: always a safe
-  // integer, and never over 2^62, which isn't one.
-  const value = /^[0-9]{1,9}$/.test(raw) ? Number(raw) : low - 1
-  if (value < low || value > high) {
-    // BigInt prints 2^62 exactly.
-    throw new HttpError(422, "invalid_body", `${name} must be an integer from ${low} to ${BigInt(high)}`)
+  const value = seqDigits(raw)
+  if (value === null || value < low || value > high) {
+    throw new HttpError(422, "invalid_body", `${name} must be an integer from ${low} to ${high}`)
   }
   return value
 }
@@ -168,9 +175,9 @@ export function liveTarget(ctx: RequestContext, id: string): { log: string; afte
   const raw = param(ctx, "after")
   let after = -1
   if (raw !== undefined) {
-    after = Number(raw)
-    if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(after))
-      throw new HttpError(422, "invalid_body", "after must be a record seq from 0")
+    const seq = seqDigits(raw)
+    if (seq === null) throw new HttpError(422, "invalid_body", "after must be a record seq from 0")
+    after = seq
   }
   const { store, paths } = ctx.office
   const row = store.getRun(id)

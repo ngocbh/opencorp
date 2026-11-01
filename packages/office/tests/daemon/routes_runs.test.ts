@@ -359,6 +359,38 @@ test("one runs routes say what went wrong", async () => {
   expect([gone.status, body(gone).error]).toEqual([404, "no_log"])
 })
 
+test.each([
+  ["/events", { after: "1000000000" }, 200],
+  ["/events/1000000000", {}, 404],
+  ["/nodes", { before: "1000000000" }, 200],
+  ["/events", { after: "9007199254740991" }, 200],
+] as const)("a seq of ten digits or more up to the safe integers is read [%s %o]", async (suffix, params, status) => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  const r = await get(sock, `/runs/${runId}${suffix}`, params)
+  expect(r.status).toBe(status)
+  if (status === 404) expect(body(r).error).toBe("not_found")
+})
+
+test("a limit with leading zeros is read", async () => {
+  const { sock } = await servedRuns()
+  expect((await get(sock, "/runs", { limit: "0000000001" })).status).toBe(200)
+})
+
+test("a seq past the safe integers is refused with the real bound and not echoed", async () => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  for (const target of [`/runs/${runId}/events?after=9007199254740992`, `/runs/${runId}/events/9007199254740992`]) {
+    const r = await request(sock, "GET", target)
+    const name = target.includes("after") ? "after" : "seq"
+    expect([r.status, r.json()]).toEqual([
+      422,
+      { error: "invalid_body", message: `${name} must be an integer from 0 to 9007199254740991` },
+    ])
+    expect(r.text).not.toContain("9007199254740992")
+  }
+})
+
 test("the download has no head so a head never opens the log", async () => {
   const { office, sock } = await servedQuietly()
   const runId = await withLog(office)
