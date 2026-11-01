@@ -489,6 +489,38 @@ test("human without profile is fine", async () => {
   expect(await codes(company(), "warning")).not.toContain("person.no_profile")
 })
 
+test("profile.md that isn't UTF-8 is an error", async () => {
+  const root = makeCompany()
+  fs.writeFileSync(path.join(root, "people/minh/profile.md"), Buffer.from("# M\xffinh\n", "latin1"))
+  expect(await issues(root)).toContain("person.profile_not_utf8 people/minh/profile.md")
+})
+
+test("a byte order mark in profile.md is fine", async () => {
+  const root = makeCompany({ "people/minh/profile.md": "\uFEFF# Minh\n" })
+  expect(await lint(loadRepo(root))).toEqual([])
+})
+
+test("a symlinked or folder profile.md is an error", async () => {
+  const linked = makeCompany()
+  const outside = path.join(path.dirname(linked), "outside.md")
+  fs.writeFileSync(outside, "# Minh\n")
+  fs.rmSync(path.join(linked, "people/minh/profile.md"))
+  fs.symlinkSync(outside, path.join(linked, "people/minh/profile.md"))
+  const folder = makeCompany()
+  fs.rmSync(path.join(folder, "people/minh/profile.md"))
+  fs.mkdirSync(path.join(folder, "people/minh/profile.md"))
+  for (const root of [linked, folder]) {
+    expect(await issues(root)).toContain("person.profile_not_a_file people/minh/profile.md")
+    expect(await codes(root, "warning")).not.toContain("person.no_profile")
+  }
+})
+
+test("a human's unreadable profile is an error too", async () => {
+  const root = company()
+  fs.writeFileSync(path.join(root, "people/ngocbh/profile.md"), Buffer.from("\xff\n", "latin1"))
+  expect(await issues(root)).toContain("person.profile_not_utf8 people/ngocbh/profile.md")
+})
+
 /** A device file entry named `name` whose token hash is `digit` 64 times. */
 function device(name: string, digit = "a") {
   return { name, token_sha256: digit.repeat(64) }

@@ -266,6 +266,97 @@ test("apply of an unknown proposal is 404", async () => {
   expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
 })
 
+test("put with a lone surrogate is 422 and writes nothing", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const head = git(office.paths.company, "rev-parse", "HEAD")
+  // Raw, as JSON.stringify would escape it the same way but the test should show what goes on the wire.
+  const r = await request(sock, "PUT", "/profiles/minh", {
+    headers: { "content-type": "application/json" },
+    body: `{"text":"# Minh\\ud800\\n","base_version":"${blob(MINH)}"}`,
+  })
+  expect(r.status).toBe(422)
+  expect(r.json()).toMatchObject({ error: "invalid_body", message: "text: holds a lone surrogate" })
+  expect(r.text).not.toContain("ud800")
+  expect(r.text).not.toContain("# Minh")
+  expect(git(office.paths.company, "rev-parse", "HEAD")).toBe(head)
+})
+
+const PROFILE = "people/minh/profile.md"
+
+test("get of a non UTF-8 profile is 409 unreadable_profile", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  fs.writeFileSync(path.join(office.paths.company, PROFILE), Buffer.from("# M\xffinh\n", "latin1"))
+  const r = await request(sock, "GET", "/profiles/minh")
+  expect(r.status).toBe(409)
+  expect(r.json()).toEqual({ error: "unreadable_profile", message: "people/minh/profile.md is not UTF-8" })
+})
+
+test("a symlinked profile is 409 on get and put", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const company = office.paths.company
+  const outside = path.join(path.dirname(company), "outside.md")
+  fs.writeFileSync(outside, MINH)
+  fs.rmSync(path.join(company, PROFILE))
+  fs.symlinkSync(outside, path.join(company, PROFILE))
+  const got = await request(sock, "GET", "/profiles/minh")
+  expect([got.status, errorOf(got)]).toEqual([409, "unreadable_profile"])
+  expect(got.text).not.toContain(outside)
+  git(company, "add", PROFILE)
+  git(company, "commit", "-qm", "link")
+  const r = await put(sock, { text: "pwned\n", base_version: git(company, "rev-parse", `HEAD:${PROFILE}`) })
+  expect([r.status, errorOf(r)]).toEqual([409, "unreadable_profile"])
+  expect(r.text).not.toContain(outside)
+  expect(fs.readFileSync(outside, "utf8")).toBe(MINH)
+})
+
+/** Replaces minh's profile.md in `company` with a folder holding a file. */
+function folderProfile(company: string): void {
+  fs.rmSync(path.join(company, PROFILE))
+  fs.mkdirSync(path.join(company, PROFILE))
+  fs.writeFileSync(path.join(company, PROFILE, "x"), "x\n")
+}
+
+test("a folder profile is 409 on get and put", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  folderProfile(office.paths.company)
+  const message = "people/minh/profile.md is not a regular file"
+  const got = await request(sock, "GET", "/profiles/minh")
+  expect([got.status, got.json()]).toEqual([409, { error: "unreadable_profile", message }])
+  const r = await put(sock, { text: "x\n", base_version: blob(MINH) })
+  expect([r.status, r.json()]).toEqual([409, { error: "unreadable_profile", message }])
+})
+
+test("apply onto a folder profile is 409 and the proposal stays open", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const p = await proposeText(office, "# Minh\n")
+  folderProfile(office.paths.company)
+  const r = await request(sock, "POST", `/profile-proposals/${p.id}/apply`)
+  expect([r.status, errorOf(r)]).toEqual([409, "unreadable_profile"])
+  expect(office.store.getProfileProposal(p.id)!.status).toBe("open")
+})
+
+test.each([
+  ["yaml", ["people/minh/person.yaml"]],
+  ["folder", ["-r", "people/minh"]],
+])("apply after the person's %s is removed is 404", async (_label, args) => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const company = office.paths.company
+  const p = await proposeText(office, "# Minh\n")
+  git(company, "rm", "-q", ...args)
+  git(company, "commit", "-qm", "drop minh")
+  const head = git(company, "rev-parse", "HEAD")
+  const r = await request(sock, "POST", `/profile-proposals/${p.id}/apply`)
+  expect([r.status, r.json()]).toEqual([404, { error: "not_found", message: "no person minh" }])
+  expect(git(company, "rev-parse", "HEAD")).toBe(head)
+  expect(office.store.getProfileProposal(p.id)!.status).toBe("open")
+})
+
 // The profile manager's chat over the routes (Python's `tests/daemon/test_routes_learning.py`), on a chat harness
 // over the fake LLM.
 

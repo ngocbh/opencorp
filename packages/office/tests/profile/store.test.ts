@@ -4,8 +4,8 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { loadFlow, type MarkdownStore, MarkdownVersionMismatch, ProfileMemory, runFlow } from "@ngocbh/yian"
-import { CompanyGit, CompanyRepoBusy, repoBusy } from "../../src/company/git.ts"
-import { blobId, commitMessage, EMPTY_BLOB, GitProfileStore } from "../../src/profile/store.ts"
+import { CompanyGit, CompanyGitError, CompanyRepoBusy, type LockedGit, repoBusy } from "../../src/company/git.ts"
+import { blobId, commitMessage, EMPTY_BLOB, GitProfileStore, ProfileUnreadable } from "../../src/profile/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { company, failingGit, GIT_FAILURES, git, recordingGit, stashPopConflict } from "../company/helpers.ts"
@@ -114,7 +114,39 @@ test("missing profile reads as empty", async () => {
 test("non utf8 profile is a range error", async () => {
   const { root, store } = setup()
   fs.writeFileSync(path.join(root, PROFILE), Buffer.from("# M\xffinh\n", "latin1"))
-  await expect(store.read()).rejects.toThrow(RangeError)
+  const error = await rejection(store.read())
+  expect(error).toBeInstanceOf(RangeError)
+  expect(error).toBeInstanceOf(ProfileUnreadable)
+  expect((error as Error).message).toBe("people/minh/profile.md is not UTF-8")
+})
+
+test("read refuses a symlinked profile", async () => {
+  const { dir, root, store } = setup()
+  const outside = path.join(dir, "outside.md")
+  fs.writeFileSync(outside, MINH)
+  fs.unlinkSync(path.join(root, PROFILE))
+  fs.symlinkSync(outside, path.join(root, PROFILE))
+  const head = git(root, "rev-parse", "HEAD")
+  const error = await rejection(store.read())
+  expect(error).toBeInstanceOf(ProfileUnreadable)
+  expect((error as Error).message).toMatch(/symlink/)
+  expect((error as Error).message).not.toContain(outside)
+  expect(git(root, "rev-parse", "HEAD")).toBe(head) // the link isn't committed as a hand edit
+})
+
+/** Replaces minh's profile.md with a folder holding a file. */
+function folderProfile(root: string): void {
+  fs.rmSync(path.join(root, PROFILE))
+  fs.mkdirSync(path.join(root, PROFILE))
+  fs.writeFileSync(path.join(root, PROFILE, "x"), "x\n")
+}
+
+test("read refuses a folder at profile.md", async () => {
+  const { root, store } = setup()
+  folderProfile(root)
+  const error = await rejection(store.read())
+  expect(error).toBeInstanceOf(ProfileUnreadable)
+  expect((error as Error).message).toBe("people/minh/profile.md is not a regular file")
 })
 
 test("a byte order mark is kept", async () => {
@@ -232,11 +264,31 @@ test("write refuses a symlinked profile", async () => {
   fs.writeFileSync(outside, MINH)
   fs.unlinkSync(path.join(root, PROFILE))
   fs.symlinkSync(outside, path.join(root, PROFILE))
-  const base = (await store.read())[1] // the symlink, committed as a hand edit
+  git(root, "add", PROFILE)
+  git(root, "commit", "-qm", "link")
+  const base = git(root, "rev-parse", `HEAD:${PROFILE}`)
   const error = await rejection(store.write("pwned\n", { baseVersion: base }))
-  expect(error).toBeInstanceOf(RangeError)
+  expect(error).toBeInstanceOf(ProfileUnreadable)
   expect((error as Error).message).toMatch(/symlink/)
   expect(fs.readFileSync(outside, "utf8")).toBe(MINH)
+})
+
+test("write refuses a folder at profile.md", async () => {
+  const { root, store } = setup()
+  folderProfile(root)
+  const head = git(root, "rev-parse", "HEAD")
+  const error = await rejection(store.write("x\n", { baseVersion: blobId(bytes(MINH)) }))
+  expect(error).toBeInstanceOf(ProfileUnreadable)
+  expect((error as Error).message).toBe("people/minh/profile.md is not a regular file")
+  expect(git(root, "rev-parse", "HEAD")).toBe(head)
+})
+
+test("a retried write still returns its version over a broken file", async () => {
+  const { root, store } = setup()
+  const provenance = { commit_id: "c-1" }
+  const version = await store.write("# Minh\nnew\n", { baseVersion: blobId(bytes(MINH)), provenance })
+  folderProfile(root)
+  expect(await store.write("# Minh\nnew\n", { baseVersion: blobId(bytes(MINH)), provenance })).toBe(version)
 })
 
 test("write refuses non strings", async () => {
