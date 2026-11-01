@@ -272,6 +272,16 @@ test("offboard on an empty home is exit 0", async () => {
   expect(s.out()).toContain("Nothing of this office to remove at")
 })
 
+test.each(["start", "restart"])("a home too long for the socket is exit 1 [%s]", async (command) => {
+  const dir = tempDir()
+  const runner = new Runner()
+  const s = { ...standIns(dir), host: makeHost(dir, runner) }
+  const stderr = capture()
+  expect(await main([command, "--home", path.join(dir, "h".repeat(120))], { ...s, stderr })).toBe(1)
+  expect(stderr.text()).toContain("socket path too long")
+  expect(runner.calls).toEqual([])
+})
+
 test("start before onboarding is exit 3 with a hint", async () => {
   const dir = tempDir()
   const s = standIns(dir)

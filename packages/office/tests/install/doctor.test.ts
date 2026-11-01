@@ -134,6 +134,14 @@ test("a company without a first commit is told to onboard", async () => {
   })
 })
 
+test("a home too long for the socket fails the home check, even before it exists", async () => {
+  const dir = tempDir()
+  const got = byName(await runChecks(dir, new OfficePaths(path.join(dir, "h".repeat(120)))))
+  expect(got.home!.status).toBe("fail")
+  expect(got.home!.detail).toContain("socket path too long")
+  expect(got.home!.detail).toContain("--home")
+})
+
 test("a fresh machine is told to onboard", async () => {
   const dir = tempDir()
   const found = await runChecks(dir, new OfficePaths(path.join(dir, "home")))

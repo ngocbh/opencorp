@@ -22,7 +22,16 @@ import { init } from "./init.ts"
 import { JsonPrompter, type TextOut } from "./json_prompts.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, ServiceError } from "./launch.ts"
 import { Declined, OffboardError, offboard } from "./offboard.ts"
-import { LISTERS, type Listers, type ModelCheck, modelProblem, onboard, SET_UP, WHO } from "./onboard.ts"
+import {
+  checkSocket,
+  LISTERS,
+  type Listers,
+  type ModelCheck,
+  modelProblem,
+  onboard,
+  SET_UP,
+  WHO,
+} from "./onboard.ts"
 import { isTTY, KeyboardInterrupt, OnboardError, type Prompter, TtyPrompter } from "./prompts.ts"
 import * as service from "./service.ts"
 
@@ -518,6 +527,18 @@ async function reportHq(officeHome: string, s: Setup): Promise<void> {
   }
 }
 
+/** Whether the office's socket at `run`'s home is too long to bind; says so on stderr. */
+function socketTooLong(run: Launch, s: Setup): boolean {
+  try {
+    checkSocket(run.socket)
+  } catch (error) {
+    if (!(error instanceof OnboardError)) throw error
+    s.stderr.write(`opencorp: ${error.message}\n`)
+    return true
+  }
+  return false
+}
+
 /** Whether there's no company at the office's home yet; says so on stderr. */
 async function notOnboarded(run: Launch, s: Setup): Promise<boolean> {
   if (!(await isNew(path.join(run.home, "company")))) return false
@@ -527,6 +548,7 @@ async function notOnboarded(run: Launch, s: Setup): Promise<boolean> {
 
 async function startCommand(args: Args, s: Setup): Promise<number> {
   const run = launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome })
+  if (socketTooLong(run, s)) return 1
   if (await s.host.answers(run.socket)) {
     s.stdout.write(`The office is already running (pid ${service.pid(run)}).\n`)
     await reportHq(run.home, s)
@@ -541,6 +563,7 @@ async function startCommand(args: Args, s: Setup): Promise<number> {
 
 async function restartCommand(args: Args, s: Setup): Promise<number> {
   const run = launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome })
+  if (socketTooLong(run, s)) return 1
   if (await notOnboarded(run, s)) return NOT_ONBOARDED
   const was = (await s.host.answers(run.socket)) ? service.pid(run) : null
   if (!(await cameUp(run, s, service.restart))) return 1

@@ -30,7 +30,7 @@ import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
 import { isNew, missingFiles, type Owner, writeCompany } from "../company_template/index.ts"
-import { makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
+import { checkSocketPath, makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
 import { redact as redactSecrets, repr } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
@@ -682,6 +682,17 @@ async function saveIdentity(home: string, me: Identity): Promise<void> {
   }
 }
 
+/** Throws `OnboardError` when the office's socket at `socket` is too long for a unix socket, saying how to pick a
+ *  shorter home. */
+export function checkSocket(socket: string): void {
+  try {
+    checkSocketPath(socket)
+  } catch (error) {
+    if (!(error instanceof OfficeStartError)) throw error
+    throw new OnboardError(`${error.message}; pick a shorter office home with --home or OPENCORP_HOME`)
+  }
+}
+
 /** Makes the home and office dirs, both 0700. Throws `OnboardError` when they can't be made, or the office dir
  *  isn't this user's. */
 export function makeHome(home: string): void {
@@ -887,6 +898,7 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
   const one = launch(home, { environ, userHome: host.userHome })
   const company = path.join(one.home, "company")
   const worktrees = path.join(one.office, "worktrees")
+  checkSocket(one.socket)
   makeHome(one.home)
   prompter.say(`Office home: ${one.home}`)
 

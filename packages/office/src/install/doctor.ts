@@ -25,7 +25,15 @@ import { workerEnv } from "../worker/spawn.ts"
 import { tailRegular } from "./files.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, runCommand, which } from "./launch.ts"
 import * as launchd from "./launchd.ts"
-import { checkProvider, lexists, SET_UP, setupConnectionFile, stopToTopUp, withDefaultModel } from "./onboard.ts"
+import {
+  checkProvider,
+  checkSocket,
+  lexists,
+  SET_UP,
+  setupConnectionFile,
+  stopToTopUp,
+  withDefaultModel,
+} from "./onboard.ts"
 import { OnboardError, clean } from "./prompts.ts"
 import * as service from "./service.ts"
 import * as systemd from "./systemd.ts"
@@ -97,6 +105,12 @@ function octal(mode: number): string {
 }
 
 function homeCheck(paths: OfficePaths): Check {
+  try {
+    checkSocket(paths.socket)
+  } catch (error) {
+    if (!(error instanceof OnboardError)) throw error
+    return { name: "home", status: "fail", detail: error.message }
+  }
   let st: fs.Stats
   try {
     st = fs.statSync(paths.home)

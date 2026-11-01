@@ -303,6 +303,16 @@ test("the model is checked before it is saved", async () => {
   expect(problems).toEqual([])
 })
 
+test("a home too long for the socket is refused before anything is written", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "h".repeat(120))
+  const error = await rejection(init(home, scripted(), { ...base(dir), known: FLAGS, stdin: providerStdin() }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("socket path too long")
+  expect(error.message).toContain("--home")
+  expect(fs.existsSync(home)).toBe(false)
+})
+
 test("flags that clash without a terminal stop before the company is made", async () => {
   const dir = tempDir()
   const error = await rejection(runInit(dir, scripted(), { handle: "me", agent_handle: "me" }))

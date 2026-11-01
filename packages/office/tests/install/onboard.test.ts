@@ -463,6 +463,17 @@ test.each([
   expect(fs.existsSync(path.join(dir, "home", "company"))).toBe(false)
 })
 
+test("a home too long for the socket is refused before anything is written", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "h".repeat(120))
+  const error = await rejection(onboard(home, new Script(), { ...base(dir), source: path.join(dir, "x.git") }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("socket path too long")
+  expect(error.message).toContain("--home")
+  expect(error.message).not.toContain("can't clone")
+  expect(fs.existsSync(home)).toBe(false)
+})
+
 test("a repo that cant be cloned leaves nothing behind", async () => {
   const dir = tempDir()
   const error = await rejection(

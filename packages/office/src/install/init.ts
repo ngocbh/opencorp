@@ -15,6 +15,7 @@ import { defaultHost, type Env, type Host, launch } from "./launch.ts"
 import {
   type Answers,
   askProvider,
+  checkSocket,
   ensureProvider,
   GIT_ACCESS,
   type Listers,
@@ -109,6 +110,7 @@ export async function init(home: string, prompter: Prompter, options: InitOption
   const one = launch(home, { environ, userHome: host.userHome })
   const company = path.join(one.home, "company")
   const worktrees = path.join(one.office, "worktrees")
+  checkSocket(one.socket)
   if (!(await isNew(company))) {
     throw new OnboardError(
       `there's already a company at ${company}; run \`opencorp onboard\` to set up this office for it`,
