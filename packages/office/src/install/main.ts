@@ -603,7 +603,8 @@ async function restartCommand(args: Args, s: Setup): Promise<number> {
   const run = launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome })
   if (socketTooLong(run, s)) return 1
   const lookup = await service.findDaemon(run, s.host, s.lookup)
-  // A running office is restarted even without a company: nothing else would stop it.
+  // A running office whose company is gone is told how to stop it, not that there's no office; its new daemon
+  // would refuse to start.
   if (!(await s.host.answers(run.socket)) && lookup.daemon === null) {
     const refused = await notOnboarded(run, s)
     if (refused !== null) return refused
