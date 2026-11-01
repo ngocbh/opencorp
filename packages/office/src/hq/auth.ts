@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto"
 import fs from "node:fs"
 import type { IncomingMessage } from "node:http"
 import path from "node:path"
-import { HttpError } from "../daemon/http.ts"
+import { HttpError, logLine } from "../daemon/http.ts"
 import { OfficeStartError, messageOf } from "../daemon/sockets.ts"
 import { replaceFile } from "../secrets.ts"
 import { header, isApi, requestPath } from "./guard.ts"
@@ -50,7 +50,10 @@ export function cookieKey(officeDir: string, log: (line: string) => void = () =>
   } catch (error) {
     throw new OfficeStartError(`can't write HQ's cookie key ${file}: ${messageOf(error)}`)
   }
-  if (why !== "missing") log(`HQ's cookie key ${file} ${why}; made a new one, so every browser signs in again`)
+  if (why !== "missing") {
+    const text = `HQ's cookie key ${file} ${why}; made a new one, so every browser signs in again`
+    log(logLine("WARNING", "opencorp.hq.auth", text))
+  }
   return key
 }
 
@@ -108,8 +111,7 @@ export function cookieValue(req: IncomingMessage, key: string): string | undefin
  * Takes the `node:http` request rather than the pipeline's `RequestInfo`, whose path is still percent-encoded and
  * whose headers join repeated Cookie values: the open requests are matched on the decoded path, as uvicorn decoded
  * it, and only the first Cookie header counts (its last pair of the cookie's name, as `cookieValue` says; `key` is the
- * office's cookie key). The HQ
- * pipeline is built per request and closes over `req`.
+ * office's cookie key). The HQ pipeline is built per request and closes over `req`.
  */
 export async function browserAuth(
   sessions: Pick<BrowserSessions, "check">,

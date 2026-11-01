@@ -130,6 +130,7 @@ test("a cookie key file that isnt a private key is replaced and logged", () => {
     expect([st.isFile(), st.mode & 0o777]).toEqual([true, 0o600])
     expect(fs.readFileSync(file, "utf8")).toBe(`${key}\n`)
     expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/^\d{4}-\d\d-\d\dT\S+Z WARNING opencorp\.hq\.auth: HQ's cookie key /)
     expect(lines[0]).toContain(why)
     expect(lines[0]).not.toContain(key)
   }
