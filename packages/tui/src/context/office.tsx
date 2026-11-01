@@ -10,6 +10,7 @@ import {
   type OfficeEvents,
   type OfficeStatus,
 } from "@opencorp/client"
+import { createFlush } from "./flush"
 import { createSimpleContext } from "./helper"
 
 // Streamed deltas arrive many times a second; applying them in one batch per frame keeps
@@ -23,38 +24,22 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
     const [state, setState] = createStore<OfficeState>(emptyState())
     const [status, setStatus] = createSignal<OfficeStatus>("connecting")
     const [error, setError] = createSignal<string>()
-    let queue: ((s: OfficeState) => void)[] = []
-    let after: (() => void)[] = []
-    let timer: ReturnType<typeof setTimeout> | undefined
-
-    function flush() {
-      timer = undefined
-      const fns = queue
-      const calls = after
-      queue = []
-      after = []
-      // One bad update mustn't drop the rest, or the callbacks waiting on them.
-      batch(() => setState(produce((s) => runEach(fns, s))))
-      runEach(calls)
-    }
+    // One bad update mustn't drop the rest.
+    const flush = createFlush<OfficeState>((fns) => batch(() => setState(produce((s) => runEach(fns, s)))), FLUSH_MS)
 
     const sync = createOfficeSync({
       client,
       cwd: props.cwd,
       state: () => state,
-      mutate(fn) {
-        queue.push(fn)
-        timer ??= setTimeout(flush, FLUSH_MS)
-      },
+      mutate: flush.mutate,
       // "online" follows the snapshot it was set after, so readers never see it with stale state.
       onStatus(next, message) {
-        const apply = () =>
+        flush.later(() =>
           batch(() => {
             setStatus(next)
             setError(message)
-          })
-        if (!timer) return apply()
-        after.push(apply)
+          }),
+        )
       },
     })
 
@@ -81,7 +66,7 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
     onMount(sync.start)
     onCleanup(() => {
       sync.stop()
-      if (timer) clearTimeout(timer)
+      flush.dispose()
     })
 
     return {
@@ -99,36 +84,27 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
       /** Loads a session's messages and open questions and keeps them live; resolves once they are in `state`. */
       async syncSession(id: string) {
         await sync.syncSession(id)
-        await settled()
+        await flush.settled()
       },
       /** Re-reads a question into `state`, e.g. after an answer finds it already closed. */
       async refreshQuestion(id: string) {
         await sync.refreshQuestion(id)
-        await settled()
+        await flush.settled()
       },
       /** Stores a question a call returned, e.g. the answered question from an answer. */
       async putQuestion(q: Question) {
         sync.putQuestion(q)
-        await settled()
+        await flush.settled()
       },
       /** Re-reads both people lists, e.g. after a hire (there are no person events). */
       async refreshPeople() {
         await sync.refreshPeople()
-        await settled()
+        await flush.settled()
       },
       /** Calls `fn` for each event of `type` once it is visible in `state`; returns an unsubscribe. */
       on<K extends keyof OfficeEvents>(type: K, fn: (e: OfficeEvents[K]) => void) {
-        return sync.on(type, (e) => {
-          if (!timer) return fn(e)
-          after.push(() => fn(e))
-        })
+        return sync.on(type, (e) => flush.later(() => fn(e)))
       },
-    }
-
-    /** Resolves after queued changes are flushed into `state`. */
-    function settled() {
-      if (!timer) return Promise.resolve()
-      return new Promise<void>((resolve) => after.push(resolve))
     }
   },
 })
