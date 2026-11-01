@@ -2,6 +2,7 @@
  *  stand-ins for the machine. */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process"
 import fs from "node:fs"
+import net from "node:net"
 import path from "node:path"
 import readline from "node:readline"
 import { Readable, Writable } from "node:stream"
@@ -459,6 +460,38 @@ test(
       expect(started.code, started.err).toBe(0)
       expect(await officeAnswers(office.socket)).toBe(true)
       expect(started.out).toBe(`The office wasn't running; started it (pid ${office.pid()}).\n`)
+    } finally {
+      await office.stop()
+    }
+  },
+  120_000,
+)
+
+test(
+  "restart and start say hqs web port is taken once the office answers",
+  async () => {
+    const office = realOffice(killedAtEnd())
+    const holder = net.createServer()
+    await new Promise<void>((resolve, reject) => {
+      holder.once("error", reject)
+      holder.listen(0, "127.0.0.1", resolve)
+    })
+    onTestFinished(() => new Promise<void>((resolve) => holder.close(() => resolve())))
+    const port = (holder.address() as net.AddressInfo).port
+    const taken = `opencorp: HQ: port ${port} isn't free`
+    try {
+      const made = await office.init()
+      expect(made.code, made.err).toBe(0)
+      fs.writeFileSync(path.join(office.dir, "office", "hq.json"), JSON.stringify({ tcp: true, port }))
+      // Each command reports HQ only once office.sock answers, and HQ binds its web port before that socket listens.
+      const restart = () => office.install(["restart"])
+      const start = () => office.stop().then(() => office.install(["start"]))
+      for (const run of [restart, start]) {
+        const { code, err } = await run()
+        expect(code, err).toBe(0)
+        expect(err.split("\n").filter((line) => line.startsWith(taken))).toHaveLength(1)
+        expect(err).not.toContain("isn't listening yet (HQ is binding it)")
+      }
     } finally {
       await office.stop()
     }
