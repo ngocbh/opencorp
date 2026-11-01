@@ -31,6 +31,7 @@ import { DialogMessage } from "./dialog-message"
 import { costLabel, Sidebar } from "./sidebar"
 import { filetype } from "../../util/filetype"
 import { errorMessage } from "../../util/error"
+import { interruptible } from "../../util/status"
 import { Toast, useToast } from "../../ui/toast"
 import { useCostCap } from "../../component/cost-cap"
 import { useKV } from "../../context/kv.tsx"
@@ -53,7 +54,7 @@ import { answerShown } from "../chat/answer"
 import { QuestionCard } from "../chat/card"
 import { HarnessCard } from "../chat/harness-card"
 import { SideChat, SideHeader } from "../chat/side"
-import { freeze, frozenView, unfreeze, type Freeze } from "../chat/freeze"
+import { freeze, frozenList, unfreeze, type Freeze } from "../chat/freeze"
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
@@ -105,6 +106,11 @@ function use() {
 /** Whether a message has a text part with more than whitespace: the view draws nothing for a blank one. */
 function hasText(message: Message) {
   return message.parts.some((part) => part.type === "text" && part.text.trim())
+}
+
+/** The ids of a transcript's assistant messages. */
+function assistantIds(list: Message[]): Record<string, true> {
+  return Object.fromEntries(list.flatMap((m) => (m.role === "assistant" ? [[m.id, true]] : [])))
 }
 
 /** The text of a message's text parts, joined. */
@@ -160,21 +166,57 @@ export function Session() {
   })
   // Esc freezes what the transcript shows until the next message is sent.
   const [frozen, setFrozen] = createSignal<Freeze>()
-  const shown = createMemo(() => messages().flatMap((m) => frozenView(frozen(), m) ?? []))
-  createEffect(on(viewID, () => setFrozen(undefined), { defer: true }))
+  const shown = createMemo(() => frozenList(frozen(), messages()))
+  const viewStatus = createMemo(() => office.state.sessions.find((s) => s.id === viewID())?.status)
+  /**
+   * The viewed session's assistant messages from before its current (or next) turn began. Esc
+   * stops that turn, and what a later turn writes after a message sent before Esc still shows.
+   */
+  let turnStart: Record<string, true> | undefined
+  createEffect(
+    on(
+      viewID,
+      () => {
+        setFrozen(undefined)
+        turnStart = undefined
+      },
+      { defer: true },
+    ),
+  )
+  // The next turn starts after everything the one that just ended wrote.
+  createEffect(
+    on(
+      () => interruptible(viewStatus()),
+      (live, was) => {
+        if (was && !live) turnStart = assistantIds(messages())
+      },
+      { defer: true },
+    ),
+  )
+  /** Esc: freezes the view; the turn after the stopped one starts from what it shows now. */
+  function interrupt() {
+    // A Codex steer joins the live turn, so the next message after it can still be the stopped turn's.
+    setFrozen(freeze(messages(), frozen(), codex() ? undefined : turnStart))
+    turnStart = assistantIds(messages())
+  }
   /**
    * Ends the freeze as the user sends, before the office answers, so the new reply's first
    * message shows even if it streams in first; returns an undo for a send that fails.
    */
   function lift() {
+    const start = turnStart
+    // A message to a session between turns starts one.
+    if (!interruptible(viewStatus())) turnStart = assistantIds(messages())
+    const started = turnStart
     const f = frozen()
-    if (!f?.active) return
-    const lifted = unfreeze(f, messages())
+    const lifted = f?.active ? unfreeze(f, messages()) : undefined
     const view = viewID()
-    setFrozen(lifted)
+    if (lifted) setFrozen(lifted)
     // A newer Esc, or a switch to or from the side view, has since replaced the lifted freeze.
     return () => {
-      if (frozen() === lifted && viewID() === view) setFrozen(f)
+      if (viewID() !== view) return
+      if (turnStart === started) turnStart = start
+      if (lifted && frozen() === lifted) setFrozen(f)
     }
   }
   // The side chat closes with its question.
@@ -219,7 +261,14 @@ export function Session() {
         office
           .syncSession(sessionID)
           .then(() => {
-            if (route.sessionID === sessionID) toBottom()
+            if (route.sessionID !== sessionID) return
+            toBottom()
+            // A turn may have started before this view opened (the first message is sent from home): it
+            // began at the last user message, or begins after what is here now.
+            if (turnStart || viewID() !== sessionID) return
+            const list = messages()
+            const last = Math.max(list.findLastIndex((m) => m.role === "user"), 0)
+            turnStart = assistantIds(interruptible(viewStatus()) ? list.slice(0, last) : list)
           })
           .catch((error) => {
             // An office that is down loads the session when it comes back.
@@ -620,7 +669,7 @@ export function Session() {
                             ref={bind}
                             onSend={lift}
                             onSubmit={() => toBottom()}
-                            onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                            onInterrupt={interrupt}
                             sessionID={route.sessionID}
                           />
                         }
@@ -643,7 +692,7 @@ export function Session() {
                                     toBottom()
                                     return undo
                                   }}
-                                  onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                                  onInterrupt={interrupt}
                                 />
                               )}
                             </Show>
@@ -661,7 +710,7 @@ export function Session() {
                               question={q()}
                               active={i() === 0 && cardFocused()}
                               waiting={i() > 0}
-                              onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                              onInterrupt={interrupt}
                             />
                           )}
                         </Show>
@@ -673,7 +722,7 @@ export function Session() {
                       ref={bind}
                       onSend={lift}
                       onSubmit={() => toBottom()}
-                      onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                      onInterrupt={interrupt}
                       sessionID={route.sessionID}
                     />
                   </Show>

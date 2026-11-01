@@ -2,6 +2,8 @@ import type { Message } from "@opencorp/protocol"
 import { expect, onTestFinished, test } from "bun:test"
 import { createFakeOffice, createStub } from "./fixture/fake-office"
 import { bootFrame } from "./fixture/frame"
+import { until } from "./fixture/until"
+import { INTERRUPTED_TEXT } from "../src/routes/chat/freeze"
 
 test("a waiting session's header names who it waits on, and a capped one says so", async () => {
   const office = createFakeOffice()
@@ -355,6 +357,101 @@ test("a Codex change of several files shows each file; a failed command says its
     expect(f).toContain("new third body")
     // A finished change with nothing in it isn't still being prepared.
     expect(f).not.toContain("Preparing edit")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("after Esc, the answer to a steer sent before it shows, and stays after the next send", async () => {
+  const office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  const say = (m: Message) => {
+    office.state.messages[id] = [...office.state.messages[id].filter((x) => x.id !== m.id), m]
+    office.live({ type: "message.updated", session_id: id, data: m as never })
+  }
+  const reply = (text: string): Message => ({
+    id: office.nextId(),
+    session_id: id,
+    role: "assistant",
+    created_at: new Date().toISOString(),
+    parts: [{ id: office.nextId(), type: "text", text }],
+  })
+  let held: Message | undefined
+  office.onPrompt((_, req) => {
+    if (req.text !== "A") return say(reply(`Answer to ${req.text}.`))
+    held = reply("Held back")
+    say(held)
+  })
+  // The stopped reply ends with its marker; the office's next turn then answers the steer it never read.
+  office.onInterrupt(() => {
+    const part = { ...held!.parts[0], text: "Held back" + INTERRUPTED_TEXT } as Message["parts"][number]
+    say({ ...held!, parts: [part] })
+    say(reply("Answer to B."))
+    office.replyEnded(id)
+  })
+  const app = await bootFrame(createStub(office), { sessionID: id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    app.input.typeText("A")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Held back") && f.includes("@minh · busy"))
+    app.input.typeText("B steer")
+    app.input.pressEnter()
+    await until(() => office.requests.some((r) => (r.body as { text?: string } | undefined)?.text === "B steer"))
+    app.input.pressEscape()
+    await app.until((f) => f.includes("Answer to B.") && f.includes("@minh · idle"))
+    app.input.typeText("C")
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes("Answer to C."))
+    expect(f).toContain("Answer to B.")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("after Esc, the answer to a steer shows in a chat whose first message was sent from home", async () => {
+  const office = createFakeOffice()
+  let id = ""
+  // Kept in the office's transcript too, as the session view loads it again when it opens.
+  const say = (m: Message) => {
+    const list = office.state.messages[id] ?? []
+    office.state.messages[id] = [...list.filter((x) => x.id !== m.id), m]
+    office.live({ type: "message.updated", session_id: id, data: m as never })
+  }
+  const reply = (text: string): Message => ({
+    id: office.nextId(),
+    session_id: id,
+    role: "assistant",
+    created_at: new Date().toISOString(),
+    parts: [{ id: office.nextId(), type: "text", text }],
+  })
+  let held: Message | undefined
+  office.onPrompt((sessionId, req) => {
+    id = sessionId
+    if (req.text !== "A") return say(reply(`Answer to ${req.text}.`))
+    held = reply("Held back")
+    say(held)
+  })
+  // The stopped reply ends with its marker; the office's next turn then answers the steer it never read.
+  office.onInterrupt(() => {
+    const part = { ...held!.parts[0], text: "Held back" + INTERRUPTED_TEXT } as Message["parts"][number]
+    say({ ...held!, parts: [part] })
+    say(reply("Answer to B."))
+    office.replyEnded(id)
+  })
+  const app = await bootFrame(createStub(office))
+  try {
+    await app.until((f) => f.includes("Ask anything") && f.includes("@minh"))
+    app.input.typeText("A")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Held back") && f.includes("@minh · busy"))
+    app.input.typeText("B steer")
+    app.input.pressEnter()
+    await until(() => office.requests.some((r) => (r.body as { text?: string } | undefined)?.text === "B steer"))
+    app.input.pressEscape()
+    await app.until((f) => f.includes("Answer to B.") && f.includes("@minh · idle"))
   } finally {
     await app.stop()
     office.stop()
