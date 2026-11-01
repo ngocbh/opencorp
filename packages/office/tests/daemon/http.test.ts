@@ -914,6 +914,36 @@ async function socketCapacity(chunk: Buffer): Promise<number> {
 
 // Socket buffers differ by host (8 KiB on macOS, 16 MiB on some Linux hosts), so the backpressure tests size from this,
 // measured once for the file.
+/** Resolves once `count` has held for 200 ms: the buffers between a streamed body and a paused client are full. */
+async function stopsPulling(count: () => number): Promise<void> {
+  let last = -1
+  let since = performance.now()
+  await waitFor(
+    () => {
+      if (count() !== last) {
+        last = count()
+        since = performance.now()
+        return false
+      }
+      return last > 0 && performance.now() - since >= 200
+    },
+    { timeout: 9000, what: "the body to stop being pulled" },
+  )
+}
+
+/** The body of a chunked reply: each hex size line, that many bytes, CRLF; a zero size ends it. */
+function dechunk(body: string): string {
+  let decoded = ""
+  let at = 0
+  for (;;) {
+    const eol = body.indexOf("\r\n", at)
+    const size = Number.parseInt(body.slice(at, eol), 16)
+    if (!size) return decoded
+    decoded += body.slice(eol + 2, eol + 2 + size)
+    at = eol + 2 + size + 2
+  }
+}
+
 let pausedCapacity: Promise<number> | undefined
 
 describe("raw replies", () => {
@@ -1128,6 +1158,122 @@ describe("raw replies", () => {
     await waitFor(() => finished, { timeout: 9000, what: "the body to finish" })
     await waitFor(() => settled() === 1, { timeout: 9000, what: "the request to settle" })
     expect(lines).toEqual([])
+  })
+
+  test("aborting a stream's cut destroys the connection while the client is not reading", async () => {
+    let pulls = 0
+    let finished = false
+    const cut = new AbortController()
+    const chunk = "x".repeat(64 * 1024)
+    const forever: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: () =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            try {
+              for (;;) {
+                pulls++
+                yield chunk
+              }
+            } finally {
+              finished = true
+            }
+          })(),
+          { abort: cut.signal },
+        ),
+    }
+    const { sock } = await serve([forever])
+    const socket = connect(sock)
+    socket.on("error", () => {})
+    socket.write("GET /s HTTP/1.1\r\nhost: office\r\n\r\n")
+    socket.pause()
+    await stopsPulling(() => pulls)
+    cut.abort()
+    await waitFor(() => finished, { timeout: 9000, what: "the body to finish" })
+    const stopped = pulls
+    // The client, reading again, gets what was buffered and then a closed connection without the last chunk.
+    const parts: Buffer[] = []
+    await new Promise<void>((resolve) => {
+      socket.on("data", (part: Buffer) => parts.push(part))
+      socket.on("close", () => resolve())
+      socket.resume()
+    })
+    expect(Buffer.concat(parts).toString().endsWith("0\r\n\r\n")).toBe(false)
+    expect(pulls).toBe(stopped)
+  })
+
+  test("a client that keeps reading gets what the body yields after its cut aborts", async () => {
+    const cut = new AbortController()
+    const tick: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: () =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            while (!cut.signal.aborted) {
+              yield "x"
+              await new Promise((resolve) => setTimeout(resolve, 5))
+            }
+            yield "END"
+          })(),
+          { abort: cut.signal },
+        ),
+    }
+    const { sock } = await serve([tick])
+    const socket = connect(sock)
+    const parts: Buffer[] = []
+    const text = await new Promise<string>((resolve, reject) => {
+      socket.on("data", (part: Buffer) => {
+        parts.push(part)
+        cut.abort()
+      })
+      socket.on("end", () => resolve(Buffer.concat(parts).toString()))
+      socket.on("error", reject)
+      socket.write("GET /s HTTP/1.1\r\nhost: office\r\nconnection: close\r\n\r\n")
+    })
+    const { status, body } = parse(text)
+    expect(status).toBe(200)
+    expect(body.endsWith("0\r\n\r\n")).toBe(true)
+    expect(dechunk(body).endsWith("END")).toBe(true)
+  })
+
+  test("a write that fills the buffer after the cut aborted destroys the connection at once", async () => {
+    let finished = false
+    let resumed = false
+    const cut = new AbortController()
+    const big = "x".repeat(4 * 1024 * 1024)
+    const once: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: () =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            try {
+              cut.abort()
+              yield big
+              resumed = true
+              yield big
+            } finally {
+              finished = true
+            }
+          })(),
+          { abort: cut.signal },
+        ),
+    }
+    const { sock } = await serve([once])
+    const socket = connect(sock)
+    socket.on("error", () => {})
+    socket.write("GET /s HTTP/1.1\r\nhost: office\r\n\r\n")
+    socket.pause()
+    await waitFor(() => finished, { timeout: 9000, what: "the body to finish" })
+    expect(resumed).toBe(false)
   })
 
   test("a streamed body that fails after the client left logs nothing", async () => {

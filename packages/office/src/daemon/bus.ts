@@ -21,6 +21,7 @@ export class Subscription {
   #dropped = false
   #reading = false
   #wake: (() => void) | null = null
+  readonly #ended = new AbortController()
 
   constructor(remove: (sub: Subscription) => void, session: string | null, types: ReadonlySet<string> | null) {
     this.#remove = remove
@@ -31,6 +32,12 @@ export class Subscription {
   /** Whether the bus dropped this subscription for falling behind. */
   get dropped(): boolean {
     return this.#dropped
+  }
+
+  /** Fires once the subscription is ended from outside (`end`, a drop, the bus closing), never by its reader's
+   *  `close`: a reader suspended elsewhere, such as a stream waiting for its client to read, learns of it here. */
+  get ended(): AbortSignal {
+    return this.#ended.signal
   }
 
   /** How many items wait in the queue. */
@@ -92,6 +99,7 @@ export class Subscription {
   /** Queue `item` (null ends the subscription) and wake a waiting reader. Called by the bus. */
   push(item: Item | null): void {
     this.#queue.push(item)
+    if (item === null) this.#ended.abort()
     // The reader takes from the queue when it runs, as asyncio's queue does: a burst published before then
     // stays queued and can overflow it.
     this.#wake?.()
