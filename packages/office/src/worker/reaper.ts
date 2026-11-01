@@ -32,9 +32,9 @@ const REAL: Readings = {
  *  leader may exit while its background children live on. This keeps the reuse guard: neither XNU nor Linux hands
  *  out a pid that is still a live group or session id, so while the group has members no other process can hold
  *  the pid. Only ESRCH counts as gone, since the start time also reads as null for a process of another user.
- *  Two windows remain, the same ones a worker's exit kill and the design's reaper accept: between the crash and
- *  this read the group empties and the pid is reused by a new group leader that exits while its children live on;
- *  or the same happens between this read and the kill. */
+ *  Two windows remain, as with a worker's exit kill and the design's reaper: the group empties and its id is taken
+ *  by a new group, either between the crash and this read (with that group's leader gone by then and its children
+ *  left) or between this read and the kill. */
 export function reap(store: Store, key?: string, read: Readings = REAL): WorkerRecord[] {
   const killed: WorkerRecord[] = []
   for (const record of store.listWorkers()) {
