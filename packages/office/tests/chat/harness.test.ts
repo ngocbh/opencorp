@@ -106,9 +106,9 @@ async function asked(fake: FakeLLM, n: number): Promise<string> {
 const ECHO = { name: "fake__echo", arguments: { text: "x" } }
 
 /** The author of each user message of session `sid`, by its text. */
-function authors(h: Harness, sid: string): Record<string, string | null> {
+async function authors(h: Harness, sid: string): Promise<Record<string, string | null>> {
   const by: Record<string, string | null> = {}
-  for (const message of h.harness.messages(sid)) {
+  for (const message of await h.harness.messages(sid)) {
     if (message.role !== "user") continue
     for (const part of message.parts) if (part.type === "text") by[part.text] = message.author ?? null
   }
@@ -189,6 +189,26 @@ test("a parked chat's run page shows its turns' tokens", async () => {
   )
 })
 
+test("messages of a session gone while its logs are read is 404", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const s = await start(h)
+  let release!: () => void
+  const refresh = spyOn(h.transcript, "refresh").mockImplementation(
+    () => new Promise<void>((resolve) => (release = resolve)),
+  )
+  const read = h.harness.messages(s.id)
+  const getSession = h.store.getSession.bind(h.store)
+  const gone = spyOn(h.store, "getSession").mockImplementation((id) => (id === s.id ? undefined : getSession(id)))
+  try {
+    release()
+    const error = await rejection(read)
+    expect([error.status, error.code]).toEqual([404, "not_found"])
+  } finally {
+    gone.mockRestore()
+    refresh.mockRestore()
+  }
+})
+
 test("a main run gets the persons identity and who they talk with", async () => {
   const h = await makeHarness(await fakeLlm())
   const spec = await h.harness.spec(await stored(h))
@@ -232,8 +252,7 @@ test("a steer reaches the running reply", async () => {
   // flight, and yian names the first call after a steer one step too early, so its text would show twice.
   await asleep(h, id)
   // The steer comes after the text streamed before the model read it, and before the text after.
-  const shown = h.harness
-    .messages(id)
+  const shown = (await h.harness.messages(id))
     .map((m) => [m.role, m.parts.flatMap((p) => (p.type === "text" ? [p.text] : []))])
   expect(shown).toEqual([
     ["user", ["hi"]],
@@ -262,12 +281,11 @@ test("a steered replys text shows twice while its worker runs", async () => {
   expect(await h.harness.steer(id, "Also mention Rome.")).toBe("steer")
   fake.release()
   await fake.waitForRequests(3)
-  const results = () =>
-    h.harness.messages(id).flatMap((m) => m.parts.filter((p) => p.type === "tool" && p.state === "completed"))
-  await waitFor(() => results().length === 2, { what: "the second tool result" })
+  const results = async () =>
+    (await h.harness.messages(id)).flatMap((m) => m.parts.filter((p) => p.type === "tool" && p.state === "completed"))
+  await waitFor(async () => (await results()).length === 2, { what: "the second tool result" })
   expect(h.registry.get(id)).toBeDefined()
-  const shown = h.harness
-    .messages(id)
+  const shown = (await h.harness.messages(id))
     .map((m) => [m.role, m.parts.flatMap((p) => (p.type === "text" && p.text !== "" ? [p.text] : []))])
   expect(shown).toEqual([
     ["user", ["hi"]],
@@ -387,7 +405,7 @@ test("a message with no sender is authored by the ceo of the pinned company", as
   const { id } = await start(h)
   await h.harness.prompt(id, "hi")
   await waitFor(() => same(texts(h, id).slice(-1), ["Hello."]), { what: "the reply" })
-  expect(authors(h, id)).toEqual({ hi: "ngocbh" })
+  expect(await authors(h, id)).toEqual({ hi: "ngocbh" })
 })
 
 test("a message is authored by the sessions opener", async () => {
@@ -397,7 +415,7 @@ test("a message is authored by the sessions opener", async () => {
   const { id } = await start(h, { openedBy: "lan" })
   await h.harness.prompt(id, "hi")
   await waitFor(() => same(texts(h, id).slice(-1), ["Hello."]), { what: "the reply" })
-  expect(authors(h, id)).toEqual({ hi: "lan" })
+  expect(await authors(h, id)).toEqual({ hi: "lan" })
 })
 
 test("an answer off a live run is credited to the opener else the ceo", async () => {
@@ -428,7 +446,7 @@ test("messages and answers are credited to who sent them", async () => {
   await waitFor(() => same(texts(h, id).slice(-1), ["Done."]) && status(h, id) === "idle", { what: "the reply" })
   expect(await h.harness.prompt(id, "thanks", { by: "kai" })).toBe("turn")
   await waitFor(() => same(texts(h, id).slice(-1), ["Bye."]), { what: "the last reply" })
-  expect(authors(h, id)).toEqual({ "pick one": "lan", thanks: "kai" })
+  expect(await authors(h, id)).toEqual({ "pick one": "lan", thanks: "kai" })
   expect(h.store.getQuestion(q.id)!.answered_by).toBe("lan")
 })
 
@@ -466,7 +484,7 @@ test.each([
     await waitFor(() => same(texts(h, id, "user"), ["hi", "one more thing"]) && status(h, id) === "idle", {
       what: "both messages answered",
     })
-    expect(authors(h, id)).toEqual({ hi: "ngocbh", "one more thing": "lan" })
+    expect(await authors(h, id)).toEqual({ hi: "ngocbh", "one more thing": "lan" })
   },
 )
 
@@ -1389,7 +1407,7 @@ test("a turn after the provider changes runs on the new provider", async () => {
   await waitFor(() => same(texts(h, id), ["One.", "Two."]) && status(h, id) === "idle", {
     what: "the reply on the new provider",
   })
-  expect(authors(h, id)).toEqual({ first: "ngocbh", second: "lan" })
+  expect(await authors(h, id)).toEqual({ first: "ngocbh", second: "lan" })
   expect(h.jobs.slice(before).map((job) => [job.kind, job.llm_config?.api_key])).toEqual([["chat", "sk-new"]])
   expect(h.store.getSession(id)!.run_ids).toHaveLength(2)
   expect(texts(h, id, "user")).toEqual(["first", "second"])
@@ -1428,7 +1446,7 @@ test("a failed run says so and starts a new run", async () => {
   expect(error).toEndWith("Send your message again.")
   expect(texts(h, id)).toEqual([])
   // The notice is never in the transcript.
-  expect(h.harness.messages(id).flatMap((m) => m.parts.filter((p) => p.type === "error"))).toEqual([])
+  expect((await h.harness.messages(id)).flatMap((m) => m.parts.filter((p) => p.type === "error"))).toEqual([])
   await h.harness.prompt(id, "again")
   await waitFor(() => same(texts(h, id).slice(-1), ["Back."]), { what: "the reply" })
 })

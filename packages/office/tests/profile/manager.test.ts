@@ -277,7 +277,7 @@ test("the profile manager is opened and applied by who acted", async () => {
   const s = await h.harness.startManager("minh", "Add x.", { by: "lan" })
   expect(s.opened_by).toBe("lan")
   await waitFor(() => texts(h, s.id).join() === "Proposed.", { what: "the reply" })
-  const users = h.harness.messages(s.id).filter((m) => m.role === "user")
+  const users = (await h.harness.messages(s.id)).filter((m) => m.role === "user")
   expect(users.map((m) => m.author)).toEqual(["lan"])
   expect(h.store.getRun(h.store.getSession(s.id)!.run_ids[0]!)!.driver).toBe("lan")
   const [proposal] = h.store.listProfileProposals("minh")

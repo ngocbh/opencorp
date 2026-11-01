@@ -5,12 +5,13 @@ import path from "node:path"
 import { iterRunRecords, type LiveViewCall, type PoolCommitRecord, type RunLogEntry } from "@ngocbh/yian/run"
 import { pending } from "@ngocbh/yian/tools"
 import { Message, type ToolPart } from "@opencorp/protocol"
-import { INTERRUPTED_TEXT, type LiveCalls, Transcript } from "../../src/chat/transcript.ts"
+import { INTERRUPTED_TEXT, type LiveCalls, tooLargeText, Transcript } from "../../src/chat/transcript.ts"
 import { MAIN_CHAT } from "../../src/chat/turns.ts"
 import { newId } from "../../src/store/store.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
 import type { Delivery, Job } from "../../src/worker/job.ts"
 import { tempDir, waitFor } from "../helpers.ts"
+import { line, RUN, runStarted, started } from "../runs/helpers.ts"
 import { advanceJob, inProcessWorker, run, type TestWorker } from "../worker/helpers.ts"
 import {
   advance,
@@ -653,4 +654,208 @@ test("a run id that is not one folder name is skipped", async () => {
   await advance(job, fake, [send("s1", "hi")])
   expect(messages(runs, newId(), ["r1"]).length).toBe(2)
   expect(messages(runs, newId(), ["", ".", "..", "../runs/r1", "r1/..", "r1\\x", "r1\0"])).toEqual([])
+})
+
+/** The `node_step` entry of the first `kind` step of node `node` in the log `log`, its `n` and its line's size. */
+function stepEntry(log: string, node: string, kind: string): { n: number; size: number } {
+  for (const entry of iterRunRecords(log)) {
+    const record = entry.envelope.record as unknown as { n?: number; step?: Step }
+    if (entry.kind === "node_step" && entry.nodeId === node && record.step?.kind === kind) {
+      return { n: record.n!, size: entry.end - entry.offset }
+    }
+  }
+  throw new Error(`no ${kind} step of ${node}`)
+}
+
+/** A run whose first reply says 40,000 characters, then a second turn "Two.", under `runs` as `r1`. */
+async function bigReply(runs: string): Promise<{ log: string; n: number; size: number }> {
+  const fake = await fakeLlm()
+  fake.script({ content: "x".repeat(40_000) }, { content: "Two." })
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "one")])
+  await advance(job, fake, [send("s2", "two")])
+  return { log: job.log, ...stepEntry(job.log, "chat#0/reply", "model_call") }
+}
+
+test("a reply step over the line cap shows its size, and the turns after it still show", async () => {
+  const runs = tempDir()
+  const { n, size } = await bigReply(runs)
+  expect(size).toBeGreaterThan(16_384)
+  const read = messages(runs, newId(), ["r1"], { transcript: new Transcript(runs, { lineCap: 16_384 }) })
+  expect(texts(read)).toEqual([
+    ["user", ["one"]],
+    ["assistant", [tooLargeText(size)]],
+    ["user", ["two"]],
+    ["assistant", ["Two."]],
+  ])
+  expect(read[1]!.parts[0]!.id).toBe(`r1:chat#0/reply:${n}`)
+  expect(tooLargeText(3 * 2 ** 20)).toBe("(too large to show: 3.0 MiB)")
+})
+
+test("a live call on a reply step over the line cap shows once", async () => {
+  const runs = tempDir()
+  const { n, size } = await bigReply(runs)
+  const live = liveCalls([{ node: "chat#0/reply", n, text: "partial", nextIndex: 1 }])
+  const read = messages(runs, newId(), ["r1"], { transcript: new Transcript(runs, { lineCap: 16_384 }), live })
+  const parts = read.flatMap((m) => m.parts).filter((part) => part.id === `r1:chat#0/reply:${n}`)
+  expect(parts).toEqual([{ id: `r1:chat#0/reply:${n}`, type: "text", text: tooLargeText(size) }])
+})
+
+const REPLY = "chat#0/reply"
+
+/** A hand-built log under `runs` (as RUN): the run's start, the reply's start, a model call of one tool, and a
+ *  tool result whose output is `output`, with `extra` fields; returns the tool result line's size. */
+function bigToolResult(runs: string, output: string, extra: Record<string, unknown> = {}): number {
+  const toolCall = { type: "tool_call", id: "c1", name: "fake__echo", arguments: { text: "x" } }
+  const call = { kind: "model_call", purpose: "chat", error: null, output: { parts: [toolCall] } }
+  const step = { call_id: "c1", closed: null, is_error: false, kind: "tool_result", output, ...extra }
+  const result = line(3, "node_step", { node_id: REPLY, n: 2n, step })
+  const log = path.join(runs, RUN, "log.jsonl")
+  fs.mkdirSync(path.dirname(log), { recursive: true })
+  const head = [runStarted(0), started(1, REPLY), line(2, "node_step", { node_id: REPLY, n: 1n, step: call })]
+  fs.writeFileSync(log, Buffer.concat([...head, result]))
+  return result.length
+}
+
+test("a tool result over the line cap completes its tool part with its size", () => {
+  const runs = tempDir()
+  const size = bigToolResult(runs, "y".repeat(20_000))
+  const transcript = new Transcript(runs, { lineCap: 16_384 })
+  const read = messages(runs, newId(), [RUN], { transcript })
+  expect(tools(read)).toEqual([["c1", "completed", tooLargeText(size), null]])
+  expect(shown(read)).toEqual([["assistant", ["completed"]]])
+})
+
+test("a tool result over the line cap keeps its error or interruption", () => {
+  const capped = (runs: string) =>
+    messages(runs, newId(), [RUN], { transcript: new Transcript(runs, { lineCap: 16_384 }) })
+  const errored = tempDir()
+  const size = bigToolResult(errored, "y".repeat(20_000), { is_error: true })
+  expect(tools(capped(errored))).toEqual([["c1", "error", {}, tooLargeText(size)]])
+  const closed = tempDir()
+  const cut = bigToolResult(closed, "y".repeat(20_000), { closed: "x" })
+  expect(tools(capped(closed))).toEqual([["c1", "interrupted", {}, tooLargeText(cut)]])
+})
+
+test("a run end over the line cap ends the run, and another node's line over it is skipped", () => {
+  const runs = tempDir()
+  const log = path.join(runs, RUN, "log.jsonl")
+  fs.mkdirSync(path.dirname(log), { recursive: true })
+  const big = "z".repeat(20_000)
+  const commit = line(2, "pool_commit", { node_id: "other", key: "other", kind: "object", value: { output: big } })
+  fs.writeFileSync(log, Buffer.concat([runStarted(0), started(1, REPLY), commit]))
+  const transcript = new Transcript(runs, { lineCap: 16_384 })
+  expect(transcript.runningReply(RUN)).toBe(`${RUN}:${String(1).padStart(12, "0")}`)
+  expect(messages(runs, newId(), [RUN], { transcript })).toEqual([])
+  fs.appendFileSync(log, line(3, "run_failed", { failure: { code: "x", message: big } }))
+  expect(transcript.runningReply(RUN)).toBeNull()
+})
+
+test("a line over the line cap that isn't its seq is refused without its content", () => {
+  const runs = tempDir()
+  const log = path.join(runs, RUN, "log.jsonl")
+  fs.mkdirSync(path.dirname(log), { recursive: true })
+  const secret = "secret-looking-" + "q".repeat(20_000)
+  const commit = line(5, "pool_commit", { node_id: "o", key: "o", kind: "object", value: { output: secret } })
+  fs.writeFileSync(log, Buffer.concat([runStarted(0), commit]))
+  const transcript = new Transcript(runs, { lineCap: 16_384 })
+  let thrown: unknown
+  try {
+    transcript.messages(newId(), [RUN])
+  } catch (error) {
+    thrown = error
+  }
+  expect(thrown).toBeInstanceOf(RangeError)
+  expect((thrown as Error).message).not.toContain("secret")
+  expect((thrown as Error).message).toContain("line 2")
+})
+
+test("a refresh yields to the event loop and leaves what a fresh read gives", async () => {
+  const runs = tempDir()
+  const log = path.join(runs, RUN, "log.jsonl")
+  fs.mkdirSync(path.dirname(log), { recursive: true })
+  const lines = [runStarted(0)]
+  for (let seq = 1; seq < 20_000; seq++) lines.push(line(seq, "node_started", { node_id: `n${seq}` }))
+  fs.writeFileSync(log, Buffer.concat(lines))
+  const transcript = new Transcript(runs)
+  let ticks = 0
+  let ticking = true
+  const tick = () => {
+    ticks += 1
+    if (ticking) setImmediate(tick)
+  }
+  setImmediate(tick)
+  const sessionId = newId()
+  await transcript.refresh([RUN])
+  ticking = false
+  expect(ticks).toBeGreaterThan(1)
+  expect(transcript.messages(sessionId, [RUN])).toEqual(new Transcript(runs).messages(sessionId, [RUN]))
+})
+
+test("a read during a refresh shares its fold", async () => {
+  const runs = tempDir()
+  const { log } = await bigReply(runs)
+  // Padded so the refresh takes more than one slice.
+  const padding: Buffer[] = []
+  let seq = [...iterRunRecords(log)].length
+  for (let i = 0; i < 20_000; i++) padding.push(line(seq++, "node_started", { node_id: `pad${i}` }))
+  const text = Buffer.concat(padding).toString().replaceAll(RUN, "r1")
+  fs.appendFileSync(log, text)
+  const transcript = new Transcript(runs)
+  const sessionId = newId()
+  const refreshing = transcript.refresh(["r1"])
+  await new Promise((resolve) => setImmediate(resolve))
+  const during = transcript.messages(sessionId, ["r1"])
+  await refreshing
+  const fresh = new Transcript(runs).messages(sessionId, ["r1"])
+  expect(during).toEqual(fresh)
+  expect(transcript.messages(sessionId, ["r1"])).toEqual(fresh)
+})
+
+test("a run forgotten during its refresh isn't kept", async () => {
+  const runs = tempDir()
+  const log = path.join(runs, RUN, "log.jsonl")
+  fs.mkdirSync(path.dirname(log), { recursive: true })
+  const lines = [runStarted(0)]
+  for (let seq = 1; seq < 40_000; seq++) lines.push(line(seq, "node_started", { node_id: `n${seq}` }))
+  fs.writeFileSync(log, Buffer.concat(lines))
+  const transcript = new Transcript(runs)
+  const refreshing = transcript.refresh([RUN])
+  await new Promise((resolve) => setImmediate(resolve))
+  transcript.forget([RUN])
+  await refreshing
+  // Nothing cached: a read starts from the log's first byte.
+  corrupt(log)
+  expect(() => transcript.messages(newId(), [RUN])).toThrow()
+})
+
+test("logs whose folds hold little stay cached however large the logs are", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "A." }, { content: "B." })
+  const runs = tempDir()
+  const pad = (log: string, runId: string) => {
+    let seq = [...iterRunRecords(log)].length
+    const big = "p".repeat(50_000)
+    const lines: Buffer[] = []
+    for (let i = 0; i < 4; i++) {
+      lines.push(line(seq++, "pool_commit", { node_id: "other", key: `k${i}`, kind: "object", value: { output: big } }))
+    }
+    fs.appendFileSync(log, Buffer.concat(lines).toString().replaceAll(RUN, runId))
+  }
+  const a = await waitingChat(fake, "chat", {}, { runs, runId: "a" })
+  await advance(a, fake, [send("s1", "to a")])
+  pad(a.log, "a")
+  const b = await waitingChat(fake, "chat", {}, { runs, runId: "b" })
+  await advance(b, fake, [send("s2", "to b")])
+  pad(b.log, "b")
+  // Below either log, above both folds.
+  const transcript = new Transcript(runs, { maxBytes: 150_000 })
+  const sessionId = newId()
+  expect(messages(runs, sessionId, ["a"], { transcript }).length).toBe(2)
+  expect(messages(runs, sessionId, ["b"], { transcript }).length).toBe(2)
+  corrupt(a.log)
+  expect(texts(messages(runs, sessionId, ["a"], { transcript }))).toEqual([
+    ["user", ["to a"]],
+    ["assistant", ["A."]],
+  ])
 })

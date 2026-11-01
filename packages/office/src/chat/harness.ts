@@ -424,11 +424,20 @@ export class ChatHarness implements SessionHarness {
     return this.store.updateSession(sessionId, { connection, model: model === own ? null : model, model_note: null })
   }
 
-  /** The session's messages: a yian chat's from its runs' logs, with its live actor's calls in flight. */
-  messages(sessionId: string): Message[] {
+  /** The session's messages: a yian chat's from its runs' logs, with its live actor's calls in flight. The logs are
+   *  read on first in slices that yield to the event loop (`Transcript.refresh`), so a long log doesn't hold it; 404
+   *  `not_found` without the session. */
+  async messages(sessionId: string): Promise<Message[]> {
     const codex = this.#codexFor(sessionId)
     if (codex) return codex.messages(sessionId)
-    const session = this.store.getSession(sessionId)!
+    const before = this.store.getSession(sessionId)
+    if (before === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
+    await this.transcript.refresh(before.run_ids)
+    // Read again after the wait: a run may have been replaced, or the session handed on, meanwhile.
+    const handed = this.#codexFor(sessionId)
+    if (handed) return handed.messages(sessionId)
+    const session = this.store.getSession(sessionId)
+    if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
     return this.transcript.messages(sessionId, session.run_ids, this.#actors.get(sessionId))
   }
 
