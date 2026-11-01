@@ -116,6 +116,9 @@ export async function install(command: string, args: string[], deps: Deps = real
   return spec ? deps.spawn(spec.argv, { cwd: spec.cwd, env: spec.env }) : 1
 }
 
+/** `typed` without one leading `@`: a handle as people write it. */
+export const bareHandle = (typed: string) => typed.replace(/^@/, "")
+
 /** Exit code when no office answers, as the install's `start` exits with no office yet. */
 export const NO_OFFICE = 3
 

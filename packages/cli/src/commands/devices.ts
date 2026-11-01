@@ -5,7 +5,7 @@ import { isMissingRoute, isNotImplemented, OfficeError, OfficeUnavailable, type 
 import type { BrowserSession, Person } from "@opencorp/protocol"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
-import { localIdentity, officeClient, officeNotRunning, warnIfTokenless } from "../office"
+import { bareHandle, localIdentity, officeClient, officeNotRunning, warnIfTokenless } from "../office"
 
 class Usage extends Error {}
 
@@ -82,7 +82,7 @@ export const run: CommandRun = async (argv) => {
     const me = localIdentity()
     const office = officeClient(me)
     if (sub === "list" && rest.length <= 1) {
-      const handle = rest[0] ?? (await office.whoami()).person
+      const handle = rest[0] !== undefined ? bareHandle(rest[0]) : (await office.whoami()).person
       const person = (await office.people.list()).find((p) => p.handle === handle)
       if (!person) throw new Error(`no person @${handle}`)
       const devices = person.devices ?? []
@@ -96,13 +96,15 @@ export const run: CommandRun = async (argv) => {
     }
     if (values.hashes) throw new Usage("--hashes goes with list")
     if (sub === "add" && rest.length === 3) {
-      const [handle, name, sha256] = rest
+      const [given, name, sha256] = rest
+      const handle = bareHandle(given)
       await office.devices.add(handle, { name, token_sha256: sha256 })
       console.log(`@${handle} has device ${name}.`)
       return 0
     }
     if (sub === "remove" && rest.length === 2) {
-      const [handle, name] = rest
+      const [given, name] = rest
+      const handle = bareHandle(given)
       await office.devices.remove(handle, name)
       console.log(`Removed device ${name} from @${handle}.`)
       await warnIfTokenless()

@@ -230,6 +230,32 @@ test("devices list shows names, and hashes only on --hashes", async () => {
   })
 })
 
+test("devices list, add and remove take a handle with or without the @", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const hash = tokenSha256(identity(trusted).token).replace(/./, "0")
+  const outputs = [
+    await opencorp(trusted, "devices", "list", "@ngocbh"),
+    await opencorp(trusted, "devices", "add", "@ngocbh", "laptop", hash),
+    await opencorp(trusted, "devices", "remove", "@ngocbh", "laptop"),
+    await opencorp(trusted, "devices", "list", "@nobody"),
+    await opencorp(trusted, "devices", "remove", "@nobody", "laptop"),
+  ]
+  expect(outputs[0]).toEqual({ code: 0, out: "mac  (this device)", err: "" })
+  expect(outputs[1]).toEqual({ code: 0, out: "@ngocbh has device laptop.", err: "" })
+  expect(office.requests.find((r) => r.method === "POST" && r.raw?.includes("/devices"))?.raw).toBe(
+    "/people/ngocbh/devices",
+  )
+  expect(outputs[2]).toEqual({ code: 0, out: "Removed device laptop from @ngocbh.", err: "" })
+  expect(outputs[3]).toEqual({ code: 1, out: "", err: "opencorp devices: no person @nobody" })
+  expect(outputs[4].code).toBe(1)
+  for (const r of outputs) expect(r.out + r.err).not.toContain("@@")
+})
+
+test("login --handle takes a handle with its @", async () => {
+  expect((await opencorp(trusted, "login", "--handle", "@ngocbh", "--device", "mac")).code).toBe(0)
+  expect(identity(trusted).handle).toBe("ngocbh")
+})
+
 const day = (ts: string) => new Date(ts).toLocaleDateString()
 
 test("devices list adds this office's browsers: name, label, who paired it, last use, expiry", async () => {
@@ -530,10 +556,35 @@ test("password needs a terminal, and refuses an agent", async () => {
     out: "",
     err: "opencorp password: there's no terminal to read the password on without echo",
   })
-  answering(PASSWORD, PASSWORD)
+  const asked = answering(PASSWORD, PASSWORD)
   expect(await opencorp(trusted, "password", "--handle", "minh")).toEqual({
     code: 1,
     out: "",
     err: "opencorp password: the person is an agent; agents have no password",
   })
+  // Said before asking for a password it couldn't set.
+  expect(asked.asked).toEqual([])
+})
+
+test("password for an unknown handle says so before asking", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const asked = answering(PASSWORD, PASSWORD)
+  expect(await opencorp(trusted, "password", "--handle", "@nobody")).toEqual({
+    code: 1,
+    out: "",
+    err: "opencorp password: no person @nobody",
+  })
+  expect(asked.asked).toEqual([])
+})
+
+test("password --handle takes a handle with its @", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const asked = answering(PASSWORD, PASSWORD)
+  expect(await opencorp(trusted, "password", "--handle", "@ngocbh")).toEqual({
+    code: 0,
+    out: "Set @ngocbh's password.",
+    err: "",
+  })
+  expect(asked.asked[0]).toBe("New password for @ngocbh (at least 12 characters, one you use nowhere else; not shown)")
+  expect(office.passwords.get("ngocbh")).toBe(PASSWORD)
 })
