@@ -23,18 +23,19 @@ function repeats(args: string[]): string[] {
   return [...new Set(args.filter((a, i) => args.indexOf(a) !== i))]
 }
 
-/** Spies on `fs.realpathSync` and `fs.lstatSync` until the test ends; returns the paths each was asked about. */
-function spyLookups(): { realpath: () => string[]; lstat: () => string[] } {
-  const realpath = spyOn(fs, "realpathSync")
-  const lstat = spyOn(fs, "lstatSync")
-  onTestFinished(() => {
-    realpath.mockRestore()
-    lstat.mockRestore()
-  })
-  return {
-    realpath: () => realpath.mock.calls.map((c) => String(c[0])),
-    lstat: () => lstat.mock.calls.map((c) => String(c[0])),
+/** Spies on `fs.realpathSync`, `fs.lstatSync` and `fs.readlinkSync` until the test ends; returns the paths each
+ *  was asked about. */
+function spyLookups(): { realpath: () => string[]; lstat: () => string[]; readlink: () => string[] } {
+  const spies = {
+    realpath: spyOn(fs, "realpathSync"),
+    lstat: spyOn(fs, "lstatSync"),
+    readlink: spyOn(fs, "readlinkSync"),
   }
+  onTestFinished(() => {
+    for (const spy of Object.values(spies)) spy.mockRestore()
+  })
+  const args = (spy: { mock: { calls: unknown[][] } }) => () => spy.mock.calls.map((c) => String(c[0]))
+  return { realpath: args(spies.realpath), lstat: args(spies.lstat), readlink: args(spies.readlink) }
 }
 
 /** Makes the folders `dirs` (with their parents) and returns them. */
@@ -466,11 +467,13 @@ test("each refusal has a reason that names no path", () => {
   )
 })
 
-/** Office paths with tools, install and PATH entries deep under `root`, so their walks share long prefixes. */
+/** Office paths with tools, install and PATH entries deep under `root`, so their walks share long prefixes; each
+ *  walk goes through the link `deep/l` to `deep/a`. */
 function deepOffice(root: string): OfficePaths {
-  const c = path.join(root, "deep/a/b/c")
-  mkdirs(path.join(c, "bin1"), path.join(c, "bin2"), path.join(c, "lib"))
-  for (const name of ["git", "tmux"]) fs.writeFileSync(path.join(c, "bin1", name), "")
+  mkdirs(path.join(root, "deep/a/b/c/bin1"), path.join(root, "deep/a/b/c/bin2"), path.join(root, "deep/a/b/c/lib"))
+  for (const name of ["git", "tmux"]) fs.writeFileSync(path.join(root, "deep/a/b/c/bin1", name), "")
+  fs.symlinkSync("a", path.join(root, "deep/l"))
+  const c = path.join(root, "deep/l/b/c")
   return {
     home: path.join(root, "home"),
     tools: [path.join(c, "bin1/git"), path.join(c, "bin1/tmux")],
@@ -486,6 +489,7 @@ test("one check asks the OS about each path once", () => {
   checkWorkspace(ws, office)
   expect(repeats(spy.realpath())).toEqual([])
   expect(repeats(spy.lstat())).toEqual([])
+  expect(spy.readlink()).toHaveLength(1)
 })
 
 test("a policy build asks the OS about each path once", () => {
@@ -495,6 +499,7 @@ test("a policy build asks the OS about each path once", () => {
   new SandboxPolicy({ workspace: ws, writable: false, network: false, tmpdir: tmp, readOnly: office.install, office })
   expect(repeats(spy.realpath())).toEqual([])
   expect(repeats(spy.lstat())).toEqual([])
+  expect(spy.readlink()).toHaveLength(1)
 })
 
 test("each check looks at the disk again", () => {
@@ -527,7 +532,6 @@ test("withHelper resolves only the helper and checks nothing again", () => {
   onTestFinished(() => lstat.mockRestore())
   const result = policy.withHelper(helper)
   expect(lstat.mock.calls.map((c) => String(c[0])).filter((p) => p === marker)).toEqual([])
-  lstat.mockRestore()
   expect(result).toBeInstanceOf(SandboxPolicy)
   expect(result.helper).toEqual({ binary: path.join(real!, "opencorp") })
   const rebuilt = new SandboxPolicy({ ...policy, helper })

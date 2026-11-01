@@ -68,11 +68,12 @@ export function realPath(p: string, visited?: string[]): string {
   return walk(p, visited, lookups())
 }
 
-/** What one check has asked the OS so far: each realpath (null when it failed) and whether each name is a link.
- *  Made per top-level check and dropped when it returns, so every check looks at the disk again. */
+/** What one check has asked the OS so far: each realpath (null when it failed) and each name's link target (null
+ *  when it is no link). Made per top-level check and dropped when it returns, so every check looks at the disk
+ *  again, and sees one answer per path while it runs. */
 interface Lookups {
   spelling: Map<string, string | null>
-  link: Map<string, boolean>
+  link: Map<string, Buffer | null>
 }
 
 /** An empty `Lookups`, for one top-level check. */
@@ -117,20 +118,20 @@ function walk(p: string, visited: string[] | undefined, cache: Lookups): string 
       continue
     }
     visited?.push(path.join(onDisk(resolved, cache), name))
-    let isLink = cache.link.get(next)
-    if (isLink === undefined) {
-      isLink = false
+    let raw = cache.link.get(next)
+    if (raw === undefined) {
+      let isLink = false
       try {
         isLink = fs.lstatSync(next).isSymbolicLink()
       } catch {}
-      cache.link.set(next, isLink)
+      raw = isLink ? fs.readlinkSync(next, { encoding: "buffer" }) : null
+      cache.link.set(next, raw)
     }
-    if (!isLink) {
+    if (raw === null) {
       resolved = next
       continue
     }
     seen.set(next, null)
-    const raw = fs.readlinkSync(next, { encoding: "buffer" })
     const target = raw.toString("utf8")
     // A lossy decode would make the walk look up a different name than the OS follows.
     if (!Buffer.from(target, "utf8").equals(raw)) throw new Error(`symlink ${next} has a target that is not UTF-8`)
