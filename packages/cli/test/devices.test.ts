@@ -242,12 +242,12 @@ test("devices list, add and remove take a handle with or without the @", async (
   ]
   expect(outputs[0]).toEqual({ code: 0, out: "mac  (this device)", err: "" })
   expect(outputs[1]).toEqual({ code: 0, out: "@ngocbh has device laptop.", err: "" })
-  expect(office.requests.find((r) => r.method === "POST" && r.raw?.includes("/devices"))?.raw).toBe(
+  expect(office.requests.findLast((r) => r.method === "POST" && r.raw.includes("/devices"))?.raw).toBe(
     "/people/ngocbh/devices",
   )
   expect(outputs[2]).toEqual({ code: 0, out: "Removed device laptop from @ngocbh.", err: "" })
   expect(outputs[3]).toEqual({ code: 1, out: "", err: "opencorp devices: no person @nobody" })
-  expect(outputs[4].code).toBe(1)
+  expect(outputs[4]).toEqual({ code: 1, out: "", err: "opencorp devices: no person @nobody" })
   for (const r of outputs) expect(r.out + r.err).not.toContain("@@")
 })
 
