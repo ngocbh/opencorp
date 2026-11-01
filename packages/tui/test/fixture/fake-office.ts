@@ -631,7 +631,7 @@ export function createFakeOffice(
         : []),
       ...(state.people.some((p) => p.handle === body.manager)
         ? []
-        : [{ path: file, code: "person.unknown_manager", message: body.manager }]),
+        : [{ path: file, code: "person.unknown_manager", message: `manager @${body.manager} isn't a person in the company` }]),
     ].map((i) => ({ ...i, severity: "error" as const }))
     const person: Person = {
       handle: body.handle,

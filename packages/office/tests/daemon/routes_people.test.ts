@@ -90,7 +90,8 @@ test("a hire with lint errors previews but does not confirm", async () => {
     ["people/ava/person.yaml", "person.unknown_manager", "error"],
   ])
   r = await post(sock, { ...HIRE, manager: "ghost", confirm: true })
-  expect([r.status, r.json()]).toEqual([422, { error: "lint_failed", message: "ghost" }])
+  const message = "manager @ghost isn't a person in the company"
+  expect([r.status, r.json()]).toEqual([422, { error: "lint_failed", message }])
   r = await post(sock, { ...HIRE, title: "Lead", confirm: true })
   expect([r.status, errorOf(r)]).toEqual([422, "lint_failed"])
   expect(await office.git.head()).toBe(head)

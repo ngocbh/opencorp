@@ -144,6 +144,7 @@ test("a hire confirm never previewed is lint_failed", async () => {
 })
 
 test("a hire checks the body like the office; an unknown manager is a lint issue", async () => {
+  const KAI = "manager @kai isn't a person in the company"
   const req = { name: "Hoa", handle: "hoa", title: "QA", manager: "ngocbh" }
   for (const body of [
     { ...req, handle: "Hoa" },
@@ -156,10 +157,10 @@ test("a hire checks the body like the office; an unknown manager is a lint issue
   }
   const orphan = await client().people.hire({ ...req, manager: "kai", confirm: false })
   expect(orphan.issues).toEqual([
-    { path: "people/hoa/person.yaml", code: "person.unknown_manager", message: "kai", severity: "error" },
+    { path: "people/hoa/person.yaml", code: "person.unknown_manager", message: KAI, severity: "error" },
   ])
   const refused = await failure(client().people.hire({ ...req, manager: "kai", confirm: true }))
-  expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", "kai"])
+  expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", KAI])
 })
 
 test("unknown paths and wrong methods", async () => {

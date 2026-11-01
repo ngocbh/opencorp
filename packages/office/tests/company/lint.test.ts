@@ -37,12 +37,34 @@ test("clean repo has no issues", async () => {
 test("unknown manager", async () => {
   const root = makeCompany({ "people/minh/person.yaml": person("minh", { manager: "ghost" }) })
   expect(await issues(root)).toContain("person.unknown_manager people/minh/person.yaml")
+  const found = await withCode(root, "person.unknown_manager")
+  expect(found.map((issue) => issue.message)).toEqual(["manager @ghost isn't a person in the company"])
 })
 
 test("manager cycle is reported once", async () => {
   const root = makeCompany({ "people/ngocbh/person.yaml": person("ngocbh", { manager: "minh" }) })
   const found = await withCode(root, "person.manager_cycle")
-  expect(found.map((issue) => issue.message)).toEqual(["minh -> ngocbh"])
+  expect(found.map((issue) => issue.message)).toEqual(["reporting lines loop: @minh -> @ngocbh -> @minh"])
+})
+
+test("a manager cycle reads in reporting order from its first handle", async () => {
+  const root = makeCompany({
+    "people/a/person.yaml": person("minh", { handle: "a", name: "A", manager: "c" }),
+    "people/b/person.yaml": person("minh", { handle: "b", name: "B", manager: "a" }),
+    "people/c/person.yaml": person("minh", { handle: "c", name: "C", manager: "b" }),
+  })
+  const found = await withCode(root, "person.manager_cycle")
+  expect(found.map((issue) => [issue.path, issue.message])).toEqual([
+    ["people/a/person.yaml", "reporting lines loop: @a -> @c -> @b -> @a"],
+  ])
+})
+
+test("a person who manages themself is a cycle", async () => {
+  const root = makeCompany({
+    "people/selfy/person.yaml": person("minh", { handle: "selfy", name: "Selfy", manager: "selfy" }),
+  })
+  const found = await withCode(root, "person.manager_cycle")
+  expect(found.map((issue) => issue.message)).toEqual(["reporting lines loop: @selfy -> @selfy"])
 })
 
 test("ceo has manager", async () => {
@@ -63,7 +85,8 @@ test("an agent ceo is an error", async () => {
 
 test("unknown ceo", async () => {
   const company = { ...(baseFiles()["company.yaml"] as object), ceo: "ghost" }
-  expect(await codes(makeCompany({ "company.yaml": company }))).toContain("company.unknown_ceo")
+  const found = await withCode(makeCompany({ "company.yaml": company }), "company.unknown_ceo")
+  expect(found.map((issue) => issue.message)).toEqual(["ceo @ghost isn't a person in the company"])
 })
 
 test("missing company yaml does not crash lint", async () => {
@@ -86,9 +109,12 @@ test("ids that differ only by case", async () => {
 
 test("unknown group parent and head", async () => {
   const group = { id: "eng", name: "Engineering", parent: "nope", head: "ghost" }
-  const found = await codes(makeCompany({ "groups/eng.yaml": group }))
-  expect(found).toContain("group.unknown_parent")
-  expect(found).toContain("group.unknown_head")
+  const found = (await lint(loadRepo(makeCompany({ "groups/eng.yaml": group }))))
+    .filter((issue) => issue.code.startsWith("group.unknown_"))
+  expect(found.map((issue) => [issue.code, issue.message])).toEqual([
+    ["group.unknown_parent", "parent group nope doesn't exist"],
+    ["group.unknown_head", "head @ghost isn't a person in the company"],
+  ])
 })
 
 test("group parent cycle", async () => {
@@ -97,12 +123,14 @@ test("group parent cycle", async () => {
     "groups/infra.yaml": { id: "infra", name: "Infra", parent: "eng", head: "minh" },
   })
   const found = await withCode(root, "group.parent_cycle")
-  expect(found.map((issue) => issue.message)).toEqual(["eng -> infra"])
+  expect(found.map((issue) => issue.message)).toEqual(["parent groups loop: eng -> infra -> eng"])
 })
 
 test("person in unknown group", async () => {
   const root = makeCompany({ "people/minh/person.yaml": person("minh", { groups: ["eng", "nope"] }) })
   expect(await issues(root)).toContain("person.unknown_group people/minh/person.yaml")
+  const found = await withCode(root, "person.unknown_group")
+  expect(found.map((issue) => issue.message)).toEqual(["group nope doesn't exist"])
 })
 
 /** The base asset file with `changes` applied. */
@@ -118,7 +146,10 @@ test("unknown grantees", async () => {
   const grants = [{ who: "group:nope", can: ["echo"] }, { who: "ghost", can: ["echo"] }]
   const root = makeCompany({ "assets/fake.yaml": asset({ grants }) })
   const found = await withCode(root, "asset.unknown_grantee")
-  expect(found.map((issue) => issue.message).sort()).toEqual(["ghost", "group:nope"])
+  expect(found.map((issue) => issue.message).sort()).toEqual([
+    "grantee ghost isn't a person or group in the company",
+    "grantee group:nope isn't a person or group in the company",
+  ])
 })
 
 test("person grantee is known", async () => {
@@ -128,7 +159,8 @@ test("person grantee is known", async () => {
 
 test("unknown tool in grant", async () => {
   const grants = [{ who: "group:eng", can: ["echo", "nope"] }]
-  expect(await codes(makeCompany({ "assets/fake.yaml": asset({ grants }) }))).toContain("asset.unknown_tool")
+  const found = await withCode(makeCompany({ "assets/fake.yaml": asset({ grants }) }), "asset.unknown_tool")
+  expect(found.map((issue) => issue.message)).toEqual(['tool "nope" isn\'t one of this asset\'s tools'])
 })
 
 test("tool name too long", async () => {
@@ -452,6 +484,8 @@ test("system paths through a merge key is refused", async () => {
 test("unknown skill", async () => {
   const root = makeCompany({ "people/minh/person.yaml": person("minh", { skills: ["nope"] }) })
   expect(await issues(root)).toContain("person.unknown_skill people/minh/person.yaml")
+  const found = await withCode(root, "person.unknown_skill")
+  expect(found.map((issue) => issue.message)).toEqual(['skill "nope" isn\'t in people/minh/skills or shared/skills'])
 })
 
 test("personal skill is found", async () => {
@@ -535,7 +569,9 @@ test("two devices with one name", async () => {
   const devices = [device("mac"), device("mac", "b")]
   const root = makeCompany({ "people/ngocbh/person.yaml": person("ngocbh", { devices }) })
   const found = await withCode(root, "person.duplicate_device")
-  expect(found.map((issue) => [issue.path, issue.message])).toEqual([["people/ngocbh/person.yaml", "mac"]])
+  expect(found.map((issue) => [issue.path, issue.message])).toEqual([
+    ["people/ngocbh/person.yaml", "device mac is listed twice"],
+  ])
 })
 
 test("a token hash two people list", async () => {
