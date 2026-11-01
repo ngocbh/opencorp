@@ -133,6 +133,14 @@ export function args(pid: number, ps: string): string | null {
   return line === "" ? null : line
 }
 
+/** Whether `line` (`args`'s output) is the office daemon of `home`: it ends with `daemon --home <home>`, optionally
+ *  followed by `--reexeced`. The program is left out of the match, since it may show up as the binary it links to. */
+export function isDaemonLine(line: string | null, home: string): boolean {
+  if (line === null) return false
+  const tail = ` daemon --home ${home}`
+  return line.endsWith(tail) || line.endsWith(`${tail} --reexeced`)
+}
+
 /** Sends `sig` to `pid`; a failed send (the process went meanwhile) is ignored. */
 function signal(pid: number, sig: NodeJS.Signals): void {
   try {

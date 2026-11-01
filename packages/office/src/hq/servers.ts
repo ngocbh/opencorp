@@ -105,7 +105,7 @@ export class Listeners {
     const hq = this.#hq
     try {
       // The office holds its lock, so no live office owns a socket there.
-      removeStaleSocket(hq.socket)
+      await removeStaleSocket(hq.socket)
       const tracked = trackRequests(createHqApp(hq, { port: null }))
       const server = createServer(tracked.listener, HQ_LIMITS)
       await listenUnix(server, hq.socket)

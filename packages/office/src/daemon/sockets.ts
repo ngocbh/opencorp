@@ -1,7 +1,7 @@
 /** The office dir and the sockets the office listens on: 0600 unix sockets in the office dir, and HQ's TCP
  *  sockets on 127.0.0.1 and ::1. */
 import fs from "node:fs"
-import type net from "node:net"
+import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 
@@ -44,9 +44,37 @@ export function makeOfficeDir(dir: string, uid: number = process.geteuid!()): vo
   fs.chmodSync(dir, 0o700)
 }
 
+/** What `probeSocket` found at a socket path: nothing, a socket nobody listens on, a listener, or an answer it
+ *  can't read (refused for another reason, or no answer in time). */
+export type SocketState = "none" | "stale" | "live" | "unknown"
+
+/** Connects to the unix socket at `socketPath` and hangs up at once, sending nothing: `live` when the connect is
+ *  accepted (a stopped or hung listener's backlog accepts too), `stale` on ECONNREFUSED, `none` on ENOENT, else
+ *  `unknown`, as after `timeoutMs`. The caller lstats first: a connect follows a symlink. A listener whose macOS
+ *  backlog is full also refuses, so it reads as `stale`. */
+export function probeSocket(socketPath: string, timeoutMs = 1000): Promise<SocketState> {
+  return new Promise((resolve) => {
+    const conn = net.connect({ path: socketPath })
+    let settled = false
+    const settle = (state: SocketState) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      conn.destroy()
+      resolve(state)
+    }
+    const timer = setTimeout(() => settle("unknown"), timeoutMs)
+    conn.on("connect", () => settle("live"))
+    conn.on("error", (error: NodeJS.ErrnoException) => {
+      settle(error.code === "ENOENT" ? "none" : error.code === "ECONNREFUSED" ? "stale" : "unknown")
+    })
+  })
+}
+
 /** Unlinks the socket a crashed daemon left at `socketPath`; throws `OfficeStartError` if something else is
- *  there (a directory, a file, or a symlink, even one to a socket). */
-export function removeStaleSocket(socketPath: string): void {
+ *  there (a directory, a file, or a symlink, even one to a socket), or a socket that has a listener or can't be
+ *  probed (`probeSocket`), which is left. */
+export async function removeStaleSocket(socketPath: string): Promise<void> {
   let st: fs.Stats
   try {
     st = fs.lstatSync(socketPath)
@@ -55,11 +83,40 @@ export function removeStaleSocket(socketPath: string): void {
     throw error
   }
   if (!st.isSocket()) throw new OfficeStartError(`${socketPath} exists and is not a socket`)
+  const state = await probeSocket(socketPath)
+  if (state === "live") throw new OfficeStartError(`${socketPath} has a live listener`)
+  if (state === "unknown") throw new OfficeStartError(`can't tell whether ${socketPath} is in use`)
+  if (state === "none") return
   try {
     fs.unlinkSync(socketPath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
   }
+}
+
+/** Which file a socket is: its device and inode, read without following links. 64-bit inodes can pass 2^53. */
+export interface SocketId {
+  dev: bigint
+  ino: bigint
+}
+
+/** Removes the socket at `socketPath` if it is still the file `id` names; true when it was removed or is already
+ *  gone, false when another file (a newer daemon's socket) is there, which is left. Other errors propagate. */
+export function removeOwnSocket(socketPath: string, id: SocketId): boolean {
+  let st: fs.BigIntStats
+  try {
+    st = fs.lstatSync(socketPath, { bigint: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true
+    throw error
+  }
+  if (st.dev !== id.dev || st.ino !== id.ino) return false
+  try {
+    fs.unlinkSync(socketPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+  }
+  return true
 }
 
 /** Runs `start` and waits for `server` to listen, or rejects with its error; both listeners are removed once
@@ -89,14 +146,15 @@ function listening(server: net.Server, start: () => void): Promise<void> {
   })
 }
 
-/** Makes `server` listen on a unix socket at `socketPath` with mode 0600; throws `OfficeStartError` if it can't.
+/** Makes `server` listen on a unix socket at `socketPath` with mode 0600, and resolves to the socket's `SocketId`;
+ *  throws `OfficeStartError` if it can't.
  *
  *  The socket is bound in a private 0700 temp folder next to `socketPath`, so nobody can connect before its mode
  *  is set, then hard-linked into place, which fails if anything is at `socketPath`. The caller runs
- *  `removeStaleSocket` first, and removes `socketPath` after `server.close()`: close doesn't unlink a linked
- *  socket. A crash before the cleanup leaves a `.sXXXXXX` folder beside `socketPath`. After a successful call
+ *  `removeStaleSocket` first, and removes `socketPath` after `server.close()` with `removeOwnSocket`: close doesn't
+ *  unlink a linked socket. A crash before the cleanup leaves a `.sXXXXXX` folder beside `socketPath`. After a successful call
  *  `server.address()` still names the removed temp path, so callers use `socketPath`, not `server.address()`. */
-export async function listenUnix(server: net.Server, socketPath: string): Promise<void> {
+export async function listenUnix(server: net.Server, socketPath: string): Promise<SocketId> {
   checkSocketPath(socketPath)
   let tmp: string
   try {
@@ -126,6 +184,9 @@ export async function listenUnix(server: net.Server, socketPath: string): Promis
       fs.chmodSync(temp, 0o600)
       // A link, unlike a rename, never replaces what appeared at socketPath after the stale check.
       fs.linkSync(temp, socketPath)
+      // The link shares the temp socket's inode, which nothing else can have linked since.
+      const st = fs.lstatSync(temp, { bigint: true })
+      return { dev: st.dev, ino: st.ino }
     } catch (error) {
       if (server.listening) server.close()
       throw new OfficeStartError(`can't listen on ${socketPath}: ${messageOf(error)}`)

@@ -3,6 +3,7 @@ import fs from "node:fs"
 import http from "node:http"
 import net from "node:net"
 import path from "node:path"
+import { setTimeout as sleep } from "node:timers/promises"
 import { describe, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { AnswerRequest, LoginRequest, SetPasswordRequest } from "@opencorp/protocol"
 import { z } from "zod"
@@ -23,6 +24,8 @@ import {
   listenTcp,
   listenUnix,
   makeOfficeDir,
+  probeSocket,
+  removeOwnSocket,
   removeStaleSocket,
 } from "../../src/daemon/sockets.ts"
 import { CompanyRepoBusy } from "../../src/company/git.ts"
@@ -152,9 +155,78 @@ describe("sockets", () => {
     const sock = path.join(shortDir(), "s.sock")
     await staleSocket(sock) // closing leaves the file, as a crash does
     expect(fs.lstatSync(sock).isSocket()).toBe(true)
-    removeStaleSocket(sock)
+    await removeStaleSocket(sock)
     expect(fs.existsSync(sock)).toBe(false)
-    removeStaleSocket(sock) // nothing there is fine
+    await removeStaleSocket(sock) // nothing there is fine
+  })
+
+  test("probe says none for a missing path, stale for a closed socket, live for a listener", async () => {
+    const dir = shortDir()
+    const sock = path.join(dir, "s.sock")
+    expect(await probeSocket(sock)).toBe("none")
+    await staleSocket(sock)
+    expect(await probeSocket(sock)).toBe("stale")
+    fs.unlinkSync(sock)
+    let bytes = 0
+    const live = net.createServer((conn) => conn.on("data", (chunk) => (bytes += chunk.length)))
+    onTestFinished(() => new Promise<void>((resolve) => (live.listening ? live.close(() => resolve()) : resolve())))
+    await listenUnix(live, sock)
+    expect(await probeSocket(sock)).toBe("live")
+    await sleep(50)
+    // A connect and nothing more: the listener never reads a request.
+    expect(bytes).toBe(0)
+  })
+
+  test.skipIf(process.getuid?.() === 0)("probe says unknown for a socket it cant connect to", async () => {
+    const sock = path.join(shortDir(), "s.sock")
+    await listenUnix(server(), sock)
+    fs.chmodSync(sock, 0o000)
+    expect(await probeSocket(sock)).toBe("unknown")
+  })
+
+  test("a live socket is refused and left", async () => {
+    const sock = path.join(shortDir(), "s.sock")
+    await listenUnix(server(), sock)
+    const ino = fs.lstatSync(sock).ino
+    const err = await removeStaleSocket(sock).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(OfficeStartError)
+    expect((err as Error).message).toBe(`${sock} has a live listener`)
+    expect(fs.lstatSync(sock).ino).toBe(ino)
+    expect(await probeSocket(sock)).toBe("live")
+  })
+
+  test.skipIf(process.getuid?.() === 0)("a socket that cant be probed is refused and left", async () => {
+    const sock = path.join(shortDir(), "s.sock")
+    await listenUnix(server(), sock)
+    fs.chmodSync(sock, 0o000)
+    const err = await removeStaleSocket(sock).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(OfficeStartError)
+    expect((err as Error).message).toBe(`can't tell whether ${sock} is in use`)
+    expect(fs.lstatSync(sock).isSocket()).toBe(true)
+  })
+
+  test("listen unix returns the sockets dev and ino", async () => {
+    const sock = path.join(shortDir(), "s.sock")
+    const id = await listenUnix(server(), sock)
+    const st = fs.lstatSync(sock, { bigint: true })
+    expect(id).toEqual({ dev: st.dev, ino: st.ino })
+  })
+
+  test("remove own socket removes its own socket, leaves a replaced one, and is fine with none", async () => {
+    const dir = shortDir()
+    const sock = path.join(dir, "s.sock")
+    const s = server()
+    const id = await listenUnix(s, sock)
+    await close(s)
+    expect(removeOwnSocket(sock, id)).toBe(true)
+    expect(fs.existsSync(sock)).toBe(false)
+    expect(removeOwnSocket(sock, id)).toBe(true)
+    const old = await listenUnix(server(), sock)
+    fs.unlinkSync(sock)
+    await staleSocket(sock)
+    const ino = fs.lstatSync(sock).ino
+    expect(removeOwnSocket(sock, old)).toBe(false)
+    expect(fs.lstatSync(sock).ino).toBe(ino)
   })
 
   test.each(["dir", "file", "symlink"])("something else at the socket path is refused [%s]", async (kind) => {
@@ -166,8 +238,8 @@ describe("sockets", () => {
       await staleSocket(path.join(dir, "real.sock"))
       fs.symlinkSync(path.join(dir, "real.sock"), sock)
     }
-    expect(() => removeStaleSocket(sock)).toThrow(OfficeStartError)
-    expect(() => removeStaleSocket(sock)).toThrow(/not a socket/)
+    await expect(removeStaleSocket(sock)).rejects.toThrow(OfficeStartError)
+    await expect(removeStaleSocket(sock)).rejects.toThrow(/not a socket/)
     expect(() => fs.lstatSync(sock)).not.toThrow()
   })
 

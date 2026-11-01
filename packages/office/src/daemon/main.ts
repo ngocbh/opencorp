@@ -396,7 +396,7 @@ async function run(
         }
         // Last, so HQ starts after everything else and stops first.
         attach(office, { log: (line) => write(line + "\n") })
-        removeStaleSocket(paths.socket) // we hold the lock, so no live daemon owns it
+        await removeStaleSocket(paths.socket) // we hold the lock, so no live daemon owns it
         try {
           await office.start()
         } catch (error) {
