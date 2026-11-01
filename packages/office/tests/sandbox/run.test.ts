@@ -95,6 +95,36 @@ test.skipIf(!sandboxAvailable())("cancel kills the call", async () => {
   expect(performance.now() - start).toBeLessThan(10_000)
 })
 
+// Twenty background steps that each wait on a sleep that can't end within the test, then create a file: one that
+// appears means its shell ran on after the sleep was killed. On macOS a group signal reaches members one at a time,
+// so a shell could wake from the death of its sleep before its own SIGKILL arrived.
+const RACE = 'for i in $(seq 20); do (sleep 30; touch "$TMPDIR/after$i") & done'
+
+/** Runs `script` five times under one policy, each time expecting no `after*` file in its tmpdir 200 ms after the
+ *  call returns, and no `done` in its stdout. */
+async function nothingAfter(script: string, options: () => RunOptions): Promise<void> {
+  const policy = makePolicy().make()
+  for (let i = 0; i < 5; i++) {
+    const result = await sh(policy, script, options())
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(fs.readdirSync(policy.tmpdir).filter((name) => name.startsWith("after"))).toEqual([])
+    expect(result.stdout.toString()).not.toContain("done")
+  }
+}
+
+test.skipIf(!sandboxAvailable())("a timeout runs nothing after the killed step", async () => {
+  await nothingAfter(`${RACE}; wait; echo done`, () => ({ timeout: 1 }))
+  await nothingAfter('sleep 5; echo done; touch "$TMPDIR/after"', () => ({ timeout: 1 }))
+})
+
+test.skipIf(!sandboxAvailable())("an abort runs nothing after the killed step", async () => {
+  await nothingAfter(`${RACE}; wait; echo done`, () => ({ signal: AbortSignal.timeout(500) }))
+})
+
+test.skipIf(!sandboxAvailable())("a natural exit runs nothing after its background steps are killed", async () => {
+  await nothingAfter(`${RACE}; exit 0`, () => ({}))
+})
+
 test.skipIf(!sandboxAvailable())("background process dies with the call", async () => {
   // Kills a leftover even when an earlier assertion fails.
   onTestFinished(() => gone("4242"))
