@@ -357,6 +357,8 @@ export class ChatHarness implements SessionHarness {
     const log = (line: string) => this.log(`session ${session.id}: ${line}`)
     const real = folderOf(session.cwd)
     const tmpdir = path.join(paths.sessionDir(session.id), "tmp")
+    // Made before the policy, which resolves the tmp dir as an existing folder; a folder found unsafe at restore
+    // therefore still leaves this office-owned dir behind.
     fs.mkdirSync(tmpdir, { recursive: true, mode: 0o700 })
     // The policy runs `checkWorkspace`, so a spec build checks the folder once; the overlap check follows it, so a
     // folder failing both keeps the workspace check's reason.
