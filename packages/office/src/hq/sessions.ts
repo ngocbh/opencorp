@@ -345,7 +345,7 @@ export class BrowserSessions {
     const live: HqSessionRecord[] = []
     for (const row of rows) {
       const gone =
-        view === null || row.issuedSha === null || (await this.#goneBetween(person, row.issuedSha, view.sha))
+        view === null || row.issuedSha === null || (await this.#goneBetween(row.person, row.issuedSha, view.sha))
       if (!gone && (humans.unreadable.has(person) || row.passwordFp === fp)) live.push(row)
       else await this.revoke(row.id)
     }
