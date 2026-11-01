@@ -957,6 +957,62 @@ test("the seed goes once when no ceo answers for the human", async () => {
   expect(await lastUser(fake, 3)).toBe("how often?")
 })
 
+/** Whether side session `sid` is held at its cap with no worker running. */
+function held(h: Harness, sid: string): boolean {
+  const s = h.store.getSession(sid)!
+  return s.status === "waiting" && s.capped && !running(h.registry, sid)
+}
+
+test("a side chat opened at its cap answers nothing until its cap is raised", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake, { defaults: { side_chat_cost_cap_usd: 0 } })
+  const { q } = await ask(h)
+  const side = await h.office.cards!.openSide(q.id, "why?")
+  await waitFor(() => held(h, side.id), { what: "the hold at the cap" })
+  expect(fake.requests()).toHaveLength(1)
+  await h.harness.setCostCap(side.id, 1)
+  await waitFor(() => texts(h, side.id).length === 1 && status(h, side.id) === "idle", { what: "the side reply" })
+  expect(texts(h, side.id)).toEqual(["Quota."])
+  // The first message, after the seed.
+  expect(await lastUser(fake, 2)).toEndWith("why?")
+})
+
+test("a side chat reopened at its cap gets no turn until its cap is raised", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." }, { content: "Per hour." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  await h.harness.end(side.id)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  // Its cost so far stays with the session it reopens.
+  h.store.updateSession(side.id, { cost: 6 })
+  const again = await h.office.cards!.openSide(q.id, "how often?")
+  expect(again.id).toBe(side.id)
+  await waitFor(() => held(h, side.id), { what: "the hold at the cap" })
+  expect(fake.requests()).toHaveLength(2)
+  await h.harness.setCostCap(side.id, 20)
+  await waitFor(() => texts(h, side.id).length === 2 && status(h, side.id) === "idle", { what: "the side reply" })
+  expect(await lastUser(fake, 3)).toBe("how often?")
+})
+
+test("a side chat at its cap opens a side chat cap item, and the answer that ends it cancels it", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Backing off." })
+  const h = await sideHarness(fake, { defaults: { side_chat_cost_cap_usd: 0 } })
+  const { q } = await ask(h)
+  const side = await h.office.cards!.openSide(q.id, "why?")
+  const items = () => h.store.listWorkItems().filter((item) => item.title.startsWith("Raise the cost cap"))
+  expect(items()).toMatchObject([
+    { status: "open", assignee: CEO, title: "Raise the cost cap of @minh's side chat", parent_id: null },
+  ])
+  expect(items()[0]!.summary).toStartWith(`Session ${side.id} `)
+  await h.office.cards!.answer(q.id, "Back off", "option")
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  expect(items().map((item) => item.status)).toEqual(["cancelled"])
+})
+
 test("an ended side chat restarts on its memory without the seed again", async () => {
   const fake = await fakeLlm()
   fake.script(ASK, { content: "Quota." }, { content: "Per hour." })

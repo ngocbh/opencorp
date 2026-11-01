@@ -19,7 +19,12 @@ export function dollars(text: string): number | undefined {
   return usd > 0 ? usd : undefined
 }
 
-/** Raising a session's cost cap: `raise` asks the office and says how it went; `ask` opens a dialog for the amount,
+/** `usd` with at least 2 decimals and every decimal it has ("20.00", "1.2345", "0.00004"). */
+function usdText(usd: number): string {
+  return usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 20, useGrouping: false })
+}
+
+/** Setting a session's cost cap: `raise` asks the office and says how it went; `ask` opens a dialog for the amount,
  * starting from `value`. */
 export function useCostCap() {
   const office = useOffice()
@@ -29,7 +34,9 @@ export function useCostCap() {
   function raise(sessionID: string, usd: number) {
     office.client.sessions
       .costCap(sessionID, { cost_cap_usd: usd })
-      .then(() => toast.show({ message: `Cost cap raised to $${usd.toFixed(2)}`, variant: "info" }))
+      // The office takes any cap above the cost, a lower one too. Every decimal typed shows: a rounded figure could
+      // read below the cost.
+      .then(() => toast.show({ message: `Cost cap set to $${usdText(usd)}`, variant: "info" }))
       // The office's own words: cap_too_low says the cost so far, not_supported says why (a Codex session).
       .catch((error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }))
   }
@@ -37,7 +44,7 @@ export function useCostCap() {
   function ask(sessionID: string, value = "") {
     dialog.replace(() => (
       <DialogPrompt
-        title="Raise the cost cap"
+        title="Set the cost cap"
         placeholder="New cap in USD, e.g. 10"
         value={value}
         onConfirm={(text) => {

@@ -1572,6 +1572,230 @@ test("a new actor over a capped session sends without advancing", async () => {
   expect(o.kinds.slice(before)).toEqual(["advance", "advance"])
 })
 
+/** Starts a scripted session already over the company's $5 cap; its `chat` worker is `workers[0]`, still live. */
+async function cappedStart(o: ChatOffice) {
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  o.office.store.updateSession(sid, { cost: 6 })
+  const actor = makeActor(o, sid)
+  await actor.start()
+  return { workers, sid, actor, runId: actor.runId! }
+}
+
+/** Resolves once every command queued on `actor` before it has run: a command refused at once. */
+function drained(actor: SessionActor): Promise<unknown> {
+  return actor.answer("no-such-question", null, "text").catch(() => {})
+}
+
+/** The ops `scripted`'s worker was given, its job's and the ones sent while it ran. */
+function ops(scripted: ScriptedWorker): string[] {
+  return scripted.given().map((d) => d.op)
+}
+
+/** `scripted`'s worker acks every delivery it was given, rests waiting at the turn and exits. */
+function rests(scripted: ScriptedWorker, runId: string): void {
+  for (const d of scripted.given()) scripted.handlers.deliverReply(scripted.worker, { type: "deliver_reply", id: d.id, seq: 1 })
+  scripted.handlers.result(scripted.worker, waitingResult(runId))
+  scripted.handlers.exited(scripted.worker, 0)
+}
+
+test("over the cap a message sent while the run starts waits for a job that only delivers", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { workers, actor, runId } = await cappedStart(o)
+  const sent = actor.prompt("hi")
+  await drained(actor)
+  // The start's chat job may call the model: the message stays out of it.
+  expect(ops(workers[0]!)).toEqual([])
+  rests(workers[0]!, runId)
+  await waitFor(() => workers.length === 2, { what: "the delivering job" })
+  expect(workers[1]!.job).toMatchObject({ kind: "advance", advance: false })
+  expect(ops(workers[1]!)).toEqual(["send"])
+  rests(workers[1]!, runId)
+  expect(await sent).toBe("queued")
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  await actor.setCostCap(20)
+  expect(workers).toHaveLength(3)
+  expect(workers[2]!.job).toMatchObject({ kind: "advance", advance: true })
+})
+
+test("a busy retry of a chat job over the cap keeps messages out of it", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { workers, actor, runId } = await cappedStart(o)
+  const sent = actor.prompt("hi")
+  await drained(actor)
+  const first = workers[0]!
+  first.handlers.error(first.worker, { type: "error", message: `RunBusyError: run ${runId} is running`, traceback: "" })
+  first.handlers.exited(first.worker, 1)
+  await waitFor(() => workers.length === 2, { what: "the retry" })
+  expect(workers[1]!.job.kind).toBe("chat")
+  expect(ops(workers[1]!)).toEqual([])
+  rests(workers[1]!, runId)
+  await waitFor(() => workers.length === 3, { what: "the delivering job" })
+  expect(workers[2]!.job).toMatchObject({ kind: "advance", advance: false })
+  expect(ops(workers[2]!)).toEqual(["send"])
+  rests(workers[2]!, runId)
+  expect(await sent).toBe("queued")
+})
+
+test("a message held from a busy retry is refused when the retry can't spawn", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { workers, actor, runId } = await cappedStart(o)
+  const sent = outcome(actor.prompt("hi"))
+  await drained(actor)
+  failNextScripted(o)
+  const first = workers[0]!
+  first.handlers.error(first.worker, { type: "error", message: `RunBusyError: run ${runId} is running`, traceback: "" })
+  first.handlers.exited(first.worker, 1)
+  expect(await sent).toBe("503 cant_wake")
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  // Nothing of it is left for the next job.
+  const again = actor.prompt("again")
+  await waitFor(() => workers.length === 2, { what: "the delivering job" })
+  expect(workers[1]!.job).toMatchObject({ kind: "advance", advance: false })
+  expect(ops(workers[1]!)).toEqual(["send"])
+  rests(workers[1]!, runId)
+  expect(await again).toBe("queued")
+})
+
+test("esc over the cap while a message is only being delivered sends no interrupt", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { workers, actor, runId, sid } = await cappedStart(o)
+  rests(workers[0]!, runId)
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "waiting", { what: "held at the cap" })
+  const sent = actor.prompt("hi")
+  await waitFor(() => workers.length === 2, { what: "the delivering job" })
+  const second = workers[1]!
+  expect(second.job).toMatchObject({ kind: "advance", advance: false })
+  // No reply runs: an interrupt would cut the reply the raise starts.
+  await actor.interrupt()
+  expect(ops(second)).toEqual(["send"])
+  rests(second, runId)
+  expect(await sent).toBe("queued")
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  await actor.setCostCap(20)
+  expect(workers).toHaveLength(3)
+  expect(workers[2]!.job).toMatchObject({ kind: "advance", advance: true, deliver: [] })
+})
+
+test("esc over the cap in a chat job's start window sends no interrupt", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { workers, actor, runId } = await cappedStart(o)
+  const sent = actor.prompt("hi")
+  await actor.interrupt()
+  expect(ops(workers[0]!)).toEqual([])
+  rests(workers[0]!, runId)
+  await waitFor(() => workers.length === 2, { what: "the delivering job" })
+  expect(ops(workers[1]!)).toEqual(["send"])
+  rests(workers[1]!, runId)
+  expect(await sent).toBe("queued")
+})
+
+test("after a raise in the start window esc stops the held message's reply as right after sending", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { workers, actor, runId } = await cappedStart(o)
+  const sent = actor.prompt("hi")
+  await actor.setCostCap(20)
+  const cut = actor.interrupt()
+  await drained(actor)
+  // Nothing overtakes the held message.
+  expect(ops(workers[0]!)).toEqual([])
+  rests(workers[0]!, runId)
+  await waitFor(() => workers.length === 2, { what: "the advance" })
+  expect(workers[1]!.job).toMatchObject({ kind: "advance", advance: true })
+  expect(ops(workers[1]!)).toEqual(["send", "interrupt"])
+  rests(workers[1]!, runId)
+  expect(await sent).toBe("queued")
+  await cut
+})
+
+test("after a raise while a delivering worker runs esc reaches it after the send", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { workers, actor, runId, sid } = await cappedStart(o)
+  rests(workers[0]!, runId)
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "waiting", { what: "held at the cap" })
+  const sent = actor.prompt("hi")
+  await waitFor(() => workers.length === 2, { what: "the delivering job" })
+  await actor.setCostCap(20)
+  const cut = actor.interrupt()
+  await waitFor(() => workers[1]!.deliveries.length === 1, { what: "the interrupt" })
+  expect(ops(workers[1]!)).toEqual(["send", "interrupt"])
+  rests(workers[1]!, runId)
+  expect(await sent).toBe("queued")
+  await cut
+})
+
+test("end over the cap in the start window stops the run and refuses the held message", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { workers, actor, runId, sid } = await cappedStart(o)
+  const first = workers[0]!
+  const stops = countStops(first)
+  const sent = outcome(actor.prompt("hi"))
+  await actor.end()
+  expect(stops()).toBe(1)
+  expect(first.deliveries.filter((d) => d.op === "send")).toEqual([])
+  first.handlers.error(first.worker, STOPPED_ERROR)
+  first.handlers.exited(first.worker, 1)
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  expect(o.office.store.getRun(runId)?.endReason).toBe(ENDED_OVER_CAP)
+  expect(await sent).toBe("409 not_live")
+  await waitFor(() => workers.length === 2, { what: "the cancel job" })
+  expect(o.jobs.slice(1)).toMatchObject([{ run_id: runId, advance: false, deliver: [{ op: "cancel" }] }])
+})
+
+test("end over the cap after the start's worker rested closes after the held message", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { workers, actor, runId, sid } = await cappedStart(o)
+  const first = workers[0]!
+  const sent = actor.prompt("hi")
+  await drained(actor)
+  first.handlers.result(first.worker, waitingResult(runId))
+  await actor.end()
+  first.handlers.exited(first.worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the ending advance" })
+  // The take reads the message and the closed inbox: the flow skips the reply.
+  expect(workers[1]!.job).toMatchObject({ kind: "advance", advance: true })
+  expect(ops(workers[1]!)).toEqual(["send", "close"])
+  const { worker, handlers } = workers[1]!
+  for (const d of workers[1]!.given()) handlers.deliverReply(worker, { type: "deliver_reply", id: d.id, seq: 1 })
+  expect(await sent).toBe("queued")
+  handlers.result(worker, { type: "result", status: "succeeded", run_id: runId, output: null, failure: null, waits: [] })
+  handlers.exited(worker, 0)
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+})
+
+test("end after a raise in the start window closes after the held message", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { workers, actor, runId } = await cappedStart(o)
+  const sent = actor.prompt("hi")
+  await actor.setCostCap(20)
+  await actor.end()
+  expect(ops(workers[0]!)).toEqual([])
+  rests(workers[0]!, runId)
+  await waitFor(() => workers.length === 2, { what: "the ending advance" })
+  expect(ops(workers[1]!)).toEqual(["send", "close"])
+  rests(workers[1]!, runId)
+  expect(await sent).toBe("queued")
+})
+
+test("esc over the cap while the stopped reply's node runs still interrupts it", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake, { prices: PRICES })
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = workers[0]!
+  const stops = countStops(first)
+  first.handlers.event(first.worker, { type: "event", name: "NodeStarted", data: { node_id: "chat#0/reply" } })
+  modelCall(first, 6)
+  await waitFor(() => stops() === 1 && session(o, sid).capped, { what: "the stop at the cap" })
+  const cut = actor.interrupt()
+  await waitFor(() => first.deliveries.length === 1, { what: "the interrupt" })
+  expect(ops(first)).toEqual(["interrupt"])
+  first.handlers.deliverReply(first.worker, { type: "deliver_reply", id: first.deliveries[0]!.id, seq: 1 })
+  await cut
+})
+
 test("end over the cost cap on a waiting run closes it without a model call", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)

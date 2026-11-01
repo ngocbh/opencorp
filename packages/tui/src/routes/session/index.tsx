@@ -303,7 +303,7 @@ export function Session() {
       },
     },
     {
-      title: "Raise the cost cap",
+      title: "Set the cost cap",
       value: "session.cost_cap",
       category: "Session",
       slash: { name: "cost-cap" },
