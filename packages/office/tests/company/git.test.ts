@@ -371,6 +371,106 @@ test("repo signing config is ignored", async () => {
   expect(git(company, "log", "-1", "--format=%s")).toBe("edit")
 })
 
+/** Rewrites HEAD in `root` as the same commit with a (fake) PGP signature; returns the new id. */
+function signHead(root: string): string {
+  const raw = git(root, "cat-file", "commit", "HEAD")
+  const signature = "gpgsig -----BEGIN PGP SIGNATURE-----\n \n iQEz\n -----END PGP SIGNATURE-----"
+  const signed = raw.replace(/^(committer .*)$/m, `$1\n${signature}`) + "\n"
+  const id = gitInput(root, Buffer.from(signed), "hash-object", "-t", "commit", "-w", "--stdin")
+  git(root, "update-ref", "HEAD", id)
+  return id
+}
+
+test("find commit and commit info never run a repo gpg program", async () => {
+  const { tmp, company, g } = setup()
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  await g.commit([PROFILE], "profile(@minh): x\n\nCommit-Id: c-1")
+  const signed = signHead(company)
+  const wire = tripwire(tmp, "exit 1")
+  for (const key of ["gpg.program", "gpg.openpgp.program", "gpg.ssh.program", "gpg.x509.program"]) {
+    git(company, "config", key, wire.script)
+  }
+  git(company, "config", "log.showSignature", "true")
+  expect(await g.findCommit(PROFILE, "Commit-Id: c-1")).toBe(signed)
+  expect((await g.commitInfo(signed)).subject).toBe("profile(@minh): x")
+  expect(wire.tripped()).toBe(false)
+})
+
+/** The git subcommand of a recorded call: the first argument after `-C <root>` and the global options. */
+function subcommand(args: string[]): string {
+  let at = 2
+  while (args[at]?.startsWith("--work-tree") || args[at] === "-c") at += args[at] === "-c" ? 2 : 1
+  return args[at]!
+}
+
+test("every call but init pins the work tree, and reads never show a signature", async () => {
+  const dir = tempDir()
+  const recording = recordingGit(dir)
+  const { company, g } = setup({ git: recording.git })
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  const head = await g.commit([PROFILE], "edit")
+  await g.findCommit(PROFILE, "edit")
+  await g.commitInfo(head)
+  await g.pin(head)
+  fs.mkdirSync(path.join(dir, "fresh"))
+  await new CompanyGit(path.join(dir, "fresh"), dir, { git: recording.git }).init()
+  const calls = recording.calls().map((call) => call.args)
+  for (const args of calls) {
+    expect(args.slice(0, 1)).toEqual(["-C"])
+    expect(args[2] === "--work-tree=.").toBe(subcommand(args) !== "init")
+  }
+  expect(calls.filter((args) => subcommand(args) === "init")).not.toHaveLength(0)
+  const logs = calls.filter((args) => subcommand(args) === "log")
+  expect(logs).toHaveLength(2) // findCommit and commitInfo
+  for (const args of logs) expect(args).toContain("--no-show-signature")
+  expect(calls.find((args) => subcommand(args) === "commit")).toContain("--cleanup=whitespace")
+})
+
+test("a repo commit cleanup cannot strip the commit id trailer", async () => {
+  const message = "profile(@minh): x\n\nCommit-Id: c-1"
+  const plain = setup()
+  const { company, g } = setup()
+  git(company, "config", "commit.cleanup", "strip")
+  git(company, "config", "core.commentChar", "C")
+  for (const { company: root, g: each } of [plain, { company, g }]) {
+    fs.writeFileSync(path.join(root, PROFILE), "# edited\n")
+    await each.commit([PROFILE], message)
+  }
+  expect(await g.findCommit(PROFILE, "Commit-Id: c-1")).toBe(await g.head())
+  const body = (root: string) => git(root, "cat-file", "commit", "HEAD").split("\n\n").slice(1).join("\n\n")
+  expect(body(company)).toBe(message)
+  expect(body(company)).toBe(body(plain.company))
+})
+
+test.each([[["core.bare", "false"]], [["core.bare", "true"]]])(
+  "a repo core.worktree does not move the work tree [%j]",
+  async (extra) => {
+    const { tmp, company, g } = setup()
+    const elsewhere = path.join(tmp, "elsewhere")
+    fs.mkdirSync(path.join(elsewhere, "people/minh"), { recursive: true })
+    fs.writeFileSync(path.join(elsewhere, PROFILE), "# elsewhere\n")
+    git(company, "config", extra[0]!, extra[1]!)
+    git(company, "config", "core.worktree", elsewhere)
+    fs.writeFileSync(path.join(company, PROFILE), "# root\n")
+    const head = await g.commit([PROFILE], "edit")
+    expect((await g.readBlob((await g.blobId(PROFILE, head))!))!.toString()).toBe("# root\n")
+    expect(fs.readFileSync(path.join(await g.pin("HEAD"), PROFILE), "utf8")).toBe("# root\n")
+    expect(fs.readdirSync(elsewhere)).toEqual(["people"])
+    expect(fs.readFileSync(path.join(elsewhere, PROFILE), "utf8")).toBe("# elsewhere\n")
+  },
+)
+
+test("a repo commit and log encoding do not change what the office writes or reads", async () => {
+  const { company, g } = setup()
+  git(company, "config", "i18n.commitEncoding", "ISO-8859-1")
+  git(company, "config", "i18n.logOutputEncoding", "ISO-8859-1")
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  const head = await g.commit([PROFILE], "profile(@minh): café\n\nCommit-Id: naïve")
+  expect(git(company, "cat-file", "commit", "HEAD")).not.toMatch(/^encoding /m)
+  expect((await g.commitInfo(head)).subject).toBe("profile(@minh): café")
+  expect(await g.findCommit(PROFILE, "Commit-Id: naïve")).toBe(head)
+})
+
 /** A script in `dir` that leaves a mark each time it runs, then runs the shell `then`. */
 function tripwire(dir: string, then: string) {
   const mark = path.join(dir, "tripped")

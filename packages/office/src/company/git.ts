@@ -10,8 +10,17 @@ import { selfSpawnEnv } from "../platform.ts"
 const IDENTITY = ["-c", "user.name=OpenCorp office", "-c", "user.email=office@opencorp.local"]
 // Repo-local config and hooks still apply after the env is cleaned; never sign, run hooks or an fsmonitor.
 // With no global config git still reads ~/.config/git/attributes and ignore, so point both at nothing.
+// A signed commit in the history would run the repo's gpg programs under log.showSignature, and a repo's
+// encodings would re-encode the messages the office writes and reads, trailers included.
 const LOCKDOWN = [
   "-c", "commit.gpgsign=false",
+  "-c", "log.showSignature=false",
+  "-c", `gpg.program=${os.devNull}`,
+  "-c", `gpg.openpgp.program=${os.devNull}`,
+  "-c", `gpg.ssh.program=${os.devNull}`,
+  "-c", `gpg.x509.program=${os.devNull}`,
+  "-c", "i18n.commitEncoding=UTF-8",
+  "-c", "i18n.logOutputEncoding=UTF-8",
   "-c", `core.hooksPath=${os.devNull}`,
   "-c", "core.fsmonitor=false",
   "-c", `core.attributesFile=${os.devNull}`,
@@ -254,7 +263,10 @@ export class CompanyGit {
     { check = true, input }: { check?: boolean; input?: Uint8Array },
   ): Promise<GitResult> {
     return new Promise((resolve, reject) => {
-      const child = spawn(this.#git, ["-C", this.root, ...IDENTITY, ...LOCKDOWN, ...args], {
+      // The work tree is pinned to the root, since a repo's core.worktree would move it; `-c core.worktree`
+      // can't, as the repo's value wins. Not for `init`, which would write the option into the config.
+      const workTree = args[0] === "init" ? [] : ["--work-tree=."]
+      const child = spawn(this.#git, ["-C", this.root, ...workTree, ...IDENTITY, ...LOCKDOWN, ...args], {
         env,
         stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],
       })
@@ -433,7 +445,7 @@ export class CompanyGit {
 
   /** The newest commit on HEAD that touches `relpath` and has `line` as a whole message line. */
   async findCommit(relpath: string, line: string): Promise<string | null> {
-    const grep = ["log", "--fixed-strings", `--grep=${line}`, "--format=%H%x00%B%x1e"]
+    const grep = ["log", "--no-show-signature", "--fixed-strings", `--grep=${line}`, "--format=%H%x00%B%x1e"]
     const out = (await this.#run([...grep, "HEAD", "--", `:(literal)${relpath}`])).stdout.toString()
     for (const record of out.split("\x1e")) {
       const trimmed = record.replace(/^\n+|\n+$/g, "")
@@ -479,7 +491,9 @@ export class CompanyGit {
     const wanted = paths.map((p) => path.posix.normalize(encodePath(p).toString("latin1")).replace(/\/+$/, ""))
     const touched = staged.some((s) => wanted.some((w) => w === "." || s === w || s.startsWith(`${w}/`)))
     if (!touched) return this.head()
-    await this.#run(["commit", "-q", "-m", message, ...FROM_STDIN], { input: literal(paths) })
+    // git's default cleanup for -m, pinned so a repo's commit.cleanup can't strip a trailer as a comment.
+    const commit = ["commit", "-q", "--cleanup=whitespace", "-m", message, ...FROM_STDIN]
+    await this.#run(commit, { input: literal(paths) })
     return this.head()
   }
 
