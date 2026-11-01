@@ -528,7 +528,7 @@ test("a live frame too large to send is named on stderr by its type", async () =
   expect(stderr.join("\n")).not.toContain("zzzz")
 })
 
-test("an event's stubs drop its values and keep what the office reads", () => {
+test("the stubs of an event drop its values and keep what the office reads", () => {
   const big = "v".repeat(1000)
   expect(eventStubs({ node_id: "chat~2", grow: { seed: { history: big }, prune: ["a"] } })).toEqual([
     { node_id: "chat~2", grow: { seed: null, prune: ["a"] } },
@@ -578,7 +578,7 @@ test("the minimal stub keeps every event field the office reads", () => {
   expect([...read].filter((field) => field !== "failure" && !READ_KEYS.includes(field))).toEqual([])
 })
 
-test("a model call's stubs keep its usage and model", () => {
+test("the stubs of a model call keep its usage and model", () => {
   const usage = { input_tokens: 10, output_tokens: 2, total_tokens: 12 }
   const data = { node_id: "reply", n: 1, purpose: "reply", provider: "p", model: "m", usage, error: "e".repeat(1000) }
   expect(eventStubs(data)).toEqual([{ node_id: "reply", usage, model: "m" }])

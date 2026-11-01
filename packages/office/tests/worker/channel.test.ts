@@ -108,7 +108,7 @@ test("an oversize frame none of whose fallbacks fits is refused with its own siz
   expect((error as Error).message).toBe(`a ${size}-byte frame is over the 1024-byte limit`)
 }, TIMEOUT)
 
-test("fallbacks aren't built for a frame that fits", async () => {
+test("fallbacks are not built for a frame that fits", async () => {
   const { left, right } = await pair({ maxFrame: 1024 })
   let built = 0
   await left.send({ ok: 1 }, () => {
