@@ -12,7 +12,6 @@ import type { z } from "zod"
 import type { CompanyGit } from "../company/git.ts"
 import { parseFile } from "../company/issues.ts"
 import type { CompanySnapshots } from "../company/snapshot.ts"
-import type { Subscription } from "../daemon/bus.ts"
 import { HttpError } from "../daemon/http.ts"
 import { HqSessionRecord, newId, type Store } from "../store/store.ts"
 
@@ -24,6 +23,9 @@ export const TTL = 30 * 24 * 3600_000
 
 /** How often `lastUsedAt` is written at most, in ms. */
 export const TOUCH_EVERY = 3600_000
+
+/** How many streams (events and live) one session holds open at most; opening another ends its oldest. */
+export const STREAMS_PER_SESSION = 8
 
 const NAME_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789"
 
@@ -118,7 +120,8 @@ interface Live {
   person: string
   passwordFp: string
   revoked: boolean
-  streams: Set<Subscription>
+  /** Each open stream's cut, oldest first. */
+  streams: Set<AbortController>
 }
 
 /** A live, unrevoked entry for the session `record`. */
@@ -266,7 +269,7 @@ export class BrowserSessions {
     }
     if (live !== undefined) {
       live.revoked = true
-      for (const sub of [...live.streams]) sub.end()
+      for (const cut of [...live.streams]) cut.abort()
     }
     return this.store.deleteHqSession(sid)
   }
@@ -291,17 +294,27 @@ export class BrowserSessions {
     return live
   }
 
-  /** Tracks an open stream of session `sid`, so revoking the session ends it; a revoked or unknown session ends it
-   *  now (expiry is left to the stream's `alive` check). */
-  register(sid: string, sub: Subscription): void {
+  /**
+   * Tracks an open stream of session `sid`, so revoking the session aborts its `cut`; returns the release to call
+   * once the stream ends (a second call does nothing). A revoked or unknown session aborts `cut` now (expiry is left
+   * to the stream's `alive` check).
+   *
+   * Past `STREAMS_PER_SESSION` the session's oldest stream is cut rather than this one refused: a browser that is
+   * still there reconnects, while a stream a sleeping laptop holds open through a tunnel never would.
+   */
+  open(sid: string, cut: AbortController): () => void {
     const live = this.#live.get(sid)
-    if (live === undefined || live.revoked) sub.end()
-    else live.streams.add(sub)
-  }
-
-  /** Forgets a stream that ended. */
-  unregister(sid: string, sub: Subscription): void {
-    this.#live.get(sid)?.streams.delete(sub)
+    if (live === undefined || live.revoked) {
+      cut.abort()
+      return () => {}
+    }
+    for (const oldest of live.streams) {
+      if (live.streams.size < STREAMS_PER_SESSION) break
+      live.streams.delete(oldest)
+      oldest.abort()
+    }
+    live.streams.add(cut)
+    return () => live.streams.delete(cut)
   }
 
   /** How many open streams session `sid` has; 0 when unknown. */

@@ -76,6 +76,29 @@ test(
 )
 
 test(
+  "a session holds eight streams and signing it out ends them all",
+  async () => {
+    const office = await webOffice()
+    const cwd = scratch(office)
+    await waitListening(office)
+    const [, port, code] = (await office.opencorp(["pair", "--no-open"], { cwd })).stdout.match(URL_RE)!
+    const browser = new Browser(`http://127.0.0.1:${port}`)
+    const session = (await browser.post("/api/pair", { code })).json()
+    const streams = []
+    for (let i = 0; i < 10; i++) {
+      const stream = browser.stream("/api/events")
+      expect(await stream.connected).toBe(": connected")
+      streams.push(stream)
+    }
+    // The cap ends the oldest, so a browser that comes back always gets its stream.
+    await Promise.all(streams.slice(0, 2).map((s) => s.ended))
+    await office.opencorp(["devices", "remove-browser", session.id], { cwd })
+    await Promise.all(streams.slice(2).map((s) => s.ended))
+  },
+  TIMEOUT,
+)
+
+test(
   "password sign in the one refusal and the lock",
   async () => {
     const office = await webOffice()
