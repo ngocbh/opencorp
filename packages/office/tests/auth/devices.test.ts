@@ -113,6 +113,20 @@ test("only the person or the ceo changes a humans devices", async () => {
   expect((await addDevice(g, "ava", device("laptop"), "ngocbh")).devices.map((d) => d.name)).toEqual(["laptop"])
 })
 
+test("devices of a person whose file doesn't load answer the doctor hint", async () => {
+  const { root, g } = setup(AVA)
+  await addDevice(g, "ava", device("mac"), "ngocbh")
+  fs.writeFileSync(path.join(root, "people/ava/person.yaml"), "handle: [SECRETVALUE\n")
+  git(root, "commit", "-qam", "break ava")
+  const before = head(root)
+  const hint: [number, string, string] = [404, "not_found", "@ava's person.yaml doesn't load; run `opencorp doctor`"]
+  expect(await refusal(addDevice(g, "ava", device("pc"), "ngocbh"))).toEqual(hint)
+  expect(await refusal(removeDevice(g, "ava", "mac", "ngocbh"))).toEqual(hint)
+  expect(await refusal(setPassword(g, "ava", PASSWORD, "ngocbh"))).toEqual(hint)
+  expect(await refusal(removeDevice(g, "nobody", "mac", "ngocbh"))).toEqual([404, "not_found", "no person @nobody"])
+  expect(head(root)).toBe(before)
+})
+
 test("removing a device commits it and an unknown name is not found", async () => {
   const { root, g } = setup()
   await addDevice(g, "ngocbh", device("mac"), "ngocbh")

@@ -5,7 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { type Scheduler, realScheduler } from "@ngocbh/yian/platform"
 import { type Message, OFFICE, Session, WorkItem, now } from "@opencorp/protocol"
-import { loadRepo } from "../company/loader.ts"
+import { loadRepo, missingPerson } from "../company/loader.ts"
 import type { Office, SessionHarness } from "../daemon/office.ts"
 import { type CodexSessions, checkFolder, notSupported, unsafeWorkspace } from "../harness/sessions.ts"
 import type { Monitor } from "../perm/monitor.ts"
@@ -269,7 +269,8 @@ export class ChatHarness implements SessionHarness {
     await git.commitHandEdits()
     const head = await git.head()
     const pin = await git.pin(head)
-    if (!loadRepo(pin).people.has(handle)) throw new HarnessError(404, "not_found", `no person ${handle}`)
+    const repo = loadRepo(pin)
+    if (!repo.people.has(handle)) throw new HarnessError(404, "not_found", missingPerson(repo, handle))
     if (!isFile(path.join(pin, MANAGER_FLOW))) {
       throw new HarnessError(422, "no_manager_flow", `the company has no ${MANAGER_FLOW}`)
     }
@@ -615,7 +616,7 @@ export class ChatHarness implements SessionHarness {
     const head = await this.office.git.head()
     const repo = loadRepo(await this.office.git.pin(head))
     const person = repo.people.get(handle)
-    if (person === undefined) throw new HarnessError(404, "not_found", `no person ${handle}`)
+    if (person === undefined) throw new HarnessError(404, "not_found", missingPerson(repo, handle))
     if (person.kind !== "agent" || !person.main) throw notAnAgent()
     // An empty list is the schema's default: the composer harness alone.
     const harnesses = person.harnesses.length ? person.harnesses : ["composer"]

@@ -4,6 +4,7 @@ import { readIdentity, type Identity, defaultSocket, identityPath } from "@openc
 import fs from "node:fs"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
+import { warnIfTokenless } from "../office"
 
 /**
  * `opencorp logout`: removes this device from its person's devices, sent with its own token, then
@@ -32,9 +33,11 @@ export const run: CommandRun = async (argv) => {
   }
   const entry = `${me.device} in people/${me.handle}/person.yaml`
   let note: string
+  let removed = false
   try {
     await createOfficeClient({ socket: defaultSocket(), token: me.token }).devices.remove(me.handle, me.device)
     note = `Removed ${entry}.`
+    removed = true
   } catch (e) {
     if (e instanceof OfficeUnavailable)
       note = `The office isn't running, so ${entry} remains; remove it with \`opencorp devices remove ${me.handle} ${me.device}\`.`
@@ -48,5 +51,6 @@ export const run: CommandRun = async (argv) => {
   }
   fs.rmSync(file, { force: true })
   console.log(`${note} This device is logged out.`)
+  if (removed) await warnIfTokenless()
   return 0
 }

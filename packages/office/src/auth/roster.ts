@@ -2,24 +2,31 @@
 import { Company, Person as PersonSchema } from "@opencorp/protocol"
 import type { z } from "zod"
 import type { CompanyGit } from "../company/git.ts"
-import { parseFile } from "../company/issues.ts"
+import { parseFile, type RepoIssue, repoIssue } from "../company/issues.ts"
 
 type Person = z.output<typeof PersonSchema>
 
+/** A person file at HEAD that doesn't load: its repo path and the RepoIssue code, never the issue's message. */
+export type Unreadable = { readonly path: string; readonly code: string }
+
 /** The CEO and `{token_sha256: [handle, device]}` at commit `head`; `enforced` says whether every request
- *  needs a token: once any human lists a device. */
+ *  needs a token: once any human lists a device. `unreadable` lists the person files that don't load. An agent
+ *  named CEO is no CEO: agents never act for a request. */
 export class Roster {
   constructor(
     readonly head: string,
     readonly ceo: string | null,
     readonly tokens: ReadonlyMap<string, readonly [string, string]> = new Map(),
     readonly enforced = false,
+    readonly unreadable: readonly Unreadable[] = [],
   ) {}
 
-  /** The roster of `people` at `head`. */
-  static of(head: string, ceo: string | null, people: Iterable<Person>): Roster {
+  /** The roster of `people` at `head`, with the person files that didn't load. */
+  static of(head: string, ceo: string | null, people: Iterable<Person>, unreadable: readonly Unreadable[] = []): Roster {
     const list = [...people]
-    return new Roster(head, ceo, tokenTable(list), list.some((p) => p.kind === "human" && p.devices.length > 0))
+    const enforced = list.some((p) => p.kind === "human" && p.devices.length > 0)
+    if (list.some((p) => p.handle === ceo && p.kind !== "human")) ceo = null
+    return new Roster(head, ceo, tokenTable(list), enforced, unreadable)
   }
 }
 
@@ -40,10 +47,18 @@ export function tokenTable(people: Iterable<Person>): Map<string, readonly [stri
   return table
 }
 
-/** `data` parsed as `schema`, or null when empty or broken. */
-function parse<S extends z.ZodObject>(path: string, data: Buffer | undefined, schema: S): z.output<S> | null {
-  // Lint reports a broken file; here it just lets no one in through it.
-  return data?.length ? parseFile(path, data, schema, []) : null
+/** `data` parsed as `schema`, or null when missing or broken; the problem is recorded in `issues`. */
+function parse<S extends z.ZodObject>(
+  path: string,
+  data: Buffer | undefined,
+  schema: S,
+  issues: RepoIssue[],
+): z.output<S> | null {
+  if (data === undefined) {
+    issues.push(repoIssue(path, "repo.unreadable", "can't be read"))
+    return null
+  }
+  return parseFile(path, data, schema, issues)
 }
 
 /** The roster at commit `head`, read from git objects, so uncommitted edits don't count. */
@@ -57,11 +72,15 @@ export async function loadRoster(git: CompanyGit, head: string): Promise<Roster>
   // One read for every file: a git call per person would make each reload grow with the company.
   const ids = [companyBlob, ...[...personBlobs.values()].map(([, blob]) => blob)].filter((b): b is string => !!b)
   const data = await git.readBlobs(ids)
-  const company = companyBlob ? parse("company.yaml", data.get(companyBlob), Company) : null
+  const company = companyBlob ? parse("company.yaml", data.get(companyBlob), Company, []) : null
   const people: Person[] = []
+  // A broken person file lets no one in through it; lint reports it in full.
+  const issues: RepoIssue[] = []
   for (const [handle, [path, blob]] of personBlobs) {
-    const person = parse(path, data.get(blob), PersonSchema)
-    if (person !== null && person.handle === handle) people.push(person)
+    const person = parse(path, data.get(blob), PersonSchema, issues)
+    if (person === null) continue
+    if (person.handle === handle) people.push(person)
+    else issues.push(repoIssue(path, "person.dir_mismatch", "the handle must match its directory"))
   }
-  return Roster.of(head, company?.ceo ?? null, people)
+  return Roster.of(head, company?.ceo ?? null, people, issues.map(({ path, code }) => ({ path, code })))
 }

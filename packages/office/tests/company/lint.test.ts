@@ -50,6 +50,17 @@ test("ceo has manager", async () => {
   expect(await codes(makeCompany({ "company.yaml": company }))).toContain("company.ceo_has_manager")
 })
 
+test("an agent ceo is an error", async () => {
+  const company = { ...(baseFiles()["company.yaml"] as object), ceo: "minh" }
+  const root = makeCompany({ "company.yaml": company, "people/minh/person.yaml": person("minh", { manager: null }) })
+  const found = await issues(root)
+  expect(found).toContain("company.ceo_not_human company.yaml")
+  expect(found).not.toContain("company.ceo_has_manager company.yaml")
+  expect((await withCode(root, "company.ceo_not_human")).map((issue) => issue.message)).toEqual([
+    "ceo @minh is an agent, not a human",
+  ])
+})
+
 test("unknown ceo", async () => {
   const company = { ...(baseFiles()["company.yaml"] as object), ceo: "ghost" }
   expect(await codes(makeCompany({ "company.yaml": company }))).toContain("company.unknown_ceo")

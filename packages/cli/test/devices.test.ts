@@ -380,16 +380,48 @@ test("the CEO signs out someone else's browser, confirmed by its id", async () =
   expect((await opencorp(trusted, "devices", "remove-browser", b.id)).err).toBe(`opencorp devices: no browser session ${b.id}`)
 })
 
+const OPEN_NOW =
+  "opencorp: warning: no human lists a device now, so the office takes requests without a token as @ngocbh; " +
+  "run `opencorp login` to need tokens again"
+
+test("devices remove of the last human device warns", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  expect(await opencorp(trusted, "devices", "remove", "ngocbh", "mac")).toEqual({
+    code: 0,
+    out: "Removed device mac from @ngocbh.",
+    err: OPEN_NOW,
+  })
+})
+
+test("no warning while another human's device remains", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  office.state.people.push({ handle: "ann", name: "Ann", kind: "human", title: "Designer", manager: "ngocbh" })
+  await opencorp(other, "login", "--handle", "ann", "--device", "laptop") // untrusted: prints the add command
+  await opencorp(trusted, "devices", "add", "ann", "laptop", tokenSha256(identity(other).token))
+  expect(await opencorp(trusted, "logout")).toEqual({
+    code: 0,
+    out: "Removed mac in people/ngocbh/person.yaml. This device is logged out.",
+    err: "",
+  })
+  expect(await opencorp(other, "devices", "remove", "ann", "laptop")).toEqual({
+    code: 0,
+    out: "Removed device laptop from @ann.",
+    err: OPEN_NOW,
+  })
+})
+
 test("logout removes this device with its own token, then the identity", async () => {
   await opencorp(trusted, "login", "--device", "mac")
   const token = identity(trusted).token
   expect(await opencorp(trusted, "logout")).toEqual({
     code: 0,
     out: "Removed mac in people/ngocbh/person.yaml. This device is logged out.",
-    err: "",
+    err: OPEN_NOW,
   })
   const del = office.requests.find((r) => r.method === "DELETE")!
   expect([del.raw, del.authorization]).toEqual(["/people/ngocbh/devices/mac", `Bearer ${token}`])
+  // The check after it goes without a token: it asks whether the office still needs one.
+  expect([office.requests.at(-1)?.path, office.requests.at(-1)?.authorization]).toEqual(["/whoami", undefined])
   expect(devices()).toBeUndefined()
   expect(fs.existsSync(path.join(trusted, "identity.json"))).toBe(false)
   expect(await opencorp(trusted, "logout")).toEqual({ code: 1, out: "", err: "opencorp logout: this device isn't logged in" })

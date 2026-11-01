@@ -667,6 +667,13 @@ test("a start that fails otherwise names the session but not the error", async (
   expect(error.message).not.toContain("sentinel")
 })
 
+test("start names a person whose file doesnt load", async () => {
+  const h = await makeHarness(await fakeLlm(), { files: { "people/minh/person.yaml": "handle: [\n" } })
+  const error = await rejection(h.harness.startSession("minh", h.folder))
+  expect([error.status, error.code, error.message]).toEqual([404, "not_found", "@minh's person.yaml doesn't load; run `opencorp doctor`"])
+  expect(h.store.listSessions()).toEqual([])
+})
+
 test.each([
   ["unknown person", "nobody", null, "not_found"],
   ["human", "ngocbh", null, "not_an_agent"],
