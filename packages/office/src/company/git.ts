@@ -492,8 +492,9 @@ export class CompanyGit {
   /**
    * Whether `relpath` may hold a different file at commit `to` than at commit `from`: true when the clone doesn't
    * have `from`, when no common ancestor of the two holds the file, or when a commit on either side since their common
-   * ancestors deletes it or changes its type (a merge compared with each parent); false when `from === to`. A RangeError for anything but
-   * full commit ids and a relative path; `CompanyGitError` when git fails, so a failed read is neither answer.
+   * ancestors deletes it or changes its type (a merge compared with each parent); false when `from === to`. A
+   * RangeError for anything but full commit ids and a relative path; `CompanyGitError` when git fails, so a failed
+   * read is neither answer.
    */
   async goneSince(relpath: string, from: string, to: string): Promise<boolean> {
     fullId(from)
@@ -515,7 +516,8 @@ export class CompanyGit {
     const held = await Promise.all(ids.map((base) => this.blobId(relpath, base)))
     if (held.every((blob) => blob === null)) return true
     // The range is symmetric so a reset back to before a deletion counts too; each repo setting that would change
-    // which commits or changes the log shows is pinned.
+    // which commits or changes the log shows is pinned. `-m` with log.diffMerges set rather than `--diff-merges`,
+    // which git before 2.31 refuses; there `-m` always compares a merge with each parent and the setting is unknown.
     const log = ["-c", "log.follow=false", "-c", "log.diffMerges=separate", "log", "-n", "1", "--full-history", "-m"]
     log.push("--no-patch", "--no-renames", "--no-show-signature", "--no-ext-diff", "--diff-filter=DT", "--format=%H")
     log.push(`${from}...${to}`, "--", `:(literal)${relpath}`)

@@ -1145,6 +1145,22 @@ test.each([["on"], ["first-parent"], ["combined"], ["follow"]])(
   },
 )
 
+test.each([["on"], ["first-parent"], ["combined"]])(
+  "gone since sees a merge drop a file only its merged branch had, whatever the repos log config [%s]",
+  async (setting) => {
+    const { company, g } = setup()
+    git(company, "config", "log.diffMerges", setting)
+    git(company, "checkout", "-q", "-b", "side")
+    const hired = hire(company)
+    git(company, "checkout", "-q", "main")
+    other(company, "on main")
+    git(company, "merge", "-q", "--no-ff", "--no-commit", "side")
+    git(company, "rm", "-qf", DANA)
+    git(company, "commit", "-q", "-m", "merge side without dana")
+    expect(await g.goneSince(DANA, hired, git(company, "rev-parse", "HEAD"))).toBe(true)
+  },
+)
+
 test("gone since is false after merging a branch forked before the file was added, either way", async () => {
   const { company, g } = setup()
   const base = git(company, "rev-parse", "HEAD")

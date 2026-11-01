@@ -67,9 +67,9 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     },
   },
   // A person's browser sessions on this office, newest first. Only the CEO may list a person who isn't a human at HEAD
-  // (anymore) and still has stored sessions; everyone else, and any other handle, gets 404 or 422 as for devices. Sessions a password change or a removal of their person
-  // since they were issued ended are deleted here rather than listed; expired ones are pruned at office start and on
-  // each new session.
+  // (anymore) and still has stored sessions; everyone else, and any other handle, gets 404 or 422 as for devices.
+  // Sessions a password change or a removal of their person since they were issued ended are deleted here rather than
+  // listed; expired ones are pruned at office start and on each new session.
   {
     method: "GET",
     path: "/hq/browsers",
