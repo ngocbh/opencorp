@@ -170,7 +170,8 @@ const BATCH = 64
 /**
  * The log of run `id` and the last seq the client already has (`after`, -1 without one): 422 `invalid_body` when
  * `after` isn't a seq, 404 `not_found` when the store holds no such run (or not its session), 404 `no_log` when the
- * run's log isn't a regular file (none, a symlink, a FIFO). The id is looked up in the store before it is joined into a path.
+ * run's log isn't a regular file (none, a symlink, a FIFO). The id is looked up in the store before it is joined into
+ * a path.
  */
 export function liveTarget(ctx: RequestContext, id: string): { log: string; after: number } {
   const raw = param(ctx, "after")

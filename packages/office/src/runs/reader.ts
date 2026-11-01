@@ -959,9 +959,8 @@ function eventAt(path: string, index: Index, seq: number, derived: TypedValue | 
 /**
  * The download: every complete line of `path` as it is when called, as stored, streamed CHUNK at a time, so no line
  * is ever held whole. The file is opened when called (NotALog, or its `fs` error, `ENOENT`, rejects the promise, not
- * the stream).
- * It needs no index, so a log this office can't read still downloads. The caller consumes or destroys the stream,
- * which closes the file.
+ * the stream). It needs no index, so a log this office can't read still downloads. The caller consumes or destroys
+ * the stream, which closes the file.
  */
 export async function logStream(path: string): Promise<Readable> {
   const fd = openLog(path)

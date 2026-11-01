@@ -639,7 +639,8 @@ test("checked log events refuse an index of another file", async () => {
   const index = await refresh(file, null)
   fs.copyFileSync(file, `${file}.new`)
   fs.renameSync(`${file}.new`, file)
-  expect([[...logEvents(file, 0, null, index, true)], [...logEvents(file, 0, null, null, true)]]).toEqual([[null], [null]])
+  expect([...logEvents(file, 0, null, index, true)]).toEqual([null])
+  expect([...logEvents(file, 0, null, null, true)]).toEqual([null])
 })
 
 /** Each read of the log at `file` the office makes itself, by name; `index` is an index of some log, for the reads that
@@ -655,7 +656,8 @@ function officeReads(file: string, index: Index): [string, () => unknown][] {
   ]
 }
 
-/** What `read` threw or rejected with, by its code or else its name, and how long it took in milliseconds; null when it didn't throw. */
+/** What `read` threw or rejected with, by its code or else its name (null when it didn't throw), and how long it took
+ *  in milliseconds. */
 async function refusal(name: string, read: () => unknown): Promise<[string, string | null, number]> {
   const start = performance.now()
   try {

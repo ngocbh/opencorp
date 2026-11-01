@@ -761,13 +761,19 @@ test.each(REFUSED_LINES)("a log line the pages refuse resets a stream at its run
   expect(await rest(it)).toEqual([["reset", null, null]])
 })
 
+/** Appends a commit and a success to `storedRun`'s log (last seq 19): seqs 20 and 21. */
+function appendTwo(log: string): void {
+  fs.appendFileSync(log, committed(20, "chat#2/ask", { output: "hi" }))
+  fs.appendFileSync(log, succeeded(21, "chat#2/ask", 20))
+}
+
 test("a record appended between the index build and the join doesn't reset", async () => {
   const office = makeOffice()
   const { sock } = await served(office)
   const { runId, sessionId, log } = storedRun(office)
   const stale = (await office.runs.logIndex(log))!
   expect(stale.lastSeq).toBe(19)
-  fs.appendFileSync(log, Buffer.concat([committed(20, "chat#2/ask", { output: "hi" }), succeeded(21, "chat#2/ask", 20)]))
+  appendTwo(log)
   const relay = liveRelay(office)
   const worker = stubWorker(runId, sessionId, log)
   relay.frame(worker, { type: "snapshot", snapshot: { last_seq: 21, calls: [] } })
@@ -793,7 +799,7 @@ test("run end with a stale build in flight still sends every record", async () =
   const head = await read(it, 2 + from)
   const stale = (await office.runs.logIndex(log))!
   expect(stale.lastSeq).toBe(19)
-  fs.appendFileSync(log, Buffer.concat([committed(20, "chat#2/ask", { output: "hi" }), succeeded(21, "chat#2/ask", 20)]))
+  appendTwo(log)
   spyOn(office.runs, "logIndex").mockImplementationOnce(async () => ({ ...stale }))
   relay.detach(worker)
   const records = await recordFrames(log)
