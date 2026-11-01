@@ -25,6 +25,7 @@ import {
   type Index,
   logStream,
   nodePage,
+  NotALog,
   readEvents,
   RunLogReader,
   UnreadableLog,
@@ -54,9 +55,9 @@ export class NoLog extends Error {
   override name = "NoLog"
 }
 
-/** Whether `error` is the `fs` error of a file that doesn't exist. */
+/** Whether `error` says the log doesn't exist (its `fs` error), or isn't a regular file (NotALog). */
 function isMissing(error: unknown): boolean {
-  return (error as { code?: unknown } | null)?.code === "ENOENT"
+  return error instanceof NotALog || (error as { code?: unknown } | null)?.code === "ENOENT"
 }
 
 /** A list request's filters and paging. */
@@ -352,7 +353,8 @@ export class RunLogs {
     return { yian, summaries: new Summaries(this.#store, live, yian, { fresh: this.#live, log: this.#log }) }
   }
 
-  /** The run's log, its index brought up to date, and its session; NoLog when the log doesn't exist. */
+  /** The run's log, its index brought up to date, and its session; NoLog when the log doesn't exist or isn't a
+   *  regular file. */
   async #logIndex(runId: string): Promise<{ file: string; index: Index; session: SessionRecord }> {
     const { session } = this.#one(runId)
     const file = this.logPath(runId)

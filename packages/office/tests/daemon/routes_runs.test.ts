@@ -9,7 +9,7 @@ import type { RunIndexRow } from "@ngocbh/yian/run"
 import { newToken } from "../../src/auth/tokens.ts"
 import type { LiveJoin, LiveRelay, LiveWorker } from "../../src/daemon/live.ts"
 import type { Office } from "../../src/daemon/office.ts"
-import { HUGE_LINE, readEvents, refresh, SCHEMA } from "../../src/runs/reader.ts"
+import { HUGE_LINE, readEvents, refresh, RunLogReader, SCHEMA } from "../../src/runs/reader.ts"
 import { Live, type LiveRun } from "../../src/runs/records.ts"
 import { WORKER_STOPPED } from "../../src/runs/outcomes.ts"
 import { RunLogs } from "../../src/runs/service.ts"
@@ -17,8 +17,8 @@ import { newId } from "../../src/store/store.ts"
 import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
 import type { Frame as WorkerFrame } from "../../src/worker/channel.ts"
 import { fakeLlm, send, TemplateOffice, waitingChat } from "../chat/helpers.ts"
-import { waitFor } from "../helpers.ts"
-import { chatLog, committed, failed, line, runStarted, started } from "../runs/helpers.ts"
+import { tempDir, waitFor } from "../helpers.ts"
+import { chatLog, committed, failed, fifoAt, line, runStarted, started } from "../runs/helpers.ts"
 import { session } from "../store/helpers.ts"
 import { advanceJob, run } from "../worker/helpers.ts"
 import {
@@ -437,6 +437,75 @@ test("a log removed before it streams has no log", async () => {
   expect([whole.status, whole.text]).toEqual([200, stored])
   const r = await get(sock, `/runs/${runId}/log`)
   expect([r.status, body(r).error]).toEqual([404, "no_log"])
+})
+
+const OUTSIDE = "OUTSIDE-SECRET-7d41c9a2"
+
+/** A chat log outside the office's runs folder whose commit holds OUTSIDE; returns its path. */
+function outsideLog(): string {
+  const file = path.join(tempDir(), "outside.jsonl")
+  fs.writeFileSync(file, Buffer.concat([runStarted(0), started(1, "a"), committed(2, "a", { output: OUTSIDE })]))
+  return file
+}
+
+/** The status, error and whether OUTSIDE shows of GET `target`, and whether it answered within a second. */
+async function refused(sock: string, target: string): Promise<[string, number, unknown, boolean, boolean]> {
+  const start = performance.now()
+  const r = await get(sock, target)
+  const error = r.headers["content-type"]?.startsWith("application/json") ? body(r).error : null
+  return [target, r.status, error, r.text.includes(OUTSIDE), performance.now() - start < 1000]
+}
+
+const LOG_ROUTES = ["/nodes", "/events", "/events/1", "/log", "/live"]
+
+test("a log that is a symlink is no log on every route that reads it", async () => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  const file = office.runs.logPath(runId)
+  fs.rmSync(file)
+  fs.symlinkSync(outsideLog(), file)
+  for (const suffix of LOG_ROUTES) {
+    const target = `/runs/${runId}${suffix}`
+    expect(await refused(sock, target)).toEqual([target, 404, "no_log", false, true])
+  }
+  const head = await get(sock, `/runs/${runId}`)
+  expect([head.status, body(head).log_state, head.text.includes(OUTSIDE)]).toEqual([200, "missing", false])
+})
+
+test("a log swapped for a symlink after its index was built is no log", async () => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  const file = office.runs.logPath(runId)
+  const outside = outsideLog()
+  // The swap lands between the index's build and the page's read of the log, which `#logIndex` doesn't cover.
+  const reader = new RunLogReader({
+    refresh: async (log, index, options) => {
+      const built = await refresh(log, index, options)
+      fs.rmSync(file, { force: true })
+      fs.symlinkSync(outside, file)
+      return built
+    },
+  })
+  office.runs = new RunLogs({ store: office.store, runsDir: office.paths.runs, reader })
+  for (const suffix of ["/events", "/events/1"]) {
+    const target = `/runs/${runId}${suffix}`
+    expect(await refused(sock, target)).toEqual([target, 404, "no_log", false, true])
+    fs.rmSync(file)
+    chatLog(file)
+  }
+})
+
+test("a log that is a fifo is no log at once on every route that reads it", async () => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  const file = office.runs.logPath(runId)
+  fs.rmSync(file)
+  fifoAt(file)
+  // Not GET /runs/{id}: yian's inspection of a run still opens its log itself.
+  for (const suffix of LOG_ROUTES) {
+    const target = `/runs/${runId}${suffix}`
+    expect(await refused(sock, target)).toEqual([target, 404, "no_log", false, true])
+  }
 })
 
 test("a schema that isnt a number isnt echoed", async () => {

@@ -4,7 +4,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { RunDetail, RunEvent, RunEventPage, RunNodePage, RunPage } from "@opencorp/protocol"
-import { lineEvent, logEvents, UnreadableLog } from "../../runs/reader.ts"
+import { lineEvent, logEvents, NotALog, UnreadableLog } from "../../runs/reader.ts"
 import { NoLog, PAGE } from "../../runs/service.ts"
 import { NotFound } from "../../store/store.ts"
 import { PING } from "../bus.ts"
@@ -100,7 +100,8 @@ async function runCall<T>(read: () => Promise<T>): Promise<T> {
   try {
     return await read()
   } catch (error) {
-    if (error instanceof NoLog || (error as { code?: unknown } | null)?.code === "ENOENT") {
+    // NotALog too: a log swapped for a symlink after its index was built is opened past the service's own check.
+    if (error instanceof NoLog || error instanceof NotALog || (error as { code?: unknown } | null)?.code === "ENOENT") {
       throw new HttpError(404, "no_log", "this run has no log: it didn't start, or its log is gone")
     }
     // Store and reader messages name ids, never values or the log's text.
@@ -169,7 +170,7 @@ const BATCH = 64
 /**
  * The log of run `id` and the last seq the client already has (`after`, -1 without one): 422 `invalid_body` when
  * `after` isn't a seq, 404 `not_found` when the store holds no such run (or not its session), 404 `no_log` when the
- * run has no log file. The id is looked up in the store before it is joined into a path.
+ * run's log isn't a regular file (none, a symlink, a FIFO). The id is looked up in the store before it is joined into a path.
  */
 export function liveTarget(ctx: RequestContext, id: string): { log: string; after: number } {
   const raw = param(ctx, "after")
@@ -184,7 +185,8 @@ export function liveTarget(ctx: RequestContext, id: string): { log: string; afte
   if (row === undefined || store.getSession(row.sessionId) === undefined)
     throw new HttpError(404, "not_found", `no run ${id}`)
   const log = path.join(paths.runs, row.runId, "log.jsonl")
-  if (!fs.statSync(log, { throwIfNoEntry: false })?.isFile())
+  // lstat: a symlink in the log's place is no log, as the reader won't open it.
+  if (!fs.lstatSync(log, { throwIfNoEntry: false })?.isFile())
     throw new HttpError(404, "no_log", "this run has no log: it didn't start, or its log is gone")
   return { log, after }
 }

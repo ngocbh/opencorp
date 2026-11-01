@@ -103,6 +103,43 @@ export class UnsupportedSchema extends UnreadableLog {
   }
 }
 
+/** The run log's path is a symlink, a FIFO, a socket or anything else that isn't a regular file, so it isn't read.
+ *  Deliberately not an UnreadableLog: it is no log to the routes, and the reader never keeps it as a failed build. The
+ *  message never names the path. */
+export class NotALog extends Error {
+  override name = "NotALog"
+
+  constructor() {
+    super("The run log isn't a regular file")
+  }
+}
+
+/** Opens the log at `path` for reading: a file descriptor of a regular file. Throws NotALog when the path is a symlink
+ *  or isn't a regular file, and the `fs` error (`ENOENT`) of one it can't open. */
+function openLog(path: string): number {
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
+  let fd: number
+  try {
+    // O_NOFOLLOW: a symlink in the log's place isn't followed. O_NONBLOCK: a FIFO can't hang the open.
+    fd = fs.openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code
+    // A symlink under O_NOFOLLOW is ELOOP on Linux and macOS, EMLINK on FreeBSD; a socket is ENXIO on Linux and
+    // EOPNOTSUPP on macOS.
+    if (code === "ELOOP" || code === "EMLINK" || code === "ENXIO" || code === "EOPNOTSUPP") throw new NotALog()
+    throw error
+  }
+  let regular = false
+  try {
+    regular = fs.fstatSync(fd).isFile()
+  } catch {}
+  if (!regular) {
+    fs.closeSync(fd)
+    throw new NotALog()
+  }
+  return fd
+}
+
 /** Where a node attempt stands: `restarted` when a resume retried it before it had an outcome. */
 export type AttemptStatus = "open" | "waiting" | "succeeded" | "routed" | "expanded" | "failed" | "restarted"
 
@@ -184,8 +221,8 @@ type Stat = fs.BigIntStats
  * is left for the next call. A line it can't read while the file changed under the read is read again once, from the
  * start.
  *
- * Throws UnsupportedSchema or UnreadableLog for a complete line this office can't read or any line over LINE_CAP, and
- * the `fs` error (`ENOENT`) of a log it can't open.
+ * Throws UnsupportedSchema or UnreadableLog for a complete line this office can't read or any line over LINE_CAP,
+ * NotALog for a log that is a symlink or isn't a regular file, and the `fs` error (`ENOENT`) of a log it can't open.
  */
 export async function refresh(
   path: string,
@@ -258,7 +295,7 @@ function continues(path: string, index: Index, st: Stat): boolean {
 /** The sha256 (hex) of bytes `[start, end)` of `path`, read CHUNK at a time. */
 function sha256(path: string, start: number, end: number): string {
   const hash = crypto.createHash("sha256")
-  const fd = fs.openSync(path, "r")
+  const fd = openLog(path)
   try {
     const chunk = Buffer.allocUnsafe(CHUNK)
     for (let pos = start; pos < end;) {
@@ -289,7 +326,7 @@ function pacer(): () => Promise<void> {
  * LINE_CAP and a chunk past the last complete line is read.
  */
 async function scan(path: string, index: Index, pace: () => Promise<void>): Promise<number> {
-  const fd = fs.openSync(path, "r")
+  const fd = openLog(path)
   try {
     const chunk = Buffer.allocUnsafe(CHUNK)
     let pos = index.offset
@@ -797,7 +834,7 @@ export function readEvents(
   let begin = 0
   let nextAfter: number | null = null
   let cut = false
-  const fd = fs.openSync(path, "r")
+  const fd = openLog(path)
   try {
     let seq = first
     for (const line of lines(fd, start, stop, BIG_LINE, first - base)) {
@@ -861,7 +898,7 @@ export function* logEvents(
   index: Index | null = null,
 ): Generator<RunEvent | null> {
   if (to !== null && from > to) return
-  const fd = fs.openSync(path, "r")
+  const fd = openLog(path)
   try {
     const st = fs.fstatSync(fd, { bigint: true })
     const size = Number(st.size)
@@ -899,7 +936,7 @@ export function readEvent(path: string, index: Index, seq: number): RunEvent | n
 function eventAt(path: string, index: Index, seq: number, derived: TypedValue | null): RunEvent | null {
   const [base, start, stop] = window(index, seq)
   if (seq < base) return null
-  const fd = fs.openSync(path, "r")
+  const fd = openLog(path)
   try {
     for (const line of lines(fd, start, stop, HUGE_LINE, seq - base)) {
       return line.bytes === null ? stub(line.head, line.tail, seq, line.size) : decode(line.bytes, seq, true, derived)
@@ -912,12 +949,13 @@ function eventAt(path: string, index: Index, seq: number, derived: TypedValue | 
 
 /**
  * The download: every complete line of `path` as it is when called, as stored, streamed CHUNK at a time, so no line
- * is ever held whole. The file is opened when called (its `fs` error, `ENOENT`, rejects the promise, not the stream).
+ * is ever held whole. The file is opened when called (NotALog, or its `fs` error, `ENOENT`, rejects the promise, not
+ * the stream).
  * It needs no index, so a log this office can't read still downloads. The caller consumes or destroys the stream,
  * which closes the file.
  */
 export async function logStream(path: string): Promise<Readable> {
-  const fd = fs.openSync(path, "r")
+  const fd = openLog(path)
   let end: number
   try {
     end = await lastLineEnd(fd, fs.fstatSync(fd).size)
@@ -1040,7 +1078,8 @@ export class RunLogReader {
   }
 
   /** `path`'s index, brought up to date; concurrent callers share one build. Throws UnreadableLog (or
-   *  UnsupportedSchema) and the `fs` error (`ENOENT`) of a log it can't open. */
+   *  UnsupportedSchema), NotALog for a log that isn't a regular file, and the `fs` error (`ENOENT`) of a log it can't
+   *  open. */
   async index(path: string): Promise<Index> {
     const failed = this.failed.get(path)
     if (failed !== undefined) {
