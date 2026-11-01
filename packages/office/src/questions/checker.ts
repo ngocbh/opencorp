@@ -3,6 +3,7 @@ import { casefold, repr, splitLines, strip } from "../perm/redact.ts"
 import type { QuestionRecord } from "../store/store.ts"
 
 type Field = QuestionRecord["answer_schema"][number]
+type Kind = "option" | "text" | "sent_back" | "interrupted"
 
 const TRUE = new Set(["true", "yes", "y"])
 const FALSE = new Set(["false", "no", "n"])
@@ -27,11 +28,7 @@ export class InvalidAnswer extends Error {
  * itself. Any answer, or converted value, holding text that isn't well-formed (a lone surrogate, which yian refuses
  * to take) is refused first, without quoting it.
  */
-export function checkAnswer(
-  question: QuestionRecord,
-  answer: unknown,
-  kind: "option" | "text" | "sent_back" | "interrupted",
-): unknown {
+export function checkAnswer(question: QuestionRecord, answer: unknown, kind: Kind): unknown {
   wellFormed(answer)
   // Typed JSON text can decode an escape to a lone surrogate.
   const value = convert(question, answer, kind)
@@ -50,7 +47,7 @@ function wellFormed(value: unknown): void {
   if (!ok(value)) throw new InvalidAnswer("the answer must be valid text")
 }
 
-function convert(question: QuestionRecord, answer: unknown, kind: "option" | "text" | "sent_back" | "interrupted"): unknown {
+function convert(question: QuestionRecord, answer: unknown, kind: Kind): unknown {
   if (question.source === "harness") return harness(question, answer, kind)
   if (kind === "sent_back" || kind === "interrupted") return answer
   if (question.source !== "ask") {

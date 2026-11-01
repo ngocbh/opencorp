@@ -569,7 +569,7 @@ test("a refusal of an answer the run already took changes nothing", async () => 
 test.each([
   [{ seq: null }, "consumed"],
   [{ refused: "unknown_call" }, "stale"],
-])("a card answer the running worker refused as an unknown call goes with the next advance [%o]", async (again, end) => {
+])("a card answer a running worker refused as an unknown call goes with the next advance [%o]", async (again, end) => {
   const o = await chatOffice(await fakeLlm())
   const { actor, q, first, workers, runId, callId } = await askedOnce(o)
   await actor.answer(q.id, "A", "text")
@@ -627,7 +627,7 @@ test("an answer whose re-send failed waits for the next spawn", async () => {
 test.each([
   [{ seq: null }, "consumed"],
   [{ refused: "unknown_call" }, "stale"],
-])("an answered question whose call the run no longer waits on is sent once with the next advance [%o]", async (again, end) => {
+])("an answered question whose call no wait lists is sent once with the next advance [%o]", async (again, end) => {
   const o = await chatOffice(await fakeLlm())
   const { actor, q, first, workers, runId, callId } = await askedOnce(o)
   // Its answer's reply never reached the actor (the office died, or the reply was lost).

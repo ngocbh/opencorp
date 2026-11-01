@@ -564,9 +564,10 @@ test("a refused model ask user is the tool result and a refused ask node or a fa
   const refused = await rejection(asking.invoke("ask_user", { question: "" }, { callId: "r1/reply/1/0" }))
   expect(isReportedToolError(refused)).toBe(true)
   expect((refused as Error).message).toBe("error: ask_user question is blank: write the question to ask the user")
-  const node = await rejection(asking.invokeTrusted("ask", { prompt: "", nodeId: "sop#0/ask" }, { callId: "r1/sop#0/ask" }))
+  const nodeCall = { prompt: "", nodeId: "sop#0/ask" }
+  const node = await rejection(asking.invokeTrusted("ask", nodeCall, { callId: "r1/sop#0/ask" }))
   expect(isReportedToolError(node)).toBe(false)
-  expect((node as Error).message).toBe("ask_user failed: ask_user question is blank: write the question to ask the user")
+  expect((node as Error).message).toBe(`ask_user failed: ${String(reply.message)}`)
   reply = { error: "failed", message: "store is down" }
   const failed = await rejection(asking.invoke("ask_user", { question: "Go?" }, { callId: "r1/reply/1/1" }))
   expect(isReportedToolError(failed)).toBe(false)

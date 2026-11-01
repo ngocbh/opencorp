@@ -615,7 +615,8 @@ export class SessionActor implements LiveCalls {
       if (question === undefined || question.session_id !== this.sessionId) {
         throw new HarnessError(404, "not_found", `no question ${questionId}`)
       }
-      const asked = question.run_id === this.#runId && (question.source === "ask_user" || question.source === "ask_manager")
+      const model = question.source === "ask_user" || question.source === "ask_manager"
+      const asked = model && question.run_id === this.#runId
       // End's interrupt closes the call, so the answer would never reach it.
       if (asked && (this.#ending || this.#session().status === "ending")) {
         throw new HarnessError(409, "ending", "the session is ending")
@@ -654,8 +655,8 @@ export class SessionActor implements LiveCalls {
   /** Throws `422 too_large` when `value`, `question`'s answer of `kind` by `answerer`, makes a result over
    *  `MAX_ANSWER_BYTES`: yian would refuse the `complete`. */
   #checkSize(question: QuestionRecord, value: unknown, kind: AnswerKind, answerer: string | null): void {
-    const answered = { ...question, status: "answered" as const, answer: value, answer_kind: kind, answered_by: answerer }
-    const output = formatAnswer(answered, this.#ctx.answers.carried(question))
+    const answered = { ...question, answer: value, answer_kind: kind, answered_by: answerer }
+    const output = formatAnswer({ ...answered, status: "answered" }, this.#ctx.answers.carried(question))
     if (Buffer.byteLength(JSON.stringify(output) ?? "") > MAX_ANSWER_BYTES) {
       throw new HarnessError(422, "too_large", "the answer is too large")
     }
