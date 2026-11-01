@@ -43,7 +43,7 @@ test("the fixture's /api/login: one 401 for every failure, 429 with Retry-After,
   await request.post("/__fixture/set", { data: { login: { retryAfter: null, busy: false } } })
   const ok = await login({ handle: "ngocbh", password: "correct horse", label: "Chrome on Mac" })
   expect(ok.status()).toBe(200)
-  expect(ok.headers()["set-cookie"]).toMatch(/^opencorp_hq_\d+=fixture; HttpOnly; SameSite=Strict; Path=\/; Max-Age=2592000/)
+  expect(ok.headers()["set-cookie"]).toMatch(/^opencorp_hq_\d+_[0-9a-f]{32}=fixture; HttpOnly; SameSite=Strict; Path=\/; Max-Age=2592000/)
   expect(await ok.json()).toMatchObject({ person: "ngocbh", via: "login", issued_by: "ngocbh", label: "Chrome on Mac" })
   expect((await request.get("/api/company")).status()).toBe(200)
   const log = await (await request.get("/__fixture/log")).json()

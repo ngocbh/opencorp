@@ -4,6 +4,8 @@ import fs from "node:fs"
 import type { IncomingMessage } from "node:http"
 import path from "node:path"
 import { HttpError } from "../daemon/http.ts"
+import { OfficeStartError, messageOf } from "../daemon/sockets.ts"
+import { replaceFile } from "../secrets.ts"
 import { header, isApi, requestPath } from "./guard.ts"
 import type { BrowserSessions, Who } from "./sessions.ts"
 
@@ -28,29 +30,56 @@ export const COOKIE_KEY_FILE = "hq-cookie-key"
 const KEY = /^[0-9a-f]{32}$/
 
 /**
- * The office's cookie key, from `officeDir/hq-cookie-key`; a fresh random one, written there (mode 0600), when the
- * file is missing or doesn't hold one. The key is part of the session cookie's name, so a page or server on another
- * port of this host, which can neither read an HttpOnly cookie's name nor HQ's replies, can't name HQ's cookie:
- * it can't shadow it with a same-named one at a deeper path, a nameless `=name=value` one, or a `Set-Cookie`.
+ * The office's cookie key, from `officeDir/hq-cookie-key`. The key is part of the session cookie's name, so a page on
+ * another port of this host, whose script can neither read an HttpOnly cookie's name nor HQ's replies, can't name
+ * HQ's cookie: it can't shadow it with a same-named one at a deeper path or a nameless `=name=value` one. (A server
+ * on another port gets the whole Cookie header, the session included, so the key doesn't stop it.)
+ *
+ * A missing file, or one that isn't a regular file private to this user (mode 0600) holding a key, is replaced by a
+ * fresh random key, written atomically; replacing a file that was there signs every browser out, and is logged
+ * through `log`. Throws `OfficeStartError` when the file can't be written.
  */
-export function cookieKey(officeDir: string): string {
+export function cookieKey(officeDir: string, log: (line: string) => void = () => {}): string {
   const file = path.join(officeDir, COOKIE_KEY_FILE)
-  try {
-    const key = fs.readFileSync(file, "utf8").trim()
-    if (KEY.test(key)) return key
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e
-  }
+  const why = readKey(file)
+  if (typeof why === "object") return why.key
   const key = randomBytes(16).toString("hex")
-  fs.mkdirSync(officeDir, { recursive: true, mode: 0o700 })
-  fs.writeFileSync(file, `${key}\n`, { mode: 0o600 })
-  fs.chmodSync(file, 0o600)
+  try {
+    fs.mkdirSync(officeDir, { recursive: true, mode: 0o700 })
+    replaceFile(officeDir, COOKIE_KEY_FILE, `${key}\n`)
+  } catch (error) {
+    throw new OfficeStartError(`can't write HQ's cookie key ${file}: ${messageOf(error)}`)
+  }
+  if (why !== "missing") log(`HQ's cookie key ${file} ${why}; made a new one, so every browser signs in again`)
   return key
+}
+
+/** The key in `file`, or why there's none: "missing", or what is wrong with the file. */
+function readKey(file: string): { key: string } | string {
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
+  let fd: number
+  try {
+    // O_NONBLOCK so a FIFO there can't hang the open; fstat then refuses it.
+    fd = fs.openSync(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return code === "ENOENT" ? "missing" : `can't be opened (${code})`
+  }
+  try {
+    const st = fs.fstatSync(fd)
+    if (!st.isFile() || st.uid !== process.geteuid!() || st.mode & 0o077) return "isn't a private file (mode 0600)"
+    const key = fs.readFileSync(fd, "utf8").trim()
+    return KEY.test(key) ? { key } : "doesn't hold a key"
+  } catch (error) {
+    return `can't be read (${(error as NodeJS.ErrnoException).code})`
+  } finally {
+    fs.closeSync(fd)
+  }
 }
 
 /** `opencorp_hq_<port>_<key>`, the port being the Host header's (the whole value without a colon) and `key` the
  *  office's cookie key (`cookieKey`): cookies ignore ports, so the port tells HQs on one host apart, and the key keeps
- *  the name unguessable from other ports. */
+ *  the name unguessable to pages on other ports. */
 export function cookieName(req: IncomingMessage, key: string): string {
   const host = header(req, "host") ?? ""
   return `opencorp_hq_${host.slice(host.lastIndexOf(":") + 1)}_${key}`

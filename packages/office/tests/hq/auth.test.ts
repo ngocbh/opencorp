@@ -1,10 +1,13 @@
 /** HQ's session check on /api: the open requests, the cookie named for the port, and the 401 without a session. */
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import type { IncomingMessage } from "node:http"
 import path from "node:path"
+import { inspect } from "node:util"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { newToken } from "../../src/auth/tokens.ts"
 import { HttpError } from "../../src/daemon/http.ts"
+import { OfficeStartError } from "../../src/daemon/sockets.ts"
 import { COOKIE_KEY_FILE, SIGN_IN, browserAuth, cookieKey } from "../../src/hq/auth.ts"
 import { Hq } from "../../src/hq/core.ts"
 import type { BrowserSessions, Who } from "../../src/hq/sessions.ts"
@@ -96,18 +99,55 @@ test("only the first cookie header counts", async () => {
   expect(s.asked).toEqual([undefined])
 })
 
-test("the cookie key is random, kept in the office dir, and replaced when unreadable", () => {
+test("the cookie key is random and kept in the office dir", () => {
   const dir = tempDir()
-  const key = cookieKey(dir)
+  const lines: string[] = []
+  const key = cookieKey(dir, (line) => lines.push(line))
   expect(key).toMatch(/^[0-9a-f]{32}$/)
-  const file = path.join(dir, COOKIE_KEY_FILE)
-  expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+  expect(fs.statSync(path.join(dir, COOKIE_KEY_FILE)).mode & 0o777).toBe(0o600)
   expect(cookieKey(dir)).toBe(key)
   expect(cookieKey(tempDir())).not.toBe(key)
-  fs.writeFileSync(file, "opencorp_hq\n")
-  const fresh = cookieKey(dir)
-  expect(fresh).toMatch(/^[0-9a-f]{32}$/)
-  expect(fs.readFileSync(file, "utf8").trim()).toBe(fresh)
+  expect(lines).toEqual([])
+})
+
+test("a cookie key file that isnt a private key is replaced and logged", () => {
+  const outside = path.join(tempDir(), "elsewhere")
+  fs.writeFileSync(outside, "keep me\n")
+  const plant: [string, (file: string) => void][] = [
+    ["doesn't hold a key", (file) => fs.writeFileSync(file, "opencorp_hq\n", { mode: 0o600 })],
+    ["isn't a private file", (file) => fs.writeFileSync(file, `${"a".repeat(32)}\n`, { mode: 0o644 })],
+    ["isn't a private file", (file) => spawnSync("mkfifo", ["-m", "600", file])],
+    ["can't be opened (ELOOP)", (file) => fs.symlinkSync(outside, file)],
+  ]
+  for (const [why, make] of plant) {
+    const dir = tempDir()
+    const file = path.join(dir, COOKIE_KEY_FILE)
+    make(file)
+    const lines: string[] = []
+    const key = cookieKey(dir, (line) => lines.push(line))
+    expect(key).not.toBe("a".repeat(32))
+    const st = fs.lstatSync(file)
+    expect([st.isFile(), st.mode & 0o777]).toEqual([true, 0o600])
+    expect(fs.readFileSync(file, "utf8")).toBe(`${key}\n`)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain(why)
+    expect(lines[0]).not.toContain(key)
+  }
+  expect(fs.readFileSync(outside, "utf8")).toBe("keep me\n")
+})
+
+test("a cookie key that cant be written stops the office with a reason", () => {
+  const dir = tempDir()
+  fs.mkdirSync(path.join(dir, COOKIE_KEY_FILE))
+  fs.writeFileSync(path.join(dir, COOKIE_KEY_FILE, "x"), "")
+  expect(() => cookieKey(dir)).toThrow(OfficeStartError)
+  expect(() => cookieKey(dir)).toThrow(`can't write HQ's cookie key ${path.join(dir, COOKIE_KEY_FILE)}`)
+})
+
+test("inspecting hq doesnt show the cookie key", async () => {
+  const hq = await makeHq(makeOffice())
+  expect(inspect(hq, { depth: 0 })).not.toContain(hq.cookieKey)
+  expect(Object.keys(hq)).not.toContain("cookieKey")
 })
 
 test("hq keeps its cookie name across restarts", async () => {
