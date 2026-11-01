@@ -500,3 +500,33 @@ test("while a side message is on its way, Esc interrupts and Ctrl+C asks to leav
     office.stop()
   }
 })
+
+test("a side message shows at once, and the office's message replaces it", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const side = { ...s, id: office.nextId(), kind: "side" as const, status: "busy" as const }
+  office.state.sessions.push(side)
+  office.state.messages[side.id] = []
+  say(office, side.id, "Explaining")
+  office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"], side_session_id: side.id })
+  const count = (f: string, text: string) => f.split(text).length - 1
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh · busy") && f.includes("Explaining"))
+    // The office takes the send only once released, so nothing of it is published until then.
+    const release = office.hold("POST /sessions/:id/prompt")
+    await app.input.typeText("why now?")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("┆") && count(f, "why now?") === 2)
+    release()
+    await app.until((f) => !f.includes("┆") && count(f, "why now?") === 1)
+    for (let i = 0; i < 10; i++) await app.setup.renderOnce()
+    expect(count(app.frame(), "why now?")).toBe(1)
+    expect(office.state.messages[side.id].filter((m) => m.role === "user")).toHaveLength(1)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
