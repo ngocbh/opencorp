@@ -225,6 +225,17 @@ test("offboard with an identity the company doesnt list skips the device", async
   expect(subjects(paths.company)).toEqual(["init: create the company"])
 }, 30_000)
 
+test("offboard with an identity it can't read skips the device", async () => {
+  const dir = tempDir()
+  const paths = await office(path.join(dir, "home"))
+  fs.chmodSync(path.join(paths.home, "identity.json"), 0o644)
+  const ask = new Script()
+  await offboard(paths.home, ask, { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+  expect(ask.seen.some((line) => line.includes("from @me in the company repo"))).toBe(false)
+  expect(devices(paths)).toEqual([deviceName()])
+  expect(fs.existsSync(path.join(paths.home, "identity.json"))).toBe(false)
+}, 30_000)
+
 test("offboard uninstalls a launchd office through the host", async () => {
   const dir = tempDir()
   const paths = await office(path.join(dir, "home"))
