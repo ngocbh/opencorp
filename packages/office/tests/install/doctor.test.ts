@@ -6,6 +6,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
+import { openSqlite } from "@ngocbh/yian/platform"
 import { expect, onTestFinished, test } from "bun:test"
 import { Identity, identityPath, readIdentity, writeIdentity } from "../../src/auth/identity.ts"
 import { newToken } from "../../src/auth/tokens.ts"
@@ -21,6 +22,7 @@ import { SET_UP, setupConnectionFile } from "../../src/install/onboard.ts"
 import * as systemd from "../../src/install/systemd.ts"
 import { helperCommand } from "../../src/platform.ts"
 import { writePrivate } from "../../src/secrets.ts"
+import { latestVersion } from "../../src/store/migrate.ts"
 import { Store } from "../../src/store/store.ts"
 import { git } from "../company/helpers.ts"
 import { CEO, giveDevice, makeOffice, served } from "../daemon/helpers.ts"
@@ -1703,14 +1705,59 @@ test("a stopped offices store is read without its wal files", async () => {
   expect(byName(await runChecks(dir, paths, { environ })).folders).toEqual(expected)
 })
 
-test("a store doctor cant read warns on the folders line", async () => {
+const MOVE_ASIDE =
+  "move it aside (the office then starts with an empty store and its records are lost) or restore it from a backup"
+
+test("a store that isnt a database fails its own line and has no folders line", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)
   fs.writeFileSync(paths.store, "not a database ".repeat(100))
   const store = new OfficePaths(launchFor(dir, paths).home).store
-  expect(byName(await runChecks(dir, paths)).folders).toEqual({
-    name: "folders",
-    status: "warn",
-    detail: `can't read the worked folders in ${store}: SQLITE_NOTADB`,
+  const found = await runChecks(dir, paths)
+  expect(byName(found).store).toEqual({
+    name: "store",
+    status: "fail",
+    detail: `the store ${store} isn't a SQLite database (SQLITE_NOTADB); ${MOVE_ASIDE}`,
+  })
+  expect(byName(found).folders).toBeUndefined()
+  expect(doctor.exitCode(found)).toBe(1)
+})
+
+test("an office without a store has no store line", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  expect(byName(await runChecks(dir, paths)).store).toBeUndefined()
+})
+
+test("a store that is a symlink fails and its target is never opened", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const fifo = path.join(dir, "fifo")
+  execFileSync("mkfifo", [fifo])
+  fs.symlinkSync(fifo, paths.store)
+  const store = new OfficePaths(launchFor(dir, paths).home).store
+  expect(byName(await runChecks(dir, paths)).store).toEqual({
+    name: "store",
+    status: "fail",
+    detail: `store file ${store} is not a regular file; ${MOVE_ASIDE}`,
   })
 })
+
+test("a store newer than the code fails with both versions and a good one is ok", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  storeWith(paths)
+  const store = new OfficePaths(launchFor(dir, paths).home).store
+  expect(byName(await runChecks(dir, paths)).store).toEqual({
+    name: "store",
+    status: "ok",
+    detail: `${store} (schema version ${latestVersion()})`,
+  })
+  const db = openSqlite(paths.store)
+  db.exec(`PRAGMA user_version = ${latestVersion() + 1}`)
+  db.close()
+  const got = byName(await runChecks(dir, paths)).store!
+  expect(got.status).toBe("fail")
+  expect(got.detail).toContain(`store is at version ${latestVersion() + 1}, newer than this code (${latestVersion()})`)
+})
+

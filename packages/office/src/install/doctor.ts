@@ -3,9 +3,9 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { type HqStatus, OfficeInfo } from "@opencorp/protocol"
+import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
-import { FileLockError, openSqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
+import { FileLockError, openSqlite, type Sqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
 import { type Identity, identityPath, readIdentity } from "../auth/identity.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
 import type { RepoIssue } from "../company/issues.ts"
@@ -21,6 +21,9 @@ import { selfCommand } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
 import { checkWorkspace, type OfficePaths as Guards, SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
 import { fsHelper, run } from "../sandbox/run.ts"
+import { latestVersion, newerStore, userVersion } from "../store/migrate.ts"
+import { storeProblem } from "../store/problem.ts"
+import { StoreError } from "../store/store.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import * as fallback from "./fallback.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, runCommand, which } from "./launch.ts"
@@ -725,28 +728,73 @@ export async function sandboxProblem(officeHome: string): Promise<string | null>
   }
 }
 
-/** Every folder in the `worked_folders` table of the store at `store`, sorted, read without writing. */
-function workedFolders(store: string): string[] {
-  const read = (readonly: boolean) => {
+/**
+ * `read` on the store at `store`, opened without migrating it: read-only, or read-write when that can't open it. A
+ * WAL store can't be opened read-only without its -wal and -shm files, which SQLite deletes when the office closes
+ * it; the read-write open makes them again, private like the store. `read` only reads, and the store is never
+ * migrated: a doctor newer than the daemon must not change its schema under it.
+ */
+function readStore<T>(store: string, read: (db: Sqlite) => T): T {
+  const open = (readonly: boolean) => {
     const db = openSqlite(store, { readonly })
     try {
-      return db
-        .prepare("SELECT DISTINCT cwd FROM worked_folders ORDER BY cwd")
-        .all()
-        .map((row) => String(row.cwd))
+      return read(db)
     } finally {
       db.close()
     }
   }
+  const old = process.umask(0o077)
   try {
-    return read(true)
-  } catch (error) {
-    if (((sqliteErrorCode(error) ?? 0) & 0xff) !== SQLITE_CANTOPEN) throw error
-    // A WAL store can't be read read-only without its -wal and -shm files, which SQLite deletes when the office
-    // closes it. A read-write open on the existing file makes them again; the query still only reads, and the store
-    // is never migrated: a doctor newer than the daemon must not change its schema under it.
-    return read(false)
+    try {
+      return open(true)
+    } catch (error) {
+      if (((sqliteErrorCode(error) ?? 0) & 0xff) !== SQLITE_CANTOPEN) throw error
+      return open(false)
+    }
+  } finally {
+    process.umask(old)
   }
+}
+
+/** Every folder in the `worked_folders` table of the store at `store`, sorted, read without writing. */
+function workedFolders(store: string): string[] {
+  return readStore(store, (db) =>
+    db
+      .prepare("SELECT DISTINCT cwd FROM worked_folders ORDER BY cwd")
+      .all()
+      .map((row) => String(row.cwd)),
+  )
+}
+
+/**
+ * Whether the store at `store` opens and reads as this code's (`storeProblem` says why not, as the daemon's start
+ * would); null when there is no store yet. The path is looked at without following a symlink, and only the schema
+ * is read: no integrity check, which would read the whole file.
+ */
+export function storeCheck(store: string, lstat: (p: string) => fs.Stats): Check | null {
+  let st: fs.Stats
+  try {
+    st = lstat(store)
+  } catch (error) {
+    const code = errnoCode(error)
+    if (code === "ENOENT") return null
+    if (code === undefined) throw error
+    return { name: "store", status: "fail", detail: `can't read ${store}: ${strerror(error) ?? code}` }
+  }
+  let version: number
+  try {
+    if (!st.isFile()) throw new StoreError(`store file ${store} is not a regular file`)
+    version = readStore(store, (db) => {
+      db.prepare("SELECT count(*) FROM sqlite_master").get()
+      return userVersion(db)
+    })
+    if (version > latestVersion()) throw newerStore(version, latestVersion())
+  } catch (error) {
+    const problem = storeProblem(store, error)
+    const detail = problem ?? `can't read ${store}: ${errnoCode(error) ?? nameOf(error)}`
+    return { name: "store", status: "fail", detail }
+  }
+  return { name: "store", status: "ok", detail: `${store} (schema version ${version})` }
 }
 
 /**
@@ -886,13 +934,19 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
       })
     }
   }
+  const store = storeCheck(paths.store, lstat)
+  if (store !== null) found.push(store)
   const problem = await probe(paths.home)
   found.push({ name: "sandbox", status: problem ? "fail" : "ok", detail: problem || "sandboxed commands run" })
-  const folders = foldersCheck(
-    paths.store,
-    guards ?? workspaceGuards(resolveTools(run.env), run.env, command, [host.userHome, paths.home, os.tmpdir()]),
-    host.userHome,
-  )
+  // A store that failed its own check has no worked folders to read.
+  const folders =
+    store?.status === "fail"
+      ? null
+      : foldersCheck(
+          paths.store,
+          guards ?? workspaceGuards(resolveTools(run.env), run.env, command, [host.userHome, paths.home, os.tmpdir()]),
+          host.userHome,
+        )
   if (folders !== null) found.push(folders)
   // run.env is the environment an office set up or started from this shell gets, which can differ from the running
   // daemon's (a launchd or systemd office keeps the one `opencorp onboard` wrote into its service file).

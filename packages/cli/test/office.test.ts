@@ -132,7 +132,7 @@ test("a missing home folder is one line and exit 1", async () => {
   expect(calls).toEqual([])
 })
 
-test("start, stop, restart, doctor and offboard run the install with their flags and return its exit code", async () => {
+test("start, stop, restart, doctor and offboard run the install with their flags and return its code", async () => {
   const runs = [
     { cmd: "start", run: start, code: 3, flags: ["--home", "/h"] },
     { cmd: "stop", run: stop, code: 0, flags: ["--home", "/h"] },

@@ -20,6 +20,7 @@ import { Monitor } from "../perm/monitor.ts"
 import { selfCommand } from "../platform.ts"
 import { Inspections, YianRuns, sweep } from "../runs/records.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
+import { storeProblem } from "../store/problem.ts"
 import { Store } from "../store/store.ts"
 import { reap } from "../worker/reaper.ts"
 import { WorkerRegistry } from "../worker/spawn.ts"
@@ -251,6 +252,18 @@ async function sweepOnStart(office: Office, log: ReturnType<typeof officeLogger>
   }
 }
 
+/** `step`'s result; a store trouble it throws (`storeProblem`) becomes an `OfficeStartError` that names it, so the
+ *  start says why instead of logging a crash with only the error's type. */
+function openStore<T>(file: string, step: () => T): T {
+  try {
+    return step()
+  } catch (error) {
+    const problem = storeProblem(file, error)
+    if (problem === null) throw error
+    throw new OfficeStartError(problem)
+  }
+}
+
 /** Opens the store and the company clone (run by `tools.git`), kills the processes an earlier office left, and
  *  assembles the office with its tools, its workspace guards, its worker registry (each worker's exit updates the
  *  run index; the one-reply model check runs over it), its run transcript and live relay (for the session actors;
@@ -259,20 +272,21 @@ async function sweepOnStart(office: Office, log: ReturnType<typeof officeLogger>
  *  first (the Codex sessions, then the workers). On start: the run index brought up to date and the start sweep,
  *  then the harness's restore (before the extensions' start callbacks), then a model warm-up (not awaited) and the
  *  HEAD watcher; on stop, the sign-ins still waiting are cancelled and the watcher stops. `OfficeStartError` when
- *  `tools` has no git. */
+ *  `tools` has no git, or the store can't be opened or read (`storeProblem`). */
 export function buildOffice(
   paths: OfficePaths,
   { tools, guards, write }: { tools: Tools; guards: SandboxOfficePaths; write: Write },
 ): Office {
   if (tools.git === undefined) throw new OfficeStartError(NO_GIT)
   const log = officeLogger(write)
-  const store = new Store(paths.store, { log: log("ERROR", "opencorp.store") })
+  const store = openStore(paths.store, () => new Store(paths.store, { log: log("ERROR", "opencorp.store") }))
   try {
     const companyGit = new CompanyGit(paths.company, paths.worktrees, {
       git: tools.git,
       log: log("WARNING", "opencorp.company.git"),
     })
-    reap(store)
+    // A store that opened can still fail its first queries (a corrupt page), and the reap runs them first.
+    openStore(paths.store, () => reap(store))
     const workers = new WorkerRegistry(store, {
       log: (level, line) => log(level, "opencorp.worker.spawn")(line),
       // update never rejects.

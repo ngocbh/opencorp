@@ -6,7 +6,7 @@ import net from "node:net"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
-import { isLocked } from "@ngocbh/yian/platform"
+import { isLocked, openSqlite } from "@ngocbh/yian/platform"
 import { readRunIndex, updateRunIndex } from "@ngocbh/yian/run"
 import { Database } from "bun:sqlite"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
@@ -37,6 +37,7 @@ import { launch as officeLaunch, resolveHome } from "../../src/install/launch.ts
 import { args, killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { OFFICE_STOPPED } from "../../src/runs/outcomes.ts"
+import { latestVersion } from "../../src/store/migrate.ts"
 import { Store, newId } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { EXIT_GRACE_MS, RegistryClosed, WorkerRegistry } from "../../src/worker/spawn.ts"
@@ -194,6 +195,71 @@ test("a directory at the socket path exits 1", async () => {
   expect(await inProcess(() => main(["--home", dir], { write: out.write }))).toBe(1)
   expect(out.text()).toContain(`${paths.socket} exists and is not a socket`)
   await released(paths)
+})
+
+/** Runs the daemon's start on `dir` and returns its exit code and what it wrote. */
+async function startOn(dir: string): Promise<{ code: number; text: string }> {
+  const out = collect()
+  const code = await inProcess(() => main(["--home", dir], { write: out.write }))
+  return { code, text: out.text() }
+}
+
+const MOVE_ASIDE =
+  "move it aside (the office then starts with an empty store and its records are lost) or restore it from a backup"
+
+test("a store that isnt a database stops the start and says so without a crash", async () => {
+  const dir = home()
+  const paths = new OfficePaths(dir)
+  fs.writeFileSync(paths.store, Buffer.alloc(8192, 0x5a))
+  const got = await startOn(dir)
+  expect(got.code).toBe(1)
+  expect(got.text).toContain(
+    `opencorp office: the store ${paths.store} isn't a SQLite database (SQLITE_NOTADB); ${MOVE_ASIDE}\n`,
+  )
+  expect(got.text).not.toContain("office crashed")
+  expect(got.text).not.toContain("file is not a database")
+  await released(paths)
+})
+
+test("a directory at the store path stops the start and says so", async () => {
+  const dir = home()
+  const paths = new OfficePaths(dir)
+  fs.mkdirSync(paths.store)
+  const got = await startOn(dir)
+  expect(got.code).toBe(1)
+  expect(got.text).toContain(`opencorp office: store file ${paths.store} is not a regular file; ${MOVE_ASIDE}\n`)
+  expect(got.text).not.toContain("office crashed")
+})
+
+test("a store newer than the code stops the start with both versions", async () => {
+  const dir = home()
+  const paths = new OfficePaths(dir)
+  new Store(paths.store).close()
+  const db = openSqlite(paths.store)
+  db.exec(`PRAGMA user_version = ${latestVersion() + 1}`)
+  db.close()
+  const got = await startOn(dir)
+  expect(got.code).toBe(1)
+  expect(got.text).toContain(
+    `opencorp office: the store ${paths.store}: store is at version ${latestVersion() + 1}, newer than this code` +
+      ` (${latestVersion()}); run a newer opencorp or restore a backup\n`,
+  )
+})
+
+test.skipIf(process.getuid?.() === 0)("a store it may not read is an os error not a crash", async () => {
+  const dir = home()
+  const paths = new OfficePaths(dir)
+  new Store(paths.store).close()
+  fs.chmodSync(paths.store, 0o000)
+  let got: { code: number; text: string }
+  try {
+    got = await startOn(dir)
+  } finally {
+    fs.chmodSync(paths.store, 0o600)
+  }
+  expect(got.code).toBe(1)
+  expect(got.text).toContain(`opencorp office: can't open the store ${paths.store}: Permission denied\n`)
+  expect(got.text).not.toContain("move it aside")
 })
 
 test("missing company repo exits 1", async () => {
