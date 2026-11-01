@@ -791,6 +791,31 @@ test("a switch while ask user waits starts the fresh run and the answer is refus
   expect(fake.requests().at(-1)!.model).toBe("stub-5")
 })
 
+test("a reply switched while it runs that then asks has its question go stale and the answer refused", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+  fake.script({ ...ASK_USER, hold: 30 }, { content: "on five" })
+  const s = await start(h)
+  await h.harness.prompt(s.id, "hi")
+  await fake.waitForRequests(1)
+  await replyRunning(h)
+  const first = h.store.getSession(s.id)!.run_ids[0]!
+  await h.harness.setModel(s.id, "second", "stub-5")
+  fake.release()
+  // The asking run call ends after the switch, so the run is replaced and its question goes stale at once.
+  const asked = () => h.store.listQuestions({ sessionId: s.id, source: "ask_user" })
+  await waitFor(() => asked()[0]?.status === "stale", { what: "the question to go stale" })
+  const q = asked()[0]!
+  expect(fake.requests().map((r) => r.model)).toEqual(["stub"])
+  expect(h.store.getRun(first)?.endReason).toBe(NEW_MODEL)
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  await waitFor(() => status(h, s.id) === "idle", { what: "the fresh run at its turn" })
+  const refused = await rejection(h.harness.answer(q.id, "A", "option"))
+  expect([refused.status, refused.code]).toEqual([409, "not_open"])
+  expect(await tell(h, s.id, "b")).toBe("on five")
+  expect(fake.requests().at(-1)!.model).toBe("stub-5")
+})
+
 test.each([false, true])(
   "a switch back after a refused answer doesnt hang the chat [restart %p]",
   async (restart) => {
