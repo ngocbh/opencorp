@@ -685,7 +685,12 @@ test.skipIf(!sandboxAvailable())("the helper reads and writes inside the workspa
   expect(await helperTool(policy, { op: "read_file", path: "a.txt" })).toEqual(ok("yz"))
   // A top path the sandbox denies is an error, not "(no matches)".
   expect((await helperTool(policy, { op: "search", pattern: "secret", path: "../beside.txt" })).ok).toBe(false)
-  expect((await helperTool(policy, { op: "search", pattern: "secret", path: ".." })).ok).toBe(false)
+  // Seatbelt denies reading `..`; under bwrap `..` is a tmpfs folder holding only the mount points, so
+  // the search succeeds there but sees nothing outside the workspace.
+  const above = await helperTool(policy, { op: "search", pattern: "secret", path: ".." })
+  if (process.platform === "darwin") expect(above.ok).toBe(false)
+  expect(JSON.stringify(above)).not.toContain("secret")
+  expect(JSON.stringify(above)).not.toContain("beside")
 })
 
 test.skipIf(!sandboxAvailable())("the helper does not run under the shell profile", async () => {
