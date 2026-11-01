@@ -26,7 +26,7 @@ import { blobId } from "../../src/profile/store.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../../src/sandbox/policy.ts"
 import { Store, newId } from "../../src/store/store.ts"
 import { git, makeCompany } from "../company/helpers.ts"
-import { shortDir, tempDir } from "../helpers.ts"
+import { shortDir, tempDir, waitFor } from "../helpers.ts"
 import { chatLog } from "../runs/helpers.ts"
 import { session } from "../store/helpers.ts"
 
@@ -563,4 +563,63 @@ export class Conn {
   closed({ timeout = 9000 } = {}): Promise<boolean> {
     return this.until(() => this.ended, performance.now() + timeout)
   }
+}
+
+/** The bytes a unix-socket server can write to a client that never reads before writes stop being taken: it writes
+ *  `chunk` until `write()` returns false, waits up to 200 ms for `drain`, and repeats until no `drain` comes. */
+export async function socketCapacity(chunk: Buffer): Promise<number> {
+  const where = path.join(shortDir(), "s")
+  const server = net.createServer()
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(where, resolve))
+  const accepted = new Promise<net.Socket>((resolve) => server.once("connection", resolve))
+  const client = net.connect(where)
+  client.pause()
+  let writer: net.Socket | undefined
+  try {
+    await new Promise<void>((resolve, reject) => client.once("connect", resolve).once("error", reject))
+    writer = await accepted
+    let written = 0
+    for (;;) {
+      let more = true
+      while (more) {
+        if (written > 2 ** 30) throw new Error("a paused client took over 1 GiB")
+        more = writer.write(chunk)
+        written += chunk.length
+      }
+      const socket = writer
+      const drained = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => {
+          socket.off("drain", onDrain)
+          resolve(false)
+        }, 200)
+        const onDrain = () => {
+          clearTimeout(timer)
+          resolve(true)
+        }
+        socket.once("drain", onDrain)
+      })
+      if (!drained) return written
+    }
+  } finally {
+    writer?.destroy()
+    client.destroy()
+    server.close()
+  }
+}
+
+/** Resolves once `count` has held for 200 ms: the buffers between a streamed body and a paused client are full. */
+export async function stopsPulling(count: () => number): Promise<void> {
+  let last = -1
+  let since = performance.now()
+  await waitFor(
+    () => {
+      if (count() !== last) {
+        last = count()
+        since = performance.now()
+        return false
+      }
+      return last > 0 && performance.now() - since >= 200
+    },
+    { timeout: 9000, what: "the body to stop being pulled" },
+  )
 }

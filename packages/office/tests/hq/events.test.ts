@@ -1,14 +1,27 @@
 /** HQ's /api/events: the /events contract, HQ's event types only, and the session checked on every frame. */
-import { expect, setDefaultTimeout, test } from "bun:test"
+import net from "node:net"
+import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { Event, type LiveEvent, now } from "@opencorp/protocol"
 import { hashPassword } from "../../src/auth/passwords.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { HQ_EVENT_TYPES } from "../../src/hq/api.ts"
 import type { Hq } from "../../src/hq/core.ts"
-import { TTL } from "../../src/hq/sessions.ts"
+import { STREAMS_PER_SESSION, TTL } from "../../src/hq/sessions.ts"
 import { newId } from "../../src/store/store.ts"
 import { waitFor } from "../helpers.ts"
-import { CEO, type Frame, ends, frames, makeOffice, take, within } from "../daemon/helpers.ts"
+import {
+  CEO,
+  type Frame,
+  ends,
+  frames,
+  joinedRun,
+  makeOffice,
+  socketCapacity,
+  stopsPulling,
+  storedRun,
+  take,
+  within,
+} from "../daemon/helpers.ts"
 import { type HqClient, handEdit, hqClient, makeHq, pairCode } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -40,6 +53,44 @@ async function served(): Promise<{ office: Office; hq: Hq; client: HqClient; log
 /** Publishes an HQ event every 10 ms, so the stream always has a frame to send; clear the returned timer. */
 function busy(office: Office): ReturnType<typeof setInterval> {
   return setInterval(() => office.bus.publishMeta(meta("session.updated", "S", { id: "S" })), 10)
+}
+
+/** A raw connection asking for `target` with the client's cookies, paused once the head arrives, and what it got
+ *  once it read again: `closed()` resumes it and resolves with everything it then received, at the close. */
+async function paused(client: HqClient, target: string): Promise<{ socket: net.Socket; closed: () => Promise<string> }> {
+  const socket = net.connect(client.sock)
+  onTestFinished(() => socket.destroy())
+  socket.on("error", () => {})
+  const cookie = [...client.cookies].map(([name, value]) => `${name}=${value}`).join("; ")
+  socket.write(
+    `GET ${target} HTTP/1.1\r\nhost: 127.0.0.1:5555\r\norigin: http://127.0.0.1:5555\r\ncookie: ${cookie}\r\n` +
+      "connection: close\r\n\r\n",
+  )
+  await new Promise<void>((resolve) => socket.once("data", () => resolve()))
+  socket.pause()
+  const closed = () =>
+    new Promise<string>((resolve) => {
+      const parts: Buffer[] = []
+      socket.on("data", (part: Buffer) => parts.push(part))
+      socket.on("close", () => resolve(Buffer.concat(parts).toString()))
+      socket.resume()
+    })
+  return { socket, closed }
+}
+
+/** Leaves `/api/events` streams waiting for their paused clients: publishes large frames, paced, until `alive`, which a
+ *  stream checks before every frame, stops being called. Waited for rather than sized, since socket buffers differ by
+ *  host. */
+async function stall(office: Office, hq: Hq): Promise<void> {
+  const alive = spyOn(hq.sessions, "alive")
+  const big = "x".repeat(256 * 1024)
+  const feed = setInterval(() => office.bus.publishMeta(meta("session.updated", "S", { big })), 5)
+  try {
+    await stopsPulling(() => alive.mock.calls.length)
+  } finally {
+    clearInterval(feed)
+    alive.mockRestore()
+  }
 }
 
 /** Reads frames until `it` ends, within 5 s. */
@@ -220,4 +271,136 @@ test("an unreadable person file ends the stream but not the session", async () =
   expect((await client.get("/api/whoami")).status).toBe(401)
   handEdit(office.paths.company, CEO, { kind: "human" })
   expect((await client.get("/api/whoami")).status).toBe(200)
+})
+
+test("revoking closes a stalled events stream", async () => {
+  const { office, hq, client } = await served()
+  const sid = office.store.listHqSessions()[0]!.id
+  const stream = await paused(client, "/api/events")
+  await stall(office, hq)
+  await hq.sessions.revoke(sid)
+  // Cut while it waited for the client: the stream's last chunk never went out.
+  expect((await within(stream.closed())).endsWith("0\r\n\r\n")).toBe(false)
+  expect(hq.sessions.streams(sid)).toBe(0)
+})
+
+test("revoking closes a stalled live stream", async () => {
+  const { office, hq, client } = await served()
+  const sid = office.store.listHqSessions()[0]!.id
+  // A log far past what a paused client's socket takes (a turn is over 1000 bytes; socket buffers differ by host), so
+  // the stream waits for the client before its end.
+  const capacity = await socketCapacity(Buffer.alloc(64 * 1024))
+  const { runId } = storedRun(office, { turns: Math.max(3000, Math.ceil((2 * capacity) / 1000)) })
+  const alive = spyOn(hq.sessions, "alive")
+  onTestFinished(() => alive.mockRestore())
+  const stream = await paused(client, `/api/runs/${runId}/live`)
+  await stopsPulling(() => alive.mock.calls.length)
+  expect(hq.sessions.streams(sid)).toBe(1) // waiting for the client, not done
+  await hq.sessions.revoke(sid)
+  const got = await within(stream.closed())
+  expect(got.endsWith("0\r\n\r\n")).toBe(false)
+  expect(got.includes("event: run_end")).toBe(false)
+  await waitFor(() => hq.sessions.streams(sid) === 0, { timeout: 5000, what: "the stream to be released" })
+})
+
+test("a password change closes a stalled events stream", async () => {
+  const { office, hq, client } = await served()
+  const sid = office.store.listHqSessions()[0]!.id
+  const stream = await paused(client, "/api/events")
+  await stall(office, hq)
+  handEdit(office.paths.company, CEO, { password_hash: await hashPassword("brand new one") })
+  const sha = await office.git.readHead()
+  office.store.emit("company.updated", sha, { sha })
+  // Released only once the cut ends it: until the client reads again, nothing else can.
+  await waitFor(() => hq.sessions.streams(sid) === 0, { timeout: 5000, what: "the stream to be cut" })
+  expect((await within(stream.closed())).endsWith("0\r\n\r\n")).toBe(false)
+  expect((await client.get("/api/whoami")).status).toBe(401)
+})
+
+test("an unreadable person file closes a stalled events stream but keeps the session", async () => {
+  const { office, hq, client } = await served()
+  const sid = office.store.listHqSessions()[0]!.id
+  const stream = await paused(client, "/api/events")
+  await stall(office, hq)
+  handEdit(office.paths.company, CEO, { kind: "robot" })
+  const sha = await office.git.readHead()
+  office.store.emit("company.updated", sha, { sha })
+  // Released only once the cut ends it: until the client reads again, nothing else can.
+  await waitFor(() => hq.sessions.streams(sid) === 0, { timeout: 5000, what: "the stream to be cut" })
+  expect((await within(stream.closed())).endsWith("0\r\n\r\n")).toBe(false)
+  expect(office.store.getHqSession(sid)).toBeDefined()
+})
+
+test("a stream past the sessions cap ends its oldest", async () => {
+  const { office, hq, client } = await served()
+  const sid = office.store.listHqSessions()[0]!.id
+  // A run a worker feeds, so its live stream stays open: the cap counts it with the event streams.
+  const { runId } = joinedRun(office)
+  const first = frames(await client.stream(`/api/runs/${runId}/live`))
+  await take(first, 1)
+  const rest: AsyncIterator<Frame>[] = []
+  for (let i = 1; i < STREAMS_PER_SESSION; i++) {
+    const it = frames(await client.stream("/api/events"))
+    await take(it, 1)
+    rest.push(it)
+  }
+  expect(hq.sessions.streams(sid)).toBe(STREAMS_PER_SESSION)
+  const ninth = frames(await client.stream("/api/events"))
+  expect(await take(ninth, 1)).toEqual([["comment", null, "connected"]])
+  await drain(first)
+  expect(hq.sessions.streams(sid)).toBe(STREAMS_PER_SESSION)
+})
+
+test("a burst of streams leaves the sessions cap open", async () => {
+  const { office, hq, client } = await served()
+  const sid = office.store.listHqSessions()[0]!.id
+  const opened = await Promise.all(Array.from({ length: 12 }, () => client.stream("/api/events")))
+  expect(opened.map((res) => res.statusCode)).toEqual(Array(12).fill(200))
+  let ended = 0
+  for (const res of opened) {
+    res.on("end", () => ended++)
+    res.resume()
+  }
+  await waitFor(() => ended === 12 - STREAMS_PER_SESSION, { timeout: 5000, what: "the oldest streams to end" })
+  expect(hq.sessions.streams(sid)).toBe(STREAMS_PER_SESSION)
+})
+
+test("a client that leaves before the stream starts holds no slot", async () => {
+  const { office, hq, client } = await served()
+  const sid = office.store.listHqSessions()[0]!.id
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  const real = hq.sessions.check.bind(hq.sessions)
+  let checking!: () => void
+  const checked = new Promise<void>((resolve) => (checking = resolve))
+  hq.sessions.check = async (cookie) => {
+    checking()
+    await gate
+    return real(cookie)
+  }
+  const socket = net.connect(client.sock)
+  socket.on("error", () => {})
+  const cookie = [...client.cookies].map(([name, value]) => `${name}=${value}`).join("; ")
+  socket.write(
+    `GET /api/events HTTP/1.1\r\nhost: 127.0.0.1:5555\r\norigin: http://127.0.0.1:5555\r\ncookie: ${cookie}\r\n\r\n`,
+  )
+  await checked
+  socket.destroy()
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  const open = spyOn(hq.sessions, "open")
+  onTestFinished(() => open.mockRestore())
+  release()
+  await waitFor(() => open.mock.calls.length > 0, { timeout: 5000, what: "the handler to take a slot" })
+  expect(hq.sessions.streams(sid)).toBe(0)
+  expect(office.bus.subscriberCount).toBe(0)
+})
+
+test("a refused live stream holds no slot", async () => {
+  const { office, hq, client } = await served()
+  const sid = office.store.listHqSessions()[0]!.id
+  expect((await client.get(`/api/runs/${newId()}/live`)).status).toBe(404)
+  const { runId } = storedRun(office)
+  expect((await client.request("HEAD", `/api/runs/${runId}/live`)).status).toBe(405)
+  expect((await client.request("HEAD", "/api/events")).status).toBe(405)
+  expect(hq.sessions.streams(sid)).toBe(0)
 })

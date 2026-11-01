@@ -109,22 +109,78 @@ function last(ctx: HqContext, name: string): string | undefined {
   return ctx.query.getAll(name).at(-1)
 }
 
+/** Counts a stream against its session (`BrowserSessions.open`); returns the release to call once it ends. A client
+ *  that leaves first releases it too: the stream's body then never starts. */
+function track(ctx: HqContext, cut: AbortController): () => void {
+  const release = ctx.hq.sessions.open(ctx.session!, cut)
+  if (ctx.signal.aborted) release()
+  else ctx.signal.addEventListener("abort", release, { once: true })
+  return () => {
+    ctx.signal.removeEventListener("abort", release)
+    release()
+  }
+}
+
+/**
+ * Watches session `sid` beside a stream, on its own subscription, so a stream waiting on its client, its log or its
+ * worker still learns of each commit: aborts `cut` once the session's person no longer checks out at a new commit, or
+ * the check fails (logged as `couldn't re-check ...; ending its <what>`). Returns the stop to call once the stream
+ * ends.
+ */
+function watchSession(hq: Hq, sid: string, cut: AbortController, what: string): () => void {
+  const sub = hq.office.bus.subscribe(null, { types: ["company.updated"] })
+  let finished = false
+  void (async () => {
+    for (;;) {
+      const item = await sub.next(hq.pingMs)
+      if (item === null) {
+        // Ended from outside (the office stopping) rather than by the stop: the stream can't be watched any more.
+        if (!finished) cut.abort()
+        return
+      }
+      if (item === PING || item[1].type !== "company.updated") continue
+      const [, event] = item
+      try {
+        if (!(await hq.sessions.stillValid(sid, event.subject_id))) return cut.abort()
+      } catch (error) {
+        // The app reconnects, and its next request checks the session at HEAD again.
+        const type = errorType(error)
+        const text = `couldn't re-check HQ session ${sid} at ${event.subject_id}; ending its ${what}: ${type}`
+        hq.log(logLine("ERROR", "opencorp.hq.api", text))
+        return cut.abort()
+      }
+    }
+  })()
+  return () => {
+    finished = true
+    // Wakes the watcher, which then ends.
+    sub.end()
+  }
+}
+
 /**
  * HQ's event stream: the /events contract (`: connected`, frames, `reset`, pings) for HQ's event types.
  *
  * Every frame and ping checks the session's expiry and revocation, and each `company.updated` checks its person
- * again at the new commit; a failing check ends the stream (the app then gets 401 and shows sign-in).
+ * again at the new commit; a failing check ends the stream (the app then gets 401 and shows sign-in). `cut` ends it
+ * from outside, even while the client isn't reading: a revoke, a commit the watcher refuses, or a bus drop abort it.
+ * `done` releases its slot.
  */
-async function* hqEvents(ctx: HqContext): AsyncGenerator<string> {
+async function* hqEvents(ctx: HqContext, cut: AbortController, done: () => void): AsyncGenerator<string> {
   const { hq } = ctx
   const sid = ctx.session!
+  if (cut.signal.aborted) return done()
   // Subscribed here, on the first pull, so a reply that never starts leaves no subscription behind.
   const sub = hq.office.bus.subscribe(null, { types: HQ_EVENT_TYPES })
-  hq.sessions.register(sid, sub)
   // A generator can't be stopped from outside while it awaits `next`; ending the subscription wakes it.
   const end = () => sub.end()
   if (ctx.signal.aborted) end()
   else ctx.signal.addEventListener("abort", end, { once: true })
+  cut.signal.addEventListener("abort", end, { once: true })
+  // A drop while the client isn't reading: only the cut ends it then.
+  const dropped = () => cut.abort()
+  sub.ended.addEventListener("abort", dropped, { once: true })
+  const stopWatching = watchSession(hq, sid, cut, "stream")
   try {
     yield ": connected\n\n"
     while (hq.sessions.alive(sid)) {
@@ -139,66 +195,49 @@ async function* hqEvents(ctx: HqContext): AsyncGenerator<string> {
         continue
       }
       const [, event] = item
-      if (event.type === "company.updated") {
-        let valid: boolean
-        try {
-          valid = await hq.sessions.stillValid(sid, event.subject_id)
-        } catch (error) {
-          // The app reconnects, and its next request checks the session at HEAD again.
-          const type = errorType(error)
-          const text = `couldn't re-check HQ session ${sid} at ${event.subject_id}; ending its stream: ${type}`
-          hq.log(logLine("ERROR", "opencorp.hq.api", text))
-          return
-        }
-        if (!valid) return
-      }
+      // Checked here too, not only by the watcher, so no frame goes out after a commit the person fails: neither
+      // that commit's own frame nor those published while the watcher's check loads. A check that fails is logged
+      // by the watcher, which runs the same check.
+      if (event.type === "company.updated" && !(await hq.sessions.stillValid(sid, event.subject_id).catch(() => false)))
+        return
       yield frame(item)
     }
   } finally {
     ctx.signal.removeEventListener("abort", end)
-    hq.sessions.unregister(sid, sub)
+    cut.signal.removeEventListener("abort", end)
+    sub.ended.removeEventListener("abort", dropped)
+    stopWatching()
+    done()
     sub.close()
   }
 }
 
 /**
  * HQ's live stream of run `runId`: the /runs/{id}/live contract, ended as `hqEvents` ends its stream: when the session
- * is revoked or expires, or its person no longer checks out at a new commit.
+ * is revoked or expires, or its person no longer checks out at a new commit (`cut` aborts). `done` releases its slot.
  */
-async function* hqLive(ctx: HqContext, runId: string, log: string, after: number): AsyncGenerator<string> {
+async function* hqLive(
+  ctx: HqContext,
+  runId: string,
+  log: string,
+  after: number,
+  cut: AbortController,
+  done: () => void,
+): AsyncGenerator<string> {
   const { hq } = ctx
   const sid = ctx.session!
-  // Subscribed here, on the first pull, so a reply that never starts leaves no subscription behind.
-  const sub = hq.office.bus.subscribe(null, { types: ["company.updated"] })
-  hq.sessions.register(sid, sub)
-  const stop = new AbortController()
-  // Watches the session beside the stream, which waits on the log or the worker rather than on the bus.
-  void (async () => {
-    for (;;) {
-      const item = await sub.next(hq.pingMs)
-      if (item === null) return stop.abort()
-      if (item === PING || item[1].type !== "company.updated") continue
-      const [, event] = item
-      try {
-        if (!(await hq.sessions.stillValid(sid, event.subject_id))) return stop.abort()
-      } catch (error) {
-        const type = errorType(error)
-        const text = `couldn't re-check HQ session ${sid} at ${event.subject_id}; ending its live stream: ${type}`
-        hq.log(logLine("ERROR", "opencorp.hq.api", text))
-        return stop.abort()
-      }
-    }
-  })()
+  if (cut.signal.aborted) return done()
+  // Watched here, on the first pull, so a reply that never starts leaves no subscription behind.
+  const stopWatching = watchSession(hq, sid, cut, "live stream")
   try {
     yield* liveStream(hq.office, runId, log, after, {
-      signal: AbortSignal.any([ctx.signal, stop.signal]),
+      signal: AbortSignal.any([ctx.signal, cut.signal]),
       pingMs: hq.pingMs,
       alive: () => hq.sessions.alive(sid),
     })
   } finally {
-    hq.sessions.unregister(sid, sub)
-    // Wakes the watcher, which then ends.
-    sub.end()
+    stopWatching()
+    done()
   }
 }
 
@@ -270,10 +309,14 @@ export const ROUTES: readonly Route<HqContext>[] = [
           allow: "GET",
         })
       const { log, after } = liveTarget(ctx, params.id!)
+      // Counted from here, not from the body's first pull, so a burst of opens can't pass the cap before any starts.
+      const cut = new AbortController()
+      const done = track(ctx, cut)
       return new RawReply(
         200,
         { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
-        hqLive(ctx, params.id!, log, after),
+        hqLive(ctx, params.id!, log, after, cut, done),
+        { abort: cut.signal },
       )
     },
   },
@@ -284,14 +327,21 @@ export const ROUTES: readonly Route<HqContext>[] = [
   {
     method: "GET",
     path: "/api/events",
-    handler: (ctx) =>
-      ctx.req.method !== "GET"
-        ? errorReply(405, "method_not_allowed", `${ctx.req.method} is not allowed on /api/events`, { allow: "GET" })
-        : new RawReply(
-            200,
-            { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
-            hqEvents(ctx),
-          ),
+    handler: (ctx) => {
+      if (ctx.req.method !== "GET")
+        return errorReply(405, "method_not_allowed", `${ctx.req.method} is not allowed on /api/events`, {
+          allow: "GET",
+        })
+      // Counted from here, as the live stream is.
+      const cut = new AbortController()
+      const done = track(ctx, cut)
+      return new RawReply(
+        200,
+        { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
+        hqEvents(ctx, cut, done),
+        { abort: cut.signal },
+      )
+    },
   },
   // Spends a one-time code from a pairing link and signs this browser in. Open without a session. A local failure
   // after the code is spent burns it; run `opencorp pair` again.

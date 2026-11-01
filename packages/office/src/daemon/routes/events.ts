@@ -17,8 +17,9 @@ export function frame([kind, event]: Item): string {
   return `event: ${kind}\n${id}data: ${JSON.stringify(event)}\n\n`
 }
 
-/** The stream's chunks: `: connected`, then frames, pings and a final `reset` if the bus dropped it. */
-async function* stream(ctx: RequestContext, pingMs: number): AsyncGenerator<string> {
+/** The stream's chunks: `: connected`, then frames, pings and a final `reset` if the bus dropped it. Aborts `cut`
+ *  when the subscription is ended from outside. */
+async function* stream(ctx: RequestContext, pingMs: number, cut: AbortController): AsyncGenerator<string> {
   // Subscribed before ": connected" is sent, so a client gets every event published after it sees that line.
   // Subscribing here, on the first pull, means a reply that never starts leaves no subscription behind.
   const sub = ctx.office.bus.subscribe(ctx.query.getAll("session").at(-1) ?? null)
@@ -26,6 +27,10 @@ async function* stream(ctx: RequestContext, pingMs: number): AsyncGenerator<stri
   const end = () => sub.end()
   if (ctx.signal.aborted) end()
   else ctx.signal.addEventListener("abort", end, { once: true })
+  // Ended from outside (a drop, the office stopping) while the client isn't reading: only the cut ends it then.
+  const ended = () => cut.abort()
+  if (sub.ended.aborted) ended()
+  else sub.ended.addEventListener("abort", ended, { once: true })
   try {
     yield ": connected\n\n"
     for (;;) {
@@ -38,6 +43,7 @@ async function* stream(ctx: RequestContext, pingMs: number): AsyncGenerator<stri
     }
   } finally {
     ctx.signal.removeEventListener("abort", end)
+    sub.ended.removeEventListener("abort", ended)
     sub.close()
   }
 }
@@ -54,8 +60,8 @@ async function* stream(ctx: RequestContext, pingMs: number): AsyncGenerator<stri
  * from a `part.updated` or `message.updated` received after its snapshot.
  *
  * `event: reset` means the office dropped this client for falling behind; the stream then ends, and the client
- * reconnects and bootstraps again. Any other end of the stream (the office stopping) also calls for a fresh
- * bootstrap.
+ * reconnects and bootstraps again. Any other end of the stream (the office stopping, or a drop while the client
+ * wasn't reading, which closes the connection without `reset`) also calls for a fresh bootstrap.
  */
 export function eventRoutes(pingMs: number = PING_MS): Route<RequestContext>[] {
   return [
@@ -63,12 +69,15 @@ export function eventRoutes(pingMs: number = PING_MS): Route<RequestContext>[] {
       method: "GET",
       path: "/events",
       head: false,
-      handler: (ctx) =>
-        new RawReply(
+      handler: (ctx) => {
+        const cut = new AbortController()
+        return new RawReply(
           200,
           { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
-          stream(ctx, pingMs),
-        ),
+          stream(ctx, pingMs, cut),
+          { abort: cut.signal },
+        )
+      },
     },
   ]
 }
