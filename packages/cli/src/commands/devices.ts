@@ -29,6 +29,24 @@ async function browsersOf(office: OfficeClient, person: Person): Promise<Browser
   }
 }
 
+const ESCAPES: Record<string, string> = { "\n": "\\n", "\r": "\\r", "\t": "\\t" }
+
+/** `text` with each C0, DEL or C1 control character shown as an escape such as `\n` or `\x1b`, so text from the
+ *  office can't drive the terminal. */
+function printable(text: string): string {
+  return text.replace(
+    /[\u0000-\u001f\u007f-\u009f]/gu,
+    (c) => ESCAPES[c] ?? `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`,
+  )
+}
+
+/** `b` with its printed text fields made `printable`: the client doesn't validate replies, and labels stored before
+ *  the office refused control characters may hold some. */
+function shown(b: BrowserSession): BrowserSession {
+  const label = b.label && printable(b.label)
+  return { ...b, id: printable(b.id), name: printable(b.name), label, issued_by: printable(b.issued_by) }
+}
+
 /** The "Browsers (this office)" section; nothing when there are none. A browser signed in with a password says so
  *  rather than who paired it, since nobody did. */
 function browserLines(browsers: BrowserSession[]): string[] {
@@ -36,7 +54,7 @@ function browserLines(browsers: BrowserSession[]): string[] {
   // Office-local, and named in their own namespace, apart from person.yaml's devices.
   return [
     "Browsers (this office):",
-    ...browsers.map(
+    ...browsers.map(shown).map(
       (b) =>
         `  ${b.id}  ${b.name}${b.label ? ` (${b.label})` : ""}  ` +
         `${b.via === "login" ? "signed in" : `paired by @${b.issued_by}`}  ` +
@@ -94,7 +112,7 @@ export const run: CommandRun = async (argv) => {
       // One of the asker's own sessions may be given by its web-xxxxxx name, and is confirmed by it; anyone else's
       // (the CEO's case) by its id.
       const own = (await office.hq.browsers().catch(() => [])).find((b) => b.id === given || b.name === given)
-      const name = own?.name ?? given
+      const name = printable(own?.name ?? given)
       try {
         await office.hq.removeBrowser(own?.id ?? given)
       } catch (e) {

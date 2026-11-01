@@ -264,6 +264,22 @@ test("devices list says a session the office hasn't cleaned up yet has expired",
   )
 })
 
+test("devices list shows control characters in browser fields as escapes", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const b = office.addBrowser({
+    person: "ngocbh",
+    issued_by: "ngocbh",
+    name: "web-\u0007x",
+    label: "evil\u001b[2J\r\nline\u009b\t\u007f",
+  })
+  const out = (await opencorp(trusted, "devices", "list")).out
+  expect(out.split("\n").at(-1)).toBe(
+    `  ${b.id}  web-\\x07x (evil\\x1b[2J\\r\\nline\\x9b\\t\\x7f)  paired by @ngocbh  last used never  ` +
+      `expires ${day(b.expires_at)}`,
+  )
+  expect(out).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/u)
+})
+
 test("an agent's list asks for no browsers", async () => {
   await opencorp(trusted, "login", "--device", "mac")
   expect((await opencorp(trusted, "devices", "list", "minh")).out).toBe("@minh has no devices.")
@@ -330,6 +346,16 @@ test("remove-browser takes one of your own sessions by its web- name too", async
   })
   expect(office.requests.at(-1)?.raw).toBe(`/hq/browsers/${b.id}`)
   expect((await opencorp(trusted, "devices", "remove-browser", b.id)).err).toBe(`opencorp devices: no browser session ${b.id}`)
+})
+
+test("remove-browser shows control characters in the name as escapes", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const b = office.addBrowser({ person: "ngocbh", issued_by: "ngocbh", name: "web-\u001b[2Jx" })
+  expect(await opencorp(trusted, "devices", "remove-browser", b.id)).toEqual({
+    code: 0,
+    out: "Signed out browser web-\\x1b[2Jx.",
+    err: "",
+  })
 })
 
 test("the CEO signs out someone else's browser, confirmed by its id", async () => {
