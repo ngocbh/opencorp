@@ -5,6 +5,7 @@ import os from "node:os"
 import type { Readable } from "node:stream"
 import * as bwrap from "./bwrap.ts"
 import { Canary, killEscaped } from "./escapees.ts"
+import { killGroup } from "../install/proc.ts"
 import { endPipe, helperCommand, pipe, pipeReadable, processLimits, type ProcessLimits } from "../platform.ts"
 import { type Helper, helperFiles, isInside, type SandboxPolicy } from "./policy.ts"
 import { profile } from "./seatbelt.ts"
@@ -159,7 +160,8 @@ export interface RunOptions {
  *
  * The call runs in a new process group. The group is killed when the call's first
  * process exits (so nothing it started in the background survives), when `timeout`
- * seconds pass, or when `signal` aborts. On macOS, processes that left the group with
+ * seconds pass, or when `signal` aborts; on macOS it is stopped first, so no process
+ * in it runs another step while the kill goes round. On macOS, processes that left the group with
  * `setsid` are then found and killed too; on Linux the pid namespace dies with the call.
  * Each output stream keeps at most `maxOutput` bytes. Rejects with the spawn error when
  * the call can't start, `SandboxUnavailable` on an unsupported platform, a `RangeError`
@@ -260,7 +262,7 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
           // normally still running, so the kill can't reach an unrelated group; where the runtime
           // reaps on its own thread, a leader that exits by itself just as the timeout fires is
           // already reaped, the same window as a natural exit.
-          killGroup(pid)
+          killGroup(pid, { stopFirst: true })
           if (canary) killEscaped(canary)
         } finally {
           clearTimeout(timer)
@@ -345,16 +347,6 @@ function ownPipes(withStdin: boolean) {
       }
       if (first !== undefined) throw first
     },
-  }
-}
-
-/** SIGKILLs process group `pgid`, ignoring a group that is gone or not ours. */
-function killGroup(pgid: number): void {
-  try {
-    process.kill(-pgid, "SIGKILL")
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code !== "ESRCH" && code !== "EPERM") throw error
   }
 }
 
