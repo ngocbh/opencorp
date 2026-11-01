@@ -377,10 +377,19 @@ test("the call argv is pinned with a process cap and without one", () => {
   }
 })
 
-test.skipIf(!sandboxAvailable() || processCap(processLimits()) === null)(
+// null when the limits can't be read (say, no libc.so.6 on a musl Linux), so the test skips instead of the file failing.
+function officeCap(): number | null {
+  try {
+    return processCap(processLimits())
+  } catch {
+    return null
+  }
+}
+
+test.skipIf(!sandboxAvailable() || officeCap() === null)(
   "a call's soft and hard process limits are the cap and can't be raised",
   async () => {
-    const cap = processCap(processLimits())!
+    const cap = officeCap()!
     const script =
       "ulimit -S -u 2>/dev/null || ulimit -S -p; ulimit -H -u 2>/dev/null || ulimit -H -p; " +
       `if (ulimit -S -u ${cap + 1} || ulimit -S -p ${cap + 1}) 2>/dev/null; then echo raised; else echo held; fi`
