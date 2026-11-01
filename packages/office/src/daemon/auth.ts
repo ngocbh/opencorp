@@ -107,16 +107,20 @@ export class DeviceTokens {
       this.#again = true
       return this.#checking
     }
+    // Nothing to end. Returning here also means the loop below always awaits before it can finish: one that
+    // finished without awaiting would clear `#checking` before it was set, leaving a settled promise for every later
+    // call to join.
+    if (this.#streams.size === 0) return Promise.resolve()
     this.#checking = (async () => {
-      for (;;) {
-        this.#again = false
-        if (this.#streams.size > 0) await this.#pass()
-        // Cleared in the same step as the check, so a call landing after the pass still finds one to join or starts
-        // its own.
-        if (!this.#again) {
-          this.#checking = null
-          return
-        }
+      try {
+        do {
+          this.#again = false
+          if (this.#streams.size > 0) await this.#pass()
+        } while (this.#again)
+      } finally {
+        // Cleared in the same step as the last look at `#again`, so a call landing after the pass still finds one to
+        // join or starts its own.
+        this.#checking = null
       }
     })()
     return this.#checking
@@ -128,8 +132,10 @@ export class DeviceTokens {
     try {
       roster = await this.roster()
     } catch (error) {
-      // A stream that can't be checked can't be trusted; its client reconnects and is checked again.
-      this.office.log(`couldn't load the roster to recheck open streams; ending them: ${errorType(error)}`)
+      // A stream that can't be checked can't be trusted; its client reconnects and is checked again. Streams that
+      // all ended meanwhile (the office stopping) leave nothing to report.
+      if (this.#streams.size > 0)
+        this.office.log(`couldn't load the roster to recheck open streams; ending them: ${errorType(error)}`)
     }
     for (const stream of [...this.#streams]) {
       if (roster !== null && counts(stream, roster)) continue

@@ -250,6 +250,20 @@ test("removing a device ends the streams its token opened", async () => {
   expect(await within(Promise.race([kept.next().then(() => "frame"), sleep(200).then(() => "open")]))).toBe("open")
 })
 
+test("a device added before any stream opens leaves a later removal ending its stream", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const [mac, pc] = [newToken(), newToken()]
+  giveDevice(office.paths.company, CEO, "mac", mac)
+  const body = JSON.stringify({ name: "pc", token_sha256: tokenSha256(pc) })
+  const headers = { ...bearer(mac), "content-type": "application/json" }
+  expect((await request(sock, "POST", `/people/${CEO}/devices`, { headers, body })).status).toBe(200)
+  const gone = frames(await openEvents(sock, "/events", bearer(mac)))
+  await take(gone, 1)
+  expect((await request(sock, "DELETE", `/people/${CEO}/devices/mac`, { headers: bearer(pc) })).status).toBe(200)
+  expect(await ends(gone)).toBe(true)
+})
+
 test("a commit giving a device a new token ends the old tokens streams at company updated", async () => {
   const { office, sock, mac } = await twoDevices()
   const it = frames(await openEvents(sock, "/events", bearer(mac)))

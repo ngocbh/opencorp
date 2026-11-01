@@ -668,8 +668,19 @@ test("removing a device ends the streams its token opened", async () => {
   expect(ended).toEqual([])
   await removeDevice(office.git, CEO, "mac", CEO)
   await office.tokens.recheck()
-  await office.tokens.recheck()
   expect(ended).toEqual(["mac"])
+})
+
+test("a recheck with no stream open leaves later ones working", async () => {
+  const office = makeOffice()
+  const [mac, pc] = [newToken(), newToken()]
+  setDevices(office.paths.company, CEO, [["mac", mac], ["pc", pc]])
+  await office.tokens.recheck()
+  let ended = 0
+  office.tokens.track(await office.tokens.context(info(bearer(mac))), () => ended++)
+  await removeDevice(office.git, CEO, "mac", CEO)
+  await office.tokens.recheck()
+  expect(ended).toBe(1)
 })
 
 test("a device removed and added again under its name ends the old tokens streams", async () => {
