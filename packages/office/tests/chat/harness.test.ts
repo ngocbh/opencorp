@@ -1666,6 +1666,18 @@ test.each([
   expect(h.logs.join("\n")).not.toContain("SENTINEL")
 })
 
+test("a failed runs log never names the model key in its node", async () => {
+  const h = await keyed(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const { worker, handlers } = workers[0]!
+  handlers.result(worker, failedResult(s.run_ids[0]!, { node_id: `chat#0/${SENTINEL}`, cause_type: "ProviderError" }))
+  handlers.exited(worker, 1)
+  await waitFor(() => status(h, s.id) === "failed", { what: "the failure" })
+  expect(h.logs.some((line) => line.includes("its run ended (failed at a node: ProviderError)"))).toBe(true)
+  expect(h.logs.join("\n")).not.toContain(SENTINEL)
+})
+
 test("a session whose worker keeps dying says so", async () => {
   const h = await makeHarness(await fakeLlm())
   const workers = scriptedWorker(h)

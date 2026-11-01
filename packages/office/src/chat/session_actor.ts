@@ -2244,7 +2244,7 @@ export class SessionActor implements LiveCalls {
     const failure = failureOf(outcome)
     const type = typeName(redactKey(failure.cause_type, run.provider))
     const id = String(failure.node_id)
-    const where = this.#chat.isReply(id) ? "its reply failed" : `its context failed at ${nodePath(id)}`
+    const where = this.#chat.isReply(id) ? "its reply failed" : `its context failed at ${nodePath(id, run.provider)}`
     this.#log(`session ${this.sessionId}: ${where} (${type})`)
     const reason = whyFailed(outcome, run.provider)
     const hint = refusedKey(failure, reason)
@@ -2702,18 +2702,18 @@ function typeName(value: unknown): string {
   return typeof value === "string" && /^[A-Za-z_][\w.]{0,99}$/.test(value) ? value : "Error"
 }
 
-/** The static path of node id `id` when it reads as one, else `a node`: a log line carries nothing else a worker
- *  sent. */
-function nodePath(id: unknown): string {
-  const at = typeof id === "string" ? staticPathOf(id) : ""
-  return /^[A-Za-z_][\w./-]{0,199}$/.test(at) ? at : "a node"
+/** The static path of node id `id` when it reads as one, `provider`'s key redacted, else `a node`: a log line
+ *  carries nothing else a worker sent. */
+function nodePath(id: unknown, provider: Provider | null): string {
+  const at = redactKey(typeof id === "string" ? staticPathOf(id) : "", provider)
+  return typeof at === "string" && /^[A-Za-z_][\w./-]{0,199}$/.test(at) ? at : "a node"
 }
 
 /** Where and how the failed result `outcome` failed, for a log line: the node's static path and the error type,
  *  `provider`'s key redacted. */
 function failedAt(outcome: Frame, provider: Provider | null): string {
   const failure = failureOf(outcome)
-  return `failed at ${nodePath(failure.node_id)}: ${typeName(redactKey(failure.cause_type, provider))}`
+  return `failed at ${nodePath(failure.node_id, provider)}: ${typeName(redactKey(failure.cause_type, provider))}`
 }
 
 /** `frame` with its `refused` reason kept only when it reads as one (else `refused`) and its `failed` only when it
