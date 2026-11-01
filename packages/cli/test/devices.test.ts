@@ -116,9 +116,61 @@ test("login on a device the office already knows asks nothing; --force replaces 
   expect(asked.asked).toEqual([])
   expect(identity(trusted)).toEqual(first)
   answering()
-  expect((await opencorp(trusted, "login", "--device", "mac2", "--force")).code).toBe(0)
-  expect(devices()?.map((d) => d.name)).toEqual(["mac", "mac2"])
+  expect(await opencorp(trusted, "login", "--device", "mac2", "--force")).toEqual({
+    code: 0,
+    out:
+      `This device is mac2, acting as @ngocbh; its token is in ${trusted}/identity.json.\n` +
+      "Removed mac from people/ngocbh/person.yaml.",
+    err: "",
+  })
+  // The device it replaced is gone, removed with its own token.
+  expect(devices()?.map((d) => d.name)).toEqual(["mac2"])
+  const del = office.requests.find((r) => r.method === "DELETE")!
+  expect([del.raw, del.authorization]).toEqual(["/people/ngocbh/devices/mac", `Bearer ${first.token}`])
+  // Only once the new device is in.
+  expect(office.requests.indexOf(del)).toBeGreaterThan(office.requests.findLastIndex((r) => r.method === "POST"))
   expect(identity(trusted).device).toBe("mac2")
+})
+
+test("a --force login over an identity the office doesn't know removes nothing", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  await opencorp(other, "login", "--handle", "ngocbh", "--device", "laptop") // untrusted: never listed
+  office.passwords.set("ngocbh", PASSWORD)
+  answering("ngocbh", PASSWORD)
+  expect(await opencorp(other, "login", "--device", "laptop2", "--force")).toEqual({
+    code: 0,
+    out: `This device is laptop2, acting as @ngocbh; its token is in ${other}/identity.json.`,
+    err: "",
+  })
+  expect(devices()?.map((d) => d.name)).toEqual(["mac", "laptop2"])
+  expect(office.requests.some((r) => r.method === "DELETE")).toBe(false)
+})
+
+test("a --force login the office won't take yet keeps the old device and says so", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  office.state.people.push({ handle: "ann", name: "Ann", kind: "human", title: "Designer", manager: "ngocbh" })
+  await opencorp(other, "login", "--handle", "ann", "--device", "laptop")
+  await opencorp(trusted, "devices", "add", "ann", "laptop", tokenSha256(identity(other).token))
+  // Ann's device can't add one for the CEO, so it says what to run on a trusted one.
+  const r = await opencorp(other, "login", "--handle", "ngocbh", "--device", "laptop2", "--force")
+  expect(r.code).toBe(1)
+  expect(r.err).toContain(`opencorp devices add ngocbh laptop2 ${tokenSha256(identity(other).token)}`)
+  // Possibly the person's last device, so it stays until the new one is listed.
+  expect(r.err.split("\n").at(-1)).toBe(
+    "laptop in people/ann/person.yaml remains; remove it with `opencorp devices remove ann laptop`",
+  )
+  expect(devices("ann")?.map((d) => d.name)).toEqual(["laptop"])
+})
+
+test("a --force login whose old device can't be removed still logs in and says the entry remains", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  office.broken.add("DELETE /people/:handle/devices/:name")
+  expect(await opencorp(trusted, "login", "--device", "mac2", "--force")).toEqual({
+    code: 0,
+    out: `This device is mac2, acting as @ngocbh; its token is in ${trusted}/identity.json.`,
+    err: "mac in people/ngocbh/person.yaml remains; remove it with `opencorp devices remove ngocbh mac`",
+  })
+  expect(devices()?.map((d) => d.name)).toEqual(["mac", "mac2"])
 })
 
 test("a --force login the office refuses keeps the identity it would have replaced", async () => {
@@ -194,6 +246,14 @@ test("devices list adds this office's browsers: name, label, who paired it, last
     ].join("\n"),
     err: "",
   })
+})
+
+test("devices list says a browser signed in with a password was signed in, not paired", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const b = office.addBrowser({ person: "ngocbh", issued_by: "ngocbh", via: "login" })
+  expect((await opencorp(trusted, "devices", "list")).out.split("\n").at(-1)).toBe(
+    `  ${b.id}  ${b.name}  signed in  last used never  expires ${day(b.expires_at)}`,
+  )
 })
 
 test("devices list says a session the office hasn't cleaned up yet has expired", async () => {

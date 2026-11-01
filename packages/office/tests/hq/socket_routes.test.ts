@@ -1,11 +1,12 @@
 /** HQ's routes on office.sock: status, minting links, and browser sessions. */
 import { expect, test } from "bun:test"
+import { hashPassword } from "../../src/auth/passwords.ts"
 import { newToken } from "../../src/auth/tokens.ts"
 import { DeviceTokens } from "../../src/daemon/auth.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { CEO, ULID, addHuman, bearer, giveDevice, makeOffice, request, serve } from "../daemon/helpers.ts"
-import { makeHq } from "./helpers.ts"
+import { handEdit, makeHq } from "./helpers.ts"
 
 type HeaderMap = Record<string, string>
 
@@ -93,6 +94,49 @@ test("browsers are listed and removed by their person or the ceo", async () => {
   expect(await hq.sessions.check(cookie)).toBeNull()
   expect((await sock.delete(`/hq/browsers/${mine.id}`, bearer(ceo))).status).toBe(404)
   expect((await sock.delete(`/hq/browsers/${theirs.id}`, bearer(ceo))).json()).toEqual({ ok: true })
+})
+
+test("a session a password change ended is not listed", async () => {
+  const { office, hq, company, sock } = await setup()
+  const token = newToken()
+  giveDevice(company, CEO, "mac", token)
+  await hq.sessions.issue(CEO, { issuedBy: CEO, label: "old" })
+  handEdit(company, CEO, { password_hash: await hashPassword("brand new one") })
+  const [kept] = await hq.sessions.issue(CEO, { issuedBy: CEO, label: "new" })
+  for (let i = 0; i < 2; i++) {
+    const listed = (await sock.get("/hq/browsers", bearer(token))).json()
+    expect(listed.map((b: { id: string }) => b.id)).toEqual([kept.id])
+  }
+  expect(office.store.listHqSessions(CEO).map((r) => r.id)).toEqual([kept.id])
+})
+
+test("a session signed in while a listing reads head is kept", async () => {
+  const { office, hq, company, sock } = await setup()
+  const token = newToken()
+  giveDevice(company, CEO, "mac", token)
+  // The listing's first HEAD read waits until the password has changed and a new session is signed in under it.
+  const head = hq.snapshots.head.bind(hq.snapshots)
+  let entered!: () => void
+  const reading = new Promise<void>((resolve) => (entered = resolve))
+  let release!: () => void
+  let gate: Promise<void> | null = new Promise((resolve) => (release = resolve))
+  hq.snapshots.head = async () => {
+    const view = await head()
+    const wait = gate
+    gate = null
+    if (wait !== null) {
+      entered()
+      await wait
+    }
+    return view
+  }
+  const listing = sock.get("/hq/browsers", bearer(token))
+  await reading
+  handEdit(company, CEO, { password_hash: await hashPassword("brand new one") })
+  const [kept] = await hq.sessions.issue(CEO, { issuedBy: CEO, label: "new" })
+  release()
+  expect((await listing).json().map((b: { id: string }) => b.id)).toEqual([kept.id])
+  expect(office.store.listHqSessions(CEO).map((r) => r.id)).toEqual([kept.id])
 })
 
 test("status", async () => {

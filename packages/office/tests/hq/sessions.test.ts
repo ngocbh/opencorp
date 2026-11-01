@@ -294,6 +294,30 @@ test("registering on a session that isnt live ends the stream", async () => {
   }
 })
 
+test("listing a persons sessions ends those a password change ended", async () => {
+  const office = makeOffice()
+  const s = sessionsFor(office)
+  const [old] = await s.issue("ngocbh", ISSUE)
+  const sub = office.bus.subscribe()
+  s.register(old.id, sub)
+  handEdit(office.paths.company, "ngocbh", { password_hash: await hashPassword("brand new one") })
+  const [kept] = await s.issue("ngocbh", ISSUE)
+  const listed = await s.listLive("ngocbh")
+  expect(listed.map((r) => r.id)).toEqual([kept.id])
+  expect(office.store.getHqSession(old.id)).toBeUndefined()
+  expect(await sub.next(1000)).toBeNull()
+})
+
+test("listing a persons sessions while their file cant be read ends none", async () => {
+  const office = makeOffice()
+  const s = sessionsFor(office)
+  const [pub] = await s.issue("ngocbh", ISSUE)
+  handEdit(office.paths.company, "ngocbh", { kind: "robot" })
+  const listed = await s.listLive("ngocbh")
+  expect(listed.map((r) => r.id)).toEqual([pub.id])
+  expect(s.alive(pub.id)).toBe(true)
+})
+
 test("alive turns false at expiry", async () => {
   const office = makeOffice()
   const clock = new Clock()

@@ -29,7 +29,8 @@ async function browsersOf(office: OfficeClient, person: Person): Promise<Browser
   }
 }
 
-/** The "Browsers (this office)" section; nothing when there are none. */
+/** The "Browsers (this office)" section; nothing when there are none. A browser signed in with a password says so
+ *  rather than who paired it, since nobody did. */
 function browserLines(browsers: BrowserSession[]): string[] {
   if (!browsers.length) return []
   // Office-local, and named in their own namespace, apart from person.yaml's devices.
@@ -37,7 +38,8 @@ function browserLines(browsers: BrowserSession[]): string[] {
     "Browsers (this office):",
     ...browsers.map(
       (b) =>
-        `  ${b.id}  ${b.name}${b.label ? ` (${b.label})` : ""}  paired by @${b.issued_by}  ` +
+        `  ${b.id}  ${b.name}${b.label ? ` (${b.label})` : ""}  ` +
+        `${b.via === "login" ? "signed in" : `paired by @${b.issued_by}`}  ` +
         `last used ${b.last_used_at ? day(b.last_used_at) : "never"}  ` +
         // The office keeps an expired session until its next cleanup.
         `${Date.parse(b.expires_at) <= Date.now() ? "expired" : "expires"} ${day(b.expires_at)}`,

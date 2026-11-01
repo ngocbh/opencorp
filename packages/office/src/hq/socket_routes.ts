@@ -53,7 +53,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
   },
   // A person's browser sessions on this office, newest first. A person who left the company can't be listed (404):
   // their sessions fail the check and are deleted on first use, and expired ones are pruned at office start and on
-  // each new session.
+  // each new session. Sessions a password change ended are deleted here rather than listed.
   {
     method: "GET",
     path: "/hq/browsers",
@@ -63,7 +63,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
       const actor = actingPerson(ctx)
       const handle = ctx.query.getAll("person").at(-1) || actor
       checkFor(await hq.snapshots.head(), handle, actor)
-      return ctx.office.store.listHqSessions(handle).map((r) => r.public())
+      return (await hq.sessions.listLive(handle)).map((r) => r.public())
     },
   },
   // Ends one browser session, its open streams included.
