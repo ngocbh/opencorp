@@ -345,8 +345,9 @@ function close(server: Server): Promise<void> {
  * and last the socket: it listens only once everything is ready. A failed start undoes what it did, in reverse.
  *
  * The stop: the office stops first (its bus closes before anything else, because SSE responses never end on their
- * own, so the server's close isn't held by them), then the connections and the server close, the socket file goes,
- * request handlers still running get up to `HANDLER_WAIT_MS`, the store closes, and last the pidfile and lock.
+ * own, so the handler wait isn't held by them), then the server takes no new connections and idle ones close,
+ * request handlers still running get up to `HANDLER_WAIT_MS` to answer, the remaining connections and the server
+ * close, the socket file goes, the store closes, and last the pidfile and lock.
  */
 async function run(
   paths: OfficePaths,
@@ -408,10 +409,17 @@ async function run(
         try {
           await office.stop()
         } finally {
+          // No new connections while running handlers answer (503 stopping): a request on an idle keep-alive
+          // connection would start a handler the closing below cuts. Not close() yet: on this runtime a close()
+          // before closeAllConnections() leaves the open connections open.
+          server.maxConnections = 0
+          server.closeIdleConnections()
+          // Settled before closing, so a handler still running isn't cut off before its reply. The office's stop
+          // already ended the event and live streams, which never end on their own.
+          await requests.settled(HANDLER_WAIT_MS)
           server.closeAllConnections()
           await close(server)
           fs.rmSync(paths.socket, { force: true })
-          await requests.settled(HANDLER_WAIT_MS)
         }
       } finally {
         office.store.close()
