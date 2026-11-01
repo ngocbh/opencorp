@@ -3,6 +3,7 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import { writeYaml } from "../../src/company/flow_yaml.ts"
+import { MAX_FLOW_FILE } from "../../src/company/flows.ts"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { assetToolName } from "../../src/company/naming.ts"
@@ -169,6 +170,18 @@ test("flow cycle message is repo relative", async () => {
   expect(rest).toEqual([])
   expect(issue!.message).not.toContain(root)
   expect(issue!.message).toContain("shared/flows/chat.yaml")
+})
+
+test("a child flow over the size limit is invalid, named repo relative and without its content", async () => {
+  const tmp = tempDir()
+  const root = makeCompany({ "shared/flows/chat.yaml": parentFlow("echo") }, tmp)
+  // Written after the commit: lint reads the working tree.
+  fs.writeFileSync(path.join(root, "shared/flows/echo.yaml"), CHILD + "#PADPAD\n".repeat(MAX_FLOW_FILE / 8 + 1))
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.message).toContain("shared/flows/echo.yaml is over the 1 MiB flow size limit")
+  expect(issue!.message).not.toContain(tmp)
+  expect(issue!.message).not.toContain("PADPAD")
 })
 
 test("child flow inside repo is fine", async () => {
