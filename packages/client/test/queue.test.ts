@@ -23,3 +23,11 @@ test("runEach runs every function, logging the ones that throw", () => {
   expect(seen).toEqual([1, 2])
   expect(logged).toHaveLength(1)
 })
+
+test("runEach walks a live Set: a function removed during the pass isn't called", () => {
+  const seen: string[] = []
+  const third = () => void seen.push("third")
+  const fns = new Set<() => void>([() => void (seen.push("first"), fns.delete(third)), () => void seen.push("second"), third])
+  runEach(fns)
+  expect(seen).toEqual(["first", "second"])
+})

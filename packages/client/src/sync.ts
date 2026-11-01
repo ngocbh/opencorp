@@ -5,6 +5,7 @@
 import type { Event, LiveEvent, Message, Person, Question } from "@opencorp/protocol"
 import type { OfficeClient } from "./client"
 import { failureKind, OfficeError, OfficeUnavailable, UnknownDevice } from "./errors"
+import { runEach } from "./queue"
 import type { StreamEvent, SubscribeOptions, Subscription } from "./sse"
 import { applyLive, applyMeta, replay, upsertQuestion, upsertSession, type OfficeState } from "./store"
 
@@ -130,7 +131,8 @@ export function createOfficeSync(opts: {
   function fire(events: StreamEvent[]) {
     for (const e of events) {
       if (e.type !== "meta" && e.type !== "live") continue
-      for (const fn of listeners.get(e.event.type) ?? []) fn(e.event)
+      // One listener's bug mustn't cost the others their event, or the stream (and the state) its update.
+      runEach(listeners.get(e.event.type) ?? [], e.event)
     }
   }
 
@@ -396,7 +398,7 @@ export function createOfficeSync(opts: {
         if (folderPeople) s.folderPeople = folderPeople
       })
     },
-    /** Calls `fn` for each event of `type` once it is applied; returns an unsubscribe. */
+    /** Calls `fn` for each event of `type` once it is applied (a throw is logged); returns an unsubscribe. */
     on<K extends keyof OfficeEvents>(type: K, fn: (e: OfficeEvents[K]) => void) {
       const set = listeners.get(type) ?? new Set()
       listeners.set(type, set)
