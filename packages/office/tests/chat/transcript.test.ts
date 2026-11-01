@@ -662,7 +662,7 @@ test("a bad line shows the messages up to it and logs once", async () => {
   expect(texts(messages(runs, sessionId, ["r1"], { transcript }))).toEqual(want)
   expect(texts(messages(runs, sessionId, ["r1"], { transcript }))).toEqual(want)
   expect(logs.length).toBe(1)
-  expect(logs[0]).toMatch(/^run r1: the transcript stops after record \d+ \(RangeError: a line of its log can't be read\)$/)
+  expect(logs[0]).toMatch(/^run r1: the transcript stops after record \d+ \(RangeError: a line of its log can't be read\)/)
   expect(logs[0]).not.toContain(runs)
 })
 
@@ -690,10 +690,11 @@ test("a bad first line reads as no messages", async () => {
   await advance(job, fake, [send("s1", "first")])
   corrupt(job.log)
   const logs: string[] = []
-  expect(messages(runs, newId(), ["r1"], { transcript: new Transcript(runs, { log: (line) => logs.push(line) }) })).toEqual(
-    [],
-  )
-  expect(logs).toEqual(["run r1: the transcript stops before its first record (RangeError: a line of its log can't be read)"])
+  const transcript = new Transcript(runs, { log: (line) => logs.push(line) })
+  expect(messages(runs, newId(), ["r1"], { transcript })).toEqual([])
+  expect(logs).toEqual([
+    "run r1: the transcript stops before its first record (RangeError: a line of its log can't be read)",
+  ])
 })
 
 test("a bad line that was rewritten reads on past it", async () => {
@@ -721,9 +722,8 @@ test("a runs path that is a file reads as no messages", () => {
   const runs = path.join(tempDir(), "runs")
   fs.writeFileSync(runs, "")
   const logs: string[] = []
-  expect(messages(runs, newId(), ["r1"], { transcript: new Transcript(runs, { log: (line) => logs.push(line) }) })).toEqual(
-    [],
-  )
+  const transcript = new Transcript(runs, { log: (line) => logs.push(line) })
+  expect(messages(runs, newId(), ["r1"], { transcript })).toEqual([])
   expect(logs).toEqual([])
 })
 

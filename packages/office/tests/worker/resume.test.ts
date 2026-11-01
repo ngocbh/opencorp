@@ -184,7 +184,13 @@ test("an advance whose log is gone is not resumed", async () => {
   fs.rmSync(path.dirname(waiting.log), { recursive: true })
   const rec = await run(advanceJob(waiting, { deliver: [HI] }), new Recorder())
   expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", refused: "not_started" }])
-  expect(rec.outcome).toEqual({ type: "result", status: "not_resumed", run_id: "r1", error_type: "ENOENT", unreadable: true })
+  expect(rec.outcome).toEqual({
+    type: "result",
+    status: "not_resumed",
+    run_id: "r1",
+    error_type: "ENOENT",
+    unreadable: true,
+  })
   expect(fs.existsSync(path.dirname(waiting.log))).toBe(false)
 })
 

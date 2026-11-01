@@ -251,7 +251,8 @@ export class Transcript {
     if (read.stopped !== null) {
       // Only the record count and the error's type: yian's message quotes the log's path and the line's values.
       const where = state.seq === null ? "before its first record" : `after record ${state.seq}`
-      this.warnOnce(runId, `run ${runId}: the transcript stops ${where} (${errorName(read.stopped)}: a line of its log can't be read)`)
+      const why = `${errorName(read.stopped)}: a line of its log can't be read`
+      this.warnOnce(runId, `run ${runId}: the transcript stops ${where} (${why})`)
     }
     this.cache.set(runId, state)
     let bytes = 0

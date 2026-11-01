@@ -1738,7 +1738,8 @@ test("a run log with a bad line answers the next message from a fresh run", asyn
   expect(status(o, sid)).toBe("idle")
   expect(texts(o, sid, "user")).toEqual(["a", "b"])
   expect(texts(o, sid)).toEqual(["one", "two"])
-  expect(o.logs).toContainEqual(expect.stringContaining("its run's log can't be read (RangeError); a fresh run replaces it"))
+  const replaced = "its run's log can't be read (RangeError); a fresh run replaces it"
+  expect(o.logs).toContainEqual(expect.stringContaining(replaced))
   expect(o.logs.filter((line) => line.includes("has no recorded outcome") || line.includes("garbage"))).toEqual([])
 })
 
@@ -1748,7 +1749,9 @@ const ERROR_FRAME = { type: "error", message: "Error: x", traceback: "" }
 const LOG_LOST = "The reply failed (its run log is gone or can't be read). Send your message again."
 
 /** Session `sid` on `o`'s scripted workers, its first worker started and its run's `RunStarted` told. */
-async function startedScripted(o: ChatOffice): Promise<{ actor: SessionActor; sid: string; workers: ScriptedWorker[] }> {
+async function startedScripted(
+  o: ChatOffice,
+): Promise<{ actor: SessionActor; sid: string; workers: ScriptedWorker[] }> {
   const workers = scriptedWorker(o)
   const sid = await newSession(o)
   const actor = makeActor(o, sid)
@@ -1803,7 +1806,7 @@ test("an error after a run started whose log is gone carries an unapplied messag
   expect(await reply).toBe("queued")
 })
 
-test("an error before the run started fails it couldn't start; after it started with a readable log, worker stopped", async () => {
+test("an error before its run started ends it couldn't start; after, with a readable log, worker stopped", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
   const workers = scriptedWorker(o)
@@ -1846,7 +1849,7 @@ test("a run log lost twice without a turn fails the session", async () => {
   expect(workers.length).toBe(2)
 })
 
-test("a fresh run whose log can't be made fails once, and the log names the errno and the folder, not the message", async () => {
+test("a fresh run whose log can't be made fails once, logging its errno and folder only", async () => {
   const o = await chatOffice(await fakeLlm())
   const { actor, sid, workers } = await startedScripted(o)
   void outcome(actor.prompt("b"))

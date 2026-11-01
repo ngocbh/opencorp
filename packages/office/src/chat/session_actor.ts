@@ -172,8 +172,8 @@ const ENDING: readonly string[] = ["succeeded", "failed", "cancelled"]
 
 /** The first wait before a state write that failed is tried again, in ms; each wait after doubles, up to
  *  `SETTLE_RETRY_MAX_MS`. */
-export const SETTLE_RETRY_MS = 1000
-export const SETTLE_RETRY_MAX_MS = 60_000
+const SETTLE_RETRY_MS = 1000
+const SETTLE_RETRY_MAX_MS = 60_000
 
 /** The worker events that say its run started or runs again. */
 const STARTS: readonly string[] = ["RunStarted", "RunResumed", "NodeStarted", "NodeWoken"]
@@ -1450,13 +1450,15 @@ export class SessionActor implements LiveCalls {
         if (replace === null && why === NEW_MODEL && !removed && note !== null) {
           store.updateSession(sid, { model_note: note })
         }
-        if (replace === null && why === COULDNT_RESUME) {
-          this.#notice("This chat's earlier messages are gone (its run log was deleted); a fresh run answers without them.")
-        }
         seed = await this.#seed(session)
         // Read before the replace moves `#runId`: the old run's stored answers no delivery carries.
         const unread = this.#unreadAnswers(pendings)
         await this.#replace(session, spec, fresh.why, fresh.finished)
+        if (replace === null && why === COULDNT_RESUME) {
+          this.#notice(
+            "This chat's earlier messages are gone (its run log was deleted); a fresh run answers without them.",
+          )
+        }
         pendings = this.#freshCarry(pendings, true)
         for (const q of unread) this.#loseAnswer(q.id)
         // Its deliveries, which `close` answers through `#starting`.
@@ -2320,7 +2322,8 @@ export class SessionActor implements LiveCalls {
    * stopped or crashed over the cap isn't a death: its deliveries go on, with a real advance once the cap is raised;
    * an ending session over the cap ends `ENDED_OVER_CAP`; a run another process holds is tried once more
    * (`#runBusy`); a run whose reply, or whose fold after its take, failed is replaced by a fresh run (`#replyFailed`);
-   * any other outcome fails the session.
+   * a worker error after the run started whose log is gone or can't be read leaves a fresh run for the next message
+   * (`#logGone`); any other outcome fails the session, an error frame with an office end reason.
    * Every delivery not carried is answered. A finished actor only starts its run's hard stop that waited for this
    * exit.
    */
@@ -2830,7 +2833,8 @@ export class SessionActor implements LiveCalls {
         }
 
         override result(_worker: unknown, frame: Frame): void {
-          if (frame.status === "not_resumed") note(`wasn't applied: its log can't be read (${typeName(frame.error_type)})`)
+          if (frame.status !== "not_resumed") return
+          note(`wasn't applied: its log can't be read (${typeName(frame.error_type)})`)
         }
 
         override error(_worker: unknown, frame: Frame): void {
