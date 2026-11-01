@@ -18,6 +18,7 @@ export const ERROR_CODES = [
   "cant_wake",
   "cap_too_low",
   "codex_refused",
+  "company_repo_busy",
   "connection_unusable",
   "cross_site",
   "device_exists",

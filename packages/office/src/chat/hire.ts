@@ -110,7 +110,7 @@ export class Hiring {
         return [person, files, issues, commit] as const
       } catch (failure) {
         // Left on disk, the profile would be committed later as a hand edit.
-        await this.#undo(request.handle, Object.keys(files), head)
+        await this.#undo(request.handle, head)
         throw failure
       }
     })
@@ -118,8 +118,8 @@ export class Hiring {
     return { person, diff: diff(files), issues, commit }
   }
 
-  /** Remove the files a failed hire commit left, and unstage them; best effort. */
-  async #undo(handle: string, paths: string[], head: string): Promise<void> {
+  /** Remove the files a failed hire commit left; best effort. The commit has already unstaged them. */
+  async #undo(handle: string, head: string): Promise<void> {
     try {
       if ((await this.git.head()) !== head) return // the commit landed before the failure; keep it
       try {
@@ -131,7 +131,6 @@ export class Hiring {
       } catch (error) {
         if (errno(error) === undefined) throw error
       }
-      await this.git.unstage(paths)
     } catch (error) {
       // The caller needs the commit's error, not this one.
       if (!(error instanceof CompanyGitError) && errno(error) === undefined) throw error

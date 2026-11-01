@@ -7,10 +7,10 @@ import { addDevice, DeviceRefused, login, removeDevice, setPassword } from "../.
 import { Roster } from "../../src/auth/roster.ts"
 import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
 import { readYaml } from "../../src/company/flow_yaml.ts"
-import { CompanyGit, CompanyGitError } from "../../src/company/git.ts"
+import { CompanyGit, CompanyGitError, CompanyRepoBusy } from "../../src/company/git.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { tempDir } from "../helpers.ts"
-import { company, git, makeCompany, person } from "../company/helpers.ts"
+import { company, failingGit, git, gitStatus, makeCompany, person, startMerge } from "../company/helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -140,14 +140,56 @@ test("a failed commit restores the person file", async () => {
       () => null,
       (e: unknown) => e,
     )
-    expect(error).toBeInstanceOf(CompanyGitError)
-    // `git add` runs after the file is written.
-    expect((error as Error).message).toContain("git add")
+    // `git add` runs after the file is written, and gives up on the lock.
+    expect(error).toBeInstanceOf(CompanyRepoBusy)
+    expect((error as CompanyRepoBusy).status).toBe(503)
     expect(fs.readFileSync(path.join(root, PERSON)).equals(original)).toBe(true)
     expect(head(root)).toBe(before)
   } finally {
     fs.rmSync(lock, { force: true })
   }
+})
+
+/** Each change that writes a human's person.yaml, made as themselves. */
+const CHANGES: [string, (g: CompanyGit) => Promise<unknown>][] = [
+  ["add device", (g) => addDevice(g, "ngocbh", device("mac"), "ngocbh")],
+  ["set password", (g) => setPassword(g, "ngocbh", PASSWORD, "ngocbh")],
+]
+
+test.each(CHANGES)("a change mid-merge is refused and stays out of the index [%s]", async (_, change) => {
+  const { root, g } = setup()
+  startMerge(root, "groups/eng.yaml")
+  const original = fs.readFileSync(path.join(root, PERSON))
+  const error = await change(g).catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(CompanyRepoBusy)
+  expect((error as CompanyRepoBusy).status).toBe(409)
+  expect(git(root, "diff", "--cached", "--name-only")).not.toContain(PERSON)
+  expect(fs.readFileSync(path.join(root, PERSON)).equals(original)).toBe(true)
+  expect(gitStatus(root, "merge", "--abort")).toBe(0)
+})
+
+test.each(CHANGES)("a refused change never reaches the human's merge commit [%s]", async (_, change) => {
+  const { root, g } = setup()
+  startMerge(root, "groups/eng.yaml")
+  await expect(change(g)).rejects.toBeInstanceOf(CompanyRepoBusy)
+  fs.writeFileSync(path.join(root, "groups/eng.yaml"), "resolved\n")
+  git(root, "add", "groups/eng.yaml")
+  git(root, "commit", "-q", "--no-edit")
+  expect(git(root, "show", `HEAD:${PERSON}`)).toBe(git(root, "show", `HEAD~1:${PERSON}`))
+  expect(git(root, "status", "--porcelain")).toBe("")
+})
+
+test("a change whose commit fails after staging leaves the repo clean", async () => {
+  const tmp = tempDir()
+  const root = company(tmp)
+  const failing = failingGit(tmp, "--cleanup=whitespace", "exit 1")
+  const g = new CompanyGit(root, path.join(tmp, "worktrees"), { git: failing })
+  const original = fs.readFileSync(path.join(root, PERSON))
+  const error = await addDevice(g, "ngocbh", device("mac"), "ngocbh").catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(CompanyGitError)
+  expect(error).not.toBeInstanceOf(CompanyRepoBusy)
+  expect(git(root, "status", "--porcelain")).toBe("")
+  expect(fs.readFileSync(path.join(root, PERSON)).equals(original)).toBe(true)
 })
 
 test.each([["file"], ["folder"]])("a symlinked person file is never written through [%s]", async (link) => {

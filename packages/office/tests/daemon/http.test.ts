@@ -25,6 +25,7 @@ import {
   makeOfficeDir,
   removeStaleSocket,
 } from "../../src/daemon/sockets.ts"
+import { CompanyRepoBusy } from "../../src/company/git.ts"
 import { NotFound } from "../../src/store/store.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"
 import {
@@ -428,6 +429,45 @@ describe("routes", () => {
     const r = await request(sock, "GET", "/questions/q9")
     expect(r.status).toBe(404)
     expect(r.text).toBe('{"error":"not_found","message":"no question q9"}')
+  })
+
+  test.each([
+    ["a busy repo", (busy: CompanyRepoBusy) => busy],
+    [
+      "a store error caused by a busy repo",
+      (busy: CompanyRepoBusy) => Object.assign(new Error("EIO", { cause: busy }), { code: "EIO" }),
+    ],
+  ])("%s is its status and company_repo_busy, not a 500, and is logged as a warning", async (_, thrown) => {
+    for (const [status, message] of [
+      [409, "the company repo has a merge in progress; finish or abort it"],
+      [503, "the company repo is locked by .git/index.lock; if no git command is running there, remove it"],
+    ] as const) {
+      const lines: string[] = []
+      const busy: Route<Ctx> = {
+        method: "PUT",
+        path: "/profiles/:handle",
+        handler: () => {
+          throw thrown(new CompanyRepoBusy(status, message))
+        },
+      }
+      const { sock } = await serve([busy], { log: (line) => lines.push(line) })
+      const r = await request(sock, "PUT", "/profiles/minh")
+      expect(r.status).toBe(status)
+      expect(r.json()).toEqual({ error: "company_repo_busy", message })
+      expect(lines.filter((line) => line.includes("internal error"))).toEqual([])
+      const warnings = lines.filter((line) => line.includes(" WARNING opencorp.daemon.http: "))
+      expect(warnings.map((line) => line.split(": ").slice(1).join(": "))).toEqual([
+        `company repo busy on PUT /profiles/:handle: company_repo_busy: ${message}`,
+      ])
+
+      // A log hook that throws doesn't stop the reply.
+      const throwing = await serve([busy], {
+        log: () => {
+          throw new Error("log hook failed")
+        },
+      })
+      expect((await request(throwing.sock, "PUT", "/profiles/minh")).status).toBe(status)
+    }
   })
 
   test("the request signal aborts when the client goes away", async () => {

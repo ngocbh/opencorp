@@ -8,6 +8,7 @@ import http, {
 } from "node:http"
 import { type ErrorCode, validationMessage } from "@opencorp/protocol"
 import type { z } from "zod"
+import { repoBusy } from "../company/git.ts"
 import { NotFound } from "../store/store.ts"
 
 /** A route's path params, decoded. */
@@ -433,6 +434,18 @@ export function requestListener<C>(
       if (error instanceof HttpError) return reply(error.status, apiError(error.code, error.message), unread)
       // Store messages name ids, never values.
       if (error instanceof NotFound) return reply(404, apiError("not_found", error.message), unread)
+      // A human's merge, a conflict or a stale lock in the company repo: its messages name no absolute path.
+      const busy = repoBusy(error)
+      if (busy !== null) {
+        reply(busy.status, apiError(busy.code, busy.message), unread)
+        // Logged so the owner sees why writes are refused; unlike a 500's, the message is a fixed text.
+        try {
+          const where = `${method} ${route?.path ?? "(no route)"}`
+          const message = `company repo busy on ${where}: ${busy.code}: ${busy.message}`
+          options.log(logLine("WARNING", "opencorp.daemon.http", message))
+        } catch {}
+        return
+      }
       // The client left, so a handler that honours `ctx.signal` and rejects (an AbortError) is neither answered
       // nor logged.
       if (controller.signal.aborted) return
