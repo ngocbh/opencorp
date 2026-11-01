@@ -600,6 +600,55 @@ test("a new actor after a switch starts a fresh run with the woken note", async 
   expect(fake.requests().at(-1)!.model).toBe("stub-2")
 })
 
+// A switch on a live chat: the actor reacts to it.
+
+/** Waits for session `sid`'s worker to park; returns its pid. */
+async function parkedPid(h: Harness, sid: string): Promise<number> {
+  await waitFor(() => h.registry.get(sid)?.parked === true, { what: "the worker to park" })
+  return h.registry.get(sid)!.pid
+}
+
+/** Whether process `pid` is alive. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+test("a switch closes the parked worker", async () => {
+  const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
+  const s = await start(h)
+  const pid = await parkedPid(h, s.id)
+  await h.harness.setModel(s.id, "second", "stub-5")
+  expect(h.registry.get(s.id)).toBeUndefined()
+  await waitFor(() => !alive(pid), { what: "the parked worker to exit" })
+})
+
+test("a switch to the same pick keeps the parked worker", async () => {
+  const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
+  const s = await start(h)
+  const pid = await parkedPid(h, s.id)
+  expect(picked(await h.harness.setModel(s.id, "office", "stub"))).toEqual(["office", null, null])
+  expect(h.registry.get(s.id)?.pid).toBe(pid)
+  expect(alive(pid)).toBe(true)
+})
+
+test("a reply that finishes after a switch doesnt park its worker", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+  fake.script({ content: "Done on one.", hold: 30 })
+  const s = await start(h)
+  await h.harness.prompt(s.id, "a")
+  await fake.waitForRequests(1)
+  await h.harness.setModel(s.id, "second", "stub-2")
+  fake.release()
+  await waitFor(() => texts(h, s.id).at(-1) === "Done on one." && status(h, s.id) === "idle", { what: "the reply" })
+  await waitFor(() => h.registry.get(s.id) === undefined, { what: "the worker to exit" })
+})
+
 // Subscriptions.
 
 /** A subscription runs against chatgpt.com; should a test's worker ever call it, the call goes nowhere. */

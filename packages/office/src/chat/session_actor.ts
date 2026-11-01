@@ -1010,12 +1010,15 @@ export class SessionActor implements LiveCalls {
   /**
    * Switches the session to connection `connection` and `model` (null: the connection's own), clears its note and
    * returns the stored session. A reply already running finishes where it is, on the old model; the next run call is
-   * a fresh run on the new pick (`#recordCheck`). Refused with `409 not_live`, `409 ending` or `503 stopping`.
+   * a fresh run on the new pick (`#recordCheck`). The parked worker is closed unless it ran on the new pick.
+   * Refused with `409 not_live`, `409 ending` or `503 stopping`.
    */
   setModel(connection: string, model: string | null): Promise<SessionRecord> {
     return this.#command(async () => {
       this.#live()
       this.#ctx.store.updateSession(this.sessionId, { connection, model, model_note: null })
+      // A fresh run never reuses it, and it holds the old connection's key.
+      if (this.#parked !== null && !this.#onPick(this.#parked.ranOn)) await this.#releaseParked()
       this.#trySettle("after a switch")
       return this.#session()
     })
@@ -1180,6 +1183,13 @@ export class SessionActor implements LiveCalls {
     }
     this.#next.push(p)
     return this.#run === null
+  }
+
+  /** Whether `ranOn` is the session's connection and model now, compared as the record check compares them. */
+  #onPick(ranOn: { name: string; model: string | null } | null): boolean {
+    const session = this.#ctx.store.getSession(this.sessionId)
+    if (ranOn === null || session === undefined) return false
+    return ranOn.name === (session.connection || OFFICE) && ranOn.model === session.model
   }
 
   /** The decided reply of a message queued now: `queued` over the cost cap, where no turn runs until a raise. */
@@ -2167,7 +2177,11 @@ export class SessionActor implements LiveCalls {
       worker.closeChannel()
       return
     }
-    if (!run.exited) this.#keep(run, worker)
+    if (!run.exited) {
+      this.#keep(run, worker)
+      // Switched since its spawn: the next run call is a fresh run, which never reuses it.
+      if (!this.#onPick(run.ranOn)) await this.#releaseParked()
+    }
     await this.#callEnded(run)
   }
 
