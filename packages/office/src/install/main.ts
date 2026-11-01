@@ -21,7 +21,7 @@ import { type CheckOptions, checks, exitCode, hqPortChecks, hqStatus, report } f
 import * as fallback from "./fallback.ts"
 import { init } from "./init.ts"
 import { JsonPrompter, type TextOut } from "./json_prompts.ts"
-import { defaultHost, type Env, type Host, type Launch, launch, ServiceError } from "./launch.ts"
+import { defaultHost, type Env, type Host, type Launch, launch, ServiceError, wantedHome } from "./launch.ts"
 import { Declined, OffboardError, offboard } from "./offboard.ts"
 import {
   checkSocket,
@@ -272,6 +272,8 @@ function parse(command: string, argv: string[]): Args | string {
   }
   const args = parsed.values as Args
   if (args.help) return args
+  // An empty home would resolve to the cwd, and falling back to the default would point offboard at the real office.
+  if (args.home === "") return "argument --home: the home can't be empty"
   // In argv order, as argparse words it: the later flag is the one not allowed.
   const given = parsed.tokens.flatMap((t) => (t.kind === "option" && EXCLUSIVE.includes(t.name) ? [t.name] : []))
   const later = given.find((name) => name !== given[0])
@@ -366,10 +368,10 @@ export async function run(argv: string[], setup: Partial<Setup> = {}): Promise<n
   return exit(code)
 }
 
-/** The home to use: `--home`, else `$OPENCORP_HOME` (empty is unset), else `~/.opencorp`; resolved by each
- *  command through `launch`. */
+/** The home to use (`wantedHome`): `--home`, which `parse` refuses empty, else `$OPENCORP_HOME` (empty is unset),
+ *  else `~/.opencorp`; resolved by each command through `launch`. */
 function home(value: string | undefined, s: Setup): string {
-  return value || s.environ.OPENCORP_HOME || path.join(s.host.userHome, ".opencorp")
+  return wantedHome(value, s.environ, s.host.userHome)
 }
 
 /** The prompter for init and onboard: the setup screen's with `--json-prompts`, else the terminal's, which asks

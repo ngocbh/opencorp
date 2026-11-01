@@ -105,6 +105,12 @@ export function resolveHome(value: string): string {
   }
 }
 
+/** The home a command asked for, unresolved: `value` (its `--home`), else `$OPENCORP_HOME`, else `~/.opencorp`
+ *  under `userHome`. An empty `$OPENCORP_HOME` counts as unset. */
+export function wantedHome(value: string | undefined, environ: Env, userHome = os.homedir()): string {
+  return value ?? (environ.OPENCORP_HOME || path.join(userHome, ".opencorp"))
+}
+
 /** The daemon's arguments: `--home <path>` and the re-exec's `--reexeced` mark, nothing else; throws on any other
  *  argument and on an empty home. The daemon's one parser, used before and after the re-exec, so the two can't
  *  disagree. */

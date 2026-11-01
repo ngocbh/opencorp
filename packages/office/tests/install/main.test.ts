@@ -130,6 +130,41 @@ test("an empty opencorp home means the default", async () => {
   expect(s.out()).toContain(`no company repo at ${dir}/.opencorp/company`)
 })
 
+test.each(["init", "onboard", "offboard", "doctor", "start", "restart"])(
+  "an empty home is a usage error [%s]",
+  async (command) => {
+    for (const flag of [["--home", ""], ["--home="]]) {
+      const dir = tempDir()
+      const runner = new Runner()
+      const s = {
+        ...standIns(dir),
+        host: makeHost(dir, runner),
+        // Where an empty home used to fall back to: nothing may be read or written there.
+        environ: { OPENCORP_HOME: path.join(dir, "elsewhere") },
+        init: mustNotRun,
+        onboard: mustNotRun,
+        offboard: mustNotRun,
+      }
+      expect(await main([command, ...flag], s)).toBe(2)
+      expect(s.err()).toStartWith(`usage: opencorp install ${command}`)
+      expect(s.err()).toContain(`opencorp install ${command}: error: argument --home: the home can't be empty\n`)
+      expect(s.out()).toBe("")
+      expect(runner.calls).toEqual([])
+      expect(fs.readdirSync(dir)).toEqual([])
+    }
+  },
+)
+
+test("offboard with yes and an empty home removes nothing", async () => {
+  const dir = tempDir()
+  const office = path.join(dir, "elsewhere", "office")
+  fs.mkdirSync(office, { recursive: true })
+  const s = { ...standIns(dir), environ: { OPENCORP_HOME: path.join(dir, "elsewhere") } }
+  expect(await main(["offboard", "--yes", "--home", ""], s)).toBe(2)
+  expect(s.err()).toContain("argument --home: the home can't be empty")
+  expect(fs.statSync(office).isDirectory()).toBe(true)
+})
+
 /** What a stand-in for init, onboard or offboard was called with. */
 interface Call<O> {
   home: string

@@ -15,6 +15,7 @@ import {
   pinDaemon,
   resolveHome,
   runCommand,
+  wantedHome,
   which,
 } from "../../src/install/launch.ts"
 import { sameProcess, startTime } from "../../src/install/proc.ts"
@@ -155,6 +156,14 @@ test("the daemon parser takes home and reexeced and nothing else", () => {
   for (const argv of [["--reexeced=x"], ["--bogus"], ["pos"]]) expect(() => daemonArgs(argv)).toThrow()
   // An empty home would resolve to the cwd.
   expect(() => daemonArgs(["--home="])).toThrow("the home can't be empty")
+})
+
+test("the wanted home is the flag, else OPENCORP_HOME, else the default", () => {
+  expect(wantedHome("/f", { OPENCORP_HOME: "/x" }, "/u")).toBe("/f")
+  expect(wantedHome(undefined, { OPENCORP_HOME: "/x" }, "/u")).toBe("/x")
+  // An empty value counts as unset.
+  expect(wantedHome(undefined, { OPENCORP_HOME: "" }, "/u")).toBe("/u/.opencorp")
+  expect(wantedHome(undefined, {}, "/u")).toBe("/u/.opencorp")
 })
 
 const COMMAND: [string] = ["/opt/opencorp/bin/opencorp"]
