@@ -53,7 +53,7 @@ export class Hq {
     this.api = officeApi()
     this.build = new BuildInfo(config.appDir)
     this.snapshots = office.snapshots
-    this.sessions = new BrowserSessions(office.store, this.snapshots)
+    this.sessions = new BrowserSessions(office.store, this.snapshots, { log })
     this.codes = new PairCodes(office.paths.office, { log })
     this.logins = new Logins(this.sessions)
     this.source = new CompanySource(office.git)

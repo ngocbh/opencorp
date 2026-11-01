@@ -365,17 +365,24 @@ test("the history isnt read while HEAD is the issue commit, and once per HEAD, i
   expect(counter.calls).toBe(3)
 })
 
-test("a failed history read rejects the check, keeps the session and is read again", async () => {
+test("a failed history read refuses the check, keeps the session, logs its type and is read again", async () => {
   const office = makeOffice()
+  const lines: string[] = []
   let calls = 0
-  const s = sessionsFor(office, new Clock(), undefined, (git, relpath, from, to) => {
-    calls++
-    return calls === 1 ? Promise.reject(new Error("git went away")) : git.goneSince(relpath, from, to)
+  const s = new BrowserSessions(office.store, new CompanySnapshots(office.git), {
+    goneSince: (git, relpath, from, to) => {
+      calls++
+      return calls === 1 ? Promise.reject(new Error("git went away at /secret")) : git.goneSince(relpath, from, to)
+    },
+    log: (line) => lines.push(line),
   })
   const [pub, cookie] = await s.issue("ngocbh", ISSUE)
   handEdit(office.paths.company, "minh", { title: "Lead" })
-  await expect(s.check(cookie)).rejects.toThrow("git went away")
+  expect(await s.check(cookie)).toBeNull()
   expect(office.store.getHqSession(pub.id)).toBeDefined()
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).toContain("refusing it: Error")
+  expect(lines[0]).not.toContain("/secret")
   expect((await s.check(cookie))?.id).toBe(pub.id)
   expect(calls).toBe(2)
 })

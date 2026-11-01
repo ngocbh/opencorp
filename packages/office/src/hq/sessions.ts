@@ -13,7 +13,7 @@ import type { z } from "zod"
 import { type CompanyGit, isCommitId } from "../company/git.ts"
 import { parseFile } from "../company/issues.ts"
 import type { CompanySnapshots } from "../company/snapshot.ts"
-import { HttpError } from "../daemon/http.ts"
+import { errorType, HttpError, logLine } from "../daemon/http.ts"
 import { HqSessionRecord, newId, type Store } from "../store/store.ts"
 
 type BrowserSession = z.output<typeof BrowserSessionSchema>
@@ -146,6 +146,7 @@ export class BrowserSessions {
   clock: () => Date
   readonly #fingerprints: Fingerprints
   readonly #goneSince: GoneSince
+  readonly #log: (line: string) => void
   // By "<to> <from> <person>"; a Map keeps insertion order, so its first key is the oldest answer.
   readonly #gone = new Map<string, Promise<boolean>>()
   readonly #live = new Map<string, Live>()
@@ -157,10 +158,12 @@ export class BrowserSessions {
       clock = () => new Date(),
       passwordFps: load = passwordFps,
       goneSince = (git, relpath, from, to) => git.goneSince(relpath, from, to),
+      log = () => {},
     }: {
       clock?: () => Date
       passwordFps?: (git: CompanyGit, sha: string) => Promise<Humans>
       goneSince?: GoneSince
+      log?: (line: string) => void
     } = {},
   ) {
     this.store = store
@@ -168,6 +171,7 @@ export class BrowserSessions {
     this.clock = clock
     this.#fingerprints = new Fingerprints(snapshots.git, load)
     this.#goneSince = goneSince
+    this.#log = log
   }
 
   /** How many sessions are held in memory (live, or revoked and not yet expired). */
@@ -289,7 +293,17 @@ export class BrowserSessions {
     if (row === null) return null // only a cookie that proves the secret gets past here
     const sid = row.id
     const [view, humans] = await this.#atHead()
-    if (view === null || (await this.#goneBetween(row.person, row.issuedSha, view.sha))) {
+    let gone: boolean
+    try {
+      gone = view === null || (await this.#goneBetween(row.person, row.issuedSha, view.sha))
+    } catch (error) {
+      // Refused without ending it, as when the person's file can't be read, so this browser can still pair or sign
+      // in again; a HEAD that can't be read throws above instead.
+      const text = `couldn't read the history of HQ session ${sid}'s person; refusing it: ${errorType(error)}`
+      this.#log(logLine("ERROR", "opencorp.hq.sessions", text))
+      return null
+    }
+    if (view === null || gone) {
       await this.revoke(sid)
       return null
     }
