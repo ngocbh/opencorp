@@ -6,8 +6,8 @@ import { HttpError } from "../../src/daemon/http.ts"
 import { SIGN_IN, browserAuth } from "../../src/hq/auth.ts"
 import type { Hq } from "../../src/hq/core.ts"
 import type { BrowserSessions, Who } from "../../src/hq/sessions.ts"
-import { CEO, makeOffice } from "../daemon/helpers.ts"
-import { type HqClient, PORT, hqClient, makeHq, pairCode, web } from "./helpers.ts"
+import { CEO, addHuman, makeOffice } from "../daemon/helpers.ts"
+import { type HqClient, PORT, handEdit, hqClient, makeHq, pairCode, web } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -40,6 +40,7 @@ test("the open requests and the app need no session", async () => {
     ["HEAD", "/api/health"],
     ["POST", "/api/pair"],
     ["POST", "/api/login"],
+    ["POST", "/api/logout"],
     ["GET", "/"],
     ["GET", "/assets/x.js"],
     // Decoded to /api/login, as uvicorn decoded the path Python matched.
@@ -54,6 +55,8 @@ test("the open requests and the app need no session", async () => {
     ["GET", "/api/login"],
     ["POST", "/api/login/"],
     ["POST", "/api/loginx"],
+    ["GET", "/api/logout"],
+    ["POST", "/api/logout/"],
   ] as const) {
     const s = sessions(WHO)
     expect(await browserAuth(s, request(method, url))).toBe(WHO)
@@ -280,16 +283,60 @@ test("logout needs a session", async () => {
   expect((await client.post("/api/logout", {})).status).toBe(401)
 })
 
-test("a failing check of the old cookie doesnt burn the code", async () => {
+test("logout while the person file cant be read ends the session", async () => {
+  const office = makeOffice()
+  const hq = await makeHq(office)
+  const client = await web(hq)
+  const sid = ((await pair(client, hq)).json() as Body).id as string
+  const cookie = `opencorp_hq_${PORT}=${client.cookies.get(`opencorp_hq_${PORT}`)}`
+  handEdit(office.paths.company, CEO, { nickname: "typo" })
+  expect((await client.get("/api/whoami")).status).toBe(401)
+  const r = await client.post("/api/logout", {})
+  expect([r.status, r.json()]).toEqual([200, { ok: true }])
+  expect(r.headers["set-cookie"]![0]).toContain("Max-Age=0")
+  expect(office.store.getHqSession(sid)).toBeUndefined()
+  handEdit(office.paths.company, CEO, { nickname: undefined })
+  expect((await client.get("/api/whoami", { headers: { cookie } })).status).toBe(401)
+})
+
+test("logout with a cookie that proves nothing revokes nothing", async () => {
+  const office = makeOffice()
+  const hq = await makeHq(office)
+  const client = await web(hq)
+  const [other] = await hq.sessions.issue(CEO, { issuedBy: CEO, label: null })
+  client.cookies.set(`opencorp_hq_${PORT}`, `${other.id}.forged`)
+  const r = await client.post("/api/logout", {})
+  expect([r.status, (r.json() as Body).error]).toEqual([401, "sign_in_required"])
+  expect(office.store.getHqSession(other.id)).toBeDefined()
+})
+
+test("pairing replaces the old session even while its person file cant be read", async () => {
+  const office = makeOffice()
+  const hq = await makeHq(office)
+  addHuman(office.paths.company, "lan")
+  const client = await web(hq)
+  const first = ((await pair(client, hq)).json() as Body).id as string
+  handEdit(office.paths.company, CEO, { nickname: "typo" })
+  const code = (await hq.mint("lan", { issuer: CEO, openFile: false })).path.split("#")[1]!
+  const r = await client.post("/api/pair", { code })
+  expect([r.status, (r.json() as Body).person]).toEqual([200, "lan"])
+  expect(office.store.getHqSession(first)).toBeUndefined()
+})
+
+test("a failing read of the old cookie doesnt burn the code", async () => {
   const hq = await makeHq(makeOffice())
   const client = await web(hq)
   const code = await pairCode(hq)
   // An own property over the prototype's method, deleted below so the method is back.
-  Object.assign(hq.sessions, { check: async () => Promise.reject(new Error("git went away")) })
+  Object.assign(hq.sessions, {
+    proven: () => {
+      throw new Error("store went away")
+    },
+  })
   try {
     expect((await client.post("/api/pair", { code })).status).toBe(500)
   } finally {
-    delete (hq.sessions as { check?: unknown }).check
+    delete (hq.sessions as { proven?: unknown }).proven
   }
   expect((await client.post("/api/pair", { code })).status).toBe(200)
 })

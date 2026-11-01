@@ -5,12 +5,22 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { parse, stringify } from "yaml"
 import { checkPassword, DUMMY_HASH, hashPassword } from "../../src/auth/passwords.ts"
 import type { Hq } from "../../src/hq/core.ts"
-import { BadCredentials, Busy, CHECKS, LIMIT, Logins, MAX_KEYS, Throttle, Throttled } from "../../src/hq/login.ts"
+import {
+  BadCredentials,
+  Busy,
+  CHECKS,
+  LIMIT,
+  Logins,
+  MAX_KEYS,
+  Throttle,
+  Throttled,
+  UnreadablePerson,
+} from "../../src/hq/login.ts"
 import { passwordFp } from "../../src/hq/sessions.ts"
 import { git } from "../company/helpers.ts"
-import { CEO, type Reply, makeOffice } from "../daemon/helpers.ts"
+import { CEO, type Reply, addHuman, makeOffice } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
-import { type HqClient, ORIGIN, PORT, hqClient, makeHq, pairCode, web } from "./helpers.ts"
+import { type HqClient, ORIGIN, PORT, handEdit, hqClient, makeHq, pairCode, web } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -308,7 +318,7 @@ test("a check whose request went away still holds its slot", async () => {
   const entered: string[] = []
   const held: ((matched: boolean) => void)[] = []
   const logins = new Logins(
-    { passwordHash: async () => null },
+    { passwordHash: async () => ({ hash: null, unreadable: false }) },
     {
       checkPassword: (_password, phc) => {
         entered.push(phc)
@@ -339,7 +349,7 @@ test("a check that errors gives its slot back and counts no failure", async () =
     [
       "the check throws",
       [
-        { passwordHash: async () => PHC },
+        { passwordHash: async () => ({ hash: PHC, unreadable: false }) },
         {
           checkPassword: (() => {
             throw error
@@ -347,7 +357,10 @@ test("a check that errors gives its slot back and counts no failure", async () =
         },
       ],
     ],
-    ["the check rejects", [{ passwordHash: async () => PHC }, { checkPassword: () => Promise.reject(error) }]],
+    [
+      "the check rejects",
+      [{ passwordHash: async () => ({ hash: PHC, unreadable: false }) }, { checkPassword: () => Promise.reject(error) }],
+    ],
   ]
   for (const [what, args] of cases) {
     const logins = new Logins(...args)
@@ -362,7 +375,7 @@ test("a check that errors gives its slot back and counts no failure", async () =
 test("an unknown handle is checked against the dummy hash and fails", async () => {
   const checked: string[] = []
   const logins = new Logins(
-    { passwordHash: async () => null },
+    { passwordHash: async () => ({ hash: null, unreadable: false }) },
     {
       checkPassword: async (_password, phc) => {
         checked.push(phc)
@@ -374,11 +387,40 @@ test("an unknown handle is checked against the dummy hash and fails", async () =
   expect(checked).toEqual([DUMMY_HASH])
 })
 
+test("an unreadable person file costs a full check then fails and counts", async () => {
+  const checked: string[] = []
+  let release!: () => void
+  const logins = new Logins(
+    { passwordHash: async () => ({ hash: null, unreadable: true }) },
+    {
+      clock: clockAt().call,
+      checkPassword: async (_password, phc) => {
+        checked.push(phc)
+        if (checked.length === 1) await new Promise<void>((resolve) => (release = resolve))
+        return false
+      },
+    },
+  )
+  let settled = false
+  const first = rejection(logins.check("p", "ngocbh", PASSWORD)).finally(() => (settled = true))
+  await waitFor(() => checked.length === 1, { timeout: 5000, what: "the check" })
+  await Bun.sleep(10)
+  expect(settled).toBe(false)
+  release()
+  const error = await first
+  expect(error).toBeInstanceOf(UnreadablePerson)
+  expect(error).toBeInstanceOf(BadCredentials)
+  expect(checked).toEqual([DUMMY_HASH])
+  for (let i = 0; i < LIMIT - 1; i++)
+    expect(await rejection(logins.check("p", "ngocbh", PASSWORD))).toBeInstanceOf(UnreadablePerson)
+  expect(await rejection(logins.check("p", "ngocbh", PASSWORD))).toBeInstanceOf(Throttled)
+})
+
 test("a throttled pair is refused before the password is checked", async () => {
   const clock = clockAt()
   const checked: string[] = []
   const logins = new Logins(
-    { passwordHash: async () => PHC },
+    { passwordHash: async () => ({ hash: PHC, unreadable: false }) },
     {
       clock: clock.call,
       checkPassword: async (password, phc) => {
@@ -399,7 +441,7 @@ test("a throttled pair is refused before the password is checked", async () => {
 
 test("the right password returns the fingerprint of its hash and clears the failures", async () => {
   const logins = new Logins(
-    { passwordHash: async () => PHC },
+    { passwordHash: async () => ({ hash: PHC, unreadable: false }) },
     { clock: clockAt().call, checkPassword: async (password, phc) => password === PASSWORD && phc === PHC },
   )
   for (let i = 0; i < 4; i++)
@@ -537,4 +579,65 @@ test("an encoded login path is the open login route", async () => {
   expect([miss.status, (miss.json() as Body).error]).toEqual([404, "no_route"])
   expect(miss.headers).not.toHaveProperty("set-cookie")
   expect(office.store.listHqSessions()).toHaveLength(1)
+})
+
+test("a sign in while the person file cant be read is the same 401 and logged apart", async () => {
+  const lines: string[] = []
+  const { office, client } = await withPassword({ logs: lines })
+  handEdit(office.paths.company, CEO, { nickname: "typo" })
+  const r = await login(client)
+  expect([r.status, r.json()]).toEqual([401, BAD])
+  expect(r.headers).not.toHaveProperty("set-cookie")
+  expect(messages(lines)).toContain(
+    "sign-in for @ngocbh from 127.0.0.1 refused: people/ngocbh/person.yaml can't be read",
+  )
+  expect(messages(lines).filter((m) => m.endsWith(" failed"))).toEqual([])
+  expect(lines.join("\n")).not.toContain(PASSWORD)
+})
+
+test("a password typed as the handle never reaches the log", async () => {
+  const lines: string[] = []
+  const { hq, client } = await withPassword({ logs: lines })
+  const typed = "hunter2-secret-pw"
+  delegating(hq, fast)
+  const clock = { now: 1000 }
+  hq.logins.throttle.clock = () => clock.now
+  for (let i = 0; i < LIMIT; i++) expect((await login(client, typed, PASSWORD)).status).toBe(401)
+  expect((await login(client, typed, PASSWORD)).status).toBe(429)
+  expect(messages(lines)).toContain("sign-in for an unknown handle from 127.0.0.1 failed")
+  expect(messages(lines)).toContain("sign-in for an unknown handle from 127.0.0.1 throttled for 60 s")
+  expect(lines.join("\n")).not.toContain(typed)
+})
+
+test("an agent handle is still named", async () => {
+  const lines: string[] = []
+  const { client } = await withPassword({ logs: lines })
+  expect((await login(client, "minh")).status).toBe(401)
+  expect(messages(lines)).toContain("sign-in for @minh from 127.0.0.1 failed")
+})
+
+test("a failing handle lookup logs an unknown handle", async () => {
+  const lines: string[] = []
+  const { hq, client } = await withPassword({ logs: lines })
+  // An own property over the prototype's method, deleted below so the method is back.
+  Object.assign(hq.sessions, { knows: async () => Promise.reject(new Error("git went away")) })
+  try {
+    const r = await login(client, CEO, "a wrong guess")
+    expect([r.status, r.json()]).toEqual([401, BAD])
+  } finally {
+    delete (hq.sessions as { knows?: unknown }).knows
+  }
+  expect(messages(lines)).toContain("sign-in for an unknown handle from 127.0.0.1 failed")
+})
+
+test("signing in replaces the old session even while its person file cant be read", async () => {
+  const { office, hq, client } = await withPassword()
+  addHuman(office.paths.company, "lan")
+  setPassword(office.paths.company, "lan", await hashPassword(PASSWORD))
+  const first = ((await login(client)).json() as Body).id as string
+  handEdit(office.paths.company, CEO, { nickname: "typo" })
+  expect(hq.sessions.proven(client.cookies.get(`opencorp_hq_${PORT}`))).toBe(first)
+  const r = await login(client, "lan")
+  expect([r.status, (r.json() as Body).person]).toEqual([200, "lan"])
+  expect(office.store.getHqSession(first)).toBeUndefined()
 })

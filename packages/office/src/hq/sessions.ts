@@ -165,12 +165,20 @@ export class BrowserSessions {
     return [view, view === null ? { fps: new Map(), unreadable: new Set() } : await this.#fingerprints.at(view.sha)]
   }
 
-  /** `person`'s password hash at HEAD, or null unless they are a human with a password there. */
-  async passwordHash(person: string): Promise<string | null> {
+  /** `person`'s password hash at HEAD (null unless they are a human with a password there), and whether their
+   *  `person.yaml` can't be read there. */
+  async passwordHash(person: string): Promise<{ hash: string | null; unreadable: boolean }> {
     const view = await this.snapshots.head()
-    if (view === null) return null
-    const [hashes] = await humans(this.snapshots.git, view.sha)
-    return hashes.get(person) ?? null
+    if (view === null) return { hash: null, unreadable: false }
+    const [hashes, unreadable] = await humans(this.snapshots.git, view.sha)
+    return { hash: hashes.get(person) ?? null, unreadable: unreadable.has(person) }
+  }
+
+  /** Whether `handle` names a person at HEAD, of any kind, or one whose `person.yaml` can't be read there. Reads the
+   *  cached snapshot and fingerprints, so every handle costs the same. */
+  async knows(handle: string): Promise<boolean> {
+    const [view, humans] = await this.#atHead()
+    return view !== null && (view.people.some((p) => p.handle === handle) || humans.unreadable.has(handle))
   }
 
   /**
@@ -220,19 +228,20 @@ export class BrowserSessions {
     return [record.public(), `${record.id}.${secret}`]
   }
 
+  /** The id of the session `cookie` proves (its secret and its id, not expired), whatever HEAD says; never ends or
+   *  touches it. For ending the session a cookie proves. */
+  proven(cookie: string | null | undefined): string | null {
+    return this.#proof(cookie, stamp(this.clock()))?.id ?? null
+  }
+
   /** The session `cookie` carries, if it's live and its person, at HEAD, is still a human with the same password; a
    *  session failing those checks is ended. */
   async check(cookie: string | null | undefined): Promise<Who | null> {
-    const text = cookie ?? ""
-    const dot = text.indexOf(".")
-    const sid = dot < 0 ? text : text.slice(0, dot)
-    const secret = dot < 0 ? "" : text.slice(dot + 1)
-    if (!sid || !secret) return null
     const at = this.clock()
     const now = stamp(at)
-    this.#forgetExpired(now)
-    const row = this.store.hqSessionBySecret(secretSha256(secret), now)
-    if (row === undefined || row.id !== sid) return null // only a cookie that proves the secret gets past here
+    const row = this.#proof(cookie, now)
+    if (row === null) return null // only a cookie that proves the secret gets past here
+    const sid = row.id
     const [view, humans] = await this.#atHead()
     // A typo, or a field from a newer writer, isn't offboarding: refuse until the file reads again.
     if (humans.unreadable.has(row.person)) return null
@@ -348,6 +357,18 @@ export class BrowserSessions {
   /** Shows how many sessions are tracked, never a fingerprint. */
   [inspect.custom](): string {
     return `BrowserSessions ${inspect(this.toJSON())}`
+  }
+
+  /** The unexpired row whose secret and id `cookie` (`<id>.<secret>`) carries, at time `now`; null otherwise. */
+  #proof(cookie: string | null | undefined, now: string): HqSessionRecord | null {
+    const text = cookie ?? ""
+    const dot = text.indexOf(".")
+    const sid = dot < 0 ? text : text.slice(0, dot)
+    const secret = dot < 0 ? "" : text.slice(dot + 1)
+    if (!sid || !secret) return null
+    this.#forgetExpired(now)
+    const row = this.store.hqSessionBySecret(secretSha256(secret), now)
+    return row !== undefined && row.id === sid ? row : null
   }
 
   /** Drops the in-memory entries of sessions past their expiry that no stream holds, so the entries stay bounded by
