@@ -282,6 +282,20 @@ test("a model that doesnt answer never quotes the path of an endpoint that ends 
   expect(leaks(message, "team-sk-123")).toEqual([])
 })
 
+test("a model that doesnt answer never quotes the endpoint in its normalized form", async () => {
+  const body = { provider: "openai", endpoint: "https://gw.example.com:443/team-sk-123/v1/", api_key: SENTINEL, model: "m1" }
+  const problem = "request to https://gw.example.com/team-sk-123/v1/chat/completions failed"
+  const message = await refusedWith(body, problem)
+  expect(message).toBe("The model didn't answer: request to the endpoint/chat/completions failed")
+  expect(leaks(message, "team-sk-123")).toEqual([])
+})
+
+test("a model id with no letter or digit is left as is", async () => {
+  const body = { provider: "openai", api_key: SENTINEL, model: "-" }
+  const message = await refusedWith(body, "model - not found; try gpt-5-mini")
+  expect(message).toBe("The model didn't answer: model - not found; try gpt-5-mini")
+})
+
 test("an azure resource is replaced even where another host continues it", async () => {
   const body = { provider: "azure", endpoint: "sk-AzureRes-KEY123", api_key: SENTINEL, model: "gpt-5.4-x" }
   const message = await refusedWith(body, "getaddrinfo ENOTFOUND sk-azureres-key123.cognitiveservices.azure.com")

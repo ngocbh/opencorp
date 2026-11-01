@@ -123,11 +123,14 @@ function llmConfig(body: AddBody): LlmConfig {
 function scrubInput(text: string, body: AddBody, llm: LlmConfig): string {
   // Yian refuses a base URL with credentials, so none reaches here. A host printed in its Unicode form isn't matched.
   const names = new Map<string, string>()
-  if (body.model) names.set(body.model.toLowerCase(), "the model")
+  // An id with no letter or digit names nothing, and replacing it would garble the provider's text.
+  if (body.model && /[\p{L}\p{N}]/u.test(body.model)) names.set(body.model.toLowerCase(), "the model")
   const endpoint = (body.endpoint ?? "").trim()
   const baseUrl = typeof llm.base_url === "string" ? llm.base_url : ""
   const host = URL.parse(baseUrl)?.hostname ?? ""
-  for (const url of [endpoint, baseUrl, host]) {
+  // The provider may print the URL normalized, e.g. without a default port.
+  const normalized = URL.parse(baseUrl)?.href ?? ""
+  for (const url of [endpoint, baseUrl, normalized, host]) {
     // Without a trailing `/`, so the path that follows still reads as one: "the endpoint/chat/completions".
     const name = url.replace(/\/+$/, "")
     if (name) names.set(name.toLowerCase(), "the endpoint")
