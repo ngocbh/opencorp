@@ -7,6 +7,10 @@ import { errorName } from "../worker/rpc.ts"
 /** How long an update waits for the index's lock, in milliseconds. */
 export const INDEX_TIMEOUT_MS = 2000
 
+/** How long close waits for the thread to stop, in milliseconds: longer than INDEX_TIMEOUT_MS, as a healthy thread can
+ *  be in SQLite's busy wait for the lock. */
+export const CLOSE_MS = 3000
+
 // The skipped logs already logged; cleared when full, so a damaged log is logged again only after many others.
 const SKIPPED_CAP = 10_000
 
@@ -38,6 +42,7 @@ export class RunIndexer {
   readonly #log: (line: string) => void
   readonly #start: (runsDir: string, timeoutMs: number) => IndexThread
   readonly #timeoutMs: number
+  readonly #closeMs: number
   #thread: IndexThread | null = null
   #current: Update | null = null
   #next: Update | null = null
@@ -50,12 +55,14 @@ export class RunIndexer {
       log?: (line: string) => void
       start?: (runsDir: string, timeoutMs: number) => IndexThread
       timeoutMs?: number
+      closeMs?: number
     } = {},
   ) {
     this.#runsDir = runsDir
     this.#log = options.log ?? (() => {})
     this.#start = options.start ?? startThread
     this.#timeoutMs = options.timeoutMs ?? INDEX_TIMEOUT_MS
+    this.#closeMs = options.closeMs ?? CLOSE_MS
   }
 
   /** Brings the index up to date with an update that starts after this call: `true` when it did, `false` when it
@@ -69,7 +76,9 @@ export class RunIndexer {
     return this.#begin(newUpdate())
   }
 
-  /** Ends the thread; pending and later updates resolve `false`. */
+  /** Ends the thread, waiting at most `closeMs` for it to stop; pending and later updates resolve `false`. A thread
+   *  stuck in a system call (an open of a FIFO) outlives `terminate()`, so close then logs that it timed out and
+   *  returns: the daemon's entry exits with `process.exit`, which doesn't wait for the thread. */
   async close(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
@@ -78,10 +87,17 @@ export class RunIndexer {
     this.#current?.resolve(false)
     this.#next?.resolve(false)
     this.#current = this.#next = null
-    if (thread) {
-      try {
-        await thread.terminate()
-      } catch {}
+    if (!thread) return
+    // No new thread replaces a stuck one: it would only wait on the lock the stuck thread holds.
+    const stopped = Promise.resolve()
+      .then(() => thread.terminate())
+      .then(() => true, () => true)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const late = new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), this.#closeMs)))
+    try {
+      if (!(await Promise.race([stopped, late]))) this.#log("run index thread stopped (close timed out)")
+    } finally {
+      clearTimeout(timer)
     }
   }
 

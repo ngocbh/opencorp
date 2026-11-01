@@ -14,7 +14,7 @@ import { readEvents, refresh } from "../../src/runs/reader.ts"
 import { RunLogs } from "../../src/runs/service.ts"
 import { newId } from "../../src/store/store.ts"
 import { git } from "../company/helpers.ts"
-import { waitFor } from "../helpers.ts"
+import { tempDir, waitFor } from "../helpers.ts"
 import {
   CEO,
   type Frame,
@@ -30,7 +30,7 @@ import {
   take,
   within,
 } from "../daemon/helpers.ts"
-import { chatLog } from "../runs/helpers.ts"
+import { chatLog, committed, fifoAt, runStarted, started } from "../runs/helpers.ts"
 import { question, session, workItem } from "../store/helpers.ts"
 import { HOST, ORIGIN, PORT, dist, makeHq, signedIn, web } from "./helpers.ts"
 
@@ -392,3 +392,29 @@ test("one runs routes are on the allowlist", async () => {
   // No HEAD on the download: HQ's GET catch-all answers it, as any method HQ doesn't serve.
   expect((await client.request("HEAD", `/api/runs/${runId}/log`)).status).toBe(404)
 })
+
+test("a run log that is a symlink isn't downloaded", async () => {
+  const office = makeOffice({ log: () => {} })
+  const client = await signedIn(await makeHq(office))
+  const runId = addRun(office, "chat", CEO, await office.git.head())
+  const file = office.runs.logPath(runId)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const outside = path.join(tempDir(), "outside.jsonl")
+  const secret = "OUTSIDE-SECRET-b3e8f052"
+  fs.writeFileSync(outside, Buffer.concat([runStarted(0), started(1, "a"), committed(2, "a", { output: secret })]))
+  fs.symlinkSync(outside, file)
+  const r = await client.get(`/api/runs/${runId}/log`)
+  expect([r.status, (r.json() as Body).error, r.text.includes(secret)]).toEqual([404, "no_log", false])
+})
+
+test("a run log that is a fifo is no log at once", async () => {
+  const office = makeOffice({ log: () => {} })
+  const client = await signedIn(await makeHq(office))
+  const runId = addRun(office, "chat", CEO, await office.git.head())
+  const file = office.runs.logPath(runId)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fifoAt(file)
+  const start = performance.now()
+  const r = await client.get(`/api/runs/${runId}/events`)
+  expect([r.status, (r.json() as Body).error, performance.now() - start < 1000]).toEqual([404, "no_log", true])
+}, 15_000)

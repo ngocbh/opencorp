@@ -1,6 +1,7 @@
 /** The run-log reader: a lazy, bounded index per log with its node table; node and record pages; plain reads only. */
 import { expect, onTestFinished, spyOn, test } from "bun:test"
 import fs from "node:fs"
+import net from "node:net"
 import path from "node:path"
 import {
   BIG_LINE,
@@ -12,12 +13,14 @@ import {
   EVENT_BYTES,
   FIELD_CHARS,
   HUGE_LINE,
+  type Index,
   LINE_CAP,
   lineEvent,
   logEvents,
   logStream,
   LRU_LOGS,
   nodePage,
+  NotALog,
   PAGE_BYTES,
   PAGE_SCAN,
   readEvent,
@@ -33,7 +36,7 @@ import {
   UnsupportedSchema,
 } from "../../src/runs/reader.ts"
 import { kindOf, recordedKinds } from "../../src/runs/nodes.ts"
-import { tempDir } from "../helpers.ts"
+import { shortDir, tempDir } from "../helpers.ts"
 import {
   chatLog,
   CODED_LOOP_FLOW,
@@ -41,6 +44,7 @@ import {
   committed,
   expanded,
   failed,
+  fifoAt,
   FP,
   line,
   LOOP_FLOW,
@@ -462,7 +466,7 @@ test("a line over 2 mib is a stub with its kind seq and size", async () => {
   const huge = committed(1, "big", { output: "y".repeat(BIG_LINE + 10) })
   const file = logOf(runStarted(0), huge, started(2, "next"))
   const page = readEvents(file, await refresh(file, null), { after: 0, limit: 10 })
-  expect(page.events[0]).toEqual({ seq: 1, kind: "pool_commit", size: huge.length })
+  expect(page.events[0]).toEqual({ seq: 1, kind: "pool_commit", node_id: "big", size: huge.length })
   expect(page.events[1]!.seq).toBe(2)
 })
 
@@ -508,10 +512,10 @@ test("a line over the page cap maps to a stub with its size", async () => {
   const edge = commitOfSize(2, "edge", BIG_LINE + 1, "e")
   const file = logOf(runStarted(0), huge, edge, started(3, "next"))
   const page = readEvents(file, await refresh(file, null), { after: 0, limit: 10 })
-  expect(lineEvent(huge, 1)).toEqual({ seq: 1, kind: "pool_commit", size: huge.length })
+  expect(lineEvent(huge, 1)).toEqual({ seq: 1, kind: "pool_commit", node_id: "big", size: huge.length })
   expect([...logEvents(file, 1, null)]).toEqual(page.events)
   // A line given without its newline is sized with it, as pages size it: just over the cap is a stub too.
-  expect(page.events[1]).toEqual({ seq: 2, kind: "pool_commit", size: BIG_LINE + 1 })
+  expect(page.events[1]).toEqual({ seq: 2, kind: "pool_commit", node_id: "edge", size: BIG_LINE + 1 })
   expect([lineEvent(huge.subarray(0, -1), 1), lineEvent(edge.subarray(0, -1), 2)]).toEqual(page.events.slice(0, 2))
 })
 
@@ -526,14 +530,38 @@ test("a stub whose line is no longer its seq ends the page", async () => {
   expect(readEvents(file, index, { after: 0, limit: 10 })).toEqual({ events: [], next_after: 0, cut: false })
   expect([...logEvents(file, 1, null, index)]).toEqual([null])
   expect(lineEvent(moved, 1)).toBeNull()
-  expect(lineEvent(huge, 1)).toEqual({ seq: 1, kind: "pool_commit", size: huge.length })
+  expect(lineEvent(huge, 1)).toEqual({ seq: 1, kind: "pool_commit", node_id: "big", size: huge.length })
 })
+
+test("a stub carries the node its payload names", async () => {
+  const fill = "y".repeat(BIG_LINE)
+  const cases: [Buffer, string | null][] = [
+    [committed(1, "plain", { output: fill }), "plain"],
+    // An earlier string holding what looks like a key is read past as one string.
+    [line(2, "pool_commit", { key: 'x","node_id":"fake', kind: "str", node_id: "real", value: fill }), "real"],
+    [committed(3, 'a"b\\c', { output: fill }), 'a"b\\c'],
+    [committed(4, "世界🚀", { output: fill }), "世界🚀"],
+    // The failure comes first, and a container is never entered: its node id isn't taken for the payload's.
+    [failed(5, "inner", fill), null],
+    // Cut off by the first 256 bytes.
+    [committed(6, "n".repeat(300), { output: fill }), null],
+  ]
+  const file = logOf(runStarted(0), ...cases.map(([bytes]) => bytes))
+  const page = readEvents(file, await refresh(file, null), { after: 0, limit: 10 })
+  expect(page.events.map((e) => [e.size, e.node_id])).toEqual(cases.map(([bytes, id]) => [bytes.length, id]))
+  expect(cases.map(([bytes], i) => lineEvent(bytes, i + 1))).toEqual(page.events)
+  expect([...logEvents(file, 1, null)]).toEqual(page.events)
+  // A spawner's id when only scalars come first, as `nodeOf` reads it; an id inside an earlier container is skipped.
+  const spawner = line(7, "node_expanded", { digest: "d", spawner_id: "spawner", topology: fill })
+  const nested = line(8, "pool_commit", { from: { node_id: "inner" }, node_id: "outer", value: fill })
+  expect([lineEvent(spawner, 7)?.node_id, lineEvent(nested, 8)?.node_id]).toEqual(["spawner", null])
+}, 60_000)
 
 test("one huge record whose line is no longer its seq is null", async () => {
   const over = commitOfSize(1, "big", HUGE_LINE + 1, "b")
   const file = logOf(runStarted(0), over, started(2, "next"))
   const index = await refresh(file, null)
-  expect(readEvent(file, index, 1)).toEqual({ seq: 1, kind: "pool_commit", size: HUGE_LINE + 1 })
+  expect(readEvent(file, index, 1)).toEqual({ seq: 1, kind: "pool_commit", node_id: "big", size: HUGE_LINE + 1 })
   fs.writeFileSync(file, Buffer.concat([runStarted(0), commitOfSize(7, "big", HUGE_LINE + 1, "b"), started(2, "next")]))
   expect(readEvent(file, index, 1)).toBeNull()
 }, 60_000)
@@ -596,6 +624,121 @@ test("log events ignore an index of a replaced file", async () => {
   expect([...logEvents(file, 1, null, index)].map((e) => e?.seq)).toEqual([1, 2])
 }, 60_000)
 
+test("checked log events end with null at a line the index hasn't read", async () => {
+  const file = logOf(runStarted(0), started(1, "a"), committed(2, "a", {}), succeeded(3, "a", 2), started(4, "b"))
+  const index = await refresh(file, null)
+  fs.appendFileSync(file, committed(5, "b", {}))
+  const read = [...logEvents(file, 0, null)]
+  expect(read.map((e) => e?.seq)).toEqual([0, 1, 2, 3, 4, 5])
+  expect([...logEvents(file, 0, null, index, true)]).toEqual([...read.slice(0, 5), null])
+  expect([...logEvents(file, 2, 4, index, true)]).toEqual(read.slice(2, 5))
+})
+
+test("checked log events refuse an index of another file", async () => {
+  const file = chatLog(path.join(tempDir(), "r.jsonl"), 1)
+  const index = await refresh(file, null)
+  fs.copyFileSync(file, `${file}.new`)
+  fs.renameSync(`${file}.new`, file)
+  expect([...logEvents(file, 0, null, index, true)]).toEqual([null])
+  expect([...logEvents(file, 0, null, null, true)]).toEqual([null])
+})
+
+/** Each read of the log at `file` the office makes itself, by name; `index` is an index of some log, for the reads that
+ *  take one. */
+function officeReads(file: string, index: Index): [string, () => unknown][] {
+  return [
+    ["refresh", () => refresh(file, null)],
+    ["refresh an index", () => refresh(file, index)],
+    ["readEvents", () => readEvents(file, index, { after: null, limit: 10 })],
+    ["readEvent", () => readEvent(file, index, 1)],
+    ["logEvents", () => [...logEvents(file, 0, null)]],
+    ["logStream", () => logStream(file)],
+  ]
+}
+
+/** What `read` threw or rejected with, by its code or else its name (null when it didn't throw), and how long it took
+ *  in milliseconds. */
+async function refusal(name: string, read: () => unknown): Promise<[string, string | null, number]> {
+  const start = performance.now()
+  try {
+    await read()
+  } catch (error) {
+    return [name, (error as NodeJS.ErrnoException).code ?? (error as Error).name, performance.now() - start]
+  }
+  return [name, null, performance.now() - start]
+}
+
+/** `refusal` of each of `reads`, its time only checked to be under a second. */
+async function refusals(reads: [string, () => unknown][]): Promise<[string, string | null, boolean][]> {
+  const out: [string, string | null, boolean][] = []
+  for (const [name, read] of reads) {
+    const [, error, ms] = await refusal(name, read)
+    out.push([name, error, ms < 1000])
+  }
+  return out
+}
+
+test("a log that is a symlink isn't read", async () => {
+  const dir = tempDir()
+  const outside = chatLog(path.join(dir, "outside.jsonl"), 1)
+  const index = await refresh(outside, null)
+  const file = path.join(dir, "r.jsonl")
+  fs.symlinkSync(outside, file)
+  const reads = officeReads(file, index)
+  expect(await refusals(reads)).toEqual(reads.map(([name]) => [name, "NotALog", true]))
+  // A dangling one is a log that doesn't exist to refresh's stat, and still isn't opened by the reads.
+  fs.rmSync(outside)
+  expect((await refusals(reads)).map(([name, error]) => [name, error])).toEqual([
+    ["refresh", "ENOENT"],
+    ["refresh an index", "ENOENT"],
+    ...reads.slice(2).map(([name]) => [name, "NotALog"]),
+  ])
+})
+
+test("a log swapped for a symlink after it was indexed isn't read", async () => {
+  const dir = tempDir()
+  const file = chatLog(path.join(dir, "r.jsonl"), 1)
+  const index = await refresh(file, null)
+  // The same file, moved and linked back: the index still matches what the link leads to.
+  fs.renameSync(file, path.join(dir, "moved.jsonl"))
+  fs.symlinkSync(path.join(dir, "moved.jsonl"), file)
+  const reads = officeReads(file, index)
+  expect(await refusals(reads)).toEqual(reads.map(([name]) => [name, "NotALog", true]))
+})
+
+test("a log that is a fifo is refused at once", async () => {
+  const dir = tempDir()
+  const index = await refresh(chatLog(path.join(dir, "real.jsonl"), 1), null)
+  const file = path.join(dir, "r.jsonl")
+  fifoAt(file)
+  const reads = officeReads(file, index)
+  expect(await refusals(reads)).toEqual(reads.map(([name]) => [name, "NotALog", true]))
+}, 15_000)
+
+test("a log that is a unix socket is refused", async () => {
+  const file = path.join(shortDir(), "r.sock")
+  const server = net.createServer()
+  await new Promise<void>((resolve) => server.listen(file, resolve))
+  onTestFinished(() => new Promise<void>((resolve) => server.close(() => resolve())))
+  const index = await refresh(chatLog(path.join(tempDir(), "real.jsonl"), 1), null)
+  const reads = officeReads(file, index)
+  expect(await refusals(reads)).toEqual(reads.map(([name]) => [name, "NotALog", true]))
+})
+
+test("a symlinked log isn't kept as unreadable", async () => {
+  const dir = tempDir()
+  const outside = chatLog(path.join(dir, "outside.jsonl"), 1)
+  const file = path.join(dir, "r.jsonl")
+  fs.symlinkSync(outside, file)
+  const reader = new RunLogReader()
+  const refused = await reader.index(file).catch((error: unknown) => error)
+  expect([refused instanceof NotALog, (refused as Error).message]).toEqual([true, "The run log isn't a regular file"])
+  expect(reader.cached()).toEqual([])
+  fs.rmSync(file)
+  chatLog(file, 1)
+  expect((await reader.index(file)).lastSeq).toBe(11)
+})
+
 test("the download is every complete line as stored", async () => {
   const file = logOf(runStarted(0), started(1, "a"), committed(2, "a", { output: "d".repeat(3 << 20) }))
   const whole = fs.readFileSync(file)
@@ -645,7 +788,7 @@ test("one record over huge line is a size stub never parsed", async () => {
   fs.writeSync(fd, '"', head.length + exact.length + (over.length >> 1))
   fs.closeSync(fd)
   expect(readEvent(file, index, 1)).toBeNull()
-  expect(readEvent(file, index, 2)).toEqual({ seq: 2, kind: "pool_commit", size: HUGE_LINE + 1 })
+  expect(readEvent(file, index, 2)).toEqual({ seq: 2, kind: "pool_commit", node_id: "big", size: HUGE_LINE + 1 })
   expect(readEvent(file, index, 4)).toBeNull()
 }, 60_000)
 
@@ -653,7 +796,7 @@ test("one huge record is read without holding its line", async () => {
   const huge = committed(1, "huge", { output: "h".repeat(HUGE_LINE + (4 << 20)) })
   const file = logOf(runStarted(0), huge, started(2, "next"))
   const index = await refresh(file, null)
-  expect(readEvent(file, index, 1)).toEqual({ seq: 1, kind: "pool_commit", size: huge.length })
+  expect(readEvent(file, index, 1)).toEqual({ seq: 1, kind: "pool_commit", node_id: "huge", size: huge.length })
   expect(readEvent(file, index, 2)!.node_id).toBe("next") // past the huge line, skipped without holding it
 }, 60_000)
 

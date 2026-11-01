@@ -103,6 +103,43 @@ export class UnsupportedSchema extends UnreadableLog {
   }
 }
 
+/** The run log's path is a symlink, a FIFO, a socket or anything else that isn't a regular file, so it isn't read.
+ *  Deliberately not an UnreadableLog: it is no log to the routes, and the reader never keeps it as a failed build. The
+ *  message never names the path. */
+export class NotALog extends Error {
+  override name = "NotALog"
+
+  constructor() {
+    super("The run log isn't a regular file")
+  }
+}
+
+/** Opens the log at `path` for reading: a file descriptor of a regular file. Throws NotALog when the path is a symlink
+ *  or isn't a regular file, and the `fs` error (`ENOENT`) of one it can't open. */
+function openLog(path: string): number {
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
+  let fd: number
+  try {
+    // O_NOFOLLOW: a symlink in the log's place isn't followed. O_NONBLOCK: a FIFO can't hang the open.
+    fd = fs.openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code
+    // A symlink under O_NOFOLLOW is ELOOP on Linux and macOS, EMLINK on FreeBSD; a socket is ENXIO on Linux and
+    // EOPNOTSUPP on macOS.
+    if (code === "ELOOP" || code === "EMLINK" || code === "ENXIO" || code === "EOPNOTSUPP") throw new NotALog()
+    throw error
+  }
+  let regular = false
+  try {
+    regular = fs.fstatSync(fd).isFile()
+  } catch {}
+  if (!regular) {
+    fs.closeSync(fd)
+    throw new NotALog()
+  }
+  return fd
+}
+
 /** Where a node attempt stands: `restarted` when a resume retried it before it had an outcome. */
 export type AttemptStatus = "open" | "waiting" | "succeeded" | "routed" | "expanded" | "failed" | "restarted"
 
@@ -184,8 +221,8 @@ type Stat = fs.BigIntStats
  * is left for the next call. A line it can't read while the file changed under the read is read again once, from the
  * start.
  *
- * Throws UnsupportedSchema or UnreadableLog for a complete line this office can't read or any line over LINE_CAP, and
- * the `fs` error (`ENOENT`) of a log it can't open.
+ * Throws UnsupportedSchema or UnreadableLog for a complete line this office can't read or any line over LINE_CAP,
+ * NotALog for a log that is a symlink or isn't a regular file, and the `fs` error (`ENOENT`) of a log it can't open.
  */
 export async function refresh(
   path: string,
@@ -258,7 +295,7 @@ function continues(path: string, index: Index, st: Stat): boolean {
 /** The sha256 (hex) of bytes `[start, end)` of `path`, read CHUNK at a time. */
 function sha256(path: string, start: number, end: number): string {
   const hash = crypto.createHash("sha256")
-  const fd = fs.openSync(path, "r")
+  const fd = openLog(path)
   try {
     const chunk = Buffer.allocUnsafe(CHUNK)
     for (let pos = start; pos < end;) {
@@ -289,7 +326,7 @@ function pacer(): () => Promise<void> {
  * LINE_CAP and a chunk past the last complete line is read.
  */
 async function scan(path: string, index: Index, pace: () => Promise<void>): Promise<number> {
-  const fd = fs.openSync(path, "r")
+  const fd = openLog(path)
   try {
     const chunk = Buffer.allocUnsafe(CHUNK)
     let pos = index.offset
@@ -671,16 +708,53 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const HEAD = /^\{(?:"at":"[^"]{0,64}",)?"kind":"([a-z_]{1,64})"/
 const SEQ = /,"seq":(0|[1-9][0-9]{0,15})\}\n$/
 
+// The same sorted keys put the payload's members after "kind", in key order: the scalars before its `node_id` (or
+// `spawner_id`) can be stepped over one at a time. A container is never entered, so an id nested in one can't match.
+const PAYLOAD = /^\{(?:"at":"[^"]{0,64}",)?"kind":"[a-z_]{1,64}","payload":\{/
+const KEY = /"((?:[^"\\]|\\.)*)":/y
+const STRING = /"(?:[^"\\]|\\.)*"/y
+const SCALAR = /(?:"(?:[^"\\]|\\.)*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null),/y
+
 /** Decodes UTF-8, throwing a TypeError on bytes that aren't UTF-8. */
 const UTF8 = new TextDecoder("utf-8", { fatal: true })
 
-/** Record `seq`, `size` bytes long, as its size and the kind its first bytes `head` name: it isn't parsed. Null when
- *  the line's last bytes `tail` (its newline included) don't end with seq `seq` (the file changed since it was
- *  indexed). */
+/** The node an oversized record's first bytes `head` name, as `nodeOf` reads it: its payload's `node_id`, else its
+ *  `spawner_id`, when only scalars come before it and it ends within `head`; else null. */
+function stubNode(head: Buffer): string | null {
+  // Latin-1 maps each byte to one character, so offsets are byte offsets; a UTF-8 byte of a longer character is never
+  // a quote or a backslash.
+  const text = head.toString("latin1")
+  let at = PAYLOAD.exec(text)?.[0].length
+  while (at !== undefined) {
+    KEY.lastIndex = at
+    const key = KEY.exec(text)?.[1]
+    if (key === undefined) return null
+    at = KEY.lastIndex
+    if (key === "node_id" || key === "spawner_id") {
+      STRING.lastIndex = at
+      if (STRING.exec(text) !== null) {
+        try {
+          const id = JSON.parse(UTF8.decode(head.subarray(at, STRING.lastIndex))) as string
+          if (id !== "") return id
+        } catch {
+          return null
+        }
+      }
+    }
+    SCALAR.lastIndex = at
+    at = SCALAR.exec(text) === null ? undefined : SCALAR.lastIndex
+  }
+  return null
+}
+
+/** Record `seq`, `size` bytes long, as its size and the kind and node its first bytes `head` name: it isn't parsed.
+ *  Null when the line's last bytes `tail` (its newline included) don't end with seq `seq` (the file changed since it
+ *  was indexed). */
 function stub(head: Buffer, tail: Buffer, seq: number, size: number): RunEvent | null {
   if (SEQ.exec(tail.toString("latin1"))?.[1] !== String(seq)) return null
-  const found = HEAD.exec(head.subarray(0, 256).toString("latin1"))
-  return { seq, kind: found?.[1] ?? "unknown", size }
+  const first = head.subarray(0, 256)
+  const found = HEAD.exec(first.toString("latin1"))
+  return { seq, kind: found?.[1] ?? "unknown", node_id: stubNode(first), size }
 }
 
 /**
@@ -760,7 +834,7 @@ export function readEvents(
   let begin = 0
   let nextAfter: number | null = null
   let cut = false
-  const fd = fs.openSync(path, "r")
+  const fd = openLog(path)
   try {
     let seq = first
     for (const line of lines(fd, start, stop, BIG_LINE, first - base)) {
@@ -815,28 +889,37 @@ export function lineEvent(bytes: Buffer, seq: number): RunEvent | null {
  * parsed: the seq at its end is checked). With `index` of the same file (device and inode), the read
  * starts at its last sparse entry at or before `from` rather than at byte 0, and still reads past what it indexed; a
  * file edited since then yields that null too when it is now shorter than that entry. An index of another file is
- * ignored. The file is opened on the first pull and closed when the generator ends or is returned.
+ * ignored. When `checked`, only records the index read are given: an index of another file (or none) yields that
+ * null at once, and so does a line past the index's last seq. The file is opened on the first pull (NotALog, or its
+ * `fs` error, is thrown there) and closed when the generator ends or is returned.
  */
 export function* logEvents(
   path: string,
   from: number,
   to: number | null,
   index: Index | null = null,
+  checked = false,
 ): Generator<RunEvent | null> {
   if (to !== null && from > to) return
-  const fd = fs.openSync(path, "r")
+  const fd = openLog(path)
   try {
     const st = fs.fstatSync(fd, { bigint: true })
     const size = Number(st.size)
     // An index of a replaced file could start mid-line and count a stub (checked only at its end) as the wrong seq.
     const same = index !== null && st.dev === index.dev && st.ino === index.ino
     const [base, start] = same ? window(index, from) : [0, 0]
-    if (start > size) {
+    if (start > size || (checked && !same)) {
       yield null
       return
     }
     let seq = from
     for (const line of lines(fd, start, size, BIG_LINE, from - base)) {
+      // yian's reader checked each line the index read, its schema and kind included; this decode checks only a
+      // line's JSON and seq.
+      if (checked && seq > (index!.lastSeq ?? -1)) {
+        yield null
+        return
+      }
       const event = line.bytes === null ? stub(line.head, line.tail, seq, line.size) : decode(line.bytes, seq, false)
       yield event
       seq += 1
@@ -862,7 +945,7 @@ export function readEvent(path: string, index: Index, seq: number): RunEvent | n
 function eventAt(path: string, index: Index, seq: number, derived: TypedValue | null): RunEvent | null {
   const [base, start, stop] = window(index, seq)
   if (seq < base) return null
-  const fd = fs.openSync(path, "r")
+  const fd = openLog(path)
   try {
     for (const line of lines(fd, start, stop, HUGE_LINE, seq - base)) {
       return line.bytes === null ? stub(line.head, line.tail, seq, line.size) : decode(line.bytes, seq, true, derived)
@@ -875,12 +958,12 @@ function eventAt(path: string, index: Index, seq: number, derived: TypedValue | 
 
 /**
  * The download: every complete line of `path` as it is when called, as stored, streamed CHUNK at a time, so no line
- * is ever held whole. The file is opened when called (its `fs` error, `ENOENT`, rejects the promise, not the stream).
- * It needs no index, so a log this office can't read still downloads. The caller consumes or destroys the stream,
- * which closes the file.
+ * is ever held whole. The file is opened when called (NotALog, or its `fs` error, `ENOENT`, rejects the promise, not
+ * the stream). It needs no index, so a log this office can't read still downloads. The caller consumes or destroys
+ * the stream, which closes the file.
  */
 export async function logStream(path: string): Promise<Readable> {
-  const fd = fs.openSync(path, "r")
+  const fd = openLog(path)
   let end: number
   try {
     end = await lastLineEnd(fd, fs.fstatSync(fd).size)
@@ -1003,7 +1086,8 @@ export class RunLogReader {
   }
 
   /** `path`'s index, brought up to date; concurrent callers share one build. Throws UnreadableLog (or
-   *  UnsupportedSchema) and the `fs` error (`ENOENT`) of a log it can't open. */
+   *  UnsupportedSchema), NotALog for a log that isn't a regular file, and the `fs` error (`ENOENT`) of a log it can't
+   *  open. */
   async index(path: string): Promise<Index> {
     const failed = this.failed.get(path)
     if (failed !== undefined) {

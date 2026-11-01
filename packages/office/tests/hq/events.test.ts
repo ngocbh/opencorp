@@ -290,7 +290,9 @@ test("revoking closes a stalled live stream", async () => {
   // A log far past what a paused client's socket takes (a turn is over 1000 bytes; socket buffers differ by host), so
   // the stream waits for the client before its end.
   const capacity = await socketCapacity(Buffer.alloc(64 * 1024))
-  const { runId } = storedRun(office, { turns: Math.max(3000, Math.ceil((2 * capacity) / 1000)) })
+  const { runId, log } = storedRun(office, { turns: Math.max(3000, Math.ceil((2 * capacity) / 1000)) })
+  // Built first, as the run page does: a stream waiting on the build pulls no frames either, so it looks stalled.
+  expect(await office.runs.logIndex(log)).not.toBeNull()
   const alive = spyOn(hq.sessions, "alive")
   onTestFinished(() => alive.mockRestore())
   const stream = await paused(client, `/api/runs/${runId}/live`)

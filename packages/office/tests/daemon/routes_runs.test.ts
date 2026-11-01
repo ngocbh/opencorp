@@ -9,7 +9,7 @@ import type { RunIndexRow } from "@ngocbh/yian/run"
 import { newToken } from "../../src/auth/tokens.ts"
 import type { LiveJoin, LiveRelay, LiveWorker } from "../../src/daemon/live.ts"
 import type { Office } from "../../src/daemon/office.ts"
-import { HUGE_LINE, readEvents, refresh, SCHEMA } from "../../src/runs/reader.ts"
+import { HUGE_LINE, readEvents, refresh, RunLogReader, SCHEMA } from "../../src/runs/reader.ts"
 import { Live, type LiveRun } from "../../src/runs/records.ts"
 import { WORKER_STOPPED } from "../../src/runs/outcomes.ts"
 import { RunLogs } from "../../src/runs/service.ts"
@@ -17,8 +17,8 @@ import { newId } from "../../src/store/store.ts"
 import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
 import type { Frame as WorkerFrame } from "../../src/worker/channel.ts"
 import { fakeLlm, send, TemplateOffice, waitingChat } from "../chat/helpers.ts"
-import { waitFor } from "../helpers.ts"
-import { chatLog, committed, failed, line, runStarted, started } from "../runs/helpers.ts"
+import { tempDir, waitFor } from "../helpers.ts"
+import { chatLog, committed, failed, fifoAt, line, runStarted, started, succeeded } from "../runs/helpers.ts"
 import { session } from "../store/helpers.ts"
 import { advanceJob, run } from "../worker/helpers.ts"
 import {
@@ -359,6 +359,38 @@ test("one runs routes say what went wrong", async () => {
   expect([gone.status, body(gone).error]).toEqual([404, "no_log"])
 })
 
+test.each([
+  ["/events", { after: "1000000000" }, 200],
+  ["/events/1000000000", {}, 404],
+  ["/nodes", { before: "1000000000" }, 200],
+  ["/events", { after: "9007199254740991" }, 200],
+] as const)("a seq of ten digits or more up to the safe integers is read [%s %o]", async (suffix, params, status) => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  const r = await get(sock, `/runs/${runId}${suffix}`, params)
+  expect(r.status).toBe(status)
+  if (status === 404) expect(body(r).error).toBe("not_found")
+})
+
+test("a limit with leading zeros is read", async () => {
+  const { sock } = await servedRuns()
+  expect((await get(sock, "/runs", { limit: "0000000001" })).status).toBe(200)
+})
+
+test("a seq past the safe integers is refused with the real bound and not echoed", async () => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  for (const target of [`/runs/${runId}/events?after=9007199254740992`, `/runs/${runId}/events/9007199254740992`]) {
+    const r = await request(sock, "GET", target)
+    const name = target.includes("after") ? "after" : "seq"
+    expect([r.status, r.json()]).toEqual([
+      422,
+      { error: "invalid_body", message: `${name} must be an integer from 0 to 9007199254740991` },
+    ])
+    expect(r.text).not.toContain("9007199254740992")
+  }
+})
+
 test("the download has no head so a head never opens the log", async () => {
   const { office, sock } = await servedQuietly()
   const runId = await withLog(office)
@@ -379,7 +411,7 @@ test("one huge record is a size stub", async () => {
   const r = await get(sock, `/runs/${runId}/events/2`)
   expect(r.status).toBe(200)
   const got = body(r)
-  expect([got.kind, got.payload, got.size]).toEqual(["pool_commit", null, big.length])
+  expect([got.kind, got.node_id, got.payload, got.size]).toEqual(["pool_commit", "a", null, big.length])
 }, 30_000)
 
 test("a node error is shown as stored cut to 200", async () => {
@@ -405,6 +437,75 @@ test("a log removed before it streams has no log", async () => {
   expect([whole.status, whole.text]).toEqual([200, stored])
   const r = await get(sock, `/runs/${runId}/log`)
   expect([r.status, body(r).error]).toEqual([404, "no_log"])
+})
+
+const OUTSIDE = "OUTSIDE-SECRET-7d41c9a2"
+
+/** A chat log outside the office's runs folder whose commit holds OUTSIDE; returns its path. */
+function outsideLog(): string {
+  const file = path.join(tempDir(), "outside.jsonl")
+  fs.writeFileSync(file, Buffer.concat([runStarted(0), started(1, "a"), committed(2, "a", { output: OUTSIDE })]))
+  return file
+}
+
+/** The status, error and whether OUTSIDE shows of GET `target`, and whether it answered within a second. */
+async function refused(sock: string, target: string): Promise<[string, number, unknown, boolean, boolean]> {
+  const start = performance.now()
+  const r = await get(sock, target)
+  const error = r.headers["content-type"]?.startsWith("application/json") ? body(r).error : null
+  return [target, r.status, error, r.text.includes(OUTSIDE), performance.now() - start < 1000]
+}
+
+const LOG_ROUTES = ["/nodes", "/events", "/events/1", "/log", "/live"]
+
+test("a log that is a symlink is no log on every route that reads it", async () => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  const file = office.runs.logPath(runId)
+  fs.rmSync(file)
+  fs.symlinkSync(outsideLog(), file)
+  for (const suffix of LOG_ROUTES) {
+    const target = `/runs/${runId}${suffix}`
+    expect(await refused(sock, target)).toEqual([target, 404, "no_log", false, true])
+  }
+  const head = await get(sock, `/runs/${runId}`)
+  expect([head.status, body(head).log_state, head.text.includes(OUTSIDE)]).toEqual([200, "missing", false])
+})
+
+test("a log swapped for a symlink after its index was built is no log", async () => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  const file = office.runs.logPath(runId)
+  const outside = outsideLog()
+  // The swap lands between the index's build and the page's read of the log, which `#logIndex` doesn't cover.
+  const reader = new RunLogReader({
+    refresh: async (log, index, options) => {
+      const built = await refresh(log, index, options)
+      fs.rmSync(file, { force: true })
+      fs.symlinkSync(outside, file)
+      return built
+    },
+  })
+  office.runs = new RunLogs({ store: office.store, runsDir: office.paths.runs, reader })
+  for (const suffix of ["/events", "/events/1"]) {
+    const target = `/runs/${runId}${suffix}`
+    expect(await refused(sock, target)).toEqual([target, 404, "no_log", false, true])
+    fs.rmSync(file)
+    chatLog(file)
+  }
+})
+
+test("a log that is a fifo is no log at once on every route that reads it", async () => {
+  const { office, sock } = await servedQuietly()
+  const runId = await withLog(office)
+  const file = office.runs.logPath(runId)
+  fs.rmSync(file)
+  fifoAt(file)
+  // Not GET /runs/{id}: yian's inspection of a run still opens its log itself.
+  for (const suffix of LOG_ROUTES) {
+    const target = `/runs/${runId}${suffix}`
+    expect(await refused(sock, target)).toEqual([target, 404, "no_log", false, true])
+  }
 })
 
 test("a schema that isnt a number isnt echoed", async () => {
@@ -618,14 +719,128 @@ test("a reconnect reads the log from the run index", async () => {
   const read = spyOn(fs, "readSync")
   onTestFinished(() => read.mockRestore())
   expect(await all(await open(sock, `/runs/${runId}/live?after=70`))).toEqual(want)
-  expect(logIndex.mock.calls).toEqual([[log]])
+  // Asked again at the end, so the index read covers the whole log.
+  expect(logIndex.mock.calls).toEqual([[log], [log]])
   // The records are read from the sparse entry of seq 64, and nothing is read from byte 0.
   const positions = read.mock.calls.map((call) => (call as unknown[])[4])
   expect([positions.includes(index.sparse[1]![1]), positions.includes(0)]).toEqual([true, false])
   read.mockRestore()
-  // A stream from the start reads from byte 0 anyway: it builds no index.
+  // A stream from the start checks the log against the run index too.
   expect(await all(await open(sock, `/runs/${runId}/live`))).toEqual(await expected(log, null))
-  expect(logIndex).toHaveBeenCalledTimes(1)
+  expect(logIndex).toHaveBeenCalledTimes(4)
+})
+
+/** A line the run pages refuse after `storedRun`'s last seq (19), by name. */
+const REFUSED_LINES: [string, Buffer][] = [
+  ["an unknown kind", line(20, "wat_kind", {})],
+  ["another schema", line(20, "node_started", { node_id: "a" }, { schema: 99n })],
+]
+
+test.each(REFUSED_LINES)("a log line the pages refuse resets a stream with no worker [%s]", async (_, bad) => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const { runId, log } = storedRun(office)
+  fs.appendFileSync(log, bad)
+  expect(await all(await open(sock, `/runs/${runId}/live`))).toEqual([
+    ["comment", null, "connected"],
+    ["reset", null, null],
+  ])
+  const page = await request(sock, "GET", `/runs/${runId}/events`)
+  expect([page.status, body(page).error]).toEqual([409, "unsupported_schema"])
+})
+
+test.each(REFUSED_LINES)("a log line the pages refuse resets a stream at its run end [%s]", async (_, bad) => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const { runId, log, lastSeq, relay, worker } = joinedRun(office)
+  const records = await recordFrames(log)
+  const it = frames(await open(sock, `/runs/${runId}/live`))
+  expect(await read(it, 2 + lastSeq)).toEqual([["comment", null, "connected"], ...records])
+  fs.appendFileSync(log, bad)
+  relay.detach(worker)
+  expect(await rest(it)).toEqual([["reset", null, null]])
+})
+
+/** Appends a commit and a success to `storedRun`'s log (last seq 19): seqs 20 and 21. */
+function appendTwo(log: string): void {
+  fs.appendFileSync(log, committed(20, "chat#2/ask", { output: "hi" }))
+  fs.appendFileSync(log, succeeded(21, "chat#2/ask", 20))
+}
+
+test("a record appended between the index build and the join doesn't reset", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const { runId, sessionId, log } = storedRun(office)
+  const stale = (await office.runs.logIndex(log))!
+  expect(stale.lastSeq).toBe(19)
+  appendTwo(log)
+  const relay = liveRelay(office)
+  const worker = stubWorker(runId, sessionId, log)
+  relay.frame(worker, { type: "snapshot", snapshot: { last_seq: 21, calls: [] } })
+  // The stream's first index is the build from before the append, as a build still in flight at the join would be.
+  spyOn(office.runs, "logIndex").mockImplementationOnce(async () => stale)
+  const records = await recordFrames(log)
+  expect(records).toHaveLength(22)
+  const it = frames(await open(sock, `/runs/${runId}/live`))
+  expect(await read(it, 1 + records.length)).toEqual([["comment", null, "connected"], ...records])
+  relay.detach(worker)
+  expect(await rest(it)).toEqual([["run_end", null, {}]])
+})
+
+test("run end with a stale build in flight still sends every record", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const { runId, sessionId, log } = storedRun(office)
+  const relay = liveRelay(office)
+  const worker = stubWorker(runId, sessionId, log)
+  const from = 15
+  relay.frame(worker, { type: "snapshot", snapshot: { last_seq: from, calls: [] } })
+  const it = frames(await open(sock, `/runs/${runId}/live`))
+  const head = await read(it, 2 + from)
+  const stale = (await office.runs.logIndex(log))!
+  expect(stale.lastSeq).toBe(19)
+  appendTwo(log)
+  spyOn(office.runs, "logIndex").mockImplementationOnce(async () => ({ ...stale }))
+  relay.detach(worker)
+  const records = await recordFrames(log)
+  expect([...head, ...(await rest(it))]).toEqual([["comment", null, "connected"], ...records, ["run_end", null, {}]])
+})
+
+test("a stream waiting on its index sends pings", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { pingMs: 50 })
+  const { runId, log } = storedRun(office)
+  const logIndex = office.runs.logIndex.bind(office.runs)
+  spyOn(office.runs, "logIndex").mockImplementationOnce(async (file) => {
+    await Bun.sleep(250)
+    return logIndex(file)
+  })
+  const got = await all(await open(sock, `/runs/${runId}/live`))
+  const first = got.findIndex(([event]) => event === "record")
+  const pings = got.slice(0, first).filter(([event, , data]) => event === "comment" && data === "ping")
+  expect(pings.length).toBeGreaterThanOrEqual(2)
+  expect(got.filter(([event]) => event !== "comment")).toEqual([...(await recordFrames(log)), ["run_end", null, {}]])
+})
+
+test("a log swapped for a symlink before the stream reads it gets reset", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const { runId, log } = joinedRun(office)
+  const outside = outsideLog()
+  const logIndex = office.runs.logIndex.bind(office.runs)
+  spyOn(office.runs, "logIndex").mockImplementationOnce(async (file) => {
+    const index = await logIndex(file)
+    fs.rmSync(log)
+    fs.symlinkSync(outside, log)
+    return index
+  })
+  const res = await open(sock, `/runs/${runId}/live`)
+  const got = await all(res)
+  expect(got).toEqual([
+    ["comment", null, "connected"],
+    ["reset", null, null],
+  ])
+  expect(JSON.stringify(got)).not.toContain(OUTSIDE)
 })
 
 test("a live stream sends the log to the joins seq then the calls then frames", async () => {
@@ -891,4 +1106,27 @@ test("removing a device cuts its live stream while the client is not reading", a
   const got = Buffer.concat(parts).toString()
   expect(got.endsWith("0\r\n\r\n")).toBe(false)
   expect(got.includes("event: run_end")).toBe(false)
+})
+
+test("a removed device's /live ends while it waits for the run's index", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true, pingMs: 50 })
+  const [mac, pc] = [newToken(), newToken()]
+  giveDevice(office.paths.company, CEO, "mac", mac)
+  giveDevice(office.paths.company, CEO, "pc", pc)
+  const { runId } = storedRun(office)
+  // An index that doesn't settle while the test runs, so the stream is still waiting on it when the device goes.
+  const { promise, resolve } = Promise.withResolvers<null>()
+  spyOn(office.runs, "logIndex").mockImplementation(() => promise)
+  try {
+    const it = frames(await open(sock, `/runs/${runId}/live`, bearer(mac)))
+    expect(await read(it, 2)).toEqual([
+      ["comment", null, "connected"],
+      ["comment", null, "ping"],
+    ])
+    expect((await request(sock, "DELETE", `/people/${CEO}/devices/mac`, { headers: bearer(pc) })).status).toBe(200)
+    expect((await rest(it)).filter(([, , data]) => data !== "ping")).toEqual([])
+  } finally {
+    resolve(null)
+  }
 })

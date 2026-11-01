@@ -1,6 +1,8 @@
 /** Synthetic yian run logs for the run tests: one record per line as yian writes them, each record's seq its line
  *  number. Every int in a payload is a `bigint`, which yian's writer writes as an int. And real logs of flows that run
  *  without a model. */
+import { onTestFinished } from "bun:test"
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { loadFlow } from "@ngocbh/yian"
@@ -192,4 +194,45 @@ export async function realRun(
   const result = await runFlow(loaded, {}, { log, runId, numWorkers: 0, env: () => undefined })
   if (result.status !== "succeeded") throw new Error(`the run ended ${result.status}`)
   return { log, codeRoot: dir }
+}
+
+/** Opens `file` for writing without blocking, which frees a reader waiting in `open()` on it; does nothing when no
+ *  reader is waiting or it is gone. */
+function freeReaders(file: string): void {
+  try {
+    fs.closeSync(fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK))
+  } catch {}
+}
+
+/**
+ * Makes a FIFO at `file`, removed when the test finishes. A read that blocks in `open()` on it waits for a writer, so
+ * a child process frees any such reader every 200 ms from 3 s to 8 s after this call, then exits: a regression then
+ * fails the caller's time check instead of freezing the run. The cleanup frees any reader left and kills the child.
+ * Without `unblock`, there is no child: for a test whose reader is in another process, which it kills itself.
+ */
+export function fifoAt(file: string, { unblock = true }: { unblock?: boolean } = {}): void {
+  if (spawnSync("mkfifo", [file]).status !== 0) throw new Error("mkfifo failed")
+  if (!unblock) {
+    onTestFinished(() => {
+      freeReaders(file)
+      fs.rmSync(file, { force: true })
+    })
+    return
+  }
+  const code = [
+    'import fs from "node:fs"',
+    `const file = ${JSON.stringify(file)}`,
+    "await Bun.sleep(3000)",
+    "for (const end = Date.now() + 5000; Date.now() < end; await Bun.sleep(200)) {",
+    "  try { fs.closeSync(fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK)) } catch {}",
+    "}",
+  ].join("\n")
+  const child = Bun.spawn([process.execPath, "--no-install", "--no-env-file", "--config=/dev/null", "-e", code], {
+    stdio: ["ignore", "ignore", "ignore"],
+  })
+  onTestFinished(() => {
+    freeReaders(file)
+    child.kill("SIGKILL")
+    fs.rmSync(file, { force: true })
+  })
 }
