@@ -83,18 +83,18 @@ test("/cost-cap below the current cap says the cap was set, not raised", async (
   }
 })
 
-test("/cost-cap under a cent shows the cap it set to the hundredth of a cent", async () => {
+test("/cost-cap shows every decimal of the cap it set", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
   office.updateSession(s.id, { cost: 0.0001, cost_cap_usd: 10 })
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
     await app.until((f) => f.includes("of $10.00"))
-    await app.input.typeText("/cost-cap 0.0006")
-    await app.until((f) => f.includes("/cost-cap 0.0006"))
+    await app.input.typeText("/cost-cap 1.2345")
+    await app.until((f) => f.includes("/cost-cap 1.2345"))
     app.input.pressEnter()
-    await app.until(() => raised(office, s.id, 0.0006))
-    await app.until((f) => f.includes("Cost cap set to $0.0006"))
+    await app.until(() => raised(office, s.id, 1.2345))
+    await app.until((f) => f.includes("Cost cap set to $1.2345"))
   } finally {
     await app.stop()
     office.stop()
