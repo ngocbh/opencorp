@@ -7,7 +7,7 @@ import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import type { RequestInfo } from "../../src/daemon/http.ts"
 import type { Office, RequestContext } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
-import { listenUnix } from "../../src/daemon/sockets.ts"
+import { hasLoopback6, listenTcp, listenUnix } from "../../src/daemon/sockets.ts"
 import type { Hq } from "../../src/hq/core.ts"
 import { HQ_LIMITS, Listeners, MAX_OPEN } from "../../src/hq/servers.ts"
 import { shortDir, waitFor } from "../helpers.ts"
@@ -28,6 +28,8 @@ async function setup(): Promise<{ office: Office; hq: Hq; logs: string[] }> {
   const logs: string[] = []
   const settings = { tcp: true, port: await freePort(), app_dir: path.join(office.paths.home, "dist") }
   const hq = await makeHq(office, { settings, logs })
+  // The host's real accounts would add a warning.
+  hq.otherUsers = async () => []
   return { office, hq, logs }
 }
 
@@ -86,10 +88,14 @@ function attempt(
   })
 }
 
-/** One GET to 127.0.0.1:`port` on a fresh connection. */
-function tcpGet(port: number, target: string): Promise<Reply> {
+/** One GET to `host`:`port` (127.0.0.1 by default) on a fresh connection, with `headers`. */
+function tcpGet(
+  port: number,
+  target: string,
+  { host = "127.0.0.1", headers = {} }: { host?: string; headers?: Record<string, string> } = {},
+): Promise<Reply> {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: "127.0.0.1", port, path: target, agent: false }, (res) => {
+    const req = http.request({ host, port, path: target, headers, agent: false }, (res) => {
       const parts: Buffer[] = []
       res.on("data", (part: Buffer) => parts.push(part))
       res.on("error", reject)
@@ -110,16 +116,33 @@ function sockHealth(hq: Hq): Promise<Reply> {
 
 const closeServer = (server: net.Server) => new Promise<void>((resolve) => server.close(() => resolve()))
 
-/** A plain `net` server listening on 127.0.0.1:`port`, closed when the test finishes. */
-async function hold(port: number): Promise<net.Server> {
+/** A plain `net` server listening on `host`:`port` (127.0.0.1 by default), closed when the test finishes. */
+async function hold(port: number, host = "127.0.0.1"): Promise<net.Server> {
   const holder = net.createServer()
   onTestFinished(() => closeServer(holder))
   await new Promise<void>((resolve, reject) => {
     holder.once("error", reject)
-    holder.listen(port, "127.0.0.1", () => resolve())
+    holder.listen(port, host, () => resolve())
   })
   return holder
 }
+
+/** Whether a connection to `host`:`port` is refused. */
+function refused(port: number, host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect(port, host)
+    socket.on("connect", () => {
+      socket.destroy()
+      resolve(false)
+    })
+    socket.on("error", () => resolve(true))
+  })
+}
+
+const LOOPBACK6 = hasLoopback6()
+
+/** The kept server on `address`, if any. */
+const on = (listeners: Listeners, address: string) => listeners.servers.filter((s) => s.address === address)
 
 test("the 65th connection is closed and office sock still answers", async () => {
   const { office, hq } = await setup()
@@ -188,11 +211,12 @@ test("hq sock is 0600 and tcp listens on the port", async () => {
   await listeners.start()
   try {
     await waitFor(() => hq.boundPort, { timeout: 3000, what: "the TCP bind" })
+    if (LOOPBACK6) await waitFor(() => on(listeners, "::1").length, { timeout: 3000, what: "the ::1 bind" })
     expect(fs.statSync(hq.socket).mode & 0o777).toBe(0o600)
     expect((await hq.status()).url).toBe(`http://127.0.0.1:${hq.config.port}/`)
     expect((await tcpGet(hq.config.port, "/api/health")).json()).toMatchObject({ ok: true })
     expect((await sockHealth(hq)).json()).toMatchObject({ ok: true })
-    expect(listeners.servers).toHaveLength(2)
+    expect(listeners.servers).toHaveLength(LOOPBACK6 ? 3 : 2)
     for (const { server } of listeners.servers)
       expect([server.maxConnections, server.headersTimeout, server.requestTimeout, server.timeout]).toEqual([
         64, 10_000, 10_000, 0,
@@ -344,9 +368,9 @@ test("a tcp server that dies is noticed and the port bound again", async () => {
   await listeners.start()
   try {
     await waitFor(() => hq.boundPort, { timeout: 3000, what: "the TCP bind" })
-    const first = listeners.servers.find((s) => s.port !== null)!.server
+    const first = on(listeners, "127.0.0.1")[0]!.server
     first.emit("error", new Error("crashed"))
-    await waitFor(() => hq.boundPort !== null && listeners.servers.some((s) => s.port !== null && s.server !== first), {
+    await waitFor(() => hq.boundPort !== null && on(listeners, "127.0.0.1").some((s) => s.server !== first), {
       timeout: 3000,
       what: "the TCP rebind",
     })
@@ -356,6 +380,176 @@ test("a tcp server that dies is noticed and the port bound again", async () => {
   } finally {
     await listeners.stop()
   }
+})
+
+test.skipIf(!LOOPBACK6)("tcp listens on 127.0.0.1 and ::1 at the same port", async () => {
+  const { office, hq } = await setup()
+  shortOffice(office)
+  for (const port of [hq.config.port, 0]) {
+    hq.config = { ...hq.config, port }
+    const listeners = new Listeners(hq)
+    await listeners.start()
+    try {
+      await waitFor(() => hq.boundPort !== null && on(listeners, "::1").length, { timeout: 3000, what: "both binds" })
+      const at = hq.boundPort!
+      if (port) expect(at).toBe(port)
+      expect(on(listeners, "::1").map((s) => s.port)).toEqual([at])
+      const reply = await tcpGet(at, "/api/health", { host: "::1", headers: { host: `127.0.0.1:${at}` } })
+      expect(reply.status).toBe(200)
+      expect((await hq.status()).warnings).toEqual([])
+    } finally {
+      await listeners.stop()
+    }
+  }
+})
+
+test.skipIf(!LOOPBACK6)("localhost over ::1 is sent to 127.0.0.1 and any other host is refused", async () => {
+  const { office, hq } = await setup()
+  shortOffice(office)
+  const listeners = new Listeners(hq)
+  await listeners.start()
+  try {
+    await waitFor(() => on(listeners, "::1").length, { timeout: 3000, what: "the ::1 bind" })
+    const port = hq.config.port
+    const page = { "sec-fetch-dest": "document", "sec-fetch-mode": "navigate", "sec-fetch-site": "none" }
+    const local = await tcpGet(port, "/", { host: "::1", headers: { ...page, host: `localhost:${port}` } })
+    expect([local.status, local.headers.location]).toEqual([307, `http://127.0.0.1:${port}/`])
+    const v6 = await tcpGet(port, "/", { host: "::1", headers: { ...page, host: `[::1]:${port}` } })
+    expect(v6.status).toBe(403)
+  } finally {
+    await listeners.stop()
+  }
+})
+
+test.skipIf(!LOOPBACK6)("a held ::1 warns, 127.0.0.1 still serves, and ::1 is taken once free", async () => {
+  const { office, hq, logs } = await setup()
+  shortOffice(office)
+  const port = hq.config.port
+  const holder = await hold(port, "::1")
+  const listeners = new Listeners(hq, { retryMs: 100 })
+  await listeners.start()
+  try {
+    await waitFor(() => hq.loopback6Error, { timeout: 3000, what: "the ::1 error" })
+    await sleep(300)
+    const status = await hq.status()
+    expect(status.tcp.listening).toBe(true)
+    expect(status.tcp.error).toBeNull()
+    const said = (status.warnings ?? []).filter((w) => w.includes(`can't hold [::1]:${port}`))
+    expect(said).toHaveLength(1)
+    expect(said[0]).toStartWith(`http://localhost:${port}/ may reach another program`)
+    expect(said[0]).toEndWith(`Open http://127.0.0.1:${port}/`)
+    // Only state changes are logged.
+    expect(logs.filter((line) => line.includes(`can't hold [::1]:${port}`))).toHaveLength(1)
+    expect((await tcpGet(port, "/api/health")).status).toBe(200)
+    await closeServer(holder)
+    await waitFor(() => on(listeners, "::1").length, { timeout: 3000, what: "the ::1 bind" })
+    expect(hq.loopback6Error).toBeNull()
+    expect((await hq.status()).warnings).toEqual([])
+  } finally {
+    await listeners.stop()
+  }
+})
+
+test.skipIf(!LOOPBACK6)("a ::1 server that dies leaves the 127.0.0.1 state alone", async () => {
+  const { office, hq, logs } = await setup()
+  shortOffice(office)
+  const listeners = new Listeners(hq, { retryMs: 100 })
+  await listeners.start()
+  try {
+    await waitFor(() => on(listeners, "::1").length, { timeout: 3000, what: "the ::1 bind" })
+    const bound = hq.boundPort
+    const first = on(listeners, "::1")[0]!.server
+    first.emit("error", new Error("crashed"))
+    expect([hq.boundPort, hq.tcpError, hq.nextRetryAt]).toEqual([bound, null, null])
+    expect(hq.loopback6Error).toStartWith("its server ended")
+    expect(logs.some((line) => line.includes("[::1]") && line.includes("crashed"))).toBe(true)
+    await waitFor(() => on(listeners, "::1").some((s) => s.server !== first), { timeout: 3000, what: "the rebind" })
+    expect([hq.boundPort, hq.loopback6Error]).toEqual([bound, null])
+  } finally {
+    await listeners.stop()
+  }
+})
+
+test.skipIf(!LOOPBACK6)("a dying 127.0.0.1 server takes ::1 down and clears its warning", async () => {
+  const { office, hq } = await setup()
+  shortOffice(office)
+  const port = hq.config.port
+  const holder = await hold(port, "::1")
+  const listeners = new Listeners(hq, { retryMs: 100 })
+  await listeners.start()
+  try {
+    await waitFor(() => hq.loopback6Error, { timeout: 3000, what: "the ::1 error" })
+    on(listeners, "127.0.0.1")[0]!.server.emit("error", new Error("crashed"))
+    expect(hq.loopback6Error).toBeNull()
+    expect(on(listeners, "::1")).toEqual([])
+    expect((await hq.status()).warnings).toEqual([])
+    await closeServer(holder)
+    await waitFor(() => hq.boundPort !== null && on(listeners, "::1").length, { timeout: 3000, what: "both binds" })
+    const reply = await tcpGet(port, "/api/health", { host: "::1", headers: { host: `127.0.0.1:${port}` } })
+    expect(reply.status).toBe(200)
+  } finally {
+    await listeners.stop()
+  }
+})
+
+test.skipIf(!LOOPBACK6)("a ::1 bind that settles after its 127.0.0.1 server died is closed", async () => {
+  const { office, hq } = await setup()
+  shortOffice(office)
+  let open: (() => void) | null = null
+  let held = 0
+  const listen = async (server: net.Server, port: number, host?: string) => {
+    if (host === "::1" && held++ === 0) await new Promise<void>((resolve) => (open = resolve))
+    return listenTcp(server, port, host)
+  }
+  const listeners = new Listeners(hq, { retryMs: 100, listen })
+  const starting = listeners.start()
+  try {
+    await waitFor(() => open, { timeout: 3000, what: "the held ::1 bind" })
+    on(listeners, "127.0.0.1")[0]!.server.emit("error", new Error("crashed"))
+    open!()
+    await starting
+    await waitFor(() => hq.boundPort !== null && on(listeners, "::1").length, { timeout: 3000, what: "both binds" })
+    await sleep(300)
+    expect(on(listeners, "::1").map((s) => s.port)).toEqual([hq.boundPort])
+    expect(hq.loopback6Error).toBeNull()
+  } finally {
+    await starting
+    await listeners.stop()
+  }
+})
+
+test("without an ipv6 loopback only 127.0.0.1 is tried", async () => {
+  const { office, hq, logs } = await setup()
+  shortOffice(office)
+  const listeners = new Listeners(hq, { loopback6: () => false })
+  await listeners.start()
+  try {
+    await waitFor(() => hq.boundPort, { timeout: 3000, what: "the TCP bind" })
+    await sleep(200)
+    expect(on(listeners, "::1")).toEqual([])
+    expect(hq.loopback6Error).toBeNull()
+    expect(logs.filter((line) => line.includes("::1"))).toEqual([])
+  } finally {
+    await listeners.stop()
+  }
+})
+
+test.skipIf(!LOOPBACK6)("stop closes both tcp servers and ends the ::1 retries", async () => {
+  const { office, hq } = await setup()
+  shortOffice(office)
+  const port = hq.config.port
+  const holder = await hold(port, "::1")
+  const listeners = new Listeners(hq, { retryMs: 100 })
+  await listeners.start()
+  await waitFor(() => hq.loopback6Error, { timeout: 3000, what: "the ::1 error" })
+  await listeners.stop()
+  expect(hq.loopback6Error).toBeNull()
+  await closeServer(holder)
+  await sleep(300)
+  expect(await refused(port, "127.0.0.1")).toBe(true)
+  expect(await refused(port, "::1")).toBe(true)
+  // Nobody took ::1 after stop.
+  await closeServer(await hold(port, "::1"))
 })
 
 test("a hq sock server that exits is a socket error not a stopped office", async () => {

@@ -8,7 +8,7 @@ import { PING_MS } from "../daemon/routes/events.ts"
 import { type HqConfig, loadConfig } from "./config.ts"
 import { Logins } from "./login.ts"
 import { PairCodes } from "./pairing.ts"
-import { Listeners } from "./servers.ts"
+import { Listeners, RETRY_MS } from "./servers.ts"
 import { BrowserSessions } from "./sessions.ts"
 import { otherUsers } from "./status.ts"
 import { BuildInfo, officeApi } from "./version.ts"
@@ -33,6 +33,8 @@ export class Hq {
   tcpError: string | null = null
   /** When the listeners next try to bind TCP; set by the listeners. */
   nextRetryAt: string | null = null
+  /** Why HQ doesn't hold [::1] at the TCP port while 127.0.0.1 listens; set by the listeners. */
+  loopback6Error: string | null = null
   /** Why hq.sock isn't listening, when binding it failed. */
   socketError: string | null = null
   /** How long an idle `/api/events` waits before a ping, in ms; tests shorten it. */
@@ -115,12 +117,19 @@ export class Hq {
       found.push(
         `settings ignored, so the web port stays off until hq.json is fixed (restart to apply): ${this.config.problem}`,
       )
+    if (this.boundPort !== null && this.loopback6Error !== null) {
+      const port = this.boundPort
+      found.push(
+        `http://localhost:${port}/ may reach another program: HQ can't hold [::1]:${port} (${this.loopback6Error}); ` +
+          `it tries again every ${RETRY_MS / 1000} s. Open http://127.0.0.1:${port}/`,
+      )
+    }
     if (this.config.tcp) {
       const others = await this.otherUsers()
       if (others.length > 0)
         found.push(
           `the web port is on and this host has other users (${others.join(", ")}): any of them could take the ` +
-            `port while the office is down. Turn it off with "tcp": false in ` +
+            `port while the office is down or restarting. Turn it off with "tcp": false in ` +
             path.join(this.office.paths.office, "hq.json"),
         )
     }
