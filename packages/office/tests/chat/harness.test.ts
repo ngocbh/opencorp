@@ -637,6 +637,66 @@ test("the run spec keeps its tmp dir private under the session folder", async ()
   expect(fs.statSync(tmp).mode & 0o777).toBe(0o700)
 })
 
+/** Adds `guards` to `h`'s office guards; each office gets its own guards object, so no other test sees them. */
+function guard(h: Harness, guards: Harness["office"]["guards"]): void {
+  Object.assign(h.office.guards, guards)
+}
+
+/** Spies on `fs.lstatSync` until the test ends; returns how many times it was asked about `p`. */
+function lstatsOf(p: string): () => number {
+  const lstat = spyOn(fs, "lstatSync")
+  onTestFinished(() => lstat.mockRestore())
+  return () => lstat.mock.calls.filter((c) => String(c[0]) === p).length
+}
+
+test("a spec build checks the folder once", async () => {
+  const h = await makeHarness(await fakeLlm())
+  // An absent PATH entry: only a workspace check looks it up, once per check.
+  const marker = path.join(tempDir(), "marker-bin")
+  guard(h, { path: [marker] })
+  const s = await stored(h)
+  const checks = lstatsOf(marker)
+  await h.harness.spec(s)
+  expect(checks()).toBe(1)
+})
+
+test("a create checks the folder twice", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const marker = path.join(tempDir(), "marker-bin")
+  guard(h, { path: [marker] })
+  const checks = lstatsOf(marker)
+  // Once before anything is written, and once as the first turn's spec is built.
+  await start(h)
+  expect(checks()).toBe(2)
+})
+
+test("a spec whose folder became unsafe is refused through the policy", async () => {
+  const h = await makeHarness(await fakeLlm())
+  guard(h, { path: [path.join(h.folder, "bin")] })
+  const s = await stored(h)
+  const error = await rejection(h.harness.spec(s))
+  expect([error.status, error.code]).toEqual([422, "unsafe_workspace"])
+  const onPath = "cwd can't be a workspace: it contains a folder on the office's PATH; use a project folder"
+  expect(error.message).toBe(`${onPath} (the office log has the paths)`)
+  expect(error.message).not.toContain(h.folder)
+  const refused = `session ${s.id}: a session folder was refused`
+  expect(h.logs.some((line) => line.includes(refused) && line.includes(fs.realpathSync(h.folder)))).toBe(true)
+
+  // A folder failing both the workspace check and the overlap check keeps the workspace check's reason.
+  const company = h.office.paths.company
+  guard(h, { path: [path.join(company, "bin")] })
+  const inCompany = await stored(h, { cwd: company })
+  expect((await rejection(h.harness.spec(inCompany))).message).toBe(`${onPath} (the office log has the paths)`)
+})
+
+test("a spec whose folder is gone is invalid_body and makes no tmp dir", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const s = await stored(h, { cwd: path.join(tempDir(), "gone") })
+  const error = await rejection(h.harness.spec(s))
+  expect([error.status, error.code]).toEqual([422, "invalid_body"])
+  expect(fs.existsSync(path.join(h.office.paths.office, "sessions", s.id, "tmp"))).toBe(false)
+})
+
 test("a session records the resolved folder", async () => {
   const h = await makeHarness(await fakeLlm())
   const link = path.join(tempDir(), "link")
