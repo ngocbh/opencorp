@@ -39,7 +39,8 @@ export const ULID = "01JA1H0000000000000000000A"
  * (Python's `office` fixture). `log` gets the office's raw log messages. The listing and the sign-in are offline
  * stand-ins unless `models`/`logins` give others: the defaults reach OpenAI. The model check rejects unless
  * `checkModel` gives one, as tests have no worker. `files` are `makeCompany` overrides on the base company.
- * `tools` and `guards` are the office's pinned programs and workspace guards; none by default.
+ * `tools` and `guards` are the office's pinned programs and workspace guards; none by default. `pinGraceMs` is
+ * the office's pin window.
  *
  * When the test finishes it is stopped and its store closed, before its temp dir is removed. A test that already
  * called `stop()` gets a second one then, after its assertions; that is harmless, though `stop` is not idempotent
@@ -53,6 +54,7 @@ export function makeOffice({
   checkModel = () => Promise.reject(new Error("no worker in tests: pass checkModel")),
   tools,
   guards,
+  pinGraceMs,
 }: {
   log?: (message: string) => void
   models?: ModelCacheOptions
@@ -61,6 +63,7 @@ export function makeOffice({
   checkModel?: ModelCheck
   tools?: Tools
   guards?: SandboxOfficePaths
+  pinGraceMs?: number
 } = {}): Office {
   let office: Office | undefined
   let store: Store | undefined
@@ -92,6 +95,7 @@ export function makeOffice({
     checkModel,
     tools,
     guards,
+    pinGraceMs,
   })
   return office
 }
