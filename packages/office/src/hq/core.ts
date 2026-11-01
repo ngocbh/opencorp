@@ -66,7 +66,7 @@ export class Hq {
 
   /** The path of hq.sock. */
   get socket(): string {
-    return path.join(this.office.paths.office, "hq.sock")
+    return this.office.paths.hqSocket
   }
 
   /** `http://127.0.0.1:<port><path>` while TCP is listening, else null. */

@@ -34,8 +34,9 @@ import { OfficeStartError, listenUnix, makeOfficeDir } from "../../src/daemon/so
 import type { Extension } from "../../src/extensions/index.ts"
 import { register } from "../../src/extensions/questions.ts"
 import { CodexSessions } from "../../src/harness/sessions.ts"
-import { launch as officeLaunch, resolveHome } from "../../src/install/launch.ts"
+import { daemonEnv, launch as officeLaunch, resolveHome } from "../../src/install/launch.ts"
 import { args, killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
+import { resolveTools } from "../../src/install/tools.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { OFFICE_STOPPED } from "../../src/runs/outcomes.ts"
 import { latestVersion } from "../../src/store/migrate.ts"
@@ -97,10 +98,46 @@ test("release removes the pidfile and frees the lock", async () => {
   await file.acquire()
   expect(fs.readFileSync(pid, "utf8")).toBe(`${process.pid}\n`)
   expect(fs.statSync(pid).mode & 0o777).toBe(0o600)
-  file.release()
+  expect(file.release()).toBe(true)
   expect(fs.existsSync(pid)).toBe(false)
   expect(isLocked(lock)).toBe(false)
   file.release()
+})
+
+test("a check that refuses after the lock leaves the pidfile and frees the lock", async () => {
+  const { pid, lock } = paths()
+  fs.writeFileSync(pid, "999\n", { mode: 0o600 })
+  const ino = fs.statSync(pid).ino
+  let seen: number | null | undefined
+  const error = await pidFile(pid, lock)
+    .acquire(async (named) => {
+      seen = named
+      // The lock is ours while the check runs.
+      expect(isLocked(lock)).toBe(true)
+      throw new AlreadyRunning(named)
+    })
+    .catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(AlreadyRunning)
+  expect(seen).toBe(999)
+  expect(fs.readFileSync(pid, "utf8")).toBe("999\n")
+  expect(fs.statSync(pid).ino).toBe(ino)
+  expect(isLocked(lock)).toBe(false)
+})
+
+test("release leaves a pidfile that was replaced", async () => {
+  const { pid, lock } = paths()
+  const file = pidFile(pid, lock)
+  await file.acquire()
+  fs.unlinkSync(pid)
+  fs.writeFileSync(pid, "4242\n", { mode: 0o600 })
+  expect(file.release()).toBe(false)
+  expect(fs.readFileSync(pid, "utf8")).toBe("4242\n")
+  expect(isLocked(lock)).toBe(false)
+  const gone = pidFile(pid, lock)
+  fs.rmSync(pid)
+  await gone.acquire()
+  fs.rmSync(pid)
+  expect(gone.release()).toBe(true)
 })
 
 test("a pidfile left by a dead office is taken over", async () => {
@@ -1302,6 +1339,172 @@ test(
     const d = startDaemon(dir)
     await waitUntilServing(dir, d)
     await stopDaemon(dir, d)
+  },
+  120_000,
+)
+
+/** A second, in-process start on `home` with the tools a daemon would resolve (ps by its absolute path): its exit
+ *  code and what it wrote. */
+async function secondStart(home: string): Promise<{ code: number; text: string }> {
+  const tools = resolveTools(daemonEnv(process.env))
+  expect(path.isAbsolute(tools.ps!)).toBe(true)
+  const out = collect()
+  const code = await inProcess(() => main(["--home", home], { write: out.write, tools }))
+  return { code, text: out.text() }
+}
+
+/** The inode of `file`, not following a link. */
+function ino(file: string): bigint {
+  return fs.lstatSync(file, { bigint: true }).ino
+}
+
+test(
+  "office lock deleted while an office serves: a second start exits 0 and touches nothing",
+  async () => {
+    const dir = daemonHome()
+    const paths = new OfficePaths(dir)
+    const d = startDaemon(dir)
+    await waitUntilServing(dir, d)
+    const store = new Store(paths.store, { log: () => {} })
+    const group = startGroup("sleep 30")
+    try {
+      store.recordWorker("S1", { pid: group.pid, pgid: group.pid, startTime: group.started! })
+    } finally {
+      store.close()
+    }
+    const before = { sock: ino(paths.socket), hq: ino(paths.hqSocket), pid: ino(paths.pidfile) }
+    fs.rmSync(paths.lock)
+    const second = await secondStart(dir)
+    expect(second.code).toBe(0)
+    expect(second.text).toBe(`opencorp office: office already running (pid ${d.pid})\n`)
+    expect({ sock: ino(paths.socket), hq: ino(paths.hqSocket), pid: ino(paths.pidfile) }).toEqual(before)
+    expect(fs.readFileSync(paths.pidfile, "utf8")).toBe(`${d.pid}\n`)
+    expect(await healthy(paths.socket)).toBe(true)
+    // Nothing reaped: the refusal comes before the store opens.
+    expect(isGone(group.pid, group.started)).toBe(false)
+    await stopDaemon(dir, d)
+  },
+  120_000,
+)
+
+test(
+  "any one of office pid, office sock and hq sock still naming a live office refuses a second start",
+  async () => {
+    const dir = daemonHome()
+    const paths = new OfficePaths(dir)
+    const d = startDaemon(dir)
+    await waitUntilServing(dir, d)
+    const files = [paths.pidfile, paths.socket, paths.hqSocket]
+    const before = files.map(ino)
+    // Each case moves the other two files away (a rename keeps the inode, so they come back as they were) and
+    // deletes the lock, which a refused start makes again.
+    for (const [kept, named] of [
+      [paths.pidfile, `pid ${d.pid}`],
+      [paths.socket, "pid unknown"],
+      [paths.hqSocket, "pid unknown"],
+    ] as const) {
+      const away = files.filter((file) => file !== kept)
+      for (const file of away) fs.renameSync(file, `${file}.away`)
+      fs.rmSync(paths.lock, { force: true })
+      const second = await secondStart(dir)
+      for (const file of away) fs.renameSync(`${file}.away`, file)
+      expect(second, kept).toEqual({ code: 0, text: `opencorp office: office already running (${named})\n` })
+      expect(files.map(ino)).toEqual(before)
+    }
+    expect(await healthy(paths.socket)).toBe(true)
+    await stopDaemon(dir, d)
+    // Its own files, so the stop removed them.
+    expect(fs.existsSync(paths.socket)).toBe(false)
+    expect(fs.existsSync(paths.hqSocket)).toBe(false)
+    expect(fs.existsSync(paths.pidfile)).toBe(false)
+  },
+  120_000,
+)
+
+test.skipIf(process.getuid?.() === 0)("an hq sock nobody can connect to stops the start with exit 1", async () => {
+  const dir = home()
+  const paths = new OfficePaths(dir)
+  const left = net.createServer()
+  await listenUnix(left, paths.hqSocket)
+  await new Promise<void>((resolve) => left.close(() => resolve()))
+  fs.chmodSync(paths.hqSocket, 0o000)
+  const second = await secondStart(dir)
+  expect(second.code).toBe(1)
+  const real = new OfficePaths(resolveHome(dir))
+  expect(second.text).toBe(`opencorp office: can't tell whether ${real.hqSocket} is in use\n`)
+  expect(fs.existsSync(paths.pidfile)).toBe(false)
+  expect(fs.existsSync(paths.store)).toBe(false)
+  await released(paths)
+})
+
+test(
+  "a stopping office leaves an office sock, hq sock and office pid that replaced its own",
+  async () => {
+    const dir = daemonHome()
+    const paths = new OfficePaths(dir)
+    const d = startDaemon(dir)
+    await waitUntilServing(dir, d)
+    for (const sock of [paths.socket, paths.hqSocket]) {
+      fs.unlinkSync(sock)
+      const other = net.createServer()
+      await listenUnix(other, sock)
+      await new Promise<void>((resolve) => other.close(() => resolve()))
+    }
+    fs.unlinkSync(paths.pidfile)
+    fs.writeFileSync(paths.pidfile, "4242\n", { mode: 0o600 })
+    const files = [paths.socket, paths.hqSocket, paths.pidfile]
+    const before = files.map(ino)
+    await stopDaemon(dir, d)
+    expect(files.map(ino)).toEqual(before)
+    expect(fs.readFileSync(paths.pidfile, "utf8")).toBe("4242\n")
+    const warnings = daemonLog(dir)
+      .split("\n")
+      .filter((line) => line.includes(" WARNING "))
+    const real = new OfficePaths(resolveHome(dir))
+    for (const file of [real.socket, real.hqSocket, real.pidfile])
+      expect(warnings.some((line) => line.includes(`left ${file}`))).toBe(true)
+  },
+  120_000,
+)
+
+test(
+  "a killed offices surviving children dont make its sockets look live",
+  async () => {
+    const dir = daemonHome()
+    const paths = new OfficePaths(dir)
+    const kids = path.join(dir, "kids")
+    const a = runScript(
+      dir,
+      `import { spawn } from "node:child_process"
+import fs from "node:fs"
+import { main } from ${JSON.stringify(DAEMON_MAIN)}
+const home = process.argv[2]!
+// One child in its own group, one in the office's, as workers and tools are started.
+const spawnBoth = () => {
+  const detached = spawn("sleep", ["30"], { detached: true, stdio: "ignore" })
+  const inGroup = Bun.spawn(["sleep", "30"], { stdio: ["ignore", "ignore", "ignore"] })
+  fs.writeFileSync(${JSON.stringify(kids)}, \`\${detached.pid} \${inGroup.pid}\`)
+}
+process.exit(await main(["--home", home], {
+  extensions: [{ name: "kids", register: (office) => void office.onStart.push(() => void setTimeout(spawnBoth, 1000)) }],
+}))
+`,
+    )
+    await waitUntilServing(dir, a)
+    await waitFor(() => fs.existsSync(kids), { what: "the office's children" })
+    const pids = fs.readFileSync(kids, "utf8").split(" ").map(Number)
+    const sleeps = pids.map((pid) => ({ pid, started: startTime(pid) }))
+    onTestFinished(() => {
+      for (const kid of sleeps) if (kid.started !== null && sameProcess(kid.pid, kid.started)) process.kill(kid.pid, "SIGKILL")
+    })
+    a.child.kill("SIGKILL")
+    expect(await exitWithin(dir, a, 15_000)).toEqual({ code: null, signal: "SIGKILL" })
+    expect(sleeps.every((kid) => !isGone(kid.pid, kid.started))).toBe(true)
+    const b = startDaemon(dir)
+    await waitUntilServing(dir, b)
+    expect(daemonLog(dir)).not.toContain("already running")
+    expect(fs.readFileSync(paths.pidfile, "utf8")).toBe(`${b.pid}\n`)
+    await stopDaemon(dir, b)
   },
   120_000,
 )
