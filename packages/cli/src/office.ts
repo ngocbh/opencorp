@@ -144,6 +144,23 @@ export function officeClient(me = localIdentity()) {
   return createOfficeClient({ socket: defaultSocket(), token: me?.token })
 }
 
+/**
+ * Warns on stderr when the office on the default socket now takes a request without a token, as after removing the
+ * last device any human listed. Says nothing when it refuses one or can't be asked.
+ */
+export async function warnIfTokenless(): Promise<void> {
+  try {
+    const { person, device } = await createOfficeClient({ socket: defaultSocket() }).whoami()
+    if (device !== null || !person) return
+    console.error(
+      `opencorp: warning: no human lists a device now, so the office takes requests without a token as @${person}; ` +
+        "run `opencorp login` to need tokens again",
+    )
+  } catch {
+    // A refusal means the office still needs a token, which is what removing a device should leave.
+  }
+}
+
 /** Whether an office answers `GET /health`, which needs no token, on the unix socket `socket` within 2 s. */
 export async function officeAnswers(socket: string): Promise<boolean> {
   try {

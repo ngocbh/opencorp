@@ -5,7 +5,7 @@ import { isMissingRoute, isNotImplemented, OfficeError, OfficeUnavailable, type 
 import type { BrowserSession, Person } from "@opencorp/protocol"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
-import { localIdentity, officeClient, officeNotRunning } from "../office"
+import { localIdentity, officeClient, officeNotRunning, warnIfTokenless } from "../office"
 
 class Usage extends Error {}
 
@@ -105,6 +105,7 @@ export const run: CommandRun = async (argv) => {
       const [handle, name] = rest
       await office.devices.remove(handle, name)
       console.log(`Removed device ${name} from @${handle}.`)
+      await warnIfTokenless()
       return 0
     }
     if (sub === "remove-browser" && rest.length === 1) {

@@ -77,8 +77,11 @@ test(
     expect(["ending", "ended"]).toContain(await owned.status(sid))
     expect((await opencorp(["devices", "list"])).stdout).toBe(`${me.device}  (this device)\n`)
 
-    // Logging out removes the last device, so the office is open again.
-    await opencorp(["logout"])
+    // Logging out removes the last device, so the office is open again, and logout says so.
+    expect((await opencorp(["logout"])).stderr).toBe(
+      "opencorp: warning: no human lists a device now, so the office takes requests without a token as @ngocbh; " +
+        "run `opencorp login` to need tokens again\n",
+    )
     const people = await owned.request("GET", "/people", { anonymous: true })
     expect(people.status).toBe(200)
     await people.body?.cancel()
