@@ -1486,6 +1486,145 @@ test("a failed session says why without the model key", async () => {
   expect(error).toEndWith("Start a new chat.")
 })
 
+/** Prompts session `id` `n` times with a 7,000-character message, waiting for each reply: five such turns are over
+ *  the template's 32,000-character budget, so the sixth turn folds the oldest. */
+async function longTurns(h: Harness, id: string, n: number): Promise<void> {
+  for (let k = 0; k < n; k++) {
+    await h.harness.prompt(id, `p${k}`.padEnd(7000, "p"))
+    await waitFor(() => texts(h, id).length === k + 1 && status(h, id) === "idle", { what: `reply ${k + 1}` })
+  }
+}
+
+const OKS = Array.from({ length: 5 }, () => ({ content: "ok" }))
+const SUMMARIZER = "You keep a running summary"
+const SUMMARIZE = "chat#3/context/compacted/folded/summarize"
+
+test("a failed fold says so and starts a new run", async () => {
+  const fake = await fakeLlm()
+  fake.script(...OKS, { match: SUMMARIZER, error: 500 }, { match: SUMMARIZER, content: "SUMMARY" }, { content: "Back." })
+  const h = await makeHarness(fake)
+  const { id } = await start(h)
+  await longTurns(h, id, 5)
+  await h.harness.prompt(id, "sixth")
+  await waitFor(() => h.store.getSession(id)!.run_ids.length === 2 && status(h, id) === "idle", {
+    what: "the new run",
+  })
+  const [error, ...rest] = errors(h, id)
+  expect(rest).toEqual([])
+  expect(error).toStartWith("Summarizing the older messages failed (")
+  expect(error).toEndWith("Send your message again.")
+  expect(h.logs.some((line) => line.includes("its context failed at chat/context/compacted/folded/summarize ("))).toBe(
+    true,
+  )
+  await h.harness.prompt(id, "again")
+  await waitFor(() => same(texts(h, id).slice(-1), ["Back."]), { what: "the reply" })
+  const last = fake.requests().at(-1)!.messages as { role: string; content: unknown }[]
+  expect(String(last[0]!.content)).toContain("SUMMARY")
+  expect(last.at(-1)!.role).toBe("user")
+  expect(String(last.at(-1)!.content)).toContain("again")
+})
+
+test("a finished turn over budget leaves the session idle", async () => {
+  const fake = await fakeLlm()
+  fake.script(...OKS)
+  const h = await makeHarness(fake)
+  const { id } = await start(h)
+  await longTurns(h, id, 5)
+  await asleep(h, id)
+  expect(status(h, id)).toBe("idle")
+  expect(fake.requests()).toHaveLength(5)
+})
+
+test("a context failure before its turn took a message fails the session", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const { worker, handlers } = workers[0]!
+  const failure = { node_id: "chat#0/context/compacted/folded/summarize", cause_type: "ProviderError", message: "boom" }
+  handlers.result(worker, failedResult(s.run_ids[0]!, failure))
+  handlers.exited(worker, 1)
+  await waitFor(() => status(h, s.id) === "failed", { what: "the failure" })
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(1)
+  expect(errors(h, s.id).filter((e) => e.startsWith("Summarizing"))).toEqual([])
+  expect(
+    h.logs.some((line) =>
+      line.includes("its run ended (failed at chat/context/compacted/folded/summarize: ProviderError)"),
+    ),
+  ).toBe(true)
+})
+
+test("a fresh run whose context fails before its take fails the session", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const { worker, handlers } = workers[0]!
+  handlers.event(worker, { type: "event", name: "NodeSucceeded", data: { node_id: "chat#3/heard" } })
+  handlers.result(worker, failedResult(s.run_ids[0]!, { node_id: SUMMARIZE, cause_type: "ProviderError", message: "a" }))
+  handlers.exited(worker, 1)
+  await waitFor(() => workers.length === 2, { what: "the fresh run" })
+  const fresh = h.store.getSession(s.id)!.run_ids[1]!
+  const second = workers[1]!
+  const failure = { node_id: "chat#0/context/compacted/folded/summarize", cause_type: "ProviderError", message: "b" }
+  second.handlers.result(second.worker, failedResult(fresh, failure))
+  second.handlers.exited(second.worker, 1)
+  await waitFor(() => status(h, s.id) === "failed", { what: "the failure" })
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  const [notice, ended, ...rest] = errors(h, s.id)
+  expect(rest).toEqual([])
+  expect(notice).toStartWith("Summarizing the older messages failed (")
+  expect(ended).toStartWith("The session failed (")
+  expect(
+    h.logs.some((line) =>
+      line.includes("its run ended (failed at chat/context/compacted/folded/summarize: ProviderError)"),
+    ),
+  ).toBe(true)
+})
+
+test("a context failure in another iteration than the take fails the session", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const { worker, handlers } = workers[0]!
+  handlers.event(worker, { type: "event", name: "NodeSucceeded", data: { node_id: "chat#3/heard" } })
+  const failure = { node_id: "chat#2/context/compacted/folded/summarize", cause_type: "ProviderError", message: "a" }
+  handlers.result(worker, failedResult(s.run_ids[0]!, failure))
+  handlers.exited(worker, 1)
+  await waitFor(() => status(h, s.id) === "failed", { what: "the failure" })
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(1)
+})
+
+test("a context failure other than the summarizer says the reply failed", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const { worker, handlers } = workers[0]!
+  handlers.event(worker, { type: "event", name: "NodeSucceeded", data: { node_id: "chat#2/heard" } })
+  const failure = { node_id: "chat#2/context", cause_type: "EvaluationError", message: "bad" }
+  handlers.result(worker, failedResult(s.run_ids[0]!, failure))
+  handlers.exited(worker, 1)
+  await waitFor(() => workers.length === 2, { what: "the fresh run" })
+  const [notice, ...rest] = errors(h, s.id)
+  expect(rest).toEqual([])
+  expect(notice).toStartWith("The reply failed (")
+  expect(h.logs.some((line) => line.includes("its context failed at chat/context (EvaluationError)"))).toBe(true)
+})
+
+test.each([
+  ["chat#0/route", "failed at chat/route: EvaluationError"],
+  ["chat#0/x y\nSENTINEL", "failed at a node: EvaluationError"],
+])("a failed run names its node and error type in the log [%s]", async (nodeId, said) => {
+  const h = await makeHarness(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const { worker, handlers } = workers[0]!
+  const failure = { node_id: nodeId, cause_type: "EvaluationError", message: "SENTINEL-TEXT" }
+  handlers.result(worker, failedResult(s.run_ids[0]!, failure))
+  handlers.exited(worker, 1)
+  await waitFor(() => status(h, s.id) === "failed", { what: "the failure" })
+  expect(h.logs.some((line) => line.includes(`its run ended (${said})`))).toBe(true)
+  expect(h.logs.join("\n")).not.toContain("SENTINEL")
+})
+
 test("a session whose worker keeps dying says so", async () => {
   const h = await makeHarness(await fakeLlm())
   const workers = scriptedWorker(h)

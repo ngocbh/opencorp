@@ -9,6 +9,7 @@ import {
   pendingCalls,
   type RunInspection,
   type Message as RunMessage,
+  staticPathOf,
 } from "@ngocbh/yian/run"
 import { CompanyDefaults, type Message, now, OFFICE, WorkItem } from "@opencorp/protocol"
 import type { z } from "zod"
@@ -348,6 +349,9 @@ export class SessionActor implements LiveCalls {
   /** Workers that exited with no outcome, or with a `stopped` or `crashed` run, since the last `waiting` or
    *  `succeeded` result. */
   #deaths = 0
+  /** The turn take that succeeded most recently, by run and loop iteration: a failed fold recovers only once its
+   *  turn has taken its messages. */
+  #took: { runId: string; iteration: number } | null = null
   /** The runs whose hard stop waits for the lingering worker's exit. */
   #stopAfterExit: string[] = []
   /** The `cancel` the finish sent through the live worker, by delivery id, and its run; null when none was sent. */
@@ -1773,6 +1777,10 @@ export class SessionActor implements LiveCalls {
         if (node !== null) {
           run.inFlight.delete(node)
           if (this.#chat.isReply(node)) this.#countTurn()
+          if (this.#chat.isTurn(node)) {
+            const iteration = this.#chat.iterationOf(node)
+            if (iteration !== null) this.#took = { runId: run.runId, iteration }
+          }
         }
         break
       // A container expands and never succeeds.
@@ -2011,8 +2019,8 @@ export class SessionActor implements LiveCalls {
    * `stopped` or `crashed` run, is replaced once (`#died`), but a run the cap stopped, a delivering job's, or one
    * stopped or crashed over the cap isn't a death: its deliveries go on, with a real advance once the cap is raised;
    * an ending session over the cap ends `ENDED_OVER_CAP`; a run another process holds is tried once more
-   * (`#runBusy`); a run whose reply failed is replaced by a fresh run (`#replyFailed`); any other outcome fails the
-   * session.
+   * (`#runBusy`); a run whose reply, or whose fold after its take, failed is replaced by a fresh run (`#replyFailed`);
+   * any other outcome fails the session.
    * Every delivery not carried is answered. A finished actor only starts its run's hard stop that waited for this
    * exit.
    */
@@ -2089,10 +2097,11 @@ export class SessionActor implements LiveCalls {
       this.#finish("ended", outcome, null, run)
     } else if (status === "not_resumed") {
       await this.#notResumed(run)
-    } else if (status === "failed" && this.#failedReply(outcome!)) {
+    } else if (status === "failed" && this.#recovers(run, outcome!)) {
       await this.#replyFailed(run, outcome!)
     } else {
-      this.#log(`session ${this.sessionId}: its run ended (${status})`)
+      const ended = status === "failed" ? failedAt(outcome!, run.provider) : status
+      this.#log(`session ${this.sessionId}: its run ended (${ended})`)
       // An error before yian wrote a log (a flow that won't load): its worker couldn't start the run. With a log,
       // how yian recorded the run stands, which an office end reason would hide.
       const unstarted = status === "error" && run.kind === "chat" && !fs.existsSync(this.#logOf(run.runId))
@@ -2101,10 +2110,15 @@ export class SessionActor implements LiveCalls {
     this.#trySettle("after a worker exit")
   }
 
-  /** Whether the failed result `outcome` failed at a reply node. */
-  #failedReply(outcome: Frame): boolean {
+  /** Whether `run`'s failed result `outcome` failed at a reply node, or inside the turn's context once that turn's
+   *  take succeeded in the same run: a fold that runs before any take (a flow that folds first, or a fresh run's)
+   *  would fail again in the fresh run. */
+  #recovers(run: WorkerRun, outcome: Frame): boolean {
     const id = failureOf(outcome).node_id
-    return typeof id === "string" && this.#chat.isReply(id)
+    if (typeof id !== "string") return false
+    if (this.#chat.isReply(id)) return true
+    const took = this.#took
+    return this.#chat.inContext(id) && took?.runId === run.runId && took.iteration === this.#chat.iterationOf(id)
   }
 
   /**
@@ -2212,20 +2226,25 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * `run`'s reply failed (its `failed` result `outcome`): the session is told why ("The reply failed (…). Send your
-   * message again.", with which connection to check when the model refused its key), the death count starts over,
+   * `run`'s reply, or its turn's context after the take, failed (its `failed` result `outcome`): the session is told
+   * why ("The reply failed (…). Send your message again.", or "Summarizing the older messages failed (…)" when the
+   * summarizer failed, with which connection to check when the model refused its key), the death count starts over,
    * and a fresh run replaces it, carrying what `#carryFresh` keeps; yian recorded the failure, so the old run gets no
    * office end reason, and `runFinished` gets `outcome`, key redacted. A fresh run that can't start fails the session
    * (`COULDNT_START`).
    */
   async #replyFailed(run: WorkerRun, outcome: Frame): Promise<void> {
     const failure = failureOf(outcome)
-    this.#log(`session ${this.sessionId}: its reply failed (${typeName(redactKey(failure.cause_type, run.provider))})`)
+    const type = typeName(redactKey(failure.cause_type, run.provider))
+    const id = String(failure.node_id)
+    const where = this.#chat.isReply(id) ? "its reply failed" : `its context failed at ${nodePath(id)}`
+    this.#log(`session ${this.sessionId}: ${where} (${type})`)
     const reason = whyFailed(outcome, run.provider)
     const hint = refusedKey(failure, reason)
       ? ` Check connection '${this.#ranOn(run.runId)}', or pick another model with /model.`
       : ""
-    this.#notice(`The reply failed (${reason}). Send your message again.${hint}`)
+    const what = staticPathOf(id) === this.#chat.summarizer ? "Summarizing the older messages" : "The reply"
+    this.#notice(`${what} failed (${reason}). Send your message again.${hint}`)
     this.#deaths = 0
     this.#carryFresh(run)
     try {
@@ -2674,6 +2693,20 @@ function errorType(frame: Frame): string {
 /** `value` when it reads as an error type's name, else `Error`: a log line carries nothing else a worker sent. */
 function typeName(value: unknown): string {
   return typeof value === "string" && /^[A-Za-z_][\w.]{0,99}$/.test(value) ? value : "Error"
+}
+
+/** The static path of node id `id` when it reads as one, else `a node`: a log line carries nothing else a worker
+ *  sent. */
+function nodePath(id: unknown): string {
+  const at = typeof id === "string" ? staticPathOf(id) : ""
+  return /^[A-Za-z_][\w./-]{0,199}$/.test(at) ? at : "a node"
+}
+
+/** Where and how the failed result `outcome` failed, for a log line: the node's static path and the error type,
+ *  `provider`'s key redacted. */
+function failedAt(outcome: Frame, provider: Provider | null): string {
+  const failure = failureOf(outcome)
+  return `failed at ${nodePath(failure.node_id)}: ${typeName(redactKey(failure.cause_type, provider))}`
 }
 
 /** `frame` with its `refused` reason kept only when it reads as one (else `refused`) and its `failed` only when it
