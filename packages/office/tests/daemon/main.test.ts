@@ -16,7 +16,7 @@ import { Hooks } from "../../src/chat/hooks.ts"
 import { Provider } from "../../src/chat/provider.ts"
 import { HarnessError } from "../../src/chat/state.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
-import { trackRequests } from "../../src/daemon/http.ts"
+import { HANDLER_WAIT_MS, trackRequests } from "../../src/daemon/http.ts"
 import { LiveRelay } from "../../src/daemon/live.ts"
 import {
   AlreadyRunning,
@@ -43,10 +43,10 @@ import { CHAT_FILES, fakeLlm } from "../chat/helpers.ts"
 import { company, makeCompany, recordingGit } from "../company/helpers.ts"
 import { cwdOf, envNames, isGone, ps, reexecMarks, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { freePort } from "../hq/helpers.ts"
-import { RUN, committed, runStarted, started, succeeded } from "../runs/helpers.ts"
+import { RUN, chatLog, committed, runStarted, started, succeeded } from "../runs/helpers.ts"
 import { question, session } from "../store/helpers.ts"
 import { Recorder, base, makeJob } from "../worker/helpers.ts"
-import { frames, makeOffice, request, served, take, within } from "./helpers.ts"
+import { type Frame, frames, makeOffice, request, served, take, within } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -1349,6 +1349,139 @@ process.exit(await main(["--home", process.argv[2]!], {
     expect(fs.existsSync(paths.pidfile)).toBe(false)
     expect(isLocked(paths.lock)).toBe(false)
     expect(daemonLog(dir)).toContain(`office serving on ${paths.socket}`)
+  },
+  120_000,
+)
+
+const SPAWN = fileURLToPath(new URL("../../src/worker/spawn.ts", import.meta.url))
+
+test(
+  "a request in flight at a stop gets 503 stopping, not a dropped connection",
+  async () => {
+    // An endpoint that lists no models: an add checks the model it names with one reply.
+    const endpoint = http.createServer((req, res) => {
+      req.resume()
+      res.writeHead(404)
+      res.end()
+    })
+    await new Promise<void>((resolve) => endpoint.listen(0, "127.0.0.1", resolve))
+    onTestFinished(
+      () =>
+        new Promise<void>((resolve) => {
+          endpoint.closeAllConnections()
+          endpoint.close(() => resolve())
+        }),
+    )
+    const dir = daemonHome()
+    const paths = new OfficePaths(dir)
+    const checking = path.join(dir, "checking")
+    // The add's model check holds until the office stops, then fails as a stopping registry fails it: the handler
+    // is still running once the office has stopped.
+    const d = runScript(
+      dir,
+      `import fs from "node:fs"
+import { exitOnCrash, main } from ${JSON.stringify(DAEMON_MAIN)}
+import { RegistryClosed } from ${JSON.stringify(SPAWN)}
+exitOnCrash()
+const hold = (office) => {
+  const { promise: stopped, resolve } = Promise.withResolvers()
+  office.onStop.push(() => resolve())
+  office.checkModel = async () => {
+    fs.writeFileSync(${JSON.stringify(checking)}, "")
+    await stopped
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    throw new RegistryClosed()
+  }
+}
+process.exit(await main(["--home", process.argv[2]!], { extensions: [{ name: "hold", register: hold }] }))
+`,
+    )
+    await waitUntilServing(dir, d)
+    const url = `http://127.0.0.1:${(endpoint.address() as net.AddressInfo).port}/v1`
+    const body = { provider: "openai", endpoint: url, api_key: "sk-test-stop-7d2f0a", model: "held" }
+    const adding = request(paths.socket, "POST", "/connections", {
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    await waitFor(() => fs.existsSync(checking), { what: "the model check" })
+    d.child.kill("SIGTERM")
+    const r = await adding
+    expect([r.status, (r.json() as { error: string }).error], daemonLog(dir)).toEqual([503, "stopping"])
+    expect(await exitWithin(dir, d, 30_000), daemonLog(dir)).toEqual({ code: 0, signal: null })
+    expect(fs.existsSync(paths.socket)).toBe(false)
+  },
+  120_000,
+)
+
+/** GET `target` on the office socket of `home`: its frames, once it answered 200. The request is destroyed when the
+ *  test finishes. */
+function streamed(home: string, target: string): Promise<AsyncGenerator<Frame>> {
+  return new Promise((resolve, reject) => {
+    const req = http.get({ socketPath: new OfficePaths(home).socket, path: target, agent: false }, (res) => {
+      // The cleanup's destroy cuts an unfinished response, which then errors with nobody reading it.
+      res.on("error", () => {})
+      if (res.statusCode === 200) resolve(frames(res))
+      else reject(new Error(`GET ${target} answered ${res.statusCode}`))
+    })
+    onTestFinished(() => req.destroy())
+    req.on("error", reject)
+  })
+}
+
+test(
+  "a stop with an open event stream and live stream exits well before the handler wait",
+  async () => {
+    const dir = daemonHome()
+    const paths = new OfficePaths(dir)
+    // An ended session's run with a log, which a stand-in worker joins to the live relay once the office started.
+    const store = new Store(paths.store, { log: () => {} })
+    let joined: { runId: string; sessionId: string; lastSeq: number }
+    try {
+      const ended = store.createSession(session({ status: "ended" }))
+      const runId = newId()
+      store.addRun({
+        runId,
+        sessionId: ended.id,
+        driver: "minh",
+        flow: "chat",
+        flowPath: "shared/flows/chat.yaml",
+        connection: null,
+        model: null,
+        configSha256: null,
+        replacesRunId: null,
+        createdAt: ended.created_at,
+      })
+      const log = path.join(paths.runs, runId, "log.jsonl")
+      fs.mkdirSync(path.dirname(log), { recursive: true })
+      chatLog(log, 2)
+      joined = { runId, sessionId: ended.id, lastSeq: 3 + 8 * 2 }
+    } finally {
+      store.close()
+    }
+    const d = runScript(
+      dir,
+      `import path from "node:path"
+import { exitOnCrash, main } from ${JSON.stringify(DAEMON_MAIN)}
+exitOnCrash()
+const { runId, sessionId, lastSeq } = JSON.parse(process.argv[3]!)
+const join = (office) => {
+  const log = path.join(office.paths.runs, runId, "log.jsonl")
+  const worker = { job: { run_id: runId, session_id: sessionId, log }, follow: () => Promise.resolve(true) }
+  office.onStart.push(() => office.live.frame(worker, { type: "snapshot", snapshot: { last_seq: lastSeq, calls: [] } }))
+}
+process.exit(await main(["--home", process.argv[2]!], { extensions: [{ name: "join", register: join }] }))
+`,
+      JSON.stringify(joined),
+    )
+    await waitUntilServing(dir, d)
+    const events = await streamed(dir, "/events")
+    const live = await streamed(dir, `/runs/${joined.runId}/live`)
+    expect(await take(events, 1)).toEqual([["comment", null, "connected"]])
+    expect(await take(live, 1)).toEqual([["comment", null, "connected"]])
+    d.child.kill("SIGTERM")
+    // A stream left open would hold the stop for the whole handler wait.
+    expect(await exitWithin(dir, d, HANDLER_WAIT_MS - 1500), daemonLog(dir)).toEqual({ code: 0, signal: null })
+    expect(fs.existsSync(paths.socket)).toBe(false)
   },
   120_000,
 )

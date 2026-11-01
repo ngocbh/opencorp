@@ -361,6 +361,9 @@ export class SessionActor implements LiveCalls {
   /** The runs fresh runs replaced, whose open questions go stale once a fresh worker's run starts. */
   #replaced: string[] = []
   #spec: RunSpec | null = null
+  /** The run whose questions restore couldn't reconcile, its spec refused for its folder: the first spec built
+   *  reconciles them. */
+  #reconcileDue: string | null = null
   #pins: Pins | null = null
   /** Whether this actor has started a worker. A new actor stands for a session woken after a restart, as Python's
    *  `_resume` saw it, so only its fresh run for a changed model or connection gets `WOKEN_NOTE`; one after a switch
@@ -734,11 +737,14 @@ export class SessionActor implements LiveCalls {
    * At office start: picks the session up from where yian's log says its run stands. A run yian ended
    * keeps that end: an ending session ends as the run did; any other sleeps, its questions stale, until a fresh run.
    * An unreadable log fails an ending session (`COULDNT_RESUME`), and a run that never started has an ending session
-   * ended again; any other sleeps until a fresh run. A waiting run's questions are reconciled and it sleeps, its
-   * timer armed, unless it can wake now. Over the cost cap any run sleeps. Any other run is advanced, and an ending
-   * session ended again. Until the actor's first worker, a run the record check finds moved ends `OFFICE_REPLACED`.
-   * A failure is logged by its type and fails the session, unless the office stops. Does nothing a second time, or
-   * once a worker runs or the session finished; `503 stopping` after `close`.
+   * ended again; any other sleeps until a fresh run, one that never started recorded `COULDNT_START` at once. A
+   * waiting run's questions are reconciled and it sleeps, its timer armed, unless it can wake now. Over the cost cap
+   * any run sleeps. Any other run is advanced, and an ending session ended again. Until the actor's first worker, a
+   * run the record check finds moved ends `OFFICE_REPLACED`. A spec refused for its folder (missing or unsafe) leaves
+   * a session that isn't ending asleep, a waiting run's timer armed and its questions reconciled by the first spec
+   * built; the next message checks the folder again. Any other failure is logged by its type and fails the session,
+   * unless the office stops. Does nothing a second time, or once a worker runs or the session finished; `503
+   * stopping` after `close`.
    */
   restore(): Promise<void> {
     return this.#command(async () => {
@@ -769,8 +775,10 @@ export class SessionActor implements LiveCalls {
     }
     const ending = session.status === "ending"
     if (!fs.existsSync(this.#logOf(runId))) {
-      // Its worker never started it: the record check makes the next advance a fresh run (`COULDNT_START`).
+      // Its worker never started it. Recorded now, so the run lists as failed from the start on, not only once the
+      // next message's fresh run replaces it (that end then writes nothing).
       if (ending) await this.#end(session, false)
+      else this.#ctx.store.endRun(runId, COULDNT_START)
       return
     }
     let inspection: RunInspection | null = null
@@ -796,8 +804,6 @@ export class SessionActor implements LiveCalls {
       }
       return
     }
-    const spec = await this.#specOf(session)
-    const capped = this.#capped()
     if (status === "waiting") {
       this.#waits = inspection.waits.map((wait) => ({
         node: wait.node,
@@ -808,12 +814,29 @@ export class SessionActor implements LiveCalls {
         settled: wait.settled,
       }))
       this.#rested = true
+    }
+    let spec: RunSpec
+    try {
+      spec = await this.#specOf(session)
+    } catch (error) {
+      // As without a restart: the next message checks the folder again. Left open, an ending session could never
+      // be ended, so it still fails.
+      if (ending || !folderRefused(error)) throw error
+      this.#log(`session ${this.sessionId}: its folder can't be used at restore (${errorName(error)})`)
+      if (status === "waiting") {
+        this.#reconcileDue = runId
+        this.#arm(this.#waits ?? [])
+      }
+      return
+    }
+    const capped = this.#capped()
+    if (status === "waiting") {
       await this.#reconcile(session, spec, runId)
       const unread = this.#unreadAnswers([]).length > 0
       if (!ending && (capped || (!inspection.ready && !unread))) {
         // Over the cap, the answer goes with the advance a raise starts.
         if (unread) this.#needsAdvance = true
-        this.#arm(this.#waits)
+        this.#arm(this.#waits ?? [])
         return
       }
     } else if (capped && !ending) {
@@ -2047,7 +2070,10 @@ export class SessionActor implements LiveCalls {
       await this.#replyFailed(run, outcome!)
     } else {
       this.#log(`session ${this.sessionId}: its run ended (${status})`)
-      this.#finish("failed", outcome, null, run)
+      // An error before yian wrote a log (a flow that won't load): its worker couldn't start the run. With a log,
+      // how yian recorded the run stands, which an office end reason would hide.
+      const unstarted = status === "error" && run.kind === "chat" && !fs.existsSync(this.#logOf(run.runId))
+      this.#finish("failed", outcome, unstarted ? COULDNT_START : null, run)
     }
     this.#trySettle("after a worker exit")
   }
@@ -2267,6 +2293,7 @@ export class SessionActor implements LiveCalls {
   #finish(status: "ended" | "failed", outcome: Frame | null, why: string | null, run = this.#run): void {
     if (this.#finished) return
     this.#finished = true
+    this.#reconcileDue = null
     // The failed run is reported as its held fresh run would have reported it.
     const held = this.#heldFresh
     if (held !== null) {
@@ -2498,9 +2525,18 @@ export class SessionActor implements LiveCalls {
     return session
   }
 
-  /** The run spec, built once per actor. */
+  /** The run spec, built once per actor; the first build also reconciles the questions restore left
+   *  (`#reconcileDue`), unless the session finished, the actor closed or another run replaced that one. */
   async #specOf(session: SessionRecord): Promise<RunSpec> {
-    this.#spec ??= await this.#ctx.spec(session)
+    if (this.#spec === null) {
+      const spec = await this.#ctx.spec(session)
+      this.#spec = spec
+      const due = this.#reconcileDue
+      this.#reconcileDue = null
+      if (due !== null && due === this.#runId && !this.#finished && !this.#closed) {
+        await this.#reconcile(session, spec, due)
+      }
+    }
     return this.#spec
   }
 
@@ -2571,6 +2607,15 @@ export class SessionActor implements LiveCalls {
  *  provider error's text. */
 function spawnWhy(error: unknown): string {
   return error instanceof ProviderError ? ": its connection can't be used; see the office log" : "; see the office log"
+}
+
+/** Whether `error` is the session folder's refusal (`checkFolder`): missing, not a folder, or unsafe. */
+function folderRefused(error: unknown): boolean {
+  return (
+    error instanceof HarnessError &&
+    error.status === 422 &&
+    (error.code === "invalid_body" || error.code === "unsafe_workspace")
+  )
 }
 
 /** Whether `session`'s cost is at or over its cap, the pinned default if it has none of its own. */

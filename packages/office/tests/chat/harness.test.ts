@@ -10,7 +10,7 @@ import { INTERRUPTED_CALL, SessionActor } from "../../src/chat/session_actor.ts"
 import { HarnessError, LIVE } from "../../src/chat/state.ts"
 import { MAIN_CHAT } from "../../src/chat/turns.ts"
 import { PING } from "../../src/daemon/bus.ts"
-import { CARD_CLOSED } from "../../src/runs/outcomes.ts"
+import { CARD_CLOSED, COULDNT_START } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { type SessionRecord, type WorkItemRecord, newId } from "../../src/store/store.ts"
 import { type FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
@@ -26,6 +26,7 @@ import {
   ASK_MANAGER,
   ASK_USER,
   ASKED,
+  CHAT_FLOW,
   EMPTY,
   LAN,
   PRICES,
@@ -1548,6 +1549,31 @@ test("a reopened session whose start fails leaves its earlier run untouched", as
   expect(status(h, s.id)).toBe("failed")
   expect(h.store.getSession(s.id)!.run_ids).toEqual([first!])
   expect(h.store.getRun(first!)!.endReason).toBeNull()
+})
+
+test("a session whose flow fails to load fails with its run recorded as couldn't start", async () => {
+  const flow = CHAT_FLOW.replace("kind: loop", "kind: bogus")
+  expect(flow).not.toBe(CHAT_FLOW)
+  const h = await makeHarness(await fakeLlm(), { files: { "shared/flows/chat.yaml": flow } })
+  const errors = spyOn(console, "error")
+  try {
+    const s = await h.harness.startSession("minh", h.folder)
+    const [runId] = s.run_ids
+    await waitFor(() => status(h, s.id) === "failed", { what: "the session to fail" })
+    // The worker's error frame failed it, not a spec the start refused.
+    expect(h.kinds).toContain("chat")
+    expect(h.logs.some((line) => line.includes(`session ${s.id}: its run ended (error)`))).toBe(true)
+    expect(fs.existsSync(path.join(h.office.paths.runs, runId!, "log.jsonl"))).toBe(false)
+    expect(h.store.getRun(runId!)).toMatchObject({ endReason: COULDNT_START, endedAt: expect.any(String) })
+    expect(h.office.runs.page().runs.find((r) => r.run_id === runId)).toMatchObject({
+      status: "failed",
+      reason: COULDNT_START,
+    })
+    expect((await h.office.runs.detail(runId!)).run.status).toBe("failed")
+    expect(errors.mock.calls.some((call) => String(call[0]).includes("has no recorded outcome"))).toBe(false)
+  } finally {
+    errors.mockRestore()
+  }
 })
 
 /** The kinds of the records in run `runId`'s log. */
