@@ -170,16 +170,17 @@ export async function azureDeployments(
   }
 }
 
-/** The models provider `name` lists for `key` (an empty key sends none), sorted; none when it has no listing.
- *  `request` stands in for the HTTP sender. Throws `OnboardError` when they couldn't be listed; the message never
- *  holds the key. */
+/** The models provider `name` lists for `key` (an empty key sends none) at `baseUrl` (empty or none: the
+ *  provider's own host), sorted; none when it has no listing. `request` stands in for the HTTP sender. Throws
+ *  `OnboardError` when they couldn't be listed; the message never holds the key. */
 export async function providerModels(
   name: string,
   key: string,
-  options: { request?: AuthRequest } = {},
+  options: { request?: AuthRequest; baseUrl?: string } = {},
 ): Promise<string[]> {
+  const { request, baseUrl } = options
   try {
-    return (await models.providerModels(name, key || null, null, { timeoutMs: 15_000, request: options.request })) ?? []
+    return (await models.providerModels(name, key || null, baseUrl || null, { timeoutMs: 15_000, request })) ?? []
   } catch (error) {
     if (error instanceof models.ModelListError) throw new OnboardError(error.message)
     throw error
@@ -189,11 +190,15 @@ export async function providerModels(
 /** How onboarding lists what a provider offers; tests pass listers that reach no provider. */
 export interface Listers {
   azureDeployments(baseUrl: string, key: string): Promise<string[]>
-  providerModels(name: string, key: string): Promise<string[]>
+  /** `baseUrl`, when given and not empty, is the server to list instead of the provider's own. */
+  providerModels(name: string, key: string, baseUrl?: string): Promise<string[]>
 }
 
 /** The listers that ask the providers. */
-export const LISTERS: Listers = { azureDeployments, providerModels }
+export const LISTERS: Listers = {
+  azureDeployments,
+  providerModels: (name, key, baseUrl) => providerModels(name, key, { baseUrl }),
+}
 
 /** Asks `question` until `problem` finds nothing wrong with the answer, at most `TRIES` times; with `options`, the
  *  owner picks the answer from them. Throws `OnboardError` when no answer worked. */
@@ -253,12 +258,44 @@ function azureProblem(answer: string): string | null {
   return null
 }
 
+/** Why `answer` isn't a server URL to save, or null when it is one or empty (the server on this machine). The
+ *  reasons never hold the answer. */
+function serverUrlProblem(answer: string): string | null {
+  const text = answer.trim()
+  if (!text) return null
+  const url = URL.parse(text)
+  if (url === null || (url.protocol !== "http:" && url.protocol !== "https:") || !url.hostname) {
+    return "give an http:// or https:// URL like http://host:8000/v1"
+  }
+  if (url.username || url.password) return "keep the user and password out of the URL"
+  if (text.includes("?") || text.includes("#")) return "give the URL without a query or fragment"
+  return null
+}
+
+/** Why a key can't go to a server at an http URL elsewhere. */
+const KEY_OVER_HTTP = "a key goes only over https, or http to localhost, 127.0.0.1 or ::1"
+
+/** Whether a key may be sent to the server at `url`, empty for the one on this machine. */
+function keyMayGo(url: string): boolean {
+  if (!url) return true
+  // Yian's rule for where a key may be sent, which it applies to llm_config.base_url; VLLM_BASE_URL is used as
+  // written, so it is applied here.
+  try {
+    new LLMConfig({ provider: "openai", base_url: url, api_key: "-" })
+  } catch (error) {
+    if (!(error instanceof ValidationError)) throw error
+    return false
+  }
+  return true
+}
+
 /** The key for provider `name`, read without echo; empty only when not `required`, and `last` for an empty answer
  *  when there is one. */
 async function askKey(prompter: Prompter, name: string, required: boolean, last = ""): Promise<string> {
   let question: string
   if (last) question = `${name} API key (empty keeps the one you just typed; not shown)`
   else if (required) question = `${name} API key (not shown)`
+  else if (models.KEYLESS.includes(name)) question = `${name} API key (empty for none; not shown)`
   else question = `${name} API key (empty to use \`yian auth ${name}\`; not shown)`
   for (let i = 0; i < TRIES; i++) {
     let key: string
@@ -276,14 +313,15 @@ async function askKey(prompter: Prompter, name: string, required: boolean, last 
   throw new OnboardError(`no usable answer to ${repr(question)}`)
 }
 
-/** The model for provider `name`, picked from those it lists for `key` when it can be listed, `last` for an empty
- *  answer; empty, without a key, for the model of yian's own login. */
+/** The model for provider `name`, picked from those it lists for `key` (at `baseUrl` when given) when it can be
+ *  listed, `last` for an empty answer; empty, without a key, for the model of yian's own login. */
 export async function askModel(
   prompter: Prompter,
   name: string,
   last: string,
   key: string,
   listers: Listers,
+  baseUrl = "",
 ): Promise<string> {
   if (!key && !models.KEYLESS.includes(name)) {
     // The runs use yian's own login, which saved its model and which the listing can't use.
@@ -294,7 +332,7 @@ export async function askModel(
   let listed: string[] = []
   if (prompter.interactive) {
     try {
-      listed = await listers.providerModels(name, key)
+      listed = await listers.providerModels(name, key, baseUrl)
     } catch (error) {
       if (!(error instanceof OnboardError)) throw error
       prompter.say(`Couldn't list the models (${error.message}).`)
@@ -340,6 +378,26 @@ async function askProviderData(prompter: Prompter, last: Answers, listers: Liste
     return { llm_config: { provider: "openai", base_url: baseUrl, api_key: last.key, model: last.model } }
   }
   const llm: Record<string, string> = { provider: name }
+  if (models.KEYLESS.includes(name)) {
+    // The server's URL goes in the env, where yian's client for the provider reads it; the caller's own variable
+    // is never read, so setup works only as the office's runs will.
+    for (let i = 0; ; i++) {
+      const question = `${name} server URL (empty for one on this machine)`
+      last.endpoint = (await askUntil(prompter, question, last.endpoint ?? "", serverUrlProblem)).trim()
+      // Yian's ollama client sends no key.
+      last.key = name === "ollama" ? "" : await askKey(prompter, name, false, last.key ?? "")
+      if (!last.key || keyMayGo(last.endpoint)) break
+      prompter.say(`That doesn't work: ${KEY_OVER_HTTP}`)
+      // Dropped, so the next key question can be left empty for none.
+      last.key = ""
+      if (i + 1 >= TRIES) throw new OnboardError(KEY_OVER_HTTP)
+    }
+    if (last.key) llm.api_key = last.key
+    last.model = (await askModel(prompter, name, last.model ?? "", last.key, listers, last.endpoint)).trim()
+    if (last.model) llm.model = last.model
+    if (!last.endpoint) return { llm_config: llm }
+    return { llm_config: llm, env: { [models.ENV_BASE_URL[name]!]: last.endpoint } }
+  }
   last.key = await askKey(prompter, name, false, last.key ?? "")
   if (last.key) llm.api_key = last.key
   else prompter.say(`No key saved; runs will use yian's own login (\`yian auth ${name}\`).`)
