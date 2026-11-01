@@ -85,32 +85,45 @@ function send(res: ServerResponse, status: number, text: string, headers: Record
  *  (text or bytes) streamed as they come. A streamed body that waits must end once `ctx.signal` aborts: an async
  *  generator can't be stopped from outside while it awaits. A streamed body should take its resources (a
  *  subscription, a file) inside the generator body, which runs only on the first pull: HEAD, and a client that left
- *  before the reply, never start it. */
+ *  before the reply, never start it. `abort` cuts a streamed reply's connection while the client isn't reading (a
+ *  write is waiting for it to drain), which neither `ctx.signal` nor the body can do; a client that reads gets
+ *  whatever the body yields before it ends. */
 export class RawReply {
   constructor(
     readonly status: number,
     readonly headers: Readonly<Record<string, string>>,
     readonly body: string | AsyncIterable<string | Uint8Array>,
+    readonly options: { abort?: AbortSignal } = {},
   ) {}
 }
 
-/** Resolves once `res` can take more data or has closed. */
-function drained(res: ServerResponse): Promise<void> {
+/** Resolves once `res` can take more data or has closed; destroys it first if `abort` aborts meanwhile. */
+function drained(res: ServerResponse, abort: AbortSignal | undefined): Promise<void> {
   return new Promise((resolve) => {
     if (res.destroyed) return resolve()
+    if (abort?.aborted) {
+      res.destroy()
+      return resolve()
+    }
     const done = () => {
       res.off("drain", done)
       res.off("close", done)
+      abort?.removeEventListener("abort", cut)
       resolve()
+    }
+    const cut = () => {
+      res.destroy()
+      done()
     }
     res.on("drain", done)
     res.on("close", done)
+    abort?.addEventListener("abort", cut, { once: true })
   })
 }
 
 /** Sends `reply` with `extra` headers added: text whole through `send`, a stream chunk by chunk, waiting while
- *  the client isn't reading. HEAD gets the head only and never starts the stream. An error from the stream
- *  rejects, after the head has gone out. */
+ *  the client isn't reading unless the reply's `abort` cuts it. HEAD gets the head only and never starts the
+ *  stream. An error from the stream rejects, after the head has gone out. */
 async function sendRaw(res: ServerResponse, reply: RawReply, extra: Record<string, string>): Promise<void> {
   const headers = { ...reply.headers, ...extra }
   if (typeof reply.body === "string") return send(res, reply.status, reply.body, headers)
@@ -121,7 +134,7 @@ async function sendRaw(res: ServerResponse, reply: RawReply, extra: Record<strin
   }
   for await (const chunk of reply.body) {
     if (res.destroyed) break
-    if (!res.write(chunk)) await drained(res)
+    if (!res.write(chunk)) await drained(res, reply.options.abort)
     // A client that left while we waited must not cost another chunk: for an event stream, one taken and lost.
     if (res.destroyed) break
   }

@@ -138,6 +138,32 @@ test("a dropped subscriber gets reset then the stream ends", async () => {
   expect(await ends(it)).toBe(true)
 })
 
+test("a dropped subscriber that is not reading has its connection cut", async () => {
+  const office = makeOffice()
+  const s = office.store.createSession(session())
+  office.bus.queueSize = 4
+  const { sock } = await served(office)
+  const conn = await Conn.open(sock)
+  conn.send("GET /events HTTP/1.1\r\nhost: office\r\nconnection: close\r\n\r\n")
+  await waitFor(() => conn.socket.bytesRead > 0, { timeout: 9000, what: "the stream to start" })
+  conn.socket.pause()
+  // Paced, so the stream writes until the paused socket is full and then its queue overflows while it waits.
+  const big = "x".repeat(256 * 1024)
+  for (let i = 0; office.bus.subscriberCount > 0; i++) {
+    if (i > 2000) throw new Error("the stream was never dropped")
+    office.bus.publishLive(delta(s.id, big))
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  const parts: Buffer[] = []
+  await new Promise<void>((resolve) => {
+    conn.socket.on("data", (part: Buffer) => parts.push(part))
+    conn.socket.on("close", () => resolve())
+    conn.socket.resume()
+  })
+  // Cut while waiting, so it never got to send the reset frame: any end of the stream means bootstrap again.
+  expect(Buffer.concat(parts).toString().includes("event: reset")).toBe(false)
+})
+
 test("head is 405 and leaves the connection usable", async () => {
   const office = makeOffice()
   const { sock } = await served(office)

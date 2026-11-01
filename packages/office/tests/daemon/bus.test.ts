@@ -159,3 +159,25 @@ test("a second reader while one waits is refused", async () => {
   await expect(sub.next(5000)).rejects.toThrow("a subscription has one reader at a time")
   expect(text(await woken)).toBe("b") // not a false end
 })
+
+test("ended fires when the subscription is ended from outside, never by its reader closing it", () => {
+  const bus = new Bus({ queueSize: 1 })
+  const ended = bus.subscribe()
+  ended.end()
+  expect(ended.ended.aborted).toBe(true)
+
+  const dropped = bus.subscribe()
+  bus.publishMeta(meta(S1))
+  bus.publishMeta(meta(S1))
+  expect(dropped.dropped).toBe(true)
+  expect(dropped.ended.aborted).toBe(true)
+
+  const closed = bus.subscribe()
+  closed.close()
+  expect(closed.ended.aborted).toBe(false)
+
+  const open = bus.subscribe()
+  bus.close()
+  expect(open.ended.aborted).toBe(true)
+  expect(bus.subscribe().ended.aborted).toBe(true)
+})
