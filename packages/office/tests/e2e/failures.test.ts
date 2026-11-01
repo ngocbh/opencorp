@@ -148,7 +148,7 @@ test(
       what: "the orphaned worker to exit when its office dies",
     })
     const down = await office.opencorp(["end"], { cwd: workspace, check: false })
-    expect([down.code, down.stderr.trim()]).toEqual([3, "The office isn't running. Run `opencorp doctor`."])
+    expect([down.code, down.stderr.trim()]).toEqual([3, "The office isn't running. Run `opencorp start` (or `opencorp doctor` if it won't start)."])
     await office.opencorp(["start"], { cwd: workspace })
     expect(office.pid()).not.toBe(old)
     await office.settled(sid, ["One.", "Resumed."])

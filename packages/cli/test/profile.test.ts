@@ -300,5 +300,5 @@ test("with no office running, edit says so and exits 3", async () => {
   rmSync(socket, { force: true })
   editor(`: # leaves the file as it is\n`)
   const r = await profile("edit", "minh")
-  expect([r.code, r.err]).toEqual([3, "The office isn't running. Run `opencorp doctor`."])
+  expect([r.code, r.err]).toEqual([3, "The office isn't running. Run `opencorp start` (or `opencorp doctor` if it won't start)."])
 })

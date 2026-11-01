@@ -143,7 +143,7 @@ async function initLocked(one: Launch, prompter: Prompter, options: InitOptions)
   const worktrees = path.join(one.office, "worktrees")
   if (await host.answers(one.socket)) {
     throw new OnboardError(
-      `the office is running, but ${company} has no company yet; stop it and run \`opencorp init\` again`,
+      `the office is running, but ${company} has no company yet; run \`opencorp stop\`, then \`opencorp init\` again`,
     )
   }
 

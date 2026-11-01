@@ -1,6 +1,6 @@
 /**
  * `opencorp install <command>`: what `opencorp init`, `opencorp onboard`, `opencorp offboard`, `opencorp doctor`,
- * `opencorp start` and `opencorp restart` run.
+ * `opencorp start`, `opencorp stop` and `opencorp restart` run.
  *
  * `opencorp`'s setup screen runs init and onboard with `--json-prompts`: each question is a JSON line on stdout,
  * each answer a JSON line on stdin. Flags are matched whole; a prefix (`--prov` for `--provider-stdin`) is
@@ -18,6 +18,7 @@ import { companyState } from "../company_template/index.ts"
 import { OfficeStartError } from "../daemon/sockets.ts"
 import { repr } from "../perm/redact.ts"
 import { type CheckOptions, checks, exitCode, hqPortChecks, hqStatus, report } from "./doctor.ts"
+import * as fallback from "./fallback.ts"
 import { init } from "./init.ts"
 import { JsonPrompter, type TextOut } from "./json_prompts.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, ServiceError } from "./launch.ts"
@@ -209,6 +210,7 @@ const COMMANDS: Record<string, { about: string; flags: Record<string, Flag>; run
   },
   doctor: { about: "check the office", flags: COMMON, run: doctorCommand },
   start: { about: "start the office if it isn't running", flags: COMMON, run: startCommand },
+  stop: { about: "stop the office; its service stays installed", flags: COMMON, run: stopCommand },
   restart: { about: "stop the office and start it again", flags: COMMON, run: restartCommand },
 }
 
@@ -600,11 +602,29 @@ async function startCommand(args: Args, s: Setup): Promise<number> {
 async function restartCommand(args: Args, s: Setup): Promise<number> {
   const run = launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome })
   if (socketTooLong(run, s)) return 1
-  const refused = await notOnboarded(run, s)
-  if (refused !== null) return refused
+  const lookup = await service.findDaemon(run, s.host, s.lookup)
+  // A running office is restarted even without a company: nothing else would stop it.
+  if (!(await s.host.answers(run.socket)) && lookup.daemon === null) {
+    const refused = await notOnboarded(run, s)
+    if (refused !== null) return refused
+  } else {
+    const company = path.join(run.home, "company")
+    const state = await companyState(company)
+    if (state.kind === "damaged") {
+      s.stderr.write(`opencorp: ${damageMessage(company, state)}\n`)
+      return 1
+    }
+    if (state.kind !== "ok") {
+      s.stderr.write(
+        `opencorp: the office is running (pid ${lookup.named ?? service.pid(run)}), but ${company} has no company;` +
+          " run `opencorp stop`, then `opencorp init` or `opencorp onboard --from URL`\n",
+      )
+      return 1
+    }
+  }
   let was: number | null = null
   const restart = async (one: Launch, host: Host) => {
-    const done = await service.restart(one, host, undefined, await service.findDaemon(one, host, s.lookup))
+    const done = await service.restart(one, host, undefined, lookup)
     was = done.stopped
     return done
   }
@@ -613,5 +633,41 @@ async function restartCommand(args: Args, s: Setup): Promise<number> {
   if (was === null) s.stdout.write(`The office wasn't running; started it (pid ${pid}).\n`)
   else s.stdout.write(`Restarted the office (pid ${pid}; was ${was}).\n`)
   await reportHq(run.home, s)
+  return 0
+}
+
+/** What brings an office stopped under `mode` back, and the risk when its daemon had to be killed; one line each. */
+export function afterStop(mode: service.Mode | null, killed: boolean): string[] {
+  const lines: string[] = []
+  if (mode === "launchd" || mode === "systemd") {
+    lines.push(`${mode} starts it again at your next login; \`opencorp start\` starts it now.`)
+  } else {
+    lines.push("`opencorp start` starts it again.")
+  }
+  if (killed) {
+    // systemd's unit was stopped too, which cancels its restart; launchd restarts a killed daemon on its own.
+    const restarts =
+      mode === "launchd" ? "; launchd may start it again in about 10s; run `opencorp stop` again if it does" : ""
+    lines.push(`It didn't stop within ${fallback.STOP_TIMEOUT_MS / 1000}s and was killed${restarts}.`)
+  }
+  return lines
+}
+
+async function stopCommand(args: Args, s: Setup): Promise<number> {
+  const run = launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome })
+  let done: service.Stopped
+  try {
+    done = await service.stop(run, s.host, undefined, await service.findDaemon(run, s.host, s.lookup))
+  } catch (error) {
+    if (!(error instanceof ServiceError)) throw error
+    s.stderr.write(`opencorp: ${error.message}\n`)
+    return 1
+  }
+  if (done.stopped === null) {
+    s.stdout.write("The office isn't running.\n")
+    return 0
+  }
+  s.stdout.write(`Stopped the office (pid ${done.stopped}).\n`)
+  for (const line of afterStop(service.recordedMode(run), done.killed)) s.stdout.write(`${line}\n`)
   return 0
 }

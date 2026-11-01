@@ -153,20 +153,20 @@ async function waitGone(pid: number, started: number, timeout: number): Promise<
 
 /** Stops `pid` if it is still the process that started at `started`: SIGTERM, then SIGKILL after `timeout` ms,
  *  then waits up to `killWait` ms for it to go. The start time is re-read before each signal, so a pid reused
- *  meanwhile is never signalled. True when the process was found and signalled, false when it wasn't running.
+ *  meanwhile is never signalled. `terminated` when SIGTERM stopped it, `killed` when it took SIGKILL, false when it
+ *  wasn't running.
  *  Read `started` with startTime(pid) before anything else identifies the process (e.g. args), so a pid reused
  *  in between fails the re-check; never pass a time the office recorded itself. */
 export async function stopProcess(
   pid: number,
   started: number,
   { timeout = 15_000, killWait = 5_000 } = {},
-): Promise<boolean> {
+): Promise<false | "terminated" | "killed"> {
   if (pid === process.pid || !sameProcess(pid, started)) return false
   signal(pid, "SIGTERM")
   // waitGone's last sameProcess read comes right before this SIGKILL, with nothing awaited in between.
-  if (!(await waitGone(pid, started, timeout))) {
-    signal(pid, "SIGKILL")
-    await waitGone(pid, started, killWait)
-  }
-  return true
+  if (await waitGone(pid, started, timeout)) return "terminated"
+  signal(pid, "SIGKILL")
+  await waitGone(pid, started, killWait)
+  return "killed"
 }

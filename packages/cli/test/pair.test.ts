@@ -517,7 +517,7 @@ test("when HQ's status can't be read, it opens the link as before", async () => 
 test("without an office it says so and exits 3", async () => {
   const { d, errors } = deps()
   expect(await pair([], d)).toBe(3)
-  expect(errors).toEqual(["The office isn't running. Run `opencorp doctor`."])
+  expect(errors).toEqual(["The office isn't running. Run `opencorp start` (or `opencorp doctor` if it won't start)."])
 })
 
 test("an unknown option is a usage error", async () => {

@@ -329,7 +329,10 @@ test("stop process signals only the daemon it is given", async () => {
   fs.writeFileSync(pidfile, `${named.pid}\n`)
   const given = await standIn(`daemon --home ${one.home}`)
   const found = { pid: given.pid, started: given.started! }
-  expect(await fallback.stopProcess(one, { ps: ps(), found })).toBe(`stopped the office (pid ${given.pid})`)
+  expect(await fallback.stopProcess(one, { ps: ps(), found })).toEqual({
+    line: `stopped the office (pid ${given.pid})`,
+    killed: false,
+  })
   expect(isGone(given.pid, given.started)).toBe(true)
   expect(isGone(named.pid, named.started)).toBe(false)
   expect(await fallback.stopProcess(one, { ps: ps(), found: null })).toBeNull()
@@ -346,6 +349,6 @@ test("stop process stops the office daemon and nothing else", async () => {
 
   const live = await standIn(`daemon --home ${one.home}`)
   fs.writeFileSync(pidfile, `${live.pid}\n`)
-  expect(await fallback.stopProcess(one, { ps: ps() })).toBe(`stopped the office (pid ${live.pid})`)
+  expect((await fallback.stopProcess(one, { ps: ps() }))?.line).toBe(`stopped the office (pid ${live.pid})`)
   expect(isGone(live.pid, live.started)).toBe(true)
 })

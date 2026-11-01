@@ -286,7 +286,7 @@ test("a running office missing template files is told to stop first", async () =
   expect(got.company!.status).toBe("warn")
   expect(got.company!.detail).toContain(SIDE_CHAT)
   expect(got.company!.detail).toContain(
-    "The office is running; stop it and run `opencorp onboard` again to add 1 template file.",
+    "The office is running; run `opencorp stop`, then `opencorp onboard` again to add 1 template file.",
   )
 })
 
@@ -548,7 +548,9 @@ test("a failed office start names the type the log above it holds", async () => 
   expect(got.office!.detail).not.toContain("see the log above")
 })
 
-test.each(["file", "directory", "symlink"])("something other than a socket at the socket path fails [%s]", async (kind) => {
+test.each(["file", "directory", "symlink"])("something other than a socket at the socket path fails [%s]", async (
+  kind,
+) => {
   const dir = tempDir()
   const paths = await onboarded(dir)
   const sock = path.join(paths.office, "office.sock")
@@ -1000,10 +1002,10 @@ test("codex advice says how the office picks up a change under its service", asy
   const missing = { PATH: path.join(tempDir(), "nowhere") }
   for (const mode of ["launchd", "systemd"]) {
     const managed = await doctor.codexCheck(missing, {}, mode)
-    expect(managed.detail).toContain("stop the office and run `opencorp onboard` again from that shell")
+    expect(managed.detail).toContain("then `opencorp stop` and `opencorp onboard` again from that shell")
     expect(managed.detail).not.toContain("opencorp restart")
     const override = await doctor.codexCheck(missing, { OPENCORP_CODEX_BIN: "/nowhere/codex" }, mode)
-    expect(override.detail).toContain("stop the office and run `opencorp onboard` again from that shell")
+    expect(override.detail).toContain("then `opencorp stop` and `opencorp onboard` again from that shell")
   }
   for (const mode of ["tmux", "background", null]) {
     expect((await doctor.codexCheck(missing, {}, mode)).detail).toContain("then `opencorp restart` from that shell")

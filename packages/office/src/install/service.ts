@@ -233,12 +233,14 @@ export async function install(launch: Launch, host: Host, mode: Mode | "auto" = 
         mode: null,
         notes: [
           `the office is already running (pid ${pid(launch)}) but was not started by` +
-            " a service; stop it and run `opencorp onboard` again to install one",
+            " a service; run `opencorp stop`, then `opencorp onboard` again to install one",
         ],
       }
     }
     if (mode !== "auto" && mode !== recorded) {
-      throw new ServiceError(`the office is already running under ${recorded}; stop it before moving it to ${mode}`)
+      throw new ServiceError(
+        `the office is already running under ${recorded}; run \`opencorp stop\` before moving it to ${mode}`,
+      )
     }
     const notManaged = NOT_MANAGED[recorded]
     if (notManaged !== undefined) {
@@ -246,7 +248,7 @@ export async function install(launch: Launch, host: Host, mode: Mode | "auto" = 
       if (problem !== null) {
         throw new ServiceError(
           `the office is running, but ${recorded} doesn't have its service (${problem});` +
-            " stop the office and run `opencorp onboard` again",
+            " run `opencorp stop`, then `opencorp onboard` again",
         )
       }
       return { mode: recorded, notes: [] }
@@ -449,7 +451,9 @@ function failedStart(launch: Launch, failure: Exclude<StartFailure, { running: n
   if ("crash" in failure) {
     return new ServiceError(`the office crashed while starting: ${failure.crash}; its stack is in ${launch.log}`)
   }
-  const said = failure.tail ? `the end of what it wrote to ${launch.log}:\n${failure.tail}\n` : `nothing in ${launch.log}`
+  const said = failure.tail
+    ? `the end of what it wrote to ${launch.log}:\n${failure.tail}\n`
+    : `nothing in ${launch.log}`
   return new ServiceError(`the office exited (${failure.exited}) before it answered on ${launch.socket}; ${said}`)
 }
 
@@ -544,7 +548,7 @@ export async function uninstall(
   ]
   if (recorded === "tmux" || host.which("tmux")) done.push(await fallback.stopTmux(launch, host))
   const stopped = await fallback.stopProcess(launch, { timeoutMs, found: lookup.daemon })
-  if (stopped) done.push(`${recorded ?? "started by hand"}: ${stopped}`)
+  if (stopped) done.push(`${recorded ?? "started by hand"}: ${stopped.line}`)
   fs.rmSync(path.join(launch.office, "install.json"), { force: true })
   await waitStopped(launch, host, lookup)
   return done.filter((line): line is string => Boolean(line))
@@ -573,7 +577,9 @@ function why(lookup: Lookup): string {
   if (daemon !== null) {
     return ` after pid ${daemon.pid} was stopped (another daemon took its place?); \`opencorp doctor\` shows what it is`
   }
-  if (named === null) return ", and neither GET /office nor office.pid names its pid; `opencorp doctor` shows what it is"
+  if (named === null) {
+    return ", and neither GET /office nor office.pid names its pid; `opencorp doctor` shows what it is"
+  }
   if (!lookup.checked && lookup.from === "office") {
     return (
       ` (pid ${named}, from GET /office); this machine has no \`ps\` to check it with; if pid ${named} is the` +
@@ -584,6 +590,39 @@ function why(lookup: Lookup): string {
     ` (pid ${named}, from ${source(lookup)}); it isn't one this command could verify as this office's daemon, so` +
     " nothing was signalled; `opencorp doctor` shows what it is"
   )
+}
+
+/** What `stop` did: the pid it stopped (null when none ran) and whether it took SIGKILL. */
+export interface Stopped {
+  stopped: number | null
+  killed: boolean
+}
+
+/**
+ * Stops the office now and leaves its service installed, as `systemctl stop` does: launchd or systemd starts it
+ * again at the next login (or boot), `start` starts it at once, and offboarding removes it.
+ *
+ * The daemon is the one `lookup` (by default `findDaemon`'s) verified: SIGTERM, then SIGKILL after `timeoutMs`. A
+ * daemon exits 0 on SIGTERM, which neither launchd nor systemd restarts; one that took SIGKILL failed, so its manager
+ * would start it again. Under systemd the unit is stopped too, which cancels that restart; launchd has no such call
+ * short of unloading the service, so the caller says so. A tmux session is killed with its daemon.
+ *
+ * Throws `ServiceError` if the office still answers afterwards.
+ */
+export async function stop(
+  launch: Launch,
+  host: Host,
+  timeoutMs = fallback.STOP_TIMEOUT_MS,
+  lookup?: Lookup,
+): Promise<Stopped> {
+  lookup ??= await findDaemon(launch, host)
+  const done = await fallback.stopProcess(launch, { timeoutMs, found: lookup.daemon })
+  const mode = recordedMode(launch)
+  if (mode === "tmux") await fallback.stopTmux(launch, host)
+  // Best effort: the daemon is already stopped, and a unit systemd doesn't know has nothing to restart.
+  if (mode === "systemd") await host.run(["systemctl", "--user", "stop", systemd.unitName(launch)])
+  await waitStopped(launch, host, lookup)
+  return { stopped: done && lookup.daemon ? lookup.daemon.pid : null, killed: done?.killed ?? false }
 }
 
 /**

@@ -70,7 +70,7 @@ test("opencorp end finds the folder's live session behind more than a page of ne
 test("opencorp end ID ends that session; no office exits 3, its refusal 1", async () => {
   rmSync(path.dirname(socket), { recursive: true, force: true })
   const down = await capture(["end", "S1"])
-  expect([down.code, down.err]).toEqual([3, "The office isn't running. Run `opencorp doctor`."])
+  expect([down.code, down.err]).toEqual([3, "The office isn't running. Run `opencorp start` (or `opencorp doctor` if it won't start)."])
 
   mkdirSync(path.dirname(socket), { recursive: true })
   const office = createFakeOffice({ socket })

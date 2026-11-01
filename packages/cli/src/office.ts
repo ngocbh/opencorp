@@ -124,7 +124,7 @@ export const NO_OFFICE = 3
 
 /** Says the office isn't running; returns `NO_OFFICE`. */
 export function officeNotRunning(): number {
-  console.error("The office isn't running. Run `opencorp doctor`.")
+  console.error("The office isn't running. Run `opencorp start` (or `opencorp doctor` if it won't start).")
   return NO_OFFICE
 }
 

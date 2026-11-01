@@ -16,7 +16,7 @@ import { OfficePaths } from "../../src/daemon/office.ts"
 import * as fallback from "../../src/install/fallback.ts"
 import type { InitOptions } from "../../src/install/init.ts"
 import { launch, officeAnswers } from "../../src/install/launch.ts"
-import { main, type Setup } from "../../src/install/main.ts"
+import { afterStop, main, type Setup } from "../../src/install/main.ts"
 import { type OnboardOptions, SET_UP, setupConnectionFile, WHO } from "../../src/install/onboard.ts"
 import { KeyboardInterrupt, type Prompter, TtyPrompter } from "../../src/install/prompts.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
@@ -299,6 +299,51 @@ test("restart before onboarding is exit 3 with a hint", async () => {
   expect(s.err()).toContain(SET_UP)
 })
 
+test("stop is a command with its own help", async () => {
+  const s = standIns(tempDir())
+  expect(await main(["--help"], s)).toBe(0)
+  expect(s.out()).toContain("stop the office; its service stays installed")
+})
+
+test("stopping an office that isnt running says so and is exit 0", async () => {
+  const dir = tempDir()
+  const s = standIns(dir)
+  expect(await main(["stop", "--home", path.join(dir, "home")], s)).toBe(0)
+  expect(s.out()).toBe("The office isn't running.\n")
+})
+
+test("restart of a running office without a company points at stop", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  fs.mkdirSync(path.join(home, "office"), { recursive: true, mode: 0o700 })
+  const real = fs.realpathSync(home)
+  const live = await standIn(`daemon --home ${real}`)
+  fs.writeFileSync(path.join(real, "office", "office.pid"), `${live.pid}\n`)
+  const s = standIns(dir)
+  expect(await main(["restart", "--home", home], s)).toBe(1)
+  expect(s.err()).toBe(
+    `opencorp: the office is running (pid ${live.pid}), but ${path.join(real, "company")} has no company;` +
+      " run `opencorp stop`, then `opencorp init` or `opencorp onboard --from URL`\n",
+  )
+  expect(s.err()).not.toContain("no office at")
+  const answering = { ...standIns(dir), host: makeHost(dir, new Runner(), { answers: async () => true }) }
+  fs.rmSync(path.join(real, "office", "office.pid"))
+  expect(await main(["restart", "--home", home], answering)).toBe(1)
+  expect(answering.err()).toContain("the office is running (pid ?)")
+})
+
+test("after a stop the next steps follow the service and whether it was killed", () => {
+  expect(afterStop("launchd", false)).toEqual([
+    "launchd starts it again at your next login; `opencorp start` starts it now.",
+  ])
+  expect(afterStop("background", false)).toEqual(["`opencorp start` starts it again."])
+  expect(afterStop("launchd", true)[1]).toBe(
+    "It didn't stop within 25s and was killed; launchd may start it again in about 10s; run `opencorp stop` again" +
+      " if it does.",
+  )
+  expect(afterStop("systemd", true)[1]).toBe("It didn't stop within 25s and was killed.")
+})
+
 test("start with a company that has no first commit is exit 3 with a hint", async () => {
   const dir = tempDir()
   const company = path.join(dir, "home", "company")
@@ -448,7 +493,8 @@ async function heldHome(dir: string, holder: number) {
   fs.mkdirSync(path.join(real, "office"), { mode: 0o700 })
   fs.writeFileSync(path.join(real, "office", "office.pid"), `${holder}\n`)
   const spawn = (_argv: readonly [string, ...string[]], options: SpawnOptions): ChildProcess => {
-    fs.writeSync((options.stdio as [string, number, number])[1], `opencorp office: office already running (pid ${holder})\n`)
+    const log = (options.stdio as [string, number, number])[1]
+    fs.writeSync(log, `opencorp office: office already running (pid ${holder})\n`)
     const child = Object.assign(new EventEmitter(), { pid: 4242, unref() {} })
     // A microtask: the fake clock never lets a timer run while the start waits.
     queueMicrotask(() => child.emit("exit", 0, null))
@@ -606,6 +652,29 @@ test(
       const again = await office.install(["restart"])
       expect(again.code, again.err).toBe(0)
       expect(again.out).toBe(`Restarted the office (pid ${office.pid()}; was ${now}).\n`)
+    } finally {
+      await office.stop()
+    }
+  },
+  120_000,
+)
+
+test(
+  "stop stops a running office and start brings it back",
+  async () => {
+    const office = realOffice(killedAtEnd())
+    try {
+      const made = await office.init()
+      expect(made.code, made.err).toBe(0)
+      const pid = office.pid()
+      const stopped = await office.install(["stop"])
+      expect(stopped.code, stopped.err).toBe(0)
+      expect(stopped.out).toBe(`Stopped the office (pid ${pid}).\n\`opencorp start\` starts it again.\n`)
+      expect(await officeAnswers(office.socket)).toBe(false)
+      expect((await office.install(["stop"])).out).toBe("The office isn't running.\n")
+      const started = await office.install(["start"])
+      expect(started.code, started.err).toBe(0)
+      expect(await officeAnswers(office.socket)).toBe(true)
     } finally {
       await office.stop()
     }

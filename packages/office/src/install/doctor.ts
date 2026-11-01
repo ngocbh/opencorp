@@ -353,7 +353,7 @@ function codexChangeLands(mode: string | null): string {
   // launchd and systemd start the office with the environment `opencorp onboard` wrote into its service file, which
   // `opencorp restart` reuses; only a stopped office's onboard writes the file again.
   if (mode === "launchd" || mode === "systemd") {
-    return "stop the office and run `opencorp onboard` again from that shell"
+    return "`opencorp stop` and `opencorp onboard` again from that shell"
   }
   return "`opencorp restart` from that shell"
 }

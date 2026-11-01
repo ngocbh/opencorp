@@ -239,7 +239,7 @@ export async function pair(argv: string[], deps: PairDeps = realPairDeps): Promi
     return 0
   } catch (e) {
     if (e instanceof OfficeUnavailable) {
-      deps.error("The office isn't running. Run `opencorp doctor`.")
+      deps.error("The office isn't running. Run `opencorp start` (or `opencorp doctor` if it won't start).")
       return NO_OFFICE
     }
     if (isMissingRoute(e) || isNotImplemented(e))

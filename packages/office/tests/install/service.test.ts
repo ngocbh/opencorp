@@ -23,7 +23,7 @@ import * as service from "../../src/install/service.ts"
 import * as systemd from "../../src/install/systemd.ts"
 import { selfSpawnEnv } from "../../src/platform.ts"
 import { company } from "../company/helpers.ts"
-import { cwdOf, envNames, fifo, isGone, ps, reexecMarks, shortDir, tempDir } from "../helpers.ts"
+import { cwdOf, envNames, fifo, isGone, ps, reexecMarks, shortDir, startGroup, tempDir } from "../helpers.ts"
 import { Runner, daemonHost, killedAtEnd, makeHost, standIn } from "./helpers.ts"
 
 /** A `which` that finds every program in `/usr/bin`. */
@@ -199,7 +199,7 @@ test("a running office its service manager lost is an error", async () => {
   const host = makeHost(dir, run, { platform: "linux", answers: async () => true })
   const error = await refusal(service.install(one, host))
   expect(error).toBeInstanceOf(ServiceError)
-  expect(error.message).toMatch(/No such file[\s\S]*stop the office/)
+  expect(error.message).toMatch(/No such file[\s\S]*run `opencorp stop`, then `opencorp onboard` again/)
 })
 
 test("a running office in tmux or the background is not started twice", async () => {
@@ -527,8 +527,10 @@ test("the daemon is found through GET /office when the pidfile is wrong", async 
   fs.writeFileSync(path.join(one.office, "office.pid"), "1\n")
   const host = makeHost(dir, new Runner(), { answers: async () => true })
   const none = async () => undefined
-  const found = await service.findDaemon(one, host, { ps: ps(), office: officeSays(one.home, live.pid), identity: none })
-  expect(found).toEqual({ daemon: { pid: live.pid, started: live.started! }, named: live.pid, from: "office", checked: true })
+  const office = officeSays(one.home, live.pid)
+  const found = await service.findDaemon(one, host, { ps: ps(), office, identity: none })
+  const daemon = { pid: live.pid, started: live.started! }
+  expect(found).toEqual({ daemon, named: live.pid, from: "office", checked: true })
   const other = await standIn(`daemon --home ${one.home}2`)
   const unverified = await service.findDaemon(one, host, {
     ps: ps(),
@@ -536,7 +538,7 @@ test("the daemon is found through GET /office when the pidfile is wrong", async 
     identity: none,
   })
   expect(unverified).toEqual({ daemon: null, named: other.pid, from: "office", checked: true })
-  const noPs = await service.findDaemon(one, host, { office: officeSays(one.home, live.pid), identity: none, ps: null })
+  const noPs = await service.findDaemon(one, host, { office, identity: none, ps: null })
   expect(noPs).toEqual({ daemon: null, named: live.pid, from: "office", checked: false })
 })
 
@@ -946,6 +948,55 @@ test(
   },
   120_000,
 )
+
+test(
+  "stopping a background office stops its daemon and keeps its record",
+  async () => {
+    const spawned = killedAtEnd()
+    const dir = shortDir()
+    const home = companyHome(dir)
+    const one = launch(home, { environ: { ...selfSpawnEnv(process.env), HOME: tempDir() } })
+    const host = daemonHost(dir, spawned)
+    await service.install(one, host, "background")
+    await service.wait(one, host)
+    const pid = pidfile(one)
+    expect(await service.stop(one, host)).toEqual({ stopped: pid, killed: false })
+    expect(isGone(pid, spawned[0]!.started)).toBe(true)
+    expect(await officeAnswers(one.socket)).toBe(false)
+    expect(recorded(one).mode).toBe("background")
+    expect(await service.stop(one, host)).toEqual({ stopped: null, killed: false })
+  },
+  120_000,
+)
+
+test("a daemon that ignores SIGTERM is killed and the stop says so", async () => {
+  const { dir, one } = fixture()
+  installedAs(one, "background")
+  const group = startGroup(`trap '' TERM; echo ready; while :; do sleep 1; done; : daemon --home ${one.home}`)
+  expect(await group.line()).toBe("ready")
+  fs.writeFileSync(path.join(one.office, "office.pid"), `${group.pid}\n`)
+  const lookup = await service.findDaemon(one, makeHost(dir, new Runner()), { ps: ps() })
+  expect(lookup.daemon?.pid).toBe(group.pid)
+  const done = await service.stop(one, makeHost(dir, new Runner()), 200, lookup)
+  expect(done).toEqual({ stopped: group.pid, killed: true })
+})
+
+test("stopping a systemd office stops its unit and leaves it enabled", async () => {
+  const { dir, one } = fixture()
+  installedAs(one, "systemd")
+  const run = new Runner()
+  await service.stop(one, makeHost(dir, run, { platform: "linux" }))
+  expect(run.calls).toEqual([["systemctl", "--user", "stop", systemd.unitName(one)]])
+  expect(recorded(one).mode).toBe("systemd")
+})
+
+test("stopping a launchd office leaves its agent loaded", async () => {
+  const { dir, one } = fixture()
+  installedAs(one, "launchd")
+  const run = new Runner()
+  expect(await service.stop(one, makeHost(dir, run))).toEqual({ stopped: null, killed: false })
+  expect(run.calls).toEqual([])
+})
 
 /** An office that answers only after a start command ran, so its old daemon counts as stopped. */
 function answersOnceStarted(run: Runner): () => Promise<boolean> {

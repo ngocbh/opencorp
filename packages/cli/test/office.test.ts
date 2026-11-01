@@ -8,6 +8,7 @@ import { doctor } from "../src/commands/doctor"
 import { offboard } from "../src/commands/offboard"
 import { restart } from "../src/commands/restart"
 import { start } from "../src/commands/start"
+import { stop } from "../src/commands/stop"
 import { main } from "../src/main"
 import { type Deps, install, installSpawn, officeAnswers, realDeps } from "../src/office"
 import { createFakeOffice } from "@opencorp/tui/fake-office"
@@ -131,9 +132,10 @@ test("a missing home folder is one line and exit 1", async () => {
   expect(calls).toEqual([])
 })
 
-test("start, restart, doctor and offboard run the install with their flags and return its exit code", async () => {
+test("start, stop, restart, doctor and offboard run the install with their flags and return its exit code", async () => {
   const runs = [
     { cmd: "start", run: start, code: 3, flags: ["--home", "/h"] },
+    { cmd: "stop", run: stop, code: 0, flags: ["--home", "/h"] },
     { cmd: "restart", run: restart, code: 1, flags: ["--home", "/h"] },
     { cmd: "doctor", run: doctor, code: 1, flags: ["--home", "/h"] },
     { cmd: "offboard", run: offboard, code: 1, flags: ["--yes", "--delete-company", "--home", "/h"] },
@@ -148,6 +150,7 @@ test("start, restart, doctor and offboard run the install with their flags and r
   }
   const { commands } = await import("../src/main")
   expect(commands.restart.summary).toBe("Stop the office and start it again")
+  expect(commands.stop.summary).toBe("Stop the office (its service stays installed)")
 })
 
 test("init and offboard are commands with their own summaries", async () => {
@@ -253,7 +256,7 @@ test("`opencorp` with no office says so and exits 3 before loading the TUI", asy
   console.error = (...a: unknown[]) => void err.push(a.join(" "))
   try {
     expect(await main(["--continue"])).toBe(3)
-    expect(err).toEqual(["The office isn't running. Run `opencorp doctor`."])
+    expect(err).toEqual(["The office isn't running. Run `opencorp start` (or `opencorp doctor` if it won't start)."])
   } finally {
     console.error = error
     fs.rmSync(home, { recursive: true, force: true })
