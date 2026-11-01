@@ -5,6 +5,7 @@ import { createOfficeClient } from "@opencorp/client"
 import { createFakeOffice } from "@opencorp/tui/fake-office"
 import { endSession } from "../src/commands/end"
 import { main } from "../src/main"
+import { staleSocket } from "./sockets"
 
 /** What a client says when no office answers at `home`. */
 const notRunningAt = (home: string) =>
@@ -78,6 +79,13 @@ test("opencorp end ID ends that session; no office exits 3, its refusal 1", asyn
   expect([down.code, down.err]).toEqual([3, notRunningAt(home)])
 
   mkdirSync(path.dirname(socket), { recursive: true })
+  await staleSocket(socket)
+  const stale = await capture(["end", "S1"])
+  expect([stale.code, stale.err]).toEqual([
+    3,
+    `The office can't be reached: nothing answers on ${socket}; the office may have stopped or crashed. Run \`opencorp doctor\`.`,
+  ])
+  rmSync(socket)
   const office = createFakeOffice({ socket })
   try {
     const id = office.state.sessions[0].id

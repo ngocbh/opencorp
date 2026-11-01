@@ -118,7 +118,7 @@ export const run: CommandRun = async (argv) => {
       }
     }
   } catch (e) {
-    if (e instanceof OfficeUnavailable) return officeNotRunning()
+    if (e instanceof OfficeUnavailable) return officeNotRunning(e)
     // parseArgs throws a TypeError coded ERR_PARSE_ARGS_… for an unknown flag.
     const parse = e instanceof TypeError && "code" in e && String(e.code).startsWith("ERR_PARSE")
     const usage = e instanceof Usage || parse

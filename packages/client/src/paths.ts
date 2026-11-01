@@ -1,3 +1,4 @@
+import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
@@ -16,4 +17,28 @@ export function defaultSocket() {
 /** This device's identity file: `$OPENCORP_HOME/identity.json` (default `~/.opencorp/identity.json`). */
 export function identityPath() {
   return path.join(opencorpHome(), "identity.json")
+}
+
+/**
+ * Why the socket at `socket` can't be reached, for a message; undefined when there's no socket (the office isn't
+ * running). It looks after a failed connection, so an office that restarted in between can make it wrong.
+ */
+export function socketProblem(socket: string): string | undefined {
+  let stat: fs.Stats
+  try {
+    stat = fs.statSync(socket)
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    if (code === "ENOENT" || code === "ENOTDIR") return undefined
+    if (code === "EACCES") return `permission denied on ${socket}`
+    return `${socket} can't be read (${code})`
+  }
+  if (!stat.isSocket()) return `${socket} isn't a socket`
+  // Connecting needs write permission on the socket, which stat doesn't.
+  try {
+    fs.accessSync(socket, fs.constants.W_OK)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EACCES") return `permission denied on ${socket}`
+  }
+  return `nothing answers on ${socket}; the office may have stopped or crashed`
 }

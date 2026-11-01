@@ -132,7 +132,7 @@ export const run: CommandRun = async (argv) => {
     }
     throw new Usage(USAGE)
   } catch (e) {
-    if (e instanceof OfficeUnavailable) return officeNotRunning()
+    if (e instanceof OfficeUnavailable) return officeNotRunning(e)
     console.error(`opencorp devices: ${e instanceof Error ? e.message : e}`)
     return e instanceof Usage || (e as { code?: string }).code?.startsWith("ERR_PARSE_ARGS") ? 2 : 1
   }

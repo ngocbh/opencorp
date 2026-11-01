@@ -65,7 +65,7 @@ export const run: CommandRun = async (argv) => {
   }
   const socket = defaultSocket()
   // Checked before anything is written, so no office leaves no half-made identity.
-  if (!(await officeAnswers(socket))) return officeNotRunning()
+  if (!(await officeAnswers(socket))) return officeNotRunning(socket)
   const known = fs.existsSync(file) ? localIdentity() : undefined
   if (fs.existsSync(file) && !values.force) {
     const me = known && (await whoIs(socket, known.token))

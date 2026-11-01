@@ -10,7 +10,17 @@ import { restart } from "../src/commands/restart"
 import { start } from "../src/commands/start"
 import { stop } from "../src/commands/stop"
 import { tui } from "../src/commands/tui"
-import { type Deps, INTERRUPT_GRACE_MS, install, installSpawn, officeAnswers, realDeps } from "../src/office"
+import { OfficeDropped, OfficeUnavailable } from "@opencorp/client"
+import {
+  type Deps,
+  INTERRUPT_GRACE_MS,
+  install,
+  installSpawn,
+  officeAnswers,
+  officeNotRunning,
+  realDeps,
+} from "../src/office"
+import { staleSocket } from "./sockets"
 import { createFakeOffice } from "@opencorp/tui/fake-office"
 
 /** What a client says when no office answers at `home`. */
@@ -404,3 +414,25 @@ test("`opencorp` with no office says so and exits 3 before loading the TUI", asy
     fs.rmSync(home, { recursive: true, force: true })
   }
 }, 10_000)
+
+test("officeNotRunning says why a socket that's there can't be reached, and returns 3 either way", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
+  const socket = path.join(home, "office.sock")
+  const lines: string[] = []
+  const print = (line: string) => void lines.push(line)
+  try {
+    expect(officeNotRunning(socket, print)).toBe(3)
+    expect(officeNotRunning(new OfficeUnavailable(socket), print)).toBe(3)
+    await staleSocket(socket)
+    expect(officeNotRunning(new OfficeUnavailable(socket), print)).toBe(3)
+    expect(officeNotRunning(new OfficeDropped(socket, "POST", "/sessions/S1/end"), print)).toBe(3)
+    expect(lines).toEqual([
+      "The office isn't running. Run `opencorp doctor`.",
+      "The office isn't running. Run `opencorp doctor`.",
+      `The office can't be reached: nothing answers on ${socket}; the office may have stopped or crashed. Run \`opencorp doctor\`.`,
+      "POST /sessions/S1/end: the office dropped the connection before answering; the change may have been applied, so check before trying again. Run `opencorp doctor`.",
+    ])
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})

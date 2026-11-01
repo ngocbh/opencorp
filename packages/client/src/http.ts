@@ -1,4 +1,4 @@
-import { OfficeError, OfficeTimeout, OfficeUnavailable, UnknownDevice, VersionConflictError } from "./errors"
+import { OfficeDropped, OfficeError, OfficeTimeout, OfficeUnavailable, UnknownDevice, VersionConflictError } from "./errors"
 
 // Bun sends the request over the socket; the host only fills the Host header.
 export const BASE = "http://localhost"
@@ -42,9 +42,23 @@ export type RequestOptions = {
   token?: string
 }
 
-/** The headers that carry `token`, if there is one. */
-export const authorization = (token?: string): Record<string, string> =>
-  token ? { authorization: `Bearer ${token}` } : {}
+/**
+ * What a token may hold: printable ASCII with no space. Tokens are `act_` and base64url; Bun's error for a header it
+ * can't send quotes the header, token and all, so one that can't be sent never reaches fetch.
+ */
+export const TOKEN_CHARS = /^[\x21-\x7E]+$/
+
+/** The headers that carry `token`, if there is one. Throws `bad_token` for a token a header can't carry. */
+export function authorization(token?: string): Record<string, string> {
+  if (!token) return {}
+  if (!TOKEN_CHARS.test(token))
+    throw new OfficeError(
+      0,
+      "bad_token",
+      "this device's token can't be sent (it holds characters a token can't have); run `opencorp login --force`",
+    )
+  return { authorization: `Bearer ${token}` }
+}
 
 /** Sends one JSON request to the office and returns the parsed body. Throws `OfficeError`. */
 export async function request<T>(
@@ -65,16 +79,23 @@ export async function request<T>(
     if (timeout?.aborted) return new OfficeTimeout(method, path, timeoutMs!)
     return otherwise()
   }
+  // Outside the try: a token that can't be sent is bad_token, not an office that's away.
+  const headers = { ...authorization(token), ...(sent !== undefined && { "content-type": "application/json" }) }
   let res: Response
   try {
     res = await officeFetch(t, path, {
       method,
       signal: both,
-      headers: { ...authorization(token), ...(sent !== undefined && { "content-type": "application/json" }) },
+      headers,
       body: sent === undefined ? undefined : JSON.stringify(sent),
     })
   } catch (e) {
-    throw failed(e, () => new OfficeUnavailable(where(t), e, t.baseUrl !== undefined))
+    const remote = t.baseUrl !== undefined
+    throw failed(e, () =>
+      (e as { code?: unknown } | null)?.code === "ECONNRESET"
+        ? new OfficeDropped(where(t), method, path, e, remote)
+        : new OfficeUnavailable(where(t), e, remote),
+    )
   }
   let text: string
   try {

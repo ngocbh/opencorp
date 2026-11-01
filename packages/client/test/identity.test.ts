@@ -8,6 +8,7 @@ import {
   newToken,
   readIdentity,
   tokenSha256,
+  UnusableToken,
   writeIdentity,
 } from "../src/identity"
 import { identityPath } from "../src/paths"
@@ -101,5 +102,23 @@ test("no file is no identity; a broken one says to log in again without echoing 
     readIdentity(path.join(dir, "identity.json"))
   } catch (e) {
     expect(String(e)).not.toContain(token)
+  }
+})
+
+test("a token a header can't carry is UnusableToken, naming the file, the handle and the device but not the token", () => {
+  const file = path.join(tmp(), "identity.json")
+  for (const token of ["act_a\r\nb", "act_abc ", "act_é"]) {
+    fs.writeFileSync(file, JSON.stringify({ handle: "ngocbh", device: "mac", token }), { mode: 0o600 })
+    let e: unknown
+    try {
+      readIdentity(file)
+    } catch (error) {
+      e = error
+    }
+    expect(e).toBeInstanceOf(UnusableToken)
+    const u = e as UnusableToken
+    expect([u.handle, u.device]).toEqual(["ngocbh", "mac"])
+    expect(u.message).toBe(`${file} holds a token that can't be sent; run \`opencorp login --force\``)
+    expect(Bun.inspect(u)).not.toContain(token)
   }
 })

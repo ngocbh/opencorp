@@ -8,11 +8,6 @@ import { git, gitStatus, startMerge, stashPopConflict } from "../company/helpers
 import { waitFor } from "../helpers.ts"
 import { alive, asked, folder, openOffice, type RunningOffice } from "./helpers.ts"
 
-/** What a client says when no office answers at `home`. */
-const notRunningAt = (home: string) =>
-  `The office at ${home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
-  " set $OPENCORP_HOME if your office is elsewhere."
-
 const TIMEOUT = 180_000
 
 /** Starts a session with Minh in `workspace` and takes one turn; returns the session id. */
@@ -153,7 +148,11 @@ test(
       what: "the orphaned worker to exit when its office dies",
     })
     const down = await office.opencorp(["end"], { cwd: workspace, check: false })
-    expect([down.code, down.stderr.trim()]).toEqual([3, notRunningAt(office.home)])
+    // A killed office leaves its socket behind, so the CLI can say nothing answers there.
+    expect([down.code, down.stderr.trim()]).toEqual([
+      3,
+      `The office can't be reached: nothing answers on ${office.paths.socket}; the office may have stopped or crashed. Run \`opencorp doctor\`.`,
+    ])
     await office.opencorp(["start"], { cwd: workspace })
     expect(office.pid()).not.toBe(old)
     await office.settled(sid, ["One.", "Resumed."])

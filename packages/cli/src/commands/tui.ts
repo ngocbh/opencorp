@@ -96,7 +96,7 @@ export async function tui(argv: string[], deps: TuiDeps = realTuiDeps): Promise<
   }
   const socket = defaultSocket()
   // Asked before the TUI loads, so no office is one line, not a TUI waiting on the socket.
-  if (!(await officeAnswers(socket))) return officeNotRunning()
+  if (!(await officeAnswers(socket))) return officeNotRunning(socket)
   const token = localIdentity()?.token
   // Likewise a device the office refuses: one line, not a TUI that can't load anything.
   try {

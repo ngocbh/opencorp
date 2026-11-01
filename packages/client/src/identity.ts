@@ -5,6 +5,7 @@ import { createHash, randomBytes } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { TOKEN_CHARS } from "./http"
 
 export type Identity = { handle: string; device: string; token: string }
 
@@ -32,11 +33,24 @@ export function deviceName(hostname = os.hostname()) {
   )
 }
 
+/** An identity file whose token a request header can't carry (hand-edited, say); its handle and device are kept. */
+export class UnusableToken extends Error {
+  constructor(
+    file: string,
+    readonly handle: string,
+    readonly device: string,
+  ) {
+    super(`${file} holds a token that can't be sent; run \`opencorp login --force\``)
+    this.name = "UnusableToken"
+  }
+}
+
 /**
  * The identity in `file`, or undefined if there is none. A file others can read still loads,
  * with a warning: refusing would lock the owner out over a mode they can fix.
  *
- * Throws when the file exists but isn't an identity.
+ * Throws when the file exists but isn't an identity, and `UnusableToken` when its token can't be sent: every token
+ * `newToken` makes can, so one with a space, a control character or non-ASCII was edited by hand.
  */
 export function readIdentity(file: string, warn: (message: string) => void = console.error): Identity | undefined {
   let text: string
@@ -57,6 +71,7 @@ export function readIdentity(file: string, warn: (message: string) => void = con
   const { handle, device, token } = data
   if (typeof handle !== "string" || typeof device !== "string" || typeof token !== "string")
     throw new Error(`${file} lacks a handle, device or token; run \`opencorp login --force\``)
+  if (!TOKEN_CHARS.test(token)) throw new UnusableToken(file, handle, device)
   return { handle, device, token }
 }
 

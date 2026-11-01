@@ -66,7 +66,7 @@ export const run: CommandRun = async (argv) => {
     else console.log(`Ending ${who}'s ${session.kind.replace("_", " ")} session ${session.id}.`)
     return 0
   } catch (e) {
-    if (e instanceof OfficeUnavailable) return officeNotRunning()
+    if (e instanceof OfficeUnavailable) return officeNotRunning(e)
     console.error(`opencorp end: ${e instanceof Error ? e.message : e}`)
     return 1
   }

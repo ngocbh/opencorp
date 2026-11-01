@@ -6,6 +6,7 @@ import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
 import { realTuiDeps } from "../src/commands/tui"
 import { main } from "../src/main"
 import { usePrompter, type Prompter } from "../src/prompt"
+import { droppingSocket } from "./sockets"
 
 // Two devices on one office: each home has its own identity.json, and both reach the office
 // through the first home's socket.
@@ -551,6 +552,58 @@ test("logout with no office forgets the device here and says the entry remains",
   })
   expect(fs.existsSync(path.join(trusted, "identity.json"))).toBe(false)
   office = createFakeOffice({ socket: path.join(trusted, "office", "office.sock") }) // for afterEach
+})
+
+test("logout over a connection the office drops says the entry may remain, and still forgets the device", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  office.stop()
+  const close = await droppingSocket(path.join(trusted, "office", "office.sock"))
+  try {
+    expect(await opencorp(trusted, "logout")).toEqual({
+      code: 0,
+      out:
+        "The office dropped the connection, so mac in people/ngocbh/person.yaml may remain; check with `opencorp devices list` " +
+        "and remove it with `opencorp devices remove ngocbh mac`. This device is logged out.",
+      err: "",
+    })
+  } finally {
+    await close()
+  }
+  expect(fs.existsSync(path.join(trusted, "identity.json"))).toBe(false)
+  office = createFakeOffice({ socket: path.join(trusted, "office", "office.sock") }) // for afterEach
+})
+
+/** Writes an identity for mac of @ngocbh whose token a header can't carry. */
+function unusableIdentity(home: string) {
+  const token = "act_a\nb"
+  issued.push(token)
+  fs.writeFileSync(path.join(home, "identity.json"), JSON.stringify({ handle: "ngocbh", device: "mac", token }), {
+    mode: 0o600,
+  })
+}
+
+test("logout with a token that can't be sent removes the file and says the entry remains", async () => {
+  unusableIdentity(trusted)
+  const file = path.join(trusted, "identity.json")
+  expect(await opencorp(trusted, "logout")).toEqual({
+    code: 0,
+    out: `Removed ${file}, which couldn't be read; mac in people/ngocbh/person.yaml remains; remove it with \`opencorp devices remove ngocbh mac\`.`,
+    err: "",
+  })
+  expect(fs.existsSync(file)).toBe(false)
+  expect(office.requests).toEqual([])
+})
+
+test("login --force replaces an identity whose token can't be sent, which the office never sees", async () => {
+  unusableIdentity(trusted)
+  const r = await opencorp(trusted, "login", "--force", "--device", "mac")
+  expect(r.code).toBe(0)
+  const { token } = identity(trusted)
+  expect(token).toMatch(/^act_[A-Za-z0-9_-]{43}$/)
+  const sent = new Set(office.requests.map((q) => q.authorization))
+  sent.delete(undefined)
+  sent.delete(`Bearer ${token}`)
+  expect([...sent]).toEqual([])
 })
 
 test("whoami with no identity on an open office; a loose file warns", async () => {

@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { chmodSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import net from "node:net"
 import path from "node:path"
 import { createOfficeClient } from "../src/client"
-import { OfficeError, OfficeTimeout, OfficeUnavailable, UnknownDevice } from "../src/errors"
+import { OfficeDropped, OfficeError, OfficeTimeout, OfficeUnavailable, UnknownDevice } from "../src/errors"
 import { transportOf } from "../src/http"
 import { subscribe, type StreamEvent } from "../src/sse"
 import { emptyState } from "../src/store"
@@ -365,4 +366,103 @@ test("every client method is guarded, carries no path value, or is listed as ung
   walk(createOfficeClient({ socket: "/nowhere" }), "")
   const guarded = new Set(GUARDED.map(([name]) => name.split(" ")[0]))
   expect(names.filter((n) => !guarded.has(n) && !NO_PATH_SEGMENT.has(n) && !UNGUARDED.has(n))).toEqual([])
+})
+
+const BAD_TOKENS = ["act_abc\r\nX-Evil: 1", "act_a\nb", "act_a\0b", "act_é", "act_abc ", "act_abc\n"]
+
+test("a token a header can't carry is bad_token, sent nowhere, and never in the error", async () => {
+  const dir = mkdtempSync("/tmp/oct-")
+  onStop(() => rmSync(dir, { recursive: true, force: true }))
+  const socket = path.join(dir, "o.sock")
+  const { seen } = serve({ unix: socket })
+  for (const token of BAD_TOKENS) {
+    const e = await failure(createOfficeClient({ socket, token }).whoami())
+    expect(e).toBeInstanceOf(OfficeError)
+    expect(e).not.toBeInstanceOf(OfficeUnavailable)
+    expect([e.status, e.code]).toEqual([0, "bad_token"])
+    expect(e.message).toContain("opencorp login --force")
+    for (const text of [e.message, String(e.cause), Bun.inspect(e)]) {
+      expect(text).not.toContain(token)
+      expect(text).not.toContain("act_")
+    }
+  }
+  expect(seen).toEqual([])
+})
+
+test("a token a header can't carry fails the stream without the token in its error", async () => {
+  const dir = mkdtempSync("/tmp/oct-")
+  onStop(() => rmSync(dir, { recursive: true, force: true }))
+  const socket = path.join(dir, "o.sock")
+  const { seen } = serve({ unix: socket })
+  const first = await new Promise<StreamEvent>((resolve) => {
+    const sub = subscribe({ socket }, (e) => {
+      sub.close()
+      resolve(e)
+    }, { token: "act_abc\r\nX-Evil: 1" })
+  })
+  const error = (first as { error?: any }).error
+  expect(first.type).toBe("unreachable")
+  expect([error.status, error.code]).toEqual([0, "bad_token"])
+  expect(Bun.inspect(error)).not.toContain("act_")
+  expect(seen).toEqual([])
+})
+
+/** A unix socket server that reads a request, starts an answer and drops the connection. */
+async function dropping() {
+  const dir = mkdtempSync("/tmp/oct-")
+  const socket = path.join(dir, "o.sock")
+  const server = net.createServer((c) =>
+    c.once("data", () => {
+      c.write("HTTP/1.1 200 OK\r\nContent-Le")
+      c.destroy()
+    }),
+  )
+  await new Promise<void>((resolve) => server.listen(socket, resolve))
+  onStop(() => {
+    server.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+  return socket
+}
+
+test("a connection dropped before the answer is OfficeDropped; a write may have been applied", async () => {
+  const socket = await dropping()
+  const read = await failure(createOfficeClient({ socket }).whoami())
+  expect(read).toBeInstanceOf(OfficeDropped)
+  expect(read).toBeInstanceOf(OfficeUnavailable)
+  expect(read.status).toBe(0)
+  expect(read.message).toBe("GET /whoami: the office dropped the connection before answering")
+  const write = await failure(createOfficeClient({ socket }).sessions.end("S1"))
+  expect(write).toBeInstanceOf(OfficeDropped)
+  expect(write.message).toBe(
+    "POST /sessions/S1/end: the office dropped the connection before answering; the change may have been applied, so check before trying again",
+  )
+})
+
+test("a socket that can't be reached is OfficeUnavailable naming it, without guessing why", async () => {
+  const dir = mkdtempSync("/tmp/oct-")
+  onStop(() => rmSync(dir, { recursive: true, force: true }))
+  const plain = path.join(dir, "plain")
+  writeFileSync(plain, "")
+  // A socket no server holds any more: moved aside while its server closes, so the file stays.
+  const stale = path.join(dir, "stale.sock")
+  const server = net.createServer()
+  await new Promise<void>((resolve) => server.listen(stale, resolve))
+  renameSync(stale, `${stale}.x`)
+  await new Promise<void>((resolve) => server.close(() => resolve()))
+  renameSync(`${stale}.x`, stale)
+  const sockets = [path.join(dir, "missing.sock"), plain, stale]
+  // A live socket nobody may write to; root may write anyway.
+  if (process.getuid?.() !== 0) {
+    const locked = path.join(dir, "locked.sock")
+    serve({ unix: locked })
+    chmodSync(locked, 0)
+    sockets.push(locked)
+  }
+  for (const socket of sockets) {
+    const e = await failure(createOfficeClient({ socket }).whoami())
+    expect(e).toBeInstanceOf(OfficeUnavailable)
+    expect(e).not.toBeInstanceOf(OfficeDropped)
+    expect(e.message).toBe(`can't connect to the office at ${socket}`)
+  }
 })

@@ -8,7 +8,7 @@ import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
-import { bareHandle, localIdentity, NO_OFFICE, notRunning, officeClient } from "../office"
+import { bareHandle, localIdentity, officeClient, officeNotRunning } from "../office"
 
 /**
  * The local port the printed SSH forwards use for hq.sock: any free one works there, since hq.sock takes any port. Not
@@ -245,10 +245,7 @@ export async function pair(argv: string[], deps: PairDeps = realPairDeps): Promi
     }
     return 0
   } catch (e) {
-    if (e instanceof OfficeUnavailable) {
-      deps.error(notRunning())
-      return NO_OFFICE
-    }
+    if (e instanceof OfficeUnavailable) return officeNotRunning(e, deps.error)
     if (isMissingRoute(e) || isNotImplemented(e))
       deps.error("opencorp pair: this office has no HQ yet; update the checkout and run `opencorp restart`")
     else deps.error(`opencorp pair: ${e instanceof Error ? e.message : e}`)

@@ -65,7 +65,7 @@ export const run: CommandRun = async (argv) => {
     console.error("opencorp password: no usable password")
     return 1
   } catch (e) {
-    if (e instanceof OfficeUnavailable) return officeNotRunning()
+    if (e instanceof OfficeUnavailable) return officeNotRunning(e)
     console.error(`opencorp password: ${e instanceof Error ? e.message : e}`)
     return 1
   }

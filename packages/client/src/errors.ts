@@ -12,20 +12,36 @@ export class OfficeError extends Error {
   }
 }
 
-/** Nothing answers at the office's socket or base URL. */
+/**
+ * The office's socket or base URL didn't answer. Over a socket the client can't tell why (no socket, a stale one, no
+ * permission all fail alike), so the message doesn't guess; Node callers can look at the path (`socketProblem`).
+ */
 export class OfficeUnavailable extends OfficeError {
   constructor(
     readonly socket: string,
     cause?: unknown,
     remote = false,
   ) {
-    super(
-      0,
-      "office_unavailable",
-      remote ? `can't reach the office at ${socket}` : `the office is not running (no socket at ${socket})`,
-    )
+    super(0, "office_unavailable", remote ? `can't reach the office at ${socket}` : `can't connect to the office at ${socket}`)
     this.name = "OfficeUnavailable"
     this.cause = cause
+  }
+}
+
+/** The office took the connection and dropped it before answering; a write may have been applied. */
+export class OfficeDropped extends OfficeUnavailable {
+  constructor(
+    socket: string,
+    readonly method: string,
+    readonly path: string,
+    cause?: unknown,
+    remote = false,
+  ) {
+    super(socket, cause, remote)
+    this.name = "OfficeDropped"
+    this.message =
+      `${method} ${path}: the office dropped the connection before answering` +
+      (method === "GET" ? "" : "; the change may have been applied, so check before trying again")
   }
 }
 

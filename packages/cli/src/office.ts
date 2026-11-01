@@ -2,8 +2,15 @@
 // live in the office's `opencorp install` entry, in this same binary; it runs in the home dir with the setup env
 // (this env without the names that change how Bun starts). `opencorp` never starts the office on its own: the
 // service `opencorp init` or `opencorp onboard` installed does.
-import { createOfficeClient } from "@opencorp/client"
-import { readIdentity, type Identity, defaultSocket, identityPath, opencorpHome } from "@opencorp/client/node"
+import { createOfficeClient, OfficeDropped, OfficeUnavailable } from "@opencorp/client"
+import {
+  readIdentity,
+  type Identity,
+  defaultSocket,
+  identityPath,
+  opencorpHome,
+  socketProblem,
+} from "@opencorp/client/node"
 import { selfCommand, selfSpawnCwd, selfSpawnEnv } from "@opencorp/office/platform"
 import fs from "node:fs"
 import os from "node:os"
@@ -154,9 +161,25 @@ export const notRunning = () =>
   `The office at ${opencorpHome()} isn't running. ` +
   "Run `opencorp start` (or `opencorp doctor` if it won't start); set $OPENCORP_HOME if your office is elsewhere."
 
-/** Says the office isn't running; returns `NO_OFFICE`. */
-export function officeNotRunning(): number {
-  console.error(notRunning())
+/**
+ * Why the office can't be reached, for a message: `about` is the failure, or the socket path to look at (default the
+ * default socket). Undefined when there's no socket, so the office just isn't running.
+ */
+export function unreachableReason(about: unknown = defaultSocket()): string | undefined {
+  if (about instanceof OfficeDropped) return about.message
+  if (about instanceof OfficeUnavailable) return socketProblem(about.socket)
+  return socketProblem(typeof about === "string" ? about : defaultSocket())
+}
+
+/**
+ * Says the office can't be reached, and why when there's a socket that doesn't answer (`about`: the failure, or the
+ * socket path looked at); returns `NO_OFFICE`.
+ */
+export function officeNotRunning(about?: unknown, print: (line: string) => void = console.error): number {
+  const reason = unreachableReason(about)
+  if (reason === undefined) print(notRunning())
+  else if (about instanceof OfficeDropped) print(`${reason}. Run \`opencorp doctor\`.`)
+  else print(`The office can't be reached: ${reason}. Run \`opencorp doctor\`.`)
   return NO_OFFICE
 }
 
