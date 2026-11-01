@@ -441,6 +441,26 @@ export class CompanyGit {
     await this.#run(["init", "-q", "-b", "main"])
   }
 
+  /**
+   * Whether the repo at root has no commit yet (`unborn`) or has one at HEAD (`committed`). `CompanyGitError` when
+   * git can't read it, or finds a repo other than root's own.
+   */
+  async repoState(): Promise<"unborn" | "committed"> {
+    const top = (await this.#run(["rev-parse", "--show-toplevel"])).stdout.toString().replace(/\n$/, "")
+    // Git walks up past a .git it can't read, so a broken repo inside another would pass for the outer one.
+    const own = fs.realpathSync(this.root)
+    if (top !== own) throw new CompanyGitError(`git found the repo at ${top}, not ${own}`)
+    try {
+      await this.head()
+      return "committed"
+    } catch (error) {
+      if (!(error instanceof RangeError)) throw error
+    }
+    const refs = await this.#run(["for-each-ref", "--count=1"])
+    if (refs.stdout.length === 0) return "unborn"
+    throw new CompanyGitError("HEAD names no commit, but the repo has refs")
+  }
+
   /** The commit id at HEAD. */
   head(): Promise<string> {
     return this.resolve("HEAD")

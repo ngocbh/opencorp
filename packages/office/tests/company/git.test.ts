@@ -1274,3 +1274,45 @@ test.each(GIT_FAILURES.filter((failure) => failure !== "exit 0"))(
     await expect(g.goneSince(DANA, hired, later)).rejects.toThrow(CompanyGitError)
   },
 )
+
+test("the repo state is unborn until the first commit, then committed", async () => {
+  const root = path.join(tempDir(), "repo")
+  fs.mkdirSync(root)
+  git(root, "init", "-q", "-b", "main")
+  const g = new CompanyGit(root, root)
+  expect(await g.repoState()).toBe("unborn")
+  git(root, "commit", "-q", "--allow-empty", "-m", "first")
+  expect(await g.repoState()).toBe("committed")
+})
+
+test("a repo git can't read has no state", async () => {
+  const root = path.join(tempDir(), "repo")
+  fs.mkdirSync(path.join(root, ".git"), { recursive: true })
+  await expect(new CompanyGit(root, root).repoState()).rejects.toThrow(CompanyGitError)
+})
+
+test("a broken repo inside another is not taken for the outer one", async () => {
+  const outer = path.join(tempDir(), "outer")
+  fs.mkdirSync(outer)
+  git(outer, "init", "-q", "-b", "main")
+  git(outer, "commit", "-q", "--allow-empty", "-m", "first")
+  const inner = path.join(outer, "inner")
+  fs.mkdirSync(path.join(inner, ".git"), { recursive: true })
+  const error = await new CompanyGit(inner, inner).repoState().then(
+    () => null,
+    (e: unknown) => e,
+  )
+  expect(error).toBeInstanceOf(CompanyGitError)
+  expect((error as Error).message).toContain(outer)
+  expect((error as Error).message).toContain(inner)
+})
+
+test("a head that names no commit while refs exist has no state", async () => {
+  const root = path.join(tempDir(), "repo")
+  fs.mkdirSync(root)
+  git(root, "init", "-q", "-b", "main")
+  git(root, "commit", "-q", "--allow-empty", "-m", "first")
+  git(root, "tag", "v1")
+  fs.writeFileSync(path.join(root, ".git", "refs", "heads", "main"), `${"0".repeat(40)}\n`)
+  await expect(new CompanyGit(root, root).repoState()).rejects.toThrow(CompanyGitError)
+})
