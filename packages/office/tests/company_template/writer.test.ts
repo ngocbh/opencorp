@@ -364,6 +364,20 @@ const STATES: [string, (tmp: string, root: string) => Promise<unknown> | unknown
   ["a dangling symlink", (tmp, root) => fs.symlinkSync(path.join(tmp, "gone"), root), "damaged", "not-a-directory"],
   ["files without a repo", (_, root) => withoutGit(root), "damaged", "no-git"],
   ["an empty .git", (_, root) => fs.mkdirSync(path.join(root, ".git"), { recursive: true }), "damaged", "bad-git"],
+  [
+    "a NUL-filled branch ref",
+    async (_, root) => {
+      fs.writeFileSync(path.join(await committed(root), ".git", "refs", "heads", "main"), Buffer.alloc(41))
+    },
+    "damaged",
+    "bad-git",
+  ],
+  [
+    "a deleted branch ref",
+    async (_, root) => fs.unlinkSync(path.join(await committed(root), ".git", "refs", "heads", "main")),
+    "damaged",
+    "bad-git",
+  ],
   ["no company.yaml in the last commit", (_, root) => withoutCompanyYaml(root), "damaged", "no-company-yaml"],
   [
     "company.yaml deleted from the folder",

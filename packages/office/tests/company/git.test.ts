@@ -1307,6 +1307,37 @@ test("a broken repo inside another is not taken for the outer one", async () => 
   expect((error as Error).message).toContain(inner)
 })
 
+/** A repo at a new temp dir with one commit on main. */
+function repoWithHistory(): string {
+  const root = path.join(tempDir(), "repo")
+  fs.mkdirSync(root)
+  git(root, "init", "-q", "-b", "main")
+  git(root, "commit", "-q", "--allow-empty", "-m", "first")
+  return root
+}
+
+test("a repo whose branch ref is NUL-filled has no state", async () => {
+  const root = repoWithHistory()
+  // Git skips a broken ref with a warning, so the repo would otherwise look like it had no refs.
+  fs.writeFileSync(path.join(root, ".git", "refs", "heads", "main"), Buffer.alloc(41))
+  await expect(new CompanyGit(root, root).repoState()).rejects.toThrow(CompanyGitError)
+})
+
+test("a repo whose branch ref was deleted has no state while HEAD has a reflog", async () => {
+  const root = repoWithHistory()
+  fs.unlinkSync(path.join(root, ".git", "refs", "heads", "main"))
+  expect(fs.existsSync(path.join(root, ".git", "logs", "HEAD"))).toBe(true)
+  await expect(new CompanyGit(root, root).repoState()).rejects.toThrow(CompanyGitError)
+})
+
+test("a detached head that names a missing commit has no state", async () => {
+  const root = path.join(tempDir(), "repo")
+  fs.mkdirSync(root)
+  git(root, "init", "-q", "-b", "main")
+  fs.writeFileSync(path.join(root, ".git", "HEAD"), `${"1".repeat(40)}\n`)
+  await expect(new CompanyGit(root, root).repoState()).rejects.toThrow(CompanyGitError)
+})
+
 test("a head that names no commit while refs exist has no state", async () => {
   const root = path.join(tempDir(), "repo")
   fs.mkdirSync(root)

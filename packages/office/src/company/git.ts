@@ -443,7 +443,9 @@ export class CompanyGit {
 
   /**
    * Whether the repo at root has no commit yet (`unborn`) or has one at HEAD (`committed`). `CompanyGitError` when
-   * git can't read it, or finds a repo other than root's own.
+   * git can't read it, finds a repo other than root's own, or HEAD names no commit in a repo that once had one.
+   *
+   * `unborn` needs HEAD to be a branch that doesn't exist, no ref at all, and no HEAD reflog.
    */
   async repoState(): Promise<"unborn" | "committed"> {
     const top = (await this.#run(["rev-parse", "--show-toplevel"])).stdout.toString().replace(/\n$/, "")
@@ -456,9 +458,18 @@ export class CompanyGit {
     } catch (error) {
       if (!(error instanceof RangeError)) throw error
     }
+    const symbolic = await this.#run(["symbolic-ref", "-q", "HEAD"], { check: false })
+    if (symbolic.code !== 0) throw new CompanyGitError("HEAD names no commit and no branch")
+    // Git skips a ref it can't read with a warning on stderr, so a corrupt branch would look like no ref at all.
     const refs = await this.#run(["for-each-ref", "--count=1"])
-    if (refs.stdout.length === 0) return "unborn"
-    throw new CompanyGitError("HEAD names no commit, but the repo has refs")
+    const warning = refs.stderr.toString().trim()
+    if (refs.stdout.length || warning) {
+      throw new CompanyGitError(`HEAD names no commit, but the repo has refs${warning ? `: ${warning}` : ""}`)
+    }
+    // A branch ref deleted by hand leaves HEAD's reflog behind; a repo with no commit yet has none.
+    const reflog = await this.#run(["reflog", "exists", "HEAD"], { check: false })
+    if (reflog.code === 0) throw new CompanyGitError("HEAD names no commit, but its reflog shows it had one")
+    return "unborn"
   }
 
   /** The commit id at HEAD. */
