@@ -1184,6 +1184,25 @@ test("the provider is saved only once the model answers", async () => {
   expect(await saved(office)).toEqual({ provider: "openai", api_key: KEY, model: "gpt-5.5" })
 })
 
+test("a provider on stdin says it is checking the model", async () => {
+  const office = newOffice()
+  const ask = new Script()
+  const data = { llm_config: { provider: "anthropic", api_key: KEY } }
+  expect(await ensure(office, ask, { stdin: stdin(data), checkModel: answers(null) })).toBe(true)
+  expect(ask.seen).toEqual(["Checking that the model answers..."])
+})
+
+test("a provider on stdin whose model times out is not saved", async () => {
+  const office = newOffice()
+  const ask = new Script()
+  const data = { llm_config: { provider: "anthropic", api_key: KEY } }
+  const error = await rejection(ensure(office, ask, { stdin: stdin(data), checkModel: answers("timed out") }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toBe("the model didn't answer: timed out")
+  expect(ask.seen[0]).toBe("Checking that the model answers...")
+  expect(existsSync(file(office))).toBe(false)
+})
+
 test("trying again checks the same answers and nothing is saved until it works", async () => {
   const office = newOffice()
   const problems = answers("Connection error", "Connection error", null)

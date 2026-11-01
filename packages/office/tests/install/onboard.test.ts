@@ -2,11 +2,13 @@
  *  start. */
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
+import http from "node:http"
+import type { AddressInfo } from "node:net"
 import path from "node:path"
 import { Readable, Writable } from "node:stream"
 import { fileURLToPath } from "node:url"
 import { isDeepStrictEqual } from "node:util"
-import { expect, test } from "bun:test"
+import { expect, onTestFinished, test } from "bun:test"
 import type { Device } from "@opencorp/protocol"
 import { loadFlow } from "@ngocbh/yian"
 import { stringify } from "yaml"
@@ -643,6 +645,51 @@ test("a model that quotes the key in another case or base64 says why without any
   for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) expect(problem).not.toContain(copy)
 })
 
+test("a model that never answers times out", async () => {
+  const fake = await fakeLlm()
+  fake.script({ hold: true })
+  const started = performance.now()
+  const problem = await modelProblem(Provider.parse({ llm_config: LLM_CONFIG, env: fake.env() }), { timeoutMs: 300 })
+  expect(problem).toBe("timed out")
+  expect(performance.now() - started).toBeLessThan(5_000)
+})
+
+test("the model checks own retry limit wins over the providers env", async () => {
+  let posts = 0
+  // Not the fake LLM: its errors say not to retry, so yian would never try again against it.
+  const server = http.createServer((req, res) => {
+    if (req.method === "POST") posts++
+    req.resume()
+    req.on("end", () => {
+      res.writeHead(503, { "content-type": "application/json" })
+      res.end(JSON.stringify({ error: { message: "overloaded" } }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()))
+  onTestFinished(() => {
+    server.closeAllConnections()
+    server.close()
+  })
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`
+  const provider = Provider.parse({ llm_config: LLM_CONFIG, env: { VLLM_BASE_URL: url, YIAN_MODEL_RETRIES: "6" } })
+  expect(await modelProblem(provider)).toBeTruthy()
+  expect(posts).toBe(2)
+}, 30_000)
+
+test("a stop during the model check rejects with its reason", async () => {
+  const fake = await fakeLlm()
+  fake.script({ hold: true })
+  const controller = new AbortController()
+  const checking = modelProblem(Provider.parse({ llm_config: LLM_CONFIG, env: fake.env() }), {
+    signal: controller.signal,
+    timeoutMs: 10_000,
+  })
+  await fake.waitForRequests(1)
+  const reason = new Error("stopped")
+  controller.abort(reason)
+  expect(await rejection(checking)).toBe(reason)
+})
+
 test("a setup run failure never shows the key or url credentials", async () => {
   const flow = await loadFlow(
     "id: fail\nname: fail\ninput:\n  text: !str\noutput: str\nkind: code\ncode: |\n  throw new Error(inputs.text)\n",
@@ -711,8 +758,8 @@ test("a setup run sees only the office workers env and the providers", async () 
     `import { Provider } from ${JSON.stringify(PROVIDER)}`,
     `import { modelProblem } from ${JSON.stringify(ONBOARD)}`,
     `import { LLM_CONFIG } from ${JSON.stringify(FAKE_LLM)}`,
-    // No retries, so the refused connection fails at once; the provider's env does reach the run.
-    'const provider = Provider.parse({ llm_config: LLM_CONFIG, env: { YIAN_MODEL_RETRIES: "0" } })',
+    // The check's own limits allow one retry, so the refused connection fails well within the wait.
+    "const provider = Provider.parse({ llm_config: LLM_CONFIG })",
     "console.log(JSON.stringify(await modelProblem(provider)))",
   ].join("\n")
   const child = Bun.spawn([process.execPath, "--no-install", "--no-env-file", "--config=/dev/null", "-e", code], {

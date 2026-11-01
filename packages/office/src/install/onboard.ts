@@ -532,7 +532,11 @@ export async function ensureProvider(office: string, prompter: Prompter, options
     throw new OnboardError("the provider on stdin is not valid JSON")
   }
   const provider = withDefaultModel(checkProvider(data))
-  const problem = options.checkModel === undefined ? null : await options.checkModel(provider)
+  let problem: string | null = null
+  if (options.checkModel !== undefined) {
+    prompter.say("Checking that the model answers...")
+    problem = await options.checkModel(provider)
+  }
   if (problem !== null) throw new OnboardError(`the model didn't answer: ${problem}`)
   await saveProvider(office, provider)
   return true
@@ -912,10 +916,22 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
   prompter.say("Done. Run `opencorp` in a project folder to talk to your team.")
 }
 
+/** How long, in ms, the model check waits for an answer: under the daemon's 90 s wait for its worker, so the
+ *  worker's "timed out" reaches the daemon first. */
+export const CHECK_DEADLINE_MS = 80_000
+
+/** The yian settings the model check runs with: one slow request and one retry, then the deadline decides. */
+export const CHECK_LIMITS: Readonly<Record<string, string>> = Object.freeze({
+  YIAN_MODEL_FIRST_RESPONSE_TIMEOUT_SECONDS: "60",
+  YIAN_MODEL_IDLE_TIMEOUT_SECONDS: "60",
+  YIAN_MODEL_RETRIES: "1",
+})
+
 /**
  * Runs `flow` with `provider`'s model as an office run would; resolves its result (null when the run threw), and
  * why it failed (null when it didn't), without the key or URL credentials. The run's environment is `env` (by
- * default a worker's, from this process's) with `provider.env` on top. Rejects with `signal`'s reason once it aborts.
+ * default a worker's, from this process's) with `provider.env` on top, then `limits`. Rejects with `signal`'s reason
+ * once it aborts.
  */
 export async function runSetup(
   flow: ComposedFlow,
@@ -926,16 +942,19 @@ export async function runSetup(
     context,
     env: base,
     signal,
+    limits,
   }: {
     tools: NonNullable<RunFlowOptions["tools"]>
     context?: unknown
     env?: WorkerEnv
     signal?: AbortSignal
+    limits?: Readonly<Record<string, string>>
   },
 ): Promise<{ result: RunResult | null; message: string | null }> {
   // The run gets the environment office runs get, so it authenticates the way they will: a shell variable the
   // office never sees can't make it work.
-  const vars: Record<string, string | undefined> = { ...(base ?? workerEnv(process.env)), ...provider.env }
+  // The limits go after the provider's env, so it can't lift them.
+  const vars: Record<string, string | undefined> = { ...(base ?? workerEnv(process.env)), ...provider.env, ...limits }
   const env = (name: string) => (Object.hasOwn(vars, name) ? vars[name] : undefined)
   // An Azure deployment or a gateway's model is never in yian's list; the owner chose it on purpose.
   const handler = (message: string, type: string | undefined) => {
@@ -965,14 +984,29 @@ export async function runSetup(
 }
 
 /** Why `provider`'s model doesn't answer a one-word request made as an office run makes it, or null when it
- *  answers; the run's environment is as `runSetup`'s, `env` replacing the default base. Rejects with `signal`'s
- *  reason once it aborts. */
+ *  answers; `timed out` once `timeoutMs` passes. The run's environment is as `runSetup`'s, `env` replacing the
+ *  default base, with `CHECK_LIMITS` on top. Rejects with `signal`'s reason once it aborts. */
 export async function modelProblem(
   provider: Provider,
-  { env, signal }: { env?: WorkerEnv; signal?: AbortSignal } = {},
+  { env, signal, timeoutMs = CHECK_DEADLINE_MS }: { env?: WorkerEnv; signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<string | null> {
   const flow = await loadFlow(embedded(checkModelYaml).toString("utf8"), {
     sourceLabel: "install/flows/check_model.yaml",
   })
-  return (await runSetup(flow, {}, provider, { tools: {}, env, signal })).message
+  // Apart from the caller's signal: running out of time is a problem with the model, a caller's stop is not.
+  const deadline = new AbortController()
+  const timer = setTimeout(() => deadline.abort(), timeoutMs)
+  const both = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal
+  try {
+    const { message } = await runSetup(flow, {}, provider, { tools: {}, env, signal: both, limits: CHECK_LIMITS })
+    // The run may end as failed, rather than throw, once its signal aborts.
+    if (message !== null && deadline.signal.aborted && !signal?.aborted) return models.TIMED_OUT
+    return message
+  } catch (error) {
+    signal?.throwIfAborted()
+    if (deadline.signal.aborted) return models.TIMED_OUT
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
 }

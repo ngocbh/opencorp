@@ -5,9 +5,16 @@ import type { AddressInfo } from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
-import { type CheckWorkers, CLOSE_MS, NO_RESULT, NOT_FINISHED, oneReplyProblem } from "../../src/chat/check.ts"
+import {
+  type CheckWorkers,
+  CLOSE_MS,
+  NO_RESULT,
+  NOT_FINISHED,
+  oneReplyProblem,
+  TIMEOUT_MS,
+} from "../../src/chat/check.ts"
 import { Provider } from "../../src/chat/provider.ts"
-import { checkProvider } from "../../src/install/onboard.ts"
+import { CHECK_DEADLINE_MS, checkProvider } from "../../src/install/onboard.ts"
 import { args, startTime } from "../../src/install/proc.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
@@ -24,6 +31,11 @@ setDefaultTimeout(60_000)
 
 const SENTINEL = "sk-ant-sentinel-61f0d2c9a8b3"
 const PROVIDER = checkProvider({ llm_config: { provider: "anthropic", api_key: SENTINEL, model: "claude-x" } })
+
+test("the worker gives up on a silent model before the daemon stops waiting for it", () => {
+  // The worker's "timed out" reaches the daemon, rather than the daemon's "didn't finish".
+  expect(CHECK_DEADLINE_MS + 5_000).toBeLessThanOrEqual(TIMEOUT_MS)
+})
 
 interface Spawned {
   job: Job
