@@ -617,13 +617,18 @@ test("an answer applied before the workers first frame is published", async () =
 
 test("a failed attempt leaves no text behind", async () => {
   const fake = await fakeLlm()
-  fake.script({ content: "Half an", cut: true }, { content: "Whole answer." })
+  fake.script({ content: "Half an", cut: true, hold: true }, { content: "Whole answer." })
   const job = await waitingChat(fake)
   const { relay, events, lines, transcript } = makeRelay(runsOf(job))
   const office = new LiveOffice(relay)
-  // Not a race: yian sends the start frame before its request, and writes the failed step only after the fake's
-  // response is handled on the same loop, so the render at start shows the failed attempt's part.
-  await run(advanceJob(job, { deliver: [send("s1", "hi")] }), office, { env: fake.env() })
+  // The cut attempt is held until the relay has shown its part: the worker runs ahead of the relay's frames, and a
+  // render that already reads the failed step never shows the part this test needs emptied.
+  const advanced = run(advanceJob(job, { deliver: [send("s1", "hi")] }), office, { env: fake.env() })
+  await waitFor(() => events.some((event) => event.type === "message.updated"), { what: "the reply's message" })
+  // A hold that starts after a release would never end.
+  await fake.waitForRequests(1, 30_000)
+  fake.release()
+  await advanced
   expect(waitingAt(office)).toEqual(["chat#1/heard"])
   const starts = office.streams.filter((frame) => frame.type === "start" && frame.node === REPLY)
   expect(starts.map((frame) => frame.n)).toEqual([starts[0]!.n, (starts[0]!.n as number) + 1])
