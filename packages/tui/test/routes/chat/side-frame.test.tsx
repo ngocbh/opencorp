@@ -392,7 +392,7 @@ test("/cost-cap 20 in a side chat raises the side session's cap and sends nothin
     await app.until((f) => f.includes("/cost-cap 20"))
     app.input.pressEnter()
     await app.until(() => office.requests.some((r) => r.path === `/sessions/${side.id}/cost-cap`))
-    await app.until((f) => f.includes("Cost cap raised to $20.00") && !f.includes("/cost-cap 20"))
+    await app.until((f) => f.includes("Cost cap set to $20.00") && !f.includes("/cost-cap 20"))
     expect(office.requests.some((r) => r.path.endsWith("/prompt") || r.path.endsWith("/side"))).toBe(false)
   } finally {
     await app.stop()
