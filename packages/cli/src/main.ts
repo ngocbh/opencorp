@@ -38,11 +38,7 @@ export const commands: Record<string, { args?: string; summary: string; load: ()
     load: () => import("./commands/password"),
   },
   logout: { summary: "Remove this device from the office and forget it", load: () => import("./commands/logout") },
-  devices: {
-    args: "list|add|remove ...",
-    summary: "List, add or remove a person's devices",
-    load: () => import("./commands/devices"),
-  },
+  devices: { summary: "List, add or remove a person's devices", load: () => import("./commands/devices") },
   whoami: { summary: "Show who this device acts as", load: () => import("./commands/whoami") },
   pair: {
     summary: "Print or open a one-time link that signs a browser in to HQ",
@@ -100,7 +96,8 @@ function unknown(name: string): number {
 /** Runs the command `argv` names (or the default); resolves to the process exit code. */
 export async function main(argv: string[]): Promise<number> {
   const [first, ...rest] = argv
-  if (first === "help" && rest.length > 0) {
+  // `help help` and `help -h` ask for this help, which the checks below print.
+  if (first === "help" && rest.length > 0 && !["help", "-h", "--help"].includes(rest[0]!)) {
     const named = command(rest[0]!)
     return named ? (await named.load()).run(["--help"]) : unknown(rest[0]!)
   }

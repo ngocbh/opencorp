@@ -235,11 +235,11 @@ test("an office a client here wouldn't find ends with how to reach it", async ()
     await company(home)
     const seen = await onboardRunning(dir, home, { environ: noHomeEnv() })
     const quoted = fallback.shQuote(fs.realpathSync(home))
-    expect(seen.at(-1)).toBe(
-      "Done. This office isn't the one `opencorp` finds in this shell, so first run " +
-        `\`export OPENCORP_HOME=${quoted}\` (add it to your shell profile to keep it), ` +
-        "then run `opencorp` in a project folder to talk to your team.",
-    )
+    expect(seen.slice(-2)).toEqual([
+      "Done. Run `opencorp` in a project folder to talk to your team.",
+      "This shell's `opencorp` looks for its office elsewhere; to reach this one, run " +
+        `\`export OPENCORP_HOME=${quoted}\` (add it to your shell profile to keep it).`,
+    ])
   }
   expect(fallback.shQuote(fs.realpathSync(path.join(dir, "my home")))).toStartWith("'")
 })

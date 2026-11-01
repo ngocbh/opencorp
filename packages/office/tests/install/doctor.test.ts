@@ -193,9 +193,12 @@ test("the binary's assets folder is checked beside the home, only when there is 
     name: "tui assets",
     status: "fail",
     detail:
-      "missing /nowhere/assets: `opencorp` can't start its TUI or setup screen; reinstall opencorp, or keep bin/ and " +
-      "assets/ together",
+      "no readable folder at /nowhere/assets: `opencorp` can't start its TUI or setup screen; reinstall opencorp, " +
+      "or keep bin/ and assets/ together",
   })
+  const loop = path.join(dir, "loop")
+  fs.symlinkSync(loop, loop)
+  expect(byName(await runChecks(dir, paths, { assets: loop }))["tui assets"]?.status).toBe("fail")
   expect(doctor.exitCode(missing)).toBe(1)
   const there = byName(await runChecks(dir, paths, { assets: dir }))
   expect(there["tui assets"]).toEqual({ name: "tui assets", status: "ok", detail: `found at ${dir}` })

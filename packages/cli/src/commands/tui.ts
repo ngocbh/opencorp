@@ -4,7 +4,7 @@ import { createOfficeClient, UnknownDevice } from "@opencorp/client"
 import { defaultSocket } from "@opencorp/client/node"
 import type { CommandRun } from "../main"
 import { localIdentity, officeAnswers, officeNotRunning } from "../office"
-import { drawable } from "../setup"
+import { terminal } from "../setup"
 
 /** What `opencorp tui --help` prints; `opencorp --help` repeats the option lines. */
 export const TUI_USAGE = [
@@ -37,6 +37,16 @@ export function parseTuiArgs(argv: string[]) {
   }
 }
 
+/** Whether `p` is a folder this process can stat; a missing path, a file, a symlink loop or no search permission
+ *  all are not. */
+function isFolder(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 /** What `tui` checks before it starts; tests pass fakes. */
 export type TuiDeps = {
   /** Whether the TUI can draw here. */
@@ -46,7 +56,7 @@ export type TuiDeps = {
 }
 
 export const realTuiDeps: TuiDeps = {
-  terminal: () => drawable(process.env, Boolean(process.stdin.isTTY), Boolean(process.stdout.isTTY)),
+  terminal,
   assetRoot: () => process.env.OTUI_ASSET_ROOT,
 }
 
@@ -69,9 +79,9 @@ export async function tui(argv: string[], deps: TuiDeps = realTuiDeps): Promise<
   }
   // A binary copied without the assets beside it: OpenTUI would throw into Bun's crash printer.
   const assets = deps.assetRoot()
-  if (assets !== undefined && !fs.statSync(assets, { throwIfNoEntry: false })?.isDirectory()) {
+  if (assets !== undefined && !isFolder(assets)) {
     console.error(
-      `opencorp: this binary's assets folder is missing (${assets}); reinstall opencorp, ` +
+      `opencorp: this binary's assets folder (${assets}) is missing or unreadable; reinstall opencorp, ` +
         "or keep bin/ and assets/ together",
     )
     return 1

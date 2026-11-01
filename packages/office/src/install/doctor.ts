@@ -91,15 +91,19 @@ function octal(mode: number): string {
 
 /** Whether the compiled binary's assets folder is there: without it `opencorp` can't load OpenTUI. */
 function assetsCheck(assets: string): Check {
-  if (fs.statSync(assets, { throwIfNoEntry: false })?.isDirectory()) {
-    return { name: "tui assets", status: "ok", detail: `found at ${assets}` }
+  let folder = false
+  try {
+    folder = fs.statSync(assets).isDirectory()
+  } catch {
+    // Missing, a symlink loop or no search permission: OpenTUI can't load from it either.
   }
+  if (folder) return { name: "tui assets", status: "ok", detail: `found at ${assets}` }
   return {
     name: "tui assets",
     status: "fail",
     detail:
-      `missing ${assets}: \`opencorp\` can't start its TUI or setup screen; reinstall opencorp, or keep bin/ and ` +
-      "assets/ together",
+      `no readable folder at ${assets}: \`opencorp\` can't start its TUI or setup screen; reinstall opencorp, or ` +
+      "keep bin/ and assets/ together",
   }
 }
 

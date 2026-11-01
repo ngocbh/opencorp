@@ -95,9 +95,11 @@ test("help COMMAND prints that command's usage; an unknown one exits 2", async (
     expect(unknown.code).toBe(2)
     expect(unknown.err).toContain(`opencorp: unknown command: ${name}`)
   }
-  const bare = await capture(["help"])
-  expect(bare.code).toBe(0)
-  expect(bare.out).toContain("Usage: opencorp [command] [options]")
+  for (const argv of [["help"], ["help", "help"], ["help", "-h"], ["help", "--help"]]) {
+    const general = await capture(argv)
+    expect(general.code).toBe(0)
+    expect(general.out).toContain("Usage: opencorp [command] [options]")
+  }
 })
 
 test("--version prints the package's version", async () => {

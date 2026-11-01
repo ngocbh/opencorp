@@ -53,6 +53,22 @@ test("a missing assets folder is one line naming it, before the terminal or the 
   expect(office.requests).toEqual([])
 })
 
+test("a file, or a symlink loop, where the assets folder goes is refused in one line too", async () => {
+  const file = path.join(home, "assets-file")
+  fs.writeFileSync(file, "")
+  const loop = path.join(home, "assets-loop")
+  fs.symlinkSync(loop, loop)
+  for (const root of [file, loop]) {
+    const r = await capture([], { terminal: () => true, assetRoot: () => root })
+    expect(r.code).toBe(1)
+    expect(r.err).toEqual([
+      `opencorp: this binary's assets folder (${root}) is missing or unreadable; reinstall opencorp, ` +
+        "or keep bin/ and assets/ together",
+    ])
+  }
+  expect(office.requests).toEqual([])
+})
+
 test("an assets folder that is there passes on to the terminal check", async () => {
   const r = await capture([], { terminal: () => false, assetRoot: () => home })
   expect(r.code).toBe(1)

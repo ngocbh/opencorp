@@ -1027,12 +1027,13 @@ describe("the built binary", () => {
     expect(result.reached, result.stdout).toBe(false)
     expect(result.code).toBe(1)
     expect(result.stderr).toBe(
-      `opencorp: this binary's assets folder is missing (${path.join(built, "bare/assets")}); reinstall opencorp, ` +
-        "or keep bin/ and assets/ together\n",
+      `opencorp: this binary's assets folder (${path.join(built, "bare/assets")}) is missing or unreadable; ` +
+        "reinstall opencorp, or keep bin/ and assets/ together\n",
     )
     expect(fs.readdirSync(tmpdir)).toEqual([])
     const doctor = await runBuilt([bare, "doctor"])
-    expect(doctor.stdout, doctor.stderr).toContain(`fail  tui assets   missing ${path.join(built, "bare/assets")}: `)
+    const noFolder = `fail  tui assets   no readable folder at ${path.join(built, "bare/assets")}: `
+    expect(doctor.stdout, doctor.stderr).toContain(noFolder)
     const full = await runBuilt([bin, "doctor"])
     expect(full.stdout, full.stderr).toContain(`ok    tui assets   found at ${path.join(npmOut, PLATFORM, "assets")}`)
   }, 150_000)
