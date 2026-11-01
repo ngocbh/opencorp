@@ -275,3 +275,105 @@ export function usesFlow(id: string, refs: string[]): string {
 export function leafFlow(id: string): string {
   return `id: ${id}\nname: ${id}\nnodes:\n  v: !str leaf\noutput: \${v.output}\n`
 }
+
+/** Runs git in `root` as `git` does, but returns the exit status instead of throwing on a failure. */
+export function gitStatus(root: string, ...args: string[]): number {
+  try {
+    run(root, args)
+    return 0
+  } catch (error) {
+    const status = /exited (\d+)/.exec((error as Error).message)
+    if (status === null) throw error
+    return Number(status[1])
+  }
+}
+
+/** Writes `text` to `rel` in `root` and commits it with `subject`. */
+function commitText(root: string, rel: string, text: string, subject: string): void {
+  fs.writeFileSync(path.join(root, rel), text)
+  git(root, "add", "--", rel)
+  git(root, "commit", "-q", "-m", subject)
+}
+
+/** A branch `side` and the current branch that each change `rel` in `root` differently, the current branch
+ *  checked out. */
+function divergedOn(root: string, rel: string): void {
+  const branch = git(root, "branch", "--show-current")
+  git(root, "checkout", "-q", "-b", "side")
+  commitText(root, rel, "side\n", "side")
+  git(root, "checkout", "-q", branch)
+  commitText(root, rel, `${branch}\n`, branch)
+}
+
+/** Leaves `root` mid-merge, `rel` conflicted: MERGE_HEAD set and `rel` unmerged (UU). */
+export function startMerge(root: string, rel: string): void {
+  divergedOn(root, rel)
+  if (gitStatus(root, "merge", "-q", "side") !== 1) throw new Error("the merge did not stop on a conflict")
+}
+
+/** Leaves `root` mid-rebase, stopped by a failed `--exec`: `rebase-merge/` and no unmerged path. */
+export function startRebaseStop(root: string): void {
+  commitText(root, "rebase.txt", "rebase\n", "to rebase")
+  if (gitStatus(root, "rebase", "-q", "--exec", "false", "HEAD~1") === 0) throw new Error("the rebase did not stop")
+}
+
+/** Leaves `root` mid cherry-pick, `rel` conflicted: CHERRY_PICK_HEAD set. */
+export function startCherryPick(root: string, rel: string): void {
+  divergedOn(root, rel)
+  if (gitStatus(root, "cherry-pick", "side") === 0) throw new Error("the cherry-pick did not stop")
+}
+
+/** Leaves `root` mid-revert, `rel` conflicted: REVERT_HEAD set. */
+export function startRevert(root: string, rel: string): void {
+  commitText(root, rel, "first\n", "first")
+  commitText(root, rel, "second\n", "second")
+  if (gitStatus(root, "revert", "--no-edit", "HEAD~1") === 0) throw new Error("the revert did not stop")
+}
+
+/** Leaves `root` with a cherry-pick of two commits stopped after the first, whose conflict on `rel` was
+ *  resolved and committed by hand: `sequencer/` left, no CHERRY_PICK_HEAD. */
+export function sequencerOnly(root: string, rel: string): void {
+  divergedOn(root, rel)
+  git(root, "checkout", "-q", "side")
+  commitText(root, "side.txt", "side\n", "side two")
+  git(root, "checkout", "-q", "-")
+  if (gitStatus(root, "cherry-pick", "side~1", "side") === 0) throw new Error("the cherry-pick did not stop")
+  fs.writeFileSync(path.join(root, rel), "resolved\n")
+  git(root, "add", "--", rel)
+  git(root, "commit", "-q", "--no-edit")
+}
+
+/** Leaves `rel` in `root` unmerged (UU) by a `stash pop` that conflicted: no MERGE_HEAD. */
+export function stashPopConflict(root: string, rel: string): void {
+  fs.writeFileSync(path.join(root, rel), "stashed\n")
+  git(root, "stash", "-q")
+  commitText(root, rel, "committed\n", "committed")
+  if (gitStatus(root, "stash", "pop", "-q") === 0) throw new Error("the stash pop did not conflict")
+}
+
+/** A `git` script in `dir` that appends its env, then a `--` line, to `dir/env` and runs the real git. */
+export function envGit(dir: string) {
+  const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()
+  const script = path.join(dir, "env-git")
+  const log = path.join(dir, "env")
+  fs.writeFileSync(
+    script,
+    ["#!/bin/sh", `{ env; echo --; } >> ${JSON.stringify(log)}`, `exec ${JSON.stringify(real)} "$@"`, ""].join("\n"),
+    { mode: 0o755 },
+  )
+  return {
+    git: script,
+    /** Each call's env, by variable name. */
+    envs(): Map<string, string>[] {
+      if (!fs.existsSync(log)) return []
+      return fs
+        .readFileSync(log, "utf8")
+        .split("--\n")
+        .filter(Boolean)
+        .map((block) => new Map(block.split("\n").filter(Boolean).map((line) => {
+          const eq = line.indexOf("=")
+          return [line.slice(0, eq), line.slice(eq + 1)] as [string, string]
+        })))
+    },
+  }
+}

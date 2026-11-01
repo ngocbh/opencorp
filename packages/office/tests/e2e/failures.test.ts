@@ -1,6 +1,10 @@
-/** What a real office survives: a killed worker, a killed office, and racing answers. */
+/** What a real office survives: a killed worker, a killed office, racing answers, and a company repo a human left
+ *  mid-merge, conflicted or locked. */
+import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
+import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
+import { git, gitStatus, startMerge, stashPopConflict } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import { alive, asked, folder, openOffice, type RunningOffice } from "./helpers.ts"
 
@@ -208,6 +212,71 @@ test(
     expect(tools).toHaveLength(1)
     expect(tools[0]).toContain(winner)
     expect(tools[0]).not.toContain(loser)
+  },
+  TIMEOUT,
+)
+
+const PROFILE = "people/minh/profile.md"
+
+test(
+  "a device change mid-merge or under a stale lock is refused as company_repo_busy and stays out of the index",
+  async () => {
+    const office = await openOffice()
+    const company = office.paths.company
+    const person = "people/ngocbh/person.yaml"
+    startMerge(company, "notes.md")
+    const device = { name: "laptop", token_sha256: tokenSha256(newToken()) }
+    let reply = await office.request("POST", "/people/ngocbh/devices", { body: device })
+    expect(reply.status).toBe(409)
+    expect(await reply.json()).toEqual({
+      error: "company_repo_busy",
+      message: "the company repo has a merge in progress; finish or abort it",
+    })
+    expect(git(company, "diff", "--cached", "--name-only")).not.toContain(person)
+    expect(gitStatus(company, "merge", "--abort")).toBe(0)
+
+    const lock = path.join(company, ".git/index.lock")
+    fs.writeFileSync(lock, "")
+    reply = await office.request("PUT", "/people/ngocbh/password", { body: { password: "correct horse battery" } })
+    expect(reply.status).toBe(503)
+    expect(await reply.json()).toEqual({
+      error: "company_repo_busy",
+      message: "the company repo is locked by .git/index.lock; if no git command is running there, remove it",
+    })
+    expect(fs.existsSync(lock)).toBe(true)
+    fs.unlinkSync(lock)
+    expect(git(company, "status", "--porcelain")).toBe("")
+    expect((await office.post("/people/ngocbh/devices", device)).devices).toEqual([device])
+  },
+  TIMEOUT,
+)
+
+test(
+  "a chat starts mid-merge from HEAD and leaves a profile hand edit for after the merge",
+  async () => {
+    const office = await openOffice()
+    const company = office.paths.company
+    startMerge(company, "notes.md")
+    const head = git(company, "rev-parse", "HEAD")
+    fs.appendFileSync(path.join(company, PROFILE), "Likes tests.\n")
+    await firstTurn(office, folder(path.join(office.root, "project")))
+    expect(git(company, "rev-parse", "HEAD")).toBe(head)
+    expect(fs.readFileSync(path.join(company, PROFILE), "utf8")).toEndWith("Likes tests.\n")
+    expect(gitStatus(company, "merge", "--abort")).toBe(0)
+  },
+  TIMEOUT,
+)
+
+test(
+  "a chat starts with a conflicted profile and neither HEAD nor the model sees its markers",
+  async () => {
+    const office = await openOffice()
+    const company = office.paths.company
+    stashPopConflict(company, PROFILE)
+    await firstTurn(office, folder(path.join(office.root, "project")))
+    expect(git(company, "show", `HEAD:${PROFILE}`)).toBe("committed")
+    expect(git(company, "ls-files", "-u")).toContain(PROFILE)
+    expect(JSON.stringify(office.llm.requests())).not.toContain("<<<<<<<")
   },
   TIMEOUT,
 )

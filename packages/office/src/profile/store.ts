@@ -223,13 +223,13 @@ export class GitProfileStore implements MarkdownStore {
     }
   }
 
-  /** Puts back the profile a failed commit left on disk, and unstages it; best effort, never throws. */
+  /** Puts back the profile a failed commit left on disk; best effort, never throws. The commit has already
+   *  unstaged what it staged, and a refused commit staged nothing, so an unresolved conflict stays one. */
   async #restore(target: string, previous: Uint8Array | null, current: string): Promise<void> {
     try {
       if ((await this.#current()) !== current) return // the commit landed before the failure; keep it
       if (previous === null) fs.rmSync(target, { force: true })
       else this.#put(target, previous)
-      await this.git.unstage([this.path])
     } catch {
       // the caller needs the commit's error, not this one
     }

@@ -113,3 +113,7 @@ test("the codex session codes are protocol error codes", () => {
   ])
     expect(codes).toContain(code)
 })
+
+test("a company repo mid-merge, mid-rebase or locked has a protocol error code", () => {
+  expect<readonly string[]>(ERROR_CODES).toContain("company_repo_busy")
+})

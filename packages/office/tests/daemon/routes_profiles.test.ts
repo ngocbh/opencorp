@@ -11,7 +11,7 @@ import { blobId, GitProfileStore } from "../../src/profile/store.ts"
 import type { ProfileProposalRecord } from "../../src/store/store.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
 import { fakeLlm, makeHarness, ROOT, status } from "../chat/helpers.ts"
-import { git } from "../company/helpers.ts"
+import { git, stashPopConflict } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import { proposal, recordEvents, session } from "../store/helpers.ts"
 import {
@@ -168,6 +168,26 @@ test("the office profile store defaults to the git store", async () => {
   expect(r.status).toBe(200)
   expect(git(office.paths.company, "log", "-1", "--format=%s")).toBe("profile(@minh): hand edit")
   expect((await request(sock, "GET", "/profiles/minh")).json()).toMatchObject({ version: blob("# Minh\nterse\n") })
+})
+
+test("put on a profile with an unresolved conflict is 409 company_repo_busy and keeps the conflict", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const company = office.paths.company
+  const rel = "people/minh/profile.md"
+  stashPopConflict(company, rel)
+  const conflicted = fs.readFileSync(path.join(company, rel))
+  const got = await request(sock, "GET", "/profiles/minh")
+  expect(got.status).toBe(200)
+  expect(got.json()).toMatchObject({ text: "committed\n", version: blob("committed\n") })
+  const r = await put(sock, { text: "# Minh\nterse\n", base_version: blob("committed\n") })
+  expect(r.status).toBe(409)
+  expect(r.json()).toEqual({
+    error: "company_repo_busy",
+    message: `${JSON.stringify(rel)} has an unresolved merge conflict in the company repo; resolve it and commit`,
+  })
+  expect(git(company, "ls-files", "-u")).toContain(rel)
+  expect(fs.readFileSync(path.join(company, rel))).toEqual(conflicted)
 })
 
 test("proposals are listed oldest first and 404 for no person", async () => {

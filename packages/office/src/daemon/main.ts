@@ -268,7 +268,10 @@ export function buildOffice(
   const log = officeLogger(write)
   const store = new Store(paths.store, { log: log("ERROR", "opencorp.store") })
   try {
-    const companyGit = new CompanyGit(paths.company, paths.worktrees, { git: tools.git })
+    const companyGit = new CompanyGit(paths.company, paths.worktrees, {
+      git: tools.git,
+      log: log("WARNING", "opencorp.company.git"),
+    })
     reap(store)
     const workers = new WorkerRegistry(store, {
       log: (level, line) => log(level, "opencorp.worker.spawn")(line),

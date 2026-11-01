@@ -55,16 +55,17 @@ function overwrite(file: string, data: string | Buffer): void {
   }
 }
 
-/** Sets `key` in `handle`'s `person.yaml` (an empty device list drops the key) and commits it; the file is
- *  restored if that fails. */
+/** Sets `key` in `handle`'s `person.yaml` (an empty device list drops the key) and commits it through `locked`;
+ *  the file is restored if that fails, unless the commit is known to have landed. */
 async function write(
-  git: LockedGit,
-  root: string,
+  locked: LockedGit,
+  git: CompanyGit,
   handle: string,
   key: string,
   value: Device[] | string,
   subject: string,
 ): Promise<Person> {
+  const root = git.root
   const rel = `people/${handle}/person.yaml`
   const file = path.join(root, rel)
   // The loader follows a symlinked file or folder, but a write through one would change a file outside the repo.
@@ -92,11 +93,14 @@ async function write(
   if (!parsed.success) {
     throw new DeviceRefused(422, "invalid_body", validationMessage(PersonSchema, parsed.error, fields))
   }
+  const head = await git.head().catch(() => null)
   try {
     overwrite(file, writeYaml(fields))
-    await git.commit([rel], subject)
+    await locked.commit([rel], subject)
   } catch (error) {
-    overwrite(file, before)
+    // Put back over a commit that landed, the old file would be read, and committed, by the next change.
+    const now = head === null ? null : await git.head().catch(() => null)
+    if (now === null || now === head) overwrite(file, before)
     throw error
   }
   return parsed.data
@@ -119,7 +123,7 @@ export async function addDevice(git: CompanyGit, handle: string, device: Device,
       throw new DeviceRefused(409, "token_in_use", "another device already lists this token")
     }
     const devices = [...found.devices, { name: device.name, token_sha256: device.token_sha256 }]
-    return write(locked, git.root, handle, "devices", devices, `devices(@${handle}): add ${device.name}`)
+    return write(locked, git, handle, "devices", devices, `devices(@${handle}): add ${device.name}`)
   })
 }
 
@@ -133,7 +137,7 @@ export async function removeDevice(git: CompanyGit, handle: string, name: string
     if (kept.length === found.devices.length) {
       throw new DeviceRefused(404, "not_found", `@${handle} has no device named ${name}`)
     }
-    return write(locked, git.root, handle, "devices", kept, `devices(@${handle}): remove ${name}`)
+    return write(locked, git, handle, "devices", kept, `devices(@${handle}): remove ${name}`)
   })
 }
 
@@ -163,6 +167,6 @@ export async function setPassword(git: CompanyGit, handle: string, password: str
   return git.locked(async (locked) => {
     await locked.commitHandEdits()
     person(loadRepo(git.root), handle, actor, "password")
-    return write(locked, git.root, handle, "password_hash", hash, `password(@${handle}): set`)
+    return write(locked, git, handle, "password_hash", hash, `password(@${handle}): set`)
   })
 }

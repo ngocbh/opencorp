@@ -4,11 +4,11 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { loadFlow, type MarkdownStore, MarkdownVersionMismatch, ProfileMemory, runFlow } from "@ngocbh/yian"
-import { CompanyGit, CompanyGitError, type LockedGit } from "../../src/company/git.ts"
+import { CompanyGit, CompanyRepoBusy, repoBusy } from "../../src/company/git.ts"
 import { blobId, commitMessage, EMPTY_BLOB, GitProfileStore } from "../../src/profile/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
-import { company, failingGit, GIT_FAILURES, git, recordingGit } from "../company/helpers.ts"
+import { company, failingGit, GIT_FAILURES, git, recordingGit, stashPopConflict } from "../company/helpers.ts"
 import { tempDir } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -381,28 +381,19 @@ test("profile memory commit is a git commit with run and commit id", async () =>
 
 // Failed commits
 
-/** A `CompanyGit` whose commit stages the paths, then fails as a stale index.lock would. */
-class FailingCommitGit extends CompanyGit {
-  override locked<T>(fn: (git: LockedGit) => Promise<T>): Promise<T> {
-    return super.locked((locked) =>
-      fn({
-        ...locked,
-        commit: async (paths) => {
-          git(this.root, "add", "--", ...paths)
-          throw new CompanyGitError("git commit exited 128: fatal: Unable to create '.git/index.lock'")
-        },
-      }),
-    )
-  }
+/** A store on minh's profile in `root` whose `git commit` fails after staging, as a corrupt object would. */
+function failingStore(dir: string, root: string): GitProfileStore {
+  const git = failingGit(dir, "--cleanup=whitespace", "echo 'fatal: boom' >&2; exit 128")
+  return new GitProfileStore(new CompanyGit(root, path.join(dir, "worktrees"), { git }), "minh")
 }
 
 test("a failed commit restores the profile", async () => {
   const { dir, root, store } = setup()
   const base = (await store.read())[1]
-  const failing = new GitProfileStore(new FailingCommitGit(root, path.join(dir, "worktrees")), "minh")
+  const failing = failingStore(dir, root)
   const error = await rejection(failing.write("# Minh\nv1\n", { baseVersion: base, provenance: { commit_id: "c-1" } }))
   expect(error).toMatchObject({ code: "EIO" })
-  expect((error as Error).message).toMatch(/index.lock/)
+  expect((error as Error).message).toMatch(/boom/)
   expect(read(root)).toBe(MINH)
   expect(git(root, "status", "--porcelain")).toBe("")
   expect(await store.committed("c-1")).toBeNull()
@@ -416,14 +407,30 @@ test("a failed commit removes a new profile", async () => {
   const { dir, root, store } = setup()
   git(root, "rm", "-q", PROFILE)
   git(root, "commit", "-q", "-m", "drop")
-  const failing = new GitProfileStore(new FailingCommitGit(root, path.join(dir, "worktrees")), "minh")
-  const error = await rejection(failing.write("# Minh\n", { baseVersion: EMPTY_BLOB }))
+  const error = await rejection(failingStore(dir, root).write("# Minh\n", { baseVersion: EMPTY_BLOB }))
   expect(error).toMatchObject({ code: "EIO" })
-  expect((error as Error).message).toMatch(/index.lock/)
+  expect((error as Error).message).toMatch(/boom/)
   expect(fs.existsSync(path.join(root, PROFILE))).toBe(false)
   expect(git(root, "status", "--porcelain")).toBe("")
   expect(await store.committed("c-1")).toBeNull()
   expect(await store.write("# Minh\n", { baseVersion: EMPTY_BLOB })).toBe(blobId(bytes("# Minh\n")))
+})
+
+test("a write to a profile with an unresolved conflict is refused and the conflict kept", async () => {
+  const { root, store } = setup()
+  stashPopConflict(root, PROFILE)
+  const conflicted = fs.readFileSync(path.join(root, PROFILE))
+  const [text, base] = await store.read()
+  expect(text).toBe("committed\n") // HEAD's, not the markers
+  const error = await rejection(store.write("# Minh\nv1\n", { baseVersion: base }))
+  expect(error).toMatchObject({ code: "EIO", syscall: "write" })
+  const busy = (error as Error).cause
+  expect(busy).toBeInstanceOf(CompanyRepoBusy)
+  expect((busy as CompanyRepoBusy).status).toBe(409)
+  expect(repoBusy(error)).toBe(busy as CompanyRepoBusy)
+  expect(git(root, "ls-files", "-u")).toContain(PROFILE)
+  expect(fs.readFileSync(path.join(root, PROFILE))).toEqual(conflicted)
+  expect(git(root, "show", `HEAD:${PROFILE}`)).toBe("committed")
 })
 
 test("a forged handle cannot add a commit id", async () => {

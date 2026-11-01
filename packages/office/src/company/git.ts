@@ -41,6 +41,25 @@ const KINDS: Record<string, TreeEntry["type"]> = {
   "120000": "symlink",
   "160000": "submodule",
 }
+// How long `#run` waits, in turn, before running again a command that found a git lock file taken.
+const LOCK_WAITS = [50, 100, 200, 400, 800]
+// Greedy, so a quote in the clone's path doesn't end the lock's path early.
+const LOCK_TAKEN = /Unable to create '(.+\.lock)': File exists/
+const INDEX_LOCKED = "the company repo is locked by .git/index.lock; if no git command is running there, remove it"
+const LOCKED =
+  "the company repo is locked by a stale git lock file; " +
+  "if no git command is running there, remove the .lock file under .git"
+// What git keeps under the git dir while a human's operation is in progress, and what each refusal says is.
+const OPERATIONS: readonly (readonly [string, string])[] = [
+  ["MERGE_HEAD", "a merge"],
+  ["rebase-merge", "a rebase"],
+  ["rebase-apply", "a rebase or git am"],
+  ["CHERRY_PICK_HEAD", "a cherry-pick or revert"],
+  ["REVERT_HEAD", "a cherry-pick or revert"],
+  ["sequencer", "a cherry-pick or revert"],
+]
+// The `status --porcelain` codes of a path with an unresolved conflict.
+const UNMERGED = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"])
 // argv can't carry bytes that aren't UTF-8, so paths go to git on stdin, NUL-separated.
 const FROM_STDIN = ["--pathspec-from-file=-", "--pathspec-file-nul"]
 // Every line boundary `splitlines` knows, so a trailer matches as a whole line however the message breaks.
@@ -146,10 +165,30 @@ function literal(paths: string[]): Buffer {
   return Buffer.concat(paths.flatMap((p) => [Buffer.from(":(literal)"), encodePath(p), Buffer.of(0)]))
 }
 
-/** `base` without GIT_* variables, the system or user git config, or prompts. */
+/** `paths` as git lists them with `-z`, to compare with its output: as latin1 (one char per byte, so
+ *  `normalize` sees no lone surrogates to replace), normalized, without a trailing slash. */
+function asListed(paths: string[]): string[] {
+  return paths.map((p) => path.posix.normalize(encodePath(p).toString("latin1")).replace(/\/+$/, ""))
+}
+
+/** Whether `listed`, a path from git's `-z` output read as latin1, is one of `wanted` (from `asListed`) or
+ *  under one. */
+function matchesAny(listed: string, wanted: string[]): boolean {
+  return wanted.some((w) => w === "." || listed === w || listed.startsWith(`${w}/`))
+}
+
+/** `base` without GIT_* variables, the system or user git config, or prompts, in the C locale. */
 function gitEnv(base: Record<string, string | undefined>): Record<string, string> {
   const kept = Object.fromEntries(Object.entries(base).filter(([name]) => !name.startsWith("GIT_")))
-  return { ...selfSpawnEnv(kept), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull, GIT_TERMINAL_PROMPT: "0" }
+  // A taken lock is found in git's stderr, which a locale would translate; LANGUAGE is dropped for the same
+  // reason. Every path is read as `-z` bytes, so the locale changes nothing else.
+  const { LANGUAGE: _, ...env } = selfSpawnEnv(kept)
+  return { ...env, LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull, GIT_TERMINAL_PROMPT: "0" }
+}
+
+/** The `CompanyGitError` for git `args` that exited non-zero with `result`. */
+function exited(args: string[], result: GitResult): CompanyGitError {
+  return new CompanyGitError(`git ${args.join(" ")} exited ${result.code}: ${result.stderr.toString().trim()}`)
 }
 
 const noop = () => {}
@@ -160,6 +199,31 @@ const holder = new AsyncLocalStorage<{ git: CompanyGit; held: boolean }>()
 /** A git command on the company clone failed; the message includes git's stderr. */
 export class CompanyGitError extends Error {
   override name = "CompanyGitError"
+}
+
+/**
+ * The company repo can't take an office commit now: a human's merge, rebase, cherry-pick or revert is in
+ * progress, or a path to commit has an unresolved conflict (409); or a git lock file stayed taken (503).
+ *
+ * The message says what to do and names no absolute path, since an HQ client may be on another machine.
+ */
+export class CompanyRepoBusy extends CompanyGitError {
+  override name = "CompanyRepoBusy"
+  readonly code = "company_repo_busy" as const
+
+  constructor(
+    readonly status: 409 | 503,
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
+/** `error` if it is a `CompanyRepoBusy`, else its `cause` if that is one (a store's wrapped error), else null. */
+export function repoBusy(error: unknown): CompanyRepoBusy | null {
+  if (error instanceof CompanyRepoBusy) return error
+  const cause = error instanceof Error ? error.cause : undefined
+  return cause instanceof CompanyRepoBusy ? cause : null
 }
 
 /** The writes that need the repo lock, given to a `locked` section, which already holds it. */
@@ -175,6 +239,8 @@ export interface CompanyGitOptions {
   git?: string
   /** The env git runs in, before cleaning (default `process.env`). */
   env?: Record<string, string | undefined>
+  /** Where to report what the office left uncommitted, and a reset that failed (default: nowhere). */
+  log?: (line: string) => void
 }
 
 interface GitResult {
@@ -194,7 +260,12 @@ export class CompanyGit {
   readonly worktrees: string
   readonly #git: string
   readonly #env: Record<string, string>
+  readonly #log: (line: string) => void
   #queue: Promise<unknown> = Promise.resolve()
+  // What `commitHandEdits` last reported waiting for, and the conflicted profiles it last skipped, so
+  // each is logged once.
+  #waiting = ""
+  #skipped = "[]"
   readonly #writer: LockedGit = {
     commit: (paths, message) => this.#commit(paths, message),
     commitHandEdits: () => this.#commitHandEdits(),
@@ -205,13 +276,32 @@ export class CompanyGit {
     this.worktrees = worktrees
     this.#git = options.git ?? "git"
     this.#env = gitEnv(options.env ?? process.env)
+    this.#log = options.log ?? noop
   }
 
-  /** Runs git in the clone with stdin `input` (else none); with `check`, a non-zero exit rejects with
-   *  `CompanyGitError`. A command that touches working files runs with the repo's filter drivers off. */
+  /**
+   * Runs git in the clone with stdin `input` (else none); with `check`, a non-zero exit rejects with
+   * `CompanyGitError`. A command that touches working files runs with the repo's filter drivers off.
+   *
+   * A command that finds a git lock file taken runs again after each of `LOCK_WAITS`, then rejects with a
+   * 503 `CompanyRepoBusy`. The lock is never removed: another git may hold it.
+   */
   async #run(args: string[], options: { check?: boolean; input?: Uint8Array } = {}): Promise<GitResult> {
     const env = FILTERED.has(args[0]!) ? { ...this.#env, ...(await this.#noFilters()) } : this.#env
-    return this.#spawn(args, env, options)
+    for (let attempt = 0; ; attempt++) {
+      const result = await this.#spawn(args, env, { input: options.input, check: false })
+      // git rolls its lock files back when a command fails on one, so running it again is safe.
+      const lock = result.code === 0 ? null : LOCK_TAKEN.exec(result.stderr.toString())
+      if (lock === null) {
+        if ((options.check ?? true) && result.code !== 0) throw exited(args, result)
+        return result
+      }
+      if (attempt === LOCK_WAITS.length) {
+        this.#log(`git ${args[0]} gave up on ${JSON.stringify(lock[1])}, which stayed taken`)
+        throw new CompanyRepoBusy(503, lock[1]!.endsWith("/index.lock") ? INDEX_LOCKED : LOCKED)
+      }
+      await new Promise((resolve) => setTimeout(resolve, LOCK_WAITS[attempt]))
+    }
   }
 
   /**
@@ -285,9 +375,8 @@ export class CompanyGit {
         if (settled) return
         settled = true
         const result = { code: status ?? -1, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr) }
-        if (check && result.code !== 0) {
-          reject(new CompanyGitError(`git ${args.join(" ")} exited ${result.code}: ${result.stderr.toString().trim()}`))
-        } else resolve(result)
+        if (check && result.code !== 0) reject(exited(args, result))
+        else resolve(result)
       })
       if (input) {
         child.stdin!.on("error", noop) // git may exit before reading all of it
@@ -465,11 +554,15 @@ export class CompanyGit {
     return this.locked((git) => git.commit(paths, message))
   }
 
-  /** `commit` with the lock held. */
+  /** `commit` with the lock held. A 409 `CompanyRepoBusy` while a human's operation is in progress or a
+   *  path has an unresolved conflict; a commit that fails after staging unstages its paths again. */
   async #commit(paths: string[], message: string): Promise<string> {
     // `git commit` with no pathspec would commit the whole index
     if (!paths.length) return this.head()
     checkPaths(paths)
+    // Refused before anything is staged, so the reset below never touches an operation's or a conflict's
+    // index entries.
+    await this.#refuseBusy(paths)
     const present = new Set<string>()
     for (const p of paths) {
       // lstat: a tracked symlink whose target is gone is still present.
@@ -477,31 +570,82 @@ export class CompanyGit {
       const stat = await fs.promises.lstat(encodePath(`${this.root}/${p}`)).catch(() => null)
       if (stat) present.add(p)
     }
-    if (present.size) await this.#run(["add", ...FROM_STDIN], { input: literal([...present]) })
-    const gone = paths.filter((p) => !present.has(p)) // a deletion, maybe already staged
-    if (gone.length) {
-      // `git add` fails on a path gone from both disk and index.
-      await this.#run(["rm", "-q", "--cached", "--ignore-unmatch", ...FROM_STDIN], { input: literal(gone) })
+    let staged = false
+    try {
+      if (present.size) {
+        await this.#run(["add", ...FROM_STDIN], { input: literal([...present]) })
+        staged = true
+      }
+      const gone = paths.filter((p) => !present.has(p)) // a deletion, maybe already staged
+      if (gone.length) {
+        // `git add` fails on a path gone from both disk and index.
+        await this.#run(["rm", "-q", "--cached", "--ignore-unmatch", ...FROM_STDIN], { input: literal(gone) })
+        staged = true
+      }
+      // `git commit` exits 1 on an empty commit; callers rely on a no-op write succeeding. `git diff` takes
+      // no pathspecs on stdin, so the staged paths are matched here.
+      const out = await this.#run(["diff", "--cached", "--name-only", "-z", "--no-renames"])
+      const wanted = asListed(paths)
+      const touched = out.stdout.toString("latin1").split("\0").some((s) => s && matchesAny(s, wanted))
+      if (!touched) return await this.head()
+      // git's default cleanup for -m, pinned so a repo's commit.cleanup can't strip a trailer as a comment.
+      const commit = ["commit", "-q", "--cleanup=whitespace", "-m", message, ...FROM_STDIN]
+      await this.#run(commit, { input: literal(paths) })
+      return await this.head()
+    } catch (error) {
+      // Left staged, a refused write would be committed with the next commit of any other path.
+      if (staged) await this.#resetBestEffort(paths)
+      throw error
     }
-    // `git commit` exits 1 on an empty commit; callers rely on a no-op write succeeding. `git diff` takes
-    // no pathspecs on stdin, so the staged paths are matched here.
-    const out = await this.#run(["diff", "--cached", "--name-only", "-z", "--no-renames"])
-    // Compared as latin1, one char per byte, so `normalize` sees no lone surrogates to replace.
-    const staged = out.stdout.toString("latin1").split("\0").filter(Boolean)
-    const wanted = paths.map((p) => path.posix.normalize(encodePath(p).toString("latin1")).replace(/\/+$/, ""))
-    const touched = staged.some((s) => wanted.some((w) => w === "." || s === w || s.startsWith(`${w}/`)))
-    if (!touched) return this.head()
-    // git's default cleanup for -m, pinned so a repo's commit.cleanup can't strip a trailer as a comment.
-    const commit = ["commit", "-q", "--cleanup=whitespace", "-m", message, ...FROM_STDIN]
-    await this.#run(commit, { input: literal(paths) })
-    return this.head()
   }
 
-  /** Resets `paths` in the index to HEAD, leaving the working files alone. */
-  async unstage(paths: string[]): Promise<void> {
-    checkPaths(paths)
-    // `git reset` with no pathspec would reset the whole index
-    if (paths.length) await this.#run(["reset", "-q", ...FROM_STDIN], { input: literal(paths) })
+  /** Resets `paths` in the index to HEAD after a failed commit, leaving the working files alone; a reset that
+   *  fails too (a lock that stays taken) is logged, not thrown, so the commit's error is the one reported. */
+  async #resetBestEffort(paths: string[]): Promise<void> {
+    try {
+      await this.#run(["reset", "-q", ...FROM_STDIN], { input: literal(paths) })
+    } catch {
+      this.#log(`paths ${JSON.stringify(paths)} stayed staged after a failed commit`)
+    }
+  }
+
+  /** A 409 `CompanyRepoBusy` if a human's operation is in progress, or a path in `paths` (or under one) has an
+   *  unresolved conflict, since staging it would mark the conflict resolved. */
+  async #refuseBusy(paths: string[]): Promise<void> {
+    const operation = await this.#operation()
+    if (operation !== null) throw operation
+    // `ls-files` takes no pathspecs on stdin, so the paths are matched here. Entries are `<info>\t<path>`, one
+    // per conflict stage.
+    const out = await this.#run(["ls-files", "-u", "-z"])
+    const wanted = asListed(paths)
+    for (const entry of out.stdout.toString("latin1").split("\0")) {
+      const listed = entry.slice(entry.indexOf("\t") + 1)
+      if (!entry || !matchesAny(listed, wanted)) continue
+      const shown = JSON.stringify(decodePath(Buffer.from(listed, "latin1")))
+      const message = `${shown} has an unresolved merge conflict in the company repo; resolve it and commit`
+      throw new CompanyRepoBusy(409, message)
+    }
+  }
+
+  /** A 409 `CompanyRepoBusy` naming the human's operation in progress in the clone, or null if there is none. */
+  async #operation(): Promise<CompanyRepoBusy | null> {
+    // `--git-path`, as the git dir of a linked worktree is elsewhere and per-worktree state lives in it.
+    const args = ["rev-parse", ...OPERATIONS.flatMap(([name]) => ["--git-path", name])]
+    const lines = decodePath((await this.#run(args)).stdout).split("\n")
+    if (lines.at(-1) === "") lines.pop()
+    // Fails closed: output that doesn't line up could hide an operation.
+    if (lines.length !== OPERATIONS.length) throw new CompanyGitError(`git rev-parse printed ${lines.length} git paths`)
+    for (const [i, [, what]] of OPERATIONS.entries()) {
+      // Relative to the root, unless git printed it absolute (a linked worktree's git dir).
+      const file = encodePath(lines[i]!.startsWith("/") ? lines[i]! : `${this.root}/${lines[i]}`)
+      const found = await fs.promises.lstat(file).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT" || error.code === "ENOTDIR") return null
+        throw error
+      })
+      if (found === null) continue
+      return new CompanyRepoBusy(409, `the company repo has ${what} in progress; finish or abort it`)
+    }
+    return null
   }
 
   /**
@@ -536,25 +680,46 @@ export class CompanyGit {
     return this.locked((git) => git.commitHandEdits())
   }
 
-  /** `commitHandEdits` with the lock held. */
+  /**
+   * `commitHandEdits` with the lock held.
+   *
+   * While a human's operation is in progress it commits nothing: HEAD is still a whole company, so chats keep
+   * starting from it, and a commit now would land inside their merge or rebase. A profile with an unresolved
+   * conflict is skipped, since committing it would mark it resolved with the markers in it.
+   */
   async #commitHandEdits(): Promise<string[]> {
+    const operation = await this.#operation()
+    const waiting = operation?.message ?? ""
+    if (waiting && waiting !== this.#waiting) this.#log(`hand edits wait: ${waiting}`)
+    this.#waiting = waiting
+    if (operation !== null) return []
     // --untracked-files=all lists a new profile inside a wholly untracked people/<new>/.
     const out = await this.#run(["status", "--porcelain", "-z", "--untracked-files=all", "--", PROFILES])
     const fields = decodePath(out.stdout).split("\0")
     const found = new Set<string>()
+    const conflicted: string[] = []
     // `--porcelain -z` entries are `XY path`. A rename or copy, staged (X) or in the worktree (Y, after
     // `git add -N`), is followed by a second field, its original path; a rename's original is committed
     // too (as a deletion).
     for (let i = 0; i < fields.length; ) {
       const entry = fields[i++]!
       if (!entry) continue
-      found.add(entry.slice(3))
       const xy = entry.slice(0, 2)
+      if (UNMERGED.has(xy)) {
+        conflicted.push(entry.slice(3))
+        continue
+      }
+      found.add(entry.slice(3))
       if (xy.includes("R") || xy.includes("C")) {
         if (xy.includes("R")) found.add(fields[i]!)
         i++
       }
     }
+    const skipped = JSON.stringify(conflicted.sort())
+    if (conflicted.length && skipped !== this.#skipped) {
+      this.#log(`hand edits skip ${skipped}: an unresolved merge conflict; resolve it and commit`)
+    }
+    this.#skipped = skipped
     const paths = [...found].sort()
     for (const rel of paths) {
       // The directory is the handle; one line, so a hand-made name can't add a trailer.

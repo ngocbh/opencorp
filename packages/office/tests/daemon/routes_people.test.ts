@@ -3,6 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { stringify } from "yaml"
+import { git, gitStatus, startMerge } from "../company/helpers.ts"
 import { makeOffice, request, served } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -48,6 +49,25 @@ test("hire previews then commits", async () => {
   expect(newHead).not.toBe(head)
   expect(fs.readdirSync(path.join(company, "people/ava")).sort()).toEqual(["person.yaml", "profile.md"])
   expect(handles(await request(sock, "GET", "/people"))).toContain("ava")
+})
+
+test("a hire mid-merge is 409 company_repo_busy and leaves the merge as it was", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const company = office.paths.company
+  startMerge(company, "groups/eng.yaml")
+  const head = await office.git.head()
+  expect((await post(sock, HIRE)).status).toBe(200)
+  const r = await post(sock, { ...HIRE, confirm: true })
+  expect(r.status).toBe(409)
+  expect(r.json()).toEqual({
+    error: "company_repo_busy",
+    message: "the company repo has a merge in progress; finish or abort it",
+  })
+  expect(await office.git.head()).toBe(head)
+  expect(fs.existsSync(path.join(company, "people/ava"))).toBe(false)
+  expect(git(company, "status", "--porcelain")).toBe("UU groups/eng.yaml")
+  expect(gitStatus(company, "merge", "--abort")).toBe(0)
 })
 
 test("a confirm without a preview is refused", async () => {

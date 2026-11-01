@@ -5,9 +5,26 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { stamp } from "@opencorp/protocol"
-import { CompanyGit, CompanyGitError, type CompanyGitOptions } from "../../src/company/git.ts"
+import { CompanyGit, CompanyGitError, type CompanyGitOptions, CompanyRepoBusy } from "../../src/company/git.ts"
 import { tempDir } from "../helpers.ts"
-import { company, failingGit, GIT_FAILURES, git, gitEnv, gitInput, recordingGit, writeRepo } from "./helpers.ts"
+import {
+  company,
+  envGit,
+  failingGit,
+  GIT_FAILURES,
+  git,
+  gitEnv,
+  gitInput,
+  gitStatus,
+  recordingGit,
+  sequencerOnly,
+  startCherryPick,
+  startMerge,
+  startRebaseStop,
+  startRevert,
+  stashPopConflict,
+  writeRepo,
+} from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -479,6 +496,11 @@ function tripwire(dir: string, then: string) {
   return { script, tripped: () => fs.existsSync(mark) }
 }
 
+/** A `CompanyGit` on `root` whose `git commit` fails after its paths are staged; its stub lives in `dir`. */
+function refusingCommit(dir: string, root: string): CompanyGit {
+  return new CompanyGit(root, path.join(dir, "worktrees"), { git: failingGit(dir, "--cleanup=whitespace", "exit 1") })
+}
+
 test("a repo fsmonitor does not run", async () => {
   const { tmp, company, g } = setup()
   const wire = tripwire(tmp, "exit 1")
@@ -487,7 +509,10 @@ test("a repo fsmonitor does not run", async () => {
   expect(await g.commitHandEdits()).toEqual([PROFILE])
   fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
   await g.commit(["groups/eng.yaml"], "edit group")
-  await g.unstage(["groups/eng.yaml"])
+  // A commit that fails after staging resets what it staged.
+  fs.writeFileSync(path.join(company, "groups/eng.yaml"), `${GROUP}# again\n`)
+  await expect(refusingCommit(tmp, company).commit(["groups/eng.yaml"], "again")).rejects.toThrow(CompanyGitError)
+  expect(git(company, "-c", "core.fsmonitor=false", "diff", "--cached", "--name-only")).toBe("")
   await g.pin("HEAD")
   expect(wire.tripped()).toBe(false)
 })
@@ -508,8 +533,13 @@ test.each(["clean", "smudge", "process"])("a repo filter driver does not run [%s
   fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
   fs.writeFileSync(path.join(company, "notes.txt"), "notes\n")
   await g.commit(["groups/eng.yaml", "notes.txt"], "edit group")
-  await g.unstage(["groups/eng.yaml", "notes.txt"])
   const pinned = await g.pin("HEAD")
+  // A commit that fails after staging resets what it staged.
+  fs.writeFileSync(path.join(company, "groups/eng.yaml"), `${GROUP}# again\n`)
+  fs.writeFileSync(path.join(company, "notes.txt"), "notes again\n")
+  const failing = refusingCommit(tmp, company)
+  await expect(failing.commit(["groups/eng.yaml", "notes.txt"], "again")).rejects.toThrow(CompanyGitError)
+  expect(git(company, "diff", "--cached", "--name-only")).toBe("")
   expect(wire.tripped()).toBe(false)
   expect(fs.readFileSync(path.join(pinned, PROFILE), "utf8")).toBe("# edited\n")
   expect(fs.readFileSync(path.join(pinned, "groups/eng.yaml"), "utf8")).toBe(GROUP)
@@ -688,13 +718,47 @@ test("find commit matches a whole line on the path", async () => {
   expect(await g.findCommit("groups/eng.yaml", "Commit-Id: c-2")).toBe(await g.head())
 })
 
-test("unstage keeps the working file", async () => {
-  const { company, g } = setup()
-  fs.writeFileSync(path.join(company, PROFILE), "# staged\n")
-  git(company, "add", PROFILE)
-  await g.unstage([PROFILE])
-  expect(git(company, "status", "--porcelain")).toBe("M people/minh/profile.md")
-  expect(fs.readFileSync(path.join(company, PROFILE), "utf8")).toBe("# staged\n")
+test("a commit that fails after staging leaves nothing staged and keeps the working files", async () => {
+  const { tmp, company } = setup()
+  const g = refusingCommit(tmp, company)
+  const failed = async (paths: string[]) => {
+    const error = await g.commit(paths, "edit").catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(CompanyGitError)
+    expect(error).not.toBeInstanceOf(CompanyRepoBusy)
+    expect(git(company, "diff", "--cached", "--name-only")).toBe("")
+  }
+  fs.writeFileSync(path.join(company, PROFILE), "# changed\n")
+  await failed([PROFILE])
+  expect(fs.readFileSync(path.join(company, PROFILE), "utf8")).toBe("# changed\n")
+  fs.writeFileSync(path.join(company, "new.md"), "# new\n")
+  await failed(["new.md"])
+  expect(fs.readFileSync(path.join(company, "new.md"), "utf8")).toBe("# new\n")
+  fs.unlinkSync(path.join(company, "company.yaml"))
+  await failed(["company.yaml"])
+  expect(git(company, "diff", "--name-only").split("\n")).toEqual(["company.yaml", PROFILE])
+  expect(git(company, "ls-files", "--others")).toBe("new.md")
+})
+
+test("a reset that fails after a failed commit is logged and the commit's error is the one thrown", async () => {
+  const { tmp, company } = setup()
+  const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()
+  const stub = path.join(tmp, "stub-git")
+  const script = [
+    "#!/bin/sh",
+    'for a in "$@"; do case "$a" in',
+    '  --cleanup=whitespace) echo "commit refused" >&2; exit 1;;',
+    "  reset) exit 1;;",
+    "esac; done",
+    `exec ${JSON.stringify(real)} "$@"`,
+    "",
+  ]
+  fs.writeFileSync(stub, script.join("\n"), { mode: 0o755 })
+  const logged: string[] = []
+  const g = new CompanyGit(company, path.join(tmp, "worktrees"), { git: stub, log: (line) => logged.push(line) })
+  fs.writeFileSync(path.join(company, PROFILE), "# changed\n")
+  await expect(g.commit([PROFILE], "edit")).rejects.toThrow(/commit refused/)
+  expect(logged).toHaveLength(1)
+  expect(logged[0]).toContain(JSON.stringify([PROFILE]))
 })
 
 test("a path holding a nul or starting with a slash is refused before git runs", async () => {
@@ -705,7 +769,6 @@ test("a path holding a nul or starting with a slash is refused before git runs",
   // A NUL would end the `:(literal)` entry on stdin and start an unprefixed pathspec.
   await expect(g.commit([PROFILE, "x\0:(glob)**"], "x")).rejects.toBeInstanceOf(RangeError)
   await expect(g.commit(["/etc/hosts"], "x")).rejects.toBeInstanceOf(RangeError)
-  await expect(g.unstage(["x\0:(glob)**"])).rejects.toBeInstanceOf(RangeError)
   expect(await g.head()).toBe(head)
   expect(git(company, "status", "--porcelain")).toBe("M  groups/eng.yaml")
 })
@@ -799,4 +862,163 @@ test("commit info has the subject author name and time", async () => {
   const ct = Number(git(company, "log", "-1", "--format=%ct", sha))
   expect(info.time).toBe(stamp(new Date(ct * 1000)))
   expect(JSON.stringify(info)).not.toContain("@")
+})
+
+test("git runs in the C locale whatever the office's", async () => {
+  const recording = envGit(tempDir())
+  const env = { ...process.env, LC_ALL: "de_DE.UTF-8", LANG: "de_DE.UTF-8", LANGUAGE: "de" }
+  const { company, g } = setup({ git: recording.git, env })
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  await g.commit([PROFILE], "edit")
+  const envs = recording.envs()
+  expect(envs.length).toBeGreaterThan(3)
+  for (const each of envs) expect([each.get("LC_ALL"), each.has("LANGUAGE")]).toEqual(["C", false])
+})
+
+const INDEX_LOCKED = "the company repo is locked by .git/index.lock; if no git command is running there, remove it"
+
+test("a stale index lock is a 503 within a bound, stages nothing and is never removed", async () => {
+  const recording = recordingGit(tempDir())
+  const { company, g } = setup({ git: recording.git })
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  const lock = path.join(company, ".git/index.lock")
+  fs.writeFileSync(lock, "")
+  const head = await g.head()
+  const start = performance.now()
+  const error = await g.commit([PROFILE], "edit").catch((e: unknown) => e)
+  const took = performance.now() - start
+  expect(error).toBeInstanceOf(CompanyRepoBusy)
+  expect([(error as CompanyRepoBusy).status, (error as CompanyRepoBusy).code]).toEqual([503, "company_repo_busy"])
+  expect((error as Error).message).toBe(INDEX_LOCKED)
+  expect(took).toBeGreaterThan(1400)
+  expect(took).toBeLessThan(4000)
+  expect(fs.existsSync(lock)).toBe(true)
+  expect(recording.calls().filter((call) => subcommand(call.args) === "reset")).toEqual([])
+  fs.unlinkSync(lock)
+  expect(git(company, "diff", "--cached", "--name-only")).toBe("")
+  expect(await g.head()).toBe(head)
+})
+
+test("an index lock removed while the commit waits lets it land", async () => {
+  const { company, g } = setup()
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  const lock = path.join(company, ".git/index.lock")
+  fs.writeFileSync(lock, "")
+  const head = await g.head()
+  setTimeout(() => fs.unlinkSync(lock), 200)
+  expect(await g.commit([PROFILE], "edit")).not.toBe(head)
+  expect(git(company, "log", "-1", "--format=%s")).toBe("edit")
+})
+
+test("a stale ref lock is a 503 and leaves nothing staged", async () => {
+  const { company, g } = setup()
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  fs.writeFileSync(path.join(company, ".git/refs/heads/main.lock"), "")
+  const head = await g.head()
+  const error = await g.commit([PROFILE], "edit").catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(CompanyRepoBusy)
+  expect((error as CompanyRepoBusy).status).toBe(503)
+  expect((error as Error).message).toBe(
+    "the company repo is locked by a stale git lock file; " +
+      "if no git command is running there, remove the .lock file under .git",
+  )
+  expect(await g.head()).toBe(head)
+  expect(git(company, "diff", "--cached", "--name-only")).toBe("")
+  expect(fs.readFileSync(path.join(company, PROFILE), "utf8")).toBe("# edited\n")
+})
+
+/** Each operation a human can leave the company repo in: its name, how to start it (any conflict on
+ *  company.yaml), what the refusal says is in progress, and how to abort it. */
+const CHERRY = "a cherry-pick or revert"
+const OPERATIONS: [string, (root: string) => void, string, string[]][] = [
+  ["merge", (root) => startMerge(root, "company.yaml"), "a merge", ["merge", "--abort"]],
+  ["rebase", startRebaseStop, "a rebase", ["rebase", "--abort"]],
+  ["cherry-pick", (root) => startCherryPick(root, "company.yaml"), CHERRY, ["cherry-pick", "--abort"]],
+  ["revert", (root) => startRevert(root, "company.yaml"), CHERRY, ["revert", "--abort"]],
+  ["sequencer", (root) => sequencerOnly(root, "company.yaml"), CHERRY, ["cherry-pick", "--quit"]],
+]
+
+/** The refusal `promise` rejects with: a 409 `CompanyRepoBusy` with `message`. */
+async function expectRefused(promise: Promise<unknown>, message: string): Promise<void> {
+  const error = await promise.catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(CompanyRepoBusy)
+  expect([(error as CompanyRepoBusy).status, (error as Error).message]).toEqual([409, message])
+}
+
+test.each(OPERATIONS)("a commit during a %s is refused before anything is staged", async (_, start, what, abort) => {
+  const { company, g } = setup()
+  start(company)
+  const index = git(company, "ls-files", "-s")
+  fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
+  const message = `the company repo has ${what} in progress; finish or abort it`
+  await expectRefused(g.commit(["groups/eng.yaml"], "edit group"), message)
+  expect(git(company, "ls-files", "-s")).toBe(index)
+  expect(gitStatus(company, ...abort)).toBe(0)
+})
+
+test("a commit that changes nothing during a merge is refused too", async () => {
+  const { company, g } = setup()
+  startMerge(company, "company.yaml")
+  const message = "the company repo has a merge in progress; finish or abort it"
+  await expectRefused(g.commit(["groups/eng.yaml"], "no-op"), message)
+})
+
+test("a merge in a linked worktree is found", async () => {
+  const { tmp, company } = setup()
+  const linked = path.join(tmp, "linked")
+  git(company, "worktree", "add", "-q", linked, "-b", "linked")
+  startMerge(linked, "company.yaml")
+  const g = new CompanyGit(linked, path.join(tmp, "worktrees"))
+  fs.writeFileSync(path.join(linked, "groups/eng.yaml"), GROUP)
+  const message = "the company repo has a merge in progress; finish or abort it"
+  await expectRefused(g.commit(["groups/eng.yaml"], "edit group"), message)
+  expect(await g.commitHandEdits()).toEqual([])
+})
+
+test("a path with an unresolved conflict is refused and kept, other paths still commit", async () => {
+  const { company, g } = setup()
+  stashPopConflict(company, PROFILE)
+  const conflicted = fs.readFileSync(path.join(company, PROFILE))
+  const message =
+    `${JSON.stringify(PROFILE)} has an unresolved merge conflict in the company repo; resolve it and commit`
+  await expectRefused(g.commit([PROFILE], "edit"), message)
+  await expectRefused(g.commit(["people/minh"], "edit"), message)
+  expect(git(company, "ls-files", "-u")).toContain(PROFILE)
+  expect(fs.readFileSync(path.join(company, PROFILE))).toEqual(conflicted)
+  fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
+  await g.commit(["groups/eng.yaml"], "edit group")
+  expect(git(company, "log", "-1", "--format=%s")).toBe("edit group")
+  expect(git(company, "ls-files", "-u")).toContain(PROFILE)
+})
+
+test("hand edits skip a profile with an unresolved conflict and say so once", async () => {
+  const logged: string[] = []
+  const { company, g } = setup({ log: (line) => logged.push(line) })
+  stashPopConflict(company, PROFILE)
+  const other = "people/ngocbh/profile.md"
+  fs.writeFileSync(path.join(company, other), "# Ngoc\n")
+  expect(await g.commitHandEdits()).toEqual([other])
+  expect(git(company, "show", `HEAD:${PROFILE}`)).not.toContain("<<<<<<<")
+  expect(git(company, "ls-files", "-u")).toContain(PROFILE)
+  expect(logged).toHaveLength(1)
+  expect(logged[0]).toContain(JSON.stringify(PROFILE))
+  expect(await g.commitHandEdits()).toEqual([])
+  expect(logged).toHaveLength(1)
+})
+
+test.each(OPERATIONS)("hand edits wait while a %s is in progress", async (_, start, what, abort) => {
+  const logged: string[] = []
+  const { company, g } = setup({ log: (line) => logged.push(line) })
+  start(company)
+  const head = await g.head()
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  expect(await g.commitHandEdits()).toEqual([])
+  expect(await g.commitHandEdits()).toEqual([])
+  expect(await g.head()).toBe(head)
+  expect(logged).toHaveLength(1)
+  expect(logged[0]).toContain(what)
+  expect(gitStatus(company, ...abort)).toBe(0)
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n") // a rebase's abort resets the work tree
+  expect(await g.commitHandEdits()).toEqual([PROFILE])
+  expect(git(company, "show", `HEAD:${PROFILE}`)).toBe("# edited")
 })
