@@ -489,6 +489,39 @@ export class CompanyGit {
     return id
   }
 
+  /**
+   * Whether `relpath` may hold a different file at commit `to` than at commit `from`: true when the clone doesn't
+   * have `from`, when no common ancestor of the two holds the file, or when a commit on either side since their common
+   * ancestors deletes it (a merge compared with each parent); false when `from === to`. A RangeError for anything but
+   * full commit ids and a relative path; `CompanyGitError` when git fails, so a failed read is neither answer.
+   */
+  async goneSince(relpath: string, from: string, to: string): Promise<boolean> {
+    fullId(from)
+    fullId(to)
+    checkPaths([relpath])
+    if (from === to) return false
+    const known = ["rev-parse", "--verify", "--quiet", `${from}^{commit}`]
+    const found = await this.#run(known, { check: false })
+    // --quiet makes a missing commit exit 1 silently; an object git couldn't read exits 1 with an error.
+    if (found.code === 1 && !found.stderr.length) return true
+    if (found.code !== 0 || found.stdout.toString().trim() !== from) throw exited(known, found)
+    const merged = ["merge-base", "--all", from, to]
+    const bases = await this.#run(merged, { check: false })
+    // Exit 1 with no output: unrelated histories.
+    if (bases.code === 1 && !bases.stdout.length && !bases.stderr.length) return true
+    const ids = bases.stdout.toString().split("\n").filter(Boolean)
+    if (bases.code !== 0 || !ids.length || !ids.every(isCommitId)) throw exited(merged, bases)
+    // A history rewritten to before the file was added, then added again, deletes nothing in between.
+    const held = await Promise.all(ids.map((base) => this.blobId(relpath, base)))
+    if (held.every((blob) => blob === null)) return true
+    // The range is symmetric so a reset back to before a deletion counts too; each repo setting that would change
+    // which commits or changes the log shows is pinned.
+    const log = ["-c", "log.follow=false", "log", "-n", "1", "--full-history", "--diff-merges=separate"]
+    log.push("--no-patch", "--no-renames", "--no-show-signature", "--no-ext-diff", "--diff-filter=D", "--format=%H")
+    log.push(`${from}...${to}`, "--", `:(literal)${relpath}`)
+    return (await this.#run(log)).stdout.toString().trim() !== ""
+  }
+
   /** The blob id of every file under `folder` at `commit`, by repo path. */
   async files(folder: string, commit = "HEAD"): Promise<Map<string, string>> {
     const out = await this.#run(["ls-tree", "-r", "-z", "--full-tree", commit, "--", `:(literal)${folder}`])
