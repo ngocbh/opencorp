@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { loadFlow } from "@ngocbh/yian"
-import { type CompanyRepo, loadRepo, missingPerson } from "../../src/company/loader.ts"
+import { type CompanyRepo, loadRepo, missingPerson, personFileBroken } from "../../src/company/loader.ts"
 import { company, makeCompany, person } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -46,6 +46,17 @@ test("missing person names a person file that doesnt load", () => {
   expect(missingPerson(broken, "nobody")).toBe("no person nobody")
   // Only a path from the folder listing matches, never one a handle spells out.
   for (const handle of ["../minh", "minh/", "people/minh"]) expect(missingPerson(broken, handle)).toBe(`no person ${handle}`)
+})
+
+test("person file broken matches only the exact person file path", () => {
+  const broken = loadRepo(makeCompany({ "people/minh/person.yaml": "harnesses: [composer\n" }))
+  expect(personFileBroken(broken.errors, "minh")).toBe(true)
+  expect(personFileBroken(loadRepo(makeCompany()).errors, "minh")).toBe(false)
+  expect(personFileBroken(broken.errors, "nobody")).toBe(false)
+  for (const handle of ["../minh", "minh/x", "minh/", "people/minh"]) {
+    expect(personFileBroken(broken.errors, handle)).toBe(false)
+  }
+  expect(personFileBroken([{ path: "people/minh/person.yaml" }], "minh")).toBe(true)
 })
 
 test("unknown field is a schema error", () => {

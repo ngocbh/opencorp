@@ -101,11 +101,20 @@ export function loadRepo(root: string): CompanyRepo {
   return { root, company, people, groups, assets, errors }
 }
 
-/** Why `repo` has no person `handle`, for a 404: their person.yaml doesn't load, or there is no such person. The
- *  issue's message stays out, so the reply points to `opencorp doctor`. */
-export function missingPerson(repo: CompanyRepo, handle: string): string {
+/** Whether `issues` has one for `handle`'s person file. Only the exact `people/<handle>/person.yaml` path counts. */
+export function personFileBroken(issues: readonly { path: string }[], handle: string): boolean {
   // Matched against paths from the folder listing, so a handle with a slash or dots never matches.
   const rel = `people/${handle}/person.yaml`
-  const broken = repo.errors.some((issue) => issue.path === rel)
-  return broken ? `@${handle}'s person.yaml doesn't load; run \`opencorp doctor\`` : `no person ${handle}`
+  return issues.some((issue) => issue.path === rel)
+}
+
+/** The 404 text for a person `handle` whose person.yaml doesn't load. The issue's message stays out, so it points to
+ *  `opencorp doctor`. */
+export function doesntLoad(handle: string): string {
+  return `@${handle}'s person.yaml doesn't load; run \`opencorp doctor\``
+}
+
+/** Why `repo` has no person `handle`, for a 404: their person.yaml doesn't load, or there is no such person. */
+export function missingPerson(repo: CompanyRepo, handle: string): string {
+  return personFileBroken(repo.errors, handle) ? doesntLoad(handle) : `no person ${handle}`
 }
