@@ -254,6 +254,24 @@ test("the profile manager says when the default cant be read", async () => {
   await endChat(h, s.id)
 })
 
+test("the profile manager says when the default cant be used", async () => {
+  const fake = await fakeLlm()
+  const h = await managerHarness(fake)
+  await writePrivate(path.join(h.office.connections.dir, "third.json"), "{not json")
+  await h.office.connections.setDefault("third")
+  fake.script({ content: "Hello." })
+  const s = await h.harness.startManager("minh", "Hi.")
+  expect([s.connection, s.model, s.model_note]).toEqual([
+    "office",
+    null,
+    "The office's default connection 'third' can't be used; this chat uses office/stub.",
+  ])
+  expect(h.logs.join("\n")).toContain("the office's default connection 'third' can't be used")
+  expect(h.logs.join("\n")).not.toContain(h.office.connections.dir)
+  await waitFor(() => texts(h, s.id).join() === "Hello.", { what: "the reply" })
+  await endChat(h, s.id)
+})
+
 test("a profile manager survives a restart", async () => {
   const fake = await fakeLlm()
   const h = await managerHarness(fake)

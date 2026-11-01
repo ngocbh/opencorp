@@ -259,7 +259,7 @@ export class ChatHarness implements SessionHarness {
   /**
    * Opens a profile-manager session over `handle`'s profile, opened by `by`, with `text` as its first message: stored
    * `starting` at the company's current commit on the office's default connection and its own model (with a note when
-   * that is `office` only because the default can't be read), with no work item, then started by `startRun` and
+   * that is `office` only because the default can't be read or used), with no work item, then started by `startRun` and
    * prompted. Refused 404 `not_found` for no person, 422 `no_manager_flow` when the company has no
    * profile manager flow, 503 once closed; a start that fails is `startRun`'s.
    */
@@ -274,9 +274,9 @@ export class ChatHarness implements SessionHarness {
     if (!isFile(path.join(pin, MANAGER_FLOW))) {
       throw new HarnessError(422, "no_manager_flow", `the company has no ${MANAGER_FLOW}`)
     }
-    const [connection, unread] = await this.#default()
-    const uses = unread ? await named(this.office.connections, OFFICE, null) : null
-    const note = uses === null ? null : `${UNREAD_DEFAULT}; this chat uses ${uses}.`
+    const [connection, broken] = await this.#default()
+    const uses = broken === null ? null : await named(this.office.connections, OFFICE, null)
+    const note = uses === null ? null : `${broken}; this chat uses ${uses}.`
     // Checked again before any write: the office may have begun stopping during the checks.
     this.#running()
     const t = now()
@@ -631,8 +631,8 @@ export class ChatHarness implements SessionHarness {
    *
    * The pick (`connection` and `model`; a model alone is on the default) if its connection is on this office and can
    * be used; else the first connection that offers `person.model`, the default first and then the others by name;
-   * else the default on its own model. Everything is decided within one `chooseDeadlineMs`. A model equal to the
-   * chosen connection's own is null.
+   * else the default on its own model. The default is `office`, with a note, when it can't be read or used.
+   * Everything is decided within one `chooseDeadlineMs`. A model equal to the chosen connection's own is null.
    */
   async choose(
     person: { handle: string; model: string | null },
@@ -649,7 +649,7 @@ export class ChatHarness implements SessionHarness {
       if (error instanceof ProviderError) return { connection: OFFICE, model: null, note: null }
       throw error
     }
-    const [fallback, unread] = await this.#default()
+    const [fallback, broken] = await this.#default()
     const why: string[] = []
     const picked = connection ?? fallback
     if (connection !== null || model !== null) {
@@ -659,9 +659,9 @@ export class ChatHarness implements SessionHarness {
         why.push(`Your last pick '${picked}' can't be used on this office`)
       } else {
         const own = await this.#unlessOwn(picked, model)
-        // A model picked alone is on the default, which may be office only because the default can't be read.
-        const onUnread = connection === null && unread
-        const note = onUnread ? `${UNREAD_DEFAULT}; this chat uses ${await named(connections, OFFICE, own)}.` : null
+        // A model picked alone is on the default, which may be office only because the default can't be read or used.
+        const onBroken = connection === null && broken !== null
+        const note = onBroken ? `${broken}; this chat uses ${await named(connections, OFFICE, own)}.` : null
         return { connection: picked, model: own, note }
       }
     }
@@ -687,21 +687,37 @@ export class ChatHarness implements SessionHarness {
         why.push(`Couldn't check in time which connection offers ${person.model}`)
       }
     }
-    if (unread && name === fallback) why.push(UNREAD_DEFAULT)
+    if (broken !== null && name === fallback) why.push(broken)
     const note = why.length ? `${why.join(". ")}; this chat uses ${await named(connections, name, chosen)}.` : null
     return { connection: name, model: chosen, note }
   }
 
-  /** The default connection, and whether it is `office` only because `_default.json` can't be read. */
-  async #default(): Promise<[string, boolean]> {
+  /**
+   * The default connection, and why it is `office` instead (null when it isn't): `_default.json` can't be read, or the
+   * connection it names can't be resolved (its file is unreadable, or a subscription has no sign-in). Checked on every
+   * new chat, as `_default.json` itself is read on every one; resolving reads local files only. The name logged and
+   * noted has passed the connection name check, as every name `default()` returns does; the error's own text, which
+   * can hold file paths, is never.
+   */
+  async #default(): Promise<[string, string | null]> {
+    let name: string
     try {
-      return [await this.office.connections.default(), false]
+      name = await this.office.connections.default()
     } catch (error) {
       if (!(error instanceof ProviderError)) throw error
       // The spawn never reads _default.json, so nothing else would say why chats left the default.
       this.log("the office's default connection can't be read; new chats take office as the default")
-      return [OFFICE, true]
+      return [OFFICE, UNREAD_DEFAULT]
     }
+    if (name === OFFICE) return [OFFICE, null]
+    try {
+      await this.office.connections.resolve(name, null)
+    } catch (error) {
+      if (!(error instanceof ProviderError || error instanceof BadConnectionName)) throw error
+      this.log(`the office's default connection '${name}' can't be used; new chats take office as the default`)
+      return [OFFICE, `The office's default connection '${name}' can't be used`]
+    }
+    return [name, null]
   }
 
   /** Whether a run on connection `name` and `model` can be resolved now. */

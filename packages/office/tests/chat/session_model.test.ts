@@ -1,4 +1,5 @@
 /** The connection and model a chat runs on (Python's `tests/chat/test_session_model.py`). */
+import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
@@ -249,6 +250,84 @@ test("a chat on the office because the default cant be read says so", async () =
     "stub-5",
     "The office's default connection can't be read; this chat uses office/stub-5.",
   ])
+})
+
+/** A harness whose default connection is `third`, whose file can't be parsed (`more` adds connections). */
+async function brokenDefault(more: Record<string, string> = {}, files: Record<string, unknown> = {}) {
+  const h = await makeHarness(await fakeLlm(), { connections: { third: "stub-3", ...more }, files })
+  await h.office.connections.setDefault("third")
+  await writePrivate(path.join(h.office.connections.dir, "third.json"), "{not json")
+  return h
+}
+
+/** Whether `h`'s log says the default can't be used, and names none of the connections' files. */
+function saysBroken(h: Harness): void {
+  expect(h.logs.join("\n")).toContain("the office's default connection 'third' can't be used")
+  expect(h.logs.join("\n")).not.toContain(h.office.connections.dir)
+}
+
+test("a default that cant be used gives way to the office with a note", async () => {
+  const h = await brokenDefault()
+  expect(choice(await h.harness.choose(await minh(h), null, null))).toEqual([
+    "office",
+    null,
+    "The office's default connection 'third' can't be used; this chat uses office/stub.",
+  ])
+  // A pick of it falls back the same way, and says both.
+  expect(choice(await h.harness.choose(await minh(h), "third", null))).toEqual([
+    "office",
+    null,
+    "Your last pick 'third' can't be used on this office. The office's default connection 'third' can't be used; " +
+      "this chat uses office/stub.",
+  ])
+  // A model picked alone is on the default, which is office now.
+  expect(choice(await h.harness.choose(await minh(h), null, "stub-5"))).toEqual([
+    "office",
+    "stub-5",
+    "The office's default connection 'third' can't be used; this chat uses office/stub-5.",
+  ])
+  saysBroken(h)
+})
+
+test("a default that cant be used leaves a working pick alone", async () => {
+  const h = await brokenDefault({ second: "stub-2" })
+  expect(choice(await h.harness.choose(await minh(h), "second", "stub-5"))).toEqual(["second", "stub-5", null])
+  saysBroken(h)
+})
+
+test("a persons model no connection offers falls back past a default that cant be used", async () => {
+  const h = await brokenDefault({}, wants("nowhere-1"))
+  expect(choice(await h.harness.choose(await minh(h), null, null))).toEqual([
+    "office",
+    null,
+    "@minh asks for nowhere-1, which no connection on this office offers. The office's default connection 'third' " +
+      "can't be used; this chat uses office/stub.",
+  ])
+  saysBroken(h)
+})
+
+test("a default subscription with no sign in gives way to the office", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const auth = await subscribe(h, "third")
+  await h.office.connections.setDefault("third")
+  fs.rmSync(auth)
+  expect(choice(await h.harness.choose(await minh(h), null, null))).toEqual([
+    "office",
+    null,
+    "The office's default connection 'third' can't be used; this chat uses office/stub.",
+  ])
+  saysBroken(h)
+})
+
+test("a chat whose default cant be used starts on the office and says so", async () => {
+  const h = await brokenDefault()
+  const s = await start(h)
+  expect(picked(s)).toEqual([
+    "office",
+    null,
+    "The office's default connection 'third' can't be used; this chat uses office/stub.",
+  ])
+  saysBroken(h)
 })
 
 test("a connection that cant be read offers nothing", async () => {
