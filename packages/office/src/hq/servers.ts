@@ -12,13 +12,13 @@ import {
   trackRequests,
 } from "../daemon/http.ts"
 import {
+  type SocketId,
   hasLoopback6,
   listenTcp,
   listenUnix,
   messageOf,
   removeOwnSocket,
   removeStaleSocket,
-  type SocketId,
 } from "../daemon/sockets.ts"
 import { createHqApp } from "./api.ts"
 import type { Hq } from "./core.ts"

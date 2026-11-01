@@ -380,10 +380,12 @@ async function refuseLiveDaemon(paths: OfficePaths, pid: number | null, ps: stri
   // startTime spawns nothing, so ps runs only for a live pid.
   const alive = pid !== null && pid !== process.pid && startTime(pid) !== null
   if (alive && ps !== undefined && isDaemonLine(args(pid, ps), paths.home)) throw new AlreadyRunning(pid)
+  // A live socket names the pidfile's pid only when ps couldn't say it is someone else.
+  const named = alive && ps === undefined ? pid : null
   for (const sock of [paths.socket, paths.hqSocket]) {
     if (!fs.lstatSync(sock, { throwIfNoEntry: false })?.isSocket()) continue
     const state = await probeSocket(sock)
-    if (state === "live") throw new AlreadyRunning(alive ? pid : null)
+    if (state === "live") throw new AlreadyRunning(named)
     if (state === "unknown") throw new OfficeStartError(`can't tell whether ${sock} is in use`)
   }
   await removeStaleSocket(paths.socket)
@@ -504,11 +506,11 @@ export interface MainOptions {
 }
 
 /**
- * Runs the daemon for `--home` (default `$OPENCORP_HOME`, else `~/.opencorp`: `wantedHome`) until SIGINT, SIGTERM or SIGHUP; resolves to the exit
- * code: 0 after a clean stop or when this home's office is already running (a service manager restarts only on
- * failure, so a duplicate start must not look like one), 1 when it can't start or crashed, 2 for bad arguments.
- * The start and stop are `run`'s. Writes are synchronous by default: the process exits as soon as this returns, so
- * nothing may wait in a stream buffer.
+ * Runs the daemon for `--home` (default `$OPENCORP_HOME`, else `~/.opencorp`: `wantedHome`) until SIGINT, SIGTERM or
+ * SIGHUP; resolves to the exit code: 0 after a clean stop or when this home's office is already running (a service
+ * manager restarts only on failure, so a duplicate start must not look like one), 1 when it can't start or crashed,
+ * 2 for bad arguments. The start and stop are `run`'s. Writes are synchronous by default: the process exits as soon
+ * as this returns, so nothing may wait in a stream buffer.
  *
  * The tools are resolved once at start, as the absolute paths found on the daemon's PATH; nothing is looked up by
  * name later.

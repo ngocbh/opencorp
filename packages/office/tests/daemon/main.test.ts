@@ -1486,7 +1486,7 @@ const spawnBoth = () => {
   fs.writeFileSync(${JSON.stringify(kids)}, \`\${detached.pid} \${inGroup.pid}\`)
 }
 process.exit(await main(["--home", home], {
-  extensions: [{ name: "kids", register: (office) => void office.onStart.push(() => void setTimeout(spawnBoth, 1000)) }],
+  extensions: [{ name: "kids", register: (office) => void office.onStart.push(() => void setTimeout(spawnBoth, 200)) }],
 }))
 `,
     )
@@ -1495,7 +1495,8 @@ process.exit(await main(["--home", home], {
     const pids = fs.readFileSync(kids, "utf8").split(" ").map(Number)
     const sleeps = pids.map((pid) => ({ pid, started: startTime(pid) }))
     onTestFinished(() => {
-      for (const kid of sleeps) if (kid.started !== null && sameProcess(kid.pid, kid.started)) process.kill(kid.pid, "SIGKILL")
+      for (const kid of sleeps)
+        if (kid.started !== null && sameProcess(kid.pid, kid.started)) process.kill(kid.pid, "SIGKILL")
     })
     a.child.kill("SIGKILL")
     expect(await exitWithin(dir, a, 15_000)).toEqual({ code: null, signal: "SIGKILL" })

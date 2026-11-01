@@ -151,9 +151,10 @@ function listening(server: net.Server, start: () => void): Promise<void> {
  *
  *  The socket is bound in a private 0700 temp folder next to `socketPath`, so nobody can connect before its mode
  *  is set, then hard-linked into place, which fails if anything is at `socketPath`. The caller runs
- *  `removeStaleSocket` first, and removes `socketPath` after `server.close()` with `removeOwnSocket`: close doesn't
- *  unlink a linked socket. A crash before the cleanup leaves a `.sXXXXXX` folder beside `socketPath`. After a successful call
- *  `server.address()` still names the removed temp path, so callers use `socketPath`, not `server.address()`. */
+ *  `removeStaleSocket` first, and removes `socketPath` after `server.close()` with `removeOwnSocket`: close
+ *  doesn't unlink a linked socket. A crash before the cleanup leaves a `.sXXXXXX` folder beside `socketPath`. After
+ *  a successful call `server.address()` still names the removed temp path, so callers use `socketPath`, not
+ *  `server.address()`. */
 export async function listenUnix(server: net.Server, socketPath: string): Promise<SocketId> {
   checkSocketPath(socketPath)
   let tmp: string
