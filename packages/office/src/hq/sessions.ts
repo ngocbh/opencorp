@@ -272,14 +272,15 @@ export class BrowserSessions {
   }
 
   /**
-   * `person`'s unexpired sessions, newest first, as checked against commit `sha`: a session whose person's password
-   * changed there is ended (its row deleted, its streams closed) and left out, as `check` would on its next use. A
-   * `person.yaml` that can't be read there ends none, as `check` doesn't.
+   * `person`'s sessions, newest first, as checked at HEAD: a session whose person's password changed there is ended
+   * (its row deleted, its streams closed) and left out, as `check` would on its next use. A `person.yaml` that can't
+   * be read there ends none, as `check` doesn't.
    */
-  async listLive(person: string, sha: string): Promise<HqSessionRecord[]> {
-    const now = stamp(this.clock())
-    const rows = this.store.listHqSessions(person).filter((r) => r.expiresAt > now)
-    const humans = await this.#fingerprints.at(sha)
+  async listLive(person: string): Promise<HqSessionRecord[]> {
+    const rows = this.store.listHqSessions(person)
+    // HEAD is read after the rows, as in `check`, so a session issued under a newer password is never checked
+    // against an older one.
+    const [, humans] = await this.#atHead()
     if (humans.unreadable.has(person)) return rows
     const fp = humans.fps.get(person)
     const live: HqSessionRecord[] = []

@@ -110,6 +110,35 @@ test("a session a password change ended is not listed", async () => {
   expect(office.store.listHqSessions(CEO).map((r) => r.id)).toEqual([kept.id])
 })
 
+test("a session signed in while a listing reads head is kept", async () => {
+  const { office, hq, company, sock } = await setup()
+  const token = newToken()
+  giveDevice(company, CEO, "mac", token)
+  // The listing's first HEAD read waits until the password has changed and a new session is signed in under it.
+  const head = hq.snapshots.head.bind(hq.snapshots)
+  let entered!: () => void
+  const reading = new Promise<void>((resolve) => (entered = resolve))
+  let release!: () => void
+  let gate: Promise<void> | null = new Promise((resolve) => (release = resolve))
+  hq.snapshots.head = async () => {
+    const view = await head()
+    const wait = gate
+    gate = null
+    if (wait !== null) {
+      entered()
+      await wait
+    }
+    return view
+  }
+  const listing = sock.get("/hq/browsers", bearer(token))
+  await reading
+  handEdit(company, CEO, { password_hash: await hashPassword("brand new one") })
+  const [kept] = await hq.sessions.issue(CEO, { issuedBy: CEO, label: "new" })
+  release()
+  expect((await listing).json().map((b: { id: string }) => b.id)).toEqual([kept.id])
+  expect(office.store.listHqSessions(CEO).map((r) => r.id)).toEqual([kept.id])
+})
+
 test("status", async () => {
   const { hq, sock } = await setup()
   const r = await sock.get("/hq")

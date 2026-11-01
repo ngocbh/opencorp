@@ -127,6 +127,8 @@ test("login on a device the office already knows asks nothing; --force replaces 
   expect(devices()?.map((d) => d.name)).toEqual(["mac2"])
   const del = office.requests.find((r) => r.method === "DELETE")!
   expect([del.raw, del.authorization]).toEqual(["/people/ngocbh/devices/mac", `Bearer ${first.token}`])
+  // Only once the new device is in.
+  expect(office.requests.indexOf(del)).toBeGreaterThan(office.requests.findLastIndex((r) => r.method === "POST"))
   expect(identity(trusted).device).toBe("mac2")
 })
 
