@@ -11,12 +11,15 @@ export const OPEN: ReadonlySet<string> = new Set(["GET /health", "HEAD /health",
 
 const LOGGER = "opencorp.daemon.auth"
 
-/** The 401's message while the company repo's HEAD can't be read. */
-const NO_HEAD = "the company repo's HEAD can't be read; run `opencorp doctor`"
+/** The 401's message while the company repo's HEAD can't be read. It doesn't send the owner to `opencorp doctor`:
+ *  doctor takes a lost ref for an init that stopped early, and running init again would rewrite the company. */
+const NO_HEAD = "the company repo's branch ref can't be read; restore it with git"
 
-/** The 401's message for a tokenless request while no human CEO is named at HEAD. */
+/** The 401's message for a tokenless request while no human CEO is named at HEAD. It names the fix rather than
+ *  `opencorp doctor`, which says to run init again when company.yaml is gone. */
 const NO_CEO =
-  "this request has no person to act as: the company repo names no human CEO at HEAD; run `opencorp doctor`"
+  "this request has no person to act as: the company repo names no human CEO at HEAD; " +
+  "make `ceo` in company.yaml name a human and commit it"
 
 /** Added to a refusal while a person file at HEAD doesn't load. The caller isn't signed in, so it names no file. */
 const UNREADABLE_HINT = "; a person.yaml at HEAD doesn't load: run `opencorp doctor`"
@@ -81,7 +84,11 @@ export class DeviceTokens {
       if (!(error instanceof RangeError)) throw error
       // Init refuses to run while an office answers, so a running office always had a commit: the ref is gone.
       if (!this.#headUnreadable) {
-        this.#warn("the company repo's HEAD can't be read; every request but /health and /login is refused; run `opencorp doctor`")
+        const company = JSON.stringify(this.office.paths.company)
+        this.#warn(
+          `the company repo's branch ref can't be read; every request but /health and /login is refused ` +
+            `until it is restored with git in ${company}`,
+        )
       }
       this.#headUnreadable = true
       return new Roster("", null, new Map(), true)

@@ -38,7 +38,9 @@ const UNAUTHENTICATED = {
 
 const NO_CEO = {
   error: "unauthenticated",
-  message: "this request has no person to act as: the company repo names no human CEO at HEAD; run `opencorp doctor`",
+  message:
+    "this request has no person to act as: the company repo names no human CEO at HEAD; " +
+    "make `ceo` in company.yaml name a human and commit it",
 }
 
 const errorOf = (reply: { json(): unknown }) => (reply.json() as { error: string }).error
@@ -301,7 +303,10 @@ function hideHead(company: string): () => void {
   return () => fs.renameSync(`${packed}.away`, packed)
 }
 
-const NO_HEAD = { error: "unauthenticated", message: "the company repo's HEAD can't be read; run `opencorp doctor`" }
+const NO_HEAD = {
+  error: "unauthenticated",
+  message: "the company repo's branch ref can't be read; restore it with git",
+}
 
 test("an unreadable head refuses everything but the open routes", async () => {
   const office = makeOffice()
@@ -346,7 +351,10 @@ test("an unreadable head logs once", async () => {
   for (let i = 0; i < 3; i++) expect((await request(sock, "GET", "/whoami")).status).toBe(401)
   expect(authLines(lines)).toHaveLength(1)
   expect(authLines(lines)[0]).toContain("WARNING")
-  expect(authLines(lines)[0]).toContain("HEAD can't be read")
+  expect(authLines(lines)[0]).toContain("branch ref can't be read")
+  expect(authLines(lines)[0]).toContain(JSON.stringify(office.paths.company))
+  // `opencorp doctor` takes a lost ref for an unfinished init, and init would rewrite the company.
+  expect(authLines(lines)[0]).not.toContain("doctor")
   unhide()
   expect((await request(sock, "GET", "/whoami")).status).toBe(200)
   hideHead(office.paths.company)
