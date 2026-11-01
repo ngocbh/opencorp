@@ -18,7 +18,7 @@ import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
 import type { Frame as WorkerFrame } from "../../src/worker/channel.ts"
 import { fakeLlm, send, TemplateOffice, waitingChat } from "../chat/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
-import { chatLog, committed, failed, fifoAt, line, runStarted, started } from "../runs/helpers.ts"
+import { chatLog, committed, failed, fifoAt, line, runStarted, started, succeeded } from "../runs/helpers.ts"
 import { session } from "../store/helpers.ts"
 import { advanceJob, run } from "../worker/helpers.ts"
 import {
@@ -719,14 +719,122 @@ test("a reconnect reads the log from the run index", async () => {
   const read = spyOn(fs, "readSync")
   onTestFinished(() => read.mockRestore())
   expect(await all(await open(sock, `/runs/${runId}/live?after=70`))).toEqual(want)
-  expect(logIndex.mock.calls).toEqual([[log]])
+  // Asked again at the end, so the index read covers the whole log.
+  expect(logIndex.mock.calls).toEqual([[log], [log]])
   // The records are read from the sparse entry of seq 64, and nothing is read from byte 0.
   const positions = read.mock.calls.map((call) => (call as unknown[])[4])
   expect([positions.includes(index.sparse[1]![1]), positions.includes(0)]).toEqual([true, false])
   read.mockRestore()
-  // A stream from the start reads from byte 0 anyway: it builds no index.
+  // A stream from the start checks the log against the run index too.
   expect(await all(await open(sock, `/runs/${runId}/live`))).toEqual(await expected(log, null))
-  expect(logIndex).toHaveBeenCalledTimes(1)
+  expect(logIndex).toHaveBeenCalledTimes(4)
+})
+
+/** A line the run pages refuse after `storedRun`'s last seq (19), by name. */
+const REFUSED_LINES: [string, Buffer][] = [
+  ["an unknown kind", line(20, "wat_kind", {})],
+  ["another schema", line(20, "node_started", { node_id: "a" }, { schema: 99n })],
+]
+
+test.each(REFUSED_LINES)("a log line the pages refuse resets a stream with no worker [%s]", async (_, bad) => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const { runId, log } = storedRun(office)
+  fs.appendFileSync(log, bad)
+  expect(await all(await open(sock, `/runs/${runId}/live`))).toEqual([
+    ["comment", null, "connected"],
+    ["reset", null, null],
+  ])
+  const page = await request(sock, "GET", `/runs/${runId}/events`)
+  expect([page.status, body(page).error]).toEqual([409, "unsupported_schema"])
+})
+
+test.each(REFUSED_LINES)("a log line the pages refuse resets a stream at its run end [%s]", async (_, bad) => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const { runId, log, lastSeq, relay, worker } = joinedRun(office)
+  const records = await recordFrames(log)
+  const it = frames(await open(sock, `/runs/${runId}/live`))
+  expect(await read(it, 2 + lastSeq)).toEqual([["comment", null, "connected"], ...records])
+  fs.appendFileSync(log, bad)
+  relay.detach(worker)
+  expect(await rest(it)).toEqual([["reset", null, null]])
+})
+
+test("a record appended between the index build and the join doesn't reset", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const { runId, sessionId, log } = storedRun(office)
+  const stale = (await office.runs.logIndex(log))!
+  expect(stale.lastSeq).toBe(19)
+  fs.appendFileSync(log, Buffer.concat([committed(20, "chat#2/ask", { output: "hi" }), succeeded(21, "chat#2/ask", 20)]))
+  const relay = liveRelay(office)
+  const worker = stubWorker(runId, sessionId, log)
+  relay.frame(worker, { type: "snapshot", snapshot: { last_seq: 21, calls: [] } })
+  // The stream's first index is the build from before the append, as a build still in flight at the join would be.
+  spyOn(office.runs, "logIndex").mockImplementationOnce(async () => stale)
+  const records = await recordFrames(log)
+  expect(records).toHaveLength(22)
+  const it = frames(await open(sock, `/runs/${runId}/live`))
+  expect(await read(it, 1 + records.length)).toEqual([["comment", null, "connected"], ...records])
+  relay.detach(worker)
+  expect(await rest(it)).toEqual([["run_end", null, {}]])
+})
+
+test("run end with a stale build in flight still sends every record", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const { runId, sessionId, log } = storedRun(office)
+  const relay = liveRelay(office)
+  const worker = stubWorker(runId, sessionId, log)
+  const from = 15
+  relay.frame(worker, { type: "snapshot", snapshot: { last_seq: from, calls: [] } })
+  const it = frames(await open(sock, `/runs/${runId}/live`))
+  const head = await read(it, 2 + from)
+  const stale = (await office.runs.logIndex(log))!
+  expect(stale.lastSeq).toBe(19)
+  fs.appendFileSync(log, Buffer.concat([committed(20, "chat#2/ask", { output: "hi" }), succeeded(21, "chat#2/ask", 20)]))
+  spyOn(office.runs, "logIndex").mockImplementationOnce(async () => ({ ...stale }))
+  relay.detach(worker)
+  const records = await recordFrames(log)
+  expect([...head, ...(await rest(it))]).toEqual([["comment", null, "connected"], ...records, ["run_end", null, {}]])
+})
+
+test("a stream waiting on its index sends pings", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { pingMs: 50 })
+  const { runId, log } = storedRun(office)
+  const logIndex = office.runs.logIndex.bind(office.runs)
+  spyOn(office.runs, "logIndex").mockImplementationOnce(async (file) => {
+    await Bun.sleep(250)
+    return logIndex(file)
+  })
+  const got = await all(await open(sock, `/runs/${runId}/live`))
+  const first = got.findIndex(([event]) => event === "record")
+  const pings = got.slice(0, first).filter(([event, , data]) => event === "comment" && data === "ping")
+  expect(pings.length).toBeGreaterThanOrEqual(2)
+  expect(got.filter(([event]) => event !== "comment")).toEqual([...(await recordFrames(log)), ["run_end", null, {}]])
+})
+
+test("a log swapped for a symlink before the stream reads it gets reset", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  const { runId, log } = joinedRun(office)
+  const outside = outsideLog()
+  const logIndex = office.runs.logIndex.bind(office.runs)
+  spyOn(office.runs, "logIndex").mockImplementationOnce(async (file) => {
+    const index = await logIndex(file)
+    fs.rmSync(log)
+    fs.symlinkSync(outside, log)
+    return index
+  })
+  const res = await open(sock, `/runs/${runId}/live`)
+  const got = await all(res)
+  expect(got).toEqual([
+    ["comment", null, "connected"],
+    ["reset", null, null],
+  ])
+  expect(JSON.stringify(got)).not.toContain(OUTSIDE)
 })
 
 test("a live stream sends the log to the joins seq then the calls then frames", async () => {

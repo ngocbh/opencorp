@@ -284,8 +284,10 @@ export class RunLogs {
     return found
   }
 
-  /** The index of the log `file`, brought up to date, for a live stream to start near a seq; null when it can't be
-   *  read (the stream then reads from byte 0). */
+  /** The index of the log `file`, brought up to date, for a live stream to start near a seq and to check the records
+   *  it sends against; null when the log can't be indexed (another schema, a line it refuses, not a regular file,
+   *  gone, any other error), and the stream then sends `reset`. Never rejects, so the stream can start it before it
+   *  needs it. */
   async logIndex(file: string): Promise<Index | null> {
     try {
       return await this.#reader.index(file)

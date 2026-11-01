@@ -624,6 +624,24 @@ test("log events ignore an index of a replaced file", async () => {
   expect([...logEvents(file, 1, null, index)].map((e) => e?.seq)).toEqual([1, 2])
 }, 60_000)
 
+test("checked log events end with null at a line the index hasn't read", async () => {
+  const file = logOf(runStarted(0), started(1, "a"), committed(2, "a", {}), succeeded(3, "a", 2), started(4, "b"))
+  const index = await refresh(file, null)
+  fs.appendFileSync(file, committed(5, "b", {}))
+  const read = [...logEvents(file, 0, null)]
+  expect(read.map((e) => e?.seq)).toEqual([0, 1, 2, 3, 4, 5])
+  expect([...logEvents(file, 0, null, index, true)]).toEqual([...read.slice(0, 5), null])
+  expect([...logEvents(file, 2, 4, index, true)]).toEqual(read.slice(2, 5))
+})
+
+test("checked log events refuse an index of another file", async () => {
+  const file = chatLog(path.join(tempDir(), "r.jsonl"), 1)
+  const index = await refresh(file, null)
+  fs.copyFileSync(file, `${file}.new`)
+  fs.renameSync(`${file}.new`, file)
+  expect([[...logEvents(file, 0, null, index, true)], [...logEvents(file, 0, null, null, true)]]).toEqual([[null], [null]])
+})
+
 /** Each read of the log at `file` the office makes itself, by name; `index` is an index of some log, for the reads that
  *  take one. */
 function officeReads(file: string, index: Index): [string, () => unknown][] {

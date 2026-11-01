@@ -889,13 +889,16 @@ export function lineEvent(bytes: Buffer, seq: number): RunEvent | null {
  * parsed: the seq at its end is checked). With `index` of the same file (device and inode), the read
  * starts at its last sparse entry at or before `from` rather than at byte 0, and still reads past what it indexed; a
  * file edited since then yields that null too when it is now shorter than that entry. An index of another file is
- * ignored. The file is opened on the first pull and closed when the generator ends or is returned.
+ * ignored. When `checked`, only records the index read are given: an index of another file (or none) yields that
+ * null at once, and so does a line past the index's last seq. The file is opened on the first pull (NotALog, or its
+ * `fs` error, is thrown there) and closed when the generator ends or is returned.
  */
 export function* logEvents(
   path: string,
   from: number,
   to: number | null,
   index: Index | null = null,
+  checked = false,
 ): Generator<RunEvent | null> {
   if (to !== null && from > to) return
   const fd = openLog(path)
@@ -905,12 +908,18 @@ export function* logEvents(
     // An index of a replaced file could start mid-line and count a stub (checked only at its end) as the wrong seq.
     const same = index !== null && st.dev === index.dev && st.ino === index.ino
     const [base, start] = same ? window(index, from) : [0, 0]
-    if (start > size) {
+    if (start > size || (checked && !same)) {
       yield null
       return
     }
     let seq = from
     for (const line of lines(fd, start, size, BIG_LINE, from - base)) {
+      // yian's reader checked each line the index read, its schema and kind included; this decode checks only a
+      // line's JSON and seq.
+      if (checked && seq > (index!.lastSeq ?? -1)) {
+        yield null
+        return
+      }
       const event = line.bytes === null ? stub(line.head, line.tail, seq, line.size) : decode(line.bytes, seq, false)
       yield event
       seq += 1

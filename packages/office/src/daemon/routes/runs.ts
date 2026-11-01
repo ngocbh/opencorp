@@ -4,7 +4,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { RunDetail, RunEvent, RunEventPage, RunNodePage, RunPage } from "@opencorp/protocol"
-import { lineEvent, logEvents, NotALog, UnreadableLog } from "../../runs/reader.ts"
+import { type Index, lineEvent, logEvents, NotALog, UnreadableLog } from "../../runs/reader.ts"
 import { NoLog, PAGE } from "../../runs/service.ts"
 import { NotFound } from "../../store/store.ts"
 import { PING } from "../bus.ts"
@@ -196,8 +196,8 @@ function liveFrame(type: string, data: object): string {
   return `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`
 }
 
-/** Resolves after `ms`, or as soon as `signal` aborts. */
-function rest(ms: number, signal: AbortSignal): Promise<void> {
+/** Resolves after `ms`, or as soon as `signal` aborts or `until` settles. */
+function rest(ms: number, signal: AbortSignal, until?: Promise<unknown>): Promise<void> {
   return new Promise((resolve) => {
     const done = () => {
       clearTimeout(timer)
@@ -206,6 +206,7 @@ function rest(ms: number, signal: AbortSignal): Promise<void> {
     }
     const timer = setTimeout(done, ms)
     signal.addEventListener("abort", done)
+    until?.then(done, done)
   })
 }
 
@@ -220,10 +221,13 @@ function rest(ms: number, signal: AbortSignal): Promise<void> {
  *   sends the log after the last record sent, then `run_end`. While the relay rebuilds its view the stream joins
  *   again every `REJOIN_MS`, with `: ping` after each `pingMs` of waiting.
  *
+ * Records read from the log are only those the run's index read, so a line the run pages refuse (another schema, an
+ * unknown kind) is never sent; `: ping` goes out after each `pingMs` while the stream waits for the index.
+ *
  * `run_end` means the worker ended, not the run: a client reconnects with `after` when the run runs again. `reset`
  * means the stream can't go on as the view says (a line that doesn't read as its seq, a log behind the view, a record
- * past the next seq, a viewer the relay dropped): the client reconnects. Any of these ends the stream, as do `signal`
- * aborting and `alive` turning false (checked before every frame).
+ * past the next seq, a viewer the relay dropped, a log its index can't read or doesn't cover): the client reconnects.
+ * Any of these ends the stream, as do `signal` aborting and `alive` turning false (checked before every frame).
  */
 export async function* liveStream(
   office: Office,
@@ -236,25 +240,54 @@ export async function* liveStream(
   if (!open()) return
   yield ": connected\n\n"
   let last = after
-  // A reconnect starts near `after` from the run's index (the run page has usually built it), not by skipping lines
-  // from byte 0 in one synchronous read; a stream from the start reads from byte 0 anyway, and so does a reconnect
-  // when the log's index can't be read (`logIndex` is null). Built alongside the join, so a long build doesn't hold
-  // the rejoin loop's pings.
-  const indexing = after >= 0 ? office.runs.logIndex(log) : null
-  /** Record frames for the log's records after `last` through `to` (to its end when null); whether the stream goes
-   *  on: false once it is closed or has sent `reset`. */
+  // The run's index checks each record read from the log (yian's reader read it), and a reconnect starts near `after`
+  // from it rather than skipping lines from byte 0 in one synchronous read; the run page has usually built it. Started
+  // before the join, so a long build doesn't hold the rejoin loop's pings.
+  let warm: Promise<Index | null> | null = office.runs.logIndex(log)
+
+  /** `promise`'s value, with `: ping` sent after each `pingMs` until it settles; undefined once the stream closed. */
+  async function* pinging<T>(promise: Promise<T>): AsyncGenerator<string, T | undefined> {
+    let settled = false
+    const done = promise.finally(() => (settled = true))
+    for (;;) {
+      await rest(pingMs, signal, done)
+      if (!open()) return undefined
+      if (settled) return await promise
+      yield ": ping\n\n"
+    }
+  }
+
+  /** Record frames for the log's records after `last` through `to` (to its end when null), as its index read them;
+   *  whether the stream goes on: false once it is closed or has sent `reset`. */
   async function* records(to: number | null): AsyncGenerator<string, boolean> {
+    if (to !== null && to <= last) return open()
+    let index = yield* pinging(warm ?? office.runs.logIndex(log))
+    warm = null
+    // A build in flight can predate the join or the run's end, so it may not cover what the log has now; one asked for
+    // after it settled can't (concurrent callers share a build, so this one starts after the last settled).
+    if (index && (to === null || (index.lastSeq ?? -1) < to)) index = yield* pinging(office.runs.logIndex(log))
+    if (index === undefined) return false
+    if (index === null) {
+      yield RESET
+      return false
+    }
     let sent = 0
-    const index = await indexing
-    for (const event of logEvents(log, last + 1, to, index)) {
-      if (++sent % BATCH === 0) await new Promise((resolve) => setImmediate(resolve))
-      if (!open()) return false
-      if (event === null) {
-        yield RESET
-        return false
+    try {
+      for (const event of logEvents(log, last + 1, to, index, true)) {
+        if (++sent % BATCH === 0) await new Promise((resolve) => setImmediate(resolve))
+        if (!open()) return false
+        if (event === null) {
+          yield RESET
+          return false
+        }
+        yield liveFrame("record", { seq: event.seq, record: event })
+        last = event.seq
       }
-      yield liveFrame("record", { seq: event.seq, record: event })
-      last = event.seq
+    } catch (error) {
+      // The log went, or was swapped for a symlink or a FIFO, since its index was read.
+      if (!(error instanceof NotALog) && (error as { code?: unknown } | null)?.code !== "ENOENT") throw error
+      if (open()) yield RESET
+      return false
     }
     return open()
   }
