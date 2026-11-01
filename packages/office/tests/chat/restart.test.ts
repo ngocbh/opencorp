@@ -2,10 +2,11 @@
  *  `tests/chat/test_restart.py`). */
 import fs from "node:fs"
 import path from "node:path"
-import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
+import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { inspectRun } from "@ngocbh/yian/run"
 import { now, Question } from "@opencorp/protocol"
 import type { SessionActor } from "../../src/chat/session_actor.ts"
+import { HarnessError } from "../../src/chat/state.ts"
 import type { LiveCalls } from "../../src/chat/transcript.ts"
 import { COULDNT_RESUME, COULDNT_START, OFFICE_REPLACED } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
@@ -26,6 +27,7 @@ import {
   EMPTY,
   fakeLlm,
   followWorkers,
+  type HarnessOffice,
   makeActor,
   makeHarness,
   newSession,
@@ -378,6 +380,182 @@ test("end on a restored session whose folder is gone fails it", async () => {
     expect(status(h, s.id)).toBe("failed")
     expect(h.store.getRun(old)?.endReason).toBe(logged ? COULDNT_RESUME : COULDNT_START)
   }
+})
+
+/** Moves the session folder of `h` away; the returned function moves it back, as the test's end does if it didn't. */
+function moveFolder(h: HarnessOffice): () => void {
+  const moved = `${h.folder}.moved`
+  fs.renameSync(h.folder, moved)
+  const back = () => {
+    if (fs.existsSync(moved)) fs.renameSync(moved, h.folder)
+  }
+  onTestFinished(back)
+  return back
+}
+
+/** Checks a message to session `sid` is refused 422 `code` without naming `folder`, and leaves the session idle. */
+async function refusedForFolder(h: HarnessOffice, sid: string, code: string, folder: string): Promise<void> {
+  const error = await h.harness.prompt(sid, "while gone").then(
+    () => null,
+    (error: unknown) => error,
+  )
+  expect(error).toMatchObject({ status: 422, code })
+  expect((error as Error).message).not.toContain(folder)
+  expect(status(h, sid)).toBe("idle")
+}
+
+/** A started session of `h`, idle with no worker running. */
+async function idleSession(h: HarnessOffice): Promise<string> {
+  const s = await h.harness.startSession("minh", h.folder)
+  await waitFor(() => status(h, s.id) === "idle" && !running(h.registry, s.id), { what: "the first turn" })
+  return s.id
+}
+
+test("a run waiting at its turn whose folder is gone at restore sleeps until its folder is back", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" })
+  const h = await makeHarness(fake)
+  const sid = await idleSession(h)
+  const runIds = session(h, sid).run_ids
+  await h.reopen()
+  const back = moveFolder(h)
+  const before = h.kinds.length
+  await h.harness.restore()
+  expect(status(h, sid)).toBe("idle")
+  expect(h.kinds.length).toBe(before)
+  expect(running(h.registry, sid)).toBe(false)
+  await refusedForFolder(h, sid, "invalid_body", h.folder)
+  back()
+  await h.harness.prompt(sid, "b")
+  await waitFor(() => texts(h, sid).includes("one") && status(h, sid) === "idle", { what: "the reply" })
+  expect(h.kinds.slice(before)).toEqual(["advance"])
+  expect(session(h, sid).run_ids).toEqual(runIds)
+})
+
+test("a reply the stop cut, whose folder is gone at restore, resumes once its folder is back", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "slow", hold: true }, { content: "two" }, { content: "three" })
+  const h = await makeHarness(fake)
+  const sid = await idleSession(h)
+  const runIds = session(h, sid).run_ids
+  await h.harness.prompt(sid, "a")
+  await fake.waitForRequests(1, 30_000)
+  // The office stops mid-reply: the run is left stopped.
+  await h.reopen()
+  fake.release()
+  const back = moveFolder(h)
+  const before = h.kinds.length
+  await h.harness.restore()
+  expect(status(h, sid)).toBe("idle")
+  expect(h.kinds.length).toBe(before)
+  await refusedForFolder(h, sid, "invalid_body", h.folder)
+  back()
+  await h.harness.prompt(sid, "b")
+  // The stopped run resumes; no fresh run replaces it.
+  expect(h.kinds.slice(before)[0]).toBe("advance")
+  await waitFor(() => texts(h, sid).includes("two") && status(h, sid) === "idle" && !running(h.registry, sid), {
+    what: "the resumed reply",
+  })
+  expect(fake.requests().some((r) => JSON.stringify(r.messages).includes("\\nb\\n"))).toBe(true)
+  expect(session(h, sid).run_ids).toEqual(runIds)
+})
+
+test("an unsafe folder at restore leaves the session asleep", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" })
+  const h = await makeHarness(fake)
+  const sid = await idleSession(h)
+  const cwd = session(h, sid).cwd
+  await h.reopen()
+  // Its folder is now inside the office's own files.
+  h.store.updateSession(sid, { cwd: h.office.paths.company })
+  const before = h.kinds.length
+  await h.harness.restore()
+  expect(status(h, sid)).toBe("idle")
+  expect(h.kinds.length).toBe(before)
+  const company = fs.realpathSync(h.office.paths.company)
+  await refusedForFolder(h, sid, "unsafe_workspace", company)
+  // Restore's own line names the error's type, never a path; only the refusal's line names the paths.
+  const restored = h.logs.filter((line) => line.includes(sid) && line.includes("at restore"))
+  expect(restored).toEqual([`session ${sid}: its folder can't be used at restore (HarnessError)`])
+  const named = h.logs.filter((line) => line.includes(company))
+  expect(named.length).toBeGreaterThan(0)
+  expect(named.every((line) => line.startsWith(`session ${sid}: a session folder was refused: `))).toBe(true)
+  h.store.updateSession(sid, { cwd })
+  await h.harness.prompt(sid, "b")
+  await waitFor(() => texts(h, sid).includes("one") && status(h, sid) === "idle", { what: "the reply" })
+})
+
+test("a waiting runs questions are reconciled at the first message once its folder is back", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_USER)
+  const o = await chatOffice(fake)
+  const { actor: first, sid } = await startActor(o)
+  const runId = first.runId!
+  // The office died before it stored the model's question: the call is pending with none.
+  const ask = spyOn(o.answers, "ask").mockImplementation((question) => question)
+  await first.prompt("hi")
+  await waitFor(() => fake.requests().length === 1 && !first.hasWorker, { what: "the run waiting on its call" })
+  ask.mockRestore()
+  // And a question whose call the run no longer waits on.
+  const t = now()
+  const gone = o.office.store.addQuestion(
+    Question.parse({
+      id: newId(),
+      session_id: sid,
+      run_id: runId,
+      node_id: null,
+      call_id: `${runId}/gone`,
+      source: "ask_user",
+      asker: "minh",
+      question: "Gone?",
+      status: "open",
+      created_at: t,
+      updated_at: t,
+    }),
+  )
+  await reopen(o, first)
+  let folderGone = true
+  const actor = makeActor(o, sid, {
+    spec: async (s) => {
+      if (folderGone) throw new HarnessError(422, "invalid_body", "cwd is not a folder")
+      return o.ctx.spec(s)
+    },
+  })
+  const before = o.kinds.length
+  await actor.restore()
+  expect(status(o, sid)).not.toBe("failed")
+  expect(o.kinds.length).toBe(before)
+  expect(o.office.store.getQuestion(gone.id)!.status).toBe("open")
+  expect(o.office.store.listQuestions({ sessionId: sid }).map((q) => q.question)).toEqual(["Gone?"])
+  folderGone = false
+  fake.script({ content: "A it is." })
+  await actor.prompt("A")
+  // Reconciled before the message: the stale question gone, the pending call's stored and answered by it.
+  expect(o.office.store.getQuestion(gone.id)!.status).toBe("stale")
+  const asked = o.office.store.listQuestions({ sessionId: sid }).filter((q) => q.question === "Which?")
+  expect(asked).toHaveLength(1)
+  expect(asked[0]!.answer).toBe("A")
+  await waitFor(() => texts(o, sid).includes("A it is.") && status(o, sid) === "idle", { what: "the reply" })
+  expect(o.office.store.getQuestion(asked[0]!.id)!.status).toBe("consumed")
+})
+
+test("an ending session whose folder is gone at restore still fails", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "slow", hold: true })
+  const h = await makeHarness(fake)
+  const sid = await idleSession(h)
+  const runId = session(h, sid).run_ids.at(-1)!
+  await h.harness.prompt(sid, "a")
+  await fake.waitForRequests(1, 30_000)
+  await h.reopen()
+  fake.release()
+  // The office stopped as the session was ending; left open it could never be ended.
+  h.store.updateSession(sid, { status: "ending" })
+  moveFolder(h)
+  await h.harness.restore()
+  expect(status(h, sid)).toBe("failed")
+  expect(h.store.getRun(runId)?.endReason).toBe(COULDNT_RESUME)
 })
 
 test("a session whose connection cant be resolved at restore still cancels its run", async () => {
