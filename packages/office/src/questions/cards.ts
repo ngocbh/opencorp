@@ -36,8 +36,9 @@ export interface CardActor {
     options?: { by?: string | null },
   ): Promise<QuestionRecord>
   /** Esc on a live session: its model questions are answered interrupted and the reply stops; throws
-   *  `HarnessError` when the session has no run to stop. */
-  interrupt(sessionId: string): Promise<void>
+   *  `HarnessError` when the session has no run to stop. A card's stop names its `question`: refused 409
+   *  `not_open` unless it is open with no other interrupt under way, and 409 `ending` while the session ends. */
+  interrupt(sessionId: string, options?: { question?: string | null }): Promise<void>
 }
 
 /** What side chats ask of the session actor besides the card actions: the chat harness has it; a stand-in or the
@@ -97,6 +98,8 @@ export class Cards {
    *  waiting on too. */
   #closing: Promise<unknown> = Promise.resolve()
   readonly #unlisten: () => void
+  /** The questions a stop is under way for: a second stop of one is refused. */
+  readonly #stopping = new Set<string>()
 
   constructor(office: Office, actor: CardActor) {
     this.office = office
@@ -196,25 +199,40 @@ export class Cards {
   /**
    * Stop the asker from the card: it gets `[interrupted by the user]` with the discussion.
    *
-   * A model question in a live main chat is Esc on that chat (the reply stops too) and is credited to no one; any
-   * other model question is answered as `by` and its run carries on.
+   * A model question in a live main chat is Esc on that chat (the reply stops too) and is credited to no one; when
+   * the interrupt leaves the question open (nothing ran to close it), or the chat has no run to interrupt, it is
+   * answered as for any other model question: as `by`, and its run carries on. Refused 409 `not_open` while another
+   * stop of it, an answer that came first or another Esc is under way, and 409 `ending` while its chat ends.
    */
   async stop(questionId: string, { by = null }: { by?: string | null } = {}): Promise<QuestionRecord> {
     const question = this.#open(questionId)
     this.#notHarness(question)
     if (question.source === "ask") throw new HarnessError(422, "cannot_stop", "a flow's own question can't be stopped")
-    this.snapshot(question)
-    const asker = this.store.getSession(question.session_id)
-    if (question.source === "ask_user" && asker !== undefined && asker.kind === "main" && LIVE.includes(asker.status)) {
-      try {
-        await this.actor.interrupt(asker.id)
-        return this.store.getQuestion(questionId)!
-      } catch (error) {
-        // Its run is gone: answer the question alone.
-        if (!(error instanceof HarnessError)) throw error
-      }
+    if (this.#stopping.has(questionId)) {
+      throw new HarnessError(409, "not_open", `question ${questionId} is being stopped`)
     }
-    return this.actor.answer(questionId, INTERRUPTED, "interrupted", { by })
+    this.#stopping.add(questionId)
+    try {
+      this.snapshot(question)
+      const asker = this.store.getSession(question.session_id)
+      const main = asker !== undefined && asker.kind === "main" && LIVE.includes(asker.status)
+      if (question.source === "ask_user" && main) {
+        try {
+          await this.actor.interrupt(asker.id, { question: questionId })
+        } catch (error) {
+          // Its run is gone: answer the question alone. An answer or End that came first wins.
+          if (!(error instanceof HarnessError) || error.code === "not_open" || error.code === "ending") throw error
+        }
+        const current = this.store.getQuestion(questionId)!
+        if (current.status !== "open") {
+          if (current.answer_kind === "interrupted" && current.status !== "stale") return current
+          throw new HarnessError(409, "not_open", `question ${questionId} is ${current.status}`)
+        }
+      }
+      return await this.actor.answer(questionId, INTERRUPTED, "interrupted", { by })
+    } finally {
+      this.#stopping.delete(questionId)
+    }
   }
 
   /** Stop carrying an expired question's discussion into this card and its answer. */

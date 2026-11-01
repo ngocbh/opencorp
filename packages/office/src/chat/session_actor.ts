@@ -22,7 +22,7 @@ import type { Env } from "../install/launch.ts"
 import { redact } from "../perm/redact.ts"
 import { type Answers, makeAskUser, type OnQuestion } from "../questions/ask.ts"
 import type { AnswerKind } from "../questions/cards.ts"
-import { formatAnswer } from "../questions/format.ts"
+import { formatAnswer, MAX_ANSWER_BYTES } from "../questions/format.ts"
 import type { RunIndexer } from "../runs/indexer.ts"
 import { OpenNodes } from "../runs/nodes.ts"
 import {
@@ -203,6 +203,8 @@ class Pending {
   done = false
   /** Whether a held fresh run's message was answered `queued` before any run took it: it is still carried. */
   early = false
+  /** Whether a running worker took it, rather than a job's deliveries: a call it names may not be pending yet. */
+  live = false
   /** The question a `complete` answers, marked consumed once the run takes it. */
   readonly questionId: string | null
   /** The `send` a message's `complete` falls back on when its call settled first. */
@@ -383,6 +385,11 @@ export class SessionActor implements LiveCalls {
   #unresumable: Fresh | null = null
   /** The office tool calls in flight, each answered `INTERRUPTED_CALL` when called. */
   readonly #calls = new Set<() => void>()
+  /** Esc's last `interrupt`; while it isn't answered, the model questions it may close take no answer. */
+  #interrupt: Pending | null = null
+  /** The answered questions a spawn sent again (`#storedAnswers`) and no reply settled: a waiting result doesn't
+   *  spawn for them again. */
+  readonly #resent = new Set<string>()
   /** The nodes the current worker's run executes now, from its frames. */
   readonly #nodes = new OpenNodes()
 
@@ -520,13 +527,15 @@ export class SessionActor implements LiveCalls {
       const refused = pending.reply?.refused
       if (fallback === null || (refused !== "call_settled" && refused !== "unknown_call")) throw error
     }
-    // The call settled before the answer reached it (a card's answer came first): the text is the next message.
+    // The call settled, or isn't pending, before the answer reached it (it timed out or closed, or the reply hasn't
+    // asked yet): the text is the next message.
     const sent = await this.#command(async () => this.#send(fallback, this.#replyNow(this.#live())))
     return (await sent.answer) as MessageReply
   }
 
   /** Answers the run's open `ask_user` question with `text` and delivers the answer by `complete`, which falls back
-   *  on `fallback`; null when none is open, or a card answered it first. */
+   *  on `fallback`; null when none is open, a card answered it first, or Esc may be closing it. Refused `422
+   *  too_large` when the answer couldn't reach the run. */
   async #answerAsked(
     session: SessionRecord,
     text: string,
@@ -535,8 +544,9 @@ export class SessionActor implements LiveCalls {
   ): Promise<Pending | null> {
     const { store } = this.#ctx
     const asked = store.listQuestions({ runId: this.#runId!, status: "open", source: "ask_user" })[0]
-    if (asked === undefined || asked.call_id === null) return null
+    if (asked === undefined || asked.call_id === null || this.#interrupting()) return null
     const answerer = by ?? (await this.#owner(session))
+    this.#checkSize(asked, text, "text", answerer)
     let answered: QuestionRecord
     try {
       answered = store.answerQuestion(asked.id, text, "text", answerer)
@@ -587,8 +597,11 @@ export class SessionActor implements LiveCalls {
   /**
    * Answers the session's open question `questionId` as `by` (the owner when null), after the `answerCheck` hooks,
    * and returns it as stored. A question of a call of the current run goes back to the run by `complete`, which the
-   * answer doesn't wait for; it is marked consumed once the run takes it. Refused with `404 not_found` (no such
-   * question of this session), `409 not_open`, `422 invalid_answer` or `503 stopping`.
+   * answer doesn't wait for; it is marked consumed once the run takes it, and stale (`loseAnswer`) when the run
+   * refuses it for good (`#lostAnswer`). Refused with `404 not_found` (no such question of this session), `409
+   * not_open` (also while Esc's interrupt, which may close it, is unanswered), `409 ending` (End will interrupt it),
+   * `422 invalid_answer`, `422 too_large` (its result would pass `MAX_ANSWER_BYTES`) or `503 stopping`. The last two
+   * apply to the model's questions (`ask_user`, `ask_manager`) of the current run.
    */
   answer(
     questionId: string,
@@ -602,13 +615,24 @@ export class SessionActor implements LiveCalls {
       if (question === undefined || question.session_id !== this.sessionId) {
         throw new HarnessError(404, "not_found", `no question ${questionId}`)
       }
+      const asked = question.run_id === this.#runId && (question.source === "ask_user" || question.source === "ask_manager")
+      // End's interrupt closes the call, so the answer would never reach it.
+      if (asked && (this.#ending || this.#session().status === "ending")) {
+        throw new HarnessError(409, "ending", "the session is ending")
+      }
       if (question.status !== "open") {
         throw new HarnessError(409, "not_open", `question ${questionId} is ${question.status}`)
+      }
+      if (asked && this.#interrupting()) {
+        throw new HarnessError(409, "not_open", `question ${questionId} is being interrupted`)
       }
       for (const refusal of hooks.fire("answerCheck", question, value, kind)) {
         if (refusal) throw new HarnessError(422, "invalid_answer", String(refusal))
       }
       const answerer = by ?? (await this.#owner(this.#session()))
+      if (question.call_id !== null && question.run_id === this.#runId && !this.#finished) {
+        this.#checkSize(question, value, kind, answerer)
+      }
       let stored: QuestionRecord
       try {
         stored = store.answerQuestion(questionId, value, kind, answerer)
@@ -627,18 +651,35 @@ export class SessionActor implements LiveCalls {
     })
   }
 
+  /** Throws `422 too_large` when `value`, `question`'s answer of `kind` by `answerer`, makes a result over
+   *  `MAX_ANSWER_BYTES`: yian would refuse the `complete`. */
+  #checkSize(question: QuestionRecord, value: unknown, kind: AnswerKind, answerer: string | null): void {
+    const answered = { ...question, status: "answered" as const, answer: value, answer_kind: kind, answered_by: answerer }
+    const output = formatAnswer(answered, this.#ctx.answers.carried(question))
+    if (Buffer.byteLength(JSON.stringify(output) ?? "") > MAX_ANSWER_BYTES) {
+      throw new HarnessError(422, "too_large", "the answer is too large")
+    }
+  }
+
   /**
    * Esc: interrupts the workspace, answers the office tool calls in flight `INTERRUPTED_CALL`, and interrupts the
    * run: through its worker while one runs it (over the cost cap, unless ending, only while a reply node runs), else,
    * while the agent waits on a model question, through a worker spawned for it; else nothing runs to stop. Resolves
-   * once the interrupt's reply is handled (the calls it closed are answered) or it was dropped. Refused with `404
-   * not_found`, `409 not_live`, `503 stopping` or `503 cant_wake`.
+   * once the interrupt's reply is handled (the calls it closed are answered) or it was dropped. A card's stop names its
+   * `question`, which must still be open with no other interrupt unanswered. Refused with `404 not_found`, `409
+   * not_live`, `409 not_open` and `409 ending` (with a `question`), `503 stopping` or `503 cant_wake`.
    */
-  async interrupt(): Promise<void> {
+  async interrupt({ question = null }: { question?: string | null } = {}): Promise<void> {
     const pending = await this.#command(async () => {
       const session = this.#session()
       if (this.#finished || !LIVE.includes(session.status) || this.#runId === null) {
         throw new HarnessError(409, "not_live", `session ${this.sessionId} has no live run`)
+      }
+      if (question !== null) {
+        if (this.#ending || session.status === "ending") throw new HarnessError(409, "ending", "the session is ending")
+        const status = this.#ctx.store.getQuestion(question)?.status
+        if (status !== "open") throw new HarnessError(409, "not_open", `question ${question} is ${status ?? "gone"}`)
+        if (this.#interrupting()) throw new HarnessError(409, "not_open", `question ${question} is being interrupted`)
       }
       this.#interruptWorkspace()
       this.#answerCalls()
@@ -649,16 +690,24 @@ export class SessionActor implements LiveCalls {
       if (!running && !this.#agentWaits()) return null
       const spec = await this.#specOf(session)
       const p = new Pending({ id: newId(), op: "interrupt", inbox: spec.chat.inbox })
+      this.#interrupt = p
       await this.#deliver(p)
       return p
     })
     if (pending !== null) await pending.answer
   }
 
-  /** Whether the model's question (`ask_user` or `ask_manager`) is open on the current run. */
+  /** Whether Esc's last `interrupt` has no answer yet: its reply, or the closing rule, settles it. */
+  #interrupting(): boolean {
+    return this.#interrupt !== null && !this.#interrupt.done
+  }
+
+  /** Whether the model's question (`ask_user` or `ask_manager`) is open on the current run, or the run last waited
+   *  on such a call unsettled (its question answered, the answer not taken). */
   #agentWaits(): boolean {
     const asked = this.#ctx.store.listQuestions({ runId: this.#runId!, status: "open" })
-    return asked.some((q) => q.source === "ask_user" || q.source === "ask_manager")
+    if (asked.some((q) => q.source === "ask_user" || q.source === "ask_manager")) return true
+    return (this.#waits ?? []).some((w) => !w.settled && (w.tool === "ask_user" || w.tool === "ask_manager"))
   }
 
   /** A steer is a message: the running reply reads it before its next model call, else the next turn does. */
@@ -1099,6 +1148,7 @@ export class SessionActor implements LiveCalls {
       }
       // A reply means the worker took it, though the channel closed before the frame's write reported back.
       if (sent || p.reply !== null) {
+        p.live = true
         if (p.delivery.op === "send") run.turnPending = true
         return false
       }
@@ -1598,9 +1648,12 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  /** A `complete` for each of `#unreadAnswers(next)`. */
+  /** A `complete` for each of `#unreadAnswers(next)`, each question marked `#resent`. */
   #storedAnswers(next: readonly Pending[]): Pending[] {
-    return this.#unreadAnswers(next).map((q) => this.#complete(q, undefined))
+    return this.#unreadAnswers(next).map((q) => {
+      this.#resent.add(q.id)
+      return this.#complete(q, undefined)
+    })
   }
 
   /** The questions answered on a call of the current run whose answer never reached it (its spawn failed, or the
@@ -1918,6 +1971,7 @@ export class SessionActor implements LiveCalls {
 
   /** Marks the answered question `questionId` consumed: its run took the answer. */
   #consume(questionId: string): void {
+    this.#resent.delete(questionId)
     try {
       this.#ctx.store.setQuestionStatus(questionId, "consumed")
     } catch (error) {
@@ -1945,9 +1999,10 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Answers `p`'s caller from its reply: acknowledged (after closing the questions of the calls it closed, and
-   *  marking the question a `complete` answered consumed), or refused. A `not_started` refusal, and a failure before
-   *  any node event (the run may not have resumed), are held for the worker's exit. A delivery already answered is
-   *  acted on only when it is a message the run took, which is shown, and the session hasn't finished. */
+   *  marking the question a `complete` answered consumed), or refused (after `#lostAnswer` for a question's
+   *  `complete`). A `not_started` refusal, and a failure before any node event (the run may not have resumed), are
+   *  held for the worker's exit. A delivery already answered is acted on only when it is a message the run took,
+   *  which is shown, and the session hasn't finished. */
   #replied(run: WorkerRun, p: Pending): void {
     const reply = p.reply!
     const op = p.delivery.op
@@ -1967,12 +2022,46 @@ export class SessionActor implements LiveCalls {
     } else if (typeof reply.refused === "string") {
       // The reason only: a delivery never names the message's text.
       this.#log(`session ${this.sessionId}: a ${op} was refused (${reply.refused})`)
+      if (p.questionId !== null) this.#lostAnswer(p, reply.refused)
       if (reply.refused !== "not_started") p.reject(refusalOf(reply.refused))
     } else {
       const failed = reply.failed as string
       this.#log(`session ${this.sessionId}: a ${op} failed (${failed})`)
       if (run.nodeEvent) p.reject(this.#cantWake(failed))
     }
+  }
+
+  /**
+   * The run refused `p`, the `complete` of an answered question, with `reason`: when the answer can never reach the
+   * call, the question goes stale (`loseAnswer`), as a Codex answer that didn't reach Codex does. That is a call
+   * settled (`call_settled`: answered, timed out or closed), a run that `ended`, an answer yian can't take
+   * (`invalid_value`, `too_large`; the call then gets a `complete` with an error, so the run doesn't wait on a call
+   * with no card), or an `unknown_call` from a job's deliveries (the node settled). An `unknown_call` a running worker
+   * gave may mean the reply hasn't recorded the call yet, so the answer stands and goes with the next spawn; anything
+   * else (`not_started`) is held. A question no longer answered is left as it is.
+   */
+  #lostAnswer(p: Pending, reason: string): void {
+    const delivery = p.delivery
+    const unusable = reason === "invalid_value" || reason === "too_large"
+    const lost = unusable || reason === "call_settled" || reason === "ended" || (reason === "unknown_call" && !p.live)
+    if (!lost || delivery.op !== "complete") return
+    const questionId = p.questionId!
+    this.#resent.delete(questionId)
+    try {
+      this.#ctx.store.loseAnswer(questionId)
+    } catch (error) {
+      // Consumed meanwhile: the run took it after all.
+      if (!(error instanceof InvalidTransition)) {
+        this.#log(`session ${this.sessionId}: a lost answer can't be marked stale (${errorName(error)})`)
+      }
+      return
+    }
+    this.#trySettle("after a lost answer")
+    if (!unusable) return
+    // The reason only, never the answer: the model reads this.
+    const result = { error: `the answer couldn't be delivered (${reason})` }
+    const settle = new Pending({ id: newId(), op: "complete", call_id: delivery.call_id, result })
+    this.#post("undeliverable answer", () => this.#deliver(settle))
   }
 
   /** Publishes the user message of the `send` the run took at `seq`, as the transcript will show it. `sent` is the
@@ -2145,7 +2234,8 @@ export class SessionActor implements LiveCalls {
   /**
    * `run`'s worker ended with a `waiting` result, whose waits are `#waits`. What it never answered (but an
    * `interrupt`) and what it refused `not_started` go to the next worker, which is spawned when there is any, when
-   * `#next` holds some, or when a delivery came after the result (`readvance`). A settled wait alone is advanced
+   * `#next` holds some, when a stored answer no spawn sent again waits (`#unreadAnswers`, `#resent`), or when a
+   * delivery came after the result (`readvance`). A settled wait alone is advanced
    * too, but not again when the last spawn was such a plain re-advance and the run still waits on the same calls,
    * each as settled as before: it made no progress, so it waits for the next command. With no worker started, the
    * timer waits for the earliest deadline. Over the cost cap, unless ending, only deliveries are taken to the run,
@@ -2164,12 +2254,14 @@ export class SessionActor implements LiveCalls {
     this.#carry(run)
     // Armed before the spawn, which disarms it once its worker starts: a spawn that fails leaves the timer.
     this.#arm(waits)
+    // An answer no reply settled yet, sent again once: a reply that failed leaves it for the next spawn.
+    const resend = this.#unreadAnswers(this.#next).some((q) => !this.#resent.has(q.id))
     if (!this.#ending && this.#capped()) {
-      if (readvance || waits.some((wait) => wait.settled)) this.#needsAdvance = true
+      if (readvance || resend || waits.some((wait) => wait.settled)) this.#needsAdvance = true
       if (this.#next.length > 0) await this.#spawnQuietly("advance")
       return
     }
-    if (readvance || this.#needsAdvance || this.#next.length > 0) {
+    if (readvance || resend || this.#needsAdvance || this.#next.length > 0) {
       await this.#spawnQuietly("advance")
       return
     }
@@ -2309,6 +2401,7 @@ export class SessionActor implements LiveCalls {
     for (const p of carry) {
       p.reply = null
       p.late = false
+      p.live = false
     }
     this.#next = [...carry, ...this.#next]
   }
