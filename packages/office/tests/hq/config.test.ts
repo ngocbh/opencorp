@@ -59,14 +59,31 @@ const BAD: [string, unknown][] = [
   ["deeply-nested", "[".repeat(100_000) + "]".repeat(100_000)],
 ]
 
-test.each(BAD)("a bad file is ignored and says why [%s]", (_shown, bad) => {
+test.each(BAD)("a bad file is ignored, turns tcp off, and says why [%s]", (_shown, bad) => {
   const tmp = tempDir()
   write(tmp, bad)
   const { config, lines } = load(tmp)
-  expect(config.tcp).toBe(true)
+  expect(config.tcp).toBe(false)
   expect(config.port).toBe(DEFAULT_PORT)
   expect(config.problem).toContain("hq.json")
-  expect(lines.some((line) => line.includes("hq.json"))).toBe(true)
+  expect(lines.some((line) => line.includes("hq.json") && line.includes("stays off"))).toBe(true)
+})
+
+test("an unreadable hq json turns tcp off and names the file", () => {
+  const tmp = tempDir()
+  fs.mkdirSync(path.join(tmp, "hq.json"))
+  const { config, lines } = load(tmp)
+  expect(config.tcp).toBe(false)
+  expect(config.problem).toBe(`${path.join(tmp, "hq.json")} can't be read: EISDIR`)
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).toContain("ERROR")
+  expect(lines[0]).toContain("stays off")
+})
+
+test("a missing hq json keeps the macos default", () => {
+  const { config, lines } = load(path.join(tempDir(), "office"))
+  expect([config.tcp, config.problem]).toEqual([true, null])
+  expect(lines).toEqual([])
 })
 
 test("a problem never quotes the files values", () => {

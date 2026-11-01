@@ -126,7 +126,20 @@ test("status names ignored settings", async () => {
   fs.writeFileSync(path.join(office.paths.office, "hq.json"), "{")
   const hq = attach(office, { log, listen: false })
   hq.otherUsers = async () => []
-  expect((await hq.status()).warnings![0]).toStartWith("settings ignored: ")
+  expect((await hq.status()).warnings![0]).toStartWith(
+    "settings ignored, so the web port stays off until hq.json is fixed (restart to apply): ",
+  )
+})
+
+test("ignored settings are the only warning while tcp is off", async () => {
+  const office = makeOffice()
+  fs.mkdirSync(office.paths.office, { recursive: true })
+  fs.writeFileSync(path.join(office.paths.office, "hq.json"), "{")
+  const hq = attach(office, { log, listen: false })
+  hq.otherUsers = async () => ["bob"]
+  const warnings = (await hq.status()).warnings!
+  expect(warnings).toHaveLength(1)
+  expect(warnings[0]).toStartWith("settings ignored, so the web port stays off")
 })
 
 test("start deletes redirect files a crash left", async () => {

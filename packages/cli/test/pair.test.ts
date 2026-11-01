@@ -14,7 +14,7 @@ const code = (over: Partial<PairCode> = {}): PairCode => ({
   open_file: "/home/u/.opencorp/office/pair-1a2b.html",
   ...over,
 })
-const opts = { host: "misha", noOpen: false, hqJson: "/home/u/.opencorp/office/hq.json", tcp: null }
+const opts = { host: "misha", noOpen: false, hqJson: "/home/u/.opencorp/office/hq.json", tcp: null, warnings: [] }
 const tcpOff = { enabled: false, port: 49380, listening: false, error: null, next_retry_at: null }
 const SOCKET_FORWARD = "  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49381:/home/u/.opencorp/office/hq.sock misha"
 const taken = {
@@ -88,6 +88,23 @@ test("with TCP off, it prints a forward of hq.sock, and locally how to turn TCP 
   const ssh = { SSH_CONNECTION: "1 2 3 4" }
   const remote = pairOutput(off, { ...opts, tcp: tcpOff, env: ssh, platform: "linux" }).lines
   expect(remote.join("\n")).not.toContain('"tcp": true')
+})
+
+test("with TCP off because hq.json was ignored, it says why and to fix the file, not to add tcp", () => {
+  const off = code({ url: null, open_file: null })
+  const warning = "settings ignored, so the web port stays off until hq.json is fixed (restart to apply): x"
+  const local = pairOutput(off, { ...opts, tcp: tcpOff, warnings: [warning], env: {}, platform: "darwin" }).lines
+  expect(local).toContain("HQ's web port is off here.")
+  expect(local).toContain(`  ${warning}`)
+  expect(local).toContain(
+    'To open it here instead, fix /home/u/.opencorp/office/hq.json so it has "tcp": true, then run `opencorp restart`.',
+  )
+  expect(local.join("\n")).not.toContain('add "tcp": true')
+  expect(local).toContain(SOCKET_FORWARD)
+  const ssh = { SSH_CONNECTION: "1 2 3 4" }
+  const remote = pairOutput(off, { ...opts, tcp: tcpOff, warnings: [warning], env: ssh, platform: "darwin" }).lines
+  expect(remote).toContain(`  ${warning}`)
+  expect(remote.join("\n")).not.toContain("To open it here")
 })
 
 test("with TCP on but not listening, it says why, forwards hq.sock, and doesn't say to turn TCP on", () => {

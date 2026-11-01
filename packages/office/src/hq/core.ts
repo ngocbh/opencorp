@@ -110,7 +110,11 @@ export class Hq {
 
   /** What `opencorp doctor` and `opencorp pair` should mention, besides `socket_error` and TCP's own state. */
   async warnings(): Promise<string[]> {
-    const found = this.config.problem === null ? [] : [`settings ignored: ${this.config.problem}`]
+    const found: string[] = []
+    if (this.config.problem !== null)
+      found.push(
+        `settings ignored, so the web port stays off until hq.json is fixed (restart to apply): ${this.config.problem}`,
+      )
     if (this.config.tcp) {
       const others = await this.otherUsers()
       if (others.length > 0)

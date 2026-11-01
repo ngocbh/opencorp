@@ -1,4 +1,12 @@
-/** HQ's settings: `$OPENCORP_HOME/office/hq.json`, read when the office starts (restart to apply). */
+/**
+ * HQ's settings: `$OPENCORP_HOME/office/hq.json`, read when the office starts (restart to apply). A JSON object
+ * with any of these keys:
+ *
+ * - `tcp`: whether HQ listens on 127.0.0.1 (true by default on macOS only);
+ * - `port`: that port (49380 by default; 0 for any free one);
+ * - `app_dir`: the built web app (by default the checkout's `packages/app/dist`);
+ * - `dev_origins`: extra origins `/api` accepts, such as a Vite dev server's `http://localhost:5173`.
+ */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -92,9 +100,10 @@ function apply(defaults: HqConfig, data: unknown, officeDir: string): HqConfig {
 }
 
 /**
- * `officeDir/hq.json` over the defaults. A file that isn't valid is ignored, logged through `log`, and named in
- * `problem`; the problem never quotes the parser or a setting's value, except unknown key names and an app_dir that
- * can't be expanded, as Python does.
+ * `officeDir/hq.json` over the defaults; a missing file means the defaults. A file that exists but can't be read or
+ * isn't valid is ignored, logged through `log`, and named in `problem`, and turns TCP off: the owner may have
+ * written it to turn TCP off, so a typo must not turn it back on. The problem never quotes the parser or a setting's
+ * value, except unknown key names and an app_dir that can't be expanded, as Python does.
  *
  * TCP is on by default only on macOS: on a host with other users, whoever holds the port while the office doesn't
  * is the origin the browser trusts, so HQ listens there on `hq.sock` alone unless the owner opts in.
@@ -111,8 +120,8 @@ export function loadConfig(
     problem: null,
   }
   const ignored = (why: string): HqConfig => {
-    log(logLine("ERROR", "opencorp.hq.config", `ignoring HQ settings: ${why}`))
-    return { ...defaults, problem: why }
+    log(logLine("ERROR", "opencorp.hq.config", `ignoring HQ settings; the web port stays off: ${why}`))
+    return { ...defaults, tcp: false, problem: why }
   }
   const file = path.join(officeDir, "hq.json")
   let raw: Buffer
