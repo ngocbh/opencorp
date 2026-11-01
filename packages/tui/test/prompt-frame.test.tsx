@@ -25,7 +25,7 @@ test("Enter on home creates a session for the person in the cwd, prompts it, and
 })
 
 test.each([["spaces", "   "], ["a zero-width space", "\u200b"]])(
-  "Enter on home with a message that doesn't show starts nothing [%s]",
+  "Enter on home with a message that doesnt show starts nothing [%s]",
   async (_case, text) => {
     const office = createFakeOffice()
     const app = await bootFrame(createStub(office))

@@ -654,7 +654,7 @@ test.each(BROKEN_SPECS)("a spec that cant be built fails the session [%s]", asyn
   expect(r.text).not.toContain("sentinel")
 })
 
-test("a new chat in a folder the office can't open or name is a 422 that names no path", async () => {
+test("a new chat in a folder the office cant open or name is a 422 that names no path", async () => {
   const h = await makeHarness(await fakeLlm())
   const lines: string[] = []
   const { sock } = await served(h.office, { log: (line) => lines.push(line) })

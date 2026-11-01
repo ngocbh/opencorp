@@ -187,7 +187,7 @@ test.each([
   },
 )
 
-test("a folder the office can't open or name is a 422 that names no path", async () => {
+test("a folder the office cant open or name is a 422 that names no path", async () => {
   const h = makeCodex()
   const { folders, restore } = unusableFolders()
   try {
