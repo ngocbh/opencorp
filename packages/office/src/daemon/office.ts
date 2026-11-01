@@ -22,6 +22,7 @@ import { RunLogs } from "../runs/service.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { SecretStore } from "../secrets.ts"
 import type { SessionRecord, Store } from "../store/store.ts"
+import { DeviceTokens } from "./auth.ts"
 import type { Bus } from "./bus.ts"
 import { errorType } from "./http.ts"
 import type { LiveRelay } from "./live.ts"
@@ -120,6 +121,9 @@ export interface RequestContext {
    *  CEO. Routes that need one call `actingPerson`. */
   person: string | null
   device: string | null
+  /** The sha256 of the device token the request authenticated with; absent for a tokenless or open request. Never
+   *  the token. */
+  tokenSha256?: string
   signal: AbortSignal
   query: URLSearchParams
 }
@@ -178,6 +182,8 @@ export class Office {
   readonly onStop: (() => unknown)[] = []
   /** Gets raw log messages: the office log. */
   readonly log: (message: string) => void
+  /** Who each request acts as, and the open socket streams to end when their token stops counting. */
+  readonly tokens: DeviceTokens
   #unlisten: (() => void) | undefined
 
   constructor({
@@ -238,6 +244,7 @@ export class Office {
     this.tools = tools
     this.guards = guards
     this.log = log
+    this.tokens = new DeviceTokens(this)
   }
 
   /**
@@ -248,7 +255,11 @@ export class Office {
    */
   async start(): Promise<void> {
     try {
-      this.#unlisten = this.store.addListener((event) => this.bus.publishMeta(event))
+      this.#unlisten = this.store.addListener((event) => {
+        this.bus.publishMeta(event)
+        // A commit (the office's own, a hand edit, a removed person) may take a token out of the roster.
+        if (event.type === "company.updated") this.tokens.changed()
+      })
       for (const callback of this.onStart) await callback()
     } catch (error) {
       await this.stop()

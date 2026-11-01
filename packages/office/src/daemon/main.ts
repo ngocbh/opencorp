@@ -23,7 +23,6 @@ import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { Store } from "../store/store.ts"
 import { reap } from "../worker/reaper.ts"
 import { WorkerRegistry } from "../worker/spawn.ts"
-import { DeviceTokens } from "./auth.ts"
 import { Bus } from "./bus.ts"
 import {
   HANDLER_WAIT_MS,
@@ -389,7 +388,7 @@ async function run(
         }
         const requests = trackRequests(
           requestListener(allRoutes(), {
-            context: new DeviceTokens(office).context,
+            context: office.tokens.context,
             log: (line) => write(line + "\n"),
           }),
         )

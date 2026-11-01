@@ -13,7 +13,6 @@ import { Hooks } from "../../src/chat/hooks.ts"
 import type { LoginsOptions } from "../../src/chat/logins.ts"
 import { type ModelCacheOptions, ownModels } from "../../src/chat/models.ts"
 import { CompanyGit } from "../../src/company/git.ts"
-import { DeviceTokens } from "../../src/daemon/auth.ts"
 import { Bus } from "../../src/daemon/bus.ts"
 import { type Limits, type RequestInfo, type Route, createServer, requestListener } from "../../src/daemon/http.ts"
 import { LiveRelay, type LiveWorker } from "../../src/daemon/live.ts"
@@ -215,7 +214,7 @@ export async function served(
 ): Promise<{ sock: string; server: http.Server }> {
   await office.start()
   const context = tokens
-    ? new DeviceTokens(office).context
+    ? office.tokens.context
     : (info: RequestInfo): RequestContext => ({
         office,
         person: CEO,
