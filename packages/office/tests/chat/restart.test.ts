@@ -3,11 +3,12 @@
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
-import { inspectRun } from "@ngocbh/yian/run"
+import { complete, inspectRun, interrupt } from "@ngocbh/yian/run"
 import { now, Question } from "@opencorp/protocol"
 import type { SessionActor } from "../../src/chat/session_actor.ts"
 import { HarnessError } from "../../src/chat/state.ts"
 import type { LiveCalls } from "../../src/chat/transcript.ts"
+import { formatAnswer } from "../../src/questions/format.ts"
 import { COULDNT_RESUME, COULDNT_START, OFFICE_REPLACED } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { newId } from "../../src/store/store.ts"
@@ -127,6 +128,52 @@ test("restore advances a run with an answer that never reached it", async () => 
   expect(o.jobs.at(-1)!.deliver).toMatchObject([{ op: "complete", call_id: q.call_id }])
   await waitFor(() => texts(o, sid).includes("A it is.") && status(o, sid) === "idle", { what: "the reply" })
   expect(o.office.store.getQuestion(q.id)!.status).toBe("consumed")
+})
+
+/** Run `job`'s delivery options for a call from this process, as its worker would make them on `fake`. */
+function offline(job: { pin: string }, fake: Awaited<ReturnType<typeof fakeLlm>>) {
+  return { env: (name: string) => fake.env()[name], codeRoot: job.pin }
+}
+
+test("restore sends again an answer the run took just before the office died, and it is consumed", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_USER, { content: "A it is." })
+  const o = await chatOffice(fake)
+  const { actor: first, sid } = await startActor(o)
+  await first.prompt("hi")
+  const q = await card(o, sid, "ask_user")
+  await waitFor(() => status(o, sid) === "waiting" && !first.hasWorker, { what: "asleep on the question" })
+  const actor = await reopen(o, first)
+  // The worker wrote the answer to the log, and the office died before it read the reply.
+  const answered = o.office.store.answerQuestion(q.id, "A", "text", CEO)
+  const job = o.jobs.at(-1)!
+  expect(await complete(job.log, q.call_id!, { output: formatAnswer(answered) }, offline(job, fake))).toBeNumber()
+  const before = o.kinds.length
+  await actor.restore()
+  expect(o.kinds.slice(before)).toEqual(["advance"])
+  expect(o.jobs.at(-1)!.deliver).toMatchObject([{ op: "complete", call_id: q.call_id }])
+  await waitFor(() => texts(o, sid).includes("A it is.") && status(o, sid) === "idle", { what: "the reply" })
+  await waitFor(() => o.office.store.getQuestion(q.id)!.status === "consumed", { what: "the answer taken" })
+})
+
+test("restore loses an answer whose call closed before the office died", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_USER, { content: "spare" })
+  const o = await chatOffice(fake)
+  const { actor: first, sid } = await startActor(o)
+  await first.prompt("hi")
+  const q = await card(o, sid, "ask_user")
+  await waitFor(() => status(o, sid) === "waiting" && !first.hasWorker, { what: "asleep on the question" })
+  const actor = await reopen(o, first)
+  // An Esc closed the call in the log; the answer was stored, and the office died before either was read.
+  const job = o.jobs.at(-1)!
+  const { calls } = await interrupt(job.log, "messages", offline(job, fake))
+  expect(calls.map((call) => call.callId)).toEqual([q.call_id!])
+  o.office.store.answerQuestion(q.id, "A", "text", CEO)
+  await actor.restore()
+  expect(o.jobs.at(-1)!.deliver).toMatchObject([{ op: "complete", call_id: q.call_id }])
+  await waitFor(() => o.office.store.getQuestion(q.id)!.status === "stale", { what: "the answer lost" })
+  await waitFor(() => status(o, sid) === "idle" && !actor.hasWorker, { what: "the run at its next turn" })
 })
 
 test("an answer that never reached a run over its cap goes with the advance a raise starts", async () => {

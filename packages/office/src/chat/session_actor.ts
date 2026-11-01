@@ -1656,20 +1656,15 @@ export class SessionActor implements LiveCalls {
     })
   }
 
-  /** The questions answered on a call of the current run whose answer never reached it (its spawn failed, or the
-   *  office stopped first) and that `next` doesn't deliver: only calls the last result waits on unsettled, or every
-   *  one when those waits are unknown. */
+  /** The questions answered on a call of the current run that no reply marked consumed or stale, and that `next`
+   *  doesn't deliver: the answer never reached the run (its spawn failed, or the office stopped first), or the run
+   *  took it and the reply was lost (the office died first). Sent again, an answer the call already took is a no-op
+   *  that marks it consumed, and one a settled call refuses goes stale (`#lostAnswer`), so none stays answered. */
   #unreadAnswers(next: readonly Pending[]): QuestionRecord[] {
     const delivered = new Set(next.flatMap((p) => (p.delivery.op === "complete" ? [p.delivery.call_id] : [])))
-    const waits = this.#waits
     return this.#ctx.store
       .listQuestions({ runId: this.#runId!, status: "answered" })
-      .filter(
-        (q) =>
-          q.call_id !== null &&
-          !delivered.has(q.call_id) &&
-          (waits === null || waits.some((wait) => wait.call_id === q.call_id && !wait.settled)),
-      )
+      .filter((q) => q.call_id !== null && !delivered.has(q.call_id))
   }
 
   /** Stores a question of the run's calls through `Answers.ask`; a newly stored one fires `questionStored` and

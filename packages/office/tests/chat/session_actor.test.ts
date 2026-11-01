@@ -624,6 +624,28 @@ test("an answer whose re-send failed waits for the next spawn", async () => {
   expect(o.office.store.getQuestion(q.id)!.status).toBe("answered")
 })
 
+test.each([
+  [{ seq: null }, "consumed"],
+  [{ refused: "unknown_call" }, "stale"],
+])("an answered question whose call the run no longer waits on is sent once with the next advance [%o]", async (again, end) => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first, workers, runId, callId } = await askedOnce(o)
+  // Its answer's reply never reached the actor (the office died, or the reply was lost).
+  o.office.store.answerQuestion(q.id, "A", "text", null)
+  first.handlers.result(first.worker, waitingResult(runId))
+  first.handlers.exited(first.worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the advance" })
+  const second = workers[1]!
+  expect(second.job.deliver).toMatchObject([{ op: "complete", call_id: callId }])
+  replyTo(second, second.job.deliver[0]!, again)
+  await waitFor(() => o.office.store.getQuestion(q.id)!.status === end, { what: `the answer ${end}` })
+  second.handlers.result(second.worker, waitingResult(runId))
+  second.handlers.exited(second.worker, 0)
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  await drained(actor)
+  expect(workers).toHaveLength(2)
+})
+
 test("a message whose answer the running worker refused as an unknown call is also its next message", async () => {
   const o = await chatOffice(await fakeLlm())
   const { actor, q, first } = await askedOnce(o)

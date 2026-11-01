@@ -204,8 +204,9 @@ export class Answers {
    * isn't listed goes stale; a listed call with no question is stored through `handlers`, as a live call would be.
    * Call only for a `waiting` run while no worker runs it (a crashed run's questions may belong to calls yian hasn't
    * recorded yet, which a resume re-invokes). Call ids outside `${runId}/` are skipped. An `answered` question whose
-   * call yian settled is left as it is. Only question calls (`ask`, `ask_user`, `ask_manager`) are rebuilt: a pending
-   * step names a tool, and re-running any other tool from it would skip the job's grant check.
+   * call yian settled is left as it is: the actor sends its answer again, which settles it. Only question calls
+   * (`ask`, `ask_user`, `ask_manager`) are rebuilt: a pending step names a tool, and re-running any other tool from
+   * it would skip the job's grant check.
    *
    * A TOOL `ask` call's recorded arguments are the node's inputs only, so its rebuilt question has no title and no
    * answer schema. A handler that throws is logged by the call id and the error's name, and the rest go on.
