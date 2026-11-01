@@ -207,6 +207,18 @@ test("a resume codex refuses fails the new row even with a message sent during i
   await waitFor(() => status(h, fresh.id) === "failed", { what: "the failed resume" })
 })
 
+test("esc during a resume codex refuses still fails the new row", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("m1", "First")])
+  const old = await ended(h, h.workspace)
+  h.fake.script([], { resume_error: { code: -32600, message: "no rollout found" }, initialize_delay: 0.5 })
+  const fresh = await h.sessions.continueSession(old, { by: "ngocbh" })
+  expect(await h.sessions.prompt(fresh.id, "more")).toBe("queued")
+  await h.sessions.interrupt(fresh.id)
+  expect(status(h, fresh.id)).toBe("starting")
+  await waitFor(() => status(h, fresh.id) === "failed", { what: "the failed resume" })
+})
+
 test("a session ended before an office restart continues after it", async () => {
   const h = makeCodex()
   h.fake.script([fc.agentMessage("m1", "First"), fc.agentMessage("m2", "Second")])

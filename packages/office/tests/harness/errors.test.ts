@@ -298,6 +298,33 @@ test("a message another message is reloading for waits for that reload", async (
   expect((turns[0]!.input[0].text as string).split("\n\n").sort()).toEqual(["one", "two"])
 })
 
+test("an esc while codex says the thread is unloaded drops the message", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("m1", "Reloaded")])
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  const [opened, release] = gate()
+  let entered = false
+  spyOn(live.process!.rpc!, "request").mockImplementation(async () => {
+    entered = true
+    await opened
+    throw unloaded()
+  })
+  const sending = h.sessions.prompt(sid, "go")
+  await waitFor(() => entered, { what: "turn/start sent" })
+  await h.sessions.interrupt(sid)
+  release()
+  expect(await sending).toBe("queued")
+  await waitFor(() => calls(h, "thread/resume").length === 1 && !live.loading && status(h, sid) === "idle", {
+    what: "the reload",
+  })
+  expect(calls(h, "turn/start")).toEqual([])
+  expect(texts(h, sid)).toEqual(["[interrupted]"])
+  expect(await h.sessions.prompt(sid, "again")).toBe("turn")
+  await waitFor(() => texts(h, sid).includes("Reloaded") && status(h, sid) === "idle", { what: "the next turn" })
+  expect(calls(h, "turn/interrupt")).toEqual([])
+})
+
 test("a thread open elsewhere says so and stays idle", async () => {
   const h = makeCodex()
   h.fake.script([[{ exit: 1 }]], { resume_error: WRITER_LOCK })

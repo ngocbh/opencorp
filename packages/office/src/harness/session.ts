@@ -139,6 +139,8 @@ export class CodexSession {
   #unstarted: CodexProcess | null = null
   /** `turn/started` and `turn/completed` notifications handled, to tell whether one came during a `turn/start`. */
   #turnEvents = 0
+  /** Esc came while a message was being sent and its turn wasn't known yet: that turn is interrupted once it starts. */
+  #interruptWanted = false
 
   constructor(owner: CodexSessions, session: SessionRecord, { author }: { author: string | null }) {
     this.owner = owner
@@ -191,17 +193,38 @@ export class CodexSession {
     }
   }
 
-  /** Esc: asks Codex to interrupt the running turn; its `turn/completed` marks it. */
+  /** Esc: drops the messages waiting for a load, interrupts a turn being started once Codex says which it is, and
+   *  asks Codex to interrupt the running turn; its `turn/completed` marks it. */
   async interrupt(): Promise<void> {
+    if (this.stopped || this.closed) return
     const turn = this.turnId
     const proc = this.process
-    if (turn === null || proc === null) return
+    if (!this.ending) {
+      const starting = this.#startPending
+      const queued = this.pending.length > 0
+      // A turn being started gets the marker once it is interrupted.
+      if (queued) this.#dropQueued({ mark: !starting })
+      if (starting && turn === null) this.#interruptWanted = true
+    }
+    if (turn !== null && proc !== null) await this.#interruptTurn(proc, turn)
+  }
+
+  /** Asks `proc` to interrupt `turn`. */
+  async #interruptTurn(proc: CodexProcess, turn: string): Promise<void> {
     try {
       await proc.rpc!.request("turn/interrupt", { threadId: this.threadId, turnId: turn })
     } catch (error) {
       // The turn ended meanwhile, the app-server is gone, or it hangs (its end or office stop kills it).
       if (!(error instanceof RpcError || error instanceof RpcClosed || isTimeout(error))) throw error
     }
+  }
+
+  /** Drops the messages waiting for a load, as Esc does; `mark` ends the transcript with the interrupt marker. */
+  #dropQueued({ mark }: { mark: boolean }): void {
+    this.pending = []
+    // A turn id of its own each time: the translator closes an id only once.
+    if (mark) this.translator.turnCompleted(`queued-${newId()}`, "interrupted", null)
+    this.#settle()
   }
 
   /** Ends the session: interrupts a running turn, closes the app-server, then ends through the hooks. */
@@ -214,6 +237,7 @@ export class CodexSession {
     this.ending = true
     this.pending = []
     this.#unstarted = null
+    this.#interruptWanted = false
     this.#stopTimer()
     const busy = this.turnId !== null
     this.store.updateSession(this.sessionId, notWaiting("ending"))
@@ -397,6 +421,7 @@ export class CodexSession {
     this.loading = false
     this.pending = []
     this.#unstarted = null
+    this.#interruptWanted = false
     if (this.ending) return // the end posted meanwhile closes it
     if (this.#loaded) {
       // A reload: say why and wait for the next message.
@@ -459,6 +484,8 @@ export class CodexSession {
       throw error
     } finally {
       this.#sending--
+      // A refused message starts no turn for an Esc to stop.
+      if (!this.#startPending) this.#interruptWanted = false
       this.#settle()
     }
     return busy ? "steer" : "turn"
@@ -468,6 +495,8 @@ export class CodexSession {
   #reload(proc: CodexProcess, text: string): void {
     if (this.stopped || this.ending) return // office stop keeps the session for restore; an end closes it
     this.pending.push(text)
+    // Esc came while it was being sent: it stays unsent, and the load goes on.
+    if (this.#interruptWanted) this.#dropQueued({ mark: true })
     if (this.process !== proc) {
       // Another message got there first, or the app-server died meanwhile; and if nothing is loading now, send it on
       // the new app-server, or load one.
@@ -501,6 +530,14 @@ export class CodexSession {
       this.#turnEvents++
       this.#unstarted = null
       this.#turnIs(params.turn.id)
+      if (this.#interruptWanted && !this.ending) {
+        this.#interruptWanted = false
+        // Esc came before Codex said which turn it started. Not awaited: a job never waits on Codex.
+        const turn: string = params.turn.id
+        void this.#interruptTurn(proc, turn).catch((error) =>
+          this.owner.log(`codex session ${this.sessionId}: the interrupt of ${turn} failed (${nameOf(error)})`),
+        )
+      }
       if (!this.ending) this.#settle()
     } else if (method === "turn/completed") {
       this.#turnEvents++
@@ -675,6 +712,7 @@ export class CodexSession {
   async #lost(proc: CodexProcess, said: string | null): Promise<void> {
     this.process = null
     this.#unstarted = null
+    this.#interruptWanted = false
     if (said === null) this.retiring = proc // office stop kills it while it is being closed
     const turn = this.turnId
     // The stored id stays until the turn is marked interrupted, so an office stop or a crash before that still

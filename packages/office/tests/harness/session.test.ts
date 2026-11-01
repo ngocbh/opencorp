@@ -8,7 +8,7 @@ import type { Part } from "@opencorp/protocol"
 import { HarnessError } from "../../src/chat/state.ts"
 import type { HarnessEvent } from "../../src/harness/adapter.ts"
 import { type CodexProcess, CodexStartError, ownerLoad } from "../../src/harness/codex.ts"
-import { JsonRpc, RpcClosed } from "../../src/harness/rpc.ts"
+import { JsonRpc, RpcClosed, RpcError } from "../../src/harness/rpc.ts"
 import type { CodexSession } from "../../src/harness/session.ts"
 import { CodexSessions } from "../../src/harness/sessions.ts"
 import { killGroup, startTime } from "../../src/install/proc.ts"
@@ -484,6 +484,135 @@ test("esc with no turn running asks codex nothing", async () => {
   await h.sessions.interrupt(sid)
   expect(h.fake.calls("turn/interrupt")).toEqual([])
   expect(status(h, sid)).toBe("idle")
+})
+
+test("esc while starting drops the queued message", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("m1", "Hi")], { initialize_delay: 1 })
+  const { id: sid } = await startSession(h, "minh", h.workspace, { openedBy: "ngocbh" })
+  expect(await h.sessions.prompt(sid, "early")).toBe("queued")
+  await h.sessions.interrupt(sid)
+  expect(status(h, sid)).toBe("starting")
+  await waitFor(() => status(h, sid) === "idle", { what: "the load" })
+  expect(h.fake.calls("turn/start")).toEqual([])
+  expect(texts(h, sid)).toEqual(["[interrupted]"])
+  // The dropped message took no turn of the fake's: the next message gets the first.
+  expect(await h.sessions.prompt(sid, "again")).toBe("turn")
+  await waitFor(() => texts(h, sid).includes("Hi") && status(h, sid) === "idle", { what: "the next turn" })
+})
+
+test("esc during a reload drops the queued message", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  h.fake.script([], { initialize_delay: 1 })
+  const r = await restarted(h)
+  const live = r.sessions.get(sid)!
+  expect(await r.sessions.prompt(sid, "go")).toBe("queued")
+  await r.sessions.interrupt(sid)
+  expect(status(r, sid)).toBe("idle")
+  await waitFor(() => live.process !== null && !live.loading, { what: "the reload" })
+  expect(status(r, sid)).toBe("idle")
+  expect(r.fake.calls("thread/resume")).toHaveLength(1)
+  expect(r.fake.calls("turn/start")).toEqual([])
+  expect(texts(r, sid)).toEqual(["[interrupted]"])
+})
+
+test("esc before turn/started interrupts the turn once it starts", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  const release = await hold(h.sessions.get(sid)!) // turn/started waits behind it
+  expect(await h.sessions.prompt(sid, "go")).toBe("turn")
+  await h.sessions.interrupt(sid)
+  release()
+  await waitFor(() => status(h, sid) === "idle", { what: "the interrupted turn's end" })
+  expect(h.fake.calls("turn/interrupt")).toEqual([{ threadId: "thr_1", turnId: "turn_1" }])
+  expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
+})
+
+test("esc while turn/start waits for codex interrupts the turn once it starts", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  const rpc = h.sessions.get(sid)!.process!.rpc!
+  const real = rpc.request.bind(rpc)
+  const [opened, open] = gate()
+  let entered = false
+  spyOn(rpc, "request").mockImplementation(async (method, params, options) => {
+    if (method === "turn/start") {
+      entered = true
+      await opened
+    }
+    return real(method, params, options)
+  })
+  const sending = h.sessions.prompt(sid, "go")
+  await waitFor(() => entered, { what: "turn/start sent" })
+  expect(status(h, sid)).toBe("busy")
+  await h.sessions.interrupt(sid)
+  open()
+  expect(await sending).toBe("turn")
+  await waitFor(() => status(h, sid) === "idle", { what: "the interrupted turn's end" })
+  expect(h.fake.calls("turn/interrupt")).toEqual([{ threadId: "thr_1", turnId: "turn_1" }])
+  expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
+})
+
+test("esc with a turn/start in flight and a message queued behind it stops both", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 30 }]], { initialize_delay: 0.5 })
+  const real = JsonRpc.prototype.request
+  const [opened, open] = gate()
+  let entered = false
+  const spy = spyOn(JsonRpc.prototype, "request").mockImplementation(async function (
+    this: JsonRpc,
+    method,
+    params,
+    options,
+  ) {
+    if (method === "turn/start") {
+      entered = true
+      await opened
+    }
+    return real.call(this, method, params, options)
+  })
+  onTestFinished(() => spy.mockRestore())
+  const { id: sid } = await startSession(h, "minh", h.workspace, { openedBy: "ngocbh" })
+  const live = h.sessions.get(sid)!
+  expect(await h.sessions.prompt(sid, "A")).toBe("queued")
+  await waitFor(() => entered, { timeout: 10_000, what: "the queued message's turn/start" })
+  expect(await h.sessions.prompt(sid, "B")).toBe("queued") // still loading: it waits behind A
+  await h.sessions.interrupt(sid)
+  open()
+  const interrupted = () => h.fake.calls("turn/interrupt").length === 1 && live.turnId === null
+  await waitFor(() => interrupted() && status(h, sid) === "idle" && !live.loading, {
+    what: "the interrupted turn's end",
+  })
+  expect((h.fake.calls("turn/start") as { input: { text: string }[] }[]).map((p) => p.input[0]!.text)).toEqual(["A"])
+  expect(h.fake.calls("turn/interrupt")).toEqual([{ threadId: "thr_1", turnId: "turn_1" }])
+  expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
+})
+
+test("an esc during a refused turn/start doesnt interrupt the next turn", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("m1", "Two")])
+  const sid = await start(h, h.workspace)
+  const rpc = h.sessions.get(sid)!.process!.rpc!
+  const [opened, open] = gate()
+  let entered = false
+  const spy = spyOn(rpc, "request").mockImplementation(async () => {
+    entered = true
+    await opened
+    throw new RpcError(-32600, "busy")
+  })
+  const refused = rejection(h.sessions.prompt(sid, "one"))
+  await waitFor(() => entered, { what: "turn/start sent" })
+  await h.sessions.interrupt(sid)
+  open()
+  expect((await refused).code).toBe("codex_refused")
+  expect(status(h, sid)).toBe("idle")
+  spy.mockRestore()
+  expect(await h.sessions.prompt(sid, "two")).toBe("turn")
+  await waitFor(() => texts(h, sid).includes("Two") && status(h, sid) === "idle", { what: "the next turn" })
+  expect(h.fake.calls("turn/interrupt")).toEqual([])
 })
 
 test("esc on a codex that doesnt answer returns", async () => {
