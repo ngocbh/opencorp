@@ -3,6 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
+import type { Scheduler } from "@ngocbh/yian/platform"
 import { CompanyDefaults, OFFICE, Session, now } from "@opencorp/protocol"
 import type { Hooks } from "../chat/hooks.ts"
 import type { RunSpec } from "../chat/run_spec.ts"
@@ -60,6 +61,8 @@ export interface SideActor extends CardActor {
   abandon(sessionId: string, why: string): Promise<void>
   /** Where the side chats' warnings go. */
   readonly log: (line: string) => void
+  /** The timers the side chat opens wait on. */
+  readonly scheduler: Pick<Scheduler, "sleep">
 }
 
 /** `actor` as a `SideActor`, or undefined when it can't run side chats. */
@@ -68,9 +71,13 @@ function sideActor(actor: CardActor): SideActor | undefined {
   const can =
     a.transcript !== undefined &&
     a.answers !== undefined &&
+    a.scheduler !== undefined &&
     [a.spec, a.startRun, a.prompt, a.end, a.abandon, a.log].every((fn) => typeof fn === "function")
   return can ? (actor as SideActor) : undefined
 }
+
+/** How long a side chat open waits for its side chat's end before answering 409 `ending`. */
+export const SIDE_END_WAIT_MS = 30_000
 
 const HARNESS_ONLY_ANSWER = "a Codex card takes only an answer; press Esc in the chat to interrupt Codex's turn"
 
@@ -101,6 +108,8 @@ export class Cards {
   /** Side chat ends, one at a time. Its own queue: an end waits on the harness, which a send-back or an open may be
    *  waiting on too. */
   #closing: Promise<unknown> = Promise.resolve()
+  /** The side chat opens waiting for an end, each aborted when the cards close. */
+  readonly #waits = new Set<AbortController>()
   readonly #unlisten: () => void
   /** The questions a stop is under way for: a second stop of one is refused. */
   readonly #stopping = new Set<string>()
@@ -140,9 +149,11 @@ export class Cards {
 
   /**
    * "Chat about this": sends `text` from `by` to the question's side session, starting it if it has none and
-   * starting a new run of it if it ended or failed (whoever reopens it is in it now). Answers 501 when the actor
-   * can't run side chats, 422 `refused` for the exit command, 422 for a missing flow or a refused folder (nothing is
-   * stored), and 409 `not_open` when the question closed while the side chat started (the side chat is ended).
+   * starting a new run of it if it ended or failed (whoever reopens it is in it now). A side chat that is ending is
+   * waited for, up to `SIDE_END_WAIT_MS`, then started again. Answers 501 when the actor can't run side chats, 422
+   * `refused` for the exit command, 422 for a missing flow or a refused folder (nothing is stored), 409 `not_open`
+   * when the question closed while the side chat started (the side chat is ended), 409 `ending` when the end takes
+   * longer than the wait, and 503 `stopping` when the office stops during the wait.
    */
   async openSide(questionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<SessionRecord> {
     const question = this.#open(questionId)
@@ -152,9 +163,14 @@ export class Cards {
     const refusal = this.refuseExit(undefined, text)
     if (refusal) throw new HarnessError(422, "refused", refusal)
     const side = await this.#serialSide(questionId, async () => {
-      const current = this.#open(questionId)
-      const stored = current.side_session_id ? this.store.getSession(current.side_session_id) : undefined
+      let current = this.#open(questionId)
+      let stored = current.side_session_id ? this.store.getSession(current.side_session_id) : undefined
       if (stored === undefined) return this.#createSide(actor, current, by)
+      if (stored.status === "ending") {
+        await this.#untilEnded(actor, stored.id)
+        current = this.#open(questionId)
+        stored = this.store.getSession(stored.id)!
+      }
       if (!isLive(stored)) {
         const reopened = { ...stored, opened_by: by ?? stored.opened_by }
         // Refuses a missing flow or folder before anything is stored.
@@ -268,10 +284,11 @@ export class Cards {
     }
   }
 
-  /** Stops reacting to question changes, and waits for queued card work (send-backs, discussion copies, side chat
-   *  opens and ends) to finish. */
+  /** Stops reacting to question changes, ends the side chat opens' waits for an end (they answer 503 `stopping`),
+   *  and waits for queued card work (send-backs, discussion copies, side chat opens and ends) to finish. */
   async close(): Promise<void> {
     this.#unlisten()
+    for (const wait of this.#waits) wait.abort()
     await Promise.all([this.#discussion, ...this.#sides.values(), this.#closing])
   }
 
@@ -420,6 +437,36 @@ export class Cards {
         // It ended or stopped meanwhile.
         if (!(failure instanceof HarnessError)) throw failure
       }
+    }
+  }
+
+  /** Resolves once side session `sideId` is gone or no longer live. Throws `HarnessError` 409 `ending` after
+   *  `SIDE_END_WAIT_MS`, and 503 `stopping` when the cards close first. */
+  async #untilEnded(actor: SideActor, sideId: string): Promise<void> {
+    const wait = new AbortController()
+    let unlisten = () => {}
+    const ended = new Promise<"ended">((resolve) => {
+      // A store listener must not wait: it only settles the promise.
+      unlisten = this.store.addListener((event) => {
+        if (event.type === "session.updated" && event.subject_id === sideId && !isLive(event.data as SessionRecord)) {
+          resolve("ended")
+        }
+      })
+    })
+    this.#waits.add(wait)
+    try {
+      if (!isLive(this.store.getSession(sideId))) return
+      const timer = actor.scheduler.sleep(SIDE_END_WAIT_MS, wait.signal).then(
+        () => "timeout" as const,
+        () => "stopping" as const,
+      )
+      const outcome = await Promise.race([ended, timer])
+      if (outcome === "timeout") throw new HarnessError(409, "ending", `side session ${sideId} is ending`)
+      if (outcome === "stopping") throw new HarnessError(503, "stopping", "the office is stopping")
+    } finally {
+      unlisten()
+      wait.abort()
+      this.#waits.delete(wait)
     }
   }
 

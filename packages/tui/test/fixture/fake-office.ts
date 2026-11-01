@@ -1144,7 +1144,8 @@ export function createFakeOffice(
           // The office keeps the seed in the side session's run dir, not on the session.
           side = newSession({ person: q.asker, cwd, kind: "side", question_id: q.id })
           updateQuestion({ ...q, side_session_id: side.id, updated_at: now() })
-        } else if (!LIVE.includes(side.status)) {
+        } else if (!LIVE.includes(side.status) || side.status === "ending") {
+          // The office waits for an ending side session's end, then starts it again.
           setStatus(side.id, "idle")
         }
         turn(side.id, body)

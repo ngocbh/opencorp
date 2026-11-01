@@ -7,7 +7,7 @@ import { useTheme } from "../../context/theme"
 import { clearFirst, useBindings, useOpenCorpModeStack } from "../../keymap"
 import { EmptyBorder } from "../../ui/border"
 import { useToast } from "../../ui/toast"
-import { OfficeUnavailable, isNotImplemented, statusLabel } from "@opencorp/client"
+import { OfficeError, OfficeUnavailable, isNotImplemented, statusLabel } from "@opencorp/client"
 import { errorMessage } from "../../util/error"
 import { interruptible } from "../../util/status"
 import { costCapArgument, dollars, useCostCap } from "../../component/cost-cap"
@@ -20,8 +20,15 @@ const SIDE_MODE = "side"
 /** What the side chat refuses, in any case: only the office ends a side session, when its question closes. */
 const SIDE_EXIT = new Set(["/end", "/exit", "/quit"])
 
-/** The statuses a session takes prompts in; any other goes back through the side route, which restarts it. */
+/** The statuses of a session with a live run. */
 const LIVE: Session["status"][] = ["starting", "idle", "busy", "waiting", "ending"]
+
+/** The statuses a side session takes prompts in; any other goes through the side route, which waits for an ending
+ *  one's end and starts it again. */
+const PROMPTABLE: Session["status"][] = LIVE.filter((status) => status !== "ending")
+
+/** Whether `error` is the office refusing a prompt because the session is ending. */
+const isEnding = (error: unknown) => error instanceof OfficeError && error.status === 409 && error.code === "ending"
 
 /** The side chat's header: who explains which question, and, for a gate, whose side they are on. */
 export function SideHeader(props: { question: Question; session: Session | undefined }) {
@@ -51,7 +58,7 @@ export function SideHeader(props: { question: Question; session: Session | undef
 
 /**
  * The side chat's input: Enter sends to the side session, through the question's side route while
- * the session isn't live (none yet, or ended), Esc interrupts its reply, and `/back` or Ctrl+B
+ * the session isn't live (none yet, ending or ended), Esc interrupts its reply, and `/back` or Ctrl+B
  * returns to the card.
  */
 export function SideChat(props: {
@@ -117,10 +124,17 @@ export function SideChat(props: {
     sending = true
     const s = props.session
     const undo = props.onSend()
-    // The side route opens or restarts a side session that isn't live.
+    // The side route opens or restarts a side session that isn't live, and takes a message the session refused as
+    // ending: one that started ending before this client heard of it.
     const sent =
-      s && LIVE.includes(s.status)
-        ? office.client.sessions.prompt(s.id, { text }).then(() => undefined)
+      s && PROMPTABLE.includes(s.status)
+        ? office.client.sessions.prompt(s.id, { text }).then(
+            () => undefined,
+            (error) => {
+              if (!isEnding(error)) throw error
+              return office.client.questions.side(props.question.id, { text })
+            },
+          )
         : office.client.questions.side(props.question.id, { text })
     sent
       .then(

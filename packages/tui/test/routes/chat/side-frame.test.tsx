@@ -375,6 +375,66 @@ test("a waiting side session still has its run: a message goes to it, and Esc in
   }
 })
 
+test("a message to an ending side chat goes through the side route, which starts it again", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const side = { ...s, id: office.nextId(), kind: "side" as const, status: "ending" as const }
+  office.state.sessions.push(side)
+  office.state.messages[side.id] = []
+  const q = office.addQuestion({
+    session_id: s.id,
+    question: "Deploy now?",
+    options: ["yes", "no"],
+    side_session_id: side.id,
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh · ending"))
+    app.input.typeText("still there?")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Side chat with @minh · busy"))
+    expect(posts(office)).toEqual([[`/questions/${q.id}/side`, { text: "still there?" }]])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a message the side session refuses as ending goes again through the side route", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const side = { ...s, id: office.nextId(), kind: "side" as const, status: "idle" as const }
+  office.state.sessions.push(side)
+  office.state.messages[side.id] = []
+  const q = office.addQuestion({
+    session_id: s.id,
+    question: "Deploy now?",
+    options: ["yes", "no"],
+    side_session_id: side.id,
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh · idle"))
+    // Ending at the office before the TUI hears of it: the prompt is refused 409 ending.
+    office.state.sessions.find((x) => x.id === side.id)!.status = "ending"
+    app.input.typeText("still there?")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Side chat with @minh · busy"))
+    expect(posts(office)).toEqual([
+      [`/sessions/${side.id}/prompt`, { text: "still there?" }],
+      [`/questions/${q.id}/side`, { text: "still there?" }],
+    ])
+    expect(app.frame()).not.toContain("Side chat failed")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("/cost-cap 20 in a side chat raises the side session's cap and sends nothing to the model", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]

@@ -4,14 +4,14 @@ import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
 import { iterRunRecords } from "@ngocbh/yian/run"
-import type { Scheduler } from "@ngocbh/yian/platform"
+import { realScheduler, type Scheduler } from "@ngocbh/yian/platform"
 import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { type Question, stamp } from "@opencorp/protocol"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { HarnessError, notWaiting } from "../../src/chat/state.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { register } from "../../src/extensions/questions.ts"
-import type { AnswerKind, CardActor, Cards } from "../../src/questions/cards.ts"
+import { type AnswerKind, type CardActor, type Cards, SIDE_END_WAIT_MS } from "../../src/questions/cards.ts"
 import { CARRIED_NOTE, INTERRUPTED, SENT_BACK } from "../../src/questions/format.ts"
 import { FRAMING, firstMessage } from "../../src/questions/seed.ts"
 import { BACK_HINT, SEED_FILE } from "../../src/questions/side.ts"
@@ -1095,6 +1095,139 @@ test("a side chat open waits only behind opens of its own question", async () =>
   } finally {
     release()
   }
+})
+
+/** A real-clock scheduler whose sleeps of `SIDE_END_WAIT_MS` (a side chat open waiting for an end) end only when
+ *  the test calls `expire()`. */
+function sideEndTimer(): { scheduler: Scheduler; expire: () => void; waiting: () => number } {
+  const held: (() => void)[] = []
+  const scheduler: Scheduler = {
+    now: () => realScheduler.now(),
+    sleep: (ms, signal) => {
+      if (ms !== SIDE_END_WAIT_MS) return realScheduler.sleep(ms, signal)
+      return new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) return reject(signal.reason)
+        const go = () => resolve()
+        signal?.addEventListener(
+          "abort",
+          () => {
+            const i = held.indexOf(go)
+            if (i >= 0) held.splice(i, 1)
+            reject(signal.reason)
+          },
+          { once: true },
+        )
+        held.push(go)
+      })
+    },
+  }
+  return { scheduler, expire: () => held.splice(0).forEach((go) => go()), waiting: () => held.length }
+}
+
+/** Chats one round in `q`'s side chat, then Ends it with End's job to its worker held: the side chat stays `ending`
+ *  until `release()`. */
+async function endingSide(h: Harness, q: QuestionRecord) {
+  const side = await chat(h, q, "why?", 1)
+  // Parked, so End's job goes through a spawn the test can hold.
+  await waitFor(() => !running(h.registry, side.id), { what: "the side worker to park" })
+  const held = h.hold()
+  const ending = h.harness.end(side.id).catch(() => undefined)
+  await held.entered
+  expect(status(h, side.id)).toBe("ending")
+  return { side, release: held.release, ending }
+}
+
+test("chat about this while its side chat ends waits for the end and reopens it", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." }, { content: "Again: quota." })
+  const timer = sideEndTimer()
+  const h = await sideHarness(fake, { scheduler: timer.scheduler })
+  const { q } = await ask(h)
+  const { side, release, ending } = await endingSide(h, q)
+  let opened = false
+  const opening = h.office.cards!.openSide(q.id, "again").finally(() => (opened = true))
+  try {
+    await waitFor(() => timer.waiting() === 1, { what: "the open to wait for the end" })
+    await Bun.sleep(100)
+    expect(opened).toBe(false)
+  } finally {
+    release()
+  }
+  await ending
+  const reopened = await opening
+  expect(reopened.id).toBe(side.id)
+  expect(h.store.getSession(side.id)!.run_ids).toHaveLength(2)
+  expect(texts(h, side.id, "user")).toEqual(["why?", "again"])
+  await waitFor(() => texts(h, side.id).at(-1) === "Again: quota." && status(h, side.id) === "idle", {
+    what: "the reply",
+  })
+  expect(timer.waiting()).toBe(0)
+})
+
+test("an open waiting on an ending side chat times out with 409 ending", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const timer = sideEndTimer()
+  const h = await sideHarness(fake, { scheduler: timer.scheduler })
+  const { q } = await ask(h)
+  const { side, release, ending } = await endingSide(h, q)
+  try {
+    const opening = refusal(() => h.office.cards!.openSide(q.id, "again"))
+    await waitFor(() => timer.waiting() === 1, { what: "the open to wait for the end" })
+    timer.expire()
+    const error = await opening
+    expect([error.status, error.code]).toEqual([409, "ending"])
+    expect(h.store.getSession(side.id)!.run_ids).toHaveLength(1)
+    expect(texts(h, side.id, "user")).toEqual(["why?"])
+  } finally {
+    release()
+  }
+  await ending
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+})
+
+test("an open waiting on an ending side chat answers 503 when the cards close", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const timer = sideEndTimer()
+  const h = await sideHarness(fake, { scheduler: timer.scheduler })
+  const { q } = await ask(h)
+  const { side, release, ending } = await endingSide(h, q)
+  try {
+    const opening = refusal(() => h.office.cards!.openSide(q.id, "again"))
+    await waitFor(() => timer.waiting() === 1, { what: "the open to wait for the end" })
+    await h.office.cards!.close()
+    const error = await opening
+    expect([error.status, error.code]).toEqual([503, "stopping"])
+    expect(timer.waiting()).toBe(0)
+  } finally {
+    release()
+  }
+  await ending
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  expect(texts(h, side.id, "user")).toEqual(["why?"])
+})
+
+test("an open waiting on an ending side chat goes on when the end fails it", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." }, { content: "Again: quota." })
+  const timer = sideEndTimer()
+  const h = await sideHarness(fake, { scheduler: timer.scheduler })
+  const { q } = await ask(h)
+  const { side, release, ending } = await endingSide(h, q)
+  h.failNextSpawn() // End's job to the worker fails, which fails the side session
+  const opening = h.office.cards!.openSide(q.id, "again")
+  try {
+    await waitFor(() => timer.waiting() === 1, { what: "the open to wait for the end" })
+  } finally {
+    release()
+  }
+  await ending
+  await opening
+  expect(h.store.getSession(side.id)!.run_ids).toHaveLength(2)
+  await waitFor(() => texts(h, side.id).at(-1) === "Again: quota." && status(h, side.id) === "idle", {
+    what: "the reply",
+  })
 })
 
 /** The entries of `h`'s session dirs root. */
