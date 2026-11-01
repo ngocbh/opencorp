@@ -118,6 +118,7 @@ test("reap signals a leaderless group only when every check passes", () => {
   onTestFinished(() => kill.mockRestore())
   const leaderGone: Readings = {
     platform: "linux",
+    bootTime: () => 500,
     startTime: () => null,
     noSuchProcess: () => true,
     inOfficeGroup: () => false,
@@ -138,6 +139,8 @@ test("reap signals a leaderless group only when every check passes", () => {
     ["another platform", row, { ...leaderGone, platform: "freebsd" }],
     ["a group the leader didn't lead", { ...row, pgid: NO_GROUP + 1 }, leaderGone],
     ["the office's own group", row, { ...leaderGone, inOfficeGroup: () => true }],
+    ["a row from before the last boot", row, { ...leaderGone, bootTime: () => 2000 }],
+    ["a boot time it can't read", row, { ...leaderGone, bootTime: () => null }],
   ]
   for (const [what, refusedRow, read] of refused) {
     store.recordWorker("s1", refusedRow as typeof row)

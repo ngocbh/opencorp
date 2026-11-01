@@ -5,6 +5,7 @@ import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import {
   args,
+  bootTime,
   inOfficeGroup,
   isDaemonLine,
   killGroup,
@@ -121,6 +122,15 @@ test("noSuchProcess is true only once no process holds the pid", async () => {
 test("noSuchProcess is false for a process it may not signal", () => {
   mockKill(Object.assign(new Error("EPERM"), { code: "EPERM" }))
   expect(noSuchProcess(NO_GROUP)).toBe(false)
+})
+
+test("bootTime is when this machine booted", () => {
+  const booted = bootTime()
+  if (process.platform !== "darwin" && process.platform !== "linux") return expect(booted).toBeNull()
+  expect(booted).not.toBeNull()
+  // Every process started after the boot; the machine booted after 2020 and before now.
+  expect(booted!).toBeLessThanOrEqual(startTime(process.pid)!)
+  expect(booted!).toBeGreaterThan(Date.UTC(2020, 0) / 1000)
 })
 
 test("inOfficeGroup tells the office's own group from another", () => {
