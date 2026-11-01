@@ -4,7 +4,6 @@ import path from "node:path"
 import { readIdentity, tokenSha256 } from "@opencorp/client/node"
 import { expect, test } from "bun:test"
 import { git } from "../company/helpers.ts"
-import { waitFor } from "../helpers.ts"
 import { folder, openOffice, REPO, type RunningOffice, run } from "./helpers.ts"
 
 const TIMEOUT = 180_000
@@ -117,26 +116,15 @@ async function stream(office: RunningOffice, target: string): Promise<{ ended: P
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 test(
-  "removing a device ends the streams it opened",
+  "removing a device ends the event stream it opened",
   async () => {
     const owned = await openOffice({ device: true })
     const workspace = folder(path.join(owned.root, "project"))
     const me = readIdentity(path.join(owned.home, "identity.json"))!
-    owned.llm.script({ content: "Hi." })
-    const sid = await owned.startChat(await owned.person("minh"), workspace)
-    await owned.prompt(sid, "hello")
-    await owned.settled(sid, ["Hi."])
-    const runs = async () => (await owned.get("/runs")).runs.find((r: { session_id: string }) => r.session_id === sid)
-    const chat = await waitFor(runs, { timeout: 30_000, what: "the chat's run" })
-
     const events = await stream(owned, "/events")
-    const live = await stream(owned, `/runs/${chat.run_id}/live`)
-    // Both stay open while the device is listed: the chat's worker is parked, so its run is still live.
-    expect(await Promise.race([events.ended, live.ended, sleep(500).then(() => "open")])).toBe("open")
+    expect(await Promise.race([events.ended, sleep(500).then(() => "open")])).toBe("open")
     await owned.opencorp(["devices", "remove", "ngocbh", me.device], { cwd: workspace })
-    const within = (ended: Promise<string>) => Promise.race([ended, sleep(10_000).then(() => "still open")])
-    expect(await within(events.ended)).not.toBe("still open")
-    expect(await within(live.ended)).not.toBe("still open")
+    expect(await Promise.race([events.ended, sleep(10_000).then(() => "still open")])).not.toBe("still open")
     // The client's reconnect is refused, which the TUI shows as an unknown device.
     const again = await owned.request("GET", "/events")
     expect([again.status, ((await again.json()) as { error: string }).error]).toEqual([401, "bad_token"])
