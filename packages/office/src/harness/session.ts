@@ -5,7 +5,7 @@ import { HarnessError, notWaiting, runState, writeState } from "../chat/state.ts
 import { type SessionRecord, type Store, newId } from "../store/store.ts"
 import { type CodexProcess, CodexStartError, ownerLoad } from "./codex.ts"
 import { RpcClosed, RpcError, nameOf } from "./rpc.ts"
-import { type Issued, NOT_AN_OPTION, NOT_A_NUMBER, TURNLESS, Translator, Unserved } from "./translate.ts"
+import { type Issued, NOT_AN_OPTION, NOT_A_NUMBER, TURNLESS, Translator, Unserved, Unshowable } from "./translate.ts"
 import type { CodexSessions } from "./sessions.ts"
 
 /** Milliseconds office stop waits for the session to finish the job it is in. */
@@ -507,7 +507,8 @@ export class CodexSession {
     this.store.updateSession(this.sessionId, { harness_usage: usage })
   }
 
-  /** A server request: a card the owner answers, or a JSON-RPC error for a method the office doesn't serve. */
+  /** A server request: a card the owner answers, or a JSON-RPC error for a method the office doesn't serve or a
+   *  request no card can show. */
   async #request(proc: CodexProcess, id: unknown, method: string, params: Obj): Promise<void> {
     if (proc !== this.process) return // its app-server is gone: no one would read the reply
     const runId: string = params.turnId || this.#turnlessRun(proc)
@@ -517,6 +518,12 @@ export class CodexSession {
     } catch (error) {
       if (error instanceof Unserved) {
         await this.#refuse(proc, id, -32601, `OpenCorp doesn't serve ${method}`)
+        return
+      }
+      if (error instanceof Unshowable) {
+        // Codex takes the error as a refusal and goes on, rather than waiting on a card no answer satisfies.
+        this.owner.log(`codex session ${this.sessionId}: no card can show ${method} ${error.message}`)
+        await this.#refuse(proc, id, -32603, `OpenCorp can't show ${method} ${error.message}`)
         return
       }
       // A request shaped other than the pinned schema says: Codex would wait on it until Esc.

@@ -431,6 +431,55 @@ test("an unserved request gets a json rpc error", async () => {
   expect(h.store.listQuestions({ sessionId: sid })).toEqual([])
 })
 
+test("a request no card can show is refused with its reason and logged", async () => {
+  const h = makeCodex()
+  const many = fc.userInput(9, "u3", [0, 1, 2, 3, 4].map((i) => fc.question(`q${i}`, `Q${i}`, SENTINEL)))
+  h.fake.script([[many]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "go")
+  await waitFor(() => 9 in h.fake.replies(), { what: "the error reply" })
+  expect(h.fake.replies()[9]).toEqual({ code: -32603,
+    message: "OpenCorp can't show item/tool/requestUserInput with more than four questions" })
+  expect(h.lines).toContain(
+    `codex session ${sid}: no card can show item/tool/requestUserInput with more than four questions`)
+  expect(h.lines.join("\n")).not.toContain(SENTINEL)
+  await waitFor(() => status(h, sid) === "idle", { what: "Codex going on" })
+  expect(h.store.listQuestions({ sessionId: sid })).toEqual([])
+})
+
+test("an approval with no decision a card can offer is refused, not left unanswerable", async () => {
+  const h = makeCodex()
+  const step = fc.commandApproval(9, "c1", `echo ${SENTINEL}`)
+  step.params.availableDecisions = [{ acceptWithExecpolicyAmendment: { execpolicy_amendment: [SENTINEL] } }]
+  h.fake.script([[step]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "go")
+  await waitFor(() => 9 in h.fake.replies(), { what: "the error reply" })
+  expect(h.fake.replies()[9]).toEqual({ code: -32603,
+    message: "OpenCorp can't show item/commandExecution/requestApproval with no option a card can offer" })
+  expect(h.lines.filter((x) => x.includes("no card can show"))).toEqual([
+    `codex session ${sid}: no card can show item/commandExecution/requestApproval with no option a card can offer`])
+  expect(h.lines.join("\n")).not.toContain(SENTINEL)
+  await waitFor(() => status(h, sid) === "idle", { what: "Codex going on" })
+  expect(h.store.listQuestions({ sessionId: sid })).toEqual([])
+})
+
+test("an elicitation in a mode a card cannot answer is refused without echoing the mode", async () => {
+  const h = makeCodex()
+  const params = { serverName: "gh", threadId: "{thread}", turnId: "{turn}", mode: SENTINEL, message: "Pick" }
+  h.fake.script([[{ request: "mcpServer/elicitation/request", id: 9, wait: true, params }]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "go")
+  await waitFor(() => 9 in h.fake.replies(), { what: "the error reply" })
+  expect(code(h.fake.replies()[9])).toBe(-32603)
+  expect(JSON.stringify(h.fake.replies()[9])).not.toContain(SENTINEL)
+  expect(h.lines).toContain(
+    `codex session ${sid}: no card can show mcpServer/elicitation/request in a mode a card can't answer`)
+  expect(h.lines.join("\n")).not.toContain(SENTINEL)
+  await waitFor(() => status(h, sid) === "idle", { what: "Codex going on" })
+  expect(h.store.listQuestions({ sessionId: sid })).toEqual([])
+})
+
 test("cards answer a codex card and refuse its other actions", async () => {
   const h = makeCodex()
   h.office.harness = h.sessions
