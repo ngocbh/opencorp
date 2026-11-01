@@ -4,6 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { foldRunLog, inspectRun, PoolCommitRecord } from "@ngocbh/yian/run"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
+import type { Frame } from "../../src/worker/channel.ts"
 import type { Job } from "../../src/worker/job.ts"
 import { tempDir, waitFor } from "../helpers.ts"
 import {
@@ -399,4 +400,37 @@ test("moved messages that cannot be delivered are dropped quietly", async () => 
   expect(moved).toEqual(["opencorp __worker: a moved message was not delivered (not_started)"])
   expect(lines.filter((line) => line.includes("m1-words"))).toEqual([])
   expect(fake.requests()).toEqual([])
+})
+
+test("a carried history over the frame limit goes as a stubbed NodeExpanded and the next turn runs", async () => {
+  captureStderr()
+  const fake = await fakeLlm()
+  const big = `${"w".repeat(1023)} `.repeat(100)
+  fake.script({ content: big }, { content: "ok" })
+  const first = new TemplateOffice()
+  const r1 = templateJob("chat", first, {}, { deliver: [send("s1", "hi")], keep: false })
+  const w1 = await inProcessWorker(r1, first, { env: fake.env(), maxFrame: 96 * 1024 })
+  await w1.wait()
+  expect(first.outcome?.status).toBe("waiting")
+  const expanded = first.frames
+    .filter((frame) => frame.name === "NodeExpanded")
+    .map((frame) => frame.data as { node_id: string; grow: { seed: unknown } })
+    .filter((data) => /^chat~\d+$/.test(data.node_id))
+  expect(expanded.length).toBeGreaterThan(0)
+  expect(expanded.at(-1)!.grow.seed).toBeNull()
+  // The reply still names its node, so the office counts the turn.
+  const reply = first.frames.find(
+    (frame) => frame.name === "NodeSucceeded" && (frame.data as Frame).node_id === "chat#0/reply",
+  )
+  expect(reply?.data).toMatchObject({ output: null })
+  const second = new TemplateOffice()
+  const w2 = await inProcessWorker(advanceJob(r1, { deliver: [send("s2", "again")] }), second, {
+    env: fake.env(),
+    maxFrame: 96 * 1024,
+  })
+  await w2.wait()
+  expect(second.outcome?.status).toBe("waiting")
+  // Yian kept the history though its event went as a stub.
+  const texts = (fake.requests().at(-1)!.messages as Record<string, unknown>[]).map((m) => JSON.stringify(m.content))
+  expect(texts.some((text) => text.includes("wwww"))).toBe(true)
 })

@@ -261,6 +261,37 @@ export function advanceAppended(log: string, before: number | null): boolean {
   }
 }
 
+/** The fields of an event's data that carry a run's values, which the office never reads from an event frame; a
+ *  `NodeExpanded`'s `grow.seed` is one too. */
+const VALUE_KEYS = ["output", "arguments", "result"]
+
+/** The fields of an event's data the office reads (`SessionActor.#event`, `OpenNodes.apply`), besides `failure`'s
+ *  `node_id`. */
+const READ_KEYS = ["node_id", "call_id", "call_ids", "reason", "usage", "model", "error_type"]
+
+/** The smaller forms of an event's `data` to send when its frame is over the limit, largest first: when it has a
+ *  value field, `data` with each value set to null (a `NodeExpanded` keeps its `grow.prune`), then only the fields
+ *  the office reads, so a stubbed event still names its node, call and model call usage. */
+export function eventStubs(data: Record<string, unknown>): Frame[] {
+  const stubs: Frame[] = []
+  const grow = data.grow
+  const growing = typeof grow === "object" && grow !== null && !Array.isArray(grow)
+  if (growing || VALUE_KEYS.some((key) => Object.hasOwn(data, key))) {
+    const stub: Frame = { ...data }
+    for (const key of VALUE_KEYS) if (Object.hasOwn(stub, key)) stub[key] = null
+    if (growing) stub.grow = { ...grow, seed: null }
+    stubs.push(stub)
+  }
+  const minimal: Frame = {}
+  for (const key of READ_KEYS) if (Object.hasOwn(data, key)) minimal[key] = data[key]
+  const failure = data.failure
+  if (typeof failure === "object" && failure !== null && !Array.isArray(failure)) {
+    minimal.failure = Object.hasOwn(failure, "node_id") ? { node_id: (failure as Frame).node_id } : {}
+  }
+  stubs.push(minimal)
+  return stubs
+}
+
 /**
  * The worker's follow of its run's live channel: each follow frame goes to the office as `{type: "stream", frame}`.
  * `serve` makes one per job; `runJob` binds it to the run call's channel, which it follows from inside the first frame;
@@ -549,8 +580,14 @@ async function runJob(
   const onEvent: EventHook = (event) => {
     // Not awaited: a delivery waits for the run to go live, which happens after this observer returns.
     if (event.type === "RunStarted" || event.type === "RunResumed") deliveries.open()
-    // A send that fails rejects the run.
-    return channel.send({ type: "event", name: event.type, data: event.toJSON() })
+    // A send that fails rejects the run. An event over the frame limit goes without its values: the office reads none
+    // of them, and the log keeps them. `send` picks the stub before its first await, so frames keep call order.
+    const data: Frame = event.toJSON()
+    return channel.send({ type: "event", name: event.type, data }, () => {
+      // The type only: the values are the run's.
+      process.stderr.write(`opencorp __worker: a ${event.type} event frame went without its values\n`)
+      return eventStubs(data).map((stub) => ({ type: "event", name: event.type, data: stub }))
+    })
   }
   // Each job makes at most one run call, so this is one channel per run call.
   const live = new LiveChannel({

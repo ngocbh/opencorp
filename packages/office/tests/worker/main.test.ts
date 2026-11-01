@@ -15,7 +15,15 @@ import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Channel, ChannelClosed, type Frame } from "../../src/worker/channel.ts"
 import { groupSpecs, type Job, type JobInput, STOP_REASON } from "../../src/worker/job.ts"
-import { EXIT_FAILED, EXIT_OK, EXIT_ORPHANED, isOfficeChannel, report, serve } from "../../src/worker/main.ts"
+import {
+  EXIT_FAILED,
+  EXIT_OK,
+  EXIT_ORPHANED,
+  eventStubs,
+  isOfficeChannel,
+  report,
+  serve,
+} from "../../src/worker/main.ts"
 import type { AskRequest, OfficeTool } from "../../src/worker/rpc.ts"
 import { fakeLlm, logPrefix, send, TemplateOffice, waitingChat } from "../chat/helpers.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"
@@ -522,6 +530,92 @@ test("a live frame too large to send is named on stderr by its type", async () =
   expect(rec.outcome?.status).toBe("succeeded")
   expect(written).toContain("opencorp __worker: a live frame was not sent (FrameTooLarge)\n")
   expect(written.join("")).not.toContain("zzzz")
+})
+
+test("an event's stubs drop its values and keep what the office reads", () => {
+  const big = "v".repeat(1000)
+  expect(eventStubs({ node_id: "chat~2", grow: { seed: { history: big }, prune: ["a"] } })).toEqual([
+    { node_id: "chat~2", grow: { seed: null, prune: ["a"] } },
+    { node_id: "chat~2" },
+  ])
+  expect(eventStubs({ node_id: "reply", output: big, commit_as: null, interrupted: false })).toEqual([
+    { node_id: "reply", output: null, commit_as: null, interrupted: false },
+    { node_id: "reply" },
+  ])
+  expect(eventStubs({ output: big })).toEqual([{ output: null }, {}])
+  const call = { node_id: "reply", n: 1, call_index: 0, tool_call_id: "t1", name: "shout" }
+  expect(eventStubs({ ...call, arguments: { text: big } })).toEqual([
+    { ...call, arguments: null },
+    { node_id: "reply" },
+  ])
+  expect(eventStubs({ ...call, result: big, error: null })).toEqual([
+    { ...call, result: null, error: null },
+    { node_id: "reply" },
+  ])
+})
+
+test("an event with no value field gets only the minimal stub", () => {
+  const big = "v".repeat(1000)
+  expect(eventStubs({ failure: { node_id: "x", message: big } })).toEqual([{ failure: { node_id: "x" } }])
+  expect(eventStubs({ failure: { node_id: null, message: big } })).toEqual([{ failure: { node_id: null } }])
+  expect(
+    eventStubs({ node_id: "reply", attempt: 1, error: { kind: "x", message: big }, retry_in: 1 }),
+  ).toEqual([{ node_id: "reply" }])
+  expect(eventStubs({ call_id: "c1", reason: "interrupted" })).toEqual([
+    { call_id: "c1", reason: "interrupted" },
+  ])
+  expect(eventStubs({ node_id: "chat#1/heard", call_ids: ["c1"] })).toEqual([
+    { node_id: "chat#1/heard", call_ids: ["c1"] },
+  ])
+  expect(eventStubs({ error_type: "LoadError" })).toEqual([{ error_type: "LoadError" }])
+})
+
+test("a model call's stubs keep its usage and model", () => {
+  const usage = { input_tokens: 10, output_tokens: 2, total_tokens: 12 }
+  const data = { node_id: "reply", n: 1, purpose: "reply", provider: "p", model: "m", usage, error: "e".repeat(1000) }
+  const stubs = eventStubs(data)
+  expect(stubs.length).toBeGreaterThan(0)
+  for (const stub of stubs) expect(stub).toMatchObject({ usage, model: "m" })
+  expect(stubs.at(-1)).toEqual({ node_id: "reply", usage, model: "m" })
+})
+
+test("an event frame over the frame limit goes without its values", async () => {
+  const written: string[] = []
+  const write = spyOn(process.stderr, "write").mockImplementation((text: string | Uint8Array) => {
+    written.push(String(text))
+    return true
+  })
+  onTestFinished(() => write.mockRestore())
+  const fake = await fakeLlm()
+  fake.script({ content: `${"w".repeat(1023)} `.repeat(100) })
+  const rec = new Recorder()
+  const job = makeJob(base(), "flows/replied.yaml", { inputs: { message: "hi" } })
+  const worker = await inProcessWorker(job, rec, { env: fake.env(), maxFrame: 96 * 1024 })
+  expect(await worker.wait()).toBe(EXIT_OK)
+  expect(rec.outcome).toMatchObject({ type: "result", status: "waiting" })
+  const reply = rec.frames.find(
+    (frame) => frame.name === "NodeSucceeded" && (frame.data as Frame).node_id === "reply",
+  )
+  expect(reply?.data).toMatchObject({ output: null, interrupted: false })
+  expect(rec.frames.find((frame) => frame.name === "ModelCallFinished")?.data).toMatchObject({
+    usage: expect.any(Object),
+  })
+  expect(written).toContain("opencorp __worker: a NodeSucceeded event frame went without its values\n")
+  expect(written.join("")).not.toContain("wwww")
+})
+
+test("a final output over the frame limit still fails the job", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: `${"w".repeat(1023)} `.repeat(100) })
+  const rec = new Recorder()
+  const job = makeJob(base(), "flows/echo.yaml", {})
+  const worker = await inProcessWorker(job, rec, { env: fake.env(), maxFrame: 96 * 1024 })
+  expect(await worker.wait()).toBe(EXIT_FAILED)
+  expect(rec.names().at(-1)).toBe("RunSucceeded")
+  expect(rec.outcome?.type).toBe("error")
+  expect(String(rec.outcome?.message)).toStartWith("FrameTooLarge:")
+  // The run itself succeeded: only its result couldn't be sent.
+  expect(inspectRun(job.log).status).toBe("succeeded")
 })
 
 // A kept worker: after a waiting result it parks, and the office's next start frame runs the run's next advance.
