@@ -622,7 +622,7 @@ test("a job that raises sends an error frame", async () => {
   })
   expect(rec.returncode).toBe(1)
   expect(rec.outcome?.type).toBe("error")
-  expect(String(rec.outcome?.message).startsWith("Error: ENOENT")).toBe(true)
+  expect(rec.outcome?.message).toBe("RangeError: flows/missing.yaml does not exist")
   for (const line of String(rec.outcome?.traceback).split("\n")) expect(line).toMatch(/^\s+at /)
   expect(fake.requests()).toEqual([])
 })

@@ -3,6 +3,7 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import { writeYaml } from "../../src/company/flow_yaml.ts"
+import { MAX_FLOW_FILE } from "../../src/company/flows.ts"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { assetToolName } from "../../src/company/naming.ts"
@@ -171,6 +172,18 @@ test("flow cycle message is repo relative", async () => {
   expect(issue!.message).toContain("shared/flows/chat.yaml")
 })
 
+test("a child flow over the size limit is invalid, named repo relative and without its content", async () => {
+  const tmp = tempDir()
+  const root = makeCompany({ "shared/flows/chat.yaml": parentFlow("echo") }, tmp)
+  // Written after the commit: lint reads the working tree.
+  fs.writeFileSync(path.join(root, "shared/flows/echo.yaml"), CHILD + "#PADPAD\n".repeat(MAX_FLOW_FILE / 8 + 1))
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.message).toContain("shared/flows/echo.yaml is over the 1 MiB flow size limit")
+  expect(issue!.message).not.toContain(tmp)
+  expect(issue!.message).not.toContain("PADPAD")
+})
+
 test("child flow inside repo is fine", async () => {
   // A main flow must be chat-shaped, so the parent that imports the child is a SOP.
   const root = makeCompany({
@@ -218,6 +231,43 @@ test.each(["main", "sops", "routines"])("nul byte in a flow ref is invalid [%s]"
   expect(rest).toEqual([])
   expect(issue!.path).toBe("people/minh/person.yaml")
   expect(issue!.message).not.toContain("\0")
+})
+
+test.each(["main", "sops", "routines"])("absolute flow ref is invalid [%s]", async (field) => {
+  // A flow inside the repo that exists; the worker would look for it under the session's pinned worktree.
+  const dir = tempDir()
+  const ref = path.join(fs.realpathSync(dir), "company/shared/flows/chat.yaml")
+  const value = { main: ref, sops: [{ flow: ref }], routines: [{ name: "daily", flow: ref }] }[field]
+  const root = makeCompany({ "people/minh/person.yaml": person("minh", { [field]: value }) }, dir)
+  expect(fs.existsSync(ref)).toBe(true)
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.path).toBe("people/minh/person.yaml")
+  expect(issue!.message).toContain("chat.yaml")
+  expect(issue!.message).toContain("relative to people/minh/")
+  expect(issue!.message).not.toContain(dir)
+  expect(issue!.message).not.toContain(fs.realpathSync(dir))
+})
+
+test.each(["main", "sops", "routines"])("absolute flow ref outside the repo is flow_outside_repo [%s]", async (field) => {
+  const ref = "/etc/passwd"
+  const value = { main: ref, sops: [{ flow: ref }], routines: [{ name: "daily", flow: ref }] }[field]
+  const root = makeCompany({ "people/minh/person.yaml": person("minh", { [field]: value }) })
+  const [issue, ...rest] = await withCode(root, "person.flow_outside_repo")
+  expect(rest).toEqual([])
+  expect(issue!.path).toBe("people/minh/person.yaml")
+  expect(await codes(root)).not.toContain("person.flow_invalid")
+})
+
+test("a missing child flow is invalid, named repo relative", async () => {
+  const tmp = tempDir()
+  const root = makeCompany({ "shared/flows/chat.yaml": parentFlow("echo") }, tmp)
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.message).toContain("shared/flows/echo.yaml does not exist")
+  expect(issue!.message).not.toContain(tmp)
+  expect(issue!.message).not.toContain(fs.realpathSync(tmp))
+  expect(issue!.message).not.toContain("ENOENT")
 })
 
 test("agent needs a main flow", async () => {

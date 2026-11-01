@@ -263,3 +263,15 @@ export function parentFlow(ref: string): string {
     "    input:\n      text: ${ask.output}\noutput: ${reply.output}\n"
   )
 }
+
+/** A flow `id` calling each of `refs` through the `uses:` aliases a0, a1, ...; its output is a0's. */
+export function usesFlow(id: string, refs: string[]): string {
+  const uses = refs.map((ref, i) => `  a${i}: ${ref}\n`).join("")
+  const nodes = refs.map((_, i) => `  x${i}:\n    kind: call\n    call: a${i}\n`).join("")
+  return `id: ${id}\nname: ${id}\nuses:\n${uses}nodes:\n${nodes}output: \${x0.output}\n`
+}
+
+/** A leaf flow `id` with no inputs. */
+export function leafFlow(id: string): string {
+  return `id: ${id}\nname: ${id}\nnodes:\n  v: !str leaf\noutput: \${v.output}\n`
+}

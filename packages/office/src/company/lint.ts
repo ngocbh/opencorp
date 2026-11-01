@@ -240,8 +240,8 @@ function chatShapeProblems(ref: string, flow: ComposedFlow): string[] {
   return problems
 }
 
-/** Agents have a main flow; every main, SOP, and routine flow exists inside the repo and compiles; a main
- *  flow declares the inputs the office passes it and has the template chat's shape. */
+/** Agents have a main flow; every main, SOP, and routine flow is a relative path to a file inside the repo
+ *  that compiles; a main flow declares the inputs the office passes it and has the template chat's shape. */
 async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
   for (const [handle, person] of sorted(repo.people)) {
     const file = personPath(handle)
@@ -257,6 +257,14 @@ async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
         continue
       }
       const resolved = resolvePath(path.resolve(base, ref))
+      // The worker joins the ref under the session's pinned worktree, where an absolute path names no file; read
+      // as absolute, it would name the live clone rather than the pinned commit. The message shows only the file
+      // name, never the folders above the repo. An absolute ref outside the repo is reported below as outside it.
+      if (path.isAbsolute(ref) && !outsideRoot(repo.root, resolved)) {
+        yield repoIssue(file, "person.flow_invalid",
+          `flow path .../${path.basename(ref)} is absolute; write it relative to people/${handle}/`)
+        continue
+      }
       if (!outsideRoot(repo.root, resolved) && !isFile(resolved)) {
         yield repoIssue(file, "person.flow_missing", `${ref} does not exist`)
         continue
