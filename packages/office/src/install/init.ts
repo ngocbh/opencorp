@@ -6,7 +6,7 @@ import type { Readable } from "node:stream"
 import { agentFiles } from "../chat/hire.ts"
 import type { Draft } from "../company/draft.ts"
 import { CompanyGitError } from "../company/git.ts"
-import { isNew, writeCompany } from "../company_template/index.ts"
+import { companyState, writeCompany } from "../company_template/index.ts"
 import { strip } from "../perm/redact.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
 import { shQuote } from "./fallback.ts"
@@ -16,6 +16,7 @@ import {
   type Answers,
   askProvider,
   checkSocket,
+  damageMessage,
   ensureProvider,
   GIT_ACCESS,
   type Listers,
@@ -121,9 +122,11 @@ export async function init(home: string, prompter: Prompter, options: InitOption
   }
 }
 
-/** Throws `OnboardError` when there's a company at `company` already. */
+/** Throws `OnboardError` when there's a company at `company` already, or something init can't make one over. */
 async function noCompanyYet(company: string): Promise<void> {
-  if (!(await isNew(company))) {
+  const state = await companyState(company)
+  if (state.kind === "damaged") throw new OnboardError(damageMessage(company, state))
+  if (state.kind === "ok") {
     throw new OnboardError(
       `there's already a company at ${company}; run \`opencorp onboard\` to set up this office for it`,
     )

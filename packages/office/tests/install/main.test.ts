@@ -9,6 +9,7 @@ import { Readable, Writable } from "node:stream"
 import { type HqStatus, SetupPrompt } from "@opencorp/protocol"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { loadRepo } from "../../src/company/loader.ts"
+import { writeCompany } from "../../src/company_template/index.ts"
 import type { Unread } from "../../src/install/doctor.ts"
 import * as fallback from "../../src/install/fallback.ts"
 import type { InitOptions } from "../../src/install/init.ts"
@@ -400,6 +401,39 @@ test("a failed init says nothing of hq", async () => {
   const s = { ...onboardedStandIns(dir, async () => hqAnswer(TAKEN)), init: interrupted }
   expect(await main(["init", "--home", path.join(dir, "home")], s)).toBe(130)
   expect(s.err()).toBe("\n")
+})
+
+test.each(["start", "restart"])("after offboarding is exit 3 and says to onboard [%s]", async (command) => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  // What offboard leaves of a company with no remote: the company, but no office and no identity.
+  await writeCompany(path.join(home, "company"), path.join(dir, "worktrees"), {
+    company: "Acme",
+    owner: { handle: "me", name: "Me" },
+  })
+  const runner = new Runner()
+  const s = { ...standIns(dir), host: makeHost(dir, runner) }
+  const stderr = capture()
+  expect(await main([command, "--home", home], { ...s, stderr })).toBe(3)
+  expect(stderr.text()).toContain("`opencorp onboard`")
+  expect(runner.calls).toEqual([])
+  expect(fs.existsSync(path.join(home, "office"))).toBe(false)
+})
+
+test("start with a damaged company is exit 1 and says how to fix it", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const company = path.join(home, "company")
+  await writeCompany(company, path.join(dir, "worktrees"), { company: "Acme", owner: { handle: "me", name: "Me" } })
+  git(company, "rm", "-q", "company.yaml")
+  git(company, "commit", "-qm", "drop company.yaml")
+  fs.mkdirSync(path.join(home, "office"), { mode: 0o700 })
+  const runner = new Runner()
+  const s = { ...standIns(dir), host: makeHost(dir, runner) }
+  const stderr = capture()
+  expect(await main(["start", "--home", home], { ...s, stderr })).toBe(1)
+  expect(stderr.text()).toContain("log -- company.yaml")
+  expect(runner.calls).toEqual([])
 })
 
 /** A home for a real office, kept off HQ's TCP port, which the owner's own office holds: `install(argv)` runs

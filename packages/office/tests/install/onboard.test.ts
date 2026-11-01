@@ -533,7 +533,7 @@ test("a repo without a company is refused and removed", async () => {
   expect(fs.readdirSync(path.join(dir, "home")).sort()).toEqual(["office"])
 })
 
-test("a company init left unfinished is not cloned over", async () => {
+test("company files without a repo are not cloned over", async () => {
   const dir = tempDir()
   const root = path.join(dir, "home", "company")
   fs.mkdirSync(root, { recursive: true })
@@ -542,8 +542,75 @@ test("a company init left unfinished is not cloned over", async () => {
     onboard(path.join(dir, "home"), new Script(), { ...base(dir), source: path.join(dir, "x.git") }),
   )
   expect(error).toBeInstanceOf(OnboardError)
-  expect(error.message).toContain("run `opencorp init` to finish it")
+  expect(error.message).toContain("holds files but no git repo")
   expect(fs.readdirSync(root)).toEqual(["company.yaml"])
+})
+
+test("a company init left unfinished is not cloned over", async () => {
+  const dir = tempDir()
+  const root = path.join(dir, "home", "company")
+  fs.mkdirSync(root, { recursive: true })
+  git(root, "init", "-q", "-b", "main")
+  fs.writeFileSync(path.join(root, "company.yaml"), 'name: "Acme"\nceo: "me"\n')
+  const error = await rejection(
+    onboard(path.join(dir, "home"), new Script(), { ...base(dir), source: path.join(dir, "x.git") }),
+  )
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("run `opencorp init` to finish it")
+  expect(fs.readdirSync(root).sort()).toEqual([".git", "company.yaml"])
+})
+
+test("a company that is a file is refused before the clone", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const remote = await published(dir)
+  fs.mkdirSync(home)
+  fs.writeFileSync(path.join(home, "company"), "")
+  const error = await rejection(onboard(home, new Script(["lan"]), { ...base(dir), source: remote }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("is not a directory")
+  expect(fs.readdirSync(home)).toEqual(["company"])
+})
+
+test("a damaged company is refused, not topped up", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const root = await company(home)
+  fs.rmSync(path.join(home, "office"), { recursive: true, force: true })
+  git(root, "rm", "-q", "company.yaml")
+  git(root, "commit", "-qm", "drop company.yaml")
+  const head = git(root, "rev-parse", "HEAD")
+  const error = await rejection(onboard(home, new Script(), base(dir)))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("log -- company.yaml")
+  expect(fs.readdirSync(home)).toEqual(["company"])
+  expect(git(root, "rev-parse", "HEAD")).toBe(head)
+  expect(git(root, "status", "--porcelain")).toBe("")
+})
+
+/** A prompter that puts a non-empty folder at `company` when it's asked which human you are. */
+class CompanyAppears extends Script {
+  constructor(private readonly company: string) {
+    super(["lan"])
+  }
+
+  override async choose(question: string, options: readonly string[], defaultAnswer = "", typed = false) {
+    fs.mkdirSync(this.company, { recursive: true })
+    fs.writeFileSync(path.join(this.company, "x"), "")
+    return super.choose(question, options, defaultAnswer, typed)
+  }
+}
+
+test("a company that appears while you pick who you are is an onboard error", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const remote = await published(dir)
+  const error = await rejection(
+    onboard(home, new CompanyAppears(path.join(home, "company")), { ...base(dir), source: remote }),
+  )
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain(`can't move the clone into ${path.join(home, "company")}`)
+  expect(fs.existsSync(path.join(home, ".company-clone"))).toBe(false)
 })
 
 test("a second onboard of a cloned company changes nothing and asks nothing", async () => {

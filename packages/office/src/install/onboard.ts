@@ -29,7 +29,7 @@ import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
 import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
-import { isNew, missingFiles, type Owner, writeCompany } from "../company_template/index.ts"
+import { type CompanyState, companyState, missingFiles, type Owner, writeCompany } from "../company_template/index.ts"
 import { checkSocketPath, makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
 import { redact as redactSecrets, repr } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
@@ -37,6 +37,7 @@ import { strerror } from "../sandbox/fs_helper.ts"
 import { PrivateFileError, writePrivate } from "../secrets.ts"
 import type { WorkerEnv } from "../worker/main.ts"
 import { workerEnv } from "../worker/spawn.ts"
+import { shQuote } from "./fallback.ts"
 import checkModelYaml from "./flows/check_model.yaml" with { type: "file" }
 import {
   type Completed,
@@ -53,6 +54,22 @@ import * as service from "./service.ts"
 
 /** What to do when a home has no company. */
 export const SET_UP = "run `opencorp init` to create one, or `opencorp onboard --from URL` to join one"
+
+/** What's wrong with the company at `root` (`state`) and how to fix it. */
+export function damageMessage(root: string, state: Extract<CompanyState, { kind: "damaged" }>): string {
+  const q = shQuote(root)
+  const fixes: Record<typeof state.reason, string> = {
+    "not-a-directory": "move it away, then run this again",
+    unreadable: "move it away, then run this again",
+    "no-git": "restore its .git, or move it away to start over",
+    "bad-git": "restore its .git, or move it away to start over",
+    "no-company-yaml":
+      `find the commit that removed it with \`git -C ${q} log -- company.yaml\`, restore it with` +
+      ` \`git -C ${q} checkout <commit>~1 -- company.yaml\` and commit`,
+    "company-yaml-deleted": `restore it with \`git -C ${q} checkout -- company.yaml\``,
+  }
+  return `${state.detail}; ${fixes[state.reason]}`
+}
 
 /** What to do about `count` missing template files while the office runs. */
 export function stopToTopUp(count: number): string {
@@ -760,7 +777,7 @@ async function clone(url: string, dest: string, env: Env): Promise<void> {
       `can't clone ${redact(url)}: ${redact(done.stderr.trim())}; ${GIT_ACCESS}, then run \`opencorp onboard\` again`,
     )
   }
-  if (await isNew(dest)) {
+  if ((await companyState(dest)).kind !== "ok") {
     removePath(dest)
     throw new OnboardError(`${redact(url)} isn't a company repo: it has no company.yaml at its top`)
   }
@@ -932,6 +949,9 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
   const environ = options.environ ?? process.env
   const one = launch(home, { environ, userHome: (options.host ?? defaultHost()).userHome })
   checkSocket(one.socket)
+  // Checked before the home is made, so a damaged company is reported with nothing changed.
+  const state = await companyState(path.join(one.home, "company"))
+  if (state.kind === "damaged") throw new OnboardError(damageMessage(path.join(one.home, "company"), state))
   makeHome(one.home)
   const lock = await setupLock(one)
   try {
@@ -958,7 +978,9 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
   // A running office is the only writer of its company clone (CompanyGit's lock is in-process), so the template
   // top-up waits until it is stopped.
   const running = await host.answers(one.socket)
-  const fresh = await isNew(company)
+  const state = await companyState(company)
+  if (state.kind === "damaged") throw new OnboardError(damageMessage(company, state))
+  const fresh = state.kind !== "ok"
   let root = company
   if (fresh) {
     if (running) {
@@ -966,7 +988,7 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
         `the office is running, but ${company} has no company yet; stop it and run \`opencorp onboard\` again`,
       )
     }
-    if (fs.statSync(company, { throwIfNoEntry: false })?.isDirectory() && fs.readdirSync(company).length > 0) {
+    if (state.kind === "unfinished") {
       throw new OnboardError(
         `${company} holds a company that was never finished (no first commit);` +
           " run `opencorp init` to finish it, or remove it to join another",
@@ -1010,9 +1032,15 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
       ? await join(root, worktrees, one.home, prompter, options.loginDefaults ?? loginDefaults)
       : ((await knownIdentity(one.home)) ?? null)
     if (fresh) {
-      // An empty dir: rename can't put a directory over a full one.
-      if (fs.statSync(company, { throwIfNoEntry: false })?.isDirectory()) fs.rmdirSync(company)
-      fs.renameSync(root, company)
+      try {
+        // An empty dir: rename can't put a directory over a full one.
+        if (fs.statSync(company, { throwIfNoEntry: false })?.isDirectory()) fs.rmdirSync(company)
+        fs.renameSync(root, company)
+      } catch (error) {
+        const text = strerror(error)
+        if (text === undefined) throw error
+        throw new OnboardError(`can't move the clone into ${company}: ${text}`)
+      }
     }
   } catch (error) {
     if (fresh) removePath(root)

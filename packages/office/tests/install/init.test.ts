@@ -15,7 +15,7 @@ import type { Draft, InitOutput } from "../../src/company/draft.ts"
 import { CompanyGit, CompanyGitError } from "../../src/company/git.ts"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
-import { isNew, missingFiles, writeCompany } from "../../src/company_template/index.ts"
+import { companyState, missingFiles, writeCompany } from "../../src/company_template/index.ts"
 import * as fallback from "../../src/install/fallback.ts"
 import { type InitOptions, init } from "../../src/install/init.ts"
 import {
@@ -381,12 +381,59 @@ test("the setup lock is free after a failed init", async () => {
   lockFile(path.join(dir, "home", "office", "setup.lock"), { private: true }).release()
 })
 
+/** Ways a company can be damaged after init made it, and what refusing it tells the owner to do. */
+const DAMAGES: [string, (company: string) => void, string][] = [
+  [
+    "company.yaml removed in a commit",
+    (company) => {
+      git(company, "rm", "-q", "company.yaml")
+      git(company, "commit", "-qm", "drop company.yaml")
+    },
+    "log -- company.yaml",
+  ],
+  ["no .git", (company) => fs.rmSync(path.join(company, ".git"), { recursive: true }), "move it away"],
+  ["company.yaml deleted", (company) => fs.unlinkSync(path.join(company, "company.yaml")), "checkout -- company.yaml"],
+]
+
+test.each(DAMAGES)("init refuses a damaged company and leaves it alone [%s]", async (_, damage, fix) => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const company = path.join(home, "company")
+  await expect(runInit(dir, scripted())).rejects.toThrow(STOP)
+  damage(company)
+  const before = () => [
+    fs.readFileSync(path.join(home, "identity.json")),
+    fs.readFileSync(path.join(company, "people", "me", "person.yaml")),
+    fs.existsSync(path.join(company, ".git")) ? git(company, "log", "--format=%H") : "",
+  ]
+  const kept = before()
+  const ask = scripted()
+  const error = await rejection(runInit(dir, ask))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain(fix)
+  expect(error.message).toContain(company)
+  expect(before()).toEqual(kept)
+  expect(ask.seen).not.toContain("Step 1 of 5: Model")
+})
+
+test("a company that is a file is refused before identity.json is written", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  fs.mkdirSync(home)
+  fs.writeFileSync(path.join(home, "company"), "")
+  const error = await rejection(runInit(dir, scripted()))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("is not a directory")
+  expect(error.message).toContain("move it away")
+  expect(fs.readdirSync(home)).toEqual(["company"])
+})
+
 test("flags that clash without a terminal stop before the company is made", async () => {
   const dir = tempDir()
   const error = await rejection(runInit(dir, scripted(), { handle: "me", agent_handle: "me" }))
   expect(error).toBeInstanceOf(OnboardError)
   expect(error.message).toContain("@me is taken; pass --agent-handle")
-  expect(await isNew(path.join(dir, "home", "company"))).toBe(true)
+  expect(await companyState(path.join(dir, "home", "company"))).toEqual({ kind: "absent" })
 })
 
 test("init registers this device for the ceo in the first commit", async () => {
@@ -656,7 +703,7 @@ test("ctrl c at the remote leaves no company", async () => {
   const dir = tempDir()
   const error = await rejection(runInit(dir, new InterruptedAtRemote([PASSWORD, PASSWORD], { interactive: false })))
   expect(error).toBeInstanceOf(KeyboardInterrupt)
-  expect(await isNew(path.join(dir, "home", "company"))).toBe(true)
+  expect(await companyState(path.join(dir, "home", "company"))).toEqual({ kind: "absent" })
 })
 
 test("without anyone to ask there is no remote", async () => {

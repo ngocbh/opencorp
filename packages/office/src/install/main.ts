@@ -14,7 +14,7 @@ import type { Readable, Writable } from "node:stream"
 import { parseArgs } from "node:util"
 import { identityPath, readIdentity } from "../auth/identity.ts"
 import { handleProblem } from "../company/naming.ts"
-import { isNew } from "../company_template/index.ts"
+import { companyState } from "../company_template/index.ts"
 import { OfficeStartError } from "../daemon/sockets.ts"
 import { repr } from "../perm/redact.ts"
 import { type CheckOptions, checks, exitCode, hqPortChecks, hqStatus, report } from "./doctor.ts"
@@ -24,7 +24,9 @@ import { defaultHost, type Env, type Host, type Launch, launch, ServiceError } f
 import { Declined, OffboardError, offboard } from "./offboard.ts"
 import {
   checkSocket,
+  damageMessage,
   LISTERS,
+  lexists,
   type Listers,
   type ModelCheck,
   modelProblem,
@@ -35,7 +37,7 @@ import {
 import { isTTY, KeyboardInterrupt, OnboardError, type Prompter, TtyPrompter } from "./prompts.ts"
 import * as service from "./service.ts"
 
-/** The exit code of `start` and `restart` when there's no office yet. */
+/** The exit code of `start` and `restart` when there's no company or no office yet. */
 export const NOT_ONBOARDED = 3
 
 /** What the commands read, write and run; tests pass stand-ins. */
@@ -539,11 +541,25 @@ function socketTooLong(run: Launch, s: Setup): boolean {
   return false
 }
 
-/** Whether there's no company at the office's home yet; says so on stderr. */
-async function notOnboarded(run: Launch, s: Setup): Promise<boolean> {
-  if (!(await isNew(path.join(run.home, "company")))) return false
-  s.stderr.write(`opencorp: no office at ${run.home} yet; ${SET_UP}\n`)
-  return true
+/** The exit code when the office at `run`'s home can't start yet, saying why on stderr, or null when it can. */
+async function notOnboarded(run: Launch, s: Setup): Promise<number | null> {
+  const company = path.join(run.home, "company")
+  const state = await companyState(company)
+  if (state.kind === "damaged") {
+    s.stderr.write(`opencorp: ${damageMessage(company, state)}\n`)
+    return 1
+  }
+  if (state.kind !== "ok") {
+    s.stderr.write(`opencorp: no office at ${run.home} yet; ${SET_UP}\n`)
+    return NOT_ONBOARDED
+  }
+  // init and onboard always make the office dir and offboard removes it, while an identity is legitimately
+  // missing (no device, or onboarded without a terminal), so the dir is what says this home is onboarded.
+  if (!lexists(run.office)) {
+    s.stderr.write(`opencorp: ${run.home} has a company but no office yet; run \`opencorp onboard\` to set it up\n`)
+    return NOT_ONBOARDED
+  }
+  return null
 }
 
 async function startCommand(args: Args, s: Setup): Promise<number> {
@@ -554,7 +570,8 @@ async function startCommand(args: Args, s: Setup): Promise<number> {
     await reportHq(run.home, s)
     return 0
   }
-  if (await notOnboarded(run, s)) return NOT_ONBOARDED
+  const refused = await notOnboarded(run, s)
+  if (refused !== null) return refused
   if (!(await cameUp(run, s, service.start))) return 1
   s.stdout.write(`Started the office (pid ${service.pid(run)}).\n`)
   await reportHq(run.home, s)
@@ -564,7 +581,8 @@ async function startCommand(args: Args, s: Setup): Promise<number> {
 async function restartCommand(args: Args, s: Setup): Promise<number> {
   const run = launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome })
   if (socketTooLong(run, s)) return 1
-  if (await notOnboarded(run, s)) return NOT_ONBOARDED
+  const refused = await notOnboarded(run, s)
+  if (refused !== null) return refused
   const was = (await s.host.answers(run.socket)) ? service.pid(run) : null
   if (!(await cameUp(run, s, service.restart))) return 1
   if (was === null) s.stdout.write(`The office wasn't running; started it (pid ${service.pid(run)}).\n`)
