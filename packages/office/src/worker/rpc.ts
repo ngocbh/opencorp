@@ -46,8 +46,9 @@ export class RemoteError extends Error {
   }
 }
 
-/** The office refuses a model's `ask_user` request the model can fix (a blank question); the message names only the
- *  field, never its value. The reply is `{error: "refused"}`, which the model reads as the call's result. */
+/** The office refuses a model's `ask_user` request the model can fix (a blank question, or a question or options that
+ *  aren't valid text); the message names only the field, never its value. The reply is `{error: "refused"}`, which
+ *  the model reads as the call's result. */
 export class AskRefused extends Error {
   override name = "AskRefused"
 }

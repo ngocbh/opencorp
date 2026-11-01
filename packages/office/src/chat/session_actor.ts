@@ -598,10 +598,12 @@ export class SessionActor implements LiveCalls {
    * Answers the session's open question `questionId` as `by` (the owner when null), after the `answerCheck` hooks,
    * and returns it as stored. A question of a call of the current run goes back to the run by `complete`, which the
    * answer doesn't wait for; it is marked consumed once the run takes it, and stale (`loseAnswer`) when the run
-   * refuses it for good (`#lostAnswer`). Refused with `404 not_found` (no such question of this session), `409
-   * not_open` (also while Esc's interrupt, which may close it, is unanswered), `409 ending` (End will interrupt it),
-   * `422 invalid_answer`, `422 too_large` (its result would pass `MAX_ANSWER_BYTES`) or `503 stopping`. The last two
-   * apply to the model's questions (`ask_user`, `ask_manager`) of the current run.
+   * refuses it for good (`#lostAnswer`). Refused, for any answer, with `404 not_found` (no such question of this
+   * session), `409 not_open` (the question isn't open), `422 invalid_answer` (an `answerCheck` hook refused it) or `503
+   * stopping` (the office is stopping); for a question with a call of the current, unfinished run (a model's question
+   * or a flow `ask` node), with `422 too_large` (its result would pass `MAX_ANSWER_BYTES`); and for the model's
+   * questions (`ask_user`, `ask_manager`) of the current run, with `409 ending` (End will interrupt the call) or `409
+   * not_open` while Esc's interrupt, which may close the call, is unanswered.
    */
   answer(
     questionId: string,
