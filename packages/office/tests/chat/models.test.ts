@@ -117,7 +117,7 @@ test.each([
   ["401", new HttpResponse(401, { error: { message: SENTINEL } }), "HTTP 401", 401],
   ["not json", new HttpResponse(200, null), "the reply isn't a deployment list", null],
   ["data not a list", new HttpResponse(200, { data: "x" }), "the reply isn't a deployment list", null],
-  ["unreachable", new TypeError("fetch failed"), "can't reach acme.openai.azure.com", null],
+  ["unreachable", new TypeError("fetch failed"), "can't reach host", null],
   ["timeout", new DOMException("slow", "TimeoutError"), TIMED_OUT, null],
 ] as const)("azure deployments says why it cant list them [%s]", async (_, response, problem, status) => {
   const fake = new FakeRequest(response)
@@ -499,7 +499,7 @@ test("a redirect from azure is not followed", async () => {
 test.each([
   ["not a deployment list", "the reply isn't a deployment list"],
   ["timed out", TIMED_OUT],
-  ["cant reach", "can't reach 127.0.0.1"],
+  ["cant reach", "can't reach host"],
 ] as const)(
   "azure deployments through the default sender says why [%s]",
   async (_, problem) => {
@@ -802,7 +802,7 @@ test("a host that times out in composer makes offers time out", async () => {
 
 test.each([
   ["timed out", TIMED_OUT],
-  ["cant reach api.openai.com", "can't reach api.openai.com"],
+  ["cant reach host", "can't reach host"],
   ["the listing failed", "the listing failed"],
 ] as const)("offers lists again a connection whose last listing failed [%s]", async (_, error) => {
   const conns = await connections()

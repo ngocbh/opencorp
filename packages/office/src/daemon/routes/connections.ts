@@ -116,6 +116,37 @@ function llmConfig(body: AddBody): LlmConfig {
   return body.model ? { ...llm, model: body.model } : llm
 }
 
+/**
+ * `text` with the endpoint `body` named replaced by "the endpoint" and the model it named by "the model", matched
+ * case-insensitively and as whole tokens only.
+ */
+function scrubInput(text: string, body: AddBody, llm: LlmConfig): string {
+  // Yian refuses a base URL with credentials, so none reaches here. A host printed in its Unicode form isn't matched.
+  const names = new Map<string, string>()
+  if (body.model) names.set(body.model.toLowerCase(), "the model")
+  const endpoint = (body.endpoint ?? "").trim()
+  const baseUrl = typeof llm.base_url === "string" ? llm.base_url : ""
+  const host = URL.parse(baseUrl)?.hostname ?? ""
+  for (const name of [endpoint, baseUrl, host]) {
+    if (name) names.set(name.toLowerCase(), "the endpoint")
+  }
+  if (names.size === 0) return text
+  // One pass, longest first, so a replacement is never matched again. A token doesn't continue into a letter, digit,
+  // `_`, `-` or a further `.label`, yet a sentence's closing period still ends it.
+  const alternatives = [...names.keys()].sort((a, b) => b.length - a.length).map(escapeRegExp)
+  const pattern = new RegExp(
+    `(?<![A-Za-z0-9_.-])(?:${alternatives.join("|")})(?![A-Za-z0-9_-]|\\.[A-Za-z0-9])`,
+    "gi",
+  )
+  // A letter whose lower case is longer than itself can miss the map; it is still input, so it still goes.
+  return text.replace(pattern, (match) => names.get(match.toLowerCase()) ?? "the endpoint")
+}
+
+/** `text` as a regular expression that matches it literally. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
 /** Adds the connection `body` asks for once its key works, and returns its name; nothing is saved otherwise. */
 async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
   const llm = llmConfig(body)
@@ -169,11 +200,14 @@ async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
       throw error
     }
     if (problem) {
-      if (body.model) throw new HttpError(422, "model_refused", `The model didn't answer: ${problem}`)
+      // The provider's reason is worth showing, but a 422 never echoes what the request named.
+      const shown = scrubInput(problem, body, llm)
+      if (body.model) throw new HttpError(422, "model_refused", `The model didn't answer: ${shown}`)
+      // Not input: this model is a default or the listing's first.
       throw new HttpError(
         422,
         "model_refused",
-        `The model '${llm.model}' didn't answer: ${problem}; name another model`,
+        `The model '${llm.model}' didn't answer: ${shown}; name another model`,
       )
     }
   }
