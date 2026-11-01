@@ -719,6 +719,11 @@ test("labels", () => {
     "azure",
   )
   expect(providerLabel({ provider: "openai", base_url: "https://gw.example/v1/" })).toBe("custom")
+  // Azure Government and Azure China.
+  for (const host of ["openai.azure.us", "cognitiveservices.azure.us", "openai.azure.cn", "cognitiveservices.azure.cn"])
+    expect(providerLabel({ provider: "openai", base_url: `https://acme.${host}/openai/v1/` })).toBe("azure")
+  for (const base_url of ["https://evilazure.us/v1", "https://azure.us.evil.com/v1", "https://acme.azure.co/v1"])
+    expect(providerLabel({ provider: "openai", base_url })).toBe("custom")
   expect(providerLabel({ provider: "openai" })).toBe("openai")
   expect(providerLabel({ provider: "anthropic", api_key: SENTINEL })).toBe("anthropic")
   expect(providerLabel({ model: "m" })).toBe("composer")

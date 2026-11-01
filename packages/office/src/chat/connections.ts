@@ -565,19 +565,24 @@ export function runRecord(connection: string, model: string | null, provider: Pr
   return { connection, model, configSha256: configHash(provider) }
 }
 
-/** A short name for the provider of `llm`: `azure`, `custom` (another OpenAI-compatible endpoint), the
- *  provider's own name, or `composer`, the label for yian's default provider. */
+/** The host name of `llm`'s `base_url`, or "" when it has none or it isn't a URL. */
+export function baseUrlHost(llm: LlmConfig | null): string {
+  if (!llm?.base_url) return ""
+  return URL.parse(String(llm.base_url))?.hostname ?? ""
+}
+
+/** The host name endings of Azure OpenAI resources: the commercial, Government and China clouds. */
+const AZURE_HOSTS = [".azure.com", ".azure.us", ".azure.cn"]
+
+/** A short name for the provider of `llm`: `azure` (an Azure OpenAI resource in the commercial, Government or
+ *  China cloud), `custom` (another OpenAI-compatible endpoint), the provider's own name, or `composer`, the label
+ *  for yian's default provider. */
 export function providerLabel(llm: LlmConfig | null): string {
   const provider = llm?.provider
   if (!provider) return "composer"
   if (provider === "openai" && llm.base_url) {
-    let host = ""
-    try {
-      host = new URL(String(llm.base_url)).hostname
-    } catch {
-      // not a URL: no host
-    }
-    return host.endsWith(".azure.com") ? "azure" : "custom"
+    const host = baseUrlHost(llm)
+    return AZURE_HOSTS.some((ending) => host.endsWith(ending)) ? "azure" : "custom"
   }
   return String(provider)
 }

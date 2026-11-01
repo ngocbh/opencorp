@@ -381,8 +381,48 @@ test("other takes a base url and needs a model", async () => {
     api_key: SENTINEL,
     model: "llama-4",
   })
-  expect(checks.calls).toEqual([]) // listing was the check
+  // A listing doesn't prove the endpoint serves chat.
+  expect(checks.calls.map((c) => c.llm_config)).toEqual([saved(office, "custom").llm_config])
 })
+
+test("a custom endpoint that lists its models but doesnt answer is not saved", async () => {
+  const { office, sock, checks } = await setup()
+  const owner = await asOwner(office)
+  checks.problems.push("HTTP 404")
+  const body = { provider: "openai", api_key: SENTINEL, endpoint: "https://gw.example/v1", model: "llama-4" }
+  const r = await post(sock, "/connections", owner, body)
+  expect([r.status, r.json()]).toEqual([422, { error: "model_refused", message: "The model didn't answer: HTTP 404" }])
+  expect(JSON.stringify(r.json())).not.toContain(SENTINEL)
+  expect(checks.calls).toHaveLength(1)
+  onlyOffice(office)
+})
+
+test("an azure government resource is saved as azure after one reply", async () => {
+  const { office, sock, checks } = await setup()
+  const owner = await asOwner(office)
+  const body = { provider: "azure", api_key: SENTINEL, endpoint: "https://acme.openai.azure.us", model: "o3" }
+  const r = await post(sock, "/connections", owner, body)
+  expect([r.status, json(r).name, json(r).provider, json(r).model]).toEqual([200, "azure", "azure", "o3"])
+  expect(saved(office, "azure").llm_config).toEqual({
+    provider: "openai",
+    base_url: "https://acme.openai.azure.us/openai/v1/",
+    api_key: SENTINEL,
+    model: "o3",
+  })
+  expect(checks.calls).toHaveLength(1)
+})
+
+test.each([UNREACHABLE, REFUSED])(
+  "a non azure host given as azure whose deployments cant be listed needs a model [%s]",
+  async (key) => {
+    const { office, sock, checks } = await setup()
+    const owner = await asOwner(office)
+    const r = await post(sock, "/connections", owner, { provider: "azure", api_key: key, endpoint: "https://gw.example" })
+    expect([r.status, errorOf(r)]).toEqual([422, "models_unlisted"])
+    expect(checks.calls).toEqual([])
+    onlyOffice(office)
+  },
+)
 
 test("an endpoint is only for azure or openai", async () => {
   const { office, sock } = await setup()
