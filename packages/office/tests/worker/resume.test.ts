@@ -153,6 +153,55 @@ test("an advance whose yian settings differ is not resumed", async () => {
   await expectNotResumed(advanceJob(chat), "DefaultsMismatchError", { ...fake.env(), YIAN_MAX_EVENT_BYTES: "12345" })
 })
 
+/** A run of `flows/inbox.yaml` waiting for a message. */
+async function waitingInbox(): Promise<Job> {
+  const waiting = makeJob(base(), "flows/inbox.yaml", { inputs: {} })
+  expect((await run(waiting, new Recorder())).outcome?.status).toBe("waiting")
+  return waiting
+}
+
+const HI = { id: "s1", op: "send", inbox: "messages", event: "hi" } as const
+
+test("an advance whose log has a bad line is not resumed and refuses its deliveries", async () => {
+  const waiting = await waitingInbox()
+  fs.appendFileSync(waiting.log, "garbage\n")
+  const before = fs.readFileSync(waiting.log, "utf8")
+  const rec = await run(advanceJob(waiting, { deliver: [HI] }), new Recorder())
+  expect(rec.order).toEqual(["deliver_reply", "result"])
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", refused: "not_started" }])
+  expect(rec.outcome).toEqual({
+    type: "result",
+    status: "not_resumed",
+    run_id: "r1",
+    error_type: "RangeError",
+    unreadable: true,
+  })
+  expect(fs.readFileSync(waiting.log, "utf8")).toBe(before)
+})
+
+test("an advance whose log is gone is not resumed", async () => {
+  const waiting = await waitingInbox()
+  fs.rmSync(path.dirname(waiting.log), { recursive: true })
+  const rec = await run(advanceJob(waiting, { deliver: [HI] }), new Recorder())
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", refused: "not_started" }])
+  expect(rec.outcome).toEqual({ type: "result", status: "not_resumed", run_id: "r1", error_type: "ENOENT", unreadable: true })
+  expect(fs.existsSync(path.dirname(waiting.log))).toBe(false)
+})
+
+test("a delivery-only job on an unreadable log is not resumed", async () => {
+  const waiting = await waitingInbox()
+  fs.appendFileSync(waiting.log, "garbage\n")
+  const rec = await run(advanceJob(waiting, { advance: false, deliver: [HI] }), new Recorder())
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", refused: "not_started" }])
+  expect(rec.outcome).toEqual({
+    type: "result",
+    status: "not_resumed",
+    run_id: "r1",
+    error_type: "RangeError",
+    unreadable: true,
+  })
+})
+
 test("a refusal after the advance appended a record is an error", () => {
   expect(notResumed(new RangeError("x"), true)).toBe(false)
   expect(notResumed(new RangeError("x"), false)).toBe(true)

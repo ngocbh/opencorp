@@ -2490,10 +2490,15 @@ export class SessionActor implements LiveCalls {
     this.#requeue(carry)
   }
 
-  /** `run`'s advance was refused before it appended anything (`not_resumed`): a fresh run replaces the run
-   *  (`COULDNT_RESUME`), carrying what `#carryFresh` keeps. */
+  /** `run`'s advance was refused before it appended anything (`not_resumed`), or its log is gone or can't be read
+   *  (`unreadable`): a fresh run replaces the run (`COULDNT_RESUME`), carrying what `#carryFresh` keeps. */
   async #notResumed(run: WorkerRun): Promise<void> {
-    this.#log(`session ${this.sessionId}: its run can't be resumed (${typeName(run.outcome!.error_type)})`)
+    const type = typeName(run.outcome!.error_type)
+    this.#log(
+      run.outcome!.unreadable === true
+        ? `session ${this.sessionId}: its run's log can't be read (${type}); a fresh run replaces it`
+        : `session ${this.sessionId}: its run can't be resumed (${type})`,
+    )
     this.#carryFresh(run)
     await this.#spawnQuietly("chat", { replace: { why: COULDNT_RESUME, finished: null } })
   }
@@ -2739,6 +2744,10 @@ export class SessionActor implements LiveCalls {
           const reply = checkedReply(frame)
           if (typeof reply.refused === "string") note(`was refused (${reply.refused})`)
           else if (typeof reply.failed === "string") note(`failed (${reply.failed})`)
+        }
+
+        override result(_worker: unknown, frame: Frame): void {
+          if (frame.status === "not_resumed") note(`wasn't applied: its log can't be read (${typeName(frame.error_type)})`)
         }
 
         override error(_worker: unknown, frame: Frame): void {

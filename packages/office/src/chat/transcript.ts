@@ -8,11 +8,13 @@ import {
   type Message as RunMessage,
   PoolCommitRecord,
   RunLogChangedError,
+  type RunLogEntry,
   TypedValue,
 } from "@ngocbh/yian/run"
 import { Handle, type Message, type Part, type ToolPart } from "@opencorp/protocol"
 import { INTERRUPTED_TEXT } from "../harness/translate.ts"
 import { CHUNK, HUGE_LINE } from "../runs/reader.ts"
+import { errorName } from "../worker/rpc.ts"
 import { MAIN_CHAT } from "./turns.ts"
 
 export { INTERRUPTED_TEXT }
@@ -132,18 +134,27 @@ function messageId(runId: string, seq: number): string {
  * `maxBytes` (32 MiB by default), and always the run just read. A fold keeps copies of only what it shows, so a large
  * log whose transcript is small stays cached. A log line over `lineCap` (LINE_CAP by default) is never parsed: a reply
  * step shows its size instead.
+ *
+ * A log line that isn't a record this version reads stops its run's transcript after the record before it: each later
+ * read stops there again, and `log` gets one line for the run, naming the record and the error's type, never the
+ * line. A run whose log or folder isn't there shows no messages; one whose log can't be opened (`EACCES`) shows none
+ * either, logged once.
  */
 export class Transcript {
   private readonly runs: string
   private readonly maxBytes: number
   private readonly lineCap: number
+  private readonly log: (line: string) => void
   private readonly cache = new Map<string, Fold>()
   private readonly refreshing = new Map<string, Promise<void>>()
+  /** The runs whose unreadable log was logged. */
+  private readonly warned = new Set<string>()
 
-  constructor(runs: string, options: { maxBytes?: number; lineCap?: number } = {}) {
+  constructor(runs: string, options: { maxBytes?: number; lineCap?: number; log?: (line: string) => void } = {}) {
     this.runs = runs
     this.maxBytes = options.maxBytes ?? 32 * 1024 * 1024
     this.lineCap = options.lineCap ?? LINE_CAP
+    this.log = options.log ?? (() => {})
   }
 
   /** The messages of the runs `runIds` (session_runs order), then the last run's queued messages. */
@@ -192,7 +203,10 @@ export class Transcript {
 
   /** Forgets the reads of `runIds`, for a session that ended. */
   forget(runIds: Iterable<string>): void {
-    for (const runId of runIds) this.cache.delete(runId)
+    for (const runId of runIds) {
+      this.cache.delete(runId)
+      this.warned.delete(runId)
+    }
   }
 
   private async refreshRun(runId: string): Promise<void> {
@@ -203,32 +217,41 @@ export class Transcript {
     }
   }
 
-  /** The fold of the run `runId`, its cached fold read on to the end of its log; a run with no log yet has an empty
-   *  fold, not cached. */
+  /** The fold of the run `runId`, its cached fold read on to the end of its log, or to the last record before a line
+   *  that can't be read; a run with no log yet, or a log that can't be opened, has an empty fold, not cached. */
   private read(runId: string): Fold {
     return this.slice(runId, Infinity).fold
   }
 
-  /** The fold of the run `runId`, its cached fold read on until its log's end (`done`) or `deadline` (a
-   *  `performance.now()` time); a run with no log yet has an empty fold, not cached. */
+  /** The fold of the run `runId`, its cached fold read on until its log's end or the last record before a line that
+   *  can't be read (`done`), or `deadline` (a `performance.now()` time); a run with no log yet, or a log that can't be
+   *  opened, has an empty fold, not cached. */
   private slice(runId: string, deadline: number): { fold: Fold; done: boolean } {
     const log = path.join(this.runs, runId, "log.jsonl")
     const cached = this.cache.get(runId)
     // Out of the cache while it is read, so a read that throws leaves no half-read fold, and put back last.
     this.cache.delete(runId)
     let state = cached ?? emptyFold()
-    let done: boolean
+    let read: ReadEnd
     try {
       try {
-        done = readOn(log, runId, state, this.lineCap, deadline)
+        read = readOn(log, runId, state, this.lineCap, deadline)
       } catch (error) {
         if (!(error instanceof RunLogChangedError)) throw error
         state = emptyFold()
-        done = readOn(log, runId, state, this.lineCap, deadline)
+        read = readOn(log, runId, state, this.lineCap, deadline)
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return { fold: emptyFold(), done: true }
-      throw error
+      const code = (error as NodeJS.ErrnoException | null)?.code
+      if (code === "ENOENT" || code === "ENOTDIR") return { fold: emptyFold(), done: true }
+      if (code !== "EACCES") throw error
+      this.warnOnce(runId, `run ${runId}: its log can't be read (EACCES); it shows no messages`)
+      return { fold: emptyFold(), done: true }
+    }
+    if (read.stopped !== null) {
+      // Only the record count and the error's type: yian's message quotes the log's path and the line's values.
+      const where = state.seq === null ? "before its first record" : `after record ${state.seq}`
+      this.warnOnce(runId, `run ${runId}: the transcript stops ${where} (${errorName(read.stopped)}: a line of its log can't be read)`)
     }
     this.cache.set(runId, state)
     let bytes = 0
@@ -239,8 +262,22 @@ export class Transcript {
       this.cache.delete(id)
       bytes -= fold.held
     }
-    return { fold: state, done }
+    return { fold: state, done: read.done }
   }
+
+  /** Logs `line` unless a line was logged for the run `runId` already. */
+  private warnOnce(runId: string, line: string): void {
+    if (this.warned.has(runId)) return
+    this.warned.add(runId)
+    this.log(line)
+  }
+}
+
+/** Where a read of a log ended: at the end of its complete lines or at a line that isn't a record this version reads
+ *  (`done`), or at its deadline; `stopped` is that line's error, else null. */
+interface ReadEnd {
+  done: boolean
+  stopped: unknown
 }
 
 /** Where a read of `log` from `from` stops (`stop`): the end of the last complete line scanned, CHUNK at a time for
@@ -277,39 +314,57 @@ function scan(
   }
 }
 
-/** Folds into `state` the records of the log `log` (of the run `runId`) after the last one it folded, until the end of
- *  its complete lines (true) or `deadline` (false). Each stretch of lines is scanned before yian's reader reads it, so
- *  a line over `cap` is never held or parsed (`foldBig`). */
-function readOn(log: string, runId: string, state: Fold, cap: number, deadline: number): boolean {
+/**
+ * Folds into `state` the records of the log `log` (of the run `runId`) after the last one it folded, until the end of
+ * its complete lines, a line that isn't a record this version reads (a `RangeError`, `RunLogSchemaError` among them,
+ * with `state` folded up to the record before it), or `deadline`. Each stretch of lines is scanned before yian's
+ * reader reads it, so a line over `cap` is never held or parsed (`foldBig`).
+ *
+ * @throws RunLogChangedError when the log no longer continues `state`; the error of a failed open or read.
+ */
+function readOn(log: string, runId: string, state: Fold, cap: number, deadline: number): ReadEnd {
   for (;;) {
     const { stop, big, more } = scan(log, state.end, cap)
     if (stop > state.end) {
       // Every kind is read, not only KINDS, so the read can stop at exactly the scanned end.
       const resume = state.seq === null ? {} : { afterOffset: state.end, runId: state.runId, afterSeq: state.seq }
-      let reached = false
-      for (const entry of iterRunRecords(log, resume)) {
-        // A record past the scanned end means the scanned bytes were rewritten since.
-        if (entry.end > stop) throw new RunLogChangedError("the run log changed under its read")
-        if (KINDS.has(entry.kind)) fold(state, entry.seq, entry.at, entry.kind, entry.nodeId, entry.envelope.record)
-        state.end = entry.end
-        state.seq = entry.seq
-        state.runId = entry.runId
-        if (entry.end === stop) {
-          reached = true
-          break
+      const records = iterRunRecords(log, resume)
+      try {
+        for (;;) {
+          let next: IteratorResult<RunLogEntry, void>
+          try {
+            next = records.next()
+          } catch (error) {
+            if (!(error instanceof RangeError) || error instanceof RunLogChangedError) throw error
+            return { done: true, stopped: error }
+          }
+          // The log ended before the scanned end: it was cut since; what is left is read next time.
+          if (next.done) return { done: true, stopped: null }
+          const entry = next.value
+          // A record past the scanned end means the scanned bytes were rewritten since.
+          if (entry.end > stop) throw new RunLogChangedError("the run log changed under its read")
+          // A throw from the fold isn't caught: it would leave the record half folded, and a cached half fold would
+          // fold it again on the next read.
+          if (KINDS.has(entry.kind)) fold(state, entry.seq, entry.at, entry.kind, entry.nodeId, entry.envelope.record)
+          state.end = entry.end
+          state.seq = entry.seq
+          state.runId = entry.runId
+          if (entry.end === stop) break
+          if (performance.now() > deadline) return { done: false, stopped: null }
         }
-        if (performance.now() > deadline) return false
+      } finally {
+        // Closes the log when the read stops early or the fold throws.
+        records.return()
       }
-      // The log ended before the scanned end: it was cut since; what is left is read next time.
-      if (!reached) return true
     }
     if (big !== null) {
       if (state.runId === "") state.runId = runId
-      foldBig(log, state, big.start, big.end)
+      const stopped = foldBig(log, state, big.start, big.end)
+      if (stopped !== null) return { done: true, stopped }
     } else if (!more) {
-      return true
+      return { done: true, stopped: null }
     }
-    if (performance.now() > deadline) return false
+    if (performance.now() > deadline) return { done: false, stopped: null }
   }
 }
 
@@ -328,9 +383,9 @@ function leading(text: string): { fields: Record<string, unknown>; rest: string 
 
 /** Folds into `state` the line of `log` from `start` to `end`, over the line cap, from its first and last bytes only:
  *  a reply's `tool_result` step keeps its call and shows its size as its output, any other reply step shows its size,
- *  a commit's acceptance and a run's end count, and the rest is skipped. Throws a RangeError, naming the line by
- *  number only, when the line's seq isn't the next one. */
-function foldBig(log: string, state: Fold, start: number, end: number): void {
+ *  a commit's acceptance and a run's end count, and the rest is skipped; returns null. Returns a RangeError, naming the
+ *  line by number only, and folds nothing, when the line's seq isn't the next one. */
+function foldBig(log: string, state: Fold, start: number, end: number): RangeError | null {
   const size = end - start
   const seq = state.seq === null ? 0 : state.seq + 1
   const head = Buffer.alloc(Math.min(HEAD_BYTES, size))
@@ -343,7 +398,7 @@ function foldBig(log: string, state: Fold, start: number, end: number): void {
     fs.closeSync(fd)
   }
   if (SEQ.exec(tail.toString("latin1"))?.[1] !== String(seq)) {
-    throw new RangeError(`run log line ${seq + 1} is too large to read and doesn't read as record ${seq}`)
+    return new RangeError(`run log line ${seq + 1} is too large to read and doesn't read as record ${seq}`)
   }
   const text = head.toString("utf8")
   const envelope = text.startsWith("{") ? leading(text.slice(1)) : { fields: {}, rest: "" }
@@ -369,6 +424,7 @@ function foldBig(log: string, state: Fold, start: number, end: number): void {
   }
   state.end = end
   state.seq = seq
+  return null
 }
 
 /** A copy of `value` sharing no memory with the line it was parsed from (JSC keeps a substring's parent string alive,

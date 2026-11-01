@@ -1605,6 +1605,25 @@ test("a profile edited between two messages does not stop the next advance", asy
   expect(session(o, sid).run_ids).toHaveLength(1)
 })
 
+test("a run log with a bad line answers the next message from a fresh run", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  expect(await say(o, actor, sid, "a")).toBe("one")
+  const old = actor.runId!
+  fs.appendFileSync(path.join(o.office.paths.runs, old, "log.jsonl"), "garbage\n")
+  expect(await say(o, actor, sid, "b")).toBe("two")
+  expect(o.kinds.at(-1)).toBe("chat")
+  expect(actor.runId).not.toBe(old)
+  expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
+  expect(status(o, sid)).toBe("idle")
+  expect(texts(o, sid, "user")).toEqual(["a", "b"])
+  expect(texts(o, sid)).toEqual(["one", "two"])
+  expect(o.logs).toContainEqual(expect.stringContaining("its run's log can't be read (RangeError); a fresh run replaces it"))
+  expect(o.logs.filter((line) => line.includes("has no recorded outcome") || line.includes("garbage"))).toEqual([])
+})
+
 /** A `not_resumed` result frame of run `runId`. */
 function notResumed(runId: string): Record<string, unknown> {
   return { type: "result", status: "not_resumed", run_id: runId, error_type: "ResumeError" }

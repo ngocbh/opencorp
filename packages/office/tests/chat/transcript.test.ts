@@ -592,7 +592,7 @@ test("reads are incremental", async () => {
   ])
   await advance(job, fake, [send("s2", "second")])
   corrupt(job.log)
-  expect(() => new Transcript(runs).messages(sessionId, ["r1"])).toThrow()
+  expect(new Transcript(runs, { log: () => {} }).messages(sessionId, ["r1"])).toEqual([])
   expect(texts(messages(runs, sessionId, ["r1"], { transcript }))).toEqual([
     ["user", ["first"]],
     ["assistant", ["one"]],
@@ -627,19 +627,124 @@ test("the cache keeps at most max bytes and forgets ended runs", async () => {
   await advance(a, fake, [send("s1", "to a")])
   const b = await waitingChat(fake, "chat", {}, { runs, runId: "b" })
   await advance(b, fake, [send("s2", "to b")])
-  const transcript = new Transcript(runs, { maxBytes: 1 })
+  const transcript = new Transcript(runs, { maxBytes: 1, log: () => {} })
   const sessionId = newId()
   expect(messages(runs, sessionId, ["a"], { transcript }).length).toBe(2)
   expect(messages(runs, sessionId, ["b"], { transcript }).length).toBe(2)
   corrupt(a.log)
-  expect(() => transcript.messages(sessionId, ["a"])).toThrow()
   corrupt(b.log)
   expect(texts(messages(runs, sessionId, ["b"], { transcript }))).toEqual([
     ["user", ["to b"]],
     ["assistant", ["B."]],
   ])
   transcript.forget(["b"])
-  expect(() => transcript.messages(sessionId, ["b"])).toThrow()
+  expect(transcript.messages(sessionId, ["b"])).toEqual([])
+  expect(transcript.messages(sessionId, ["a"])).toEqual([])
+})
+
+test("a bad line shows the messages up to it and logs once", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "first")])
+  await advance(job, fake, [send("s2", "second")])
+  fs.appendFileSync(job.log, "garbage\n")
+  const logs: string[] = []
+  const transcript = new Transcript(runs, { log: (line) => logs.push(line) })
+  const sessionId = newId()
+  const want: [string, string[]][] = [
+    ["user", ["first"]],
+    ["assistant", ["one"]],
+    ["user", ["second"]],
+    ["assistant", ["two"]],
+  ]
+  expect(texts(messages(runs, sessionId, ["r1"], { transcript }))).toEqual(want)
+  expect(texts(messages(runs, sessionId, ["r1"], { transcript }))).toEqual(want)
+  expect(logs.length).toBe(1)
+  expect(logs[0]).toMatch(/^run r1: the transcript stops after record \d+ \(RangeError: a line of its log can't be read\)$/)
+  expect(logs[0]).not.toContain(runs)
+})
+
+test("a line with the wrong schema stops the transcript the same way", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "first")])
+  fs.appendFileSync(job.log, `${JSON.stringify({ schema: 999, run_id: "r1" })}\n`)
+  const logs: string[] = []
+  const transcript = new Transcript(runs, { log: (line) => logs.push(line) })
+  expect(texts(messages(runs, newId(), ["r1"], { transcript }))).toEqual([
+    ["user", ["first"]],
+    ["assistant", ["one"]],
+  ])
+  expect(logs).toEqual([expect.stringMatching(/stops after record \d+ \(RunLogSchemaError: /)])
+})
+
+test("a bad first line reads as no messages", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "first")])
+  corrupt(job.log)
+  const logs: string[] = []
+  expect(messages(runs, newId(), ["r1"], { transcript: new Transcript(runs, { log: (line) => logs.push(line) }) })).toEqual(
+    [],
+  )
+  expect(logs).toEqual(["run r1: the transcript stops before its first record (RangeError: a line of its log can't be read)"])
+})
+
+test("a bad line that was rewritten reads on past it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "first")])
+  const good = fs.readFileSync(job.log)
+  fs.appendFileSync(job.log, "garbage\n")
+  const transcript = new Transcript(runs, { log: () => {} })
+  const sessionId = newId()
+  expect(messages(runs, sessionId, ["r1"], { transcript }).length).toBe(2)
+  fs.writeFileSync(job.log, good)
+  await advance(job, fake, [send("s2", "second")])
+  expect(texts(messages(runs, sessionId, ["r1"], { transcript }))).toEqual([
+    ["user", ["first"]],
+    ["assistant", ["one"]],
+    ["user", ["second"]],
+    ["assistant", ["two"]],
+  ])
+})
+
+test("a runs path that is a file reads as no messages", () => {
+  const runs = path.join(tempDir(), "runs")
+  fs.writeFileSync(runs, "")
+  const logs: string[] = []
+  expect(messages(runs, newId(), ["r1"], { transcript: new Transcript(runs, { log: (line) => logs.push(line) }) })).toEqual(
+    [],
+  )
+  expect(logs).toEqual([])
+})
+
+test.skipIf(process.getuid?.() === 0)("an unreadable run folder reads as no messages and logs its code once", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "first")])
+  const folder = path.dirname(job.log)
+  const logs: string[] = []
+  const transcript = new Transcript(runs, { log: (line) => logs.push(line) })
+  fs.chmodSync(folder, 0o000)
+  try {
+    expect(messages(runs, newId(), ["r1"], { transcript })).toEqual([])
+    expect(messages(runs, newId(), ["r1"], { transcript })).toEqual([])
+  } finally {
+    fs.chmodSync(folder, 0o700)
+  }
+  expect(logs).toEqual(["run r1: its log can't be read (EACCES); it shows no messages"])
+  expect(messages(runs, newId(), ["r1"], { transcript }).length).toBe(2)
 })
 
 test("a run without a log yet has no messages", () => {
@@ -751,23 +856,18 @@ test("a run end over the line cap ends the run, and another node's line over it 
   expect(transcript.runningReply(RUN)).toBeNull()
 })
 
-test("a line over the line cap that isn't its seq is refused without its content", () => {
+test("a line over the line cap that is not its seq stops the transcript, logged without its content", () => {
   const runs = tempDir()
   const log = path.join(runs, RUN, "log.jsonl")
   fs.mkdirSync(path.dirname(log), { recursive: true })
   const secret = "secret-looking-" + "q".repeat(20_000)
   const commit = line(5, "pool_commit", { node_id: "o", key: "o", kind: "object", value: { output: secret } })
-  fs.writeFileSync(log, Buffer.concat([runStarted(0), commit]))
-  const transcript = new Transcript(runs, { lineCap: 16_384 })
-  let thrown: unknown
-  try {
-    transcript.messages(newId(), [RUN])
-  } catch (error) {
-    thrown = error
-  }
-  expect(thrown).toBeInstanceOf(RangeError)
-  expect((thrown as Error).message).not.toContain("secret")
-  expect((thrown as Error).message).toContain("line 2")
+  fs.writeFileSync(log, Buffer.concat([runStarted(0), started(1, REPLY), commit]))
+  const logs: string[] = []
+  const transcript = new Transcript(runs, { lineCap: 16_384, log: (text) => logs.push(text) })
+  expect(transcript.messages(newId(), [RUN])).toEqual([])
+  expect(transcript.runningReply(RUN)).toBe(`${RUN}:${String(1).padStart(12, "0")}`)
+  expect(logs).toEqual([`run ${RUN}: the transcript stops after record 1 (RangeError: a line of its log can't be read)`])
 })
 
 test("a refresh yields to the event loop and leaves what a fresh read gives", async () => {
@@ -819,14 +919,16 @@ test("a run forgotten during its refresh isn't kept", async () => {
   const lines = [runStarted(0)]
   for (let seq = 1; seq < 40_000; seq++) lines.push(line(seq, "node_started", { node_id: `n${seq}` }))
   fs.writeFileSync(log, Buffer.concat(lines))
-  const transcript = new Transcript(runs)
+  const logs: string[] = []
+  const transcript = new Transcript(runs, { log: (text) => logs.push(text) })
   const refreshing = transcript.refresh([RUN])
   await new Promise((resolve) => setImmediate(resolve))
   transcript.forget([RUN])
   await refreshing
-  // Nothing cached: a read starts from the log's first byte.
+  // Nothing cached: a read starts from the log's first byte, and stops there.
   corrupt(log)
-  expect(() => transcript.messages(newId(), [RUN])).toThrow()
+  expect(transcript.messages(newId(), [RUN])).toEqual([])
+  expect(logs).toEqual([expect.stringMatching(/stops before its first record/)])
 })
 
 test("logs whose folds hold little stay cached however large the logs are", async () => {
