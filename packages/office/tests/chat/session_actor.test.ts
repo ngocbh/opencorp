@@ -487,9 +487,9 @@ test("an answer whose spawn failed goes with the next advance and is consumed", 
   expect(texts(o, sid, "user")).toEqual(["hi", "next"])
 })
 
-test("esc answers an office call in flight", async () => {
-  const fake = await fakeLlm()
-  fake.script({ tool_calls: [{ name: "slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
+/** An office whose `slow` tool call never returns, recording what the actor's handlers answer each tool call with:
+ *  `called` resolves once the call starts. */
+async function slowCallOffice(fake: Awaited<ReturnType<typeof fakeLlm>>) {
   let entered!: () => void
   const called = new Promise<void>((resolve) => (entered = resolve))
   const slow: OfficeTool = {
@@ -501,7 +501,6 @@ test("esc answers an office call in flight", async () => {
     },
   }
   const o = await chatOffice(fake, { groups: { toolbox: { slow } } })
-  // What the actor's handlers answer each tool call with.
   const replies: Promise<unknown>[] = []
   const recorded = (handlers: WorkerHandlers<Worker>) => {
     const toolCall = handlers.toolCall.bind(handlers)
@@ -515,6 +514,13 @@ test("esc answers an office call in flight", async () => {
   const { spawn, next } = o.registry
   o.registry.spawn = (job, sessionDir, handlers, options) => spawn(job, sessionDir, recorded(handlers), options)
   o.registry.next = (worker, job, handlers) => next(worker, job, recorded(handlers))
+  return { o, called, replies }
+}
+
+test("esc answers an office call in flight", async () => {
+  const fake = await fakeLlm()
+  fake.script({ tool_calls: [{ name: "slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
+  const { o, called, replies } = await slowCallOffice(fake)
   const { actor, sid } = await startActor(o)
   await actor.prompt("hi")
   await called
@@ -524,6 +530,25 @@ test("esc answers an office call in flight", async () => {
   expect(o.workspace.interrupts).toBeGreaterThan(interrupts)
   // The run goes on to its next turn.
   await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "the run at its next turn" })
+})
+
+test("end answers an office call in flight and interrupts the workspace", async () => {
+  const fake = await fakeLlm()
+  fake.script({ tool_calls: [{ name: "slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
+  const { o, called, replies } = await slowCallOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("hi")
+  await called
+  const interrupts = o.workspace.interrupts
+  await actor.end()
+  expect(o.workspace.interrupts).toBeGreaterThan(interrupts)
+  // Answered by End itself, while the worker still waits on it, not at the worker's exit.
+  const answered = replies[0]!.then((reply) => [reply, actor.hasWorker])
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise((resolve) => (timer = setTimeout(() => resolve("unanswered"), 5_000)))
+  expect(await Promise.race([answered, late])).toEqual([INTERRUPTED_CALL, true])
+  clearTimeout(timer)
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
 })
 
 test("a stored question fires question stored once", async () => {
@@ -919,6 +944,61 @@ test("a lost ack is resent and a lost interrupt is dropped", async () => {
   expect(second.job.deliver).toEqual([first.deliveries[0]!])
   second.handlers.deliverReply(second.worker, { type: "deliver_reply", id: first.deliveries[0]!.id, seq: 5 })
   expect(await sent).toBe("queued")
+})
+
+test("an esc its worker never answered is resent when the worker dies", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = workers[0]!
+  const sent = actor.prompt("hi")
+  await waitFor(() => first.deliveries.length === 1, { what: "the send" })
+  first.handlers.deliverReply(first.worker, { type: "deliver_reply", id: first.deliveries[0]!.id, seq: 4 })
+  expect(await sent).toBe("queued")
+  let answered = false
+  const cut = actor.interrupt().then(() => void (answered = true))
+  await waitFor(() => first.deliveries.length === 2, { what: "the interrupt" })
+  // The worker dies before it answers the interrupt, with no outcome.
+  first.handlers.exited(first.worker, 1)
+  await waitFor(() => workers.length === 2, { what: "the next worker" })
+  const second = workers[1]!
+  // Its advance resumes the reply the interrupt was meant to cut, so the interrupt goes again.
+  expect(second.job).toMatchObject({ kind: "advance", advance: true })
+  expect(second.job.deliver).toEqual([first.deliveries[1]!])
+  expect(answered).toBe(false)
+  second.handlers.deliverReply(second.worker, { type: "deliver_reply", id: first.deliveries[1]!.id, seq: 6 })
+  await cut
+  expect(answered).toBe(true)
+})
+
+test("an end its worker never answered resends its interrupt and close when the worker dies", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const first = workers[0]!
+  first.handlers.event(first.worker, { type: "event", name: "NodeStarted", data: { node_id: "chat#0/reply" } })
+  await actor.end()
+  expect(first.deliveries.map((d) => d.op)).toEqual(["interrupt", "close"])
+  first.handlers.exited(first.worker, 1)
+  await waitFor(() => workers.length === 2, { what: "the next worker" })
+  const second = workers[1]!
+  // In order: the resumed reply is cut before its turn reads the inbox closed.
+  expect(second.job.deliver).toEqual(first.deliveries)
+  for (const [seq, d] of second.job.deliver.entries()) {
+    second.handlers.deliverReply(second.worker, { type: "deliver_reply", id: d.id, seq: 6 + seq })
+  }
+  const succeeded = { type: "result", status: "succeeded", run_id: runId, output: null, failure: null, waits: [] }
+  second.handlers.result(second.worker, succeeded)
+  second.handlers.exited(second.worker, 0)
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  expect(o.kinds).toEqual(["chat", "advance"])
 })
 
 test("a settled wait is re-advanced once without progress", async () => {

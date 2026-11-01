@@ -164,7 +164,7 @@ interface Fresh {
 /** The run statuses that end a run, whose report waits for the run index. */
 const ENDING: readonly string[] = ["succeeded", "failed", "cancelled"]
 
-/** What an office tool call answers when Esc, the worker's exit or the office stop cuts it before it returns. */
+/** What an office tool call answers when Esc, End, the worker's exit or the office stop cuts it before it returns. */
 export const INTERRUPTED_CALL = "interrupted; outcome unknown"
 
 /** What a message became: the turn the run waits for, an answer to the model's open question, a steer of the running
@@ -652,7 +652,8 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * End: the session is `ending` at once, and its run gets an `interrupt` (while a reply runs or the agent waits on
+   * End: the session is `ending` at once, the workspace is interrupted and the office tool calls in flight are
+   * answered `INTERRUPTED_CALL` (as by Esc), and its run gets an `interrupt` (while a reply runs or the agent waits on
    * a model question) and a `close` of its inbox, whose turn then reads it closed, so the run succeeds and the
    * session ends. Resolves once they are queued; a second End does nothing. A spawn for them that fails fails the
    * session, and End throws its error. Over the cost cap a waiting run is ended the same way; a reply that runs is
@@ -669,9 +670,9 @@ export class SessionActor implements LiveCalls {
     })
   }
 
-  /** Marks the session ending and queues its run's `interrupt` (while a reply runs, `replying`, or the agent waits)
-   *  and `close`, spawning for them when no worker runs. A run restore found ended in yian ends the session at once,
-   *  as that run did. */
+  /** Marks the session ending, interrupts the workspace and answers the office tool calls in flight (as Esc does),
+   *  and queues its run's `interrupt` (while a reply runs, `replying`, or the agent waits) and `close`, spawning for
+   *  them when no worker runs. A run restore found ended in yian ends the session at once, as that run did. */
   async #end(session: SessionRecord, replying = this.#replying()): Promise<void> {
     if (this.#unresumable?.why === null) {
       // Yian ended the run: nothing is left to close, so the session ends as the run did.
@@ -681,6 +682,10 @@ export class SessionActor implements LiveCalls {
     }
     this.#ending = true
     this.#ctx.store.updateSession(this.sessionId, notWaiting("ending"))
+    // A reply blocked on a sandboxed shell or an office tool call can't read the interrupt until the call returns;
+    // and nobody will read what it returns, even when the end below fails.
+    this.#interruptWorkspace()
+    this.#answerCalls()
     let inbox: string
     try {
       // Restore may not have built the spec, and a folder gone or unsafe since fails its build.
@@ -1558,8 +1563,8 @@ export class SessionActor implements LiveCalls {
     return stored
   }
 
-  /** Runs the office tool call `call`, which Esc, the worker's exit or the office stop answers `INTERRUPTED_CALL` at
-   *  once. */
+  /** Runs the office tool call `call`, which Esc, End, the worker's exit or the office stop answers
+   *  `INTERRUPTED_CALL` at once. */
   #cancellable(call: () => Promise<unknown>): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const cancel = () => resolve(INTERRUPTED_CALL)
@@ -2116,13 +2121,19 @@ export class SessionActor implements LiveCalls {
     if (this.#rested) this.#arm(this.#waits ?? [])
   }
 
-  /** Moves the deliveries `run`'s worker never answered (but an `interrupt`), those it refused `not_started` and,
-   *  with `failed`, those that failed (but an `interrupt`), to the front of `#next`; answers the rest it was given. A
-   *  message a held fresh run answered early counts as never answered until a run takes it. */
-  #carry(run: WorkerRun, { failed = false }: { failed?: boolean } = {}): void {
+  /** Moves the deliveries `run`'s worker never answered (an `interrupt` only with `interrupts`), those it refused
+   *  `not_started` and, with `failed`, those that failed (an `interrupt` only with `interrupts`), to the front of
+   *  `#next`; answers the rest it was given. A message a held fresh run answered early counts as never answered until
+   *  a run takes it. */
+  #carry(
+    run: WorkerRun,
+    { failed = false, interrupts = false }: { failed?: boolean; interrupts?: boolean } = {},
+  ): void {
     const carry = run.given.filter((p) => {
       if (p.done && !p.early) return false
-      if (p.reply === null || (failed && typeof p.reply.failed === "string")) return p.delivery.op !== "interrupt"
+      if (p.reply === null || (failed && typeof p.reply.failed === "string")) {
+        return interrupts || p.delivery.op !== "interrupt"
+      }
       return p.reply.refused === "not_started"
     })
     this.#answerRest(
@@ -2203,11 +2214,11 @@ export class SessionActor implements LiveCalls {
   }
 
   /** `run`'s worker is gone with no outcome (`status` null), or its run `stopped` or `crashed`: the first time, a
-   *  plain `advance` takes over with what it carried (a fresh run, the old one ending `WORKER_REPLACED`, when the
-   *  run's record no longer gives what it ran on). After a worker gone with no outcome, one that can't start fails
-   *  the session (`#cantStartWhy`); after a `stopped` or `crashed` run, a failed spawn is only logged and the session
-   *  waits for the next message (an ending one fails, as `#spawnQuietly` says). Again before a `waiting` or
-   *  `succeeded` result, the session fails (`WORKER_STOPPED`). */
+   *  plain `advance` takes over with what it carried, an `interrupt` it never answered included (a fresh run, the old
+   *  one ending `WORKER_REPLACED`, when the run's record no longer gives what it ran on). After a worker gone with no
+   *  outcome, one that can't start fails the session (`#cantStartWhy`); after a `stopped` or `crashed` run, a failed
+   *  spawn is only logged and the session waits for the next message (an ending one fails, as `#spawnQuietly` says).
+   *  Again before a `waiting` or `succeeded` result, the session fails (`WORKER_STOPPED`). */
   async #died(run: WorkerRun, status: string | null): Promise<void> {
     this.#log(`session ${this.sessionId}: ${status === null ? "its worker exited (no outcome)" : `its run ${status}`}`)
     if (this.#deaths >= 1) {
@@ -2216,7 +2227,9 @@ export class SessionActor implements LiveCalls {
       return
     }
     this.#deaths += 1
-    this.#carry(run)
+    // The advance resumes the reply the interrupt was meant to cut; yian keeps a Stop that already took, so the
+    // interrupt sent again does nothing more.
+    this.#carry(run, { interrupts: true })
     if (status !== null) {
       await this.#spawnQuietly("advance", { moved: WORKER_REPLACED })
       return
@@ -2384,8 +2397,9 @@ export class SessionActor implements LiveCalls {
   /**
    * The closing rule: answers each of `pendings` that has no answer yet and isn't carried. A held `not_started` is
    * `503 cant_wake`, a held failure `failure` (by default `503 cant_wake` naming its type); a lost `interrupt` or
-   * `cancel`, or a dropped `complete` of a card's answer (its question stays answered), is resolved; any other
-   * delivery with no reply, a message's `complete` included, gets `fallback`.
+   * `cancel` (not carried: its worker returned a result, a fresh run replaced the run, or the session finished), or
+   * a dropped `complete` of a card's answer (its question stays answered), is resolved; any other delivery with no
+   * reply, a message's `complete` included, gets `fallback`.
    */
   #answerRest(pendings: readonly Pending[], fallback: HarnessError, failure?: HarnessError): void {
     for (const p of pendings) {

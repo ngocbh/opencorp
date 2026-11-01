@@ -66,6 +66,44 @@ test(
   TIMEOUT,
 )
 
+/** Takes a first turn in a session with Minh, then starts a reply whose model call is held, scripting `next` for the
+ *  model call after it; returns the session id and its worker's pid. */
+async function replyHeld(office: RunningOffice, next: string): Promise<{ sid: string; worker: number }> {
+  const sid = await firstTurn(office, folder(path.join(office.root, "project")))
+  office.llm.script({ content: "Busy.", hold: true }, { content: next })
+  await office.prompt(sid, "go")
+  await office.llm.waitForRequests(2, 40_000)
+  await office.replying(sid)
+  return { sid, worker: await office.worker(sid) }
+}
+
+test(
+  "an end whose worker is killed before it answers still cuts the reply",
+  async () => {
+    const office = await openOffice()
+    const { sid, worker } = await replyHeld(office, "AfterEnd.")
+    expect((await office.request("POST", `/sessions/${sid}/end`)).status).toBe(200)
+    process.kill(-worker, "SIGKILL")
+    await office.ended(sid)
+    // The respawned worker resumes the reply End cut, and gets End's interrupt again.
+    expect(await office.texts(sid)).toEqual(["One.", "[interrupted]"])
+  },
+  TIMEOUT,
+)
+
+test(
+  "an esc whose worker is killed before it answers still cuts the reply",
+  async () => {
+    const office = await openOffice()
+    const { sid, worker } = await replyHeld(office, "Redone.")
+    const esc = office.request("POST", `/sessions/${sid}/interrupt`)
+    process.kill(-worker, "SIGKILL")
+    expect((await esc).status).toBe(200)
+    await office.settled(sid, ["One.", "[interrupted]"])
+  },
+  TIMEOUT,
+)
+
 test(
   "an office killed between turns leaves no worker and opencorp start continues the chat",
   async () => {
