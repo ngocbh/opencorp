@@ -4,7 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import type { Scheduler } from "@ngocbh/yian/platform"
-import { iterRunRecords } from "@ngocbh/yian/run"
+import { iterRunRecords, staticPathOf } from "@ngocbh/yian/run"
 import { type RunUpdated, WorkItem, now } from "@opencorp/protocol"
 import { INTERRUPTED_CALL, SessionActor } from "../../src/chat/session_actor.ts"
 import { HarnessError, LIVE } from "../../src/chat/state.ts"
@@ -1495,6 +1495,16 @@ async function longTurns(h: Harness, id: string, n: number): Promise<void> {
   }
 }
 
+/** Waits until session `id`'s actor sees its summarizer run: the model getting the request shows only the worker's
+ *  side, and a command sent after this finds the fold running. */
+async function folding(h: Harness, id: string): Promise<void> {
+  const runId = h.store.getSession(id)!.run_ids.at(-1)!
+  const nodes = () => h.harness.live().runs.get(runId)?.nodes ?? []
+  await waitFor(() => nodes().some((node) => staticPathOf(node) === MAIN_CHAT.summarizer), {
+    what: "the fold",
+  })
+}
+
 const OKS = Array.from({ length: 5 }, () => ({ content: "ok" }))
 const SUMMARIZER = "You keep a running summary"
 const SUMMARIZE = "chat#3/context/compacted/folded/summarize"
@@ -1542,7 +1552,7 @@ test("esc during a fold stops the turn", async () => {
   const { id } = await start(h)
   await longTurns(h, id, 5)
   await h.harness.prompt(id, "sixth")
-  await fake.waitForRequests(6)
+  await folding(h, id)
   expect(status(h, id)).toBe("busy")
   await h.harness.interrupt(id)
   fake.release()
@@ -1559,7 +1569,7 @@ test("end during a fold ends without a reply call", async () => {
   const { id } = await start(h)
   await longTurns(h, id, 5)
   await h.harness.prompt(id, "sixth")
-  await fake.waitForRequests(6)
+  await folding(h, id)
   await h.harness.end(id)
   fake.release()
   await waitFor(() => status(h, id) === "ended", { what: "the end" })
