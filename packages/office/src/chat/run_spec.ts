@@ -66,7 +66,7 @@ export interface RunSpec {
 }
 
 /** The company defaults of `repo`; the schema's defaults without any. */
-function defaultsOf(repo: CompanyRepo): z.output<typeof CompanyDefaults> {
+export function defaultsOf(repo: CompanyRepo): z.output<typeof CompanyDefaults> {
   return repo.company?.defaults ?? CompanyDefaults.parse({})
 }
 

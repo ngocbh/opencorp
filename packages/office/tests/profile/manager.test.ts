@@ -13,6 +13,7 @@ import {
   ProposalNotFound,
   ProposalNotOpen,
   profileTools,
+  propose,
 } from "../../src/profile/manager.ts"
 import { GitProfileStore } from "../../src/profile/store.ts"
 import { writePrivate } from "../../src/secrets.ts"
@@ -27,12 +28,12 @@ setDefaultTimeout(30_000)
 
 /** A base company repo, a `CompanyGit` on it, and a store with a profile-manager session of minh's and its
  *  profile tools (Python's `office` fixture). */
-function office() {
+function office({ maxChars = 32000 }: { maxChars?: number } = {}) {
   const dir = tempDir()
   const g = new CompanyGit(company(dir), path.join(dir, "worktrees"))
   const store = openStore()
   const s = store.createSession(session({ kind: "profile_manager" }))
-  return { git: g, store, s, tools: profileTools(store, new GitProfileStore(g, "minh"), s) }
+  return { git: g, store, s, tools: profileTools(store, new GitProfileStore(g, "minh"), s, { maxChars }) }
 }
 
 const subject = (g: CompanyGit) => git(g.root, "log", "-1", "--format=%s")
@@ -85,6 +86,65 @@ test("propose edit stores a proposal with its diff and replaces older ones", asy
   )
   const made = tools.propose_edit.call({ text: "x", base_version: "0".repeat(40) })
   await expect(made).rejects.toBeInstanceOf(RangeError)
+})
+
+const HEADERS = "--- a/people/minh/profile.md\n+++ b/people/minh/profile.md\n"
+
+/** `n` lines `<prefix><i>\n`, every second one `<other><i>\n` when `other` is given. */
+function numbered(n: number, prefix: string, other?: string): string[] {
+  return Array.from({ length: n }, (_, i) => `${other !== undefined && i % 2 ? other : prefix}${i}\n`)
+}
+
+/** The diff `propose` stores for `text` over `base`. */
+async function diffOf(base: string, text: string): Promise<string> {
+  const { git: g, store, s } = office()
+  return (await propose(store, s, new GitProfileStore(g, "minh"), "0".repeat(40), base, text)).diff
+}
+
+test("a large edit gets one whole-file hunk", async () => {
+  // 1200 changed lines on each side is past the diff's edit bound, which a plain diff of them finishes well within
+  // its time bound, so only the edit bound makes the single hunk.
+  const base = numbered(2400, "l")
+  const text = numbered(2400, "l", "m")
+  const diff = await diffOf(base.join(""), text.join(""))
+  const minus = base.map((line) => `-${line}`).join("")
+  const plus = text.map((line) => `+${line}`).join("")
+  expect(diff).toBe(`${HEADERS}@@ -1,2400 +1,2400 @@\n${minus}${plus}`)
+})
+
+test("the whole-file hunk keeps difflib's last-line handling", async () => {
+  const base = numbered(2400, "l").join("").slice(0, -1)
+  const text = numbered(2400, "l", "m").join("").slice(0, -1)
+  const diff = await diffOf(base, text)
+  expect(diff).toContain("\n-l2399+l0\n") // the last old line without its end runs into the first new one
+  expect(diff.endsWith("\n+m2399")).toBe(true)
+})
+
+test("the whole-file hunk of an empty base", async () => {
+  const text = numbered(2400, "l")
+  const diff = await diffOf("", text.join(""))
+  expect(diff).toBe(`${HEADERS}@@ -0,0 +1,2400 @@\n${text.map((line) => `+${line}`).join("")}`)
+})
+
+test("propose_edit refuses text over 4x the budget", async () => {
+  const { store, tools } = office({ maxChars: 10 })
+  const { version } = await readProfile(tools)
+  const over = `${"😀".repeat(2)}${"x".repeat(39)}` // 41 code points, 43 UTF-16 units
+  const error = await rejection(tools.propose_edit.call({ text: over, base_version: version }))
+  expect(error).toBeInstanceOf(RangeError)
+  expect((error as Error).message).toMatch(/41 characters.*at most 40/)
+  expect((error as Error).message).not.toContain("xxx")
+  expect(store.listProfileProposals("minh")).toEqual([])
+  await tools.propose_edit.call({ text: over.slice(0, -1), base_version: version })
+  expect(store.listProfileProposals("minh")).toHaveLength(1)
+})
+
+test("propose_edit refuses a lone surrogate", async () => {
+  const { store, tools } = office()
+  const { version } = await readProfile(tools)
+  const error = await rejection(tools.propose_edit.call({ text: "# Minh\ud800\n", base_version: version }))
+  expect(error).toBeInstanceOf(RangeError)
+  expect(store.listProfileProposals("minh")).toEqual([])
 })
 
 test("apply commits the proposal as the owner via the profile manager", async () => {

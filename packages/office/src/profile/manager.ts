@@ -32,11 +32,13 @@ const PROPOSE_EDIT =
   "Propose the complete new text of the profile, as an edit of the version you read.\n\n" +
   "The owner reviews the diff and applies it."
 
-/** The `profile` tool group of a profile-manager session: `read` and `propose_edit`. */
+/** The `profile` tool group of a profile-manager session: `read` and `propose_edit`. `propose_edit` refuses text
+ *  over 4 × `maxChars` (the company's `profile_max_chars`) code points. */
 export function profileTools(
   store: Store,
   profile: GitProfileStore,
   session: SessionRecord,
+  { maxChars }: { maxChars: number },
 ): { read: ProfileTool; propose_edit: ProfileTool } {
   // Both schemas as the Python office's pydantic wrote them.
   return {
@@ -65,6 +67,13 @@ export function profileTools(
         if (typeof text !== "string" || typeof baseVersion !== "string") {
           throw new TypeError("text and base_version must be strings")
         }
+        // The budget is soft, so applying over-budget text works; the cap only bounds what the model can store.
+        const cap = 4 * maxChars
+        const n = [...text].length
+        if (n > cap) {
+          throw new RangeError(`text is ${n} characters; a proposal may hold at most ${cap} (4 × profile_max_chars)`)
+        }
+        if (!text.isWellFormed()) throw new RangeError("text holds a lone surrogate, which has no UTF-8 encoding")
         const [base] = await profile.read(baseVersion) // a RangeError for a version the model made up
         const proposal = await propose(store, session, profile, baseVersion, base, text)
         return `Proposed edit ${proposal.id}. The owner can apply it from the profile view.`
@@ -173,19 +182,37 @@ function range(start: number, length: number): string {
 
 /** The unified diff of `profile` from `base` to `text`, with difflib's headers and hunk ranges. Its hunks can pair
  *  lines differently from difflib's on ambiguous edits (reordered blocks, repeated lines), and only `\n` ends a
- *  line. */
+ *  line. Past 1000 changed lines or 200 ms, one hunk replaces the whole file. */
 function unifiedDiff(profile: GitProfileStore, base: string, text: string): string {
-  const { hunks } = structuredPatch(`a/${profile.path}`, `b/${profile.path}`, base, text, undefined, undefined, {
+  // The diff runs on the event loop and its worst case grows with the square of the text, so it is bounded; the
+  // diff is only shown, so a coarser one is fine.
+  const patch = structuredPatch(`a/${profile.path}`, `b/${profile.path}`, base, text, undefined, undefined, {
     context: 3,
+    maxEditLength: 1000,
+    timeout: 200,
   })
-  if (hunks.length === 0) return ""
+  if (patch === undefined) return wholeFileHunk(profile, base, text)
+  if (patch.hunks.length === 0) return ""
   let out = `--- a/${profile.path}\n+++ b/${profile.path}\n`
-  for (const hunk of hunks) {
+  for (const hunk of patch.hunks) {
     out += `@@ -${range(hunk.oldStart, hunk.oldLines)} +${range(hunk.newStart, hunk.newLines)} @@\n`
     hunk.lines.forEach((line, k) => {
       // A "\\ No newline at end of file" marker follows a last line without its end, which difflib writes as it is.
       if (!line.startsWith("\\")) out += hunk.lines[k + 1]?.startsWith("\\") ? line : `${line}\n`
     })
   }
+  return out
+}
+
+/** One hunk that removes every line of `base` and adds every line of `text`, with difflib's headers; a last line
+ *  without its end is written as it is. */
+function wholeFileHunk(profile: GitProfileStore, base: string, text: string): string {
+  const lines = (s: string) => s.match(/[^\n]*\n|[^\n]+$/g) ?? []
+  const old = lines(base)
+  const neu = lines(text)
+  let out = `--- a/${profile.path}\n+++ b/${profile.path}\n`
+  out += `@@ -${range(1, old.length)} +${range(1, neu.length)} @@\n`
+  for (const line of old) out += `-${line}`
+  for (const line of neu) out += `+${line}`
   return out
 }
