@@ -462,7 +462,7 @@ test("a line over 2 mib is a stub with its kind seq and size", async () => {
   const huge = committed(1, "big", { output: "y".repeat(BIG_LINE + 10) })
   const file = logOf(runStarted(0), huge, started(2, "next"))
   const page = readEvents(file, await refresh(file, null), { after: 0, limit: 10 })
-  expect(page.events[0]).toEqual({ seq: 1, kind: "pool_commit", size: huge.length })
+  expect(page.events[0]).toEqual({ seq: 1, kind: "pool_commit", node_id: "big", size: huge.length })
   expect(page.events[1]!.seq).toBe(2)
 })
 
@@ -508,10 +508,10 @@ test("a line over the page cap maps to a stub with its size", async () => {
   const edge = commitOfSize(2, "edge", BIG_LINE + 1, "e")
   const file = logOf(runStarted(0), huge, edge, started(3, "next"))
   const page = readEvents(file, await refresh(file, null), { after: 0, limit: 10 })
-  expect(lineEvent(huge, 1)).toEqual({ seq: 1, kind: "pool_commit", size: huge.length })
+  expect(lineEvent(huge, 1)).toEqual({ seq: 1, kind: "pool_commit", node_id: "big", size: huge.length })
   expect([...logEvents(file, 1, null)]).toEqual(page.events)
   // A line given without its newline is sized with it, as pages size it: just over the cap is a stub too.
-  expect(page.events[1]).toEqual({ seq: 2, kind: "pool_commit", size: BIG_LINE + 1 })
+  expect(page.events[1]).toEqual({ seq: 2, kind: "pool_commit", node_id: "edge", size: BIG_LINE + 1 })
   expect([lineEvent(huge.subarray(0, -1), 1), lineEvent(edge.subarray(0, -1), 2)]).toEqual(page.events.slice(0, 2))
 })
 
@@ -526,14 +526,38 @@ test("a stub whose line is no longer its seq ends the page", async () => {
   expect(readEvents(file, index, { after: 0, limit: 10 })).toEqual({ events: [], next_after: 0, cut: false })
   expect([...logEvents(file, 1, null, index)]).toEqual([null])
   expect(lineEvent(moved, 1)).toBeNull()
-  expect(lineEvent(huge, 1)).toEqual({ seq: 1, kind: "pool_commit", size: huge.length })
+  expect(lineEvent(huge, 1)).toEqual({ seq: 1, kind: "pool_commit", node_id: "big", size: huge.length })
 })
+
+test("a stub carries the node its payload names", async () => {
+  const fill = "y".repeat(BIG_LINE)
+  const cases: [Buffer, string | null][] = [
+    [committed(1, "plain", { output: fill }), "plain"],
+    // An earlier string holding what looks like a key is read past as one string.
+    [line(2, "pool_commit", { key: 'x","node_id":"fake', kind: "str", node_id: "real", value: fill }), "real"],
+    [committed(3, 'a"b\\c', { output: fill }), 'a"b\\c'],
+    [committed(4, "世界🚀", { output: fill }), "世界🚀"],
+    // The failure comes first, and a container is never entered: its node id isn't taken for the payload's.
+    [failed(5, "inner", fill), null],
+    // Cut off by the first 256 bytes.
+    [committed(6, "n".repeat(300), { output: fill }), null],
+  ]
+  const file = logOf(runStarted(0), ...cases.map(([bytes]) => bytes))
+  const page = readEvents(file, await refresh(file, null), { after: 0, limit: 10 })
+  expect(page.events.map((e) => [e.size, e.node_id])).toEqual(cases.map(([bytes, id]) => [bytes.length, id]))
+  expect(cases.map(([bytes], i) => lineEvent(bytes, i + 1))).toEqual(page.events)
+  expect([...logEvents(file, 1, null)]).toEqual(page.events)
+  // A spawner's id when only scalars come first, as `nodeOf` reads it; an id inside an earlier container is skipped.
+  const spawner = line(7, "node_expanded", { digest: "d", spawner_id: "spawner", topology: fill })
+  const nested = line(8, "pool_commit", { from: { node_id: "inner" }, node_id: "outer", value: fill })
+  expect([lineEvent(spawner, 7)?.node_id, lineEvent(nested, 8)?.node_id]).toEqual(["spawner", null])
+}, 60_000)
 
 test("one huge record whose line is no longer its seq is null", async () => {
   const over = commitOfSize(1, "big", HUGE_LINE + 1, "b")
   const file = logOf(runStarted(0), over, started(2, "next"))
   const index = await refresh(file, null)
-  expect(readEvent(file, index, 1)).toEqual({ seq: 1, kind: "pool_commit", size: HUGE_LINE + 1 })
+  expect(readEvent(file, index, 1)).toEqual({ seq: 1, kind: "pool_commit", node_id: "big", size: HUGE_LINE + 1 })
   fs.writeFileSync(file, Buffer.concat([runStarted(0), commitOfSize(7, "big", HUGE_LINE + 1, "b"), started(2, "next")]))
   expect(readEvent(file, index, 1)).toBeNull()
 }, 60_000)
@@ -645,7 +669,7 @@ test("one record over huge line is a size stub never parsed", async () => {
   fs.writeSync(fd, '"', head.length + exact.length + (over.length >> 1))
   fs.closeSync(fd)
   expect(readEvent(file, index, 1)).toBeNull()
-  expect(readEvent(file, index, 2)).toEqual({ seq: 2, kind: "pool_commit", size: HUGE_LINE + 1 })
+  expect(readEvent(file, index, 2)).toEqual({ seq: 2, kind: "pool_commit", node_id: "big", size: HUGE_LINE + 1 })
   expect(readEvent(file, index, 4)).toBeNull()
 }, 60_000)
 
@@ -653,7 +677,7 @@ test("one huge record is read without holding its line", async () => {
   const huge = committed(1, "huge", { output: "h".repeat(HUGE_LINE + (4 << 20)) })
   const file = logOf(runStarted(0), huge, started(2, "next"))
   const index = await refresh(file, null)
-  expect(readEvent(file, index, 1)).toEqual({ seq: 1, kind: "pool_commit", size: huge.length })
+  expect(readEvent(file, index, 1)).toEqual({ seq: 1, kind: "pool_commit", node_id: "huge", size: huge.length })
   expect(readEvent(file, index, 2)!.node_id).toBe("next") // past the huge line, skipped without holding it
 }, 60_000)
 

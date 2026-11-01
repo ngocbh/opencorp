@@ -411,7 +411,7 @@ test("one huge record is a size stub", async () => {
   const r = await get(sock, `/runs/${runId}/events/2`)
   expect(r.status).toBe(200)
   const got = body(r)
-  expect([got.kind, got.payload, got.size]).toEqual(["pool_commit", null, big.length])
+  expect([got.kind, got.node_id, got.payload, got.size]).toEqual(["pool_commit", "a", null, big.length])
 }, 30_000)
 
 test("a node error is shown as stored cut to 200", async () => {
