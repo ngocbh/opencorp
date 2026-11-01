@@ -93,9 +93,10 @@ function octal(mode: number): string {
 function assetsCheck(assets: string): Check {
   let folder = false
   try {
+    fs.accessSync(assets, fs.constants.R_OK | fs.constants.X_OK)
     folder = fs.statSync(assets).isDirectory()
   } catch {
-    // Missing, a symlink loop or no search permission: OpenTUI can't load from it either.
+    // Missing, a symlink loop, or no read or search permission: OpenTUI can't load from it either.
   }
   if (folder) return { name: "tui assets", status: "ok", detail: `found at ${assets}` }
   return {

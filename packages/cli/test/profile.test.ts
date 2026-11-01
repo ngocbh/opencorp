@@ -287,7 +287,7 @@ test("usage errors exit 2 and office errors exit 1", async () => {
   expect((await profile()).code).toBe(2)
   const show = await profile("show", "minh")
   expect(show.code).toBe(2)
-  expect(show.err).toContain("Usage: opencorp profile edit PERSON")
+  expect(show.err).toContain("usage: opencorp profile edit PERSON")
   expect((await profile("edit", "minh", "extra")).code).toBe(2)
   editor(`: # leaves the file as it is\n`)
   const unknown = await profile("edit", "@nobody")

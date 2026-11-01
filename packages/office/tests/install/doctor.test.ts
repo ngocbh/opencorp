@@ -198,7 +198,12 @@ test("the binary's assets folder is checked beside the home, only when there is 
   })
   const loop = path.join(dir, "loop")
   fs.symlinkSync(loop, loop)
-  expect(byName(await runChecks(dir, paths, { assets: loop }))["tui assets"]?.status).toBe("fail")
+  const closed = path.join(dir, "closed")
+  fs.mkdirSync(closed, { mode: 0o000 })
+  for (const unusable of [loop, closed])
+    expect(byName(await runChecks(dir, paths, { assets: unusable }))["tui assets"]?.status).toBe("fail")
+  // So the cleanup can list it.
+  fs.chmodSync(closed, 0o700)
   expect(doctor.exitCode(missing)).toBe(1)
   const there = byName(await runChecks(dir, paths, { assets: dir }))
   expect(there["tui assets"]).toEqual({ name: "tui assets", status: "ok", detail: `found at ${dir}` })

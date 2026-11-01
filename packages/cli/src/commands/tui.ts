@@ -2,6 +2,7 @@ import fs from "node:fs"
 import { parseArgs } from "node:util"
 import { createOfficeClient, UnknownDevice } from "@opencorp/client"
 import { defaultSocket } from "@opencorp/client/node"
+import { tuiAssetRoot } from "@opencorp/office/platform"
 import type { CommandRun } from "../main"
 import { localIdentity, officeAnswers, officeNotRunning } from "../office"
 import { terminal } from "../setup"
@@ -37,10 +38,11 @@ export function parseTuiArgs(argv: string[]) {
   }
 }
 
-/** Whether `p` is a folder this process can stat; a missing path, a file, a symlink loop or no search permission
- *  all are not. */
+/** Whether `p` is a folder this process can list and enter; a missing path, a file, a symlink loop or a folder
+ *  without read or search permission is not. */
 function isFolder(p: string): boolean {
   try {
+    fs.accessSync(p, fs.constants.R_OK | fs.constants.X_OK)
     return fs.statSync(p).isDirectory()
   } catch {
     return false
@@ -51,13 +53,14 @@ function isFolder(p: string): boolean {
 export type TuiDeps = {
   /** Whether the TUI can draw here. */
   terminal(): boolean
-  /** The folder OpenTUI loads its native library and assets from, when one is set (the compiled binary's). */
-  assetRoot(): string | undefined
+  /** The compiled binary's folder OpenTUI loads its native library and assets from; null in a checkout. */
+  assetRoot(): string | null
 }
 
 export const realTuiDeps: TuiDeps = {
   terminal,
-  assetRoot: () => process.env.OTUI_ASSET_ROOT,
+  // The folder main.ts gives OpenTUI, worked out as the doctor does; never the caller's OTUI_ASSET_ROOT.
+  assetRoot: tuiAssetRoot,
 }
 
 /**
@@ -79,7 +82,7 @@ export async function tui(argv: string[], deps: TuiDeps = realTuiDeps): Promise<
   }
   // A binary copied without the assets beside it: OpenTUI would throw into Bun's crash printer.
   const assets = deps.assetRoot()
-  if (assets !== undefined && !isFolder(assets)) {
+  if (assets !== null && !isFolder(assets)) {
     console.error(
       `opencorp: this binary's assets folder (${assets}) is missing or unreadable; reinstall opencorp, ` +
         "or keep bin/ and assets/ together",

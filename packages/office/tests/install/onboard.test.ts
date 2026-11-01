@@ -236,20 +236,22 @@ test("an office a client here wouldn't find ends with how to reach it", async ()
     const seen = await onboardRunning(dir, home, { environ: noHomeEnv() })
     const quoted = fallback.shQuote(fs.realpathSync(home))
     expect(seen.slice(-2)).toEqual([
-      "Done. Run `opencorp` in a project folder to talk to your team.",
-      "This shell's `opencorp` looks for its office elsewhere; to reach this one, run " +
+      "This shell's `opencorp` looks for its office elsewhere; to reach this one, first run " +
         `\`export OPENCORP_HOME=${quoted}\` (add it to your shell profile to keep it).`,
+      "Done. Run `opencorp` in a project folder to talk to your team.",
     ])
   }
   expect(fallback.shQuote(fs.realpathSync(path.join(dir, "my home")))).toStartWith("'")
 })
 
-test("an office a client here finds ends with the plain line", async () => {
+test("an office a client here finds ends with the plain line and no hint", async () => {
   const dir = tempDir()
   const plain = "Done. Run `opencorp` in a project folder to talk to your team."
   const home = path.join(dir, "home")
   await company(home)
-  expect((await onboardRunning(dir, home, { environ: { ...noHomeEnv(), OPENCORP_HOME: home } })).at(-1)).toBe(plain)
+  const named = await onboardRunning(dir, home, { environ: { ...noHomeEnv(), OPENCORP_HOME: home } })
+  expect(named.at(-1)).toBe(plain)
+  expect(named.join("\n")).not.toContain("export OPENCORP_HOME")
   // makeHost's user home is `dir`, so `dir/.opencorp` is the default home.
   const usual = path.join(dir, ".opencorp")
   await company(usual)

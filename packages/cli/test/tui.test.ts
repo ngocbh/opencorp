@@ -38,7 +38,7 @@ async function capture(argv: string[], deps: Parameters<typeof tui>[1]) {
 }
 
 test("without a terminal the TUI refuses in one line and sends nothing", async () => {
-  const r = await capture(["--prompt", "hi"], { terminal: () => false, assetRoot: () => undefined })
+  const r = await capture(["--prompt", "hi"], { terminal: () => false, assetRoot: () => null })
   expect(r.code).toBe(1)
   expect(r.err).toHaveLength(1)
   expect(r.err[0]).toStartWith("opencorp: the TUI needs a terminal")
@@ -53,12 +53,14 @@ test("a missing assets folder is one line naming it, before the terminal or the 
   expect(office.requests).toEqual([])
 })
 
-test("a file, or a symlink loop, where the assets folder goes is refused in one line too", async () => {
+test("a file, a symlink loop or a closed folder where the assets folder goes is refused in one line too", async () => {
   const file = path.join(home, "assets-file")
   fs.writeFileSync(file, "")
   const loop = path.join(home, "assets-loop")
   fs.symlinkSync(loop, loop)
-  for (const root of [file, loop]) {
+  const closed = path.join(home, "assets-closed")
+  fs.mkdirSync(closed, { mode: 0o000 })
+  for (const root of [file, loop, closed]) {
     const r = await capture([], { terminal: () => true, assetRoot: () => root })
     expect(r.code).toBe(1)
     expect(r.err).toEqual([
@@ -66,6 +68,8 @@ test("a file, or a symlink loop, where the assets folder goes is refused in one 
         "or keep bin/ and assets/ together",
     ])
   }
+  // So the cleanup can list it.
+  fs.chmodSync(closed, 0o700)
   expect(office.requests).toEqual([])
 })
 

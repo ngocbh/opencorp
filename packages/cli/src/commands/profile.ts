@@ -9,7 +9,7 @@ import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { bareHandle, localIdentity, officeClient, officeNotRunning } from "../office"
 
-const USAGE = "Usage: opencorp profile edit PERSON"
+const USAGE = "usage: opencorp profile edit PERSON"
 
 // ignoreBOM keeps a byte order mark as U+FEFF, as the office's profile store does.
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })

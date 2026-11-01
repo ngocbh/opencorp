@@ -66,7 +66,7 @@ test("an inherited name is an unknown command", async () => {
 const USAGES: Record<string, string> = {
   tui: "usage: opencorp [tui] [-s ID] [-c] [--person HANDLE] [--prompt TEXT]",
   end: "usage: opencorp end [SESSION_ID]",
-  profile: "Usage: opencorp profile edit PERSON",
+  profile: "usage: opencorp profile edit PERSON",
   login: "usage: opencorp login [--handle H] [--device NAME] [--force]",
   password: "usage: opencorp password [--handle H]",
   logout: "usage: opencorp logout",

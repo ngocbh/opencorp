@@ -397,7 +397,7 @@ test("`opencorp` with no office says so and exits 3 before loading the TUI", asy
   console.error = (...a: unknown[]) => void err.push(a.join(" "))
   try {
     // On a terminal: without one, the TUI refuses before it asks the office.
-    expect(await tui(["--continue"], { terminal: () => true, assetRoot: () => undefined })).toBe(3)
+    expect(await tui(["--continue"], { terminal: () => true, assetRoot: () => null })).toBe(3)
     expect(err).toEqual([notRunningAt(home)])
   } finally {
     console.error = error

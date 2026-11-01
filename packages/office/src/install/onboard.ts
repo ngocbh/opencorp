@@ -1123,13 +1123,14 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
     throw error
   }
   prompter.say(`Office: running under ${installed.mode ?? "a process started by hand"}; log at ${one.log}`)
-  prompter.say("Done. Run `opencorp` in a project folder to talk to your team.")
+  // Before the done line, so the export comes before the `opencorp` it says to run.
   if (!clientFinds(one.home, environ, host.userHome)) {
     prompter.say(
-      "This shell's `opencorp` looks for its office elsewhere; to reach this one, run " +
+      "This shell's `opencorp` looks for its office elsewhere; to reach this one, first run " +
         `\`export OPENCORP_HOME=${shQuote(one.home)}\` (add it to your shell profile to keep it).`,
     )
   }
+  prompter.say("Done. Run `opencorp` in a project folder to talk to your team.")
 }
 
 /** Whether `opencorp` run with `environ` finds the office at `home` (a real path): its home is `$OPENCORP_HOME`,
