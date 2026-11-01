@@ -5,17 +5,19 @@ import path from "node:path"
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
-import { parse as parseYaml } from "yaml"
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
+import { removeDevice } from "../../src/auth/devices.ts"
 import { checkPassword, hashPassword } from "../../src/auth/passwords.ts"
 import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
 import { CompanyGit } from "../../src/company/git.ts"
 import { DeviceTokens, OPEN, actingPerson } from "../../src/daemon/auth.ts"
-import type { Route } from "../../src/daemon/http.ts"
+import type { RequestInfo, Route } from "../../src/daemon/http.ts"
 import type { RequestContext } from "../../src/daemon/office.ts"
 import { officeAnswers } from "../../src/install/launch.ts"
 import { git } from "../company/helpers.ts"
 import {
+  CEO,
   addHuman,
   bearer,
   exchange,
@@ -622,4 +624,160 @@ test("a short password or an agents is refused", async () => {
   expect((r!.json() as { message: string }).message).toBe("use at least 12 characters")
   r = await send(sock, "PUT", "/people/minh/password", { password: PASSWORD })
   expect([r.status, errorOf(r)]).toEqual([422, "not_a_human"])
+})
+
+/** What `DeviceTokens.context` gets for `method path` with `headers`. */
+function info(headers: Record<string, string> = {}, method = "GET", path = "/events"): RequestInfo {
+  return { method, path, query: new URLSearchParams(), headers, signal: new AbortController().signal }
+}
+
+/** Commits `handle`'s devices as `devices` (name and token), replacing the ones listed. */
+function setDevices(company: string, handle: string, devices: [name: string, token: string][]): void {
+  const file = path.join(company, "people", handle, "person.yaml")
+  const data = parseYaml(fs.readFileSync(file, "utf8")) as Record<string, unknown>
+  data.devices = devices.map(([name, token]) => ({ name, token_sha256: tokenSha256(token) }))
+  fs.writeFileSync(file, stringifyYaml(data))
+  git(company, "commit", "-qam", `devices of ${handle}`)
+}
+
+test("a token's context carries its sha256 and never the token", async () => {
+  const office = makeOffice()
+  const token = newToken()
+  giveDevice(office.paths.company, "ngocbh", "mac", token)
+  const ctx = await office.tokens.context(info(bearer(token)))
+  expect(ctx.tokenSha256).toBe(tokenSha256(token))
+  const { office: _office, signal: _signal, ...rest } = ctx
+  expect(JSON.stringify(rest)).not.toContain(token)
+})
+
+test("a tokenless or open request has no token sha256", async () => {
+  const office = makeOffice()
+  expect((await office.tokens.context(info())).tokenSha256).toBeUndefined()
+  giveDevice(office.paths.company, "ngocbh", "mac", newToken())
+  expect((await office.tokens.context(info({}, "GET", "/health"))).tokenSha256).toBeUndefined()
+})
+
+test("removing a device ends the streams its token opened", async () => {
+  const office = makeOffice()
+  const [mac, pc] = [newToken(), newToken()]
+  setDevices(office.paths.company, CEO, [["mac", mac], ["pc", pc]])
+  const ended: string[] = []
+  office.tokens.track(await office.tokens.context(info(bearer(mac))), () => ended.push("mac"))
+  office.tokens.track(await office.tokens.context(info(bearer(pc))), () => ended.push("pc"))
+  await office.tokens.recheck()
+  expect(ended).toEqual([])
+  await removeDevice(office.git, CEO, "mac", CEO)
+  await office.tokens.recheck()
+  await office.tokens.recheck()
+  expect(ended).toEqual(["mac"])
+})
+
+test("a device removed and added again under its name ends the old tokens streams", async () => {
+  const office = makeOffice()
+  const [old, renewed, other] = [newToken(), newToken(), newToken()]
+  setDevices(office.paths.company, CEO, [["mac", old], ["pc", other]])
+  let ended = 0
+  office.tokens.track(await office.tokens.context(info(bearer(old))), () => ended++)
+  setDevices(office.paths.company, CEO, [["mac", renewed], ["pc", other]])
+  await office.tokens.recheck()
+  expect(ended).toBe(1)
+})
+
+test("a tokenless stream ends once tokens are needed or the ceo changes", async () => {
+  const office = makeOffice()
+  let ended = 0
+  office.tokens.track(await office.tokens.context(info()), () => ended++)
+  addHuman(office.paths.company, "ava")
+  await office.tokens.recheck()
+  expect(ended).toBe(0)
+  giveDevice(office.paths.company, "ava", "pc", newToken())
+  await office.tokens.recheck()
+  expect(ended).toBe(1)
+
+  const other = makeOffice()
+  let changed = 0
+  other.tokens.track(await other.tokens.context(info()), () => changed++)
+  addHuman(other.paths.company, "ava")
+  const file = path.join(other.paths.company, "company.yaml")
+  fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(`ceo: ${CEO}`, "ceo: ava"))
+  git(other.paths.company, "commit", "-qam", "new ceo")
+  await other.tokens.recheck()
+  expect(changed).toBe(1)
+})
+
+test("a removal between the check and tracking still ends the stream", async () => {
+  const office = makeOffice()
+  const [mac, pc] = [newToken(), newToken()]
+  setDevices(office.paths.company, CEO, [["mac", mac], ["pc", pc]])
+  const ctx = await office.tokens.context(info(bearer(mac)))
+  await removeDevice(office.git, CEO, "mac", CEO)
+  let ended = 0
+  office.tokens.track(ctx, () => ended++)
+  await office.tokens.recheck()
+  expect(ended).toBe(1)
+})
+
+test("a roster that cant be loaded ends every stream and logs only the error type", async () => {
+  const logs: string[] = []
+  const office = makeOffice({ log: (line) => logs.push(line) })
+  const token = newToken()
+  giveDevice(office.paths.company, CEO, "mac", token)
+  let ended = 0
+  office.tokens.track(await office.tokens.context(info(bearer(token))), () => ended++)
+  await office.tokens.recheck()
+  class GitWentAway extends Error {}
+  office.git.readHead = () => Promise.reject(new GitWentAway(`no repo at ${office.paths.company}`))
+  expect(() => office.tokens.changed()).not.toThrow()
+  await office.tokens.recheck()
+  expect(ended).toBe(1)
+  expect(logs).toEqual(["couldn't load the roster to recheck open streams; ending them: GitWentAway"])
+})
+
+test("a recheck asked for during one runs again after it and never beside it", async () => {
+  const office = makeOffice()
+  const [a, b, c] = [newToken(), newToken(), newToken()]
+  setDevices(office.paths.company, CEO, [["a", a], ["b", b], ["c", c]])
+  const ended: string[] = []
+  office.tokens.track(await office.tokens.context(info(bearer(a))), () => ended.push("a"))
+  office.tokens.track(await office.tokens.context(info(bearer(b))), () => ended.push("b"))
+  await office.tokens.recheck()
+  const real = office.git.readHead.bind(office.git)
+  let open = 0
+  let most = 0
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  let reading!: () => void
+  const read = new Promise<void>((resolve) => (reading = resolve))
+  office.git.readHead = async () => {
+    most = Math.max(most, ++open)
+    try {
+      const head = await real()
+      reading()
+      await gate
+      return head
+    } finally {
+      open--
+    }
+  }
+  setDevices(office.paths.company, CEO, [["b", b], ["c", c]])
+  const first = office.tokens.recheck()
+  await read
+  setDevices(office.paths.company, CEO, [["c", c]])
+  const second = office.tokens.recheck()
+  release()
+  await Promise.all([first, second])
+  expect(ended).toEqual(["a", "b"])
+  expect(most).toBe(1)
+})
+
+test("an untracked stream is not ended", async () => {
+  const office = makeOffice()
+  const [mac, pc] = [newToken(), newToken()]
+  setDevices(office.paths.company, CEO, [["mac", mac], ["pc", pc]])
+  let ended = 0
+  const untrack = office.tokens.track(await office.tokens.context(info(bearer(mac))), () => ended++)
+  untrack()
+  await removeDevice(office.git, CEO, "mac", CEO)
+  await office.tokens.recheck()
+  expect(ended).toBe(0)
 })

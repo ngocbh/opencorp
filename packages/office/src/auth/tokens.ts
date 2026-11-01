@@ -32,6 +32,14 @@ export function tokenSha256(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex")
 }
 
+/** The device token an `Authorization` header carries as `Bearer <token>`, or null when it carries none. */
+export function bearerToken(header: string): string | null {
+  // JS trim() also strips U+FEFF, which a latin1-decoded header can't hold; Python's strip() also strips
+  // U+0085 and U+001C-U+001F, which TS then refuses, the safe direction.
+  const match = BEARER.exec(header.trim())
+  return match !== null && TOKEN.test(match[1]!) ? match[1]! : null
+}
+
 /** The `[handle, device]` whose token the `Authorization` header carries. Throws `AuthError`:
  *  `unauthenticated` with no header; `bad_token` for a malformed header or a token no human lists.
  *  Messages never include the token. */
@@ -40,13 +48,9 @@ export function authenticate(
   roster: Roster,
 ): readonly [handle: string, device: string] {
   if (header == null) throw new AuthError("unauthenticated", "this office needs a device token; run `opencorp login`")
-  // JS trim() also strips U+FEFF, which a latin1-decoded header can't hold; Python's strip() also strips
-  // U+0085 and U+001C-U+001F, which TS then refuses, the safe direction.
-  const match = BEARER.exec(header.trim())
-  if (match === null || !TOKEN.test(match[1]!)) {
-    throw new AuthError("bad_token", "the Authorization header isn't `Bearer <device token>`")
-  }
-  const owner = roster.tokens.get(tokenSha256(match[1]!))
+  const token = bearerToken(header)
+  if (token === null) throw new AuthError("bad_token", "the Authorization header isn't `Bearer <device token>`")
+  const owner = roster.tokens.get(tokenSha256(token))
   if (owner === undefined) throw new AuthError("bad_token", "the office doesn't know this device; run `opencorp login`")
   return owner
 }
