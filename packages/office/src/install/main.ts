@@ -419,7 +419,7 @@ async function initCommand(args: Args, s: Setup): Promise<number> {
       environ: s.environ,
     }),
   )
-  if (code === 0) await reportHq(launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome }), s)
+  if (code === 0) await reportHq(home(args.home, s), s)
   return code
 }
 
@@ -436,7 +436,7 @@ async function onboardCommand(args: Args, s: Setup): Promise<number> {
       environ: s.environ,
     }),
   )
-  if (code === 0) await reportHq(launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome }), s)
+  if (code === 0) await reportHq(home(args.home, s), s)
   return code
 }
 
@@ -499,12 +499,13 @@ async function cameUp(
 }
 
 /**
- * Says on stderr what needs a look about HQ on the office that answers on `run.socket`: its socket or web port not
- * listening (a taken port never stops the office, so nothing else would say so), and HQ's own warnings. Says
- * nothing when GET /hq can't be read, as without this device's identity; doctor says more.
+ * Says on stderr what needs a look about HQ on the office at `officeHome`: its socket or web port not listening (a
+ * taken port never stops the office, so nothing else would say so), and HQ's own warnings. Says nothing when GET /hq
+ * can't be read, as without this device's identity; doctor says more.
  */
-async function reportHq(run: Launch, s: Setup): Promise<void> {
+async function reportHq(officeHome: string, s: Setup): Promise<void> {
   try {
+    const run = launch(officeHome, { environ: s.environ, userHome: s.host.userHome })
     const status = await (s.doctor.hq ?? hqStatus)(run.socket, await readIdentity(identityPath(run.home)))
     if (typeof status === "string") return
     const port = hqPortChecks(status, path.join(run.home, "office")).filter((c) => c.status === "warn")
@@ -526,13 +527,13 @@ async function startCommand(args: Args, s: Setup): Promise<number> {
   const run = launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome })
   if (await s.host.answers(run.socket)) {
     s.stdout.write(`The office is already running (pid ${service.pid(run)}).\n`)
-    await reportHq(run, s)
+    await reportHq(run.home, s)
     return 0
   }
   if (await notOnboarded(run, s)) return NOT_ONBOARDED
   if (!(await cameUp(run, s, service.start))) return 1
   s.stdout.write(`Started the office (pid ${service.pid(run)}).\n`)
-  await reportHq(run, s)
+  await reportHq(run.home, s)
   return 0
 }
 
@@ -543,6 +544,6 @@ async function restartCommand(args: Args, s: Setup): Promise<number> {
   if (!(await cameUp(run, s, service.restart))) return 1
   if (was === null) s.stdout.write(`The office wasn't running; started it (pid ${service.pid(run)}).\n`)
   else s.stdout.write(`Restarted the office (pid ${service.pid(run)}; was ${was}).\n`)
-  await reportHq(run, s)
+  await reportHq(run.home, s)
   return 0
 }

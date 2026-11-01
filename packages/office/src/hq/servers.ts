@@ -62,7 +62,7 @@ export class Listeners {
   #timer: ReturnType<typeof setTimeout> | null = null
   /** The reason the last WARNING about the TCP bind gave. */
   #said: string | null = null
-  /** Counts the 127.0.0.1 servers kept: a ::1 bind or retry for an older one is dropped. */
+  /** Moves on each time a 127.0.0.1 server is kept or ends: a ::1 bind or retry started before is dropped. */
   #gen = 0
   #binding6: Promise<void> | null = null
   #timer6: ReturnType<typeof setTimeout> | null = null
