@@ -558,6 +558,24 @@ export function errorName(error: unknown): string {
   }
 }
 
+/** An errno code (`ENOENT`) and a syscall name (`realpath`): fixed tokens, never a value from the error's text. */
+const ERRNO_CODE = /^E[A-Z0-9]{1,31}$/
+const SYSCALL = /^[a-z][a-z0-9_]{0,31}$/
+
+/** A thrown value's name for a log line, followed by its errno code and syscall when it has them (`Error ENOENT
+ *  realpath`); never its message, and never throws. */
+export function errorKind(error: unknown): string {
+  const kind = [errorName(error)]
+  try {
+    const { code, syscall } = error as { code?: unknown; syscall?: unknown }
+    if (typeof code === "string" && ERRNO_CODE.test(code)) {
+      kind.push(code)
+      if (typeof syscall === "string" && SYSCALL.test(syscall)) kind.push(syscall)
+    }
+  } catch {}
+  return kind.join(" ")
+}
+
 /** A thrown value's message for a reply; never throws. `String(value)` can, so another non-`Error` gets fixed text. */
 export function errorMessage(error: unknown): string {
   if (typeof error === "string") return error

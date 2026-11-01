@@ -52,6 +52,7 @@ import {
   type AskRequest,
   BaseHandlers,
   errnoFields,
+  errorKind,
   errorName,
   type OfficeTool,
   type WorkerHandlers,
@@ -530,7 +531,7 @@ export class SessionActor implements LiveCalls {
         this.#runId = runId
         await this.#spawn("chat", { seed })
       } catch (error) {
-        this.#log(`session ${sid} can't start (${errorName(error)})`)
+        this.#log(`session ${sid} can't start (${errorKind(error)})`)
         // The office stops: the session stays as it was, for the next office to start.
         if (error instanceof RegistryClosed || this.#closed) throw stopping()
         // A run stored ends `COULDNT_START`; with none, only the session fails.
@@ -1062,7 +1063,7 @@ export class SessionActor implements LiveCalls {
     try {
       await this.#spawn("advance")
     } catch (error) {
-      this.#log(`session ${this.sessionId}: a worker can't start at restore (${errorName(error)})`)
+      this.#log(`session ${this.sessionId}: a worker can't start at restore (${errorKind(error)})`)
       // The office stops: the session stays as it was, for the next office.
       if (!(error instanceof RegistryClosed) && !this.#closed) this.#finish("failed", null, this.#cantStartWhy())
     }
@@ -1143,7 +1144,7 @@ export class SessionActor implements LiveCalls {
           await this.#spawn("advance")
         } catch (error) {
           // Its deliveries' callers have their answer; the session waits for the next message.
-          this.#log(`session ${this.sessionId}: a worker can't start after its cap was raised (${errorName(error)})`)
+          this.#log(`session ${this.sessionId}: a worker can't start after its cap was raised (${errorKind(error)})`)
         }
       }
       this.#trySettle("after its cap was raised")
@@ -1291,7 +1292,7 @@ export class SessionActor implements LiveCalls {
       await this.#spawn("advance")
     } catch (error) {
       // Its callers have their answer; the actor stays as it was.
-      this.#log(`session ${this.sessionId}: a worker can't start (${errorName(error)})`)
+      this.#log(`session ${this.sessionId}: a worker can't start (${errorKind(error)})`)
     }
   }
 
@@ -1944,7 +1945,7 @@ export class SessionActor implements LiveCalls {
     try {
       return await this.#spawn(kind, options)
     } catch (error) {
-      this.#log(`session ${this.sessionId}: a worker can't start (${errorName(error)})`)
+      this.#log(`session ${this.sessionId}: a worker can't start (${errorKind(error)})`)
       if (this.#ending && !(error instanceof RegistryClosed) && !this.#closed) {
         this.#finish("failed", null, this.#cantStartWhy())
       }
@@ -2682,7 +2683,7 @@ export class SessionActor implements LiveCalls {
     try {
       await this.#spawn("chat", { replace: { why: null, finished: redactKey(outcome, run.provider) as Frame } })
     } catch (error) {
-      this.#log(`session ${this.sessionId}: a worker can't start (${errorName(error)})`)
+      this.#log(`session ${this.sessionId}: a worker can't start (${errorKind(error)})`)
       if (error instanceof RegistryClosed || this.#closed) return
       // Before the fresh run was stored, the failed result is how the session's run ended; after, the fresh run
       // never started.
@@ -2749,7 +2750,7 @@ export class SessionActor implements LiveCalls {
     try {
       await this.#spawn("advance", { moved: WORKER_REPLACED })
     } catch (error) {
-      this.#log(`session ${this.sessionId}: a worker can't start (${errorName(error)})`)
+      this.#log(`session ${this.sessionId}: a worker can't start (${errorKind(error)})`)
       if (!(error instanceof RegistryClosed) && !this.#closed) this.#finish("failed", null, this.#cantStartWhy(), run)
     }
   }
