@@ -5,7 +5,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { stamp } from "@opencorp/protocol"
-import { CompanyGit, CompanyGitError, type CompanyGitOptions, CompanyRepoBusy } from "../../src/company/git.ts"
+import { CompanyGit, CompanyGitError, type CompanyGitOptions, CompanyRepoBusy, oneLine } from "../../src/company/git.ts"
 import { tempDir } from "../helpers.ts"
 import {
   company,
@@ -1380,4 +1380,9 @@ test("a head that names no commit while refs exist has no state", async () => {
   git(root, "tag", "v1")
   fs.writeFileSync(path.join(root, ".git", "refs", "heads", "main"), `${"0".repeat(40)}\n`)
   await expect(new CompanyGit(root, root).repoState()).rejects.toThrow(CompanyGitError)
+})
+
+test("one line drops NULs and turns each run of whitespace or line breaks into one space", () => {
+  expect(oneLine("a\0b \n\u2028 c\t")).toBe("ab c")
+  expect(oneLine(" \r\n ")).toBe("")
 })

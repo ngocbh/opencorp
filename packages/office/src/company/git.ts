@@ -67,6 +67,12 @@ const LINE_BREAK = /\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/
 // The whitespace Python's str.split() splits on, so a newline in a folder name can't start a trailer line.
 export const WHITESPACE = /[\t\n\v\f\r \x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/
 
+/** `text` without NULs, with each run of `WHITESPACE` (line breaks included) as one space, and none at either end. */
+export function oneLine(text: string): string {
+  // A NUL in git's argv fails the spawn; drop it rather than read it as a space.
+  return text.replaceAll("\0", "").split(WHITESPACE).filter(Boolean).join(" ")
+}
+
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
 // Bad bytes become U+FFFD, so text that wasn't UTF-8 can still go into JSON.
 const UTF8_REPLACING = new TextDecoder("utf-8", { ignoreBOM: true })

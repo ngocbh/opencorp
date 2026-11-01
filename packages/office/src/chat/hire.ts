@@ -8,7 +8,7 @@ import { z } from "zod"
 import { actorLine } from "../company/access.ts"
 import { errno, outsideRoot, resolvePath } from "../company/flows.ts"
 import { writeYaml } from "../company/flow_yaml.ts"
-import { type CompanyGit, CompanyGitError } from "../company/git.ts"
+import { type CompanyGit, CompanyGitError, oneLine } from "../company/git.ts"
 import { repoIssue, type RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
@@ -211,12 +211,9 @@ function linkOnPath(root: string, rel: string): boolean {
   return false
 }
 
-/** Python's `str.split()` whitespace. */
-const SPACES = /[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/
-
 function subject(person: Person): string {
   // One line: a newline in the name or title could forge a Commit-Id trailer.
-  return `hire(@${person.handle}): ${person.name}, ${person.title}`.split(SPACES).filter(Boolean).join(" ")
+  return oneLine(`hire(@${person.handle}): ${person.name}, ${person.title}`)
 }
 
 function form(request: Request): string[] {
@@ -245,7 +242,8 @@ export function agentFiles(request: HireForm, about = ""): [Person, Record<strin
   const person = PersonSchema.parse({ name, handle, title, manager, ...NEW_AGENT })
   const base = `people/${person.handle}`
   const text = strip(about)
-  const profile = `# ${person.name}, ${person.title}\n` + (text ? `\n${text}\n` : "")
+  // One line: init passes model text, and a line break would add lines to the memory the agent reads.
+  const profile = `# ${oneLine(person.name)}, ${oneLine(person.title)}\n` + (text ? `\n${text}\n` : "")
   const body = withoutDefaults(PersonSchema, person)
   return [person, { [`${base}/person.yaml`]: writeYaml(body), [`${base}/profile.md`]: profile }]
 }

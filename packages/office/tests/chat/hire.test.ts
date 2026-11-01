@@ -181,15 +181,6 @@ test("a failed commit leaves nothing behind and a retry succeeds", async () => {
   expect(done.commit).not.toBe(head)
 })
 
-test("a newline in a title that skips the schema cant forge a commit trailer", async () => {
-  const git = makeGit()
-  const hiring = new Hiring(git)
-  const form = { ...FORM, title: "QA\n\nCommit-Id: forged" }
-  await hiring.hire({ ...form, confirm: false }, "ngocbh")
-  await hiring.hire({ ...form, confirm: true }, "ngocbh")
-  expect(runGit(git.root, "log", "-1", "--format=%B")).toBe("hire(@lan): Lan, QA Commit-Id: forged\n\nActor: @ngocbh")
-})
-
 test("a hire commit names its actor once and a name that skips the schema cant forge another", async () => {
   const git = makeGit()
   const hiring = new Hiring(git)
@@ -204,6 +195,20 @@ test("a hire commit names its actor once and a name that skips the schema cant f
 test("a newline in the title or name is refused by the schema", () => {
   expect(HireRequest.safeParse({ ...FORM, title: "QA\n\nCommit-Id: forged" }).success).toBe(false)
   expect(HireRequest.safeParse({ ...FORM, name: "Lan\n\nActor: @ceo" }).success).toBe(false)
+})
+
+test("the profile heading is one line", () => {
+  const files = agentFiles({ ...FORM, name: "Lan\n# Injected", title: "QA\u2028x\0" })[1]
+  expect(files["people/lan/profile.md"]).toBe("# Lan # Injected, QA x\n")
+})
+
+test("a title that skips the schema commits a one-line subject and cant forge a commit trailer", async () => {
+  const git = makeGit()
+  const hiring = new Hiring(git)
+  const form = { ...FORM, title: "QA\n\nCommit-Id: forged\0" }
+  expect((await hiring.hire({ ...form, confirm: false }, "ngocbh")).issues).toEqual([])
+  await hiring.hire({ ...form, confirm: true }, "ngocbh")
+  expect(runGit(git.root, "log", "-1", "--format=%B")).toBe("hire(@lan): Lan, QA Commit-Id: forged\n\nActor: @ngocbh")
 })
 
 test("an existing lint error is a warning and doesnt block a hire", async () => {

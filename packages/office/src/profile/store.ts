@@ -5,7 +5,7 @@ import path from "node:path"
 import { type MarkdownStore, MarkdownVersionMismatch } from "@ngocbh/yian"
 import type { JsonObject } from "@ngocbh/yian/run"
 import { Handle } from "@opencorp/protocol"
-import { type CompanyGit, CompanyGitError, type LockedGit, WHITESPACE } from "../company/git.ts"
+import { type CompanyGit, CompanyGitError, type LockedGit, oneLine, WHITESPACE } from "../company/git.ts"
 
 /** The git blob id of empty content. */
 export const EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
@@ -24,12 +24,6 @@ export function blobId(data: Uint8Array): string {
   return createHash("sha1").update(`blob ${data.length}\0`).update(data).digest("hex")
 }
 
-/** `text` without NULs, with each run of Python's whitespace as one space, and none at either end. */
-function collapse(text: string): string {
-  // A NUL in git's argv fails the spawn after the file was replaced; drop it rather than read it as a space.
-  return text.replaceAll("\0", "").split(WHITESPACE).filter(Boolean).join(" ")
-}
-
 /**
  * `profile(@<handle>): <source>`, with a `Commit-Id` trailer when `provenance` has one.
  *
@@ -40,11 +34,11 @@ export function commitMessage(handle: string, provenance: JsonObject | null | un
   const commitId = commitIdOf(provenance)
   let source = provenance?.source
   const runId = provenance?.run_id
-  if (!(typeof source === "string" && collapse(source))) {
+  if (!(typeof source === "string" && oneLine(source))) {
     source = typeof runId === "string" && runId ? `from feedback on run ${runId}` : "write"
   }
   // One line, whatever the caller sent, so neither part can add a trailer.
-  const subject = `profile(@${collapse(handle)}): ${collapse(source)}`
+  const subject = `profile(@${oneLine(handle)}): ${oneLine(source)}`
   return commitId === null ? subject : `${subject}\n\nCommit-Id: ${commitId}`
 }
 
