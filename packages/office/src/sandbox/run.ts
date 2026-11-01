@@ -69,7 +69,7 @@ export function scrubbedEnv(policy: SandboxPolicy): Record<string, string> {
 // The soft limit goes down first so the hard one is never below it, and the hard one is what makes the cap stick:
 // an unprivileged process can raise its soft limit back up to the hard one. `-S`/`-H` are explicit because a bare
 // `ulimit -u` sets only the soft limit in zsh; dash (Linux's usual /bin/sh) spells the flag `-p`. A failed cap
-// still runs the call (`;`): Seatbelt or bwrap applies either way, and its stderr stays out of the call's output.
+// still runs the call (`;`): Seatbelt or bwrap applies either way, and ulimit's stderr stays out of the call's output.
 const NPROC_SCRIPT =
   'n=$1; shift; { ulimit -S -u "$n" && ulimit -H -u "$n"; } 2>/dev/null || ' +
   '{ ulimit -S -p "$n" && ulimit -H -p "$n"; } 2>/dev/null; exec "$@"'
