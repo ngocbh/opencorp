@@ -2061,7 +2061,10 @@ export class SessionActor implements LiveCalls {
     // The reason only, never the answer: the model reads this.
     const result = { error: `the answer couldn't be delivered (${reason})` }
     const settle = new Pending({ id: newId(), op: "complete", call_id: delivery.call_id, result })
-    this.#post("undeliverable answer", () => this.#deliver(settle))
+    this.#post("undeliverable answer", async () => {
+      // A finished session, or a fresh run, has no such call to settle.
+      if (!this.#finished && delivery.call_id.startsWith(`${this.#runId}/`)) await this.#deliver(settle)
+    })
   }
 
   /** Publishes the user message of the `send` the run took at `seq`, as the transcript will show it. `sent` is the
