@@ -1208,6 +1208,33 @@ test("an open waiting on an ending side chat answers 503 when the cards close", 
   expect(texts(h, side.id, "user")).toEqual(["why?"])
 })
 
+test("an open queued behind a waiting open answers 503 too when the cards close, without a wait", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const timer = sideEndTimer()
+  const h = await sideHarness(fake, { scheduler: timer.scheduler })
+  const { q } = await ask(h)
+  const { side, release, ending } = await endingSide(h, q)
+  try {
+    const first = refusal(() => h.office.cards!.openSide(q.id, "again"))
+    const second = refusal(() => h.office.cards!.openSide(q.id, "and again"))
+    await waitFor(() => timer.waiting() === 1, { what: "the first open to wait for the end" })
+    let closed = false
+    const closing = h.office.cards!.close().then(() => (closed = true))
+    await waitFor(() => closed, { what: "the cards to close" })
+    await closing
+    for (const error of [await first, await second]) expect([error.status, error.code]).toEqual([503, "stopping"])
+    expect(timer.waiting()).toBe(0)
+  } finally {
+    // Frees a second open that waited, so a failing run doesn't hang.
+    timer.expire()
+    release()
+  }
+  await ending
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  expect(texts(h, side.id, "user")).toEqual(["why?"])
+})
+
 test("an open waiting on an ending side chat goes on when the end fails it", async () => {
   const fake = await fakeLlm()
   fake.script(ASK, { content: "Quota." }, { content: "Again: quota." })

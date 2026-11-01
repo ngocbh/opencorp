@@ -110,6 +110,8 @@ export class Cards {
   #closing: Promise<unknown> = Promise.resolve()
   /** The side chat opens waiting for an end, each aborted when the cards close. */
   readonly #waits = new Set<AbortController>()
+  /** Set once the cards close, so an open that reaches a wait for an end afterwards doesn't start one. */
+  #closed = false
   readonly #unlisten: () => void
   /** The questions a stop is under way for: a second stop of one is refused. */
   readonly #stopping = new Set<string>()
@@ -318,6 +320,7 @@ export class Cards {
   /** Stops reacting to question changes, ends the side chat opens' waits for an end (they answer 503 `stopping`),
    *  and waits for queued card work (send-backs, discussion copies, side chat opens and ends) to finish. */
   async close(): Promise<void> {
+    this.#closed = true
     this.#unlisten()
     for (const wait of this.#waits) wait.abort()
     await Promise.all([this.#discussion, ...this.#sides.values(), this.#closing])
@@ -498,8 +501,10 @@ export class Cards {
   }
 
   /** Resolves once side session `sideId` is gone or no longer live. Throws `HarnessError` 409 `ending` after
-   *  `SIDE_END_WAIT_MS`, and 503 `stopping` when the cards close first. */
+   *  `SIDE_END_WAIT_MS`, and 503 `stopping` when the cards close first or have closed. */
   async #untilEnded(actor: SideActor, sideId: string): Promise<void> {
+    // An open queued behind another reaches here after `close()` aborted the waits it knew of.
+    if (this.#closed) throw new HarnessError(503, "stopping", "the office is stopping")
     const wait = new AbortController()
     let unlisten = () => {}
     const ended = new Promise<"ended">((resolve) => {
