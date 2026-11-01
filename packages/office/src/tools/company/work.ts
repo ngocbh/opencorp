@@ -8,6 +8,7 @@ import { normalizeOptions } from "../../questions/normalize.ts"
 import { newId, type SessionRecord, type Store } from "../../store/store.ts"
 import type { ToolCallOptions } from "../../worker/rpc.ts"
 import type { ToolContext } from "../context.ts"
+import { workItemVisibility } from "../work_items.ts"
 
 /** Code points of the question an `ask_manager` work item keeps as its title. */
 export const TITLE_CHARS = 80
@@ -38,8 +39,9 @@ const SPACES = /[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u20
  * `repo` is the run's pinned company repo (for the caller's manager and valid assignees). `ask_manager` hands
  * `onQuestion` its question and a work item for the manager, stored once per yian call id (a call without one is
  * refused), and replies pending until the manager answers; then the same call gets the formatted answer. The item is
- * closed (or cancelled) when the answer (or the expiry) is stored, not here. A tool's error reaches the model as
- * `error: <message>`.
+ * closed (or cancelled) when the answer (or the expiry) is stored, not here. `comment` reaches only the work items
+ * the caller can see, by the work_items tools' rule around the session's work item; any other id is "no work item",
+ * as an unknown one is. A tool's error reaches the model as `error: <message>`.
  */
 export function companyTools(
   store: Store,
@@ -154,7 +156,10 @@ export function companyTools(
       call: (args) => {
         const id = args.work_item_id
         // Only a string reaches the store: SQLite binds an object as named parameters and an array as positional ones.
-        if (typeof id !== "string" || store.getWorkItem(id) === undefined) {
+        const item = typeof id === "string" ? store.getWorkItem(id) : undefined
+        // A hidden id answers as an unknown one, so the reply doesn't tell whether it exists. The chain is read per
+        // call, so an item made since the tools were built counts.
+        if (item === undefined || !workItemVisibility(store, session.person, [session.work_item_id])(item)) {
           throw new RangeError(`no work item ${repr(String(id))}`)
         }
         const comment = { id: newId(), work_item_id: id, author: session.person, body: args.body, created_at: now() }

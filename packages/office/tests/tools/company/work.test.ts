@@ -163,6 +163,72 @@ test("bad arguments are errors for the model", () => {
   expect(() => tools.comment!.call({ work_item_id: "01J9ZZZZZZZZZZZZZZZZZZZZZZ", body: "hi" })).toThrow("no work item")
 })
 
+/** The error `fn` throws; fails the test if it returns. */
+function thrown(fn: () => unknown): Error {
+  try {
+    fn()
+  } catch (error) {
+    return error as Error
+  }
+  throw new Error("expected a throw")
+}
+
+test("a comment on a hidden work item is no work item and stores nothing", () => {
+  const { store, tools } = setup()
+  const hidden = store.createWorkItem(workItem({ requester: "ngocbh", assignee: null }))
+  const error = thrown(() => tools.comment!.call({ work_item_id: hidden.id, body: "x" }))
+  expect(error).toBeInstanceOf(RangeError)
+  expect(error.message).toBe(`no work item '${hidden.id}'`)
+  expect(store.listComments(hidden.id)).toEqual([])
+})
+
+test("a hidden id answers as an unknown id does", () => {
+  const { store, tools } = setup()
+  const hidden = store.createWorkItem(workItem({ requester: "ngocbh" }))
+  const unknown = "01J9ZZZZZZZZZZZZZZZZZZZZZZ"
+  const replies = [hidden.id, unknown].map((id) => {
+    const error = thrown(() => tools.comment!.call({ work_item_id: id, body: "x" }))
+    return [error.constructor.name, error.message.replace(id, "<id>")]
+  })
+  expect(replies[0]).toEqual(replies[1]!)
+})
+
+test("a hidden id with a bad body is no work item", () => {
+  const { store, tools } = setup()
+  const hidden = store.createWorkItem(workItem({ requester: "ngocbh" }))
+  const error = thrown(() => tools.comment!.call({ work_item_id: hidden.id, body: 4242 }))
+  expect(error).toBeInstanceOf(RangeError)
+  expect(error.message).toContain("no work item")
+})
+
+test("comments reach items visible by requester assignee or child", async () => {
+  const { store, item, tools } = setup()
+  const items = [
+    store.createWorkItem(workItem({ requester: "ngocbh", assignee: "minh" })),
+    store.createWorkItem(workItem({ requester: "minh" })),
+    store.createWorkItem(workItem({ requester: "ngocbh", parent_id: item.id })),
+  ]
+  for (const { id } of items) {
+    expect(await tools.comment!.call({ work_item_id: id, body: "seen" })).toBe(`commented on ${id}`)
+  }
+})
+
+test("a session without a work item comments only on its own items", async () => {
+  const store = openStore()
+  const s = store.createSession(session({ person: "minh", work_item_id: null }))
+  const tools = toolsFor(store, s, new Desk(store))
+  const own = store.createWorkItem(workItem({ requester: "minh" }))
+  const other = store.createWorkItem(workItem({ requester: "ngocbh" }))
+  expect(await tools.comment!.call({ work_item_id: own.id, body: "x" })).toBe(`commented on ${own.id}`)
+  expect(() => tools.comment!.call({ work_item_id: other.id, body: "x" })).toThrow("no work item")
+})
+
+test("a child made after the tools counts", async () => {
+  const { store, item, tools } = setup()
+  const later = store.createWorkItem(workItem({ requester: "ngocbh", parent_id: item.id }))
+  expect(await tools.comment!.call({ work_item_id: later.id, body: "x" })).toBe(`commented on ${later.id}`)
+})
+
 test("company tool arguments of the wrong type store nothing", async () => {
   const { store, s, item, tools } = setup()
   const V = 4242424242

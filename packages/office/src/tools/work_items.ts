@@ -14,6 +14,31 @@ const LIST = "List the work items you can see (yours, and those around this ques
 const READ = "Read one work item with its comments and children, as JSON."
 
 /**
+ * Whether `handle` can see a work item, around the work items `roots` (an empty root is skipped): an item on a root's
+ * chain of parents, a child of one, or an item `handle` requested or is assigned. The chain is read now, once.
+ */
+export function workItemVisibility(
+  store: Store,
+  handle: string,
+  roots: readonly (string | null | undefined)[],
+): (item: WorkItemRecord) => boolean {
+  const chain = new Set<string>()
+  for (const root of roots) {
+    for (let itemId: string | null | undefined = root; itemId && !chain.has(itemId); ) {
+      const item = store.getWorkItem(itemId)
+      if (item === undefined) break
+      chain.add(item.id)
+      itemId = item.parent_id
+    }
+  }
+  return (item) =>
+    chain.has(item.id) ||
+    (item.parent_id != null && chain.has(item.parent_id)) ||
+    handle === item.requester ||
+    handle === item.assignee
+}
+
+/**
  * Read-only work item tools for a side chat of `handle` about `question`.
  *
  * The person sees the question's work item and the work item of the session that asked, their parents, and their
@@ -25,24 +50,8 @@ export function workItemTools(
   handle: string,
   question: QuestionRecord | null | undefined,
 ): Record<string, WorkItemTool> {
-  const roots: string[] = question?.work_item_id ? [question.work_item_id] : []
   const asker = question ? store.getSession(question.session_id) : undefined
-  if (asker?.work_item_id) roots.push(asker.work_item_id)
-  const chain = new Set<string>()
-  for (const root of roots) {
-    for (let itemId: string | null | undefined = root; itemId && !chain.has(itemId); ) {
-      const item = store.getWorkItem(itemId)
-      if (item === undefined) break
-      chain.add(item.id)
-      itemId = item.parent_id
-    }
-  }
-
-  const visible = (item: WorkItemRecord): boolean =>
-    chain.has(item.id) ||
-    (item.parent_id != null && chain.has(item.parent_id)) ||
-    handle === item.requester ||
-    handle === item.assignee
+  const visible = workItemVisibility(store, handle, [question?.work_item_id, asker?.work_item_id])
 
   return {
     list_work_items: {

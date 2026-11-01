@@ -2,7 +2,7 @@
 import fs from "node:fs"
 import { expect, test } from "bun:test"
 import { newId } from "../../src/store/store.ts"
-import { workItemTools } from "../../src/tools/work_items.ts"
+import { workItemTools, workItemVisibility } from "../../src/tools/work_items.ts"
 import { groupSpecs } from "../../src/worker/job.ts"
 import { openStore, question, session, workItem } from "./helpers.ts"
 
@@ -27,6 +27,21 @@ test("work item tools show only what the asker can see", () => {
     expect(() => tools.read_work_item!.call({ work_item_id: hidden })).toThrow(RangeError)
     expect(() => tools.read_work_item!.call({ work_item_id: hidden })).toThrow("no work item")
   }
+})
+
+test("work item visibility follows the chain children requester and assignee", () => {
+  const store = openStore()
+  const top = store.createWorkItem(workItem({ title: "Ship v2" }))
+  const root = store.createWorkItem(workItem({ title: "Chat", parent_id: top.id }))
+  const child = store.createWorkItem(workItem({ title: "Docs", parent_id: root.id }))
+  const sibling = store.createWorkItem(workItem({ title: "Sibling", parent_id: top.id }))
+  const requested = store.createWorkItem(workItem({ title: "Asked", requester: "lan" }))
+  const assigned = store.createWorkItem(workItem({ title: "Given", assignee: "lan" }))
+  const hidden = store.createWorkItem(workItem({ title: "Hidden", assignee: "minh" }))
+  const visible = workItemVisibility(store, "lan", [null, root.id, undefined])
+  for (const item of [top, root, child, sibling, requested, assigned]) expect([item.title, visible(item)]).toEqual([item.title, true])
+  expect(visible(hidden)).toBe(false)
+  expect(workItemVisibility(store, "lan", [null, undefined])(top)).toBe(false)
 })
 
 test("a work item id that is not a string is no work item", () => {
