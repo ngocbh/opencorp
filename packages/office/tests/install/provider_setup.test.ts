@@ -23,8 +23,10 @@ import {
   askDeployment,
   askModel,
   azureDeployments,
+  checkProvider,
   ensureProvider,
   type Listers,
+  MAX_KEY_CHARS,
   type ModelCheck,
   type ProviderOptions,
   providerModels,
@@ -563,6 +565,42 @@ test("a key pasted as a field name is not echoed", async () => {
     const error = await rejection(ensure(office, new Script(), { stdin: stdin(data) }))
     expect(error).toBeInstanceOf(OnboardError)
     expect(error.message).not.toContain(KEY)
+  }
+})
+
+const TOO_LONG = "llm_config.api_key is too long (at most 16384 characters)"
+const NOT_HEADER_TEXT = "llm_config.api_key must be printable ASCII with no leading or trailing spaces"
+
+test.each([
+  ["too long", "anthropic", "k".repeat(MAX_KEY_CHARS + 1), TOO_LONG],
+  ["a space", "anthropic", " ", NOT_HEADER_TEXT],
+  ["a trailing newline", "anthropic", "k\n", NOT_HEADER_TEXT],
+  ["a leading tab", "anthropic", "\tsk-abc", NOT_HEADER_TEXT],
+  ["a trailing space", "anthropic", "sk-abc ", NOT_HEADER_TEXT],
+  ["non-ascii", "anthropic", "sk-é-0123456789", NOT_HEADER_TEXT],
+  // An ollama key is never sent, but the rule is the same for every provider.
+  ["an ollama dummy", "ollama", " ", NOT_HEADER_TEXT],
+] as const)("a key that cant be sent as a header is refused before anything is saved [%s]", async (_case, name, key, message) => {
+  const llm = { provider: name, model: "m", api_key: key }
+  let error: unknown
+  try {
+    checkProvider({ llm_config: llm })
+  } catch (caught) {
+    error = caught
+  }
+  expect(error).toBeInstanceOf(OnboardError)
+  expect((error as Error).message).toBe(message)
+  const office = newOffice()
+  const refused = await rejection(ensure(office, new Script(), { stdin: stdin({ llm_config: llm }) }))
+  expect(refused).toBeInstanceOf(OnboardError)
+  expect(refused.message).toContain(message)
+  if (key.length > 8) expect(refused.message).not.toContain(key)
+  expect(existsSync(file(office))).toBe(false)
+})
+
+test("a key of the longest length and inner spaces passes", () => {
+  for (const key of ["k".repeat(MAX_KEY_CHARS), "sk abc"]) {
+    expect(checkProvider({ llm_config: { provider: "anthropic", model: "m", api_key: key } }).llm_config?.api_key).toBe(key)
   }
 })
 

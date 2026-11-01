@@ -31,7 +31,7 @@ import { launch } from "../../src/install/launch.ts"
 import { OnboardError, TRIES, TtyPrompter } from "../../src/install/prompts.ts"
 import { selfSpawnEnv } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
-import { fakeLlm } from "../chat/helpers.ts"
+import { fakeLlm, keyCopies, MIXED_KEY, refusingLlm } from "../chat/helpers.ts"
 import { git, gitEnv } from "../company/helpers.ts"
 import { request } from "../daemon/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
@@ -634,6 +634,15 @@ test("a model that fails says why without the key", async () => {
   expect(problem).not.toContain(KEY)
 })
 
+test("a model that quotes the key in another case or base64 says why without any copy", async () => {
+  const url = await refusingLlm(`bad key: ${keyCopies(MIXED_KEY).join(" and ")}`)
+  const problem = await modelProblem(
+    Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: MIXED_KEY }, env: { VLLM_BASE_URL: `${url}/v1` } }),
+  )
+  expect(problem).toContain("bad key: [redacted] and [redacted] and [redacted]")
+  for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) expect(problem).not.toContain(copy)
+})
+
 test("a setup run failure never shows the key or url credentials", async () => {
   const flow = await loadFlow(
     "id: fail\nname: fail\ninput:\n  text: !str\noutput: str\nkind: code\ncode: |\n  throw new Error(inputs.text)\n",
@@ -646,10 +655,25 @@ test("a setup run failure never shows the key or url credentials", async () => {
     Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: KEY } }),
     { tools: {} },
   )
-  expect(message).toContain("bad key *** for https://***@example.com/v1")
+  expect(message).toContain("bad key [redacted] for https://***@example.com/v1")
   expect(message).not.toContain(KEY)
   expect(message).not.toContain("hunter2")
   expect(message!.endsWith(".")).toBe(false)
+})
+
+test("a setup run failure never shows the key in another case or base64", async () => {
+  const flow = await loadFlow(
+    "id: fail\nname: fail\ninput:\n  text: !str\noutput: str\nkind: code\ncode: |\n  throw new Error(inputs.text)\n",
+    { sourceLabel: "fail" },
+  )
+  const { message } = await runSetup(
+    flow,
+    { text: `bad keys ${keyCopies(MIXED_KEY).join(", ")}` },
+    Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: MIXED_KEY } }),
+    { tools: {} },
+  )
+  expect(message).toContain("bad keys [redacted], [redacted], [redacted]")
+  for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) expect(message).not.toContain(copy)
 })
 
 test("the unknown model warning stays off the terminal", async () => {

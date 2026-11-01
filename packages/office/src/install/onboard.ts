@@ -31,7 +31,7 @@ import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
 import { isNew, missingFiles, type Owner, writeCompany } from "../company_template/index.ts"
 import { makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
-import { repr } from "../perm/redact.ts"
+import { redact as redactSecrets, repr } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
 import { PrivateFileError, writePrivate } from "../secrets.ts"
@@ -73,8 +73,16 @@ function llmErrors(issues: readonly Issue[]): string {
   return [...new Set(lines)].join("; ")
 }
 
-/** `data` as a provider whose `llm_config` yian accepts; throws `OnboardError`, whose message never holds a
- *  value from `data`. */
+/** The most characters `llm_config.api_key` may have. Servers cap a request's headers at 8-16 KiB in all, so a
+ *  longer key can't be sent, and the scrubbers build a pattern from each form of the key that grows with it. */
+export const MAX_KEY_CHARS = 16384
+
+/** Valid HTTP header text: printable ASCII with inner spaces only, as yian's `checkHeaderValue`
+ *  (`src/llm/auth.ts`) checks a key when it sends it. */
+const HEADER_TEXT = /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/
+
+/** `data` as a provider whose `llm_config` yian accepts and whose key can be sent as a header; throws
+ *  `OnboardError`, whose message never holds a value from `data`. */
 export function checkProvider(data: unknown): Provider {
   let provider: Provider
   try {
@@ -97,6 +105,17 @@ export function checkProvider(data: unknown): Provider {
       )
     }
     throw error
+  }
+  const key = llm.api_key
+  if (typeof key === "string") {
+    // Length first: a huge key is refused without a regex test.
+    if (key.length > MAX_KEY_CHARS) {
+      throw new OnboardError(`llm_config.api_key is too long (at most ${MAX_KEY_CHARS} characters)`)
+    }
+    // Yian refuses such a key only once a request is made, and reports it as the model's problem.
+    if (!HEADER_TEXT.test(key)) {
+      throw new OnboardError("llm_config.api_key must be printable ASCII with no leading or trailing spaces")
+    }
   }
   if (Object.hasOwn(llm, "api_key") && !llm.provider) {
     // Yian refuses a key without a provider at run time; say so now.
@@ -937,7 +956,9 @@ export async function runSetup(
   }
   if (message !== null) {
     const key = provider.llm_config?.api_key
-    if (typeof key === "string" && key) message = message.replaceAll(key, "***")
+    // Every form of the key, as chat runs scrub theirs: yian scrubs the key only as written and escaped, and a
+    // provider may quote it in another letter case or base64-encoded.
+    if (typeof key === "string" && key) message = redactSecrets(message, [], [key])
     message = redact(message).replace(/\.+$/, "")
   }
   return { result, message }
