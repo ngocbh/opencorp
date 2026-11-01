@@ -1799,6 +1799,8 @@ test("a run log with a bad line answers the next message from a fresh run", asyn
   const o = await chatOffice(fake)
   const { actor, sid } = await startActor(o)
   expect(await say(o, actor, sid, "a")).toBe("one")
+  // Between turns: a worker still running its turn's other nodes would take the message itself.
+  await waitFor(() => !actor.hasWorker, { what: "the run to rest" })
   const old = actor.runId!
   fs.appendFileSync(path.join(o.office.paths.runs, old, "log.jsonl"), "garbage\n")
   expect(await say(o, actor, sid, "b")).toBe("two")
@@ -1973,6 +1975,8 @@ test("a run folder deleted between turns starts a fresh run, and the old run cou
   const o = await chatOffice(fake)
   const { actor, sid } = await startActor(o)
   expect(await say(o, actor, sid, "a")).toBe("one")
+  // Between turns: a worker still running its turn's other nodes would take the message itself.
+  await waitFor(() => !actor.hasWorker, { what: "the run to rest" })
   const old = actor.runId!
   fs.rmSync(path.join(o.office.paths.runs, old), { recursive: true })
   await actor.prompt("b")

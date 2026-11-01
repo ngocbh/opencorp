@@ -413,6 +413,7 @@ test("a started run whose folder is gone at restore couldnt resume, and its fres
   const o = await chatOffice(fake)
   const { actor: first, sid } = await startActor(o)
   expect(await say(o, first, sid, "a")).toBe("one")
+  await waitFor(() => !first.hasWorker, { what: "the run to rest" })
   // A second run, so an older run with a log is there to seed from.
   fs.appendFileSync(path.join(o.office.paths.runs, first.runId!, "log.jsonl"), "garbage\n")
   expect(await say(o, first, sid, "b")).toBe("two")
