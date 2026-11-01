@@ -127,17 +127,28 @@ function scrubInput(text: string, body: AddBody, llm: LlmConfig): string {
   const endpoint = (body.endpoint ?? "").trim()
   const baseUrl = typeof llm.base_url === "string" ? llm.base_url : ""
   const host = URL.parse(baseUrl)?.hostname ?? ""
-  for (const name of [endpoint, baseUrl, host]) {
+  for (const url of [endpoint, baseUrl, host]) {
+    // Without a trailing `/`, so the path that follows still reads as one: "the endpoint/chat/completions".
+    const name = url.replace(/\/+$/, "")
     if (name) names.set(name.toLowerCase(), "the endpoint")
   }
   if (names.size === 0) return text
   // One pass, longest first, so a replacement is never matched again. A token doesn't continue into a letter, digit,
-  // `_`, `-` or a further `.label`, yet a sentence's closing period still ends it.
-  const alternatives = [...names.keys()].sort((a, b) => b.length - a.length).map(escapeRegExp)
-  const pattern = new RegExp(
-    `(?<![A-Za-z0-9_.-])(?:${alternatives.join("|")})(?![A-Za-z0-9_-]|\\.[A-Za-z0-9])`,
-    "gi",
-  )
+  // `_` or `-`, yet a sentence's closing period still ends it. Only an edge that is itself a token character is
+  // guarded, so a name ending in punctuation still matches before whatever follows it. A model id doesn't continue
+  // into a further `.label` either (`gpt-5` in `gpt-5.4`); an endpoint may, since replacing more of a host is harmless.
+  const alternatives = [...names.keys()]
+    .sort((a, b) => b.length - a.length)
+    .map((name) => {
+      const before = /^[A-Za-z0-9_]/.test(name) ? "(?<![A-Za-z0-9_.-])" : ""
+      const after = /[A-Za-z0-9_]$/.test(name)
+        ? names.get(name) === "the model"
+          ? "(?![A-Za-z0-9_-]|\\.[A-Za-z0-9])"
+          : "(?![A-Za-z0-9_-])"
+        : ""
+      return before + escapeRegExp(name) + after
+    })
+  const pattern = new RegExp(alternatives.join("|"), "gi")
   // A letter whose lower case is longer than itself can miss the map; it is still input, so it still goes.
   return text.replace(pattern, (match) => names.get(match.toLowerCase()) ?? "the endpoint")
 }

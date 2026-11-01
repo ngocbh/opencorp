@@ -274,10 +274,31 @@ test("a model that doesnt answer never quotes the endpoint url, even at a senten
   expect(leaks(message, "Sk-Pasted-SECRET9")).toEqual([])
 })
 
+test("a model that doesnt answer never quotes the path of an endpoint that ends in a slash", async () => {
+  const body = { provider: "openai", endpoint: "https://gw.example/team-sk-123/v1/", api_key: SENTINEL, model: "m1" }
+  const problem = "request to https://gw.example/team-sk-123/v1/chat/completions failed"
+  const message = await refusedWith(body, problem)
+  expect(message).toBe("The model didn't answer: request to the endpoint/chat/completions failed")
+  expect(leaks(message, "team-sk-123")).toEqual([])
+})
+
+test("an azure resource is replaced even where another host continues it", async () => {
+  const body = { provider: "azure", endpoint: "sk-AzureRes-KEY123", api_key: SENTINEL, model: "gpt-5.4-x" }
+  const message = await refusedWith(body, "getaddrinfo ENOTFOUND sk-azureres-key123.cognitiveservices.azure.com")
+  expect(message).toBe("The model didn't answer: getaddrinfo ENOTFOUND the endpoint.cognitiveservices.azure.com")
+  expect(leaks(message, "sk-AzureRes-KEY123")).toEqual([])
+})
+
 test("a model that doesnt answer never quotes the model it was named", async () => {
   const body = { provider: "openai", api_key: SENTINEL, model: "sk-Model-SECRET1" }
   const message = await refusedWith(body, "Error code: 404 - The model `sk-Model-SECRET1` does not exist")
   expect(message).toBe("The model didn't answer: Error code: 404 - The model `the model` does not exist")
+})
+
+test("a model id that ends in punctuation is replaced before whatever follows it", async () => {
+  const body = { provider: "openai", api_key: SENTINEL, model: "sk-Org-SECRET2/" }
+  const message = await refusedWith(body, "model sk-org-secret2/latest not found")
+  expect(message).toBe("The model didn't answer: model the modellatest not found")
 })
 
 test("a short model id is replaced only where it stands alone", async () => {
