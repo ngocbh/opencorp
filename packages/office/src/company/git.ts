@@ -492,7 +492,7 @@ export class CompanyGit {
   /**
    * Whether `relpath` may hold a different file at commit `to` than at commit `from`: true when the clone doesn't
    * have `from`, when no common ancestor of the two holds the file, or when a commit on either side since their common
-   * ancestors deletes it (a merge compared with each parent); false when `from === to`. A RangeError for anything but
+   * ancestors deletes it or changes its type (a merge compared with each parent); false when `from === to`. A RangeError for anything but
    * full commit ids and a relative path; `CompanyGitError` when git fails, so a failed read is neither answer.
    */
   async goneSince(relpath: string, from: string, to: string): Promise<boolean> {
@@ -517,7 +517,7 @@ export class CompanyGit {
     // The range is symmetric so a reset back to before a deletion counts too; each repo setting that would change
     // which commits or changes the log shows is pinned.
     const log = ["-c", "log.follow=false", "-c", "log.diffMerges=separate", "log", "-n", "1", "--full-history", "-m"]
-    log.push("--no-patch", "--no-renames", "--no-show-signature", "--no-ext-diff", "--diff-filter=D", "--format=%H")
+    log.push("--no-patch", "--no-renames", "--no-show-signature", "--no-ext-diff", "--diff-filter=DT", "--format=%H")
     log.push(`${from}...${to}`, "--", `:(literal)${relpath}`)
     return (await this.#run(log)).stdout.toString().trim() !== ""
   }

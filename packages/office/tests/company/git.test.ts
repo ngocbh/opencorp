@@ -1099,6 +1099,22 @@ test("gone since is true for a delete, and for a delete then a re-add", async ()
   expect(await g.goneSince(DANA, again, other(company, "later still"))).toBe(false)
 })
 
+test("gone since is true when the file was a symlink at a commit between", async () => {
+  const { company, g } = setup()
+  const hired = hire(company)
+  const file = path.join(company, DANA)
+  const text = fs.readFileSync(file)
+  fs.rmSync(file)
+  fs.symlinkSync("../ngocbh/person.yaml", file)
+  git(company, "add", DANA)
+  git(company, "commit", "-q", "-m", "dana is a link")
+  fs.rmSync(file)
+  fs.writeFileSync(file, text)
+  git(company, "add", DANA)
+  git(company, "commit", "-q", "-m", "dana is a file again")
+  expect(await g.goneSince(DANA, hired, git(company, "rev-parse", "HEAD"))).toBe(true)
+})
+
 test("gone since sees a delete and re-add on a side branch that was merged", async () => {
   const { company, g } = setup()
   const hired = hire(company)

@@ -344,12 +344,14 @@ export class BrowserSessions {
     // against an older one.
     const [view, humans] = await this.#atHead()
     const fp = humans.fps.get(person)
+    // The history is read only for rows the fingerprint keeps; rows issued at one commit share one read.
+    const kept = (row: HqSessionRecord) => humans.unreadable.has(person) || row.passwordFp === fp
     const gone = await Promise.all(
-      rows.map((row) => view === null || this.#goneBetween(row.person, row.issuedSha, view.sha)),
+      rows.map((row) => view === null || !kept(row) || this.#goneBetween(row.person, row.issuedSha, view.sha)),
     )
     const live: HqSessionRecord[] = []
     for (const [i, row] of rows.entries()) {
-      if (!gone[i] && (humans.unreadable.has(person) || row.passwordFp === fp)) live.push(row)
+      if (!gone[i]) live.push(row)
       else await this.revoke(row.id)
     }
     // A session revoked while the history was read is left out.
