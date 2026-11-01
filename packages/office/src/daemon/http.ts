@@ -472,12 +472,10 @@ export const LIMITS: Readonly<Limits> = {
  *  `readBody` with `res`) before it reads a body.
  *
  *  Under Bun, a client that half-closes (`shutdown(SHUT_WR)`, `nc -N`, socat at EOF) gets no reply from a route
- *  that awaits: Bun closes the socket, the request's signal aborts and the reply is dropped. A reply made without
- *  awaiting still arrives.
- *  - On office.sock, a route that reads a body reads it after an await, so the read fails and the route does
- *    nothing; one without a body that ignores the signal still does its work, unseen.
- *  - HQ's guard reads an API body before anything awaits, and that read still gets the whole body, so an HQ route
- *    that writes (answers a card, adds a connection) still does its write; only its reply is dropped. */
+ *  that awaits: Bun closes the socket, and the request's signal aborts. A reply made without awaiting still arrives.
+ *  Every office.sock and HQ route awaits before it replies, so none answers such a client. What a route already
+ *  started may still happen unseen, e.g. HQ's `/api/pair` may spend a code, or `/api/login` may make a session,
+ *  whose cookie never arrives. */
 export function createServer(listener: RequestListener, limits: Limits = LIMITS): http.Server {
   const { maxConnections, ...options } = limits
   const server = http.createServer(options, listener)
