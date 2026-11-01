@@ -22,13 +22,18 @@ export const ceoOf = (people: Person[]) => people.find((p) => p.kind === "human"
 /** How many passwords `opencorp login` tries before it stops. */
 const TRIES = 3
 
+// The shape `newToken` makes; the office refuses any other.
+const TOKEN = /^act_[A-Za-z0-9_-]{43}$/
+
 /**
  * `opencorp login [--handle H] [--device NAME] [--force]`: makes a token, writes this device's identity,
  * then adds the device to H's devices. The device defaults to this host's short name. On a
  * terminal, it asks for H (the CEO by default) and H's password, which lets the office add the
  * device from anywhere; otherwise H defaults to the CEO. Without a password, or for a human with
  * none, it asks the office to add the device as this device: when that's refused, prints the
- * `opencorp devices add` to run on a device it trusts. A device the office already knows asks nothing.
+ * `opencorp devices add` to run on a device it trusts. A device the office already knows asks nothing. A saved
+ * identity the office doesn't list yet gets its `opencorp devices add` line printed again, for the same token;
+ * `--force` replaces it with a new token.
  */
 export const run: CommandRun = async (argv) => {
   let values
@@ -52,12 +57,35 @@ export const run: CommandRun = async (argv) => {
   if (!(await officeAnswers(socket))) return officeNotRunning()
   const known = fs.existsSync(file) ? localIdentity() : undefined
   if (fs.existsSync(file) && !values.force) {
-    if (known && (await knows(socket, known.token, known.handle, known.device))) {
+    const me = known && (await whoIs(socket, known.token))
+    if (known && me?.person === known.handle && me.device === known.device) {
       console.log(`This device is already logged in: ${known.device}, acting as @${known.handle} (${file}).`)
       return 0
     }
+    // The flags may only repeat what the file says; naming another person or device means a new token.
+    const asSaved = (flag: string | undefined, saved: string) => flag === undefined || flag === saved
+    if (
+      known &&
+      !me &&
+      asSaved(values.handle, known.handle) &&
+      asSaved(values.device, known.device) &&
+      TOKEN.test(known.token) &&
+      DEVICE_NAME.test(known.device)
+    ) {
+      // Nothing is sent: a password or an open office would list again a token that was removed on purpose. The
+      // line needs someone on a trusted device, and its hash is no secret to anyone who can read the file.
+      vouch(known.handle, known.device, tokenSha256(known.token))
+      console.error("To start over with a new token instead, pass --force; the line above then stops working.")
+      return 1
+    }
+    if (known && me) {
+      console.error(
+        `opencorp login: the office takes this device's token (${file}) as @${me.person}'s ${me.device}, not @${known.handle}'s ${known.device}; pass --force to replace it`,
+      )
+      return 1
+    }
     console.error(
-      `opencorp login: this device already has an identity (${file}) the office doesn't know yet; pass --force to replace it`,
+      `opencorp login: this device already has an identity (${file}) that login can't pick up; pass --force to replace it`,
     )
     return 1
   }
@@ -124,8 +152,7 @@ export const run: CommandRun = async (argv) => {
   } catch (e) {
     if (e instanceof OfficeError && (e.status === 401 || e.status === 403)) {
       if (!save()) return 1
-      console.error(`opencorp login: the office doesn't trust this device yet. On a device it trusts, run:`)
-      console.error(`  opencorp devices add ${handle} ${device} ${hash}`)
+      vouch(handle, device, hash)
       // Not removed: until the new device is listed, the old one may be the office's last, whose removal opens the
       // office to requests without a token.
       if (old) console.error(remains(old))
@@ -168,15 +195,20 @@ async function removeReplaced(socket: string, token: string, old: Listed): Promi
   }
 }
 
-/** Whether the office takes `token` to be `device` of `handle`. */
-async function knows(socket: string, token: string, handle: string, device: string) {
+/** Who the office takes `token` to be, or undefined when it doesn't know the token. */
+async function whoIs(socket: string, token: string): Promise<{ person: string; device: string | null } | undefined> {
   try {
-    const me = await createOfficeClient({ socket, token }).whoami()
-    return me.person === handle && me.device === device
+    return await createOfficeClient({ socket, token }).whoami()
   } catch (e) {
-    if (e instanceof UnknownDevice) return false
+    if (e instanceof UnknownDevice) return undefined
     throw e
   }
+}
+
+/** Says to run `opencorp devices add` for `device` of `handle`, with token sha256 `hash`, on a trusted device. */
+function vouch(handle: string, device: string, hash: string) {
+  console.error(`opencorp login: the office doesn't trust this device yet. On a device it trusts, run:`)
+  console.error(`  opencorp devices add ${handle} ${device} ${hash}`)
 }
 
 function refused(e: unknown, handle: string, device: string) {

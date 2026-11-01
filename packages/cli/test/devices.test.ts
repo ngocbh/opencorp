@@ -207,17 +207,85 @@ test("login from an untrusted device says what to run on a trusted one", async (
     err: `opencorp login: the office doesn't trust this device yet. On a device it trusts, run:\n  opencorp devices add ngocbh laptop ${hash}`,
   })
   expect((await opencorp(other, "whoami")).err).toBe("opencorp whoami: the office doesn't know this device: run `opencorp login`")
-  expect(await opencorp(other, "login")).toEqual({
-    code: 1,
-    out: "",
-    err: `opencorp login: this device already has an identity (${other}/identity.json) the office doesn't know yet; pass --force to replace it`,
-  })
+  // Logging in again prints the same line for the same token, rather than sending the user to --force.
+  const saved = fs.readFileSync(path.join(other, "identity.json"))
+  for (const argv of [["login"], ["login", "--handle", "ngocbh", "--device", "laptop"]]) {
+    expect(await opencorp(other, ...argv)).toEqual({ code: 1, out: "", err: pending("laptop", hash) })
+    expect(fs.readFileSync(path.join(other, "identity.json"))).toEqual(saved)
+  }
   expect(await opencorp(trusted, "devices", "add", "ngocbh", "laptop", hash)).toEqual({
     code: 0,
     out: "@ngocbh has device laptop.",
     err: "",
   })
   expect((await opencorp(other, "whoami")).out).toContain("The office: @ngocbh, from device laptop")
+})
+
+/** What login says for a saved identity, `device` of @ngocbh with token sha256 `hash`, the office doesn't list yet. */
+const pending = (device: string, hash: string) =>
+  "opencorp login: the office doesn't trust this device yet. On a device it trusts, run:\n" +
+  `  opencorp devices add ngocbh ${device} ${hash}\n` +
+  "To start over with a new token instead, pass --force; the line above then stops working."
+
+test("login on a removed device re-prints its line and lists nothing", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  await opencorp(other, "login", "--handle", "ngocbh", "--device", "laptop")
+  const hash = tokenSha256(identity(other).token)
+  await opencorp(trusted, "devices", "add", "ngocbh", "laptop", hash)
+  expect((await opencorp(other, "whoami")).out).toContain("The office: @ngocbh, from device laptop")
+  await opencorp(trusted, "devices", "remove", "ngocbh", "laptop")
+  // A password would let the office list it again: login must not use it for a token that was removed.
+  office.passwords.set("ngocbh", PASSWORD)
+  const asked = answering(PASSWORD)
+  const before = office.requests.length
+  expect(await opencorp(other, "login")).toEqual({ code: 1, out: "", err: pending("laptop", hash) })
+  expect(asked.asked).toEqual([])
+  expect(devices()?.map((d) => d.name)).toEqual(["mac"])
+  const listing = office.requests
+    .slice(before)
+    .filter((r) => r.method !== "GET" && (r.path === "/login" || r.path.startsWith("/people/")))
+  expect(listing).toEqual([])
+})
+
+test("login with another --device or --handle than the saved identity still asks for --force", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  await opencorp(other, "login", "--handle", "ngocbh", "--device", "laptop")
+  const saved = fs.readFileSync(path.join(other, "identity.json"))
+  for (const argv of [["--device", "laptop2"], ["--handle", "minh"]]) {
+    const r = await opencorp(other, "login", ...argv)
+    expect(r.code).toBe(1)
+    expect(r.err).toContain("pass --force")
+    expect(r.err).not.toContain("devices add")
+    expect(fs.readFileSync(path.join(other, "identity.json"))).toEqual(saved)
+  }
+})
+
+test("a saved identity with a token or device name the office can't take asks for --force", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const file = path.join(other, "identity.json")
+  for (const saved of [
+    { handle: "ngocbh", device: "laptop", token: "act_short" },
+    { handle: "ngocbh", device: "Bad Name", token: "act_" + "A".repeat(43) },
+  ]) {
+    fs.writeFileSync(file, JSON.stringify(saved), { mode: 0o600 })
+    const r = await opencorp(other, "login")
+    expect(r).toEqual({
+      code: 1,
+      out: "",
+      err: `opencorp login: this device already has an identity (${file}) that login can't pick up; pass --force to replace it`,
+    })
+  }
+})
+
+test("login on a token the office takes as another device says so", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const file = path.join(other, "identity.json")
+  fs.writeFileSync(file, JSON.stringify({ ...identity(trusted), device: "mac2" }), { mode: 0o600 })
+  expect(await opencorp(other, "login")).toEqual({
+    code: 1,
+    out: "",
+    err: `opencorp login: the office takes this device's token (${file}) as @ngocbh's mac, not @ngocbh's mac2; pass --force to replace it`,
+  })
 })
 
 test("devices list shows names, and hashes only on --hashes", async () => {
