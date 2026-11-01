@@ -926,6 +926,8 @@ test("an install without the apps sources says it has no web app", () => {
   const got = byName(doctor.hqChecks(s, dir, path.join(dir, "site-packages")))["web app"]!
   expect(got.status).toBe("warn")
   expect(got.detail).toContain("this install has no web app")
+  expect(got.detail).toContain(`"app_dir" in ${path.join(dir, "hq.json")}`)
+  expect(got.detail).toContain(`v${VERSION}`)
   expect(got.detail).not.toContain("bun")
 })
 

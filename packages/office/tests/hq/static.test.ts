@@ -2,6 +2,7 @@
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
+import { VERSION } from "@opencorp/protocol/version"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { createServer } from "../../src/daemon/http.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
@@ -119,7 +120,8 @@ test.each([
 })
 
 test("without a build a page says how to build", async () => {
-  const sock = await served(path.join(tempDir(), "dist")) // app_dir doesn't exist
+  const tmp = tempDir()
+  const sock = await served(path.join(tmp, "packages", "app", "dist"), tmp) // the checkout's app_dir, not built
   const r = await fetchRaw(sock, "GET", "/", DOC)
   expect(r.status).toBe(503)
   expect(r.body).toContain("bun run build")
@@ -149,12 +151,39 @@ test("head works and a post to a page is refused", async () => {
 
 test("the not built page escapes the checkout path", async () => {
   expect(escapeHtml(`&<>"'`)).toBe("&amp;&lt;&gt;&quot;&#x27;")
-  const sock = await served(null, "/tmp/<b>x</b>")
+  const sock = await served(path.join("/tmp/<b>x</b>", "packages", "app", "dist"), "/tmp/<b>x</b>")
   const r = await fetchRaw(sock, "GET", "/", DOC)
   expect(r.status).toBe(503)
   expect(value(r.head, "content-type")).toBe("text/html; charset=utf-8")
   expect(r.body).toContain("in the checkout (/tmp/&lt;b&gt;x&lt;/b&gt;), then reload.")
   expect(r.body).not.toContain("<b>")
+})
+
+test("an install with no checkout and no app_dir says it has no web app", async () => {
+  // The compiled binary: its checkout resolves to "/", where there's no packages/app.
+  const sock = await served(null, "/")
+  const r = await fetchRaw(sock, "GET", "/", DOC)
+  expect(r.status).toBe(503)
+  expect(value(r.head, "content-type")).toBe("text/html; charset=utf-8")
+  expect(r.body).toContain("This install has no web app")
+  expect(r.body).toContain("app_dir")
+  expect(r.body).toContain("opencorp restart")
+  expect(r.body).toContain(`v${VERSION}`)
+  expect(r.body).not.toContain("checkout (/)")
+  expect(r.body).not.toContain("<script")
+  expect(value(r.head, "content-security-policy")!.startsWith("default-src 'none'")).toBe(true)
+})
+
+test("a custom app_dir without a build names app_dir, not the checkout", async () => {
+  const d = path.join(tempDir(), "<i>d</i>", "dist")
+  const sock = await served(d, tempDir())
+  const r = await fetchRaw(sock, "GET", "/", DOC)
+  expect(r.status).toBe(503)
+  expect(r.body).toContain(escapeHtml(d))
+  expect(r.body).toContain("app_dir")
+  expect(r.body).not.toContain("in the checkout")
+  expect(r.body).not.toContain("<i>")
+  expect(r.body).not.toContain("<script")
 })
 
 test("a fifo in app dir is never opened", async () => {

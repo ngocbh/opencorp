@@ -3,6 +3,7 @@ import fs from "node:fs"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import path from "node:path"
 import { pipeline } from "node:stream"
+import { VERSION } from "@opencorp/protocol/version"
 import { sendError } from "../daemon/http.ts"
 import { header, requestPath } from "./guard.ts"
 import { CHECKOUT } from "./version.ts"
@@ -23,11 +24,25 @@ export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (ch) => ESCAPES[ch]!)
 }
 
-/** The page sent while the app isn't built, naming the `checkout` to build it in. */
-function notBuilt(checkout: string): string {
+/**
+ * The page sent while there's no built app in `appDir`: with no `appDir` (an install with no checkout and no app_dir),
+ * where to point app_dir; for the checkout's own app dir, to build it in `checkout`; else, that app_dir has no build.
+ */
+function notBuilt(appDir: string | null, checkout: string): string {
+  let body: string
+  if (appDir === null)
+    body = `<h1>This install has no web app</h1><p>Point <code>"app_dir"</code> in <code>office/hq.json</code> at a \
+built OpenCorp web app (<code>packages/app/dist</code> in a checkout of the opencorp repo at this version, \
+v${escapeHtml(VERSION)}, after <code>bun run build</code> there), then run <code>opencorp restart</code>.</p>`
+  else if (path.resolve(appDir) === path.resolve(checkout, "packages", "app", "dist"))
+    body = `<h1>The web app isn't built</h1><p>Run <code>bun run build</code> in the checkout \
+(${escapeHtml(checkout)}), then reload.</p>`
+  else
+    body = `<h1>The web app isn't built</h1><p>No built web app in app_dir (${escapeHtml(appDir)}). Build one \
+there, or point <code>"app_dir"</code> in <code>office/hq.json</code> at one and run <code>opencorp restart</code>; \
+then reload.</p>`
   return `<!doctype html><html lang="en"><meta charset="utf-8"><title>OpenCorp HQ</title>
-<h1>The web app isn't built</h1><p>Run <code>bun run build</code> in the checkout (${escapeHtml(checkout)}), \
-then reload.</p></html>`
+${body}</html>`
 }
 
 /** The real path of the regular file `rel` names under `appDir`, or null if there's none or it leaves `appDir`. */
@@ -116,7 +131,8 @@ function sendFile(req: IncomingMessage, res: ServerResponse, file: string, cache
 }
 
 /** A file of the built app under `appDir`; `index.html` for a document navigation; a plain 404 for anything else
- *  missing; a page saying how to build in `checkout` while there's no build. Never rejects. */
+ *  missing; a page saying how to get a build while there's none (`checkout` is where the default app dir is built).
+ *  Never rejects. */
 export async function serveApp(
   req: IncomingMessage,
   res: ServerResponse,
@@ -129,7 +145,8 @@ export async function serveApp(
       allow: "GET, HEAD",
     })
   const index = appDir === null ? null : resolve(appDir, "index.html")
-  if (appDir === null || index === null) return sendText(req, res, 503, "text/html; charset=utf-8", notBuilt(checkout))
+  if (appDir === null || index === null)
+    return sendText(req, res, 503, "text/html; charset=utf-8", notBuilt(appDir, checkout))
   const rel = target.slice(1)
   const found = rel ? resolve(appDir, rel) : null
   if (found !== null && sendFile(req, res, found, rel.startsWith("assets/") ? IMMUTABLE : "no-cache")) return
