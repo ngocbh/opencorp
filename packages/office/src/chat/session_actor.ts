@@ -164,7 +164,7 @@ interface Fresh {
 /** The run statuses that end a run, whose report waits for the run index. */
 const ENDING: readonly string[] = ["succeeded", "failed", "cancelled"]
 
-/** What an office tool call answers when Esc, the worker's exit or the office stop cuts it before it returns. */
+/** What an office tool call answers when Esc, End, the worker's exit or the office stop cuts it before it returns. */
 export const INTERRUPTED_CALL = "interrupted; outcome unknown"
 
 /** What a message became: the turn the run waits for, an answer to the model's open question, a steer of the running
@@ -1563,8 +1563,8 @@ export class SessionActor implements LiveCalls {
     return stored
   }
 
-  /** Runs the office tool call `call`, which Esc, the worker's exit or the office stop answers `INTERRUPTED_CALL` at
-   *  once. */
+  /** Runs the office tool call `call`, which Esc, End, the worker's exit or the office stop answers
+   *  `INTERRUPTED_CALL` at once. */
   #cancellable(call: () => Promise<unknown>): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const cancel = () => resolve(INTERRUPTED_CALL)
