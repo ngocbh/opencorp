@@ -892,6 +892,71 @@ test("a roster that cant be loaded ends every stream and logs only the error typ
   expect(logs).toEqual(["couldn't load the roster to recheck open streams; ending them: GitWentAway"])
 })
 
+/** Renames the company repo's `main` to `moved`, so the branch HEAD names is gone. */
+function moveBranch(company: string): void {
+  git(company, "update-ref", "refs/heads/moved", "HEAD")
+  git(company, "update-ref", "-d", "refs/heads/main")
+}
+
+test("a moved branch ref ends token and tokenless streams and refuses new requests", async () => {
+  const lines: string[] = []
+  const open = makeOffice({ log: (line) => lines.push(line) })
+  let ended = 0
+  open.tokens.track(await open.tokens.context(info()), () => ended++)
+  await open.tokens.recheck()
+  expect(ended).toBe(0)
+  moveBranch(open.paths.company)
+  await open.tokens.recheck()
+  expect(ended).toBe(1)
+  const { sock } = await served(open, { tokens: true })
+  for (const target of ["/events", "/people", "/sessions"]) {
+    const r = await request(sock, "GET", target)
+    expect([r.status, r.json()]).toEqual([401, NO_HEAD])
+  }
+  expect(authLines(lines)).toHaveLength(1)
+
+  const logged: string[] = []
+  const closed = makeOffice({ log: (line) => logged.push(line) })
+  const token = newToken()
+  giveDevice(closed.paths.company, CEO, "mac", token)
+  let gone = 0
+  closed.tokens.track(await closed.tokens.context(info(bearer(token))), () => gone++)
+  await closed.tokens.recheck()
+  expect(gone).toBe(0)
+  moveBranch(closed.paths.company)
+  await closed.tokens.recheck()
+  expect(gone).toBe(1)
+  const { sock: closedSock } = await served(closed, { tokens: true })
+  for (let i = 0; i < 2; i++) {
+    const r = await request(closedSock, "GET", "/events", { headers: bearer(token) })
+    expect([r.status, r.json()]).toEqual([401, { ...NO_HEAD, error: "bad_token" }])
+  }
+  expect(authLines(logged)).toHaveLength(1)
+  expect(authLines(logged)[0]).toContain("branch ref can't be read")
+  expect([...lines, ...logged].filter((line) => line.includes(token))).toEqual([])
+})
+
+test("a tokenless stream ends once the ceo named is an agent", async () => {
+  const office = makeOffice()
+  addHuman(office.paths.company, "ava")
+  const file = path.join(office.paths.company, "company.yaml")
+  fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(`ceo: ${CEO}`, "ceo: ava"))
+  git(office.paths.company, "commit", "-qam", "ava is ceo")
+  let ended = 0
+  const ctx = await office.tokens.context(info())
+  expect(ctx.person).toBe("ava")
+  office.tokens.track(ctx, () => ended++)
+  await office.tokens.recheck()
+  expect(ended).toBe(0)
+  fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("ceo: ava", "ceo: minh"))
+  git(office.paths.company, "commit", "-qam", "agent ceo")
+  await office.tokens.recheck()
+  expect(ended).toBe(1)
+  const { sock } = await served(office, { tokens: true })
+  const r = await request(sock, "GET", "/events")
+  expect([r.status, r.json()]).toEqual([401, NO_CEO])
+})
+
 test("a recheck asked for during one runs again after it and never beside it", async () => {
   const office = makeOffice()
   const [a, b, c] = [newToken(), newToken(), newToken()]
