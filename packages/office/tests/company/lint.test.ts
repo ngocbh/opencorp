@@ -233,6 +233,22 @@ test.each(["main", "sops", "routines"])("nul byte in a flow ref is invalid [%s]"
   expect(issue!.message).not.toContain("\0")
 })
 
+test.each(["main", "sops", "routines"])("absolute flow ref is invalid [%s]", async (field) => {
+  // A flow inside the repo that exists; the worker would look for it under the session's pinned worktree.
+  const dir = tempDir()
+  const ref = path.join(fs.realpathSync(dir), "company/shared/flows/chat.yaml")
+  const value = { main: ref, sops: [{ flow: ref }], routines: [{ name: "daily", flow: ref }] }[field]
+  const root = makeCompany({ "people/minh/person.yaml": person("minh", { [field]: value }) }, dir)
+  expect(fs.existsSync(ref)).toBe(true)
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.path).toBe("people/minh/person.yaml")
+  expect(issue!.message).toContain("chat.yaml")
+  expect(issue!.message).toContain("relative to people/minh/")
+  expect(issue!.message).not.toContain(dir)
+  expect(issue!.message).not.toContain(fs.realpathSync(dir))
+})
+
 test("agent needs a main flow", async () => {
   const minh = person("minh")
   delete minh["main"]

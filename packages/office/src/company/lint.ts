@@ -240,8 +240,8 @@ function chatShapeProblems(ref: string, flow: ComposedFlow): string[] {
   return problems
 }
 
-/** Agents have a main flow; every main, SOP, and routine flow exists inside the repo and compiles; a main
- *  flow declares the inputs the office passes it and has the template chat's shape. */
+/** Agents have a main flow; every main, SOP, and routine flow is a relative path to a file inside the repo
+ *  that compiles; a main flow declares the inputs the office passes it and has the template chat's shape. */
 async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
   for (const [handle, person] of sorted(repo.people)) {
     const file = personPath(handle)
@@ -254,6 +254,14 @@ async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
     for (const [ref, isMain] of refs) {
       if (ref.includes("\0")) {
         yield repoIssue(file, "person.flow_invalid", `${JSON.stringify(ref)}: embedded null byte`)
+        continue
+      }
+      // The worker joins the ref under the session's pinned worktree, where an absolute path names no file; read
+      // as absolute, it would name the live clone rather than the pinned commit. The message shows only the file
+      // name, never the folders above the repo.
+      if (path.isAbsolute(ref)) {
+        yield repoIssue(file, "person.flow_invalid",
+          `flow path .../${path.basename(ref)} is absolute; write it relative to people/${handle}/`)
         continue
       }
       const resolved = resolvePath(path.resolve(base, ref))
