@@ -17,8 +17,8 @@ export function frame([kind, event]: Item): string {
   return `event: ${kind}\n${id}data: ${JSON.stringify(event)}\n\n`
 }
 
-/** The stream's chunks: `: connected`, then frames, pings and a final `reset` if the bus dropped it. Aborts `cut`
- *  when the subscription is ended from outside. */
+/** The stream's chunks: `: connected`, then frames, pings and a final `reset` if the bus dropped it. Ends when its
+ *  token stops counting, and aborts `cut` when the subscription is ended from outside. */
 async function* stream(ctx: RequestContext, pingMs: number, cut: AbortController): AsyncGenerator<string> {
   // Subscribed before ": connected" is sent, so a client gets every event published after it sees that line.
   // Subscribing here, on the first pull, means a reply that never starts leaves no subscription behind.
@@ -27,10 +27,13 @@ async function* stream(ctx: RequestContext, pingMs: number, cut: AbortController
   const end = () => sub.end()
   if (ctx.signal.aborted) end()
   else ctx.signal.addEventListener("abort", end, { once: true })
-  // Ended from outside (a drop, the office stopping) while the client isn't reading: only the cut ends it then.
+  // Ended from outside (a drop, the office stopping, its token revoked) while the client isn't reading: only the cut
+  // ends it then.
   const ended = () => cut.abort()
   if (sub.ended.aborted) ended()
   else sub.ended.addEventListener("abort", ended, { once: true })
+  // Checked once, when it opened: a token taken out of the roster later ends it here.
+  const untrack = ctx.office.tokens.track(ctx, end)
   try {
     yield ": connected\n\n"
     for (;;) {
@@ -44,6 +47,7 @@ async function* stream(ctx: RequestContext, pingMs: number, cut: AbortController
   } finally {
     ctx.signal.removeEventListener("abort", end)
     sub.ended.removeEventListener("abort", ended)
+    untrack()
     sub.close()
   }
 }
@@ -60,8 +64,9 @@ async function* stream(ctx: RequestContext, pingMs: number, cut: AbortController
  * from a `part.updated` or `message.updated` received after its snapshot.
  *
  * `event: reset` means the office dropped this client for falling behind; the stream then ends, and the client
- * reconnects and bootstraps again. Any other end of the stream (the office stopping, or a drop while the client
- * wasn't reading, which closes the connection without `reset`) also calls for a fresh bootstrap.
+ * reconnects and bootstraps again. Any other end of the stream (the office stopping, its device removed, or a drop
+ * while the client wasn't reading, which closes the connection without `reset`) also calls for a fresh bootstrap,
+ * which a removed device's reconnect gets 401 for.
  */
 export function eventRoutes(pingMs: number = PING_MS): Route<RequestContext>[] {
   return [
