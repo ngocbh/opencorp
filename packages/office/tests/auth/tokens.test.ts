@@ -145,6 +145,27 @@ test("a broken person file lets no one in through it", async () => {
   const r = await loadRoster(g, await g.readHead())
   expect(r.ceo).toBe("ngocbh")
   expect(r.tokens.size).toBe(0)
+  expect(r.unreadable).toEqual([{ path: "people/ngocbh/person.yaml", code: "repo.unreadable" }])
+})
+
+test("an empty person file counts as one that doesnt load", async () => {
+  const root = company()
+  const g = companyGit(root)
+  fs.writeFileSync(path.join(root, "people/minh/person.yaml"), "")
+  git(root, "commit", "-qam", "empty")
+  const r = await loadRoster(g, await g.readHead())
+  expect(r.unreadable).toEqual([{ path: "people/minh/person.yaml", code: "repo.schema" }])
+  expect(r.tokens.size).toBe(0)
+})
+
+test("a schema failure is recorded by its code", async () => {
+  const root = company()
+  const g = companyGit(root)
+  fs.appendFileSync(path.join(root, "people/minh/person.yaml"), "nickname: x\n")
+  git(root, "commit", "-qam", "extra key")
+  const r = await loadRoster(g, await g.readHead())
+  // Only the path and the code: an issue's message never reaches the roster.
+  expect(r.unreadable).toEqual([{ path: "people/minh/person.yaml", code: "repo.schema" }])
 })
 
 test("checking a token takes well under a millisecond", () => {
@@ -179,6 +200,8 @@ test("a person file in the wrong folder lets no one in", async () => {
   const r = await loadRoster(g, await g.readHead())
   expect(r.tokens.size).toBe(0)
   expect(r.enforced).toBe(false)
+  // The nested file isn't a person file at all, so only the misplaced one is listed.
+  expect(r.unreadable).toEqual([{ path: "people/ava/person.yaml", code: "person.dir_mismatch" }])
   for (const token of [misplaced, nested]) {
     expect(authError(() => authenticate(`Bearer ${token}`, r)).code).toBe("bad_token")
   }

@@ -36,6 +36,11 @@ const UNAUTHENTICATED = {
   message: "this office needs a device token; run `opencorp login`",
 }
 
+const NO_CEO = {
+  error: "unauthenticated",
+  message: "this request has no person to act as: the company repo names no human CEO at HEAD; run `opencorp doctor`",
+}
+
 const errorOf = (reply: { json(): unknown }) => (reply.json() as { error: string }).error
 
 test("without devices an unauthenticated request acts as the ceo", async () => {
@@ -252,12 +257,119 @@ test("without a ceo a tokenless request has no person to act as", async () => {
   const company = office.paths.company
   git(company, "rm", "-q", "company.yaml")
   git(company, "commit", "-qm", "no company")
-  const r = await request(sock, "GET", "/whoami")
-  expect([r.status, r.json()]).toEqual([
-    401,
-    { error: "unauthenticated", message: "this request has no person to act as" },
-  ])
+  // Every route answers it, those that never ask who acts as well.
+  for (const target of ["/whoami", "/people", "/sessions"]) {
+    const r = await request(sock, "GET", target)
+    expect([r.status, r.json()]).toEqual([401, NO_CEO])
+  }
   expect((await request(sock, "GET", "/health")).status).toBe(200)
+})
+
+/** Moves the company repo's branch ref away, so HEAD can't be read; returns a function that puts it back. */
+function hideHead(company: string): () => void {
+  git(company, "pack-refs", "--all", "--prune") // one place to move: no loose ref is left
+  const packed = path.join(company, ".git", "packed-refs")
+  fs.renameSync(packed, `${packed}.away`)
+  return () => fs.renameSync(`${packed}.away`, packed)
+}
+
+const NO_HEAD = { error: "unauthenticated", message: "the company repo's HEAD can't be read; run `opencorp doctor`" }
+
+test("an unreadable head refuses everything but the open routes", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const token = newToken()
+  giveDevice(office.paths.company, "ngocbh", "mac", token)
+  const unhide = hideHead(office.paths.company)
+  for (const target of ["/whoami", "/people", "/sessions"]) {
+    const r = await request(sock, "GET", target)
+    expect([r.status, r.json()]).toEqual([401, NO_HEAD])
+  }
+  // No token is known while HEAD can't be read.
+  const r = await request(sock, "GET", "/whoami", { headers: bearer(token) })
+  expect([r.status, r.json()]).toEqual([401, { ...NO_HEAD, error: "bad_token" }])
+  expect((await request(sock, "GET", "/health")).status).toBe(200)
+  unhide()
+  // The closed roster isn't kept: the next request reads HEAD again.
+  expect((await request(sock, "GET", "/whoami", { headers: bearer(token) })).json()).toEqual({
+    person: "ngocbh",
+    device: "mac",
+  })
+})
+
+test("an unreadable head without devices is refused too", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const unhide = hideHead(office.paths.company)
+  const r = await request(sock, "GET", "/people")
+  expect([r.status, r.json()]).toEqual([401, NO_HEAD])
+  unhide()
+  expect((await request(sock, "GET", "/whoami")).json()).toEqual({ person: "ngocbh", device: null })
+})
+
+/** The office log lines from `opencorp.daemon.auth`. */
+const authLines = (lines: string[]) => lines.filter((line) => line.includes("opencorp.daemon.auth"))
+
+test("an unreadable head logs once", async () => {
+  const lines: string[] = []
+  const office = makeOffice({ log: (line) => lines.push(line) })
+  const { sock } = await served(office, { tokens: true })
+  const unhide = hideHead(office.paths.company)
+  for (let i = 0; i < 3; i++) expect((await request(sock, "GET", "/whoami")).status).toBe(401)
+  expect(authLines(lines)).toHaveLength(1)
+  expect(authLines(lines)[0]).toContain("WARNING")
+  expect(authLines(lines)[0]).toContain("HEAD can't be read")
+  unhide()
+  expect((await request(sock, "GET", "/whoami")).status).toBe(200)
+  hideHead(office.paths.company)
+  expect((await request(sock, "GET", "/whoami")).status).toBe(401)
+  expect(authLines(lines)).toHaveLength(2) // once more for the next time it goes
+})
+
+test("office log names a person file that doesnt load once by path and code", async () => {
+  const lines: string[] = []
+  const office = makeOffice({ log: (line) => lines.push(line) })
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  const file = path.join(company, "people/minh/person.yaml")
+  const good = fs.readFileSync(file, "utf8")
+  fs.writeFileSync(file, "handle: [SECRETVALUE\n")
+  git(company, "commit", "-qam", "break minh")
+  for (let i = 0; i < 3; i++) await request(sock, "GET", "/whoami")
+  addHuman(company, "ava") // HEAD moves while the file stays broken
+  await request(sock, "GET", "/whoami")
+  const named = () => authLines(lines).filter((line) => line.includes('"people/minh/person.yaml"'))
+  expect(named()).toHaveLength(1)
+  expect(named()[0]).toContain("WARNING")
+  expect(named()[0]).toContain("repo.unreadable")
+  expect(lines.filter((line) => line.includes("SECRETVALUE"))).toEqual([])
+  fs.writeFileSync(file, good)
+  git(company, "commit", "-qam", "fix minh")
+  await request(sock, "GET", "/whoami")
+  fs.writeFileSync(file, "handle: [SECRETVALUE\n")
+  git(company, "commit", "-qam", "break minh again")
+  await request(sock, "GET", "/whoami")
+  expect(named()).toHaveLength(2)
+  expect(lines.filter((line) => line.includes("SECRETVALUE"))).toEqual([])
+})
+
+test("a refused token says a person file doesnt load", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  giveDevice(company, "ngocbh", "mac", newToken())
+  fs.writeFileSync(path.join(company, "people/minh/person.yaml"), "handle: [\n")
+  git(company, "commit", "-qam", "break minh")
+  const token = newToken()
+  const r = await request(sock, "GET", "/whoami", { headers: bearer(token) })
+  expect([r.status, errorOf(r)]).toEqual([401, "bad_token"])
+  const { message } = r.json() as { message: string }
+  // The caller isn't signed in, so the hint names neither the person nor the file.
+  expect(message).toBe(
+    "the office doesn't know this device; run `opencorp login`; a person.yaml at HEAD doesn't load: run `opencorp doctor`",
+  )
+  expect(r.text).not.toContain(token)
+  expect(r.text).not.toContain("minh")
 })
 
 test("get office answers pid home started at and version", async () => {

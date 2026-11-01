@@ -1,13 +1,25 @@
 /** Who sent each request: device tokens, and `actingPerson` for routes. */
 import { Roster, loadRoster } from "../auth/roster.ts"
 import { AuthError, authenticate, bearerToken, tokenSha256 } from "../auth/tokens.ts"
-import { HttpError, type RequestInfo, errorType } from "./http.ts"
+import { HttpError, type RequestInfo, errorType, logLine } from "./http.ts"
 import type { Office, RequestContext } from "./office.ts"
 
 /** Requests served without a token even once tokens are enforced: the "is the office up" probe of `opencorp`,
  *  `opencorp start`, `opencorp doctor` and onboarding, and logging in with a password. Matched against the method
  *  and the raw path before routing, so an encoded spelling of one of these paths needs a token. */
 export const OPEN: ReadonlySet<string> = new Set(["GET /health", "HEAD /health", "POST /login"])
+
+const LOGGER = "opencorp.daemon.auth"
+
+/** The 401's message while the company repo's HEAD can't be read. */
+const NO_HEAD = "the company repo's HEAD can't be read; run `opencorp doctor`"
+
+/** The 401's message for a tokenless request while no human CEO is named at HEAD. */
+const NO_CEO =
+  "this request has no person to act as: the company repo names no human CEO at HEAD; run `opencorp doctor`"
+
+/** Added to a refusal while a person file at HEAD doesn't load. The caller isn't signed in, so it names no file. */
+const UNREADABLE_HINT = "; a person.yaml at HEAD doesn't load: run `opencorp doctor`"
 
 /** The handle the request acts as: its token's person, or the CEO while no human has a device. Throws
  *  `HttpError` 401 when there is none. */
@@ -39,7 +51,8 @@ function counts(stream: Tracked, roster: Roster): boolean {
  *
  * While no human in the company (at HEAD) lists a device, a request without a token acts as the CEO; after that
  * every request but those in `OPEN` needs one. A token sent is always checked. The person, device and token sha256 go
- * in the request's context.
+ * in the request's context. Without a human CEO at HEAD a tokenless request is refused, and while HEAD can't be read
+ * every request but those in `OPEN` is.
  *
  * A stream is checked once, when it opens, so the socket's streams are tracked: each roster change (`changed`,
  * `recheck`) ends those whose token no longer maps to the same person and device, and the tokenless ones once tokens
@@ -50,25 +63,58 @@ export class DeviceTokens {
   readonly #streams = new Set<Tracked>()
   #checking: Promise<void> | null = null
   #again = false
+  /** Whether the last read of HEAD failed, so that is logged once each time it starts. */
+  #headUnreadable = false
+  /** The `path\0code` of each unreadable person file last logged, so a file staying broken is logged once. */
+  #logged = new Set<string>()
 
   constructor(readonly office: Office) {}
 
-  /** The roster at HEAD, reloaded only when HEAD moves. */
+  /** The roster at HEAD, reloaded only when HEAD moves. While HEAD can't be read: an enforced roster with no
+   *  tokens and no CEO, never kept. */
   async roster(): Promise<Roster> {
     const git = this.office.git
     let head: string
     try {
       head = await git.readHead()
     } catch (error) {
-      if (error instanceof RangeError) return new Roster("", null) // no commit yet
-      throw error
+      if (!(error instanceof RangeError)) throw error
+      // Init refuses to run while an office answers, so a running office always had a commit: the ref is gone.
+      if (!this.#headUnreadable) {
+        this.#warn("the company repo's HEAD can't be read; every request but /health and /login is refused; run `opencorp doctor`")
+      }
+      this.#headUnreadable = true
+      return new Roster("", null, new Map(), true)
     }
-    if (this.#roster?.head !== head) this.#roster = await loadRoster(git, head)
+    this.#headUnreadable = false
+    if (this.#roster?.head !== head) {
+      const roster = await loadRoster(git, head)
+      this.#logUnreadable(roster)
+      this.#roster = roster
+    }
     return this.#roster
   }
 
+  /** Logs each person file that doesn't load in `roster` and wasn't in the last one logged: its path and code only,
+   *  since a message can quote the file. */
+  #logUnreadable(roster: Roster): void {
+    const keys = new Set<string>()
+    for (const { path, code } of roster.unreadable) {
+      const key = `${path}\0${code}`
+      keys.add(key)
+      if (!this.#logged.has(key)) {
+        this.#warn(`${JSON.stringify(path)} doesn't load (${code}); no one signs in through it; run \`opencorp doctor\``)
+      }
+    }
+    this.#logged = keys
+  }
+
+  #warn(message: string): void {
+    this.office.log(logLine("WARNING", LOGGER, message))
+  }
+
   /** The request's context: its person and device, or the CEO for a tokenless request while tokens aren't
-   *  enforced. Throws `HttpError` 401 for a refused request. */
+   *  enforced. Throws `HttpError` 401 for a refused request, and for a tokenless one with no CEO to act as. */
   readonly context = async (info: RequestInfo): Promise<RequestContext> => {
     const base = { office: this.office, signal: info.signal, query: info.query }
     if (OPEN.has(`${info.method} ${info.path}`)) return { ...base, person: null, device: null }
@@ -80,7 +126,12 @@ export class DeviceTokens {
       return { ...base, person, device, tokenSha256: tokenSha256(bearerToken(header!)!) }
     } catch (error) {
       if (!(error instanceof AuthError)) throw error
-      if (error.code !== "unauthenticated" || roster.enforced) throw new HttpError(401, error.code, error.message)
+      if (roster.head === "") throw new HttpError(401, error.code, NO_HEAD)
+      if (error.code !== "unauthenticated" || roster.enforced) {
+        const hint = roster.unreadable.length ? UNREADABLE_HINT : ""
+        throw new HttpError(401, error.code, error.message + hint)
+      }
+      if (roster.ceo === null) throw new HttpError(401, "unauthenticated", NO_CEO)
       return { ...base, person: roster.ceo, device: null }
     }
   }
