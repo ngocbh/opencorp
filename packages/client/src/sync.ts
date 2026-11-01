@@ -2,7 +2,7 @@
 // (re)connect re-reads state over GET: open the stream, wait for `: connected` (the office
 // subscribes before sending it), fetch while buffering stream events, apply the snapshot,
 // then replay the buffer on top.
-import type { Event, LiveEvent, Question } from "@opencorp/protocol"
+import type { Event, LiveEvent, Message, Person, Question } from "@opencorp/protocol"
 import type { OfficeClient } from "./client"
 import { failureKind, OfficeError, OfficeUnavailable, UnknownDevice } from "./errors"
 import type { StreamEvent, SubscribeOptions, Subscription } from "./sse"
@@ -29,6 +29,48 @@ const FOLDER_LIMIT = 500
 /** The events held back while a snapshot loads, per bootstrap and per session load. */
 const MAX_BUFFERED = 10_000
 
+const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x)
+
+/** `value` with `clean` applied to every string in it, at any depth. */
+function cleanLeaves(value: unknown, clean: (text: string) => string): unknown {
+  if (typeof value === "string") return clean(value)
+  if (Array.isArray(value)) return value.map((v) => cleanLeaves(v, clean))
+  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, cleanLeaves(v, clean)]))
+  return value
+}
+
+/** A message part with `clean` applied to the text it shows; ids and states stay as sent. */
+function cleanPart(part: unknown, clean: (text: string) => string): unknown {
+  if (!isRecord(part)) return part
+  const str = (x: unknown) => (typeof x === "string" ? clean(x) : x)
+  if (part.type === "text") return { ...part, text: str(part.text) }
+  if (part.type === "error") return { ...part, message: str(part.message) }
+  if (part.type === "tool")
+    return {
+      ...part,
+      tool: str(part.tool),
+      input: cleanLeaves(part.input, clean),
+      output: cleanLeaves(part.output, clean),
+      error: str(part.error),
+    }
+  return part
+}
+
+/** A message with `clean` applied to its parts. */
+function cleanMessage<M>(message: M, clean: (text: string) => string): M {
+  if (!isRecord(message) || !Array.isArray(message.parts)) return message
+  return { ...message, parts: message.parts.map((p) => cleanPart(p, clean)) } as M
+}
+
+/** A live event with `clean` applied to the text it carries. */
+function cleanLive(e: LiveEvent, clean: (text: string) => string): LiveEvent {
+  const d = e.data
+  if (e.type === "message.updated") return { ...e, data: cleanMessage(d, clean) }
+  if (e.type === "part.updated") return { ...e, data: { ...d, part: cleanPart(d.part, clean) } }
+  if (e.type === "part.delta" && typeof d.text === "string") return { ...e, data: { ...d, text: clean(d.text) } }
+  return e
+}
+
 export function createOfficeSync(opts: {
   client: OfficeClient
   /** The folder whose people the default snapshot reads; without it, `folderPeople` isn't read. */
@@ -47,8 +89,16 @@ export function createOfficeSync(opts: {
   stream?: SubscribeOptions
   /** Past this many held-back events a load is abandoned and the stream reconnected. */
   maxBuffered?: number
+  /**
+   * Applied to the text the office relays from models and people (message text, tool calls, names and titles)
+   * as it comes in; ids, sessions and questions stay as sent, since they go back to the office.
+   */
+  clean?: (text: string) => string
 }) {
-  const { client, cwd, maxBuffered = MAX_BUFFERED } = opts
+  const { client, cwd, maxBuffered = MAX_BUFFERED, clean } = opts
+  const cleanPeople = (people: Person[]) =>
+    clean ? people.map((p) => ({ ...p, name: clean(p.name), title: clean(p.title) })) : people
+  const cleanMessages = (messages: Message[]) => (clean ? messages.map((m) => cleanMessage(m, clean)) : messages)
   // After stop(), loads still in flight must not touch the state.
   let stopped = false
   const mutate = (fn: (s: OfficeState) => void) => {
@@ -109,6 +159,7 @@ export function createOfficeSync(opts: {
   }
 
   function onStream(e: StreamEvent) {
+    if (clean && e.type === "live") e = { ...e, event: cleanLive(e.event, clean) }
     switch (e.type) {
       case "connected":
         // A failed bootstrap stays visible while it retries.
@@ -148,7 +199,7 @@ export function createOfficeSync(opts: {
   async function readFolderPeople() {
     if (cwd === undefined) return undefined
     try {
-      return await client.people.inFolder(cwd)
+      return cleanPeople(await client.people.inFolder(cwd))
     } catch (e) {
       console.error("Failed to read the folder's people", { error: e })
       return undefined
@@ -165,7 +216,7 @@ export function createOfficeSync(opts: {
       cwd ? client.sessions.list({ kind: "main", cwd, limit: FOLDER_LIMIT }) : Promise.resolve([]),
     ])
     return (s) => {
-      s.people = people
+      s.people = cleanPeople(people)
       if (folderPeople) s.folderPeople = folderPeople
       for (const session of [...sessions, ...here]) upsertSession(s, session)
     }
@@ -194,7 +245,7 @@ export function createOfficeSync(opts: {
       client.sessions.messages(id),
       openQuestionsOf(id),
     ])
-    return { id, session, messages, questions }
+    return { id, session, messages: cleanMessages(messages), questions }
   }
 
   /**
@@ -341,7 +392,7 @@ export function createOfficeSync(opts: {
     async refreshPeople() {
       const [people, folderPeople] = await Promise.all([client.people.list(), readFolderPeople()])
       mutate((s) => {
-        s.people = people
+        s.people = cleanPeople(people)
         if (folderPeople) s.folderPeople = folderPeople
       })
     },

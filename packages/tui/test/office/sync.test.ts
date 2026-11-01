@@ -449,3 +449,135 @@ test("with a custom snapshot, held open questions aren't re-read by id on a reco
   await until(() => reads.n === 2 && sync.status() === "online")
   expect(count(office, "GET /questions/Q1")).toBe(0)
 })
+
+/** Marks what `clean` touched, so a test sees which fields went through it. */
+const mark = (text: string) => text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "")
+
+function startClean(socket: string, clean?: (text: string) => string) {
+  const state = emptyState()
+  const sync = createOfficeSync({
+    client: createOfficeClient({ socket }),
+    cwd: "/tmp/proj",
+    state: () => state,
+    mutate: (f) => f(state),
+    stream: fast,
+    clean,
+  })
+  sync.start()
+  stop = sync.stop
+  return { state, sync }
+}
+
+/** A loaded message, a live one with a tool part, a part and deltas, each with control characters. */
+async function dirtySession(o: FakeOffice, sync: ReturnType<typeof createOfficeSync>) {
+  const id = o.state.sessions[0].id
+  o.state.messages[id] = [
+    {
+      id: "L\x07",
+      session_id: id,
+      role: "user",
+      parts: [{ id: "lp", type: "text", text: "load\x07ed" }],
+      created_at: "t",
+    },
+  ]
+  const release = o.hold("GET /sessions/:id/messages")
+  const done = sync.syncSession(id)
+  await until(() => count(o, `GET /sessions/${id}/messages`) === 1)
+  // Held back while the session loads, then replayed on top of it.
+  o.live({
+    type: "message.updated",
+    session_id: id,
+    data: {
+      id: "M",
+      session_id: id,
+      role: "assistant",
+      created_at: "t",
+      parts: [
+        { id: "p1", type: "text", text: "be\x07ll" },
+        {
+          id: "t1",
+          type: "tool",
+          call_id: "c\x07",
+          tool: "ba\x07sh",
+          state: "error",
+          input: { command: "ls \x1b[31mred", n: 1, list: ["a\x0eb"] },
+          output: "ou\x07t",
+          error: "fa\x07il",
+        },
+        { id: "e1", type: "error", message: "bro\x07ke" },
+      ],
+    },
+  })
+  await Bun.sleep(30)
+  release()
+  await done
+  // Applied as they come.
+  const part = { id: "p2", type: "text", text: "S\x0eO" }
+  o.live({ type: "part.updated", session_id: id, data: { message_id: "M", part } })
+  o.live({ type: "part.delta", session_id: id, data: { message_id: "M", part_id: "p2", text: " mo\x1b]0;T\x07re" } })
+  return id
+}
+
+test("with clean, transcript text and names come in cleaned; ids, sessions and questions stay as sent", async () => {
+  office = createFakeOffice()
+  office.state.people[0] = { ...office.state.people[0], name: "Min\x07h", title: "CE\x0eO" }
+  office.state.sessions[0] = { ...office.state.sessions[0], model_note: "no\x07te" }
+  const q = office.addQuestion({ question: "Q\x1b[2J?", options: ["o\x1b[31mne"] })
+  const { state, sync } = startClean(office.socket, mark)
+  await until(() => sync.status() === "online")
+  expect(state.people[0]).toMatchObject({ handle: "minh", name: "Minh", title: "CEO" })
+  expect(state.folderPeople[0]).toMatchObject({ handle: "minh", name: "Minh", title: "CEO" })
+  const id = await dirtySession(office, sync)
+  await until(() => state.messages[id].find((m) => m.id === "M")?.parts.length === 4)
+  await until(() => (state.messages[id][1].parts[3] as { text: string }).text === "SO mo]0;Tre")
+  expect(state.messages[id]).toEqual([
+    {
+      id: "L\x07",
+      session_id: id,
+      role: "user",
+      author: null,
+      parts: [{ id: "lp", type: "text", text: "loaded" }],
+      created_at: "t",
+    },
+    {
+      id: "M",
+      session_id: id,
+      role: "assistant",
+      created_at: "t",
+      parts: [
+        { id: "p1", type: "text", text: "bell" },
+        {
+          id: "t1",
+          type: "tool",
+          call_id: "c\x07",
+          tool: "bash",
+          state: "error",
+          input: { command: "ls [31mred", n: 1, list: ["ab"] },
+          output: "out",
+          error: "fail",
+        },
+        { id: "e1", type: "error", message: "broke" },
+        { id: "p2", type: "text", text: "SO mo]0;Tre" },
+      ],
+    },
+  ])
+  expect(state.sessions[0].model_note).toBe("no\x07te")
+  expect(state.questions[q.id]).toMatchObject({ question: "Q\x1b[2J?", options: ["o\x1b[31mne"] })
+  office.state.people[0] = { ...office.state.people[0], name: "Min\x07h 2" }
+  await sync.refreshPeople()
+  expect(state.people[0].name).toBe("Minh 2")
+  expect(state.folderPeople[0].name).toBe("Minh 2")
+})
+
+test("without clean, transcript text and names come in exactly as sent", async () => {
+  office = createFakeOffice()
+  office.state.people[0] = { ...office.state.people[0], name: "Min\x07h" }
+  const { state, sync } = startClean(office.socket)
+  await until(() => sync.status() === "online")
+  expect(state.people[0].name).toBe("Min\x07h")
+  const id = await dirtySession(office, sync)
+  const text = () => (state.messages[id][1]?.parts[3] as { text: string } | undefined)?.text
+  await until(() => text() === "S\x0eO mo\x1b]0;T\x07re")
+  expect(state.messages[id][0].parts[0]).toEqual({ id: "lp", type: "text", text: "load\x07ed" })
+  expect(state.messages[id][1].parts[1]).toMatchObject({ tool: "ba\x07sh", input: { command: "ls \x1b[31mred" } })
+})

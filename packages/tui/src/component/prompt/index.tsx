@@ -48,6 +48,7 @@ import { createFadeIn } from "../../util/signal"
 import { OPENCORP_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpenCorpKeymap } from "../../keymap"
 import { useTuiConfig } from "../../config"
 import { readLocalAttachment } from "./local-attachment"
+import { display } from "../../util/printable"
 
 registerOpenCorpSpinner()
 
@@ -916,7 +917,8 @@ export function Prompt(props: PromptProps) {
   const footerModel = createMemo(() => {
     const s = session()
     // A Codex session runs on Codex's own model, never the office connection's.
-    if (s) return s.harness === "codex" ? (s.harness_model ?? "Codex") : sessionModel(s, office.connections()).model
+    if (s?.harness === "codex") return display(s.harness_model ?? "Codex")
+    if (s) return sessionModel(s, office.connections()).model
     return local.harness.current() === "codex" ? "Codex" : undefined
   })
   const maxHeight = createMemo(() => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)))
@@ -1082,7 +1084,7 @@ export function Prompt(props: PromptProps) {
               props.hint ?? (
                 <Show when={props.sessionID} fallback={<text />}>
                   <box marginLeft={1}>
-                    <text fg={theme.textMuted}>{session()?.cwd ?? office.cwd}</text>
+                    <text fg={theme.textMuted}>{display(session()?.cwd ?? office.cwd)}</text>
                   </box>
                 </Show>
               )

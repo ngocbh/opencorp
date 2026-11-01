@@ -10,6 +10,7 @@ import {
   type OfficeEvents,
   type OfficeStatus,
 } from "@opencorp/client"
+import { display } from "../util/printable"
 import { createFlush } from "./flush"
 import { createSimpleContext } from "./helper"
 
@@ -32,6 +33,8 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
       cwd: props.cwd,
       state: () => state,
       mutate: flush.mutate,
+      // Model output and names are drawn into the terminal, which would act on their control characters.
+      clean: display,
       // "online" follows the snapshot it was set after, so readers never see it with stale state.
       onStatus(next, message) {
         flush.later(() =>

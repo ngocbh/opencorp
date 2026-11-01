@@ -9,6 +9,7 @@ import { useBindings } from "../../keymap"
 import { useDialog } from "../../ui/dialog"
 import { useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
+import { display } from "../../util/printable"
 import { blocks, confirmRequest, hireRequest, type HireForm } from "./people"
 
 /** The color of a unified diff line: added, removed, or neither. */
@@ -151,13 +152,13 @@ export function DialogHire() {
           <box>
             <scrollbox maxHeight={8}>
               <For each={shown().response.diff.split("\n").filter(Boolean)}>
-                {(line) => <text fg={diffColor(theme, line)}>{line}</text>}
+                {(line) => <text fg={diffColor(theme, line)}>{display(line)}</text>}
               </For>
             </scrollbox>
             <For each={shown().response.issues}>
               {(issue) => (
                 <text fg={(issue.severity ?? "error") === "error" ? theme.error : theme.warning}>
-                  {issue.severity ?? "error"}: {issue.path}: {issue.message}
+                  {issue.severity ?? "error"}: {display(issue.path)}: {display(issue.message)}
                 </text>
               )}
             </For>
@@ -165,7 +166,7 @@ export function DialogHire() {
         )}
       </Show>
       <Show when={error()}>
-        <text fg={theme.error}>{error()}</text>
+        <text fg={theme.error}>{display(error() ?? "")}</text>
       </Show>
       <text fg={theme.textMuted} paddingBottom={1}>
         {busy()

@@ -4,6 +4,7 @@ import { useTheme } from "../context/theme"
 import { useTerminalDimensions } from "@opentui/solid"
 import { SplitBorder } from "./border"
 import { TextAttributes } from "@opentui/core"
+import { display } from "../util/printable"
 export type ToastOptions = {
   title?: string
   message: string
@@ -38,11 +39,11 @@ export function Toast() {
         >
           <Show when={current().title}>
             <text attributes={TextAttributes.BOLD} marginBottom={1} fg={theme.text}>
-              {current().title}
+              {display(current().title ?? "")}
             </text>
           </Show>
           <text fg={theme.text} wrapMode="word" width="100%">
-            {current().message}
+            {display(current().message)}
           </text>
         </box>
       )}

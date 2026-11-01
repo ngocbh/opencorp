@@ -55,6 +55,7 @@ import { QuestionCard } from "../chat/card"
 import { HarnessCard } from "../chat/harness-card"
 import { SideChat, SideHeader } from "../chat/side"
 import { freeze, frozenList, unfreeze, type Freeze } from "../chat/freeze"
+import { display } from "../../util/printable"
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
@@ -608,12 +609,15 @@ export function Session() {
                     <Show when={costLabel(current(), office.connections())}>
                       {(cost) => <span style={{ fg: theme.textMuted }}> · {cost()}</span>}
                     </Show>
-                    <span style={{ fg: theme.textMuted }}> · {modelLabel(current(), office.connections())}</span>
+                    <span style={{ fg: theme.textMuted }}>
+                      {" · "}
+                      {display(modelLabel(current(), office.connections()))}
+                    </span>
                   </text>
                   <Show when={current().model_note}>
                     {(note) => (
                       <text fg={theme.warning} wrapMode="word">
-                        {note()}
+                        {display(note())}
                       </text>
                     )}
                   </Show>

@@ -46,6 +46,12 @@ describe("dialog session list", () => {
     expect(sessionRow(mine, people, { now, home: "/home/me" })).toBe("gone · ~/code/app · 3h ago")
   })
 
+  test("a row draws a folder's control characters as nothing, while the list still matches the folder as sent", () => {
+    const s = session("a", { cwd: "/tmp/a\x07b", updated_at: ago(5 * 60_000) })
+    expect(sessionRow(s, people, { now, home: "/home/me" })).toBe("@minh · /tmp/ab · 5m ago")
+    expect(listedSessions([s], "/tmp/a\x07b").map((x) => x.id)).toEqual(["a"])
+  })
+
   test("sessions group under Today or their date", () => {
     expect(sessionCategory(session("a", { updated_at: ago(60_000) }), now)).toBe("Today")
     const old = ago(3 * 86400_000)

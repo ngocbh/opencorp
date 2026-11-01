@@ -11,6 +11,7 @@ import { useBindings } from "../../keymap"
 import { buildAnswer, cardModel } from "./answer"
 import { leaveBindings } from "./leave"
 import { QUESTION_MODE, QuestionView, type QuestionViewHandle } from "./question-view"
+import { display } from "../../util/printable"
 
 /**
  * The open question card for an office question, with options and a box to type an answer: `QuestionView` with who
@@ -193,10 +194,10 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
       <Show when={earlier()}>
         {(q) => (
           <box paddingLeft={1}>
-            <text fg={theme.warning}>{`From an earlier, expired question: ${q().question}`}</text>
+            <text fg={theme.warning}>{`From an earlier, expired question: ${display(q().question)}`}</text>
             <For each={q().discussion ?? []}>
               {(entry) => (
-                <text fg={theme.textMuted}>{`${entry.role === "user" ? "you" : asker()}: ${entry.text}`}</text>
+                <text fg={theme.textMuted}>{`${entry.role === "user" ? "you" : asker()}: ${display(entry.text)}`}</text>
               )}
             </For>
           </box>
@@ -204,9 +205,9 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
       </Show>
       <Show when={!model()}>
         <box paddingLeft={1} gap={1}>
-          <text fg={theme.text}>{question().title ?? question().question}</text>
+          <text fg={theme.text}>{display(question().title ?? question().question)}</text>
           <Show when={question().title}>
-            <text fg={theme.text}>{question().question}</text>
+            <text fg={theme.text}>{display(question().question)}</text>
           </Show>
           <text fg={theme.warning}>This question can't be answered here yet.</text>
         </box>

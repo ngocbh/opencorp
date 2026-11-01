@@ -19,6 +19,7 @@ import { useTuiConfig } from "../../config"
 import { clearFirst, useBindings, useOpenCorpModeStack } from "../../keymap"
 import { SecretInput } from "../../setup/secret"
 import type { CardPage, PageAnswer } from "./answer"
+import { display } from "../../util/printable"
 
 export const QUESTION_MODE = "question"
 
@@ -288,7 +289,7 @@ export function QuestionView(
       <box gap={1} paddingLeft={1} paddingRight={3} paddingTop={1} paddingBottom={1}>
         <Show when={props.header}>
           <box paddingLeft={1}>
-            <text fg={theme.textMuted}>{props.header}</text>
+            <text fg={theme.textMuted}>{display(props.header ?? "")}</text>
           </box>
         </Show>
         {props.children}
@@ -297,10 +298,10 @@ export function QuestionView(
             <box>
               <Show when={props.pages.length > 1}>
                 <text fg={theme.textMuted}>
-                  {`Question ${store.page + 1} of ${props.pages.length} · ${page()?.header}`}
+                  {`Question ${store.page + 1} of ${props.pages.length} · ${display(page()?.header ?? "")}`}
                 </text>
               </Show>
-              <text fg={theme.text}>{page()?.question}</text>
+              <text fg={theme.text}>{display(page()?.question ?? "")}</text>
             </box>
             <box>
               <For each={shown()}>
@@ -325,14 +326,14 @@ export function QuestionView(
                         </box>
                         <box backgroundColor={current() ? theme.backgroundElement : undefined} flexShrink={1}>
                           <text fg={current() ? theme.secondary : theme.text} wrapMode="word">
-                            {opt.label}
+                            {display(opt.label)}
                           </text>
                         </box>
                       </box>
 
                       <Show when={opt.description}>
                         <box paddingLeft={3}>
-                          <text fg={theme.textMuted}>{opt.description}</text>
+                          <text fg={theme.textMuted}>{display(opt.description ?? "")}</text>
                         </box>
                       </Show>
                     </box>
@@ -439,7 +440,7 @@ export function QuestionView(
         justifyContent="space-between"
       >
         <Show when={props.notice}>
-          <text fg={theme.warning}>{props.notice}</text>
+          <text fg={theme.warning}>{display(props.notice ?? "")}</text>
         </Show>
         <box flexDirection="row" gap={2} visible={!props.notice}>
           <Show when={props.pages.length > 0}>
