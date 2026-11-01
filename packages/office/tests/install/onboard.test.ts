@@ -187,7 +187,7 @@ test("an office started by hand is left alone", async () => {
   expect(ask.seen.some((line) => line.includes("not started by a service"))).toBe(true)
 })
 
-/** Onboards the company made at `home` to the end, beside a running office, with `environ` as the caller's env;
+/** Onboards the company made at `home` to the end, beside a running office, with `more` over the base options;
  *  returns what it said. */
 async function onboardRunning(dir: string, home: string, more: Partial<OnboardOptions> = {}): Promise<string[]> {
   const ask = new Script()
@@ -213,7 +213,8 @@ test("--from on a home that has a company says it was ignored", async () => {
   const seen = await onboardRunning(dir, home, { source: "https://example.com/acme.git" })
   const repo = seen.filter((line) => line.startsWith("Company repo:"))
   expect(repo).toEqual([
-    `Company repo: up to date at ${path.join(fs.realpathSync(home), "company")} (--from ignored: there's a company here already)`,
+    `Company repo: up to date at ${path.join(fs.realpathSync(home), "company")} ` +
+      "(--from ignored: there's a company here already)",
   ])
   expect(seen.join("\n")).not.toContain("example.com")
   // Nor is a missing template file's line silent about it.
@@ -233,9 +234,10 @@ test("an office a client here wouldn't find ends with how to reach it", async ()
     const home = path.join(dir, name)
     await company(home)
     const seen = await onboardRunning(dir, home, { environ: noHomeEnv() })
+    const quoted = fallback.shQuote(fs.realpathSync(home))
     expect(seen.at(-1)).toBe(
       "Done. This office isn't the one `opencorp` finds in this shell, so first run " +
-        `\`export OPENCORP_HOME=${fallback.shQuote(fs.realpathSync(home))}\` (add it to your shell profile to keep it), ` +
+        `\`export OPENCORP_HOME=${quoted}\` (add it to your shell profile to keep it), ` +
         "then run `opencorp` in a project folder to talk to your team.",
     )
   }

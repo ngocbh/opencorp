@@ -71,7 +71,8 @@ export async function tui(argv: string[], deps: TuiDeps = realTuiDeps): Promise<
   const assets = deps.assetRoot()
   if (assets !== undefined && !fs.statSync(assets, { throwIfNoEntry: false })?.isDirectory()) {
     console.error(
-      `opencorp: this binary's assets folder is missing (${assets}); reinstall opencorp, or keep bin/ and assets/ together`,
+      `opencorp: this binary's assets folder is missing (${assets}); reinstall opencorp, ` +
+        "or keep bin/ and assets/ together",
     )
     return 1
   }

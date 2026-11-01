@@ -5,6 +5,11 @@ import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
 import { canOpen, pair, pairOutput, type PairDeps, socketPort } from "../src/commands/pair"
 
+/** What a client says when no office answers at `home`. */
+const notRunningAt = (home: string) =>
+  `The office at ${home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
+  " set $OPENCORP_HOME if your office is elsewhere."
+
 const code = (over: Partial<PairCode> = {}): PairCode => ({
   path: "/pair#CODE1234567890abcdefgh",
   url: "http://127.0.0.1:49380/pair#CODE1234567890abcdefgh",
@@ -517,10 +522,7 @@ test("when HQ's status can't be read, it opens the link as before", async () => 
 test("without an office it says so and exits 3", async () => {
   const { d, errors } = deps()
   expect(await pair([], d)).toBe(3)
-  expect(errors).toEqual([
-    `The office at ${home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
-      " set $OPENCORP_HOME if your office is elsewhere.",
-  ])
+  expect(errors).toEqual([notRunningAt(home)])
 })
 
 test("an unknown option is a usage error", async () => {

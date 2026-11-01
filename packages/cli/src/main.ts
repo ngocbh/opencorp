@@ -21,9 +21,17 @@ export type CommandRun = (argv: string[]) => Promise<number>
 /** Every command, by name, with the arguments the help shows after it. The first is the default when `opencorp` gets
  *  no command name. */
 export const commands: Record<string, { args?: string; summary: string; load: () => Promise<{ run: CommandRun }> }> = {
-  tui: { args: "[options]", summary: "Talk to a person in this folder (the default)", load: () => import("./commands/tui") },
+  tui: {
+    args: "[options]",
+    summary: "Talk to a person in this folder (the default)",
+    load: () => import("./commands/tui"),
+  },
   end: { args: "[SESSION_ID]", summary: "End a session", load: () => import("./commands/end") },
-  profile: { args: "edit PERSON", summary: "Edit a person's profile in $EDITOR", load: () => import("./commands/profile") },
+  profile: {
+    args: "edit PERSON",
+    summary: "Edit a person's profile in $EDITOR",
+    load: () => import("./commands/profile"),
+  },
   login: { summary: "Log this device in, with your password if you have one", load: () => import("./commands/login") },
   password: {
     summary: "Set your password, which logging in a new device asks for",

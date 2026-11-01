@@ -13,6 +13,11 @@ import { tui } from "../src/commands/tui"
 import { type Deps, INTERRUPT_GRACE_MS, install, installSpawn, officeAnswers, realDeps } from "../src/office"
 import { createFakeOffice } from "@opencorp/tui/fake-office"
 
+/** What a client says when no office answers at `home`. */
+const notRunningAt = (home: string) =>
+  `The office at ${home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
+  " set $OPENCORP_HOME if your office is elsewhere."
+
 const WRAPPER = path.resolve(import.meta.dir, "../bin/opencorp")
 
 const saved = { ...process.env }
@@ -393,10 +398,7 @@ test("`opencorp` with no office says so and exits 3 before loading the TUI", asy
   try {
     // On a terminal: without one, the TUI refuses before it asks the office.
     expect(await tui(["--continue"], { terminal: () => true, assetRoot: () => undefined })).toBe(3)
-    expect(err).toEqual([
-      `The office at ${home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
-        " set $OPENCORP_HOME if your office is elsewhere.",
-    ])
+    expect(err).toEqual([notRunningAt(home)])
   } finally {
     console.error = error
     fs.rmSync(home, { recursive: true, force: true })

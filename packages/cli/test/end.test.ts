@@ -6,6 +6,11 @@ import { createFakeOffice } from "@opencorp/tui/fake-office"
 import { endSession } from "../src/commands/end"
 import { main } from "../src/main"
 
+/** What a client says when no office answers at `home`. */
+const notRunningAt = (home: string) =>
+  `The office at ${home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
+  " set $OPENCORP_HOME if your office is elsewhere."
+
 const home = mkdtempSync("/tmp/ace-")
 const socket = path.join(home, "office", "office.sock")
 const saved = process.env.OPENCORP_HOME
@@ -70,11 +75,7 @@ test("opencorp end finds the folder's live session behind more than a page of ne
 test("opencorp end ID ends that session; no office exits 3, its refusal 1", async () => {
   rmSync(path.dirname(socket), { recursive: true, force: true })
   const down = await capture(["end", "S1"])
-  expect([down.code, down.err]).toEqual([
-    3,
-    `The office at ${home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
-      " set $OPENCORP_HOME if your office is elsewhere.",
-  ])
+  expect([down.code, down.err]).toEqual([3, notRunningAt(home)])
 
   mkdirSync(path.dirname(socket), { recursive: true })
   const office = createFakeOffice({ socket })

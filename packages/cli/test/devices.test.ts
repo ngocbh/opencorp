@@ -3,6 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { readIdentity, tokenSha256 } from "@opencorp/client/node"
 import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
+import { realTuiDeps } from "../src/commands/tui"
 import { main } from "../src/main"
 import { usePrompter, type Prompter } from "../src/prompt"
 
@@ -573,11 +574,18 @@ test("other commands send the token, and an unknown device gets the one-line 401
   await opencorp(trusted, "login", "--device", "mac")
   const r = await opencorp(other, "end")
   expect(r).toEqual({ code: 1, out: "", err: "opencorp end: the office doesn't know this device: run `opencorp login`" })
-  expect(await opencorp(other, "--continue")).toEqual({
-    code: 1,
-    out: "",
-    err: "opencorp: the office doesn't know this device: run `opencorp login`",
-  })
+  // As on a terminal: without one, the TUI refuses before it asks the office.
+  const terminal = realTuiDeps.terminal
+  realTuiDeps.terminal = () => true
+  try {
+    expect(await opencorp(other, "--continue")).toEqual({
+      code: 1,
+      out: "",
+      err: "opencorp: the office doesn't know this device: run `opencorp login`",
+    })
+  } finally {
+    realTuiDeps.terminal = terminal
+  }
   const token = identity(trusted).token
   await opencorp(trusted, "end")
   expect(office.requests.at(-1)?.authorization).toBe(`Bearer ${token}`)

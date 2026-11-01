@@ -91,7 +91,8 @@ test("offboard says what it will remove and no keeps everything", async () => {
   const said = ask.seen.join("\n")
   expect(said).toContain(`this device (${deviceName()}) from @me in the company repo`)
   expect(said).toContain(
-    `${paths.office} (the office's store, connections (the model provider's among them), sign-ins, logs, and worktrees)`,
+    `${paths.office} (the office's store, connections (the model provider's among them), sign-ins, logs, and ` +
+      "worktrees)",
   )
   expect(said).toContain(`${path.join(paths.home, "identity.json")} (this device's identity and token)`)
   expect(said).toContain(`${path.join(paths.home, "tui")} (opencorp's own state)`)

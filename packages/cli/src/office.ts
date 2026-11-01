@@ -151,8 +151,8 @@ export const NO_OFFICE = 3
 
 /** What to say when the office at this env's home doesn't answer: which home, and that `$OPENCORP_HOME` picks it. */
 export const notRunning = () =>
-  `The office at ${opencorpHome()} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
-  " set $OPENCORP_HOME if your office is elsewhere."
+  `The office at ${opencorpHome()} isn't running. ` +
+  "Run `opencorp start` (or `opencorp doctor` if it won't start); set $OPENCORP_HOME if your office is elsewhere."
 
 /** Says the office isn't running; returns `NO_OFFICE`. */
 export function officeNotRunning(): number {

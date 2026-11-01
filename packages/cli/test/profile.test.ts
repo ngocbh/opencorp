@@ -7,6 +7,11 @@ import path from "node:path"
 import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
 import { main } from "../src/main"
 
+/** What a client says when no office answers at `home`. */
+const notRunningAt = (home: string) =>
+  `The office at ${home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
+  " set $OPENCORP_HOME if your office is elsewhere."
+
 let home: string
 let socket: string
 let office: FakeOffice
@@ -300,9 +305,5 @@ test("with no office running, edit says so and exits 3", async () => {
   rmSync(socket, { force: true })
   editor(`: # leaves the file as it is\n`)
   const r = await profile("edit", "minh")
-  expect([r.code, r.err]).toEqual([
-    3,
-    `The office at ${home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
-      " set $OPENCORP_HOME if your office is elsewhere.",
-  ])
+  expect([r.code, r.err]).toEqual([3, notRunningAt(home)])
 })
