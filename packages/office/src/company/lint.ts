@@ -109,13 +109,17 @@ function* checkManagers(repo: CompanyRepo): Iterable<RepoIssue> {
   }
 }
 
-/** The CEO exists and reports to nobody. */
+/** The CEO exists, is a human, and reports to nobody. */
 function* checkCeo(repo: CompanyRepo): Iterable<RepoIssue> {
   if (repo.company === null) return
   const ceo = repo.people.get(repo.company.ceo)
   if (ceo === undefined) {
     yield repoIssue("company.yaml", "company.unknown_ceo", repo.company.ceo)
-  } else if (ceo.manager !== null) {
+    return
+  }
+  // Agents can't sign in or hold devices, and the office acts as the CEO for tokenless requests.
+  if (ceo.kind !== "human") yield repoIssue("company.yaml", "company.ceo_not_human", `${ceo.handle} is an agent`)
+  if (ceo.manager !== null) {
     yield repoIssue("company.yaml", "company.ceo_has_manager", `${ceo.handle} reports to ${ceo.manager}`)
   }
 }

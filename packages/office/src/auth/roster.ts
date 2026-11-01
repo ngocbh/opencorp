@@ -10,7 +10,8 @@ type Person = z.output<typeof PersonSchema>
 export type Unreadable = { readonly path: string; readonly code: string }
 
 /** The CEO and `{token_sha256: [handle, device]}` at commit `head`; `enforced` says whether every request
- *  needs a token: once any human lists a device. `unreadable` lists the person files that don't load. */
+ *  needs a token: once any human lists a device. `unreadable` lists the person files that don't load. An agent
+ *  named CEO is no CEO: agents never act for a request. */
 export class Roster {
   constructor(
     readonly head: string,
@@ -24,6 +25,7 @@ export class Roster {
   static of(head: string, ceo: string | null, people: Iterable<Person>, unreadable: readonly Unreadable[] = []): Roster {
     const list = [...people]
     const enforced = list.some((p) => p.kind === "human" && p.devices.length > 0)
+    if (list.some((p) => p.handle === ceo && p.kind !== "human")) ceo = null
     return new Roster(head, ceo, tokenTable(list), enforced, unreadable)
   }
 }

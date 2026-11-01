@@ -265,6 +265,34 @@ test("without a ceo a tokenless request has no person to act as", async () => {
   expect((await request(sock, "GET", "/health")).status).toBe(200)
 })
 
+test("an agent ceo answers no tokenless request", async () => {
+  const lines: string[] = []
+  const office = makeOffice({ log: (line) => lines.push(line) })
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  for (const [file, from, to] of [
+    ["company.yaml", "ceo: ngocbh", "ceo: minh"],
+    ["people/minh/person.yaml", "manager: ngocbh", "manager: null"],
+  ] as const) {
+    const at = path.join(company, file)
+    const text = fs.readFileSync(at, "utf8")
+    expect(text).toContain(from)
+    fs.writeFileSync(at, text.replace(from, to))
+  }
+  git(company, "commit", "-qam", "agent ceo")
+  const commits = git(company, "rev-list", "--count", "HEAD")
+  for (const [method, target, body] of [
+    ["GET", "/whoami", undefined],
+    ["PUT", "/people/ngocbh/password", { password: "correct horse battery" }],
+    ["POST", "/hq/pair", { handle: "ngocbh" }],
+  ] as const) {
+    const r = body === undefined ? await request(sock, method, target) : await send(sock, method, target, body)
+    expect([r.status, r.json()]).toEqual([401, NO_CEO])
+  }
+  expect(git(company, "rev-list", "--count", "HEAD")).toBe(commits)
+  expect(lines.filter((line) => line.includes("pairing code minted"))).toEqual([])
+})
+
 /** Moves the company repo's branch ref away, so HEAD can't be read; returns a function that puts it back. */
 function hideHead(company: string): () => void {
   git(company, "pack-refs", "--all", "--prune") // one place to move: no loose ref is left

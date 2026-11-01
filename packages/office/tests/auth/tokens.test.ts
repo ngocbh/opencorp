@@ -120,6 +120,11 @@ test("enforced once any human has a device", () => {
   expect(roster([human("ngocbh"), human("ava", [["pc", tokenSha256(newToken())]])]).enforced).toBe(true)
 })
 
+test("an agent ceo is no ceo", () => {
+  expect(roster([human("minh", [], "agent")], "minh").ceo).toBeNull()
+  expect(roster([human("ngocbh")]).ceo).toBe("ngocbh")
+})
+
 test("the roster is read at a commit", async () => {
   const root = company()
   const g = companyGit(root)
