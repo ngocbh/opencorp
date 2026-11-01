@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
-import { canOpen, pair, pairOutput, type PairDeps } from "../src/commands/pair"
+import { canOpen, pair, pairOutput, type PairDeps, socketPort } from "../src/commands/pair"
 
 const code = (over: Partial<PairCode> = {}): PairCode => ({
   path: "/pair#CODE1234567890abcdefgh",
@@ -88,6 +88,35 @@ test("over SSH with TCP listening, it forwards the same port, or hq.sock if that
   )
   expect(out.lines).toContain(SOCKET_FORWARD)
   expect(out.lines).toContain("  http://127.0.0.1:49381/pair#CODE1234567890abcdefgh")
+})
+
+test("the socket forward's local port moves off HQ's own TCP port", () => {
+  expect(socketPort(49380)).toBe(49381)
+  expect(socketPort(49381)).toBe(49382)
+})
+
+test("over SSH with HQ's TCP port on 49381, the socket fallback uses 49382", () => {
+  const out = pairOutput(code({ port: 49381, url: "http://127.0.0.1:49381/pair#X", open_file: null }), {
+    ...opts,
+    env: { SSH_CONNECTION: "1 2 3 4" },
+    platform: "linux",
+  })
+  expect(out.lines).toContain("  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49381:127.0.0.1:49381 misha")
+  expect(out.lines).toContain(
+    "  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49382:/home/u/.opencorp/office/hq.sock misha",
+  )
+  expect(out.lines).toContain("  http://127.0.0.1:49382/pair#CODE1234567890abcdefgh")
+  expect(out.lines.join("\n")).not.toContain("127.0.0.1:49381:/home")
+})
+
+test("with no URL and HQ's port on 49381, the socket forward and its hint use 49382", () => {
+  const off = code({ url: null, open_file: null, port: 49381 })
+  const out = pairOutput(off, { ...opts, status: st({ ...tcpOff, port: 49381 }), env: {}, platform: "linux" }).lines
+  expect(out).toContain(
+    "  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49382:/home/u/.opencorp/office/hq.sock misha",
+  )
+  expect(out).toContain("  http://127.0.0.1:49382/pair#CODE1234567890abcdefgh")
+  expect(out.join("\n")).toContain("in place of 49382")
 })
 
 test("with TCP off, it prints a forward of hq.sock, and locally how to turn TCP on", () => {

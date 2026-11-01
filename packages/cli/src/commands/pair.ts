@@ -13,9 +13,16 @@ import { bareHandle, localIdentity, NO_OFFICE, officeClient } from "../office"
 /**
  * The local port the printed SSH forwards use for hq.sock: any free one works there, since hq.sock takes any port. Not
  * HQ's TCP default (49380), which an office on the browser's machine may hold; a different port also keeps that
- * office's cookie apart from this one's, since the cookie's name carries the port.
+ * office's cookie apart from this one's, since the cookie's name carries the port. When HQ's own TCP port is this one,
+ * `socketPort` picks the next.
  */
 export const LOCAL_PORT = 49381
+
+/**
+ * The local port for a forward of hq.sock when HQ's TCP port is `port`: `LOCAL_PORT`, or the next one when HQ's TCP
+ * port is `LOCAL_PORT`, since the socket forward is the fallback for when that port is busy and mustn't bind it too.
+ */
+export const socketPort = (port: number) => (port === LOCAL_PORT ? LOCAL_PORT + 1 : LOCAL_PORT)
 
 type Env = Record<string, string | undefined>
 
@@ -94,6 +101,7 @@ export function pairOutput(
   const lines = [`This link signs a browser in once, ${expiry(code.expires_at, o.now ?? Date.now())}.`]
   if (appMissing) lines.push(APP_MISSING)
   const ssh = overSsh(o.env)
+  const local = socketPort(code.port)
   if (code.url && !ssh) {
     const open =
       !o.noOpen && !appMissing && canOpen(o.env, o.platform) && code.open_file ? code.open_file : undefined
@@ -113,9 +121,9 @@ export function pairOutput(
     else
       lines.push(
         `If port ${code.port} is in use on your machine (an office runs there), forward HQ's socket instead:`,
-        forward(LOCAL_PORT, shellWord(code.socket), o.host),
+        forward(local, shellWord(code.socket), o.host),
         "then open:",
-        `  http://127.0.0.1:${LOCAL_PORT}${code.path}`,
+        `  http://127.0.0.1:${local}${code.path}`,
       )
   } else {
     if (!tcp) lines.push("Couldn't read the web port's status.")
@@ -134,10 +142,10 @@ export function pairOutput(
       )
     lines.push(
       "On the machine with your browser, forward HQ's socket:",
-      forward(LOCAL_PORT, shellWord(code.socket), o.host),
+      forward(local, shellWord(code.socket), o.host),
       "then open:",
-      `  http://127.0.0.1:${LOCAL_PORT}${code.path}`,
-      `(hq.sock takes any port, so any free local port works in place of ${LOCAL_PORT}.)`,
+      `  http://127.0.0.1:${local}${code.path}`,
+      `(hq.sock takes any port, so any free local port works in place of ${local}.)`,
     )
     if (!ssh && tcp && !tcp.enabled)
       lines.push(
