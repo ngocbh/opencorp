@@ -1303,8 +1303,8 @@ test("a broken repo inside another is not taken for the outer one", async () => 
     (e: unknown) => e,
   )
   expect(error).toBeInstanceOf(CompanyGitError)
-  expect((error as Error).message).toContain(outer)
-  expect((error as Error).message).toContain(inner)
+  expect((error as Error).message).toContain("not a git repository")
+  expect((error as Error).message).not.toContain(outer)
 })
 
 /** A repo at a new temp dir with one commit on main. */
