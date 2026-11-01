@@ -143,6 +143,8 @@ export class CodexSession {
   #interruptWanted = false
   /** That Esc also dropped queued messages, which get the interrupt marker if no turn starts to carry it. */
   #markOwed = false
+  /** The last turn Codex said completed, so a `turn/start` answer naming another turn is known to start a new one. */
+  #lastEnded: string | null = null
 
   constructor(owner: CodexSessions, session: SessionRecord, { author }: { author: string | null }) {
     this.owner = owner
@@ -513,17 +515,21 @@ export class CodexSession {
     }
   }
 
-  /** `turn/start`: a new turn, or a steer of the running one (Codex decides; `turn/started` says which). `queued`
-   *  when Codex had unloaded the thread: the message waits for the reload. */
+  /** `turn/start`: a new turn, or a steer of the running one (Codex decides; `turn/started` says which, and the
+   *  answer naming a turn that hasn't completed says a new one started). `queued` when Codex had unloaded the thread:
+   *  the message waits for the reload. */
   async #send(proc: CodexProcess, text: string, busy: boolean): Promise<"turn" | "steer" | "queued"> {
     const events = this.#turnEvents
     this.#sending++
     this.#settle()
     try {
-      await proc.rpc!.request("turn/start", { threadId: this.threadId, input: input(text) })
+      const res = (await proc.rpc!.request("turn/start", { threadId: this.threadId, input: input(text) })) as Obj
+      const named = typeof res?.turn?.id === "string" ? (res.turn.id as string) : null
       // A new turn, unless Codex steered the running one or its turn/started was handled meanwhile: the session is
-      // busy until that comes.
-      if (this.turnId === null && this.#turnEvents === events) this.#unstarted = proc
+      // busy until that comes. A turn that ended meanwhile doesn't count when the answer names another one, which
+      // is a turn Codex started from this message. The id is only compared: notifications alone set the turn.
+      if (this.turnId === null && (this.#turnEvents === events || (named !== null && named !== this.#lastEnded)))
+        this.#unstarted = proc
     } catch (error) {
       if (error instanceof RpcError && NOT_LOADED.test(error.rpcMessage)) {
         this.#reload(proc, text)
@@ -595,6 +601,7 @@ export class CodexSession {
       this.#turnEvents++
       this.#unstarted = null
       const turn = params.turn
+      this.#lastEnded = turn.id
       this.translator.turnCompleted(turn.id, turn.status, turn.error ?? null)
       if (turn.id === this.turnId) this.#turnIs(null)
       this.#expireTurn(turn.id)

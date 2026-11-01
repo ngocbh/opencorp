@@ -627,6 +627,36 @@ test("esc with a refused turn/start in flight and a message queued behind it mar
   expect(texts(h, sid).filter((t) => t.endsWith("[interrupted]"))).toHaveLength(1)
 })
 
+test("esc after a turn ends while a steer is in flight interrupts the turn codex started from it", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 0.3 }], [{ sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  expect(await h.sessions.prompt(sid, "one")).toBe("turn")
+  await waitFor(() => status(h, sid) === "busy" && live.turnId !== null, { what: "the first turn" })
+  const rpc = live.process!.rpc!
+  const real = rpc.request.bind(rpc)
+  const [ended, end] = gate()
+  spyOn(rpc, "request").mockImplementation(async (method, params, options) => {
+    // Codex takes the message only once the first turn ended, so it starts a new turn from it.
+    if (method === "turn/start") await ended
+    return real(method, params, options)
+  })
+  const sending = h.sessions.prompt(sid, "two") // a steer of turn_1 as far as the office knows
+  await waitFor(() => live.turnId === null, { what: "the first turn's end" })
+  const release = await hold(live) // turn_2's turn/started waits behind it
+  end()
+  expect(await sending).toBe("steer")
+  expect(status(h, sid)).toBe("busy")
+  await h.sessions.interrupt(sid)
+  release()
+  await waitFor(() => h.fake.calls("turn/interrupt").length === 1 && status(h, sid) === "idle", {
+    what: "the interrupted turn's end",
+  })
+  expect(h.fake.calls("turn/interrupt")).toEqual([{ threadId: "thr_1", turnId: "turn_2" }])
+  expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
+})
+
 test("office stop during a reload with a message queued stores busy and restore marks it", async () => {
   const h = makeCodex()
   const sid = await start(h, h.workspace)
