@@ -6,7 +6,7 @@ import { type HarnessPolicy, type Message, OFFICE, Question, Session, WorkItem, 
 import type { Hooks } from "../chat/hooks.ts"
 import { ProviderError } from "../chat/provider.ts"
 import { HarnessError, LIVE, notAnAgent, notWaiting } from "../chat/state.ts"
-import { loadRepo } from "../company/loader.ts"
+import { loadRepo, missingPerson } from "../company/loader.ts"
 import type { Office, SessionHarness } from "../daemon/office.ts"
 import type { AnswerKind } from "../questions/cards.ts"
 import { UnsafeWorkspace, checkWorkspace, isInside, realPath } from "../sandbox/policy.ts"
@@ -492,7 +492,7 @@ export class CodexSessions implements SessionHarness {
     const head = await this.office.git.head()
     const repo = loadRepo(await this.office.git.pin(head))
     const person = repo.people.get(handle)
-    if (person === undefined) throw new HarnessError(404, "not_found", `no person ${handle}`)
+    if (person === undefined) throw new HarnessError(404, "not_found", missingPerson(repo, handle))
     if (person.kind !== "agent") throw notAnAgent()
     if (!person.harnesses.includes("codex"))
       throw new HarnessError(422, "unsupported_harness", "the person doesn't use the codex harness")

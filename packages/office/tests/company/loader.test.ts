@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { loadFlow } from "@ngocbh/yian"
-import { type CompanyRepo, loadRepo } from "../../src/company/loader.ts"
+import { type CompanyRepo, loadRepo, missingPerson } from "../../src/company/loader.ts"
 import { company, makeCompany, person } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -35,6 +35,17 @@ test("chat flow fixture loads", async () => {
   const file = path.join(company(), "shared/flows/chat.yaml")
   const text = fs.readFileSync(file, "utf8")
   await loadFlow(text, { searchPaths: [path.dirname(file)], sourceLabel: file, env: () => undefined })
+})
+
+test("missing person names a person file that doesnt load", () => {
+  const broken = loadRepo(makeCompany({ "people/minh/person.yaml": "harnesses: [composer\n" }))
+  expect(missingPerson(broken, "minh")).toBe("@minh's person.yaml doesn't load; run `opencorp doctor`")
+  const misplaced = loadRepo(makeCompany({ "people/minh/person.yaml": person("minh", { handle: "ava" }) }))
+  expect(codes(misplaced)).toContain("people/minh/person.yaml person.dir_mismatch")
+  expect(missingPerson(misplaced, "minh")).toBe("@minh's person.yaml doesn't load; run `opencorp doctor`")
+  expect(missingPerson(broken, "nobody")).toBe("no person nobody")
+  // Only a path from the folder listing matches, never one a handle spells out.
+  for (const handle of ["../minh", "minh/", "people/minh"]) expect(missingPerson(broken, handle)).toBe(`no person ${handle}`)
 })
 
 test("unknown field is a schema error", () => {

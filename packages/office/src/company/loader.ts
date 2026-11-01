@@ -100,3 +100,12 @@ export function loadRepo(root: string): CompanyRepo {
   const assets = byId(root, "assets", AssetSchema, errors)
   return { root, company, people, groups, assets, errors }
 }
+
+/** Why `repo` has no person `handle`, for a 404: their person.yaml doesn't load, or there is no such person. The
+ *  issue's message stays out, so the reply points to `opencorp doctor`. */
+export function missingPerson(repo: CompanyRepo, handle: string): string {
+  // Matched against paths from the folder listing, so a handle with a slash or dots never matches.
+  const rel = `people/${handle}/person.yaml`
+  const broken = repo.errors.some((issue) => issue.path === rel)
+  return broken ? `@${handle}'s person.yaml doesn't load; run \`opencorp doctor\`` : `no person ${handle}`
+}

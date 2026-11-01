@@ -288,6 +288,17 @@ test("the profile manager needs a known person", async () => {
   expect(h.store.listSessions({ kind: "profile_manager" })).toEqual([])
 })
 
+test("the profile manager names a person whose file doesnt load", async () => {
+  const files = {
+    [MANAGER_FLOW]: fs.readFileSync(path.join(ROOT, MANAGER_FLOW), "utf8"),
+    "people/minh/person.yaml": "handle: [\n",
+  }
+  const h = await makeHarness(await fakeLlm(), { files })
+  const error = (await rejection(h.harness.startManager("minh", "hi"))) as HarnessError
+  expect([error.status, error.code, error.message]).toEqual([404, "not_found", "@minh's person.yaml doesn't load; run `opencorp doctor`"])
+  expect(h.store.listSessions({ kind: "profile_manager" })).toEqual([])
+})
+
 test("the profile manager needs the manager flow", async () => {
   const h = await makeHarness(await fakeLlm())
   const error = await rejection(h.harness.startManager("minh", "hi"))

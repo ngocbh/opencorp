@@ -99,6 +99,13 @@ async function rejection(promise: Promise<unknown>): Promise<HarnessError> {
   )
 }
 
+test("a person whose file doesnt load is named as such", async () => {
+  const h = makeCodex({ files: { "people/minh/person.yaml": "handle: [\n" } })
+  const error = await rejection(h.sessions.startSession("minh", h.workspace, { openedBy: "ngocbh" }))
+  expect([error.status, error.code, error.message]).toEqual([404, "not_found", "@minh's person.yaml doesn't load; run `opencorp doctor`"])
+  expect(h.store.listSessions()).toEqual([])
+})
+
 test.each([
   ["no person", {}, (h: Codex) => ["nobody", h.workspace], 404, "not_found"],
   ["not an agent", {}, (h: Codex) => ["ngocbh", h.workspace], 422, "not_an_agent"],

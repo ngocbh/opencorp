@@ -11,17 +11,17 @@ import {
   VersionConflict,
 } from "@opencorp/protocol"
 import { z } from "zod"
-import { type CompanyRepo, loadRepo } from "../../company/loader.ts"
+import { type CompanyRepo, loadRepo, missingPerson } from "../../company/loader.ts"
 import { applyProposal, ProposalNotFound, ProposalNotOpen } from "../../profile/manager.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, RawReply, type Route } from "../http.ts"
 import type { RequestContext, SessionHarness } from "../office.ts"
 import { harnessCall } from "./sessions.ts"
 
-/** The company repo in the working tree; 404 for no person `handle`. */
+/** The company repo in the working tree; 404 for no person `handle`, or one whose person.yaml doesn't load. */
 function withPerson(ctx: RequestContext, handle: string): CompanyRepo {
   const repo = loadRepo(ctx.office.git.root)
-  if (!repo.people.has(handle)) throw new HttpError(404, "not_found", `no person ${handle}`)
+  if (!repo.people.has(handle)) throw new HttpError(404, "not_found", missingPerson(repo, handle))
   return repo
 }
 

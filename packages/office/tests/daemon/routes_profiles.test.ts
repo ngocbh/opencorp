@@ -204,6 +204,20 @@ test("proposals are listed oldest first and 404 for no person", async () => {
   expect([ghost.status, errorOf(ghost)]).toEqual([404, "not_found"])
 })
 
+test("a person whose file doesnt load is named as such", async () => {
+  const office = makeOffice()
+  blobStores(office)
+  const { sock } = await served(office)
+  fs.writeFileSync(path.join(office.paths.company, "people/minh/person.yaml"), "handle: [SECRETVALUE\n")
+  for (const target of ["/profiles/minh", "/profiles/minh/proposals"]) {
+    const r = await request(sock, "GET", target)
+    expect([r.status, r.json()]).toEqual([404, { error: "not_found", message: "@minh's person.yaml doesn't load; run `opencorp doctor`" }])
+    expect(r.text).not.toContain("SECRETVALUE")
+  }
+  const ghost = await request(sock, "GET", "/profiles/ghost/proposals")
+  expect(ghost.json()).toEqual({ error: "not_found", message: "no person ghost" })
+})
+
 test("apply is credited to the verified person", async () => {
   const office = makeOffice()
   const { sock } = await served(office, { tokens: true })
