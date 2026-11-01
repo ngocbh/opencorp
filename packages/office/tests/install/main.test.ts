@@ -1066,8 +1066,8 @@ test(
   60_000,
 )
 
-test("sigterm and sighup end setup at once and run its exit listeners", async () => {
-  for (const [signal, code] of [["SIGTERM", 143], ["SIGHUP", 129]] as const) {
+test("sigterm, sighup and sigquit end setup at once and run its exit listeners", async () => {
+  for (const [signal, code] of [["SIGTERM", 143], ["SIGHUP", 129], ["SIGQUIT", 131]] as const) {
     const dir = tempDir()
     const ready = path.join(dir, "ready")
     const mark = path.join(dir, "mark")
