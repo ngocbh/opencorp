@@ -469,6 +469,39 @@ describe("routes", () => {
     expect(r.text + lines.join("\n")).not.toContain(SENTINEL)
   })
 
+  test("a store that can't be written is a 503 that logs its SQLite code", async () => {
+    const lines: string[] = []
+    const routes: Route<Ctx>[] = [
+      {
+        method: "POST",
+        path: "/full",
+        handler: () => {
+          throw Object.assign(new Error(SENTINEL), { name: "SQLiteError", errno: 13 })
+        },
+      },
+      {
+        method: "POST",
+        path: "/dup",
+        handler: () => {
+          throw Object.assign(new Error(SENTINEL), { name: "SQLiteError", errno: 2067 })
+        },
+      },
+    ]
+    const { sock } = await serve(routes, { log: (line) => lines.push(line) })
+    const full = await request(sock, "POST", "/full")
+    expect(full.status).toBe(503)
+    expect(full.json()).toEqual({
+      error: "store_unwritable",
+      message: "the office can't write its store; see the office log",
+    })
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/^\S+ ERROR opencorp\.daemon\.http: store can't be written on POST \/full: Error \(SQLITE_FULL\)$/)
+    const dup = await request(sock, "POST", "/dup")
+    expect(dup.status).toBe(500)
+    expect(dup.json()).toEqual({ error: "internal_error", message: "internal error" })
+    expect(full.text + dup.text + lines.join("\n")).not.toContain(SENTINEL)
+  })
+
   test("an http error is its status code and message", async () => {
     let ran = false
     const guarded: Route<Ctx> = {

@@ -24,6 +24,7 @@ import {
   WORKER_STOPPED,
 } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
+import { sqliteName } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Delivery, STOP_REASON } from "../../src/worker/job.ts"
 import { type Worker, WorkerExists } from "../../src/worker/spawn.ts"
@@ -1521,7 +1522,7 @@ test("the wake at timer advances a timed out question once", async () => {
 
 /** A scheduler whose clock the test sets and whose sleeps the test ends, one at a time. */
 function steppedScheduler(start: number) {
-  const sleeps: { ms: number; wake: () => void }[] = []
+  const sleeps: { ms: number; wake: () => void; signal?: AbortSignal }[] = []
   const clock = { now: start }
   const scheduler: Scheduler = {
     now: () => clock.now,
@@ -1529,11 +1530,126 @@ function steppedScheduler(start: number) {
       new Promise<void>((resolve, reject) => {
         if (signal?.aborted) return reject(signal.reason)
         signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
-        sleeps.push({ ms, wake: resolve })
+        sleeps.push({ ms, wake: resolve, signal })
       }),
   }
   return { scheduler, sleeps, clock }
 }
+
+/** A bun:sqlite error for a full disk. */
+function diskFull(): Error {
+  return Object.assign(new Error("database or disk is full"), { name: "SQLiteError", errno: 13 })
+}
+
+/** Makes `o`'s store transactions throw `error()` while `failing.on`; restored when the test finishes. */
+function failTransactions(o: ChatOffice, error: () => Error = diskFull): { on: boolean } {
+  const failing = { on: true }
+  const { store } = o.office
+  const transaction = store.transaction.bind(store)
+  store.transaction = ((fn: () => unknown) => {
+    if (failing.on) throw error()
+    return transaction(fn)
+  }) as typeof store.transaction
+  onTestFinished(() => {
+    store.transaction = transaction
+  })
+  return failing
+}
+
+/** A scripted session on `scheduler` whose run rested, then took a message: the session is busy, its worker
+ *  `workers[1]`. */
+async function busyScripted(o: ChatOffice, scheduler: Scheduler) {
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid, { scheduler })
+  await actor.start()
+  const first = workers[0]!
+  first.handlers.result(first.worker, waitingResult(actor.runId!))
+  first.handlers.exited(first.worker, 0)
+  await waitFor(() => status(o, sid) === "idle", { what: "the run to rest" })
+  void outcome(actor.prompt("a"))
+  await waitFor(() => workers.length === 2 && status(o, sid) === "busy", { what: "the advance" })
+  const second = workers[1]!
+  second.handlers.deliverReply(second.worker, { type: "deliver_reply", id: second.given()[0]!.id, seq: 1 })
+  return { actor, sid, workers }
+}
+
+test("a state write that fails is retried until the store can write", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { scheduler, sleeps } = steppedScheduler(Date.now())
+  const { actor, sid, workers } = await busyScripted(o, scheduler)
+  const failing = failTransactions(o)
+  const { worker, handlers } = workers[1]!
+  handlers.result(worker, waitingResult(actor.runId!))
+  handlers.exited(worker, 0)
+  await waitFor(() => sleeps.length === 1, { what: "the retry" })
+  expect(sleeps[0]!.ms).toBe(1000)
+  expect(status(o, sid)).toBe("busy")
+  const full = () => o.logs.filter((line) => line.includes("SQLITE_FULL"))
+  expect(full()).toEqual([`session ${sid}: no state after a result (SQLITE_FULL); retrying`])
+  sleeps[0]!.wake()
+  await waitFor(() => sleeps.length === 2, { what: "the next retry" })
+  expect(sleeps[1]!.ms).toBe(2000)
+  expect(full()).toHaveLength(1)
+  failing.on = false
+  sleeps[1]!.wake()
+  await waitFor(() => status(o, sid) === "idle", { what: "the state written" })
+  expect(o.logs).toContainEqual(`session ${sid}: its state is written again`)
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  expect(sleeps).toHaveLength(2)
+})
+
+test("close and finish stop the retry of a state write", async () => {
+  for (const stop of ["close", "fail"] as const) {
+    const o = await chatOffice(await fakeLlm())
+    const { scheduler, sleeps } = steppedScheduler(Date.now())
+    const { actor, workers } = await busyScripted(o, scheduler)
+    failTransactions(o)
+    const { worker, handlers } = workers[1]!
+    handlers.result(worker, waitingResult(actor.runId!))
+    handlers.exited(worker, 0)
+    await waitFor(() => sleeps.length === 1, { what: "the retry" })
+    if (stop === "close") await actor.close()
+    else await actor.fail()
+    expect(sleeps[0]!.signal?.aborted).toBe(true)
+  }
+})
+
+test("a state write that fails for another reason isn't retried", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { scheduler, sleeps } = steppedScheduler(Date.now())
+  const { actor, sid, workers } = await busyScripted(o, scheduler)
+  failTransactions(o, () => new TypeError("x"))
+  const { worker, handlers } = workers[1]!
+  handlers.result(worker, waitingResult(actor.runId!))
+  handlers.exited(worker, 0)
+  await waitFor(() => o.logs.includes(`session ${sid}: no state after a worker exit (TypeError)`), { what: "the log" })
+  expect(o.logs).toContainEqual(`session ${sid}: no state after a result (TypeError)`)
+  expect(sleeps).toEqual([])
+})
+
+test("an End whose store write fails can be tried again", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { scheduler } = steppedScheduler(Date.now())
+  const { actor, sid, workers } = await busyScripted(o, scheduler)
+  const { store } = o.office
+  const update = store.updateSession.bind(store)
+  let fails = 1
+  store.updateSession = ((id: string, fields: Parameters<typeof update>[1]) => {
+    if (fields.status === "ending" && fails-- > 0) throw diskFull()
+    return update(id, fields)
+  }) as typeof store.updateSession
+  onTestFinished(() => {
+    store.updateSession = update
+  })
+  expect(await actor.end().then(String, (error) => sqliteName(error))).toBe("SQLITE_FULL")
+  expect(status(o, sid)).toBe("busy")
+  void outcome(actor.prompt("still here"))
+  await waitFor(() => workers[1]!.deliveries.length === 1, { what: "the message" })
+  expect(workers[1]!.deliveries[0]!.op).toBe("send")
+  await actor.end()
+  expect(status(o, sid)).toBe("ending")
+})
 
 test("the wake at timer is armed in chunks and never advances early", async () => {
   const fake = await fakeLlm()

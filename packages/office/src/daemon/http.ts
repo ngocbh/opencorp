@@ -9,7 +9,7 @@ import http, {
 import { type ErrorCode, validationMessage } from "@opencorp/protocol"
 import type { z } from "zod"
 import { repoBusy } from "../company/git.ts"
-import { NotFound } from "../store/store.ts"
+import { NotFound, storeWriteFailure } from "../store/store.ts"
 
 /** A route's path params, decoded. */
 export type Params = Record<string, string>
@@ -363,12 +363,13 @@ export function requestListener<C>(
     const method = req.method ?? "GET"
     let route: Route<C> | undefined
     // Guarded: a throwing log hook must not make the listener reject.
-    const logInternal = (error: unknown) => {
+    const log = (message: string) => {
       try {
-        const where = `${method} ${route?.path ?? "(no route)"}`
-        options.log(logLine("ERROR", "opencorp.daemon.http", `internal error on ${where}: ${errorType(error)}`))
+        options.log(logLine("ERROR", "opencorp.daemon.http", message))
       } catch {}
     }
+    const where = () => `${method} ${route?.path ?? "(no route)"}`
+    const logInternal = (error: unknown) => log(`internal error on ${where()}: ${errorType(error)}`)
     // A body left unread, or read only in part, stays on the connection, so it can't be reused: what follows on
     // it would start inside that body. Reading the whole body clears this.
     let unread: Record<string, string> = given === undefined && hasBody(req) ? { connection: "close" } : {}
@@ -444,6 +445,13 @@ export function requestListener<C>(
           const message = `company repo busy on ${where}: ${busy.code}: ${busy.message}`
           options.log(logLine("WARNING", "opencorp.daemon.http", message))
         } catch {}
+        return
+      }
+      const unwritable = storeWriteFailure(error)
+      if (unwritable !== null) {
+        reply(503, apiError("store_unwritable", "the office can't write its store; see the office log"), unread)
+        // The SQLite code only: its message can name the store's file.
+        log(`store can't be written on ${where()}: ${errorType(error)} (${unwritable})`)
         return
       }
       // The client left, so a handler that honours `ctx.signal` and rejects (an AbortError) is neither answered

@@ -35,6 +35,37 @@ export class StoreError extends Error {
   override name = "StoreError"
 }
 
+/** The names of the SQLite primary result codes the office logs by name. */
+const SQLITE_NAMES: Readonly<Record<number, string>> = {
+  5: "SQLITE_BUSY",
+  8: "SQLITE_READONLY",
+  10: "SQLITE_IOERR",
+  13: "SQLITE_FULL",
+  14: "SQLITE_CANTOPEN",
+  19: "SQLITE_CONSTRAINT",
+}
+
+/** The primary result codes of a store that can't be written: read-only, an I/O error, a full disk, a file that
+ *  can't be opened. */
+const UNWRITABLE = new Set([8, 10, 13, 14])
+
+/** A SQLite error's primary result code by name (`SQLITE_FULL`, else `SQLITE_<code>`), safe to log; undefined for
+ *  any other error. */
+export function sqliteName(error: unknown): string | undefined {
+  const code = sqliteErrorCode(error)
+  if (code === undefined) return undefined
+  // The low byte is the primary result code: SQLITE_IOERR_WRITE (778) is an IOERR.
+  const primary = code & 0xff
+  return SQLITE_NAMES[primary] ?? `SQLITE_${primary}`
+}
+
+/** The name (`sqliteName`) of a SQLite error that says the store can't be written, else null. An IOERR can come from
+ *  a read too; either way the store can't be used until the disk is fixed. */
+export function storeWriteFailure(error: unknown): string | null {
+  const code = sqliteErrorCode(error)
+  return code !== undefined && UNWRITABLE.has(code & 0xff) ? sqliteName(error)! : null
+}
+
 /** The row to change does not exist. */
 export class NotFound extends StoreError {
   override name = "NotFound"

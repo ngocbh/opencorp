@@ -42,6 +42,7 @@ import {
   newId,
   type QuestionRecord,
   type SessionRecord,
+  sqliteName,
   type Store,
   type WorkItemRecord,
 } from "../store/store.ts"
@@ -168,6 +169,11 @@ interface Fresh {
 
 /** The run statuses that end a run, whose report waits for the run index. */
 const ENDING: readonly string[] = ["succeeded", "failed", "cancelled"]
+
+/** The first wait before a state write that failed is tried again, in ms; each wait after doubles, up to
+ *  `SETTLE_RETRY_MAX_MS`. */
+export const SETTLE_RETRY_MS = 1000
+export const SETTLE_RETRY_MAX_MS = 60_000
 
 /** The worker events that say its run started or runs again. */
 const STARTS: readonly string[] = ["RunStarted", "RunResumed", "NodeStarted", "NodeWoken"]
@@ -365,6 +371,12 @@ export class SessionActor implements LiveCalls {
   #seenStart: string | null = null
   /** Whether a run's log was lost after it started (`#logGone`) since the last `waiting` or `succeeded` result. */
   #lostLog = false
+  /** The SQLite code the last state write failed with, until one succeeds; null while writes succeed. */
+  #settleFailing: string | null = null
+  /** The sleep before the next try of a failed state write, aborted at finish and close; null when none waits. */
+  #settleRetry: AbortController | null = null
+  /** How long the next retry of a failed state write waits, in ms. */
+  #settleDelay = SETTLE_RETRY_MS
   /** The runs whose hard stop waits for the lingering worker's exit. */
   #stopAfterExit: string[] = []
   /** The `cancel` the finish sent through the live worker, by delivery id, and its run; null when none was sent. */
@@ -842,8 +854,9 @@ export class SessionActor implements LiveCalls {
       this.#finish(ended?.status === "succeeded" ? "ended" : "failed", ended, null)
       return
     }
-    this.#ending = true
+    // Stored first: an End whose write fails leaves the session as it was, so End can be tried again.
     this.#ctx.store.updateSession(this.sessionId, notWaiting("ending"))
+    this.#ending = true
     // A reply blocked on a sandboxed shell or an office tool call can't read the interrupt until the call returns;
     // and nobody will read what it returns, even when the end below fails.
     this.#interruptWorkspace()
@@ -1179,6 +1192,7 @@ export class SessionActor implements LiveCalls {
     this.#closed = true
     this.#closing.resolve()
     this.#disarm()
+    this.#stopSettleRetry()
     void this.#releaseParked()
     this.#interruptWorkspace()
     this.#answerCalls()
@@ -1849,7 +1863,7 @@ export class SessionActor implements LiveCalls {
     const stored = this.#ctx.answers.ask(question, options)
     if (stored.id === question.id) {
       void this.#ctx.hooks.notify("questionStored", stored)
-      this.#post("settle", () => this.settle())
+      this.#post("settle", () => this.#trySettle("after a question"))
     }
     return stored
   }
@@ -2684,6 +2698,7 @@ export class SessionActor implements LiveCalls {
     if (this.#finished) return
     this.#finished = true
     this.#reconcileDue = null
+    this.#stopSettleRetry()
     // The failed run is reported as its held fresh run would have reported it.
     const held = this.#heldFresh
     if (held !== null) {
@@ -2974,13 +2989,55 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  /** `settle`, logging a failure by its type, where the step around it must go on. */
+  /**
+   * `settle`, where the step around it must go on. A SQLite error (a full disk, say) is logged once, by its code, for
+   * each streak of failed writes, and the write is tried again after a wait (`SETTLE_RETRY_MS`, doubling up to
+   * `SETTLE_RETRY_MAX_MS`) and at every later settle until one succeeds, so the stored status catches up once the
+   * store can write; marking the session failed would be a store write too. Any other failure is logged by its type.
+   */
   #trySettle(when: string): void {
     try {
       this.settle()
     } catch (error) {
-      this.#log(`session ${this.sessionId}: no state ${when} (${errorName(error)})`)
+      const name = sqliteName(error)
+      if (name === undefined) {
+        this.#log(`session ${this.sessionId}: no state ${when} (${errorName(error)})`)
+        return
+      }
+      if (this.#settleFailing === null) this.#log(`session ${this.sessionId}: no state ${when} (${name}); retrying`)
+      this.#settleFailing = name
+      if (this.#settleRetry === null) this.#armSettleRetry()
+      return
     }
+    if (this.#settleFailing !== null) {
+      this.#log(`session ${this.sessionId}: its state is written again`)
+      this.#settleFailing = null
+      this.#stopSettleRetry()
+      this.#settleDelay = SETTLE_RETRY_MS
+    }
+  }
+
+  /** Tries the failed state write again after `#settleDelay`, and doubles the next wait. */
+  #armSettleRetry(): void {
+    const timer = new AbortController()
+    this.#settleRetry = timer
+    const delay = this.#settleDelay
+    this.#settleDelay = Math.min(delay * 2, SETTLE_RETRY_MAX_MS)
+    this.#ctx.scheduler.sleep(delay, timer.signal).then(
+      () =>
+        this.#post("settle retry", () => {
+          if (this.#settleRetry !== timer) return
+          this.#settleRetry = null
+          if (!this.#finished && this.#settleFailing !== null) this.#trySettle("on a retry")
+        }),
+      () => {},
+    )
+  }
+
+  /** Stops the wait before the next try of a failed state write, if one waits. */
+  #stopSettleRetry(): void {
+    this.#settleRetry?.abort()
+    this.#settleRetry = null
   }
 
   /** The error a delivery's caller gets when its spawn failed with `error`. */
