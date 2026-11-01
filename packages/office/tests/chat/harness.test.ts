@@ -1082,6 +1082,43 @@ test("the cost cap holds turns until raised", async () => {
   expect(await asked(fake, 2)).toContain("held")
 })
 
+test("over the cap a message sent as the run starts waits for a raise", async () => {
+  const fake = await fakeLlm()
+  fake.script(free("Answered."))
+  const h = await makeHarness(fake, { defaults: { cost_cap_usd: 0 } })
+  const s = await h.harness.startSession("minh", h.folder)
+  // At once, while the start's worker runs: its take must not read it.
+  expect(await h.harness.prompt(s.id, "hi")).toBe("queued")
+  await waitFor(() => atTheHold(h, s.id, 0), { what: "the hold at the cap" })
+  expect(fake.requests()).toEqual([])
+  await h.harness.setCostCap(s.id, 1)
+  await waitFor(() => same(texts(h, s.id), ["Answered."]) && status(h, s.id) === "idle", {
+    what: "the reply after the raise",
+  })
+  expect(await asked(fake, 1)).toContain("hi")
+})
+
+test("esc over the cap right after a queued message leaves its reply to the raise", async () => {
+  const fake = await fakeLlm()
+  fake.script(PRICEY, free("Answered."), free("spare"))
+  const { h, gate } = await cappedHarness(fake)
+  const { id } = await start(h)
+  gate.watch(h)
+  await h.harness.prompt(id, "hi")
+  await waitFor(() => atTheHold(h, id, 6) && capItems(h).length === 1, { what: "the stop at the cap" })
+  // Not awaited: the Esc lands while the job that only delivers it runs.
+  const sent = h.harness.prompt(id, "please answer this")
+  await h.harness.interrupt(id)
+  expect(await sent).toBe("queued")
+  await h.harness.setCostCap(id, 20)
+  await waitFor(() => same(texts(h, id).slice(-1), ["Answered."]) && status(h, id) === "idle", {
+    what: "the held turn",
+  })
+  expect(texts(h, id)).not.toContain("[interrupted]")
+  expect(fake.requests()).toHaveLength(2)
+  expect(await asked(fake, 2)).toContain("please answer this")
+})
+
 test("raising the cap closes its work item and going over again opens one", async () => {
   const fake = await fakeLlm()
   fake.script(...[0, 1, 2].map((n) => ({ content: `reply ${n}`, usage: { prompt_tokens: 6, completion_tokens: 1 } })))

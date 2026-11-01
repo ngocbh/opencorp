@@ -620,10 +620,10 @@ export class SessionActor implements LiveCalls {
 
   /**
    * Esc: interrupts the workspace, answers the office tool calls in flight `INTERRUPTED_CALL`, and interrupts the
-   * run: through its worker while one runs it, else, while the agent waits on a model question, through a worker
-   * spawned for it; else nothing runs to stop. Resolves once the interrupt's reply is handled (the calls it closed
-   * are answered) or it was dropped. Refused with `404 not_found`, `409 not_live`, `503 stopping` or `503
-   * cant_wake`.
+   * run: through its worker while one runs it (over the cost cap, unless ending, only while a reply node runs), else,
+   * while the agent waits on a model question, through a worker spawned for it; else nothing runs to stop. Resolves
+   * once the interrupt's reply is handled (the calls it closed are answered) or it was dropped. Refused with `404
+   * not_found`, `409 not_live`, `503 stopping` or `503 cant_wake`.
    */
   async interrupt(): Promise<void> {
     const pending = await this.#command(async () => {
@@ -634,7 +634,9 @@ export class SessionActor implements LiveCalls {
       this.#interruptWorkspace()
       this.#answerCalls()
       const run = this.#run
-      const running = run !== null && run.worker !== null && run.outcome === null
+      const live = run !== null && run.worker !== null && run.outcome === null
+      // Over the cap no reply is about to start: only a reply node still in flight is stopped.
+      const running = live && (this.#ending || !this.#capped() || this.#replying())
       if (!running && !this.#agentWaits()) return null
       const spec = await this.#specOf(session)
       const p = new Pending({ id: newId(), op: "interrupt", inbox: spec.chat.inbox })
@@ -1058,7 +1060,9 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Sends `p` to the worker while it hasn't sent its `result`, else adds it to `#next`; true when that leaves
-   *  `#next` for a spawn now (no worker runs). */
+   *  `#next` for a spawn now (no worker runs). Over the cost cap, unless ending, a `send` or `complete` waits in
+   *  `#next` for a job that only delivers when the worker may call the model (a `chat` job starting); otherwise
+   *  nothing goes to the worker past what `#next` holds. */
   async #give(p: Pending): Promise<boolean> {
     // The office stopped while the command waited: no worker may start for it.
     if (this.#closed) {
@@ -1067,6 +1071,12 @@ export class SessionActor implements LiveCalls {
     }
     const run = this.#run
     if (run !== null && run.worker !== null && run.outcome === null) {
+      // Over the cap what wakes the agent never reaches a run that may reply; under it, nothing overtakes it.
+      const held = !this.#ending && this.#capped() ? wakes(p) && run.worker.job.advance : this.#next.length > 0
+      if (held) {
+        this.#next.push(p)
+        return false
+      }
       run.given.push(p)
       let sent: boolean
       try {
@@ -1142,12 +1152,14 @@ export class SessionActor implements LiveCalls {
    * (`#startedWorker`). On failure, the job's deliveries are answered with the error (`#wakeError`) and dropped, and
    * the error is thrown. `plain` marks a re-advance only for a settled wait. Over the cost cap, unless ending, an
    * `advance` only delivers (`advance: false`, no record check), and none starts without deliveries; the advance
-   * waits for a raise (`#needsAdvance`). A fresh run (`replace`) over the cap, unless ending, is held instead
-   * (`#heldFresh`): every spawn until a raise or End keeps `#next` for it, as the fresh run would carry it, and
-   * answers its messages `queued` at once; the first spawn after starts the held fresh run, and one that fails fails
-   * the session (`COULDNT_START`), as a failed reply's fresh run does. An `advance` after restore found the run ended
-   * or unreadable is that fresh run (`#unresumable`); a run that moved ends `OFFICE_REPLACED` until the first
-   * advancing worker since restore (`#sinceRestore`). Whether a worker started.
+   * waits for a raise (`#needsAdvance`). A `chat` job always advances, so over the cap its `send` and `complete`
+   * deliveries stay in `#next` for the next job, which only delivers; a chat job that fails answers them too. A
+   * fresh run (`replace`) over the cap, unless ending, is held instead (`#heldFresh`): every spawn until a raise or End
+   * keeps `#next` for it, as the fresh run would carry it, and answers its messages `queued` at once; the first spawn
+   * after starts the held fresh run, and one that fails fails the session (`COULDNT_START`), as a failed reply's fresh
+   * run does. An `advance` after restore found the run ended or unreadable is that fresh run (`#unresumable`); a run
+   * that moved ends `OFFICE_REPLACED` until the first advancing worker since restore (`#sinceRestore`). Whether a
+   * worker started.
    */
   async #spawn(
     kind: "chat" | "advance",
@@ -1183,13 +1195,17 @@ export class SessionActor implements LiveCalls {
       this.#heldFresh = null
     }
     // A job over the cap never calls the model, so no endpoint is replayed: no record check.
-    const advance = kind === "chat" || this.#ending || !this.#capped()
+    const over = !this.#ending && this.#capped()
+    const advance = kind === "chat" || !over
     if (!advance) {
       this.#needsAdvance = true
       if (this.#next.length === 0) return false
     }
     let pendings = this.#next
-    this.#next = []
+    // A chat job always advances: over the cap, what would wake the agent waits for the job that only delivers.
+    const held = kind === "chat" && over ? pendings.filter(wakes) : []
+    pendings = pendings.filter((p) => !held.includes(p))
+    this.#next = held
     // This spawn is the re-advance; one that fails leaves nothing to wait for.
     this.#readvance = false
     this.#readvancedFrom = plain ? this.#waits : null
@@ -1273,7 +1289,8 @@ export class SessionActor implements LiveCalls {
       // Its text may name a file under office/connections: the log gets it, the caller a fixed reason (`spawnWhy`).
       if (error instanceof ProviderError) this.#log(`session ${sid}: its connection can't be used (${error.message})`)
       const refusal = this.#wakeError(error)
-      for (const p of pendings) p.reject(refusal)
+      for (const p of [...pendings, ...held]) p.reject(refusal)
+      this.#next = this.#next.filter((p) => !held.includes(p))
       if (released !== null && !(error instanceof RegistryClosed) && !this.#closed) {
         // As a failed reply's fresh run that can't start: before the fresh run was stored, the failed result is how
         // the session's run ended; after, the fresh run never started.
@@ -2621,6 +2638,11 @@ function folderRefused(error: unknown): boolean {
 /** Whether `session`'s cost is at or over its cap, the pinned default if it has none of its own. */
 function overCap(session: SessionRecord, pins: Pins): boolean {
   return session.cost >= costCap(session, pins.defaults)
+}
+
+/** Whether `p` wakes the agent: a message (`send`) or a call's answer (`complete`). */
+function wakes(p: Pending): boolean {
+  return p.delivery.op === "send" || p.delivery.op === "complete"
 }
 
 /** The error type an `error` frame names (its message reads `<type>: <message>`), never its message. */
