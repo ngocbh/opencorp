@@ -48,7 +48,14 @@ import {
 } from "../store/store.ts"
 import { type Frame, FrameTooLarge } from "../worker/channel.ts"
 import { type Delivery, type Job, type Seed, STOP_REASON } from "../worker/job.ts"
-import { type AskRequest, BaseHandlers, errorName, type OfficeTool, type WorkerHandlers } from "../worker/rpc.ts"
+import {
+  type AskRequest,
+  BaseHandlers,
+  errnoFields,
+  errorName,
+  type OfficeTool,
+  type WorkerHandlers,
+} from "../worker/rpc.ts"
 import { RegistryClosed, type Worker, workerEnv } from "../worker/spawn.ts"
 import { BadConnectionName, type Connections, configHash, runRecord } from "./connections.ts"
 import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "./cost.ts"
@@ -3105,9 +3112,9 @@ function errorType(frame: Frame): string {
 /** `, <code> from <syscall>` for an `error` frame's errno fields that read as such (`, EACCES from mkdir`), `,
  *  <code>` without a syscall, else "". */
 function errnoOf(frame: Frame): string {
-  const { code, syscall } = frame
-  if (typeof code !== "string" || !/^E[A-Z0-9]{1,30}$/.test(code)) return ""
-  return typeof syscall === "string" && /^[a-z_]{1,30}$/.test(syscall) ? `, ${code} from ${syscall}` : `, ${code}`
+  const { code, syscall } = errnoFields(frame)
+  if (code === undefined) return ""
+  return syscall === undefined ? `, ${code}` : `, ${code} from ${syscall}`
 }
 
 /** `value` when it reads as an error type's name, else `Error`: a log line carries nothing else a worker sent. */

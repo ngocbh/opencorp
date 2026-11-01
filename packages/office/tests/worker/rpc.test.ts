@@ -13,6 +13,7 @@ import {
   type AskRequest,
   askUserStub,
   BaseHandlers,
+  errnoFields,
   isRequest,
   modelFromSchema,
   type OfficeTool,
@@ -140,6 +141,15 @@ test("store value and os errors keep their codes", async () => {
   })
   const failed = await answer(call("parse"), { tools: { parse } })
   expect([failed.error, failed.message]).toEqual(["failed", "bad text"])
+})
+
+test("only an errno code and a syscall that read as one are kept", () => {
+  const error = (fields: Record<string, unknown>) => Object.assign(new Error("x"), fields)
+  expect(errnoFields(error({ code: "EACCES", syscall: "mkdir" }))).toEqual({ code: "EACCES", syscall: "mkdir" })
+  expect(errnoFields(error({ code: "rm -rf /", syscall: "mkdir /x" }))).toEqual({})
+  expect(errnoFields(error({ code: "ERR_INVALID_ARG_TYPE" }))).toEqual({})
+  expect(errnoFields({ code: "ENOENT", syscall: "stat" })).toEqual({ code: "ENOENT", syscall: "stat" })
+  expect(errnoFields("EACCES")).toEqual({})
 })
 
 test("a failed request logs only its exception type", async () => {

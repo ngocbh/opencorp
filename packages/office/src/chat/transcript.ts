@@ -128,6 +128,12 @@ function messageId(runId: string, seq: number): string {
   return `${runId}:${String(seq).padStart(12, "0")}`
 }
 
+/** The kinds of warning a run's transcript logs once each: an unopenable log, a line that stops the read. */
+const WARNINGS = ["eacces", "stops"] as const
+
+/** How many warnings the transcript remembers before it forgets them all, so a long-lived office stays bounded. */
+const WARNED_CAP = 10_000
+
 /**
  * A session's transcript, read from its runs' logs (`<runs>/<run_id>/log.jsonl`). Each run's fold is cached, least
  * recently read first, and each read folds only what its log added since; the cache keeps folds holding at most
@@ -147,7 +153,7 @@ export class Transcript {
   private readonly log: (line: string) => void
   private readonly cache = new Map<string, Fold>()
   private readonly refreshing = new Map<string, Promise<void>>()
-  /** The runs whose unreadable log was logged. */
+  /** The warnings logged, by kind and run (`stops:<run_id>`), cleared at `WARNED_CAP`. */
   private readonly warned = new Set<string>()
 
   constructor(runs: string, options: { maxBytes?: number; lineCap?: number; log?: (line: string) => void } = {}) {
@@ -205,7 +211,7 @@ export class Transcript {
   forget(runIds: Iterable<string>): void {
     for (const runId of runIds) {
       this.cache.delete(runId)
-      this.warned.delete(runId)
+      for (const kind of WARNINGS) this.warned.delete(`${kind}:${runId}`)
     }
   }
 
@@ -245,14 +251,14 @@ export class Transcript {
       const code = (error as NodeJS.ErrnoException | null)?.code
       if (code === "ENOENT" || code === "ENOTDIR") return { fold: emptyFold(), done: true }
       if (code !== "EACCES") throw error
-      this.warnOnce(runId, `run ${runId}: its log can't be read (EACCES); it shows no messages`)
+      this.warnOnce("eacces", runId, `run ${runId}: its log can't be read (EACCES); it shows no messages`)
       return { fold: emptyFold(), done: true }
     }
     if (read.stopped !== null) {
       // Only the record count and the error's type: yian's message quotes the log's path and the line's values.
       const where = state.seq === null ? "before its first record" : `after record ${state.seq}`
       const why = `${errorName(read.stopped)}: a line of its log can't be read`
-      this.warnOnce(runId, `run ${runId}: the transcript stops ${where} (${why})`)
+      this.warnOnce("stops", runId, `run ${runId}: the transcript stops ${where} (${why})`)
     }
     this.cache.set(runId, state)
     let bytes = 0
@@ -266,10 +272,12 @@ export class Transcript {
     return { fold: state, done: read.done }
   }
 
-  /** Logs `line` unless a line was logged for the run `runId` already. */
-  private warnOnce(runId: string, line: string): void {
-    if (this.warned.has(runId)) return
-    this.warned.add(runId)
+  /** Logs `line` unless a warning of `kind` was logged for the run `runId` already. */
+  private warnOnce(kind: (typeof WARNINGS)[number], runId: string, line: string): void {
+    const key = `${kind}:${runId}`
+    if (this.warned.has(key)) return
+    if (this.warned.size >= WARNED_CAP) this.warned.clear()
+    this.warned.add(key)
     this.log(line)
   }
 }

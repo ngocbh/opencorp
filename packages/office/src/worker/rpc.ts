@@ -569,6 +569,16 @@ export function errorMessage(error: unknown): string {
   return errorName(error)
 }
 
+/** The errno `code` (`EACCES`) and `syscall` (`mkdir`) of a failed system call, or of an `error` frame that carries
+ *  them, each only when it reads as one: the office may log them, never the error's message. */
+export function errnoFields(error: unknown): { code?: string; syscall?: string } {
+  const { code, syscall } = (typeof error === "object" && error !== null ? error : {}) as NodeJS.ErrnoException
+  return {
+    ...(typeof code === "string" && /^E[A-Z0-9]{1,30}$/.test(code) ? { code } : {}),
+    ...(typeof syscall === "string" && /^[a-z_]{1,30}$/.test(syscall) ? { syscall } : {}),
+  }
+}
+
 /** Whether `error` is an instance of `type`; never throws (a revoked `Proxy` throws on `instanceof`). */
 function isInstance<T>(error: unknown, type: abstract new (...args: never[]) => T): error is T {
   try {

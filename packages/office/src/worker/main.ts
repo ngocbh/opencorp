@@ -30,7 +30,7 @@ import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
 import { Delivery, type Job, parseJob, STOP_REASON } from "./job.ts"
 import { RemoteMarkdownStore } from "./remote_store.ts"
-import { askUserStub, errorMessage, errorName, remoteTool, REPLY_TYPES, Rpc } from "./rpc.ts"
+import { askUserStub, errnoFields, errorMessage, errorName, remoteTool, REPLY_TYPES, Rpc } from "./rpc.ts"
 
 export const EXIT_OK = 0
 export const EXIT_FAILED = 1
@@ -249,16 +249,6 @@ export function unreadableLog(error: unknown): string | null {
   const code = (error as NodeJS.ErrnoException | null)?.code
   if (code === "ENOENT" || code === "ENOTDIR") return code
   return error instanceof RangeError ? errorName(error) : null
-}
-
-/** The errno `code` (`EACCES`) and `syscall` (`mkdir`) of a failed system call, each only when it reads as one: the
- *  office may log them, never the error's message. */
-export function errnoFields(error: unknown): { code?: string; syscall?: string } {
-  const { code, syscall } = (typeof error === "object" && error !== null ? error : {}) as NodeJS.ErrnoException
-  return {
-    ...(typeof code === "string" && /^E[A-Z0-9]{1,30}$/.test(code) ? { code } : {}),
-    ...(typeof syscall === "string" && /^[a-z_]{1,30}$/.test(syscall) ? { syscall } : {}),
-  }
 }
 
 /** The record kinds an `advance` starts each of its appends with; no delivery writes any of them. */

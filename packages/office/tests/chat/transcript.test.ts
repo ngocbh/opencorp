@@ -747,6 +747,30 @@ test.skipIf(process.getuid?.() === 0)("an unreadable run folder reads as no mess
   expect(messages(runs, newId(), ["r1"], { transcript }).length).toBe(2)
 })
 
+test.skipIf(process.getuid?.() === 0)("an unreadable folder, then a bad line, of the same run logs both", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "first")])
+  const folder = path.dirname(job.log)
+  const logs: string[] = []
+  const transcript = new Transcript(runs, { log: (line) => logs.push(line) })
+  fs.chmodSync(folder, 0o000)
+  try {
+    expect(messages(runs, newId(), ["r1"], { transcript })).toEqual([])
+  } finally {
+    fs.chmodSync(folder, 0o700)
+  }
+  fs.appendFileSync(job.log, "garbage\n")
+  expect(messages(runs, newId(), ["r1"], { transcript }).length).toBe(2)
+  expect(messages(runs, newId(), ["r1"], { transcript }).length).toBe(2)
+  expect(logs).toEqual([
+    "run r1: its log can't be read (EACCES); it shows no messages",
+    expect.stringMatching(/^run r1: the transcript stops after record \d+ /),
+  ])
+})
+
 test("a run without a log yet has no messages", () => {
   expect(messages(tempDir(), newId(), ["r1"])).toEqual([])
 })
