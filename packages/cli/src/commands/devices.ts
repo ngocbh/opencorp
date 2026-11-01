@@ -76,8 +76,12 @@ export const run: CommandRun = async (argv) => {
     const { values, positionals } = parseArgs({
       args: argv,
       allowPositionals: true,
-      options: { hashes: { type: "boolean" } },
+      options: { hashes: { type: "boolean" }, help: { type: "boolean", short: "h" } },
     })
+    if (values.help) {
+      console.log(USAGE)
+      return 0
+    }
     const [sub, ...rest] = positionals
     const me = localIdentity()
     const office = officeClient(me)

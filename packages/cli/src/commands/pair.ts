@@ -187,12 +187,19 @@ export const realPairDeps: PairDeps = {
 
 /** `opencorp pair [--handle H] [--no-open]`: a one-time link that signs a browser in as H (you by default). */
 export async function pair(argv: string[], deps: PairDeps = realPairDeps): Promise<number> {
-  let values: { handle?: string; "no-open"?: boolean }
+  let values: { handle?: string; "no-open"?: boolean; help?: boolean }
   try {
-    ;({ values } = parseArgs({ args: argv, options: { handle: { type: "string" }, "no-open": { type: "boolean" } } }))
+    ;({ values } = parseArgs({
+      args: argv,
+      options: { handle: { type: "string" }, "no-open": { type: "boolean" }, help: { type: "boolean", short: "h" } },
+    }))
   } catch (e) {
     deps.error(`opencorp pair: ${e instanceof Error ? e.message : e}\n${USAGE}`)
     return 2
+  }
+  if (values.help) {
+    deps.print(USAGE)
+    return 0
   }
   const noOpen = !!values["no-open"]
   try {

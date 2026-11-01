@@ -11,6 +11,8 @@ const MIN_LENGTH = 12
 /** How many times it asks before it stops. */
 const TRIES = 3
 
+const USAGE = "usage: opencorp password [--handle H]"
+
 /**
  * `opencorp password [--handle H]`: asks for a new password twice, without echo, and sets it as H's
  * (by default, whoever this device acts as). Only H or the CEO can. Needs a terminal.
@@ -18,10 +20,17 @@ const TRIES = 3
 export const run: CommandRun = async (argv) => {
   let values
   try {
-    ;({ values } = parseArgs({ args: argv, options: { handle: { type: "string" } } }))
+    ;({ values } = parseArgs({
+      args: argv,
+      options: { handle: { type: "string" }, help: { type: "boolean", short: "h" } },
+    }))
   } catch (e) {
     console.error(`opencorp password: ${e instanceof Error ? e.message : e}`)
     return 2
+  }
+  if (values.help) {
+    console.log(USAGE)
+    return 0
   }
   const ask = prompter()
   if (!ask.interactive) {

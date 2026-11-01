@@ -56,7 +56,15 @@ export const run: CommandRun = async (argv) => {
   // Set when the file holds a save that isn't UTF-8, which is kept byte for byte.
   let keepAsIs = false
   try {
-    const { positionals } = parseArgs({ args: argv, allowPositionals: true, options: {} })
+    const { values, positionals } = parseArgs({
+      args: argv,
+      allowPositionals: true,
+      options: { help: { type: "boolean", short: "h" } },
+    })
+    if (values.help) {
+      console.log(USAGE)
+      return 0
+    }
     const [sub, name, ...rest] = positionals
     if (sub !== "edit" || name === undefined || rest.length > 0) throw new Usage("expected edit PERSON")
     const editor = process.env.VISUAL || process.env.EDITOR

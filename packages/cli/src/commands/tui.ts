@@ -4,7 +4,17 @@ import { defaultSocket } from "@opencorp/client/node"
 import type { CommandRun } from "../main"
 import { localIdentity, officeAnswers, officeNotRunning } from "../office"
 
-/** The TUI's args from `opencorp`'s flags: `-s/--session ID`, `-c/--continue`, `--person HANDLE`, `--prompt TEXT`. */
+/** What `opencorp tui --help` prints; `opencorp --help` repeats the option lines. */
+export const TUI_USAGE = [
+  "usage: opencorp [tui] [-s ID] [-c] [--person HANDLE] [--prompt TEXT]",
+  "  -s, --session ID   resume a session",
+  "  -c, --continue     continue the last session in this folder",
+  "  --person HANDLE    talk to this person",
+  "  --prompt TEXT      send TEXT as the first message",
+].join("\n")
+
+/** The TUI's args from `opencorp`'s flags: `-s/--session ID`, `-c/--continue`, `--person HANDLE`, `--prompt TEXT`;
+ *  `help` when `-h/--help` asks for the usage instead. */
 export function parseTuiArgs(argv: string[]) {
   const { values } = parseArgs({
     args: argv,
@@ -13,9 +23,11 @@ export function parseTuiArgs(argv: string[]) {
       continue: { type: "boolean", short: "c" },
       person: { type: "string" },
       prompt: { type: "string" },
+      help: { type: "boolean", short: "h" },
     },
   })
   return {
+    ...(values.help && { help: true }),
     ...(values.session !== undefined && { sessionID: values.session }),
     ...(values.continue && { continue: true }),
     ...(values.person !== undefined && { person: values.person }),
@@ -24,12 +36,17 @@ export function parseTuiArgs(argv: string[]) {
 }
 
 export const run: CommandRun = async (argv) => {
-  let args
+  let parsed
   try {
-    args = parseTuiArgs(argv)
+    parsed = parseTuiArgs(argv)
   } catch (e) {
     console.error(`opencorp: ${e instanceof Error ? e.message : e}`)
     return 2
+  }
+  const { help, ...args } = parsed
+  if (help) {
+    console.log(TUI_USAGE)
+    return 0
   }
   const socket = defaultSocket()
   // Asked before the TUI loads, so no office is one line, not a TUI waiting on the socket.

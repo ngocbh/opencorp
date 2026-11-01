@@ -109,6 +109,13 @@ test("opencorp --help from a folder holding .env and a bunfig.toml preload sees 
   expect(seen.argv).toEqual([ENTRY, "--help"])
 })
 
+test("opencorp --version through the wrapper prints the package's version", () => {
+  const { result } = run(WRAPPER, ["--version"], { PATH: `${path.join(tmp, "bin")}:/usr/bin:/bin` })
+  const pkg = JSON.parse(fs.readFileSync(path.join(CHECKOUT, "packages/cli/package.json"), "utf8")) as { version: string }
+  expect(result.stdout).toBe(`${pkg.version}\n`)
+  expect(result.status).toBe(0)
+})
+
 test("opencorp through a bun link symlink chain with OPENCORP_BUN gets args with spaces intact", () => {
   const { result, seen, marker } = run(path.join(tmp, "links/opencorp"), ["--help", "x y", "", "$HOME *"], {
     PATH: "/usr/bin:/bin",

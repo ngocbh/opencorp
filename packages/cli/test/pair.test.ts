@@ -525,3 +525,10 @@ test("an unknown option is a usage error", async () => {
   expect(await pair(["--nope"], d)).toBe(2)
   expect(errors.join("\n")).toContain("usage: opencorp pair [--handle HANDLE] [--no-open]")
 })
+
+test("--help prints the usage and exits 0 without the office", async () => {
+  const { d, printed, errors } = deps()
+  expect(await pair(["--help"], d)).toBe(0)
+  expect(printed).toEqual(["usage: opencorp pair [--handle HANDLE] [--no-open]"])
+  expect(errors).toEqual([])
+})
