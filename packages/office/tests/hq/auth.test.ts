@@ -290,8 +290,32 @@ test("pairing again with a planted cookie in front replaces the real session", a
 })
 
 test("logout needs a session", async () => {
-  const client = await web(await makeHq(makeOffice()))
-  expect((await client.post("/api/logout", {})).status).toBe(401)
+  const hq = await makeHq(makeOffice())
+  const client = await web(hq)
+  let r = await client.post("/api/logout", {})
+  expect([r.status, (r.json() as Body).error]).toEqual([401, "sign_in_required"])
+  expect(r.headers["set-cookie"]![0]).toContain(`opencorp_hq_${PORT}=;`)
+  expect(r.headers["set-cookie"]![0]).toContain("Max-Age=0")
+
+  const sid = ((await pair(client, hq)).json() as Body).id as string
+  const cookie = `opencorp_hq_${PORT}=${client.cookies.get(`opencorp_hq_${PORT}`)}`
+  await hq.sessions.revoke(sid)
+  r = await client.post("/api/logout", {}, { headers: { cookie } })
+  expect([r.status, (r.json() as Body).error]).toEqual([401, "sign_in_required"])
+  expect(r.headers["set-cookie"]![0]).toContain(`opencorp_hq_${PORT}=;`)
+  expect(r.headers["set-cookie"]![0]).toContain("Max-Age=0")
+})
+
+test("a cross site logout is refused and ends nothing", async () => {
+  const hq = await makeHq(makeOffice())
+  const client = await web(hq)
+  await pair(client, hq)
+  for (const headers of [{ "sec-fetch-site": "cross-site" }, { origin: "http://127.0.0.1:1" }]) {
+    const r = await client.post("/api/logout", {}, { headers })
+    expect(r.status).toBe(403)
+    expect(r.headers["set-cookie"]).toBeUndefined()
+    expect((await client.get("/api/whoami")).status).toBe(200)
+  }
 })
 
 test("logout while the person file cant be read ends the session", async () => {

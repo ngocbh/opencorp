@@ -432,13 +432,14 @@ export const ROUTES: readonly Route<HqContext>[] = [
   },
   // Ends this browser's session: any session its cookie proves, even while its person's file can't be read at HEAD,
   // so signing out never waits on a fixed file. In `OPEN`, which skips only the session check: the guard still runs
-  // first.
+  // first. A cookie that proves nothing (revoked, expired, forged) is cleared with the 401, so the browser drops it;
+  // only here, past the guard, so a cross-site request can't clear it.
   {
     method: "POST",
     path: "/api/logout",
     handler: async ({ hq, req }) => {
       const sid = hq.sessions.proven(cookieValue(req))
-      if (sid === null) throw new HttpError(401, "sign_in_required", SIGN_IN)
+      if (sid === null) return errorReply(401, "sign_in_required", SIGN_IN, { "set-cookie": setCookie(req, "", 0) })
       await hq.sessions.revoke(sid) // false when a concurrent revoke won: ended either way
       return new RawReply(200, { "set-cookie": setCookie(req, "", 0) }, JSON.stringify({ ok: true }))
     },
