@@ -1830,6 +1830,7 @@ export class SessionActor implements LiveCalls {
     // Else the manager already has one to act on.
     if (this.#capItem(session) !== undefined) return
     const cap = costCap(session, this.#pins!.defaults)
+    const capText = cap.toFixed(cap < 0.01 ? 4 : 2)
     const t = now()
     this.#ctx.store.createWorkItem(
       WorkItem.parse({
@@ -1841,7 +1842,7 @@ export class SessionActor implements LiveCalls {
         assignee: this.#pins!.manager,
         parent_id: session.work_item_id,
         summary:
-          `Session ${session.id} reached its $${cap.toFixed(cap < 0.01 ? 4 : 2)} cap (cost $${costFigure(session.cost)}). ` +
+          `Session ${session.id} reached its $${capText} cap (cost $${costFigure(session.cost)}). ` +
           "Its turns wait until the cap is raised.",
         created_at: t,
         updated_at: t,
