@@ -6,6 +6,7 @@ import path from "node:path"
 import { RunLiveRecord } from "@opencorp/protocol"
 import { expect, type Mock, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import type { RunIndexRow } from "@ngocbh/yian/run"
+import { newToken } from "../../src/auth/tokens.ts"
 import type { LiveJoin, LiveRelay, LiveWorker } from "../../src/daemon/live.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { HUGE_LINE, readEvents, refresh, SCHEMA } from "../../src/runs/reader.ts"
@@ -21,20 +22,27 @@ import { chatLog, committed, failed, line, runStarted, started } from "../runs/h
 import { session } from "../store/helpers.ts"
 import { advanceJob, run } from "../worker/helpers.ts"
 import {
+  CEO,
+  Conn,
   type Frame,
   ULID,
+  bearer,
   checkedLive,
   frames,
+  giveDevice,
   joinedRun,
   liveRelay,
   makeOffice,
   type Reply,
+  repliesOf,
   request,
   served,
+  socketCapacity,
   standInHarness,
   storedRun,
   stubWorker,
   take,
+  waitsForClient,
   within,
 } from "./helpers.ts"
 
@@ -451,9 +459,9 @@ test("run changed publishes run updated at once and coalesces the next one", asy
 
 /** Opens `target` with a `node:http` request; resolves with the response. The request is destroyed when the test
  *  finishes. */
-function open(sock: string, target: string): Promise<http.IncomingMessage> {
+function open(sock: string, target: string, headers: Record<string, string> = {}): Promise<http.IncomingMessage> {
   return new Promise((resolve, reject) => {
-    const req = http.request({ socketPath: sock, path: target, agent: false }, (res) => {
+    const req = http.request({ socketPath: sock, path: target, headers, agent: false }, (res) => {
       // The cleanup's destroy cuts an unfinished response, which then errors with nobody reading it.
       res.on("error", () => {})
       resolve(res)
@@ -840,4 +848,47 @@ test("a ping keeps an idle live stream open", async () => {
   relay.detach(worker)
   const tail = await rest(it)
   expect(tail.filter(([event]) => event !== "comment")).toEqual([["start", null, start], ["run_end", null, {}]])
+})
+
+test("removing a device ends its live streams", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true, pingMs: 50 })
+  const [mac, pc] = [newToken(), newToken()]
+  giveDevice(office.paths.company, CEO, "mac", mac)
+  giveDevice(office.paths.company, CEO, "pc", pc)
+  const { runId, lastSeq } = joinedRun(office)
+  const it = frames(await open(sock, `/runs/${runId}/live`, bearer(mac)))
+  await read(it, 2 + lastSeq)
+  expect((await request(sock, "DELETE", `/people/${CEO}/devices/mac`, { headers: bearer(pc) })).status).toBe(200)
+  expect((await rest(it)).filter(([, , data]) => data !== "ping")).toEqual([])
+})
+
+test("removing a device cuts its live stream while the client is not reading", async () => {
+  const office = makeOffice()
+  const { sock, server } = await served(office, { tokens: true })
+  const replies = repliesOf(server)
+  const [mac, pc] = [newToken(), newToken()]
+  giveDevice(office.paths.company, CEO, "mac", mac)
+  giveDevice(office.paths.company, CEO, "pc", pc)
+  // A log far past what a paused client's socket takes (a turn is over 1000 bytes; socket buffers differ by host), so
+  // the stream waits for the client before its end.
+  const capacity = await socketCapacity(Buffer.alloc(64 * 1024))
+  const { runId } = storedRun(office, { turns: Math.max(3000, Math.ceil((2 * capacity) / 1000)) })
+  const conn = await Conn.open(sock)
+  conn.send(`GET /runs/${runId}/live HTTP/1.1\r\nhost: office\r\nauthorization: Bearer ${mac}\r\nconnection: close\r\n\r\n`)
+  await waitFor(() => conn.socket.bytesRead > 0, { timeout: 9000, what: "the stream to start" })
+  conn.socket.pause()
+  await waitsForClient(() => replies[0])
+  expect((await request(sock, "DELETE", `/people/${CEO}/devices/mac`, { headers: bearer(pc) })).status).toBe(200)
+  const parts: Buffer[] = []
+  await within(
+    new Promise<void>((resolve) => {
+      conn.socket.on("data", (part: Buffer) => parts.push(part))
+      conn.socket.on("close", () => resolve())
+      conn.socket.resume()
+    }),
+  )
+  const got = Buffer.concat(parts).toString()
+  expect(got.endsWith("0\r\n\r\n")).toBe(false)
+  expect(got.includes("event: run_end")).toBe(false)
 })

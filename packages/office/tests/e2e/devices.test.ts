@@ -87,3 +87,47 @@ test(
   },
   TIMEOUT,
 )
+
+/** Opens the stream at `target` as this device: resolves once it sent `: connected`, with `ended`, which resolves once
+ *  the office ends the stream. */
+async function stream(office: RunningOffice, target: string): Promise<{ ended: Promise<string> }> {
+  const reply = await office.request("GET", target)
+  expect(reply.status).toBe(200)
+  const reader = reply.body!.getReader()
+  const decoder = new TextDecoder()
+  let seen = ""
+  while (!seen.includes("\n")) {
+    const { value, done } = await reader.read()
+    if (done) break
+    seen += decoder.decode(value)
+  }
+  expect(seen).toStartWith(": connected")
+  const ended = (async () => {
+    try {
+      while (!(await reader.read()).done);
+      return "ended"
+    } catch {
+      return "cut"
+    }
+  })()
+  return { ended }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test(
+  "removing a device ends the event stream it opened",
+  async () => {
+    const owned = await openOffice({ device: true })
+    const workspace = folder(path.join(owned.root, "project"))
+    const me = readIdentity(path.join(owned.home, "identity.json"))!
+    const events = await stream(owned, "/events")
+    expect(await Promise.race([events.ended, sleep(500).then(() => "open")])).toBe("open")
+    await owned.opencorp(["devices", "remove", "ngocbh", me.device], { cwd: workspace })
+    expect(await Promise.race([events.ended, sleep(10_000).then(() => "still open")])).not.toBe("still open")
+    // The client's reconnect is refused, which the TUI shows as an unknown device.
+    const again = await owned.request("GET", "/events")
+    expect([again.status, ((await again.json()) as { error: string }).error]).toEqual([401, "bad_token"])
+  },
+  TIMEOUT,
+)

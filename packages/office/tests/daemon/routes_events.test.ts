@@ -1,19 +1,43 @@
 /** GET /events over a real socket. */
+import fs from "node:fs"
 import http from "node:http"
+import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { type Event, type LiveEvent, Message, now } from "@opencorp/protocol"
+import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
+import type { Office } from "../../src/daemon/office.ts"
 import { newId } from "../../src/store/store.ts"
+import { git } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import { recordEvents, session } from "../store/helpers.ts"
-import { Conn, ends, frames, makeOffice, request, served, standInHarness, take } from "./helpers.ts"
+import {
+  CEO,
+  Conn,
+  bearer,
+  ends,
+  frames,
+  giveDevice,
+  makeOffice,
+  repliesOf,
+  request,
+  served,
+  standInHarness,
+  take,
+  waitsForClient,
+  within,
+} from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
 /** Opens `target` with a `node:http` request; resolves with the response, whose data events stream. The request
  *  is destroyed when the test finishes. */
-function openEvents(sock: string, target = "/events"): Promise<http.IncomingMessage> {
+function openEvents(
+  sock: string,
+  target = "/events",
+  headers: Record<string, string> = {},
+): Promise<http.IncomingMessage> {
   return new Promise((resolve, reject) => {
-    const req = http.request({ socketPath: sock, path: target, agent: false }, (res) => {
+    const req = http.request({ socketPath: sock, path: target, headers, agent: false }, (res) => {
       // The cleanup's destroy cuts an unfinished response, which then errors with nobody reading it.
       res.on("error", () => {})
       resolve(res)
@@ -22,6 +46,10 @@ function openEvents(sock: string, target = "/events"): Promise<http.IncomingMess
     req.on("error", reject)
     req.end()
   })
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function delta(sessionId: string, text: string): LiveEvent {
@@ -197,4 +225,100 @@ test("the socket stream still carries every type", async () => {
   const got = await take(it, 1 + types.length)
   const expected = [["live", "part.delta"], ...types.map((type) => ["meta", type])]
   expect(got.map(([kind, , data]) => [kind, (data as { type: string }).type])).toEqual(expected)
+})
+
+/** An office serving with device tokens, whose CEO has the devices `mac` and `pc`; its server and their tokens. */
+async function twoDevices(): Promise<{ office: Office; server: http.Server; sock: string; mac: string; pc: string }> {
+  const office = makeOffice()
+  const { sock, server } = await served(office, { tokens: true })
+  const [mac, pc] = [newToken(), newToken()]
+  giveDevice(office.paths.company, CEO, "mac", mac)
+  giveDevice(office.paths.company, CEO, "pc", pc)
+  return { office, server, sock, mac, pc }
+}
+
+test("removing a device ends the streams its token opened", async () => {
+  const { sock, mac, pc } = await twoDevices()
+  const gone = frames(await openEvents(sock, "/events", bearer(mac)))
+  const kept = frames(await openEvents(sock, "/events", bearer(pc)))
+  await take(gone, 1)
+  await take(kept, 1)
+  const r = await request(sock, "DELETE", `/people/${CEO}/devices/mac`, { headers: bearer(pc) })
+  expect(r.status).toBe(200)
+  // Ended by the removal itself: no company.updated is recorded here.
+  expect(await ends(gone)).toBe(true)
+  const reconnect = await request(sock, "GET", "/whoami", { headers: bearer(mac) })
+  expect([reconnect.status, (reconnect.json() as { error: string }).error]).toEqual([401, "bad_token"])
+  expect(await within(Promise.race([kept.next().then(() => "frame"), sleep(200).then(() => "open")]))).toBe("open")
+})
+
+test("a device added before any stream opens leaves a later removal ending its stream", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const [mac, pc] = [newToken(), newToken()]
+  giveDevice(office.paths.company, CEO, "mac", mac)
+  const body = JSON.stringify({ name: "pc", token_sha256: tokenSha256(pc) })
+  const headers = { ...bearer(mac), "content-type": "application/json" }
+  expect((await request(sock, "POST", `/people/${CEO}/devices`, { headers, body })).status).toBe(200)
+  const gone = frames(await openEvents(sock, "/events", bearer(mac)))
+  await take(gone, 1)
+  expect((await request(sock, "DELETE", `/people/${CEO}/devices/mac`, { headers: bearer(pc) })).status).toBe(200)
+  expect(await ends(gone)).toBe(true)
+})
+
+test("a commit giving a device a new token ends the old tokens streams at company updated", async () => {
+  const { office, sock, mac } = await twoDevices()
+  const it = frames(await openEvents(sock, "/events", bearer(mac)))
+  await take(it, 1)
+  // The same name with a new token, as a hand edit would leave it.
+  const file = path.join(office.paths.company, "people", CEO, "person.yaml")
+  fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(tokenSha256(mac), tokenSha256(newToken())))
+  git(office.paths.company, "commit", "-qam", "new token for mac")
+  const sha = await office.git.readHead()
+  office.store.emit("company.updated", sha, { sha })
+  const rest: string[] = []
+  for (let step = await within(it.next()); !step.done; step = await within(it.next())) rest.push(step.value[0])
+  expect(rest.filter((kind) => kind !== "meta")).toEqual([])
+})
+
+test("a tokenless stream ends once the first device is added", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const it = frames(await openEvents(sock))
+  await take(it, 1)
+  const body = { name: "mac", token_sha256: tokenSha256(newToken()) }
+  const headers = { "content-type": "application/json" }
+  const r = await request(sock, "POST", `/people/${CEO}/devices`, { headers, body: JSON.stringify(body) })
+  expect(r.status).toBe(200)
+  const rest: string[] = []
+  for (let step = await within(it.next()); !step.done; step = await within(it.next())) rest.push(step.value[0])
+  expect(rest.filter((kind) => kind !== "meta")).toEqual([])
+})
+
+test("removing a device cuts its stream while the client is not reading", async () => {
+  const { office, server, sock, mac, pc } = await twoDevices()
+  const replies = repliesOf(server)
+  const s = office.store.createSession(session())
+  const conn = await Conn.open(sock)
+  conn.send(`GET /events HTTP/1.1\r\nhost: office\r\nauthorization: Bearer ${mac}\r\nconnection: close\r\n\r\n`)
+  await waitFor(() => conn.socket.bytesRead > 0, { timeout: 9000, what: "the stream to start" })
+  conn.socket.pause()
+  const big = "x".repeat(256 * 1024)
+  const feed = setInterval(() => office.bus.publishLive(delta(s.id, big)), 5)
+  try {
+    await waitsForClient(() => replies[0])
+  } finally {
+    clearInterval(feed)
+  }
+  expect((await request(sock, "DELETE", `/people/${CEO}/devices/mac`, { headers: bearer(pc) })).status).toBe(200)
+  const parts: Buffer[] = []
+  await within(
+    new Promise<void>((resolve) => {
+      conn.socket.on("data", (part: Buffer) => parts.push(part))
+      conn.socket.on("close", () => resolve())
+      conn.socket.resume()
+    }),
+  )
+  // Cut while it waited for the client: the stream's last chunk never went out.
+  expect(Buffer.concat(parts).toString().endsWith("0\r\n\r\n")).toBe(false)
 })

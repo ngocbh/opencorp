@@ -13,7 +13,6 @@ import { Hooks } from "../../src/chat/hooks.ts"
 import type { LoginsOptions } from "../../src/chat/logins.ts"
 import { type ModelCacheOptions, ownModels } from "../../src/chat/models.ts"
 import { CompanyGit } from "../../src/company/git.ts"
-import { DeviceTokens } from "../../src/daemon/auth.ts"
 import { Bus } from "../../src/daemon/bus.ts"
 import { type Limits, type RequestInfo, type Route, createServer, requestListener } from "../../src/daemon/http.ts"
 import { LiveRelay, type LiveWorker } from "../../src/daemon/live.ts"
@@ -215,7 +214,7 @@ export async function served(
 ): Promise<{ sock: string; server: http.Server }> {
   await office.start()
   const context = tokens
-    ? new DeviceTokens(office).context
+    ? office.tokens.context
     : (info: RequestInfo): RequestContext => ({
         office,
         person: CEO,
@@ -621,5 +620,29 @@ export async function stopsPulling(count: () => number): Promise<void> {
       return last > 0 && performance.now() - since >= 200
     },
     { timeout: 9000, what: "the body to stop being pulled" },
+  )
+}
+
+/** The replies `server` sends from now on, in order: for a test to watch one's writes. */
+export function repliesOf(server: http.Server): http.ServerResponse[] {
+  const replies: http.ServerResponse[] = []
+  server.on("request", (_req, res: http.ServerResponse) => replies.push(res))
+  return replies
+}
+
+/** Resolves once `reply` has waited 200 ms for its client to read: a write was refused and no `drain` came since.
+ *  Waited for rather than sized, since socket buffers differ by host. */
+export async function waitsForClient(reply: () => http.ServerResponse | undefined): Promise<void> {
+  let since: number | null = null
+  await waitFor(
+    () => {
+      if (reply()?.writableNeedDrain !== true) {
+        since = null
+        return false
+      }
+      since ??= performance.now()
+      return performance.now() - since >= 200
+    },
+    { timeout: 9000, what: "the reply to wait for its client" },
   )
 }

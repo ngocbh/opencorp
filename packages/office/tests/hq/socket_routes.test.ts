@@ -2,7 +2,6 @@
 import { expect, test } from "bun:test"
 import { hashPassword } from "../../src/auth/passwords.ts"
 import { newToken } from "../../src/auth/tokens.ts"
-import { DeviceTokens } from "../../src/daemon/auth.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { CEO, ULID, addHuman, bearer, giveDevice, makeOffice, request, serve } from "../daemon/helpers.ts"
@@ -12,7 +11,7 @@ type HeaderMap = Record<string, string>
 
 /** A client of the office socket's own table, with device tokens; `log` gets the pipeline's log lines. */
 async function socketClient(office: Office, { log }: { log?: (line: string) => void } = {}) {
-  const { sock } = await serve(allRoutes(), { context: new DeviceTokens(office).context, log })
+  const { sock } = await serve(allRoutes(), { context: office.tokens.context, log })
   const send = async (method: string, target: string, headers: HeaderMap = {}, json?: unknown) => {
     const body = json === undefined ? undefined : JSON.stringify(json)
     if (body !== undefined) headers = { ...headers, "content-type": "application/json" }

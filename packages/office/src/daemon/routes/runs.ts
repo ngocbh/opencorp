@@ -331,8 +331,27 @@ export async function* liveStream(
   }
 }
 
+/** `liveStream` for the socket, ended (`cut` aborted) once the request's token stops counting. */
+async function* trackedLive(
+  ctx: RequestContext,
+  runId: string,
+  log: string,
+  after: number,
+  pingMs: number,
+  cut: AbortController,
+): AsyncGenerator<string> {
+  // Tracked here, on the first pull, so a reply that never starts leaves nothing tracked.
+  const untrack = ctx.office.tokens.track(ctx, () => cut.abort())
+  try {
+    yield* liveStream(ctx.office, runId, log, after, { signal: AbortSignal.any([ctx.signal, cut.signal]), pingMs })
+  } finally {
+    untrack()
+  }
+}
+
 /** `GET /runs/{id}/live[?after=<seq>]`: the run's records and its worker's live frames as SSE (`liveStream`), pinging
- *  after `pingMs` idle. HEAD is refused (405): a HEAD reply to a stream would hold the connection. */
+ *  after `pingMs` idle, and ended once the request's device is removed. HEAD is refused (405): a HEAD reply to a
+ *  stream would hold the connection. */
 function live(pingMs: number): Route<RequestContext> {
   return {
     method: "GET",
@@ -340,10 +359,12 @@ function live(pingMs: number): Route<RequestContext> {
     head: false,
     handler: (ctx, params) => {
       const { log, after } = liveTarget(ctx, params.id!)
+      const cut = new AbortController()
       return new RawReply(
         200,
         { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
-        liveStream(ctx.office, params.id!, log, after, { signal: ctx.signal, pingMs }),
+        trackedLive(ctx, params.id!, log, after, pingMs, cut),
+        { abort: cut.signal },
       )
     },
   }
