@@ -118,6 +118,31 @@ test("the status is busy when a message is accepted after the result", async () 
   expect(status(o, sid)).toBe("busy")
 })
 
+test("a message sent while the next turn's history is compacted is a turn and makes the session busy", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const { worker, handlers, deliveries } = workers[0]!
+  const frame = (name: string, node_id: string, data: Record<string, unknown> = {}) =>
+    handlers.event(worker, { type: "event", name, data: { node_id, ...data } })
+  // The turn's context runs beside its take, which already waits.
+  frame("NodeStarted", "chat#0/context")
+  frame("NodeStarted", "chat#0/heard")
+  frame("NodeWaiting", "chat#0/heard", { call_ids: ["c1"] })
+  frame("NodeExpanded", "chat#0/context")
+  frame("NodeStarted", "chat#0/context/compacted")
+  await waitFor(() => status(o, sid) === "idle", { what: "idle at the turn" })
+  const sent = actor.prompt("hi")
+  await waitFor(() => deliveries.length === 1, { what: "the send" })
+  handlers.deliverReply(worker, { type: "deliver_reply", id: deliveries[0]!.id, seq: 7 })
+  expect(await sent).toBe("turn")
+  // The take is still to wake, but it has the message: no longer at the turn.
+  expect(status(o, sid)).toBe("busy")
+})
+
 test("a prompt whose send comes back unsent after close is refused as stopping", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
