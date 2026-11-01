@@ -248,6 +248,210 @@ test("edit keeps a bom", () => {
   expect(fs.readFileSync(path.join(ws, "f"))).toEqual(Buffer.from([0xef, 0xbb, 0xbf, 0x63, 0x62]))
 })
 
+/** Runs `body` with a FIFO `fifo` and a link `lnk` to it in `ws`, removing both after. */
+function withFifo(ws: string, body: () => void): void {
+  const fifo = path.join(ws, "fifo")
+  const lnk = path.join(ws, "lnk")
+  expect(spawnSync("mkfifo", [fifo]).status).toBe(0)
+  fs.symlinkSync("fifo", lnk)
+  try {
+    body()
+  } finally {
+    fs.rmSync(lnk, { force: true })
+    fs.rmSync(fifo, { force: true })
+  }
+}
+
+/** Runs `body` with a link `zero` to /dev/zero in `ws`, removing it after. */
+function withZero(ws: string, body: () => void): void {
+  const zero = path.join(ws, "zero")
+  fs.symlinkSync("/dev/zero", zero)
+  try {
+    body()
+  } finally {
+    fs.rmSync(zero, { force: true })
+  }
+}
+
+/** Runs `body` with a sparse file `name` of `size` bytes in `ws` (its first byte `first`), removing it after. */
+function withSparse(ws: string, name: string, size: number, first: string, body: () => void): void {
+  const file = path.join(ws, name)
+  fs.writeFileSync(file, first)
+  fs.truncateSync(file, size)
+  try {
+    body()
+  } finally {
+    fs.rmSync(file, { force: true })
+  }
+}
+
+const MARKER = "\n[truncated at 200000 characters; use offset and limit]"
+
+test("read refuses a fifo, directly and through a link", () => {
+  const ws = tempDir()
+  withFifo(ws, () => {
+    expect(reply(ws, { op: "read_file", path: "fifo" })).toEqual(error("not a regular file: fifo"))
+    expect(reply(ws, { op: "read_file", path: "lnk" })).toEqual(error("not a regular file: lnk"))
+  })
+})
+
+test("edit refuses a fifo, directly and through a link", () => {
+  const ws = tempDir()
+  withFifo(ws, () => {
+    expect(reply(ws, { op: "edit_file", path: "fifo", old: "x", new: "y" })).toEqual(error("not a regular file: fifo"))
+    expect(reply(ws, { op: "edit_file", path: "lnk", old: "x", new: "y" })).toEqual(error("not a regular file: lnk"))
+  })
+})
+
+test("write refuses a fifo and a device", () => {
+  const ws = tempDir()
+  withFifo(ws, () => {
+    expect(reply(ws, { op: "write_file", path: "fifo", content: "x" })).toEqual(error("not a regular file: fifo"))
+    expect(reply(ws, { op: "write_file", path: "lnk", content: "x" })).toEqual(error("not a regular file: lnk"))
+    expect(fs.lstatSync(path.join(ws, "fifo")).isFIFO()).toBe(true)
+  })
+  expect(reply(ws, { op: "write_file", path: "/dev/null", content: "x" })).toEqual(
+    error("not a regular file: /dev/null"),
+  )
+})
+
+test("read refuses devices, directly and through a link", () => {
+  const ws = tempDir()
+  withZero(ws, () => {
+    expect(reply(ws, { op: "read_file", path: "/dev/zero" })).toEqual(error("not a regular file: /dev/zero"))
+    expect(reply(ws, { op: "read_file", path: "zero", limit: 1 })).toEqual(error("not a regular file: zero"))
+    expect(reply(ws, { op: "read_file", path: "/dev/urandom" })).toEqual(error("not a regular file: /dev/urandom"))
+  })
+})
+
+test("edit refuses devices, directly and through a link", () => {
+  const ws = tempDir()
+  withZero(ws, () => {
+    expect(reply(ws, { op: "edit_file", path: "/dev/zero", old: "x", new: "y" })).toEqual(
+      error("not a regular file: /dev/zero"),
+    )
+    expect(reply(ws, { op: "edit_file", path: "zero", old: "x", new: "y" })).toEqual(error("not a regular file: zero"))
+  })
+})
+
+test("write replaces a longer file", () => {
+  const ws = tempDir()
+  expect(reply(ws, { op: "write_file", path: "f", content: "long content" })).toEqual(ok("wrote 12 bytes to f"))
+  expect(reply(ws, { op: "write_file", path: "f", content: "x" })).toEqual(ok("wrote 1 bytes to f"))
+  expect(fs.readFileSync(path.join(ws, "f"), "utf8")).toBe("x")
+})
+
+test("edit refuses a file over 64 MiB", () => {
+  const ws = tempDir()
+  withSparse(ws, "big", 64 * 1024 * 1024 + 1, "x", () => {
+    expect(reply(ws, { op: "edit_file", path: "big", old: "x", new: "y" })).toEqual(
+      error("file too large to edit: big"),
+    )
+  })
+})
+
+test("edit refuses a result over 64 MiB and leaves the file unchanged", () => {
+  const ws = tempDir()
+  fs.writeFileSync(path.join(ws, "f"), "a".repeat(1024))
+  // 1024 * 66,000 bytes is 67,584,000, over 67,108,864.
+  expect(reply(ws, { op: "edit_file", path: "f", old: "a", new: "b".repeat(66_000), replace_all: true })).toEqual(
+    error("edited file would be too large: f"),
+  )
+  expect(fs.readFileSync(path.join(ws, "f"), "utf8")).toBe("a".repeat(1024))
+})
+
+/** read_file's reply as a whole-file read gives it: the bytes decoded (a bad byte as U+FFFD), cut into lines
+ *  as Python's `splitlines(keepends=True)` does, lines `offset` to `offset + limit` kept, then capped at
+ *  200,000 code points. The reference a read in chunks must equal. */
+function wholeRead(data: Buffer, offset: number, limit?: number): string {
+  const line = /[^\n\r\v\f\x1c-\x1e\x85\u2028\u2029]*(?:\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029])|[^\n\r\v\f\x1c-\x1e\x85\u2028\u2029]+/g
+  const lines = data.toString("utf8").match(line) ?? []
+  const text = lines.slice(offset, limit === undefined ? undefined : offset + limit).join("")
+  const points = [...text]
+  return points.length > 200_000 ? points.slice(0, 200_000).join("") + MARKER : text
+}
+
+test("read streams across chunk boundaries", () => {
+  const ws = tempDir()
+  // The helper reads 65,536 bytes at a time; each file puts a break or a character across that boundary.
+  const files = [
+    Buffer.from(`${"a".repeat(65_535)}\r\nb`),
+    Buffer.from(`${"a".repeat(65_535)}é\nx`),
+    Buffer.concat([Buffer.alloc(65_535, "a"), Buffer.from([0xff]), Buffer.from("\nb")]),
+    Buffer.concat([Buffer.alloc(65_534, "a"), Buffer.from([0xe2, 0x82]), Buffer.from("x\ny")]),
+    Buffer.concat([Buffer.alloc(65_535, "a"), Buffer.from("\r"), Buffer.from([0xc3, 0xa9]), Buffer.from("\n")]),
+  ]
+  for (const [i, data] of files.entries()) {
+    fs.writeFileSync(path.join(ws, "f"), data)
+    for (const args of [{}, { limit: 1 }, { offset: 1 }, { offset: 1, limit: 1 }, { offset: 2 }]) {
+      const want = wholeRead(data, (args as { offset?: number }).offset ?? 0, (args as { limit?: number }).limit)
+      expect([i, args, reply(ws, { op: "read_file", path: "f", ...args })]).toEqual([i, args, ok(want)])
+    }
+  }
+})
+
+test("read matches a whole-file read", () => {
+  const ws = tempDir()
+  const atoms = [
+    "a",
+    "\r",
+    "\n",
+    "\r\n",
+    "é",
+    "\u{1f600}",
+    "\u2028",
+    "\x85",
+    "\v",
+    "\x1d",
+    "\ufeff",
+    [0xff],
+    [0xc3],
+    [0xe2, 0x82],
+    [0xed, 0xa0, 0x80],
+    [0xc0, 0x80],
+    [0xf0, 0x9f, 0x98],
+  ].map((atom) => (typeof atom === "string" ? Buffer.from(atom, "utf8") : Buffer.from(atom)))
+  // A fixed linear congruential generator, so the file is the same on every run.
+  let seed = 12_345
+  const next = () => (seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31)
+  const parts: Buffer[] = []
+  for (let size = 0; size < 300_000; ) {
+    // Mostly `a`, so lines run long enough to cross chunks.
+    const atom = next() % 4 === 0 ? atoms[next() % atoms.length]! : atoms[0]!
+    parts.push(atom)
+    size += atom.length
+  }
+  const data = Buffer.concat(parts)
+  fs.writeFileSync(path.join(ws, "f"), data)
+  const cases: [number, number | undefined][] = [
+    [0, undefined],
+    [0, 1],
+    [1, 2],
+    [3, undefined],
+    [0, 0],
+    [10, 5],
+    [10 ** 6, 1],
+  ]
+  for (const [offset, limit] of cases) {
+    const got = reply(ws, { op: "read_file", path: "f", offset, limit })
+    expect([offset, limit, got]).toEqual([offset, limit, ok(wholeRead(data, offset, limit))])
+  }
+})
+
+test("read with limit 1 stops early", () => {
+  const ws = tempDir()
+  fs.writeFileSync(path.join(ws, "lines"), "line\n".repeat(1_000_000))
+  expect(reply(ws, { op: "read_file", path: "lines", limit: 1 })).toEqual(ok("line\n"))
+  expect(reply(ws, { op: "read_file", path: "lines", offset: 999_999, limit: 5 })).toEqual(ok("line\n"))
+  // A file with no line break is one line: the code-point cap ends it, and one before `offset` is passed over.
+  fs.writeFileSync(path.join(ws, "long"), "x".repeat(3_000_000))
+  expect(reply(ws, { op: "read_file", path: "long", limit: 1 })).toEqual(ok(`${"x".repeat(200_000)}${MARKER}`))
+  withSparse(ws, "sparse", 64 * 1024 * 1024, "\0", () => {
+    expect(reply(ws, { op: "read_file", path: "sparse", offset: 1 })).toEqual(ok(""))
+    expect(reply(ws, { op: "read_file", path: "sparse", limit: 0 })).toEqual(ok(""))
+  })
+})
+
 test("list", () => {
   const ws = tempDir()
   fs.mkdirSync(path.join(ws, "d"))
@@ -302,17 +506,46 @@ test("search walks like os walk", () => {
   expect(reply(ws, { op: "search", pattern: "hit", path: "t" })).toEqual(ok(all))
   expect(reply(ws, { op: "search", pattern: "hit", path: "t", glob: null })).toEqual(ok(all))
   expect(reply(ws, { op: "search", pattern: "hit", path: "t", glob: "" })).toEqual(ok(all))
-  expect(reply(ws, { op: "search", pattern: "hit", path: "missing" })).toEqual(ok("(no matches)"))
+  expect(reply(ws, { op: "search", pattern: "hit", path: "missing" })).toEqual(
+    error("No such file or directory: missing"),
+  )
   fs.symlinkSync("t/real", path.join(ws, "lnk"))
   expect(reply(ws, { op: "search", pattern: "hit", path: "lnk" })).toEqual(ok("lnk/r.txt:1:hit"))
   expect(reply(ws, { op: "search", pattern: "hit", path: "./t/a.txt" })).toEqual(ok("./t/a.txt:1:hit"))
   if (!root) {
     fs.chmodSync(path.join(ws, "t"), 0o000)
     try {
-      expect(reply(ws, { op: "search", pattern: "hit", path: "t" })).toEqual(ok("(no matches)"))
+      expect(reply(ws, { op: "search", pattern: "hit", path: "t" })).toEqual(error("Permission denied: t"))
     } finally {
       fs.chmodSync(path.join(ws, "t"), 0o755)
     }
+  }
+})
+
+test("search reports a bad top path", () => {
+  const ws = tempDir()
+  withFifo(ws, () => {
+    expect(reply(ws, { op: "search", pattern: "hit", path: "fifo" })).toEqual(error("Not a directory: fifo"))
+  })
+  expect(reply(ws, { op: "search", pattern: "hit", path: "" })).toEqual(
+    error("[Errno 2] No such file or directory: ''"),
+  )
+  if (!root) {
+    tree(ws, { "t/locked": "hit\n" })
+    fs.chmodSync(path.join(ws, "t/locked"), 0o000)
+    expect(reply(ws, { op: "search", pattern: "hit", path: "t/locked" })).toEqual(error("Permission denied: t/locked"))
+  }
+})
+
+test.skipIf(root)("search passes over an unreadable subfolder and a dangling link below the top", () => {
+  const ws = tempDir()
+  tree(ws, { "u/a.txt": "hit\n", "u/sub/x.txt": "hit\n" })
+  fs.symlinkSync("nowhere", path.join(ws, "u/broken"))
+  fs.chmodSync(path.join(ws, "u/sub"), 0o000)
+  try {
+    expect(reply(ws, { op: "search", pattern: "hit", path: "u" })).toEqual(ok("u/a.txt:1:hit"))
+  } finally {
+    fs.chmodSync(path.join(ws, "u/sub"), 0o755)
   }
 })
 
