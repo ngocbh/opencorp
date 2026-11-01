@@ -326,9 +326,9 @@ test("a delivery to a missing log is refused as not started", async () => {
   })
   const rec = await run(job, new Recorder())
   expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", refused: "not_started" }])
-  expect(rec.order).toEqual(["deliver_reply", "error"])
-  expect(String(rec.outcome?.message)).toContain("ENOENT")
-  expect(rec.returncode).toBe(EXIT_FAILED)
+  expect(rec.order).toEqual(["deliver_reply", "result"])
+  expect(rec.outcome).toEqual({ type: "result", status: "not_resumed", run_id: "r1", error_type: "ENOENT", unreadable: true })
+  expect(rec.returncode).toBe(EXIT_OK)
   expect(fs.existsSync(job.log)).toBe(false)
 })
 
