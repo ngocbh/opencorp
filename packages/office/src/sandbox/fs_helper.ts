@@ -4,10 +4,11 @@
  * Reads one JSON request (`{"op": ..., ...args}`) on stdin and writes one JSON reply
  * (`{"ok": true, "output": ...}` or `{"ok": false, "error": ...}`) on stdout. The reply envelope and the
  * ops' own texts (their outputs, their errors, OS errors) match the Python office's helper byte for byte;
- * the texts for a bad argument, a bad request, a file `edit_file` can't decode and a file too large to
- * read are new, and a bad pattern's text is the JavaScript engine's, not Python's. Paths are relative to
- * the working directory, the workspace. The sandbox, not this code, decides what may be read or written.
- * It imports only `node:` builtins, because the sandbox exposes nothing else to it.
+ * new are the texts for a bad argument, a bad request, a file `edit_file` can't decode, a path that isn't a
+ * regular file (`not a regular file: <path>`), a file too large to edit or an edit whose result would be,
+ * and `search`'s errors for its top path; a bad pattern's text is the JavaScript engine's, not Python's.
+ * Paths are relative to the working directory, the workspace. The sandbox, not this code, decides what may
+ * be read or written. It imports only `node:` builtins, because the sandbox exposes nothing else to it.
  */
 import fs from "node:fs"
 import os from "node:os"
@@ -20,6 +21,9 @@ const MAX_LIST_ENTRIES = 5000
 const MAX_LINE_CHARS = 300
 const MAX_SEARCH_FILE_BYTES = 2_000_000
 const MAX_EDIT_LINES = 10
+// A resource bound: an edit holds the file's bytes, its text and the result at once.
+const MAX_EDIT_FILE_BYTES = 64 * 1024 * 1024
+const READ_CHUNK = 65_536
 
 /** A request that can't be done; the message goes back to the model. */
 class OpError extends Error {}
@@ -95,14 +99,13 @@ function encodeError(text: string): OpError {
   return new OpError(`'utf-8' codec can't encode ${what}: surrogates not allowed`)
 }
 
-/** A line and its break, as Python's `str.splitlines(keepends=True)` cuts them: at `\r\n` or any of
- *  `\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029`, a last line without a break kept. */
-const LINE = /[^\n\r\v\f\x1c-\x1e\x85\u2028\u2029]*(?:\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029])|[^\n\r\v\f\x1c-\x1e\x85\u2028\u2029]+/g
+/** A line break, as Python's `str.splitlines` finds them: `\r\n` or any of
+ *  `\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029`. Global, so reset `lastIndex` before each use. */
+const BREAK = /\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/g
 
-/** `text`'s lines, each with its break when `keepEnds` (Python's `str.splitlines`). */
-function splitLines(text: string, keepEnds = false): string[] {
-  if (keepEnds) return text.match(LINE) ?? []
-  const lines = text.split(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/)
+/** `text`'s lines, without their breaks (Python's `str.splitlines`). */
+function splitLines(text: string): string[] {
+  const lines = text.split(BREAK)
   // A text that ends at a break (or is empty) leaves an empty last piece that Python doesn't return.
   if (lines.at(-1) === "") lines.pop()
   return lines
@@ -123,31 +126,107 @@ function dirname(path: string): string {
   return /^\/*$/.test(head) ? head : head.replace(/\/+$/, "")
 }
 
-/** `decode` applied to the file's bytes. A file too large for a Buffer or a string is an `OpError`.
- *
- *  The runtime throws a RangeError (or ERR_STRING_TOO_LONG) without an errno for that, which would
- *  otherwise end the helper with no reply. Untested: it needs a file of gigabytes. */
-function readText(path: string, decode: (data: Buffer) => string): string {
+/** An fd for `path` opened with `flags`, and the file's size; refused unless it is a regular file (links
+ *  followed). O_NONBLOCK keeps a FIFO's open from blocking, and the type is checked on the open fd, so the
+ *  path can't be swapped between the check and the use. */
+function openRegular(path: string, flags: number): { fd: number; size: number } {
+  let fd: number
   try {
-    return decode(fs.readFileSync(path))
+    fd = fs.openSync(path, flags | fs.constants.O_NONBLOCK, 0o666)
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException | null)?.code
-    const errno = typeof code === "string" && Object.hasOwn(os.constants.errno, code)
-    if (!errno && (error instanceof RangeError || code === "ERR_STRING_TOO_LONG")) {
-      throw new OpError(`file too large to read: ${path}`)
-    }
+    // What a FIFO with no reader gives when opened to write; "Device not configured" would mislead.
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENXIO") throw new OpError(`not a regular file: ${path}`)
     throw error
+  }
+  let info: fs.Stats
+  try {
+    info = fs.fstatSync(fd)
+  } catch (error) {
+    fs.closeSync(fd)
+    throw error
+  }
+  if (info.isFile()) return { fd, size: info.size }
+  fs.closeSync(fd)
+  // Opening a folder to read succeeds, so its error is made here.
+  throw new OpError(info.isDirectory() ? `Is a directory: ${path}` : `not a regular file: ${path}`)
+}
+
+/** The regular file's bytes, or undefined when it holds more than `cap`. The buffer starts at the file's
+ *  size and grows only when that is filled, as for a file that reports size 0 but has content. */
+function readRegular(path: string, cap: number): Buffer | undefined {
+  const { fd, size } = openRegular(path, fs.constants.O_RDONLY)
+  try {
+    if (size > cap) return undefined
+    let buf = Buffer.allocUnsafe(size + 1)
+    let got = 0
+    for (;;) {
+      if (got === buf.length) {
+        if (buf.length > cap) return undefined
+        const bigger = Buffer.allocUnsafe(Math.min(buf.length * 2, cap + 1))
+        buf.copy(bigger, 0, 0, got)
+        buf = bigger
+      }
+      const n = fs.readSync(fd, buf, got, buf.length - got, null)
+      if (n === 0) return buf.subarray(0, got)
+      got += n
+    }
+  } finally {
+    fs.closeSync(fd)
   }
 }
 
-/** Return the file's text, from line `offset` (0-based), at most `limit` lines. */
+/** Replace the regular file's contents with `data`, creating it; nothing is truncated before its type is
+ *  checked. */
+function writeRegular(path: string, data: Buffer): void {
+  const { fd } = openRegular(path, fs.constants.O_WRONLY | fs.constants.O_CREAT)
+  try {
+    fs.ftruncateSync(fd, 0)
+    // At offset 0, the fd being new.
+    fs.writeFileSync(fd, data)
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+/** Return the file's text, from line `offset` (0-based), at most `limit` lines.
+ *
+ *  Reads in chunks and stops at the last line wanted or at the cap, keeping only the lines it returns. */
 function readFile(path: string, offset: number, limit: number | undefined): string {
   if (offset < 0 || (limit !== undefined && limit < 0)) throw new OpError("offset and limit must not be negative")
-  // A bad byte becomes U+FFFD, as Python's errors="replace"; a BOM is kept.
-  const lines = splitLines(readText(path, (data) => data.toString("utf8")), true)
-  const text = lines.slice(offset, limit === undefined ? undefined : offset + limit).join("")
-  const head = cut(text, MAX_READ_CHARS)
-  return head === undefined ? text : `${head}\n[truncated at ${MAX_READ_CHARS} characters; use offset and limit]`
+  const { fd } = openRegular(path, fs.constants.O_RDONLY)
+  try {
+    const end = limit === undefined ? Infinity : offset + limit
+    // Not fatal: a bad byte becomes U+FFFD, as Python's errors="replace"; a BOM is kept.
+    const decoder = new TextDecoder("utf-8", { ignoreBOM: true })
+    const buf = Buffer.allocUnsafe(READ_CHUNK)
+    let line = 0
+    let out = ""
+    let carry = ""
+    while (line < end) {
+      const n = fs.readSync(fd, buf, 0, READ_CHUNK, null)
+      let text = carry + (n === 0 ? decoder.decode() : decoder.decode(buf.subarray(0, n), { stream: true }))
+      carry = ""
+      // A `\r` that ends a chunk may start a `\r\n`, so it waits for the next chunk.
+      if (n > 0 && text.endsWith("\r")) {
+        carry = "\r"
+        text = text.slice(0, -1)
+      }
+      BREAK.lastIndex = 0
+      let pos = 0
+      for (let m = BREAK.exec(text); m && line < end; m = BREAK.exec(text)) {
+        if (line >= offset) out += text.slice(pos, BREAK.lastIndex)
+        pos = BREAK.lastIndex
+        line++
+      }
+      // The rest begins a line; one before `offset` is dropped, so memory stays one chunk plus the reply.
+      if (line >= offset && line < end) out += text.slice(pos)
+      if (n === 0 || (out.length > MAX_READ_CHARS && cut(out, MAX_READ_CHARS) !== undefined)) break
+    }
+    const head = cut(out, MAX_READ_CHARS)
+    return head === undefined ? out : `${head}\n[truncated at ${MAX_READ_CHARS} characters; use offset and limit]`
+  } finally {
+    fs.closeSync(fd)
+  }
 }
 
 /** Create or replace the file with `content`, creating parent directories. */
@@ -155,7 +234,7 @@ function writeFile(path: string, content: string): string {
   const parent = dirname(path)
   if (parent) fs.mkdirSync(parent, { recursive: true })
   const data = Buffer.from(content, "utf8")
-  fs.writeFileSync(path, data)
+  writeRegular(path, data)
   return `wrote ${data.length} bytes to ${path}`
 }
 
@@ -174,9 +253,11 @@ const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
  *  The reply names the line (1-based) each replaced occurrence starts on, the first `MAX_EDIT_LINES` of them. */
 function editFile(path: string, old: string, replacement: string, replaceAll: boolean): string {
   if (!old) throw new OpError("old must not be empty")
+  const data = readRegular(path, MAX_EDIT_FILE_BYTES)
+  if (data === undefined) throw new OpError(`file too large to edit: ${path}`)
   let text: string
   try {
-    text = readText(path, (data) => STRICT_UTF8.decode(data))
+    text = STRICT_UTF8.decode(data)
   } catch (error) {
     if (!(error instanceof TypeError)) throw error
     throw new OpError("'utf-8' codec can't decode the file")
@@ -186,14 +267,23 @@ function editFile(path: string, old: string, replacement: string, replaceAll: bo
   const n = old.isWellFormed() ? count(text, old) : 0
   if (n === 0) throw new OpError(`old text not found in ${path}`)
   if (n > 1 && !replaceAll) throw new OpError(`old text appears ${n} times in ${path}; add context or set replace_all`)
-  // Not String.replace with a string, which expands `$&` and `$$` in the replacement.
-  if (replaceAll) {
-    fs.writeFileSync(path, text.split(old).join(replacement))
-  } else {
-    const at = text.indexOf(old)
-    fs.writeFileSync(path, text.slice(0, at) + replacement + text.slice(at + old.length))
-  }
   const replaced = replaceAll ? n : 1
+  // Exact: `text` came from valid UTF-8 and `old` is well formed, so each occurrence is `old`'s bytes.
+  const size = data.length + replaced * (Buffer.byteLength(replacement) - Buffer.byteLength(old))
+  if (size > MAX_EDIT_FILE_BYTES) throw new OpError(`edited file would be too large: ${path}`)
+  // Written piece by piece into one buffer: `split(old).join` holds a string per occurrence, and
+  // String.replace with a string expands `$&` and `$$` in the replacement.
+  const out = Buffer.allocUnsafe(size)
+  let w = 0
+  let pos = 0
+  for (let i = 0; i < replaced; i++) {
+    const found = text.indexOf(old, pos)
+    w += out.write(text.slice(pos, found), w)
+    w += out.write(replacement, w)
+    pos = found + old.length
+  }
+  out.write(text.slice(pos), w)
+  writeRegular(path, out)
   const lines = starts(text, old, Math.min(replaced, MAX_EDIT_LINES))
   const where =
     replaced === 1 ? `line ${lines[0]}` : `lines ${lines.join(", ")}${replaced > lines.length ? ", …" : ""}`
@@ -375,23 +465,26 @@ function translateGlob(glob: string): RegExp {
   return new RegExp(`^${out}$`, "su")
 }
 
-/** The files `search` reads, in the order Python's `os.walk(top)` gives them: a file `top` as given, else
- *  top-down, each folder's files sorted, then each sorted subfolder in turn. Folders named `.git` and
- *  symlinked folders below the top aren't entered; a folder that can't be read is passed over. */
-function* walk(top: string): Generator<string> {
-  if (stat(top)?.isFile()) {
-    yield top
+/** The files `search` reads, each marked whether it is `top` itself, in the order Python's `os.walk(top)`
+ *  gives them: a file `top` as given, else top-down, each folder's files sorted, then each sorted subfolder in
+ *  turn. Folders named `.git` and symlinked folders below the top aren't entered. A `top` that is missing or
+ *  can't be read throws; a folder below it that can't be read is passed over. */
+function* walk(top: string): Generator<{ file: string; top: boolean }> {
+  if (fs.statSync(top).isFile()) {
+    yield { file: top, top: true }
     return
   }
-  yield* walkFolder(top)
+  yield* walkFolder(top, true)
 }
 
-/** The files under `root`, `os.walk` order, as `normpath(join(root, name))`. */
-function* walkFolder(root: string): Generator<string> {
+/** The files under `root`, `os.walk` order, as `normpath(join(root, name))`; a `root` that can't be read
+ *  throws when it is the `top`, else yields nothing. */
+function* walkFolder(root: string, top: boolean): Generator<{ file: string; top: boolean }> {
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(root, { withFileTypes: true })
-  } catch {
+  } catch (error) {
+    if (top) throw error
     return
   }
   const files: string[] = []
@@ -400,10 +493,10 @@ function* walkFolder(root: string): Generator<string> {
     if (entry.isDirectory()) folders.push(entry.name)
     else if (!entry.isSymbolicLink() || !stat(nodePath.join(root, entry.name))?.isDirectory()) files.push(entry.name)
   }
-  for (const name of files.sort(byCodePoint)) yield nodePath.join(root, name)
+  for (const name of files.sort(byCodePoint)) yield { file: nodePath.join(root, name), top: false }
   for (const name of folders.sort(byCodePoint)) {
     // os.walk joins without normalizing, so `..` after a link means what the OS makes of it.
-    if (name !== ".git") yield* walkFolder(root.endsWith("/") ? root + name : `${root}/${name}`)
+    if (name !== ".git") yield* walkFolder(root.endsWith("/") ? root + name : `${root}/${name}`, false)
   }
 }
 
@@ -417,30 +510,33 @@ function stat(path: string): fs.Stats | undefined {
 }
 
 /** `file`'s bytes, or undefined when `search` skips it: not a regular file (links followed), over
- *  `MAX_SEARCH_FILE_BYTES`, unreadable, or binary (a NUL in its first 8192 bytes). */
-function searchable(file: string): Buffer | undefined {
+ *  `MAX_SEARCH_FILE_BYTES`, unreadable (unless it is the `top`, whose error is thrown), or binary (a NUL in
+ *  its first 8192 bytes). */
+function searchable(file: string, top: boolean): Buffer | undefined {
   const info = stat(file)
-  // A FIFO or device would block or never end, so only regular files are read.
+  // A FIFO or device would block or never end, so only regular files are opened; the open checks again.
   if (!info?.isFile() || info.size > MAX_SEARCH_FILE_BYTES) return undefined
-  let data: Buffer
+  let data: Buffer | undefined
   try {
-    data = fs.readFileSync(file)
-  } catch {
+    data = readRegular(file, MAX_SEARCH_FILE_BYTES)
+  } catch (error) {
+    if (top) throw error
     return undefined
   }
-  return data.subarray(0, 8192).includes(0) ? undefined : data
+  return data === undefined || data.subarray(0, 8192).includes(0) ? undefined : data
 }
 
 /** Return `file:line:text` for each line matching the regex `pattern`.
  *
- *  Skips `.git`, binary files, and files over 2 MB; `glob` filters on the file name or its path. */
+ *  Skips `.git`, binary files, and files over 2 MB, a `top` file too; `glob` filters on the file name or its
+ *  path. A missing or unreadable `top` is an error; below it, what can't be read is passed over. */
 function search(pattern: string, top: string, glob: string | undefined): string {
   const rx = translateRegex(pattern)
   const only = glob ? translateGlob(glob) : undefined
   const matches: string[] = []
-  for (const file of walk(top)) {
+  for (const { file, top: isTop } of walk(top)) {
     if (only && !(only.test(file.slice(file.lastIndexOf("/") + 1)) || only.test(file))) continue
-    const data = searchable(file)
+    const data = searchable(file, isTop)
     if (!data) continue
     let number = 0
     for (const line of splitLines(data.toString("utf8"))) {
