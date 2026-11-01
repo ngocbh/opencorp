@@ -72,6 +72,7 @@ function runChecks(
   {
     runner = new Runner(),
     answers = false,
+    locked = () => false,
     probe = async () => null,
     platform = "darwin",
     lstat,
@@ -80,6 +81,7 @@ function runChecks(
   }: {
     runner?: Runner
     answers?: boolean
+    locked?: (lockPath: string) => boolean
     probe?: (officeHome: string) => Promise<string | null>
     platform?: NodeJS.Platform
     lstat?: (p: string) => fs.Stats
@@ -87,7 +89,7 @@ function runChecks(
     environ?: Record<string, string>
   } = {},
 ): Promise<Check[]> {
-  const host = makeHost(dir, runner, { answers: async () => answers, platform })
+  const host = makeHost(dir, runner, { answers: async () => answers, locked, platform })
   return doctor.checks(paths.home, {
     host,
     command,
@@ -291,6 +293,26 @@ test("a running office missing template files is told to stop first", async () =
   expect(got.company!.detail).toContain(
     "The office is running; run `opencorp stop`, then `opencorp onboard` again to add 1 template file.",
   )
+})
+
+test("a locked office that doesnt answer gets the stop to top up advice", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  fs.unlinkSync(path.join(paths.company, SIDE_CHAT))
+  const got = byName(await runChecks(dir, paths, { locked: () => true }))
+  expect(got.company!.detail).toContain(
+    "The office is running; stop it and run `opencorp onboard` again to add 1 template file.",
+  )
+  // Everything that asks the office still needs it to answer.
+  expect(got.office!.detail).toStartWith("not answering on ")
+  const unchecked = byName(
+    await runChecks(dir, paths, {
+      locked: () => {
+        throw new Error("can't open")
+      },
+    }),
+  )
+  expect(unchecked.company!.detail).toContain("`opencorp onboard` adds")
 })
 
 test("a provider others can read fails without showing it", async () => {

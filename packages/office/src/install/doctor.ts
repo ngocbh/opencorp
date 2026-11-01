@@ -5,7 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
-import { FileLockError, openSqlite, type Sqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
+import { FileLockError, isLocked, openSqlite, type Sqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
 import { type Identity, IdentityUnreadable, identityPath, loadIdentity } from "../auth/identity.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
 import type { RepoIssue } from "../company/issues.ts"
@@ -890,6 +890,16 @@ export interface CheckOptions {
   loadIdentity?: (file: string) => Promise<Identity | undefined>
 }
 
+/** Whether another process holds the office's lock (`host.locked`, else yian's `isLocked`); false when it can't be
+ *  checked, which only changes the company check's advice. */
+function lockHeld(paths: OfficePaths, host: Host): boolean {
+  try {
+    return (host.locked ?? isLocked)(paths.lock)
+  } catch {
+    return false
+  }
+}
+
 /**
  * Every check for the office at `home`, in the order onboarding sets things up. A running office is asked what it
  * runs and where HQ listens with this device's identity, read once; that read can wait on a busy `<home>/.lock`. An
@@ -912,7 +922,9 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   let guards: Guards | undefined
   const homeLine = homeCheck(paths)
   found.push(homeLine)
-  found.push(await companyCheck(paths, running))
+  // A daemon that holds the lock without answering (starting, stopping, hung) is running for the top-up advice; the
+  // checks below ask the office, so they need it to answer.
+  found.push(await companyCheck(paths, running || lockHeld(paths, host)))
   found.push(await providerCheck(paths))
   const added = connectionsCheck(paths, lstat)
   if (added !== null) found.push(added)
