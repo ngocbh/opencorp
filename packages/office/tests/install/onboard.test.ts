@@ -228,7 +228,7 @@ test("--from on a home that has a company says it was ignored", async () => {
   )
 })
 
-test("an office a client here wouldn't find ends with how to reach it", async () => {
+test("an office a client here would not find ends with how to reach it", async () => {
   const dir = tempDir()
   for (const name of ["home", "my home"]) {
     const home = path.join(dir, name)

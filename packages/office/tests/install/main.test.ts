@@ -108,7 +108,7 @@ test("a missing or unknown command or flag is a usage error", async () => {
   expect(s.err()).toContain("opencorp install: error:")
 })
 
-test("a command's help names it as the user typed it", async () => {
+test("the help of a command names it as the user typed it", async () => {
   const s = standIns(tempDir())
   expect(await main(["start", "--help"], s)).toBe(0)
   expect(s.out()).toStartWith("usage: opencorp start ")

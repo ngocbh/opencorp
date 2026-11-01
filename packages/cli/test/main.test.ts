@@ -86,7 +86,7 @@ test("each client command prints its usage on --help or -h, without the office",
   expect((await capture(["whoami", "--", "--help"])).code).toBe(2)
 })
 
-test("help COMMAND prints that command's usage; an unknown one exits 2", async () => {
+test("help COMMAND prints the usage of that command; an unknown one exits 2", async () => {
   const whoami = await capture(["help", "whoami"])
   expect(whoami.code).toBe(0)
   expect(whoami.out).toBe(USAGES.whoami)
@@ -102,12 +102,12 @@ test("help COMMAND prints that command's usage; an unknown one exits 2", async (
   }
 })
 
-test("--version prints the package's version", async () => {
+test("--version prints the package version", async () => {
   const result = await capture(["--version"])
   expect(result).toEqual({ code: 0, out: pkg.version, err: "" })
 })
 
-test("the help shows each command's arguments, the TUI's options and the home's variable", async () => {
+test("the help shows the arguments of each command, the TUI options and the home variable", async () => {
   const help = (await capture(["--help"])).out
   for (const line of TUI_USAGE.split("\n").slice(1)) expect(help).toContain(line)
   for (const text of ["end [SESSION_ID]", "profile edit PERSON", "opencorp help COMMAND", "--version", "OPENCORP_HOME"])

@@ -109,7 +109,7 @@ test("opencorp --help from a folder holding .env and a bunfig.toml preload sees 
   expect(seen.argv).toEqual([ENTRY, "--help"])
 })
 
-test("opencorp --version through the wrapper prints the package's version", () => {
+test("opencorp --version through the wrapper prints the package version", () => {
   const { result } = run(WRAPPER, ["--version"], { PATH: `${path.join(tmp, "bin")}:/usr/bin:/bin` })
   const { version } = JSON.parse(fs.readFileSync(path.join(CHECKOUT, "packages/cli/package.json"), "utf8"))
   expect(result.stdout).toBe(`${version}\n`)

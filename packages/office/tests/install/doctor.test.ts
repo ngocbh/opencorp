@@ -184,7 +184,7 @@ test("a fresh machine is told to onboard", async () => {
   expect(doctor.exitCode(found)).toBe(1)
 })
 
-test("the binary's assets folder is checked beside the home, only when there is a binary", async () => {
+test("the assets folder of the binary is checked beside the home, only when there is a binary", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir, PROVIDER)
   const missing = await runChecks(dir, paths, { assets: "/nowhere/assets" })
