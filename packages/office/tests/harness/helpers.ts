@@ -222,6 +222,11 @@ export function openCard(h: Codex, sid: string): Promise<QuestionRecord> {
   return waitFor(() => h.store.listQuestions({ sessionId: sid, status: "open" })[0], { what: "a card" })
 }
 
+/** Whether a turn of the session runs: Codex said which, and the session is busy. A message is busy before that. */
+export function turnRunning(h: Codex, sid: string): boolean {
+  return status(h, sid) === "busy" && h.sessions.get(sid)?.turnId != null
+}
+
 /** The session's stored status. */
 export function status(h: Codex, sid: string): SessionRecord["status"] | undefined {
   return h.store.getSession(sid)?.status

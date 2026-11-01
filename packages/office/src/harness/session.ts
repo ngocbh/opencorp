@@ -70,8 +70,8 @@ function input(text: string) {
 /** A JSON object from the wire: `any`, since its shape is whatever Codex sent. */
 type Obj = Record<string, any>
 
-/** A server request Codex waits on: its JSON-RPC id and its card. */
-export type Pending = { requestId: unknown; issued: Issued }
+/** A server request Codex waits on: its JSON-RPC id, its card and its method. */
+export type Pending = { requestId: unknown; issued: Issued; method: string }
 
 /** An answer waiting for its reply to be written: `started` once its job runs, `givenUp` once the answerer stopped
  *  waiting before that. `settle` resolves with what the job made of it, or rejects with its error. */
@@ -131,6 +131,18 @@ export class CodexSession {
   readonly #replies = new Set<Waiter>()
   /** The turn id the store has for the session. */
   #storedTurn: string | null
+  /** The thread has loaded once: until then a failed load fails the session, and no run state is written. */
+  #loaded: boolean
+  /** `turn/start` requests Codex hasn't answered yet. */
+  #sending = 0
+  /** The app-server that took a `turn/start` whose `turn/started` isn't handled yet. */
+  #unstarted: CodexProcess | null = null
+  /** The turns a `turn/started` or `turn/completed` was handled for, so a `turn/start` answer naming another one is
+   *  known to start a new turn. */
+  readonly #seenTurns = new Set<string>()
+  /** Esc came while a message was being sent and its turn wasn't known yet: that turn is interrupted once it starts.
+   *  `mark` when that Esc also dropped queued messages, which get the interrupt marker if no turn starts to carry it. */
+  #interruptWanted: { mark: boolean } | null = null
 
   constructor(owner: CodexSessions, session: SessionRecord, { author }: { author: string | null }) {
     this.owner = owner
@@ -139,6 +151,7 @@ export class CodexSession {
     this.cwd = session.cwd
     this.threadId = session.harness_session_id
     this.#storedTurn = session.harness_turn_id
+    this.#loaded = session.status !== "starting"
     this.author = author
     this.base = usageBase(this.store, session)
     this.log = path.join(owner.office.paths.runDir(session.id), "codex.log")
@@ -168,6 +181,7 @@ export class CodexSession {
       this.pending.push(text)
       // A restarted office, a dead app-server, or an unloaded thread.
       if (!this.loading) this.start({ resume: true })
+      this.#settle()
       return "queued"
     }
     const proc = this.process
@@ -181,17 +195,84 @@ export class CodexSession {
     }
   }
 
-  /** Esc: asks Codex to interrupt the running turn; its `turn/completed` marks it. */
+  /** Esc: drops the messages waiting for a load, interrupts a turn being started once Codex says which it is, and
+   *  asks Codex to interrupt the running turn; its `turn/completed` marks it. With none of these, cancels the cards
+   *  Codex asked outside any turn. */
   async interrupt(): Promise<void> {
+    if (this.stopped || this.closed) return
     const turn = this.turnId
     const proc = this.process
-    if (turn === null || proc === null) return
+    if (!this.ending) {
+      const starting = this.#startPending
+      const queued = this.pending.length > 0
+      // A turn being started gets the marker once it is interrupted; a running one's turn/completed carries it, so
+      // only a turn not known yet owes it to what this drops.
+      if (queued) this.#dropQueued({ mark: !starting })
+      if (starting && turn === null) this.#interruptWanted = { mark: queued || this.#interruptWanted?.mark === true }
+      if (turn === null && !starting && !queued) this.#cancelTurnless()
+    }
+    if (turn !== null && proc !== null) await this.#interruptTurn(proc, turn)
+  }
+
+  /** Asks `proc` to interrupt `turn`. */
+  async #interruptTurn(proc: CodexProcess, turn: string): Promise<void> {
     try {
       await proc.rpc!.request("turn/interrupt", { threadId: this.threadId, turnId: turn })
     } catch (error) {
       // The turn ended meanwhile, the app-server is gone, or it hangs (its end or office stop kills it).
       if (!(error instanceof RpcError || error instanceof RpcClosed || isTimeout(error))) throw error
     }
+  }
+
+  /** Esc with no turn: cancels each card Codex asked outside any turn, as closing an MCP client's dialog does. Posted,
+   *  not awaited, so Esc never waits behind a load. */
+  #cancelTurnless(): void {
+    const cards = [...this.requests].filter(([, p]) => p.issued.runId.startsWith(TURNLESS)).map(([id]) => id)
+    if (cards.length === 0) return
+    void this.post("cancel", async () => {
+      for (const questionId of cards) {
+        const pending = this.requests.get(questionId)
+        if (pending === undefined) continue // answered or resolved meanwhile
+        // A card an earlier app-server asked has no one waiting on it any more.
+        const current = this.#turnless?.proc === this.process && pending.issued.runId === this.#turnless?.runId
+        const [, proc] = this.#take(questionId)
+        this.#expire(questionId)
+        if (!current || proc === null || !proc.alive) continue
+        // Every request gets an answer; cancel grants nothing.
+        if (pending.method !== "mcpServer/elicitation/request") {
+          await this.#refuse(proc, pending.requestId, -32603, "the owner dismissed the request")
+          continue
+        }
+        try {
+          await proc.rpc!.reply(pending.requestId, { action: "cancel" })
+        } catch (error) {
+          if (!(error instanceof RpcClosed)) throw error // closed: nothing waits on the answer
+        }
+      }
+    })
+  }
+
+  /** Drops the messages waiting for a load, as Esc does; `mark` ends the transcript with the interrupt marker. */
+  #dropQueued({ mark }: { mark: boolean }): void {
+    this.pending = []
+    if (mark) this.#markInterrupted()
+    this.#settle()
+  }
+
+  /** Ends the transcript with the interrupt marker, for messages Esc dropped before any turn took them. */
+  #markInterrupted(): void {
+    // One marker covers everything dropped so far.
+    if (this.#interruptWanted !== null) this.#interruptWanted.mark = false
+    // A turn id of its own each time: the translator closes an id only once.
+    this.translator.turnCompleted(`queued-${newId()}`, "interrupted", null)
+  }
+
+  /** Forgets an Esc waiting for a turn that won't start; the messages it dropped get their marker now, unless the
+   *  office stopped (restore marks them) or the session closed. */
+  #forgetInterrupt(): void {
+    const wanted = this.#interruptWanted
+    this.#interruptWanted = null
+    if (wanted?.mark && !this.stopped && !this.closed) this.#markInterrupted()
   }
 
   /** Ends the session: interrupts a running turn, closes the app-server, then ends through the hooks. */
@@ -203,6 +284,8 @@ export class CodexSession {
       throw new HarnessError(409, "not_live", `session ${this.sessionId} has no live Codex app-server`)
     this.ending = true
     this.pending = []
+    this.#unstarted = null
+    this.#interruptWanted = null
     this.#stopTimer()
     const busy = this.turnId !== null
     this.store.updateSession(this.sessionId, notWaiting("ending"))
@@ -368,6 +451,7 @@ export class CodexSession {
       return
     }
     this.process = proc
+    this.#loaded = true
     this.threadId = result.thread.id
     this.store.updateSession(this.sessionId, { harness_session_id: this.threadId, harness_model: result.model ?? null })
     await this.#flush()
@@ -381,12 +465,14 @@ export class CodexSession {
     if (error instanceof CodexStartError || error instanceof RpcError || isTimeout(error))
       this.owner.log(`codex session ${this.sessionId} can't load its thread: ${error.message}${where}`)
     else this.owner.log(`codex session ${this.sessionId} can't load its thread (${nameOf(error)})${where}`)
+    // Before the error, which stays the last thing the transcript says.
+    this.#forgetInterrupt()
     this.translator.error(why(error))
-    const session = this.store.getSession(this.sessionId)
     this.loading = false
     this.pending = []
+    this.#unstarted = null
     if (this.ending) return // the end posted meanwhile closes it
-    if (session?.status !== "starting") {
+    if (this.#loaded) {
       // A reload: say why and wait for the next message.
       this.#settle()
       return
@@ -426,11 +512,19 @@ export class CodexSession {
     }
   }
 
-  /** `turn/start`: a new turn, or a steer of the running one (Codex decides; `turn/started` says which). `queued`
-   *  when Codex had unloaded the thread: the message waits for the reload. */
+  /** `turn/start`: a new turn, or a steer of the running one (Codex decides; `turn/started` says which, and the
+   *  answer naming a turn not seen yet says a new one started). `queued` when Codex had unloaded the thread: the
+   *  message waits for the reload. */
   async #send(proc: CodexProcess, text: string, busy: boolean): Promise<"turn" | "steer" | "queued"> {
+    this.#sending++
+    this.#settle()
     try {
-      await proc.rpc!.request("turn/start", { threadId: this.threadId, input: input(text) })
+      const res = (await proc.rpc!.request("turn/start", { threadId: this.threadId, input: input(text) })) as Obj
+      const named = typeof res?.turn?.id === "string" ? (res.turn.id as string) : null
+      // A new turn, unless Codex steered a turn already seen (running, or ended meanwhile) or this one's turn/started
+      // was handled meanwhile: the session is busy until that comes. The id is only compared: notifications alone set
+      // the turn.
+      if (this.turnId === null && named !== null && !this.#seenTurns.has(named)) this.#unstarted = proc
     } catch (error) {
       if (error instanceof RpcError && NOT_LOADED.test(error.rpcMessage)) {
         this.#reload(proc, text)
@@ -439,6 +533,11 @@ export class CodexSession {
       if (error instanceof RpcError || error instanceof RpcClosed || isTimeout(error))
         throw new HarnessError(409, "codex_refused", `Codex didn't take the message: ${error.message}`)
       throw error
+    } finally {
+      this.#sending--
+      // A refused message starts no turn for an Esc to stop.
+      if (!this.#startPending) this.#forgetInterrupt()
+      this.#settle()
     }
     return busy ? "steer" : "turn"
   }
@@ -447,6 +546,8 @@ export class CodexSession {
   #reload(proc: CodexProcess, text: string): void {
     if (this.stopped || this.ending) return // office stop keeps the session for restore; an end closes it
     this.pending.push(text)
+    // Esc came while it was being sent: it stays unsent, and the load goes on.
+    if (this.#interruptWanted) this.#dropQueued({ mark: true })
     if (this.process !== proc) {
       // Another message got there first, or the app-server died meanwhile; and if nothing is loading now, send it on
       // the new app-server, or load one.
@@ -458,6 +559,7 @@ export class CodexSession {
       return
     }
     this.process = null
+    this.#unstarted = null
     this.loading = true
     this.retiring = proc
     void this.post("reopen", () => this.#reopen(proc))
@@ -476,10 +578,23 @@ export class CodexSession {
     if (proc !== this.process) return
     if (this.translator.notification(method, params)) return
     if (method === "turn/started") {
+      this.#seenTurns.add(params.turn.id)
+      this.#unstarted = null
       this.#turnIs(params.turn.id)
+      if (this.#interruptWanted && !this.ending) {
+        // This turn's turn/completed carries the marker.
+        this.#interruptWanted = null
+        // Esc came before Codex said which turn it started. Not awaited: a job never waits on Codex.
+        const turn: string = params.turn.id
+        void this.#interruptTurn(proc, turn).catch((error) =>
+          this.owner.log(`codex session ${this.sessionId}: the interrupt of ${turn} failed (${nameOf(error)})`),
+        )
+      }
       if (!this.ending) this.#settle()
     } else if (method === "turn/completed") {
+      this.#unstarted = null
       const turn = params.turn
+      this.#seenTurns.add(turn.id)
       this.translator.turnCompleted(turn.id, turn.status, turn.error ?? null)
       if (turn.id === this.turnId) this.#turnIs(null)
       this.#expireTurn(turn.id)
@@ -541,7 +656,7 @@ export class CodexSession {
       return
     }
     // Registered once the card is out; an answer to it is a later job, so it can't come before this.
-    this.requests.set(key, { requestId: id, issued })
+    this.requests.set(key, { requestId: id, issued, method })
     this.byRequest.set(String(id), key)
     this.#settle()
   }
@@ -648,6 +763,7 @@ export class CodexSession {
    *  codex.log, which the office log names. */
   async #lost(proc: CodexProcess, said: string | null): Promise<void> {
     this.process = null
+    this.#unstarted = null
     if (said === null) this.retiring = proc // office stop kills it while it is being closed
     const turn = this.turnId
     // The stored id stays until the turn is marked interrupted, so an office stop or a crash before that still
@@ -672,6 +788,8 @@ export class CodexSession {
     if (this.stopped) return
     if (turn !== null) this.translator.turnCompleted(turn, "interrupted", null)
     this.#turnIs(null)
+    // No turn starts on this app-server to carry the marker of what an Esc dropped.
+    this.#forgetInterrupt()
     if (said) this.translator.error(said)
     if (this.ending) void this.post("close", () => this.#close())
     else this.#settle()
@@ -700,15 +818,23 @@ export class CodexSession {
     this.#storedTurn = id
   }
 
-  /** Writes the run state: waiting while Codex waits on a card (on the opener), busy while a turn runs, else idle.
-   *  Nothing once the office stops or the session is ending or closed. */
+  /** Whether a message was sent and its turn isn't known yet: Codex hasn't answered its `turn/start`, or hasn't sent
+   *  its `turn/started`. */
+  get #startPending(): boolean {
+    return this.#sending > 0 || (this.#unstarted !== null && this.#unstarted === this.process)
+  }
+
+  /** Writes the run state: waiting while Codex waits on a card (on the opener), busy while a turn runs or a message
+   *  waits for one, else idle. Nothing before the first load, or once the office stops or the session is ending or
+   *  closed. */
   #settle(): void {
-    if (this.stopped || this.ending || this.closed) return
+    if (!this.#loaded || this.stopped || this.ending || this.closed) return
     const waiting = this.requests.size > 0
+    const running = this.turnId !== null || this.pending.length > 0 || this.#startPending
     writeState(
       this.store,
       this.sessionId,
-      runState({ waiting, running: this.turnId !== null }),
+      runState({ waiting, running }),
       waiting ? [this.author] : [],
       { fromStarting: ["idle", "busy", "waiting"] },
     )

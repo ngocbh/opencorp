@@ -8,7 +8,7 @@ import type { Part } from "@opencorp/protocol"
 import { HarnessError } from "../../src/chat/state.ts"
 import type { HarnessEvent } from "../../src/harness/adapter.ts"
 import { type CodexProcess, CodexStartError, ownerLoad } from "../../src/harness/codex.ts"
-import { JsonRpc, RpcClosed } from "../../src/harness/rpc.ts"
+import { JsonRpc, RpcClosed, RpcError } from "../../src/harness/rpc.ts"
 import type { CodexSession } from "../../src/harness/session.ts"
 import { CodexSessions } from "../../src/harness/sessions.ts"
 import { killGroup, startTime } from "../../src/install/proc.ts"
@@ -26,11 +26,13 @@ import {
   makeCodex,
   messages,
   requestsValid,
+  restarted,
   start,
   startSession,
   status,
   stored,
   texts,
+  turnRunning,
 } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -51,6 +53,30 @@ async function rejection(promise: Promise<unknown>): Promise<HarnessError> {
     },
     (error: unknown) => error as HarnessError,
   )
+}
+
+/** A promise and the function that resolves it. */
+function gate(): [Promise<void>, () => void] {
+  let release!: () => void
+  const opened = new Promise<void>((resolve) => (release = resolve))
+  return [opened, release]
+}
+
+/** Holds `live`'s queue with a job of its own until the returned function is called; resolves once the job runs. */
+async function hold(live: CodexSession): Promise<() => void> {
+  const [began, begin] = gate()
+  const [released, release] = gate()
+  void live.post("hold", async () => {
+    begin()
+    await released
+  })
+  await began
+  return release
+}
+
+/** The fake's notifications with `method`. */
+function notifications(h: Codex, method: string): unknown[] {
+  return h.fake.messages("out").filter((m) => m.method === method)
 }
 
 /** What `CodexSessions.launch` needs of a session. */
@@ -226,7 +252,7 @@ test("a message during a turn steers it", async () => {
   h.fake.script([[{ sleep: 3 }, ...fc.agentMessage("m1", "Done")]])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "count")
-  await waitFor(() => status(h, sid) === "busy", { what: "the turn to start" })
+  await waitFor(() => turnRunning(h, sid), { what: "the turn to start" })
   expect(await h.sessions.prompt(sid, "and stop at 5")).toBe("steer")
   await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
   expect(h.fake.calls("turn/start")).toHaveLength(2)
@@ -313,6 +339,59 @@ test("a message while loading waits for the load", async () => {
   await waitFor(() => texts(h, sid).join() === "Got it", { what: "the queued message's reply" })
   const inputs = h.fake.calls("turn/start") as { input: { text: string }[] }[]
   expect(inputs.map((p) => p.input[0]!.text)).toEqual(["early\n\nand then"])
+})
+
+test("a message while starting leaves the session starting until the load", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("m1", "Got it")], { initialize_delay: 1 })
+  const { id: sid } = await startSession(h, "minh", h.workspace, { openedBy: "ngocbh" })
+  expect(await h.sessions.prompt(sid, "early")).toBe("queued")
+  expect(status(h, sid)).toBe("starting")
+  await waitFor(() => texts(h, sid).join() === "Got it" && status(h, sid) === "idle", { what: "the reply" })
+})
+
+test("a message waiting for a reload after a restart shows busy", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  h.fake.script([fc.agentMessage("m1", "Back")], { initialize_delay: 1 })
+  const r = await restarted(h)
+  expect(status(r, sid)).toBe("idle")
+  expect(await r.sessions.prompt(sid, "go")).toBe("queued")
+  expect(status(r, sid)).toBe("busy")
+  await waitFor(() => texts(r, sid).includes("Back") && status(r, sid) === "idle", { what: "the reloaded turn" })
+})
+
+test("a message sent to a loaded session is busy before turn/started", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  const release = await hold(live) // turn/started waits behind it
+  expect(await h.sessions.prompt(sid, "go")).toBe("turn")
+  expect(live.turnId).toBeNull()
+  expect(status(h, sid)).toBe("busy")
+  release()
+  await waitFor(() => live.turnId !== null, { what: "the turn to start" })
+  expect(status(h, sid)).toBe("busy")
+})
+
+test("a turn that completes as it starts leaves the session idle", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  // Unscripted turns: the fake answers turn/start and sends turn/started and turn/completed at once.
+  await h.sessions.prompt(sid, "one")
+  await waitFor(() => notifications(h, "turn/completed").length === 1 && status(h, sid) === "idle", {
+    what: "the first turn",
+  })
+  const release = await hold(live)
+  await h.sessions.prompt(sid, "two")
+  release()
+  await waitFor(() => notifications(h, "turn/completed").length === 2 && status(h, sid) === "idle", {
+    what: "the second turn",
+  })
+  await sleep(300)
+  expect(status(h, sid)).toBe("idle")
 })
 
 test("a message codex never answers is refused and leaves the session idle", async () => {
@@ -407,6 +486,242 @@ test("esc with no turn running asks codex nothing", async () => {
   expect(status(h, sid)).toBe("idle")
 })
 
+test("esc while starting drops the queued message", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("m1", "Hi")], { initialize_delay: 1 })
+  const { id: sid } = await startSession(h, "minh", h.workspace, { openedBy: "ngocbh" })
+  expect(await h.sessions.prompt(sid, "early")).toBe("queued")
+  await h.sessions.interrupt(sid)
+  expect(status(h, sid)).toBe("starting")
+  await waitFor(() => status(h, sid) === "idle", { what: "the load" })
+  expect(h.fake.calls("turn/start")).toEqual([])
+  expect(texts(h, sid)).toEqual(["[interrupted]"])
+  // The dropped message took no turn of the fake's: the next message gets the first.
+  expect(await h.sessions.prompt(sid, "again")).toBe("turn")
+  await waitFor(() => texts(h, sid).includes("Hi") && status(h, sid) === "idle", { what: "the next turn" })
+})
+
+test("esc during a reload drops the queued message", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  h.fake.script([], { initialize_delay: 1 })
+  const r = await restarted(h)
+  const live = r.sessions.get(sid)!
+  expect(await r.sessions.prompt(sid, "go")).toBe("queued")
+  await r.sessions.interrupt(sid)
+  expect(status(r, sid)).toBe("idle")
+  await waitFor(() => live.process !== null && !live.loading, { what: "the reload" })
+  expect(status(r, sid)).toBe("idle")
+  expect(r.fake.calls("thread/resume")).toHaveLength(1)
+  expect(r.fake.calls("turn/start")).toEqual([])
+  expect(texts(r, sid)).toEqual(["[interrupted]"])
+})
+
+test("esc before turn/started interrupts the turn once it starts", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  const release = await hold(h.sessions.get(sid)!) // turn/started waits behind it
+  expect(await h.sessions.prompt(sid, "go")).toBe("turn")
+  await h.sessions.interrupt(sid)
+  release()
+  await waitFor(() => status(h, sid) === "idle", { what: "the interrupted turn's end" })
+  expect(h.fake.calls("turn/interrupt")).toEqual([{ threadId: "thr_1", turnId: "turn_1" }])
+  expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
+})
+
+test("esc while turn/start waits for codex interrupts the turn once it starts", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  const rpc = h.sessions.get(sid)!.process!.rpc!
+  const real = rpc.request.bind(rpc)
+  const [opened, open] = gate()
+  let entered = false
+  spyOn(rpc, "request").mockImplementation(async (method, params, options) => {
+    if (method === "turn/start") {
+      entered = true
+      await opened
+    }
+    return real(method, params, options)
+  })
+  const sending = h.sessions.prompt(sid, "go")
+  await waitFor(() => entered, { what: "turn/start sent" })
+  expect(status(h, sid)).toBe("busy")
+  await h.sessions.interrupt(sid)
+  open()
+  expect(await sending).toBe("turn")
+  await waitFor(() => status(h, sid) === "idle", { what: "the interrupted turn's end" })
+  expect(h.fake.calls("turn/interrupt")).toEqual([{ threadId: "thr_1", turnId: "turn_1" }])
+  expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
+})
+
+test("esc with a turn/start in flight and a message queued behind it stops both", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 30 }]], { initialize_delay: 0.5 })
+  const real = JsonRpc.prototype.request
+  const [opened, open] = gate()
+  let entered = false
+  const spy = spyOn(JsonRpc.prototype, "request").mockImplementation(async function (
+    this: JsonRpc,
+    method,
+    params,
+    options,
+  ) {
+    if (method === "turn/start") {
+      entered = true
+      await opened
+    }
+    return real.call(this, method, params, options)
+  })
+  onTestFinished(() => spy.mockRestore())
+  const { id: sid } = await startSession(h, "minh", h.workspace, { openedBy: "ngocbh" })
+  const live = h.sessions.get(sid)!
+  expect(await h.sessions.prompt(sid, "A")).toBe("queued")
+  await waitFor(() => entered, { timeout: 10_000, what: "the queued message's turn/start" })
+  expect(await h.sessions.prompt(sid, "B")).toBe("queued") // still loading: it waits behind A
+  await h.sessions.interrupt(sid)
+  open()
+  const interrupted = () => h.fake.calls("turn/interrupt").length === 1 && live.turnId === null
+  await waitFor(() => interrupted() && status(h, sid) === "idle" && !live.loading, {
+    what: "the interrupted turn's end",
+  })
+  expect((h.fake.calls("turn/start") as { input: { text: string }[] }[]).map((p) => p.input[0]!.text)).toEqual(["A"])
+  expect(h.fake.calls("turn/interrupt")).toEqual([{ threadId: "thr_1", turnId: "turn_1" }])
+  expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
+})
+
+test("esc with a refused turn/start in flight and a message queued behind it marks the dropped message", async () => {
+  const h = makeCodex()
+  h.fake.script([], { initialize_delay: 0.5 })
+  const real = JsonRpc.prototype.request
+  const [opened, open] = gate()
+  let entered = false
+  const spy = spyOn(JsonRpc.prototype, "request").mockImplementation(async function (
+    this: JsonRpc,
+    method,
+    params,
+    options,
+  ) {
+    if (method === "turn/start") {
+      entered = true
+      await opened
+      throw new RpcError(-32600, "busy")
+    }
+    return real.call(this, method, params, options)
+  })
+  onTestFinished(() => spy.mockRestore())
+  const { id: sid } = await startSession(h, "minh", h.workspace, { openedBy: "ngocbh" })
+  const live = h.sessions.get(sid)!
+  expect(await h.sessions.prompt(sid, "A")).toBe("queued")
+  await waitFor(() => entered, { timeout: 10_000, what: "the queued message's turn/start" })
+  expect(await h.sessions.prompt(sid, "B")).toBe("queued") // still loading: it waits behind A
+  await h.sessions.interrupt(sid)
+  open()
+  await waitFor(() => status(h, sid) === "idle" && !live.loading && errors(h, sid).length > 0, {
+    what: "the refusal",
+  })
+  expect(h.fake.calls("turn/start")).toEqual([])
+  expect(h.fake.calls("turn/interrupt")).toEqual([])
+  expect(errors(h, sid)[0]).toContain("didn't take the message")
+  expect(texts(h, sid).filter((t) => t.endsWith("[interrupted]"))).toHaveLength(1)
+})
+
+test("esc after a turn ends while a steer is in flight interrupts the turn codex started from it", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 0.3 }], [{ sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  expect(await h.sessions.prompt(sid, "one")).toBe("turn")
+  await waitFor(() => status(h, sid) === "busy" && live.turnId !== null, { what: "the first turn" })
+  const rpc = live.process!.rpc!
+  const real = rpc.request.bind(rpc)
+  const [ended, end] = gate()
+  spyOn(rpc, "request").mockImplementation(async (method, params, options) => {
+    // Codex takes the message only once the first turn ended, so it starts a new turn from it.
+    if (method === "turn/start") await ended
+    return real(method, params, options)
+  })
+  const sending = h.sessions.prompt(sid, "two") // a steer of turn_1 as far as the office knows
+  await waitFor(() => live.turnId === null, { what: "the first turn's end" })
+  const release = await hold(live) // turn_2's turn/started waits behind it
+  end()
+  expect(await sending).toBe("steer")
+  expect(status(h, sid)).toBe("busy")
+  await h.sessions.interrupt(sid)
+  release()
+  await waitFor(() => h.fake.calls("turn/interrupt").length === 1 && status(h, sid) === "idle", {
+    what: "the interrupted turn's end",
+  })
+  expect(h.fake.calls("turn/interrupt")).toEqual([{ threadId: "thr_1", turnId: "turn_2" }])
+  expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
+})
+
+test("a steer answered after its turn and a later one ended leaves the session idle", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 1 }], fc.agentMessage("m2", "Three")])
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  expect(await h.sessions.prompt(sid, "one")).toBe("turn")
+  await waitFor(() => live.turnId !== null, { what: "the first turn" })
+  const rpc = live.process!.rpc!
+  const real = rpc.request.bind(rpc)
+  const [steered, steer] = gate()
+  const [answered, answer] = gate()
+  spyOn(rpc, "request").mockImplementation(async (method, params, options) => {
+    const res = await real(method, params, options)
+    if (method === "turn/start" && (params as { input: { text: string }[] }).input[0]!.text === "two") {
+      steer()
+      await answered // Codex steered turn_1 with it; the answer comes after turn_2 ended too
+    }
+    return res
+  })
+  const sending = h.sessions.prompt(sid, "two")
+  await steered
+  await waitFor(() => live.turnId === null, { what: "the first turn's end" })
+  expect(await h.sessions.prompt(sid, "three")).toBe("turn")
+  await waitFor(() => texts(h, sid).includes("Three") && live.turnId === null, { what: "the second turn's end" })
+  answer()
+  expect(await sending).toBe("steer")
+  expect(status(h, sid)).toBe("idle")
+})
+
+test("office stop during a reload with a message queued stores busy and restore marks it", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  h.fake.script([], { initialize_delay: 5 })
+  const r = await restarted(h)
+  expect(await r.sessions.prompt(sid, "go")).toBe("queued")
+  expect(status(r, sid)).toBe("busy")
+  const r2 = await restarted(r)
+  expect(status(r2, sid)).toBe("idle")
+  expect(texts(r2, sid).at(-1)).toEndWith("[interrupted]")
+})
+
+test("an esc during a refused turn/start doesnt interrupt the next turn", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("m1", "Two")])
+  const sid = await start(h, h.workspace)
+  const rpc = h.sessions.get(sid)!.process!.rpc!
+  const [opened, open] = gate()
+  let entered = false
+  const spy = spyOn(rpc, "request").mockImplementation(async () => {
+    entered = true
+    await opened
+    throw new RpcError(-32600, "busy")
+  })
+  const refused = rejection(h.sessions.prompt(sid, "one"))
+  await waitFor(() => entered, { what: "turn/start sent" })
+  await h.sessions.interrupt(sid)
+  open()
+  expect((await refused).code).toBe("codex_refused")
+  expect(status(h, sid)).toBe("idle")
+  spy.mockRestore()
+  expect(await h.sessions.prompt(sid, "two")).toBe("turn")
+  await waitFor(() => texts(h, sid).includes("Two") && status(h, sid) === "idle", { what: "the next turn" })
+  expect(h.fake.calls("turn/interrupt")).toEqual([])
+})
+
 test("esc on a codex that doesnt answer returns", async () => {
   const h = makeCodex()
   h.fake.script([[{ sleep: 30 }]])
@@ -450,7 +765,7 @@ test("ending a busy session interrupts its turn first", async () => {
   h.fake.script([[{ sleep: 30 }]])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "work")
-  await waitFor(() => status(h, sid) === "busy", { what: "busy" })
+  await waitFor(() => turnRunning(h, sid), { what: "busy" })
   await h.sessions.end(sid)
   await waitFor(() => status(h, sid) === "ended", { what: "the end" })
   expect(h.fake.calls("turn/interrupt").length).toBeGreaterThan(0)
@@ -486,7 +801,7 @@ test("ending on a codex that never answers the interrupt returns and ends after 
   h.fake.script([[{ sleep: 30 }]], { interrupt_hangs: true })
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "work")
-  await waitFor(() => status(h, sid) === "busy", { what: "busy" })
+  await waitFor(() => turnRunning(h, sid), { what: "busy" })
   const began = performance.now()
   // The interrupt Codex never answers fails once the end wait closes the app-server.
   await h.sessions.end(sid)
@@ -565,7 +880,7 @@ test("a turn starting after the end leaves the end timer running", async () => {
   const sid = await start(h, h.workspace)
   const live = h.sessions.get(sid)!
   await h.sessions.prompt(sid, "work")
-  await waitFor(() => status(h, sid) === "busy", { what: "busy" })
+  await waitFor(() => turnRunning(h, sid), { what: "busy" })
   // Waits on the interrupt Codex never answers.
   const ending = h.sessions.end(sid)
   await waitFor(() => status(h, sid) === "ending" && live.timer, { what: "the end timer" })

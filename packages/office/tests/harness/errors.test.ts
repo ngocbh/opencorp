@@ -22,6 +22,7 @@ import {
   status,
   stored,
   texts,
+  turnRunning,
 } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -297,6 +298,33 @@ test("a message another message is reloading for waits for that reload", async (
   expect((turns[0]!.input[0].text as string).split("\n\n").sort()).toEqual(["one", "two"])
 })
 
+test("an esc while codex says the thread is unloaded drops the message", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("m1", "Reloaded")])
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  const [opened, release] = gate()
+  let entered = false
+  spyOn(live.process!.rpc!, "request").mockImplementation(async () => {
+    entered = true
+    await opened
+    throw unloaded()
+  })
+  const sending = h.sessions.prompt(sid, "go")
+  await waitFor(() => entered, { what: "turn/start sent" })
+  await h.sessions.interrupt(sid)
+  release()
+  expect(await sending).toBe("queued")
+  await waitFor(() => calls(h, "thread/resume").length === 1 && !live.loading && status(h, sid) === "idle", {
+    what: "the reload",
+  })
+  expect(calls(h, "turn/start")).toEqual([])
+  expect(texts(h, sid)).toEqual(["[interrupted]"])
+  expect(await h.sessions.prompt(sid, "again")).toBe("turn")
+  await waitFor(() => texts(h, sid).includes("Reloaded") && status(h, sid) === "idle", { what: "the next turn" })
+  expect(calls(h, "turn/interrupt")).toEqual([])
+})
+
 test("a thread open elsewhere says so and stays idle", async () => {
   const h = makeCodex()
   h.fake.script([[{ exit: 1 }]], { resume_error: WRITER_LOCK })
@@ -423,9 +451,10 @@ test("a message codex says has no thread after another reloaded it goes to the n
   const late = h.sessions.prompt(sid, "two")
   await entered
   expect(await h.sessions.prompt(sid, "one")).toBe("queued")
-  await waitFor(() => texts(h, sid).includes("First") && status(h, sid) === "idle" && !live.loading, {
+  await waitFor(() => texts(h, sid).includes("First") && live.turnId === null && !live.loading, {
     what: "the reload and its turn",
   })
+  expect(status(h, sid)).toBe("busy") // "two" still waits for the old app-server's answer
   release()
   await late
   await waitFor(() => texts(h, sid).includes("Second"), { what: "the late message's turn" })
@@ -433,12 +462,86 @@ test("a message codex says has no thread after another reloaded it goes to the n
   expect(calls(h, "initialize")).toHaveLength(2)
 })
 
+test("esc with a turn running, a message being sent and one queued marks the turn once", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  const old = live.process!
+  const [entered, enter] = gate()
+  const [opened, release] = gate()
+  spyOn(old.rpc!, "request").mockImplementation(async (_method, params) => {
+    if ((params as Entry).input[0].text === "two") {
+      enter()
+      await opened // answered once the reload's turn runs
+    }
+    throw unloaded()
+  })
+  const late = h.sessions.prompt(sid, "two")
+  await entered
+  expect(await h.sessions.prompt(sid, "one")).toBe("queued")
+  await waitFor(() => live.turnId !== null && !live.loading, { what: "the reload and its turn" })
+  const rpc = live.process!.rpc!
+  const real = rpc.request.bind(rpc)
+  const [steered, steer] = gate()
+  const [answered, answer] = gate()
+  spyOn(rpc, "request").mockImplementation(async (method, params, options) => {
+    const res = await real(method, params, options)
+    if (method === "turn/start") {
+      steer()
+      await answered // Codex took "two" as a steer of the running turn; its answer comes after the Esc
+    }
+    return res
+  })
+  release() // "two" goes to the new app-server, behind which "three" waits
+  await steered
+  expect(await h.sessions.prompt(sid, "three")).toBe("queued")
+  await h.sessions.interrupt(sid)
+  answer()
+  expect(await late).toBe("queued")
+  await waitFor(() => live.turnId === null && !live.loading && status(h, sid) === "idle", {
+    what: "the interrupted turn's end",
+  })
+  expect(calls(h, "turn/interrupt")).toEqual([{ threadId: "thr_1", turnId: "turn_1" }])
+  expect(texts(h, sid).join("\n").match(/\[interrupted\]/g)).toHaveLength(1)
+})
+
+test("esc with a message queued behind a load that fails writes the marker before the error", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  const old = live.process!
+  const [entered, enter] = gate()
+  const [opened, release] = gate()
+  spyOn(old.rpc!, "request").mockImplementation(async (_method, params) => {
+    if ((params as Entry).input[0].text === "two") {
+      enter()
+      await opened // still waiting on Codex when the reload fails
+      throw new RpcError(-32600, "busy")
+    }
+    throw unloaded()
+  })
+  const late = h.sessions.prompt(sid, "two")
+  await entered
+  h.fake.script([], { initialize_delay: 0.5, resume_error: { code: -32600, message: "no rollout found" } })
+  expect(await h.sessions.prompt(sid, "one")).toBe("queued")
+  await h.sessions.interrupt(sid) // drops "one"; the marker waits for the turn "two" may start
+  await waitFor(() => errors(h, sid).length > 0, { what: "the failed reload" })
+  release()
+  await expect(late).rejects.toThrow("didn't take the message")
+  await waitFor(() => status(h, sid) === "idle", { what: "the refusal" })
+  const parts = messages(h, sid).flatMap((m) => m.parts)
+  expect(parts.at(-1)!.type).toBe("error")
+  expect(errors(h, sid)).toHaveLength(1)
+  expect(texts(h, sid).join("\n").match(/\[interrupted\]/g)).toHaveLength(1)
+})
+
 test("a message codex says has no thread while the session ends starts no load", async () => {
   const h = makeCodex({ endWaitMs: 1000 })
   h.fake.script([[{ sleep: 30 }]])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "work")
-  await waitFor(() => status(h, sid) === "busy", { what: "busy" })
+  await waitFor(() => turnRunning(h, sid), { what: "busy" })
   const old = h.sessions.get(sid)!.process!
   const [entered, enter] = gate()
   const [opened, release] = gate()
