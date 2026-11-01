@@ -14,7 +14,7 @@ import { HeadWatcher } from "../company/watch.ts"
 import { EXTENSIONS, type Extension, ExtensionError, loadExtensions } from "../extensions/index.ts"
 import { CodexSessions } from "../harness/sessions.ts"
 import { attach } from "../hq/core.ts"
-import { daemonArgs, daemonEnv, resolveHome } from "../install/launch.ts"
+import { daemonArgs, daemonEnv, requireCompany, resolveHome } from "../install/launch.ts"
 import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
 import { Monitor } from "../perm/monitor.ts"
 import { selfCommand } from "../platform.ts"
@@ -352,9 +352,9 @@ function close(server: Server): Promise<void> {
 /**
  * Runs the daemon for `paths` until SIGINT, SIGTERM or SIGHUP.
  *
- * The start: the office dir, the lock and pidfile, the stop signals (installed before anything opens, so a signal
- * during the start stops the office once it has started instead of killing the process mid-start), the company
- * repo and socket path checks, the tools (git required), the office (store, company clone, reaped workers), the
+ * The start: the company repo check (first, so a start on a home without one makes nothing), the office dir, the
+ * lock and pidfile, the stop signals (installed before anything opens, so a signal during the start stops the office
+ * once it has started instead of killing the process mid-start), the socket path check, the tools (git required), the office (store, company clone, reaped workers), the
  * extensions, HQ (attached last, so its listeners start after everything else and stop first), the office's start,
  * and last the socket: it listens only once everything is ready. A failed start undoes what it did, in reverse.
  *
@@ -368,6 +368,9 @@ async function run(
   { extensions, write, tools: given }: { extensions: readonly Extension[]; write: Write; tools?: Tools },
 ): Promise<void> {
   const log = officeLogger(write)
+  // First, unlike design §2.3's order (office dir, lock, then this check), so a start on a home without a company
+  // makes nothing there.
+  requireCompany(paths.home)
   makeOfficeDir(paths.office)
   const pidfile = new PidFile(paths.pidfile, paths.lock)
   await pidfile.acquire()
@@ -377,8 +380,6 @@ async function run(
     const onSignal = () => stop()
     for (const sig of STOP_SIGNALS) process.on(sig, onSignal)
     try {
-      if (!fs.existsSync(path.join(paths.company, ".git")))
-        throw new OfficeStartError(`no company repo at ${paths.company}`)
       checkSocketPath(paths.socket)
       // `main` can run without `pinDaemon` (tests); after the pin this filter changes nothing.
       const env = daemonEnv(process.env)

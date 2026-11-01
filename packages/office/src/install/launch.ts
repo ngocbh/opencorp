@@ -7,7 +7,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
-import { makeOfficeDir } from "../daemon/sockets.ts"
+import { makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
 import { reexec, selfCommand } from "../platform.ts"
 
 /** A service manager refused to install or start the office; the message says why. */
@@ -111,6 +111,13 @@ export function wantedHome(value: string | undefined, environ: Env, userHome = o
   return value ?? (environ.OPENCORP_HOME || path.join(userHome, ".opencorp"))
 }
 
+/** Throws `OfficeStartError` unless `home` holds a company clone (`company/.git`). The daemon checks this before
+ *  it makes anything, so a start on a wrong or missing home leaves nothing behind. */
+export function requireCompany(home: string): void {
+  const company = path.join(home, "company")
+  if (!fs.existsSync(path.join(company, ".git"))) throw new OfficeStartError(`no company repo at ${company}`)
+}
+
 /** The daemon's arguments: `--home <path>` and the re-exec's `--reexeced` mark, nothing else; throws on any other
  *  argument and on an empty home. The daemon's one parser, used before and after the re-exec, so the two can't
  *  disagree. */
@@ -155,12 +162,12 @@ function messageOf(error: unknown): string {
 
 /**
  * Pins a starting daemon to the office's env and folder: unless it already runs with `daemonEnv` of its env, in the
- * realpath of `office/` (made first), it re-execs itself there with `--reexeced`, same pid; one started with
+ * realpath of `office/` (made first, once the home is known to hold a company), it re-execs itself there with `--reexeced`, same pid; one started with
  * `--reexeced` that still differs exits instead. A service's added variables (launchd's `XPC_*`, systemd's
  * `INVOCATION_ID`) cause one re-exec too.
  *
  * Resolves to `undefined` when the daemon may run on, else the exit code: 2 for bad arguments, 1 for a home or
- * office dir that can't be used, a check still failing after the re-exec, or a re-exec that failed. Messages name
+ * office dir that can't be used (no company there included), a check still failing after the re-exec, or a re-exec that failed. Messages name
  * variables, never their values, and a failed re-exec only by its error's code or type.
  */
 export function pinDaemon(argv: readonly string[], options: PinOptions = {}): number | undefined {
@@ -185,6 +192,7 @@ export function pinDaemon(argv: readonly string[], options: PinOptions = {}): nu
   const office = path.join(home, "office")
   let officeReal: string
   try {
+    requireCompany(home)
     makeOfficeDir(office)
     officeReal = fs.realpathSync(office)
   } catch (error) {

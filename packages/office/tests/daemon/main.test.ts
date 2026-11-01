@@ -178,6 +178,7 @@ class RuntimeError extends Error {}
 
 test.each(["dir", "missing"])("a symlinked office dir stops the daemon start [%s]", async (target) => {
   const dir = shortDir()
+  company(dir)
   const elsewhere = path.join(dir, "elsewhere")
   if (target === "dir") fs.mkdirSync(elsewhere)
   fs.symlinkSync(elsewhere, path.join(dir, "office"))
@@ -266,8 +267,17 @@ test("missing company repo exits 1", async () => {
   const dir = shortDir()
   const out = collect()
   expect(await inProcess(() => main(["--home", dir], { write: out.write }))).toBe(1)
-  expect(out.text()).toContain(`no company repo at ${path.join(dir, "company")}`)
-  expect(fs.existsSync(path.join(dir, "office", "store.sqlite"))).toBe(false)
+  expect(out.text()).toContain(`no company repo at ${path.join(resolveHome(dir), "company")}`)
+  // Checked before anything is made: no office dir, no lock.
+  expect(fs.readdirSync(dir)).toEqual([])
+})
+
+test("a missing nested home leaves nothing behind", async () => {
+  const dir = shortDir()
+  const out = collect()
+  expect(await inProcess(() => main(["--home", path.join(dir, "a", "b")], { write: out.write }))).toBe(1)
+  expect(out.text()).toContain(`no company repo at ${path.join(resolveHome(dir), "a", "b", "company")}`)
+  expect(fs.existsSync(path.join(dir, "a"))).toBe(false)
 })
 
 test("failing extension stops start up", async () => {

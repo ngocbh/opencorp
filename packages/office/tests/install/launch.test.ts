@@ -13,6 +13,7 @@ import {
   launch,
   officeAnswers,
   pinDaemon,
+  requireCompany,
   resolveHome,
   runCommand,
   wantedHome,
@@ -187,13 +188,19 @@ function pin(argv: string[], options: Omit<PinOptions, "exec" | "write" | "comma
   return { code, calls, text }
 }
 
+/** `home` with a company clone's `.git`, which the daemon checks for before it makes anything. */
+function withCompany(home: string): string {
+  fs.mkdirSync(path.join(home, "company", ".git"), { recursive: true })
+  return home
+}
+
 /** A clean caller env for `home`. */
 function clean(home: string): Record<string, string> {
   return { PATH: "/usr/bin:/bin", HOME: home, LANG: "en_US.UTF-8" }
 }
 
 test("a daemon already in the office env and folder runs on", () => {
-  const home = tempDir()
+  const home = withCompany(tempDir())
   const office = path.join(home, "office")
   const got = pin(["--home", home], { environ: daemonEnv(clean(home)), cwd: () => office })
   expect(got.code).toBeUndefined()
@@ -203,7 +210,7 @@ test("a daemon already in the office env and folder runs on", () => {
 })
 
 test("a daemon with another env re-execs into the office env and folder", () => {
-  const home = tempDir()
+  const home = withCompany(tempDir())
   const office = path.join(home, "office")
   const argv = [...COMMAND, "daemon", "--home", home, "--reexeced"]
   const reexec = (env: Record<string, string>) => ({ argv, env, cwd: office })
@@ -232,7 +239,7 @@ test("a daemon with another env re-execs into the office env and folder", () => 
 })
 
 test("a daemon that still differs after its re-exec exits 1 naming variables not values", () => {
-  const home = tempDir()
+  const home = withCompany(tempDir())
   const environ = { ...clean(home), OPENAI_API_KEY: "sk-live-0000" }
   const got = pin(["--home", home, "--reexeced"], { environ, cwd: () => tempDir() })
   expect(got.code).toBe(1)
@@ -253,7 +260,7 @@ test("bad arguments exit 2 before any re-exec", () => {
 })
 
 test("a refused office dir exits 1 before any re-exec", () => {
-  const home = tempDir()
+  const home = withCompany(tempDir())
   const office = path.join(home, "office")
   fs.symlinkSync(tempDir(), office)
   const got = pin(["--home", home], { environ: clean(home), cwd: () => tempDir() })
@@ -263,7 +270,7 @@ test("a refused office dir exits 1 before any re-exec", () => {
 })
 
 test("a failed re-exec exits 1 with the errors code and never its message", () => {
-  const home = tempDir()
+  const home = withCompany(tempDir())
   const options = { environ: { ...clean(home), OPENAI_API_KEY: "sk-live-0000" }, cwd: () => tempDir() }
   const coded = pin(["--home", home], options, () => {
     throw Object.assign(new Error("boom sk-live-0000"), { code: "ENOENT" })
@@ -275,6 +282,27 @@ test("a failed re-exec exits 1 with the errors code and never its message", () =
   })
   expect(typed.code).toBe(1)
   expect(typed.text).toBe("opencorp office: can't re-exec into the office's env: RangeError\n")
+})
+
+test("a home with no company exits 1 and creates nothing before any re-exec", () => {
+  const home = tempDir()
+  const bare = pin(["--home", home], { environ: clean(home), cwd: () => tempDir() })
+  expect(bare.code).toBe(1)
+  expect(bare.text).toBe(`opencorp office: no company repo at ${path.join(fs.realpathSync(home), "company")}\n`)
+  expect(fs.readdirSync(home)).toEqual([])
+  expect(bare.calls).toEqual([])
+  const parent = tempDir()
+  const nested = pin(["--home", path.join(parent, "a", "b")], { environ: clean(parent), cwd: () => tempDir() })
+  expect(nested.code).toBe(1)
+  expect(nested.text).toStartWith("opencorp office: no company repo at ")
+  expect(fs.existsSync(path.join(parent, "a"))).toBe(false)
+  expect(nested.calls).toEqual([])
+})
+
+test("require company throws for a home without a company clone", () => {
+  const home = tempDir()
+  expect(() => requireCompany(home)).toThrow(`no company repo at ${path.join(home, "company")}`)
+  requireCompany(withCompany(home))
 })
 
 test("the pre re-exec check imports only node builtins platform and sockets", () => {
