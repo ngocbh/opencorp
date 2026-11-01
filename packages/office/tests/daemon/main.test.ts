@@ -1008,6 +1008,30 @@ test("build office updates the run index when a worker exits", async () => {
   await waitFor(() => update.mock.calls.length > 0, { what: "a run index update on the worker's exit" })
 })
 
+test("build office prunes orphan pins on start", async () => {
+  let office: Office | undefined
+  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const paths = new OfficePaths(home())
+  const orphan = path.join(paths.worktrees, "f".repeat(40))
+  fs.mkdirSync(orphan, { recursive: true })
+  fs.writeFileSync(path.join(orphan, "x"), "left by an earlier office\n")
+  const rec = recordingGit(tempDir())
+  office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write: collect().write })
+  spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
+  const prune = spyOn(office, "prunePins")
+  await office.start()
+  expect(prune).toHaveBeenCalled()
+  await office.prunePins()
+  expect(fs.existsSync(orphan)).toBe(false)
+})
+
 test("a failing start sweep does not stop the office start", async () => {
   let office: Office | undefined
   // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
