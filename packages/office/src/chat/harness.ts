@@ -411,7 +411,8 @@ export class ChatHarness implements SessionHarness {
   /**
    * Switches the session to `connection`/`model`; its next turn runs on them in a fresh run, and a reply already
    * running finishes where it is. A model equal to the connection's own is stored as null, and the note is cleared.
-   * It writes the store, not through the actor: the next spawn reads it. A Codex session's model is Codex's own.
+   * A live chat switches through its actor (`SessionActor.setModel`); one `starting` that no start of this harness's
+   * holds has the store written, which its start reads. A Codex session's model is Codex's own.
    * 409 `not_live` or `ending` for a session that ended or is ending; 422 `unknown_connection` for a connection not
    * on this office; 409 `connection_unusable` for one that can't be used now.
    */
@@ -434,7 +435,13 @@ export class ChatHarness implements SessionHarness {
       this.log(`connection ${connection} can't be used; session ${sessionId} stays where it is`)
       throw new HarnessError(409, "connection_unusable", `connection '${connection}' can't be used on this office now`)
     }
-    return this.store.updateSession(sessionId, { connection, model: model === own ? null : model, model_note: null })
+    const picked = model === own ? null : model
+    // Read again: the session may have started, ended or begun ending during the awaits.
+    const current = this.store.getSession(sessionId)
+    if (current?.status === "starting" && !this.#actors.has(sessionId)) {
+      return this.store.updateSession(sessionId, { connection, model: picked, model_note: null })
+    }
+    return this.#actor(sessionId).setModel(connection, picked)
   }
 
   /** The session's messages: a yian chat's from its runs' logs, with its live actor's calls in flight. The logs are

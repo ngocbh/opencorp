@@ -1007,6 +1007,20 @@ export class SessionActor implements LiveCalls {
     })
   }
 
+  /**
+   * Switches the session to connection `connection` and `model` (null: the connection's own), clears its note and
+   * returns the stored session. A reply already running finishes where it is, on the old model; the next run call is
+   * a fresh run on the new pick (`#recordCheck`). Refused with `409 not_live`, `409 ending` or `503 stopping`.
+   */
+  setModel(connection: string, model: string | null): Promise<SessionRecord> {
+    return this.#command(async () => {
+      this.#live()
+      this.#ctx.store.updateSession(this.sessionId, { connection, model, model_note: null })
+      this.#trySettle("after a switch")
+      return this.#session()
+    })
+  }
+
   /** Acts on the cost cap, as a charge does: over it, the running reply is stopped, the manager gets an item to raise
    *  it and the session settles; under it (a check that comes after a raise), nothing happens. */
   checkCap(): Promise<void> {
