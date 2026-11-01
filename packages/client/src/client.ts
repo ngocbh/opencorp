@@ -48,7 +48,7 @@ import type {
   WorkItem,
 } from "@opencorp/protocol"
 import { OfficeError, OfficeTimeout, UnknownDevice } from "./errors"
-import { request, seg, transportOf, where, type Method, type Transport } from "./http"
+import { isSegment, request, seg, transportOf, where, type Method, type Transport } from "./http"
 import { runLive, subscribe, type RunLiveFrame, type StreamEvent, type SubscribeOptions } from "./sse"
 
 export type OfficeClient = ReturnType<typeof createOfficeClient>
@@ -88,9 +88,17 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
   // so they wait for the office's answer.
   const get = <T>(path: string) => request<T>(transport, "GET", path, undefined, { timeoutMs, token })
   const post = <T>(path: string, body?: unknown) => call<T>("POST", path, body)
-  const s = (id: string) => `/sessions/${seg(id)}`
-  const q = (id: string) => `/questions/${seg(id)}`
-  const r = (id: string) => `/runs/${seg(id)}`
+  // Each throws not_found, in the office's words, for an id no request can carry; the methods are async, so that
+  // comes back as a rejected promise.
+  const s = (id: string) => `/sessions/${part(id, `no session ${id}`)}`
+  const q = (id: string) => `/questions/${part(id, `no question ${id}`)}`
+  const r = (id: string) => `/runs/${part(id, `no run ${id}`)}`
+  const person = (handle: string) => `/people/${part(handle, `no person @${handle}`)}`
+  const profile = (handle: string) => `/profiles/${part(handle, `no person ${handle}`)}`
+  const connection = (name: string) =>
+    `/connections/${part(name, `there is no connection '${name}' on this office`)}`
+  const signIn = (id: string) => `/connections/login/${part(id, `no sign-in ${id}`)}`
+  const workItem = (id: string) => `/work-items/${part(id, `no work item ${id}`)}`
   return {
     socket,
     whoami: () => get<WhoAmI>("/whoami"),
@@ -125,24 +133,24 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
       children: (id: string, opts: RunListOptions = {}) =>
         get<RunPage>(`/runs${query({ parent: id, ...runParams(opts) })}`),
       /** One run's header: summary, parent, children, fingerprint, pinned commit, models, usage and log state. */
-      get: (id: string) => get<RunDetail>(r(id)),
+      get: async (id: string) => get<RunDetail>(r(id)),
       /**
        * Node attempts, newest start first; `before` is the last page's `next_before`. Fails with
        * `isUnsupportedSchema` or `isNoLog`.
        */
-      nodes: (id: string, before?: number) => get<RunNodePage>(`${r(id)}/nodes${query({ before })}`),
+      nodes: async (id: string, before?: number) => get<RunNodePage>(`${r(id)}/nodes${query({ before })}`),
       /** Records after seq `after`; fails as `nodes` does. */
-      events: (id: string, after?: number) => get<RunEventPage>(`${r(id)}/events${query({ after })}`),
+      events: async (id: string, after?: number) => get<RunEventPage>(`${r(id)}/events${query({ after })}`),
       /** One record by seq, evidence included; fails as `nodes` does. */
-      event: (id: string, seq: number) => get<RunEvent>(`${r(id)}/events/${seq}`),
+      event: async (id: string, seq: number) => get<RunEvent>(`${r(id)}/events/${seq}`),
       /** Where the log downloads from, as stored, for a link (HQ only: the browser's cookie authorizes it). */
-      logUrl: (id: string) => `${socket}${r(id)}/log`,
+      logUrl: (id: string) => `${socket}/runs/${seg(id)}/log`,
       /**
        * Reads one live stream of run `id`: its records after seq `after`, then its model calls' frames while its worker
        * runs; see `runLive`. It never reconnects.
        */
       live: (id: string, handler: (f: RunLiveFrame) => void, opts: { after?: number; signal?: AbortSignal } = {}) =>
-        runLive(transport, `${r(id)}/live${query({ after: opts.after })}`, handler, { token, signal: opts.signal }),
+        runLive(transport, `/runs/${seg(id)}/live${query({ after: opts.after })}`, handler, { token, signal: opts.signal }),
     },
     /** Spends a pairing code and signs this browser in (HQ only). */
     pair: (req: PairRequest) => post<BrowserSession>("/pair", req),
@@ -165,20 +173,25 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
       status: () => get<HqStatus>("/hq"),
       pair: (req: PairCodeRequest) => post<PairCode>("/hq/pair", req),
       browsers: (person?: string) => get<BrowserSession[]>(`/hq/browsers${query({ person })}`),
-      removeBrowser: (id: string) => call<Ack>("DELETE", `/hq/browsers/${seg(id)}`),
+      removeBrowser: async (id: string) =>
+        call<Ack>("DELETE", `/hq/browsers/${part(id, `no browser session ${id}`)}`),
     },
     /** Adds a device for a human who gives their password; served without a token. */
     login: (req: LoginRequest) => post<Person>("/login", req),
     people: {
       list: () => get<Person[]>("/people"),
-      inFolder: (cwd: string) => get<Person[]>(`/folders/${seg(cwd)}/people`),
+      // A folder path's slashes are its own; the office answers [] for a folder nobody worked in, and so for one no
+      // request can name.
+      inFolder: async (cwd: string) =>
+        cwd === "" || cwd === "." || cwd.split("/").includes("..") ? [] : get<Person[]>(`/folders/${seg(cwd)}/people`),
       hire: (req: HireRequest) => post<HireResponse>("/people", req),
-      setPassword: (person: string, req: SetPasswordRequest) =>
-        call<Person>("PUT", `/people/${seg(person)}/password`, req),
+      setPassword: async (handle: string, req: SetPasswordRequest) =>
+        call<Person>("PUT", `${person(handle)}/password`, req),
     },
     devices: {
-      add: (person: string, req: AddDeviceRequest) => post<Person>(`/people/${seg(person)}/devices`, req),
-      remove: (person: string, name: string) => call<Person>("DELETE", `/people/${seg(person)}/devices/${seg(name)}`),
+      add: async (handle: string, req: AddDeviceRequest) => post<Person>(`${person(handle)}/devices`, req),
+      remove: async (handle: string, name: string) =>
+        call<Person>("DELETE", `${person(handle)}/devices/${part(name, `@${handle} has no device by that name`)}`),
     },
     sessions: {
       /** Sessions, newest updated first; several statuses are sent comma-separated. */
@@ -207,24 +220,24 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
             e.message += "; the chat may have started, so look for it in the session list (/sessions)"
           throw e
         }),
-      get: (id: string) => get<Session>(s(id)),
-      messages: (id: string) => get<Message[]>(`${s(id)}/messages`),
-      prompt: (id: string, req: PromptRequest) => post<Ack>(`${s(id)}/prompt`, req),
-      steer: (id: string, req: PromptRequest) => post<Ack>(`${s(id)}/steer`, req),
-      interrupt: (id: string) => post<Ack>(`${s(id)}/interrupt`),
-      end: (id: string) => post<Ack>(`${s(id)}/end`),
+      get: async (id: string) => get<Session>(s(id)),
+      messages: async (id: string) => get<Message[]>(`${s(id)}/messages`),
+      prompt: async (id: string, req: PromptRequest) => post<Ack>(`${s(id)}/prompt`, req),
+      steer: async (id: string, req: PromptRequest) => post<Ack>(`${s(id)}/steer`, req),
+      interrupt: async (id: string) => post<Ack>(`${s(id)}/interrupt`),
+      end: async (id: string) => post<Ack>(`${s(id)}/end`),
       /** Continues an ended Codex session on its thread, as a new session. */
-      continue: (id: string) =>
+      continue: async (id: string) =>
         request<Session>(transport, "POST", `${s(id)}/continue`, undefined, { timeoutMs: CREATE_TIMEOUT_MS, token }),
-      costCap: (id: string, req: CostCapRequest) => post<Session>(`${s(id)}/cost-cap`, req),
+      costCap: async (id: string, req: CostCapRequest) => post<Session>(`${s(id)}/cost-cap`, req),
       /** Switches a live chat's connection and model; its next reply runs on them. */
-      setModel: (id: string, req: SetModelRequest) => post<Session>(`${s(id)}/model`, req),
+      setModel: async (id: string, req: SetModelRequest) => post<Session>(`${s(id)}/model`, req),
     },
     connections: {
       list: () => get<ConnectionList>("/connections"),
       /** The models a connection offers, as the office last listed them; `refresh` lists them again. */
-      models: (name: string, opts: { refresh?: boolean } = {}) =>
-        get<ModelList>(`/connections/${seg(name)}/models${query({ refresh: opts.refresh ? 1 : undefined })}`),
+      models: async (name: string, opts: { refresh?: boolean } = {}) =>
+        get<ModelList>(`${connection(name)}/models${query({ refresh: opts.refresh ? 1 : undefined })}`),
       add: (req: AddConnectionRequest) =>
         request<Connection>(transport, "POST", "/connections", req, { timeoutMs: ADD_CONNECTION_TIMEOUT_MS, token }).catch(
           (e) => {
@@ -232,18 +245,18 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
             throw e
           },
         ),
-      remove: (name: string) => call<Ack>("DELETE", `/connections/${seg(name)}`),
+      remove: async (name: string) => call<Ack>("DELETE", connection(name)),
       setDefault: (req: SetDefaultConnectionRequest) => call<ConnectionList>("PUT", "/connections/default", req),
       /** Starts a subscription sign-in, which adds a connection once the human approves it at its URL with its code. */
       startLogin: (req: StartLoginRequest) =>
         request<ConnectionLogin>(transport, "POST", "/connections/login", req, { timeoutMs: START_LOGIN_TIMEOUT_MS, token }),
       /** A sign-in this person started, as it is now. */
-      login: (id: string) => get<ConnectionLogin>(`/connections/login/${seg(id)}`),
-      cancelLogin: (id: string) => call<Ack>("DELETE", `/connections/login/${seg(id)}`),
+      login: async (id: string) => get<ConnectionLogin>(signIn(id)),
+      cancelLogin: async (id: string) => call<Ack>("DELETE", signIn(id)),
     },
     workItems: {
-      get: (id: string) => get<WorkItem>(`/work-items/${seg(id)}`),
-      comments: (id: string) => get<Comment[]>(`/work-items/${seg(id)}/comments`),
+      get: async (id: string) => get<WorkItem>(workItem(id)),
+      comments: async (id: string) => get<Comment[]>(`${workItem(id)}/comments`),
     },
     questions: {
       /** Questions by session and status, oldest first; several statuses are sent comma-separated. */
@@ -251,20 +264,23 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
         get<Question[]>(
           `/questions${query({ session: opts.session, status: joined(opts.status) })}`,
         ),
-      get: (id: string) => get<Question>(q(id)),
-      answer: (id: string, req: AnswerRequest) => post<Question>(`${q(id)}/answer`, req),
-      side: (id: string, req: SideChatRequest) => post<Session>(`${q(id)}/side`, req),
-      sendBack: (id: string, req: SendBackRequest) => post<Question>(`${q(id)}/send-back`, req),
-      stop: (id: string) => post<Question>(`${q(id)}/stop`),
-      dismissCarried: (id: string) => post<Question>(`${q(id)}/carried/dismiss`),
+      get: async (id: string) => get<Question>(q(id)),
+      answer: async (id: string, req: AnswerRequest) => post<Question>(`${q(id)}/answer`, req),
+      side: async (id: string, req: SideChatRequest) => post<Session>(`${q(id)}/side`, req),
+      sendBack: async (id: string, req: SendBackRequest) => post<Question>(`${q(id)}/send-back`, req),
+      stop: async (id: string) => post<Question>(`${q(id)}/stop`),
+      dismissCarried: async (id: string) => post<Question>(`${q(id)}/carried/dismiss`),
     },
     profiles: {
-      get: (person: string) => get<Profile>(`/profiles/${seg(person)}`),
-      put: (person: string, req: ProfileWriteRequest) => call<Profile>("PUT", `/profiles/${seg(person)}`, req),
-      manager: (person: string, req: ProfileManagerRequest) => post<Session>(`/profiles/${seg(person)}/manager`, req),
-      proposals: (person: string) => get<ProfileProposal[]>(`/profiles/${seg(person)}/proposals`),
+      get: async (handle: string) => get<Profile>(profile(handle)),
+      put: async (handle: string, req: ProfileWriteRequest) => call<Profile>("PUT", profile(handle), req),
+      manager: async (handle: string, req: ProfileManagerRequest) => post<Session>(`${profile(handle)}/manager`, req),
+      proposals: async (handle: string) => get<ProfileProposal[]>(`${profile(handle)}/proposals`),
     },
-    proposals: { apply: (id: string) => post<Profile>(`/profile-proposals/${seg(id)}/apply`) },
+    proposals: {
+      apply: async (id: string) =>
+        post<Profile>(`/profile-proposals/${part(id, `no profile proposal ${id}`)}/apply`),
+    },
     events: {
       /** Follows `GET /events`, reconnecting until `close()`; see `subscribe`. */
       subscribe: (handler: (e: StreamEvent) => void, opts?: SubscribeOptions) => subscribe(transport, handler, { token, ...opts }),
@@ -287,6 +303,12 @@ export type RunListOptions = {
   q?: string
   before?: string
   limit?: number
+}
+
+/** `id` as one path segment; throws not_found (with `missing`) for one no request can carry, as no record has it. */
+function part(id: string, missing: string) {
+  if (!isSegment(id)) throw new OfficeError(404, "not_found", missing)
+  return seg(id)
 }
 
 /** One value or several, comma-joined; undefined for none. */

@@ -27,6 +27,12 @@ export type Method = "GET" | "POST" | "PUT" | "DELETE"
 /** Encodes one path segment (an id or a folder path). */
 export const seg = encodeURIComponent
 
+/**
+ * Whether `value` can be sent as one path segment: the URL parser collapses `.` and `..` even percent-encoded, and the
+ * office refuses an empty segment or one holding `/`.
+ */
+export const isSegment = (value: string) => value !== "" && value !== "." && value !== ".." && !value.includes("/")
+
 export type RequestOptions = {
   /** Aborts the request; the abort error is rethrown as is. */
   signal?: AbortSignal

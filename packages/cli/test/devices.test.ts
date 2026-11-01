@@ -513,6 +513,17 @@ test("no warning while another human's device remains", async () => {
   })
 })
 
+test("remove-browser with an id no path can carry says there's no such session and sends no DELETE", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  for (const bad of ["..", "."])
+    expect(await opencorp(trusted, "devices", "remove-browser", bad)).toEqual({
+      code: 1,
+      out: "",
+      err: `opencorp devices: no browser session ${bad}`,
+    })
+  expect(office.requests.filter((r) => r.method === "DELETE")).toEqual([])
+})
+
 test("logout removes this device with its own token, then the identity", async () => {
   await opencorp(trusted, "login", "--device", "mac")
   const token = identity(trusted).token

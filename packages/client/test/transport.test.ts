@@ -224,3 +224,145 @@ test("a stream refused with one status and then another reports each; repeated n
   expect(seen.map((e) => e.type)).toEqual(["unreachable", "unreachable", "unreachable"])
   expect((seen[2] as { error?: any }).error).not.toBeInstanceOf(OfficeError)
 })
+
+/** A client over a recording unix socket server. */
+function socketClient() {
+  const dir = mkdtempSync("/tmp/oct-")
+  onStop(() => rmSync(dir, { recursive: true, force: true }))
+  const socket = path.join(dir, "o.sock")
+  const { seen } = serve({ unix: socket })
+  return { client: createOfficeClient({ socket }), seen }
+}
+
+type Client = ReturnType<typeof createOfficeClient>
+const body = {} as never
+
+/** Each method that puts a caller's value in the path, how to call it with `bad` there, and the office's not_found. */
+const GUARDED: [string, (c: Client, bad: string) => Promise<unknown>, (bad: string) => string][] = [
+  ["sessions.get", (c, b) => c.sessions.get(b), (b) => `no session ${b}`],
+  ["sessions.messages", (c, b) => c.sessions.messages(b), (b) => `no session ${b}`],
+  ["sessions.prompt", (c, b) => c.sessions.prompt(b, body), (b) => `no session ${b}`],
+  ["sessions.steer", (c, b) => c.sessions.steer(b, body), (b) => `no session ${b}`],
+  ["sessions.interrupt", (c, b) => c.sessions.interrupt(b), (b) => `no session ${b}`],
+  ["sessions.end", (c, b) => c.sessions.end(b), (b) => `no session ${b}`],
+  ["sessions.continue", (c, b) => c.sessions.continue(b), (b) => `no session ${b}`],
+  ["sessions.costCap", (c, b) => c.sessions.costCap(b, body), (b) => `no session ${b}`],
+  ["sessions.setModel", (c, b) => c.sessions.setModel(b, body), (b) => `no session ${b}`],
+  ["questions.get", (c, b) => c.questions.get(b), (b) => `no question ${b}`],
+  ["questions.answer", (c, b) => c.questions.answer(b, body), (b) => `no question ${b}`],
+  ["questions.side", (c, b) => c.questions.side(b, body), (b) => `no question ${b}`],
+  ["questions.sendBack", (c, b) => c.questions.sendBack(b, body), (b) => `no question ${b}`],
+  ["questions.stop", (c, b) => c.questions.stop(b), (b) => `no question ${b}`],
+  ["questions.dismissCarried", (c, b) => c.questions.dismissCarried(b), (b) => `no question ${b}`],
+  ["runs.get", (c, b) => c.runs.get(b), (b) => `no run ${b}`],
+  ["runs.nodes", (c, b) => c.runs.nodes(b), (b) => `no run ${b}`],
+  ["runs.events", (c, b) => c.runs.events(b), (b) => `no run ${b}`],
+  ["runs.event", (c, b) => c.runs.event(b, 1), (b) => `no run ${b}`],
+  ["devices.add", (c, b) => c.devices.add(b, body), (b) => `no person @${b}`],
+  ["devices.remove", (c, b) => c.devices.remove(b, "mac"), (b) => `no person @${b}`],
+  ["devices.remove (name)", (c, b) => c.devices.remove("ann", b), () => "@ann has no device by that name"],
+  ["people.setPassword", (c, b) => c.people.setPassword(b, body), (b) => `no person @${b}`],
+  ["hq.removeBrowser", (c, b) => c.hq.removeBrowser(b), (b) => `no browser session ${b}`],
+  ["connections.models", (c, b) => c.connections.models(b), (b) => `there is no connection '${b}' on this office`],
+  ["connections.remove", (c, b) => c.connections.remove(b), (b) => `there is no connection '${b}' on this office`],
+  ["connections.login", (c, b) => c.connections.login(b), (b) => `no sign-in ${b}`],
+  ["connections.cancelLogin", (c, b) => c.connections.cancelLogin(b), (b) => `no sign-in ${b}`],
+  ["workItems.get", (c, b) => c.workItems.get(b), (b) => `no work item ${b}`],
+  ["workItems.comments", (c, b) => c.workItems.comments(b), (b) => `no work item ${b}`],
+  ["profiles.get", (c, b) => c.profiles.get(b), (b) => `no person ${b}`],
+  ["profiles.put", (c, b) => c.profiles.put(b, body), (b) => `no person ${b}`],
+  ["profiles.manager", (c, b) => c.profiles.manager(b, body), (b) => `no person ${b}`],
+  ["profiles.proposals", (c, b) => c.profiles.proposals(b), (b) => `no person ${b}`],
+  ["proposals.apply", (c, b) => c.proposals.apply(b), (b) => `no profile proposal ${b}`],
+]
+
+/** Methods with no caller value in the path (a query string carries any). */
+const NO_PATH_SEGMENT = new Set([
+  "whoami",
+  "health",
+  "company.get",
+  "company.tree",
+  "company.file", // its path goes in the query
+  "costs.since",
+  "runs.list",
+  "runs.children", // the parent goes in the query
+  "pair",
+  "signIn",
+  "logout",
+  "hq.status",
+  "hq.pair",
+  "hq.browsers",
+  "login",
+  "people.list",
+  "people.inFolder", // a folder path, slashes and all: tested on its own
+  "people.hire",
+  "sessions.list",
+  "sessions.create",
+  "connections.list",
+  "connections.add",
+  "connections.setDefault",
+  "connections.startLogin",
+  "questions.list",
+  "events.subscribe",
+])
+
+/** Methods that put an id in the path but aren't guarded. */
+const UNGUARDED = new Set([
+  "runs.logUrl", // builds a link and sends nothing
+  "runs.live", // HQ-only stream: the office answers no_route, which its caller reports
+])
+
+test("an id no path segment can carry is not_found, in the office's words, and nothing is sent", async () => {
+  const { client, seen } = socketClient()
+  for (const [name, call, missing] of GUARDED)
+    for (const bad of ["", ".", "..", "a/b", "../x"]) {
+      let p: Promise<unknown>
+      try {
+        p = call(client, bad)
+      } catch (e) {
+        throw new Error(`${name}(${JSON.stringify(bad)}) threw instead of rejecting: ${e}`)
+      }
+      const e = await failure(p)
+      expect([name, bad, e instanceof OfficeError, e.status, e.code, e.message]).toEqual([
+        name,
+        bad,
+        true,
+        404,
+        "not_found",
+        missing(bad),
+      ])
+    }
+  expect(seen).toEqual([])
+})
+
+test("ids a path segment can carry are sent, encoded", async () => {
+  const { client, seen } = socketClient()
+  for (const id of ["S1", "a.b", "...", "%2e", "a%2Fb"]) await client.sessions.get(id)
+  expect(seen.map((r) => r.path)).toEqual([
+    "/sessions/S1",
+    "/sessions/a.b",
+    "/sessions/...",
+    "/sessions/%252e",
+    "/sessions/a%252Fb",
+  ])
+})
+
+test("people.inFolder answers [] for a folder no request can name, and sends a folder path whole", async () => {
+  const { client, seen } = socketClient()
+  for (const cwd of ["", ".", "..", "/a/../b", "../x"]) expect(await client.people.inFolder(cwd)).toEqual([])
+  expect(seen).toEqual([])
+  await client.people.inFolder("/Users/me/proj")
+  expect(seen.map((r) => r.path)).toEqual(["/folders/%2FUsers%2Fme%2Fproj/people"])
+})
+
+test("every client method is guarded, carries no path value, or is listed as unguarded", () => {
+  const names: string[] = []
+  const walk = (o: Record<string, unknown>, prefix: string) => {
+    for (const [k, v] of Object.entries(o))
+      if (typeof v === "function") names.push(prefix + k)
+      else if (v && typeof v === "object") walk(v as Record<string, unknown>, `${prefix}${k}.`)
+  }
+  walk(createOfficeClient({ socket: "/nowhere" }), "")
+  const guarded = new Set(GUARDED.map(([name]) => name.split(" ")[0]))
+  expect(names.filter((n) => !guarded.has(n) && !NO_PATH_SEGMENT.has(n) && !UNGUARDED.has(n))).toEqual([])
+})
