@@ -79,9 +79,12 @@ export class Hq {
     return { ok: true, office: { api: this.api }, app: this.build.read() }
   }
 
-  /** A one-time link for `handle`, asked for by `issuer`. */
-  async mint(handle: string, { issuer, openFile }: { issuer: string; openFile: boolean }): Promise<PairCode> {
-    const minted = await this.codes.mint(handle, { issuer, url: (code) => this.url(`/pair#${code}`), openFile })
+  /** A one-time link for `handle`, asked for by `issuer` and checked at commit `sha`. */
+  async mint(
+    handle: string,
+    { issuer, openFile, sha }: { issuer: string; openFile: boolean; sha: string },
+  ): Promise<PairCode> {
+    const minted = await this.codes.mint(handle, { issuer, url: (code) => this.url(`/pair#${code}`), openFile, sha })
     return {
       path: `/pair#${minted.code}`,
       url: this.url(`/pair#${minted.code}`),

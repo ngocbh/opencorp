@@ -172,9 +172,10 @@ export function web(hq: Hq): Promise<HqClient> {
   return hqClient(hq, { headers: { origin: ORIGIN } })
 }
 
-/** A pairing code minted for the CEO, by the CEO. */
+/** A pairing code minted for the CEO, by the CEO, at HEAD. */
 export async function pairCode(hq: Hq): Promise<string> {
-  return (await hq.mint(CEO, { issuer: CEO, openFile: false })).path.split("#")[1]!
+  const sha = await hq.office.git.readHead()
+  return (await hq.mint(CEO, { issuer: CEO, openFile: false, sha })).path.split("#")[1]!
 }
 
 /** `web` with a browser session for the CEO, paired; asserts the pair answered 200 (Python's `signed_in`). */

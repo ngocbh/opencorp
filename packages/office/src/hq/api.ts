@@ -360,7 +360,11 @@ export const ROUTES: readonly Route<HqContext>[] = [
           "pair_code_invalid",
           "This link has expired or was already used. Run `opencorp pair` again.",
         )
-      const [session, value] = await hq.sessions.issue(pending.handle, { issuedBy: pending.issuer, label })
+      const [session, value] = await hq.sessions.issue(pending.handle, {
+        issuedBy: pending.issuer,
+        label,
+        since: pending.sha,
+      })
       if (old) await hq.sessions.revoke(old) // pairing again replaces this browser's session
       return sessionReply(req, session, value)
     },

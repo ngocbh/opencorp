@@ -10,14 +10,16 @@ import type { Office } from "../../src/daemon/office.ts"
 import {
   BrowserSessions,
   Fingerprints,
+  type GoneSince,
   type Humans,
   passwordFp,
   passwordFps,
   STREAMS_PER_SESSION,
   TTL,
 } from "../../src/hq/sessions.ts"
+import { HqSessionRecord } from "../../src/store/store.ts"
 import { git } from "../company/helpers.ts"
-import { makeOffice } from "../daemon/helpers.ts"
+import { addHuman, makeOffice } from "../daemon/helpers.ts"
 import { handEdit } from "./helpers.ts"
 
 const T0 = new Date("2026-10-19T10:00:00Z")
@@ -35,8 +37,36 @@ function sessionsFor(
   office: Office,
   clock = new Clock(),
   load?: (git: CompanyGit, sha: string) => Promise<Humans>,
+  goneSince?: GoneSince,
 ): BrowserSessions {
-  return new BrowserSessions(office.store, new CompanySnapshots(office.git), { clock: clock.call, passwordFps: load })
+  return new BrowserSessions(office.store, new CompanySnapshots(office.git), {
+    clock: clock.call,
+    passwordFps: load,
+    goneSince,
+  })
+}
+
+/** Deletes `handle`'s person file in `company` and commits it. */
+function remove(company: string, handle: string): void {
+  git(company, "rm", "-q", `people/${handle}/person.yaml`)
+  git(company, "commit", "-qm", `remove ${handle}`)
+}
+
+/** `CompanyGit.goneSince`, counting its calls. */
+function countingGone(): { calls: number; gone: GoneSince } {
+  const counter = {
+    calls: 0,
+    gone: ((git, relpath, from, to) => {
+      counter.calls++
+      return git.goneSince(relpath, from, to)
+    }) as GoneSince,
+  }
+  return counter
+}
+
+/** Resolves once `ready()` is true, polling. */
+async function until(ready: () => boolean): Promise<void> {
+  while (!ready()) await new Promise((resolve) => setTimeout(resolve, 1))
 }
 
 /** The `HttpError` `promise` rejects with. */
@@ -242,6 +272,172 @@ test("deleting the person ends the session", async () => {
   expect(office.store.getHqSession(pub.id)).toBeUndefined()
 })
 
+test("removing the person and adding them again, with no check between, ends the session", async () => {
+  const office = makeOffice()
+  const company = office.paths.company
+  addHuman(company, "ann")
+  const s = sessionsFor(office)
+  const [pub, cookie] = await s.issue("ann", ISSUE)
+  remove(company, "ann")
+  addHuman(company, "ann") // the same handle, again a human with no password
+  expect(await s.check(cookie)).toBeNull()
+  expect(office.store.getHqSession(pub.id)).toBeUndefined()
+})
+
+test("reverting a removal doesnt bring the session back", async () => {
+  const office = makeOffice()
+  const company = office.paths.company
+  addHuman(company, "ann")
+  const s = sessionsFor(office)
+  const [pub, cookie] = await s.issue("ann", ISSUE)
+  remove(company, "ann")
+  git(company, "revert", "--no-edit", "HEAD")
+  expect(await s.check(cookie)).toBeNull()
+  expect(office.store.getHqSession(pub.id)).toBeUndefined()
+})
+
+test("a removal ends the session even when the file added again doesnt validate", async () => {
+  const office = makeOffice()
+  const company = office.paths.company
+  addHuman(company, "ann")
+  const s = sessionsFor(office)
+  const [pub, cookie] = await s.issue("ann", ISSUE)
+  remove(company, "ann")
+  addHuman(company, "ann")
+  handEdit(company, "ann", { nickname: "typo" })
+  expect(await s.check(cookie)).toBeNull()
+  expect(office.store.getHqSession(pub.id)).toBeUndefined()
+})
+
+test("a reset to before the hire and a hire again ends the session; a rebase with the hire upstream keeps it", async () => {
+  const office = makeOffice()
+  const company = office.paths.company
+  addHuman(company, "ann")
+  const s = sessionsFor(office)
+  const [first, firstCookie] = await s.issue("ann", ISSUE)
+  git(company, "reset", "-q", "--hard", "HEAD~1")
+  handEdit(company, "minh", { title: "Lead" }) // else the hire again could be the very same commit
+  addHuman(company, "ann")
+  expect(await s.check(firstCookie)).toBeNull()
+  expect(office.store.getHqSession(first.id)).toBeUndefined()
+
+  handEdit(company, "minh", { title: "Local" }) // a commit not pushed yet
+  const [kept, keptCookie] = await s.issue("ann", ISSUE)
+  git(company, "branch", "upstream", "HEAD~1")
+  git(company, "checkout", "-q", "upstream")
+  handEdit(company, "ngocbh", { title: "Upstream" })
+  git(company, "checkout", "-q", "main")
+  git(company, "rebase", "-q", "upstream")
+  expect((await s.check(keptCookie))?.id).toBe(kept.id)
+})
+
+test("a session with no issue commit, or one the clone lacks, ends", async () => {
+  const office = makeOffice()
+  const s = sessionsFor(office)
+  for (const issuedSha of [null, "f".repeat(40)]) {
+    const [pub, cookie] = await s.issue("ngocbh", ISSUE)
+    const row = office.store.getHqSession(pub.id)!
+    office.store.deleteHqSession(pub.id)
+    office.store.addHqSession(new HqSessionRecord({ ...row, issuedSha }))
+    const fresh = sessionsFor(office) // nothing in memory, as after a restart
+    expect(await fresh.check(cookie)).toBeNull()
+    expect(office.store.getHqSession(pub.id)).toBeUndefined()
+  }
+})
+
+test("the history isnt read while HEAD is the issue commit, and once per HEAD, issue commit and person", async () => {
+  const office = makeOffice()
+  const counter = countingGone()
+  const s = sessionsFor(office, new Clock(), undefined, counter.gone)
+  const [a, cookieA] = await s.issue("ngocbh", ISSUE)
+  const [, sameCommit] = await s.issue("ngocbh", ISSUE)
+  await s.check(cookieA)
+  await s.check(sameCommit)
+  expect(counter.calls).toBe(0)
+  handEdit(office.paths.company, "minh", { title: "Lead" })
+  const [, cookieB] = await s.issue("ngocbh", ISSUE)
+  const sha = await office.git.readHead()
+  await Promise.all([s.check(cookieA), s.check(sameCommit), s.stillValid(a.id, sha), s.check(cookieB)])
+  await s.check(cookieA)
+  expect(counter.calls).toBe(1) // cookieB was issued at HEAD
+  handEdit(office.paths.company, "minh", { title: "Head" })
+  await Promise.all([s.check(cookieA), s.check(cookieB), s.check(sameCommit)])
+  expect(counter.calls).toBe(3)
+})
+
+test("a failed history read rejects the check, keeps the session and is read again", async () => {
+  const office = makeOffice()
+  let calls = 0
+  const s = sessionsFor(office, new Clock(), undefined, (git, relpath, from, to) => {
+    calls++
+    return calls === 1 ? Promise.reject(new Error("git went away")) : git.goneSince(relpath, from, to)
+  })
+  const [pub, cookie] = await s.issue("ngocbh", ISSUE)
+  handEdit(office.paths.company, "minh", { title: "Lead" })
+  await expect(s.check(cookie)).rejects.toThrow("git went away")
+  expect(office.store.getHqSession(pub.id)).toBeDefined()
+  expect((await s.check(cookie))?.id).toBe(pub.id)
+  expect(calls).toBe(2)
+})
+
+test("a revoke during the history read wins, in check and in still valid", async () => {
+  const office = makeOffice()
+  let entered = false
+  let gate: Promise<void> | null = null
+  const s = sessionsFor(office, new Clock(), undefined, async (git, relpath, from, to) => {
+    entered = true
+    if (gate !== null) await gate
+    return git.goneSince(relpath, from, to)
+  })
+  const [checked, cookie] = await s.issue("ngocbh", ISSUE)
+  handEdit(office.paths.company, "minh", { title: "Lead" })
+  const [streamed] = await s.issue("ngocbh", ISSUE) // issued at another commit, so its history is read on its own
+  handEdit(office.paths.company, "minh", { title: "Head" }) // a new HEAD, whose history isnt read yet
+  const sha = await office.git.readHead()
+  for (const [sid, run] of [
+    [checked.id, () => s.check(cookie)],
+    [streamed.id, () => s.stillValid(streamed.id, sha)],
+  ] as const) {
+    let release!: () => void
+    gate = new Promise((resolve) => (release = resolve))
+    entered = false
+    const checking = run()
+    await until(() => entered)
+    await s.revoke(sid)
+    release()
+    expect(await checking).toBeFalsy()
+  }
+})
+
+test("still valid ends the session across a removal and re-add it never saw", async () => {
+  const office = makeOffice()
+  const company = office.paths.company
+  addHuman(company, "ann")
+  const s = sessionsFor(office)
+  const [pub] = await s.issue("ann", ISSUE)
+  remove(company, "ann")
+  addHuman(company, "ann") // as if the watcher skipped the removal's commit
+  expect(await s.stillValid(pub.id, await office.git.head())).toBe(false)
+  expect(office.store.getHqSession(pub.id)).toBeUndefined()
+  expect(s.alive(pub.id)).toBe(false)
+})
+
+test("issue records HEAD, and refuses a code minted before the person was removed and added again", async () => {
+  const office = makeOffice()
+  const company = office.paths.company
+  addHuman(company, "ann")
+  const since = await office.git.readHead()
+  const s = sessionsFor(office)
+  const [pub] = await s.issue("ann", { ...ISSUE, since })
+  expect(office.store.getHqSession(pub.id)!.issuedSha).toBe(since)
+  remove(company, "ann")
+  addHuman(company, "ann")
+  const caught = await httpError(s.issue("ann", { ...ISSUE, since }))
+  expect([caught.status, caught.code]).toEqual([422, "not_a_human"])
+  expect(caught.message).toBe("the person isn't a human in the company at HEAD")
+  await s.issue("ann", { ...ISSUE, since: await office.git.readHead() })
+})
+
 test("offboarding ends the session", async () => {
   const office = makeOffice()
   const s = sessionsFor(office)
@@ -374,6 +570,19 @@ test("listing a persons sessions ends those a password change ended", async () =
   expect(cut.signal.aborted).toBe(true)
 })
 
+test("listing a persons sessions ends those issued before they were removed and added again", async () => {
+  const office = makeOffice()
+  const company = office.paths.company
+  addHuman(company, "ann")
+  const s = sessionsFor(office)
+  const [old] = await s.issue("ann", ISSUE)
+  remove(company, "ann")
+  addHuman(company, "ann")
+  const [kept] = await s.issue("ann", ISSUE)
+  expect((await s.listLive("ann")).map((r) => r.id)).toEqual([kept.id])
+  expect(office.store.getHqSession(old.id)).toBeUndefined()
+})
+
 test("listing a persons sessions while their file cant be read ends none", async () => {
   const office = makeOffice()
   const s = sessionsFor(office)
@@ -504,7 +713,7 @@ test("its inspect and json show no secret or fingerprint", async () => {
   const secret = cookie.split(".")[1]!
   const row = office.store.getHqSession(pub.id)!
   for (const shown of [inspect(s), JSON.stringify(s)]) {
-    for (const hidden of [secret, row.secretSha256, row.passwordFp]) expect(shown).not.toContain(hidden)
+    for (const hidden of [secret, row.secretSha256, row.passwordFp, row.issuedSha!]) expect(shown).not.toContain(hidden)
   }
   expect(inspect(s)).toBe("BrowserSessions { tracked: 1 }")
   expect(JSON.parse(JSON.stringify(s))).toEqual({ tracked: 1 })
