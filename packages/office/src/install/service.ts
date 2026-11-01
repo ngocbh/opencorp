@@ -334,6 +334,25 @@ const ALREADY_RUNNING = /^opencorp office: office already running \(pid (\d+|unk
 /** A stack frame line under the crash marker. */
 const FRAME = /^\s+at /
 
+/** A line the office wrote to its log (`logLine`): `<ISO time> <level> <logger>: <message>`. */
+const OFFICE_LINE = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z [A-Z]+ [\w.-]+: /
+
+/** The line Bun ends an uncaught error's report with. */
+const BUN_TRAILER = /^Bun v\S+ \(.+\)$/
+
+/** How Bun says it can't load a module, as when the office's checkout moved: shown as is, since it names only the
+ *  missing file. */
+const MODULE_MISSING = /^error: (?:Module not found "[^"]*"|Cannot find module '[^']*'(?: from '[^']*')?)$/
+
+/** The errno code line of an error Bun printed (`code: "ENOENT"`), the only part of it shown. */
+const ERRNO_LINE = /^\s*code: "(E[A-Z0-9]{1,31})",?$/
+
+/** A terminal color code, as Bun colors its error lines. */
+const COLOR = /\x1b\[[0-9;]*m/g
+
+/** The most of a foreign line `lastFailure` shows. */
+const FOREIGN_CAP = 200
+
 /** The most of the office log `readLog` reads: far more than one start writes. */
 const LOG_WINDOW = 64 * 1024
 
@@ -388,19 +407,40 @@ function startError(lines: string[], i: number): string {
   return type === undefined ? lines[i]! : `${START_ERROR}the office failed to start: ${type}`
 }
 
+/** Why the daemon's last start failed: `text`, and whether the office wrote it (`foreign` when it didn't). */
+export interface Failure {
+  text: string
+  foreign: boolean
+}
+
 /**
  * Why the daemon's last start failed, from the office log's text, or null if it didn't: the line it printed when it
- * couldn't start, or `office crashed: <type>` when the log ends with the crash marker and its frames (the frames
- * stay in the log). A marker with other lines after it belongs to an earlier start, and a duplicate start (exit 0)
- * is no failure.
+ * couldn't start; `office crashed: <type>` when the log ends with the crash marker and its frames (the frames stay in
+ * the log); or, when the log ends with output the office didn't write (Bun's own report of an error at load, as when
+ * the checkout it ran from moved), a foreign failure. A marker or start error with office lines after it belongs to
+ * an earlier start, and a duplicate start (exit 0) is no failure.
+ *
+ * Of foreign output only Bun's missing-module line and an errno code are shown; anything else may hold anything.
  */
-export function lastFailure(text: string): string | null {
-  const lines = logLines(text)
+export function lastFailure(text: string): Failure | null {
+  const lines = logLines(text.replace(COLOR, ""))
   const last = lines.at(-1)
   if (last === undefined) return null
-  if (last.startsWith(START_ERROR) && !ALREADY_RUNNING.test(last)) return startError(lines, lines.length - 1)
-  const marker = lines.findLast((line) => !FRAME.test(line))
-  return marker?.match(CRASH_MARKER)?.[1] ?? null
+  if (last.startsWith(START_ERROR)) {
+    return ALREADY_RUNNING.test(last) ? null : { text: startError(lines, lines.length - 1), foreign: false }
+  }
+  const end = lines.findLast((line) => !FRAME.test(line) && !BUN_TRAILER.test(line))
+  if (end === undefined) return null
+  const marker = end.match(CRASH_MARKER)?.[1]
+  if (marker !== undefined) return { text: marker, foreign: false }
+  if (OFFICE_LINE.test(end) || end.startsWith(START_ERROR)) return null
+  const ours = lines.findLastIndex((line) => OFFICE_LINE.test(line) || line.startsWith(START_ERROR))
+  const block = lines.slice(ours + 1)
+  const missing = block.find((line) => MODULE_MISSING.test(line))
+  if (missing !== undefined) return { text: missing.slice(0, FOREIGN_CAP), foreign: true }
+  const code = block.map((line) => line.match(ERRNO_LINE)?.[1]).find((found) => found !== undefined)
+  const said = code ? `an ${code} error` : "output"
+  return { text: `the log ends with ${said} the office didn't write`, foreign: true }
 }
 
 /** Why a background daemon ended before it answered: its start error (with the prefix), the type it crashed with,

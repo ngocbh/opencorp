@@ -115,6 +115,20 @@ export function plist(launch: Launch): Buffer {
   })
 }
 
+/** The `ProgramArguments` array as `plist` lays it out: one tab-indented `<string>` per line. */
+const PROGRAM_ARGUMENTS =
+  /\n\t<key>ProgramArguments<\/key>\n\t<array>\n((?:\t\t<string>[^<]*<\/string>\n)+)\t<\/array>\n/
+
+/** The program arguments of a plist `plist` wrote (`text`), or null when it isn't laid out as `plist` lays it out. */
+export function programArguments(text: string): string[] | null {
+  const block = PROGRAM_ARGUMENTS.exec(text)?.[1]
+  if (block === undefined) return null
+  // `&amp;` last, so an escaped `&lt;` stays text.
+  return [...block.matchAll(/<string>([^<]*)<\/string>/g)].map((m) =>
+    m[1]!.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&"),
+  )
+}
+
 /** Why launchd doesn't have this office's agent loaded, or null if it does. */
 export async function notLoaded(launch: Launch, host: Host): Promise<string | null> {
   const done = await host.run(["launchctl", "print", `gui/${host.uid}/${label(launch)}`])

@@ -1596,6 +1596,8 @@ test(
     expect(log).toMatch(new RegExp(`^\\S+Z INFO opencorp\\.daemon\\.main: office serving on ${sock}$`, "m"))
     expect(log).toMatch(/^\S+Z INFO opencorp\.hq\.pairing: pairing code minted for @/m)
     expect(log).not.toContain(code)
+    // A clean stop says so last, so doctor doesn't take earlier output for a failed start.
+    expect(log.trimEnd().split("\n").at(-1)).toMatch(/^\S+Z INFO opencorp\.daemon\.main: office stopped$/)
   },
   120_000,
 )

@@ -16,11 +16,12 @@ import { OfficePaths } from "../../src/daemon/office.ts"
 import { attach } from "../../src/hq/core.ts"
 import * as doctor from "../../src/install/doctor.ts"
 import type { Check } from "../../src/install/doctor.ts"
-import { INHERITED_ENV, launch } from "../../src/install/launch.ts"
+import { INHERITED_ENV, Launch, launch } from "../../src/install/launch.ts"
 import * as launchd from "../../src/install/launchd.ts"
 import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { SET_UP, setupConnectionFile } from "../../src/install/onboard.ts"
 import * as service from "../../src/install/service.ts"
+import { installPaths } from "../../src/install/tools.ts"
 import * as systemd from "../../src/install/systemd.ts"
 import { helperCommand } from "../../src/platform.ts"
 import { writePrivate } from "../../src/secrets.ts"
@@ -65,6 +66,23 @@ const COMMAND = ["/opt/opencorp/bin/opencorp"] as const
 /** The launch `checks` makes for the office at `paths`. */
 function launchFor(dir: string, paths: OfficePaths) {
   return launch(paths.home, { command: COMMAND, environ: {}, userHome: dir })
+}
+
+/** Writes the service file `mode` (launchd or systemd) installs for the office at `paths`, starting `argv`; returns
+ *  its path. */
+function writeService(dir: string, paths: OfficePaths, argv: readonly [string, ...string[]], mode = "launchd"): string {
+  const run = launchFor(dir, paths)
+  const service = new Launch(argv, run.env, run.cwd, run.home, run.name)
+  const host = makeHost(dir, new Runner())
+  const file = mode === "launchd" ? launchd.plistPath(service, host) : systemd.unitPath(service, host)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, mode === "launchd" ? launchd.plist(service) : systemd.unit(service))
+  return file
+}
+
+/** The argv of a service that starts a program that exists for the office at `paths`. */
+function present(paths: OfficePaths): [string, ...string[]] {
+  return [process.execPath, "daemon", "--home", paths.home]
 }
 
 function runChecks(
@@ -210,11 +228,12 @@ test("the assets folder of the binary is checked beside the home, only when ther
   // A checkout loads OpenTUI's files from node_modules: there is no folder to check.
   expect(byName(await runChecks(dir, paths, { assets: null }))["tui assets"]).toBeUndefined()
   expect(byName(await runChecks(dir, paths))["tui assets"]).toBeUndefined()
-})
+}, 30_000)
 
 test("an onboarded office that isnt running is only a warning", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir, { llm_config: { provider: "openai" } })
+  writeService(dir, paths, present(paths))
   const found = await runChecks(dir, paths)
   const got = byName(found)
   expect(got.company!.status).toBe("ok")
@@ -374,6 +393,8 @@ test("a multi-line lint message stays on the company row", async () => {
       "    input:\n      who: ${input.talking_to}\n    output: str\n    prompt: |-\n      Say hi to ${who}.\n" +
       "output: ${reply.output}\n",
   )
+  git(paths.company, "add", "-A")
+  git(paths.company, "commit", "-qm", "spin")
   const got = byName(await runChecks(dir, paths))
   expect(got.company!.status).toBe("fail")
   expect(got.company!.detail).toContain("flow has unread inbox inputs: inbox input `messages`")
@@ -720,6 +741,7 @@ test("a systemd service without linger warns that it stops at logout", async () 
   const paths = await onboarded(dir, undefined, "systemd")
   const unit = systemd.unitName(launchFor(dir, paths))
   const runner = new Runner([[["loginctl"], 0, "", "Linger=no\n"]])
+  writeService(dir, paths, present(paths), "systemd")
   const got = byName(await runChecks(dir, paths, { runner, platform: "linux" }))
   expect(got.service!.status).toBe("warn")
   expect(got.service!.detail).toContain("loginctl enable-linger")
@@ -732,8 +754,56 @@ test("a systemd service with linger is ok", async () => {
   const paths = await onboarded(dir, undefined, "systemd")
   const unit = systemd.unitName(launchFor(dir, paths))
   const runner = new Runner([[["loginctl"], 0, "", "Linger=yes\n"]])
+  writeService(dir, paths, present(paths), "systemd")
   const got = byName(await runChecks(dir, paths, { runner, platform: "linux" }))
   expect(got.service).toEqual({ name: "service", status: "ok", detail: `systemd: ${unit} is enabled` })
+})
+
+test("a service that starts a program that's gone fails and says to onboard", async () => {
+  for (const mode of ["launchd", "systemd"]) {
+    const dir = tempDir()
+    const paths = await onboarded(dir, undefined, mode)
+    const run = launchFor(dir, paths)
+    const name = mode === "launchd" ? launchd.label(run) : systemd.unitName(run)
+    const runner = new Runner([[["loginctl"], 0, "", "Linger=yes\n"]])
+    const platform = mode === "launchd" ? "darwin" : "linux"
+    const gone = path.join(dir, "moved/packages/cli/src/main.ts")
+    const services: [[string, ...string[]], string][] = [
+      [["/gone/bin/opencorp", "daemon", "--home", paths.home], "/gone/bin/opencorp"],
+      [[process.execPath, "--no-install", gone, "daemon", "--home", path.join(dir, "no-such-home")], gone],
+    ]
+    for (const [argv, missing] of services) {
+      writeService(dir, paths, argv, mode)
+      expect(byName(await runChecks(dir, paths, { runner, platform })).service).toEqual({
+        name: "service",
+        status: "fail",
+        detail: `${mode}: ${name} runs ${missing}, which is gone, so the office can't start; run \`opencorp onboard\``,
+      })
+    }
+  }
+}, 30_000)
+
+test("a loaded service whose file is gone or unreadable warns", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const label = launchd.label(launchFor(dir, paths))
+  const file = launchd.plistPath(launchFor(dir, paths), makeHost(dir, new Runner()))
+  expect(byName(await runChecks(dir, paths)).service).toEqual({
+    name: "service",
+    status: "warn",
+    detail: `launchd: ${label} is loaded, but its plist ${file} is gone; \`opencorp onboard\` writes it again`,
+  })
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  for (const text of ["not a plist", launchd.plist(launchFor(dir, paths)).toString().replace("daemon", "serve")]) {
+    fs.writeFileSync(file, text)
+    expect(byName(await runChecks(dir, paths)).service).toEqual({
+      name: "service",
+      status: "warn",
+      detail:
+        `launchd: ${label} is loaded, but doctor can't read what ${file} starts; ` +
+        "`opencorp onboard` writes it again",
+    })
+  }
 })
 
 test("an office that keeps failing to start is a crash loop", async () => {
@@ -923,6 +993,98 @@ test("a duplicate start is not a failed start", async () => {
   const got = byName(await runChecks(dir, paths))
   expect(got.office!.status).toBe("warn")
   expect(got.office!.detail).not.toContain("already running")
+})
+
+/** A log of a start that stopped cleanly, then `tail`. */
+function stoppedLog(tail: string): string {
+  return (
+    `${logLine("INFO", "opencorp.daemon.main", "office serving on /s")}\n` +
+    `${logLine("INFO", "opencorp.daemon.main", "office stopped")}\n${tail}`
+  )
+}
+
+test("a log ending in bun's missing module line fails, quoting it", async () => {
+  for (const [mode, advice] of [
+    ["launchd", "Run `opencorp onboard` from the install you use; its service may start code that's gone."],
+    ["systemd", "Run `opencorp onboard` from the install you use; its service may start code that's gone."],
+    ["background", "Run `opencorp start`."],
+  ]) {
+    const dir = tempDir()
+    const paths = await onboarded(dir, undefined, mode)
+    const runner = new Runner([[["loginctl"], 0, "", "Linger=yes\n"]])
+    const platform = mode === "systemd" ? "linux" : "darwin"
+    const missing = '\x1b[31merror\x1b[0m: Module not found "/old/packages/cli/src/main.ts"'
+    fs.writeFileSync(path.join(paths.office, "office.log"), stoppedLog(`${missing}\n`))
+    const got = byName(await runChecks(dir, paths, { runner, platform })).office!
+    expect(got.status).toBe("fail")
+    expect(got.detail).toContain('its last start failed: error: Module not found "/old/packages/cli/src/main.ts" (log:')
+    expect(got.detail).toContain(`(log: ${path.join(paths.office, "office.log")}). ${advice}`)
+  }
+}, 30_000)
+
+test("bun's missing module lines are quoted cut short", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, undefined, "background")
+  const from = `error: Cannot find module './x.ts' from '/old/${"a".repeat(300)}/main.ts'`
+  fs.writeFileSync(path.join(paths.office, "office.log"), stoppedLog(`${from}\n\nBun v1.4.2 (macOS arm64)\n`))
+  const got = byName(await runChecks(dir, paths)).office!
+  expect(got.status).toBe("fail")
+  expect(got.detail).toContain(`its last start failed: ${from.slice(0, 200)} (log:`)
+})
+
+test("a log ending in an error bun printed shows only its errno code", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, undefined, "background")
+  const block = [
+    '1 | import fs from "node:fs"',
+    '2 | fs.realpathSync("/old/secret/fs_helper.ts")',
+    "       ^",
+    "ENOENT: no such file or directory, lstat '/old/secret/fs_helper.ts'",
+    '    path: "/old/secret/fs_helper.ts",',
+    ' syscall: "lstat",',
+    "   errno: -2,",
+    '    code: "ENOENT"',
+    "",
+    "      at /old/secret/x.ts:2:4",
+    "",
+    "Bun v1.4.2 (macOS arm64)",
+  ].join("\n")
+  fs.writeFileSync(path.join(paths.office, "office.log"), stoppedLog(`${block}\n`))
+  const got = byName(await runChecks(dir, paths)).office!
+  expect(got.status).toBe("fail")
+  expect(got.detail).toContain("its last start failed: the log ends with an ENOENT error the office didn't write (log:")
+  expect(got.detail).not.toContain("secret")
+})
+
+test("other output at the end of the log fails with fixed text", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, undefined, "background")
+  fs.writeFileSync(path.join(paths.office, "office.log"), stoppedLog("(node:1) Warning: x token=abc\n"))
+  const got = byName(await runChecks(dir, paths)).office!
+  expect(got.status).toBe("fail")
+  expect(got.detail).toContain("its last start failed: the log ends with output the office didn't write (log:")
+  expect(got.detail).not.toContain("token=abc")
+})
+
+test("output before a clean stop is no failed start", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, undefined, "background")
+  const log = `${logLine("INFO", "opencorp.daemon.main", "office serving on /s")}\n(node:1) Warning: x\n`
+  const stop = logLine("INFO", "opencorp.daemon.main", "office stopped")
+  fs.writeFileSync(path.join(paths.office, "office.log"), `${log}${stop}\n`)
+  const got = byName(await runChecks(dir, paths)).office!
+  expect(got.status).toBe("warn")
+  expect(got.detail).not.toContain("last start failed")
+})
+
+test("a crash marker followed by other output is that output's failed start", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, undefined, "background")
+  const log = `${crashedLog()}error: Module not found "/old/main.ts"\n`
+  fs.writeFileSync(path.join(paths.office, "office.log"), log)
+  const got = byName(await runChecks(dir, paths)).office!
+  expect(got.status).toBe("fail")
+  expect(got.detail).toContain('its last start failed: error: Module not found "/old/main.ts" (log:')
 })
 
 test("a sandbox that cant start fails", async () => {
@@ -1574,7 +1736,7 @@ function info(home: string, over: Partial<OfficeInfo> = {}): OfficeInfo {
     started_at: "2026-10-25T10:00:00.000Z",
     version: VERSION,
     tools: {},
-    guards: { install: [], tools: [], path: [] },
+    guards: { install: installPaths(COMMAND), tools: [], path: [] },
     ...over,
   }
 }
@@ -1707,10 +1869,11 @@ test("an office older than the code is told to restart", () => {
   const run = launchFor(dir, new OfficePaths(path.join(dir, "home")))
   const office = info(run.home)
   const started = Date.parse(office.started_at)
-  const old = doctor.versionCheck(run, office, started + 60_000)
+  const here = installPaths(COMMAND)[0]!
+  const old = doctor.versionCheck(run, office, started + 60_000, here, "launchd")
   expect(old.status).toBe("warn")
   expect(old.detail).toBe("the office started before its code last changed; restart it to run the new code")
-  expect(doctor.versionCheck(run, office, started - 60_000)).toEqual({
+  expect(doctor.versionCheck(run, office, started - 60_000, here, "launchd")).toEqual({
     name: "version",
     status: "ok",
     detail: "pid 42 runs the current code",
@@ -1720,12 +1883,78 @@ test("an office older than the code is told to restart", () => {
 test("an office of another version or home is told so", () => {
   const dir = tempDir()
   const run = launchFor(dir, new OfficePaths(path.join(dir, "home")))
-  const elsewhere = doctor.versionCheck(run, info("/somewhere/else"), 0)
+  const here = installPaths(COMMAND)[0]!
+  const elsewhere = doctor.versionCheck(run, info("/somewhere/else"), 0, here, null)
   expect(elsewhere.status).toBe("warn")
   expect(elsewhere.detail).toBe("pid 42 is not this office's daemon: it serves /somewhere/else")
-  const older = doctor.versionCheck(run, info(run.home, { version: "0.0.0-old" }), 0)
+  const older = doctor.versionCheck(run, info(run.home, { version: "0.0.0-old" }), 0, here, null)
   expect(older.status).toBe("warn")
   expect(older.detail).toBe(`the office runs 0.0.0-old and this install is ${VERSION}; restart it to run the new code`)
+})
+
+test("an office running from another install is told how to run this one", async () => {
+  const dir = tempDir()
+  const run = launchFor(dir, new OfficePaths(path.join(dir, "home")))
+  const here = installPaths(COMMAND)[0]!
+  const other = fs.realpathSync(tempDir())
+  const office = info(run.home, { guards: { install: [other, here + "-not"], tools: [], path: [] } })
+  // Not the mtime check: this install's code is not what the office runs.
+  for (const mode of ["launchd", "systemd"]) {
+    expect(doctor.versionCheck(run, office, Date.now(), here, mode)).toEqual({
+      name: "version",
+      status: "warn",
+      detail:
+        `the office runs from ${other}, not this install (${here}); to run this install's code, stop the office ` +
+        "and run `opencorp onboard` from this install",
+    })
+  }
+  for (const mode of ["background", "tmux", null]) {
+    expect(doctor.versionCheck(run, office, Date.now(), here, mode).detail).toBe(
+      `the office runs from ${other}, not this install (${here}); to run this install's code, run ` +
+        "`opencorp restart` from this install",
+    )
+  }
+})
+
+test("an office running from an install that's gone fails", () => {
+  const dir = tempDir()
+  const run = launchFor(dir, new OfficePaths(path.join(dir, "home")))
+  const here = installPaths(COMMAND)[0]!
+  const gone = path.join(dir, "moved")
+  const office = info(run.home, { guards: { install: [gone], tools: [], path: [] } })
+  expect(doctor.versionCheck(run, office, 0, here, "background")).toEqual({
+    name: "version",
+    status: "fail",
+    detail:
+      `the office runs from ${gone}, which is gone, so sessions can't start; ` +
+      "run `opencorp restart` from this install",
+  })
+  expect(doctor.versionCheck(run, office, 0, here, "launchd").detail).toBe(
+    `the office runs from ${gone}, which is gone, so sessions can't start; stop the office and run ` +
+      "`opencorp onboard` from this install",
+  )
+})
+
+test("the install check finds this install anywhere in the office's install folders, and skips an empty list", () => {
+  const dir = tempDir()
+  const run = launchFor(dir, new OfficePaths(path.join(dir, "home")))
+  const here = installPaths(COMMAND)[0]!
+  const ok: Check = { name: "version", status: "ok", detail: "pid 42 runs the current code" }
+  const later = info(run.home, { guards: { install: ["/usr/local", here], tools: [], path: [] } })
+  expect(doctor.versionCheck(run, later, 0, here, null)).toEqual(ok)
+  const none = info(run.home, { guards: { install: [], tools: [], path: [] } })
+  expect(doctor.versionCheck(run, none, 0, here, null)).toEqual(ok)
+})
+
+test("a running office from another install warns on the version line", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const other = fs.realpathSync(tempDir())
+  const office = info(launchFor(dir, paths).home, { guards: { install: [other], tools: [], path: [] } })
+  const got = byName(await runningChecks(dir, paths, office)).version!
+  expect(got.status).toBe("warn")
+  expect(got.detail).toStartWith(`the office runs from ${other}, not this install`)
+  expect(got.detail).toContain("`opencorp onboard`") // onboarded() records launchd
 })
 
 test("the newest source covers the office protocol cli and yian", () => {
@@ -1844,7 +2073,8 @@ test("office info is read with this devices token", async () => {
   expect(got.home).toBe(office.paths.home)
   expect(got.tools).toEqual({ git: "/usr/bin/git" })
   const run = launchFor(home, new OfficePaths(home))
-  expect(doctor.report([doctor.versionCheck(run, got, 0), doctor.toolsCheck(got)])).not.toContain(token)
+  const version = doctor.versionCheck(run, got, 0, "/opt/opencorp/bin", null)
+  expect(doctor.report([version, doctor.toolsCheck(got)])).not.toContain(token)
   expect(await service.officeInfo(sock, undefined, 10_000)).toBe("refused") // 401
 })
 

@@ -30,6 +30,25 @@ test("spaces percents and dollars reach the daemon unchanged", () => {
   expect(text).toContain("WorkingDirectory=/Users/o w/100%%/$HOME/.opencorp/office\n")
 })
 
+test("the exec start words are read back from the unit", () => {
+  const golden = fs.readFileSync(path.join(GOLDEN, "systemd.service"), "utf8")
+  const argv = ["/opt/opencorp/bin/opencorp", "daemon", "--home", "/Users/owner/.opencorp"]
+  expect(systemd.execStart(golden)).toEqual(argv)
+  const odd = launch("/Users/o w/100%/$HOME/a\"b\\c;d'e/.opencorp", {
+    command: ["/opt/a c/bin/opencorp", "", "$$", "%%", "x\ty"],
+    environ: {},
+    userHome: "/Users/o w",
+  })
+  expect(systemd.execStart(systemd.unit(odd))).toEqual([...odd.argv])
+})
+
+test("a unit without a readable exec start has no words", () => {
+  const golden = fs.readFileSync(path.join(GOLDEN, "systemd.service"), "utf8")
+  expect(systemd.execStart(golden.replace(/^ExecStart=.*\n/m, ""))).toBeNull()
+  expect(systemd.execStart(golden.replace(/^ExecStart=.*$/m, 'ExecStart="/opt/a b daemon'))).toBeNull()
+  expect(systemd.execStart(golden.replace(/^ExecStart=.*$/m, 'ExecStart="/opt/a"b daemon'))).toBeNull()
+})
+
 test("a newline in a value is refused", () => {
   const odd = launch("/tmp/a\nb", { command: ["/opt/a/bin/opencorp"], environ: {}, userHome: "/home/o" })
   expect(() => systemd.unit(odd)).toThrow(RangeError)

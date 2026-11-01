@@ -376,8 +376,11 @@ test("a failed start is read from what the daemon logged and how it exited", () 
 })
 
 test("the last failure in the log names a failed starts type and never a crash message", () => {
-  expect(service.lastFailure(`${failedToStart}\n`)).toBe("opencorp office: the office failed to start: TypeError")
-  expect(service.lastFailure(crashed)).toBe("office crashed: RangeError")
+  expect(service.lastFailure(`${failedToStart}\n`)).toEqual({
+    text: "opencorp office: the office failed to start: TypeError",
+    foreign: false,
+  })
+  expect(service.lastFailure(crashed)).toEqual({ text: "office crashed: RangeError", foreign: false })
   expect(service.lastFailure("opencorp office: office already running (pid 7)\n")).toBeNull()
   const leaky = `${logLine("ERROR", "opencorp.daemon.main", "office crashed: TypeError token=abc")}\n`
   expect(service.lastFailure(leaky)).toBeNull()
