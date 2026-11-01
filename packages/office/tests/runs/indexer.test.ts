@@ -2,9 +2,9 @@ import { expect, onTestFinished, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import { inspectRun, readRunIndex } from "@ngocbh/yian/run"
-import { type IndexThread, RunIndexer } from "../../src/runs/indexer.ts"
+import { CLOSE_MS, type IndexThread, INDEX_TIMEOUT_MS, RunIndexer } from "../../src/runs/indexer.ts"
 import { tempDir } from "../helpers.ts"
-import { committed, RUN, runStarted, started, succeeded } from "./helpers.ts"
+import { committed, fifoAt, RUN, runStarted, started, succeeded } from "./helpers.ts"
 
 type Event = "message" | "error" | "exit"
 
@@ -162,6 +162,96 @@ test("close stops the thread and later updates resolve false", async () => {
   await indexer.close()
   expect(lines).toEqual([])
 })
+
+/** A thread stuck in a system call: its terminate never settles. */
+class StuckThread extends FakeThread {
+  override terminate(): Promise<number> {
+    this.terminated = true
+    return new Promise(() => {})
+  }
+}
+
+test("close gives up on a thread that doesn't stop and logs it once", async () => {
+  const lines: string[] = []
+  const indexer = new RunIndexer("/nonexistent/runs", {
+    log: (line) => lines.push(line),
+    start: () => new StuckThread(),
+    closeMs: 50,
+  })
+  const update = indexer.update()
+  const start = performance.now()
+  await indexer.close()
+  expect([performance.now() - start < 1000, await update]).toEqual([true, false])
+  expect(lines).toEqual(["run index thread stopped (close timed out)"])
+  expect(await indexer.update()).toBe(false)
+  await indexer.close()
+  expect(lines).toEqual(["run index thread stopped (close timed out)"])
+})
+
+test("close returns as soon as the thread stops", async () => {
+  // A healthy thread can be in SQLite's busy wait for the lock, up to the update's timeout.
+  expect(CLOSE_MS).toBeGreaterThan(INDEX_TIMEOUT_MS)
+  const lines: string[] = []
+  const indexer = new RunIndexer("/nonexistent/runs", {
+    log: (line) => lines.push(line),
+    start: () => new FakeThread(),
+    closeMs: 60_000,
+  })
+  void indexer.update()
+  const start = performance.now()
+  await indexer.close()
+  expect([performance.now() - start < 1000, lines]).toEqual([true, []])
+})
+
+const INDEXER = path.join(import.meta.dir, "../../src/runs/indexer.ts")
+
+test("the process exits with its index thread stuck opening a fifo", async () => {
+  const dir = tempDir()
+  const fifo = path.join(dir, "log.jsonl")
+  fifoAt(fifo, { unblock: false })
+  // Replies to its update, then blocks in open() until a writer comes: no writer does while the process runs.
+  const thread = path.join(dir, "stuck_thread.ts")
+  fs.writeFileSync(
+    thread,
+    [
+      'import fs from "node:fs"',
+      'import { parentPort, workerData } from "node:worker_threads"',
+      "parentPort.on(\"message\", () => {",
+      "  parentPort.postMessage({ ok: true, skipped: [] })",
+      '  fs.openSync(workerData.fifo, "r")',
+      "})",
+    ].join("\n"),
+  )
+  // Exits as the daemon's entry does: process.exit once main returns. In Bun a process whose thread is stuck in a
+  // system call doesn't exit by itself, terminate or not, so a bounded close and that exit are what end it.
+  const office = [
+    'import { Worker } from "node:worker_threads"',
+    `import { RunIndexer } from ${JSON.stringify(INDEXER)}`,
+    "const lines = []",
+    "const indexer = new RunIndexer('/nonexistent/runs', {",
+    "  log: (line) => lines.push(line),",
+    `  start: () => new Worker(${JSON.stringify(thread)}, { workerData: { fifo: ${JSON.stringify(fifo)} } }),`,
+    "  closeMs: 200,",
+    "})",
+    "if (!(await indexer.update())) process.exit(3)",
+    "await Bun.sleep(300)",
+    "await indexer.close()",
+    "console.log(lines.join('\\n'))",
+    "process.exit(0)",
+  ].join("\n")
+  const start = performance.now()
+  const child = Bun.spawn([process.execPath, "--no-install", "--no-env-file", "--config=/dev/null", "-e", office], {
+    stdout: "pipe",
+    stderr: "ignore",
+  })
+  onTestFinished(() => child.kill("SIGKILL"))
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), 5000)))
+  const status = await Promise.race([child.exited, late])
+  clearTimeout(timer)
+  expect([status, performance.now() - start < 5000]).toEqual([0, true])
+  expect((await new Response(child.stdout).text()).trim()).toBe("run index thread stopped (close timed out)")
+}, 15_000)
 
 test("a thread that cannot start fails the update without rejecting", async () => {
   const lines: string[] = []

@@ -208,9 +208,17 @@ function freeReaders(file: string): void {
  * Makes a FIFO at `file`, removed when the test finishes. A read that blocks in `open()` on it waits for a writer, so
  * a child process frees any such reader every 200 ms from 3 s to 8 s after this call, then exits: a regression then
  * fails the caller's time check instead of freezing the run. The cleanup frees any reader left and kills the child.
+ * Without `unblock`, there is no child: for a test whose reader is in another process, which it kills itself.
  */
-export function fifoAt(file: string): void {
+export function fifoAt(file: string, { unblock = true }: { unblock?: boolean } = {}): void {
   if (spawnSync("mkfifo", [file]).status !== 0) throw new Error("mkfifo failed")
+  if (!unblock) {
+    onTestFinished(() => {
+      freeReaders(file)
+      fs.rmSync(file, { force: true })
+    })
+    return
+  }
   const code = [
     'import fs from "node:fs"',
     `const file = ${JSON.stringify(file)}`,
