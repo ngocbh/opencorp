@@ -292,9 +292,9 @@ test("revoking closes a stalled live stream", async () => {
   const capacity = await socketCapacity(Buffer.alloc(64 * 1024))
   const { runId } = storedRun(office, { turns: Math.max(3000, Math.ceil((2 * capacity) / 1000)) })
   const alive = spyOn(hq.sessions, "alive")
+  onTestFinished(() => alive.mockRestore())
   const stream = await paused(client, `/api/runs/${runId}/live`)
   await stopsPulling(() => alive.mock.calls.length)
-  alive.mockRestore()
   expect(hq.sessions.streams(sid)).toBe(1) // waiting for the client, not done
   await hq.sessions.revoke(sid)
   const got = await within(stream.closed())
@@ -387,8 +387,10 @@ test("a client that leaves before the stream starts holds no slot", async () => 
   await checked
   socket.destroy()
   await new Promise((resolve) => setTimeout(resolve, 100))
+  const open = spyOn(hq.sessions, "open")
+  onTestFinished(() => open.mockRestore())
   release()
-  await new Promise((resolve) => setTimeout(resolve, 200))
+  await waitFor(() => open.mock.calls.length > 0, { timeout: 5000, what: "the handler to take a slot" })
   expect(hq.sessions.streams(sid)).toBe(0)
   expect(office.bus.subscriberCount).toBe(0)
 })
