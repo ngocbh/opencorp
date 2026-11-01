@@ -71,13 +71,20 @@ const SWEEP_ROUNDS = 50
 const pause = new Int32Array(new SharedArrayBuffer(4))
 
 /** Sends SIGKILL to process group `pgid`, and on macOS sends it again while `liveGroupMembers` lists members that
- *  aren't zombies yet (at most SWEEP_ROUNDS more times, about 1 ms apart). False when the first send fails: the
- *  group is gone, may not be signalled (macOS EPERM for a group of only zombies), or `pgid` isn't a group id the
- *  office may signal or is the office's own pid (a backstop: callers pass only groups the office spawned detached,
- *  and the office leads its own group under its service). Synchronous; never throws. */
-export function killGroup(pgid: number): boolean {
+ *  aren't zombies yet (at most SWEEP_ROUNDS more times, about 1 ms apart). With `stopFirst`, on macOS the group is
+ *  sent SIGSTOP before the first SIGKILL. False when the first send fails: the group is gone, may not be signalled
+ *  (macOS EPERM for a group of only zombies), or `pgid` isn't a group id the office may signal or is the office's
+ *  own pid (a backstop: callers pass only groups the office spawned detached, and the office leads its own group
+ *  under its service). Synchronous; never throws. */
+export function killGroup(pgid: number, { stopFirst = false }: { stopFirst?: boolean } = {}): boolean {
   if (!isPid(pgid) || pgid === process.pid) return false
-  if (!sendKill(pgid)) return false
+  // macOS delivers a group signal to one member at a time, so a shell whose child dies first can wake from
+  // its wait and run its next step before its own SIGKILL arrives. No member exits from SIGSTOP, so no waiter
+  // wakes, and once all are stopped none can run anything before it is killed. A child forked during the stop
+  // isn't stopped; the repeat kills below cover it, as for one forked during a kill.
+  const stopped = stopFirst && process.platform === "darwin"
+  if (stopped && !send(pgid, "SIGSTOP")) return false
+  if (!send(pgid, "SIGKILL")) return stopped
   // macOS signals only the processes in the group at that moment, and a child already being created still joins
   // it, even once its parent has begun to exit, so a child forked during the kill survives it. Re-signalling the
   // group can't hit a recycled id: a group id isn't reused while the group has members, and it is re-signalled only
@@ -87,18 +94,18 @@ export function killGroup(pgid: number): boolean {
   for (let round = 0; round < SWEEP_ROUNDS; round++) {
     if (liveGroupMembers(pgid).length === 0) break
     Atomics.wait(pause, 0, 0, 1)
-    if (!sendKill(pgid)) break
+    if (!send(pgid, "SIGKILL")) break
   }
   return true
 }
 
-/** Sends SIGKILL to group `pgid`; false when the send fails. */
-function sendKill(pgid: number): boolean {
+/** Sends `sig` to group `pgid`; false when the send fails. */
+function send(pgid: number, sig: NodeJS.Signals): boolean {
   try {
-    process.kill(-pgid, "SIGKILL")
+    process.kill(-pgid, sig)
     return true
   } catch {
-    // Delivery races the group's exit, so any error means "not killed", never a throw.
+    // Delivery races the group's exit, so any error means "not signalled", never a throw.
     return false
   }
 }

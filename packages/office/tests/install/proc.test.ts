@@ -143,7 +143,9 @@ async function killMembers(pgid: number): Promise<void> {
   }
 }
 
-test("killGroup leaves no survivor of a group forking in a loop", async () => {
+/** The members `ps` lists for each of 20 groups forking in a loop when `killGroup(pgid, options)` lands, 2 s after
+ *  it; empty when every kill left no survivor. */
+async function forkingSurvivors(options: { stopFirst?: boolean }): Promise<number[][]> {
   // The kill lands while the leader is forking: on macOS a child forked during the kill joins the group after
   // the kernel picked whom to signal. The loop stops at 300 children, so a failed kill can't fill the process
   // table; ps is the oracle, not the code under test.
@@ -154,7 +156,7 @@ test("killGroup leaves no survivor of a group forking in a loop", async () => {
     onTestFinished(() => killMembers(g.pid))
     try {
       for (let n = 0; n < 3; n++) await g.line()
-      killGroup(g.pid)
+      killGroup(g.pid, options)
       const deadline = performance.now() + 2000
       let members = psGroup(g.pid)
       while (members.length > 0 && performance.now() < deadline) {
@@ -166,8 +168,60 @@ test("killGroup leaves no survivor of a group forking in a loop", async () => {
       await killMembers(g.pid)
     }
   }
-  expect(left).toEqual([])
+  return left
+}
+
+test("killGroup leaves no survivor of a group forking in a loop", async () => {
+  expect(await forkingSurvivors({})).toEqual([])
 }, 240_000)
+
+test("killGroup with stopFirst leaves no survivor of a group forking in a loop", async () => {
+  expect(await forkingSurvivors({ stopFirst: true })).toEqual([])
+}, 240_000)
+
+/** Makes process.platform read `platform` until the test finishes. */
+function fakePlatform(platform: string): void {
+  const real = Object.getOwnPropertyDescriptor(process, "platform")!
+  Object.defineProperty(process, "platform", { ...real, value: platform })
+  onTestFinished(() => Object.defineProperty(process, "platform", real))
+}
+
+test.skipIf(process.platform !== "darwin")("killGroup with stopFirst stops the group before killing it on macOS", () => {
+  const kill = spyOn(process, "kill").mockImplementation(() => true)
+  onTestFinished(() => kill.mockRestore())
+  expect(killGroup(NO_GROUP, { stopFirst: true })).toBe(true)
+  expect(kill.mock.calls).toEqual([
+    [-NO_GROUP, "SIGSTOP"],
+    [-NO_GROUP, "SIGKILL"],
+  ])
+})
+
+test.skipIf(process.platform !== "darwin")("killGroup sends nothing after a stop that fails", () => {
+  const kill = mockKill(esrch())
+  expect(killGroup(NO_GROUP, { stopFirst: true })).toBe(false)
+  expect(kill.mock.calls).toEqual([[-NO_GROUP, "SIGSTOP"]])
+})
+
+test("killGroup with stopFirst only kills on Linux", () => {
+  fakePlatform("linux")
+  const kill = spyOn(process, "kill").mockImplementation(() => true)
+  onTestFinished(() => kill.mockRestore())
+  expect(killGroup(NO_GROUP, { stopFirst: true })).toBe(true)
+  expect(kill.mock.calls).toEqual([[-NO_GROUP, "SIGKILL"]])
+})
+
+test("a stopped leader is not reported as exited until it is killed", async () => {
+  // run() stops a call's group and only then awaits the leader's exit, so a stop must not read as one.
+  const g = startGroup("exec /bin/sleep 30")
+  await waitFor(() => args(g.pid, ps()) === "/bin/sleep 30", { timeout: 10_000, what: "the exec" })
+  let exited = false
+  void g.exited.then(() => (exited = true))
+  process.kill(-g.pid, "SIGSTOP")
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  expect(exited).toBe(false)
+  expect(killGroup(g.pid, { stopFirst: true })).toBe(true)
+  expect((await g.exited).signal).toBe("SIGKILL")
+})
 
 test("killGroup sends one signal to a group whose only member is the leaders zombie", async () => {
   // The office reaps its children on its event loop, which can't run while this test spins synchronously, so the

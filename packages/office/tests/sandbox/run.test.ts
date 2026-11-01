@@ -1,5 +1,6 @@
 /** Running one command in the sandbox, in its own process group. */
 import { spawn, spawnSync } from "node:child_process"
+import { Readable } from "node:stream"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -9,6 +10,7 @@ import type { Helper, SandboxPolicy } from "../../src/sandbox/policy.ts"
 import { helperCommand, processLimits } from "../../src/platform.ts"
 import * as bwrap from "../../src/sandbox/bwrap.ts"
 import {
+  capture,
   command,
   fsHelper,
   processCap,
@@ -93,6 +95,36 @@ test.skipIf(!sandboxAvailable())("cancel kills the call", async () => {
   expect(result.interrupted).toBe(true)
   expect(result.exit).toBeNull()
   expect(performance.now() - start).toBeLessThan(10_000)
+})
+
+// Twenty background steps that each wait on a sleep that can't end within the test, then create a file: one that
+// appears means its shell ran on after the sleep was killed. On macOS a group signal reaches members one at a time,
+// so a shell could wake from the death of its sleep before its own SIGKILL arrived.
+const RACE = 'for i in $(seq 20); do (sleep 30; touch "$TMPDIR/after$i") & done'
+
+/** Runs `script` five times under one policy, each time expecting no `after*` file in its tmpdir 200 ms after the
+ *  call returns, and no `done` in its stdout. */
+async function nothingAfter(script: string, options: () => RunOptions): Promise<void> {
+  const policy = makePolicy().make()
+  for (let i = 0; i < 5; i++) {
+    const result = await sh(policy, script, options())
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(fs.readdirSync(policy.tmpdir).filter((name) => name.startsWith("after"))).toEqual([])
+    expect(result.stdout.toString()).not.toContain("done")
+  }
+}
+
+test.skipIf(!sandboxAvailable())("a timeout runs nothing after the killed step", async () => {
+  await nothingAfter(`${RACE}; wait; echo done`, () => ({ timeout: 1 }))
+  await nothingAfter('sleep 5; echo done; touch "$TMPDIR/after"', () => ({ timeout: 1 }))
+})
+
+test.skipIf(!sandboxAvailable())("an abort runs nothing after the killed step", async () => {
+  await nothingAfter(`${RACE}; wait; echo done`, () => ({ signal: AbortSignal.timeout(500) }))
+})
+
+test.skipIf(!sandboxAvailable())("a natural exit runs nothing after its background steps are killed", async () => {
+  await nothingAfter(`${RACE}; exit 0`, () => ({}))
 })
 
 test.skipIf(!sandboxAvailable())("background process dies with the call", async () => {
@@ -327,6 +359,60 @@ test.skipIf(!sandboxAvailable())("output is capped", async () => {
   const result = await sh(makePolicy().make(), "head -c 100000 /dev/zero", { maxOutput: 1000 })
   expect(result.stdout.length).toBe(1000)
   expect(result.truncated).toBe(true)
+})
+
+/** What `capture(limit, tail)` keeps of a stream of `chunks`: its head, tail, byte count and whether it dropped any. */
+async function captured(chunks: Buffer[], limit: number, tail: number) {
+  const state = capture(Readable.from(chunks), limit, tail)
+  await state.closed
+  return state.kept()
+}
+
+test("capture keeps the first limit and the last tail bytes, and counts every byte", async () => {
+  const data = Buffer.from(Array.from({ length: 5000 }, (_, i) => i % 251))
+  const cases: [string, Buffer[], number, number][] = [
+    ["one chunk past both", [data], 100, 200],
+    ["one byte a chunk", [...data].map((byte) => Buffer.from([byte])), 100, 200],
+    ["a chunk across the head", [data.subarray(0, 90), data.subarray(90, 4000), data.subarray(4000)], 100, 200],
+    ["exactly head and tail", [data.subarray(0, 300)], 100, 200],
+    ["one byte more", [data.subarray(0, 150), data.subarray(150, 301)], 100, 200],
+    ["shorter than the head", [data.subarray(0, 60)], 100, 200],
+    ["no tail", [data.subarray(0, 70), data.subarray(70)], 100, 0],
+  ]
+  for (const [name, chunks, limit, tail] of cases) {
+    const whole = Buffer.concat(chunks)
+    const kept = await captured(chunks, limit, tail)
+    const head = whole.subarray(0, limit)
+    expect(kept.head.equals(head), name).toBe(true)
+    expect(kept.tail.equals(whole.subarray(Math.max(head.length, whole.length - tail))), name).toBe(true)
+    expect(kept.bytes, name).toBe(whole.length)
+    expect(kept.truncated, name).toBe(whole.length > limit + tail)
+  }
+})
+
+test.skipIf(!sandboxAvailable())("output keeps its end and counts every byte", async () => {
+  const result = await sh(makePolicy().make(), "head -c 3000000 /dev/zero; printf END", {
+    maxOutput: 1000,
+    tailOutput: 1000,
+  })
+  expect(result.stdout.length).toBe(1000)
+  expect(result.stdoutTail.length).toBe(1000)
+  expect(result.stdoutTail.subarray(-3).toString()).toBe("END")
+  expect(result.stdoutBytes).toBe(3_000_003)
+  expect(result.truncated).toBe(true)
+  const short = await sh(makePolicy().make(), "printf abc", { maxOutput: 2, tailOutput: 1000 })
+  expect([short.stdout.toString(), short.stdoutTail.toString(), short.stdoutBytes, short.truncated]).toEqual([
+    "ab",
+    "c",
+    3,
+    false,
+  ])
+})
+
+test("a tailOutput that isn't a byte count is refused before anything starts", async () => {
+  for (const tailOutput of [-1, 1.5, NaN]) {
+    await expect(sh(makePolicy().make(), "exit 0", { tailOutput })).rejects.toThrow(RangeError)
+  }
 })
 
 test("unsupported platform", () => {

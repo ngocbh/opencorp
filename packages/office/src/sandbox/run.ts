@@ -5,6 +5,7 @@ import os from "node:os"
 import type { Readable } from "node:stream"
 import * as bwrap from "./bwrap.ts"
 import { Canary, killEscaped } from "./escapees.ts"
+import { killGroup } from "../install/proc.ts"
 import { endPipe, helperCommand, pipe, pipeReadable, processLimits, type ProcessLimits } from "../platform.ts"
 import { type Helper, helperFiles, isInside, type SandboxPolicy } from "./policy.ts"
 import { profile } from "./seatbelt.ts"
@@ -36,10 +37,18 @@ export interface Result {
   /** The exit status (negative for a signal), or `null` when the call was killed for its timeout or by
    *  `signal`. */
   exit: number | null
+  /** The first `maxOutput` bytes of `stdout` and of `stderr`. */
   stdout: Buffer
   stderr: Buffer
+  /** The last `tailOutput` bytes of each stream after its first `maxOutput`; empty without `tailOutput`. */
+  stdoutTail: Buffer
+  stderrTail: Buffer
+  /** Every byte each stream wrote, kept or not. */
+  stdoutBytes: number
+  stderrBytes: number
   timedOut: boolean
   interrupted: boolean
+  /** Whether a stream wrote bytes that were kept in neither its head nor its tail. */
   truncated: boolean
   /** Seconds from the start of `run` to the end of the call. */
   duration: number
@@ -146,8 +155,10 @@ export interface RunOptions {
   /** Seconds, more than 0 and at most 2_147_483 (about 24.8 days); default 120. */
   timeout?: number
   signal?: AbortSignal
-  /** Bytes kept per stream; default 1 MiB. */
+  /** Bytes kept from the start of each stream; default 1 MiB. */
   maxOutput?: number
+  /** Bytes also kept from the end of each stream, past its first `maxOutput`; a non-negative integer, default 0. */
+  tailOutput?: number
   /** Called right after spawn with the leader's pid (the group id); the cleanup it returns runs after
    *  the group kill and the sweep, on every path. A `track` that throws still has the call killed and
    *  swept, and `run` then rejects with its error. */
@@ -159,17 +170,23 @@ export interface RunOptions {
  *
  * The call runs in a new process group. The group is killed when the call's first
  * process exits (so nothing it started in the background survives), when `timeout`
- * seconds pass, or when `signal` aborts. On macOS, processes that left the group with
- * `setsid` are then found and killed too; on Linux the pid namespace dies with the call.
- * Each output stream keeps at most `maxOutput` bytes. Rejects with the spawn error when
- * the call can't start, `SandboxUnavailable` on an unsupported platform, a `RangeError`
- * for a `timeout` out of range (before anything starts), and the error of a `track` that
- * throws, after the call is killed and swept.
+ * seconds pass, or when `signal` aborts; on macOS it is stopped first, so a shell whose
+ * step dies first can't run its next step before its own kill. On macOS, processes that left
+ * the group with `setsid` are then found and killed too; on Linux the pid namespace
+ * dies with the call.
+ * Each output stream keeps its first `maxOutput` and last `tailOutput` bytes, and counts
+ * all of them. Rejects with the spawn error when the call can't start, `SandboxUnavailable`
+ * on an unsupported platform, a `RangeError` for a `timeout` or `tailOutput` out of range
+ * (before anything starts), and the error of a `track` that throws, after the call is
+ * killed and swept.
  */
 export async function run(policy: SandboxPolicy, argv: readonly string[], options: RunOptions = {}): Promise<Result> {
-  const { stdin, timeout = 120, signal, maxOutput = 1 << 20, track } = options
+  const { stdin, timeout = 120, signal, maxOutput = 1 << 20, tailOutput = 0, track } = options
   if (!(timeout > 0 && timeout <= MAX_TIMEOUT_S)) {
     throw new RangeError(`timeout must be more than 0 and at most ${MAX_TIMEOUT_S} seconds, got ${timeout}`)
+  }
+  if (!(Number.isSafeInteger(tailOutput) && tailOutput >= 0)) {
+    throw new RangeError(`tailOutput must be a non-negative integer, got ${tailOutput}`)
   }
   const start = performance.now()
   let canary: Canary | undefined
@@ -231,8 +248,8 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
       own?.closeChildEnds()
       throw await failed
     }
-    const out = capture(outPipe, maxOutput)
-    const err = capture(errPipe, maxOutput)
+    const out = capture(outPipe, maxOutput, tailOutput)
+    const err = capture(errPipe, maxOutput, tailOutput)
     let timer: ReturnType<typeof setTimeout> | undefined
     const onAbort = () => settle("abort")
     let untrack: (() => void) | undefined
@@ -260,7 +277,7 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
           // normally still running, so the kill can't reach an unrelated group; where the runtime
           // reaps on its own thread, a leader that exits by itself just as the timeout fires is
           // already reaped, the same window as a natural exit.
-          killGroup(pid)
+          killGroup(pid, { stopFirst: true })
           if (canary) killEscaped(canary)
         } finally {
           clearTimeout(timer)
@@ -292,16 +309,21 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
     input?.destroy()
     const stopped = reason === "timeout" || reason === "abort"
     const status = stopped ? null : (exited!.code ?? -os.constants.signals[exited!.signal!])
-    const stderr = Buffer.concat(err.chunks)
+    const stdout = out.kept()
+    const stderr = err.kept()
     return {
       exit: status,
-      stdout: Buffer.concat(out.chunks),
-      stderr,
+      stdout: stdout.head,
+      stderr: stderr.head,
+      stdoutTail: stdout.tail,
+      stderrTail: stderr.tail,
+      stdoutBytes: stdout.bytes,
+      stderrBytes: stderr.bytes,
       timedOut: reason === "timeout",
       interrupted: reason === "abort",
-      truncated: out.truncated || err.truncated,
+      truncated: stdout.truncated || stderr.truncated,
       duration: (performance.now() - start) / 1000,
-      refused: refusal(process.platform, status, stderr),
+      refused: refusal(process.platform, status, stderr.head),
     }
   } finally {
     canary?.close()
@@ -348,35 +370,38 @@ function ownPipes(withStdin: boolean) {
   }
 }
 
-/** SIGKILLs process group `pgid`, ignoring a group that is gone or not ours. */
-function killGroup(pgid: number): void {
-  try {
-    process.kill(-pgid, "SIGKILL")
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code !== "ESRCH" && code !== "EPERM") throw error
-  }
-}
-
-/** Reads `stream` to its end, keeping at most `limit` bytes; past the cap it reads and discards, so a
- *  writer never blocks. */
-function capture(stream: Readable, limit: number) {
-  const state = {
-    chunks: [] as Buffer[],
-    size: 0,
-    truncated: false,
-    closed: new Promise<void>((resolve) => stream.once("close", () => resolve())),
-  }
+/** Reads `stream` to its end, keeping its first `limit` bytes and, past them, its last `tail` bytes, and counting
+ *  every byte; the rest is read and discarded, so a writer never blocks. `kept()` gives what was kept so far. */
+export function capture(stream: Readable, limit: number, tail = 0) {
+  const head: Buffer[] = []
+  let headSize = 0
+  // The tail's chunks; the first may start before the last `tail` bytes, and is cut in `kept()`.
+  const ends: Buffer[] = []
+  let endsSize = 0
+  let bytes = 0
+  const closed = new Promise<void>((resolve) => stream.once("close", () => resolve()))
   // A read error ends the capture; it must not crash the office.
   stream.on("error", () => {})
   stream.on("data", (chunk: Buffer) => {
-    const room = limit - state.size
-    if (chunk.length > room) state.truncated = true
+    bytes += chunk.length
+    const room = limit - headSize
     if (room > 0) {
       const kept = chunk.subarray(0, room)
-      state.chunks.push(kept)
-      state.size += kept.length
+      head.push(kept)
+      headSize += kept.length
+      chunk = chunk.subarray(kept.length)
     }
+    if (chunk.length === 0 || tail === 0) return
+    ends.push(chunk)
+    endsSize += chunk.length
+    while (endsSize - ends[0]!.length >= tail) endsSize -= ends.shift()!.length
   })
-  return state
+  return {
+    closed,
+    kept() {
+      const end = Buffer.concat(ends)
+      const kept = end.subarray(Math.max(0, end.length - tail))
+      return { head: Buffer.concat(head), tail: kept, bytes, truncated: bytes > headSize + kept.length }
+    },
+  }
 }
