@@ -131,7 +131,8 @@ export interface TtyOptions {
  * `preset` answers questions by their text without asking (from command-line flags); with `interactive` false,
  * every other question takes its default. When input and output are both terminals, a list is picked with the
  * arrow keys; otherwise it is numbered, and a line picks from it. A typed list ends with `TYPE_OWN`, which asks
- * for the answer; an empty one is the default.
+ * for the answer; an empty one is the default. A numbered typed list also takes, as the answer, a line that is
+ * neither an option nor a number.
  */
 export class TtyPrompter implements Prompter {
   readonly interactive: boolean
@@ -187,14 +188,20 @@ export class TtyPrompter implements Prompter {
     if (!typed) return this.pick(question, options, defaultAnswer)
     // A list on the terminal can't take text, so a last choice asks for it.
     const own = options.includes(defaultAnswer) ? "" : defaultAnswer
-    const picked = await this.pick(question, [...options, TYPE_OWN], own ? TYPE_OWN : defaultAnswer)
+    const picked = await this.pick(question, [...options, TYPE_OWN], own ? TYPE_OWN : defaultAnswer, true)
     if (picked !== TYPE_OWN) return picked
     // An empty typed answer is the default, as on the JSON path, so a deployment is never saved empty.
     return (await this.ask(question, own)) || defaultAnswer
   }
 
-  /** One of `options` picked from a list, `defaultAnswer` for an empty answer. */
-  private async pick(question: string, options: readonly string[], defaultAnswer: string): Promise<string> {
+  /** One of `options` picked from a list, `defaultAnswer` for an empty answer; with `typed`, a numbered list takes
+   *  a line that is neither an option nor a number as the answer. */
+  private async pick(
+    question: string,
+    options: readonly string[],
+    defaultAnswer: string,
+    typed = false,
+  ): Promise<string> {
     // Here, not in choose: without anyone to ask, any list gives its default, and a typed list is never empty.
     if (options.length === 0) throw new Error("a choice needs at least one option")
     if (this.drawn()) return this.drawnPick(question, options, defaultAnswer)
@@ -206,6 +213,8 @@ export class TtyPrompter implements Prompter {
       const number = /^[0-9]+$/.test(line) ? Number(line) : 0
       if (number >= 1 && number <= options.length) return options[number - 1]!
       if (!line) return defaultAnswer
+      // A number out of range is a slip, not a typed answer.
+      if (typed && !/^[0-9]+$/.test(line)) return line
       this.say(`That doesn't work: choose 1 to ${options.length}`)
     }
     throw new OnboardError(`no usable answer to ${repr(question)}`)

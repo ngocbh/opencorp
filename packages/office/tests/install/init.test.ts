@@ -597,6 +597,20 @@ test("without anyone to ask there is no remote", async () => {
   expect(await remoteStep(prompter, "")).toBe("")
 })
 
+test("on a dumb terminal the remote is typed at the list", async () => {
+  const output = new Writable({
+    write(_chunk, _encoding, done) {
+      done()
+    },
+  })
+  const prompter = new TtyPrompter({
+    input: Readable.from(["https://github.com/me/acme.git\n"]),
+    output,
+    env: { TERM: "dumb" },
+  })
+  expect(await remoteStep(prompter, "")).toBe("https://github.com/me/acme.git")
+})
+
 // Not interactive, so the company comes from the flags and no real model is asked; the CLI never runs init this way
 // (it is interactive whenever the provider isn't on stdin).
 const CEO: Known = { company: "Acme", name: "Hong Ngoc Bui", handle: "ngocbh" }

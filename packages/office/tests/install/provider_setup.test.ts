@@ -204,6 +204,21 @@ test("without a terminal a typed list ends with typing your own", async () => {
   expect(printed()).toContain(`  2. ${TYPE_OWN}\n`)
 })
 
+test("without a terminal a typed list takes text typed at the list", async () => {
+  const { input, output, printed } = pipe("git@github.com:me/acme.git\n")
+  const prompter = new TtyPrompter({ input, output, env: {} })
+  expect(await prompter.choose("Q", ["None for now"], "None for now", true)).toBe("git@github.com:me/acme.git")
+  expect(printed()).toContain(`  2. ${TYPE_OWN}\n`)
+  expect(printed()).not.toContain("That doesn't work")
+})
+
+test("without a terminal a typed list still refuses a number out of range", async () => {
+  const { input, output, printed } = pipe("7\n1\n")
+  const prompter = new TtyPrompter({ input, output, env: {} })
+  expect(await prompter.choose("Q", ["a"], "", true)).toBe("a")
+  expect(printed().split("That doesn't work: choose 1 to 2").length - 1).toBe(1)
+})
+
 test("without a terminal a typed list still picks an option", async () => {
   const { input, output } = pipe("1\n")
   const prompter = new TtyPrompter({ input, output, env: {} })
