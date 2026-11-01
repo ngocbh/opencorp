@@ -113,11 +113,14 @@ export const PairCode = z.strictObject({
 })
 export type PairCode = z.input<typeof PairCode>
 
+/** A browser's label as a request sends it: no C0, DEL or C1 control characters, since terminals print it. */
+const BrowserLabel = z.string().max(100).regex(/^[^\u0000-\u001f\u007f-\u009f]*$/u)
+
 /** The body of POST /api/pair: the code from the link's fragment. */
 export const PairRequest = z.strictObject({
   code: z.string().min(1).max(64),
   /** Free text naming the browser, such as 'Safari on Mac'. */
-  label: z.string().max(100).nullable().default(null),
+  label: BrowserLabel.nullable().default(null),
 })
 export type PairRequest = z.input<typeof PairRequest>
 
@@ -148,6 +151,6 @@ export const HqLoginRequest = z.strictObject({
   /** Checked, then dropped: never stored, logged, or echoed in an error. */
   password: z.string().min(1),
   /** Free text naming the browser, such as 'Safari on Mac'. */
-  label: z.string().max(100).nullable().default(null),
+  label: BrowserLabel.nullable().default(null),
 })
 export type HqLoginRequest = z.input<typeof HqLoginRequest>

@@ -163,8 +163,11 @@ function session(via: BrowserSession["via"], issued_by: string, label: string | 
   }
 }
 
+/** The session cookie's name, `opencorp_hq_<port>_<key>` as the office names it, with a fixed stand-in key. */
+const cookieName = () => `opencorp_hq_${port}_${"0".repeat(32)}`
+
 /** The session cookie the office sets on a sign-in. */
-const cookie = () => ({ "set-cookie": `opencorp_hq_${port}=fixture; HttpOnly; SameSite=Strict; Path=/; Max-Age=${MAX_AGE}` })
+const cookie = () => ({ "set-cookie": `${cookieName()}=fixture; HttpOnly; SameSite=Strict; Path=/; Max-Age=${MAX_AGE}` })
 
 /** POST /api/login as the office answers it: one 401 for every failure, so nobody learns which handles exist. */
 async function login(req: Request): Promise<Response> {
@@ -203,7 +206,7 @@ function logout(req: Request): Response {
   if (!state.signedIn) return json({ error: "sign_in_required", message: SIGN_IN }, 401)
   log.logouts++
   state.signedIn = false
-  return json({ ok: true }, 200, { "set-cookie": `opencorp_hq_${port}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` })
+  return json({ ok: true }, 200, { "set-cookie": `${cookieName()}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` })
 }
 
 const SIGN_IN = "Sign in: run `opencorp pair` on the office machine and open the link it prints."

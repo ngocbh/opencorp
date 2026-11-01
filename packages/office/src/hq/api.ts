@@ -51,11 +51,10 @@ import {
 } from "../daemon/routes/runs.ts"
 import { listSessions } from "../daemon/routes/sessions.ts"
 import { getWorkItem } from "../daemon/routes/work_items.ts"
-import { browserAuth, cookieName, cookieValue } from "./auth.ts"
+import { SIGN_IN, browserAuth, cookieName, cookieValue } from "./auth.ts"
 import type { Hq } from "./core.ts"
 import { hqGuard, isApi, requestPath } from "./guard.ts"
-import { BadCredentials, Busy, Throttled } from "./login.ts"
-import type { Who } from "./sessions.ts"
+import { BadCredentials, Busy, Throttled, UnreadablePerson } from "./login.ts"
 import { serveApp } from "./static.ts"
 
 /** What an HQ route sees: the socket's context plus HQ, the raw request, and the browser session. */
@@ -86,14 +85,14 @@ export const HQ_EVENT_TYPES: ReadonlySet<string> = new Set([
 export const MAX_AGE = 30 * 24 * 3600
 
 /** The Set-Cookie header for HQ's session. */
-function setCookie(req: IncomingMessage, value: string, maxAge = MAX_AGE): string {
+function setCookie(hq: Hq, req: IncomingMessage, value: string, maxAge = MAX_AGE): string {
   // No `Secure`: HQ serves no TLS.
-  return `${cookieName(req)}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`
+  return `${cookieName(req, hq.cookieKey)}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`
 }
 
 /** `session` as the reply, with the cookie carrying `value`. */
-function sessionReply(req: IncomingMessage, session: BrowserSessionType, value: string): RawReply {
-  return new RawReply(200, { "set-cookie": setCookie(req, value) }, JSON.stringify(BrowserSession.parse(session)))
+function sessionReply(hq: Hq, req: IncomingMessage, session: BrowserSessionType, value: string): RawReply {
+  return new RawReply(200, { "set-cookie": setCookie(hq, req, value) }, JSON.stringify(BrowserSession.parse(session)))
 }
 
 /** The one answer to every failed sign-in, so nobody can tell which handles exist. */
@@ -351,9 +350,9 @@ export const ROUTES: readonly Route<HqContext>[] = [
     body: PairRequest,
     handler: async ({ hq, req }, _params, body) => {
       const { code, label } = body as z.output<typeof PairRequest>
-      // Only a session the cookie really proves is replaced; a forged or stale cookie revokes nothing. Checked
-      // before the code is spent, so a failing check doesn't burn it.
-      const old = await hq.sessions.check(cookieValue(req))
+      // Only a session the cookie really proves is replaced, whatever HEAD says of its person; a forged or stale
+      // cookie revokes nothing. Read before the code is spent, so a failing read doesn't burn it.
+      const old = hq.sessions.proven(cookieValue(req, hq.cookieKey))
       const pending = hq.codes.redeem(code)
       if (pending === null)
         throw new HttpError(
@@ -362,8 +361,8 @@ export const ROUTES: readonly Route<HqContext>[] = [
           "This link has expired or was already used. Run `opencorp pair` again.",
         )
       const [session, value] = await hq.sessions.issue(pending.handle, { issuedBy: pending.issuer, label })
-      if (old) await hq.sessions.revoke(old.id) // pairing again replaces this browser's session
-      return sessionReply(req, session, value)
+      if (old) await hq.sessions.revoke(old) // pairing again replaces this browser's session
+      return sessionReply(hq, req, session, value)
     },
   },
   // Signs this browser in with a human's handle and password. Open without a session. The session is the one
@@ -378,14 +377,24 @@ export const ROUTES: readonly Route<HqContext>[] = [
       // throttle keyed on it is per handle. Anyone who reaches HQ can lock a handle's password sign-in for a while,
       // which is why `opencorp pair` never goes through it and stays the way in.
       const peer = req.socket.remoteAddress ?? ""
-      const who = `@${handle} from ${peer || "hq.sock"}`
+      const where = peer || "hq.sock"
       const info = (message: string) => hq.log(logLine("INFO", "opencorp.hq.api", message))
-      let old: Who | null
+      // A failure names the handle only when it names a person: a password typed into the handle field mustn't
+      // reach the log.
+      const named = async () => {
+        try {
+          return (await hq.sessions.knows(handle)) ? `@${handle}` : "an unknown handle"
+        } catch {
+          return "an unknown handle"
+        }
+      }
+      let old: string | null
       let issued: [BrowserSessionType, string]
       try {
         const checked = await hq.logins.check(peer, handle, password)
-        // Only a session the cookie really proves is replaced; a forged or stale cookie revokes nothing.
-        old = await hq.sessions.check(cookieValue(req))
+        // Only a session the cookie really proves is replaced, whatever HEAD says of its person; a forged or stale
+        // cookie revokes nothing.
+        old = hq.sessions.proven(cookieValue(req, hq.cookieKey))
         try {
           issued = await hq.sessions.issue(handle, { issuedBy: handle, label, via: "login", checked })
         } catch (e) {
@@ -396,12 +405,18 @@ export const ROUTES: readonly Route<HqContext>[] = [
         }
       } catch (e) {
         if (e instanceof BadCredentials) {
-          info(`sign-in for ${who} failed`)
+          // Every failure pays the same lookup, so timing doesn't tell an unreadable file apart either.
+          const who = await named()
+          // An unreadable file's handle is a directory in HEAD's people/, so naming it logs nothing typed. Only the
+          // log tells it apart: the client gets the same 401.
+          if (e instanceof UnreadablePerson)
+            info(`sign-in for @${handle} from ${where} refused: people/${handle}/person.yaml can't be read`)
+          else info(`sign-in for ${who} from ${where} failed`)
           return errorReply(401, "bad_credentials", BAD_CREDENTIALS)
         }
         if (e instanceof Throttled) {
           // Once per lock: a client retrying in a loop mustn't flood the log.
-          if (e.first) info(`sign-in for ${who} throttled for ${e.retryAfter} s`)
+          if (e.first) info(`sign-in for ${await named()} from ${where} throttled for ${e.retryAfter} s`)
           const minutes = Math.ceil(e.retryAfter / 60)
           const wait = `wait ${minutes} minute${minutes === 1 ? "" : "s"}`
           const message = `too many tries; ${wait}, or run \`opencorp pair\` on the office machine`
@@ -410,18 +425,22 @@ export const ROUTES: readonly Route<HqContext>[] = [
         if (e instanceof Busy) return errorReply(503, "busy", "the office is busy; try again", { "retry-after": "1" })
         throw e
       }
-      if (old) await hq.sessions.revoke(old.id) // signing in again replaces this browser's session
-      info(`sign-in for ${who} ok`)
-      return sessionReply(req, ...issued)
+      if (old) await hq.sessions.revoke(old) // signing in again replaces this browser's session
+      info(`sign-in for @${handle} from ${where} ok`)
+      return sessionReply(hq, req, ...issued)
     },
   },
-  // Ends this browser's session.
+  // Ends this browser's session: any session its cookie proves, even while its person's file can't be read at HEAD,
+  // so signing out never waits on a fixed file. In `OPEN`, which skips only the session check: the guard still runs
+  // first.
   {
     method: "POST",
     path: "/api/logout",
-    handler: async ({ hq, req, session }) => {
-      await hq.sessions.revoke(session!)
-      return new RawReply(200, { "set-cookie": setCookie(req, "", 0) }, JSON.stringify({ ok: true }))
+    handler: async ({ hq, req }) => {
+      const sid = hq.sessions.proven(cookieValue(req, hq.cookieKey))
+      if (sid === null) throw new HttpError(401, "sign_in_required", SIGN_IN)
+      await hq.sessions.revoke(sid)
+      return new RawReply(200, { "set-cookie": setCookie(hq, req, "", 0) }, JSON.stringify({ ok: true }))
     },
   },
   // Any method, so a wrong method under /api is 404, never 405, as Starlette's catch-all route was.
@@ -441,7 +460,7 @@ export function createHqApp(
       // Built per request so the context closes over `req`, which `RequestInfo` doesn't carry: the session check
       // reads its decoded path and first Cookie header.
       const context = async (info: RequestInfo): Promise<HqContext> => {
-        const who = await browserAuth(hq.sessions, req)
+        const who = await browserAuth(hq.sessions, req, hq.cookieKey)
         return {
           office: hq.office,
           person: who?.person ?? null,

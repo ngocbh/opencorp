@@ -399,12 +399,16 @@ const PATTERNS: {
     site: "RunDetail.flow_fingerprint", def: "RunDetail", path: ["flow_fingerprint"], bad: "abc",
     invalid: ["RunDetail.short-fingerprint"],
   },
+  {
+    site: "BrowserLabel", def: "PairRequest", path: ["label"], bad: "Safari\u001b[2J",
+    invalid: ["PairRequest.control-label", "HqLoginRequest.control-label"],
+  },
 ]
 
 test("every pattern carries the u flag", () => {
   const text = sources().map(([, source]) => source).join("\n")
   const literals = [...text.matchAll(/\.regex\(\/((?:\\.|[^\/\\\n])+)\/([a-z]*)\)/g)]
-  expect(PATTERNS.length).toBe(13)
+  expect(PATTERNS.length).toBe(14)
   // Each `.regex(` site needs its own PATTERNS row.
   expect(text.split(".regex(").length - 1).toBe(PATTERNS.length)
   expect(literals.length).toBe(PATTERNS.length)

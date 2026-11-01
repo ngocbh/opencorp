@@ -174,6 +174,63 @@ test("a person file that doesnt validate refuses without ending the session", as
   expect((await s.check(cookie))?.id).toBe(pub.id)
 })
 
+test("proven finds the session a cookie proves", async () => {
+  const office = makeOffice()
+  const clock = new Clock()
+  const s = sessionsFor(office, clock)
+  const [pub, cookie] = await s.issue("ngocbh", ISSUE)
+  const [other] = await s.issue("ngocbh", ISSUE)
+  const secret = cookie.split(".")[1]!
+  expect(s.proven(cookie)).toBe(pub.id)
+  for (const bad of [`${pub.id}.forged`, `${other.id}.${secret}`, pub.id, secret, "", null, undefined])
+    expect(s.proven(bad)).toBeNull()
+  clock.now = new Date(T0.getTime() + TTL)
+  expect(s.proven(cookie)).toBeNull()
+})
+
+test("proven ignores head", async () => {
+  const office = makeOffice()
+  const company = office.paths.company
+  const s = sessionsFor(office)
+  const [pub, cookie] = await s.issue("ngocbh", ISSUE)
+  handEdit(company, "ngocbh", { nickname: "typo" })
+  expect(await s.check(cookie)).toBeNull()
+  expect(s.proven(cookie)).toBe(pub.id)
+  handEdit(company, "ngocbh", { nickname: undefined, kind: "agent" })
+  expect(s.proven(cookie)).toBe(pub.id)
+  git(company, "rm", "-q", "people/ngocbh/person.yaml")
+  git(company, "commit", "-qm", "offboard ngocbh")
+  expect(s.proven(cookie)).toBe(pub.id)
+  expect(office.store.getHqSession(pub.id)).toBeDefined()
+})
+
+test("proven reads no git", async () => {
+  const office = makeOffice()
+  let loads = 0
+  const s = sessionsFor(office, new Clock(), (g, sha) => {
+    loads++
+    return passwordFps(g, sha)
+  })
+  const [pub, cookie] = await s.issue("ngocbh", ISSUE)
+  loads = 0
+  let heads = 0
+  const head = s.snapshots.head.bind(s.snapshots)
+  s.snapshots.head = () => {
+    heads++
+    return head()
+  }
+  expect(s.proven(cookie)).toBe(pub.id)
+  expect([loads, heads]).toEqual([0, 0])
+})
+
+test("knows names people at head and unreadable ones", async () => {
+  const office = makeOffice()
+  const s = sessionsFor(office)
+  expect([await s.knows("ngocbh"), await s.knows("minh"), await s.knows("nobody")]).toEqual([true, true, false])
+  handEdit(office.paths.company, "ngocbh", { nickname: "typo" })
+  expect(await s.knows("ngocbh")).toBe(true)
+})
+
 test("deleting the person ends the session", async () => {
   const office = makeOffice()
   const company = office.paths.company
@@ -426,9 +483,9 @@ test("a signed in session says so and needs the password it was checked against"
   const hash = await hashPassword("the first password")
   handEdit(company, "ngocbh", { password_hash: hash })
   const s = sessionsFor(office)
-  expect(await s.passwordHash("ngocbh")).toBe(hash)
-  expect(await s.passwordHash("minh")).toBeNull()
-  expect(await s.passwordHash("nobody")).toBeNull()
+  expect(await s.passwordHash("ngocbh")).toEqual({ hash, unreadable: false })
+  expect(await s.passwordHash("minh")).toEqual({ hash: null, unreadable: false })
+  expect(await s.passwordHash("nobody")).toEqual({ hash: null, unreadable: false })
   const login = { ...ISSUE, via: "login" as const, checked: passwordFp(hash) }
   const [pub] = await s.issue("ngocbh", login)
   expect(pub.via).toBe("login")
@@ -436,6 +493,8 @@ test("a signed in session says so and needs the password it was checked against"
   handEdit(company, "ngocbh", { password_hash: await hashPassword("changed meanwhile") })
   const caught = await httpError(s.issue("ngocbh", login))
   expect([caught.status, caught.code]).toEqual([409, "password_changed"])
+  handEdit(company, "ngocbh", { nickname: "typo" })
+  expect(await s.passwordHash("ngocbh")).toEqual({ hash: null, unreadable: true })
 })
 
 test("its inspect and json show no secret or fingerprint", async () => {
