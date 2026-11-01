@@ -137,6 +137,10 @@ test("only the ceo lists and ends the sessions of someone who isnt a human at he
     expect([r.status, r.json()]).toEqual([200, []])
   }
   expect(office.store.listHqSessions()).toEqual([])
+  // With no stored sessions left, or none ever (a typo, an agent), the CEO gets 404 or 422 as before.
+  expect((await sock.get("/hq/browsers?person=ann", bearer(ceo))).json()).toEqual(notFound)
+  expect((await sock.get("/hq/browsers?person=nobody", bearer(ceo))).status).toBe(404)
+  expect((await sock.get("/hq/browsers?person=minh", bearer(ceo))).status).toBe(422)
   // Pairing still needs a human at HEAD.
   expect((await sock.post("/hq/pair", { handle: "ann" }, bearer(ceo))).status).toBe(404)
 })

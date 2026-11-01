@@ -516,7 +516,7 @@ export class CompanyGit {
     if (held.every((blob) => blob === null)) return true
     // The range is symmetric so a reset back to before a deletion counts too; each repo setting that would change
     // which commits or changes the log shows is pinned.
-    const log = ["-c", "log.follow=false", "log", "-n", "1", "--full-history", "--diff-merges=separate"]
+    const log = ["-c", "log.follow=false", "-c", "log.diffMerges=separate", "log", "-n", "1", "--full-history", "-m"]
     log.push("--no-patch", "--no-renames", "--no-show-signature", "--no-ext-diff", "--diff-filter=D", "--format=%H")
     log.push(`${from}...${to}`, "--", `:(literal)${relpath}`)
     return (await this.#run(log)).stdout.toString().trim() !== ""

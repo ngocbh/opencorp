@@ -331,10 +331,10 @@ test("a reset to before the hire and a hire again ends the session; a rebase wit
   expect((await s.check(keptCookie))?.id).toBe(kept.id)
 })
 
-test("a session with no issue commit, or one the clone lacks, ends", async () => {
+test("a session with no issue commit, one that isnt a commit id, or one the clone lacks, ends", async () => {
   const office = makeOffice()
   const s = sessionsFor(office)
-  for (const issuedSha of [null, "f".repeat(40)]) {
+  for (const issuedSha of [null, "", "abc1234", "f".repeat(40)]) {
     const [pub, cookie] = await s.issue("ngocbh", ISSUE)
     const row = office.store.getHqSession(pub.id)!
     office.store.deleteHqSession(pub.id)
@@ -581,6 +581,25 @@ test("listing a persons sessions ends those issued before they were removed and 
   const [kept] = await s.issue("ann", ISSUE)
   expect((await s.listLive("ann")).map((r) => r.id)).toEqual([kept.id])
   expect(office.store.getHqSession(old.id)).toBeUndefined()
+})
+
+test("listing leaves out a session revoked while it read the history", async () => {
+  const office = makeOffice()
+  let entered = false
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  const s = sessionsFor(office, new Clock(), undefined, async (git, relpath, from, to) => {
+    entered = true
+    await gate
+    return git.goneSince(relpath, from, to)
+  })
+  const [pub] = await s.issue("ngocbh", ISSUE)
+  handEdit(office.paths.company, "minh", { title: "Lead" })
+  const listing = s.listLive("ngocbh")
+  await until(() => entered)
+  await s.revoke(pub.id)
+  release()
+  expect(await listing).toEqual([])
 })
 
 test("listing a persons sessions while their file cant be read ends none", async () => {

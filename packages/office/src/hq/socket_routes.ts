@@ -31,10 +31,10 @@ function checkFor(view: CompanyView | null, handle: string, actor: string): Comp
 }
 
 /** `checkFor` for a person's stored browser sessions: the CEO may also list and end those of a handle that isn't a
- *  human at HEAD (anymore), which nothing else could reach. */
-function checkBrowsersFor(view: CompanyView | null, handle: string, actor: string): void {
+ *  human at HEAD (anymore) but has `stored` sessions, which nothing else could reach. */
+function checkBrowsersFor(view: CompanyView | null, handle: string, actor: string, stored: boolean): void {
   const person = view?.people.find((p) => p.handle === handle)
-  if (view !== null && person?.kind !== "human" && actor === view.company?.ceo) return
+  if (stored && view !== null && person?.kind !== "human" && actor === view.company?.ceo) return
   checkFor(view, handle, actor)
 }
 
@@ -67,7 +67,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     },
   },
   // A person's browser sessions on this office, newest first. Only the CEO may list a person who isn't a human at HEAD
-  // (anymore); everyone else gets 404 or 422 as for devices. Sessions a password change or a removal of their person
+  // (anymore) and still has stored sessions; everyone else, and any other handle, gets 404 or 422 as for devices. Sessions a password change or a removal of their person
   // since they were issued ended are deleted here rather than listed; expired ones are pruned at office start and on
   // each new session.
   {
@@ -78,7 +78,8 @@ export const ROUTES: readonly Route<RequestContext>[] = [
       const hq = hqOf(ctx, "GET /hq/browsers")
       const actor = actingPerson(ctx)
       const handle = ctx.query.getAll("person").at(-1) || actor
-      checkBrowsersFor(await hq.snapshots.head(), handle, actor)
+      const stored = ctx.office.store.listHqSessions(handle).length > 0
+      checkBrowsersFor(await hq.snapshots.head(), handle, actor, stored)
       return (await hq.sessions.listLive(handle)).map((r) => r.public())
     },
   },
@@ -91,7 +92,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
       const hq = hqOf(ctx, "DELETE /hq/browsers/:id")
       const record = ctx.office.store.getHqSession(params.id!)
       if (record === undefined) throw new HttpError(404, "not_found", `no browser session ${params.id}`)
-      checkBrowsersFor(await hq.snapshots.head(), record.person, actingPerson(ctx))
+      checkBrowsersFor(await hq.snapshots.head(), record.person, actingPerson(ctx), true)
       await hq.sessions.revoke(record.id)
       return { ok: true }
     },

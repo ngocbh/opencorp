@@ -10,7 +10,7 @@ import {
   stamp,
 } from "@opencorp/protocol"
 import type { z } from "zod"
-import type { CompanyGit } from "../company/git.ts"
+import { type CompanyGit, isCommitId } from "../company/git.ts"
 import { parseFile } from "../company/issues.ts"
 import type { CompanySnapshots } from "../company/snapshot.ts"
 import { HttpError } from "../daemon/http.ts"
@@ -186,7 +186,10 @@ export class BrowserSessions {
    * issued, and `to`, or may otherwise be another person's there: such a session has ended even when the handle is a
    * human with the same password again. Loaded once per (to, from, person) however many checks ask at the same time.
    */
-  #goneBetween(person: string, from: string, to: string): Promise<boolean> {
+  #goneBetween(person: string, from: string | null, to: string): Promise<boolean> {
+    // A row from before sessions recorded their commit, or with one that isn't a commit id, can't show its person
+    // stayed, so it ends rather than failing every check.
+    if (from === null || !isCommitId(from)) return Promise.resolve(true)
     if (from === to) return Promise.resolve(false)
     const key = `${to} ${from} ${person}`
     const cached = this.#gone.get(key)
@@ -286,8 +289,7 @@ export class BrowserSessions {
     if (row === null) return null // only a cookie that proves the secret gets past here
     const sid = row.id
     const [view, humans] = await this.#atHead()
-    // A row from before sessions recorded their commit can't show its person stayed, so it ends.
-    if (view === null || row.issuedSha === null || (await this.#goneBetween(row.person, row.issuedSha, view.sha))) {
+    if (view === null || (await this.#goneBetween(row.person, row.issuedSha, view.sha))) {
       await this.revoke(sid)
       return null
     }
@@ -342,14 +344,16 @@ export class BrowserSessions {
     // against an older one.
     const [view, humans] = await this.#atHead()
     const fp = humans.fps.get(person)
+    const gone = await Promise.all(
+      rows.map((row) => view === null || this.#goneBetween(row.person, row.issuedSha, view.sha)),
+    )
     const live: HqSessionRecord[] = []
-    for (const row of rows) {
-      const gone =
-        view === null || row.issuedSha === null || (await this.#goneBetween(row.person, row.issuedSha, view.sha))
-      if (!gone && (humans.unreadable.has(person) || row.passwordFp === fp)) live.push(row)
+    for (const [i, row] of rows.entries()) {
+      if (!gone[i] && (humans.unreadable.has(person) || row.passwordFp === fp)) live.push(row)
       else await this.revoke(row.id)
     }
-    return live
+    // A session revoked while the history was read is left out.
+    return live.filter((row) => !this.#live.get(row.id)?.revoked)
   }
 
   /**
@@ -393,7 +397,7 @@ export class BrowserSessions {
     const live = this.#live.get(sid)
     if (live === undefined || live.revoked) return false
     const [gone, humans] = await Promise.all([
-      live.issuedSha === null || this.#goneBetween(live.person, live.issuedSha, sha),
+      this.#goneBetween(live.person, live.issuedSha, sha),
       this.#fingerprints.at(sha),
     ])
     if (gone) {
