@@ -107,6 +107,15 @@ test("with TCP off because hq.json was ignored, it says why and to fix the file,
   expect(remote.join("\n")).not.toContain("To open it here")
 })
 
+test("with TCP off and a warning that isnt about hq.json, it still says to add tcp", () => {
+  const off = code({ url: null, open_file: null })
+  const warning = "some other warning"
+  const local = pairOutput(off, { ...opts, tcp: tcpOff, warnings: [warning], env: {}, platform: "darwin" }).lines
+  expect(local).toContain(`  ${warning}`)
+  expect(local.join("\n")).toContain('add "tcp": true to /home/u/.opencorp/office/hq.json')
+  expect(local.join("\n")).not.toContain("fix /home/u/.opencorp/office/hq.json")
+})
+
 test("with TCP on but not listening, it says why, forwards hq.sock, and doesn't say to turn TCP on", () => {
   const off = code({ url: null, open_file: null })
   const lines = (tcp: typeof taken) => pairOutput(off, { ...opts, tcp, env: {}, platform: "darwin" }).lines

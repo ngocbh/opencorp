@@ -5,7 +5,7 @@ import type { CompanySnapshots } from "../company/snapshot.ts"
 import { CompanySource } from "../company/source.ts"
 import type { Office } from "../daemon/office.ts"
 import { PING_MS } from "../daemon/routes/events.ts"
-import { type HqConfig, loadConfig } from "./config.ts"
+import { type HqConfig, loadConfig, SETTINGS_IGNORED } from "./config.ts"
 import { Logins } from "./login.ts"
 import { PairCodes } from "./pairing.ts"
 import { Listeners, RETRY_MS } from "./servers.ts"
@@ -113,10 +113,7 @@ export class Hq {
   /** What `opencorp doctor` and `opencorp pair` should mention, besides `socket_error` and TCP's own state. */
   async warnings(): Promise<string[]> {
     const found: string[] = []
-    if (this.config.problem !== null)
-      found.push(
-        `settings ignored, so the web port stays off until hq.json is fixed (restart to apply): ${this.config.problem}`,
-      )
+    if (this.config.problem !== null) found.push(`${SETTINGS_IGNORED} (restart to apply): ${this.config.problem}`)
     if (this.boundPort !== null && this.loopback6Error !== null) {
       const port = this.boundPort
       found.push(

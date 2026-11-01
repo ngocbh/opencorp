@@ -988,7 +988,7 @@ test("a taken port gives the json to write", () => {
   const dir = tempDir()
   const got = byName(doctor.hqChecks(status({ listening: false, error: "Address already in use" }), dir, dir))
   expect(got.hq!.detail).toContain('for example {"port": 49390}')
-  expect(got.hq!.detail).toContain("created if it doesn't exist")
+  expect(got.hq!.detail).toContain("create the file if it doesn't exist; keep any keys it already has")
 })
 
 test("an answer that isnt an hq status is unreadable", async () => {

@@ -2,6 +2,7 @@
 // in a 0600 file the office wrote: never in a process's arguments, where other users could read it.
 import { isMissingRoute, isNotImplemented, OfficeUnavailable } from "@opencorp/client"
 import { opencorpHome } from "@opencorp/client/node"
+import { otherPort, SETTINGS_IGNORED } from "@opencorp/office/hq/config"
 import type { HqTcp, PairCode } from "@opencorp/protocol"
 import os from "node:os"
 import path from "node:path"
@@ -41,9 +42,6 @@ function expiry(ts: string, now: number) {
   return `in the next ${minutes} minute${minutes === 1 ? "" : "s"} (until ${clock})`
 }
 
-/** Another port to suggest in place of a taken `port`: an example, not checked to be free. */
-const otherPort = (port: number) => (port <= 65525 ? port + 10 : port - 10)
-
 /** HQ's web port as a phrase: "HQ's web port 49380", or without a number for `port: 0` (any free one). */
 const webPort = (port: number) => (port ? `HQ's web port ${port}` : "HQ's web port")
 
@@ -51,8 +49,7 @@ const webPort = (port: number) => (port ? `HQ's web port ${port}` : "HQ's web po
  * What `pair` prints for `code`, and the redirect file to open, if it should open one. `tcp` is HQ's TCP status when
  * there's no URL, or null when it couldn't be read; `warnings` are GET /hq's.
  *
- * With TCP off, any warning means hq.json was ignored (HQ reports no other warning then, as core.test pins), so the
- * fix is to repair the file, not to add `"tcp": true` to it.
+ * With TCP off because hq.json was ignored, the fix is to repair the file, not to add `"tcp": true` to it.
  */
 export function pairOutput(
   code: PairCode,
@@ -111,7 +108,7 @@ export function pairOutput(
     )
     if (!ssh && o.tcp && !o.tcp.enabled)
       lines.push(
-        o.warnings.length
+        o.warnings.some((w) => w.startsWith(SETTINGS_IGNORED))
           ? `To open it here instead, fix ${shellWord(o.hqJson)} so it has "tcp": true, then run \`opencorp restart\`.`
           : `To open it here instead, add "tcp": true to ${shellWord(o.hqJson)}, then run \`opencorp restart\`.`,
       )

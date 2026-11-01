@@ -14,6 +14,7 @@ import { loadRepo } from "../company/loader.ts"
 import { isNew, missingFiles } from "../company_template/index.ts"
 import { OfficePaths } from "../daemon/office.ts"
 import { CodexMissing, codexCommand } from "../harness/codex.ts"
+import { otherPort } from "../hq/config.ts"
 import { RETRY_MS } from "../hq/servers.ts"
 import { CHECKOUT } from "../hq/version.ts"
 import { selfCommand } from "../platform.ts"
@@ -532,9 +533,6 @@ export async function hqStatus(
 /** How HQ's status starts the TCP error when the web port's server stopped after it bound, not a failed bind. */
 const SERVER_ENDED = "its server ended"
 
-/** Another port to suggest in place of a taken `port`: an example, not checked to be free. */
-const otherPort = (port: number) => (port <= 65525 ? port + 10 : port - 10)
-
 /** What to do about an HQ status doctor couldn't read, by why. */
 export const UNREAD: Record<Unread, string> = {
   refused: "the office doesn't know this device, so it won't say where HQ listens: run `opencorp login`",
@@ -614,8 +612,8 @@ export function hqPortChecks(status: HqStatus, officeDir: string): Check[] {
         status: "warn",
         detail:
           `port ${tcp.port} isn't free (${error}); HQ tries it again every ${retry} s. Free it, or set another ` +
-          `"port" in ${path.join(officeDir, "hq.json")} (for example {"port": ${otherPort(tcp.port)}}; it's ` +
-          "created if it doesn't exist) and run `opencorp restart`",
+          `"port" in ${path.join(officeDir, "hq.json")} (for example {"port": ${otherPort(tcp.port)}}; create the ` +
+          "file if it doesn't exist; keep any keys it already has) and run `opencorp restart`",
       },
     ]
   }

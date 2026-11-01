@@ -16,6 +16,12 @@ import { CHECKOUT } from "./version.ts"
 /** A fixed port, so a bookmark and an SSH forward keep working across restarts. */
 export const DEFAULT_PORT = 49380
 
+/** How HQ's warning starts when hq.json was ignored, which keeps the web port off. */
+export const SETTINGS_IGNORED = "settings ignored, so the web port stays off until hq.json is fixed"
+
+/** Another port to suggest in place of a taken `port`: an example, not checked to be free. */
+export const otherPort = (port: number) => (port <= 65525 ? port + 10 : port - 10)
+
 const ORIGIN = /^https?:\/\/[^/\s]+$/u
 const KEYS = ["app_dir", "dev_origins", "port", "tcp"]
 
