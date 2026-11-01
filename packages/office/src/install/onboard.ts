@@ -60,7 +60,7 @@ export function damageMessage(root: string, state: Extract<CompanyState, { kind:
   const q = shQuote(root)
   const fixes: Record<typeof state.reason, string> = {
     "not-a-directory": "move it away, then run this again",
-    unreadable: "move it away, then run this again",
+    unreadable: "make it readable or move it away, then run this again",
     "no-git": "restore its .git, or move it away to start over",
     "bad-git": "restore its .git, or move it away to start over",
     "no-company-yaml":
@@ -950,8 +950,9 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
   const one = launch(home, { environ, userHome: (options.host ?? defaultHost()).userHome })
   checkSocket(one.socket)
   // Checked before the home is made, so a damaged company is reported with nothing changed.
-  const state = await companyState(path.join(one.home, "company"))
-  if (state.kind === "damaged") throw new OnboardError(damageMessage(path.join(one.home, "company"), state))
+  const company = path.join(one.home, "company")
+  const state = await companyState(company)
+  if (state.kind === "damaged") throw new OnboardError(damageMessage(company, state))
   makeHome(one.home)
   const lock = await setupLock(one)
   try {

@@ -160,14 +160,14 @@ export async function companyState(root: string): Promise<CompanyState> {
     if (errno(error) === "ENOENT" || errno(error) === "ENOTDIR") return { kind: "absent" }
     return unreadable(root, error)
   }
+  let st: fs.Stats | undefined
   try {
-    if (!fs.statSync(root).isDirectory()) throw Object.assign(new Error(), { code: "ENOTDIR" })
+    st = fs.statSync(root, { throwIfNoEntry: false })
   } catch (error) {
-    if (errno(error) === "ENOENT" || errno(error) === "ENOTDIR") {
-      return { kind: "damaged", reason: "not-a-directory", detail: `${root} is not a directory` }
-    }
-    return unreadable(root, error)
+    if (errno(error) !== "ENOTDIR") return unreadable(root, error)
   }
+  // A dangling symlink has no stat at all.
+  if (!st?.isDirectory()) return { kind: "damaged", reason: "not-a-directory", detail: `${root} is not a directory` }
   try {
     fs.lstatSync(path.join(root, ".git"))
   } catch (error) {
