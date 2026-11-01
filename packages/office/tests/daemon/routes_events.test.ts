@@ -4,12 +4,12 @@ import http from "node:http"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { type Event, type LiveEvent, Message, now } from "@opencorp/protocol"
+import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { newId } from "../../src/store/store.ts"
+import { git } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import { recordEvents, session } from "../store/helpers.ts"
-import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
-import { git } from "../company/helpers.ts"
 import {
   CEO,
   Conn,
