@@ -675,6 +675,17 @@ test.skipIf(!sandboxAvailable())("the helper reads and writes inside the workspa
   expect((await helperTool(policy, { op: "read_file", path: "../beside.txt" })).ok).toBe(false)
   expect((await helperTool(policy, { op: "write_file", path: "../new.txt", content: "x" })).ok).toBe(false)
   expect(fs.existsSync(path.join(root, "new.txt"))).toBe(false)
+  // A shorter write truncates the file through its fd, which the profile allows.
+  expect(await helperTool(policy, { op: "write_file", path: "a.txt", content: "x" })).toEqual(
+    ok("wrote 1 bytes to a.txt"),
+  )
+  expect(await helperTool(policy, { op: "edit_file", path: "a.txt", old: "x", new: "yz" })).toEqual(
+    ok("replaced 1 occurrence in a.txt at line 1"),
+  )
+  expect(await helperTool(policy, { op: "read_file", path: "a.txt" })).toEqual(ok("yz"))
+  // A top path the sandbox denies is an error, not "(no matches)".
+  expect((await helperTool(policy, { op: "search", pattern: "secret", path: "../beside.txt" })).ok).toBe(false)
+  expect((await helperTool(policy, { op: "search", pattern: "secret", path: ".." })).ok).toBe(false)
 })
 
 test.skipIf(!sandboxAvailable())("the helper does not run under the shell profile", async () => {
