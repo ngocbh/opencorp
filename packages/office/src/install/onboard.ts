@@ -9,14 +9,7 @@ import { buffer } from "node:stream/consumers"
 import { isDeepStrictEqual } from "node:util"
 import type { Device } from "@opencorp/protocol"
 import { type ComposedFlow, loadFlow, runFlow } from "@ngocbh/yian"
-import {
-  type AuthRequest,
-  type Issue,
-  LLM_CONFIG_KEYS,
-  LLMConfig,
-  SUPPORTED_LLM_PROVIDERS,
-  ValidationError,
-} from "@ngocbh/yian/llm_clients"
+import { type AuthRequest, LLMConfig, SUPPORTED_LLM_PROVIDERS, ValidationError } from "@ngocbh/yian/llm_clients"
 import { type FileLock, FileLockError, isLocked, sqliteErrorCode, waitForLock, withWarnings } from "@ngocbh/yian/platform"
 import type { RunFlowOptions, RunResult } from "@ngocbh/yian/run"
 import { addDevice, DeviceRefused } from "../auth/devices.ts"
@@ -33,7 +26,7 @@ import { checkPassword } from "../auth/passwords.ts"
 import { newToken, tokenSha256 } from "../auth/tokens.ts"
 import { azureBaseUrl, Connections } from "../chat/connections.ts"
 import * as models from "../chat/models.ts"
-import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
+import { checkLlmConfig, loadProvider, Provider, ProviderError } from "../chat/provider.ts"
 import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import { lint } from "../company/lint.ts"
 import { type CompanyRepo, loadRepo } from "../company/loader.ts"
@@ -90,24 +83,6 @@ function errnoCode(error: unknown): unknown {
   return (error as NodeJS.ErrnoException | null)?.code
 }
 
-/** The `llm_config` errors, naming only fields yian defines (a key pasted as a field name stays out). */
-function llmErrors(issues: readonly Issue[]): string {
-  const lines: string[] = []
-  for (const issue of issues) {
-    const loc = issue.loc.map(String)
-    const first = loc[0]
-    if (first !== undefined && (first === "headers" || (SUPPORTED_LLM_PROVIDERS as readonly string[]).includes(first))) {
-      // Yian's messages here quote header names and block field names, which may be a pasted key.
-      lines.push(`llm_config.${first}: holds a name or value yian won't take`)
-    } else if (issue.type === "extra_forbidden" || (first !== undefined && !LLM_CONFIG_KEYS.has(first))) {
-      lines.push(`llm_config has an extra field; the fields are ${[...LLM_CONFIG_KEYS].join(", ")}`)
-    } else {
-      lines.push(`${["llm_config", ...loc].join(".")}: ${issue.msg}`)
-    }
-  }
-  return [...new Set(lines)].join("; ")
-}
-
 /** The most characters `llm_config.api_key` may have. Servers cap a request's headers at 8-16 KiB in all, so a
  *  longer key can't be sent, and the scrubbers build a pattern from each form of the key that grows with it. */
 export const MAX_KEY_CHARS = 16384
@@ -128,17 +103,9 @@ export function checkProvider(data: unknown): Provider {
   }
   const llm = provider.llm_config ?? {}
   try {
-    LLMConfig.fromHost(llm)
+    checkLlmConfig(llm)
   } catch (error) {
-    if (error instanceof ValidationError) {
-      throw new OnboardError(`yian won't take this provider: ${llmErrors(error.issues)}`)
-    }
-    // Yian's TypeCheckError (a lone surrogate JSON.parse let through) quotes the value.
-    if (error instanceof RangeError) {
-      throw new OnboardError(
-        "yian won't take this provider: llm_config holds a value that isn't JSON text or a number",
-      )
-    }
+    if (error instanceof ProviderError) throw new OnboardError(error.message)
     throw error
   }
   const key = llm.api_key
@@ -151,10 +118,6 @@ export function checkProvider(data: unknown): Provider {
     if (!HEADER_TEXT.test(key)) {
       throw new OnboardError("llm_config.api_key must be printable ASCII with no leading or trailing spaces")
     }
-  }
-  if (Object.hasOwn(llm, "api_key") && !llm.provider) {
-    // Yian refuses a key without a provider at run time; say so now.
-    throw new OnboardError("llm_config.api_key needs llm_config.provider, so the key goes only to that provider")
   }
   const name = llm.provider
   // Without a key, runs use the login `yian auth <name>` saved, which names its model.

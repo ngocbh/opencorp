@@ -1,5 +1,12 @@
 /** The model provider a run uses: a connection file's llm_config, env and prices, read at each spawn. */
 import { inspect } from "node:util"
+import {
+  type Issue,
+  LLM_CONFIG_KEYS,
+  LLMConfig,
+  SUPPORTED_LLM_PROVIDERS,
+  ValidationError,
+} from "@ngocbh/yian/llm_clients"
 import { z } from "zod"
 import { unsafeEnvName } from "../platform.ts"
 import { PrivateFileError, readPrivate } from "../secrets.ts"
@@ -96,6 +103,45 @@ export class Provider {
   [inspect.custom](): string {
     return `${this.constructor.name} ${inspect(this.toJSON())}`
   }
+}
+
+/** Throws `ProviderError` unless yian takes `llm` as an `llm_config` (`LLMConfig.fromHost`) and a key in it names
+ *  its provider; the message never holds a value from `llm`. */
+export function checkLlmConfig(llm: LlmConfig): void {
+  try {
+    LLMConfig.fromHost(llm)
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      throw new ProviderError(`yian won't take this provider: ${llmErrors(error.issues)}`)
+    }
+    // Yian's TypeCheckError (a lone surrogate JSON.parse let through) quotes the value.
+    if (error instanceof RangeError) {
+      throw new ProviderError("yian won't take this provider: llm_config holds a value that isn't JSON text or a number")
+    }
+    throw error
+  }
+  if (Object.hasOwn(llm, "api_key") && !llm.provider) {
+    // Yian refuses a key without a provider at run time; say so now.
+    throw new ProviderError("llm_config.api_key needs llm_config.provider, so the key goes only to that provider")
+  }
+}
+
+/** The `llm_config` errors, naming only fields yian defines (a key pasted as a field name stays out). */
+function llmErrors(issues: readonly Issue[]): string {
+  const lines: string[] = []
+  for (const issue of issues) {
+    const loc = issue.loc.map(String)
+    const first = loc[0]
+    if (first !== undefined && (first === "headers" || (SUPPORTED_LLM_PROVIDERS as readonly string[]).includes(first))) {
+      // Yian's messages here quote header names and block field names, which may be a pasted key.
+      lines.push(`llm_config.${first}: holds a name or value yian won't take`)
+    } else if (issue.type === "extra_forbidden" || (first !== undefined && !LLM_CONFIG_KEYS.has(first))) {
+      lines.push(`llm_config has an extra field; the fields are ${[...LLM_CONFIG_KEYS].join(", ")}`)
+    } else {
+      lines.push(`${["llm_config", ...loc].join(".")}: ${issue.msg}`)
+    }
+  }
+  return [...new Set(lines)].join("; ")
 }
 
 /** `data` checked against `schema`; throws `ProviderError(validationErrors(error))`, with no cause. */

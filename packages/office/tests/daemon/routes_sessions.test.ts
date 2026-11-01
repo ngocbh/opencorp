@@ -10,6 +10,7 @@ import { HarnessError } from "../../src/chat/state.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { register } from "../../src/extensions/questions.ts"
+import { writePrivate } from "../../src/secrets.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { fakeLlm, makeHarness, noWorkersLeft, status as chatStatus } from "../chat/helpers.ts"
 import { allGone, approvalTurn, makeCodex, openCard, requestsValid, start, status, texts } from "../harness/helpers.ts"
@@ -382,6 +383,13 @@ test("anyone who may chat may switch its model", async () => {
   expect([r.status, errorOf(r)]).toEqual([422, "unknown_connection"])
   // Security: the refusal echoes nothing of the request.
   expect(r.text).not.toContain("gone")
+  const bad = { llm_config: { provider: "nope-provider", model: "stub-3" } }
+  await writePrivate(path.join(h.office.connections.dir, "third.json"), JSON.stringify(bad))
+  r = await post(sock, `/sessions/${sid}/model`, { connection: "third", model: "stub-5" }, bearer(ava))
+  expect([r.status, errorOf(r)]).toEqual([409, "connection_unusable"])
+  // Security: it names the connection, never its file or what the file holds.
+  expect(r.text).not.toContain(h.office.paths.home)
+  expect(r.text).not.toContain("nope-provider")
   const stored = h.store.getSession(sid)!
   expect([stored.connection, stored.model]).toEqual(["second", "stub-5"])
   expect((await post(sock, `/sessions/${sid}/end`, null, bearer(ceo))).json()).toEqual({ ok: true })

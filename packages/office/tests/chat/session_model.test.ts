@@ -522,6 +522,43 @@ test("set model refuses a connection that cant be read without naming its file",
   expect(picked(h.store.getSession(s.id)!)).toEqual(["office", null, null])
 })
 
+test("set model refuses a connection yian wont take", async () => {
+  const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
+  const s = await h.harness.startSession("minh", h.folder)
+  const bad = { llm_config: { provider: "nope-provider", model: "stub-2" }, env: {} }
+  await writePrivate(path.join(h.office.connections.dir, "second.json"), JSON.stringify(bad))
+  const refused = await rejection(h.harness.setModel(s.id, "second", "stub-5"))
+  expect([refused.status, refused.code]).toEqual([409, "connection_unusable"])
+  expect(refused.message).toContain("second")
+  expect(refused.message).not.toContain(h.office.connections.dir)
+  expect(refused.message).not.toContain("nope-provider")
+  expect(h.logs).toContain(`connection second can't be used; session ${s.id} stays where it is`)
+  expect(picked(h.store.getSession(s.id)!)).toEqual(["office", null, null])
+})
+
+test("a prompt on a connection edited to a provider yian wont take answers 503 and the session stays live", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+  fake.script({ content: "on two" }, { content: "fixed" })
+  const s = await start(h)
+  await h.harness.setModel(s.id, "second", "stub-2")
+  expect(await tell(h, s.id, "a")).toBe("on two")
+  const file = path.join(h.office.connections.dir, "second.json")
+  const good = await Bun.file(file).text()
+  const bad = { llm_config: { provider: "nope-provider", model: "stub-2" }, env: fake.env() }
+  await writePrivate(file, JSON.stringify(bad))
+  const refused = await rejection(h.harness.prompt(s.id, "b"))
+  expect([refused.status, refused.code]).toEqual([503, "cant_wake"])
+  expect(refused.message).not.toContain(h.office.connections.dir)
+  expect(status(h, s.id)).toBe("idle")
+  const prefix = "its connection can't be used ("
+  const line = h.logs.find((l) => l.includes(prefix))!
+  expect(line).toContain(`${prefix}connection 'second': yian won't take this provider`)
+  expect(line).not.toContain("nope-provider")
+  await writePrivate(file, good)
+  expect(await tell(h, s.id, "c")).toBe("fixed")
+})
+
 test("set model clears the note", async () => {
   const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
   const s = await h.harness.startSession("minh", h.folder, { connection: "gone" })

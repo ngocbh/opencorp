@@ -152,6 +152,10 @@ export const INDEX_WAIT_MS = 3000
 /** How many characters of why a run failed a notice or a reason keeps. */
 const WHY_CHARS = 500
 
+/** How many characters of why a connection can't be used a log line keeps: yian's reasons list every issue it
+ *  found, with no bound of their own. */
+const REASON_CAP = 500
+
 /** The error types of a model refusing the connection's key. */
 const AUTH_CAUSES = ["AuthenticationError", "PermissionDeniedError", "AuthError"]
 
@@ -1356,7 +1360,9 @@ export class SessionActor implements LiveCalls {
       return true
     } catch (error) {
       // Its text may name a file under office/connections: the log gets it, the caller a fixed reason (`spawnWhy`).
-      if (error instanceof ProviderError) this.#log(`session ${sid}: its connection can't be used (${error.message})`)
+      if (error instanceof ProviderError) {
+        this.#log(`session ${sid}: its connection can't be used (${error.message.slice(0, REASON_CAP)})`)
+      }
       const refusal = this.#wakeError(error)
       for (const p of [...pendings, ...held]) p.reject(refusal)
       this.#next = this.#next.filter((p) => !held.includes(p))

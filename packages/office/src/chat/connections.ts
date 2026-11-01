@@ -6,7 +6,15 @@ import { AuthError, AuthStore } from "@ngocbh/yian/llm_clients"
 import { type Connection, OFFICE } from "@opencorp/protocol"
 import type { z } from "zod"
 import { PrivateFileError, readPrivate, writePrivate } from "../secrets.ts"
-import { checked, type LlmConfig, loadProvider, Provider, ProviderError, providerSchema } from "./provider.ts"
+import {
+  checked,
+  checkLlmConfig,
+  type LlmConfig,
+  loadProvider,
+  Provider,
+  ProviderError,
+  providerSchema,
+} from "./provider.ts"
 
 /** Names no added connection may take: `default` and `login` are routes under /connections. */
 export const RESERVED: ReadonlySet<string> = new Set([OFFICE, "default", "login"])
@@ -369,8 +377,8 @@ export class Connections {
 
   /** What a run on connection `name` (null: `office`) and `model` (null: the connection's own) gets. Rejects
    *  with `BadConnectionName` when `name` isn't a connection name, `ConnectionGone` when there is no such
-   *  connection or it was removed, and `ProviderError` when its file can't be used or a subscription has no
-   *  sign-in. */
+   *  connection or it was removed, and `ProviderError` when its file can't be used, its `llm_config` isn't one yian
+   *  takes (`checkLlmConfig`), or a subscription has no sign-in. */
   async resolve(name: string | null, model: string | null): Promise<Provider> {
     name = name ?? OFFICE
     const conn = await this.get(name)
@@ -384,6 +392,13 @@ export class Connections {
         throw new ProviderError(`connection '${name}' has no sign-in; remove it and connect again`)
       }
       env[AUTH_FILE_ENV] = auth
+    }
+    try {
+      // A run on a config yian won't take fails only once its worker starts it.
+      checkLlmConfig(llm ?? {})
+    } catch (error) {
+      if (error instanceof ProviderError) throw new ProviderError(`connection '${name}': ${error.message}`)
+      throw error
     }
     return Provider.parse({ llm_config: llm, env, prices: conn.prices })
   }
