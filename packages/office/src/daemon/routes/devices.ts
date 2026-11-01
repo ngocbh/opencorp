@@ -33,6 +33,14 @@ async function refusable(change: Promise<Person>): Promise<Person> {
   }
 }
 
+/** `refusable(change)`, once the open streams are rechecked against the commit it made: a removed device's streams
+ *  end, and so do the tokenless ones once a first device makes tokens needed, before the reply says it's done. */
+async function rechecked(ctx: RequestContext, change: Promise<Person>): Promise<Person> {
+  const person = await refusable(change)
+  await ctx.office.tokens.recheck()
+  return person
+}
+
 /** The identity routes. */
 export const ROUTES: readonly Route<RequestContext>[] = [
   // `{"ok": true}`, exactly: the office is answering. Served without a token.
@@ -70,7 +78,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     reply: PersonSchema,
     handler: (ctx, params, body) => {
       const { name, token_sha256 } = body as AddDeviceRequest
-      return refusable(addDevice(ctx.office.git, params.handle!, { name, token_sha256 }, actingPerson(ctx)))
+      return rechecked(ctx, addDevice(ctx.office.git, params.handle!, { name, token_sha256 }, actingPerson(ctx)))
     },
   },
   // Removes a device, by name, from a human's `person.yaml` and commits it; the person afterwards.
@@ -85,7 +93,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
       if (!DeviceName.safeParse(params.name).success) {
         throw new HttpError(404, "not_found", `@${handle} has no device by that name`)
       }
-      return refusable(removeDevice(ctx.office.git, handle, params.name!, actor))
+      return rechecked(ctx, removeDevice(ctx.office.git, handle, params.name!, actor))
     },
   },
   // Adds a device for a human who gives their password and commits it; the person afterwards. Served without a
@@ -96,7 +104,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     path: "/login",
     body: LoginRequest,
     reply: PersonSchema,
-    handler: (ctx, _params, body) => refusable(login(ctx.office.git, body as LoginRequest)),
+    handler: (ctx, _params, body) => rechecked(ctx, login(ctx.office.git, body as LoginRequest)),
   },
   // Sets a human's password, committing only its hash; the person afterwards.
   {

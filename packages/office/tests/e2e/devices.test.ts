@@ -4,6 +4,7 @@ import path from "node:path"
 import { readIdentity, tokenSha256 } from "@opencorp/client/node"
 import { expect, test } from "bun:test"
 import { git } from "../company/helpers.ts"
+import { waitFor } from "../helpers.ts"
 import { folder, openOffice, REPO, type RunningOffice, run } from "./helpers.ts"
 
 const TIMEOUT = 180_000
@@ -84,6 +85,61 @@ test(
     await people.body?.cancel()
     expect(owned.gitLog()[0]).toBe(`devices(@ngocbh): remove ${me.device}`)
     for (const text of outputs) expect(text).not.toContain(me.token)
+  },
+  TIMEOUT,
+)
+
+/** Opens the stream at `target` as this device: resolves once it sent `: connected`, with `ended`, which resolves once
+ *  the office ends the stream. */
+async function stream(office: RunningOffice, target: string): Promise<{ ended: Promise<string> }> {
+  const reply = await office.request("GET", target)
+  expect(reply.status).toBe(200)
+  const reader = reply.body!.getReader()
+  const decoder = new TextDecoder()
+  let seen = ""
+  while (!seen.includes("\n")) {
+    const { value, done } = await reader.read()
+    if (done) break
+    seen += decoder.decode(value)
+  }
+  expect(seen).toStartWith(": connected")
+  const ended = (async () => {
+    try {
+      while (!(await reader.read()).done);
+      return "ended"
+    } catch {
+      return "cut"
+    }
+  })()
+  return { ended }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test(
+  "removing a device ends the streams it opened",
+  async () => {
+    const owned = await openOffice({ device: true })
+    const workspace = folder(path.join(owned.root, "project"))
+    const me = readIdentity(path.join(owned.home, "identity.json"))!
+    owned.llm.script({ content: "Hi." })
+    const sid = await owned.startChat(await owned.person("minh"), workspace)
+    await owned.prompt(sid, "hello")
+    await owned.settled(sid, ["Hi."])
+    const runs = async () => (await owned.get("/runs")).runs.find((r: { session_id: string }) => r.session_id === sid)
+    const chat = await waitFor(runs, { timeout: 30_000, what: "the chat's run" })
+
+    const events = await stream(owned, "/events")
+    const live = await stream(owned, `/runs/${chat.run_id}/live`)
+    // Both stay open while the device is listed: the chat's worker is parked, so its run is still live.
+    expect(await Promise.race([events.ended, live.ended, sleep(500).then(() => "open")])).toBe("open")
+    await owned.opencorp(["devices", "remove", "ngocbh", me.device], { cwd: workspace })
+    const within = (ended: Promise<string>) => Promise.race([ended, sleep(10_000).then(() => "still open")])
+    expect(await within(events.ended)).not.toBe("still open")
+    expect(await within(live.ended)).not.toBe("still open")
+    // The client's reconnect is refused, which the TUI shows as an unknown device.
+    const again = await owned.request("GET", "/events")
+    expect([again.status, ((await again.json()) as { error: string }).error]).toEqual([401, "bad_token"])
   },
   TIMEOUT,
 )
