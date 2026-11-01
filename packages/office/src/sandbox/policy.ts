@@ -65,6 +65,23 @@ export function helperFiles(helper: Helper): string[] {
  * Throws if a link's target is not valid UTF-8.
  */
 export function realPath(p: string, visited?: string[]): string {
+  return walk(p, visited, lookups())
+}
+
+/** What one check has asked the OS so far: each realpath (null when it failed) and whether each name is a link.
+ *  Made per top-level check and dropped when it returns, so every check looks at the disk again. */
+interface Lookups {
+  spelling: Map<string, string | null>
+  link: Map<string, boolean>
+}
+
+/** An empty `Lookups`, for one top-level check. */
+function lookups(): Lookups {
+  return { spelling: new Map(), link: new Map() }
+}
+
+/** `realPath`, asking the OS through `cache`. */
+function walk(p: string, visited: string[] | undefined, cache: Lookups): string {
   // Seatbelt matches resolved paths (/private/var/..., not /var/...), so every
   // path the profile names must be resolved the same way. The walk uses only lstat
   // and readlink on the raw string: path.resolve and realpathSync drop `..` before
@@ -99,11 +116,15 @@ export function realPath(p: string, visited?: string[]): string {
       resolved = known
       continue
     }
-    visited?.push(path.join(onDisk(resolved), name))
-    let isLink = false
-    try {
-      isLink = fs.lstatSync(next).isSymbolicLink()
-    } catch {}
+    visited?.push(path.join(onDisk(resolved, cache), name))
+    let isLink = cache.link.get(next)
+    if (isLink === undefined) {
+      isLink = false
+      try {
+        isLink = fs.lstatSync(next).isSymbolicLink()
+      } catch {}
+      cache.link.set(next, isLink)
+    }
     if (!isLink) {
       resolved = next
       continue
@@ -116,20 +137,26 @@ export function realPath(p: string, visited?: string[]): string {
     if (target.startsWith("/")) resolved = "/"
     pending.push({ done: next }, ...target.split("/").reverse())
   }
-  return onDisk(resolved)
+  return onDisk(resolved, cache)
 }
 
 /** `resolved` (absolute, links resolved) with its longest existing part with no `\` in its on-disk spelling. */
-function onDisk(resolved: string): string {
+function onDisk(resolved: string, cache: Lookups): string {
   // On a case-insensitive volume home/.SSH is home/.ssh, and a firmlinked
   // /System/Volumes/Data/Users is /Users; realpathSync gives the on-disk spelling.
   let head = resolved
   let tail = ""
   while (head !== "/") {
     if (!head.includes("\\")) {
-      try {
-        return path.join(fs.realpathSync(head), tail)
-      } catch {}
+      let real = cache.spelling.get(head)
+      if (real === undefined) {
+        real = null
+        try {
+          real = fs.realpathSync(head)
+        } catch {}
+        cache.spelling.set(head, real)
+      }
+      if (real !== null) return path.join(real, tail)
     }
     tail = "/" + path.basename(head) + tail
     head = path.dirname(head)
@@ -148,8 +175,8 @@ export function isInside(path: string, dir: string): boolean {
 }
 
 /** `entries` with each absolute one resolved; relative ones are kept as given (they refuse every workspace). */
-function realEntries(entries: readonly string[] | undefined): string[] {
-  return (entries ?? []).map((e) => (path.isAbsolute(e) ? realPath(e) : e))
+function realEntries(entries: readonly string[] | undefined, cache: Lookups): string[] {
+  return (entries ?? []).map((e) => (path.isAbsolute(e) ? walk(e, undefined, cache) : e))
 }
 
 /** Throws `UnsafeWorkspace` if `workspace` is `/`, contains the home directory, is or lies inside a
@@ -157,8 +184,13 @@ function realEntries(entries: readonly string[] | undefined): string[] {
  *  PATH (or a folder or link the path walks through), contains or lies inside the install folder of the
  *  office or such a program, or if any office path is relative. */
 export function checkWorkspace(workspace: string, office: OfficePaths = {}): void {
-  const ws = realPath(workspace)
-  const home = realPath(office.home ?? os.homedir())
+  check(workspace, office, lookups())
+}
+
+/** `checkWorkspace`, asking the OS through `cache`. */
+function check(workspace: string, office: OfficePaths, cache: Lookups): void {
+  const ws = walk(workspace, undefined, cache)
+  const home = walk(office.home ?? os.homedir(), undefined, cache)
   if (ws === "/" || within(home, ws)) {
     throw new UnsafeWorkspace(
       `workspace ${ws} contains the home directory ${home}; use a project folder`,
@@ -166,7 +198,7 @@ export function checkWorkspace(workspace: string, office: OfficePaths = {}): voi
     )
   }
   for (const rel of SENSITIVE_HOME_PATHS) {
-    const sensitive = realPath(path.join(home, rel))
+    const sensitive = walk(path.join(home, rel), undefined, cache)
     if (within(ws, sensitive)) {
       throw new UnsafeWorkspace(
         `workspace ${ws} is inside the sensitive path ${sensitive}; use a project folder`,
@@ -175,7 +207,7 @@ export function checkWorkspace(workspace: string, office: OfficePaths = {}): voi
     }
   }
   const resolvedEntry = (entry: string, kind: string, visited?: string[]): string => {
-    if (path.isAbsolute(entry)) return realPath(entry, visited)
+    if (path.isAbsolute(entry)) return walk(entry, visited, cache)
     throw new UnsafeWorkspace(
       `workspace ${ws} is refused: the office's ${kind} has a relative entry ${JSON.stringify(entry)}; use absolute paths`,
       `the office's ${kind} has a relative entry; the office needs absolute paths`,
@@ -230,7 +262,7 @@ export interface PolicyInit {
 }
 
 /** The access one sandboxed call gets. Every path is resolved except tool and PATH entries, which are
- *  checked through every folder and link they walk through on every build.
+ *  checked through every folder and link they walk through each time a policy is built from `PolicyInit`.
  *
  *  Throws `Error` if `workspace` or `tmpdir` is not an existing directory, and `UnsafeWorkspace`
  *  if `checkWorkspace` refuses the workspace. */
@@ -252,26 +284,21 @@ export class SandboxPolicy {
   readonly office: Required<OfficePaths>
 
   constructor(init: PolicyInit) {
-    this.workspace = existingDir("workspace", init.workspace)
+    const cache = lookups()
+    this.workspace = existingDir("workspace", init.workspace, cache)
     this.writable = init.writable
     this.network = init.network
-    this.tmpdir = existingDir("tmpdir", init.tmpdir)
-    this.readOnly = (init.readOnly ?? []).map((p) => realPath(p))
-    const helper = init.helper
-    this.helper =
-      helper === undefined
-        ? undefined
-        : "binary" in helper
-          ? { binary: realPath(helper.binary) }
-          : { bun: realPath(helper.bun), entry: realPath(helper.entry) }
+    this.tmpdir = existingDir("tmpdir", init.tmpdir, cache)
+    this.readOnly = (init.readOnly ?? []).map((p) => walk(p, undefined, cache))
+    this.helper = resolveHelper(init.helper, cache)
     const office = init.office ?? {}
     this.office = {
-      home: realPath(office.home ?? os.homedir()),
-      install: realEntries(office.install),
+      home: walk(office.home ?? os.homedir(), undefined, cache),
+      install: realEntries(office.install, cache),
       tools: [...(office.tools ?? [])],
       path: [...(office.path ?? [])],
     }
-    checkWorkspace(this.workspace, this.office)
+    check(this.workspace, this.office, cache)
   }
 
   /** The workspace paths that stay read-only in a writable workspace. */
@@ -282,8 +309,8 @@ export class SandboxPolicy {
 }
 
 /** `p` resolved; throws if it is not an existing directory. */
-function existingDir(name: string, p: string): string {
-  const resolved = realPath(p)
+function existingDir(name: string, p: string, cache: Lookups): string {
+  const resolved = walk(p, undefined, cache)
   // Any failed stat (missing, a file in the path, a link loop) means no directory.
   let isDir = false
   try {
@@ -291,4 +318,12 @@ function existingDir(name: string, p: string): string {
   } catch {}
   if (!isDir) throw new Error(`${name} ${resolved} is not an existing directory`)
   return resolved
+}
+
+/** `helper` with its files resolved. */
+function resolveHelper(helper: Helper | undefined, cache: Lookups): Helper | undefined {
+  if (helper === undefined) return undefined
+  return "binary" in helper
+    ? { binary: walk(helper.binary, undefined, cache) }
+    : { bun: walk(helper.bun, undefined, cache), entry: walk(helper.entry, undefined, cache) }
 }
