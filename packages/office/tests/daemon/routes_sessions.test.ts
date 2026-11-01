@@ -1,5 +1,6 @@
 /** Session routes. */
 import http from "node:http"
+import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { type LiveEvent, Message } from "@opencorp/protocol"
 import { z } from "zod"
@@ -11,7 +12,7 @@ import { register } from "../../src/extensions/questions.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { fakeLlm, makeHarness, noWorkersLeft, status as chatStatus } from "../chat/helpers.ts"
 import { allGone, approvalTurn, makeCodex, openCard, requestsValid, start, status, texts } from "../harness/helpers.ts"
-import { waitFor } from "../helpers.ts"
+import { tempDir, unusableFolders, waitFor } from "../helpers.ts"
 import { session } from "../store/helpers.ts"
 import {
   addHuman,
@@ -651,6 +652,27 @@ test.each(BROKEN_SPECS)("a spec that cant be built fails the session [%s]", asyn
   expect(h.logs.some((line) => line.includes(`can't start (${error.name})`))).toBe(true)
   expect([...h.logs, ...lines].join("\n")).not.toContain("sentinel")
   expect(r.text).not.toContain("sentinel")
+})
+
+test("a new chat in a folder the office can't open or name is a 422 that names no path", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const lines: string[] = []
+  const { sock } = await served(h.office, { log: (line) => lines.push(line) })
+  const { folders, restore } = unusableFolders()
+  try {
+    for (const [, cwd, message] of [...folders, ["missing", path.join(tempDir(), "gone"), "cwd is not a folder"]]) {
+      const r = await post(sock, "/sessions", { person: "minh", cwd })
+      expect([r.status, r.json()]).toEqual([422, { error: "invalid_body", message }])
+      expect(r.text).not.toContain(path.basename(cwd!))
+    }
+  } finally {
+    restore()
+  }
+  const log = [...h.logs, ...lines].join("\n")
+  expect(log).not.toContain("internal error")
+  expect(log).not.toContain("d".repeat(250))
+  expect(log).not.toContain("a".repeat(300))
+  expect(h.store.listSessions()).toEqual([])
 })
 
 /** [label, target, body, status, error code]. */

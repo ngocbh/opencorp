@@ -6,7 +6,7 @@ import { HarnessError } from "../../src/chat/state.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { person } from "../company/helpers.ts"
 import { CEO, ULID } from "../daemon/helpers.ts"
-import { tempDir, waitFor } from "../helpers.ts"
+import { tempDir, unusableFolders, waitFor } from "../helpers.ts"
 import { question, session } from "../store/helpers.ts"
 import { type Codex, allGone, makeCodex, start, startSession, status, texts, turnRunning } from "./helpers.ts"
 
@@ -186,6 +186,25 @@ test.each([
     expect(h.store.listWorkItems()).toEqual([])
   },
 )
+
+test("a folder the office can't open or name is a 422 that names no path", async () => {
+  const h = makeCodex()
+  const { folders, restore } = unusableFolders()
+  try {
+    for (const [, cwd, message] of folders) {
+      const error = await rejection(h.sessions.startSession("minh", cwd, { openedBy: "ngocbh" }))
+      expect([error.status, error.code, error.message]).toEqual([422, "invalid_body", message])
+    }
+    // A missing folder still says so.
+    const gone = await rejection(h.sessions.startSession("minh", path.join(tempDir(), "gone"), { openedBy: "ngocbh" }))
+    expect(gone.message).toBe("cwd is not a folder")
+  } finally {
+    restore()
+  }
+  expect(h.lines.join("\n")).not.toContain("a".repeat(300))
+  expect(h.lines.join("\n")).not.toContain("locked")
+  expect(h.store.listSessions()).toEqual([])
+})
 
 test("a refused folder's name can't add a line to the office log", async () => {
   const h = makeCodex()

@@ -1,5 +1,5 @@
 /** Test helpers shared by the office's tests (Python's conftest fixtures). */
-import { type ChildProcess, execFileSync, spawn } from "node:child_process"
+import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -43,6 +43,42 @@ function dirForThisTest(prefix: string): string {
 /** A fresh directory (real path) removed when the current test finishes. Call inside a test. */
 export function tempDir(): string {
   return dirForThisTest(path.join(os.tmpdir(), "opencorp-"))
+}
+
+/**
+ * Absolute folders the office can't use though they may exist, each as `[label, cwd, the 422's message]`: a name too
+ * long for the system, a real folder deeper than PATH_MAX, and (unless running as root, whom modes don't stop) a
+ * folder below one the office can't search. Call `restore` in a `finally`: it gives the locked folder its mode back
+ * and removes the deep tree, which the per-test cleanup couldn't. Call inside a test.
+ */
+export function unusableFolders(): { folders: [string, string, string][]; restore: () => void } {
+  const top = tempDir()
+  const deep = path.join(top, "deep")
+  const level = "d".repeat(250)
+  fs.mkdirSync(deep)
+  // One level at a time from inside the last, since the whole path is too long to name (~4.5 KB, over PATH_MAX on
+  // both macOS and Linux).
+  const made = spawnSync("sh", ["-c", 'for i in $(seq 18); do mkdir "$n" && cd "$n" || exit 1; done'], {
+    cwd: deep,
+    env: { ...process.env, n: level },
+  })
+  if (made.status !== 0) throw new Error("couldn't make the deep folder")
+  const locked = path.join(top, "locked")
+  fs.mkdirSync(path.join(locked, "child"), { recursive: true })
+  fs.chmodSync(locked, 0o000)
+  const folders: [string, string, string][] = [
+    ["name too long", path.join(top, "a".repeat(300)), "cwd is too long for this system"],
+    ["deeper than PATH_MAX", path.join(deep, ...Array<string>(18).fill(level)), "cwd is too long for this system"],
+  ]
+  if (process.getuid?.() !== 0)
+    folders.push(["unsearchable parent", path.join(locked, "child"), "cwd can't be opened by the office"])
+  return {
+    folders,
+    restore: () => {
+      fs.chmodSync(locked, 0o755)
+      execFileSync("rm", ["-rf", deep])
+    },
+  }
 }
 
 /** A directory with a short path, for unix sockets (macOS limits their paths to 104 bytes);
