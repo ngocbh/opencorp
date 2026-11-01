@@ -17,7 +17,7 @@ import { CodexMissing, codexCommand } from "../harness/codex.ts"
 import { otherPort } from "../hq/config.ts"
 import { RETRY_MS } from "../hq/servers.ts"
 import { CHECKOUT } from "../hq/version.ts"
-import { selfCommand } from "../platform.ts"
+import { selfCommand, tuiAssetRoot } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
 import { checkWorkspace, type OfficePaths as Guards, SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
 import { fsHelper, run } from "../sandbox/run.ts"
@@ -87,6 +87,20 @@ function nameOf(error: unknown): string {
 /** `mode`'s permission bits as four octal digits. */
 function octal(mode: number): string {
   return (mode & 0o7777).toString(8).padStart(4, "0")
+}
+
+/** Whether the compiled binary's assets folder is there: without it `opencorp` can't load OpenTUI. */
+function assetsCheck(assets: string): Check {
+  if (fs.statSync(assets, { throwIfNoEntry: false })?.isDirectory()) {
+    return { name: "tui assets", status: "ok", detail: `found at ${assets}` }
+  }
+  return {
+    name: "tui assets",
+    status: "fail",
+    detail:
+      `missing ${assets}: \`opencorp\` can't start its TUI or setup screen; reinstall opencorp, or keep bin/ and ` +
+      "assets/ together",
+  }
 }
 
 function homeCheck(paths: OfficePaths): Check {
@@ -889,6 +903,8 @@ export interface CheckOptions {
   /** Reads this device's identity, rejecting with `IdentityUnreadable` when it can't be used (default
    *  `loadIdentity`). */
   loadIdentity?: (file: string) => Promise<Identity | undefined>
+  /** The binary's TUI assets folder, or null in a checkout (default `tuiAssetRoot()`). */
+  assets?: string | null
 }
 
 /** Whether another process holds the office's lock (`host.locked`, else yian's `isLocked`); false when it can't be
@@ -923,6 +939,8 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   let guards: Guards | undefined
   const homeLine = homeCheck(paths)
   found.push(homeLine)
+  const assets = options.assets === undefined ? tuiAssetRoot() : options.assets
+  if (assets !== null) found.push(assetsCheck(assets))
   // A daemon that holds the lock without answering (starting, stopping, hung) is running for the top-up advice; the
   // checks below ask the office, so they need it to answer.
   found.push(await companyCheck(paths, running || lockHeld(paths, host)))

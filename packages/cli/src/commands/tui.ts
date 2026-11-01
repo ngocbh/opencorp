@@ -1,8 +1,10 @@
+import fs from "node:fs"
 import { parseArgs } from "node:util"
 import { createOfficeClient, UnknownDevice } from "@opencorp/client"
 import { defaultSocket } from "@opencorp/client/node"
 import type { CommandRun } from "../main"
 import { localIdentity, officeAnswers, officeNotRunning } from "../office"
+import { drawable } from "../setup"
 
 /** What `opencorp tui --help` prints; `opencorp --help` repeats the option lines. */
 export const TUI_USAGE = [
@@ -35,7 +37,24 @@ export function parseTuiArgs(argv: string[]) {
   }
 }
 
-export const run: CommandRun = async (argv) => {
+/** What `tui` checks before it starts; tests pass fakes. */
+export type TuiDeps = {
+  /** Whether the TUI can draw here. */
+  terminal(): boolean
+  /** The folder OpenTUI loads its native library and assets from, when one is set (the compiled binary's). */
+  assetRoot(): string | undefined
+}
+
+export const realTuiDeps: TuiDeps = {
+  terminal: () => drawable(process.env, Boolean(process.stdin.isTTY), Boolean(process.stdout.isTTY)),
+  assetRoot: () => process.env.OTUI_ASSET_ROOT,
+}
+
+/**
+ * `opencorp [tui]`: opens the TUI on this folder. Refuses, in one line and before it asks the office anything, when
+ * the assets folder is missing or there's no terminal to draw on, so `--prompt` without a terminal sends nothing.
+ */
+export async function tui(argv: string[], deps: TuiDeps = realTuiDeps): Promise<number> {
   let parsed
   try {
     parsed = parseTuiArgs(argv)
@@ -47,6 +66,19 @@ export const run: CommandRun = async (argv) => {
   if (help) {
     console.log(TUI_USAGE)
     return 0
+  }
+  // A binary copied without the assets beside it: OpenTUI would throw into Bun's crash printer.
+  const assets = deps.assetRoot()
+  if (assets !== undefined && !fs.statSync(assets, { throwIfNoEntry: false })?.isDirectory()) {
+    console.error(
+      `opencorp: this binary's assets folder is missing (${assets}); reinstall opencorp, or keep bin/ and assets/ together`,
+    )
+    return 1
+  }
+  // Without one, the TUI would draw into a pipe and never exit.
+  if (!deps.terminal()) {
+    console.error("opencorp: the TUI needs a terminal (stdin and stdout a TTY, TERM set and not dumb)")
+    return 1
   }
   const socket = defaultSocket()
   // Asked before the TUI loads, so no office is one line, not a TUI waiting on the socket.
@@ -75,3 +107,5 @@ export const run: CommandRun = async (argv) => {
   )
   return typeof process.exitCode === "number" ? process.exitCode : 0
 }
+
+export const run: CommandRun = (argv) => tui(argv)

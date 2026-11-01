@@ -79,6 +79,7 @@ function runChecks(
     lstat,
     command = COMMAND,
     environ = {},
+    assets,
   }: {
     runner?: Runner
     answers?: boolean
@@ -88,6 +89,7 @@ function runChecks(
     lstat?: (p: string) => fs.Stats
     command?: readonly [string, ...string[]]
     environ?: Record<string, string>
+    assets?: string | null
   } = {},
 ): Promise<Check[]> {
   const host = makeHost(dir, runner, { answers: async () => answers, locked, platform })
@@ -101,6 +103,7 @@ function runChecks(
     hq: async () => "unreachable",
     office: async () => "unreachable",
     ...(lstat ? { lstat } : {}),
+    ...(assets !== undefined ? { assets } : {}),
   })
 }
 
@@ -179,6 +182,26 @@ test("a fresh machine is told to onboard", async () => {
     detail: `no company repo at ${path.join(dir, "home", "company")}; ${SET_UP}`,
   })
   expect(doctor.exitCode(found)).toBe(1)
+})
+
+test("the binary's assets folder is checked beside the home, only when there is a binary", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, PROVIDER)
+  const missing = await runChecks(dir, paths, { assets: "/nowhere/assets" })
+  expect(missing.map((c) => c.name).slice(0, 2)).toEqual(["home", "tui assets"])
+  expect(byName(missing)["tui assets"]).toEqual({
+    name: "tui assets",
+    status: "fail",
+    detail:
+      "missing /nowhere/assets: `opencorp` can't start its TUI or setup screen; reinstall opencorp, or keep bin/ and " +
+      "assets/ together",
+  })
+  expect(doctor.exitCode(missing)).toBe(1)
+  const there = byName(await runChecks(dir, paths, { assets: dir }))
+  expect(there["tui assets"]).toEqual({ name: "tui assets", status: "ok", detail: `found at ${dir}` })
+  // A checkout loads OpenTUI's files from node_modules: there is no folder to check.
+  expect(byName(await runChecks(dir, paths, { assets: null }))["tui assets"]).toBeUndefined()
+  expect(byName(await runChecks(dir, paths))["tui assets"]).toBeUndefined()
 })
 
 test("an onboarded office that isnt running is only a warning", async () => {

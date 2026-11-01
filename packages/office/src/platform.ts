@@ -7,6 +7,7 @@
 import { dlopen, FFIType, read, type Pointer } from "bun:ffi"
 import fs from "node:fs"
 import os from "node:os"
+import path from "node:path"
 import { Readable } from "node:stream"
 import type { ReadableStream } from "node:stream/web"
 import { fileURLToPath } from "node:url"
@@ -23,6 +24,12 @@ const CHECKOUT_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 export function selfCommand(): [string, ...string[]] {
   if (Bun.isStandaloneExecutable) return [process.execPath]
   return [process.execPath, ...CHECKOUT_FLAGS, fileURLToPath(new URL("../../cli/src/main.ts", import.meta.url))]
+}
+
+/** The folder the compiled binary's TUI loads OpenTUI's native library and assets from, `<bin>/../assets` (the same
+ *  path `packages/cli/src/main.ts` gives OpenTUI); null in a checkout, where they load from node_modules. */
+export function tuiAssetRoot(): string | null {
+  return Bun.isStandaloneExecutable ? path.join(path.dirname(process.execPath), "..", "assets") : null
 }
 
 /** How to run the `__fs-helper`, and the files its profile exposes: the compiled binary in its helper

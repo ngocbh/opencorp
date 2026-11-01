@@ -656,12 +656,64 @@ describe("the built binary", () => {
     return short
   }
 
-  /** Runs `command tui` against a fake office with a fresh TMPDIR until the renderer writes an escape sequence
-   *  (its native library loaded), or the process exits; `extra` is added to its env. */
+  /**
+   * Runs `argv` in a pseudo-terminal (stdin, stdout and stderr all it) for at most 60 s, in the planted folder with
+   * the env `runBuilt` gives; resolves to its exit and everything it wrote. The pty makes the child a session leader,
+   * so its group is its pid (`groups` gets it): killed once the output satisfies `until` (the result says
+   * `reached`), on the time limit, and when it exits.
+   */
+  function runPty(
+    argv: string[],
+    options: { env?: Record<string, string>; tmpdir?: string; until?: (out: string) => boolean },
+  ): Promise<{ code: number | null; out: string; reached: boolean }> {
+    const { env = {}, tmpdir = freshTmp(), until } = options
+    const decoder = new TextDecoder()
+    let out = ""
+    let reached = false
+    let timedOut = false
+    const proc = Bun.spawn(argv, {
+      cwd: proj,
+      env: { HOME: home, PATH: "/usr/bin:/bin", TMPDIR: tmpdir, BUN_TMPDIR: tmpdir, ...env },
+      terminal: {
+        cols: 80,
+        rows: 24,
+        data(_terminal, chunk) {
+          out += decoder.decode(chunk, { stream: true })
+          if (!reached && until?.(out)) {
+            reached = true
+            killGroup(proc.pid)
+          }
+        },
+      },
+    })
+    groups.add(proc.pid)
+    const timer = setTimeout(() => {
+      timedOut = true
+      killGroup(proc.pid)
+    }, 60_000)
+    return proc.exited.then((code) => {
+      clearTimeout(timer)
+      proc.terminal?.close()
+      killGroup(proc.pid)
+      groups.delete(proc.pid)
+      if (timedOut) throw new Error(`${argv.join(" ")} ran past 60000 ms (exit ${code}):\n${out}`)
+      return { code, out, reached }
+    })
+  }
+
+  /** The env `command tui` gets: a fake office's home and a terminal type; `extra` is added. */
+  const tuiEnv = async (extra: Record<string, string> = {}) => ({
+    OPENCORP_HOME: await fakeOffice(),
+    TERM: "xterm",
+    ...extra,
+  })
+
+  /** Runs `command tui` in a pty against a fake office with a fresh TMPDIR until the renderer switches to the
+   *  alternate screen (its native library loaded), or the process exits; `extra` is added to its env. */
   async function runTui(command: string, extra: Record<string, string> = {}) {
     const tmpdir = freshTmp()
-    const env = { OPENCORP_HOME: await fakeOffice(), TERM: "xterm", ...extra }
-    return { ...(await runBuilt([command, "tui"], { env, tmpdir, until: (out) => out.includes("\x1b[") })), tmpdir }
+    const until = (out: string) => out.includes("\x1b[?1049h")
+    return { ...(await runPty([command, "tui"], { env: await tuiEnv(extra), tmpdir, until })), tmpdir }
   }
 
   test("the build writes the opencorp package with the npm shim and the platform package with the binary and every TUI asset", async () => {
@@ -947,22 +999,52 @@ describe("the built binary", () => {
 
   test("the binary loads the TUI assets from beside it and extracts nothing to TMPDIR", async () => {
     const result = await runTui(bin)
-    expect(result.reached, `exited ${result.code} first:\n${result.stdout}\n${result.stderr}`).toBe(true)
+    expect(result.reached, `exited ${result.code} first:\n${result.out}`).toBe(true)
     expect(fs.readdirSync(result.tmpdir)).toEqual([])
   }, 90_000)
 
-  test("without the assets beside it the binary refuses to start the TUI", async () => {
-    // A hard link, not a symlink: through a symlink process.execPath would be the real binary, beside its assets.
-    const bare = path.join(built, "bare/bin/opencorp")
-    fs.mkdirSync(path.dirname(bare), { recursive: true })
-    fs.linkSync(bin, bare)
+  test("the binary prints its version", async () => {
+    const result = await runBuilt([bin, "--version"])
+    expect([result.code, result.stdout, result.stderr]).toEqual([0, `${pkg.version}\n`, ""])
+  }, 90_000)
+
+  /** A hard link of the binary at `<built>/<folder>/bin/opencorp`, not a symlink: through a symlink
+   *  process.execPath would be the real binary, beside its assets. */
+  const linked = (folder: string) => {
+    const at = path.join(built, folder, "bin/opencorp")
+    fs.mkdirSync(path.dirname(at), { recursive: true })
+    fs.linkSync(bin, at)
+    return at
+  }
+
+  test("without the assets beside it the binary refuses to start the TUI in one line", async () => {
+    const bare = linked("bare")
     // A caller's OTUI_ASSET_ROOT naming a full asset set is ignored: the caller's env must not choose the native
-    // library the binary loads.
-    const result = await runTui(bare, { OTUI_ASSET_ROOT: path.join(npmOut, PLATFORM, "assets") })
+    // library the binary loads. The folder is checked before the terminal is, so this needs no pty.
+    const tmpdir = freshTmp()
+    const env = await tuiEnv({ OTUI_ASSET_ROOT: path.join(npmOut, PLATFORM, "assets") })
+    const result = await runBuilt([bare, "tui"], { env, tmpdir, until: (out) => out.includes("\x1b[") })
     expect(result.reached, result.stdout).toBe(false)
+    expect(result.code).toBe(1)
+    expect(result.stderr).toBe(
+      `opencorp: this binary's assets folder is missing (${path.join(built, "bare/assets")}); reinstall opencorp, ` +
+        "or keep bin/ and assets/ together\n",
+    )
+    expect(fs.readdirSync(tmpdir)).toEqual([])
+    const doctor = await runBuilt([bare, "doctor"])
+    expect(doctor.stdout, doctor.stderr).toContain(`fail  tui assets   missing ${path.join(built, "bare/assets")}: `)
+    const full = await runBuilt([bin, "doctor"])
+    expect(full.stdout, full.stderr).toContain(`ok    tui assets   found at ${path.join(npmOut, PLATFORM, "assets")}`)
+  }, 150_000)
+
+  test("with an empty assets folder OpenTUI refuses and extracts nothing to TMPDIR", async () => {
+    const bare = linked("bare2")
+    fs.mkdirSync(path.join(built, "bare2/assets"))
+    const result = await runTui(bare, { OTUI_ASSET_ROOT: path.join(npmOut, PLATFORM, "assets") })
+    expect(result.reached, result.out).toBe(false)
     expect(result.code).not.toBe(0)
-    expect(result.stderr).toContain("Missing OpenTUI asset")
-    expect(result.stderr).toContain(path.join(built, "bare/assets"))
+    expect(result.out).toContain("Missing OpenTUI asset")
+    expect(result.out).toContain(path.join(built, "bare2/assets"))
     expect(fs.readdirSync(result.tmpdir)).toEqual([])
   }, 90_000)
 })
