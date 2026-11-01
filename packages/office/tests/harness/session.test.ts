@@ -591,6 +591,54 @@ test("esc with a turn/start in flight and a message queued behind it stops both"
   expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
 })
 
+test("esc with a refused turn/start in flight and a message queued behind it marks the dropped message", async () => {
+  const h = makeCodex()
+  h.fake.script([], { initialize_delay: 0.5 })
+  const real = JsonRpc.prototype.request
+  const [opened, open] = gate()
+  let entered = false
+  const spy = spyOn(JsonRpc.prototype, "request").mockImplementation(async function (
+    this: JsonRpc,
+    method,
+    params,
+    options,
+  ) {
+    if (method === "turn/start") {
+      entered = true
+      await opened
+      throw new RpcError(-32600, "busy")
+    }
+    return real.call(this, method, params, options)
+  })
+  onTestFinished(() => spy.mockRestore())
+  const { id: sid } = await startSession(h, "minh", h.workspace, { openedBy: "ngocbh" })
+  const live = h.sessions.get(sid)!
+  expect(await h.sessions.prompt(sid, "A")).toBe("queued")
+  await waitFor(() => entered, { timeout: 10_000, what: "the queued message's turn/start" })
+  expect(await h.sessions.prompt(sid, "B")).toBe("queued") // still loading: it waits behind A
+  await h.sessions.interrupt(sid)
+  open()
+  await waitFor(() => status(h, sid) === "idle" && !live.loading && errors(h, sid).length > 0, {
+    what: "the refusal",
+  })
+  expect(h.fake.calls("turn/start")).toEqual([])
+  expect(h.fake.calls("turn/interrupt")).toEqual([])
+  expect(errors(h, sid)[0]).toContain("didn't take the message")
+  expect(texts(h, sid).filter((t) => t.endsWith("[interrupted]"))).toHaveLength(1)
+})
+
+test("office stop during a reload with a message queued stores busy and restore marks it", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  h.fake.script([], { initialize_delay: 5 })
+  const r = await restarted(h)
+  expect(await r.sessions.prompt(sid, "go")).toBe("queued")
+  expect(status(r, sid)).toBe("busy")
+  const r2 = await restarted(r)
+  expect(status(r2, sid)).toBe("idle")
+  expect(texts(r2, sid).at(-1)).toEndWith("[interrupted]")
+})
+
 test("an esc during a refused turn/start doesnt interrupt the next turn", async () => {
   const h = makeCodex()
   h.fake.script([fc.agentMessage("m1", "Two")])

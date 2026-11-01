@@ -141,6 +141,8 @@ export class CodexSession {
   #turnEvents = 0
   /** Esc came while a message was being sent and its turn wasn't known yet: that turn is interrupted once it starts. */
   #interruptWanted = false
+  /** That Esc also dropped queued messages, which get the interrupt marker if no turn starts to carry it. */
+  #markOwed = false
 
   constructor(owner: CodexSessions, session: SessionRecord, { author }: { author: string | null }) {
     this.owner = owner
@@ -206,6 +208,7 @@ export class CodexSession {
       // A turn being started gets the marker once it is interrupted.
       if (queued) this.#dropQueued({ mark: !starting })
       if (starting && turn === null) this.#interruptWanted = true
+      if (queued && starting) this.#markOwed = true
       if (turn === null && !starting && !queued) this.#cancelTurnless()
     }
     if (turn !== null && proc !== null) await this.#interruptTurn(proc, turn)
@@ -252,8 +255,24 @@ export class CodexSession {
   /** Drops the messages waiting for a load, as Esc does; `mark` ends the transcript with the interrupt marker. */
   #dropQueued({ mark }: { mark: boolean }): void {
     this.pending = []
+    if (mark) this.#markInterrupted()
+    this.#settle()
+  }
+
+  /** Ends the transcript with the interrupt marker, for messages Esc dropped before any turn took them. */
+  #markInterrupted(): void {
+    // One marker covers everything dropped so far.
+    this.#markOwed = false
     // A turn id of its own each time: the translator closes an id only once.
-    if (mark) this.translator.turnCompleted(`queued-${newId()}`, "interrupted", null)
+    this.translator.turnCompleted(`queued-${newId()}`, "interrupted", null)
+  }
+
+  /** Forgets an Esc waiting for a turn that won't start; the messages it dropped get their marker now, unless the
+   *  office stopped (restore marks them) or the session closed. */
+  #forgetInterrupt(): void {
+    this.#interruptWanted = false
+    if (!this.#markOwed || this.stopped || this.closed) return
+    this.#markInterrupted()
     this.#settle()
   }
 
@@ -268,6 +287,7 @@ export class CodexSession {
     this.pending = []
     this.#unstarted = null
     this.#interruptWanted = false
+    this.#markOwed = false
     this.#stopTimer()
     const busy = this.turnId !== null
     this.store.updateSession(this.sessionId, notWaiting("ending"))
@@ -451,7 +471,7 @@ export class CodexSession {
     this.loading = false
     this.pending = []
     this.#unstarted = null
-    this.#interruptWanted = false
+    this.#forgetInterrupt()
     if (this.ending) return // the end posted meanwhile closes it
     if (this.#loaded) {
       // A reload: say why and wait for the next message.
@@ -515,7 +535,7 @@ export class CodexSession {
     } finally {
       this.#sending--
       // A refused message starts no turn for an Esc to stop.
-      if (!this.#startPending) this.#interruptWanted = false
+      if (!this.#startPending) this.#forgetInterrupt()
       this.#settle()
     }
     return busy ? "steer" : "turn"
@@ -562,6 +582,8 @@ export class CodexSession {
       this.#turnIs(params.turn.id)
       if (this.#interruptWanted && !this.ending) {
         this.#interruptWanted = false
+        // This turn's turn/completed carries the marker.
+        this.#markOwed = false
         // Esc came before Codex said which turn it started. Not awaited: a job never waits on Codex.
         const turn: string = params.turn.id
         void this.#interruptTurn(proc, turn).catch((error) =>
@@ -767,6 +789,8 @@ export class CodexSession {
     if (this.stopped) return
     if (turn !== null) this.translator.turnCompleted(turn, "interrupted", null)
     this.#turnIs(null)
+    // No turn starts on this app-server to carry the marker of what an Esc dropped.
+    this.#forgetInterrupt()
     if (said) this.translator.error(said)
     if (this.ending) void this.post("close", () => this.#close())
     else this.#settle()
