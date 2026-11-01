@@ -1,4 +1,4 @@
-import type { Connection, ModelList } from "@opencorp/protocol"
+import { ModelName, type Connection, type ModelList } from "@opencorp/protocol"
 import { TextAttributes } from "@opentui/core"
 import * as fuzzysort from "fuzzysort"
 import { createEffect, createMemo, createSignal, onMount } from "solid-js"
@@ -144,6 +144,12 @@ export function DialogModel(props: { connection?: string }) {
     const typed = await DialogPrompt.show(dialog, `Model on ${choice.connection}`, { placeholder: TYPED })
     const model = typed?.trim()
     if (!model) return dialog.clear()
+    // On home the pick is only saved, and a name the office refuses would fail every new chat started on it.
+    if (!ModelName.safeParse(model).success) {
+      dialog.clear()
+      toast.show({ variant: "warning", message: "That model name can't be used" })
+      return
+    }
     await apply({ connection: choice.connection, model })
   }
 

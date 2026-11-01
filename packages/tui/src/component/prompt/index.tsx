@@ -21,6 +21,7 @@ import { useClipboard } from "../../context/clipboard"
 import { useRoute } from "../../context/route"
 import { useOffice } from "../../context/office"
 import { sessionModel } from "@opencorp/client"
+import { MessageText } from "@opencorp/protocol"
 import { usePromptRef } from "../../context/prompt"
 import { normalizePromptContent, openEditor } from "../../editor"
 import { useExit } from "../../context/exit"
@@ -706,6 +707,8 @@ export function Prompt(props: PromptProps) {
     const person = local.person.current()
     if (!props.sessionID && !person) return false
     const text = promptText()
+    // The office refuses a message that doesn't show; checked here so it starts no session either.
+    if (!MessageText.safeParse(text).success) return false
 
     let sessionID = props.sessionID
     let undo: (() => void) | void = undefined

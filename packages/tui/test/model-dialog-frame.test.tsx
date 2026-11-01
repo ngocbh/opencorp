@@ -185,6 +185,27 @@ test("a connection that can't list offers its model and a typed name", async () 
   })
 })
 
+test("on the home screen a typed name the office would refuse is not recorded", async () => {
+  const office = createFakeOffice()
+  office.state.models["azure-2"] = { connection: "azure-2", models: [{ id: "gpt-4o-mini" }], listed: false, error: null }
+  await run(
+    office,
+    async (app) => {
+      await openDialog(app)
+      await search(app, "type a model", (f) => f.includes("Type a model name…") && !f.includes("gpt-4o-mini"))
+      app.input.pressEnter()
+      await app.until((f) => f.includes("Model on azure-2"))
+      await app.until(() => app.setup.renderer.currentFocusedEditor !== null)
+      await app.input.typeText("x".repeat(257))
+      app.input.pressEnter()
+      await app.until((f) => !f.includes("Model on azure-2") && f.includes("That model name can't be used"))
+      expect(saved()).toBe("")
+      expect(office.requests.some((r) => r.path.endsWith("/model"))).toBe(false)
+    },
+    { home: true },
+  )
+})
+
 test("a listing error shows beside its connection", async () => {
   const office = createFakeOffice()
   office.state.models["azure-2"] = {

@@ -24,6 +24,31 @@ test("Enter on home creates a session for the person in the cwd, prompts it, and
   }
 })
 
+test.each([["spaces", "   "], ["a zero-width space", "\u200b"]])(
+  "Enter on home with a message that doesn't show starts nothing [%s]",
+  async (_case, text) => {
+    const office = createFakeOffice()
+    const app = await bootFrame(createStub(office))
+    try {
+      await app.until((f) => f.includes("@minh"))
+      app.input.typeText(text)
+      app.input.pressEnter()
+      // Enter submits two timer turns later.
+      await Bun.sleep(50)
+      // The draft stays; once words follow it, it goes as one message in one new session.
+      app.input.typeText("hello")
+      app.input.pressEnter()
+      await app.until((f) => f.includes("hello") && /@minh · (idle|busy)/.test(f))
+      const posts = office.requests.filter((r) => r.method === "POST")
+      expect(posts.map((r) => r.path)).toEqual(["/sessions", `/sessions/${office.state.sessions[0].id}/prompt`])
+      expect(posts[1].body).toEqual({ text: expect.stringContaining("hello") })
+    } finally {
+      await app.stop()
+      office.stop()
+    }
+  },
+)
+
 test("one Esc while busy interrupts, and the reply stops showing at once", async () => {
   const office = createFakeOffice()
   const id = office.state.sessions[0].id
