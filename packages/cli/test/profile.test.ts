@@ -234,6 +234,7 @@ test("usage errors exit 2 and office errors exit 1", async () => {
   editor(`: # leaves the file as it is\n`)
   const unknown = await profile("edit", "@nobody")
   expect(unknown).toMatchObject({ code: 1, err: "opencorp profile: no person @nobody" })
+  expect(await profile("edit", "nobody")).toMatchObject({ code: 1, err: "opencorp profile: no person @nobody" })
   editor(`exit 3\n`)
   const failed = await profile("edit", "minh")
   expect(failed.code).toBe(1)

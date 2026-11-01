@@ -13,7 +13,7 @@ import {
 import fs from "node:fs"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
-import { localIdentity, officeAnswers, officeNotRunning } from "../office"
+import { bareHandle, localIdentity, officeAnswers, officeNotRunning } from "../office"
 import { prompter } from "../prompt"
 
 /** The company's CEO among `people`: the human with no manager. */
@@ -67,7 +67,7 @@ export const run: CommandRun = async (argv) => {
   // The device being replaced, as the office lists it, so it can be removed once the new one is listed.
   const old = values.force && known ? await listedAs(socket, known.token) : null
   const ask = prompter()
-  let handle = values.handle
+  let handle = values.handle === undefined ? undefined : bareHandle(values.handle)
   if (handle === undefined) {
     let ceo: string | undefined
     try {
@@ -75,7 +75,7 @@ export const run: CommandRun = async (argv) => {
     } catch (e) {
       if (!(e instanceof UnknownDevice)) return failed(e)
     }
-    handle = ask.interactive ? (await ask.ask("Your handle", ceo)).replace(/^@/, "") || undefined : ceo
+    handle = ask.interactive ? bareHandle(await ask.ask("Your handle", ceo)) || undefined : ceo
     if (handle === undefined) {
       console.error("opencorp login: the office won't list its people to this device; pass --handle")
       return 2

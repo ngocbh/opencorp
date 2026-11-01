@@ -7,7 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
-import { officeClient, officeNotRunning } from "../office"
+import { bareHandle, officeClient, officeNotRunning } from "../office"
 
 const USAGE = "Usage: opencorp profile edit PERSON"
 
@@ -16,9 +16,9 @@ class Usage extends Error {}
 
 /** The person `name` names: a handle, with or without the `@`. */
 async function person(client: OfficeClient, name: string): Promise<Person> {
-  const bare = name.replace(/^@/, "")
+  const bare = bareHandle(name)
   const found = (await client.people.list()).find((p) => p.handle === bare)
-  if (!found) throw new Error(`no person ${name}`)
+  if (!found) throw new Error(`no person @${bare}`)
   return found
 }
 

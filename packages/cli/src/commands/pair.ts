@@ -8,7 +8,7 @@ import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
-import { localIdentity, NO_OFFICE, officeClient } from "../office"
+import { bareHandle, localIdentity, NO_OFFICE, officeClient } from "../office"
 
 /**
  * The local port the printed SSH forwards use for hq.sock: any free one works there, since hq.sock takes any port. Not
@@ -153,7 +153,7 @@ export async function pair(argv: string[], deps: PairDeps = realPairDeps): Promi
     const office = officeClient(localIdentity())
     // A redirect file only when it will be opened: otherwise it would sit in the office dir until it expires.
     const code = await office.hq.pair({
-      handle: values.handle ?? null,
+      handle: values.handle === undefined ? null : bareHandle(values.handle),
       open_file: !noOpen && canOpen(deps.env, deps.platform),
     })
     // Without a URL, why matters: TCP off (say how to turn it on) or its port taken (say so, and point at doctor).
