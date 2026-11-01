@@ -64,6 +64,8 @@ export const run: CommandRun = async (argv) => {
   // The identity being replaced may still be trusted, which lets the office take the new device
   // even once it requires a token.
   const office = createOfficeClient({ socket, token: values.force ? known?.token : undefined })
+  // The device being replaced, as the office lists it, so it can be removed once the new one is listed.
+  const old = values.force && known ? await listedAs(socket, known.token) : null
   const ask = prompter()
   let handle = values.handle
   if (handle === undefined) {
@@ -92,9 +94,10 @@ export const run: CommandRun = async (argv) => {
       return false
     }
   }
-  const loggedIn = () => {
+  const loggedIn = async () => {
     if (!save()) return 1
     console.log(`This device is ${device}, acting as @${handle}; its token is in ${file}.`)
+    if (old) await removeReplaced(socket, known!.token, old)
     return 0
   }
   let password = ask.interactive ? await ask.secret(`@${handle}'s password (not shown; empty if you have none)`) : ""
@@ -123,11 +126,46 @@ export const run: CommandRun = async (argv) => {
       if (!save()) return 1
       console.error(`opencorp login: the office doesn't trust this device yet. On a device it trusts, run:`)
       console.error(`  opencorp devices add ${handle} ${device} ${hash}`)
+      // Not removed: until the new device is listed, the old one may be the person's last, whose removal opens the
+      // office to requests without a token.
+      if (old) console.error(remains(old))
       return 1
     }
     return refused(e, handle, device)
   }
   return loggedIn()
+}
+
+/** A device the office lists: its person's handle and its name. */
+type Listed = { person: string; device: string }
+
+/** The person and device the office takes `token` to be, or null when it doesn't know the token or can't say. */
+async function listedAs(socket: string, token: string): Promise<Listed | null> {
+  try {
+    const me = await createOfficeClient({ socket, token }).whoami()
+    return me.device === null ? null : { person: me.person, device: me.device }
+  } catch (e) {
+    // Only the cleanup after the login needs it, so the login goes on without it.
+    if (e instanceof OfficeError) return null
+    throw e
+  }
+}
+
+/** What to say when the replaced device `old` is still listed. */
+const remains = (old: Listed) =>
+  `${old.device} in people/${old.person}/person.yaml remains; remove it with \`opencorp devices remove ${old.person} ${old.device}\``
+
+/** Removes `old`, the device a `--force` login replaced, with its own token, which may always remove it, and says
+ *  so; a removal that fails leaves the login done and says the entry remains. */
+async function removeReplaced(socket: string, token: string, old: Listed): Promise<void> {
+  try {
+    await createOfficeClient({ socket, token }).devices.remove(old.person, old.device)
+    console.log(`Removed ${old.device} from people/${old.person}/person.yaml.`)
+  } catch (e) {
+    // Already gone: the office no longer lists the token or the device.
+    if (e instanceof UnknownDevice || (e instanceof OfficeError && e.code === "not_found")) return
+    console.error(remains(old))
+  }
 }
 
 /** Whether the office takes `token` to be `device` of `handle`. */
