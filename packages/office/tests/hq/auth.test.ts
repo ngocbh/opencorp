@@ -310,7 +310,8 @@ test("a cross site logout is refused and ends nothing", async () => {
   const hq = await makeHq(makeOffice())
   const client = await web(hq)
   await pair(client, hq)
-  for (const headers of [{ "sec-fetch-site": "cross-site" }, { origin: "http://127.0.0.1:1" }]) {
+  const refused: Record<string, string>[] = [{ "sec-fetch-site": "cross-site" }, { origin: "http://127.0.0.1:1" }]
+  for (const headers of refused) {
     const r = await client.post("/api/logout", {}, { headers })
     expect(r.status).toBe(403)
     expect(r.headers["set-cookie"]).toBeUndefined()
