@@ -126,7 +126,7 @@ export const run: CommandRun = async (argv) => {
       if (!save()) return 1
       console.error(`opencorp login: the office doesn't trust this device yet. On a device it trusts, run:`)
       console.error(`  opencorp devices add ${handle} ${device} ${hash}`)
-      // Not removed: until the new device is listed, the old one may be the person's last, whose removal opens the
+      // Not removed: until the new device is listed, the old one may be the office's last, whose removal opens the
       // office to requests without a token.
       if (old) console.error(remains(old))
       return 1
