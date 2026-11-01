@@ -275,11 +275,8 @@ function serverUrlProblem(answer: string): string | null {
 /** Why a key can't go to a server at an http URL elsewhere. */
 const KEY_OVER_HTTP = "a key goes only over https, or http to localhost, 127.0.0.1 or ::1"
 
-/** Whether a key may be sent to the server at `url`, empty for the one on this machine. */
-function keyMayGo(url: string): boolean {
-  if (!url) return true
-  // Yian's rule for where a key may be sent, which it applies to llm_config.base_url; VLLM_BASE_URL is used as
-  // written, so it is applied here.
+/** Whether yian takes `url` as a `base_url` that a key may be sent to. */
+function keyedBaseUrl(url: string): boolean {
   try {
     new LLMConfig({ provider: "openai", base_url: url, api_key: "-" })
   } catch (error) {
@@ -287,6 +284,15 @@ function keyMayGo(url: string): boolean {
     return false
   }
   return true
+}
+
+/** Why a key can't be sent to the server at `url` (empty: the one on this machine), or null when it can. */
+function keyProblem(url: string): string | null {
+  // Yian's rule for where a key may be sent, which it applies to llm_config.base_url; VLLM_BASE_URL is used as
+  // written, so it is applied here.
+  if (!url || keyedBaseUrl(url)) return null
+  if (/^http:/i.test(url) && keyedBaseUrl(url.replace(/^http:/i, "https:"))) return KEY_OVER_HTTP
+  return "yian sends a key only to a lowercase ASCII URL whose host has no underscore"
 }
 
 /** The key for provider `name`, read without echo; empty only when not `required`, and `last` for an empty answer
@@ -382,15 +388,19 @@ async function askProviderData(prompter: Prompter, last: Answers, listers: Liste
     // The server's URL goes in the env, where yian's client for the provider reads it; the caller's own variable
     // is never read, so setup works only as the office's runs will.
     for (let i = 0; ; i++) {
-      const question = `${name} server URL (empty for one on this machine)`
+      // An empty answer keeps a URL typed before, so the server on this machine is then typed too.
+      const question = last.endpoint
+        ? `${name} server URL (empty keeps the one you just typed)`
+        : `${name} server URL (empty for one on this machine)`
       last.endpoint = (await askUntil(prompter, question, last.endpoint ?? "", serverUrlProblem)).trim()
       // Yian's ollama client sends no key.
       last.key = name === "ollama" ? "" : await askKey(prompter, name, false, last.key ?? "")
-      if (!last.key || keyMayGo(last.endpoint)) break
-      prompter.say(`That doesn't work: ${KEY_OVER_HTTP}`)
+      const problem = last.key ? keyProblem(last.endpoint) : null
+      if (problem === null) break
+      prompter.say(`That doesn't work: ${problem}`)
       // Dropped, so the next key question can be left empty for none.
       last.key = ""
-      if (i + 1 >= TRIES) throw new OnboardError(KEY_OVER_HTTP)
+      if (i + 1 >= TRIES) throw new OnboardError(problem)
     }
     if (last.key) llm.api_key = last.key
     last.model = (await askModel(prompter, name, last.model ?? "", last.key, listers, last.endpoint)).trim()
@@ -1058,7 +1068,8 @@ export async function modelProblem(
   try {
     const { message } = await runSetup(flow, {}, provider, { tools: {}, env, signal: both, limits: CHECK_LIMITS })
     // The run may end as failed, rather than throw, once its signal aborts.
-    if (message !== null && deadline.signal.aborted && !signal?.aborted) return models.TIMED_OUT
+    signal?.throwIfAborted()
+    if (message !== null && deadline.signal.aborted) return models.TIMED_OUT
     return message
   } catch (error) {
     signal?.throwIfAborted()

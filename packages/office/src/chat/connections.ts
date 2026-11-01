@@ -566,13 +566,21 @@ export function runRecord(connection: string, model: string | null, provider: Pr
 }
 
 /** The host name of `llm`'s `base_url`, or "" when it has none or it isn't a URL. */
-export function baseUrlHost(llm: LlmConfig | null): string {
+function baseUrlHost(llm: LlmConfig | null): string {
   if (!llm?.base_url) return ""
   return URL.parse(String(llm.base_url))?.hostname ?? ""
 }
 
+/** The host name ending of Azure OpenAI resources in the commercial cloud. */
+const COMMERCIAL_AZURE = ".azure.com"
+
 /** The host name endings of Azure OpenAI resources: the commercial, Government and China clouds. */
-const AZURE_HOSTS = [".azure.com", ".azure.us", ".azure.cn"]
+const AZURE_HOSTS = [COMMERCIAL_AZURE, ".azure.us", ".azure.cn"]
+
+/** Whether `llm`'s `base_url` is an Azure OpenAI resource in the commercial cloud. */
+export function commercialAzure(llm: LlmConfig | null): boolean {
+  return baseUrlHost(llm).endsWith(COMMERCIAL_AZURE)
+}
 
 /** A short name for the provider of `llm`: `azure` (an Azure OpenAI resource in the commercial, Government or
  *  China cloud), `custom` (another OpenAI-compatible endpoint), the provider's own name, or `composer`, the label

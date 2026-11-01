@@ -1193,7 +1193,31 @@ test("setting up again keeps the server URL", async () => {
   const ask = new Script(["vllm", url, "", "m", SET_UP_AGAIN, "", "", "", ""])
   await ensure(office, ask, { checkModel: answers("nope", null) })
   expect(read(office)).toEqual({ llm_config: { provider: "vllm", model: "m" }, env: { VLLM_BASE_URL: url } })
-  expect(ask.seen.filter((line) => line === "vllm server URL (empty for one on this machine)")).toHaveLength(2)
+  expect(ask.seen.filter((line) => line === "vllm server URL (empty for one on this machine)")).toHaveLength(1)
+  expect(ask.seen).toContain("vllm server URL (empty keeps the one you just typed)")
+})
+
+test("a key isnt sent to a URL yian wouldnt send it to, and says why", async () => {
+  const office = newOffice()
+  const ask = new Script(["vllm", "https://vllm_server:8000/v1", KEY, "https://vllm.lan/v1", KEY, "m"])
+  await ensure(office, ask)
+  expect(ask.seen).toContain(
+    "That doesn't work: yian sends a key only to a lowercase ASCII URL whose host has no underscore",
+  )
+  expect(ask.seen.some((line) => line.includes("only over https"))).toBe(false)
+  expect(read(office)).toEqual({
+    llm_config: { provider: "vllm", api_key: KEY, model: "m" },
+    env: { VLLM_BASE_URL: "https://vllm.lan/v1" },
+  })
+})
+
+test("a keyless vllm server URL may have an underscore", async () => {
+  const office = newOffice()
+  await ensure(office, new Script(["vllm", "http://vllm_server:8000/v1", "", "m"]))
+  expect(read(office)).toEqual({
+    llm_config: { provider: "vllm", model: "m" },
+    env: { VLLM_BASE_URL: "http://vllm_server:8000/v1" },
+  })
 })
 
 // No test changes process.env, so the key sits in a child's environment.

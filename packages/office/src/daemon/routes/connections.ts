@@ -20,7 +20,7 @@ import { identityPath, readIdentity } from "../../auth/identity.ts"
 import {
   azureBaseUrl,
   BadConnectionName,
-  baseUrlHost,
+  commercialAzure,
   ConnectionFile,
   ConnectionGone,
   providerLabel,
@@ -177,7 +177,7 @@ async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
   const label = body.provider === "azure" ? "azure" : hostLabel
   // Only a commercial Azure resource is known to serve chat wherever it lists deployments; any other endpoint's
   // listing doesn't prove chat, so one reply decides.
-  const ownEndpoint = typeof llm.base_url === "string" && !baseUrlHost(llm).endsWith(".azure.com")
+  const ownEndpoint = typeof llm.base_url === "string" && !commercialAzure(llm)
   // Listed without the model asked for, which a listing would offer as the connection's own.
   const { model: _, ...withoutModel } = llm
   const listed = await office.models.lister(ConnectionFile.parse({ llm_config: withoutModel }), label, {
