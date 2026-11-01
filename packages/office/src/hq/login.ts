@@ -29,6 +29,15 @@ export class BadCredentials extends Error {
   }
 }
 
+/** A sign-in refused because the person's `person.yaml` can't be read at HEAD, where their password hash lives. Only
+ *  the office's log tells it apart: the client gets the same answer as for `BadCredentials`. */
+export class UnreadablePerson extends BadCredentials {
+  constructor() {
+    super()
+    this.name = "UnreadablePerson"
+  }
+}
+
 /** `CHECKS` password checks are running already; the caller tries again later instead of queueing. */
 export class Busy extends Error {
   constructor() {
@@ -177,7 +186,8 @@ export class Logins {
   /**
    * The fingerprint of the password hash `password` matches, `handle`'s at HEAD; throws `BadCredentials` unless
    * `handle` is a human whose password it is, `Throttled` while `(peer, handle)` is locked, and `Busy` when
-   * `CHECKS` checks are running.
+   * `CHECKS` checks are running. A `person.yaml` that can't be read fails as `UnreadablePerson`, after the same full
+   * check, and counts toward the throttle like any failure: not counting it would tell callers the handle exists.
    *
    * Pairing never comes here, so no number of failures here can lock anyone out of `opencorp pair`.
    */
@@ -191,10 +201,13 @@ export class Logins {
       this.#running--
     }
     let phc: string | null
+    let unreadable: boolean
     try {
       // Read from git on every sign-in, not cached: every handle, known or not, pays the same read, so timing
       // doesn't tell them apart, and the slot bounds how many reads run at once.
-      phc = await this.#sessions.passwordHash(handle)
+      const read = await this.#sessions.passwordHash(handle)
+      phc = read.hash
+      unreadable = read.unreadable
     } catch (error) {
       release()
       throw error
@@ -206,7 +219,7 @@ export class Logins {
     const matched = await checking
     if (phc === null || !matched) {
       this.throttle.failed(key)
-      throw new BadCredentials()
+      throw unreadable ? new UnreadablePerson() : new BadCredentials()
     }
     this.throttle.succeeded(key)
     return passwordFp(phc)

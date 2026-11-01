@@ -6,8 +6,8 @@ import { HttpError } from "../../src/daemon/http.ts"
 import { SIGN_IN, browserAuth } from "../../src/hq/auth.ts"
 import type { Hq } from "../../src/hq/core.ts"
 import type { BrowserSessions, Who } from "../../src/hq/sessions.ts"
-import { CEO, makeOffice } from "../daemon/helpers.ts"
-import { type HqClient, PORT, hqClient, makeHq, pairCode, web } from "./helpers.ts"
+import { CEO, addHuman, makeOffice } from "../daemon/helpers.ts"
+import { type HqClient, PORT, handEdit, hqClient, makeHq, pairCode, web } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -40,6 +40,7 @@ test("the open requests and the app need no session", async () => {
     ["HEAD", "/api/health"],
     ["POST", "/api/pair"],
     ["POST", "/api/login"],
+    ["POST", "/api/logout"],
     ["GET", "/"],
     ["GET", "/assets/x.js"],
     // Decoded to /api/login, as uvicorn decoded the path Python matched.
@@ -54,6 +55,8 @@ test("the open requests and the app need no session", async () => {
     ["GET", "/api/login"],
     ["POST", "/api/login/"],
     ["POST", "/api/loginx"],
+    ["GET", "/api/logout"],
+    ["POST", "/api/logout/"],
   ] as const) {
     const s = sessions(WHO)
     expect(await browserAuth(s, request(method, url))).toBe(WHO)
@@ -76,6 +79,17 @@ test("the session check reads the cookie named for the host port", async () => {
   const empty = "opencorp_hq_49380=; opencorp_hq_49380=later"
   await browserAuth(s, request("GET", "/api/x", [["Host", HOST], ["Cookie", empty]]))
   expect(s.asked).toEqual(["later"])
+
+  // The last pair of the name wins: HQ's Path=/ cookie comes after a same-named one planted at a deeper path.
+  s = sessions(WHO)
+  const planted = "opencorp_hq_49380=junk; opencorp_hq_49380=sid.secret"
+  await browserAuth(s, request("GET", "/api/x", [["Host", HOST], ["Cookie", planted]]))
+  expect(s.asked).toEqual(["sid.secret"])
+
+  s = sessions(WHO)
+  const trailing = "opencorp_hq_49380=real; opencorp_hq_49380="
+  await browserAuth(s, request("GET", "/api/x", [["Host", HOST], ["Cookie", trailing]]))
+  expect(s.asked).toEqual(["real"])
 })
 
 test("only the first cookie header counts", async () => {
@@ -226,6 +240,17 @@ test("pairing with a cookie that proves nothing revokes nothing", async () => {
   expect(office.store.getHqSession(other.id)).toBeDefined()
 })
 
+test("a pair with a control character label is 422 and keeps the code", async () => {
+  const hq = await makeHq(makeOffice())
+  const client = await web(hq)
+  const code = await pairCode(hq)
+  const r = await client.post("/api/pair", { code, label: "Safari\u001b[2J" })
+  expect([r.status, (r.json() as Body).error]).toEqual([422, "invalid_body"])
+  expect((r.json() as Body).message).toContain("label")
+  for (const echoed of ["\u001b", "Safari", code]) expect(r.text).not.toContain(echoed)
+  expect((await client.post("/api/pair", { code })).status).toBe(200)
+})
+
 test("logout ends the session and clears the cookie", async () => {
   const office = makeOffice()
   const hq = await makeHq(office)
@@ -238,21 +263,116 @@ test("logout ends the session and clears the cookie", async () => {
   expect((await client.get("/api/whoami")).status).toBe(401)
 })
 
-test("logout needs a session", async () => {
-  const client = await web(await makeHq(makeOffice()))
-  expect((await client.post("/api/logout", {})).status).toBe(401)
+test("a planted cookie in front doesnt block use or logout", async () => {
+  const office = makeOffice()
+  const hq = await makeHq(office)
+  const client = await web(hq)
+  const sid = ((await pair(client, hq)).json() as Body).id as string
+  const name = `opencorp_hq_${PORT}`
+  const headers = { cookie: `${name}=junk; ${name}=${client.cookies.get(name)}` }
+  expect((await client.get("/api/whoami", { headers })).json()).toMatchObject({ person: CEO })
+  const r = await client.post("/api/logout", {}, { headers })
+  expect([r.status, r.json()]).toEqual([200, { ok: true }])
+  expect(office.store.getHqSession(sid)).toBeUndefined()
 })
 
-test("a failing check of the old cookie doesnt burn the code", async () => {
+test("pairing again with a planted cookie in front replaces the real session", async () => {
+  const office = makeOffice()
+  const hq = await makeHq(office)
+  const client = await web(hq)
+  const first = ((await pair(client, hq)).json() as Body).id as string
+  const name = `opencorp_hq_${PORT}`
+  const headers = { cookie: `${name}=junk; ${name}=${client.cookies.get(name)}` }
+  const r = await client.post("/api/pair", { code: await pairCode(hq) }, { headers })
+  expect(r.status).toBe(200)
+  expect(office.store.getHqSession(first)).toBeUndefined()
+  expect(office.store.getHqSession((r.json() as Body).id as string)).toBeDefined()
+})
+
+test("logout needs a session", async () => {
+  const hq = await makeHq(makeOffice())
+  const client = await web(hq)
+  let r = await client.post("/api/logout", {})
+  expect([r.status, (r.json() as Body).error]).toEqual([401, "sign_in_required"])
+  expect(r.headers["set-cookie"]![0]).toContain(`opencorp_hq_${PORT}=;`)
+  expect(r.headers["set-cookie"]![0]).toContain("Max-Age=0")
+
+  const sid = ((await pair(client, hq)).json() as Body).id as string
+  const cookie = `opencorp_hq_${PORT}=${client.cookies.get(`opencorp_hq_${PORT}`)}`
+  await hq.sessions.revoke(sid)
+  r = await client.post("/api/logout", {}, { headers: { cookie } })
+  expect([r.status, (r.json() as Body).error]).toEqual([401, "sign_in_required"])
+  expect(r.headers["set-cookie"]![0]).toContain(`opencorp_hq_${PORT}=;`)
+  expect(r.headers["set-cookie"]![0]).toContain("Max-Age=0")
+})
+
+test("a cross site logout is refused and ends nothing", async () => {
+  const hq = await makeHq(makeOffice())
+  const client = await web(hq)
+  await pair(client, hq)
+  const refused: Record<string, string>[] = [{ "sec-fetch-site": "cross-site" }, { origin: "http://127.0.0.1:1" }]
+  for (const headers of refused) {
+    const r = await client.post("/api/logout", {}, { headers })
+    expect(r.status).toBe(403)
+    expect(r.headers["set-cookie"]).toBeUndefined()
+    expect((await client.get("/api/whoami")).status).toBe(200)
+  }
+})
+
+test("logout while the person file cant be read ends the session", async () => {
+  const office = makeOffice()
+  const hq = await makeHq(office)
+  const client = await web(hq)
+  const sid = ((await pair(client, hq)).json() as Body).id as string
+  const cookie = `opencorp_hq_${PORT}=${client.cookies.get(`opencorp_hq_${PORT}`)}`
+  handEdit(office.paths.company, CEO, { nickname: "typo" })
+  expect((await client.get("/api/whoami")).status).toBe(401)
+  const r = await client.post("/api/logout", {})
+  expect([r.status, r.json()]).toEqual([200, { ok: true }])
+  expect(r.headers["set-cookie"]![0]).toContain("Max-Age=0")
+  expect(office.store.getHqSession(sid)).toBeUndefined()
+  handEdit(office.paths.company, CEO, { nickname: undefined })
+  expect((await client.get("/api/whoami", { headers: { cookie } })).status).toBe(401)
+})
+
+test("logout with a cookie that proves nothing revokes nothing", async () => {
+  const office = makeOffice()
+  const hq = await makeHq(office)
+  const client = await web(hq)
+  const [other] = await hq.sessions.issue(CEO, { issuedBy: CEO, label: null })
+  client.cookies.set(`opencorp_hq_${PORT}`, `${other.id}.forged`)
+  const r = await client.post("/api/logout", {})
+  expect([r.status, (r.json() as Body).error]).toEqual([401, "sign_in_required"])
+  expect(office.store.getHqSession(other.id)).toBeDefined()
+})
+
+test("pairing replaces the old session even while its person file cant be read", async () => {
+  const office = makeOffice()
+  const hq = await makeHq(office)
+  addHuman(office.paths.company, "lan")
+  const client = await web(hq)
+  const first = ((await pair(client, hq)).json() as Body).id as string
+  handEdit(office.paths.company, CEO, { nickname: "typo" })
+  const code = (await hq.mint("lan", { issuer: CEO, openFile: false })).path.split("#")[1]!
+  const r = await client.post("/api/pair", { code })
+  expect([r.status, (r.json() as Body).person]).toEqual([200, "lan"])
+  expect(office.store.getHqSession(first)).toBeUndefined()
+})
+
+test("a failing read of the old cookie doesnt burn the code", async () => {
   const hq = await makeHq(makeOffice())
   const client = await web(hq)
   const code = await pairCode(hq)
   // An own property over the prototype's method, deleted below so the method is back.
-  Object.assign(hq.sessions, { check: async () => Promise.reject(new Error("git went away")) })
+  Object.assign(hq.sessions, {
+    proven: () => {
+      throw new Error("store went away")
+    },
+  })
   try {
     expect((await client.post("/api/pair", { code })).status).toBe(500)
   } finally {
-    delete (hq.sessions as { check?: unknown }).check
+    delete (hq.sessions as { proven?: unknown }).proven
   }
   expect((await client.post("/api/pair", { code })).status).toBe(200)
 })
