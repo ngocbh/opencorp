@@ -312,6 +312,30 @@ test("the daemon is found only by its pid start time and home", async () => {
   expect(fallback.daemon(one, ps())).toEqual({ pid: reexeced.pid, started: reexeced.started! })
 })
 
+test("a pid is verified only as this homes daemon", async () => {
+  const one = officeDir()
+  const live = await standIn(`daemon --home ${one.home}`)
+  expect(fallback.verify(live.pid, one, ps())).toEqual({ pid: live.pid, started: live.started! })
+  const other = await standIn(`daemon --home ${one.home}2`)
+  expect(fallback.verify(other.pid, one, ps())).toBeNull()
+  expect(fallback.verify(process.pid, one, ps())).toBeNull()
+  expect(fallback.verify(1, one, ps())).toBeNull()
+})
+
+test("stop process signals only the daemon it is given", async () => {
+  const one = officeDir()
+  const pidfile = path.join(one.office, "office.pid")
+  const named = await standIn(`daemon --home ${one.home}`)
+  fs.writeFileSync(pidfile, `${named.pid}\n`)
+  const given = await standIn(`daemon --home ${one.home}`)
+  const found = { pid: given.pid, started: given.started! }
+  expect(await fallback.stopProcess(one, { ps: ps(), found })).toBe(`stopped the office (pid ${given.pid})`)
+  expect(isGone(given.pid, given.started)).toBe(true)
+  expect(isGone(named.pid, named.started)).toBe(false)
+  expect(await fallback.stopProcess(one, { ps: ps(), found: null })).toBeNull()
+  expect(isGone(named.pid, named.started)).toBe(false)
+})
+
 test("stop process stops the office daemon and nothing else", async () => {
   const one = officeDir()
   const pidfile = path.join(one.office, "office.pid")

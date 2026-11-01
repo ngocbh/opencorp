@@ -197,6 +197,12 @@ export function pidOf(launch: Launch): number | null {
 export function daemon(launch: Launch, ps: string | undefined): { pid: number; started: number } | null {
   const pid = pidOf(launch)
   if (pid === null || ps === undefined) return null
+  return verify(pid, launch, ps)
+}
+
+/** `pid` with its start time if it is this office's daemon (its args end as `daemon` describes), else null. The
+ *  start time is read first, so a pid reused before the args are read fails `stopPid`'s re-check. */
+export function verify(pid: number, launch: Launch, ps: string): { pid: number; started: number } | null {
   const started = startTime(pid)
   if (started === null) return null
   const line = args(pid, ps)
@@ -210,15 +216,16 @@ export function daemon(launch: Launch, ps: string | undefined): { pid: number; s
 export const STOP_TIMEOUT_MS = 25_000
 
 /** Stops the office's daemon with SIGTERM, then SIGKILL after `timeoutMs`; says what was done, or null if none
- *  runs. Nothing is signalled unless the pid's start time and args are this office's daemon's. */
+ *  runs. The daemon is `found` when given (a pid already verified, or null for none), else the pidfile's. Nothing is
+ *  signalled unless the pid's start time and args are this office's daemon's. */
 export async function stopProcess(
   launch: Launch,
   {
     timeoutMs = STOP_TIMEOUT_MS,
     ps = resolveTools(daemonEnv(process.env)).ps,
-  }: { timeoutMs?: number; ps?: string } = {},
+    found = daemon(launch, ps),
+  }: { timeoutMs?: number; ps?: string; found?: { pid: number; started: number } | null } = {},
 ): Promise<string | null> {
-  const found = daemon(launch, ps)
   if (found === null) return null
   if (!(await stopPid(found.pid, found.started, { timeout: timeoutMs }))) return null
   return `stopped the office (pid ${found.pid})`

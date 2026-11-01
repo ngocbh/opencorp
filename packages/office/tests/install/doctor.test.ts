@@ -1,4 +1,5 @@
 /** Python's `tests/install/test_doctor.py`. */
+import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
 import path from "node:path"
@@ -1367,10 +1368,11 @@ test("a running office reports hq", async () => {
   expect(got.hq!.status).toBe("ok")
   expect(got.version).toEqual({ name: "version", status: "ok", detail: "pid 42 runs the current code" })
   expect(got.tools!.status).toBe("ok")
-  expect(got.office!.detail).toContain("(pid ?)") // no pidfile
+  expect(got.office!.detail).toContain("(pid 42)") // from GET /office; there is no pidfile
   expect(got.connections).toBeUndefined() // none saved; the lstat stand-in reads the real folder
   expect(found.map((c) => c.name).slice(found.findIndex((c) => c.name === "office"))).toEqual([
     "office",
+    "pidfile",
     "version",
     "tools",
     "hq",
@@ -1380,11 +1382,50 @@ test("a running office reports hq", async () => {
   ])
 })
 
+test("a pidfile that disagrees with the office is a warning with the fix", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const home = launchFor(dir, paths).home
+  const pidfile = path.join(paths.office, "office.pid")
+  fs.writeFileSync(pidfile, "49\n")
+  let got = byName(await runningChecks(dir, paths, info(home, { pid: 50 })))
+  expect(got.office!.detail).toContain("(pid 50)")
+  expect(got.pidfile).toEqual({
+    name: "pidfile",
+    status: "warn",
+    detail: "office.pid says 49 but the office is pid 50; `opencorp restart` rewrites it",
+  })
+  fs.rmSync(pidfile)
+  got = byName(await runningChecks(dir, paths, info(home, { pid: 50 })))
+  expect(got.pidfile!.detail).toBe(
+    "office.pid is missing or unreadable but the office is pid 50; `opencorp restart` rewrites it",
+  )
+  fs.writeFileSync(pidfile, "50\n")
+  expect(byName(await runningChecks(dir, paths, info(home, { pid: 50 }))).pidfile).toBeUndefined()
+  // Another home's office says nothing about this one's pidfile.
+  expect(byName(await runningChecks(dir, paths, info("/elsewhere", { pid: 51 }))).pidfile).toBeUndefined()
+})
+
+test("a pidfile that is a symlink or fifo shows no pid and never hangs", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const pidfile = path.join(paths.office, "office.pid")
+  const target = path.join(dir, "secret")
+  fs.writeFileSync(target, "12345\n")
+  fs.symlinkSync(target, pidfile)
+  const linked = byName(await runningChecks(dir, paths, "unreachable"))
+  expect(linked.office!.detail).toContain("(pid ?)")
+  fs.rmSync(pidfile)
+  execFileSync("mkfifo", [pidfile])
+  expect(byName(await runningChecks(dir, paths, "unreachable")).office!.detail).toContain("(pid ?)")
+})
+
 test("a pidfile that is a symlink shows no pid and nothing of its target", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir, PROVIDER)
   fs.symlinkSync(setupConnectionFile(paths.office), path.join(paths.office, "office.pid"))
-  const found = await runningChecks(dir, paths, info(launchFor(dir, paths).home))
+  // With no answer from the office, the pid could come only from the pidfile.
+  const found = await runningChecks(dir, paths, "unreachable")
   expect(byName(found).office!.detail).toContain("(pid ?)")
   expect(doctor.report(found)).not.toContain(KEY)
 })

@@ -64,6 +64,8 @@ export interface Setup {
   offboard: typeof offboard
   /** The doctor's checks' own options (none: their defaults). */
   doctor: Omit<CheckOptions, "host" | "environ">
+  /** How `start`, `restart` and `stop` find the running daemon (none: `service.findDaemon`'s defaults). */
+  lookup: service.LookupOptions
   /** JSON mode: points every other stdout writer at stderr; returns the writer for prompts. */
   guardStdout(): TextOut
 }
@@ -93,6 +95,7 @@ function defaults(given: Partial<Setup>): Setup {
     onboard: given.onboard ?? onboard,
     offboard: given.offboard ?? offboard,
     doctor: given.doctor ?? {},
+    lookup: given.lookup ?? {},
     guardStdout: given.guardStdout ?? guardStdout,
   }
 }
@@ -568,11 +571,17 @@ async function notOnboarded(run: Launch, s: Setup): Promise<number | null> {
   return null
 }
 
+/** The running office's pid: what `GET /office` says when the office answers and says, else the pidfile's. */
+async function runningPid(run: Launch, s: Setup): Promise<number | "?"> {
+  const found = await service.findDaemon(run, s.host, s.lookup)
+  return found.from === "office" && found.named !== null ? found.named : service.pid(run)
+}
+
 async function startCommand(args: Args, s: Setup): Promise<number> {
   const run = launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome })
   if (socketTooLong(run, s)) return 1
   if (await s.host.answers(run.socket)) {
-    s.stdout.write(`The office is already running (pid ${service.pid(run)}).\n`)
+    s.stdout.write(`The office is already running (pid ${await runningPid(run, s)}).\n`)
     await reportHq(run.home, s)
     return 0
   }
@@ -581,8 +590,9 @@ async function startCommand(args: Args, s: Setup): Promise<number> {
   const came = await cameUp(run, s, service.start, "start")
   if (!came) return 1
   // Another start can win the race between the check above and this one's daemon.
-  if (came === "already-running") s.stdout.write(`The office is already running (pid ${service.pid(run)}).\n`)
-  else s.stdout.write(`Started the office (pid ${service.pid(run)}).\n`)
+  const pid = await runningPid(run, s)
+  if (came === "already-running") s.stdout.write(`The office is already running (pid ${pid}).\n`)
+  else s.stdout.write(`Started the office (pid ${pid}).\n`)
   await reportHq(run.home, s)
   return 0
 }
@@ -592,10 +602,16 @@ async function restartCommand(args: Args, s: Setup): Promise<number> {
   if (socketTooLong(run, s)) return 1
   const refused = await notOnboarded(run, s)
   if (refused !== null) return refused
-  const was = (await s.host.answers(run.socket)) ? service.pid(run) : null
-  if (!(await cameUp(run, s, service.restart, "restart"))) return 1
-  if (was === null) s.stdout.write(`The office wasn't running; started it (pid ${service.pid(run)}).\n`)
-  else s.stdout.write(`Restarted the office (pid ${service.pid(run)}; was ${was}).\n`)
+  let was: number | null = null
+  const restart = async (one: Launch, host: Host) => {
+    const done = await service.restart(one, host, undefined, await service.findDaemon(one, host, s.lookup))
+    was = done.stopped
+    return done
+  }
+  if (!(await cameUp(run, s, restart, "restart"))) return 1
+  const pid = await runningPid(run, s)
+  if (was === null) s.stdout.write(`The office wasn't running; started it (pid ${pid}).\n`)
+  else s.stdout.write(`Restarted the office (pid ${pid}; was ${was}).\n`)
   await reportHq(run.home, s)
   return 0
 }

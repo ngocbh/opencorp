@@ -37,6 +37,7 @@ import {
 } from "./onboard.ts"
 import { OnboardError, clean } from "./prompts.ts"
 import * as service from "./service.ts"
+import { officeInfo, readFromOffice, type Unread } from "./service.ts"
 import * as systemd from "./systemd.ts"
 import { installPaths, resolveTools, workspaceGuards } from "./tools.ts"
 
@@ -61,16 +62,14 @@ const ESCAPE = /\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g
  */
 const SPAWN_ERROR = /^E[A-Z0-9]+: (.*), (?:posix_)?spawn\b/
 
+export { getJson, officeInfo, type Unread } from "./service.ts"
+
 /** One line of the report: `fail` needs fixing, `warn` is worth knowing. */
 export interface Check {
   name: string
   status: "ok" | "warn" | "fail"
   detail: string
 }
-
-/** Why the office's answer couldn't be read: it refused this device's token; no office answered in time (or one too
- *  old to have the route); or its answer isn't what was asked for. */
-export type Unread = "refused" | "unreachable" | "unreadable"
 
 function errnoCode(error: unknown): string | undefined {
   const code = (error as NodeJS.ErrnoException | null)?.code
@@ -427,56 +426,8 @@ export async function codexCheck(
   return { name: "codex", status: "ok", detail: `${named}, signed in` }
 }
 
-/**
- * `GET <target>` from the office on `socket`, sent with the identity's token when there is one: the status and body
- * text, or `unreachable` when nothing answered within `timeoutMs`.
- */
-export async function getJson(
-  socket: string,
-  identity: Identity | undefined,
-  target: string,
-  timeoutMs: number,
-): Promise<{ status: number; text: string } | "unreachable"> {
-  try {
-    // Bun's fetch over a unix socket.
-    const res = await fetch(`http://office${target}`, {
-      unix: socket,
-      headers: identity?.headers(),
-      signal: AbortSignal.timeout(timeoutMs),
-    })
-    return { status: res.status, text: await res.text() }
-  } catch {
-    return "unreachable"
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-/**
- * `GET target` from the office on `socket`, sent with the identity's token when there is one, and its JSON body as
- * `read` takes it, or why it couldn't be read (`read` returning undefined makes it unreadable).
- */
-async function readFromOffice<T>(
-  socket: string,
-  identity: Identity | undefined,
-  target: string,
-  timeoutMs: number,
-  read: (body: unknown) => T | undefined,
-): Promise<T | Unread> {
-  const got = await getJson(socket, identity, target, timeoutMs)
-  if (got === "unreachable") return got
-  if (got.status === 401) return "refused"
-  // 404 from an office before the route; for /hq, 501 from one without HQ attached
-  if (got.status !== 200) return "unreachable"
-  let body: unknown
-  try {
-    body = JSON.parse(got.text)
-  } catch {
-    return "unreadable"
-  }
-  return read(body) ?? "unreadable"
 }
 
 /** `body`, once every part of it that `hqChecks` reads is there; undefined if one isn't. */
@@ -641,18 +592,6 @@ export function hqPortChecks(status: HqStatus, officeDir: string, socketMissing:
     ]
   }
   return found
-}
-
-/**
- * `GET /office` from the office on `socket`, sent with the identity's token when there is one: its pid, home, start
- * time, version and pinned tools, or why it couldn't be read.
- */
-export async function officeInfo(
-  socket: string,
-  identity: Identity | undefined,
-  timeoutMs = 2000,
-): Promise<OfficeInfo | Unread> {
-  return readFromOffice(socket, identity, "/office", timeoutMs, (body) => OfficeInfo.safeParse(body).data)
 }
 
 /** What to do about an office that wouldn't say what code it runs, by why. */
@@ -904,9 +843,20 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
       detail: `${run.socket} is not a socket; remove it, then run \`opencorp start\``,
     })
   } else if (running) {
-    found.push({ name: "office", status: "ok", detail: `answering on ${run.socket} (pid ${service.pid(run)})` })
     const identity = await readIdentity(identityPath(run.home))
     const info = await office(run.socket, identity)
+    const ours = typeof info !== "string" && info.home === run.home ? info : null
+    const pidfile = service.pid(run)
+    found.push({ name: "office", status: "ok", detail: `answering on ${run.socket} (pid ${ours?.pid ?? pidfile})` })
+    if (ours !== null && pidfile !== ours.pid) {
+      // A stop finds the daemon through GET /office only while it answers; a hung one is found by its pidfile.
+      const said = pidfile === "?" ? "office.pid is missing or unreadable" : `office.pid says ${pidfile}`
+      found.push({
+        name: "pidfile",
+        status: "warn",
+        detail: `${said} but the office is pid ${ours.pid}; \`opencorp restart\` rewrites it`,
+      })
+    }
     if (typeof info === "string") found.push({ name: "version", status: "warn", detail: VERSION_UNREAD[info] })
     else {
       found.push(versionCheck(run, info, newestSource(command)), toolsCheck(info))

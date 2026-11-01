@@ -586,6 +586,34 @@ test(
 )
 
 test(
+  "start and restart find the office when its pidfile is wrong or its socket is gone",
+  async () => {
+    const office = realOffice(killedAtEnd())
+    try {
+      const made = await office.init()
+      expect(made.code, made.err).toBe(0)
+      const old = office.pid()
+      const pidfile = path.join(office.dir, "office", "office.pid")
+      fs.writeFileSync(pidfile, "1\n")
+      const running = await office.install(["start"])
+      expect(running.out).toBe(`The office is already running (pid ${old}).\n`)
+      const restarted = await office.install(["restart"])
+      expect(restarted.code, restarted.err).toBe(0)
+      const now = office.pid()
+      expect(restarted.out).toBe(`Restarted the office (pid ${now}; was ${old}).\n`)
+      // With the socket gone, the pidfile names the daemon to stop.
+      fs.rmSync(office.socket)
+      const again = await office.install(["restart"])
+      expect(again.code, again.err).toBe(0)
+      expect(again.out).toBe(`Restarted the office (pid ${office.pid()}; was ${now}).\n`)
+    } finally {
+      await office.stop()
+    }
+  },
+  120_000,
+)
+
+test(
   "a start with a file at the socket path fails at once and says why",
   async () => {
     const office = realOffice(killedAtEnd())
