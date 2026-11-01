@@ -9,7 +9,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { makeOfficeDir } from "../daemon/sockets.ts"
 import * as fallback from "./fallback.ts"
-import { writeIfChanged } from "./files.ts"
+import { readRegular, tailRegular, writeIfChanged } from "./files.ts"
 import { type Host, type Launch, ServiceError } from "./launch.ts"
 import * as launchd from "./launchd.ts"
 import * as systemd from "./systemd.ts"
@@ -51,10 +51,15 @@ function isMode(value: unknown): value is Mode {
   return (MODES as readonly unknown[]).includes(value)
 }
 
-/** The mode `install` last recorded for this office, if any. */
+/** The most of `install.json` read: its record is about 50 bytes. */
+const RECORD_CAP = 4096
+
+/** The mode `install` last recorded for this office, if any; a record that isn't a regular file counts as none. */
 export function recordedMode(launch: Launch): Mode | null {
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(path.join(launch.office, "install.json"), "utf8"))
+    const bytes = readRegular(path.join(launch.office, "install.json"), RECORD_CAP)
+    if (bytes === null) return null
+    const parsed: unknown = JSON.parse(bytes.toString("utf8"))
     const mode = parsed !== null && typeof parsed === "object" ? (parsed as { mode?: unknown }).mode : undefined
     return isMode(mode) ? mode : null
   } catch {
@@ -71,13 +76,9 @@ function order(host: Host): Mode[] {
   return [...native, ...(host.which("tmux") ? (["tmux"] as const) : []), "background"]
 }
 
-/** The pid in the office's pidfile, or `?` if there is none. */
+/** The decimal pid in the office's pidfile (a regular file, not a link), or `?`. */
 export function pid(launch: Launch): string {
-  try {
-    return fs.readFileSync(path.join(launch.office, "office.pid"), "utf8").trim() || "?"
-  } catch {
-    return "?"
-  }
+  return String(fallback.pidOf(launch) ?? "?")
 }
 
 /**
@@ -167,10 +168,16 @@ export async function start(launch: Launch, host: Host): Promise<Installed> {
   return { mode: "background", notes }
 }
 
+/** The most of the log's end that `tail` reads. */
+const TAIL_BYTES = 64 * 1024
+
+/** The last `lines` lines of `file`, or `(no log)` when it isn't a regular file that can be read. */
 function tail(file: string, lines = 20): string {
   try {
+    const found = tailRegular(file, TAIL_BYTES)
+    if (found === null) return "(no log)\n"
     // Python read the log with universal newlines, so a `\r\n` or lone `\r` ends a line too.
-    const text = fs.readFileSync(file, "utf8").replace(/\r\n?/g, "\n")
+    const text = found.replace(/\r\n?/g, "\n")
     return text
       .split(/(?<=\n)/)
       .filter(Boolean)

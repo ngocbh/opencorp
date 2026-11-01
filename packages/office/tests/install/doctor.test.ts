@@ -23,7 +23,7 @@ import { writePrivate } from "../../src/secrets.ts"
 import { Store } from "../../src/store/store.ts"
 import { git } from "../company/helpers.ts"
 import { CEO, giveDevice, makeOffice, served } from "../daemon/helpers.ts"
-import { shortDir, tempDir } from "../helpers.ts"
+import { fifo, shortDir, tempDir } from "../helpers.ts"
 import { sandboxAvailable } from "../sandbox/helpers.ts"
 import { makeHost, Runner } from "./helpers.ts"
 
@@ -461,6 +461,39 @@ test("an office log that isnt a regular file is no crash", async () => {
   const paths = await onboarded(dir)
   fs.mkdirSync(path.join(paths.office, "office.log"))
   const got = byName(await runChecks(dir, paths))
+  expect(got.office!.status).toBe("warn")
+})
+
+test("a stopped office's record that is a FIFO reads as not installed without blocking", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const record = path.join(paths.office, "install.json")
+  fs.rmSync(record)
+  fifo(record)
+  const began = performance.now()
+  const got = byName(await runChecks(dir, paths))
+  expect(performance.now() - began).toBeLessThan(2000)
+  expect(got.service!.detail).toContain("not installed")
+})
+
+test("an office log that is a symlink is no crash and shows nothing of its target", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const target = path.join(dir, "elsewhere.log")
+  fs.writeFileSync(target, "opencorp office: SENTINEL\n")
+  fs.symlinkSync(target, path.join(paths.office, "office.log"))
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office!.status).toBe("warn")
+  expect(got.office!.detail).not.toContain("SENTINEL")
+})
+
+test("an office log that is a FIFO is no crash, without blocking", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  fifo(path.join(paths.office, "office.log"))
+  const began = performance.now()
+  const got = byName(await runChecks(dir, paths))
+  expect(performance.now() - began).toBeLessThan(2000)
   expect(got.office!.status).toBe("warn")
 })
 
@@ -1078,6 +1111,15 @@ test("a running office reports hq", async () => {
     "sandbox",
     "codex",
   ])
+})
+
+test("a pidfile that is a symlink shows no pid and nothing of its target", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, PROVIDER)
+  fs.symlinkSync(setupConnectionFile(paths.office), path.join(paths.office, "office.pid"))
+  const found = await runningChecks(dir, paths, info(launchFor(dir, paths).home))
+  expect(byName(found).office!.detail).toContain("(pid ?)")
+  expect(doctor.report(found)).not.toContain(KEY)
 })
 
 test("an office older than the code is told to restart", () => {

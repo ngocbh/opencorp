@@ -22,6 +22,7 @@ import { strerror } from "../sandbox/fs_helper.ts"
 import { checkWorkspace, type OfficePaths as Guards, SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
 import { fsHelper, run } from "../sandbox/run.ts"
 import { workerEnv } from "../worker/spawn.ts"
+import { tailRegular } from "./files.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, runCommand, which } from "./launch.ts"
 import * as launchd from "./launchd.ts"
 import { checkProvider, lexists, SET_UP, setupConnectionFile, stopToTopUp, withDefaultModel } from "./onboard.ts"
@@ -317,28 +318,6 @@ function nextStep(run: Launch, host: Host): string {
 }
 
 /**
- * The last `LOG_TAIL_BYTES` of `file`, without the partial first line when it is cut; empty when `file` isn't a
- * regular file.
- */
-function tail(file: string): string {
-  // Non-blocking so a FIFO at the log's path can't hang the open.
-  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK)
-  try {
-    const stat = fs.fstatSync(fd)
-    if (!stat.isFile()) return ""
-    const start = Math.max(0, stat.size - LOG_TAIL_BYTES)
-    const buf = Buffer.alloc(LOG_TAIL_BYTES)
-    const text = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, start)).toString("utf8")
-    if (start === 0) return text
-    // A window that falls inside one long line holds only part of it.
-    const nl = text.indexOf("\n")
-    return nl < 0 ? "" : text.slice(nl + 1)
-  } finally {
-    fs.closeSync(fd)
-  }
-}
-
-/**
  * Why the daemon's last start failed, from the office log, or null if it didn't: the line it printed when it
  * couldn't start, or `office crashed: <type>` when the log ends with the crash marker and its frames (the frames
  * stay in the log). A marker with other lines after it belongs to an earlier start.
@@ -346,7 +325,8 @@ function tail(file: string): string {
 function crash(log: string): string | null {
   let text: string
   try {
-    text = tail(log)
+    // A link or a FIFO at the log's path is no log to read.
+    text = tailRegular(log, LOG_TAIL_BYTES) ?? ""
   } catch (error) {
     if (errnoCode(error) === undefined) throw error
     return null

@@ -87,6 +87,20 @@ export function shortDir(): string {
   return dirForThisTest("/tmp/oc-")
 }
 
+/** Makes a 0600 FIFO at `p`, with a bounded writer that frees a blocked open after 3 s and exits by itself. */
+export function fifo(p: string): void {
+  execFileSync("mkfifo", [p])
+  fs.chmodSync(p, 0o600)
+  // A read-write open of a FIFO never blocks, yet counts as a reader and a writer for an open blocked on
+  // the other end; so a regression that drops O_NONBLOCK fails the timing check instead of hanging.
+  const child = spawn("sh", ["-c", 'sleep 3; : <> "$0"', p], { detached: true, stdio: "ignore" })
+  onTestFinished(() => {
+    try {
+      process.kill(-child.pid!, "SIGKILL")
+    } catch {}
+  })
+}
+
 // A group id no real process can have (Linux PID_MAX_LIMIT is 4,194,304; macOS pids stay under 100,000), so
 // a call that slipped past a mocked process.kill could never signal anything.
 export const NO_GROUP = 2_000_000_000

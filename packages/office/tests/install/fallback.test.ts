@@ -9,7 +9,7 @@ import { makeOfficeDir } from "../../src/daemon/sockets.ts"
 import * as fallback from "../../src/install/fallback.ts"
 import { type Completed, type Launch, ServiceError, launch, runCommand, which } from "../../src/install/launch.ts"
 import { selfSpawnEnv } from "../../src/platform.ts"
-import { isGone, ps, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
+import { fifo, isGone, ps, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { Runner, makeHost, ownerLaunch } from "./helpers.ts"
 
 const SESSION = "opencorp-office"
@@ -193,6 +193,33 @@ test("background refuses a symlinked log", () => {
   expect(error).toBeInstanceOf(ServiceError)
   expect(error.message).toContain("log")
   expect(fs.existsSync(path.join(dir, "elsewhere"))).toBe(false)
+})
+
+test("background refuses a FIFO log without blocking, with or without a reader", () => {
+  const dir = tempDir()
+  const one = officeAt(dir, program(dir))
+  fs.mkdirSync(one.office, { recursive: true, mode: 0o700 })
+  fifo(one.log)
+  let spawned = false
+  const spawn = (): ChildProcess => {
+    spawned = true
+    throw new Error("not reached")
+  }
+  const began = performance.now()
+  const unread = refusal(() => fallback.startBackground(one, makeHost(dir, new Runner(), { spawn })))
+  expect(unread).toBeInstanceOf(ServiceError)
+  expect(unread.message).toContain("can't open the office log")
+  // With a reader the write open succeeds, so only the fstat check stops it.
+  const reader = fs.openSync(one.log, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK)
+  try {
+    const read = refusal(() => fallback.startBackground(one, makeHost(dir, new Runner(), { spawn })))
+    expect(read).toBeInstanceOf(ServiceError)
+    expect(read.message).toContain("isn't a regular file")
+  } finally {
+    fs.closeSync(reader)
+  }
+  expect(performance.now() - began).toBeLessThan(2000)
+  expect(spawned).toBe(false)
 })
 
 test("background without the office program is a service error", () => {
