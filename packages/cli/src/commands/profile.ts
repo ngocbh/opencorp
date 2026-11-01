@@ -30,10 +30,13 @@ async function edit(editor: string, file: string, text: string): Promise<string 
   writeFileSync(file, text, { mode: 0o600 })
   // Async, not spawnSync: the process keeps serving its event loop while the editor is open.
   await launchEditor(editor, file)
+  const bytes = readFileSync(file)
   try {
-    return UTF8.decode(readFileSync(file))
-  } catch {
-    return null
+    return UTF8.decode(bytes)
+  } catch (error) {
+    // The fatal decoder throws a TypeError on bytes that aren't UTF-8.
+    if (error instanceof TypeError) return null
+    throw error
   }
 }
 

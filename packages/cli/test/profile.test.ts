@@ -212,6 +212,18 @@ test("a save that isn't UTF-8 sends nothing and keeps the file as the editor lef
   expect(office.state.profiles.minh).toEqual(before)
 })
 
+test("an editor that deletes the file reports the read error, exits 1 and leaves no temp file", async () => {
+  const before = office.state.profiles.minh!
+  editor(`printf '%s' "$1" > ${home}/path; rm "$1"\n`)
+  const r = await profile("edit", "minh")
+  expect(r.code).toBe(1)
+  expect(r.err).toContain("ENOENT")
+  expect(r.err).not.toContain("not UTF-8")
+  expect(puts()).toEqual([])
+  expect(existsSync(path.dirname(readFileSync(path.join(home, "path"), "utf8")))).toBe(false)
+  expect(office.state.profiles.minh).toEqual(before)
+})
+
 test("after a conflict, a save that isn't UTF-8 keeps the editor's bytes", async () => {
   const before = office.state.profiles.minh!
   const theirs = before.text + "Their line.\n"
