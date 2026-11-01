@@ -9,7 +9,7 @@ import { HarnessError, LIVE, notAnAgent, notWaiting } from "../chat/state.ts"
 import { loadRepo, missingPerson } from "../company/loader.ts"
 import type { Office, SessionHarness } from "../daemon/office.ts"
 import type { AnswerKind } from "../questions/cards.ts"
-import { UnsafeWorkspace, checkWorkspace, isInside, realPath } from "../sandbox/policy.ts"
+import { UnsafeWorkspace, checkClearOf, checkWorkspace, realPath } from "../sandbox/policy.ts"
 import {
   InvalidTransition,
   NotFound,
@@ -588,16 +588,12 @@ export function folderOf(cwd: string): string {
 
 /** 422 `unsafe_workspace` (`log` gets why) when `real`, a resolved folder, overlaps the office's own files. */
 export function checkOverlap(office: Office, real: string, log: (line: string) => void): void {
-  // The workspace check guards ~/.opencorp; this office's home may be elsewhere.
-  for (const kept of [office.paths.company, office.paths.office]) {
-    if (isInside(real, kept) || isInside(kept, real))
-      throw unsafeWorkspace(
-        new UnsafeWorkspace(
-          `workspace ${real} overlaps the office's files at ${realPath(kept)}`,
-          "it overlaps the office's files; use a project folder",
-        ),
-        log,
-      )
+  try {
+    // The workspace check guards ~/.opencorp; this office's home may be elsewhere.
+    checkClearOf(real, [office.paths.company, office.paths.office])
+  } catch (error) {
+    if (error instanceof UnsafeWorkspace) throw unsafeWorkspace(error, log)
+    throw error
   }
 }
 

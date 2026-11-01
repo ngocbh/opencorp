@@ -19,7 +19,13 @@ import { RETRY_MS } from "../hq/servers.ts"
 import { CHECKOUT } from "../hq/version.ts"
 import { selfCommand, tuiAssetRoot } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
-import { checkWorkspace, type OfficePaths as Guards, SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
+import {
+  checkClearOf,
+  checkWorkspace,
+  type OfficePaths as Guards,
+  SandboxPolicy,
+  UnsafeWorkspace,
+} from "../sandbox/policy.ts"
 import { fsHelper, run } from "../sandbox/run.ts"
 import { latestVersion, newerStore, userVersion } from "../store/migrate.ts"
 import { storeProblem } from "../store/problem.ts"
@@ -880,13 +886,14 @@ export function storeCheck(store: string, lstat: (p: string) => fs.Stats): Check
 }
 
 /**
- * Whether any folder someone worked in (the store's `worked_folders`) is one `checkWorkspace` refuses with `guards`
- * and the user's `home`: one holding the office install, a program it runs or a folder on its PATH, one holding the
- * home directory, or one inside a sensitive home path. Sessions there are refused until the install, the program or
- * the folder moves. Null when the office has no store, or a store without the table; a folder that no longer exists is
- * skipped.
+ * Whether any folder someone worked in (the store's `worked_folders`) is one the daemon refuses: one `checkWorkspace`
+ * refuses with `guards` and the user's `home` (one holding the office install, a program it runs or a folder on its
+ * PATH, one holding the home directory, or one inside a sensitive home path), or one that overlaps `kept`, the
+ * office's own files (its company repo and office folder). Sessions there are refused until the install, the program
+ * or the folder moves. Null when the office has no store, or a store without the table; a folder that no longer
+ * exists is skipped.
  */
-export function foldersCheck(store: string, guards: Guards, home: string): Check | null {
+export function foldersCheck(store: string, guards: Guards, home: string, kept: readonly string[]): Check | null {
   if (!fs.existsSync(store)) return null
   let cwds: string[]
   try {
@@ -902,6 +909,7 @@ export function foldersCheck(store: string, guards: Guards, home: string): Check
     if (!fs.existsSync(cwd)) continue
     try {
       checkWorkspace(cwd, { ...guards, home })
+      checkClearOf(cwd, kept)
     } catch (error) {
       const why = errnoCode(error) ?? nameOf(error)
       refused.push(error instanceof UnsafeWorkspace ? error.message : `${cwd}: can't be checked (${why})`)
@@ -911,7 +919,8 @@ export function foldersCheck(store: string, guards: Guards, home: string): Check
   return {
     name: "folders",
     status: "ok",
-    detail: "no worked folder holds the office install, a program it runs or a folder on its PATH",
+    detail:
+      "no worked folder holds the office install, a program it runs, a folder on its PATH, or the office's own files",
   }
 }
 
@@ -1079,6 +1088,7 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
           paths.store,
           guards ?? workspaceGuards(resolveTools(run.env), run.env, command, [host.userHome, paths.home, os.tmpdir()]),
           host.userHome,
+          [paths.company, paths.office],
         )
   if (folders !== null) found.push(folders)
   // run.env is the environment an office set up or started from this shell gets, which can differ from the running

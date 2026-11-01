@@ -1851,6 +1851,29 @@ test("a worked folder holding the install fails the folders check", async () => 
   expect(doctor.exitCode(found)).toBe(1)
 })
 
+/** The folders line when no worked folder is refused. */
+const OK_FOLDERS =
+  "no worked folder holds the office install, a program it runs, a folder on its PATH, or the office's own files"
+
+test("a worked folder overlapping the office's own files fails the folders check", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const sub = path.join(paths.office, "sub")
+  fs.mkdirSync(sub)
+  const [home, company, office] = [paths.home, paths.company, paths.office].map((p) => fs.realpathSync(p))
+  const cases: [string, string][] = [
+    [paths.home, `workspace ${home} overlaps the office's files at ${company}`],
+    [paths.company, `workspace ${company} overlaps the office's files at ${company}`],
+    [sub, `workspace ${office}/sub overlaps the office's files at ${office}`],
+  ]
+  for (const [cwd, detail] of cases) {
+    fs.rmSync(paths.store, { force: true })
+    for (const sidecar of ["-wal", "-shm"]) fs.rmSync(paths.store + sidecar, { force: true })
+    storeWith(paths, cwd)
+    expect(byName(await runChecks(dir, paths)).folders).toEqual({ name: "folders", status: "fail", detail })
+  }
+})
+
 test("a worked folder holding a pinned tool or a path entry fails the folders check", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)
@@ -1878,7 +1901,7 @@ test("the folders check finds tool install folders against the host's home", asy
   expect(byName(await runChecks(dir, paths, { environ: { PATH: `${dir}/bin` } })).folders).toEqual({
     name: "folders",
     status: "ok",
-    detail: "no worked folder holds the office install, a program it runs or a folder on its PATH",
+    detail: OK_FOLDERS,
   })
 })
 
@@ -1887,13 +1910,13 @@ test("the folders check keeps tool install folders clear of the office home", as
   const paths = await onboarded(dir)
   fs.mkdirSync(path.join(paths.home, "bin"))
   fs.writeFileSync(path.join(paths.home, "bin/git"), "#!/bin/sh\n", { mode: 0o755 })
-  fs.mkdirSync(path.join(paths.worktrees, "w"), { recursive: true })
-  storeWith(paths, path.join(paths.worktrees, "w"))
+  fs.mkdirSync(path.join(paths.home, "w"))
+  storeWith(paths, path.join(paths.home, "w"))
   // `<office home>/bin/git` must not make the office home, which holds the run worktrees, an install folder.
   expect(byName(await runChecks(dir, paths, { environ: { PATH: `${paths.home}/bin` } })).folders).toEqual({
     name: "folders",
     status: "ok",
-    detail: "no worked folder holds the office install, a program it runs or a folder on its PATH",
+    detail: OK_FOLDERS,
   })
 })
 
@@ -1916,7 +1939,7 @@ test("the folders check uses the tools the daemon pinned", async () => {
   expect(byName(await runChecks(dir, paths, { environ })).folders).toEqual({
     name: "folders",
     status: "ok",
-    detail: "no worked folder holds the office install, a program it runs or a folder on its PATH",
+    detail: OK_FOLDERS,
   })
 })
 
