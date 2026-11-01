@@ -467,6 +467,24 @@ test("a home held by an office that never answers is reported at the deadline", 
   expect((unverified as service.LockHeld).verified).toBe(false)
 })
 
+test("a duplicate start reports the holders own start error once it is logged", async () => {
+  const { dir, one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  const { child, exit } = stubChild()
+  fs.writeFileSync(one.log, "opencorp office: office already running (pid 42)\n")
+  exit({ code: 0, signal: null })
+  const host = waitHost(dir, (now) => {
+    if (now >= 3000 && !fs.readFileSync(one.log, "utf8").includes("not a SQLite")) {
+      fs.appendFileSync(one.log, "opencorp office: the store x isn't a SQLite database (SQLITE_NOTADB)\n")
+    }
+    return false
+  })
+  const error = await refusal(service.wait(one, host, 20_000, child))
+  expect(error).not.toBeInstanceOf(service.LockHeld)
+  expect(error.message).toContain("the office didn't start: the store x isn't a SQLite database (SQLITE_NOTADB)")
+  expect(host.clock()).toBeLessThan(5000)
+})
+
 test("who answers is told by the pidfile and the childs exit", async () => {
   const { dir, one } = fixture()
   fs.mkdirSync(one.office, { recursive: true })
@@ -888,6 +906,18 @@ test(
   },
   120_000,
 )
+
+test("uninstalling falls back to the pidfile when the lookup's daemon is gone", async () => {
+  const { dir, one } = fixture()
+  installedAs(one, "background")
+  const live = await standIn(`daemon --home ${one.home}`)
+  fs.writeFileSync(path.join(one.office, "office.pid"), `${live.pid}\n`)
+  const gone = { pid: NO_GROUP, started: 1 }
+  const stale: service.Lookup = { daemon: gone, named: NO_GROUP, from: "office", checked: true }
+  const done = await service.uninstall(one, makeHost(dir, new Runner()), 1000, stale)
+  expect(done).toEqual([`background: stopped the office (pid ${live.pid})`])
+  expect(isGone(live.pid, live.started)).toBe(true)
+})
 
 test("a pidfile naming some other process is left alone", async () => {
   const { dir, one } = fixture()

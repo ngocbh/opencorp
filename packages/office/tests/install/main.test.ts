@@ -341,7 +341,10 @@ test("after a stop the next steps follow the service and whether it was killed",
     "It didn't stop within 25s and was killed; launchd may start it again in about 10s; run `opencorp stop` again" +
       " if it does.",
   )
-  expect(afterStop("systemd", true)[1]).toBe("It didn't stop within 25s and was killed.")
+  expect(afterStop("systemd", true)).toEqual([
+    "systemd starts it again at your next login (or boot, with lingering on); `opencorp start` starts it now.",
+    "It didn't stop within 25s and was killed.",
+  ])
 })
 
 test("start with a company that has no first commit is exit 3 with a hint", async () => {

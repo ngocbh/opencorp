@@ -1424,6 +1424,21 @@ test("a pidfile that disagrees with the office is a warning with the fix", async
   expect(byName(await runningChecks(dir, paths, info("/elsewhere", { pid: 51 }))).pidfile).toBeUndefined()
 })
 
+test("a pidfile that isnt a regular file is to be removed before a restart", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const home = launchFor(dir, paths).home
+  fs.symlinkSync(path.join(dir, "elsewhere"), path.join(paths.office, "office.pid"))
+  const got = byName(await runningChecks(dir, paths, info(home, { pid: 50 })))
+  expect(got.pidfile).toEqual({
+    name: "pidfile",
+    status: "warn",
+    detail:
+      `${path.join(home, "office", "office.pid")} is not a regular file, and the office's next start refuses it;` +
+      " remove it before the next `opencorp restart` (the office is pid 50)",
+  })
+})
+
 test("a pidfile that is a symlink or fifo shows no pid and never hangs", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)

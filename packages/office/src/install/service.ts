@@ -472,7 +472,9 @@ function failedStart(launch: Launch, failure: Exclude<StartFailure, { running: n
  *
  * With `child`, the wait ends as soon as it has exited and one more probe gets no answer: a start error or crash in
  * what it logged is thrown at once, and a duplicate that found the home held keeps waiting for the holder until the
- * deadline, then throws `LockHeld`. Without one (a managed mode), or when the child is still starting, it waits
+ * holder's own start error or crash shows up in the log, or the deadline, then throws `LockHeld`. A start error is
+ * read from what the log gained since the spawn, so an older start's is never blamed; a concurrent start that
+ * failed first can be. Without one (a managed mode), or when the child is still starting, it waits
  * the full time. Throws `ServiceError` with the log's tail when nothing answered.
  */
 export async function wait(
@@ -500,6 +502,10 @@ export async function wait(
       const failure = startFailure(readLog(launch.log, child.logFrom), exit)
       if (!("running" in failure)) throw failedStart(launch, failure)
       holder = failure
+    } else if (child !== undefined && holder !== undefined) {
+      // The holder was still starting; its own start error or crash, logged since, is why no office will answer.
+      const failure = startFailure(readLog(launch.log, child.logFrom), { code: 1, signal: null })
+      if ("error" in failure || "crash" in failure) throw failedStart(launch, failure)
     }
     left = deadline - host.clock()
     if (left <= 0) break
@@ -558,7 +564,10 @@ export async function uninstall(
     await systemd.uninstall(launch, host, recorded === "systemd"),
   ]
   if (recorded === "tmux" || host.which("tmux")) done.push(await fallback.stopTmux(launch, host))
-  const stopped = await fallback.stopProcess(launch, { timeoutMs, found: lookup.daemon })
+  // The lookup can be from before a manager restarted the daemon; the pidfile then names the new one.
+  const stopped =
+    (await fallback.stopProcess(launch, { timeoutMs, found: lookup.daemon })) ??
+    (await fallback.stopProcess(launch, { timeoutMs }))
   if (stopped) done.push(`${recorded ?? "started by hand"}: ${stopped.line}`)
   fs.rmSync(path.join(launch.office, "install.json"), { force: true })
   await waitStopped(launch, host, lookup, stopped !== null)

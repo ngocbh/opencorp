@@ -305,6 +305,20 @@ async function serviceCheck(run: Launch, host: Host): Promise<Check> {
   }
 }
 
+/** Where the office's service manager shows its status, as a sentence, or "" when none runs it. */
+function serviceStatus(run: Launch, host: Host): string {
+  const mode = service.recordedMode(run)
+  if (mode === "launchd") {
+    const name = launchd.label(run)
+    return ` launchd runs it as ${name}: \`launchctl print gui/${host.uid}/${name}\` shows its status.`
+  }
+  if (mode === "systemd") {
+    const name = systemd.unitName(run)
+    return ` systemd runs it as ${name}: \`systemctl --user status ${name}\` shows its status.`
+  }
+  return ""
+}
+
 /** What to do about an office that isn't answering, after `failure` (its last start's, or null): fix that or
  *  `opencorp start`, and where its service's status is. */
 function nextStep(run: Launch, host: Host, failure: string | null): string {
@@ -314,16 +328,30 @@ function nextStep(run: Launch, host: Host, failure: string | null): string {
       : failure.startsWith("office crashed:")
         ? "Its stack is in the log; fix the cause, then run `opencorp start`."
         : "Fix that, then run `opencorp start`."
-  const mode = service.recordedMode(run)
-  if (mode === "launchd") {
-    const name = launchd.label(run)
-    return `${first} launchd runs it as ${name}: \`launchctl print gui/${host.uid}/${name}\` shows its status.`
+  return first + serviceStatus(run, host)
+}
+
+/** The warning for an office.pid (`pidfile`, as read) that doesn't name the office's own pid `actual`. A restart
+ *  rewrites a missing or wrong one, but its new daemon refuses to start over one that isn't a regular file. */
+function pidfileCheck(run: Launch, actual: number, pidfile: number | "?", lstat: (p: string) => fs.Stats): Check {
+  const file = path.join(run.office, "office.pid")
+  const st = lstatOrNull(lstat, file)
+  if (st !== null && !st.isFile()) {
+    return {
+      name: "pidfile",
+      status: "warn",
+      detail:
+        `${file} is not a regular file, and the office's next start refuses it; remove it before the next` +
+        ` \`opencorp restart\` (the office is pid ${actual})`,
+    }
   }
-  if (mode === "systemd") {
-    const name = systemd.unitName(run)
-    return `${first} systemd runs it as ${name}: \`systemctl --user status ${name}\` shows its status.`
+  // A stop finds the daemon through GET /office only while it answers; a hung one is found by its pidfile.
+  const said = pidfile === "?" ? "office.pid is missing or unreadable" : `office.pid says ${pidfile}`
+  return {
+    name: "pidfile",
+    status: "warn",
+    detail: `${said} but the office is pid ${actual}; \`opencorp restart\` rewrites it`,
   }
-  return first
 }
 
 /** What is at `file`, not following a symlink, or null when nothing is or it can't be looked at. */
@@ -893,15 +921,7 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
     const ours = typeof info !== "string" && info.home === run.home ? info : null
     const pidfile = service.pid(run)
     found.push({ name: "office", status: "ok", detail: `answering on ${run.socket} (pid ${ours?.pid ?? pidfile})` })
-    if (ours !== null && pidfile !== ours.pid) {
-      // A stop finds the daemon through GET /office only while it answers; a hung one is found by its pidfile.
-      const said = pidfile === "?" ? "office.pid is missing or unreadable" : `office.pid says ${pidfile}`
-      found.push({
-        name: "pidfile",
-        status: "warn",
-        detail: `${said} but the office is pid ${ours.pid}; \`opencorp restart\` rewrites it`,
-      })
-    }
+    if (ours !== null && pidfile !== ours.pid) found.push(pidfileCheck(run, ours.pid, pidfile, lstat))
     if (typeof info === "string") found.push({ name: "version", status: "warn", detail: VERSION_UNREAD[info] })
     else {
       found.push(versionCheck(run, info, newestSource(command)), toolsCheck(info))
@@ -913,21 +933,21 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
     found.push(...hqChecks(hqAnswer, paths.office, repo, missing))
   } else {
     const hung = fallback.daemon(run, resolveTools(run.env).ps)
-    const error = service.lastFailure(service.readLog(run.log))
-    // The log is read without following a link (the daemon never writes through one), so say why it wasn't read.
-    const linked = lstatOrNull(lstat, run.log)?.isSymbolicLink()
-      ? `; ${run.log} is a symlink, which doctor doesn't read`
-      : ""
-    const why = (error === null ? "" : `; its last start failed: ${error}`) + linked
     if (hung !== null) {
       found.push({
         name: "office",
         status: "warn",
         detail:
           `pid ${hung.pid} is running but doesn't answer on ${run.socket} (still starting, or hung); if it stays` +
-          ` that way, run \`opencorp restart\` (log: ${run.log})`,
+          ` that way, run \`opencorp restart\` (log: ${run.log}).${serviceStatus(run, host)}`,
       })
     } else {
+      const error = service.lastFailure(service.readLog(run.log))
+      // The log is read without following a link (the daemon never writes through one), so say why it wasn't read.
+      const linked = lstatOrNull(lstat, run.log)?.isSymbolicLink()
+        ? `; ${run.log} is a symlink, which doctor doesn't read`
+        : ""
+      const why = (error === null ? "" : `; its last start failed: ${error}`) + linked
       found.push({
         name: "office",
         status: error === null ? "warn" : "fail",
