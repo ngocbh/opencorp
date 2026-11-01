@@ -25,6 +25,9 @@ import { MessageText } from "@opencorp/protocol"
 import { usePromptRef } from "../../context/prompt"
 import { normalizePromptContent, openEditor } from "../../editor"
 import { useExit } from "../../context/exit"
+import { useEpilogue } from "../../context/epilogue"
+import { sessionEpilogue } from "../../util/presentation"
+import { personLabel } from "../../util/transcript"
 import { promptOffsetWidth } from "../../prompt/display"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { usePromptHistory, type PromptInfo } from "../../prompt/history"
@@ -125,10 +128,11 @@ export function Prompt(props: PromptProps) {
   const history = usePromptHistory()
   const stash = usePromptStash()
   const keymap = useOpenCorpKeymap()
-  const agentShortcut = useCommandShortcut("agent.cycle")
+  const peopleShortcut = useCommandShortcut("person.list")
   const paletteShortcut = useCommandShortcut("command.palette.show")
   const renderer = useRenderer()
   const exit = useExit()
+  const setEpilogue = useEpilogue()
   const dimensions = useTerminalDimensions()
   const { theme, syntax } = useTheme()
   const kv = useKV()
@@ -367,8 +371,16 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  // The text of the send in flight, until the office has it or refused it.
+  let sending: string | undefined
+  let disposed = false
+  /** Whether this prompt was torn down: by a quit, a switch to another view, or a card taking its place. */
+  const gone = () => disposed || !input || input.isDestroyed
+
   onCleanup(() => {
-    if (store.prompt.input) {
+    disposed = true
+    // Text that is going out isn't a draft: the next prompt would offer it again after it was sent.
+    if (store.prompt.input && store.prompt.input !== sending) {
       promptRef.saveDraft({ prompt: unwrap(store.prompt), cursor: input.cursorOffset })
     }
     setInputTarget(undefined)
@@ -713,6 +725,9 @@ export function Prompt(props: PromptProps) {
     let sessionID = props.sessionID
     let undo: (() => void) | void = undefined
     let continuing = false
+    // Once Enter is pressed the message goes out even if the prompt is torn down meanwhile; after
+    // each wait below, a gone prompt (or a quit app) is left alone and only the history keeps the text.
+    sending = store.prompt.input
     try {
       if (!sessionID) {
         // A Codex chat runs on Codex's own model, so it takes no model pick; composer is the office's default.
@@ -724,33 +739,49 @@ export function Prompt(props: PromptProps) {
           ...(codex ? { harness: "codex" as const } : pick),
         })
         sessionID = created.id
-        await office.syncSession(sessionID)
+        if (!gone()) {
+          // A quit before the session view opens still names the chat that now exists.
+          const title = `${personLabel(office.state.people, person!.handle)} · ${office.cwd}`
+          setEpilogue(sessionEpilogue({ title, sessionID }))
+          await office.syncSession(sessionID)
+        }
       } else if (continues()) {
         // An ended Codex session takes no message; its thread goes on in a new session, which gets it instead.
         continuing = true
         const next = await office.client.sessions.continue(sessionID)
         continuing = false
         sessionID = next.id
-        await office.syncSession(sessionID)
+        if (!gone()) await office.syncSession(sessionID)
       }
-      undo = props.onSend?.()
+      if (!gone()) undo = props.onSend?.()
       await office.client.sessions.prompt(sessionID, { text })
+      sending = undefined
       // A capped session holds the message until someone raises the cap.
-      if (office.state.sessions.find((s) => s.id === sessionID)?.capped)
+      if (!renderer.isDestroyed && office.state.sessions.find((s) => s.id === sessionID)?.capped)
         toast.show({ message: "This message waits until the cost cap is raised (/cost-cap)", variant: "warning" })
     } catch (error) {
+      // The text stays unsent, so a draft saved from here on keeps it.
+      sending = undefined
       undo?.()
       const title = continuing
         ? "Couldn't continue this session"
         : sessionID
           ? "Failed to send prompt"
           : "Creating a session failed"
-      showError(title)(error)
+      if (!renderer.isDestroyed) showError(title)(error)
+      if (gone()) {
+        history.append(text)
+        return true
+      }
       // A new session opens even if its prompt failed; the unsent text follows it there.
       if (sessionID && sessionID !== props.sessionID) route.navigate({ type: "session", sessionID })
       return true
     }
 
+    if (gone()) {
+      history.append(text)
+      return true
+    }
     clearSent(text)
     props.onSubmit?.()
     if (sessionID !== props.sessionID) route.navigate({ type: "session", sessionID })
@@ -1072,9 +1103,11 @@ export function Prompt(props: PromptProps) {
             </box>
           </Show>
           <box gap={2} flexDirection="row">
-            <text fg={theme.text}>
-              {agentShortcut()} <span style={{ fg: theme.textMuted }}>people</span>
-            </text>
+            <Show when={peopleShortcut()}>
+              <text fg={theme.text}>
+                {peopleShortcut()} <span style={{ fg: theme.textMuted }}>people</span>
+              </text>
+            </Show>
             <text fg={theme.text}>
               {paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
             </text>
