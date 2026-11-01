@@ -6,7 +6,7 @@ import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { loadConfined, MAX_FLOW_FILE } from "../../src/company/flows.ts"
 import { MAX_FILE } from "../../src/company/source.ts"
 import { tempDir } from "../helpers.ts"
-import { CHAT, CHILD, company, makeCompany, parentFlow } from "./helpers.ts"
+import { CHAT, CHILD, company, leafFlow, makeCompany, parentFlow, usesFlow } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -145,4 +145,58 @@ test("a directory child is refused as not a regular file", async () => {
 test("the flow size limit is the source view's file limit", () => {
   // Every flow that runs can then be viewed in HQ.
   expect(MAX_FLOW_FILE).toBe(MAX_FILE)
+})
+
+test("a diamond of uses: loads each file once", async () => {
+  const files: Record<string, string> = { "shared/flows/l4.yaml": leafFlow("l4") }
+  for (let i = 0; i < 4; i++) files[`shared/flows/l${i}.yaml`] = usesFlow(`l${i}`, [`l${i + 1}`, `l${i + 1}`])
+  const root = makeCompany(files)
+  const open = spyOn(fs, "openSync")
+  try {
+    expect((await loadConfined(root, path.join(root, "shared/flows/l0.yaml"))).name).toBe("l0")
+    expect(opened(open, "/l4.yaml")).toBe(1)
+    expect([0, 1, 2, 3, 4].map((i) => opened(open, `/l${i}.yaml`))).toEqual([1, 1, 1, 1, 1])
+  } finally {
+    open.mockRestore()
+  }
+})
+
+test("a cycle through a child imported twice is still a cycle", async () => {
+  const root = makeCompany({
+    "shared/flows/l0.yaml": usesFlow("l0", ["l1", "l1"]),
+    "shared/flows/l1.yaml": usesFlow("l1", ["l0"]),
+  })
+  await expect(loadConfined(root, path.join(root, "shared/flows/l0.yaml")))
+    .rejects.toThrow(/flow-reference cycle at shared\/flows\/l0\.yaml/)
+})
+
+test("a pinned version is checked against a child already loaded for another alias", async () => {
+  const root = makeCompany({
+    "shared/flows/chat.yaml": usesFlow("chat", ["echo", "echo@2"]),
+    "shared/flows/echo.yaml": leafFlow("echo").replace("name: echo", "name: echo\nversion: '1'"),
+  })
+  const open = spyOn(fs, "openSync")
+  try {
+    await expect(loadConfined(root, path.join(root, "shared/flows/chat.yaml"))).rejects.toThrow(/version/)
+    expect(opened(open, "/echo.yaml")).toBe(1)
+  } finally {
+    open.mockRestore()
+  }
+})
+
+test("a child already loaded is held to the uses: depth limit where it is imported again", () => {
+  // main -> s -> t -> u is 3 files deep; main -> d1 -> d2 -> t -> u is 4, past the limit of 3.
+  const root = makeCompany({
+    "shared/flows/main.yaml": usesFlow("main", ["s", "d1"]),
+    "shared/flows/s.yaml": usesFlow("s", ["t"]),
+    "shared/flows/t.yaml": usesFlow("t", ["u"]),
+    "shared/flows/u.yaml": leafFlow("u"),
+    "shared/flows/d1.yaml": usesFlow("d1", ["d2"]),
+    "shared/flows/d2.yaml": usesFlow("d2", ["t"]),
+  })
+  // yian reads its limits once per process, so the load runs in a child with its own.
+  const result = loadInChild(root, path.join(root, "shared/flows/main.yaml"), { YIAN_MAX_CALL_NESTING: "3" })
+  expect(result.status).toBe(0)
+  expect(result.error).toMatch(/past the call nesting limit of 3/)
+  expect(result.opens.filter((p) => p.endsWith("/t.yaml"))).toHaveLength(1)
 })

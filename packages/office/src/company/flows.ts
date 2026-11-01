@@ -19,6 +19,9 @@ export class FlowOutsideRepo extends Error {
  * Loads the flow at `file`; it and its `uses:` children load only from inside `root`, and their CODE
  * references resolve only to files inside it.
  *
+ * Each file loads at most once per call, however many `uses:` aliases name it. Nothing is kept between
+ * calls, so a later call (lint reads the live clone) always reads the files again.
+ *
  * @throws {FlowOutsideRepo} For a flow or child outside `root`.
  * @throws {LoadError} For a bad flow, and for a child's other problems below.
  * @throws {RangeError} For a reference cycle, a pinned-version mismatch, a `uses:` ref with a NUL, a flow
@@ -29,7 +32,7 @@ export class FlowOutsideRepo extends Error {
  */
 export async function loadConfined(root: string, file: string): Promise<ComposedFlow> {
   try {
-    return await load(resolvePath(root), file, new Set())
+    return await load(resolvePath(root), file, new Set(), new Map())
   } catch (error) {
     if (!(error instanceof LoadError)) throw error
     // yian wraps what the child resolver throws in its own LoadError.
@@ -129,19 +132,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Loads one flow under the resolved `root`; `loading` holds the resolved paths of its ancestors.
+ * Loads one flow under the resolved `root`; `loading` holds the resolved paths of its ancestors, and `loaded`
+ * the flows this top-level load has already finished, by resolved path, so a diamond of `uses:` loads each
+ * file once rather than once per path to it.
+ *
+ * Sharing one loaded flow between aliases is safe: yian copies a child for each alias, and holds a child it
+ * gets again to the import-depth limit through the flow's `importDepth`. Were yian to resolve aliases
+ * concurrently, the result would stay correct (each branch's `loading` still catches a cycle and each
+ * alias's pinned version is still checked); some files would only load twice.
  *
  * yian calls the child resolver as `(ref, version)` for `<dir>/<ref>.yaml`, and wraps anything else it
  * throws in a `LoadError` caused by it. yian ignores `system.paths` when a child resolver is given, so
  * such a flow is refused rather than loaded differently from `yian run`. yian doesn't check a child
  * resolver's flow against `codeRoot`, so each nested load passes it again.
  */
-async function load(root: string, file: string, loading: ReadonlySet<string>): Promise<ComposedFlow> {
+async function load(
+  root: string,
+  file: string,
+  loading: ReadonlySet<string>,
+  loaded: Map<string, ComposedFlow>,
+): Promise<ComposedFlow> {
   // Resolved paths are compared, so /var -> /private/var on macOS and symlinked roots work.
   const resolved = resolvePath(file)
   const shown = path.relative(root, resolved) // messages show repo-relative paths
   if (outsideRoot(root, resolved)) throw new FlowOutsideRepo(`${shown} is outside the company repo`)
   if (loading.has(resolved)) throw new RangeError(`flow-reference cycle at ${shown}`)
+  const cached = loaded.get(resolved)
+  if (cached !== undefined) return cached
   const text = new TextDecoder("utf-8", { fatal: true }).decode(readFlowBytes(resolved, shown))
   const declared = declaresSystemPaths(text)
   if (declared === true) {
@@ -151,7 +168,7 @@ async function load(root: string, file: string, loading: ReadonlySet<string>): P
   const importing = new Set([...loading, resolved])
   const childResolver = async (ref: string, version: string | null): Promise<ComposedFlow> => {
     if (ref.includes("\0")) throw new RangeError(`${JSON.stringify(ref)}: embedded null byte`)
-    const child = await load(root, path.resolve(dir, ref + ".yaml"), importing)
+    const child = await load(root, path.resolve(dir, ref + ".yaml"), importing, loaded)
     if (version !== null && child.version !== version) {
       throw new RangeError(`${ref} is version ${JSON.stringify(child.version)}, not ${JSON.stringify(version)}`)
     }
@@ -164,5 +181,7 @@ async function load(root: string, file: string, loading: ReadonlySet<string>): P
     await loadFlow(text, options)
     throw new RangeError(`${shown}: system.paths can't be checked in this flow; simplify its YAML`)
   }
-  return loadFlow(text, options)
+  const flow = await loadFlow(text, options)
+  loaded.set(resolved, flow)
+  return flow
 }
