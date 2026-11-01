@@ -280,6 +280,16 @@ test("devices list shows control characters in browser fields as escapes", async
   expect(out).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/u)
 })
 
+test("devices list shows line separators in browser fields as escapes", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const b = office.addBrowser({ person: "ngocbh", issued_by: "ngocbh", name: "web", label: "a\u2028b\u2029c" })
+  const out = (await opencorp(trusted, "devices", "list")).out
+  expect(out.split("\n").at(-1)).toBe(
+    `  ${b.id}  web (a\\u2028b\\u2029c)  paired by @ngocbh  last used never  expires ${day(b.expires_at)}`,
+  )
+  expect(out).not.toMatch(/[\u2028\u2029]/u)
+})
+
 test("an agent's list asks for no browsers", async () => {
   await opencorp(trusted, "login", "--device", "mac")
   expect((await opencorp(trusted, "devices", "list", "minh")).out).toBe("@minh has no devices.")

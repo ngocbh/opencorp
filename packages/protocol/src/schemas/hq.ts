@@ -113,8 +113,9 @@ export const PairCode = z.strictObject({
 })
 export type PairCode = z.input<typeof PairCode>
 
-/** A browser's label as a request sends it: no C0, DEL or C1 control characters, since terminals print it. */
-const BrowserLabel = z.string().max(100).regex(/^[^\u0000-\u001f\u007f-\u009f]*$/u)
+/** A browser's label as a request sends it: no control characters (C0, DEL, C1), lone surrogates, or line and
+ *  paragraph separators, since terminals and logs print it. */
+const BrowserLabel = z.string().max(100).regex(/^[^\p{Cc}\p{Cs}\u2028\u2029]*$/u)
 
 /** The body of POST /api/pair: the code from the link's fragment. */
 export const PairRequest = z.strictObject({

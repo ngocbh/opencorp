@@ -401,7 +401,12 @@ const PATTERNS: {
   },
   {
     site: "BrowserLabel", def: "PairRequest", path: ["label"], bad: "Safari\u001b[2J",
-    invalid: ["PairRequest.control-label", "HqLoginRequest.control-label"],
+    invalid: [
+      "PairRequest.control-label",
+      "HqLoginRequest.control-label",
+      "PairRequest.line-separator-label",
+      "HqLoginRequest.line-separator-label",
+    ],
   },
 ]
 

@@ -31,13 +31,13 @@ async function browsersOf(office: OfficeClient, person: Person): Promise<Browser
 
 const ESCAPES: Record<string, string> = { "\n": "\\n", "\r": "\\r", "\t": "\\t" }
 
-/** `text` with each C0, DEL or C1 control character shown as an escape such as `\n` or `\x1b`, so text from the
- *  office can't drive the terminal. */
+/** `text` with each control character (C0, DEL, C1), lone surrogate, or line or paragraph separator shown as an
+ *  escape such as `\n`, `\x1b` or `\u2028`, so text from the office can't drive the terminal. */
 function printable(text: string): string {
-  return text.replace(
-    /[\u0000-\u001f\u007f-\u009f]/gu,
-    (c) => ESCAPES[c] ?? `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`,
-  )
+  return text.replace(/[\p{Cc}\p{Cs}\u2028\u2029]/gu, (c) => {
+    const code = c.charCodeAt(0)
+    return ESCAPES[c] ?? (code <= 0xff ? `\\x${code.toString(16).padStart(2, "0")}` : `\\u${code.toString(16)}`)
+  })
 }
 
 /** `b` with its printed text fields made `printable`: the client doesn't validate replies, and labels stored before

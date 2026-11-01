@@ -136,6 +136,9 @@ test("a control character label is 422 and isnt quoted", async () => {
   const r = await login(client, CEO, PASSWORD, { label: "evil\r\nINFO forged" })
   expect([r.status, (r.json() as Body).error]).toEqual([422, "invalid_body"])
   for (const echoed of ["INFO forged", PASSWORD]) expect(r.text).not.toContain(echoed)
+  const separated = await login(client, CEO, PASSWORD, { label: "evil\u2028INFO forged" })
+  expect([separated.status, (separated.json() as Body).error]).toEqual([422, "invalid_body"])
+  for (const echoed of ["INFO forged", "\u2028"]) expect(separated.text).not.toContain(echoed)
   expect(messages(lines).filter((m) => m.startsWith("sign-in"))).toEqual([])
 })
 
