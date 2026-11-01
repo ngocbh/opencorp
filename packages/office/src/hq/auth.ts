@@ -4,13 +4,15 @@ import { HttpError } from "../daemon/http.ts"
 import { header, isApi, requestPath } from "./guard.ts"
 import type { BrowserSessions, Who } from "./sessions.ts"
 
-/** The /api requests served without a session, as method and decoded path; every non-/api path (the app itself)
- *  is open too. */
+/** The /api requests served without a session check, as method and decoded path; every non-/api path (the app
+ *  itself) is open too. Logout checks its own cookie, so it ends a session the cookie proves even while its person's
+ *  file can't be read. */
 export const OPEN: ReadonlySet<string> = new Set([
   "GET /api/health",
   "HEAD /api/health",
   "POST /api/pair",
   "POST /api/login",
+  "POST /api/logout",
 ])
 
 /** The 401 message for an /api request without a live session. */
