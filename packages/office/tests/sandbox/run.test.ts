@@ -6,10 +6,12 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import type { Helper, SandboxPolicy } from "../../src/sandbox/policy.ts"
-import { helperCommand } from "../../src/platform.ts"
+import { helperCommand, processLimits } from "../../src/platform.ts"
+import * as bwrap from "../../src/sandbox/bwrap.ts"
 import {
   command,
   fsHelper,
+  processCap,
   refusal,
   run,
   type RunOptions,
@@ -17,6 +19,7 @@ import {
   SandboxUnavailable,
   scrubbedEnv,
 } from "../../src/sandbox/run.ts"
+import { profile } from "../../src/sandbox/seatbelt.ts"
 import { tempDir, waitFor } from "../helpers.ts"
 import { envInChild, gone, goldenPolicy, helperTool, makePolicy, sandboxAvailable } from "./helpers.ts"
 
@@ -328,6 +331,50 @@ test.skipIf(!sandboxAvailable())("output is capped", async () => {
 
 test("unsupported platform", () => {
   expect(() => command(makePolicy().make(), ["x"], undefined, "win32")).toThrow(SandboxUnavailable)
+})
+
+test("the office's process limits are read from the kernel", () => {
+  const shell = spawnSync("/bin/sh", ["-c", "ulimit -S -u 2>/dev/null || ulimit -S -p"], { encoding: "utf8" })
+  const soft = shell.stdout.trim()
+  const limits = processLimits()
+  expect(limits.soft).toBe(soft === "unlimited" ? null : Number(soft))
+  if (process.platform === "darwin") {
+    const perUser = spawnSync("/usr/sbin/sysctl", ["-n", "kern.maxprocperuid"], { encoding: "utf8" }).stdout.trim()
+    expect(limits.perUser).toBe(Number(perUser))
+  } else {
+    expect(limits.perUser).toBeNull()
+  }
+})
+
+test("a call's process cap is the office's limit less an eighth", () => {
+  expect(processCap({ soft: 8000, perUser: 8000 }, "darwin")).toBe(7000)
+  expect(processCap({ soft: 12000, perUser: 8000 }, "darwin")).toBe(7000)
+  expect(processCap({ soft: null, perUser: 4000 }, "darwin")).toBe(3500)
+  expect(processCap({ soft: 2000, perUser: null }, "darwin")).toBe(1750)
+  expect(processCap({ soft: 709, perUser: 266 }, "darwin")).toBe(232)
+  expect(processCap({ soft: null, perUser: null }, "darwin")).toBeNull()
+  expect(processCap({ soft: 63000, perUser: null }, "linux")).toBe(55125)
+  expect(processCap({ soft: null, perUser: null }, "linux")).toBeNull()
+  // A cap below 1 means no wrapper at all.
+  expect(processCap({ soft: 1, perUser: null }, "linux")).toBeNull()
+  expect(processCap({ soft: 8000, perUser: null }, "win32")).toBeNull()
+})
+
+const NPROC_SCRIPT =
+  'n=$1; shift; { ulimit -S -u "$n" && ulimit -H -u "$n"; } 2>/dev/null || ' +
+  '{ ulimit -S -p "$n" && ulimit -H -p "$n"; } 2>/dev/null; exec "$@"'
+
+test("the call argv is pinned with a process cap and without one", () => {
+  const policy = goldenPolicy({ workspace: "/w", writable: true, network: false, tmpdir: "/private/tmp/call" })
+  const seatbelt = ["/usr/bin/sandbox-exec", "-p", profile(policy, { canary: "/c" }), "x"]
+  const wrapper = ["/bin/sh", "-c", NPROC_SCRIPT, "sh", "7000"]
+  expect(command(policy, ["x"], "/c", "darwin", 7000)).toEqual([...wrapper, ...seatbelt])
+  expect(command(policy, ["x"], "/c", "darwin", null)).toEqual(seatbelt)
+  expect(command(policy, ["x"], undefined, "linux", 7000)).toEqual([...wrapper, ...bwrap.command(policy, ["x"])])
+  expect(command(policy, ["x"], undefined, "linux", null)).toEqual(bwrap.command(policy, ["x"]))
+  for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+    expect(() => command(policy, ["x"], undefined, "darwin", bad), String(bad)).toThrow(RangeError)
+  }
 })
 
 test.skipIf(!sandboxAvailable())("the tracking hook sees the leader while it runs and is cleaned up after the kill", async () => {

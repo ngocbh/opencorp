@@ -266,3 +266,42 @@ export function liveGroupMembers(pgid: number): number[] {
     )
   })
 }
+
+/** The office's per-user process limits. */
+export interface ProcessLimits {
+  /** RLIMIT_NPROC's soft limit; null when unlimited. */
+  soft: number | null
+  /** macOS's `kern.maxprocperuid`, which the kernel also checks a fork against; null elsewhere. */
+  perUser: number | null
+}
+
+/** RLIMIT_NPROC's soft limit (null when unlimited) and, on macOS, `kern.maxprocperuid` (null elsewhere), read
+ *  through libc on every call. Throws when a read fails or on another platform. */
+export function processLimits(): ProcessLimits {
+  const { ptr: P, i32: I, u64: U } = FFIType
+  // struct rlimit is two u64s (rlim_cur, rlim_max) on both platforms.
+  const rlimit = new BigUint64Array(2)
+  let perUser: number | null = null
+  if (process.platform === "darwin") {
+    const { symbols } = dlopen("/usr/lib/libSystem.B.dylib", {
+      getrlimit: { args: [I, P], returns: I },
+      sysctlbyname: { args: [P, P, P, P, U], returns: I },
+    })
+    // RLIMIT_NPROC is 7 on darwin.
+    if (symbols.getrlimit(7, rlimit) !== 0) throw new Error("getrlimit failed")
+    const value = new Int32Array(1)
+    if (symbols.sysctlbyname(cString("kern.maxprocperuid"), value, new BigUint64Array([4n]), null, 0n) !== 0) {
+      throw new Error("sysctlbyname failed")
+    }
+    perUser = value[0]!
+  } else if (process.platform === "linux") {
+    const { symbols } = dlopen("libc.so.6", { getrlimit: { args: [I, P], returns: I } })
+    // RLIMIT_NPROC is 6 in asm-generic and on x86_64.
+    if (symbols.getrlimit(6, rlimit) !== 0) throw new Error("getrlimit failed")
+  } else {
+    throw new Error(`no process limits for platform ${process.platform}`)
+  }
+  // RLIM_INFINITY is 2^63 - 1 on darwin and 2^64 - 1 on Linux; no real limit comes near 2^53.
+  const soft = rlimit[0]! > BigInt(Number.MAX_SAFE_INTEGER) ? null : Number(rlimit[0])
+  return { soft, perUser }
+}
