@@ -436,7 +436,16 @@ export function requestListener<C>(
       if (error instanceof NotFound) return reply(404, apiError("not_found", error.message), unread)
       // A human's merge, a conflict or a stale lock in the company repo: its messages name no absolute path.
       const busy = repoBusy(error)
-      if (busy !== null) return reply(busy.status, apiError(busy.code, busy.message), unread)
+      if (busy !== null) {
+        reply(busy.status, apiError(busy.code, busy.message), unread)
+        // Logged so the owner sees why writes are refused; unlike a 500's, the message is a fixed text.
+        try {
+          const where = `${method} ${route?.path ?? "(no route)"}`
+          const message = `company repo busy on ${where}: ${busy.code}: ${busy.message}`
+          options.log(logLine("WARNING", "opencorp.daemon.http", message))
+        } catch {}
+        return
+      }
       // The client left, so a handler that honours `ctx.signal` and rejects (an AbortError) is neither answered
       // nor logged.
       if (controller.signal.aborted) return

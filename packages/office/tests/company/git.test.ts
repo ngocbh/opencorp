@@ -975,6 +975,32 @@ test("a merge in a linked worktree is found", async () => {
   expect(await g.commitHandEdits()).toEqual([])
 })
 
+test("a root without .git never writes to an enclosing repo", async () => {
+  const tmp = tempDir()
+  const outer = writeRepo(path.join(tmp, "outer"), { "readme.md": "outer\n" })
+  const inner = path.join(outer, "inner")
+  fs.mkdirSync(path.join(inner, "people/minh"), { recursive: true })
+  fs.writeFileSync(path.join(inner, "x.txt"), "x\n")
+  fs.writeFileSync(path.join(inner, PROFILE), "# Minh\n")
+  const state = () => [git(outer, "ls-files"), git(outer, "status", "--porcelain"), git(outer, "rev-parse", "HEAD")]
+  const before = state()
+  const g = new CompanyGit(inner, path.join(tmp, "worktrees"))
+  await expect(g.commit(["x.txt"], "x")).rejects.toBeInstanceOf(CompanyGitError)
+  await expect(g.commitHandEdits()).rejects.toBeInstanceOf(CompanyGitError)
+  expect(state()).toEqual(before)
+})
+
+test("a symlinked root still finds its own repo", async () => {
+  const { tmp, company } = setup()
+  const link = path.join(tmp, "link")
+  fs.symlinkSync(company, link)
+  const g = new CompanyGit(link, path.join(tmp, "worktrees"))
+  fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
+  await g.commit(["groups/eng.yaml"], "edit group")
+  expect(git(company, "log", "-1", "--format=%s")).toBe("edit group")
+  expect(git(company, "status", "--porcelain")).toBe("")
+})
+
 test("a path with an unresolved conflict is refused and kept, other paths still commit", async () => {
   const { company, g } = setup()
   stashPopConflict(company, PROFILE)

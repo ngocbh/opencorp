@@ -437,7 +437,7 @@ describe("routes", () => {
       "a store error caused by a busy repo",
       (busy: CompanyRepoBusy) => Object.assign(new Error("EIO", { cause: busy }), { code: "EIO" }),
     ],
-  ])("%s is its status and company_repo_busy, not a 500", async (_, thrown) => {
+  ])("%s is its status and company_repo_busy, not a 500, and is logged as a warning", async (_, thrown) => {
     for (const [status, message] of [
       [409, "the company repo has a merge in progress; finish or abort it"],
       [503, "the company repo is locked by .git/index.lock; if no git command is running there, remove it"],
@@ -455,6 +455,18 @@ describe("routes", () => {
       expect(r.status).toBe(status)
       expect(r.json()).toEqual({ error: "company_repo_busy", message })
       expect(lines.filter((line) => line.includes("internal error"))).toEqual([])
+      const warnings = lines.filter((line) => line.includes(" WARNING opencorp.daemon.http: "))
+      expect(warnings.map((line) => line.split(": ").slice(1).join(": "))).toEqual([
+        `company repo busy on PUT /profiles/:handle: company_repo_busy: ${message}`,
+      ])
+
+      // A log hook that throws doesn't stop the reply.
+      const throwing = await serve([busy], {
+        log: () => {
+          throw new Error("log hook failed")
+        },
+      })
+      expect((await request(throwing.sock, "PUT", "/profiles/minh")).status).toBe(status)
     }
   })
 

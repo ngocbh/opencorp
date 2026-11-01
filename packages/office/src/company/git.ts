@@ -264,6 +264,7 @@ export class CompanyGit {
   readonly #env: Record<string, string>
   readonly #log: (line: string) => void
   #queue: Promise<unknown> = Promise.resolve()
+  #ceiling: string | undefined
   // What `commitHandEdits` last reported waiting for, and the conflicted profiles it last skipped, so
   // each is logged once.
   #waiting = ""
@@ -357,9 +358,10 @@ export class CompanyGit {
     return new Promise((resolve, reject) => {
       // The work tree is pinned to the root, since a repo's core.worktree would move it; `-c core.worktree`
       // can't, as the repo's value wins. Not for `init`, which would write the option into the config.
-      const workTree = args[0] === "init" ? [] : ["--work-tree=."]
+      const init = args[0] === "init"
+      const workTree = init ? [] : ["--work-tree=."]
       const child = spawn(this.#git, ["-C", this.root, ...workTree, ...IDENTITY, ...LOCKDOWN, ...args], {
-        env,
+        env: init ? env : { ...env, ...this.#noDiscovery() },
         stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],
       })
       const stdout: Buffer[] = []
@@ -385,6 +387,26 @@ export class CompanyGit {
         child.stdin!.end(input)
       }
     })
+  }
+
+  /**
+   * The env that stops git looking for a repo above the root, where a root that lost its `.git` would
+   * otherwise stage and commit into an enclosing repo.
+   *
+   * A ceiling rather than `--git-dir=.git`: an explicit git dir skips repo discovery, and may skip git's
+   * `safe.directory` ownership check with it; a ceiling keeps both. The root is resolved first, since git
+   * walks up from the real path and would pass a ceiling set above a symlink. A root that doesn't exist yet
+   * gets nothing; `-C` fails on it.
+   */
+  #noDiscovery(): Record<string, string> {
+    if (this.#ceiling === undefined) {
+      try {
+        this.#ceiling = path.dirname(fs.realpathSync(this.root))
+      } catch {
+        return {}
+      }
+    }
+    return { GIT_CEILING_DIRECTORIES: this.#ceiling }
   }
 
   /**
