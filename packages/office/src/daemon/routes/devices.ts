@@ -10,7 +10,7 @@ import {
 } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
 import type { z } from "zod"
-import { DeviceRefused, addDevice, login, removeDevice, setPassword } from "../../auth/devices.ts"
+import { DeviceRefused, addDevice, login, mayChangePerson, removeDevice, setPassword } from "../../auth/devices.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, type Route } from "../http.ts"
 import type { RequestContext } from "../office.ts"
@@ -39,6 +39,18 @@ async function rechecked(ctx: RequestContext, change: Promise<Person>): Promise<
   const person = await refusable(change)
   await ctx.office.tokens.recheck()
   return person
+}
+
+/** A guard that refuses, before the body is read, unless the acting person may change `handle`'s `what`. */
+function mayChange(what: "devices" | "password"): NonNullable<Route<RequestContext>["guard"]> {
+  return (ctx, params) => {
+    try {
+      mayChangePerson(ctx.office.git.root, params.handle!, actingPerson(ctx), what)
+    } catch (error) {
+      if (error instanceof DeviceRefused) throw new HttpError(error.status, error.code, error.message)
+      throw error
+    }
+  }
 }
 
 /** The identity routes. */
@@ -74,6 +86,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
   {
     method: "POST",
     path: "/people/:handle/devices",
+    guard: mayChange("devices"),
     body: AddDeviceRequest,
     reply: PersonSchema,
     handler: (ctx, params, body) => {
@@ -110,6 +123,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
   {
     method: "PUT",
     path: "/people/:handle/password",
+    guard: mayChange("password"),
     body: SetPasswordRequest,
     reply: PersonSchema,
     handler: (ctx, params, body) => {

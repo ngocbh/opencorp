@@ -9,6 +9,7 @@ import {
   validationMessage,
 } from "@opencorp/protocol"
 import type { z } from "zod"
+import { actorLine } from "../company/access.ts"
 import { readYaml, writeYaml, YamlError } from "../company/flow_yaml.ts"
 import type { CompanyGit, LockedGit } from "../company/git.ts"
 import { type CompanyRepo, doesntLoad, loadRepo, personFileBroken } from "../company/loader.ts"
@@ -47,6 +48,13 @@ function person(repo: CompanyRepo, handle: string, actor: string, what = "device
   return found
 }
 
+/** Throws `DeviceRefused` unless `actor` may change the human `handle`'s `what` in the working tree at `root`: 404
+ *  for no such person, 422 `not_a_human` for an agent, 403 for someone other than them or the CEO. Unlocked, for a
+ *  route's guard; the change itself checks again under the lock. */
+export function mayChangePerson(root: string, handle: string, actor: string, what = "devices"): void {
+  person(loadRepo(root), handle, actor, what)
+}
+
 /** Replaces the existing file `file`'s contents with `data`. A symlink swapped in after `write`'s check isn't
  *  followed: the open fails instead. */
 function overwrite(file: string, data: string | Buffer): void {
@@ -58,8 +66,9 @@ function overwrite(file: string, data: string | Buffer): void {
   }
 }
 
-/** Sets `key` in `handle`'s `person.yaml` (an empty device list drops the key) and commits it through `locked`;
- *  the file is restored if that fails, unless the commit is known to have landed. */
+/** Sets `key` in `handle`'s `person.yaml` (an empty device list drops the key) and commits it through `locked`
+ *  with `subject`, naming `actor` in its body; the file is restored if that fails, unless the commit is known to
+ *  have landed. */
 async function write(
   locked: LockedGit,
   git: CompanyGit,
@@ -67,6 +76,7 @@ async function write(
   key: string,
   value: Device[] | string,
   subject: string,
+  actor: string,
 ): Promise<Person> {
   const root = git.root
   const rel = `people/${handle}/person.yaml`
@@ -99,7 +109,7 @@ async function write(
   const head = await git.head().catch(() => null)
   try {
     overwrite(file, writeYaml(fields))
-    await locked.commit([rel], subject)
+    await locked.commit([rel], subject + actorLine(actor))
   } catch (error) {
     // Put back over a commit that landed, the old file would be read, and committed, by the next change.
     const now = head === null ? null : await git.head().catch(() => null)
@@ -126,7 +136,7 @@ export async function addDevice(git: CompanyGit, handle: string, device: Device,
       throw new DeviceRefused(409, "token_in_use", "another device already lists this token")
     }
     const devices = [...found.devices, { name: device.name, token_sha256: device.token_sha256 }]
-    return write(locked, git, handle, "devices", devices, `devices(@${handle}): add ${device.name}`)
+    return write(locked, git, handle, "devices", devices, `devices(@${handle}): add ${device.name}`, actor)
   })
 }
 
@@ -140,7 +150,7 @@ export async function removeDevice(git: CompanyGit, handle: string, name: string
     if (kept.length === found.devices.length) {
       throw new DeviceRefused(404, "not_found", `@${handle} has no device named ${name}`)
     }
-    return write(locked, git, handle, "devices", kept, `devices(@${handle}): remove ${name}`)
+    return write(locked, git, handle, "devices", kept, `devices(@${handle}): remove ${name}`, actor)
   })
 }
 
@@ -161,15 +171,17 @@ export async function login(git: CompanyGit, request: LoginRequest): Promise<Per
   return addDevice(git, request.handle, device, request.handle)
 }
 
-/** Sets `handle`'s password as `actor`, keeping only its hash. Throws `DeviceRefused`: 422 `invalid_body`
- *  for a password too short to be one; or what changing a person refuses. */
+/** Sets `handle`'s password as `actor`, keeping only its hash. Throws `DeviceRefused`: what changing a person
+ *  refuses, checked first; then 422 `invalid_body` for a password too short to be one. */
 export async function setPassword(git: CompanyGit, handle: string, password: string, actor: string): Promise<Person> {
+  // Who may set it is checked first: a refused caller learns nothing of the policy and costs no hash.
+  mayChangePerson(git.root, handle, actor, "password")
   const problem = passwordProblem(password)
   if (problem !== null) throw new DeviceRefused(422, "invalid_body", problem)
   const hash = await hashPassword(password) // slow on purpose, so outside the lock
   return git.locked(async (locked) => {
     await locked.commitHandEdits()
     person(loadRepo(git.root), handle, actor, "password")
-    return write(locked, git, handle, "password_hash", hash, `password(@${handle}): set`)
+    return write(locked, git, handle, "password_hash", hash, `password(@${handle}): set`, actor)
   })
 }

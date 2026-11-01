@@ -11,6 +11,7 @@ import {
   VersionConflict,
 } from "@opencorp/protocol"
 import { z } from "zod"
+import { mayEditProfile } from "../../company/access.ts"
 import { type CompanyRepo, loadRepo, missingPerson } from "../../company/loader.ts"
 import { applyProposal, ProposalNotFound, ProposalNotOpen } from "../../profile/manager.ts"
 import { ProfileUnreadable } from "../../profile/store.ts"
@@ -31,15 +32,27 @@ function maxCharsOf(repo: CompanyRepo): number {
   return (repo.company?.defaults ?? CompanyDefaults.parse({})).profile_max_chars
 }
 
-/** `handle`'s profile store and the profile budget in characters; 501 without a profile store, 404 for no such
- *  person. */
-function open(ctx: RequestContext, handle: string, method: string): { store: MarkdownStore; maxChars: number } {
+/** `handle`'s profile store, the profile budget in characters and the company repo; 501 without a profile store,
+ *  404 for no such person. */
+function open(
+  ctx: RequestContext,
+  handle: string,
+  method: string,
+): { store: MarkdownStore; maxChars: number; repo: CompanyRepo } {
   const factory = ctx.office.profileStore
   if (factory === null) {
     throw new HttpError(501, "not_implemented", `${method} /profiles/${handle} is not implemented yet`)
   }
-  const maxChars = maxCharsOf(withPerson(ctx, handle))
-  return { store: factory(handle), maxChars }
+  const repo = withPerson(ctx, handle)
+  return { store: factory(handle), maxChars: maxCharsOf(repo), repo }
+}
+
+/** 403 unless the acting person may change `handle`'s profile in `repo`: the CEO or one of their human managers. */
+function checkProfileEdit(ctx: RequestContext, repo: CompanyRepo, handle: string): void {
+  if (!mayEditProfile(repo, actingPerson(ctx), handle)) {
+    const message = `only the CEO or @${handle}'s human managers can change @${handle}'s profile`
+    throw new HttpError(403, "forbidden", message)
+  }
 }
 
 /** The office's harness's profile-manager start; 501 when the harness runs no profile manager. */
@@ -95,7 +108,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     method: "PUT",
     path: "/profiles/:handle",
     guard: (ctx, params) => {
-      open(ctx, params.handle!, "PUT")
+      checkProfileEdit(ctx, open(ctx, params.handle!, "PUT").repo, params.handle!)
     },
     body: ProfileWriteRequest,
     reply: Profile,
@@ -103,12 +116,15 @@ export const ROUTES: readonly Route<RequestContext>[] = [
       const handle = params.handle!
       const { text, base_version } = body as ProfileWriteRequest
       // The guard's result can't reach the handler, and the load is cheap.
-      const { store, maxChars } = open(ctx, handle, "PUT")
+      const { store, maxChars, repo } = open(ctx, handle, "PUT")
+      checkProfileEdit(ctx, repo, handle)
       // JSON can carry one, but UTF-8 can't; the store would refuse it as a 500.
       if (!text.isWellFormed()) throw new HttpError(422, "invalid_body", "text: holds a lone surrogate")
+      // Named for who wrote it, so the commit isn't taken for a hand edit of the file.
+      const provenance = { source: `${actingPerson(ctx)} via profile edit` }
       let version: string
       try {
-        version = await store.write(text, { baseVersion: base_version, provenance: { source: "hand edit" } })
+        version = await store.write(text, { baseVersion: base_version, provenance })
       } catch (error) {
         if (!(error instanceof MarkdownVersionMismatch)) unreadable(error)
         return conflict(error)
@@ -124,6 +140,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     path: "/profiles/:handle/manager",
     guard: (ctx, params) => {
       managerStart(ctx, params.handle!)
+      checkProfileEdit(ctx, withPerson(ctx, params.handle!), params.handle!)
     },
     body: ProfileManagerRequest,
     reply: Session,
@@ -131,6 +148,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
       const handle = params.handle!
       const { text } = body as ProfileManagerRequest
       const start = managerStart(ctx, handle)
+      checkProfileEdit(ctx, withPerson(ctx, handle), handle)
       const by = actingPerson(ctx)
       return harnessCall(() => start(handle, text, { by }))
     },
@@ -151,6 +169,11 @@ export const ROUTES: readonly Route<RequestContext>[] = [
   {
     method: "POST",
     path: "/profile-proposals/:id/apply",
+    guard: (ctx, params) => {
+      const proposal = ctx.office.store.getProfileProposal(params.id!)
+      if (proposal === undefined) throw new HttpError(404, "not_found", `no profile proposal ${params.id!}`)
+      checkProfileEdit(ctx, loadRepo(ctx.office.git.root), proposal.person)
+    },
     reply: Profile,
     handler: async (ctx, params) => {
       const owner = actingPerson(ctx)
