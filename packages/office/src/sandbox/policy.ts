@@ -69,8 +69,8 @@ export function realPath(p: string, visited?: string[]): string {
 }
 
 /** What one check has asked the OS so far: each realpath (null when it failed) and each name's link target (null
- *  when it is no link). Made per top-level check and dropped when it returns, so every check looks at the disk
- *  again, and sees one answer per path while it runs. */
+ *  when it is no link). Made per `checkWorkspace` call or policy build and dropped when it returns, so every check
+ *  looks at the disk again, and sees one answer per path while it runs. */
 interface Lookups {
   spelling: Map<string, string | null>
   link: Map<string, Buffer | null>
@@ -307,7 +307,11 @@ export class SandboxPolicy {
    *  run again: this policy passed it when built from `PolicyInit`, and the check doesn't read the helper. */
   withHelper(helper: Helper | undefined): SandboxPolicy {
     const copy: SandboxPolicy = Object.create(SandboxPolicy.prototype)
-    return Object.assign(copy, { ...this, helper: resolveHelper(helper, lookups()) })
+    // Fresh lists, as a rebuild makes, so no two policies share one.
+    const { home, install, tools, path: entries } = this.office
+    const office = { home, install: [...install], tools: [...tools], path: [...entries] }
+    const readOnly = [...this.readOnly]
+    return Object.assign(copy, { ...this, readOnly, office, helper: resolveHelper(helper, lookups()) })
   }
 
   /** The workspace paths that stay read-only in a writable workspace. */

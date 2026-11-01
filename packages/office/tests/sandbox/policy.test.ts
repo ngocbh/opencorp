@@ -539,6 +539,9 @@ test("withHelper resolves only the helper and checks nothing again", () => {
     expect(result[key]).toEqual(rebuilt[key])
   }
   expect(result.protectedPaths).toEqual(policy.protectedPaths)
+  for (const list of [result.readOnly, result.office.install, result.office.tools, result.office.path]) {
+    expect([policy.readOnly, policy.office.install, policy.office.tools, policy.office.path]).not.toContain(list)
+  }
   expect(policy.helper).toBeUndefined()
   expect(result.withHelper(undefined).helper).toBeUndefined()
 })
