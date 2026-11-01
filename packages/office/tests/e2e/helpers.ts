@@ -555,6 +555,35 @@ export class Browser {
     })
   }
 
+  /** Opens the stream at `target`: `connected` resolves with its first line, `ended` once the stream ends or its
+   *  connection closes. The stream is cut when the current test finishes. */
+  stream(target: string): { connected: Promise<string>; ended: Promise<void> } {
+    let ended!: () => void
+    const done = new Promise<void>((resolve) => (ended = resolve))
+    const connected = new Promise<string>((resolve, reject) => {
+      // No timeout: the stream stays open until the office ends it.
+      const req = http.request({ ...this.#options("GET", target, {}), timeout: undefined }, (res) => {
+        res.setEncoding("utf8")
+        res.on("error", () => {})
+        let seen = ""
+        res.on("data", (chunk: string) => {
+          seen += chunk
+          const end = seen.indexOf("\n")
+          if (end >= 0) resolve(seen.slice(0, end))
+        })
+        res.on("end", ended)
+        res.on("close", ended)
+      })
+      onTestFinished(() => req.destroy())
+      req.on("error", (error) => {
+        ended()
+        reject(error)
+      })
+      req.end()
+    })
+    return { connected, ended: done }
+  }
+
   /** The `node:http` options for `method target`: the browser's Host, Origin and cookies, then `headers`. */
   #options(method: string, target: string, headers: Record<string, string>): http.RequestOptions {
     const url = new URL(this.origin)

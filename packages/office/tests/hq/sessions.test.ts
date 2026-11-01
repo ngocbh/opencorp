@@ -7,7 +7,15 @@ import type { CompanyGit } from "../../src/company/git.ts"
 import { CompanySnapshots } from "../../src/company/snapshot.ts"
 import { HttpError } from "../../src/daemon/http.ts"
 import type { Office } from "../../src/daemon/office.ts"
-import { BrowserSessions, Fingerprints, type Humans, passwordFp, passwordFps, TTL } from "../../src/hq/sessions.ts"
+import {
+  BrowserSessions,
+  Fingerprints,
+  type Humans,
+  passwordFp,
+  passwordFps,
+  STREAMS_PER_SESSION,
+  TTL,
+} from "../../src/hq/sessions.ts"
 import { git } from "../company/helpers.ts"
 import { makeOffice } from "../daemon/helpers.ts"
 import { handEdit } from "./helpers.ts"
@@ -248,50 +256,86 @@ test("a revoke marks the entry a check made while it read the row", async () => 
   const [pub, cookie] = await sessionsFor(office).issue("ngocbh", ISSUE)
   const s = sessionsFor(office) // nothing in memory yet, as after a restart
   expect(await s.check(cookie)).not.toBeNull()
-  const sub = office.bus.subscribe()
-  s.register(pub.id, sub)
+  const cut = new AbortController()
+  s.open(pub.id, cut)
   expect(await s.revoke(pub.id)).toBe(true)
   // The revoke found the entry the check made and ended its stream: it never replaced or dropped it.
-  expect(await sub.next(1000)).toBeNull()
+  expect(cut.signal.aborted).toBe(true)
   expect(s.tracked).toBe(1)
   expect(s.alive(pub.id)).toBe(false)
 })
 
-test("revoking ends registered streams and alive turns false", async () => {
+test("revoking ends open streams and alive turns false", async () => {
   const office = makeOffice()
   const s = sessionsFor(office)
   const [pub] = await s.issue("ngocbh", ISSUE)
-  const sub = office.bus.subscribe()
-  s.register(pub.id, sub)
+  const cuts = [new AbortController(), new AbortController()]
+  for (const cut of cuts) s.open(pub.id, cut)
+  expect(s.streams(pub.id)).toBe(2)
   expect(s.alive(pub.id)).toBe(true)
   await s.revoke(pub.id)
-  expect(await sub.next(1000)).toBeNull()
+  expect(cuts.map((cut) => cut.signal.aborted)).toEqual([true, true])
   expect(s.alive(pub.id)).toBe(false)
 })
 
-test("an unregistered stream outlives the revoke", async () => {
+test("a released stream outlives the revoke", async () => {
   const office = makeOffice()
   const s = sessionsFor(office)
   const [pub] = await s.issue("ngocbh", ISSUE)
-  const sub = office.bus.subscribe()
-  s.register(pub.id, sub)
-  s.unregister(pub.id, sub)
+  const cut = new AbortController()
+  s.open(pub.id, cut)()
+  expect(s.streams(pub.id)).toBe(0)
   await s.revoke(pub.id)
-  expect(office.bus.subscriberCount).toBe(1)
-  sub.close()
+  expect(cut.signal.aborted).toBe(false)
 })
 
-test("registering on a session that isnt live ends the stream", async () => {
+test("opening a stream on a session that isnt live ends it", async () => {
   const office = makeOffice()
   const s = sessionsFor(office)
   const [pub] = await s.issue("ngocbh", ISSUE)
   await s.revoke(pub.id)
   for (const sid of [pub.id, "unknown"]) {
-    const sub = office.bus.subscribe()
-    s.register(sid, sub)
-    expect(await sub.next(1000)).toBeNull()
+    const cut = new AbortController()
+    s.open(sid, cut)
+    expect(cut.signal.aborted).toBe(true)
+    expect(s.streams(sid)).toBe(0)
     expect(s.alive(sid)).toBe(false)
   }
+})
+
+test("a session over its stream cap ends its oldest stream", async () => {
+  const office = makeOffice()
+  const s = sessionsFor(office)
+  const [pub] = await s.issue("ngocbh", ISSUE)
+  const cuts = Array.from({ length: STREAMS_PER_SESSION + 1 }, () => new AbortController())
+  for (const cut of cuts) s.open(pub.id, cut)
+  expect(cuts.map((cut) => cut.signal.aborted)).toEqual([true, ...Array(STREAMS_PER_SESSION).fill(false)])
+  expect(s.streams(pub.id)).toBe(STREAMS_PER_SESSION)
+})
+
+test("releasing a stream twice frees one slot", async () => {
+  const office = makeOffice()
+  const s = sessionsFor(office)
+  const [pub] = await s.issue("ngocbh", ISSUE)
+  const release = s.open(pub.id, new AbortController())
+  s.open(pub.id, new AbortController())
+  release()
+  release()
+  expect(s.streams(pub.id)).toBe(1)
+})
+
+test("an expired session with an open stream stays in memory", async () => {
+  const office = makeOffice()
+  const clock = new Clock()
+  const s = sessionsFor(office, clock)
+  const [held] = await s.issue("ngocbh", ISSUE)
+  const [idle] = await s.issue("ngocbh", ISSUE)
+  s.open(held.id, new AbortController())
+  clock.now = new Date(T0.getTime() + TTL)
+  await s.check("unknown.secret")
+  expect(s.tracked).toBe(1)
+  expect(s.streams(held.id)).toBe(1)
+  expect(s.alive(idle.id)).toBe(false)
 })
 
 test("alive turns false at expiry", async () => {
