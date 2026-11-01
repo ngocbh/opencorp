@@ -5,6 +5,7 @@ import type { CompanySnapshots } from "../company/snapshot.ts"
 import { CompanySource } from "../company/source.ts"
 import type { Office } from "../daemon/office.ts"
 import { PING_MS } from "../daemon/routes/events.ts"
+import { cookieKey } from "./auth.ts"
 import { type HqConfig, loadConfig } from "./config.ts"
 import { Logins } from "./login.ts"
 import { PairCodes } from "./pairing.ts"
@@ -22,6 +23,8 @@ export class Hq {
   readonly snapshots: CompanySnapshots
   readonly sessions: BrowserSessions
   readonly codes: PairCodes
+  /** Part of the session cookie's name, kept in the office dir (`cookieKey`). */
+  readonly cookieKey: string
   logins: Logins
   /** The Source view's trees and files. */
   readonly source: CompanySource
@@ -53,6 +56,7 @@ export class Hq {
     this.snapshots = office.snapshots
     this.sessions = new BrowserSessions(office.store, this.snapshots)
     this.codes = new PairCodes(office.paths.office, { log })
+    this.cookieKey = cookieKey(office.paths.office)
     this.logins = new Logins(this.sessions)
     this.source = new CompanySource(office.git)
   }

@@ -85,14 +85,14 @@ export const HQ_EVENT_TYPES: ReadonlySet<string> = new Set([
 export const MAX_AGE = 30 * 24 * 3600
 
 /** The Set-Cookie header for HQ's session. */
-function setCookie(req: IncomingMessage, value: string, maxAge = MAX_AGE): string {
+function setCookie(hq: Hq, req: IncomingMessage, value: string, maxAge = MAX_AGE): string {
   // No `Secure`: HQ serves no TLS.
-  return `${cookieName(req)}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`
+  return `${cookieName(req, hq.cookieKey)}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`
 }
 
 /** `session` as the reply, with the cookie carrying `value`. */
-function sessionReply(req: IncomingMessage, session: BrowserSessionType, value: string): RawReply {
-  return new RawReply(200, { "set-cookie": setCookie(req, value) }, JSON.stringify(BrowserSession.parse(session)))
+function sessionReply(hq: Hq, req: IncomingMessage, session: BrowserSessionType, value: string): RawReply {
+  return new RawReply(200, { "set-cookie": setCookie(hq, req, value) }, JSON.stringify(BrowserSession.parse(session)))
 }
 
 /** The one answer to every failed sign-in, so nobody can tell which handles exist. */
@@ -352,7 +352,7 @@ export const ROUTES: readonly Route<HqContext>[] = [
       const { code, label } = body as z.output<typeof PairRequest>
       // Only a session the cookie really proves is replaced, whatever HEAD says of its person; a forged or stale
       // cookie revokes nothing. Read before the code is spent, so a failing read doesn't burn it.
-      const old = hq.sessions.proven(cookieValue(req))
+      const old = hq.sessions.proven(cookieValue(req, hq.cookieKey))
       const pending = hq.codes.redeem(code)
       if (pending === null)
         throw new HttpError(
@@ -362,7 +362,7 @@ export const ROUTES: readonly Route<HqContext>[] = [
         )
       const [session, value] = await hq.sessions.issue(pending.handle, { issuedBy: pending.issuer, label })
       if (old) await hq.sessions.revoke(old) // pairing again replaces this browser's session
-      return sessionReply(req, session, value)
+      return sessionReply(hq, req, session, value)
     },
   },
   // Signs this browser in with a human's handle and password. Open without a session. The session is the one
@@ -394,7 +394,7 @@ export const ROUTES: readonly Route<HqContext>[] = [
         const checked = await hq.logins.check(peer, handle, password)
         // Only a session the cookie really proves is replaced, whatever HEAD says of its person; a forged or stale
         // cookie revokes nothing.
-        old = hq.sessions.proven(cookieValue(req))
+        old = hq.sessions.proven(cookieValue(req, hq.cookieKey))
         try {
           issued = await hq.sessions.issue(handle, { issuedBy: handle, label, via: "login", checked })
         } catch (e) {
@@ -427,7 +427,7 @@ export const ROUTES: readonly Route<HqContext>[] = [
       }
       if (old) await hq.sessions.revoke(old) // signing in again replaces this browser's session
       info(`sign-in for @${handle} from ${where} ok`)
-      return sessionReply(req, ...issued)
+      return sessionReply(hq, req, ...issued)
     },
   },
   // Ends this browser's session: any session its cookie proves, even while its person's file can't be read at HEAD,
@@ -437,10 +437,10 @@ export const ROUTES: readonly Route<HqContext>[] = [
     method: "POST",
     path: "/api/logout",
     handler: async ({ hq, req }) => {
-      const sid = hq.sessions.proven(cookieValue(req))
+      const sid = hq.sessions.proven(cookieValue(req, hq.cookieKey))
       if (sid === null) throw new HttpError(401, "sign_in_required", SIGN_IN)
-      await hq.sessions.revoke(sid) // false when a concurrent revoke won: ended either way
-      return new RawReply(200, { "set-cookie": setCookie(req, "", 0) }, JSON.stringify({ ok: true }))
+      await hq.sessions.revoke(sid)
+      return new RawReply(200, { "set-cookie": setCookie(hq, req, "", 0) }, JSON.stringify({ ok: true }))
     },
   },
   // Any method, so a wrong method under /api is 404, never 405, as Starlette's catch-all route was.
@@ -460,7 +460,7 @@ export function createHqApp(
       // Built per request so the context closes over `req`, which `RequestInfo` doesn't carry: the session check
       // reads its decoded path and first Cookie header.
       const context = async (info: RequestInfo): Promise<HqContext> => {
-        const who = await browserAuth(hq.sessions, req)
+        const who = await browserAuth(hq.sessions, req, hq.cookieKey)
         return {
           office: hq.office,
           person: who?.person ?? null,

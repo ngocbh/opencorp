@@ -20,7 +20,7 @@ import { passwordFp } from "../../src/hq/sessions.ts"
 import { git } from "../company/helpers.ts"
 import { CEO, type Reply, addHuman, makeOffice } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
-import { type HqClient, ORIGIN, PORT, handEdit, hqClient, makeHq, pairCode, web } from "./helpers.ts"
+import { type HqClient, ORIGIN, PORT, cookieOf, handEdit, hqClient, makeHq, pairCode, web } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -82,9 +82,9 @@ test("the right password signs in", async () => {
 })
 
 test("the cookie is the one pairing sets", async () => {
-  const { client } = await withPassword()
+  const { hq, client } = await withPassword()
   const cookie = (await login(client)).headers["set-cookie"]![0]!
-  expect(cookie.startsWith(`opencorp_hq_${PORT}=`)).toBe(true)
+  expect(cookie.startsWith(`${cookieOf(hq)}=`)).toBe(true)
   for (const part of ["HttpOnly", "SameSite=Strict", "Path=/", "Max-Age=2592000"]) expect(cookie).toContain(part)
   expect(cookie).not.toContain("Secure")
 })
@@ -150,16 +150,18 @@ test("signing in again revokes the old session", async () => {
 test("signing in with a cookie that proves nothing revokes nothing", async () => {
   const { office, hq, client } = await withPassword()
   const [other] = await hq.sessions.issue(CEO, { issuedBy: CEO, label: null })
-  client.cookies.set(`opencorp_hq_${PORT}`, `${other.id}.forged`)
+  client.cookies.set(cookieOf(hq), `${other.id}.forged`)
   expect((await login(client)).status).toBe(200)
   expect(office.store.getHqSession(other.id)).toBeDefined()
 })
 
-test("signing in with a planted cookie in front replaces the real session", async () => {
-  const { office, client } = await withPassword()
+test("signing in with planted cookies around it replaces the real session", async () => {
+  const { office, hq, client } = await withPassword()
   const first = ((await login(client)).json() as Body).id as string
-  const name = `opencorp_hq_${PORT}`
-  const headers = { cookie: `${name}=junk; ${name}=${client.cookies.get(name)}` }
+  const name = cookieOf(hq)
+  // What another port can plant without the key: a cookie at a deeper path in front, a nameless one behind.
+  const planted = `opencorp_hq_${PORT}=junk`
+  const headers = { cookie: `${planted}; ${name}=${client.cookies.get(name)}; ${planted}` }
   const r = await client.post("/api/login", { handle: CEO, password: PASSWORD }, { headers })
   expect(r.status).toBe(200)
   expect(office.store.getHqSession(first)).toBeUndefined()
@@ -645,7 +647,7 @@ test("signing in replaces the old session even while its person file cant be rea
   setPassword(office.paths.company, "lan", await hashPassword(PASSWORD))
   const first = ((await login(client)).json() as Body).id as string
   handEdit(office.paths.company, CEO, { nickname: "typo" })
-  expect(hq.sessions.proven(client.cookies.get(`opencorp_hq_${PORT}`))).toBe(first)
+  expect(hq.sessions.proven(client.cookies.get(cookieOf(hq)))).toBe(first)
   const r = await login(client, "lan")
   expect([r.status, (r.json() as Body).person]).toEqual([200, "lan"])
   expect(office.store.getHqSession(first)).toBeUndefined()

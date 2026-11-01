@@ -32,7 +32,7 @@ import {
 } from "../daemon/helpers.ts"
 import { chatLog } from "../runs/helpers.ts"
 import { question, session, workItem } from "../store/helpers.ts"
-import { HOST, ORIGIN, PORT, dist, makeHq, signedIn, web } from "./helpers.ts"
+import { HOST, ORIGIN, cookieOf, dist, makeHq, signedIn, web } from "./helpers.ts"
 
 type Body = Record<string, unknown>
 type PersonBody = { devices: unknown[]; password_hash: string | null; skills: string[] }
@@ -56,7 +56,7 @@ test("anything else under api is a json 404", async () => {
   const hq = await makeHq(makeOffice())
   const client = await web(hq)
   const [, cookie] = await hq.sessions.issue(CEO, { issuedBy: CEO, label: null })
-  client.cookies.set(`opencorp_hq_${PORT}`, cookie)
+  client.cookies.set(cookieOf(hq), cookie)
   for (const target of ["/api", "/api/people", "/api/hq/pair", "/api/hq/browsers"]) {
     const r = await client.get(target)
     expect([r.status, (r.json() as Body).error, target]).toEqual([404, "no_route", target])

@@ -21,6 +21,11 @@ export const PORT = 49380
 export const HOST = `127.0.0.1:${PORT}`
 export const ORIGIN = `http://${HOST}`
 
+/** The name of `hq`'s session cookie for requests to `port`. */
+export function cookieOf(hq: Hq, port: number | string = PORT): string {
+  return `opencorp_hq_${port}_${hq.cookieKey}`
+}
+
 /** A built app in `dir/dist`: index.html, one hashed asset, theme.js and build.json (Python's `dist`). */
 export function dist(dir: string): string {
   const root = path.join(dir, "dist")
