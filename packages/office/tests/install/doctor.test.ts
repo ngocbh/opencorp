@@ -465,7 +465,7 @@ test("a home or office that is a regular file is reported not thrown", async () 
   })
 })
 
-test("runs and sessions folders that don't exist yet are ok", async () => {
+test("runs and sessions folders that dont exist yet are ok", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir, { llm_config: { provider: "openai" } })
   const found = await runChecks(dir, paths)

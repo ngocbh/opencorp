@@ -368,10 +368,13 @@ test("an unreadable run log sleeps and its next message starts a fresh run", asy
   expect(o.kinds.length).toBe(before)
   expect(status(o, sid)).toBe("idle")
   expect(o.logs.some((line) => line.includes(sid) && line.includes("(RangeError)"))).toBe(true)
+  // Ended at restore: no run view finds it with no outcome while the session sleeps.
+  expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
   expect(await say(o, actor, sid, "b")).toBe("two")
   expect(o.kinds.slice(before)).toEqual(["chat"])
+  // Its log can't be read, so the fresh run has no history to take.
+  expect(o.jobs.at(-1)!.seed).toBeNull()
   expect(session(o, sid).run_ids).toEqual([old, actor.runId!])
-  expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
 })
 
 test("a run log that was never written sleeps and its next message starts a fresh run", async () => {
@@ -418,6 +421,8 @@ test("a started run whose folder is gone at restore couldnt resume, and its fres
   fs.rmSync(path.join(o.office.paths.runs, started), { recursive: true })
   await actor.restore()
   expect(status(o, sid)).toBe("idle")
+  expect(o.office.store.getRun(started)?.endReason).toBe(COULDNT_RESUME)
+  expect(o.logs).toContainEqual(`session ${sid}: its run's log is gone`)
   const before = o.jobs.length
   expect(await say(o, actor, sid, "c")).toBe("three")
   expect(o.jobs.slice(before).map((job) => [job.kind, job.seed])).toEqual([["chat", null]])

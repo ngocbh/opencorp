@@ -469,7 +469,7 @@ describe("routes", () => {
     expect(r.text + lines.join("\n")).not.toContain(SENTINEL)
   })
 
-  test("a store that can't be written is a 503 that logs its SQLite code", async () => {
+  test("a store that cant be written is a 503 that logs its SQLite code", async () => {
     const lines: string[] = []
     const routes: Route<Ctx>[] = [
       {
@@ -503,7 +503,7 @@ describe("routes", () => {
     expect(full.text + raw.text + lines.join("\n")).not.toContain(SENTINEL)
   })
 
-  test("a store that can't be written after the client left is neither answered nor logged", async () => {
+  test("a store that cant be written after the client left is neither answered nor logged", async () => {
     let started = false
     let thrown = false
     const slow: Route<Ctx> = {

@@ -17,7 +17,7 @@ test("a SQLite error is named by its primary result code", () => {
   expect(sqliteName(new Error("x"))).toBeUndefined()
 })
 
-test("only a full disk, an I/O error, a read-only or unopenable store can't be written", () => {
+test("only a full disk, an I/O error, a read-only or unopenable store cant be written", () => {
   for (const [errno, name] of [
     [13, "SQLITE_FULL"],
     [778, "SQLITE_IOERR"],

@@ -168,10 +168,12 @@ const REASON_CAP = 500
 const AUTH_CAUSES = ["AuthenticationError", "PermissionDeniedError", "AuthError"]
 
 /** A fresh run that replaces the current one: the office end reason written on the old run (none when yian ended
- *  it), and the result frame `runFinished` gets for it (key redacted), if any. */
+ *  it), the result frame `runFinished` gets for it (key redacted), if any, and whether the old run is lost (its log
+ *  gone or refused by yian), so the fresh run takes no history and the session is told so. */
 interface Fresh {
   why: string | null
   finished: Frame | null
+  lost?: boolean
 }
 
 /** A finished session's end, as `#finish` stores it: the session's final status, the work item it marks done (if
@@ -184,6 +186,9 @@ interface End {
   runId: string | null
   frame: Frame | null
 }
+
+/** What the session is told when a reply's run log went from under it. */
+const LOST_REPLY = "The reply failed (its run log is gone or can't be read). Send your message again."
 
 /** The run statuses that end a run, whose report waits for the run index. */
 const ENDING: readonly string[] = ["succeeded", "failed", "cancelled"]
@@ -388,7 +393,7 @@ export class SessionActor implements LiveCalls {
   /** The runs this actor saw start (a start or wake frame of their worker, or restore reading the log); `settle`
    *  marks the current one started in the store, which keeps the fact over a restart (`#ranStarted`). */
   #runsStarted = new Set<string>()
-  /** Whether a run's log was lost after it started (`#logGone`) since the last `waiting` or `succeeded` result. */
+  /** Whether a run's log was lost after it started (`#lost`) since the last `waiting` or `succeeded` result. */
   #lostLog = false
   /** The SQLite code the last state write failed with, until one succeeds; null while writes succeed. */
   #settleFailing: string | null = null
@@ -426,7 +431,7 @@ export class SessionActor implements LiveCalls {
    *  then replaced because the office stopped (`OFFICE_REPLACED`), not for a new model. */
   #sinceRestore = false
   /** The fresh run that replaces a run restore found ended in yian (no office end reason; `finished`, how yian ended
-   *  it) or unreadable, which the next advance starts; null when none. */
+   *  it), or a lost run (`#markLost`), which the next advance starts; null when none. */
   #unresumable: Fresh | null = null
   /** The office tool calls in flight, each answered `INTERRUPTED_CALL` when called. */
   readonly #calls = new Set<() => void>()
@@ -930,15 +935,16 @@ export class SessionActor implements LiveCalls {
   /**
    * At office start: picks the session up from where yian's log says its run stands. A run yian ended
    * keeps that end: an ending session ends as the run did; any other sleeps, its questions stale, until a fresh run.
-   * An unreadable log fails an ending session (`COULDNT_RESUME`), and a run that never started has an ending session
-   * ended again; any other sleeps until a fresh run, one that never started recorded `COULDNT_START` at once. A
-   * waiting run's questions are reconciled and it sleeps, its timer armed, unless it can wake now. Over the cost cap
-   * any run sleeps. Any other run is advanced, and an ending session ended again. Until the actor's first worker, a
-   * run the record check finds moved ends `OFFICE_REPLACED`. A spec refused for its folder (missing or unsafe) leaves
-   * a session that isn't ending asleep, a waiting run's timer armed and its questions reconciled by the first spec
-   * built; the next message checks the folder again. Any other failure is logged by its type and fails the session,
-   * unless the office stops. Does nothing a second time, or once a worker runs or the session finished; `503
-   * stopping` after `close`.
+   * An unreadable log fails an ending session (`COULDNT_RESUME`); a run that never started has an ending session
+   * ended again; a run that started and whose log is gone or unreadable is lost (`#markLost`), and an ending session
+   * with a missing log is ended again; any other sleeps until a fresh run, one that never started recorded
+   * `COULDNT_START` at once. A waiting run's questions are reconciled and it sleeps, its timer armed, unless it can
+   * wake now. Over the cost cap any run sleeps. Any other run is advanced, and an ending session ended again. Until
+   * the actor's first worker, a run the record check finds moved ends `OFFICE_REPLACED`. A spec refused for its folder
+   * (missing or unsafe) leaves a session that isn't ending asleep, a waiting run's timer armed and its questions
+   * reconciled by the first spec built; the next message checks the folder again. Any other failure is logged by its
+   * type and fails the session, unless the office stops. Does nothing a second time, or once a worker runs or the
+   * session finished; `503 stopping` after `close`.
    */
   restore(): Promise<void> {
     return this.#command(async () => {
@@ -969,10 +975,15 @@ export class SessionActor implements LiveCalls {
     }
     const ending = session.status === "ending"
     if (!fs.existsSync(this.#logOf(runId))) {
-      // Its worker never started it. Recorded now, so the run lists as failed from the start on, not only once the
-      // next message's fresh run replaces it (that end then writes nothing).
+      const lost = this.#ranStarted(runId)
+      if (lost) {
+        this.#log(`session ${this.sessionId}: its run's log is gone`)
+        this.#markLost(runId)
+      }
+      // Else its worker never started it. Recorded now, so the run lists as failed from the start on, not only once
+      // the next message's fresh run replaces it (that end then writes nothing).
       if (ending) await this.#end(session, false)
-      else this.#ctx.store.endRun(runId, COULDNT_START)
+      else if (!lost) this.#ctx.store.endRun(runId, COULDNT_START)
       return
     }
     let inspection: RunInspection | null = null
@@ -984,7 +995,7 @@ export class SessionActor implements LiveCalls {
     }
     if (inspection === null) {
       if (ending) this.#finish("failed", null, COULDNT_RESUME)
-      else this.#unresumable = { why: COULDNT_RESUME, finished: null }
+      else this.#markLost(runId)
       return
     }
     const status = inspection.status
@@ -1469,22 +1480,26 @@ export class SessionActor implements LiveCalls {
       if (this.#closed) throw stopping()
       const { session, name, model, provider, moved: removed } = await this.#checkProvider()
       const spec = await this.#specOf(session)
-      const checked = kind === "advance" && advance
+      // A fresh run already decided needs no record check.
+      const checked = kind === "advance" && advance && replace === null
       const why = checked ? this.#recordCheck(run.runId, name, model, provider) : null
-      const fresh = replace ?? (why === null ? null : { why: why === NEW_MODEL ? moved : why, finished: null })
+      const lost = why === COULDNT_RESUME
+      const fresh = replace ?? (why === null ? null : { why: why === NEW_MODEL ? moved : why, finished: null, lost })
       if (fresh !== null) {
         // A moved chat has its removal note, which says more; a run that never started needs none.
         const note = moved === WORKER_REPLACED ? FRESH_NOTE : this.#startedWorker ? null : WOKEN_NOTE
         if (replace === null && why === NEW_MODEL && !removed && note !== null) {
           store.updateSession(sid, { model_note: note })
         }
-        seed = await this.#seed(session)
+        // A lost run's own turns are gone, so an older run's history would be stale context.
+        seed = fresh.lost ? null : await this.#seed(session)
         // Read before the replace moves `#runId`: the old run's stored answers no delivery carries.
         const unread = this.#unreadAnswers(pendings)
         await this.#replace(session, spec, fresh.why, fresh.finished)
-        if (replace === null && why === COULDNT_RESUME) {
+        if (fresh.lost) {
           this.#notice(
-            "This chat's earlier messages are gone (its run log was deleted); a fresh run answers without them.",
+            "The model can't see this chat's earlier messages (its run log is gone or damaged); a fresh run answers " +
+              "without them.",
           )
         }
         pendings = this.#freshCarry(pendings, true)
@@ -1722,11 +1737,8 @@ export class SessionActor implements LiveCalls {
 
   /** What a fresh run of `session` takes its history from: the newest of its runs that has a log, read with the
    *  office's allowed environment and that run's connection's (none when it can't be resolved now), and cancelled
-   *  if it hasn't finished; null when no run has a log, or when the current run started and its log is gone. */
+   *  if it hasn't finished; null when no run has a log. */
   async #seed(session: SessionRecord): Promise<Seed | null> {
-    const current = this.#runId
-    // Its own turns are gone, so an older run's history would be stale context.
-    if (current !== null && this.#ranStarted(current) && !fs.existsSync(this.#logOf(current))) return null
     const runId = session.run_ids.findLast((id) => fs.existsSync(this.#logOf(id)))
     if (runId === undefined) return null
     const env = (await this.#ranProvider(runId))?.env ?? {}
@@ -2355,8 +2367,8 @@ export class SessionActor implements LiveCalls {
    * stopped or crashed over the cap isn't a death: its deliveries go on, with a real advance once the cap is raised;
    * an ending session over the cap ends `ENDED_OVER_CAP`; a run another process holds is tried once more
    * (`#runBusy`); a run whose reply, or whose fold after its take, failed is replaced by a fresh run (`#replyFailed`);
-   * a worker error after the run started whose log is gone or can't be read leaves a fresh run for the next message
-   * (`#logGone`); any other outcome fails the session, an error frame with an office end reason.
+   * a worker error about the log of a run that started, whose log is gone or refused by yian, leaves a fresh run for
+   * the next message (`#lost`); any other outcome fails the session, an error frame with an office end reason.
    * Every delivery not carried is answered. A finished actor only starts its run's hard stop that waited for this
    * exit.
    */
@@ -2442,8 +2454,9 @@ export class SessionActor implements LiveCalls {
       await this.#notResumed(run)
     } else if (status === "failed" && this.#recovers(run, outcome!)) {
       await this.#replyFailed(run, outcome!)
-    } else if (status === "error" && this.#ranStarted(run.runId) && this.#logLost(run.runId)) {
-      await this.#logGone(run)
+    } else if (status === "error" && this.#ranStarted(run.runId) && this.#logLost(run.runId, outcome!)) {
+      this.#log(`session ${this.sessionId}: its run's log is gone or can't be read`)
+      await this.#lost(run, { notice: LOST_REPLY })
     } else {
       const log = this.#logOf(run.runId)
       const started = this.#ranStarted(run.runId)
@@ -2462,10 +2475,15 @@ export class SessionActor implements LiveCalls {
     this.#trySettle("after a worker exit")
   }
 
-  /** Whether run `runId`'s log is gone or can't be read. Read only after a worker's error: it reads the whole log. */
-  #logLost(runId: string): boolean {
+  /** Whether the worker's `error` frame `outcome` is about run `runId`'s log, and the log is lost: an errno
+   *  `ENOENT` or `ENOTDIR` with no log there, or a `RangeError` (`RunLogSchemaError`) on a log yian refuses. The log
+   *  is read only then: any other error, `EACCES` among them, is no lost log. */
+  #logLost(runId: string, outcome: Frame): boolean {
     const log = this.#logOf(runId)
-    if (!fs.existsSync(log)) return true
+    const { code } = errnoFields(outcome)
+    if (code === "ENOENT" || code === "ENOTDIR") return !fs.existsSync(log)
+    const type = errorType(outcome)
+    if (type !== "RangeError" && type !== "RunLogSchemaError") return false
     try {
       inspectRun(log)
       return false
@@ -2475,24 +2493,34 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * `run`'s worker failed after the run started, and its log is gone or can't be read, so no one can resume it: the
-   * session is told the reply failed, the run's questions go stale, what it never applied is carried, and the next
-   * spawn starts a fresh run (`COULDNT_RESUME`), at once when something waits for it. A second lost log before a
-   * `waiting` or `succeeded` result fails the session (`COULDNT_RESUME`).
+   * `run` started and its log is gone or yian refuses it, so no one can resume it (design 8.4 item 1): the session is
+   * told `notice` if given, the run is lost (`#markLost`), what its worker never applied is carried, and a fresh run
+   * with no history replaces it, at once when `now`, something waits for it or the session is ending, else at the
+   * next message. A second lost run before a `waiting` or `succeeded` result fails the session (`COULDNT_RESUME`).
    */
-  async #logGone(run: WorkerRun): Promise<void> {
-    this.#log(`session ${this.sessionId}: its run's log is gone or can't be read`)
+  async #lost(run: WorkerRun, { now = false, notice }: { now?: boolean; notice?: string } = {}): Promise<void> {
     if (this.#lostLog) {
       this.#finish("failed", null, COULDNT_RESUME, run)
       return
     }
     this.#lostLog = true
-    this.#notice("The reply failed (its run log is gone or can't be read). Send your message again.")
-    // Nothing can answer them, so the session doesn't wait on them.
-    this.#staleQuestions([run.runId])
+    if (notice !== undefined) this.#notice(notice)
+    this.#markLost(run.runId)
     this.#carryFresh(run)
-    this.#unresumable = { why: COULDNT_RESUME, finished: null }
-    if (this.#next.length > 0 || this.#ending) await this.#spawnQuietly("advance")
+    if (now || this.#next.length > 0 || this.#ending) await this.#spawnQuietly("advance")
+  }
+
+  /** Marks run `runId` lost: it ends `COULDNT_RESUME` now, so no run view finds it with no outcome while the session
+   *  sleeps (a failed write is logged; the fresh run's `#replace` writes it again), its questions go stale, as nothing
+   *  can answer them, and the next spawn starts a fresh run in its place (`#unresumable`). */
+  #markLost(runId: string): void {
+    try {
+      if (this.#ctx.store.endRun(runId, COULDNT_RESUME)) this.#ctx.runChanged?.(runId)
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: its lost run's end can't be stored (${errorName(error)})`)
+    }
+    this.#staleQuestions([runId])
+    this.#unresumable = { why: COULDNT_RESUME, finished: null, lost: true }
   }
 
   /** Whether `run`'s failed result `outcome` failed at a reply node, or inside the turn's context once that turn's
@@ -2608,15 +2636,17 @@ export class SessionActor implements LiveCalls {
     this.#requeue(carry)
   }
 
-  /** `run`'s advance was refused before it appended anything (`not_resumed`), or its log is gone or can't be read
-   *  (`unreadable`): a fresh run replaces the run (`COULDNT_RESUME`), carrying what `#carryFresh` keeps. */
+  /** `run`'s advance was refused before it appended anything (`not_resumed`): a fresh run replaces the run
+   *  (`COULDNT_RESUME`) at once, carrying what `#carryFresh` keeps; when its log is gone or can't be read
+   *  (`unreadable`), the run is lost (`#lost`). */
   async #notResumed(run: WorkerRun): Promise<void> {
     const type = typeName(run.outcome!.error_type)
-    this.#log(
-      run.outcome!.unreadable === true
-        ? `session ${this.sessionId}: its run's log can't be read (${type}); a fresh run replaces it`
-        : `session ${this.sessionId}: its run can't be resumed (${type})`,
-    )
+    if (run.outcome!.unreadable === true) {
+      this.#log(`session ${this.sessionId}: its run's log can't be read (${type}); a fresh run replaces it`)
+      await this.#lost(run, { now: true })
+      return
+    }
+    this.#log(`session ${this.sessionId}: its run can't be resumed (${type})`)
     this.#carryFresh(run)
     await this.#spawnQuietly("chat", { replace: { why: COULDNT_RESUME, finished: null } })
   }
@@ -2768,7 +2798,8 @@ export class SessionActor implements LiveCalls {
       if (status === "failed") {
         this.#notice(`The session failed (${whyFailed(reported, run?.provider ?? null)}). Start a new chat.`)
       }
-      const final = status === "ended" ? (hooks.fire("endStatus", session).find((result) => !!result) ?? "ended") : status
+      let final: SessionRecord["status"] = status
+      if (status === "ended") final = hooks.fire("endStatus", session).find((result) => !!result) ?? "ended"
       this.#storeEnd({
         final,
         workItem: status === "ended" ? session.work_item_id : null,
@@ -2813,7 +2844,9 @@ export class SessionActor implements LiveCalls {
         this.#endUnstored = null
         throw error
       }
-      if (this.#endUnstored === null) this.#log(`session ${this.sessionId}: can't store the end (${error.code}); retrying`)
+      if (this.#endUnstored === null) {
+        this.#log(`session ${this.sessionId}: can't store the end (${error.code}); retrying`)
+      }
       this.#endUnstored = end
       if (this.#settleRetry === null && !this.#closed) this.#armSettleRetry()
       return
