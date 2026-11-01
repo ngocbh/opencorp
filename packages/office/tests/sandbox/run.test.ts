@@ -1,5 +1,6 @@
 /** Running one command in the sandbox, in its own process group. */
 import { spawn, spawnSync } from "node:child_process"
+import { Readable } from "node:stream"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -9,6 +10,7 @@ import type { Helper, SandboxPolicy } from "../../src/sandbox/policy.ts"
 import { helperCommand, processLimits } from "../../src/platform.ts"
 import * as bwrap from "../../src/sandbox/bwrap.ts"
 import {
+  capture,
   command,
   fsHelper,
   processCap,
@@ -357,6 +359,60 @@ test.skipIf(!sandboxAvailable())("output is capped", async () => {
   const result = await sh(makePolicy().make(), "head -c 100000 /dev/zero", { maxOutput: 1000 })
   expect(result.stdout.length).toBe(1000)
   expect(result.truncated).toBe(true)
+})
+
+/** What `capture(limit, tail)` keeps of a stream of `chunks`: its head, tail, byte count and whether it dropped any. */
+async function captured(chunks: Buffer[], limit: number, tail: number) {
+  const state = capture(Readable.from(chunks), limit, tail)
+  await state.closed
+  return state.kept()
+}
+
+test("capture keeps the first limit and the last tail bytes, and counts every byte", async () => {
+  const data = Buffer.from(Array.from({ length: 5000 }, (_, i) => i % 251))
+  const cases: [string, Buffer[], number, number][] = [
+    ["one chunk past both", [data], 100, 200],
+    ["one byte a chunk", [...data].map((byte) => Buffer.from([byte])), 100, 200],
+    ["a chunk across the head", [data.subarray(0, 90), data.subarray(90, 4000), data.subarray(4000)], 100, 200],
+    ["exactly head and tail", [data.subarray(0, 300)], 100, 200],
+    ["one byte more", [data.subarray(0, 150), data.subarray(150, 301)], 100, 200],
+    ["shorter than the head", [data.subarray(0, 60)], 100, 200],
+    ["no tail", [data.subarray(0, 70), data.subarray(70)], 100, 0],
+  ]
+  for (const [name, chunks, limit, tail] of cases) {
+    const whole = Buffer.concat(chunks)
+    const kept = await captured(chunks, limit, tail)
+    const head = whole.subarray(0, limit)
+    expect(kept.head.equals(head), name).toBe(true)
+    expect(kept.tail.equals(whole.subarray(Math.max(head.length, whole.length - tail))), name).toBe(true)
+    expect(kept.bytes, name).toBe(whole.length)
+    expect(kept.truncated, name).toBe(whole.length > limit + tail)
+  }
+})
+
+test.skipIf(!sandboxAvailable())("output keeps its end and counts every byte", async () => {
+  const result = await sh(makePolicy().make(), "head -c 3000000 /dev/zero; printf END", {
+    maxOutput: 1000,
+    tailOutput: 1000,
+  })
+  expect(result.stdout.length).toBe(1000)
+  expect(result.stdoutTail.length).toBe(1000)
+  expect(result.stdoutTail.subarray(-3).toString()).toBe("END")
+  expect(result.stdoutBytes).toBe(3_000_003)
+  expect(result.truncated).toBe(true)
+  const short = await sh(makePolicy().make(), "printf abc", { maxOutput: 2, tailOutput: 1000 })
+  expect([short.stdout.toString(), short.stdoutTail.toString(), short.stdoutBytes, short.truncated]).toEqual([
+    "ab",
+    "c",
+    3,
+    false,
+  ])
+})
+
+test("a tailOutput that isn't a byte count is refused before anything starts", async () => {
+  for (const tailOutput of [-1, 1.5, NaN]) {
+    await expect(sh(makePolicy().make(), "exit 0", { tailOutput })).rejects.toThrow(RangeError)
+  }
 })
 
 test("unsupported platform", () => {

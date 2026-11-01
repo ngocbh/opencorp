@@ -14,8 +14,10 @@ export const MAX_SHELL_TIMEOUT = 600
 // (every op's output is bounded: 200k read characters, 200 search matches, 5000 names,
 // each at most 6 bytes a character as JSON), so a cut-off reply is reported as an error.
 export const FILE_OUTPUT_CAP = 16 << 20
-// Bytes of shell output the model sees; the rest of the capture is cut from the middle.
+// Bytes of shell output the model sees; the rest is cut from the middle.
 export const MAX_SHELL_OUTPUT = 64 * 1024
+// Bytes kept from each end of each shell stream: enough for both ends of the combined output to be exact.
+const SHELL_HALF = MAX_SHELL_OUTPUT / 2
 const BULK_ARGS = new Set(["content", "old", "new"])
 const MAX_ARG_CHARS = 200
 
@@ -287,6 +289,8 @@ export class WorkspaceTools {
       if (shell) {
         result = await run(this.#shellPolicy, ["/bin/sh", "-c", shell.command], {
           timeout: shell.limit,
+          maxOutput: SHELL_HALF,
+          tailOutput: SHELL_HALF,
           signal,
           track,
         })
@@ -371,29 +375,38 @@ function lineEnd(text: string): string {
   return text === "" || text.endsWith("\n") ? "" : "\n"
 }
 
-function shellOutput(result: Result, limit: number): string {
-  let data = result.stdout
-  if (result.stderr.length > 0) {
-    const sep = data.length === 0 || data.at(-1) === 0x0a ? "" : "\n"
-    data = Buffer.concat([data, Buffer.from(sep + "[stderr]\n"), result.stderr])
+/** The shell tool's output: stdout, then `[stderr]` and stderr when the call wrote any; past MAX_SHELL_OUTPUT bytes
+ *  only the first and last MAX_SHELL_OUTPUT / 2 bytes, with the count of bytes cut between them; then the status
+ *  line. `result` keeps each stream's first `SHELL_HALF` and last `SHELL_HALF` bytes, and `limit` is the timeout. */
+export function shellOutput(result: Result, limit: number): string {
+  // The combined output as kept pieces and the counts of bytes dropped between them.
+  const stream = (head: Buffer, tail: Buffer, bytes: number) => [head, bytes - head.length - tail.length, tail]
+  const parts: (Buffer | number)[] = stream(result.stdout, result.stdoutTail, result.stdoutBytes)
+  if (result.stderrBytes > 0) {
+    const last = (result.stdoutTail.length > 0 ? result.stdoutTail : result.stdout).at(-1)
+    const sep = result.stdoutBytes === 0 || last === 0x0a ? "" : "\n"
+    parts.push(Buffer.from(sep + "[stderr]\n"), ...stream(result.stderr, result.stderrTail, result.stderrBytes))
   }
-  let text = headAndTail(data, MAX_SHELL_OUTPUT)
-  if (result.truncated) text += lineEnd(text) + "[output truncated]"
+  const total = parts.reduce<number>((sum, part) => sum + (typeof part === "number" ? part : part.length), 0)
+  const kept = (pieces: (Buffer | number)[]) => Buffer.concat(pieces.filter((part) => typeof part !== "number"))
+  let text: string
+  if (total <= MAX_SHELL_OUTPUT) text = kept(parts).toString("utf8")
+  else {
+    // A stream that dropped bytes kept SHELL_HALF on each side of them, so the first and last SHELL_HALF bytes of
+    // the combined output never reach a gap.
+    const gap = (part: Buffer | number) => typeof part === "number" && part > 0
+    const first = parts.findIndex(gap)
+    const head = kept(first === -1 ? parts : parts.slice(0, first)).subarray(0, SHELL_HALF)
+    const after = kept(parts.slice(parts.findLastIndex(gap) + 1))
+    const tail = after.subarray(after.length - SHELL_HALF)
+    text = `${head.toString("utf8")}\n[${total - 2 * SHELL_HALF} bytes of output cut]\n${tail.toString("utf8")}`
+  }
   const status = result.timedOut
     ? `[timed out after ${g(limit)}s]`
     : result.interrupted
       ? "[interrupted]"
       : `[exit ${result.exit}]`
   return text + lineEnd(text) + status
-}
-
-/** `data` decoded; past `limit` bytes, only its first and last `limit / 2` bytes are kept. */
-function headAndTail(data: Buffer, limit: number): string {
-  if (data.length <= limit) return data.toString("utf8")
-  const half = Math.floor(limit / 2)
-  const head = data.subarray(0, half).toString("utf8")
-  const tail = data.subarray(data.length - half).toString("utf8")
-  return `${head}\n[${data.length - 2 * half} bytes of output cut]\n${tail}`
 }
 
 /** Summarizes arguments for the audit log; bulk text is recorded by length only. */
