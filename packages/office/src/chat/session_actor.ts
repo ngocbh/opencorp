@@ -606,6 +606,8 @@ export class SessionActor implements LiveCalls {
       if (error instanceof InvalidTransition) return null
       throw error
     }
+    // Store listeners (the cards' discussion copy) may have written to it before `answerQuestion` returned.
+    answered = store.getQuestion(asked.id) ?? answered
     const p = this.#complete(answered, "answer", fallback)
     await this.#deliver(p)
     return p
@@ -778,6 +780,8 @@ export class SessionActor implements LiveCalls {
         }
         throw error
       }
+      // Store listeners (the cards' discussion copy) may have written to it before `answerQuestion` returned.
+      stored = store.getQuestion(questionId) ?? stored
       // Settled once the answer is on its way: before, nothing open and nothing spawning would read idle.
       if (stored.call_id !== null && stored.run_id === this.#runId && !this.#finished) {
         await this.#deliver(this.#complete(stored, undefined))

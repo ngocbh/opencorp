@@ -492,7 +492,9 @@ export class ChatHarness implements SessionHarness {
       answerer = session.opened_by ?? loadRepo(await this.office.git.pin(session.repo_commit)).company?.ceo ?? null
     }
     try {
-      return this.store.answerQuestion(questionId, value, kind, answerer)
+      const stored = this.store.answerQuestion(questionId, value, kind, answerer)
+      // Store listeners (the cards' discussion copy) may have written to it before `answerQuestion` returned.
+      return this.store.getQuestion(questionId) ?? stored
     } catch (error) {
       if (error instanceof InvalidTransition) {
         throw new HarnessError(409, "not_open", `question ${questionId} is no longer open`)

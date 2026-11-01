@@ -60,8 +60,10 @@ export function readSeed(sessionDir: string): string | null {
 
 /**
  * The discussion so far in the side session `sideSessionId`: each human message and each reply's final text, in
- * order. A reply still running (the session is busy or waiting and its last run's last reply hasn't finished) isn't
- * final yet, so its assistant messages are left out; a message queued behind it stays.
+ * order. A reply still running (the session is starting, busy, waiting or ending and its last run's last reply
+ * hasn't finished) isn't final yet, so its assistant messages are left out; a message queued behind it stays. A
+ * first reply runs while the session is `starting`, and End's copy can land while it is `ending`. While a reopen
+ * starts its new run (`starting`, the new run not added yet), a reply the last run left unfinished is left out too.
  */
 export function discussion(
   store: Store,
@@ -74,8 +76,8 @@ export function discussion(
   // Read before the messages, as the worker may append to the log between the two reads: a reply that finishes in
   // between is left out (Python's conservative outcome). Only a reply that both starts and records text in between
   // could show early, and the reads are microseconds apart.
-  const cut =
-    (side.status === "busy" || side.status === "waiting") && last !== undefined ? transcript.runningReply(last) : null
+  const running = ["starting", "busy", "waiting", "ending"].includes(side.status)
+  const cut = running && last !== undefined ? transcript.runningReply(last) : null
   let messages = transcript.messages(side.id, side.run_ids)
   if (cut !== null) {
     messages = messages.filter((m) => !(m.role === "assistant" && m.id.startsWith(`${last}:`) && m.id >= cut))

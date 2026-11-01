@@ -80,16 +80,20 @@ const HARNESS_ONLY_ANSWER = "a Codex card takes only an answer; press Esc in the
  *
  * A side chat is a `kind: side` session of the person who asked, in the asker's folder at the asker's pinned
  * commit. Its messages get the seed (kept in its session dir, not on the session) before them until a reply
- * finishes. Its discussion is copied onto the question each time its worker exits and before each answer. It ends
- * when its question leaves `open`.
+ * finishes. Its discussion is copied onto the question each time its worker exits, and once when the question is
+ * answered, whatever answered it (a card, a typed answer in the asking chat, Esc or End there): the copy is made as
+ * the answer is stored, before it goes to the asker, so the record holds what the asker's model got. A send-back
+ * copies before it adds its note and isn't copied over. It ends when its question leaves `open`.
  */
 export class Cards {
   readonly office: Office
   readonly actor: CardActor
   readonly store: Store
-  /** Send-backs and discussion copies, one at a time, so a copy can't replace a send-back's note before the answer
-   *  lands. */
+  /** Send-backs and the copies after a side worker exits, one at a time, so a copy can't replace a send-back's note
+   *  before the answer lands. The copy made at an answer runs in the store listener, not on this queue. */
   #discussion: Promise<unknown> = Promise.resolve()
+  /** The questions whose discussion was copied at their answer, while they stay `answered`: one copy per answer. */
+  readonly #copied = new Set<string>()
   /** Side chat opens, one at a time per question, so a question gets one side session; by question id. Its own
    *  queues: an open waits on the harness (a reopen on its last run's cancel), which a copy or another card's open
    *  must not wait behind. */
@@ -105,10 +109,13 @@ export class Cards {
     this.office = office
     this.actor = actor
     this.store = office.store
-    // A store listener must not wait: the end goes on the closing queue.
+    // A store listener must not wait: the copy only reads the transcript and writes the store, and the end goes on
+    // the closing queue.
     this.#unlisten = this.store.addListener((event) => {
       if (event.type !== "question.updated") return
       const question = event.data as QuestionRecord
+      if (question.status !== "answered") this.#copied.delete(question.id)
+      else if (question.side_session_id && question.answer_kind !== "sent_back") this.#copyOnce(question.id)
       if (question.side_session_id && question.status !== "open") this.#close(question.side_session_id, question)
     })
   }
@@ -128,7 +135,6 @@ export class Cards {
       if (error instanceof InvalidAnswer) throw new HarnessError(422, "invalid_answer", error.message)
       throw error
     }
-    this.snapshot(question)
     return this.actor.answer(questionId, value, kind, { by })
   }
 
@@ -213,7 +219,6 @@ export class Cards {
     }
     this.#stopping.add(questionId)
     try {
-      this.snapshot(question)
       const asker = this.store.getSession(question.session_id)
       const main = asker !== undefined && asker.kind === "main" && LIVE.includes(asker.status)
       if (question.source === "ask_user" && main) {
@@ -248,6 +253,19 @@ export class Cards {
     const entries = discussion(this.store, actor.transcript, question.side_session_id)
     if (isDeepStrictEqual(entries, question.discussion)) return question
     return this.store.updateQuestion(question.id, { discussion: entries })
+  }
+
+  /** Copies answered question `questionId`'s discussion, unless it was copied since it was answered; an error is
+   *  logged by its type, so the side chat still ends. */
+  #copyOnce(questionId: string): void {
+    if (this.#copied.has(questionId)) return
+    this.#copied.add(questionId)
+    try {
+      const current = this.store.getQuestion(questionId)
+      if (current !== undefined) this.snapshot(current)
+    } catch (error) {
+      sideActor(this.actor)?.log(`question ${questionId}'s discussion can't be copied (${errorName(error)})`)
+    }
   }
 
   /** Stops reacting to question changes, and waits for queued card work (send-backs, discussion copies, side chat

@@ -82,8 +82,20 @@ class DeliverDuringTool extends TemplateOffice {
   }
 }
 
-// waiting: held at its cost cap, the reply not final
-test.each(["busy", "waiting"] as const)("a reply still running is not in the discussion [%s]", async (left) => {
+test("an idle side sessions last reply is final", () => {
+  const store = openStore()
+  const side = store.createSession(session({ kind: "side", status: "idle", run_ids: ["r1"] }))
+  const messages = [message(side.id, [text("why?")], "user"), { ...message(side.id, [text("Because")]), id: "r1:9" }]
+  const transcript = { messages: () => messages, runningReply: () => "r1:1" }
+  expect(pairs(discussion(store, transcript, side.id))).toEqual([
+    ["user", "why?"],
+    ["assistant", "Because"],
+  ])
+})
+
+// starting: its first reply runs; waiting: held at its cost cap, the reply not final; ending: End's copy can land
+// while the reply it stops still runs
+test.each(["starting", "busy", "waiting", "ending"] as const)("a reply still running is not in the discussion [%s]", async (left) => {
   const fake = await fakeLlm()
   fake.script({ content: "Let me look.", tool_calls: [{ id: "c1", name: "toolbox_stub" }] }, { content: "Because" })
   const runs = tempDir()
