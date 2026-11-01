@@ -3,6 +3,7 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import http, { type IncomingMessage, type ServerResponse } from "node:http"
 import net from "node:net"
+import os from "node:os"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
@@ -270,6 +271,25 @@ test("missing company repo exits 1", async () => {
   expect(out.text()).toContain(`no company repo at ${path.join(resolveHome(dir), "company")}`)
   // Checked before anything is made: no office dir, no lock.
   expect(fs.readdirSync(dir)).toEqual([])
+})
+
+test("main without a home uses OPENCORP_HOME", async () => {
+  const dir = shortDir()
+  const old = process.env.OPENCORP_HOME
+  onTestFinished(() => {
+    if (old === undefined) delete process.env.OPENCORP_HOME
+    else process.env.OPENCORP_HOME = old
+  })
+  process.env.OPENCORP_HOME = dir
+  // A stand-in user home, so a daemon that ignored OPENCORP_HOME could never reach the owner's ~/.opencorp.
+  const userHome = shortDir()
+  const homedir = spyOn(os, "homedir").mockReturnValue(userHome)
+  onTestFinished(() => homedir.mockRestore())
+  const out = collect()
+  expect(await inProcess(() => main([], { write: out.write }))).toBe(1)
+  expect(out.text()).toContain(`no company repo at ${path.join(resolveHome(dir), "company")}`)
+  expect(fs.readdirSync(dir)).toEqual([])
+  expect(fs.readdirSync(userHome)).toEqual([])
 })
 
 test("a missing nested home leaves nothing behind", async () => {

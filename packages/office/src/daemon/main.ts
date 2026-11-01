@@ -3,7 +3,6 @@
 import fs from "node:fs"
 import type { Server } from "node:http"
 import os from "node:os"
-import path from "node:path"
 import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform"
 import { oneReplyProblem } from "../chat/check.ts"
 import { ChatHarness } from "../chat/harness.ts"
@@ -14,7 +13,7 @@ import { HeadWatcher } from "../company/watch.ts"
 import { EXTENSIONS, type Extension, ExtensionError, loadExtensions } from "../extensions/index.ts"
 import { CodexSessions } from "../harness/sessions.ts"
 import { attach } from "../hq/core.ts"
-import { daemonArgs, daemonEnv, requireCompany, resolveHome } from "../install/launch.ts"
+import { daemonArgs, daemonEnv, requireCompany, resolveHome, wantedHome } from "../install/launch.ts"
 import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
 import { Monitor } from "../perm/monitor.ts"
 import { selfCommand } from "../platform.ts"
@@ -457,7 +456,7 @@ export interface MainOptions {
 }
 
 /**
- * Runs the daemon for `--home` (default `~/.opencorp`) until SIGINT, SIGTERM or SIGHUP; resolves to the exit
+ * Runs the daemon for `--home` (default `$OPENCORP_HOME`, else `~/.opencorp`: `wantedHome`) until SIGINT, SIGTERM or SIGHUP; resolves to the exit
  * code: 0 after a clean stop or when this home's office is already running (a service manager restarts only on
  * failure, so a duplicate start must not look like one), 1 when it can't start or crashed, 2 for bad arguments.
  * The start and stop are `run`'s. Writes are synchronous by default: the process exits as soon as this returns, so
@@ -479,7 +478,7 @@ export async function main(
     return 2
   }
   try {
-    const wanted = value ?? path.join(os.homedir(), ".opencorp")
+    const wanted = wantedHome(value, process.env)
     let home: string
     try {
       home = resolveHome(wanted)

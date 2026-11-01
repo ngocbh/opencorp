@@ -3,8 +3,9 @@ import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
 import net from "node:net"
+import os from "node:os"
 import path from "node:path"
-import { expect, onTestFinished, test } from "bun:test"
+import { expect, onTestFinished, spyOn, test } from "bun:test"
 import {
   Launch,
   type PinOptions,
@@ -236,6 +237,34 @@ test("a daemon with another env re-execs into the office env and folder", () => 
   })
   expect(deleted.code).toBe(1)
   expect(deleted.calls).toEqual([reexec(clean(home))])
+})
+
+test("with OPENCORP_HOME set and no flag the daemon re-execs on that home", () => {
+  // A stand-in user home, so a daemon that ignored OPENCORP_HOME could never reach the owner's ~/.opencorp.
+  const userHome = tempDir()
+  const homedir = spyOn(os, "homedir").mockReturnValue(userHome)
+  onTestFinished(() => homedir.mockRestore())
+  const home = withCompany(tempDir())
+  const office = path.join(home, "office")
+  const got = pin([], { environ: { ...clean(home), OPENCORP_HOME: home }, cwd: () => office })
+  expect(got.code).toBe(1)
+  expect(got.calls).toEqual([
+    { argv: [...COMMAND, "daemon", "--home", fs.realpathSync(home), "--reexeced"], env: clean(home), cwd: office },
+  ])
+  expect(got.calls[0]!.env.OPENCORP_HOME).toBeUndefined()
+  // A relative value resolves against the caller's cwd, before the re-exec moves to the office.
+  const parent = path.dirname(home)
+  const cwd = process.cwd()
+  process.chdir(parent)
+  try {
+    const relative = pin([], { environ: { ...clean(home), OPENCORP_HOME: path.basename(home) }, cwd: () => office })
+    expect(relative.calls.map((c) => c.argv)).toEqual([
+      [...COMMAND, "daemon", "--home", fs.realpathSync(home), "--reexeced"],
+    ])
+  } finally {
+    process.chdir(cwd)
+  }
+  expect(fs.readdirSync(userHome)).toEqual([])
 })
 
 test("a daemon that still differs after its re-exec exits 1 naming variables not values", () => {
