@@ -256,15 +256,15 @@ async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
         yield repoIssue(file, "person.flow_invalid", `${JSON.stringify(ref)}: embedded null byte`)
         continue
       }
+      const resolved = resolvePath(path.resolve(base, ref))
       // The worker joins the ref under the session's pinned worktree, where an absolute path names no file; read
       // as absolute, it would name the live clone rather than the pinned commit. The message shows only the file
-      // name, never the folders above the repo.
-      if (path.isAbsolute(ref)) {
+      // name, never the folders above the repo. An absolute ref outside the repo is reported below as outside it.
+      if (path.isAbsolute(ref) && !outsideRoot(repo.root, resolved)) {
         yield repoIssue(file, "person.flow_invalid",
           `flow path .../${path.basename(ref)} is absolute; write it relative to people/${handle}/`)
         continue
       }
-      const resolved = resolvePath(path.resolve(base, ref))
       if (!outsideRoot(repo.root, resolved) && !isFile(resolved)) {
         yield repoIssue(file, "person.flow_missing", `${ref} does not exist`)
         continue

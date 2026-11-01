@@ -249,6 +249,27 @@ test.each(["main", "sops", "routines"])("absolute flow ref is invalid [%s]", asy
   expect(issue!.message).not.toContain(fs.realpathSync(dir))
 })
 
+test.each(["main", "sops", "routines"])("absolute flow ref outside the repo is flow_outside_repo [%s]", async (field) => {
+  const ref = "/etc/passwd"
+  const value = { main: ref, sops: [{ flow: ref }], routines: [{ name: "daily", flow: ref }] }[field]
+  const root = makeCompany({ "people/minh/person.yaml": person("minh", { [field]: value }) })
+  const [issue, ...rest] = await withCode(root, "person.flow_outside_repo")
+  expect(rest).toEqual([])
+  expect(issue!.path).toBe("people/minh/person.yaml")
+  expect(await codes(root)).not.toContain("person.flow_invalid")
+})
+
+test("a missing child flow is invalid, named repo relative", async () => {
+  const tmp = tempDir()
+  const root = makeCompany({ "shared/flows/chat.yaml": parentFlow("echo") }, tmp)
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.message).toContain("shared/flows/echo.yaml does not exist")
+  expect(issue!.message).not.toContain(tmp)
+  expect(issue!.message).not.toContain(fs.realpathSync(tmp))
+  expect(issue!.message).not.toContain("ENOENT")
+})
+
 test("agent needs a main flow", async () => {
   const minh = person("minh")
   delete minh["main"]
