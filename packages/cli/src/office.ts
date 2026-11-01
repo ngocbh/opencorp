@@ -12,16 +12,42 @@ import path from "node:path"
 /** What running the install touches; tests pass fakes. */
 export interface Deps {
   /** Runs `argv` in `cwd` with exactly `env` and this terminal's stdin, stdout and stderr; resolves to its exit
-   *  code. */
+   *  code (128 + the signal's number for one a signal ended). Meanwhile it passes SIGTERM and SIGHUP on to it,
+   *  and SIGINT after INTERRUPT_GRACE_MS. */
   spawn(argv: string[], options: { cwd: string; env: Record<string, string> }): Promise<number>
   /** The folder the install runs in (`selfSpawnCwd`); throws when the home folder doesn't exist. */
   spawnCwd(): string
 }
 
+/** How long a SIGINT waits before it is passed on to a running install. */
+export const INTERRUPT_GRACE_MS = 2000
+
 export const realDeps: Deps = {
   spawn: async (argv, { cwd, env }) => {
     const proc = Bun.spawn(argv, { cwd, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" })
-    return await proc.exited
+    const forward = (signal: NodeJS.Signals) => {
+      if (proc.exitCode === null && proc.signalCode === null) proc.kill(signal)
+    }
+    let grace: ReturnType<typeof setTimeout> | undefined
+    const onTerm = () => forward("SIGTERM")
+    const onHup = () => forward("SIGHUP")
+    // A terminal's Ctrl-C already reaches the install through the foreground group, and a second one at once would
+    // hit its rule that a repeat Ctrl-C exits without draining. Waiting still passes on a SIGINT sent to this
+    // process alone, without doubling the terminal's.
+    const onInt = () => {
+      grace ??= setTimeout(() => forward("SIGINT"), INTERRUPT_GRACE_MS)
+    }
+    process.on("SIGTERM", onTerm)
+    process.on("SIGHUP", onHup)
+    process.on("SIGINT", onInt)
+    try {
+      return await proc.exited
+    } finally {
+      process.off("SIGTERM", onTerm)
+      process.off("SIGHUP", onHup)
+      process.off("SIGINT", onInt)
+      clearTimeout(grace)
+    }
   },
   spawnCwd: selfSpawnCwd,
 }
