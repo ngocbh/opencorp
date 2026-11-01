@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { GitId, Handle, Timestamp, Ulid } from "./common"
+import { GitId, Handle, MessageText, Timestamp, Ulid } from "./common"
 
 export const Profile = z.strictObject({
   person: Handle,
@@ -36,6 +36,6 @@ export type VersionConflict = z.input<typeof VersionConflict>
 
 export const ProfileManagerRequest = z.strictObject({
   /** The first message. */
-  text: z.string().min(1),
+  text: MessageText,
 })
 export type ProfileManagerRequest = z.input<typeof ProfileManagerRequest>

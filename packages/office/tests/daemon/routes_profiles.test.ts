@@ -377,6 +377,18 @@ test("learning routes refuse bad requests", async () => {
   expect(h.store.listSessions({ kind: "profile_manager" })).toEqual([])
 })
 
+test("a blank first message starts no profile manager", async () => {
+  const fake = await fakeLlm()
+  const h = await managerHarness(fake)
+  const { sock } = await served(h.office)
+  for (const text of [" \n", "\u0000"]) {
+    const r = await postJson(sock, "/profiles/minh/manager", { text })
+    expect([r.status, r.json()]).toEqual([422, { error: "invalid_body", message: "text: isn't in the right format" }])
+  }
+  expect(h.store.listSessions({ kind: "profile_manager" })).toEqual([])
+  expect(fake.requests()).toEqual([])
+})
+
 test("learning is credited to the verified person", async () => {
   const fake = await fakeLlm()
   const h = await managerHarness(fake)

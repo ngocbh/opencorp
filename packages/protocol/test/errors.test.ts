@@ -117,3 +117,18 @@ test("the codex session codes are protocol error codes", () => {
 test("a company repo mid-merge, mid-rebase or locked has a protocol error code", () => {
   expect<readonly string[]>(ERROR_CODES).toContain("company_repo_busy")
 })
+
+test("a blank message or a bad model name is refused without its value", () => {
+  const model = (value: string) => ({ connection: "office", model: value })
+  const cases: [z.ZodType, unknown, string, string][] = [
+    [Schemas.PromptRequest, { text: " \u0000\u200b " }, "text: isn't in the right format", "\u200b"],
+    [Schemas.PromptRequest, { text: "" }, "text: is too short", ""],
+    [Schemas.SetModelRequest, model(" PLANTED"), "model: isn't in the right format", "PLANTED"],
+    [Schemas.SetModelRequest, model("PLANTED".repeat(43)), "model: is too long", "PLANTED"],
+  ]
+  for (const [schema, data, expected, planted] of cases) {
+    const text = message(schema, data)
+    if (planted) expect(text).not.toContain(planted)
+    expect([data, text]).toEqual([data, expected])
+  }
+})

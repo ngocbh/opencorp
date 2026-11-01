@@ -150,3 +150,41 @@ test("the client asks the office for one folder's main sessions", async () => {
     office.stop()
   }
 })
+
+test("opencorp end refuses an empty id or more than one, exit 2, before asking the office", async () => {
+  rmSync(path.dirname(socket), { recursive: true, force: true })
+  const cases: [string[], string][] = [
+    [["end", ""], "opencorp end: the session id is empty"],
+    [["end", "a", "b"], "opencorp end: give at most one session id"],
+  ]
+  for (const [argv, err] of cases) {
+    const r = await capture(argv)
+    expect([r.code, r.err]).toEqual([2, err])
+  }
+
+  mkdirSync(path.dirname(socket), { recursive: true })
+  const office = createFakeOffice({ socket })
+  try {
+    const id = office.state.sessions[0].id
+    for (const argv of [["end", ""], ["end", id, "bogus"]]) {
+      const r = await capture(argv)
+      expect([r.code, r.out]).toEqual([2, ""])
+    }
+    expect(office.state.sessions[0].status).toBe("idle")
+    expect(office.requests.filter((r) => r.path.startsWith("/sessions"))).toEqual([])
+  } finally {
+    office.stop()
+  }
+})
+
+test("endSession refuses an empty id rather than ending the folder's newest session", async () => {
+  const office = createFakeOffice()
+  try {
+    const [first] = office.state.sessions
+    const client = createOfficeClient({ socket: office.socket })
+    await expect(endSession({ client, cwd: first.cwd, id: "" })).rejects.toThrow("the session id is empty")
+    expect(office.requests).toEqual([])
+  } finally {
+    office.stop()
+  }
+})

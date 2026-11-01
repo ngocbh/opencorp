@@ -561,12 +561,13 @@ export class CodexSessions implements SessionHarness {
 }
 
 /** The realpath of `cwd`, a new session's folder, once it is checked: 422 `invalid_body` when it isn't an absolute path
- *  to a folder, and 422 `unsafe_workspace` (`log` gets why) when `checkWorkspace` refuses it or it overlaps the
- *  office's own files. */
+ *  to a folder, is too long for the system to name, or can't be opened by the office, and 422 `unsafe_workspace`
+ *  (`log` gets why) when `checkWorkspace` refuses it or it overlaps the office's own files. */
 export function checkFolder(office: Office, cwd: string, log: (line: string) => void): string {
   // A 422 never echoes the request's path: it may not be a folder at all.
   if (!path.isAbsolute(cwd)) throw new HarnessError(422, "invalid_body", "cwd is not an absolute path")
-  if (!isFolder(cwd)) throw new HarnessError(422, "invalid_body", "cwd is not a folder")
+  const problem = folderProblem(cwd)
+  if (problem !== null) throw new HarnessError(422, "invalid_body", problem)
   // Clients match folders by their resolved path (/tmp is /private/tmp on macOS).
   const real = realPath(cwd)
   try {
@@ -633,14 +634,17 @@ export async function startConnection(
   return requested && names.includes(requested) ? requested : fallback
 }
 
-/** Whether `p` is a folder; a path that can't name one (missing, below a file, a link loop, a NUL byte) is not. */
-function isFolder(p: string): boolean {
+/** Why `p` can't be a session's folder, or null when it is a folder: it isn't one (missing, a file, below a file, a
+ *  link loop, a NUL byte), it is too long to name, or the office may not reach it. Any other error is thrown. */
+function folderProblem(p: string): string | null {
   try {
-    return fs.statSync(p).isDirectory()
+    return fs.statSync(p).isDirectory() ? null : "cwd is not a folder"
   } catch (error) {
-    // As Python's `Path.is_dir()`: these mean no folder there; anything else (EACCES) is raised.
-    const code = (error as NodeJS.ErrnoException).code
-    if (["ENOENT", "ENOTDIR", "ELOOP", "EBADF", "ERR_INVALID_ARG_VALUE"].includes(code ?? "")) return false
+    const code = (error as NodeJS.ErrnoException).code ?? ""
+    if (["ENOENT", "ENOTDIR", "ELOOP", "EBADF", "ERR_INVALID_ARG_VALUE"].includes(code)) return "cwd is not a folder"
+    if (code === "ENAMETOOLONG") return "cwd is too long for this system"
+    if (code === "EACCES" || code === "EPERM") return "cwd can't be opened by the office"
+    // Such as EIO or EMFILE: trouble on the office's side, not in the request.
     throw error
   }
 }

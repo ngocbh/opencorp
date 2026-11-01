@@ -1,5 +1,6 @@
 /** Session routes. */
 import http from "node:http"
+import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { type LiveEvent, Message } from "@opencorp/protocol"
 import { z } from "zod"
@@ -11,7 +12,7 @@ import { register } from "../../src/extensions/questions.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { fakeLlm, makeHarness, noWorkersLeft, status as chatStatus } from "../chat/helpers.ts"
 import { allGone, approvalTurn, makeCodex, openCard, requestsValid, start, status, texts } from "../harness/helpers.ts"
-import { waitFor } from "../helpers.ts"
+import { tempDir, unusableFolders, waitFor } from "../helpers.ts"
 import { session } from "../store/helpers.ts"
 import {
   addHuman,
@@ -317,6 +318,23 @@ const REFUSED_BODIES: [string, string, string, string][] = [
     "cwd: has the wrong type",
   ],
   ["empty text", `/sessions/${ULID}/prompt`, JSON.stringify({ text: "" }), "text: is too short"],
+  ["blank prompt", `/sessions/${ULID}/prompt`, JSON.stringify({ text: "  " }), "text: isn't in the right format"],
+  ["nul prompt", `/sessions/${ULID}/prompt`, JSON.stringify({ text: "\u0000" }), "text: isn't in the right format"],
+  ["blank steer", `/sessions/${ULID}/steer`, JSON.stringify({ text: "  " }), "text: isn't in the right format"],
+  ["nul steer", `/sessions/${ULID}/steer`, JSON.stringify({ text: "\u0000" }), "text: isn't in the right format"],
+  ["empty model", "/sessions", JSON.stringify({ person: "minh", cwd: "/w", model: "" }), "model: is too short"],
+  [
+    "padded model",
+    `/sessions/${ULID}/model`,
+    JSON.stringify({ connection: "office", model: " sk-sentinel" }),
+    "model: isn't in the right format",
+  ],
+  [
+    "long model",
+    "/sessions",
+    JSON.stringify({ person: "minh", cwd: "/w", model: "sk-sentinel".repeat(30) }),
+    "model: is too long",
+  ],
   [
     "too deep",
     `/sessions/${ULID}/prompt`,
@@ -583,6 +601,32 @@ test("a steer reaches a running reply and a prompt check can refuse", async () =
   expect(JSON.stringify(fake.requests())).not.toContain("nope")
 })
 
+test("a blank message or a bad model name never reaches a live chat", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const { sock } = await served(h.office)
+  fake.script({ content: "Hi there." })
+  const sid = await open(h, sock)
+  const before = fake.requests().length
+  for (const action of ["prompt", "steer"]) {
+    for (const text of ["  ", "\n", "\u0000"]) {
+      const r = await post(sock, `/sessions/${sid}/${action}`, { text })
+      expect([r.status, r.json()]).toEqual([422, { error: "invalid_body", message: "text: isn't in the right format" }])
+    }
+  }
+  const model = h.store.getSession(sid)!.model
+  for (const bad of [" ", "stub ", "x".repeat(300)]) {
+    const r = await post(sock, `/sessions/${sid}/model`, { connection: "office", model: bad })
+    expect([r.status, errorOf(r)]).toEqual([422, "invalid_body"])
+  }
+  expect(h.store.getSession(sid)!.model).toBe(model)
+  // A message that shows is still sent as typed, trailing space and all.
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "hello " })).json()).toEqual({ ok: true })
+  await settled(h, sock, sid, 2)
+  expect(fake.requests().length).toBe(before + 1)
+  expect(said(await messagesOf(sock, sid))[0]).toEqual(["user", "hello ", CEO])
+})
+
 const BROKEN_SPECS: [string, Error, number, string][] = [
   ["RuntimeError", new Error("sentinel"), 500, "start_failed"],
   // The folder vanished after the start's check.
@@ -608,6 +652,27 @@ test.each(BROKEN_SPECS)("a spec that cant be built fails the session [%s]", asyn
   expect(h.logs.some((line) => line.includes(`can't start (${error.name})`))).toBe(true)
   expect([...h.logs, ...lines].join("\n")).not.toContain("sentinel")
   expect(r.text).not.toContain("sentinel")
+})
+
+test("a new chat in a folder the office cant open or name is a 422 that names no path", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const lines: string[] = []
+  const { sock } = await served(h.office, { log: (line) => lines.push(line) })
+  const { folders, restore } = unusableFolders()
+  try {
+    for (const [, cwd, message] of [...folders, ["missing", path.join(tempDir(), "gone"), "cwd is not a folder"]]) {
+      const r = await post(sock, "/sessions", { person: "minh", cwd })
+      expect([r.status, r.json()]).toEqual([422, { error: "invalid_body", message }])
+      expect(r.text).not.toContain(path.basename(cwd!))
+    }
+  } finally {
+    restore()
+  }
+  const log = [...h.logs, ...lines].join("\n")
+  expect(log).not.toContain("internal error")
+  expect(log).not.toContain("d".repeat(250))
+  expect(log).not.toContain("a".repeat(300))
+  expect(h.store.listSessions()).toEqual([])
 })
 
 /** [label, target, body, status, error code]. */
