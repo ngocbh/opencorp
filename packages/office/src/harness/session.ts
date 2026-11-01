@@ -131,6 +131,14 @@ export class CodexSession {
   readonly #replies = new Set<Waiter>()
   /** The turn id the store has for the session. */
   #storedTurn: string | null
+  /** The thread has loaded once: until then a failed load fails the session, and no run state is written. */
+  #loaded: boolean
+  /** `turn/start` requests Codex hasn't answered yet. */
+  #sending = 0
+  /** The app-server that took a `turn/start` whose `turn/started` isn't handled yet. */
+  #unstarted: CodexProcess | null = null
+  /** `turn/started` and `turn/completed` notifications handled, to tell whether one came during a `turn/start`. */
+  #turnEvents = 0
 
   constructor(owner: CodexSessions, session: SessionRecord, { author }: { author: string | null }) {
     this.owner = owner
@@ -139,6 +147,7 @@ export class CodexSession {
     this.cwd = session.cwd
     this.threadId = session.harness_session_id
     this.#storedTurn = session.harness_turn_id
+    this.#loaded = session.status !== "starting"
     this.author = author
     this.base = usageBase(this.store, session)
     this.log = path.join(owner.office.paths.runDir(session.id), "codex.log")
@@ -168,6 +177,7 @@ export class CodexSession {
       this.pending.push(text)
       // A restarted office, a dead app-server, or an unloaded thread.
       if (!this.loading) this.start({ resume: true })
+      this.#settle()
       return "queued"
     }
     const proc = this.process
@@ -203,6 +213,7 @@ export class CodexSession {
       throw new HarnessError(409, "not_live", `session ${this.sessionId} has no live Codex app-server`)
     this.ending = true
     this.pending = []
+    this.#unstarted = null
     this.#stopTimer()
     const busy = this.turnId !== null
     this.store.updateSession(this.sessionId, notWaiting("ending"))
@@ -368,6 +379,7 @@ export class CodexSession {
       return
     }
     this.process = proc
+    this.#loaded = true
     this.threadId = result.thread.id
     this.store.updateSession(this.sessionId, { harness_session_id: this.threadId, harness_model: result.model ?? null })
     await this.#flush()
@@ -382,11 +394,11 @@ export class CodexSession {
       this.owner.log(`codex session ${this.sessionId} can't load its thread: ${error.message}${where}`)
     else this.owner.log(`codex session ${this.sessionId} can't load its thread (${nameOf(error)})${where}`)
     this.translator.error(why(error))
-    const session = this.store.getSession(this.sessionId)
     this.loading = false
     this.pending = []
+    this.#unstarted = null
     if (this.ending) return // the end posted meanwhile closes it
-    if (session?.status !== "starting") {
+    if (this.#loaded) {
       // A reload: say why and wait for the next message.
       this.#settle()
       return
@@ -429,8 +441,14 @@ export class CodexSession {
   /** `turn/start`: a new turn, or a steer of the running one (Codex decides; `turn/started` says which). `queued`
    *  when Codex had unloaded the thread: the message waits for the reload. */
   async #send(proc: CodexProcess, text: string, busy: boolean): Promise<"turn" | "steer" | "queued"> {
+    const events = this.#turnEvents
+    this.#sending++
+    this.#settle()
     try {
       await proc.rpc!.request("turn/start", { threadId: this.threadId, input: input(text) })
+      // A new turn, unless Codex steered the running one or its turn/started was handled meanwhile: the session is
+      // busy until that comes.
+      if (this.turnId === null && this.#turnEvents === events) this.#unstarted = proc
     } catch (error) {
       if (error instanceof RpcError && NOT_LOADED.test(error.rpcMessage)) {
         this.#reload(proc, text)
@@ -439,6 +457,9 @@ export class CodexSession {
       if (error instanceof RpcError || error instanceof RpcClosed || isTimeout(error))
         throw new HarnessError(409, "codex_refused", `Codex didn't take the message: ${error.message}`)
       throw error
+    } finally {
+      this.#sending--
+      this.#settle()
     }
     return busy ? "steer" : "turn"
   }
@@ -458,6 +479,7 @@ export class CodexSession {
       return
     }
     this.process = null
+    this.#unstarted = null
     this.loading = true
     this.retiring = proc
     void this.post("reopen", () => this.#reopen(proc))
@@ -476,9 +498,13 @@ export class CodexSession {
     if (proc !== this.process) return
     if (this.translator.notification(method, params)) return
     if (method === "turn/started") {
+      this.#turnEvents++
+      this.#unstarted = null
       this.#turnIs(params.turn.id)
       if (!this.ending) this.#settle()
     } else if (method === "turn/completed") {
+      this.#turnEvents++
+      this.#unstarted = null
       const turn = params.turn
       this.translator.turnCompleted(turn.id, turn.status, turn.error ?? null)
       if (turn.id === this.turnId) this.#turnIs(null)
@@ -648,6 +674,7 @@ export class CodexSession {
    *  codex.log, which the office log names. */
   async #lost(proc: CodexProcess, said: string | null): Promise<void> {
     this.process = null
+    this.#unstarted = null
     if (said === null) this.retiring = proc // office stop kills it while it is being closed
     const turn = this.turnId
     // The stored id stays until the turn is marked interrupted, so an office stop or a crash before that still
@@ -700,15 +727,23 @@ export class CodexSession {
     this.#storedTurn = id
   }
 
-  /** Writes the run state: waiting while Codex waits on a card (on the opener), busy while a turn runs, else idle.
-   *  Nothing once the office stops or the session is ending or closed. */
+  /** Whether a message was sent and its turn isn't known yet: Codex hasn't answered its `turn/start`, or hasn't sent
+   *  its `turn/started`. */
+  get #startPending(): boolean {
+    return this.#sending > 0 || (this.#unstarted !== null && this.#unstarted === this.process)
+  }
+
+  /** Writes the run state: waiting while Codex waits on a card (on the opener), busy while a turn runs or a message
+   *  waits for one, else idle. Nothing before the first load, or once the office stops or the session is ending or
+   *  closed. */
   #settle(): void {
-    if (this.stopped || this.ending || this.closed) return
+    if (!this.#loaded || this.stopped || this.ending || this.closed) return
     const waiting = this.requests.size > 0
+    const running = this.turnId !== null || this.pending.length > 0 || this.#startPending
     writeState(
       this.store,
       this.sessionId,
-      runState({ waiting, running: this.turnId !== null }),
+      runState({ waiting, running }),
       waiting ? [this.author] : [],
       { fromStarting: ["idle", "busy", "waiting"] },
     )

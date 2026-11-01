@@ -26,11 +26,13 @@ import {
   makeCodex,
   messages,
   requestsValid,
+  restarted,
   start,
   startSession,
   status,
   stored,
   texts,
+  turnRunning,
 } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -51,6 +53,30 @@ async function rejection(promise: Promise<unknown>): Promise<HarnessError> {
     },
     (error: unknown) => error as HarnessError,
   )
+}
+
+/** A promise and the function that resolves it. */
+function gate(): [Promise<void>, () => void] {
+  let release!: () => void
+  const opened = new Promise<void>((resolve) => (release = resolve))
+  return [opened, release]
+}
+
+/** Holds `live`'s queue with a job of its own until the returned function is called; resolves once the job runs. */
+async function hold(live: CodexSession): Promise<() => void> {
+  const [began, begin] = gate()
+  const [released, release] = gate()
+  void live.post("hold", async () => {
+    begin()
+    await released
+  })
+  await began
+  return release
+}
+
+/** The fake's notifications with `method`. */
+function notifications(h: Codex, method: string): unknown[] {
+  return h.fake.messages("out").filter((m) => m.method === method)
 }
 
 /** What `CodexSessions.launch` needs of a session. */
@@ -226,7 +252,7 @@ test("a message during a turn steers it", async () => {
   h.fake.script([[{ sleep: 3 }, ...fc.agentMessage("m1", "Done")]])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "count")
-  await waitFor(() => status(h, sid) === "busy", { what: "the turn to start" })
+  await waitFor(() => turnRunning(h, sid), { what: "the turn to start" })
   expect(await h.sessions.prompt(sid, "and stop at 5")).toBe("steer")
   await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
   expect(h.fake.calls("turn/start")).toHaveLength(2)
@@ -313,6 +339,59 @@ test("a message while loading waits for the load", async () => {
   await waitFor(() => texts(h, sid).join() === "Got it", { what: "the queued message's reply" })
   const inputs = h.fake.calls("turn/start") as { input: { text: string }[] }[]
   expect(inputs.map((p) => p.input[0]!.text)).toEqual(["early\n\nand then"])
+})
+
+test("a message while starting leaves the session starting until the load", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("m1", "Got it")], { initialize_delay: 1 })
+  const { id: sid } = await startSession(h, "minh", h.workspace, { openedBy: "ngocbh" })
+  expect(await h.sessions.prompt(sid, "early")).toBe("queued")
+  expect(status(h, sid)).toBe("starting")
+  await waitFor(() => texts(h, sid).join() === "Got it" && status(h, sid) === "idle", { what: "the reply" })
+})
+
+test("a message waiting for a reload after a restart shows busy", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  h.fake.script([fc.agentMessage("m1", "Back")], { initialize_delay: 1 })
+  const r = await restarted(h)
+  expect(status(r, sid)).toBe("idle")
+  expect(await r.sessions.prompt(sid, "go")).toBe("queued")
+  expect(status(r, sid)).toBe("busy")
+  await waitFor(() => texts(r, sid).includes("Back") && status(r, sid) === "idle", { what: "the reloaded turn" })
+})
+
+test("a message sent to a loaded session is busy before turn/started", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  const release = await hold(live) // turn/started waits behind it
+  expect(await h.sessions.prompt(sid, "go")).toBe("turn")
+  expect(live.turnId).toBeNull()
+  expect(status(h, sid)).toBe("busy")
+  release()
+  await waitFor(() => live.turnId !== null, { what: "the turn to start" })
+  expect(status(h, sid)).toBe("busy")
+})
+
+test("a turn that completes as it starts leaves the session idle", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  // Unscripted turns: the fake answers turn/start and sends turn/started and turn/completed at once.
+  await h.sessions.prompt(sid, "one")
+  await waitFor(() => notifications(h, "turn/completed").length === 1 && status(h, sid) === "idle", {
+    what: "the first turn",
+  })
+  const release = await hold(live)
+  await h.sessions.prompt(sid, "two")
+  release()
+  await waitFor(() => notifications(h, "turn/completed").length === 2 && status(h, sid) === "idle", {
+    what: "the second turn",
+  })
+  await sleep(300)
+  expect(status(h, sid)).toBe("idle")
 })
 
 test("a message codex never answers is refused and leaves the session idle", async () => {
@@ -450,7 +529,7 @@ test("ending a busy session interrupts its turn first", async () => {
   h.fake.script([[{ sleep: 30 }]])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "work")
-  await waitFor(() => status(h, sid) === "busy", { what: "busy" })
+  await waitFor(() => turnRunning(h, sid), { what: "busy" })
   await h.sessions.end(sid)
   await waitFor(() => status(h, sid) === "ended", { what: "the end" })
   expect(h.fake.calls("turn/interrupt").length).toBeGreaterThan(0)
@@ -486,7 +565,7 @@ test("ending on a codex that never answers the interrupt returns and ends after 
   h.fake.script([[{ sleep: 30 }]], { interrupt_hangs: true })
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "work")
-  await waitFor(() => status(h, sid) === "busy", { what: "busy" })
+  await waitFor(() => turnRunning(h, sid), { what: "busy" })
   const began = performance.now()
   // The interrupt Codex never answers fails once the end wait closes the app-server.
   await h.sessions.end(sid)
@@ -565,7 +644,7 @@ test("a turn starting after the end leaves the end timer running", async () => {
   const sid = await start(h, h.workspace)
   const live = h.sessions.get(sid)!
   await h.sessions.prompt(sid, "work")
-  await waitFor(() => status(h, sid) === "busy", { what: "busy" })
+  await waitFor(() => turnRunning(h, sid), { what: "busy" })
   // Waits on the interrupt Codex never answers.
   const ending = h.sessions.end(sid)
   await waitFor(() => status(h, sid) === "ending" && live.timer, { what: "the end timer" })

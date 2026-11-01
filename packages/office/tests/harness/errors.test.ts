@@ -22,6 +22,7 @@ import {
   status,
   stored,
   texts,
+  turnRunning,
 } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -423,9 +424,10 @@ test("a message codex says has no thread after another reloaded it goes to the n
   const late = h.sessions.prompt(sid, "two")
   await entered
   expect(await h.sessions.prompt(sid, "one")).toBe("queued")
-  await waitFor(() => texts(h, sid).includes("First") && status(h, sid) === "idle" && !live.loading, {
+  await waitFor(() => texts(h, sid).includes("First") && live.turnId === null && !live.loading, {
     what: "the reload and its turn",
   })
+  expect(status(h, sid)).toBe("busy") // "two" still waits for the old app-server's answer
   release()
   await late
   await waitFor(() => texts(h, sid).includes("Second"), { what: "the late message's turn" })
@@ -438,7 +440,7 @@ test("a message codex says has no thread while the session ends starts no load",
   h.fake.script([[{ sleep: 30 }]])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "work")
-  await waitFor(() => status(h, sid) === "busy", { what: "busy" })
+  await waitFor(() => turnRunning(h, sid), { what: "busy" })
   const old = h.sessions.get(sid)!.process!
   const [entered, enter] = gate()
   const [opened, release] = gate()

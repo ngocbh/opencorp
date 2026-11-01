@@ -8,7 +8,7 @@ import { person } from "../company/helpers.ts"
 import { CEO, ULID } from "../daemon/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
 import { question, session } from "../store/helpers.ts"
-import { type Codex, allGone, makeCodex, start, startSession, status, texts } from "./helpers.ts"
+import { type Codex, allGone, makeCodex, start, startSession, status, texts, turnRunning } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 afterAll(allGone)
@@ -69,7 +69,7 @@ test("a steer and messages queued during a load join the turn they come in", asy
   expect(await h.sessions.prompt(sid, "a")).toBe("queued")
   expect(await h.sessions.prompt(sid, "b")).toBe("queued")
   expect(userTexts(h, sid)).toEqual(["a", "b"])
-  await waitFor(() => status(h, sid) === "busy", { what: "the queued turn" })
+  await waitFor(() => turnRunning(h, sid), { what: "the queued turn" })
   expect(await h.sessions.prompt(sid, "c")).toBe("steer")
   expect(userTexts(h, sid)).toEqual(["a", "b", "c"])
 })
