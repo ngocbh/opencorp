@@ -27,7 +27,7 @@ const LOCKDOWN = [
   "-c", `core.excludesFile=${os.devNull}`,
 ]
 // The commands that read or write working files, where a repo's filter drivers would run.
-const FILTERED = new Set(["add", "commit", "reset", "rm", "status", "worktree"])
+const FILTERED = new Set(["add", "checkout-index", "commit", "reset", "rm", "status", "worktree"])
 const PIN_MARKER = ".opencorp-pin"
 const WRITE = 0o222
 // `:(glob)` makes `*` match one path segment, so only people/<handle>/profile.md matches.
@@ -159,6 +159,32 @@ function lsTreeEntries(out: Buffer): { info: string[]; path: string }[] {
       const tab = entry.indexOf("\t")
       return { info: entry.slice(0, tab).trim().split(/\s+/), path: entry.slice(tab + 1) }
     })
+}
+
+/** The paths of `git status --porcelain -z` output, sorted: `paths`, the changed ones with a rename's or copy's
+ *  original path included, and `conflicted`, those with an unresolved merge conflict. */
+function statusPaths(out: Buffer): { paths: string[]; conflicted: string[] } {
+  const fields = decodePath(out).split("\0")
+  const found = new Set<string>()
+  const conflicted: string[] = []
+  // `--porcelain -z` entries are `XY path`. A rename or copy, staged (X) or in the worktree (Y, after
+  // `git add -N`), is followed by a second field, its original path; a rename's original counts too (as a
+  // deletion).
+  for (let i = 0; i < fields.length; ) {
+    const entry = fields[i++]!
+    if (!entry) continue
+    const xy = entry.slice(0, 2)
+    if (UNMERGED.has(xy)) {
+      conflicted.push(entry.slice(3))
+      continue
+    }
+    found.add(entry.slice(3))
+    if (xy.includes("R") || xy.includes("C")) {
+      if (xy.includes("R")) found.add(fields[i]!)
+      i++
+    }
+  }
+  return { paths: [...found].sort(), conflicted: conflicted.sort() }
 }
 
 /** A RangeError unless every path is relative and holds no NUL. */
@@ -301,14 +327,18 @@ export class CompanyGit {
   }
 
   /**
-   * Runs git in the clone with stdin `input` (else none); with `check`, a non-zero exit rejects with
-   * `CompanyGitError`. A command that touches working files runs with the repo's filter drivers off.
+   * Runs git in the clone with stdin `input` (else none) and `env` added to its environment; with `check`, a non-zero
+   * exit rejects with `CompanyGitError`. A command that touches working files runs with the repo's filter drivers off.
    *
    * A command that finds a git lock file taken runs again after each of `LOCK_WAITS`, then rejects with a
    * 503 `CompanyRepoBusy`. The lock is never removed: another git may hold it.
    */
-  async #run(args: string[], options: { check?: boolean; input?: Uint8Array } = {}): Promise<GitResult> {
-    const env = FILTERED.has(args[0]!) ? { ...this.#env, ...(await this.#noFilters()) } : this.#env
+  async #run(
+    args: string[],
+    { env: extra = {}, ...options }: { check?: boolean; input?: Uint8Array; env?: Record<string, string> } = {},
+  ): Promise<GitResult> {
+    const filters = FILTERED.has(args[0]!) ? await this.#noFilters() : {}
+    const env = { ...this.#env, ...filters, ...extra }
     for (let attempt = 0; ; attempt++) {
       const result = await this.#spawn(args, env, { input: options.input, check: false })
       // git rolls its lock files back when a command fails on one, so running it again is safe.
@@ -883,38 +913,66 @@ export class CompanyGit {
     if (operation !== null) return []
     // --untracked-files=all lists a new profile inside a wholly untracked people/<new>/.
     const out = await this.#run(["status", "--porcelain", "-z", "--untracked-files=all", "--", PROFILES])
-    const fields = decodePath(out.stdout).split("\0")
-    const found = new Set<string>()
-    const conflicted: string[] = []
-    // `--porcelain -z` entries are `XY path`. A rename or copy, staged (X) or in the worktree (Y, after
-    // `git add -N`), is followed by a second field, its original path; a rename's original is committed
-    // too (as a deletion).
-    for (let i = 0; i < fields.length; ) {
-      const entry = fields[i++]!
-      if (!entry) continue
-      const xy = entry.slice(0, 2)
-      if (UNMERGED.has(xy)) {
-        conflicted.push(entry.slice(3))
-        continue
-      }
-      found.add(entry.slice(3))
-      if (xy.includes("R") || xy.includes("C")) {
-        if (xy.includes("R")) found.add(fields[i]!)
-        i++
-      }
-    }
-    const skipped = JSON.stringify(conflicted.sort())
+    const { paths, conflicted } = statusPaths(out.stdout)
+    const skipped = JSON.stringify(conflicted)
     if (conflicted.length && skipped !== this.#skipped) {
       this.#log(`hand edits skip ${skipped}: an unresolved merge conflict; resolve it and commit`)
     }
     this.#skipped = skipped
-    const paths = [...found].sort()
     for (const rel of paths) {
       // The directory is the handle; one line, so a hand-made name can't add a trailer.
       const handle = path.posix.basename(path.posix.dirname(rel)).split(WHITESPACE).filter(Boolean).join(" ")
       await this.#commit([rel], `profile(@${handle}): hand edit`)
     }
     return paths
+  }
+
+  /**
+   * The working tree's uncommitted paths, untracked files included and ignored ones not: `handEdits`, the
+   * `people/<handle>/profile.md` paths `commitHandEdits` would commit, and `uncommitted`, every other one. Read-only;
+   * it never writes the index, so it takes no lock and can run beside the daemon.
+   */
+  async pending(): Promise<{ handEdits: string[]; uncommitted: string[] }> {
+    // Without it `git status` may refresh the index under index.lock, which would fail the daemon's own git add.
+    const env = { GIT_OPTIONAL_LOCKS: "0" }
+    const status = ["status", "--porcelain", "-z", "--untracked-files=all"]
+    // A profile with a merge conflict is left out of `handEdits`, as `commitHandEdits` skips it.
+    const handEdits = statusPaths((await this.#run([...status, "--", PROFILES], { env })).stdout).paths
+    const { paths, conflicted } = statusPaths((await this.#run(status, { env })).stdout)
+    const edits = new Set(handEdits)
+    return { handEdits, uncommitted: [...paths, ...conflicted].sort().filter((p) => !edits.has(p)) }
+  }
+
+  /**
+   * Writes the files of `commit` (a sha, branch, or `HEAD`) under `dir`, as a pin would hold them, with each of
+   * `overlay` (repo paths) taken from the working tree instead: copied when there, removed when not. A RangeError if
+   * `commit` is unknown. It writes nothing in the clone (not its index, worktrees or refs) and takes no lock, so it can
+   * run beside the daemon.
+   */
+  async exportTree(commit: string, dir: string, overlay: readonly string[] = []): Promise<void> {
+    const sha = await this.resolve(commit)
+    // A private index, so the clone's own index is never read or written.
+    const scratch = await fs.promises.mkdtemp(path.join(os.tmpdir(), "opencorp-index-"))
+    try {
+      const env = { GIT_INDEX_FILE: path.join(scratch, "index") }
+      await this.#run(["read-tree", sha], { env })
+      await this.#run(["checkout-index", "-a", "-f", `--prefix=${dir}/`], { env })
+    } finally {
+      await fs.promises.rm(scratch, { recursive: true, force: true })
+    }
+    for (const rel of overlay) {
+      // Not `path.join`: the runtime's path functions turn a lone surrogate into U+FFFD.
+      const from = encodePath(`${this.root}/${rel}`)
+      const to = encodePath(`${dir}/${rel}`)
+      const stat = await fs.promises.lstat(from).catch(() => null)
+      await fs.promises.rm(to, { recursive: true, force: true })
+      if (stat?.isFile() || stat?.isSymbolicLink()) {
+        const slash = rel.lastIndexOf("/")
+        if (slash > 0) await fs.promises.mkdir(encodePath(`${dir}/${rel.slice(0, slash)}`), { recursive: true })
+        if (stat.isFile()) await fs.promises.copyFile(from, to)
+        else await fs.promises.symlink(await fs.promises.readlink(from, { encoding: "buffer" }), to)
+      }
+    }
   }
 }
 

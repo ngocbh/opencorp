@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { stamp } from "@opencorp/protocol"
@@ -1610,4 +1611,102 @@ test("a head that names no commit while refs exist has no state", async () => {
 test("one line drops NULs and turns each run of whitespace or line breaks into one space", () => {
   expect(oneLine("a\0b \n\u2028 c\t")).toBe("ab c")
   expect(oneLine(" \r\n ")).toBe("")
+})
+
+/** The bytes of `root`'s index, its worktrees and its refs, which a read-only method must leave alone. */
+function cloneState(root: string): { index: Buffer; worktrees: string; refs: string } {
+  return {
+    index: fs.readFileSync(path.join(root, ".git/index")),
+    worktrees: git(root, "worktree", "list", "--porcelain"),
+    refs: git(root, "for-each-ref"),
+  }
+}
+
+/** The `opencorp-index-*` folders in the temp dir. */
+function tempIndexes(): string[] {
+  return fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("opencorp-index-"))
+}
+
+test("pending sorts profile hand edits from other uncommitted changes", async () => {
+  const { company, g } = setup()
+  fs.writeFileSync(path.join(company, "people/ngocbh/profile.md"), "# Ngoc\n")
+  git(company, "add", "people/ngocbh/profile.md")
+  git(company, "commit", "-q", "-m", "profile")
+  fs.writeFileSync(path.join(company, PROFILE), "# Minh\nedited\n")
+  fs.unlinkSync(path.join(company, "people/ngocbh/profile.md"))
+  fs.mkdirSync(path.join(company, "people/ava"))
+  fs.writeFileSync(path.join(company, "people/ava/profile.md"), "# Ava\n")
+  fs.writeFileSync(path.join(company, "shared/flows/chat.yaml"), "id: chat\n")
+  fs.writeFileSync(path.join(company, "shared/b.txt"), "b\n")
+  expect(await g.pending()).toEqual({
+    handEdits: ["people/ava/profile.md", PROFILE, "people/ngocbh/profile.md"],
+    uncommitted: ["shared/b.txt", "shared/flows/chat.yaml"],
+  })
+})
+
+test("pending of a clean clone is empty", async () => {
+  const { g } = setup()
+  expect(await g.pending()).toEqual({ handEdits: [], uncommitted: [] })
+})
+
+test("pending never writes the index", async () => {
+  const { company, g } = setup()
+  const before = cloneState(company)
+  // A new mtime makes a plain `git status` refresh the index.
+  const later = new Date(Date.now() + 10_000)
+  fs.utimesSync(path.join(company, "groups/eng.yaml"), later, later)
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  expect((await g.pending()).handEdits).toEqual([PROFILE])
+  expect(cloneState(company)).toEqual(before)
+})
+
+test("export tree writes the commit with the overlay from the working tree and nothing in the clone", async () => {
+  const { tmp, company, g } = setup()
+  const indexes = tempIndexes()
+  const before = cloneState(company)
+  const committed = fs.readFileSync(path.join(company, "shared/flows/chat.yaml"), "utf8")
+  fs.writeFileSync(path.join(company, "shared/flows/chat.yaml"), "id: edited\n")
+  fs.writeFileSync(path.join(company, PROFILE), "# Minh\nedited\n")
+  fs.mkdirSync(path.join(company, "people/ava"))
+  fs.writeFileSync(path.join(company, "people/ava/profile.md"), "# Ava\n")
+  fs.symlinkSync("profile.md", path.join(company, "people/ava/linked.md"))
+  const dir = path.join(tmp, "export")
+  await g.exportTree("HEAD", dir, [PROFILE, "people/ava/linked.md", "people/gone/profile.md"])
+  expect(fs.readFileSync(path.join(dir, "shared/flows/chat.yaml"), "utf8")).toBe(committed)
+  expect(fs.readFileSync(path.join(dir, PROFILE), "utf8")).toBe("# Minh\nedited\n")
+  expect(fs.readlinkSync(path.join(dir, "people/ava/linked.md"))).toBe("profile.md")
+  expect(fs.existsSync(path.join(dir, "people/ava/profile.md"))).toBe(false)
+  expect(fs.existsSync(path.join(dir, "people/gone"))).toBe(false)
+  expect(fs.readFileSync(path.join(dir, "company.yaml"), "utf8")).toContain("test-corp")
+  expect(fs.existsSync(path.join(dir, ".git"))).toBe(false)
+  expect(cloneState(company)).toEqual(before)
+  expect(tempIndexes()).toEqual(indexes)
+})
+
+test("export tree removes an overlay path gone from the working tree", async () => {
+  const { tmp, company, g } = setup()
+  fs.unlinkSync(path.join(company, PROFILE))
+  const dir = path.join(tmp, "export")
+  await g.exportTree("HEAD", dir, [PROFILE])
+  expect(fs.existsSync(path.join(dir, PROFILE))).toBe(false)
+  expect(fs.existsSync(path.join(dir, "people/minh/person.yaml"))).toBe(true)
+})
+
+test("export tree runs no filter driver", async () => {
+  const { tmp, company, g } = setup()
+  const wire = tripwire(tmp, "exec cat")
+  fs.writeFileSync(path.join(company, ".gitattributes"), "* filter=x\n")
+  git(company, "add", ".gitattributes")
+  git(company, "commit", "-q", "-m", "attributes")
+  git(company, "config", "filter.x.smudge", wire.script)
+  git(company, "config", "filter.x.required", "true")
+  const dir = path.join(tmp, "export")
+  await g.exportTree("HEAD", dir)
+  expect(wire.tripped()).toBe(false)
+  expect(fs.readFileSync(path.join(dir, PROFILE), "utf8")).toBe("# Minh, Engineer\n")
+})
+
+test("export tree of an unknown commit is a range error", async () => {
+  const { tmp, g } = setup()
+  await expect(g.exportTree("0".repeat(40), path.join(tmp, "export"))).rejects.toThrow(RangeError)
 })

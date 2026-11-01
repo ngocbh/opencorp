@@ -262,9 +262,101 @@ test("lint errors fail", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)
   fs.writeFileSync(path.join(paths.company, "company.yaml"), "name: Acme\nceo: nobody\n")
+  git(paths.company, "commit", "-qam", "break")
   const got = byName(await runChecks(dir, paths))
   expect(got.company!.status).toBe("fail")
   expect(got.company!.detail).toContain("company.unknown_ceo")
+  expect(got.company!.detail).not.toContain("uncommitted")
+})
+
+/** What the company line says about one uncommitted change, `rel`. */
+function unsaved(rel: string): string {
+  return `1 uncommitted change (${rel}) isn't in the last commit, which sessions run: commit it to use it`
+}
+
+test("the company check lints the last commit, which sessions run, not the working tree", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const file = path.join(paths.company, "company.yaml")
+  const good = fs.readFileSync(file)
+  fs.writeFileSync(file, "name: Acme\nceo: nobody\n")
+  git(paths.company, "commit", "-qam", "break")
+  fs.writeFileSync(file, good)
+  const broken = byName(await runChecks(dir, paths)).company!
+  expect(broken.status).toBe("fail")
+  expect(broken.detail).toContain("company.unknown_ceo")
+  expect(broken.detail).toContain(unsaved("company.yaml"))
+
+  git(paths.company, "commit", "-qam", "fix")
+  fs.writeFileSync(file, "name: Acme\nceo: nobody\n")
+  expect(byName(await runChecks(dir, paths)).company).toEqual({
+    name: "company",
+    status: "warn",
+    detail: `${paths.company} (${unsaved("company.yaml")})`,
+  })
+})
+
+test("the company check names a few uncommitted changes and counts the rest", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  for (const name of ["a", "b", "c", "d"]) fs.writeFileSync(path.join(paths.company, `${name}.txt`), "x\n")
+  expect(byName(await runChecks(dir, paths)).company!.detail).toBe(
+    `${paths.company} (4 uncommitted changes (a.txt, b.txt, c.txt, …) aren't in the last commit, which sessions ` +
+      "run: commit them to use them)",
+  )
+})
+
+/** Commits an agent `bot` to the company at `paths`, with a profile, whose main flow is `main` (a repo path). */
+function commitAgent(paths: OfficePaths, main = "shared/flows/chat.yaml"): void {
+  const person = `handle: bot\nname: Bot\nkind: agent\ntitle: Helper\nmanager: ngocbh\nmain: ../../${main}\n`
+  fs.mkdirSync(path.join(paths.company, "people/bot"))
+  fs.writeFileSync(path.join(paths.company, "people/bot/person.yaml"), person)
+  fs.writeFileSync(path.join(paths.company, "people/bot/profile.md"), "# Bot\n")
+  git(paths.company, "add", "people/bot")
+  git(paths.company, "commit", "-qm", "bot")
+}
+
+test("the company check lays profile hand edits over the last commit, as a new session commits them", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  commitAgent(paths)
+  expect(byName(await runChecks(dir, paths)).company).toEqual({ name: "company", status: "ok", detail: paths.company })
+  // A changed or new profile is no uncommitted change: the next session commits it.
+  fs.writeFileSync(path.join(paths.company, "people/bot/profile.md"), "# Bot\nedited\n")
+  fs.writeFileSync(path.join(paths.company, "people/ngocbh/profile.md"), "# Ngoc\n")
+  expect(byName(await runChecks(dir, paths)).company).toEqual({ name: "company", status: "ok", detail: paths.company })
+  // A deleted one is linted as gone.
+  fs.unlinkSync(path.join(paths.company, "people/bot/profile.md"))
+  expect(byName(await runChecks(dir, paths)).company).toEqual({
+    name: "company",
+    status: "warn",
+    detail: `${paths.company} (1 lint warnings)`,
+  })
+})
+
+test("the company check shows the company's path, never the copy it lints", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  // A skill that won't load is reported by its absolute path.
+  const skill = path.join(paths.company, "shared/skills/broken/SKILL.md")
+  fs.mkdirSync(path.dirname(skill), { recursive: true })
+  fs.writeFileSync(skill, "---\nname: [\n---\n")
+  git(paths.company, "add", "shared/skills")
+  git(paths.company, "commit", "-qm", "skill")
+  const got = byName(await runChecks(dir, paths)).company!
+  expect(got.status).toBe("fail")
+  expect(got.detail).toContain(`skill.invalid: ${skill}: frontmatter is not valid YAML`)
+  expect(got.detail).not.toContain("opencorp-doctor-")
+})
+
+test("a company whose last commit git cant read fails without throwing", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const blob = git(paths.company, "rev-parse", "HEAD:company.yaml")
+  fs.rmSync(path.join(paths.company, ".git/objects", blob.slice(0, 2), blob.slice(2)), { force: true })
+  const got = byName(await runChecks(dir, paths)).company!
+  expect(got.status).toBe("fail")
+  expect(got.detail).toStartWith(`can't read the last commit of ${paths.company}: `)
 })
 
 test("a multi-line lint message stays on the company row", async () => {

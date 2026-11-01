@@ -8,6 +8,7 @@ import { VERSION } from "@opencorp/protocol/version"
 import { FileLockError, isLocked, openSqlite, type Sqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
 import { type Identity, IdentityUnreadable, identityPath, loadIdentity } from "../auth/identity.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
+import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import type { RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
@@ -141,6 +142,20 @@ function homeCheck(paths: OfficePaths): Check {
   return { name: "home", status: "ok", detail: paths.home }
 }
 
+/** What the company line says about `paths`, uncommitted changes that sessions don't run: a few named, the rest
+ *  counted. */
+function uncommittedNote(paths: string[]): string {
+  const shown = paths.slice(0, 3).map(oneLine).join(", ") + (paths.length > 3 ? ", …" : "")
+  const [count, are, them] =
+    paths.length === 1 ? ["1 uncommitted change", "isn't", "it"] : [`${paths.length} uncommitted changes`, "aren't", "them"]
+  return `${count} (${shown}) ${are} in the last commit, which sessions run: commit ${them} to use ${them}`
+}
+
+/**
+ * Lints the company repo's last commit, which sessions run, with the profile hand edits a new session commits first
+ * laid over it, and says what uncommitted changes sessions won't see. It reads the clone without writing to it, so it
+ * can run beside the daemon; missing template files are looked for in the working tree, where onboard adds them.
+ */
 async function companyCheck(paths: OfficePaths, running: boolean): Promise<Check> {
   const root = paths.company
   const state = await companyState(root)
@@ -155,20 +170,42 @@ async function companyCheck(paths: OfficePaths, running: boolean): Promise<Check
       detail: `${root} has no company yet (no first commit); run \`opencorp init\` to finish it`,
     }
   }
+  let tmp: string | undefined
   let issues: RepoIssue[]
+  let uncommitted: string[]
   try {
-    issues = await lint(loadRepo(root))
+    // Not `pin`: the daemon owns the pinned worktrees, and its lock doesn't reach this process.
+    const git = new CompanyGit(root, paths.worktrees)
+    const pending = await git.pending()
+    uncommitted = pending.uncommitted
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-doctor-"))
+    const tree = path.join(tmp, path.basename(root))
+    fs.mkdirSync(tree)
+    await git.exportTree("HEAD", tree, pending.handEdits)
+    // Messages name the copy's paths; show them as the company's, and a path beside the copy as one beside it.
+    const [copied, real, home] = [tmp, fs.realpathSync(tmp), path.dirname(root)]
+    const shown = (text: string) => text.replaceAll(real, home).replaceAll(copied, home)
+    try {
+      issues = (await lint(loadRepo(tree))).map((i) => ({ ...i, message: shown(i.message) }))
+    } catch (error) {
+      // A repo that won't even load is the finding.
+      return { name: "company", status: "fail", detail: `${root} doesn't load: ${shown(messageOf(error))}` }
+    }
   } catch (error) {
-    // A repo that won't even load is the finding.
-    return { name: "company", status: "fail", detail: `${root} doesn't load: ${messageOf(error)}` }
+    const why = error instanceof CompanyGitError ? oneLine(error.message) : (errnoCode(error) ?? nameOf(error))
+    return { name: "company", status: "fail", detail: `can't read the last commit of ${root}: ${why}` }
+  } finally {
+    if (tmp !== undefined) fs.rmSync(tmp, { recursive: true, force: true })
   }
   const errors = issues.filter((i) => i.severity === "error")
   if (errors.length) {
     // Some of Yian's messages run over indented lines; the report has one row per check.
-    const detail = errors.map((i) => `${i.path}: ${i.code}: ${oneLine(i.message)}`).join("; ")
-    return { name: "company", status: "fail", detail }
+    const found = errors.map((i) => `${i.path}: ${i.code}: ${oneLine(i.message)}`)
+    if (uncommitted.length) found.push(uncommittedNote(uncommitted))
+    return { name: "company", status: "fail", detail: found.join("; ") }
   }
   const notes = issues.length ? [`${issues.length} lint warnings`] : []
+  if (uncommitted.length) notes.push(uncommittedNote(uncommitted))
   const missing = missingFiles(root)
   if (missing.length) {
     const todo = running ? stopToTopUp(missing.length) : "`opencorp onboard` adds them"
