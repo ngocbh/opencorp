@@ -377,6 +377,39 @@ test("the call argv is pinned with a process cap and without one", () => {
   }
 })
 
+test.skipIf(!sandboxAvailable() || processCap(processLimits()) === null)(
+  "a call's soft and hard process limits are the cap and can't be raised",
+  async () => {
+    const cap = processCap(processLimits())!
+    const script =
+      "ulimit -S -u 2>/dev/null || ulimit -S -p; ulimit -H -u 2>/dev/null || ulimit -H -p; " +
+      `if (ulimit -S -u ${cap + 1} || ulimit -S -p ${cap + 1}) 2>/dev/null; then echo raised; else echo held; fi`
+    const result = await sh(makePolicy().make(), script)
+    expect(result.exit).toBe(0)
+    expect(result.stdout.toString()).toBe(`${cap}\n${cap}\nheld\n`)
+  },
+)
+
+const PERL_FORK =
+  'defined(my $p = fork) or do { print "refused\\n"; exit 0 }; if (!$p) { exit 0 } waitpid($p, 0); print "forked\\n"'
+
+test.skipIf(!sandboxAvailable() || !fs.existsSync("/usr/bin/perl"))("a call over its process cap can't fork", () => {
+  // One fork, never a loop; perl, because bash retries a fork that fails with EAGAIN for about 15 s.
+  const policy = makePolicy().make()
+  const [file, ...args] = command(policy, ["/usr/bin/perl", "-e", PERL_FORK], undefined, process.platform, 1)
+  const r = spawnSync(file!, args, { cwd: policy.workspace, env: scrubbedEnv(policy), timeout: 30_000, encoding: "utf8" })
+  expect(r.stdout).not.toContain("forked")
+  if (process.platform === "darwin") {
+    expect(r.status).toBe(0)
+    expect(r.stdout).toBe("refused\n")
+  } else {
+    // bwrap's own clone fails first unless bwrap is setuid-root (exempt), in which case perl's fork fails.
+    const perlRefused = r.status === 0 && r.stdout === "refused\n"
+    const bwrapRefused = r.status !== 0 && /Resource temporarily unavailable|EAGAIN/.test(r.stderr)
+    expect(perlRefused || bwrapRefused, r.stderr).toBe(true)
+  }
+})
+
 test.skipIf(!sandboxAvailable())("the tracking hook sees the leader while it runs and is cleaned up after the kill", async () => {
   const policy = makePolicy().make()
   const cases: [string, RunOptions][] = [
