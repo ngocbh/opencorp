@@ -5,7 +5,7 @@ import os from "node:os"
 import type { Readable } from "node:stream"
 import * as bwrap from "./bwrap.ts"
 import { Canary, killEscaped } from "./escapees.ts"
-import { endPipe, helperCommand, pipe, pipeReadable } from "../platform.ts"
+import { endPipe, helperCommand, pipe, pipeReadable, processLimits, type ProcessLimits } from "../platform.ts"
 import { type Helper, helperFiles, isInside, type SandboxPolicy } from "./policy.ts"
 import { profile } from "./seatbelt.ts"
 
@@ -65,19 +65,70 @@ export function scrubbedEnv(policy: SandboxPolicy): Record<string, string> {
   return env
 }
 
+// Sets RLIMIT_NPROC to $1, then execs the rest of its argv. The cap comes in as $1, never in the script text.
+// The soft limit goes down first so the hard one is never below it, and the hard one is what makes the cap stick:
+// an unprivileged process can raise its soft limit back up to the hard one. `-S`/`-H` are explicit because a bare
+// `ulimit -u` sets only the soft limit in zsh; dash (Linux's usual /bin/sh) spells the flag `-p`. A failed cap
+// still runs the call (`;`): Seatbelt or bwrap applies either way, and ulimit's stderr stays out of the call's output.
+const NPROC_SCRIPT =
+  'n=$1; shift; { ulimit -S -u "$n" && ulimit -H -u "$n"; } 2>/dev/null || ' +
+  '{ ulimit -S -p "$n" && ulimit -H -p "$n"; } 2>/dev/null; exec "$@"'
+
+/** The process cap for a call under an office with `limits` on `platform`: the office's effective per-user limit
+ *  (macOS: the smaller of the soft RLIMIT_NPROC and `kern.maxprocperuid`; Linux: the soft RLIMIT_NPROC) less an
+ *  eighth, or null (no cap) when that limit is unlimited, the cap would be below 1, or on another platform.
+ *  RLIMIT_NPROC counts every process of the user (on Linux, threads too), not just the call's, so the cap is
+ *  headroom: the calls together can never take the last eighth of the slots from the office. */
+export function processCap(limits: ProcessLimits, platform: string = process.platform): number | null {
+  let limit: number | null = null
+  if (platform === "darwin") {
+    const known = [limits.soft, limits.perUser].filter((value) => value !== null)
+    if (known.length > 0) limit = Math.min(...known)
+  } else if (platform.startsWith("linux")) {
+    limit = limits.soft
+  }
+  if (limit === null) return null
+  const cap = limit - Math.ceil(limit / 8)
+  return cap >= 1 ? cap : null
+}
+
+let officeCap: number | null | undefined
+
+/** `processCap` of the office's own limits, read once (the office never changes them); null (no cap) when they
+ *  can't be read. */
+function callCap(): number | null {
+  if (officeCap === undefined) {
+    try {
+      officeCap = processCap(processLimits())
+    } catch {
+      officeCap = null
+    }
+  }
+  return officeCap
+}
+
 /** Returns the host argv that runs `argv` under `policy` on `platform`.
  *
- *  `canary` marks the call's processes on macOS (see `escapees.ts`). Throws `SandboxUnavailable` when
- *  the platform is neither macOS nor Linux. */
+ *  `canary` marks the call's processes on macOS (see `escapees.ts`). `nproc` caps the call's soft and hard
+ *  RLIMIT_NPROC (default: the office's cap, see `processCap`; null: no cap) through a `/bin/sh` that then
+ *  execs the runner, so the pid, the process group and bwrap's `--die-with-parent` stay the same. Throws
+ *  `SandboxUnavailable` when the platform is neither macOS nor Linux, and a `RangeError` when `nproc` is not a
+ *  positive safe integer. */
 export function command(
   policy: SandboxPolicy,
   argv: readonly string[],
   canary?: string,
   platform: string = process.platform,
+  nproc?: number | null,
 ): string[] {
-  if (platform === "darwin") return ["/usr/bin/sandbox-exec", "-p", profile(policy, { canary }), ...argv]
-  if (platform.startsWith("linux")) return bwrap.command(policy, argv)
-  throw new SandboxUnavailable(`no sandbox for platform ${JSON.stringify(platform)}`)
+  let runner: string[]
+  if (platform === "darwin") runner = ["/usr/bin/sandbox-exec", "-p", profile(policy, { canary }), ...argv]
+  else if (platform.startsWith("linux")) runner = bwrap.command(policy, argv)
+  else throw new SandboxUnavailable(`no sandbox for platform ${JSON.stringify(platform)}`)
+  const n = nproc === undefined ? callCap() : nproc
+  if (n === null) return runner
+  if (!(Number.isSafeInteger(n) && n >= 1)) throw new RangeError(`nproc must be a positive integer, got ${n}`)
+  return ["/bin/sh", "-c", NPROC_SCRIPT, "sh", String(n), ...runner]
 }
 
 /** Whether the sandbox runner refused the call: it exited non-zero and a stderr line holds the
