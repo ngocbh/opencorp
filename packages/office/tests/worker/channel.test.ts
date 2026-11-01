@@ -90,6 +90,54 @@ test("an oversized frame is refused on both ends", async () => {
   await expect(right.recv()).rejects.toBeInstanceOf(ChannelClosed)
 }, TIMEOUT)
 
+test("an oversize frame with fallbacks sends the first one that fits, in call order", async () => {
+  const { left, right } = await pair({ maxFrame: 1024 })
+  const sent = left.send({ text: "x".repeat(2000) }, () => [{ text: "y".repeat(1500) }, { stub: true }])
+  const next = left.send({ n: 2 })
+  await Promise.all([sent, next])
+  expect(await right.recv()).toEqual({ stub: true })
+  expect(await right.recv()).toEqual({ n: 2 })
+}, TIMEOUT)
+
+test("an oversize frame none of whose fallbacks fits is refused with its own size", async () => {
+  const { left } = await pair({ maxFrame: 1024 })
+  const frame = { text: "x".repeat(2000) }
+  const size = Buffer.byteLength(JSON.stringify(frame))
+  const error = await left.send(frame, () => [{ text: "y".repeat(1500) }]).catch((error: unknown) => error)
+  expect(error).toBeInstanceOf(FrameTooLarge)
+  expect((error as Error).message).toBe(`a ${size}-byte frame is over the 1024-byte limit`)
+}, TIMEOUT)
+
+test("fallbacks aren't built for a frame that fits", async () => {
+  const { left, right } = await pair({ maxFrame: 1024 })
+  let built = 0
+  await left.send({ ok: 1 }, () => {
+    built += 1
+    return [{ stub: true }]
+  })
+  expect(await right.recv()).toEqual({ ok: 1 })
+  expect(built).toBe(0)
+}, TIMEOUT)
+
+test("a frame whose encoding throws a RangeError goes as a fallback", async () => {
+  const { left, right } = await pair({ maxFrame: 1024 })
+  const tooLong = new RangeError("Invalid string length")
+  const huge = {
+    toJSON() {
+      throw tooLong
+    },
+  }
+  await left.send({ huge }, () => [{ stub: true }])
+  expect(await right.recv()).toEqual({ stub: true })
+  await expect(left.send({ huge })).rejects.toBe(tooLong)
+  // Only a size error falls back: another encode error still rejects.
+  const cycle: Record<string, unknown> = {}
+  cycle.self = cycle
+  await expect(left.send(cycle, () => [{ stub: true }])).rejects.toBeInstanceOf(TypeError)
+  await left.send({ n: 2 })
+  expect(await right.recv()).toEqual({ n: 2 })
+}, TIMEOUT)
+
 test("a frame must be an object", async () => {
   const { left, right, leftSocket } = await pair()
   await rawWrite(leftSocket, framed(Buffer.from("[]")))

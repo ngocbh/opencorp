@@ -77,13 +77,26 @@ export class Channel {
     return this.#maxFrame
   }
 
-  /** Sends one frame. Rejects with `FrameTooLarge`, or with `ChannelClosed` after `closeSend()` or `close()`, or
-   *  once the transport broke. The bytes are handed to the transport before the first `await`, so frames go out in
-   *  call order; it resolves once the transport has taken them. */
-  async send(frame: Frame): Promise<void> {
-    const text = encode(frame)
-    const size = Buffer.byteLength(text)
-    if (size > this.#maxFrame) throw new FrameTooLarge(size, this.#maxFrame)
+  /** Sends one frame. A frame over the limit, or one whose encoding throws a `RangeError` (a string or nesting too
+   *  big for the engine), goes as the first of `fallbacks()` that fits instead; `fallbacks` is called at most once,
+   *  and only then. Rejects with `FrameTooLarge` (naming the frame's own size) or that `RangeError` when nothing fits,
+   *  or with `ChannelClosed` after `closeSend()` or `close()`, or once the transport broke. The bytes are handed to
+   *  the transport before the first `await`, so frames go out in call order; it resolves once the transport has taken
+   *  them. */
+  async send(frame: Frame, fallbacks?: () => Frame[]): Promise<void> {
+    let text: string
+    let size: number
+    try {
+      text = encode(frame)
+      size = Buffer.byteLength(text)
+      if (size > this.#maxFrame) throw new FrameTooLarge(size, this.#maxFrame)
+    } catch (error) {
+      if (!(error instanceof RangeError) || fallbacks === undefined) throw error
+      const fits = this.firstFit(fallbacks())
+      if (fits === undefined) throw error
+      text = fits.text
+      size = fits.size
+    }
     if (this.#sendClosed || this.#closed) throw new ChannelClosed("this end stopped sending")
     if (this.#broken) throw this.#broken
     const data = Buffer.allocUnsafe(HEADER + size)
@@ -131,6 +144,16 @@ export class Channel {
     this.#buffered = 0
     this.settle(new ChannelClosed())
     this.#transport.destroy()
+  }
+
+  // The text and byte size of the first of `frames` within the limit, encoding none after it.
+  private firstFit(frames: Frame[]): { text: string; size: number } | undefined {
+    for (const frame of frames) {
+      const text = encode(frame)
+      const size = Buffer.byteLength(text)
+      if (size <= this.#maxFrame) return { text, size }
+    }
+    return undefined
   }
 
   private stop(error: ChannelClosed): void {
