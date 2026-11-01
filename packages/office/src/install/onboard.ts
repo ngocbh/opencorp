@@ -17,7 +17,7 @@ import {
   SUPPORTED_LLM_PROVIDERS,
   ValidationError,
 } from "@ngocbh/yian/llm_clients"
-import { FileLockError, withWarnings } from "@ngocbh/yian/platform"
+import { type FileLock, FileLockError, sqliteErrorCode, waitForLock, withWarnings } from "@ngocbh/yian/platform"
 import type { RunFlowOptions, RunResult } from "@ngocbh/yian/run"
 import { addDevice, DeviceRefused } from "../auth/devices.ts"
 import { deviceName, Identity, identityPath, readIdentity, writeIdentity } from "../auth/identity.ts"
@@ -38,7 +38,16 @@ import { PrivateFileError, writePrivate } from "../secrets.ts"
 import type { WorkerEnv } from "../worker/main.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import checkModelYaml from "./flows/check_model.yaml" with { type: "file" }
-import { type Completed, defaultHost, type Env, type Host, launch, runCommand, ServiceError } from "./launch.ts"
+import {
+  type Completed,
+  defaultHost,
+  type Env,
+  type Host,
+  type Launch,
+  launch,
+  runCommand,
+  ServiceError,
+} from "./launch.ts"
 import { NoTerminal, OnboardError, type Prompter, TRIES } from "./prompts.ts"
 import * as service from "./service.ts"
 
@@ -853,6 +862,33 @@ async function askPassword(prompter: Prompter, handle: string, passwordHash: str
   throw new OnboardError(`wrong password for @${handle}`)
 }
 
+/**
+ * Takes the lock `opencorp init` and `opencorp onboard` hold while they set up the office at `one`'s home, which
+ * `makeHome` has made. Throws `OnboardError` when another init or onboard holds it, or it can't be taken.
+ */
+export async function setupLock(one: Launch): Promise<FileLock> {
+  // Not the home's `.lock`: that is the private-file lock `writeIdentity` takes, and a second lock on it in this
+  // process would wait for this one.
+  const file = path.join(one.office, "setup.lock")
+  try {
+    // Two contenders can both see the lock as busy for a moment; a short wait lets one of them win.
+    return await waitForLock(file, { private: true, timeoutMs: 1000 })
+  } catch (error) {
+    if (error instanceof FileLockError) {
+      if (error.reason === "busy") {
+        throw new OnboardError(
+          `another \`opencorp init\` or \`opencorp onboard\` is running on ${one.home}; wait for it to finish`,
+        )
+      }
+      throw new OnboardError(`can't lock ${file}: ${error.message}`)
+    }
+    if (sqliteErrorCode(error) !== undefined) throw new OnboardError(`can't lock ${file}: it isn't a lock file; remove it`)
+    const text = strerror(error)
+    if (text === undefined) throw error
+    throw new OnboardError(`can't lock ${file}: ${text}`)
+  }
+}
+
 /** Onboarding's steps: the company, this device, the model, and the office. */
 export const STEPS = 4
 
@@ -889,17 +925,29 @@ export interface OnboardOptions {
  * device's identity; the office's setup connection; and the daemon under `mode`. With `steps`, each step gets a
  * numbered header (`opencorp init` turns them off, since onboarding is one of its steps).
  *
- * Throws `OnboardError` when a step failed, or there's no company here and no repo to clone; earlier steps stay
- * done.
+ * Holds the setup lock (see `setupLock`) from the home onward. Throws `OnboardError` when another init or onboard
+ * holds it, a step failed, or there's no company here and no repo to clone; earlier steps stay done.
  */
 export async function onboard(home: string, prompter: Prompter, options: OnboardOptions): Promise<void> {
-  const host = options.host ?? defaultHost()
   const environ = options.environ ?? process.env
-  const one = launch(home, { environ, userHome: host.userHome })
-  const company = path.join(one.home, "company")
-  const worktrees = path.join(one.office, "worktrees")
+  const one = launch(home, { environ, userHome: (options.host ?? defaultHost()).userHome })
   checkSocket(one.socket)
   makeHome(one.home)
+  const lock = await setupLock(one)
+  try {
+    await onboardLocked(one, prompter, options)
+  } finally {
+    lock.release()
+  }
+}
+
+/** As `onboard`, for a caller that has made the home (`makeHome`) of the office at `one` and holds its
+ *  `setupLock`. */
+export async function onboardLocked(one: Launch, prompter: Prompter, options: OnboardOptions): Promise<void> {
+  const host = options.host ?? defaultHost()
+  const environ = options.environ ?? process.env
+  const company = path.join(one.home, "company")
+  const worktrees = path.join(one.office, "worktrees")
   prompter.say(`Office home: ${one.home}`)
 
   const step = (number: number, title: string, why: string) => {

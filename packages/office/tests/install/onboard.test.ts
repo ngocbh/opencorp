@@ -11,6 +11,7 @@ import { isDeepStrictEqual } from "node:util"
 import { expect, onTestFinished, test } from "bun:test"
 import type { Device } from "@opencorp/protocol"
 import { loadFlow } from "@ngocbh/yian"
+import { lockFile } from "@ngocbh/yian/platform"
 import { stringify } from "yaml"
 import { deviceName, Identity, readIdentity, writeIdentity } from "../../src/auth/identity.ts"
 import { hashPassword } from "../../src/auth/passwords.ts"
@@ -19,6 +20,7 @@ import { Provider } from "../../src/chat/provider.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { writeCompany } from "../../src/company_template/index.ts"
 import {
+  makeHome,
   modelProblem,
   type OnboardOptions,
   onboard,
@@ -472,6 +474,38 @@ test("a home too long for the socket is refused before anything is written", asy
   expect(error.message).toContain("--home")
   expect(error.message).not.toContain("can't clone")
   expect(fs.existsSync(home)).toBe(false)
+})
+
+test("onboard is refused while another setup holds the lock", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const remote = await published(dir)
+  makeHome(home)
+  const lock = lockFile(path.join(home, "office", "setup.lock"), { private: true })
+  try {
+    const error = await rejection(onboard(home, new Script(["lan"]), { ...base(dir), source: remote }))
+    expect(error).toBeInstanceOf(OnboardError)
+    expect(error.message).toContain("another `opencorp init` or `opencorp onboard` is running on")
+    expect(fs.readdirSync(home)).toEqual(["office"])
+  } finally {
+    lock.release()
+  }
+})
+
+test("a setup lock that isnt a lock file is an onboard error", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const file = path.join(home, "office", "setup.lock")
+  makeHome(home)
+  fs.symlinkSync("/nonexistent", file)
+  let error = await rejection(onboard(home, new Script(), base(dir)))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain(file)
+  fs.unlinkSync(file)
+  fs.writeFileSync(file, "not a database, and long enough to be read as one's header\n".repeat(4), { mode: 0o600 })
+  error = await rejection(onboard(home, new Script(), base(dir)))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain(file)
 })
 
 test("a repo that cant be cloned leaves nothing behind", async () => {

@@ -11,7 +11,7 @@ import { strip } from "../perm/redact.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
 import { shQuote } from "./fallback.ts"
 import { fallbackDraft, initFlow, type Known, ModelError, passwordStep, remoteStep, STEPS } from "./interview.ts"
-import { defaultHost, type Env, type Host, launch } from "./launch.ts"
+import { defaultHost, type Env, type Host, type Launch, launch } from "./launch.ts"
 import {
   type Answers,
   askProvider,
@@ -25,9 +25,10 @@ import {
   makeHome,
   type ModelCheck,
   modelFailed,
-  onboard,
+  onboardLocked,
   redact,
   setupConnectionFile,
+  setupLock,
   userGit,
 } from "./onboard.ts"
 import { OnboardError, type Prompter } from "./prompts.ts"
@@ -100,23 +101,43 @@ export interface InitOptions {
  * lists this device, whose token goes in `identity.json`. The remote, `known.remote` or asked for, is added and
  * pushed to.
  *
- * Rejects with `OnboardError` when a company already exists here or a step failed.
+ * Holds the setup lock (see `setupLock`) from the home onward. Rejects with `OnboardError` when a company already
+ * exists here, another init or onboard holds the lock, or a step failed.
  */
 export async function init(home: string, prompter: Prompter, options: InitOptions): Promise<void> {
-  const host = options.host ?? defaultHost()
   const environ = options.environ ?? process.env
-  const known = options.known ?? {}
-  const defaults = options.loginDefaults ?? loginDefaults
-  const one = launch(home, { environ, userHome: host.userHome })
+  const one = launch(home, { environ, userHome: (options.host ?? defaultHost()).userHome })
   const company = path.join(one.home, "company")
-  const worktrees = path.join(one.office, "worktrees")
   checkSocket(one.socket)
+  await noCompanyYet(company)
+  makeHome(one.home)
+  const lock = await setupLock(one)
+  try {
+    // Checked again: another init or onboard may have made the company while this one waited.
+    await noCompanyYet(company)
+    await initLocked(one, prompter, options)
+  } finally {
+    lock.release()
+  }
+}
+
+/** Throws `OnboardError` when there's a company at `company` already. */
+async function noCompanyYet(company: string): Promise<void> {
   if (!(await isNew(company))) {
     throw new OnboardError(
       `there's already a company at ${company}; run \`opencorp onboard\` to set up this office for it`,
     )
   }
-  makeHome(one.home)
+}
+
+/** As `init`, for the office at `one`, whose home `init` made and whose setup lock it holds. */
+async function initLocked(one: Launch, prompter: Prompter, options: InitOptions): Promise<void> {
+  const host = options.host ?? defaultHost()
+  const environ = options.environ ?? process.env
+  const known = options.known ?? {}
+  const defaults = options.loginDefaults ?? loginDefaults
+  const company = path.join(one.home, "company")
+  const worktrees = path.join(one.office, "worktrees")
   if (await host.answers(one.socket)) {
     throw new OnboardError(
       `the office is running, but ${company} has no company yet; stop it and run \`opencorp init\` again`,
@@ -164,6 +185,8 @@ export async function init(home: string, prompter: Prompter, options: InitOption
     draft = { ...draft, owner: { ...draft.owner, passwordHash: await passwordStep(prompter) } }
     url = await remoteStep(prompter, known.remote ?? "")
   }
+  // Checked once more before identity.json is replaced, since the steps above can take a while.
+  await noCompanyYet(company)
   const owner = (options.device ?? true) ? await makeDevice(one.home, draft.owner) : draft.owner
 
   const extra: Record<string, Uint8Array> = {}
@@ -186,7 +209,7 @@ export async function init(home: string, prompter: Prompter, options: InitOption
 
   prompter.step(5, STEPS, "This machine", "The office service and this device, as `opencorp onboard` sets them up.")
   // The provider stdin was used up by the model step; onboard finds the file it wrote and keeps it.
-  await onboard(home, prompter, {
+  await onboardLocked(one, prompter, {
     listers,
     checkModel,
     mode: options.mode,

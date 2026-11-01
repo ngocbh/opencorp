@@ -6,6 +6,7 @@ import path from "node:path"
 import { Readable, Writable } from "node:stream"
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { ToolContext } from "@ngocbh/yian"
+import { lockFile } from "@ngocbh/yian/platform"
 import { parse } from "yaml"
 import { deviceName, readIdentity } from "../../src/auth/identity.ts"
 import { checkPassword } from "../../src/auth/passwords.ts"
@@ -32,6 +33,7 @@ import {
 import { launch, officeAnswers } from "../../src/install/launch.ts"
 import {
   GIT_ACCESS,
+  makeHome,
   onboard,
   redact,
   SET_UP_AGAIN,
@@ -311,6 +313,72 @@ test("a home too long for the socket is refused before anything is written", asy
   expect(error.message).toContain("socket path too long")
   expect(error.message).toContain("--home")
   expect(fs.existsSync(home)).toBe(false)
+})
+
+const BUSY = "another `opencorp init` or `opencorp onboard` is running on"
+
+/** Takes the setup lock of the office at `home`, making the office dir first. */
+function holdSetupLock(home: string) {
+  makeHome(home)
+  return lockFile(path.join(home, "office", "setup.lock"), { private: true })
+}
+
+test("init is refused while another setup holds the lock, and writes nothing", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const lock = holdSetupLock(home)
+  try {
+    const error = await rejection(runInit(dir, scripted()))
+    expect(error).toBeInstanceOf(OnboardError)
+    expect(error.message).toContain(BUSY)
+    expect(fs.existsSync(path.join(home, "company"))).toBe(false)
+    expect(fs.existsSync(path.join(home, "identity.json"))).toBe(false)
+    expect(fs.existsSync(setupConnectionFile(path.join(home, "office")))).toBe(false)
+  } finally {
+    lock.release()
+  }
+})
+
+test("init checks for a company again once it has the lock", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const staged = path.join(dir, "staged")
+  await writeCompany(staged, path.join(dir, "wt"), { company: "Acme", owner: { handle: "me", name: "Me" } })
+  const lock = holdSetupLock(home)
+  const pending = runInit(dir, scripted())
+  try {
+    // Init is now waiting on the lock: the company it checked for before is made meanwhile.
+    await Bun.sleep(20)
+    fs.renameSync(staged, path.join(home, "company"))
+  } finally {
+    lock.release()
+  }
+  const error = await rejection(pending)
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("there's already a company")
+  expect(fs.existsSync(path.join(home, "identity.json"))).toBe(false)
+  expect(fs.existsSync(setupConnectionFile(path.join(home, "office")))).toBe(false)
+})
+
+test("two inits at once leave one consistent company", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const results = await Promise.allSettled([runInit(dir, scripted()), runInit(dir, scripted())])
+  const messages = results.map((r) => (r.status === "rejected" ? (r.reason as Error).message : "resolved")).sort()
+  expect(messages.filter((m) => m === STOP)).toHaveLength(1)
+  const other = messages.find((m) => m !== STOP)!
+  expect(other.includes(BUSY) || other.includes("there's already a company"), other).toBe(true)
+  const company = path.join(home, "company")
+  expect(git(company, "log", "--format=%s").split("\n")).toEqual(["init: create the company"])
+  const me = (await readIdentity(path.join(home, "identity.json")))!
+  const devices = parse(git(company, "show", "HEAD:people/me/person.yaml")).devices
+  expect(devices).toEqual([{ name: me.device, token_sha256: tokenSha256(me.token) }])
+})
+
+test("the setup lock is free after a failed init", async () => {
+  const dir = tempDir()
+  await expect(runInit(dir, scripted())).rejects.toThrow(STOP)
+  lockFile(path.join(dir, "home", "office", "setup.lock"), { private: true }).release()
 })
 
 test("flags that clash without a terminal stop before the company is made", async () => {
