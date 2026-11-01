@@ -1,11 +1,12 @@
 /** Seeding a fresh chat run from the run it replaces. */
-import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import { foldRunLog, inspectRun, PoolCommitRecord } from "@ngocbh/yian/run"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
+import type { Frame } from "../../src/worker/channel.ts"
 import type { Job } from "../../src/worker/job.ts"
-import { tempDir, waitFor } from "../helpers.ts"
+import { captureStderr, tempDir, waitFor } from "../helpers.ts"
 import {
   advanceJob,
   base,
@@ -68,17 +69,6 @@ function notSeeded(rec: Recorder): unknown[] {
   return rec.frames
     .filter((frame) => frame.type === "event" && frame.name === "history_not_seeded")
     .map((frame) => frame.data)
-}
-
-/** The lines this process writes to stderr until the test finishes, captured instead of written. */
-function captureStderr(): string[] {
-  const lines: string[] = []
-  const spy = spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
-    lines.push(...String(chunk).split("\n").filter(Boolean))
-    return true
-  })
-  onTestFinished(() => spy.mockRestore())
-  return lines
 }
 
 /** The `steer` steps the run log of `job` records. */
@@ -399,4 +389,39 @@ test("moved messages that cannot be delivered are dropped quietly", async () => 
   expect(moved).toEqual(["opencorp __worker: a moved message was not delivered (not_started)"])
   expect(lines.filter((line) => line.includes("m1-words"))).toEqual([])
   expect(fake.requests()).toEqual([])
+})
+
+test("a carried history over the frame limit goes as a stubbed NodeExpanded and the next turn runs", async () => {
+  const stderr = captureStderr()
+  const fake = await fakeLlm()
+  const big = `${"w".repeat(1023)} `.repeat(100)
+  fake.script({ content: big }, { content: "ok" })
+  const first = new TemplateOffice()
+  const r1 = templateJob("chat", first, {}, { deliver: [send("s1", "hi")], keep: false })
+  const w1 = await inProcessWorker(r1, first, { env: fake.env(), maxFrame: 96 * 1024 })
+  await w1.wait()
+  expect(first.outcome?.status).toBe("waiting")
+  const expanded = first.frames
+    .filter((frame) => frame.name === "NodeExpanded")
+    .map((frame) => frame.data as { node_id: string; grow: { seed: unknown } })
+    .filter((data) => /^chat~\d+$/.test(data.node_id))
+  expect(expanded.length).toBeGreaterThan(0)
+  expect(expanded.at(-1)!.grow.seed).toBeNull()
+  // The reply still names its node, so the office counts the turn.
+  const reply = first.frames.find(
+    (frame) => frame.name === "NodeSucceeded" && (frame.data as Frame).node_id === "chat#0/reply",
+  )
+  expect(reply?.data).toMatchObject({ output: null })
+  const second = new TemplateOffice()
+  const w2 = await inProcessWorker(advanceJob(r1, { deliver: [send("s2", "again")] }), second, {
+    env: fake.env(),
+    maxFrame: 96 * 1024,
+  })
+  await w2.wait()
+  expect(second.outcome?.status).toBe("waiting")
+  expect(stderr).toContain("opencorp __worker: a NodeExpanded event frame went without its values")
+  expect(stderr.join("\n")).not.toContain("wwww")
+  // Yian kept the history though its event went as a stub.
+  const texts = (fake.requests().at(-1)!.messages as Record<string, unknown>[]).map((m) => JSON.stringify(m.content))
+  expect(texts.some((text) => text.includes("wwww"))).toBe(true)
 })

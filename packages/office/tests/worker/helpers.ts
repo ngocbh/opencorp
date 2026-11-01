@@ -34,9 +34,17 @@ import { openStore } from "../store/helpers.ts"
 export function recordFrames(): string[] {
   const frames: string[] = []
   const { send, recv } = Channel.prototype
-  const sending = spyOn(Channel.prototype, "send").mockImplementation(function (this: Channel, frame: Frame) {
-    frames.push(encode(frame))
-    return send.call(this, frame)
+  const sending = spyOn(Channel.prototype, "send").mockImplementation(function (
+    this: Channel,
+    frame: Frame,
+    fallbacks?: () => Frame[],
+  ) {
+    try {
+      frames.push(encode(frame))
+    } catch {
+      // Too big to encode: `send` sends a fallback or rejects, as it would unspied.
+    }
+    return send.call(this, frame, fallbacks)
   })
   const receiving = spyOn(Channel.prototype, "recv").mockImplementation(async function (this: Channel) {
     const frame = await recv.call(this)
@@ -83,6 +91,12 @@ export const HEARD =
   "id: heard\nname: heard\ninput:\n  messages: !Inbox(str)\nnodes:\n  heard:\n    kind: tool\n    tool_id: take\n" +
   "    input:\n      from: ${input.messages}\n      take: all\n  reply:\n    kind: agent\n    input:\n" +
   '      said: ${heard.output.events}\n    output: str\n    prompt: "${said}"\noutput: ${reply.output}\n'
+// An agent that answers the message, then the inbox flow's take, so the run waits after the reply.
+export const REPLIED =
+  "id: replied\nname: replied\ninput:\n  message: !str\n  messages: !Inbox(str)\nnodes:\n  reply:\n    kind: agent\n" +
+  '    input:\n      message: ${input.message}\n    output: str\n    prompt: "${message}"\n  heard:\n    kind: tool\n' +
+  "    tool_id: take\n    depends_on: [reply]\n    input:\n      from: ${input.messages}\n      take: all\n" +
+  "output: ${heard.output}\n"
 // A CODE node whose function is in a file beside the flow, then the inbox flow's take, so the run waits with a CODE
 // reference recorded.
 export const CODED =
@@ -131,6 +145,7 @@ export function writePin(root: string): string {
     "flows/cuttable.yaml": CUTTABLE,
     "flows/inbox.yaml": INBOX,
     "flows/heard.yaml": HEARD,
+    "flows/replied.yaml": REPLIED,
     "flows/coded.yaml": CODED,
     "flows/helpers.ts": CODED_HELPERS,
     "flows/profiled.yaml": PROFILED,

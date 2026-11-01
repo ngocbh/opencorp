@@ -4,8 +4,19 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { createInterface } from "node:readline"
-import { onTestFinished } from "bun:test"
+import { onTestFinished, spyOn } from "bun:test"
 import { args, sameProcess, startTime } from "../src/install/proc.ts"
+
+/** The lines this process writes to stderr until the test finishes, captured instead of written. */
+export function captureStderr(): string[] {
+  const lines: string[] = []
+  const spy = spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+    lines.push(...String(chunk).split("\n").filter(Boolean))
+    return true
+  })
+  onTestFinished(() => spy.mockRestore())
+  return lines
+}
 
 /** Polls `predicate` every 20 ms until it returns something truthy, and returns that; throws
  *  `timed out waiting for <what>` after `timeout` ms (Python's `wait_for`). */

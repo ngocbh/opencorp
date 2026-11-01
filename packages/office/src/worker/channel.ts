@@ -77,13 +77,26 @@ export class Channel {
     return this.#maxFrame
   }
 
-  /** Sends one frame. Rejects with `FrameTooLarge`, or with `ChannelClosed` after `closeSend()` or `close()`, or
-   *  once the transport broke. The bytes are handed to the transport before the first `await`, so frames go out in
-   *  call order; it resolves once the transport has taken them. */
-  async send(frame: Frame): Promise<void> {
-    const text = encode(frame)
-    const size = Buffer.byteLength(text)
-    if (size > this.#maxFrame) throw new FrameTooLarge(size, this.#maxFrame)
+  /** Sends one frame. A frame over the limit, or one too big for the engine to encode (`tooBig`), goes as the first
+   *  of `fallbacks()` that fits instead; `fallbacks` is called at most once, and only then. Rejects with
+   *  `FrameTooLarge` (naming the frame's own size) or the engine's `RangeError` when nothing fits, or with
+   *  `ChannelClosed` after `closeSend()` or `close()`, or once the transport broke. The bytes are handed to the
+   *  transport before the first `await`, so frames go out in call order; it resolves once the transport has taken
+   *  them. */
+  async send(frame: Frame, fallbacks?: () => Frame[]): Promise<void> {
+    let text: string
+    let size: number
+    try {
+      text = encode(frame)
+      size = Buffer.byteLength(text)
+      if (size > this.#maxFrame) throw new FrameTooLarge(size, this.#maxFrame)
+    } catch (error) {
+      if (!tooBig(error) || fallbacks === undefined) throw error
+      const fits = this.firstFit(fallbacks())
+      if (fits === undefined) throw error
+      text = fits.text
+      size = fits.size
+    }
     if (this.#sendClosed || this.#closed) throw new ChannelClosed("this end stopped sending")
     if (this.#broken) throw this.#broken
     const data = Buffer.allocUnsafe(HEADER + size)
@@ -131,6 +144,23 @@ export class Channel {
     this.#buffered = 0
     this.settle(new ChannelClosed())
     this.#transport.destroy()
+  }
+
+  // The text and byte size of the first of `frames` within the limit, encoding none after it; one too big for the
+  // engine to encode doesn't fit.
+  private firstFit(frames: Frame[]): { text: string; size: number } | undefined {
+    for (const frame of frames) {
+      let text: string
+      try {
+        text = encode(frame)
+      } catch (error) {
+        if (tooBig(error)) continue
+        throw error
+      }
+      const size = Buffer.byteLength(text)
+      if (size <= this.#maxFrame) return { text, size }
+    }
+    return undefined
   }
 
   private stop(error: ChannelClosed): void {
@@ -292,6 +322,17 @@ function toFrame(body: Buffer): Frame {
     throw new TypeError(`a frame must be a JSON object, got ${kind}`)
   }
   return value as Frame
+}
+
+/** Whether `error` says a frame is too big: `FrameTooLarge`, or the engine's `RangeError` for a value too long or
+ *  too deep to encode. Another `RangeError` (one a value's own `toJSON` throws, say) is a real error. */
+function tooBig(error: unknown): boolean {
+  if (error instanceof FrameTooLarge) return true
+  // JavaScriptCore's messages, and V8's for a string too long.
+  return (
+    error instanceof RangeError &&
+    /^(Out of memory|Maximum call stack size exceeded|Invalid string length)/.test(error.message)
+  )
 }
 
 // The ChannelClosed for a transport error: its text is at most the error's code, never anything it quotes.
