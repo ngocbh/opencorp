@@ -24,6 +24,13 @@ export const TRIES = 5
 /** The last choice of a typed list on the terminal; picking it asks for the answer. */
 export const TYPE_OWN = "Type my own answer"
 
+/** `text` safe to print: line breaks and tabs become spaces and other control characters are dropped, so model or
+ *  program text can't move the cursor or send escapes. */
+export function clean(text: string): string {
+  // C1 controls (0x80-0x9f) go too: some terminals read 0x9b as the start of an escape sequence.
+  return text.replace(/[\x00-\x1f\x7f-\x9f]/g, (c) => (c === "\n" || c === "\r" || c === "\t" ? " " : ""))
+}
+
 /** The error for stdin ending before `question` was answered. */
 export function closedInput(question: string): OnboardError {
   return new OnboardError(`no answer to ${repr(question)} (stdin closed)`)

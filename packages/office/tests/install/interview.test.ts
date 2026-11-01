@@ -10,11 +10,11 @@ import { readFlow } from "../../src/company/flow_yaml.ts"
 import type { Owner } from "../../src/company_template/index.ts"
 import initYaml from "../../src/install/flows/init.yaml" with { type: "file" }
 import {
-  Asking, CHANGE, CONFIRM, CREATE, type Known, ModelError, REMOTE, WHAT_TO_CHANGE, askUser, clean, confirm, facts,
+  Asking, CHANGE, CONFIRM, CREATE, type Known, ModelError, REMOTE, WHAT_TO_CHANGE, askUser, confirm, facts,
   fallbackDraft, initFlow, runInitFlow, summary,
 } from "../../src/install/interview.ts"
 import type { LoginDefaults } from "../../src/install/onboard.ts"
-import { KeyboardInterrupt, OnboardError, type Prompter, TRIES } from "../../src/install/prompts.ts"
+import { KeyboardInterrupt, OnboardError, type Prompter, TRIES, clean } from "../../src/install/prompts.ts"
 import { pyJson } from "../../src/perm/redact.ts"
 import { embedded } from "../../src/platform.ts"
 import { writePrivate } from "../../src/secrets.ts"

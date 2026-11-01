@@ -140,6 +140,8 @@ export async function readPrivate(file: string): Promise<Buffer> {
   } catch (error) {
     const code = errnoCode(error)
     if (code === "ENOENT") throw error
+    // The final component of a symlink under O_NOFOLLOW fails with ELOOP (EMLINK on some BSDs).
+    if (code === "ELOOP" || code === "EMLINK") throw new PrivateFileError(`'${file}' is a symlink, not a regular file`)
     throw new PrivateFileError(`can't open '${file}': ${code}`)
   }
   try {

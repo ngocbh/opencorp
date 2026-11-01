@@ -26,11 +26,17 @@ export interface CompanyRepo {
   readonly errors: readonly RepoIssue[]
 }
 
-/** The names in `dir`, sorted; none if it can't be listed. */
-function list(dir: string): string[] {
+/** The names in repo folder `rel`, sorted; none if it's missing or a file, and an unreadable folder is recorded in
+ *  `errors`. */
+function list(root: string, rel: string, errors: RepoIssue[]): string[] {
   try {
-    return fs.readdirSync(dir).sort()
-  } catch {
+    return fs.readdirSync(path.join(root, rel)).sort()
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    // The OS error's message quotes the absolute path, so only fixed text and the code leave.
+    if (code !== "ENOENT" && code !== "ENOTDIR") {
+      errors.push(repoIssue(rel, "repo.unreadable", `can't be listed (${code ?? "error"})`))
+    }
     return []
   }
 }
@@ -57,7 +63,7 @@ function byId<S extends typeof GroupSchema | typeof AssetSchema>(
   errors: RepoIssue[],
 ): Map<string, z.output<S>> {
   const items = new Map<string, z.output<S>>()
-  for (const name of list(path.join(root, folder)).filter((name) => name.endsWith(".yaml"))) {
+  for (const name of list(root, folder, errors).filter((name) => name.endsWith(".yaml"))) {
     const rel = `${folder}/${name}`
     const stem = name.slice(0, -".yaml".length)
     const item = parse(root, rel, schema, errors)
@@ -82,10 +88,10 @@ export function loadRepo(root: string): CompanyRepo {
   const errors: RepoIssue[] = []
   const company = parse(root, "company.yaml", CompanySchema, errors)
   const people = new Map<string, Person>()
-  for (const folder of list(path.join(root, "people"))) {
+  for (const folder of list(root, "people", errors)) {
     // A listing matches the name exactly where a lookup may ignore case (macOS), as the glob and git do. It
     // follows a symlinked folder, gives nothing for a file and keeps a dangling person.yaml link.
-    if (!list(path.join(root, "people", folder)).includes("person.yaml")) continue
+    if (!list(root, `people/${folder}`, errors).includes("person.yaml")) continue
     const rel = `people/${folder}/person.yaml`
     const person = parse(root, rel, PersonSchema, errors)
     if (person === null) continue
