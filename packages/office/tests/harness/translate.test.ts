@@ -5,7 +5,7 @@ import { expect, test } from "bun:test"
 import type { Message, Part } from "@opencorp/protocol"
 import type { HarnessEvent } from "../../src/harness/adapter.ts"
 import { changeCounts, COMMAND, FILE_CHANGE, type Issued, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED, relative,
-  REPLY_SCHEMAS, REQUEST, SERVED, Translator, Unserved } from "../../src/harness/translate.ts"
+  REPLY_SCHEMAS, REQUEST, SERVED, Translator, Unserved, Unshowable } from "../../src/harness/translate.ts"
 import { agentMessage, agentMessageDelta, command, commandApproval, commandStarted, error, fileChange,
   fileChangeApproval, fill, formElicitation, mcpApproval, mcpApprovalQuestion, networkApproval, permissionsApproval,
   question, urlElicitation, userInput } from "../../src/testing/fake_codex.ts"
@@ -405,8 +405,20 @@ test("a file change card offers only the decisions codex lists", () => {
   for (const label of ["Approve for this session", "Deny and stop", "toString"]) {
     expect(() => c.reply(label)).toThrow(new RangeError("the answer isn't one of the card's options"))
   }
-  step.params.availableDecisions = []
-  expect(card(t, step).card.options).toEqual([])
+})
+
+test.each([
+  ["an empty list", []],
+  ["only amendments", [{ acceptWithExecpolicyAmendment: {} }]],
+])("an approval with no decision a card can offer is unshowable [%s]", (_name, available) => {
+  const { t } = tr()
+  feed(t, [fileChange("f1", "{cwd}/notes.md", "hi\n")[0]!])
+  for (const step of [commandApproval(1, "c1", "make a"), fileChangeApproval(2, "f1")]) {
+    step.params.availableDecisions = available
+    const ask = () => card(t, step)
+    expect(ask).toThrow(Unshowable)
+    expect(ask).toThrow("with no option a card can offer")
+  }
 })
 
 test("a command approval names the permissions it asks for", () => {
@@ -486,6 +498,18 @@ test.each(["elicitation", "user_input"])("an mcp tool approval is one card in ei
   }
 })
 
+test.each([
+  ["only don't ask again", ["Allow and don't ask me again"]],
+  ["no options", null],
+])("an mcp approval question with no option a card can offer is unshowable [%s]", (_name, options) => {
+  const { t } = tr()
+  const step = mcpApprovalQuestion(5, "u2", "docs", "search")
+  step.params.questions[0].options = options && options.map((label) => ({ label, description: "" }))
+  const ask = () => card(t, step)
+  expect(ask).toThrow(Unshowable)
+  expect(ask).toThrow("with no option a card can offer")
+})
+
 test("an mcp approval without a session choice offers two", () => {
   const { t } = tr()
   expect(card(t, mcpApproval(5, "docs", "search", { sessionOption: false })).card.options).toEqual(["Allow", "Cancel"])
@@ -525,21 +549,40 @@ test("a form with no fields is an accept decline or cancel card", () => {
 
 test.each([
   // more fields than a card has pages
-  ["five fields", Object.fromEntries([0, 1, 2, 3, 4].map((i) => [`f${i}`, { type: "string" }]))],
+  ["five fields", Object.fromEntries([0, 1, 2, 3, 4].map((i) => [`f${i}`, { type: "string" }])),
+    "with more than four fields"],
   // a list, which a page can't give
-  ["a list", { tags: { type: "array", items: { type: "string", enum: ["a", "b"] } } }],
+  ["a list", { tags: { type: "array", items: { type: "string", enum: ["a", "b"] } } },
+    "with a list or titled-choice field"],
   // titled choices, whose values differ
-  ["titled choices", { env: { type: "string", oneOf: [{ const: "p", title: "Prod" }] } }],
-])("a form a card cannot answer in full is unserved [%s]", (_name, properties) => {
+  ["titled choices", { env: { type: "string", oneOf: [{ const: "p", title: "Prod" }] } },
+    "with a list or titled-choice field"],
+])("a form a card cannot answer in full is unshowable [%s]", (_name, properties, reason) => {
   const { t } = tr()
-  expect(() => card(t, formElicitation(7, "jira", "Ticket", properties))).toThrow(Unserved)
+  const ask = () => card(t, formElicitation(7, "jira", "Ticket", properties))
+  expect(ask).toThrow(Unshowable)
+  expect(ask).toThrow(reason)
 })
 
-test("more than four questions or an unknown method is unserved", () => {
+test("more than four questions is unshowable", () => {
   const { t } = tr()
   const many = userInput(8, "u3", [0, 1, 2, 3, 4].map((i) => question(`q${i}`, `Q${i}`, "?")))
-  expect(() => card(t, many)).toThrow(Unserved)
-  expect(() => t.card("item/tool/call", {}, { runId: "turn_1", nodeId: "9" })).toThrow(Unserved)
+  expect(() => card(t, many)).toThrow(Unshowable)
+  expect(() => card(t, many)).toThrow("with more than four questions")
+})
+
+test("a question request with no questions can't be read", () => {
+  const { t } = tr()
+  const ask = () => card(t, userInput(8, "u3", []))
+  expect(ask).toThrow("the request can't be shown as a card")
+  expect(ask).not.toThrow(Unshowable)
+})
+
+test("an unknown method is unserved", () => {
+  const { t } = tr()
+  const ask = () => t.card("item/tool/call", {}, { runId: "turn_1", nodeId: "9" })
+  expect(ask).toThrow(Unserved)
+  expect(ask).not.toThrow(Unshowable)
 })
 
 test.each([
@@ -548,12 +591,18 @@ test.each([
   // OpenAI's own forms have a schema the pinned protocol leaves open, so a card can't type their reply.
   ["openai/form", { message: "Pick", requestedSchema: { anything: true } }],
   ["openaiForm", { message: "Pick", requestedSchema: { anything: true } }],
-])("an elicitation in a mode a card cannot answer is unserved [%s]", (mode, rest) => {
+])("an elicitation in a mode a card cannot answer is unshowable [%s]", (mode, rest) => {
   const { t } = tr()
   const params = { serverName: "gh", threadId: "thr_1", turnId: null, mode, ...rest }
-  const ask = () => t.card("mcpServer/elicitation/request", params, { runId: "codex-1", nodeId: "10" })
-  expect(ask).toThrow(Unserved)
-  expect(ask).toThrow(`in mode ${mode}`)
+  let thrown: unknown
+  try {
+    t.card("mcpServer/elicitation/request", params, { runId: "codex-1", nodeId: "10" })
+  } catch (e) {
+    thrown = e
+  }
+  expect(thrown).toBeInstanceOf(Unshowable)
+  // A fixed text: the mode is Codex's to choose, so it isn't echoed.
+  expect((thrown as Error).message).toBe("in a mode a card can't answer")
 })
 
 test("an answer that isnt an offered option makes no reply", () => {

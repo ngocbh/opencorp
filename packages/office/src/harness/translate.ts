@@ -265,7 +265,8 @@ export class Translator {
     if (turn.startsWith(TURNLESS)) this.finish(turn, false)
   }
 
-  /** The card for a server request; `Unserved` for a method that isn't one. */
+  /** The card for a server request; `Unserved` for a method that isn't one, `Unshowable` for a request of one that no
+   *  card can show. */
   card(method: string, params: Obj, asked: Asked): Issued {
     if (method === "item/commandExecution/requestApproval") {
       const network = params.networkApprovalContext
@@ -325,7 +326,8 @@ export class Translator {
       // Only MCP's own modes can be answered from a card. A device verification (openai/userVerification) wants a
       // proof Codex's client makes, and OpenAI's forms (openai/form, openaiForm) have a schema the pinned protocol
       // leaves open, so no reply could be checked; Codex takes the error as a refusal.
-      if (params.mode !== "form" && params.mode !== "url") throw new Unserved(`${method} in mode ${pyStr(params.mode)}`)
+      // The mode is Codex's to choose, so the reason doesn't name it.
+      if (params.mode !== "form" && params.mode !== "url") throw new Unshowable("in a mode a card can't answer")
       const meta: Obj = truthy(params._meta) ? params._meta : {}
       const title = `${params.serverName}: ${params.message}`
       if (truthy(meta.codex_approval_kind)) {
@@ -576,6 +578,10 @@ function issue(kind: Card["kind"], callId: string | undefined, { runId, nodeId }
   const parsed = CARD.safeParse(shown)
   // The parse error quotes what Codex sent, so only a fixed text leaves.
   if (!parsed.success) throw new Error("the request can't be shown as a card")
+  // A card with no pages takes only an option, so with none no answer could reach Codex.
+  if (parsed.data.questions === null && parsed.data.options.length === 0) {
+    throw new Unshowable("with no option a card can offer")
+  }
   return { card: { kind, ...parsed.data }, callId, runId, nodeId, reply }
 }
 
@@ -586,9 +592,9 @@ function approval(kind: Card["kind"], params: Obj, asked: Asked, title: string, 
     options: options.map(([label]) => label) }, choice(options, (d) => ({ decision: d })))
 }
 
-/** A question card with a page per Codex question; `Unserved` for more than a card holds. */
+/** A question card with a page per Codex question; `Unshowable` for more than a card holds. */
 function pages(params: Obj, asked: Asked, questions: Obj[]): Issued {
-  if (questions.length > MAX_PAGES) throw new Unserved("item/tool/requestUserInput with more than four questions")
+  if (questions.length > MAX_PAGES) throw new Unshowable("with more than four questions")
   const headers = new Map<string, string>()  // page header -> Codex question id
   const enums = new Map<string, string[]>()  // page header -> its options, for a page that takes only them
   const shown: QuestionPage[] = [], schema: AnswerField[] = []
@@ -639,10 +645,10 @@ function elicitation(params: Obj, asked: Asked, title: string): Issued {
   const fields = new Map<string, Obj>(Object.entries(props))
   const choices = new Map<string, string[]>()  // field -> the labels it takes only
   // A reply must hold every field, typed as the schema says: a form a card can't answer in full is refused.
-  if (fields.size > MAX_PAGES) throw new Unserved("mcpServer/elicitation/request with more than four fields")
+  if (fields.size > MAX_PAGES) throw new Unshowable("with more than four fields")
   if ([...fields.values()].some((spec) => spec.type === "array" || Object.hasOwn(spec, "oneOf")
     || Object.hasOwn(spec, "anyOf"))) {
-    throw new Unserved("mcpServer/elicitation/request with a list or titled-choice field")
+    throw new Unshowable("with a list or titled-choice field")
   }
   const shown: QuestionPage[] = [], schema: AnswerField[] = []
   for (const [name, spec] of fields) {
@@ -684,8 +690,8 @@ function choice(options: Options, result: (decision: string, label: string) => R
   }
 }
 
-/** The options whose decisions Codex lists. All of them when Codex sends no list (missing or null); none for an
- *  empty list. */
+/** The options whose decisions Codex lists. All of them when Codex sends no list (missing or null); none for a list
+ *  that is empty or holds only amendments, which `issue` then refuses. */
 function offered(available: unknown[] | null | undefined, options: Options): Options {
   if (available == null) return options
   // Persistent decisions are objects (amendments) and write the owner's Codex config: never offered.
@@ -731,7 +737,13 @@ function pruned(value: unknown): unknown {
     .filter(([, v]) => v != null && !(isPlain(v) && Object.keys(v).length === 0)))
 }
 
-/** A server request the office doesn't turn into a card; it gets a JSON-RPC error. */
+/** A server request whose method the office doesn't serve; it gets a JSON-RPC error. */
 export class Unserved extends Error {
   override name = "Unserved"
+}
+
+/** A request of a served method that no card can show; it gets a JSON-RPC error. Its message is a fixed reason, and
+ *  it is thrown only once the method matched a served one, so both can be logged. */
+export class Unshowable extends Error {
+  override name = "Unshowable"
 }
