@@ -1,5 +1,6 @@
 /** The run state Codex sessions write, and how a restart finds a waiting one. */
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
+import { RpcError } from "../../src/harness/rpc.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { waitFor } from "../helpers.ts"
 import { type Codex, allGone, approvalTurn, makeCodex, openCard, restarted, start, status, texts } from "./helpers.ts"
@@ -44,6 +45,80 @@ test("a turnless card is waiting with no turn then idle once answered", async ()
   })
   await h.sessions.answer(q.id, "Done", "option", { by: "ngocbh" })
   await waitFor(() => Bun.deepEquals(state(h, sid), ["idle", []]), { what: "idle, not busy" })
+})
+
+test("esc on a turnless card with no turn cancels it", async () => {
+  const h = makeCodex()
+  h.fake.script([[fc.urlElicitation(8, "gh", "Sign in", "https://e.com/l", { wait: false })]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "sign in")
+  const q = await openCard(h, sid)
+  await waitFor(() => status(h, sid) === "waiting" && h.sessions.get(sid)!.turnId === null, { what: "the turn's end" })
+  await h.sessions.interrupt(sid)
+  await waitFor(() => 8 in h.fake.replies(), { what: "the reply" })
+  expect(h.fake.replies()[8]).toEqual({ action: "cancel" })
+  expect(state(h, sid)).toEqual(["idle", []])
+  expect(h.store.getQuestion(q.id)!.status).toBe("stale")
+  expect(h.fake.calls("turn/interrupt")).toEqual([])
+})
+
+test("with a turn and a turnless card the first esc stops the turn and the second cancels the card", async () => {
+  const h = makeCodex()
+  h.fake.script([[fc.urlElicitation(8, "gh", "Sign in", "https://e.com/l", { wait: false }), { sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  await h.sessions.prompt(sid, "sign in")
+  const q = await openCard(h, sid)
+  await waitFor(() => status(h, sid) === "waiting" && live.turnId !== null, { what: "waiting mid turn" })
+  await h.sessions.interrupt(sid)
+  await waitFor(() => live.turnId === null, { what: "the interrupted turn's end" })
+  expect(h.fake.calls("turn/interrupt")).toEqual([{ threadId: "thr_1", turnId: "turn_1" }])
+  expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
+  expect(state(h, sid)).toEqual(["waiting", ["ngocbh"]])
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+  expect(8 in h.fake.replies()).toBe(false)
+  await h.sessions.interrupt(sid)
+  await waitFor(() => 8 in h.fake.replies(), { what: "the reply" })
+  expect(h.fake.replies()[8]).toEqual({ action: "cancel" })
+  expect(state(h, sid)).toEqual(["idle", []])
+  expect(h.store.getQuestion(q.id)!.status).toBe("stale")
+})
+
+test("esc cancels a turnless card only on the app server that asked it", async () => {
+  const h = makeCodex()
+  h.fake.script([[fc.urlElicitation(8, "gh", "Sign in", "https://e.com/l", { wait: false })]])
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  await h.sessions.prompt(sid, "sign in")
+  const q = await openCard(h, sid)
+  await waitFor(() => status(h, sid) === "waiting" && live.turnId === null, { what: "the turn's end" })
+  const old = live.process!
+  // Codex unloaded the thread: the next message reloads it in a new app-server, which never asked the card.
+  spyOn(old.rpc!, "request").mockRejectedValue(new RpcError(-32600, "thread not found: thr_1"))
+  expect(await h.sessions.prompt(sid, "again")).toBe("queued")
+  await waitFor(() => live.process !== null && live.process !== old && !live.loading && live.turnId === null, {
+    what: "the reload and its turn",
+  })
+  await waitFor(() => status(h, sid) === "waiting", { what: "the turn's end" })
+  await h.sessions.interrupt(sid)
+  await waitFor(() => Bun.deepEquals(state(h, sid), ["idle", []]), { what: "idle" })
+  expect(h.store.getQuestion(q.id)!.status).toBe("stale")
+  expect(8 in h.fake.replies()).toBe(false)
+})
+
+test("esc refuses a request with no turn that isnt an elicitation", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  const step = fc.userInput(9, "u1", [fc.question("token", "Token", "Paste the token")])
+  live.requested(live.process!, 9, step.request, { ...fc.fill(step.params, "", h.workspace, "thr_1"), turnId: null })
+  const q = await openCard(h, sid)
+  await waitFor(() => status(h, sid) === "waiting", { what: "the card" })
+  await h.sessions.interrupt(sid)
+  await waitFor(() => 9 in h.fake.replies(), { what: "the reply" })
+  expect((h.fake.replies()[9] as { code: number }).code).toBe(-32603)
+  expect(state(h, sid)).toEqual(["idle", []])
+  expect(h.store.getQuestion(q.id)!.status).toBe("stale")
 })
 
 test("a card codex resolves itself leaves waiting", async () => {

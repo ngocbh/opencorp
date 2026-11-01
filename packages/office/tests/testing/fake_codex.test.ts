@@ -350,6 +350,25 @@ test(
 )
 
 test(
+  "an interrupt leaves a request with no turn waiting",
+  async () => {
+    const live = new Live(tempDir(), {
+      turns: [
+        [fc.urlElicitation(8, "gh", "Sign in", "https://e.com/l", { wait: false }), fc.commandApproval(0, "c1", "a")],
+      ],
+    })
+    live.send(...START)
+    await live.until(method("item/commandExecution/requestApproval"))
+    live.send(INTERRUPT)
+    await live.until(method("serverRequest/resolved"))
+    // Resolved in the order they were sent, with no await between: 8 would come first.
+    expect(live.out.filter((m) => m.method === "serverRequest/resolved").map((m) => m.params.requestId)).toEqual([0])
+    await live.close()
+  },
+  TIMEOUT,
+)
+
+test(
   "a turn start once a turn ends never starts the next turn before the old one completes",
   async () => {
     // Many requests still waiting make the end of the interrupted turn long, and the first serverRequest/resolved

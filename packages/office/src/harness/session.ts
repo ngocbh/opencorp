@@ -70,8 +70,8 @@ function input(text: string) {
 /** A JSON object from the wire: `any`, since its shape is whatever Codex sent. */
 type Obj = Record<string, any>
 
-/** A server request Codex waits on: its JSON-RPC id and its card. */
-export type Pending = { requestId: unknown; issued: Issued }
+/** A server request Codex waits on: its JSON-RPC id, its card and its method. */
+export type Pending = { requestId: unknown; issued: Issued; method: string }
 
 /** An answer waiting for its reply to be written: `started` once its job runs, `givenUp` once the answerer stopped
  *  waiting before that. `settle` resolves with what the job made of it, or rejects with its error. */
@@ -194,7 +194,8 @@ export class CodexSession {
   }
 
   /** Esc: drops the messages waiting for a load, interrupts a turn being started once Codex says which it is, and
-   *  asks Codex to interrupt the running turn; its `turn/completed` marks it. */
+   *  asks Codex to interrupt the running turn; its `turn/completed` marks it. With none of these, cancels the cards
+   *  Codex asked outside any turn. */
   async interrupt(): Promise<void> {
     if (this.stopped || this.closed) return
     const turn = this.turnId
@@ -205,6 +206,7 @@ export class CodexSession {
       // A turn being started gets the marker once it is interrupted.
       if (queued) this.#dropQueued({ mark: !starting })
       if (starting && turn === null) this.#interruptWanted = true
+      if (turn === null && !starting && !queued) this.#cancelTurnless()
     }
     if (turn !== null && proc !== null) await this.#interruptTurn(proc, turn)
   }
@@ -217,6 +219,34 @@ export class CodexSession {
       // The turn ended meanwhile, the app-server is gone, or it hangs (its end or office stop kills it).
       if (!(error instanceof RpcError || error instanceof RpcClosed || isTimeout(error))) throw error
     }
+  }
+
+  /** Esc with no turn: cancels each card Codex asked outside any turn, as closing an MCP client's dialog does. Posted,
+   *  not awaited, so Esc never waits behind a load. */
+  #cancelTurnless(): void {
+    const cards = [...this.requests].filter(([, p]) => p.issued.runId.startsWith(TURNLESS)).map(([id]) => id)
+    if (cards.length === 0) return
+    void this.post("cancel", async () => {
+      for (const questionId of cards) {
+        const pending = this.requests.get(questionId)
+        if (pending === undefined) continue // answered or resolved meanwhile
+        // A card an earlier app-server asked has no one waiting on it any more.
+        const current = this.#turnless?.proc === this.process && pending.issued.runId === this.#turnless?.runId
+        const [, proc] = this.#take(questionId)
+        this.#expire(questionId)
+        if (!current || proc === null || !proc.alive) continue
+        // Every request gets an answer; cancel grants nothing.
+        if (pending.method !== "mcpServer/elicitation/request") {
+          await this.#refuse(proc, pending.requestId, -32603, "the owner dismissed the request")
+          continue
+        }
+        try {
+          await proc.rpc!.reply(pending.requestId, { action: "cancel" })
+        } catch (error) {
+          if (!(error instanceof RpcClosed)) throw error // closed: nothing waits on the answer
+        }
+      }
+    })
   }
 
   /** Drops the messages waiting for a load, as Esc does; `mark` ends the transcript with the interrupt marker. */
@@ -604,7 +634,7 @@ export class CodexSession {
       return
     }
     // Registered once the card is out; an answer to it is a later job, so it can't come before this.
-    this.requests.set(key, { requestId: id, issued })
+    this.requests.set(key, { requestId: id, issued, method })
     this.byRequest.set(String(id), key)
     this.#settle()
   }

@@ -18,7 +18,8 @@
  *
  *  `"{thread}"`, `"{turn}"` and `"{cwd}"` in params are filled in. `turn/start` during a turn is a steer and answers
  *  with the running turn. `turn/interrupt` stops the steps, completes the turn `interrupted`, and then resolves the
- *  requests still waiting; with `interrupt_hangs` it gets no answer and the turn runs on. Every message read or written
+ *  requests of the turn still waiting (a request whose `turnId` is null outlives it); with `interrupt_hangs` it gets
+ *  no answer and the turn runs on. Every message read or written
  *  is appended to `--log` as `{"dir": "in"|"out", "msg"}`. Stdin EOF exits 0. The builders below make steps whose
  *  messages match the pinned Codex schema. */
 import { spawn } from "node:child_process"
@@ -57,6 +58,7 @@ export class Fake {
   cwd = "/"
   private readonly replies = new Map<unknown, Obj>()
   private readonly waiting = new Set<unknown>() // requests sent and not resolved yet
+  private readonly turnless = new Set<unknown>() // the waiting requests whose turnId is null
   private turn: string | null = null
   private interrupted = false
   private readonly countFile: string | null
@@ -216,6 +218,7 @@ export class Fake {
       if ("notify" in step) this.send({ method: step.notify, params })
       else if ("request" in step) {
         this.waiting.add(step.id)
+        if (params.turnId === null) this.turnless.add(step.id)
         this.send({ id: step.id, method: step.request, params })
         if (step.wait) await this.waitReply(step.id)
       } else if ("wait_reply" in step) await this.waitReply(step.wait_reply)
@@ -239,7 +242,7 @@ export class Fake {
     // As Codex does: turn/completed first, then serverRequest/resolved for what an interrupt left waiting. All of it
     // is sent with no await in between, so a turn/start that comes as the turn ends never sends the next turn/started
     // ahead of it.
-    const waiting = this.interrupted ? [...this.waiting] : []
+    const waiting = this.interrupted ? [...this.waiting].filter((id) => !this.turnless.has(id)) : []
     if (this.interrupted) status = "interrupted"
     this.send({
       method: "turn/completed",
@@ -256,6 +259,7 @@ export class Fake {
 
   resolve(requestId: unknown): void {
     this.waiting.delete(requestId)
+    this.turnless.delete(requestId)
     this.send({ method: "serverRequest/resolved", params: { threadId: this.thread.id, requestId } })
   }
 }
