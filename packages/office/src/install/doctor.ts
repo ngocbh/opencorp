@@ -418,7 +418,8 @@ export async function codexCheck(
   if (home) env = { ...env, CODEX_HOME: home }
   /** `found <args>`, or the failed check when it timed out or never started. */
   const ask = async (...args: string[]) => {
-    const done = await runCommand([found, ...args], { env, timeoutMs })
+    // In its own group, so a hung Codex and anything it started go with the timeout.
+    const done = await runCommand([found, ...args], { env, timeoutMs, group: true })
     if (done.code === 124 && done.stderr === `${found} timed out`) {
       const detail = `${found} ${args.join(" ")} didn't answer in ${timeoutMs / 1000} s`
       return { name: "codex", status: "fail", detail } satisfies Check

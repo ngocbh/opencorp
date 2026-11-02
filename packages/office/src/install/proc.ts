@@ -2,7 +2,7 @@
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { liveGroupMembers, procStartTime } from "../platform.ts"
+import { liveGroupMembers, machineBootTime, procGroupId, procStartTime } from "../platform.ts"
 
 /** Whether `n` can be a process or group id the office may read or signal: an integer from 2 to 2^31 − 1
  *  (0 and 1 would make process.kill hit the office's own group or every process; pid_t is 32 bits). */
@@ -34,18 +34,39 @@ function parseDecimal(text: string | undefined): number | null {
   return Number.isSafeInteger(n) ? n : null
 }
 
+/** `btime` from `<procRoot>/stat`, read once per root; null when the file is missing or malformed. Linux only. */
+function linuxBootTime(procRoot: string): number | null {
+  const known = bootTimes.get(procRoot)
+  if (known !== undefined) return known
+  try {
+    const line = fs.readFileSync(path.join(procRoot, "stat"), "utf8").match(/^btime (.*)$/m)
+    const read = parseDecimal(line?.[1])
+    if (read !== null) bootTimes.set(procRoot, read)
+    return read
+  } catch {
+    return null
+  }
+}
+
+/** When this machine booted, in seconds since the epoch, or null when it can't be read (or on a platform other
+ *  than macOS or Linux). macOS: `kern.boottime`; Linux: the `btime` startTime adds to, read once. */
+export function bootTime(): number | null {
+  if (process.platform === "linux") return linuxBootTime("/proc")
+  if (process.platform !== "darwin") return null
+  try {
+    return machineBootTime()
+  } catch {
+    // libSystem wouldn't load.
+    return null
+  }
+}
+
 /** Linux: `btime` from `<procRoot>/stat` (read once per root) plus field 22 (start ticks after boot) of
  *  `<procRoot>/<pid>/stat` over USER_HZ (100). Null when either file is missing or malformed. */
 export function linuxStartTime(pid: number, procRoot = "/proc"): number | null {
+  const btime = linuxBootTime(procRoot)
+  if (btime === null) return null
   try {
-    let btime = bootTimes.get(procRoot)
-    if (btime === undefined) {
-      const line = fs.readFileSync(path.join(procRoot, "stat"), "utf8").match(/^btime (.*)$/m)
-      const read = parseDecimal(line?.[1])
-      if (read === null) return null
-      btime = read
-      bootTimes.set(procRoot, btime)
-    }
     const stat = fs.readFileSync(path.join(procRoot, String(pid), "stat"), "utf8")
     // The comm (field 2) may hold spaces and parens, so the fields start after the last ")".
     const end = stat.lastIndexOf(")")
@@ -63,6 +84,40 @@ export function linuxStartTime(pid: number, procRoot = "/proc"): number | null {
 export function sameProcess(pid: number, started: number): boolean {
   const found = startTime(pid)
   return found !== null && Math.abs(found - started) < 0.01
+}
+
+/** Whether no process holds `pid` now: `kill(pid, 0)` fails with ESRCH. False for a live process (zombies
+ *  included), one the office may not signal (EPERM), or an id that isn't a pid. Sends no signal. */
+export function noSuchProcess(pid: number): boolean {
+  if (!isPid(pid)) return false
+  try {
+    process.kill(pid, 0)
+    return false
+  } catch (error) {
+    return (error as { code?: unknown }).code === "ESRCH"
+  }
+}
+
+/** Whether the office itself is in process group `pgid`: whether the office's own group id, read now, is `pgid`.
+ *  macOS: libproc's `procGroupId`; Linux: field 5 of /proc/self/stat. True when it can't be told (another
+ *  platform, a failed read), so a caller that skips the office's own group fails safe. */
+export function inOfficeGroup(pgid: number): boolean {
+  const own = officeGroup()
+  return own === null || own === pgid
+}
+
+/** The office's own process group id, or null when it can't be read. */
+function officeGroup(): number | null {
+  try {
+    if (process.platform === "darwin") return procGroupId(process.pid)
+    if (process.platform !== "linux") return null
+    const stat = fs.readFileSync("/proc/self/stat", "utf8")
+    // As in linuxStartTime: the fields start after the last ")", and rest[0] is field 3, so field 5 is rest[2].
+    const end = stat.lastIndexOf(")")
+    return end < 0 ? null : parseDecimal(stat.slice(end + 2).split(" ")[2])
+  } catch {
+    return null
+  }
 }
 
 // At most this many repeat kills on macOS, about 1 ms apart, so a group forking faster than that can't hold the

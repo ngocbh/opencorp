@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, onTestFinished, test } from "bun:test"
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
@@ -10,7 +10,7 @@ import { restart } from "../src/commands/restart"
 import { start } from "../src/commands/start"
 import { stop } from "../src/commands/stop"
 import { main } from "../src/main"
-import { type Deps, install, installSpawn, officeAnswers, realDeps } from "../src/office"
+import { type Deps, INTERRUPT_GRACE_MS, install, installSpawn, officeAnswers, realDeps } from "../src/office"
 import { createFakeOffice } from "@opencorp/tui/fake-office"
 
 const WRAPPER = path.resolve(import.meta.dir, "../bin/opencorp")
@@ -169,6 +169,142 @@ test("what the CLI passes reaches the programs it runs", async () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// Bun run from a checkout, as selfCommand runs it: no install, no .env and no bunfig.toml.
+const CHECKOUT = [process.execPath, "--no-install", "--no-env-file", "--config=/dev/null"]
+
+/** A fresh folder (real path) removed when the test finishes. */
+function tempDir(): string {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-signal-")))
+  onTestFinished(() => fs.rmSync(dir, { recursive: true, force: true }))
+  return dir
+}
+
+/** The pid `file` holds once it is written, within 10 s. */
+async function pidIn(file: string): Promise<number> {
+  for (let i = 0; i < 500; i++) {
+    const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim() : ""
+    if (/^\d+$/.test(text)) return Number(text)
+    await Bun.sleep(20)
+  }
+  throw new Error(`no pid in ${file}`)
+}
+
+/** Whether no process holds `pid`. */
+function gone(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return false
+  } catch (error) {
+    return (error as { code?: unknown }).code === "ESRCH"
+  }
+}
+
+/** Waits up to 10 s for `pid` to be gone; true when it went. */
+async function waitGone(pid: number): Promise<boolean> {
+  for (let i = 0; i < 500 && !gone(pid); i++) await Bun.sleep(20)
+  return gone(pid)
+}
+
+/**
+ * Runs `realDeps.spawn(childArgv)` in a process of its own leading its own group, as the CLI runs an install;
+ * `exited` resolves to its exit code, or fails after 20 s. The group, the install child included, is killed when the
+ * test finishes.
+ */
+function runSpawn(dir: string, childArgv: string[]) {
+  const file = path.join(dir, "cli.ts")
+  const office = JSON.stringify(path.resolve(import.meta.dir, "../src/office.ts"))
+  fs.writeFileSync(
+    file,
+    `import { realDeps } from ${office}\n` +
+      "const options = { cwd: process.cwd(), env: { PATH: '/usr/bin:/bin' } }\n" +
+      "process.exit(await realDeps.spawn(JSON.parse(process.argv[2]), options))\n",
+  )
+  const argv = [...CHECKOUT, file, JSON.stringify(childArgv)]
+  const proc = spawn(argv[0]!, argv.slice(1), { cwd: dir, stdio: "ignore", detached: true })
+  onTestFinished(() => {
+    try {
+      process.kill(-proc.pid!, "SIGKILL")
+    } catch {}
+  })
+  const exited = Promise.race([
+    new Promise<number | null>((resolve) => proc.on("exit", (code) => resolve(code))),
+    Bun.sleep(20_000).then(() => {
+      throw new Error("the CLI didn't exit within 20 s")
+    }),
+  ])
+  return { pid: proc.pid!, exited }
+}
+
+/** A child that writes its pid to `file` and sleeps 30 s. */
+function sleeper(file: string): string[] {
+  return ["/bin/sh", "-c", `echo $$ > '${file}'; exec /bin/sleep 30`]
+}
+
+test("sigterm and sighup reach the install and the cli exits with its code", async () => {
+  for (const [signal, code] of [["SIGTERM", 143], ["SIGHUP", 129]] as const) {
+    const dir = tempDir()
+    const pidFile = path.join(dir, "pid")
+    const cli = runSpawn(dir, sleeper(pidFile))
+    const child = await pidIn(pidFile)
+    const sent = performance.now()
+    process.kill(cli.pid, signal)
+    expect(await cli.exited).toBe(code)
+    expect(performance.now() - sent).toBeLessThan(5000)
+    expect(await waitGone(child)).toBe(true)
+  }
+}, 60_000)
+
+test("a targeted sigint reaches the install after a grace", async () => {
+  const dir = tempDir()
+  const pidFile = path.join(dir, "pid")
+  const cli = runSpawn(dir, sleeper(pidFile))
+  const child = await pidIn(pidFile)
+  const sent = performance.now()
+  process.kill(cli.pid, "SIGINT")
+  expect(await cli.exited).toBe(130)
+  // Less a little for the timer's slack.
+  expect(performance.now() - sent).toBeGreaterThanOrEqual(INTERRUPT_GRACE_MS - 200)
+  expect(await waitGone(child)).toBe(true)
+}, 30_000)
+
+test("a terminal ctrl c reaches the install once", async () => {
+  const dir = tempDir()
+  const pidFile = path.join(dir, "pid")
+  const countFile = path.join(dir, "count")
+  const script = path.join(dir, "install.ts")
+  // Like the install, it exits 130 a little after its first SIGINT; it counts each one it gets meanwhile.
+  fs.writeFileSync(
+    script,
+    `import fs from "node:fs"
+let count = 0
+process.on("SIGINT", () => {
+  if (count++ > 0) return
+  setTimeout(() => {
+    fs.writeFileSync(${JSON.stringify(countFile)}, String(count))
+    process.exit(130)
+  }, 500)
+})
+setTimeout(() => process.exit(1), 30_000)
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))
+`,
+  )
+  const cli = runSpawn(dir, [...CHECKOUT, script])
+  await pidIn(pidFile)
+  const sent = performance.now()
+  // A terminal sends Ctrl-C's SIGINT to its whole foreground group: the CLI and the install both.
+  process.kill(-cli.pid, "SIGINT")
+  expect(await cli.exited).toBe(130)
+  expect(performance.now() - sent).toBeLessThan(INTERRUPT_GRACE_MS - 200)
+  expect(fs.readFileSync(countFile, "utf8")).toBe("1")
+}, 30_000)
+
+test("the cli's signal handlers are gone once the install exits", async () => {
+  const signals = ["SIGTERM", "SIGHUP", "SIGINT"] as const
+  const before = signals.map((signal) => process.listenerCount(signal))
+  expect(await realDeps.spawn(["/usr/bin/true"], { cwd: os.tmpdir(), env: { PATH: "/usr/bin:/bin" } })).toBe(0)
+  expect(signals.map((signal) => process.listenerCount(signal))).toEqual(before)
 })
 
 test(

@@ -3,7 +3,7 @@ import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { killGroup, startTime } from "../../src/install/proc.ts"
 import type { Store } from "../../src/store/store.ts"
-import { reap } from "../../src/worker/reaper.ts"
+import { type Readings, reap } from "../../src/worker/reaper.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { type Group, isGone, NO_GROUP, startGroup, waitFor } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
@@ -73,6 +73,82 @@ test("reap one session", async () => {
   expect((await second.exited).signal).toBe("SIGKILL")
   await expectRunning(first)
   expect(store.listWorkers().map((r) => r.key)).toEqual(["s1"])
+})
+
+/** Starts a group whose leader starts a grandchild and exits, records it under `key` and waits for the leader to be
+ *  reaped, so only the grandchild is left in the group: what a SIGKILLed office's Codex app-server leaves behind
+ *  when it exits on stdin EOF. Returns the grandchild's pid and start time. */
+async function leaderless(store: Store, key: string) {
+  const leader = startGroup("/bin/sleep 61 & echo $!")
+  const grand = Number(await leader.line())
+  const grandStarted = startTime(grand)
+  expect(grandStarted).not.toBeNull()
+  // startGroup's own cleanup skips a group whose leader is gone, so the grandchild is tracked by pid.
+  leader.track(grand, grandStarted)
+  record(store, key, leader)
+  await leader.exited
+  expect(startTime(leader.pid)).toBeNull()
+  return { grand, grandStarted }
+}
+
+test("reap kills what is left of a group whose leader has exited", async () => {
+  const store = openStore()
+  const { grand, grandStarted } = await leaderless(store, "harness:s1")
+  expect(reap(store).map((r) => r.key)).toEqual(["harness:s1"])
+  await waitFor(() => isGone(grand, grandStarted), { timeout: 10_000, what: "the grandchild gone" })
+  expect(store.listWorkers()).toEqual([])
+})
+
+test("reap of one session kills what is left of its leaderless group", async () => {
+  const store = openStore()
+  const first = startGroup("exec /bin/sleep 61")
+  record(store, "s1", first)
+  const { grand, grandStarted } = await leaderless(store, "s2")
+  expect(reap(store, "s2").map((r) => r.key)).toEqual(["s2"])
+  await waitFor(() => isGone(grand, grandStarted), { timeout: 10_000, what: "the grandchild gone" })
+  await expectRunning(first)
+  expect(store.listWorkers().map((r) => r.key)).toEqual(["s1"])
+})
+
+test("reap signals a leaderless group only when every check passes", () => {
+  // process.kill is mocked, and the rows name a group no real process can have, so nothing real is signalled.
+  const kill = spyOn(process, "kill").mockImplementation(() => {
+    throw Object.assign(new Error("ESRCH"), { code: "ESRCH" })
+  })
+  onTestFinished(() => kill.mockRestore())
+  const leaderGone: Readings = {
+    platform: "linux",
+    bootTime: () => 500,
+    startTime: () => null,
+    noSuchProcess: () => true,
+    inOfficeGroup: () => false,
+  }
+  const row = { pid: NO_GROUP, pgid: NO_GROUP, startTime: 1000 }
+  const store = openStore()
+
+  store.recordWorker("s1", row)
+  expect(reap(store, undefined, leaderGone)).toEqual([])
+  expect(kill).toHaveBeenCalledTimes(1)
+  // On macOS the group is stopped before it is killed; the mocked ESRCH ends the kill at that first send.
+  expect(kill).toHaveBeenCalledWith(-NO_GROUP, process.platform === "darwin" ? "SIGSTOP" : "SIGKILL")
+  expect(store.listWorkers()).toEqual([])
+  kill.mockClear()
+
+  const refused: [string, object, Readings][] = [
+    ["a 0 start time", { ...row, startTime: 0 }, leaderGone],
+    ["a leader that may not be signalled", row, { ...leaderGone, noSuchProcess: () => false }],
+    ["another platform", row, { ...leaderGone, platform: "freebsd" }],
+    ["a group the leader didn't lead", { ...row, pgid: NO_GROUP + 1 }, leaderGone],
+    ["the office's own group", row, { ...leaderGone, inOfficeGroup: () => true }],
+    ["a row from before the last boot", row, { ...leaderGone, bootTime: () => 2000 }],
+    ["a boot time it can't read", row, { ...leaderGone, bootTime: () => null }],
+  ]
+  for (const [what, refusedRow, read] of refused) {
+    store.recordWorker("s1", refusedRow as typeof row)
+    expect(reap(store, undefined, read), what).toEqual([])
+    expect(kill, what).not.toHaveBeenCalled()
+    expect(store.listWorkers(), what).toEqual([])
+  }
 })
 
 test("kill group ignores a group it may not signal", () => {

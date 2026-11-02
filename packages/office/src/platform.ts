@@ -235,6 +235,37 @@ const SHORTINFO_SIZE = 64
 // pbsi_status of a zombie.
 const SZOMB = 5
 
+/** The process group of `pid` (libproc `proc_pidinfo(PROC_PIDT_SHORTBSDINFO)`, zombies included), or null when it
+ *  can't be read: no such process or an id outside 2..2^31 − 1. macOS only. */
+export function procGroupId(pid: number): number | null {
+  if (!Number.isInteger(pid) || pid < 2 || pid > 0x7fffffff) return null
+  const info = new Uint8Array(SHORTINFO_SIZE)
+  const size = loadLibProc().proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 1n, info, SHORTINFO_SIZE)
+  const view = new DataView(info.buffer)
+  if (size !== SHORTINFO_SIZE || view.getUint32(0, true) !== pid) return null
+  return view.getUint32(8, true)
+}
+
+// struct timeval: tv_sec (i64) at 0, tv_usec (i32) at 8, 16 bytes with padding; the same on arm64 and x86_64.
+const TIMEVAL_SIZE = 16
+/** libSystem's `sysctlbyname`, as declared through bun:ffi. */
+type SysctlByName = (name: Buffer, value: Uint8Array, size: BigUint64Array, update: null, updateSize: bigint) => number
+let sysctl: SysctlByName | undefined
+
+/** When this machine booted, in seconds since the epoch (µs resolution), from `sysctlbyname("kern.boottime")`; null
+ *  when the read fails. macOS only. */
+export function machineBootTime(): number | null {
+  const { ptr: P, i32: I, u64: U } = FFIType
+  // int sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen): not variadic.
+  sysctl ??= dlopen("/usr/lib/libSystem.B.dylib", { sysctlbyname: { args: [P, P, P, P, U], returns: I } }).symbols
+    .sysctlbyname
+  const value = new Uint8Array(TIMEVAL_SIZE)
+  const size = new BigUint64Array([BigInt(TIMEVAL_SIZE)])
+  if (sysctl(cString("kern.boottime"), value, size, null, 0n) !== 0 || size[0] !== BigInt(TIMEVAL_SIZE)) return null
+  const view = new DataView(value.buffer)
+  return Number(view.getBigInt64(0, true)) + view.getInt32(8, true) / 1e6
+}
+
 /** The members of process group `pgid` (libproc `proc_listpgrppids`) that aren't zombies yet and that the office
  *  may signal; empty when the listing fails or `pgid` is outside 2..2^31 − 1. Each member's
  *  `proc_pidinfo(PROC_PIDT_SHORTBSDINFO)` leaves out zombies and another user's processes (by the kernel's rule:
