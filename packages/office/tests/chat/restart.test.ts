@@ -31,6 +31,7 @@ import {
   type HarnessOffice,
   makeActor,
   makeHarness,
+  neverStarted,
   newSession,
   noWorkersLeft,
   reopen,
@@ -367,10 +368,13 @@ test("an unreadable run log sleeps and its next message starts a fresh run", asy
   expect(o.kinds.length).toBe(before)
   expect(status(o, sid)).toBe("idle")
   expect(o.logs.some((line) => line.includes(sid) && line.includes("(RangeError)"))).toBe(true)
+  // Ended at restore: no run view finds it with no outcome while the session sleeps.
+  expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
   expect(await say(o, actor, sid, "b")).toBe("two")
   expect(o.kinds.slice(before)).toEqual(["chat"])
+  // Its log can't be read, so the fresh run has no history to take.
+  expect(o.jobs.at(-1)!.seed).toBeNull()
   expect(session(o, sid).run_ids).toEqual([old, actor.runId!])
-  expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
 })
 
 test("a run log that was never written sleeps and its next message starts a fresh run", async () => {
@@ -380,8 +384,7 @@ test("a run log that was never written sleeps and its next message starts a fres
   const { actor: first, sid } = await startActor(o)
   const old = first.runId!
   const actor = await reopen(o, first)
-  // As a run whose worker never started it.
-  fs.rmSync(path.join(o.office.paths.runs, old, "log.jsonl"))
+  neverStarted(o.office, old)
   const before = o.kinds.length
   const errors = spyOn(console, "error")
   try {
@@ -404,6 +407,29 @@ test("a run log that was never written sleeps and its next message starts a fres
   expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_START)
 })
 
+test("a started run whose folder is gone at restore couldnt resume, and its fresh run isnt seeded", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" }, { content: "three" })
+  const o = await chatOffice(fake)
+  const { actor: first, sid } = await startActor(o)
+  expect(await say(o, first, sid, "a")).toBe("one")
+  await waitFor(() => !first.hasWorker, { what: "the run to rest" })
+  // A second run, so an older run with a log is there to seed from.
+  fs.appendFileSync(path.join(o.office.paths.runs, first.runId!, "log.jsonl"), "garbage\n")
+  expect(await say(o, first, sid, "b")).toBe("two")
+  const started = first.runId!
+  const actor = await reopen(o, first)
+  fs.rmSync(path.join(o.office.paths.runs, started), { recursive: true })
+  await actor.restore()
+  expect(status(o, sid)).toBe("idle")
+  expect(o.office.store.getRun(started)?.endReason).toBe(COULDNT_RESUME)
+  expect(o.logs).toContainEqual(`session ${sid}: its run's log is gone`)
+  const before = o.jobs.length
+  expect(await say(o, actor, sid, "c")).toBe("three")
+  expect(o.jobs.slice(before).map((job) => [job.kind, job.seed])).toEqual([["chat", null]])
+  expect(o.office.store.getRun(started)?.endReason).toBe(COULDNT_RESUME)
+})
+
 test("end on a restored session whose folder is gone fails it", async () => {
   const fake = await fakeLlm()
   const h = await makeHarness(fake)
@@ -414,7 +440,7 @@ test("end on a restored session whose folder is gone fails it", async () => {
     const log = path.join(h.office.paths.runs, old, "log.jsonl")
     // Restore builds no run spec for a run with no log, nor for one whose log can't be read.
     if (logged) fs.writeFileSync(log, "")
-    else fs.rmSync(log)
+    else neverStarted(h.office, old)
     await h.reopen()
     await h.harness.restore()
     expect(status(h, s.id)).toBe("idle")

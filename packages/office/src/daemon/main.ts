@@ -332,7 +332,7 @@ export function buildOffice(
     })
     // Bounded: closeAll waits at most STOP_WAIT_MS for the sign-ins to stop.
     office.onStop.push(() => office.logins.closeAll())
-    office.transcript = new Transcript(paths.runs)
+    office.transcript = new Transcript(paths.runs, { log: log("WARNING", "opencorp.chat.transcript") })
     office.live = new LiveRelay({
       bus: office.bus,
       transcript: office.transcript,

@@ -63,6 +63,7 @@ export const ERROR_CODES = [
   "stale_commit",
   "start_failed",
   "stopping",
+  "store_unwritable",
   "token_in_use",
   "too_large",
   "too_many_attempts",

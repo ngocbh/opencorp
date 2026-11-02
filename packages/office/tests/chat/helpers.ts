@@ -757,6 +757,12 @@ export async function reopen(o: ChatOffice, actor: SessionActor): Promise<Sessio
   return makeActor(o, actor.sessionId)
 }
 
+/** Makes run `runId` of `office` look as if its worker never started it: no log, and its row not marked started. */
+export function neverStarted(office: Office, runId: string): void {
+  fs.rmSync(path.join(office.paths.runs, runId, "log.jsonl"))
+  office.store.db.prepare("UPDATE runs SET started_at = NULL WHERE run_id = ?").run(runId)
+}
+
 /** A started session, asleep under a new actor (Python's `asleep`). */
 export async function asleep(o: ChatOffice): Promise<{ actor: SessionActor; sid: string }> {
   const { actor, sid } = await startActor(o)

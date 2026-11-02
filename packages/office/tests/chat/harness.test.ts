@@ -1959,7 +1959,8 @@ test("a session whose flow fails to load fails with its run recorded as couldn't
     await waitFor(() => status(h, s.id) === "failed", { what: "the session to fail" })
     // The worker's error frame failed it, not a spec the start refused.
     expect(h.kinds).toContain("chat")
-    expect(h.logs.some((line) => line.includes(`session ${s.id}: its run ended (error)`))).toBe(true)
+    const ended = h.logs.find((line) => line.includes(`session ${s.id}: its run ended (error: `))
+    expect(ended).toContain("was never made")
     expect(fs.existsSync(path.join(h.office.paths.runs, runId!, "log.jsonl"))).toBe(false)
     expect(h.store.getRun(runId!)).toMatchObject({ endReason: COULDNT_START, endedAt: expect.any(String) })
     expect(h.office.runs.page().runs.find((r) => r.run_id === runId)).toMatchObject({

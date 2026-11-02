@@ -35,6 +35,55 @@ export class StoreError extends Error {
   override name = "StoreError"
 }
 
+/** The names of the SQLite primary result codes the office logs by name. */
+const SQLITE_NAMES: Readonly<Record<number, string>> = {
+  5: "SQLITE_BUSY",
+  8: "SQLITE_READONLY",
+  10: "SQLITE_IOERR",
+  13: "SQLITE_FULL",
+  14: "SQLITE_CANTOPEN",
+  19: "SQLITE_CONSTRAINT",
+}
+
+/** The primary result codes of a store that can't be written: read-only, an I/O error, a full disk, a file that
+ *  can't be opened. */
+const UNWRITABLE = new Set([8, 10, 13, 14])
+
+/** A SQLite error's primary result code by name (`SQLITE_FULL`, else `SQLITE_<code>`), safe to log; undefined for
+ *  any other error. */
+export function sqliteName(error: unknown): string | undefined {
+  const code = sqliteErrorCode(error)
+  if (code === undefined) return undefined
+  // The low byte is the primary result code: SQLITE_IOERR_WRITE (778) is an IOERR.
+  const primary = code & 0xff
+  return SQLITE_NAMES[primary] ?? `SQLITE_${primary}`
+}
+
+/** A write transaction on the office store failed because the store can't be written (a full disk, an I/O error,
+ *  a read-only or unopenable file). `code` names the SQLite result code and is all a log line may carry: the
+ *  message of the SQLite error (`cause`) can name the store's file. */
+export class StoreUnwritable extends StoreError {
+  override name = "StoreUnwritable"
+  readonly code: string
+
+  constructor(code: string, options?: ErrorOptions) {
+    super(`the office can't write its store (${code})`, options)
+    this.code = code
+  }
+
+  /** `error` as a `StoreUnwritable` when it is a SQLite error that says the store can't be written, else `error`. */
+  static from(error: unknown): unknown {
+    const code = sqliteErrorCode(error)
+    if (code === undefined || !UNWRITABLE.has(code & 0xff)) return error
+    return new StoreUnwritable(sqliteName(error)!, { cause: error })
+  }
+}
+
+/** The SQLite code name of a failed write to the office store (`StoreUnwritable`), else null. */
+export function storeWriteFailure(error: unknown): string | null {
+  return error instanceof StoreUnwritable ? error.code : null
+}
+
 /** The row to change does not exist. */
 export class NotFound extends StoreError {
   override name = "NotFound"
@@ -642,7 +691,8 @@ export class Store {
 
   /** Runs `fn` in a write transaction (`BEGIN IMMEDIATE`) and returns its result. Store methods called inside
    *  join it; a nested `transaction()` is a savepoint: if it throws, only its own writes and events are undone.
-   *  Events reach listeners after the outermost commit.
+   *  Events reach listeners after the outermost commit. The outermost transaction throws a SQLite error that says
+   *  the store can't be written as `StoreUnwritable`.
    *
    *  The callback must be synchronous: an async one is refused and rolled back, and its continuation's `tx.*`
    *  calls throw "the transaction is over" (a store method it calls later still opens its own transaction:
@@ -650,7 +700,11 @@ export class Store {
   transaction<T>(fn: (tx: Tx) => T): T {
     if (this.#tx) return this.#savepoint(this.#tx, fn)
     const db = this.db
-    db.exec("BEGIN IMMEDIATE")
+    try {
+      db.exec("BEGIN IMMEDIATE")
+    } catch (error) {
+      throw StoreUnwritable.from(error)
+    }
     const tx = new Tx(db)
     this.#tx = tx
     let result: T
@@ -660,7 +714,7 @@ export class Store {
       db.exec("COMMIT")
     } catch (error) {
       if (inTransaction(db)) db.exec("ROLLBACK")
-      throw error
+      throw StoreUnwritable.from(error)
     } finally {
       this.#tx = undefined
       tx.over = true
@@ -1086,6 +1140,19 @@ export class Store {
       for (const runId of ids) if (tx.get(sql, kept, runId) !== undefined) written.push(runId)
       return written
     })
+  }
+
+  /** Marks run `runId` started (its worker said so), now, unless it is marked already; no event. */
+  markRunStarted(runId: string): void {
+    this.transaction((tx) =>
+      tx.run("UPDATE runs SET started_at = ? WHERE run_id = ? AND started_at IS NULL", now(), runId),
+    )
+  }
+
+  /** Whether run `runId` was marked started; false for no row. */
+  runStarted(runId: string): boolean {
+    const row = this.db.prepare("SELECT started_at FROM runs WHERE run_id = ?").get(runId)
+    return row !== undefined && row !== null && row.started_at !== null
   }
 
   /** The run's row, or undefined. */

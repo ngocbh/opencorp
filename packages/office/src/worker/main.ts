@@ -30,7 +30,7 @@ import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
 import { Delivery, type Job, parseJob, STOP_REASON } from "./job.ts"
 import { RemoteMarkdownStore } from "./remote_store.ts"
-import { askUserStub, errorMessage, errorName, remoteTool, REPLY_TYPES, Rpc } from "./rpc.ts"
+import { askUserStub, errnoFields, errorMessage, errorName, remoteTool, REPLY_TYPES, Rpc } from "./rpc.ts"
 
 export const EXIT_OK = 0
 export const EXIT_FAILED = 1
@@ -242,6 +242,15 @@ export function notResumed(error: unknown, appended: boolean): boolean {
   return error instanceof RangeError && !appended
 }
 
+/** For an error reading a run log that a host can't fix by trying again, its errno code (`ENOENT`, `ENOTDIR`: the log
+ *  or its folder is gone) or its type (a `RangeError`: a line that isn't a record this version reads); else null.
+ *  Never its message, which quotes the log's path and values. */
+export function unreadableLog(error: unknown): string | null {
+  const code = (error as NodeJS.ErrnoException | null)?.code
+  if (code === "ENOENT" || code === "ENOTDIR") return code
+  return error instanceof RangeError ? errorName(error) : null
+}
+
 /** The record kinds an `advance` starts each of its appends with; no delivery writes any of them. */
 const ADVANCE_KINDS = ["run_resumed", "node_woken", "node_started"]
 
@@ -408,10 +417,13 @@ function nextOf(previous: Job, job: Job): boolean {
  *
  * Each delivery (the job's `deliver` list first, then each `deliver` frame) is applied to the run with a yian host
  * call once the run has started, in order, and answered by one `deliver_reply`; ones the run can't take because it
- * never started are refused `not_started`. The last frame is `result` (or `error`), sent once every delivery received
- * so far is answered. After it the worker keeps applying and answering deliveries until the office closes its side
+ * never started are refused `not_started`. The last frame is `result` (or `error`: `{type: "error", message,
+ * traceback}`, with the errno `code` and `syscall` of a failed system call), sent once every delivery received so far
+ * is answered. After it the worker keeps applying and answering deliveries until the office closes its side
  * (or `linger` ms pass). A run's result is `{type: "result", status, run_id, output, failure, waits}`, or, for an
- * advance yian refused before it appended anything, `{type: "result", status: "not_resumed", run_id, error_type}`.
+ * advance yian refused before it appended anything, `{type: "result", status: "not_resumed", run_id, error_type}`; an
+ * advance or delivery job whose log is gone or can't be read sends that result with `unreadable: true`, and refuses its
+ * deliveries.
  * If the office closes the channel before the job finished, `exit` is called with `EXIT_ORPHANED`: nobody can answer
  * a question or read the result.
  *
@@ -525,7 +537,12 @@ async function serveJob(
     code = EXIT_OK
   } catch (error) {
     deliveries.refuse()
-    last = { type: "error", message: `${errorName(error)}: ${errorMessage(error)}`, traceback: stackFrames(error) }
+    last = {
+      type: "error",
+      message: `${errorName(error)}: ${errorMessage(error)}`,
+      traceback: stackFrames(error),
+      ...errnoFields(error),
+    }
     code = EXIT_FAILED
   }
   state.finished = true
@@ -552,7 +569,8 @@ async function serveJob(
  *  run first, as quiet deliveries, and with `seed.cancel` that run is cancelled when it hasn't finished. An advance
  *  job applies the deliveries the run can take now, then moves the run on from its log with yian's `advance` (or,
  *  with `advance: false`, only delivers); when yian refuses the advance before appending anything, the fields are
- *  `{status: "not_resumed", run_id, error_type}` and the deliveries still held are refused `not_started`. */
+ *  `{status: "not_resumed", run_id, error_type}` and the deliveries still held are refused `not_started`; so are they
+ *  when the run's log is gone or can't be read, with `unreadable: true`. */
 async function runJob(
   job: Job,
   channel: Channel,
@@ -631,7 +649,16 @@ async function runJob(
       parent: job.parent && { runId: job.parent.run_id, node: job.parent.node },
     })
   } else {
-    const inspection = inspectRun(log)
+    let inspection: ReturnType<typeof inspectRun>
+    try {
+      inspection = inspectRun(log)
+    } catch (error) {
+      const why = unreadableLog(error)
+      if (why === null) throw error
+      // Nothing was appended, so the run is as it was: the office starts a fresh run in its place.
+      deliveries.refuse()
+      return { status: "not_resumed", run_id: job.run_id, error_type: why, unreadable: true }
+    }
     const status = inspection.status
     if (!job.advance) {
       // This job only delivers to a run at rest; a running one is someone else's to move.
