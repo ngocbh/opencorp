@@ -6,7 +6,7 @@ import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:t
 import { now, OFFICE, Question } from "@opencorp/protocol"
 import { ConnectionFile, runRecord } from "../../src/chat/connections.ts"
 import type { SessionActor } from "../../src/chat/session_actor.ts"
-import { COULDNT_START } from "../../src/runs/outcomes.ts"
+import { COULDNT_START, NEW_MODEL } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { newId } from "../../src/store/store.ts"
 import { type FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
@@ -14,7 +14,9 @@ import type { Job } from "../../src/worker/job.ts"
 import type { Worker } from "../../src/worker/spawn.ts"
 import { waitFor } from "../helpers.ts"
 import {
+  ASK_USER,
   type ChatOffice,
+  card,
   chatOffice,
   fakeLlm,
   makeActor,
@@ -525,4 +527,21 @@ test("a fresh run that cant be recorded leaves the old runs questions open", asy
   expect(await refusal(actor.prompt("a"))).toEqual([503, "cant_wake"])
   // Nothing was staled before the recording failed.
   expect(store.getQuestion(question.id)?.status).toBe("open")
+})
+
+test("a switch with a question open ends the run on the new model at once", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake, { connections: { second: "stub-2" } })
+  const { actor, sid } = await startActor(o)
+  fake.script(ASK_USER)
+  await actor.prompt("hi")
+  const q = await card(o, sid, "ask_user")
+  await waitFor(() => !actor.hasWorker, { what: "the run call that asked to end" })
+  const old = actor.runId!
+  await actor.setModel("second", null)
+  expect(o.office.store.getRun(old)?.endReason).toBe(NEW_MODEL)
+  expect(recordOf(o, sid).replacesRunId).toBe(old)
+  expect(o.office.store.getQuestion(q.id)?.status).toBe("stale")
+  await waitFor(() => status(o, sid) === "idle", { what: "the fresh run at its turn" })
+  expect([recordOf(o, sid).connection, recordOf(o, sid).model]).toEqual(["second", null])
 })

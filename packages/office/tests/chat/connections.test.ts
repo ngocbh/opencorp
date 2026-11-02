@@ -654,6 +654,30 @@ test("resolve puts the model in llm config", async () => {
   expect(await c.resolve(null, null)).toEqual(await c.resolve("office", null))
 })
 
+test("resolve refuses an llm config yian wont take without its values or path", async () => {
+  const root = tempDir()
+  const c = new Connections(await officeDir(root))
+  c.ensureDir()
+  const file = path.join(c.dir, "second.json")
+  await writePrivate(file, JSON.stringify({ llm_config: { provider: "nope-provider", model: "m" } }))
+  let error = await raised(() => c.resolve("second", null))
+  expect(error).toBeInstanceOf(ProviderError)
+  let message = (error as Error).message
+  expect(message).toStartWith("connection 'second': yian won't take this provider")
+  expect(message).not.toContain("nope-provider")
+  expect(message).not.toContain(root)
+  // A key with no provider would go to whichever provider yian picks.
+  await writePrivate(file, JSON.stringify({ llm_config: { api_key: SENTINEL, model: "m" } }))
+  error = await raised(() => c.resolve("second", null))
+  expect(error).toBeInstanceOf(ProviderError)
+  message = (error as Error).message
+  expect(message).toStartWith("connection 'second': llm_config.api_key needs llm_config.provider")
+  expect(message).not.toContain(SENTINEL)
+  // A run resumed on it moves, as on any connection that can't be used.
+  const record = { connection: "second", model: null, configSha256: "x" }
+  expect(await raised(() => c.forRun(record, "run-1"))).toBeInstanceOf(RunMoved)
+})
+
 test("a subscription resolves to its own auth file and no key", async () => {
   const root = tempDir()
   const c = new Connections(await officeDir(root))

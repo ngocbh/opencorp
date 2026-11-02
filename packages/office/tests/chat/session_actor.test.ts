@@ -1685,7 +1685,8 @@ test("a not resumed advance starts a fresh run with the deliveries it never appl
   fresh.handlers.event(fresh.worker, { type: "event", name: "RunStarted", data: { run_id: runId } })
   await waitFor(() => o.office.store.getQuestion(open3.id)!.status === "stale", { what: "the stale question" })
   expect(seen.filter((entry) => entry.startsWith("forget"))).toEqual([`forget ${old}`])
-  expect(o.office.store.getQuestion(card2.id)!.status).toBe("answered")
+  // The card's answer, which no run read, is lost.
+  expect(o.office.store.getQuestion(card2.id)!.status).toBe("stale")
   fresh.job.deliver.forEach((d, n) => {
     fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: d.id, seq: n + 1 })
   })

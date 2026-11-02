@@ -6,26 +6,34 @@ import { AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
 import { AUTH_FILE_ENV, ConnectionFile } from "../../src/chat/connections.ts"
 import { DEFAULT_PRICE } from "../../src/chat/cost.ts"
 import { type Lister, TIMED_OUT, ownModels } from "../../src/chat/models.ts"
-import { WOKEN_NOTE, refusedKey } from "../../src/chat/session_actor.ts"
+import { type SessionActor, WOKEN_NOTE, refusedKey } from "../../src/chat/session_actor.ts"
 import { HarnessError } from "../../src/chat/state.ts"
 import { loadRepo } from "../../src/company/loader.ts"
+import { NEW_MODEL } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import type { SessionRecord } from "../../src/store/store.ts"
 import { person } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import {
   ACCESS,
+  ASK_USER,
   type ChatOffice,
+  card,
+  chatOffice,
   errors,
   fakeLlm,
+  makeActor,
   makeHarness,
+  newSession,
   noWorkersLeft,
   REFRESH,
   replyRunning,
   type ScriptedWorker,
   scriptedWorker,
+  session,
   status,
   texts,
+  waitingResult,
 } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -522,6 +530,43 @@ test("set model refuses a connection that cant be read without naming its file",
   expect(picked(h.store.getSession(s.id)!)).toEqual(["office", null, null])
 })
 
+test("set model refuses a connection yian wont take", async () => {
+  const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
+  const s = await h.harness.startSession("minh", h.folder)
+  const bad = { llm_config: { provider: "nope-provider", model: "stub-2" }, env: {} }
+  await writePrivate(path.join(h.office.connections.dir, "second.json"), JSON.stringify(bad))
+  const refused = await rejection(h.harness.setModel(s.id, "second", "stub-5"))
+  expect([refused.status, refused.code]).toEqual([409, "connection_unusable"])
+  expect(refused.message).toContain("second")
+  expect(refused.message).not.toContain(h.office.connections.dir)
+  expect(refused.message).not.toContain("nope-provider")
+  expect(h.logs).toContain(`connection second can't be used; session ${s.id} stays where it is`)
+  expect(picked(h.store.getSession(s.id)!)).toEqual(["office", null, null])
+})
+
+test("a prompt on a connection edited to a provider yian wont take answers 503 and the session stays live", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+  fake.script({ content: "on two" }, { content: "fixed" })
+  const s = await start(h)
+  await h.harness.setModel(s.id, "second", "stub-2")
+  expect(await tell(h, s.id, "a")).toBe("on two")
+  const file = path.join(h.office.connections.dir, "second.json")
+  const good = await Bun.file(file).text()
+  const bad = { llm_config: { provider: "nope-provider", model: "stub-2" }, env: fake.env() }
+  await writePrivate(file, JSON.stringify(bad))
+  const refused = await rejection(h.harness.prompt(s.id, "b"))
+  expect([refused.status, refused.code]).toEqual([503, "cant_wake"])
+  expect(refused.message).not.toContain(h.office.connections.dir)
+  expect(status(h, s.id)).toBe("idle")
+  const prefix = "its connection can't be used ("
+  const line = h.logs.find((l) => l.includes(prefix))!
+  expect(line).toContain(`${prefix}connection 'second': yian won't take this provider`)
+  expect(line).not.toContain("nope-provider")
+  await writePrivate(file, good)
+  expect(await tell(h, s.id, "c")).toBe("fixed")
+})
+
 test("set model clears the note", async () => {
   const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
   const s = await h.harness.startSession("minh", h.folder, { connection: "gone" })
@@ -561,6 +606,299 @@ test("a new actor after a switch starts a fresh run with the woken note", async 
   expect(recordOf(h, s.id)[0]).toBe("second")
   expect(stored.model_note).toBe(WOKEN_NOTE)
   expect(fake.requests().at(-1)!.model).toBe("stub-2")
+})
+
+// A switch on a live chat: the actor reacts to it.
+
+/** Resolves once every job `actor` had queued has run: a command queued after them is refused. */
+async function drained(actor: SessionActor): Promise<void> {
+  await actor.answer("no-such-question", "x", "text").catch(() => {})
+}
+
+/** Waits for session `sid`'s worker to park; returns its pid. */
+async function parkedPid(h: Harness, sid: string): Promise<number> {
+  await waitFor(() => h.registry.get(sid)?.parked === true, { what: "the worker to park" })
+  return h.registry.get(sid)!.pid
+}
+
+/** Whether process `pid` is alive. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+test("a switch closes the parked worker", async () => {
+  const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
+  const s = await start(h)
+  const pid = await parkedPid(h, s.id)
+  await h.harness.setModel(s.id, "second", "stub-5")
+  expect(h.registry.get(s.id)).toBeUndefined()
+  await waitFor(() => !alive(pid), { what: "the parked worker to exit" })
+})
+
+test("a switch to the same pick keeps the parked worker", async () => {
+  const h = await makeHarness(await fakeLlm(), { connections: { second: "stub-2" } })
+  const s = await start(h)
+  const pid = await parkedPid(h, s.id)
+  expect(picked(await h.harness.setModel(s.id, "office", "stub"))).toEqual(["office", null, null])
+  expect(h.registry.get(s.id)?.pid).toBe(pid)
+  expect(alive(pid)).toBe(true)
+})
+
+test("a reply that finishes after a switch doesnt park its worker", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+  fake.script({ content: "Done on one.", hold: 30 })
+  const s = await start(h)
+  await h.harness.prompt(s.id, "a")
+  await fake.waitForRequests(1)
+  await h.harness.setModel(s.id, "second", "stub-2")
+  fake.release()
+  await waitFor(() => texts(h, s.id).at(-1) === "Done on one." && status(h, s.id) === "idle", { what: "the reply" })
+  await waitFor(() => h.registry.get(s.id) === undefined, { what: "the worker to exit" })
+})
+
+test("a message after a switch waits for the fresh run", async () => {
+  const o = await chatOffice(await fakeLlm(), { connections: { second: "stub-2" } })
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = actor.runId!
+  const old = workers[0]!
+  await actor.setModel("second", "stub-5")
+  const sent = actor.prompt("hi")
+  await drained(actor)
+  // The live worker would take it at its turn, on the old model.
+  expect(old.deliveries).toEqual([])
+  old.handlers.result(old.worker, waitingResult(first))
+  old.handlers.exited(old.worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the fresh run's worker" })
+  const fresh = workers[1]!
+  expect(fresh.job.kind).toBe("chat")
+  expect(fresh.job.llm_config?.model).toBe("stub-5")
+  expect(fresh.job.deliver.map((d) => d.op)).toEqual(["send"])
+  fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: fresh.job.deliver[0]!.id, seq: 3 })
+  expect(await sent).toBe("queued")
+  expect(o.office.store.getRun(first)?.endReason).toBe(NEW_MODEL)
+  expect(session(o, sid).run_ids).toEqual([first, fresh.job.run_id])
+})
+
+test("messages held after a switch keep their order", async () => {
+  const o = await chatOffice(await fakeLlm(), { connections: { second: "stub-2" } })
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = actor.runId!
+  const old = workers[0]!
+  // Sent to the live worker before the switch: its reply runs on the old model.
+  const one = actor.prompt("one")
+  await waitFor(() => old.deliveries.length === 1, { what: "the first message" })
+  old.handlers.deliverReply(old.worker, { type: "deliver_reply", id: old.deliveries[0]!.id, seq: 2 })
+  await one
+  await actor.setModel("second", "stub-5")
+  const two = actor.prompt("two")
+  await drained(actor)
+  old.handlers.event(old.worker, { type: "event", name: "NodeStarted", data: { node_id: "chat#0/reply" } })
+  // While a message is held, a later one is held too, though a reply runs.
+  const three = actor.prompt("three")
+  await drained(actor)
+  expect(old.deliveries.map((d) => d.op)).toEqual(["send"])
+  old.handlers.result(old.worker, waitingResult(first))
+  old.handlers.exited(old.worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the fresh run's worker" })
+  const fresh = workers[1]!
+  const said = fresh.job.deliver.map((d) => JSON.stringify(d.op === "send" ? d.event : d.op))
+  expect(said).toHaveLength(2)
+  expect(said[0]).toContain('"two"')
+  expect(said[1]).toContain('"three"')
+  fresh.job.deliver.forEach((d, i) => {
+    fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: d.id, seq: 3 + i })
+  })
+  expect([await two, await three]).toEqual(["queued", "queued"])
+})
+
+test("end after a held message holds its close for the fresh run", async () => {
+  const o = await chatOffice(await fakeLlm(), { connections: { second: "stub-2" } })
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = actor.runId!
+  const old = workers[0]!
+  await actor.setModel("second", "stub-5")
+  const sent = actor.prompt("hi")
+  await actor.end()
+  expect(old.deliveries).toEqual([])
+  old.handlers.result(old.worker, waitingResult(first))
+  old.handlers.exited(old.worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the fresh run's worker" })
+  const fresh = workers[1]!
+  expect(fresh.job.deliver.map((d) => d.op)).toEqual(["send", "close"])
+  fresh.job.deliver.forEach((d, i) => {
+    fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: d.id, seq: 3 + i })
+  })
+  expect(await sent).toBe("queued")
+  const done = { type: "result", status: "succeeded", run_id: fresh.job.run_id, output: null, failure: null }
+  fresh.handlers.result(fresh.worker, done)
+  fresh.handlers.exited(fresh.worker, 0)
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+})
+
+test("a switch right after start runs the first turn on the new model", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+  fake.script({ content: "on five" })
+  const s = await h.harness.startSession("minh", h.folder)
+  await h.harness.setModel(s.id, "second", "stub-5")
+  expect(await tell(h, s.id, "hi")).toBe("on five")
+  expect(fake.requests().map((r) => r.model)).toEqual(["stub-5"])
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  expect(recordOf(h, s.id)).toEqual(["second", "stub-5"])
+})
+
+/** Starts minh's chat in `h` and has the model ask its question; returns the session and the question. */
+async function asking(h: Harness) {
+  const s = await start(h)
+  await h.harness.prompt(s.id, "hi")
+  const q = await card(h, s.id, "ask_user")
+  await waitFor(() => status(h, s.id) === "waiting" && h.registry.get(s.id)?.parked !== false, {
+    what: "the run to wait on the question",
+  })
+  return { s, q }
+}
+
+test("a switch while ask user waits starts the fresh run and the answer is refused", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+  fake.script(ASK_USER, { content: "on five" })
+  const { s, q } = await asking(h)
+  const first = h.store.getSession(s.id)!.run_ids[0]!
+  await h.harness.setModel(s.id, "second", "stub-5")
+  // At once, or at the end of the run call that asked, if the actor hadn't handled it yet.
+  await waitFor(() => h.store.getQuestion(q.id)?.status === "stale", { what: "the question to go stale" })
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  expect(h.store.getRun(first)?.endReason).toBe(NEW_MODEL)
+  await waitFor(() => status(h, s.id) === "idle", { what: "the fresh run at its turn" })
+  const refused = await rejection(h.harness.answer(q.id, "A", "option"))
+  expect([refused.status, refused.code]).toEqual([409, "not_open"])
+  expect(await tell(h, s.id, "b")).toBe("on five")
+  expect(fake.requests().at(-1)!.model).toBe("stub-5")
+})
+
+test("a reply switched while it runs that then asks has its question go stale and the answer refused", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+  fake.script({ ...ASK_USER, hold: 30 }, { content: "on five" })
+  const s = await start(h)
+  await h.harness.prompt(s.id, "hi")
+  await fake.waitForRequests(1)
+  await replyRunning(h)
+  const first = h.store.getSession(s.id)!.run_ids[0]!
+  await h.harness.setModel(s.id, "second", "stub-5")
+  fake.release()
+  // The asking run call ends after the switch, so the run is replaced and its question goes stale at once.
+  const asked = () => h.store.listQuestions({ sessionId: s.id, source: "ask_user" })
+  await waitFor(() => asked()[0]?.status === "stale", { what: "the question to go stale" })
+  const q = asked()[0]!
+  expect(fake.requests().map((r) => r.model)).toEqual(["stub"])
+  expect(h.store.getRun(first)?.endReason).toBe(NEW_MODEL)
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  await waitFor(() => status(h, s.id) === "idle", { what: "the fresh run at its turn" })
+  const refused = await rejection(h.harness.answer(q.id, "A", "option"))
+  expect([refused.status, refused.code]).toEqual([409, "not_open"])
+  expect(await tell(h, s.id, "b")).toBe("on five")
+  expect(fake.requests().at(-1)!.model).toBe("stub-5")
+})
+
+test.each([false, true])(
+  "a switch back after a refused answer doesnt hang the chat [restart %p]",
+  async (restart) => {
+    const fake = await fakeLlm()
+    const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+    fake.script(ASK_USER, { content: "back on one" })
+    const { s, q } = await asking(h)
+    await h.harness.setModel(s.id, "second", "stub-5")
+    await waitFor(() => status(h, s.id) === "idle", { what: "the fresh run at its turn" })
+    expect((await rejection(h.harness.answer(q.id, "A", "option"))).code).toBe("not_open")
+    if (restart) await h.reopen()
+    await h.harness.setModel(s.id, "office", "stub")
+    expect(await tell(h, s.id, "b")).toBe("back on one")
+    expect(fake.requests().at(-1)!.model).toBe("stub")
+    expect(h.store.getSession(s.id)!.run_ids).toHaveLength(3)
+  },
+)
+
+test("over the cap a switch with a question open waits for a raise", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { connections: { second: "stub-2" } })
+  fake.script(ASK_USER, { content: "on five" })
+  const { s, q } = await asking(h)
+  // Over the company's $5 cap.
+  h.store.updateSession(s.id, { cost: 6 })
+  await h.harness.setModel(s.id, "second", "stub-5")
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(1)
+  expect(h.store.getQuestion(q.id)?.status).toBe("open")
+  const refused = await rejection(h.harness.answer(q.id, "A", "option"))
+  expect([refused.status, refused.code]).toEqual([409, "not_open"])
+  expect(h.store.getQuestion(q.id)?.status).toBe("open")
+  await h.harness.setCostCap(s.id, 10)
+  await waitFor(() => h.store.getQuestion(q.id)?.status === "stale" && status(h, s.id) === "idle", {
+    what: "the fresh run after the raise",
+  })
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  expect(await tell(h, s.id, "b")).toBe("on five")
+  expect(fake.requests().at(-1)!.model).toBe("stub-5")
+})
+
+test("an answer after the key changed starts the fresh run and is refused", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  fake.script(ASK_USER, { content: "on the new key" })
+  const { s, q } = await asking(h)
+  const provider = { llm_config: { provider: "vllm", model: "stub", api_key: "sk-new-key-3f1a" }, env: fake.env() }
+  await writePrivate(path.join(h.office.connections.dir, "office.json"), JSON.stringify(provider))
+  const refused = await rejection(h.harness.answer(q.id, "A", "option"))
+  expect([refused.status, refused.code]).toEqual([409, "not_open"])
+  expect(h.store.getQuestion(q.id)?.status).toBe("stale")
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  await waitFor(() => status(h, s.id) === "idle", { what: "the fresh run at its turn" })
+  expect(await tell(h, s.id, "b")).toBe("on the new key")
+})
+
+test("a typed reply after the key changed goes to the fresh run as a message", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  fake.script(ASK_USER, { content: "got it" })
+  const { s, q } = await asking(h)
+  const provider = { llm_config: { provider: "vllm", model: "stub", api_key: "sk-new-key-3f1a" }, env: fake.env() }
+  await writePrivate(path.join(h.office.connections.dir, "office.json"), JSON.stringify(provider))
+  const n = texts(h, s.id).length
+  expect(await h.harness.prompt(s.id, "A please")).toBe("queued")
+  await waitFor(() => texts(h, s.id).length > n && status(h, s.id) === "idle", { what: "the reply" })
+  expect(texts(h, s.id).at(-1)).toBe("got it")
+  expect(h.store.getQuestion(q.id)?.status).toBe("stale")
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  expect(userTexts(fake.requests().at(-1)!).at(-1)).toContain("A please")
+})
+
+test("a stored answer that never reached its run loses its answer when a fresh run replaces the run", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  fake.script(ASK_USER, { content: "fresh" })
+  const { s, q } = await asking(h)
+  // Stored with no complete sent, as when the answer's spawn failed or the office died first.
+  h.store.answerQuestion(q.id, "A", "text", null)
+  const provider = { llm_config: { provider: "vllm", model: "stub", api_key: "sk-new-key-3f1a" }, env: fake.env() }
+  await writePrivate(path.join(h.office.connections.dir, "office.json"), JSON.stringify(provider))
+  expect(await tell(h, s.id, "b")).toBe("fresh")
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  expect(h.store.getQuestion(q.id)?.status).toBe("stale")
 })
 
 // Subscriptions.
