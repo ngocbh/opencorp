@@ -2,7 +2,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { expect, test } from "bun:test"
+import { expect, onTestFinished, spyOn, test } from "bun:test"
 import { checkWorkspace, type OfficePaths, SandboxPolicy, UnsafeWorkspace } from "../../src/sandbox/policy.ts"
 import { makePolicy } from "./helpers.ts"
 
@@ -16,6 +16,26 @@ function expectRefused(ws: string, tmp: string, office: OfficePaths, message: st
   expect(() => checkWorkspace(ws, office)).toThrow(message)
   expect(() => policyAt(ws, tmp, office)).toThrow(UnsafeWorkspace)
   expect(() => policyAt(ws, tmp, office)).toThrow(message)
+}
+
+/** The arguments in `args` that occur more than once. */
+function repeats(args: string[]): string[] {
+  return [...new Set(args.filter((a, i) => args.indexOf(a) !== i))]
+}
+
+/** Spies on `fs.realpathSync`, `fs.lstatSync` and `fs.readlinkSync` until the test ends; returns the paths each
+ *  was asked about. */
+function spyLookups(): { realpath: () => string[]; lstat: () => string[]; readlink: () => string[] } {
+  const spies = {
+    realpath: spyOn(fs, "realpathSync"),
+    lstat: spyOn(fs, "lstatSync"),
+    readlink: spyOn(fs, "readlinkSync"),
+  }
+  onTestFinished(() => {
+    for (const spy of Object.values(spies)) spy.mockRestore()
+  })
+  const args = (spy: { mock: { calls: unknown[][] } }) => () => spy.mock.calls.map((c) => String(c[0]))
+  return { realpath: args(spies.realpath), lstat: args(spies.lstat), readlink: args(spies.readlink) }
 }
 
 /** Makes the folders `dirs` (with their parents) and returns them. */
@@ -445,4 +465,83 @@ test("each refusal has a reason that names no path", () => {
   expect(reasonOf(opt!, { home, tools: ["git"] })).toBe(
     "the office's tool list has a relative entry; the office needs absolute paths",
   )
+})
+
+/** Office paths with tools, install and PATH entries deep under `root`, so their walks share long prefixes; each
+ *  walk goes through the link `deep/l` to `deep/a`. */
+function deepOffice(root: string): OfficePaths {
+  mkdirs(path.join(root, "deep/a/b/c/bin1"), path.join(root, "deep/a/b/c/bin2"), path.join(root, "deep/a/b/c/lib"))
+  for (const name of ["git", "tmux"]) fs.writeFileSync(path.join(root, "deep/a/b/c/bin1", name), "")
+  fs.symlinkSync("a", path.join(root, "deep/l"))
+  const c = path.join(root, "deep/l/b/c")
+  return {
+    home: path.join(root, "home"),
+    tools: [path.join(c, "bin1/git"), path.join(c, "bin1/tmux")],
+    install: [path.join(c, "lib")],
+    path: [path.join(c, "bin1"), path.join(c, "bin2")],
+  }
+}
+
+test("one check asks the OS about each path once", () => {
+  const { root, ws } = makePolicy()
+  const office = deepOffice(root)
+  const spy = spyLookups()
+  checkWorkspace(ws, office)
+  expect(repeats(spy.realpath())).toEqual([])
+  expect(repeats(spy.lstat())).toEqual([])
+  expect(spy.readlink()).toHaveLength(1)
+})
+
+test("a policy build asks the OS about each path once", () => {
+  const { root, ws, tmp } = makePolicy()
+  const office = deepOffice(root)
+  const spy = spyLookups()
+  new SandboxPolicy({ workspace: ws, writable: false, network: false, tmpdir: tmp, readOnly: office.install, office })
+  expect(repeats(spy.realpath())).toEqual([])
+  expect(repeats(spy.lstat())).toEqual([])
+  expect(spy.readlink()).toHaveLength(1)
+})
+
+test("each check looks at the disk again", () => {
+  const { root, tmp } = makePolicy()
+  const home = path.join(root, "home")
+  const [proj, p] = mkdirs(path.join(root, "proj"), path.join(root, "p"))
+  mkdirs(path.join(p!, "bin"), path.join(proj!, "bin"))
+  const office = { home, path: [path.join(p!, "bin")] }
+  checkWorkspace(proj!, office)
+  // The PATH entry's folder becomes a link into the workspace after a check passed.
+  fs.rmSync(p!, { recursive: true })
+  fs.symlinkSync(proj!, p!)
+  const message = onPath(proj!, path.join(proj!, "bin"))
+  expect(() => checkWorkspace(proj!, office)).toThrow(message)
+  expect(() => policyAt(proj!, tmp, office)).toThrow(message)
+})
+
+test("withHelper resolves only the helper and checks nothing again", () => {
+  const { root, make } = makePolicy()
+  const [real] = mkdirs(path.join(root, "real"))
+  fs.writeFileSync(path.join(real!, "opencorp"), "")
+  const link = path.join(root, "link")
+  fs.symlinkSync(real!, link)
+  // An absent PATH entry: the check is the only thing that looks it up.
+  const marker = path.join(root, "marker-bin")
+  const office = { home: path.join(root, "home"), install: [path.join(link, "install")], path: [marker] }
+  const policy = make({ office })
+  const helper = { binary: path.join(link, "opencorp") }
+  const lstat = spyOn(fs, "lstatSync")
+  onTestFinished(() => lstat.mockRestore())
+  const result = policy.withHelper(helper)
+  expect(lstat.mock.calls.map((c) => String(c[0])).filter((p) => p === marker)).toEqual([])
+  expect(result).toBeInstanceOf(SandboxPolicy)
+  expect(result.helper).toEqual({ binary: path.join(real!, "opencorp") })
+  const rebuilt = new SandboxPolicy({ ...policy, helper })
+  for (const key of ["office", "workspace", "writable", "network", "tmpdir", "readOnly"] as const) {
+    expect(result[key]).toEqual(rebuilt[key])
+  }
+  expect(result.protectedPaths).toEqual(policy.protectedPaths)
+  for (const list of [result.readOnly, result.office.install, result.office.tools, result.office.path]) {
+    expect([policy.readOnly, policy.office.install, policy.office.tools, policy.office.path]).not.toContain(list)
+  }
+  expect(policy.helper).toBeUndefined()
+  expect(result.withHelper(undefined).helper).toBeUndefined()
 })

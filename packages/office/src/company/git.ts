@@ -195,6 +195,7 @@ const noop = () => {}
 // Which instance's lock the current async context holds. `held` is cleared when the section ends,
 // since timers and callbacks started inside it keep the context afterwards.
 const holder = new AsyncLocalStorage<{ git: CompanyGit; held: boolean }>()
+const NOT_REENTRANT = "CompanyGit's lock is not reentrant; use the LockedGit that locked() passes"
 
 /** A git command on the company clone failed; the message includes git's stderr. */
 export class CompanyGitError extends Error {
@@ -418,10 +419,7 @@ export class CompanyGit {
    * write started without `await` inside a section also rejects if it runs before the section ends.
    */
   locked<T>(fn: (git: LockedGit) => Promise<T>): Promise<T> {
-    const current = holder.getStore()
-    if (current?.git === this && current.held) {
-      return Promise.reject(new Error("CompanyGit's lock is not reentrant; use the LockedGit that locked() passes"))
-    }
+    if (this.#holding()) return Promise.reject(new Error(NOT_REENTRANT))
     const run = this.#queue.then(() => {
       const token = { git: this, held: true }
       return holder.run(token, async () => {
@@ -434,6 +432,12 @@ export class CompanyGit {
     })
     this.#queue = run.then(noop, noop) // a failed section must not wedge the lock
     return run
+  }
+
+  /** Whether the current async context is inside one of this clone's `locked` sections. */
+  #holding(): boolean {
+    const current = holder.getStore()
+    return current?.git === this && current.held
   }
 
   /** Creates the repo at root (git init, branch main). */
@@ -744,8 +748,17 @@ export class CompanyGit {
    * The marker file is written last, so a dir without it (a crash mid-setup, or a half-deleted dir) is
    * rebuilt from scratch. Only files are made read-only, so `git worktree remove --force` and a
    * recursive `rm` still work on a pin.
+   *
+   * A full lowercase sha that is already pinned comes back without git or the lock, even if the clone has
+   * since lost that commit. Called inside a `locked` section it rejects, pinned or not, as `locked` does.
    */
   async pin(commit: string): Promise<string> {
+    if (this.#holding()) throw new Error(NOT_REENTRANT)
+    if (COMMIT_ID.test(commit)) {
+      const dir = path.join(this.worktrees, commit)
+      // The marker is written last and a pin never changes, so a marked dir is complete.
+      if ((await fs.promises.stat(path.join(dir, PIN_MARKER)).catch(() => null))?.isFile()) return dir
+    }
     const sha = await this.resolve(commit)
     const dir = path.join(this.worktrees, sha)
     await this.locked(() => this.#pin(sha, dir))

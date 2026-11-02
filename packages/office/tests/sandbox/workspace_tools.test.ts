@@ -2,7 +2,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { ToolSet } from "@ngocbh/yian/tools"
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { helperCommand } from "../../src/platform.ts"
 import type { Result } from "../../src/sandbox/run.ts"
 import {
@@ -388,6 +388,20 @@ test.skipIf(!sandboxAvailable())("shell calls run without the helper profile and
   const listing = await t.call("list", { path: "." })
   expect(listing.output).toBe("(empty)")
   expect(listing.audit.exit).toBe(0)
+})
+
+test("building the tools walks no guard entry", () => {
+  const { root, make } = makePolicy()
+  // An absent PATH entry: only a workspace check looks it up.
+  const marker = path.join(root, "marker-bin")
+  const office = { home: path.join(root, "home"), path: [marker] }
+  const helperFile = path.join(root, "helper")
+  fs.writeFileSync(helperFile, "")
+  const policies = [make({ office }), make({ office, helper: { binary: helperFile } })]
+  const lstat = spyOn(fs, "lstatSync")
+  onTestFinished(() => lstat.mockRestore())
+  for (const policy of policies) new WorkspaceTools(policy, { officeHome: tempDir(), store: openStore() })
+  expect(lstat.mock.calls.map((c) => String(c[0])).filter((p) => p === marker)).toEqual([])
 })
 
 test("the workspace tool specs equal the saved copy", () => {

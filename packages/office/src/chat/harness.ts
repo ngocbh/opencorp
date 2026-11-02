@@ -7,7 +7,14 @@ import { type Scheduler, realScheduler } from "@ngocbh/yian/platform"
 import { type Message, OFFICE, Session, WorkItem, now } from "@opencorp/protocol"
 import { loadRepo, missingPerson } from "../company/loader.ts"
 import type { Office, SessionHarness } from "../daemon/office.ts"
-import { type CodexSessions, checkFolder, notSupported, unsafeWorkspace } from "../harness/sessions.ts"
+import {
+  type CodexSessions,
+  checkFolder,
+  checkOverlap,
+  folderOf,
+  notSupported,
+  unsafeWorkspace,
+} from "../harness/sessions.ts"
 import type { Monitor } from "../perm/monitor.ts"
 import { MANAGER_FLOW, profileTools } from "../profile/manager.ts"
 import { GitProfileStore } from "../profile/store.ts"
@@ -348,9 +355,13 @@ export class ChatHarness implements SessionHarness {
   #workspace(session: SessionRecord, { writable, network }: { writable: boolean; network: boolean }): WorkspaceTools {
     const { store, paths } = this.office
     const log = (line: string) => this.log(`session ${session.id}: ${line}`)
-    const real = checkFolder(this.office, session.cwd, log)
+    const real = folderOf(session.cwd)
     const tmpdir = path.join(paths.sessionDir(session.id), "tmp")
+    // Made before the policy, which resolves the tmp dir as an existing folder; a folder found unsafe at restore
+    // therefore still leaves this office-owned dir behind.
     fs.mkdirSync(tmpdir, { recursive: true, mode: 0o700 })
+    // The policy runs `checkWorkspace`, so a spec build checks the folder once; the overlap check follows it, so a
+    // folder failing both keeps the workspace check's reason.
     let sandbox: SandboxPolicy
     try {
       sandbox = new SandboxPolicy({ workspace: real, writable, network, tmpdir, office: this.office.guards })
@@ -358,6 +369,7 @@ export class ChatHarness implements SessionHarness {
       if (error instanceof UnsafeWorkspace) throw unsafeWorkspace(error, log)
       throw error
     }
+    checkOverlap(this.office, real, log)
     return new WorkspaceTools(sandbox, { officeHome: paths.home, store })
   }
 

@@ -249,6 +249,40 @@ test("pin keys by full sha", async () => {
   expect(path.basename(await g.pin("main"))).toBe(head)
 })
 
+test("a pinned full sha needs no git", async () => {
+  const recording = recordingGit(tempDir())
+  const { g } = setup({ git: recording.git })
+  const head = await g.head()
+  const dir = await g.pin(head)
+  const n = recording.calls().length
+  expect(await g.pin(head)).toBe(dir)
+  expect(recording.calls().slice(n)).toEqual([])
+  // Anything but a full lowercase sha is resolved first: on a case-insensitive volume an uppercase sha would
+  // find the lowercase pin's marker.
+  const others = ["HEAD", head.slice(0, 12), head.toUpperCase()]
+  for (const commit of others) await g.pin(commit).catch(() => {})
+  const revParses = recording.calls().slice(n).filter((c) => c.args.includes("rev-parse"))
+  expect(revParses.map((c) => c.args.at(-1))).toEqual(others.map((commit) => `${commit}^{commit}`))
+})
+
+test("pinning an existing pin doesn't wait for the lock", async () => {
+  const { g } = setup()
+  const head = await g.head()
+  const dir = await g.pin(head)
+  let release!: () => void
+  const held = g.locked(() => new Promise<void>((resolve) => (release = resolve)))
+  expect(await g.pin(head)).toBe(dir)
+  release()
+  await held
+}, 10_000)
+
+test("pin inside a locked section rejects even when the pin exists", async () => {
+  const { g } = setup()
+  const head = await g.head()
+  await g.pin(head)
+  await expect(g.locked(() => g.pin(head))).rejects.toThrow(/not reentrant/)
+})
+
 test("pin unknown commit raises", async () => {
   const { g } = setup()
   await expect(g.pin("0".repeat(40))).rejects.toThrow(RangeError)

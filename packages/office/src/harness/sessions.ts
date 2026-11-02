@@ -564,18 +564,30 @@ export class CodexSessions implements SessionHarness {
  *  to a folder, is too long for the system to name, or can't be opened by the office, and 422 `unsafe_workspace`
  *  (`log` gets why) when `checkWorkspace` refuses it or it overlaps the office's own files. */
 export function checkFolder(office: Office, cwd: string, log: (line: string) => void): string {
-  // A 422 never echoes the request's path: it may not be a folder at all.
-  if (!path.isAbsolute(cwd)) throw new HarnessError(422, "invalid_body", "cwd is not an absolute path")
-  const problem = folderProblem(cwd)
-  if (problem !== null) throw new HarnessError(422, "invalid_body", problem)
-  // Clients match folders by their resolved path (/tmp is /private/tmp on macOS).
-  const real = realPath(cwd)
+  const real = folderOf(cwd)
   try {
     checkWorkspace(real, office.guards)
   } catch (error) {
     if (error instanceof UnsafeWorkspace) throw unsafeWorkspace(error, log)
     throw error
   }
+  checkOverlap(office, real, log)
+  return real
+}
+
+/** The realpath of `cwd`: 422 `invalid_body` when it isn't an absolute path to a folder, is too long for the system to
+ *  name, or can't be opened by the office. */
+export function folderOf(cwd: string): string {
+  // A 422 never echoes the request's path: it may not be a folder at all.
+  if (!path.isAbsolute(cwd)) throw new HarnessError(422, "invalid_body", "cwd is not an absolute path")
+  const problem = folderProblem(cwd)
+  if (problem !== null) throw new HarnessError(422, "invalid_body", problem)
+  // Clients match folders by their resolved path (/tmp is /private/tmp on macOS).
+  return realPath(cwd)
+}
+
+/** 422 `unsafe_workspace` (`log` gets why) when `real`, a resolved folder, overlaps the office's own files. */
+export function checkOverlap(office: Office, real: string, log: (line: string) => void): void {
   // The workspace check guards ~/.opencorp; this office's home may be elsewhere.
   for (const kept of [office.paths.company, office.paths.office]) {
     if (isInside(real, kept) || isInside(kept, real))
@@ -587,7 +599,6 @@ export function checkFolder(office: Office, cwd: string, log: (line: string) => 
         log,
       )
   }
-  return real
 }
 
 /** The 422 `unsafe_workspace` for the refusal `refused`: the reply gets its reason, and `log` its message, which names
