@@ -14,6 +14,7 @@ import { type Env, launch, officeAnswers, which } from "../../src/install/launch
 import * as launchd from "../../src/install/launchd.ts"
 import { CONFIRM, Declined, KEEP, launchers, OffboardError, offboard, REMOVE } from "../../src/install/offboard.ts"
 import { makeDevice, makeHome } from "../../src/install/onboard.ts"
+import { sameProcess } from "../../src/install/proc.ts"
 import * as service from "../../src/install/service.ts"
 import { selfSpawnEnv } from "../../src/platform.ts"
 import { git, gitEnv } from "../company/helpers.ts"
@@ -281,6 +282,30 @@ test(
     } finally {
       await fallback.stopProcess(run)
     }
+  },
+  120_000,
+)
+
+test(
+  "offboard stops a running office whose pidfile is wrong",
+  async () => {
+    const spawned = killedAtEnd()
+    const dir = shortDir()
+    const paths = await office(path.join(dir, "home"))
+    fs.writeFileSync(path.join(paths.office, "hq.json"), '{"tcp": false}')
+    const environ = { ...gitEnv(selfSpawnEnv(process.env)), HOME: tempDir() }
+    const run = launch(paths.home, { environ, userHome: dir })
+    const host = daemonHost(dir, spawned)
+    await service.install(run, host, "background")
+    await service.wait(run, host)
+    const pid = Number(fs.readFileSync(path.join(paths.office, "office.pid"), "utf8"))
+    fs.writeFileSync(path.join(paths.office, "office.pid"), "1\n")
+    const ask = new Script()
+    await offboard(paths.home, ask, { yes: true, host, environ: { ...environ, PATH: gitOnly(dir).PATH } })
+    expect(ask.seen).toContain(`  - the running office (pid ${pid})`)
+    expect(ask.seen).toContain(`Stopped: background: stopped the office (pid ${pid})`)
+    expect(await officeAnswers(run.socket)).toBe(false)
+    expect(spawned.every((d) => !sameProcess(d.pid, d.started))).toBe(true)
   },
   120_000,
 )

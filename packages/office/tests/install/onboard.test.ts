@@ -187,7 +187,7 @@ test("a running office is not topped up behind its back", async () => {
     host: makeHost(dir, new Runner(), { answers: async () => true }),
   })
   expect(ask.seen.join("\n")).toContain(
-    "The office is running; stop it and run `opencorp onboard` again to add 2 template files.",
+    "The office is running; run `opencorp stop`, then `opencorp onboard` again to add 2 template files.",
   )
   expect(fs.existsSync(path.join(root, "shared/flows/side_chat.yaml"))).toBe(false)
   expect(git(root, "rev-parse", "HEAD")).toBe(head)

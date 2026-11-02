@@ -24,6 +24,7 @@ test("--help lists every command; an unknown command exits 2", async () => {
   expect(help.out).toContain("Usage: opencorp [command] [options]")
   expect(help.out).toContain("With no command, or only options, opencorp runs `tui`.")
   expect(Object.keys(commands)).toContain("pair")
+  expect(Object.keys(commands)).toContain("stop")
   for (const name of Object.keys(commands)) expect(help.out).toContain(name)
   const unknown = await capture(["frobnicate"])
   expect(unknown.code).toBe(2)

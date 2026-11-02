@@ -1,10 +1,12 @@
 /** Python's `tests/install/test_doctor.py`. */
+import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
+import { openSqlite } from "@ngocbh/yian/platform"
 import { expect, onTestFinished, test } from "bun:test"
 import { Identity, identityPath, readIdentity, writeIdentity } from "../../src/auth/identity.ts"
 import { newToken } from "../../src/auth/tokens.ts"
@@ -17,15 +19,17 @@ import type { Check } from "../../src/install/doctor.ts"
 import { INHERITED_ENV, launch } from "../../src/install/launch.ts"
 import * as launchd from "../../src/install/launchd.ts"
 import { SET_UP, setupConnectionFile } from "../../src/install/onboard.ts"
+import * as service from "../../src/install/service.ts"
 import * as systemd from "../../src/install/systemd.ts"
 import { helperCommand } from "../../src/platform.ts"
 import { writePrivate } from "../../src/secrets.ts"
+import { latestVersion } from "../../src/store/migrate.ts"
 import { Store } from "../../src/store/store.ts"
 import { git } from "../company/helpers.ts"
 import { CEO, giveDevice, makeOffice, served } from "../daemon/helpers.ts"
-import { fifo, shortDir, tempDir } from "../helpers.ts"
+import { fifo, ps, shortDir, tempDir } from "../helpers.ts"
 import { sandboxAvailable } from "../sandbox/helpers.ts"
-import { makeHost, Runner } from "./helpers.ts"
+import { makeHost, Runner, standIn } from "./helpers.ts"
 
 const KEY = "sk-ant-test-0123456789"
 const PROVIDER = { llm_config: { provider: "anthropic", api_key: KEY } }
@@ -285,7 +289,7 @@ test("a running office missing template files is told to stop first", async () =
   expect(got.company!.status).toBe("warn")
   expect(got.company!.detail).toContain(SIDE_CHAT)
   expect(got.company!.detail).toContain(
-    "The office is running; stop it and run `opencorp onboard` again to add 1 template file.",
+    "The office is running; run `opencorp stop`, then `opencorp onboard` again to add 1 template file.",
   )
 })
 
@@ -530,7 +534,72 @@ test("an office that keeps failing to start is a crash loop", async () => {
   const got = byName(await runChecks(dir, paths))
   expect(got.office!.status).toBe("fail")
   expect(got.office!.detail).toContain("opencorp office: the company repo has no .git")
-  expect(got.office!.detail).toContain("Run `opencorp start`.")
+  expect(got.office!.detail).toContain("Fix that, then run `opencorp start`.")
+})
+
+test("a failed office start names the type the log above it holds", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const log = [
+    logLine("ERROR", "opencorp.daemon.main", "the office failed to start: TypeError"),
+    "    at start (office.ts:1:1)",
+    "opencorp office: the office failed to start (see the log above)",
+  ].join("\n")
+  fs.writeFileSync(path.join(paths.office, "office.log"), `${log}\n`)
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office!.detail).toContain("its last start failed: opencorp office: the office failed to start: TypeError")
+  expect(got.office!.detail).not.toContain("see the log above")
+})
+
+test.each(["file", "directory", "symlink"])("something other than a socket at the socket path fails [%s]", async (
+  kind,
+) => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const sock = path.join(paths.office, "office.sock")
+  if (kind === "file") fs.writeFileSync(sock, "")
+  else if (kind === "directory") fs.mkdirSync(sock)
+  else fs.symlinkSync(path.join(dir, "elsewhere.sock"), sock)
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office).toEqual({
+    name: "office",
+    status: "fail",
+    detail: `${sock} is not a socket; remove it, then run \`opencorp start\``,
+  })
+})
+
+test("a symlink at the socket path is never asked anything even when something answers", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  fs.symlinkSync(path.join(dir, "other.sock"), path.join(paths.office, "office.sock"))
+  const asked: string[] = []
+  const host = makeHost(dir, new Runner(), { answers: async () => true })
+  const found = await doctor.checks(paths.home, {
+    host,
+    command: COMMAND,
+    repo: path.join(dir, "repo"),
+    probe: async () => null,
+    codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
+    environ: {},
+    hq: async () => (asked.push("hq"), "unreachable"),
+    office: async () => (asked.push("office"), "unreachable"),
+  })
+  expect(byName(found).office!.status).toBe("fail")
+  expect(asked).toEqual([])
+})
+
+test("a daemon that holds the home but doesnt answer is named with the restart", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const real = launchFor(dir, paths).home
+  const live = await standIn(`daemon --home ${real}`)
+  fs.writeFileSync(path.join(paths.office, "office.pid"), `${live.pid}\n`)
+  const got = byName(await runChecks(dir, paths, { environ: { PATH: path.dirname(ps()) } }))
+  expect(got.office!.status).toBe("warn")
+  expect(got.office!.detail).toContain(
+    `pid ${live.pid} is running but doesn't answer on ${path.join(paths.office, "office.sock")} (still starting,` +
+      " or hung); if it stays that way, run `opencorp restart`",
+  )
 })
 
 /** A log of a start, then the crash marker with two frames. */
@@ -549,6 +618,7 @@ test("an office that crashed with the crash marker fails", async () => {
   const got = byName(await runChecks(dir, paths))
   expect(got.office!.status).toBe("fail")
   expect(got.office!.detail).toContain("its last start failed: office crashed: TypeError")
+  expect(got.office!.detail).toContain("Its stack is in the log; fix the cause, then run `opencorp start`.")
   expect(got.office!.detail).not.toContain("x.ts")
   expect(got.office!.detail).not.toContain("y.ts")
 })
@@ -561,6 +631,19 @@ test("a crash marker never shows more than the error type", async () => {
   const got = byName(await runChecks(dir, paths))
   expect(got.office!.status).toBe("warn")
   expect(got.office!.detail).not.toContain("token=abc")
+})
+
+test("a symlinked office log is named, not read", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const target = path.join(dir, "elsewhere.log")
+  fs.writeFileSync(target, "opencorp office: the company repo has no .git\n")
+  fs.symlinkSync(target, path.join(paths.office, "office.log"))
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office!.status).toBe("warn")
+  const log = launchFor(dir, paths).log
+  expect(got.office!.detail).toContain(`${log} is a symlink, which doctor doesn't read`)
+  expect(got.office!.detail).not.toContain("no .git")
 })
 
 test("an office log that isnt a regular file is no crash", async () => {
@@ -935,10 +1018,10 @@ test("codex advice says how the office picks up a change under its service", asy
   const missing = { PATH: path.join(tempDir(), "nowhere") }
   for (const mode of ["launchd", "systemd"]) {
     const managed = await doctor.codexCheck(missing, {}, mode)
-    expect(managed.detail).toContain("stop the office and run `opencorp onboard` again from that shell")
+    expect(managed.detail).toContain("then `opencorp stop` and `opencorp onboard` again from that shell")
     expect(managed.detail).not.toContain("opencorp restart")
     const override = await doctor.codexCheck(missing, { OPENCORP_CODEX_BIN: "/nowhere/codex" }, mode)
-    expect(override.detail).toContain("stop the office and run `opencorp onboard` again from that shell")
+    expect(override.detail).toContain("then `opencorp stop` and `opencorp onboard` again from that shell")
   }
   for (const mode of ["tmux", "background", null]) {
     expect((await doctor.codexCheck(missing, {}, mode)).detail).toContain("then `opencorp restart` from that shell")
@@ -1278,7 +1361,7 @@ function fakeStat(sock: Sock): fs.Stats {
 function runningChecks(
   dir: string,
   paths: OfficePaths,
-  office: OfficeInfo | doctor.Unread,
+  office: OfficeInfo | service.Unread,
   environ: Record<string, string> = {},
   { sock = "socket", hq = status() }: { sock?: Sock; hq?: HqStatus } = {},
 ): Promise<Check[]> {
@@ -1303,10 +1386,11 @@ test("a running office reports hq", async () => {
   expect(got.hq!.status).toBe("ok")
   expect(got.version).toEqual({ name: "version", status: "ok", detail: "pid 42 runs the current code" })
   expect(got.tools!.status).toBe("ok")
-  expect(got.office!.detail).toContain("(pid ?)") // no pidfile
+  expect(got.office!.detail).toContain("(pid 42)") // from GET /office; there is no pidfile
   expect(got.connections).toBeUndefined() // none saved; the lstat stand-in reads the real folder
   expect(found.map((c) => c.name).slice(found.findIndex((c) => c.name === "office"))).toEqual([
     "office",
+    "pidfile",
     "version",
     "tools",
     "hq",
@@ -1316,11 +1400,65 @@ test("a running office reports hq", async () => {
   ])
 })
 
+test("a pidfile that disagrees with the office is a warning with the fix", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const home = launchFor(dir, paths).home
+  const pidfile = path.join(paths.office, "office.pid")
+  fs.writeFileSync(pidfile, "49\n")
+  let got = byName(await runningChecks(dir, paths, info(home, { pid: 50 })))
+  expect(got.office!.detail).toContain("(pid 50)")
+  expect(got.pidfile).toEqual({
+    name: "pidfile",
+    status: "warn",
+    detail: "office.pid says 49 but the office is pid 50; `opencorp restart` rewrites it",
+  })
+  fs.rmSync(pidfile)
+  got = byName(await runningChecks(dir, paths, info(home, { pid: 50 })))
+  expect(got.pidfile!.detail).toBe(
+    "office.pid is missing or unreadable but the office is pid 50; `opencorp restart` rewrites it",
+  )
+  fs.writeFileSync(pidfile, "50\n")
+  expect(byName(await runningChecks(dir, paths, info(home, { pid: 50 }))).pidfile).toBeUndefined()
+  // Another home's office says nothing about this one's pidfile.
+  expect(byName(await runningChecks(dir, paths, info("/elsewhere", { pid: 51 }))).pidfile).toBeUndefined()
+})
+
+test("a pidfile that isnt a regular file is to be removed before a restart", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const home = launchFor(dir, paths).home
+  fs.symlinkSync(path.join(dir, "elsewhere"), path.join(paths.office, "office.pid"))
+  const got = byName(await runningChecks(dir, paths, info(home, { pid: 50 })))
+  expect(got.pidfile).toEqual({
+    name: "pidfile",
+    status: "warn",
+    detail:
+      `${path.join(home, "office", "office.pid")} is not a regular file, and the office's next start refuses it;` +
+      " remove it before the next `opencorp restart` (the office is pid 50)",
+  })
+})
+
+test("a pidfile that is a symlink or fifo shows no pid and never hangs", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const pidfile = path.join(paths.office, "office.pid")
+  const target = path.join(dir, "secret")
+  fs.writeFileSync(target, "12345\n")
+  fs.symlinkSync(target, pidfile)
+  const linked = byName(await runningChecks(dir, paths, "unreachable"))
+  expect(linked.office!.detail).toContain("(pid ?)")
+  fs.rmSync(pidfile)
+  execFileSync("mkfifo", [pidfile])
+  expect(byName(await runningChecks(dir, paths, "unreachable")).office!.detail).toContain("(pid ?)")
+})
+
 test("a pidfile that is a symlink shows no pid and nothing of its target", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir, PROVIDER)
   fs.symlinkSync(setupConnectionFile(paths.office), path.join(paths.office, "office.pid"))
-  const found = await runningChecks(dir, paths, info(launchFor(dir, paths).home))
+  // With no answer from the office, the pid could come only from the pidfile.
+  const found = await runningChecks(dir, paths, "unreachable")
   expect(byName(found).office!.detail).toContain("(pid ?)")
   expect(doctor.report(found)).not.toContain(KEY)
 })
@@ -1400,22 +1538,22 @@ test("office info is read with this devices token", async () => {
   giveDevice(office.paths.company, CEO, "mac", token) // enforced from now on
   await writeIdentity(identityPath(home), new Identity(CEO, "mac", token))
   const { sock } = await served(office, { tokens: true })
-  const got = await doctor.officeInfo(sock, await readIdentity(identityPath(home)), 10_000)
+  const got = await service.officeInfo(sock, await readIdentity(identityPath(home)), 10_000)
   if (typeof got === "string") throw new Error(`unread: ${got}`)
   expect(got.pid).toBe(process.pid)
   expect(got.home).toBe(office.paths.home)
   expect(got.tools).toEqual({ git: "/usr/bin/git" })
   const run = launchFor(home, new OfficePaths(home))
   expect(doctor.report([doctor.versionCheck(run, got, 0), doctor.toolsCheck(got)])).not.toContain(token)
-  expect(await doctor.officeInfo(sock, undefined, 10_000)).toBe("refused") // 401
+  expect(await service.officeInfo(sock, undefined, 10_000)).toBe("refused") // 401
 })
 
 test("an answer that isnt office info is unreadable", async () => {
   for (const body of ["<html>", '{"ok": true}', "[1]"]) {
     const sock = await answering(200, body)
-    expect(await doctor.officeInfo(sock, undefined, 10_000), body).toBe("unreadable")
+    expect(await service.officeInfo(sock, undefined, 10_000), body).toBe("unreadable")
   }
-  expect(await doctor.officeInfo(await answering(404, "{}"), undefined, 10_000)).toBe("unreachable")
+  expect(await service.officeInfo(await answering(404, "{}"), undefined, 10_000)).toBe("unreachable")
 })
 
 /** An executable file in a fresh temp dir. */
@@ -1596,14 +1734,59 @@ test("a stopped offices store is read without its wal files", async () => {
   expect(byName(await runChecks(dir, paths, { environ })).folders).toEqual(expected)
 })
 
-test("a store doctor cant read warns on the folders line", async () => {
+const MOVE_ASIDE =
+  "move it aside (the office then starts with an empty store and its records are lost) or restore it from a backup"
+
+test("a store that isnt a database fails its own line and has no folders line", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)
   fs.writeFileSync(paths.store, "not a database ".repeat(100))
   const store = new OfficePaths(launchFor(dir, paths).home).store
-  expect(byName(await runChecks(dir, paths)).folders).toEqual({
-    name: "folders",
-    status: "warn",
-    detail: `can't read the worked folders in ${store}: SQLITE_NOTADB`,
+  const found = await runChecks(dir, paths)
+  expect(byName(found).store).toEqual({
+    name: "store",
+    status: "fail",
+    detail: `the store ${store} isn't a SQLite database (SQLITE_NOTADB); ${MOVE_ASIDE}`,
+  })
+  expect(byName(found).folders).toBeUndefined()
+  expect(doctor.exitCode(found)).toBe(1)
+})
+
+test("an office without a store has no store line", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  expect(byName(await runChecks(dir, paths)).store).toBeUndefined()
+})
+
+test("a store that is a symlink fails and its target is never opened", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const fifo = path.join(dir, "fifo")
+  execFileSync("mkfifo", [fifo])
+  fs.symlinkSync(fifo, paths.store)
+  const store = new OfficePaths(launchFor(dir, paths).home).store
+  expect(byName(await runChecks(dir, paths)).store).toEqual({
+    name: "store",
+    status: "fail",
+    detail: `store file ${store} is not a regular file; ${MOVE_ASIDE}`,
   })
 })
+
+test("a store newer than the code fails with both versions and a good one is ok", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  storeWith(paths)
+  const store = new OfficePaths(launchFor(dir, paths).home).store
+  expect(byName(await runChecks(dir, paths)).store).toEqual({
+    name: "store",
+    status: "ok",
+    detail: `${store} (schema version ${latestVersion()})`,
+  })
+  const db = openSqlite(paths.store)
+  db.exec(`PRAGMA user_version = ${latestVersion() + 1}`)
+  db.close()
+  const got = byName(await runChecks(dir, paths)).store!
+  expect(got.status).toBe("fail")
+  expect(got.detail).toContain(`store is at version ${latestVersion() + 1}, newer than this code (${latestVersion()})`)
+})
+

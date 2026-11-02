@@ -52,13 +52,23 @@ export function ladder(files: MigrationFile[]): [number, MigrationFile][] {
   return [...found].sort(([a], [b]) => a - b)
 }
 
+/** The refusal of a store at schema `version`, newer than this code's `latest`. */
+export function newerStore(version: number, latest: number): MigrationError {
+  return new MigrationError(`store is at version ${version}, newer than this code (${latest})`)
+}
+
+/** The schema version the last of `files` brings a store to. */
+export function latestVersion(files = MIGRATIONS): number {
+  return ladder(files).at(-1)?.[0] ?? 0
+}
+
 /** Applies each migration numbered above `user_version`, in order, one transaction each. Gaps in the
  *  numbering are allowed. Returns the new `user_version`. */
 export function migrate(db: Sqlite, files = MIGRATIONS): number {
   const steps = ladder(files)
   const latest = steps.at(-1)?.[0] ?? 0
   const current = userVersion(db)
-  if (current > latest) throw new MigrationError(`store is at version ${current}, newer than this code (${latest})`)
+  if (current > latest) throw newerStore(current, latest)
   for (const [number, file] of steps) {
     if (number <= current) continue
     db.exec("BEGIN IMMEDIATE")

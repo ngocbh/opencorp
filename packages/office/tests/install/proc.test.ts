@@ -310,7 +310,7 @@ test("args refuses a ps that is not an absolute path", () => {
 test("stopProcess ends a process with SIGTERM", async () => {
   const g = startGroup("exec /bin/sleep 61")
   expect(g.started).not.toBeNull()
-  expect(await stopProcess(g.pid, g.started!)).toBe(true)
+  expect(await stopProcess(g.pid, g.started!)).toBe("terminated")
   expect((await g.exited).signal).toBe("SIGTERM")
 })
 
@@ -319,7 +319,7 @@ test("stopProcess kills a process that ignores SIGTERM after the timeout", async
   const g = startGroup("trap '' TERM; echo ready; exec /bin/sleep 61")
   await g.line()
   expect(g.started).not.toBeNull()
-  expect(await stopProcess(g.pid, g.started!, { timeout: 300, killWait: 5000 })).toBe(true)
+  expect(await stopProcess(g.pid, g.started!, { timeout: 300, killWait: 5000 })).toBe("killed")
   expect((await g.exited).signal).toBe("SIGKILL")
 })
 

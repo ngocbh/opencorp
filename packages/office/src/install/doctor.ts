@@ -3,9 +3,9 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { type HqStatus, OfficeInfo } from "@opencorp/protocol"
+import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
-import { FileLockError, openSqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
+import { FileLockError, openSqlite, type Sqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
 import { type Identity, identityPath, readIdentity } from "../auth/identity.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
 import type { RepoIssue } from "../company/issues.ts"
@@ -21,8 +21,11 @@ import { selfCommand } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
 import { checkWorkspace, type OfficePaths as Guards, SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
 import { fsHelper, run } from "../sandbox/run.ts"
+import { latestVersion, newerStore, userVersion } from "../store/migrate.ts"
+import { storeProblem } from "../store/problem.ts"
+import { StoreError } from "../store/store.ts"
 import { workerEnv } from "../worker/spawn.ts"
-import { tailRegular } from "./files.ts"
+import * as fallback from "./fallback.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, runCommand, which } from "./launch.ts"
 import * as launchd from "./launchd.ts"
 import {
@@ -39,21 +42,6 @@ import { OnboardError, clean } from "./prompts.ts"
 import * as service from "./service.ts"
 import * as systemd from "./systemd.ts"
 import { installPaths, resolveTools, workspaceGuards } from "./tools.ts"
-
-/** How the daemon prefixes the one line it prints when it can't start. */
-const START_ERROR = "opencorp office: "
-
-/**
- * The crash marker's line (`logLine` from the daemon's `crashReport`), capturing `office crashed: <type>`. The type
- * may be empty (an anonymous class); a marker with anything after the type doesn't match, so no message shows.
- */
-const CRASH_MARKER = /^\S+ ERROR opencorp\.daemon\.main: (office crashed: \S*)$/
-
-/** The end of the office log that `crash` looks at: far more than 40 lines. */
-const LOG_TAIL_BYTES = 64 * 1024
-
-/** A stack frame line under the crash marker. */
-const FRAME = /^\s+at /
 
 /** How `codex login status` starts the line it prints when nobody is signed in, lowercased. */
 const SIGNED_OUT = "not logged in"
@@ -82,10 +70,6 @@ export interface Check {
   status: "ok" | "warn" | "fail"
   detail: string
 }
-
-/** Why the office's answer couldn't be read: it refused this device's token; no office answered in time (or one too
- *  old to have the route); or its answer isn't what was asked for. */
-export type Unread = "refused" | "unreachable" | "unreadable"
 
 function errnoCode(error: unknown): string | undefined {
   const code = (error as NodeJS.ErrnoException | null)?.code
@@ -321,47 +305,62 @@ async function serviceCheck(run: Launch, host: Host): Promise<Check> {
   }
 }
 
-/** What to do about an office that isn't answering: `opencorp start`, and where its service's status is. */
-function nextStep(run: Launch, host: Host): string {
+/** Where the office's service manager shows its status, as a sentence, or "" when none runs it. */
+function serviceStatus(run: Launch, host: Host): string {
   const mode = service.recordedMode(run)
   if (mode === "launchd") {
     const name = launchd.label(run)
-    return (
-      `Run \`opencorp start\`. launchd runs it as ${name}: ` +
-      `\`launchctl print gui/${host.uid}/${name}\` shows its status.`
-    )
+    return ` launchd runs it as ${name}: \`launchctl print gui/${host.uid}/${name}\` shows its status.`
   }
   if (mode === "systemd") {
     const name = systemd.unitName(run)
-    return `Run \`opencorp start\`. systemd runs it as ${name}: \`systemctl --user status ${name}\` shows its status.`
+    return ` systemd runs it as ${name}: \`systemctl --user status ${name}\` shows its status.`
   }
-  return "Run `opencorp start`."
+  return ""
 }
 
-/**
- * Why the daemon's last start failed, from the office log, or null if it didn't: the line it printed when it
- * couldn't start, or `office crashed: <type>` when the log ends with the crash marker and its frames (the frames
- * stay in the log). A marker with other lines after it belongs to an earlier start.
- */
-function crash(log: string): string | null {
-  let text: string
+/** What to do about an office that isn't answering, after `failure` (its last start's, or null): fix that or
+ *  `opencorp start`, and where its service's status is. */
+function nextStep(run: Launch, host: Host, failure: string | null): string {
+  const first =
+    failure === null
+      ? "Run `opencorp start`."
+      : failure.startsWith("office crashed:")
+        ? "Its stack is in the log; fix the cause, then run `opencorp start`."
+        : "Fix that, then run `opencorp start`."
+  return first + serviceStatus(run, host)
+}
+
+/** The warning for an office.pid (`pidfile`, as read) that doesn't name the office's own pid `actual`. A restart
+ *  rewrites a missing or wrong one, but its new daemon refuses to start over one that isn't a regular file. */
+function pidfileCheck(run: Launch, actual: number, pidfile: number | "?", lstat: (p: string) => fs.Stats): Check {
+  const file = path.join(run.office, "office.pid")
+  const st = lstatOrNull(lstat, file)
+  if (st !== null && !st.isFile()) {
+    return {
+      name: "pidfile",
+      status: "warn",
+      detail:
+        `${file} is not a regular file, and the office's next start refuses it; remove it before the next` +
+        ` \`opencorp restart\` (the office is pid ${actual})`,
+    }
+  }
+  // A stop finds the daemon through GET /office only while it answers; a hung one is found by its pidfile.
+  const said = pidfile === "?" ? "office.pid is missing or unreadable" : `office.pid says ${pidfile}`
+  return {
+    name: "pidfile",
+    status: "warn",
+    detail: `${said} but the office is pid ${actual}; \`opencorp restart\` rewrites it`,
+  }
+}
+
+/** What is at `file`, not following a symlink, or null when nothing is or it can't be looked at. */
+function lstatOrNull(lstat: (p: string) => fs.Stats, file: string): fs.Stats | null {
   try {
-    // A link or a FIFO at the log's path is no log to read.
-    text = tailRegular(log, LOG_TAIL_BYTES) ?? ""
-  } catch (error) {
-    if (errnoCode(error) === undefined) throw error
+    return lstat(file)
+  } catch {
     return null
   }
-  const lines = text
-    .split(/\r?\n/)
-    .filter((line) => line.trim())
-    .slice(-40)
-  const last = lines.at(-1)
-  if (last === undefined) return null
-  // A duplicate start exits 0 and is no crash.
-  if (last.startsWith(START_ERROR) && !last.includes("office already running")) return last
-  const marker = lines.findLast((line) => !FRAME.test(line))
-  return marker?.match(CRASH_MARKER)?.[1] ?? null
 }
 
 /** `s` as one printable line: escapes and control characters gone, whitespace collapsed. */
@@ -382,7 +381,7 @@ function codexChangeLands(mode: string | null): string {
   // launchd and systemd start the office with the environment `opencorp onboard` wrote into its service file, which
   // `opencorp restart` reuses; only a stopped office's onboard writes the file again.
   if (mode === "launchd" || mode === "systemd") {
-    return "stop the office and run `opencorp onboard` again from that shell"
+    return "`opencorp stop` and `opencorp onboard` again from that shell"
   }
   return "`opencorp restart` from that shell"
 }
@@ -455,56 +454,8 @@ export async function codexCheck(
   return { name: "codex", status: "ok", detail: `${named}, signed in` }
 }
 
-/**
- * `GET <target>` from the office on `socket`, sent with the identity's token when there is one: the status and body
- * text, or `unreachable` when nothing answered within `timeoutMs`.
- */
-export async function getJson(
-  socket: string,
-  identity: Identity | undefined,
-  target: string,
-  timeoutMs: number,
-): Promise<{ status: number; text: string } | "unreachable"> {
-  try {
-    // Bun's fetch over a unix socket.
-    const res = await fetch(`http://office${target}`, {
-      unix: socket,
-      headers: identity?.headers(),
-      signal: AbortSignal.timeout(timeoutMs),
-    })
-    return { status: res.status, text: await res.text() }
-  } catch {
-    return "unreachable"
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-/**
- * `GET target` from the office on `socket`, sent with the identity's token when there is one, and its JSON body as
- * `read` takes it, or why it couldn't be read (`read` returning undefined makes it unreadable).
- */
-async function readFromOffice<T>(
-  socket: string,
-  identity: Identity | undefined,
-  target: string,
-  timeoutMs: number,
-  read: (body: unknown) => T | undefined,
-): Promise<T | Unread> {
-  const got = await getJson(socket, identity, target, timeoutMs)
-  if (got === "unreachable") return got
-  if (got.status === 401) return "refused"
-  // 404 from an office before the route; for /hq, 501 from one without HQ attached
-  if (got.status !== 200) return "unreachable"
-  let body: unknown
-  try {
-    body = JSON.parse(got.text)
-  } catch {
-    return "unreadable"
-  }
-  return read(body) ?? "unreadable"
 }
 
 /** `body`, once every part of it that `hqChecks` reads is there; undefined if one isn't. */
@@ -532,15 +483,15 @@ export async function hqStatus(
   socket: string,
   identity: Identity | undefined,
   timeoutMs = 2000,
-): Promise<HqStatus | Unread> {
-  return readFromOffice(socket, identity, "/hq", timeoutMs, readByChecks)
+): Promise<HqStatus | service.Unread> {
+  return service.readFromOffice(socket, identity, "/hq", timeoutMs, readByChecks)
 }
 
 /** How HQ's status starts the TCP error when the web port's server stopped after it bound, not a failed bind. */
 const SERVER_ENDED = "its server ended"
 
 /** What to do about an HQ status doctor couldn't read, by why. */
-export const UNREAD: Record<Unread, string> = {
+export const UNREAD: Record<service.Unread, string> = {
   refused: "the office doesn't know this device, so it won't say where HQ listens: run `opencorp login`",
   unreachable: "the office didn't say where HQ listens (an office from before HQ?): run `opencorp restart`",
   unreadable:
@@ -575,7 +526,7 @@ function socketProblem(socket: unknown, lstat: (p: string) => fs.Stats): string 
 
 /** Where HQ listens (see `hqPortChecks`), whether the web app is built for this office, and HQ's own warnings. */
 export function hqChecks(
-  status: HqStatus | Unread,
+  status: HqStatus | service.Unread,
   officeDir: string,
   repo: string,
   socketMissing: string | null = null,
@@ -671,20 +622,8 @@ export function hqPortChecks(status: HqStatus, officeDir: string, socketMissing:
   return found
 }
 
-/**
- * `GET /office` from the office on `socket`, sent with the identity's token when there is one: its pid, home, start
- * time, version and pinned tools, or why it couldn't be read.
- */
-export async function officeInfo(
-  socket: string,
-  identity: Identity | undefined,
-  timeoutMs = 2000,
-): Promise<OfficeInfo | Unread> {
-  return readFromOffice(socket, identity, "/office", timeoutMs, (body) => OfficeInfo.safeParse(body).data)
-}
-
 /** What to do about an office that wouldn't say what code it runs, by why. */
-export const VERSION_UNREAD: Record<Unread, string> = {
+export const VERSION_UNREAD: Record<service.Unread, string> = {
   refused: "the office doesn't know this device, so it won't say what it runs: run `opencorp login`",
   unreachable: "the office didn't say what code it runs: run `opencorp restart`",
   unreadable:
@@ -814,28 +753,73 @@ export async function sandboxProblem(officeHome: string): Promise<string | null>
   }
 }
 
-/** Every folder in the `worked_folders` table of the store at `store`, sorted, read without writing. */
-function workedFolders(store: string): string[] {
-  const read = (readonly: boolean) => {
+/**
+ * `read` on the store at `store`, opened without migrating it: read-only, or read-write when that can't open it. A
+ * WAL store can't be opened read-only without its -wal and -shm files, which SQLite deletes when the office closes
+ * it; the read-write open makes them again, private like the store. `read` only reads, and the store is never
+ * migrated: a doctor newer than the daemon must not change its schema under it.
+ */
+function readStore<T>(store: string, read: (db: Sqlite) => T): T {
+  const open = (readonly: boolean) => {
     const db = openSqlite(store, { readonly })
     try {
-      return db
-        .prepare("SELECT DISTINCT cwd FROM worked_folders ORDER BY cwd")
-        .all()
-        .map((row) => String(row.cwd))
+      return read(db)
     } finally {
       db.close()
     }
   }
+  const old = process.umask(0o077)
   try {
-    return read(true)
-  } catch (error) {
-    if (((sqliteErrorCode(error) ?? 0) & 0xff) !== SQLITE_CANTOPEN) throw error
-    // A WAL store can't be read read-only without its -wal and -shm files, which SQLite deletes when the office
-    // closes it. A read-write open on the existing file makes them again; the query still only reads, and the store
-    // is never migrated: a doctor newer than the daemon must not change its schema under it.
-    return read(false)
+    try {
+      return open(true)
+    } catch (error) {
+      if (((sqliteErrorCode(error) ?? 0) & 0xff) !== SQLITE_CANTOPEN) throw error
+      return open(false)
+    }
+  } finally {
+    process.umask(old)
   }
+}
+
+/** Every folder in the `worked_folders` table of the store at `store`, sorted, read without writing. */
+function workedFolders(store: string): string[] {
+  return readStore(store, (db) =>
+    db
+      .prepare("SELECT DISTINCT cwd FROM worked_folders ORDER BY cwd")
+      .all()
+      .map((row) => String(row.cwd)),
+  )
+}
+
+/**
+ * Whether the store at `store` opens and reads as this code's (`storeProblem` says why not, as the daemon's start
+ * would); null when there is no store yet. The path is looked at without following a symlink, and only the schema
+ * is read: no integrity check, which would read the whole file.
+ */
+export function storeCheck(store: string, lstat: (p: string) => fs.Stats): Check | null {
+  let st: fs.Stats
+  try {
+    st = lstat(store)
+  } catch (error) {
+    const code = errnoCode(error)
+    if (code === "ENOENT") return null
+    if (code === undefined) throw error
+    return { name: "store", status: "fail", detail: `can't read ${store}: ${strerror(error) ?? code}` }
+  }
+  let version: number
+  try {
+    if (!st.isFile()) throw new StoreError(`store file ${store} is not a regular file`)
+    version = readStore(store, (db) => {
+      db.prepare("SELECT count(*) FROM sqlite_master").get()
+      return userVersion(db)
+    })
+    if (version > latestVersion()) throw newerStore(version, latestVersion())
+  } catch (error) {
+    const problem = storeProblem(store, error)
+    const detail = problem ?? `can't read ${store}: ${errnoCode(error) ?? nameOf(error)}`
+    return { name: "store", status: "fail", detail }
+  }
+  return { name: "store", status: "ok", detail: `${store} (schema version ${version})` }
 }
 
 /**
@@ -892,10 +876,10 @@ export interface CheckOptions {
   environ?: Env
   /** `GET /hq` from the office on the socket, sent with the identity's token when there is one (default
    *  `hqStatus`). */
-  hq?: (socket: string, identity: Identity | undefined) => Promise<HqStatus | Unread>
+  hq?: (socket: string, identity: Identity | undefined) => Promise<HqStatus | service.Unread>
   /** `GET /office` from the office on the socket, sent with the identity's token when there is one (default
-   *  `officeInfo`). */
-  office?: (socket: string, identity: Identity | undefined) => Promise<OfficeInfo | Unread>
+   *  `service.officeInfo`). */
+  office?: (socket: string, identity: Identity | undefined) => Promise<OfficeInfo | service.Unread>
   /** Looks at a path without following a symlink (default `fs.lstatSync`). */
   lstat?: (p: string) => fs.Stats
 }
@@ -910,7 +894,7 @@ export interface CheckOptions {
  */
 export async function checks(home: string, options: CheckOptions): Promise<Check[]> {
   const { host = defaultHost(), command = selfCommand(), repo = CHECKOUT, environ = process.env } = options
-  const { codex = codexCheck, hq = hqStatus, office = officeInfo, probe = sandboxProblem } = options
+  const { codex = codexCheck, hq = hqStatus, office = service.officeInfo, probe = sandboxProblem } = options
   const lstat = options.lstat ?? ((p: string) => fs.lstatSync(p))
   const run = launch(home, { command, environ, userHome: host.userHome })
   const paths = new OfficePaths(run.home)
@@ -923,10 +907,21 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   const added = connectionsCheck(paths, lstat)
   if (added !== null) found.push(added)
   found.push(await serviceCheck(run, host))
-  if (running) {
-    found.push({ name: "office", status: "ok", detail: `answering on ${run.socket} (pid ${service.pid(run)})` })
+  const sock = lstatOrNull(lstat, run.socket)
+  if (sock !== null && !sock.isSocket()) {
+    // Nothing is asked over it: a symlink could lead the device's token to another office.
+    found.push({
+      name: "office",
+      status: "fail",
+      detail: `${run.socket} is not a socket; remove it, then run \`opencorp start\``,
+    })
+  } else if (running) {
     const identity = await readIdentity(identityPath(run.home))
     const info = await office(run.socket, identity)
+    const ours = typeof info !== "string" && info.home === run.home ? info : null
+    const pidfile = service.pid(run)
+    found.push({ name: "office", status: "ok", detail: `answering on ${run.socket} (pid ${ours?.pid ?? pidfile})` })
+    if (ours !== null && pidfile !== ours.pid) found.push(pidfileCheck(run, ours.pid, pidfile, lstat))
     if (typeof info === "string") found.push({ name: "version", status: "warn", detail: VERSION_UNREAD[info] })
     else {
       found.push(versionCheck(run, info, newestSource(command)), toolsCheck(info))
@@ -937,21 +932,42 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
       typeof hqAnswer === "string" || hqAnswer.socket_error ? null : socketProblem(hqAnswer.socket, lstat)
     found.push(...hqChecks(hqAnswer, paths.office, repo, missing))
   } else {
-    const error = crash(run.log)
-    const why = error === null ? "" : `; its last start failed: ${error}`
-    found.push({
-      name: "office",
-      status: error === null ? "warn" : "fail",
-      detail: `not answering on ${run.socket}${why} (log: ${run.log}). ${nextStep(run, host)}`,
-    })
+    const hung = fallback.daemon(run, resolveTools(run.env).ps)
+    if (hung !== null) {
+      found.push({
+        name: "office",
+        status: "warn",
+        detail:
+          `pid ${hung.pid} is running but doesn't answer on ${run.socket} (still starting, or hung); if it stays` +
+          ` that way, run \`opencorp restart\` (log: ${run.log}).${serviceStatus(run, host)}`,
+      })
+    } else {
+      const error = service.lastFailure(service.readLog(run.log))
+      // The log is read without following a link (the daemon never writes through one), so say why it wasn't read.
+      const linked = lstatOrNull(lstat, run.log)?.isSymbolicLink()
+        ? `; ${run.log} is a symlink, which doctor doesn't read`
+        : ""
+      const why = (error === null ? "" : `; its last start failed: ${error}`) + linked
+      found.push({
+        name: "office",
+        status: error === null ? "warn" : "fail",
+        detail: `not answering on ${run.socket}${why} (log: ${run.log}). ${nextStep(run, host, error)}`,
+      })
+    }
   }
+  const store = storeCheck(paths.store, lstat)
+  if (store !== null) found.push(store)
   const problem = await probe(paths.home)
   found.push({ name: "sandbox", status: problem ? "fail" : "ok", detail: problem || "sandboxed commands run" })
-  const folders = foldersCheck(
-    paths.store,
-    guards ?? workspaceGuards(resolveTools(run.env), run.env, command, [host.userHome, paths.home, os.tmpdir()]),
-    host.userHome,
-  )
+  // A store that failed its own check has no worked folders to read.
+  const folders =
+    store?.status === "fail"
+      ? null
+      : foldersCheck(
+          paths.store,
+          guards ?? workspaceGuards(resolveTools(run.env), run.env, command, [host.userHome, paths.home, os.tmpdir()]),
+          host.userHome,
+        )
   if (folders !== null) found.push(folders)
   // run.env is the environment an office set up or started from this shell gets, which can differ from the running
   // daemon's (a launchd or systemd office keeps the one `opencorp onboard` wrote into its service file).

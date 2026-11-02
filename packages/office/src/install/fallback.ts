@@ -77,14 +77,31 @@ function messageOf(error: unknown): string {
   return strerror(error) ?? (error instanceof Error ? error.message : String(error))
 }
 
+/** How a background daemon ended: its exit code or signal, or `error` when it couldn't be started. */
+export interface Exit {
+  code: number | null
+  signal: NodeJS.Signals | null
+  error?: true
+}
+
+/** A daemon `startBackground` started: its pid, its exit, and the log's size just before it started. */
+export interface BackgroundChild {
+  pid: number
+  exited: Promise<Exit>
+  logFrom: number
+}
+
 /**
  * Starts the daemon as a detached process leading its own session, its output appended to the log, with a soft
  * limit of 4096 open files.
  *
+ * Returns the daemon's pid, a promise of its exit and the log's size before the spawn, so a wait can stop when the
+ * daemon exits and read only what it wrote. The daemon is unref'd: nothing here keeps the caller alive for it.
+ *
  * Throws `OfficeStartError` for an office dir that isn't ours, and `ServiceError` if the office program isn't an
  * executable file, the log can't be opened or isn't a regular file, or the daemon can't be started.
  */
-export function startBackground(launch: Launch, host: Host): void {
+export function startBackground(launch: Launch, host: Host): BackgroundChild {
   makeOfficeDir(launch.office)
   const program = launch.argv[0]
   // `sh` would report a missing program only in the log, after the caller has started waiting. The office
@@ -106,7 +123,15 @@ export function startBackground(launch: Launch, host: Host): void {
     throw new ServiceError(`can't open the office log ${launch.log}: ${messageOf(error)}`)
   }
   try {
-    if (!fs.fstatSync(log).isFile()) throw new ServiceError(`the office log ${launch.log} isn't a regular file`)
+    let logFrom: number
+    try {
+      const stat = fs.fstatSync(log)
+      if (!stat.isFile()) throw new ServiceError(`the office log ${launch.log} isn't a regular file`)
+      logFrom = stat.size
+    } catch (error) {
+      if (error instanceof ServiceError) throw error
+      throw new ServiceError(`can't open the office log ${launch.log}: ${messageOf(error)}`)
+    }
     let child: ChildProcess
     try {
       // `-S` sets only the soft limit, as Python's daemon did: no hard cap. `;`, not `&&`: when the hard limit is
@@ -120,11 +145,13 @@ export function startBackground(launch: Launch, host: Host): void {
     } catch (error) {
       throw new ServiceError(`can't start ${program}: ${messageOf(error)}`)
     }
-    // A late spawn error must not become an uncaught exception; the caller's wait reports a daemon that never
-    // answers.
-    child.on("error", () => {})
+    const { promise: exited, resolve } = Promise.withResolvers<Exit>()
+    // Listening also keeps a late spawn error from becoming an uncaught exception.
+    child.once("error", () => resolve({ code: null, signal: null, error: true }))
+    child.once("exit", (code, signal) => resolve({ code, signal }))
     if (child.pid === undefined) throw new ServiceError(`can't start ${program}`)
     child.unref()
+    return { pid: child.pid, exited, logFrom }
   } finally {
     fs.closeSync(log)
   }
@@ -170,6 +197,12 @@ export function pidOf(launch: Launch): number | null {
 export function daemon(launch: Launch, ps: string | undefined): { pid: number; started: number } | null {
   const pid = pidOf(launch)
   if (pid === null || ps === undefined) return null
+  return verify(pid, launch, ps)
+}
+
+/** `pid` with its start time if it is this office's daemon (its args end as `daemon` describes), else null. The
+ *  start time is read first, so a pid reused before the args are read fails `stopPid`'s re-check. */
+export function verify(pid: number, launch: Launch, ps: string): { pid: number; started: number } | null {
   const started = startTime(pid)
   if (started === null) return null
   const line = args(pid, ps)
@@ -182,17 +215,20 @@ export function daemon(launch: Launch, ps: string | undefined): { pid: number; s
  *  must close cleanly. */
 export const STOP_TIMEOUT_MS = 25_000
 
-/** Stops the office's daemon with SIGTERM, then SIGKILL after `timeoutMs`; says what was done, or null if none
- *  runs. Nothing is signalled unless the pid's start time and args are this office's daemon's. */
+/** Stops the office's daemon with SIGTERM, then SIGKILL after `timeoutMs`; says which pid it stopped, how, and
+ *  whether it took SIGKILL, or null if none runs. The daemon is `found` when given (a pid already verified, or null
+ *  for none), else the pidfile's. Nothing is signalled unless the pid's start time and args are this office's
+ *  daemon's. */
 export async function stopProcess(
   launch: Launch,
   {
     timeoutMs = STOP_TIMEOUT_MS,
     ps = resolveTools(daemonEnv(process.env)).ps,
-  }: { timeoutMs?: number; ps?: string } = {},
-): Promise<string | null> {
-  const found = daemon(launch, ps)
+    found = daemon(launch, ps),
+  }: { timeoutMs?: number; ps?: string; found?: { pid: number; started: number } | null } = {},
+): Promise<{ pid: number; line: string; killed: boolean } | null> {
   if (found === null) return null
-  if (!(await stopPid(found.pid, found.started, { timeout: timeoutMs }))) return null
-  return `stopped the office (pid ${found.pid})`
+  const how = await stopPid(found.pid, found.started, { timeout: timeoutMs })
+  if (!how) return null
+  return { pid: found.pid, line: `stopped the office (pid ${found.pid})`, killed: how === "killed" }
 }

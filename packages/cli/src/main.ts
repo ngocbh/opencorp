@@ -39,6 +39,7 @@ export const commands: Record<string, { summary: string; load: () => Promise<{ r
   onboard: { summary: "Set up this office for an existing company", load: () => import("./commands/onboard") },
   offboard: { summary: "Remove this office from this machine", load: () => import("./commands/offboard") },
   start: { summary: "Start the office if it isn't running", load: () => import("./commands/start") },
+  stop: { summary: "Stop the office (its service stays installed)", load: () => import("./commands/stop") },
   restart: { summary: "Stop the office and start it again", load: () => import("./commands/restart") },
   doctor: { summary: "Check the office, its socket, the sandbox and Codex", load: () => import("./commands/doctor") },
 }

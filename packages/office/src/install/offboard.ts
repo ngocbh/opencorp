@@ -6,14 +6,12 @@ import { type Identity, identityPath } from "../auth/identity.ts"
 import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import { loadRepo } from "../company/loader.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
-import * as fallback from "./fallback.ts"
-import { daemonEnv, defaultHost, type Env, type Host, type Launch, launch, ServiceError } from "./launch.ts"
+import { defaultHost, type Env, type Host, type Launch, launch, ServiceError } from "./launch.ts"
 import * as launchd from "./launchd.ts"
 import { CLONE, knownIdentity, lexists, removePath, userGit } from "./onboard.ts"
 import type { Prompter } from "./prompts.ts"
 import * as service from "./service.ts"
 import * as systemd from "./systemd.ts"
-import { resolveTools } from "./tools.ts"
 
 /** What the owner is asked before anything is removed, and the two answers. */
 export const CONFIRM = "Remove all this?"
@@ -155,15 +153,15 @@ function listed(company: string, me: Identity | undefined): boolean {
 }
 
 /** The office's service and running daemon, as plan lines: its recorded mode (or a leftover file's), the service
- *  files there are, and the daemon's pid when it answers or its pidfile names it. */
-function serviceLines(run: Launch, host: Host, running: boolean, ps: string | undefined): string[] {
+ *  files there are, and the daemon's pid when it answers or `lookup` verified one. */
+function serviceLines(run: Launch, host: Host, running: boolean, lookup: service.Lookup): string[] {
   const found: string[] = []
   const mode = service.recordedMode(run)
   const files = [launchd.plistPath(run, host), systemd.unitPath(run, host)].filter((file) => fs.existsSync(file))
   if (mode || files.length) {
     found.push(`the office's ${mode ?? "leftover"} service` + (files.length ? ` (${files.join(", ")})` : ""))
   }
-  if (running || fallback.daemon(run, ps)) found.push(`the running office (pid ${service.pid(run)})`)
+  if (running || lookup.daemon) found.push(`the running office (pid ${lookup.named ?? "?"})`)
   return found
 }
 
@@ -177,8 +175,6 @@ export async function plan(
   const company = path.join(run.home, "company")
   const me = await knownIdentity(run.home)
   const running = await host.answers(run.socket)
-  // The `ps` the service's stop uses.
-  const ps = resolveTools(daemonEnv(process.env)).ps
   const described = new Map([
     [run.office, "the office's store, provider.json, connections and sign-ins, logs, and worktrees"],
     [identityPath(run.home), "this device's identity and token"],
@@ -188,7 +184,7 @@ export async function plan(
   const found: Plan = {
     me,
     listed: listed(company, me),
-    service: serviceLines(run, host, running, ps),
+    service: serviceLines(run, host, running, await service.findDaemon(run, host)),
     state: [...described.keys()].filter(lexists),
     company: lexists(company) ? company : null,
     keepWhy: null,
@@ -310,6 +306,8 @@ export async function offboard(
   }
 
   const me = found.me
+  // Before the device goes: the office won't tell a device it no longer knows its pid.
+  const lookup = await service.findDaemon(run, host)
   let removedOnline = false
   if (found.listed && me && (await host.answers(run.socket))) {
     removedOnline = await removeOnline(run, me)
@@ -317,7 +315,7 @@ export async function offboard(
   }
   let stopped: string[]
   try {
-    stopped = await service.uninstall(run, host)
+    stopped = await service.uninstall(run, host, undefined, lookup)
   } catch (error) {
     if (!(error instanceof ServiceError)) throw error
     throw new OffboardError(`${error.message}; nothing else was removed`)

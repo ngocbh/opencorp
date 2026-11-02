@@ -74,7 +74,7 @@ export function damageMessage(root: string, state: Extract<CompanyState, { kind:
 /** What to do about `count` missing template files while the office runs. */
 export function stopToTopUp(count: number): string {
   const files = count === 1 ? "template file" : "template files"
-  return `The office is running; stop it and run \`opencorp onboard\` again to add ${count} ${files}.`
+  return `The office is running; run \`opencorp stop\`, then \`opencorp onboard\` again to add ${count} ${files}.`
 }
 
 function errnoCode(error: unknown): unknown {
@@ -986,7 +986,8 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
   if (fresh) {
     if (running) {
       throw new OnboardError(
-        `the office is running, but ${company} has no company yet; stop it and run \`opencorp onboard\` again`,
+        `the office is running, but ${company} has no company yet; run \`opencorp stop\`,` +
+          " then `opencorp onboard` again",
       )
     }
     if (state.kind === "unfinished") {
@@ -1066,7 +1067,7 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
   try {
     installed = await service.install(one, host, options.mode ?? "auto")
     for (const note of installed.notes) prompter.say(`  skipped ${note}`)
-    await service.wait(one, host)
+    await service.wait(one, host, undefined, installed.child)
   } catch (error) {
     if (error instanceof ServiceError || error instanceof OfficeStartError) throw new OnboardError(error.message)
     throw error
