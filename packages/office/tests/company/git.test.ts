@@ -1710,3 +1710,32 @@ test("export tree of an unknown commit is a range error", async () => {
   const { tmp, g } = setup()
   await expect(g.exportTree("0".repeat(40), path.join(tmp, "export"))).rejects.toThrow(RangeError)
 })
+
+/** Whether names in the temp dir are case-insensitive, as on a default macOS volume. */
+function foldsCase(): boolean {
+  const dir = tempDir()
+  fs.writeFileSync(path.join(dir, "a"), "")
+  return fs.existsSync(path.join(dir, "A"))
+}
+
+test.each([
+  ["x", "same case"],
+  ["X", "other case"],
+])("export tree never writes through a symlink the commit put in the export [%s, %s]", async (committed) => {
+  if (committed !== "x" && !foldsCase()) return
+  const { tmp, company, g } = setup()
+  const outside = path.join(tmp, "outside")
+  fs.mkdirSync(outside)
+  fs.writeFileSync(path.join(outside, "sentinel"), "keep\n")
+  fs.symlinkSync(outside, path.join(company, "people", committed))
+  git(company, "add", `people/${committed}`)
+  git(company, "commit", "-q", "-m", "link")
+  fs.unlinkSync(path.join(company, "people", committed))
+  fs.mkdirSync(path.join(company, "people/x"))
+  fs.writeFileSync(path.join(company, "people/x/profile.md"), "# X\n")
+  const dir = path.join(tmp, "export")
+  await g.exportTree("HEAD", dir, ["people/x/profile.md"])
+  expect(fs.readdirSync(outside)).toEqual(["sentinel"])
+  expect(fs.readFileSync(path.join(outside, "sentinel"), "utf8")).toBe("keep\n")
+  expect(fs.lstatSync(path.join(dir, "people", committed)).isSymbolicLink()).toBe(true)
+})

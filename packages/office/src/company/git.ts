@@ -961,6 +961,8 @@ export class CompanyGit {
       await fs.promises.rm(scratch, { recursive: true, force: true })
     }
     for (const rel of overlay) {
+      // A folder the commit holds as a symlink would carry the write outside `dir`; that path stays as committed.
+      if (await underSymlink(dir, rel)) continue
       // Not `path.join`: the runtime's path functions turn a lone surrogate into U+FFFD.
       const from = encodePath(`${this.root}/${rel}`)
       const to = encodePath(`${dir}/${rel}`)
@@ -974,6 +976,24 @@ export class CompanyGit {
       }
     }
   }
+}
+
+/** Whether a parent folder of repo path `rel` under `dir` is a symlink. It asks the filesystem, not the names, so a
+ *  case-insensitive volume's other-case symlink counts. */
+async function underSymlink(dir: string, rel: string): Promise<boolean> {
+  const segments = rel.split("/").slice(0, -1)
+  let prefix = dir
+  for (const segment of segments) {
+    prefix = `${prefix}/${segment}`
+    const stat = await fs.promises.lstat(encodePath(prefix)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null
+      throw error
+    })
+    // Nothing further down exists, so `mkdir` makes real folders.
+    if (stat === null) return false
+    if (stat.isSymbolicLink()) return true
+  }
+  return false
 }
 
 /** Clears the write bits of every regular file under `dir` except a `.git` file. It never follows a symlink,
