@@ -2,7 +2,6 @@
 import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { stamp } from "@opencorp/protocol"
@@ -1622,9 +1621,17 @@ function cloneState(root: string): { index: Buffer; worktrees: string; refs: str
   }
 }
 
-/** The `opencorp-index-*` folders in the temp dir. */
-function tempIndexes(): string[] {
-  return fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("opencorp-index-"))
+/** Points the temp dir at a new folder for the rest of the test, so what another process puts in the shared one
+ *  can't show up in it; returns that folder. */
+function privateTmp(): string {
+  const dir = tempDir()
+  const saved = process.env.TMPDIR
+  process.env.TMPDIR = dir
+  onTestFinished(() => {
+    if (saved === undefined) delete process.env.TMPDIR
+    else process.env.TMPDIR = saved
+  })
+  return dir
 }
 
 test("pending sorts profile hand edits from other uncommitted changes", async () => {
@@ -1675,7 +1682,7 @@ test("pending never writes the index", async () => {
 
 test("export tree writes the commit with the overlay from the working tree and nothing in the clone", async () => {
   const { tmp, company, g } = setup()
-  const indexes = tempIndexes()
+  const scratch = privateTmp()
   const before = cloneState(company)
   const committed = fs.readFileSync(path.join(company, "shared/flows/chat.yaml"), "utf8")
   fs.writeFileSync(path.join(company, "shared/flows/chat.yaml"), "id: edited\n")
@@ -1693,7 +1700,7 @@ test("export tree writes the commit with the overlay from the working tree and n
   expect(fs.readFileSync(path.join(dir, "company.yaml"), "utf8")).toContain("test-corp")
   expect(fs.existsSync(path.join(dir, ".git"))).toBe(false)
   expect(cloneState(company)).toEqual(before)
-  expect(tempIndexes()).toEqual(indexes)
+  expect(fs.readdirSync(scratch).filter((name) => name.startsWith("opencorp-index-"))).toEqual([])
 })
 
 test("export tree removes an overlay path gone from the working tree", async () => {
