@@ -515,7 +515,7 @@ function replyTo(scripted: ScriptedWorker, delivery: Delivery, fields: Record<st
   scripted.handlers.deliverReply(scripted.worker, { type: "deliver_reply", id: delivery.id, ...fields })
 }
 
-/** Resolves once every job queued on `actor` before it has run. */
+/** Resolves once every command queued on `actor` before it has run: a command refused at once. */
 async function drained(actor: SessionActor): Promise<void> {
   await actor.answer("no-such-question", "x", "text").catch(() => {})
 }
@@ -1959,11 +1959,6 @@ async function cappedStart(o: ChatOffice) {
   const actor = makeActor(o, sid)
   await actor.start()
   return { workers, sid, actor, runId: actor.runId! }
-}
-
-/** Resolves once every command queued on `actor` before it has run: a command refused at once. */
-function drained(actor: SessionActor): Promise<unknown> {
-  return actor.answer("no-such-question", null, "text").catch(() => {})
 }
 
 /** The ops `scripted`'s worker was given, its job's and the ones sent while it ran. */
