@@ -385,8 +385,9 @@ export class SessionActor implements LiveCalls {
   /** The turn take that succeeded most recently, by run and loop iteration: a failed fold recovers only once its
    *  turn has taken its messages. */
   #took: { runId: string; iteration: number } | null = null
-  /** The run this actor saw start (a start or wake frame of its worker, or restore reading its log), or null. */
-  #seenStart: string | null = null
+  /** The runs this actor saw start (a start or wake frame of their worker, or restore reading the log); `settle`
+   *  marks the current one started in the store, which keeps the fact over a restart (`#ranStarted`). */
+  #runsStarted = new Set<string>()
   /** Whether a run's log was lost after it started (`#logGone`) since the last `waiting` or `succeeded` result. */
   #lostLog = false
   /** The SQLite code the last state write failed with, until one succeeds; null while writes succeed. */
@@ -977,7 +978,7 @@ export class SessionActor implements LiveCalls {
     let inspection: RunInspection | null = null
     try {
       inspection = inspectRun(this.#logOf(runId))
-      this.#seenStart = runId
+      this.#runsStarted.add(runId)
     } catch (error) {
       this.#log(`session ${this.sessionId}: its run's log can't be read (${errorName(error)})`)
     }
@@ -1165,13 +1166,16 @@ export class SessionActor implements LiveCalls {
    * cap item's assignee, else the pinned manager); else busy while a worker is being spawned or is sure
    * to be (a re-advance, or a message or an answer held for the next job), or while a worker runs the run and it
    * isn't at its turn; else idle. A starting session moves to busy only once its reply runs: before, a run that
-   * starts is busy whether or not a turn comes. `writeState` leaves ending and finished sessions alone.
-   * Called inside queue jobs. Every command reads the pinned company first, so it throws for missing pins only
-   * before any command; tests may call it directly when nothing else runs.
+   * starts is busy whether or not a turn comes. `writeState` leaves ending and finished sessions alone. The current
+   * run is marked started in the same transaction once this actor saw it start. Whether it wrote a state (false for
+   * an ending or finished session). Called inside queue jobs. Every command reads the pinned company first, so it
+   * throws for missing pins only before any command; tests may call it directly when nothing else runs.
    */
   settle(): boolean {
     const { store } = this.#ctx
     const wrote = store.transaction(() => {
+      // In this transaction, so a start the store couldn't take is written by the settle's retry.
+      if (this.#runId !== null && this.#runsStarted.has(this.#runId)) store.markRunStarted(this.#runId)
       const session = store.getSession(this.sessionId)
       if (session === undefined || !SETTLED.includes(session.status)) return false
       if (this.#pins === null) throw new Error("the pinned company isn't read yet")
@@ -1696,8 +1700,8 @@ export class SessionActor implements LiveCalls {
 
   /**
    * Why run `runId` can't be advanced on connection `name` and `model`, which give `provider`, so that a fresh run
-   * replaces it: `COULDNT_START` when it never started (its row has no config, or it has no log and this actor never
-   * saw it start), `COULDNT_RESUME` when this actor saw it start and its log is gone, `NEW_MODEL` when it ran on
+   * replaces it: `COULDNT_START` when it never started (its row has no config, or it has no log and never started,
+   * `#ranStarted`), `COULDNT_RESUME` when it started and its log is gone, `NEW_MODEL` when it ran on
    * another connection or model, or `provider` isn't the endpoint, key or config it had (an advance would replay them
    * with whatever it is given); null when it can be advanced.
    */
@@ -1705,8 +1709,8 @@ export class SessionActor implements LiveCalls {
     const row = this.#ctx.store.getRun(runId)
     if (row === undefined || row.configSha256 === null) return COULDNT_START
     if (!fs.existsSync(this.#logOf(runId))) {
-      // A chat run's config is stored before its worker starts, so only a start this actor saw tells the two apart.
-      if (this.#seenStart !== runId) return COULDNT_START
+      // A chat run's config is stored before its worker starts, so only its start tells the two apart.
+      if (!this.#ranStarted(runId)) return COULDNT_START
       this.#log(`session ${this.sessionId}: its run's log is gone`)
       return COULDNT_RESUME
     }
@@ -1722,7 +1726,7 @@ export class SessionActor implements LiveCalls {
   async #seed(session: SessionRecord): Promise<Seed | null> {
     const current = this.#runId
     // Its own turns are gone, so an older run's history would be stale context.
-    if (current !== null && this.#seenStart === current && !fs.existsSync(this.#logOf(current))) return null
+    if (current !== null && this.#ranStarted(current) && !fs.existsSync(this.#logOf(current))) return null
     const runId = session.run_ids.findLast((id) => fs.existsSync(this.#logOf(id)))
     if (runId === undefined) return null
     const env = (await this.#ranProvider(runId))?.env ?? {}
@@ -1930,6 +1934,11 @@ export class SessionActor implements LiveCalls {
     }
   }
 
+  /** Whether run `runId` started: this actor saw it start, or the store says it did (before a restart). */
+  #ranStarted(runId: string): boolean {
+    return this.#runsStarted.has(runId) || this.#ctx.store.runStarted(runId)
+  }
+
   /** Why a session whose worker can't start fails: its run `COULDNT_START` when it has no log (a fresh run that
    *  never started), else `COULDNT_RESUME`. */
   #cantStartWhy(): string {
@@ -2025,7 +2034,7 @@ export class SessionActor implements LiveCalls {
     }
     if (this.#finished) return
     // A waiting run's advance writes no RunResumed, so its node frames count too.
-    if (STARTS.includes(String(frame.name))) this.#seenStart = run.runId
+    if (STARTS.includes(String(frame.name))) this.#runsStarted.add(run.runId)
     if (this.#nodes.apply(String(frame.name), data)) this.#ctx.runChanged?.(run.runId)
     const node = typeof data.node_id === "string" ? data.node_id : null
     switch (frame.name) {
@@ -2433,11 +2442,11 @@ export class SessionActor implements LiveCalls {
       await this.#notResumed(run)
     } else if (status === "failed" && this.#recovers(run, outcome!)) {
       await this.#replyFailed(run, outcome!)
-    } else if (status === "error" && this.#seenStart === run.runId && this.#logLost(run.runId)) {
+    } else if (status === "error" && this.#ranStarted(run.runId) && this.#logLost(run.runId)) {
       await this.#logGone(run)
     } else {
       const log = this.#logOf(run.runId)
-      const started = this.#seenStart === run.runId
+      const started = this.#ranStarted(run.runId)
       const neverMade = status === "error" && !started && !fs.existsSync(log) ? `; its log ${log} was never made` : ""
       const ended =
         status === "error"

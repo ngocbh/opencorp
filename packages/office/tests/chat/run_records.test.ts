@@ -20,6 +20,7 @@ import {
   chatOffice,
   fakeLlm,
   makeActor,
+  neverStarted,
   newSession,
   noWorkersLeft,
   reopen,
@@ -489,8 +490,7 @@ test("a run with no log starts fresh without a note", async () => {
   const { actor: first, sid } = await startActor(o)
   const second = await reopen(o, first)
   const old = second.runId!
-  // Its worker never started.
-  fs.rmSync(path.join(o.office.paths.runs, old, "log.jsonl"))
+  neverStarted(o.office, old)
   const before = o.kinds.length
   await wake(o, fake, second, sid)
   const stored = session(o, sid)

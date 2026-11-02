@@ -1142,6 +1142,19 @@ export class Store {
     })
   }
 
+  /** Marks run `runId` started (its worker said so), now, unless it is marked already; no event. */
+  markRunStarted(runId: string): void {
+    this.transaction((tx) =>
+      tx.run("UPDATE runs SET started_at = ? WHERE run_id = ? AND started_at IS NULL", now(), runId),
+    )
+  }
+
+  /** Whether run `runId` was marked started; false for no row. */
+  runStarted(runId: string): boolean {
+    const row = this.db.prepare("SELECT started_at FROM runs WHERE run_id = ?").get(runId)
+    return row !== undefined && row !== null && row.started_at !== null
+  }
+
   /** The run's row, or undefined. */
   getRun(runId: string): RunRow | undefined {
     const row = this.db.prepare("SELECT * FROM runs WHERE run_id = ?").get(runId)

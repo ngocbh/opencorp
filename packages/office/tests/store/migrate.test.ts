@@ -107,9 +107,9 @@ test("every migration file is in the ladder", () => {
   for (const m of MIGRATIONS) expect(m.sql).toBe(fs.readFileSync(new URL(m.name, dir), "utf8"))
 })
 
-test("the office migrations bring a fresh database to version 5", () => {
+test("the office migrations bring a fresh database to version 7", () => {
   const db = open()
-  expect(migrate(db)).toBe(6)
+  expect(migrate(db)).toBe(7)
   const questions = db.prepare("PRAGMA table_info(questions)").all()
   expect(questions.map((c) => c.name)).toContain("call_id")
   const turns = db.prepare("PRAGMA table_info(sessions)").all().find((c) => c.name === "turns")
@@ -122,4 +122,16 @@ test("the office migrations bring a fresh database to version 5", () => {
   expect(launched.map((c) => c.name)).toEqual(["created_at"])
   const sessions = db.prepare("PRAGMA table_info(sessions)").all().map((c) => c.name)
   expect(sessions).toContain("harness_turn_id")
+  const started = db.prepare("PRAGMA table_info(runs)").all().find((c) => c.name === "started_at")
+  expect([started?.type, started?.dflt_value]).toEqual(["TEXT", null])
+})
+
+test("a store already at version 6 gets only the runs started_at migration", () => {
+  const db = open()
+  expect(migrate(db, MIGRATIONS.slice(0, 6))).toBe(6)
+  expect(migrate(db)).toBe(7)
+  const runs = db.prepare("PRAGMA table_info(runs)").all().map((c) => c.name)
+  expect(runs).toContain("started_at")
+  const sessions = db.prepare("PRAGMA table_info(hq_sessions)").all().map((c) => c.name)
+  expect(sessions).toContain("issued_sha")
 })

@@ -51,6 +51,22 @@ test("a launch is stored", () => {
   expect(error).not.toBeInstanceOf(NotFound)
 })
 
+test("a run is marked started once, and a new one reads not started", () => {
+  const store = openStore()
+  const s = store.createSession(session())
+  const row = store.addRun(launch(s))
+  expect(store.runStarted(row.runId)).toBe(false)
+  const events = recordEvents(store)
+  store.markRunStarted(row.runId)
+  expect(store.runStarted(row.runId)).toBe(true)
+  const at = store.db.prepare("SELECT started_at FROM runs WHERE run_id = ?").get(row.runId)!.started_at
+  store.markRunStarted(row.runId)
+  expect(store.db.prepare("SELECT started_at FROM runs WHERE run_id = ?").get(row.runId)!.started_at).toBe(at)
+  expect(store.getRun(row.runId)).toEqual(row)
+  expect(events).toEqual([])
+  expect(store.runStarted(newId())).toBe(false)
+})
+
 test("a runs config is recorded at spawn", () => {
   const store = openStore()
   const s = store.createSession(session())
