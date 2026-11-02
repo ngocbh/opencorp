@@ -30,7 +30,7 @@ export function socketProblem(socket: string): string | undefined {
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code
     if (code === "ENOENT" || code === "ENOTDIR") return undefined
-    if (code === "EACCES") return `permission denied on ${socket}`
+    if (code === "EACCES" || code === "EPERM") return `permission denied on ${socket}`
     return `${socket} can't be read (${code})`
   }
   if (!stat.isSocket()) return `${socket} isn't a socket`
@@ -38,7 +38,9 @@ export function socketProblem(socket: string): string | undefined {
   try {
     fs.accessSync(socket, fs.constants.W_OK)
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "EACCES") return `permission denied on ${socket}`
+    const code = (e as NodeJS.ErrnoException).code
+    // EPERM: a sandbox or an ACL refused, which the mode bits don't show.
+    if (code === "EACCES" || code === "EPERM") return `permission denied on ${socket}`
   }
   return `nothing answers on ${socket}; the office may have stopped or crashed`
 }

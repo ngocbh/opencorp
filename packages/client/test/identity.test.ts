@@ -122,3 +122,31 @@ test("a token a header can't carry is UnusableToken, naming the file, the handle
     expect(Bun.inspect(u)).not.toContain(token)
   }
 })
+
+test("a handle or device no office can list is refused, before the token is looked at", () => {
+  const file = path.join(tmp(), "identity.json")
+  const bad = [
+    { handle: "", device: "mac" },
+    { handle: ".", device: "mac" },
+    { handle: "a/b", device: "mac" },
+    { handle: "NgocBH", device: "mac" },
+    { handle: "ngocbh", device: "" },
+    { handle: "ngocbh", device: "." },
+    { handle: "ngocbh", device: "a/b" },
+  ]
+  for (const token of [newToken(), "act_a\nb"])
+    for (const who of bad) {
+      fs.writeFileSync(file, JSON.stringify({ ...who, token }), { mode: 0o600 })
+      let e: unknown
+      try {
+        readIdentity(file)
+      } catch (error) {
+        e = error
+      }
+      expect([who, e instanceof Error, e instanceof UnusableToken]).toEqual([who, true, false])
+      expect((e as Error).message).toBe(
+        `${file} names a handle or device no office lists; run \`opencorp login --force\``,
+      )
+      expect(Bun.inspect(e)).not.toContain(token)
+    }
+})

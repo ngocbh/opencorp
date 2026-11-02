@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, spyOn, test } from "bun:test"
 import fs from "node:fs"
 import net from "node:net"
 import os from "node:os"
@@ -69,4 +69,26 @@ test("socketProblem: a socket, or its folder, this user may not use is permissio
   fs.chmodSync(folder, 0)
   cleanups.unshift(() => fs.chmodSync(folder, 0o700))
   expect(socketProblem(inner)).toBe(`permission denied on ${inner}`)
+})
+
+test("socketProblem: EPERM (a sandbox or an ACL) is permission denied too", async () => {
+  const dir = fs.mkdtempSync("/tmp/ocp-")
+  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const live = path.join(dir, "live.sock")
+  await listening(live)
+  const eperm = () => {
+    throw Object.assign(new Error("operation not permitted"), { code: "EPERM" })
+  }
+  const access = spyOn(fs, "accessSync").mockImplementation(eperm)
+  try {
+    expect(socketProblem(live)).toBe(`permission denied on ${live}`)
+  } finally {
+    access.mockRestore()
+  }
+  const stat = spyOn(fs, "statSync").mockImplementation(eperm)
+  try {
+    expect(socketProblem(live)).toBe(`permission denied on ${live}`)
+  } finally {
+    stat.mockRestore()
+  }
 })

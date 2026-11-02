@@ -10,13 +10,15 @@ import { restart } from "../src/commands/restart"
 import { start } from "../src/commands/start"
 import { stop } from "../src/commands/stop"
 import { tui } from "../src/commands/tui"
-import { OfficeDropped, OfficeUnavailable } from "@opencorp/client"
+import { main } from "../src/main"
+import { OfficeDropped, OfficeError, OfficeTimeout, OfficeUnavailable } from "@opencorp/client"
+import net from "node:net"
 import {
   type Deps,
   INTERRUPT_GRACE_MS,
   install,
   installSpawn,
-  officeAnswers,
+  officeDown,
   officeNotRunning,
   realDeps,
 } from "../src/office"
@@ -386,10 +388,10 @@ test("a running office answers the probe with one request; no socket is no offic
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
   const socket = path.join(home, "office.sock")
   try {
-    expect(await officeAnswers(socket)).toBe(false)
+    expect(await officeDown(socket)).toBeInstanceOf(OfficeUnavailable)
     const office = createFakeOffice({ socket })
     try {
-      expect(await officeAnswers(socket)).toBe(true)
+      expect(await officeDown(socket)).toBeUndefined()
       expect(office.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /health"])
     } finally {
       office.stop()
@@ -398,6 +400,50 @@ test("a running office answers the probe with one request; no socket is no offic
     fs.rmSync(home, { recursive: true, force: true })
   }
 })
+
+test("the probe tells an office that's too slow or answers with an error from one that isn't there", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
+  const failing = path.join(home, "500.sock")
+  const mute = path.join(home, "mute.sock")
+  const server = Bun.serve({ unix: failing, fetch: () => new Response("", { status: 500 }) })
+  // Takes the connection and never answers.
+  const silent = net.createServer(() => {})
+  await new Promise<void>((resolve) => silent.listen(mute, resolve))
+  try {
+    const status = await officeDown(failing)
+    expect(status).toBeInstanceOf(OfficeError)
+    expect(status).not.toBeInstanceOf(OfficeUnavailable)
+    expect(status!.status).toBe(500)
+    expect(await officeDown(mute, 200)).toBeInstanceOf(OfficeTimeout)
+  } finally {
+    server.stop(true)
+    await new Promise<void>((resolve) => silent.close(() => resolve()))
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("`opencorp` and login on an office whose health check fails say so, not that it crashed", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
+  fs.mkdirSync(path.join(home, "office"))
+  process.env.OPENCORP_HOME = home
+  const unix = path.join(home, "office", "office.sock")
+  const server = Bun.serve({ unix, fetch: () => new Response("", { status: 503 }) })
+  const err: string[] = []
+  const error = console.error
+  console.error = (...a: unknown[]) => void err.push(a.join(" "))
+  try {
+    // On a terminal: without one, the TUI refuses before it asks the office.
+    expect(await tui(["--continue"], { terminal: () => true, assetRoot: () => null })).toBe(3)
+    expect(await main(["login", "--device", "mac"])).toBe(3)
+    const line = "The office answered its health check with HTTP 503. Run `opencorp doctor`."
+    expect(err).toEqual([line, line])
+    expect(fs.existsSync(path.join(home, "identity.json"))).toBe(false)
+  } finally {
+    console.error = error
+    server.stop(true)
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+}, 10_000)
 
 test("`opencorp` with no office says so and exits 3 before loading the TUI", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
@@ -417,6 +463,7 @@ test("`opencorp` with no office says so and exits 3 before loading the TUI", asy
 
 test("officeNotRunning says why a socket that's there can't be reached, and returns 3 either way", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
+  process.env.OPENCORP_HOME = home
   const socket = path.join(home, "office.sock")
   const lines: string[] = []
   const print = (line: string) => void lines.push(line)
@@ -426,11 +473,15 @@ test("officeNotRunning says why a socket that's there can't be reached, and retu
     await staleSocket(socket)
     expect(officeNotRunning(new OfficeUnavailable(socket), print)).toBe(3)
     expect(officeNotRunning(new OfficeDropped(socket, "POST", "/sessions/S1/end"), print)).toBe(3)
+    expect(officeNotRunning(new OfficeTimeout("GET", "/health", 2000), print)).toBe(3)
+    expect(officeNotRunning(new OfficeError(500, "bad_response", "GET /health: HTTP 500"), print)).toBe(3)
     expect(lines).toEqual([
-      "The office isn't running. Run `opencorp doctor`.",
-      "The office isn't running. Run `opencorp doctor`.",
+      notRunningAt(home),
+      notRunningAt(home),
       `The office can't be reached: nothing answers on ${socket}; the office may have stopped or crashed. Run \`opencorp doctor\`.`,
       "POST /sessions/S1/end: the office dropped the connection before answering; the change may have been applied, so check before trying again. Run `opencorp doctor`.",
+      "The office didn't answer within 2 s; it may be busy or stuck. Run `opencorp doctor`.",
+      "The office answered its health check with HTTP 500. Run `opencorp doctor`.",
     ])
   } finally {
     fs.rmSync(home, { recursive: true, force: true })

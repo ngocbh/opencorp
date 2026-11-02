@@ -594,6 +594,60 @@ test("logout with a token that can't be sent removes the file and says the entry
   expect(office.requests).toEqual([])
 })
 
+test("logout with a handle or device no request can name keeps the device listed and says it may remain", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const file = path.join(trusted, "identity.json")
+  const { token } = identity(trusted)
+  const bad = [
+    { handle: ".", device: "mac" },
+    { handle: "", device: "mac" },
+    { handle: "ngocbh", device: "a/b" },
+  ]
+  for (const who of bad) {
+    fs.writeFileSync(file, JSON.stringify({ ...who, token }), { mode: 0o600 })
+    expect(await opencorp(trusted, "logout")).toEqual({
+      code: 0,
+      out:
+        `Removed ${file}, which couldn't be read; the office may still list this device: ` +
+        "check with `opencorp devices list`.",
+      err: "",
+    })
+    expect(fs.existsSync(file)).toBe(false)
+  }
+  // Never "already gone": nothing was sent, and the office still lists the device.
+  expect(office.requests.filter((r) => r.method === "DELETE")).toEqual([])
+  expect(devices()?.map((d) => d.name)).toEqual(["mac"])
+})
+
+test("login --force over a listed device whose token can't be sent says the old entry may remain", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  unusableIdentity(trusted)
+  office.passwords.set("ngocbh", PASSWORD)
+  answering(PASSWORD)
+  expect(await opencorp(trusted, "login", "--handle", "ngocbh", "--device", "mac2", "--force")).toEqual({
+    code: 0,
+    out: `This device is mac2, acting as @ngocbh; its token is in ${trusted}/identity.json.`,
+    // The old token can't ask the office, so the entry it names is said, not removed; no "run login --force".
+    err:
+      "mac in people/ngocbh/person.yaml may remain; check with `opencorp devices list` and remove it with " +
+      "`opencorp devices remove ngocbh mac`",
+  })
+  expect(devices()?.map((d) => d.name)).toEqual(["mac", "mac2"])
+  expect(office.requests.some((r) => r.method === "DELETE")).toBe(false)
+})
+
+test("a --force login the office won't take yet, over an unsendable token, says the old entry may remain", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  unusableIdentity(other)
+  const r = await opencorp(other, "login", "--handle", "ngocbh", "--device", "laptop", "--force")
+  expect(r.code).toBe(1)
+  expect(r.err).not.toContain("run `opencorp login --force`")
+  expect(r.err.split("\n").at(-1)).toBe(
+    "mac in people/ngocbh/person.yaml may remain; check with `opencorp devices list` and remove it with " +
+      "`opencorp devices remove ngocbh mac`",
+  )
+})
+
 test("login --force replaces an identity whose token can't be sent, which the office never sees", async () => {
   unusableIdentity(trusted)
   const r = await opencorp(trusted, "login", "--force", "--device", "mac")

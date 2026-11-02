@@ -5,15 +5,18 @@ import {
   DEVICE_NAME,
   deviceName,
   newToken,
+  readIdentity,
   tokenSha256,
+  UnusableToken,
   writeIdentity,
+  type Identity,
   defaultSocket,
   identityPath,
 } from "@opencorp/client/node"
 import fs from "node:fs"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
-import { bareHandle, localIdentity, officeAnswers, officeNotRunning } from "../office"
+import { bareHandle, officeDown, officeNotRunning } from "../office"
 import { prompter } from "../prompt"
 
 /** The company's CEO among `people`: the human with no manager. */
@@ -65,8 +68,19 @@ export const run: CommandRun = async (argv) => {
   }
   const socket = defaultSocket()
   // Checked before anything is written, so no office leaves no half-made identity.
-  if (!(await officeAnswers(socket))) return officeNotRunning(socket)
-  const known = fs.existsSync(file) ? localIdentity() : undefined
+  const down = await officeDown(socket)
+  if (down) return officeNotRunning(down)
+  let known: Identity | undefined
+  // The device named by an identity whose token can't be sent; unchecked, as only its token could ask the office.
+  let unsent: Listed | undefined
+  try {
+    known = readIdentity(file, (m) => console.error(`opencorp: ${m}`))
+  } catch (e) {
+    // A file it can't use is treated as none: the office then says whether it needs a token. --force is replacing it,
+    // so "run login --force" would be noise; the entry it names is said once the login is done.
+    if (values.force && e instanceof UnusableToken) unsent = { person: e.handle, device: e.device }
+    else console.error(`opencorp: ${e instanceof Error ? e.message : e}`)
+  }
   if (fs.existsSync(file) && !values.force) {
     const me = known && (await whoIs(socket, known.token))
     if (known && me?.person === known.handle && me.device === known.device) {
@@ -137,6 +151,7 @@ export const run: CommandRun = async (argv) => {
     if (!save()) return 1
     console.log(`This device is ${device}, acting as @${handle}; its token is in ${file}.`)
     if (old) await removeReplaced(socket, known!.token, old)
+    if (unsent) console.error(mayRemain(unsent))
     return 0
   }
   let password = ask.interactive ? await ask.secret(`@${handle}'s password (not shown; empty if you have none)`) : ""
@@ -167,6 +182,7 @@ export const run: CommandRun = async (argv) => {
       // Not removed: until the new device is listed, the old one may be the office's last, whose removal opens the
       // office to requests without a token.
       if (old) console.error(remains(old))
+      if (unsent) console.error(mayRemain(unsent))
       return 1
     }
     return refused(e, handle, device)
@@ -192,6 +208,11 @@ async function listedAs(socket: string, token: string): Promise<Listed | null> {
 /** What to say when the replaced device `old` is still listed. */
 const remains = (old: Listed) =>
   `${old.device} in people/${old.person}/person.yaml remains; remove it with \`opencorp devices remove ${old.person} ${old.device}\``
+
+/** What to say about `old`, a device the office may still list but this device can't ask about. */
+const mayRemain = (old: Listed) =>
+  `${old.device} in people/${old.person}/person.yaml may remain; check with \`opencorp devices list\` and remove it ` +
+  `with \`opencorp devices remove ${old.person} ${old.device}\``
 
 /** Removes `old`, the device a `--force` login replaced, with its own token, which may always remove it, and says
  *  so; a removal that fails leaves the login done and says the entry remains. */

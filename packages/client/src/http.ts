@@ -1,4 +1,5 @@
 import {
+  BadToken,
   OfficeDropped,
   OfficeError,
   OfficeTimeout,
@@ -55,17 +56,18 @@ export type RequestOptions = {
  */
 export const TOKEN_CHARS = /^[\x21-\x7E]+$/
 
-/** The headers that carry `token`, if there is one. Throws `bad_token` for a token a header can't carry. */
+/** The headers that carry `token`, if there is one. Throws `BadToken` for a token a header can't carry. */
 export function authorization(token?: string): Record<string, string> {
   if (!token) return {}
-  if (!TOKEN_CHARS.test(token))
-    throw new OfficeError(
-      0,
-      "bad_token",
-      "this device's token can't be sent (it holds characters a token can't have); run `opencorp login --force`",
-    )
+  if (!TOKEN_CHARS.test(token)) throw new BadToken()
   return { authorization: `Bearer ${token}` }
 }
+
+/**
+ * The error codes of a connection the office took and then dropped before answering: Bun gives ECONNRESET for every
+ * drop seen so far; EPIPE (a write to a closed socket) and Bun's own ConnectionClosed mean the same.
+ */
+const DROPPED = new Set(["ECONNRESET", "EPIPE", "ConnectionClosed"])
 
 /** Sends one JSON request to the office and returns the parsed body. Throws `OfficeError`. */
 export async function request<T>(
@@ -99,7 +101,7 @@ export async function request<T>(
   } catch (e) {
     const remote = t.baseUrl !== undefined
     throw failed(e, () =>
-      (e as { code?: unknown } | null)?.code === "ECONNRESET"
+      DROPPED.has((e as { code?: unknown } | null)?.code as string)
         ? new OfficeDropped(where(t), method, path, e, remote)
         : new OfficeUnavailable(where(t), e, remote),
     )

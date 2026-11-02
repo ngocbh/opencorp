@@ -143,14 +143,25 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
       events: async (id: string, after?: number) => get<RunEventPage>(`${r(id)}/events${query({ after })}`),
       /** One record by seq, evidence included; fails as `nodes` does. */
       event: async (id: string, seq: number) => get<RunEvent>(`${r(id)}/events/${seq}`),
-      /** Where the log downloads from, as stored, for a link (HQ only: the browser's cookie authorizes it). */
+      /**
+       * Where the log downloads from, as stored, for a link (HQ only: the browser's cookie authorizes it). Unguarded:
+       * it sends nothing, and HQ shows the link only once `get` found the run.
+       */
       logUrl: (id: string) => `${socket}/runs/${seg(id)}/log`,
       /**
        * Reads one live stream of run `id`: its records after seq `after`, then its model calls' frames while its worker
-       * runs; see `runLive`. It never reconnects.
+       * runs; see `runLive`. It never reconnects. An id no request can carry ends it `closed` with not_found, sending
+       * nothing.
        */
-      live: (id: string, handler: (f: RunLiveFrame) => void, opts: { after?: number; signal?: AbortSignal } = {}) =>
-        runLive(transport, `/runs/${seg(id)}/live${query({ after: opts.after })}`, handler, { token, signal: opts.signal }),
+      live: (id: string, handler: (f: RunLiveFrame) => void, opts: { after?: number; signal?: AbortSignal } = {}) => {
+        let path: string
+        try {
+          path = `${r(id)}/live${query({ after: opts.after })}`
+        } catch (error) {
+          return refusedLive(error, handler, opts.signal)
+        }
+        return runLive(transport, path, handler, { token, signal: opts.signal })
+      },
     },
     /** Spends a pairing code and signs this browser in (HQ only). */
     pair: (req: PairRequest) => post<BrowserSession>("/pair", req),
@@ -309,6 +320,22 @@ export type RunListOptions = {
 function part(id: string, missing: string) {
   if (!isSegment(id)) throw new OfficeError(404, "not_found", missing)
   return seg(id)
+}
+
+/**
+ * A live stream that ends `closed` with `error` without opening, reported on a later tick as `runLive` reports a
+ * failure, and not at all once closed or aborted.
+ */
+function refusedLive(error: unknown, handler: (f: RunLiveFrame) => void, signal?: AbortSignal) {
+  let closed = false
+  queueMicrotask(() => {
+    if (!closed && !signal?.aborted) handler({ type: "closed", error })
+  })
+  return {
+    close() {
+      closed = true
+    },
+  }
 }
 
 /** One value or several, comma-joined; undefined for none. */

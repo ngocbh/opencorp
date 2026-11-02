@@ -3,9 +3,17 @@ import { chmodSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:
 import net from "node:net"
 import path from "node:path"
 import { createOfficeClient } from "../src/client"
-import { OfficeDropped, OfficeError, OfficeTimeout, OfficeUnavailable, UnknownDevice } from "../src/errors"
+import {
+  BadToken,
+  failureKind,
+  OfficeDropped,
+  OfficeError,
+  OfficeTimeout,
+  OfficeUnavailable,
+  UnknownDevice,
+} from "../src/errors"
 import { transportOf } from "../src/http"
-import { subscribe, type StreamEvent } from "../src/sse"
+import { subscribe, type RunLiveFrame, type StreamEvent } from "../src/sse"
 import { emptyState } from "../src/store"
 import { createOfficeSync, type OfficeStatus } from "../src/sync"
 import { onStop, serve, stopServers } from "./serve"
@@ -309,8 +317,8 @@ const NO_PATH_SEGMENT = new Set([
 
 /** Methods that put an id in the path but aren't guarded. */
 const UNGUARDED = new Set([
-  "runs.logUrl", // builds a link and sends nothing
-  "runs.live", // HQ-only stream: the office answers no_route, which its caller reports
+  // Builds a link and sends nothing; HQ shows it only once `runs.get` (guarded) found the run.
+  "runs.logUrl",
 ])
 
 test("an id no path segment can carry is not_found, in the office's words, and nothing is sent", async () => {
@@ -356,6 +364,34 @@ test("people.inFolder answers [] for a folder no request can name, and sends a f
   expect(seen.map((r) => r.path)).toEqual(["/folders/%2FUsers%2Fme%2Fproj/people"])
 })
 
+test("runs.live with an id no path segment can carry ends closed with not_found, and sends nothing", async () => {
+  const { client, seen } = socketClient()
+  for (const bad of ["", ".", "..", "a/b", "../x"]) {
+    const frames: RunLiveFrame[] = []
+    client.runs.live(bad, (f) => frames.push(f))
+    expect(frames).toEqual([]) // reported as runLive reports a failure: not from inside the call
+    await Bun.sleep(0)
+    expect(frames.length).toBe(1)
+    const [f] = frames as [{ type: string; error?: any }]
+    expect([f.type, f.error instanceof OfficeError, f.error?.status, f.error?.code, f.error?.message]).toEqual([
+      "closed",
+      true,
+      404,
+      "not_found",
+      `no run ${bad}`,
+    ])
+  }
+  // A stream closed or aborted before then reports nothing.
+  const frames: RunLiveFrame[] = []
+  client.runs.live("..", (f) => frames.push(f)).close()
+  const abort = new AbortController()
+  client.runs.live("..", (f) => frames.push(f), { signal: abort.signal })
+  abort.abort()
+  await Bun.sleep(0)
+  expect(frames).toEqual([])
+  expect(seen).toEqual([])
+})
+
 test("every client method is guarded, carries no path value, or is listed as unguarded", () => {
   const names: string[] = []
   const walk = (o: Record<string, unknown>, prefix: string) => {
@@ -364,7 +400,8 @@ test("every client method is guarded, carries no path value, or is listed as ung
       else if (v && typeof v === "object") walk(v as Record<string, unknown>, `${prefix}${k}.`)
   }
   walk(createOfficeClient({ socket: "/nowhere" }), "")
-  const guarded = new Set(GUARDED.map(([name]) => name.split(" ")[0]))
+  // runs.live reports through its handler, so it's tested on its own.
+  const guarded = new Set([...GUARDED.map(([name]) => name.split(" ")[0]), "runs.live"])
   expect(names.filter((n) => !guarded.has(n) && !NO_PATH_SEGMENT.has(n) && !UNGUARDED.has(n))).toEqual([])
 })
 
@@ -377,7 +414,7 @@ test("a token a header can't carry is bad_token, sent nowhere, and never in the 
   const { seen } = serve({ unix: socket })
   for (const token of BAD_TOKENS) {
     const e = await failure(createOfficeClient({ socket, token }).whoami())
-    expect(e).toBeInstanceOf(OfficeError)
+    expect(e).toBeInstanceOf(BadToken)
     expect(e).not.toBeInstanceOf(OfficeUnavailable)
     expect([e.status, e.code]).toEqual([0, "bad_token"])
     expect(e.message).toContain("opencorp login --force")
@@ -402,9 +439,36 @@ test("a token a header can't carry fails the stream without the token in its err
   })
   const error = (first as { error?: any }).error
   expect(first.type).toBe("unreachable")
+  expect(error).toBeInstanceOf(BadToken)
   expect([error.status, error.code]).toEqual([0, "bad_token"])
+  // A refusal, not a network failure: retrying won't help.
+  expect(failureKind(error)).not.toBe("network")
   expect(Bun.inspect(error)).not.toContain("act_")
   expect(seen).toEqual([])
+})
+
+test("a token a header can't carry reaches onStatus as an error saying to log in again, not as offline", async () => {
+  const dir = mkdtempSync("/tmp/oct-")
+  onStop(() => rmSync(dir, { recursive: true, force: true }))
+  const socket = path.join(dir, "o.sock")
+  const { seen: sent } = serve({ unix: socket })
+  const seen: [OfficeStatus, string | undefined, unknown][] = []
+  const state = emptyState()
+  const sync = createOfficeSync({
+    client: createOfficeClient({ socket, token: "act_abc " }),
+    state: () => state,
+    mutate: (f) => f(state),
+    onStatus: (s, error, cause) => seen.push([s, error, cause]),
+    stream: { minDelayMs: 10, maxDelayMs: 40, token: "act_abc " },
+  })
+  sync.start()
+  onStop(sync.stop)
+  while (!seen.length) await Bun.sleep(5)
+  const [status, message, cause] = seen[0]
+  expect(status).toBe("error")
+  expect(cause).toBeInstanceOf(BadToken)
+  expect(message).toContain("run `opencorp login --force`")
+  expect(sent).toEqual([])
 })
 
 /** A unix socket server that reads a request, starts an answer and drops the connection. */
@@ -437,6 +501,27 @@ test("a connection dropped before the answer is OfficeDropped; a write may have 
   expect(write.message).toBe(
     "POST /sessions/S1/end: the office dropped the connection before answering; the change may have been applied, so check before trying again",
   )
+})
+
+test("a connection reset, a broken pipe or Bun's ConnectionClosed is OfficeDropped", async () => {
+  const real = globalThis.fetch
+  try {
+    for (const code of ["ECONNRESET", "EPIPE", "ConnectionClosed"]) {
+      globalThis.fetch = (async () => {
+        throw Object.assign(new Error("dropped"), { code })
+      }) as unknown as typeof fetch
+      const e = await failure(createOfficeClient({ socket: "/nowhere.sock" }).sessions.end("S1"))
+      expect([code, e instanceof OfficeDropped]).toEqual([code, true])
+    }
+    globalThis.fetch = (async () => {
+      throw Object.assign(new Error("refused"), { code: "ECONNREFUSED" })
+    }) as unknown as typeof fetch
+    const e = await failure(createOfficeClient({ socket: "/nowhere.sock" }).sessions.end("S1"))
+    expect(e).toBeInstanceOf(OfficeUnavailable)
+    expect(e).not.toBeInstanceOf(OfficeDropped)
+  } finally {
+    globalThis.fetch = real
+  }
 })
 
 test("a socket that can't be reached is OfficeUnavailable naming it, without guessing why", async () => {

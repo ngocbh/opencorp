@@ -1,14 +1,6 @@
 // `opencorp logout`: takes this device off the office's list, then forgets its identity.
 import { createOfficeClient, OfficeDropped, OfficeError, OfficeUnavailable, UnknownDevice } from "@opencorp/client"
-import {
-  DEVICE_NAME,
-  readIdentity,
-  UnusableToken,
-  type Identity,
-  defaultSocket,
-  identityPath,
-} from "@opencorp/client/node"
-import { Handle } from "@opencorp/protocol"
+import { readIdentity, UnusableToken, type Identity, defaultSocket, identityPath } from "@opencorp/client/node"
 import fs from "node:fs"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
@@ -37,13 +29,18 @@ export const run: CommandRun = async (argv) => {
   } catch (e) {
     // Nothing in it can be used to reach the office.
     fs.rmSync(file, { force: true })
-    // A token that can't be sent still names its entry; checked, as the file may have been edited by hand.
-    if (e instanceof UnusableToken && Handle.safeParse(e.handle).success && DEVICE_NAME.test(e.device))
+    // A token that can't be sent still names its entry (readIdentity checked the handle and device).
+    if (e instanceof UnusableToken)
       console.log(
         `Removed ${file}, which couldn't be read; ${e.device} in people/${e.handle}/person.yaml remains; ` +
           `remove it with \`opencorp devices remove ${e.handle} ${e.device}\`.`,
       )
-    else console.log(`Removed ${file}, which couldn't be read.`)
+    // Its token may still be listed, so the device may be too, under a name the file doesn't give.
+    else
+      console.log(
+        `Removed ${file}, which couldn't be read; the office may still list this device: ` +
+          "check with `opencorp devices list`.",
+      )
     return 0
   }
   if (!me) {
@@ -60,7 +57,9 @@ export const run: CommandRun = async (argv) => {
   } catch (e) {
     const remove = `remove it with \`opencorp devices remove ${me.handle} ${me.device}\``
     if (e instanceof OfficeDropped)
-      note = `The office dropped the connection, so ${entry} may remain; check with \`opencorp devices list\` and ${remove}.`
+      note =
+        `The office dropped the connection, so ${entry} may remain; ` +
+        `check with \`opencorp devices list\` and ${remove}.`
     else if (e instanceof OfficeUnavailable) {
       const reason = unreachableReason(e)
       note =

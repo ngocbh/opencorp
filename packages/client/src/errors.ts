@@ -64,6 +64,21 @@ export class UnknownDevice extends OfficeError {
   }
 }
 
+/**
+ * This device's token holds characters a request header can't carry, so the client sent nothing. A refusal like
+ * `UnknownDevice`, not an office that's away: a retry won't help, logging in again will.
+ */
+export class BadToken extends OfficeError {
+  constructor() {
+    super(
+      0,
+      "bad_token",
+      "this device's token can't be sent (it holds characters a token can't have); run `opencorp login --force`",
+    )
+    this.name = "BadToken"
+  }
+}
+
 /** The office didn't answer within the request's time limit. */
 export class OfficeTimeout extends OfficeError {
   constructor(
@@ -111,9 +126,10 @@ export const isNoLog = (e: unknown) => e instanceof OfficeError && e.status === 
 
 /**
  * What kind of failure `e` is, to tell a new failure from a repeat of the last: the class and status when the office
- * answered, "network" when it didn't (no answer, a dropped connection), "none" for no failure.
+ * answered or the client refused to send (`BadToken`), "network" when it didn't answer (no answer, a dropped
+ * connection), "none" for no failure.
  */
 export function failureKind(e: unknown) {
   if (e === undefined) return "none"
-  return e instanceof OfficeError && e.status > 0 ? `${e.name} ${e.status}` : "network"
+  return e instanceof OfficeError && (e.status > 0 || e instanceof BadToken) ? `${e.name} ${e.status}` : "network"
 }
