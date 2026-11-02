@@ -677,9 +677,10 @@ test("a turn's waiting result brings the run index up to date without holding th
   const sid = await newSession(o)
   const actor = makeActor(o, sid, { runIndex, runChanged: (runId) => void changed.push(runId) })
   await actor.start()
-  // Idle while the update is still pending: the turn wasn't held for it.
-  await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
-  expect(calls).toBe(1)
+  // Idle can come before the waiting result (history compaction may run beside the take), so wait for both.
+  await waitFor(() => status(o, sid) === "idle" && calls === 1, { what: "the first turn" })
+  // Still idle while the update is pending: the turn wasn't held for it.
+  expect(status(o, sid)).toBe("idle")
   const runId = session(o, sid).run_ids.at(-1)!
   await quiet(changed)
   const before = changed.length
