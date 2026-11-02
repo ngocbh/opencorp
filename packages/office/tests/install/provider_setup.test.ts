@@ -204,6 +204,21 @@ test("without a terminal a typed list ends with typing your own", async () => {
   expect(printed()).toContain(`  2. ${TYPE_OWN}\n`)
 })
 
+test("without a terminal a typed list takes text typed at the list", async () => {
+  const { input, output, printed } = pipe("git@github.com:me/acme.git\n")
+  const prompter = new TtyPrompter({ input, output, env: {} })
+  expect(await prompter.choose("Q", ["None for now"], "None for now", true)).toBe("git@github.com:me/acme.git")
+  expect(printed()).toContain(`  2. ${TYPE_OWN}\n`)
+  expect(printed()).not.toContain("That doesn't work")
+})
+
+test("without a terminal a typed list still refuses a number out of range", async () => {
+  const { input, output, printed } = pipe("7\n1\n")
+  const prompter = new TtyPrompter({ input, output, env: {} })
+  expect(await prompter.choose("Q", ["a"], "", true)).toBe("a")
+  expect(printed().split("That doesn't work: choose 1 to 2").length - 1).toBe(1)
+})
+
 test("without a terminal a typed list still picks an option", async () => {
   const { input, output } = pipe("1\n")
   const prompter = new TtyPrompter({ input, output, env: {} })
@@ -831,7 +846,7 @@ function askModelWith(prompter: Prompter, name: string, last = "", key = "", lis
 const deploymentsListed = (deployments: () => Promise<string[]>): Listers => ({ ...NO_LISTING, azureDeployments: deployments })
 
 /** Listers whose models are `models` and which list no deployments. */
-const modelsListed = (models: (name: string, key: string) => Promise<string[]>): Listers => ({
+const modelsListed = (models: (name: string, key: string, baseUrl?: string) => Promise<string[]>): Listers => ({
   ...NO_LISTING,
   providerModels: models,
 })
@@ -1087,10 +1102,141 @@ test("no key takes a typed model too", async () => {
 
 test("a keyless provider without a key offers its models", async () => {
   const office = newOffice()
+  // The provider, its server URL and the model: yian's ollama client sends no key, so none is asked for.
   const ask = new Script(["ollama", "", ""])
   await ensure(office, ask, { listers: modelsListed(async () => ["llama3", "qwen3"]) })
   expect(read(office)).toEqual({ llm_config: { provider: "ollama", model: "llama3" } })
   expect(ask.offered.at(-1)).toEqual(["llama3", "qwen3"])
+  expect(ask.seen.some((line) => line.includes("API key"))).toBe(false)
+})
+
+test("a vllm server elsewhere is listed and saved in the providers env", async () => {
+  const office = newOffice()
+  const listed: unknown[] = []
+  const listers = modelsListed(async (name, key, baseUrl) => {
+    listed.push([name, key, baseUrl])
+    return ["qwen3"]
+  })
+  const ask = new Script(["vllm", "http://192.168.1.5:8000/v1", "", ""])
+  await ensure(office, ask, { listers })
+  expect(listed).toEqual([["vllm", "", "http://192.168.1.5:8000/v1"]])
+  expect(read(office)).toEqual({
+    llm_config: { provider: "vllm", model: "qwen3" },
+    env: { VLLM_BASE_URL: "http://192.168.1.5:8000/v1" },
+  })
+  expect(ask.seen).toContain("vllm server URL (empty for one on this machine)")
+  expect(ask.seen).toContain("vllm API key (empty for none; not shown)")
+  expect(ask.seen.some((line) => line.includes("yian auth"))).toBe(false)
+})
+
+test("a vllm server on this machine leaves the env out", async () => {
+  const office = newOffice()
+  const listed: unknown[] = []
+  const listers = modelsListed(async (name, key, baseUrl) => {
+    listed.push([name, key, baseUrl])
+    return []
+  })
+  await ensure(office, new Script(["vllm", "", "", "m1"]), { listers })
+  expect(listed).toEqual([["vllm", "", ""]])
+  expect(read(office)).toEqual({ llm_config: { provider: "vllm", model: "m1" } })
+})
+
+test("an ollama server elsewhere is saved in the providers env", async () => {
+  const office = newOffice()
+  await ensure(office, new Script(["ollama", "http://10.0.0.2:11434", "llama3"]))
+  expect(read(office)).toEqual({
+    llm_config: { provider: "ollama", model: "llama3" },
+    env: { OLLAMA_BASE_URL: "http://10.0.0.2:11434" },
+  })
+})
+
+test.each([
+  "ftp://h",
+  "not a url",
+  "http://u:hunter2@h:8000/v1",
+  "http://@h:8000/v1",
+  "http://h/v1?x=1",
+  "http://h/v1#f",
+  "http://münchen.lan:11434",
+  "http://h/my v1",
+])(
+  "a server URL that isnt usable is asked again without echoing it [%s]",
+  async (url) => {
+    const office = newOffice()
+    const ask = new Script(["vllm", url, "", "", "m"])
+    await ensure(office, ask)
+    expect(read(office)).toEqual({ llm_config: { provider: "vllm", model: "m" } })
+    expect(ask.seen.filter((line) => line.startsWith("That doesn't work: "))).toHaveLength(1)
+    for (const line of ask.seen) {
+      expect(line).not.toContain("hunter2")
+      expect(line).not.toContain(url)
+    }
+  },
+)
+
+test("a key goes to a vllm server only over https or to this machine", async () => {
+  const office = newOffice()
+  const other = "sk-other-4f1e0b7a9c"
+  const ask = new Script(["vllm", "http://192.168.1.5:8000/v1", KEY, "https://vllm.lan/v1", other, "m"])
+  await ensure(office, ask)
+  expect(ask.seen).toContain("That doesn't work: a key goes only over https, or http to localhost, 127.0.0.1 or ::1")
+  expect(read(office)).toEqual({
+    llm_config: { provider: "vllm", api_key: other, model: "m" },
+    env: { VLLM_BASE_URL: "https://vllm.lan/v1" },
+  })
+  for (const line of ask.seen) expect(line).not.toContain(KEY)
+})
+
+test("a key goes to a vllm server on localhost over http", async () => {
+  const office = newOffice()
+  await ensure(office, new Script(["vllm", "http://localhost:8000/v1", KEY, "m"]))
+  expect(read(office)).toEqual({
+    llm_config: { provider: "vllm", api_key: KEY, model: "m" },
+    env: { VLLM_BASE_URL: "http://localhost:8000/v1" },
+  })
+})
+
+test("setting up again keeps the server URL", async () => {
+  const office = newOffice()
+  const url = "http://192.168.1.5:8000/v1"
+  const ask = new Script(["vllm", url, "", "m", SET_UP_AGAIN, "", "", "", ""])
+  await ensure(office, ask, { checkModel: answers("nope", null) })
+  expect(read(office)).toEqual({ llm_config: { provider: "vllm", model: "m" }, env: { VLLM_BASE_URL: url } })
+  expect(ask.seen.filter((line) => line === "vllm server URL (empty for one on this machine)")).toHaveLength(1)
+  expect(ask.seen).toContain("vllm server URL (empty keeps the one you just typed)")
+})
+
+test("a key isnt sent to a URL yian wouldnt send it to, and says why", async () => {
+  const office = newOffice()
+  const ask = new Script(["vllm", "https://vllm_server:8000/v1", KEY, "https://vllm.lan/v1", KEY, "m"])
+  await ensure(office, ask)
+  expect(ask.seen).toContain(
+    "That doesn't work: yian sends a key only to a lowercase ASCII URL whose host has no underscore",
+  )
+  expect(ask.seen.some((line) => line.includes("only over https"))).toBe(false)
+  expect(read(office)).toEqual({
+    llm_config: { provider: "vllm", api_key: KEY, model: "m" },
+    env: { VLLM_BASE_URL: "https://vllm.lan/v1" },
+  })
+})
+
+test("a key to an upper case http URL on this machine says why, not that it needs https", async () => {
+  const office = newOffice()
+  const ask = new Script(["vllm", "HTTP://localhost:8000/v1", KEY, "http://localhost:8000/v1", KEY, "m"])
+  await ensure(office, ask)
+  expect(ask.seen).toContain(
+    "That doesn't work: yian sends a key only to a lowercase ASCII URL whose host has no underscore",
+  )
+  expect(ask.seen.some((line) => line.includes("only over https"))).toBe(false)
+})
+
+test("a keyless vllm server URL may have an underscore", async () => {
+  const office = newOffice()
+  await ensure(office, new Script(["vllm", "http://vllm_server:8000/v1", "", "m"]))
+  expect(read(office)).toEqual({
+    llm_config: { provider: "vllm", model: "m" },
+    env: { VLLM_BASE_URL: "http://vllm_server:8000/v1" },
+  })
 })
 
 // No test changes process.env, so the key sits in a child's environment.
@@ -1167,6 +1313,25 @@ test("the provider is saved only once the model answers", async () => {
   expect(check.checked).toEqual([{ provider: "openai", api_key: KEY, model: "gpt-5.5" }])
   expect(ask.seen.at(-1)).toBe("Checking that the model answers...")
   expect(await saved(office)).toEqual({ provider: "openai", api_key: KEY, model: "gpt-5.5" })
+})
+
+test("a provider on stdin says it is checking the model", async () => {
+  const office = newOffice()
+  const ask = new Script()
+  const data = { llm_config: { provider: "anthropic", api_key: KEY } }
+  expect(await ensure(office, ask, { stdin: stdin(data), checkModel: answers(null) })).toBe(true)
+  expect(ask.seen).toEqual(["Checking that the model answers..."])
+})
+
+test("a provider on stdin whose model times out is not saved", async () => {
+  const office = newOffice()
+  const ask = new Script()
+  const data = { llm_config: { provider: "anthropic", api_key: KEY } }
+  const error = await rejection(ensure(office, ask, { stdin: stdin(data), checkModel: answers("timed out") }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toBe("the model didn't answer: timed out")
+  expect(ask.seen[0]).toBe("Checking that the model answers...")
+  expect(existsSync(file(office))).toBe(false)
 })
 
 test("trying again checks the same answers and nothing is saved until it works", async () => {

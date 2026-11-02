@@ -74,6 +74,7 @@ test("json prompts is not in the help", async () => {
   expect(await main(["init", "--help"], s)).toBe(0)
   expect(s.out()).not.toContain("--json-prompts")
   expect(s.out()).toContain("--provider-stdin")
+  expect(s.out()).toContain("VLLM_BASE_URL")
 })
 
 test("a service mode that isnt one is a usage error", async () => {

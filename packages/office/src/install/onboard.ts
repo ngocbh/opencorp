@@ -170,16 +170,17 @@ export async function azureDeployments(
   }
 }
 
-/** The models provider `name` lists for `key` (an empty key sends none), sorted; none when it has no listing.
- *  `request` stands in for the HTTP sender. Throws `OnboardError` when they couldn't be listed; the message never
- *  holds the key. */
+/** The models provider `name` lists for `key` (an empty key sends none) at `baseUrl` (empty or none: the
+ *  provider's own host), sorted; none when it has no listing. `request` stands in for the HTTP sender. Throws
+ *  `OnboardError` when they couldn't be listed; the message never holds the key. */
 export async function providerModels(
   name: string,
   key: string,
-  options: { request?: AuthRequest } = {},
+  options: { request?: AuthRequest; baseUrl?: string } = {},
 ): Promise<string[]> {
+  const { request, baseUrl } = options
   try {
-    return (await models.providerModels(name, key || null, null, { timeoutMs: 15_000, request: options.request })) ?? []
+    return (await models.providerModels(name, key || null, baseUrl || null, { timeoutMs: 15_000, request })) ?? []
   } catch (error) {
     if (error instanceof models.ModelListError) throw new OnboardError(error.message)
     throw error
@@ -189,11 +190,15 @@ export async function providerModels(
 /** How onboarding lists what a provider offers; tests pass listers that reach no provider. */
 export interface Listers {
   azureDeployments(baseUrl: string, key: string): Promise<string[]>
-  providerModels(name: string, key: string): Promise<string[]>
+  /** `baseUrl`, when given and not empty, is the server to list instead of the provider's own. */
+  providerModels(name: string, key: string, baseUrl?: string): Promise<string[]>
 }
 
 /** The listers that ask the providers. */
-export const LISTERS: Listers = { azureDeployments, providerModels }
+export const LISTERS: Listers = {
+  azureDeployments,
+  providerModels: (name, key, baseUrl) => providerModels(name, key, { baseUrl }),
+}
 
 /** Asks `question` until `problem` finds nothing wrong with the answer, at most `TRIES` times; with `options`, the
  *  owner picks the answer from them. Throws `OnboardError` when no answer worked. */
@@ -253,12 +258,52 @@ function azureProblem(answer: string): string | null {
   return null
 }
 
+/** Why `answer` isn't a server URL to save, or null when it is one or empty (the server on this machine). The
+ *  reasons never hold the answer. */
+function serverUrlProblem(answer: string): string | null {
+  const text = answer.trim()
+  if (!text) return null
+  const url = URL.parse(text)
+  if (url === null || (url.protocol !== "http:" && url.protocol !== "https:") || !url.hostname) {
+    return "give an http:// or https:// URL like http://host:8000/v1"
+  }
+  // Yian reads the variable as written, and its parsers take only printable ASCII.
+  if (!/^[\x21-\x7e]+$/.test(text)) return "give the URL in ASCII, without spaces"
+  if (url.username || url.password || text.includes("@")) return "keep the user and password out of the URL"
+  if (text.includes("?") || text.includes("#")) return "give the URL without a query or fragment"
+  return null
+}
+
+/** Why a key can't go to a server at an http URL elsewhere. */
+const KEY_OVER_HTTP = "a key goes only over https, or http to localhost, 127.0.0.1 or ::1"
+
+/** Whether yian takes `url` as a `base_url` that a key may be sent to. */
+function keyedBaseUrl(url: string): boolean {
+  try {
+    new LLMConfig({ provider: "openai", base_url: url, api_key: "-" })
+  } catch (error) {
+    if (!(error instanceof ValidationError)) throw error
+    return false
+  }
+  return true
+}
+
+/** Why a key can't be sent to the server at `url` (empty: the one on this machine), or null when it can. */
+function keyProblem(url: string): string | null {
+  // Yian's rule for where a key may be sent, which it applies to llm_config.base_url; VLLM_BASE_URL is used as
+  // written, so it is applied here.
+  if (!url || keyedBaseUrl(url)) return null
+  if (url.startsWith("http:") && keyedBaseUrl(`https:${url.slice("http:".length)}`)) return KEY_OVER_HTTP
+  return "yian sends a key only to a lowercase ASCII URL whose host has no underscore"
+}
+
 /** The key for provider `name`, read without echo; empty only when not `required`, and `last` for an empty answer
  *  when there is one. */
 async function askKey(prompter: Prompter, name: string, required: boolean, last = ""): Promise<string> {
   let question: string
   if (last) question = `${name} API key (empty keeps the one you just typed; not shown)`
   else if (required) question = `${name} API key (not shown)`
+  else if (models.KEYLESS.includes(name)) question = `${name} API key (empty for none; not shown)`
   else question = `${name} API key (empty to use \`yian auth ${name}\`; not shown)`
   for (let i = 0; i < TRIES; i++) {
     let key: string
@@ -276,14 +321,15 @@ async function askKey(prompter: Prompter, name: string, required: boolean, last 
   throw new OnboardError(`no usable answer to ${repr(question)}`)
 }
 
-/** The model for provider `name`, picked from those it lists for `key` when it can be listed, `last` for an empty
- *  answer; empty, without a key, for the model of yian's own login. */
+/** The model for provider `name`, picked from those it lists for `key` (at `baseUrl` when given) when it can be
+ *  listed, `last` for an empty answer; empty, without a key, for the model of yian's own login. */
 export async function askModel(
   prompter: Prompter,
   name: string,
   last: string,
   key: string,
   listers: Listers,
+  baseUrl = "",
 ): Promise<string> {
   if (!key && !models.KEYLESS.includes(name)) {
     // The runs use yian's own login, which saved its model and which the listing can't use.
@@ -294,7 +340,7 @@ export async function askModel(
   let listed: string[] = []
   if (prompter.interactive) {
     try {
-      listed = await listers.providerModels(name, key)
+      listed = await listers.providerModels(name, key, baseUrl)
     } catch (error) {
       if (!(error instanceof OnboardError)) throw error
       prompter.say(`Couldn't list the models (${error.message}).`)
@@ -340,6 +386,30 @@ async function askProviderData(prompter: Prompter, last: Answers, listers: Liste
     return { llm_config: { provider: "openai", base_url: baseUrl, api_key: last.key, model: last.model } }
   }
   const llm: Record<string, string> = { provider: name }
+  if (models.KEYLESS.includes(name)) {
+    // The server's URL goes in the env, where yian's client for the provider reads it; the caller's own variable
+    // is never read, so setup works only as the office's runs will.
+    for (let i = 0; ; i++) {
+      // An empty answer keeps a URL typed before, so the server on this machine is then typed too.
+      const question = last.endpoint
+        ? `${name} server URL (empty keeps the one you just typed)`
+        : `${name} server URL (empty for one on this machine)`
+      last.endpoint = (await askUntil(prompter, question, last.endpoint ?? "", serverUrlProblem)).trim()
+      // Yian's ollama client sends no key.
+      last.key = name === "ollama" ? "" : await askKey(prompter, name, false, last.key ?? "")
+      const problem = last.key ? keyProblem(last.endpoint) : null
+      if (problem === null) break
+      prompter.say(`That doesn't work: ${problem}`)
+      // Dropped, so the next key question can be left empty for none.
+      last.key = ""
+      if (i + 1 >= TRIES) throw new OnboardError(problem)
+    }
+    if (last.key) llm.api_key = last.key
+    last.model = (await askModel(prompter, name, last.model ?? "", last.key, listers, last.endpoint)).trim()
+    if (last.model) llm.model = last.model
+    if (!last.endpoint) return { llm_config: llm }
+    return { llm_config: llm, env: { [models.ENV_BASE_URL[name]!]: last.endpoint } }
+  }
   last.key = await askKey(prompter, name, false, last.key ?? "")
   if (last.key) llm.api_key = last.key
   else prompter.say(`No key saved; runs will use yian's own login (\`yian auth ${name}\`).`)
@@ -532,7 +602,11 @@ export async function ensureProvider(office: string, prompter: Prompter, options
     throw new OnboardError("the provider on stdin is not valid JSON")
   }
   const provider = withDefaultModel(checkProvider(data))
-  const problem = options.checkModel === undefined ? null : await options.checkModel(provider)
+  let problem: string | null = null
+  if (options.checkModel !== undefined) {
+    prompter.say("Checking that the model answers...")
+    problem = await options.checkModel(provider)
+  }
   if (problem !== null) throw new OnboardError(`the model didn't answer: ${problem}`)
   await saveProvider(office, provider)
   return true
@@ -912,10 +986,22 @@ export async function onboard(home: string, prompter: Prompter, options: Onboard
   prompter.say("Done. Run `opencorp` in a project folder to talk to your team.")
 }
 
+/** How long, in ms, the model check waits for an answer: under the daemon's 90 s wait for its worker, so the
+ *  worker's "timed out" reaches the daemon first. */
+export const CHECK_DEADLINE_MS = 80_000
+
+/** The yian settings the model check runs with: one slow request and one retry, then the deadline decides. */
+export const CHECK_LIMITS: Readonly<Record<string, string>> = Object.freeze({
+  YIAN_MODEL_FIRST_RESPONSE_TIMEOUT_SECONDS: "60",
+  YIAN_MODEL_IDLE_TIMEOUT_SECONDS: "60",
+  YIAN_MODEL_RETRIES: "1",
+})
+
 /**
  * Runs `flow` with `provider`'s model as an office run would; resolves its result (null when the run threw), and
  * why it failed (null when it didn't), without the key or URL credentials. The run's environment is `env` (by
- * default a worker's, from this process's) with `provider.env` on top. Rejects with `signal`'s reason once it aborts.
+ * default a worker's, from this process's) with `provider.env` on top, then `limits`. Rejects with `signal`'s reason
+ * once it aborts.
  */
 export async function runSetup(
   flow: ComposedFlow,
@@ -926,16 +1012,19 @@ export async function runSetup(
     context,
     env: base,
     signal,
+    limits,
   }: {
     tools: NonNullable<RunFlowOptions["tools"]>
     context?: unknown
     env?: WorkerEnv
     signal?: AbortSignal
+    limits?: Readonly<Record<string, string>>
   },
 ): Promise<{ result: RunResult | null; message: string | null }> {
   // The run gets the environment office runs get, so it authenticates the way they will: a shell variable the
   // office never sees can't make it work.
-  const vars: Record<string, string | undefined> = { ...(base ?? workerEnv(process.env)), ...provider.env }
+  // The limits go after the provider's env, so it can't lift them.
+  const vars: Record<string, string | undefined> = { ...(base ?? workerEnv(process.env)), ...provider.env, ...limits }
   const env = (name: string) => (Object.hasOwn(vars, name) ? vars[name] : undefined)
   // An Azure deployment or a gateway's model is never in yian's list; the owner chose it on purpose.
   const handler = (message: string, type: string | undefined) => {
@@ -965,14 +1054,30 @@ export async function runSetup(
 }
 
 /** Why `provider`'s model doesn't answer a one-word request made as an office run makes it, or null when it
- *  answers; the run's environment is as `runSetup`'s, `env` replacing the default base. Rejects with `signal`'s
- *  reason once it aborts. */
+ *  answers; `timed out` once `timeoutMs` passes. The run's environment is as `runSetup`'s, `env` replacing the
+ *  default base, with `CHECK_LIMITS` on top. Rejects with `signal`'s reason once it aborts. */
 export async function modelProblem(
   provider: Provider,
-  { env, signal }: { env?: WorkerEnv; signal?: AbortSignal } = {},
+  { env, signal, timeoutMs = CHECK_DEADLINE_MS }: { env?: WorkerEnv; signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<string | null> {
   const flow = await loadFlow(embedded(checkModelYaml).toString("utf8"), {
     sourceLabel: "install/flows/check_model.yaml",
   })
-  return (await runSetup(flow, {}, provider, { tools: {}, env, signal })).message
+  // Apart from the caller's signal: running out of time is a problem with the model, a caller's stop is not.
+  const deadline = new AbortController()
+  const timer = setTimeout(() => deadline.abort(), timeoutMs)
+  const both = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal
+  try {
+    const { message } = await runSetup(flow, {}, provider, { tools: {}, env, signal: both, limits: CHECK_LIMITS })
+    // The run may end as failed, rather than throw, once its signal aborts.
+    signal?.throwIfAborted()
+    if (message !== null && deadline.signal.aborted) return models.TIMED_OUT
+    return message
+  } catch (error) {
+    signal?.throwIfAborted()
+    if (deadline.signal.aborted) return models.TIMED_OUT
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
 }

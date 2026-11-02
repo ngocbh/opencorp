@@ -20,6 +20,7 @@ import { identityPath, readIdentity } from "../../auth/identity.ts"
 import {
   azureBaseUrl,
   BadConnectionName,
+  commercialAzure,
   ConnectionFile,
   ConnectionGone,
   providerLabel,
@@ -171,7 +172,12 @@ async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
     if (error instanceof OnboardError) throw new HttpError(422, "invalid_connection", error.message)
     throw error
   }
-  const label = providerLabel(llm)
+  const hostLabel = providerLabel(llm)
+  // The request's provider names the connection: an Azure resource behind another host is still azure.
+  const label = body.provider === "azure" ? "azure" : hostLabel
+  // Only a commercial Azure resource is known to serve chat wherever it lists deployments; any other endpoint's
+  // listing doesn't prove chat, so one reply decides.
+  const ownEndpoint = typeof llm.base_url === "string" && !commercialAzure(llm)
   // Listed without the model asked for, which a listing would offer as the connection's own.
   const { model: _, ...withoutModel } = llm
   const listed = await office.models.lister(ConnectionFile.parse({ llm_config: withoutModel }), label, {
@@ -181,7 +187,9 @@ async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
   // Read before anything copies the listing: `refused` isn't enumerable.
   const refused = (listed as Partial<Listing>).refused === true
   // Some gateways refuse their model list yet serve chat, so at an endpoint of the owner's own one reply decides.
-  if (refused && label !== "custom") throw new HttpError(422, "key_refused", `The key didn't work (${listed.error})`)
+  if (refused && hostLabel !== "custom") {
+    throw new HttpError(422, "key_refused", `The key didn't work (${listed.error})`)
+  }
   if (listed.error && label === "azure" && !body.model) {
     // A deployment is named by its owner, so there is no default to check.
     throw new HttpError(
@@ -199,7 +207,7 @@ async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
     if (model === null) throw new HttpError(422, "invalid_connection", `${label} lists no model to use; give one`)
     llm.model = model
     // A host may not list a model it serves, such as an alias of a dated id, so one reply decides.
-    needsCheck = !ids.includes(model)
+    needsCheck = ownEndpoint || !ids.includes(model)
   } else if (!body.model && fallback) {
     // Yian has no default model, so the connection is checked, and saved, on this one.
     llm.model = fallback

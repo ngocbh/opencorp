@@ -35,7 +35,7 @@ export const DEFAULT_MODELS: Readonly<Record<string, string>> = Object.freeze(
 export const KEYLESS: readonly string[] = Object.freeze(["ollama", "vllm"])
 
 /** The variable yian's client for a provider reads its endpoint from when `llm_config` gives none. */
-const ENV_BASE_URL: Readonly<Record<string, string>> = { ollama: "OLLAMA_BASE_URL", vllm: "VLLM_BASE_URL" }
+export const ENV_BASE_URL: Readonly<Record<string, string>> = { ollama: "OLLAMA_BASE_URL", vllm: "VLLM_BASE_URL" }
 
 /** Variables the SDK under yian's client for a provider reads to send runs to another host than the one yian
  *  lists, when `llm_config` gives no endpoint. */

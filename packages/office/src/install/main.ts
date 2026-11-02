@@ -132,7 +132,9 @@ const SETUP: Record<string, Flag> = {
   },
   "provider-stdin": {
     type: "boolean",
-    help: "read the office's setup connection from stdin, replacing it; ask nothing",
+    help:
+      "read the office's setup connection from stdin as JSON, replacing it; ask nothing: " +
+      '{"llm_config":{"provider":...,"api_key":...,"model":...},"env":{"VLLM_BASE_URL":...}}',
   },
   // Only for opencorp's setup screen, which reads the prompts; not something to type.
   "json-prompts": { type: "boolean" },
