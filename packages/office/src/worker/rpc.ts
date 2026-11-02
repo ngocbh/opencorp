@@ -46,6 +46,13 @@ export class RemoteError extends Error {
   }
 }
 
+/** The office refuses a model's `ask_user` request the model can fix (a blank question, or a question or options that
+ *  aren't valid text); the message names only the field, never its value. The reply is `{error: "refused"}`, which
+ *  the model reads as the call's result. */
+export class AskRefused extends Error {
+  override name = "AskRefused"
+}
+
 /** Numbered requests over a channel, on the worker side; a reader loop hands replies to `deliver`. In the worker
  *  process the process exits when its channel closes; in process, the reader calls `close`. */
 export class Rpc {
@@ -186,8 +193,9 @@ export function remoteTool(rpc: Rpc, group: string, spec: ToolSpec): FunctionToo
 }
 
 /** Yian's ask handler, answered by the office through an `ask_user` request with the six `ASK_KEYS`, the call's id
- *  and its deadline; a pending reply returns Yian's pending marker. The request ends when the call's signal aborts,
- *  as it does when the run stops. */
+ *  and its deadline; a pending reply returns Yian's pending marker. A `refused` reply to a model's call (no node id)
+ *  throws `ReportedToolError` (`error: <message>`), which the model reads as the call's result; any other error reply
+ *  throws a plain `Error`. The request ends when the call's signal aborts, as it does when the run stops. */
 export function askUserStub(rpc: Rpc): AskHandler {
   return async ({ question, questions, answerSchema, title, nodeId, options, callId, deadline }, ctx) => {
     const request = {
@@ -202,7 +210,11 @@ export function askUserStub(rpc: Rpc): AskHandler {
       const reply = await rpc.request("ask_user", { request, call_id: callId, deadline }, { signal: ctx.signal })
       return reply.pending === true ? pending() : (reply.answer ?? null)
     } catch (error) {
-      if (isInstance(error, RemoteError)) throw new Error(`ask_user failed: ${error.message}`)
+      if (isInstance(error, RemoteError)) {
+        // Only the model can fix its own request; a flow's `ask` node, or an office failure, fails as before.
+        if (error.code === "refused" && !nodeId) throw new ReportedToolError(`error: ${error.message}`)
+        throw new Error(`ask_user failed: ${error.message}`)
+      }
       throw error
     }
   }
@@ -354,7 +366,8 @@ export type RpcLog = (level: "INFO" | "WARNING", line: string) => void
  * or tool call whose handler returns Yian's `pending()` is `{pending: true}`.
  *
  * A malformed request, a question or tool call whose `call_id` isn't of `worker.job`'s run, a tool not in the job's
- * groups, or a failing tool or question is `{error: "failed", message}`. A store error is `mismatch` (with `expected`
+ * groups, or a failing tool or question is `{error: "failed", message}`; a question the handler refuses with
+ * `AskRefused` is `{error: "refused", message}`. A store error is `mismatch` (with `expected`
  * and `current`) for `MarkdownVersionMismatch`; `unknown_version` for a `RangeError` from a read and `invalid` for one
  * from a write; `invalid` for a `TypeError`; and `unavailable` for anything else, a store the job doesn't name
  * included. Throws a `TypeError` for a frame whose type isn't a request type.
@@ -402,6 +415,10 @@ export async function answerRequest(
     }
     if (kind === "store_read" || kind === "store_write") {
       return { ...head, error: storeCode(kind, error), message: errorMessage(error) }
+    }
+    if (kind === "ask_user" && isInstance(error, AskRefused)) {
+      write(log, "INFO", `worker ask_user request refused: ${errorName(error)}`)
+      return { ...head, error: "refused", message: errorMessage(error) }
     }
     return { ...head, ...failed(kind, error, log) }
   }

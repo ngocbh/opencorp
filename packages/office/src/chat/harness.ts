@@ -385,9 +385,10 @@ export class ChatHarness implements SessionHarness {
     return codex ? codex.end(sessionId) : this.#actor(sessionId).end()
   }
 
-  async interrupt(sessionId: string): Promise<void> {
+  async interrupt(sessionId: string, options: { question?: string | null } = {}): Promise<void> {
     const codex = this.#codexFor(sessionId)
-    return codex ? codex.interrupt(sessionId) : this.#actor(sessionId).interrupt()
+    // A Codex card has no stop, so no question reaches Codex.
+    return codex ? codex.interrupt(sessionId) : this.#actor(sessionId).interrupt(options)
   }
 
   async setCostCap(sessionId: string, usd: number): Promise<SessionRecord> {

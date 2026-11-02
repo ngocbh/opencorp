@@ -14,7 +14,7 @@ import {
   type Wait,
 } from "../../src/chat/session_actor.ts"
 import { PING } from "../../src/daemon/bus.ts"
-import { INTERRUPTED } from "../../src/questions/format.ts"
+import { INTERRUPTED, MAX_ANSWER_BYTES } from "../../src/questions/format.ts"
 import {
   CARD_CLOSED,
   COULDNT_RESUME,
@@ -433,6 +433,41 @@ test("a message answers the models open question", async () => {
   expect(texts(o, sid, "user")).toEqual(["hi"])
 })
 
+test("a blank model question is a tool error the model reads, and the reply goes on", async () => {
+  const fake = await fakeLlm()
+  fake.script({ tool_calls: [{ name: "ask_user", arguments: { question: "  ", options: [] } }] }, { content: "Asked." })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  expect(await say(o, actor, sid, "hi")).toBe("Asked.")
+  expect(o.office.store.listQuestions({ sessionId: sid })).toEqual([])
+  const messages = fake.requests().at(-1)!.messages as { role: string }[]
+  const tool = messages.find((message) => message.role === "tool")
+  expect(JSON.stringify(tool)).toContain("ask_user question is blank: write the question to ask the user")
+})
+
+test("a message with text that is not valid is refused before anything sees it", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const { worker, handlers, deliveries } = workers[0]!
+  const hooked: string[] = []
+  o.hooks.promptCheck.push(() => void hooked.push("promptCheck"))
+  o.hooks.turnContext.push(() => void hooked.push("turnContext"))
+  // With no question open, and with one the message would answer.
+  await expect(actor.prompt("x\ud800y")).rejects.toMatchObject({ status: 422, code: "refused" })
+  const callId = `${actor.runId}/c1`
+  await handlers.askUser(worker, ASKED, callId)
+  const refusal = await actor.prompt("x\ud800y").catch((error: Error) => error)
+  expect(refusal).toMatchObject({ status: 422, code: "refused" })
+  expect((refusal as Error).message.isWellFormed()).toBe(true)
+  expect(o.office.store.getQuestionByCall(callId)!.status).toBe("open")
+  expect(deliveries).toEqual([])
+  expect(hooked).toEqual([])
+})
+
 test("a message that loses the question to a card answer is the next message", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
@@ -452,6 +487,274 @@ test("a message that loses the question to a card answer is the next message", a
   expect(deliveries[1]).toMatchObject({ op: "send", event: { parts: [{ type: "text", text: "A" }] } })
   handlers.deliverReply(worker, { type: "deliver_reply", id: deliveries[1]!.id, seq: 3 })
   expect(await sent).toBe("queued")
+  // The answer never reached the call.
+  expect(o.office.store.getQuestionByCall(callId)!.status).toBe("stale")
+})
+
+/** A started actor on scripted workers whose first worker's run asked `ASKED` on call `c1`. */
+async function askedOnce(o: ChatOffice) {
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const callId = `${runId}/c1`
+  const first = workers[0]!
+  await first.handlers.askUser(first.worker, ASKED, callId)
+  const q = o.office.store.getQuestionByCall(callId)!
+  return { workers, sid, actor, runId, callId, q, first }
+}
+
+/** The run's unsettled wait on the model's `ask_user` call `callId`. */
+function askWait(callId: string): Wait {
+  return { ...TAKE, node: "chat#0/reply", call_id: callId, tool: "ask_user", inbox: null }
+}
+
+/** `scripted`'s reply to `delivery`. */
+function replyTo(scripted: ScriptedWorker, delivery: Delivery, fields: Record<string, unknown>): void {
+  scripted.handlers.deliverReply(scripted.worker, { type: "deliver_reply", id: delivery.id, ...fields })
+}
+
+/** Resolves once every command queued on `actor` before it has run: a command refused at once. */
+async function drained(actor: SessionActor): Promise<void> {
+  await actor.answer("no-such-question", "x", "text").catch(() => {})
+}
+
+test.each(["call_settled", "ended"])("a card answer whose complete is refused %s goes stale", async (reason) => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first } = await askedOnce(o)
+  expect((await actor.answer(q.id, "A", "text")).status).toBe("answered")
+  expect(first.deliveries).toMatchObject([{ op: "complete", call_id: q.call_id }])
+  replyTo(first, first.deliveries[0]!, { refused: reason })
+  await waitFor(() => o.office.store.getQuestion(q.id)!.status === "stale", { what: "the answer lost" })
+  await drained(actor)
+  expect(first.deliveries).toHaveLength(1)
+})
+
+test.each(["invalid_value", "too_large"])(
+  "a card answer whose complete is refused %s goes stale and its call gets an error",
+  async (reason) => {
+    const o = await chatOffice(await fakeLlm())
+    const { actor, q, first, callId } = await askedOnce(o)
+    await actor.answer(q.id, "Secret-answer", "text")
+    replyTo(first, first.deliveries[0]!, { refused: reason })
+    await waitFor(() => first.deliveries.length === 2, { what: "the error complete" })
+    expect(o.office.store.getQuestion(q.id)!.status).toBe("stale")
+    expect(first.deliveries[1]).toEqual({
+      id: expect.any(String),
+      op: "complete",
+      call_id: callId,
+      result: { error: `the answer couldn't be delivered (${reason})` },
+    })
+    // Refused in turn (the call settled meanwhile): nothing more goes out.
+    replyTo(first, first.deliveries[1]!, { refused: "call_settled" })
+    await drained(actor)
+    expect(first.deliveries).toHaveLength(2)
+    expect(o.office.store.getQuestion(q.id)!.status).toBe("stale")
+    expect(JSON.stringify([first.deliveries[1], o.logs])).not.toContain("Secret-answer")
+  },
+)
+
+test("a refusal of an answer the run already took changes nothing", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first } = await askedOnce(o)
+  await actor.answer(q.id, "A", "text")
+  o.office.store.setQuestionStatus(q.id, "consumed")
+  replyTo(first, first.deliveries[0]!, { refused: "invalid_value" })
+  await drained(actor)
+  expect(o.office.store.getQuestion(q.id)!.status).toBe("consumed")
+  expect(first.deliveries).toHaveLength(1)
+})
+
+test.each([
+  [{ seq: null }, "consumed"],
+  [{ refused: "unknown_call" }, "stale"],
+])("a card answer a running worker refused as an unknown call goes with the next advance [%o]", async (again, end) => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first, workers, runId, callId } = await askedOnce(o)
+  await actor.answer(q.id, "A", "text")
+  // The call may not be pending yet: the answer stands.
+  replyTo(first, first.deliveries[0]!, { refused: "unknown_call" })
+  await drained(actor)
+  expect(o.office.store.getQuestion(q.id)!.status).toBe("answered")
+  first.handlers.result(first.worker, waitingResult(runId, [askWait(callId)]))
+  first.handlers.exited(first.worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the advance" })
+  const second = workers[1]!
+  expect(second.job.deliver).toMatchObject([{ op: "complete", call_id: callId }])
+  replyTo(second, second.job.deliver[0]!, again)
+  await waitFor(() => o.office.store.getQuestion(q.id)!.status === end, { what: `the answer ${end}` })
+})
+
+test("a card answer a new worker's job refuses as an unknown call goes stale at once", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first, workers, runId, callId } = await askedOnce(o)
+  first.handlers.result(first.worker, waitingResult(runId, [askWait(callId)]))
+  first.handlers.exited(first.worker, 0)
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  await actor.answer(q.id, "A", "text")
+  await waitFor(() => workers.length === 2, { what: "the advance" })
+  const second = workers[1]!
+  expect(second.job.deliver).toMatchObject([{ op: "complete", call_id: callId }])
+  replyTo(second, second.job.deliver[0]!, { refused: "unknown_call" })
+  await waitFor(() => o.office.store.getQuestion(q.id)!.status === "stale", { what: "the answer lost" })
+  second.handlers.result(second.worker, waitingResult(runId))
+  second.handlers.exited(second.worker, 0)
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  await drained(actor)
+  expect(o.kinds).toEqual(["chat", "advance"])
+})
+
+test("an answer whose re-send failed waits for the next spawn", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first, workers, runId, callId } = await askedOnce(o)
+  await actor.answer(q.id, "A", "text")
+  replyTo(first, first.deliveries[0]!, { refused: "unknown_call" })
+  first.handlers.result(first.worker, waitingResult(runId, [askWait(callId)]))
+  first.handlers.exited(first.worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the re-send" })
+  const second = workers[1]!
+  replyTo(second, second.job.deliver[0]!, { failed: "OSError" })
+  second.handlers.result(second.worker, waitingResult(runId, [askWait(callId)]))
+  second.handlers.exited(second.worker, 0)
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  await drained(actor)
+  // No spin: the answer goes with whatever spawns next.
+  expect(workers).toHaveLength(2)
+  expect(o.office.store.getQuestion(q.id)!.status).toBe("answered")
+})
+
+test.each([
+  [{ seq: null }, "consumed"],
+  [{ refused: "unknown_call" }, "stale"],
+])("an answered question whose call no wait lists is sent once with the next advance [%o]", async (again, end) => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first, workers, runId, callId } = await askedOnce(o)
+  // Its answer's reply never reached the actor (the office died, or the reply was lost).
+  o.office.store.answerQuestion(q.id, "A", "text", null)
+  first.handlers.result(first.worker, waitingResult(runId))
+  first.handlers.exited(first.worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the advance" })
+  const second = workers[1]!
+  expect(second.job.deliver).toMatchObject([{ op: "complete", call_id: callId }])
+  replyTo(second, second.job.deliver[0]!, again)
+  await waitFor(() => o.office.store.getQuestion(q.id)!.status === end, { what: `the answer ${end}` })
+  second.handlers.result(second.worker, waitingResult(runId))
+  second.handlers.exited(second.worker, 0)
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  await drained(actor)
+  expect(workers).toHaveLength(2)
+})
+
+test("a message whose answer the running worker refused as an unknown call is also its next message", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first } = await askedOnce(o)
+  const sent = actor.prompt("A")
+  await waitFor(() => first.deliveries.length === 1, { what: "the answer" })
+  replyTo(first, first.deliveries[0]!, { refused: "unknown_call" })
+  await waitFor(() => first.deliveries.length === 2, { what: "the message" })
+  expect(first.deliveries[1]).toMatchObject({ op: "send", event: { parts: [{ type: "text", text: "A" }] } })
+  replyTo(first, first.deliveries[1]!, { seq: 3 })
+  expect(await sent).toBe("queued")
+  // A re-send decides whether the call took it.
+  expect(o.office.store.getQuestion(q.id)!.status).toBe("answered")
+})
+
+test("an answer too large for the run's log is refused before it is stored", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first } = await askedOnce(o)
+  const big = "x".repeat(MAX_ANSWER_BYTES)
+  await expect(actor.answer(q.id, big, "text")).rejects.toMatchObject({ status: 422, code: "too_large" })
+  await expect(actor.prompt(big)).rejects.toMatchObject({ status: 422, code: "too_large" })
+  expect(o.office.store.getQuestion(q.id)!.status).toBe("open")
+  expect(first.deliveries).toEqual([])
+})
+
+test("an answer to the model's question during end is refused as ending", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first } = await askedOnce(o)
+  await actor.end()
+  await expect(actor.answer(q.id, "A", "text")).rejects.toMatchObject({ status: 409, code: "ending" })
+  expect(first.deliveries.map((d) => d.op)).toEqual(["interrupt", "close"])
+  expect(o.office.store.getQuestion(q.id)!.status).toBe("open")
+})
+
+test("an answer while esc is under way is refused, and the question ends interrupted", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first, callId } = await askedOnce(o)
+  const cut = actor.interrupt()
+  await waitFor(() => first.deliveries.length === 1, { what: "the interrupt" })
+  const refusal = await actor.answer(q.id, "A", "text").catch((error: Error) => error)
+  expect(refusal).toMatchObject({ status: 409, code: "not_open", message: `question ${q.id} is being interrupted` })
+  // A message in the window is a message, not the answer.
+  const sent = actor.prompt("x")
+  await waitFor(() => first.deliveries.length === 2, { what: "the message" })
+  expect(first.deliveries.map((d) => d.op)).toEqual(["interrupt", "send"])
+  replyTo(first, first.deliveries[0]!, { seq: null, closed: [callId] })
+  await cut
+  const got = o.office.store.getQuestion(q.id)!
+  expect([got.status, got.answer, got.answer_kind, got.answered_by]).toEqual([
+    "consumed",
+    INTERRUPTED,
+    "interrupted",
+    null,
+  ])
+  replyTo(first, first.deliveries[1]!, { seq: 4 })
+  expect(await sent).toBe("queued")
+})
+
+test("an answer after an esc the worker never answered is taken, and lost if the call settled", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first, workers, runId, callId } = await askedOnce(o)
+  const cut = actor.interrupt()
+  await waitFor(() => first.deliveries.length === 1, { what: "the interrupt" })
+  first.handlers.result(first.worker, waitingResult(runId, [askWait(callId)]))
+  first.handlers.exited(first.worker, 0)
+  await cut
+  expect((await actor.answer(q.id, "A", "text")).status).toBe("answered")
+  await waitFor(() => workers.length === 2, { what: "the advance" })
+  const second = workers[1]!
+  replyTo(second, second.job.deliver[0]!, { refused: "call_settled" })
+  await waitFor(() => o.office.store.getQuestion(q.id)!.status === "stale", { what: "the answer lost" })
+})
+
+test("a card's stop interrupts only while its question is open and no esc is under way", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first, runId, callId } = await askedOnce(o)
+  const cut = actor.interrupt()
+  await waitFor(() => first.deliveries.length === 1, { what: "the interrupt" })
+  await expect(actor.interrupt({ question: q.id })).rejects.toMatchObject({ status: 409, code: "not_open" })
+  replyTo(first, first.deliveries[0]!, { seq: null, closed: [callId] })
+  await cut
+  await expect(actor.interrupt({ question: q.id })).rejects.toMatchObject({ status: 409, code: "not_open" })
+  expect(first.deliveries).toHaveLength(1)
+  await first.handlers.askUser(first.worker, ASKED, `${runId}/c2`)
+  const q2 = o.office.store.getQuestionByCall(`${runId}/c2`)!
+  await actor.end()
+  await expect(actor.interrupt({ question: q2.id })).rejects.toMatchObject({ status: 409, code: "ending" })
+})
+
+test("a message queued before a card's stop answers the question, and the stop is refused", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first } = await askedOnce(o)
+  const sent = actor.prompt("A")
+  await expect(actor.interrupt({ question: q.id })).rejects.toMatchObject({ status: 409, code: "not_open" })
+  expect(first.deliveries.map((d) => d.op)).toEqual(["complete"])
+  replyTo(first, first.deliveries[0]!, { seq: 2 })
+  expect(await sent).toBe("answer")
+  expect(o.office.store.getQuestion(q.id)!.status).toBe("consumed")
+})
+
+test("end interrupts a model call whose question is answered but not taken", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const { actor, q, first, workers, runId, callId } = await askedOnce(o)
+  first.handlers.result(first.worker, waitingResult(runId, [askWait(callId)]))
+  first.handlers.exited(first.worker, 0)
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  o.office.store.answerQuestion(q.id, "A", "text", null)
+  await actor.end()
+  await waitFor(() => workers.length === 2, { what: "the end's advance" })
+  expect(workers[1]!.job.deliver.map((d) => d.op).slice(-2)).toEqual(["interrupt", "close"])
 })
 
 test("a card answer is completed and consumed", async () => {
@@ -1656,11 +1959,6 @@ async function cappedStart(o: ChatOffice) {
   const actor = makeActor(o, sid)
   await actor.start()
   return { workers, sid, actor, runId: actor.runId! }
-}
-
-/** Resolves once every command queued on `actor` before it has run: a command refused at once. */
-function drained(actor: SessionActor): Promise<unknown> {
-  return actor.answer("no-such-question", null, "text").catch(() => {})
 }
 
 /** The ops `scripted`'s worker was given, its job's and the ones sent while it ran. */

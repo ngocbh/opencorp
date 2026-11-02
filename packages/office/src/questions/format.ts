@@ -6,6 +6,10 @@ import type { QuestionRecord } from "../store/store.ts"
 /** Characters (code points) of discussion JSON a result carries; the oldest messages go first. */
 export const DISCUSSION_CAP = 12000
 
+/** The most bytes of JSON an answer's result may take: yian's default `YIAN_MAX_EVENT_BYTES` (1 MiB) less room for
+ *  the step around it. */
+export const MAX_ANSWER_BYTES = (1 << 20) - (64 << 10)
+
 export const SENT_BACK =
   "No decision yet. The user discussed your question with you and wants you to ask again, " +
   "with a clearer question and options."

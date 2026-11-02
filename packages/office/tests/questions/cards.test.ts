@@ -45,7 +45,13 @@ class StandIn implements CardActor {
   readonly hooks: Hooks
   readonly answered: [string, unknown, AnswerKind, string | null][] = []
   readonly interrupted: string[] = []
+  /** The `question` each interrupt named, in order. */
+  readonly interruptedFor: (string | null)[] = []
   interruptFails = false
+  /** While set, `interrupt` refuses with this 409 code instead. */
+  interruptRefuses: string | undefined
+  /** While true, `interrupt` closes nothing: as an interrupt whose reply never came. */
+  interruptCloses = true
   /** While set, `answer` waits on it after recording the call (a real actor answers across awaits). */
   answerGate: Promise<void> | undefined
 
@@ -72,9 +78,12 @@ class StandIn implements CardActor {
     }
   }
 
-  async interrupt(sessionId: string) {
+  async interrupt(sessionId: string, { question = null }: { question?: string | null } = {}) {
     if (this.interruptFails) throw new HarnessError(409, "not_live", `session ${sessionId} has no live run`)
+    if (this.interruptRefuses !== undefined) throw new HarnessError(409, this.interruptRefuses, "refused")
     this.interrupted.push(sessionId)
+    this.interruptedFor.push(question)
+    if (!this.interruptCloses) return
     for (const q of this.store.listQuestions({ sessionId, status: "open" })) {
       if (q.source !== "ask_user" && q.source !== "ask_manager") continue
       try {
@@ -178,6 +187,21 @@ test("an invalid answer is refused before the actor sees it", async () => {
   expect(actor.answered).toEqual([])
 })
 
+test("an answer or a note with text that is not valid is refused before the actor sees it", async () => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  const discussion = [{ role: "user" as const, text: "why?" }]
+  const q = card(office, { discussion })
+  const answered = await refusal(() => cards.answer(q.id, "x\ud800y", "text"))
+  const expected = [422, "invalid_answer", "the answer must be valid text"]
+  expect([answered.status, answered.code, answered.message]).toEqual(expected)
+  const sent = await refusal(() => cards.sendBack(q.id, "x\ud800y"))
+  expect([sent.status, sent.code, sent.message]).toEqual([422, "invalid_answer", "the note must be valid text"])
+  const stored = office.store.getQuestion(q.id)!
+  expect([stored.status, stored.discussion]).toEqual(["open", discussion])
+  expect(actor.answered).toEqual([])
+})
+
 test("chat about this answers 501 without a side chat harness", async () => {
   const office = makeOffice()
   const { cards } = wire(office)
@@ -261,6 +285,47 @@ test("stop on a live main chats model question is esc on that chat", async () =>
   expect(actor.interrupted).toEqual([q.session_id])
   expect(actor.answered).toEqual([])
   expect([stopped.answer, stopped.answer_kind, stopped.answered_by]).toEqual([INTERRUPTED, "interrupted", null])
+})
+
+test("a stop names its question to the interrupt, and a second stop at once is refused", async () => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  const q = card(office)
+  const results = await Promise.allSettled([cards.stop(q.id), cards.stop(q.id)])
+  expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected"])
+  expect((results[1] as PromiseRejectedResult).reason).toMatchObject({ status: 409, code: "not_open" })
+  expect(actor.interruptedFor).toEqual([q.id])
+})
+
+test("a stop and an answer at once: exactly one wins", async () => {
+  const office = makeOffice()
+  const { cards } = wire(office)
+  const q = card(office, { options: ["Retry", "Back off"] })
+  const results = await Promise.allSettled([cards.stop(q.id), cards.answer(q.id, "Retry", "option")])
+  expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1)
+  const failed = results.find((result) => result.status === "rejected") as PromiseRejectedResult
+  expect(failed.reason).toMatchObject({ status: 409, code: "not_open" })
+})
+
+test("a stop whose interrupt leaves the question open answers it", async () => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  actor.interruptCloses = false
+  const q = card(office)
+  const stopped = await cards.stop(q.id, { by: "lan" })
+  expect(actor.interrupted).toEqual([q.session_id])
+  expect(actor.answered).toEqual([[q.id, INTERRUPTED, "interrupted", "lan"]])
+  expect([stopped.status, stopped.answer_kind]).toEqual(["answered", "interrupted"])
+})
+
+test.each(["not_open", "ending"])("a stop whose interrupt is refused %s is refused the same", async (code) => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  actor.interruptRefuses = code
+  const q = card(office)
+  expect((await refusal(() => cards.stop(q.id))).code).toBe(code)
+  expect(actor.answered).toEqual([])
+  expect(office.store.getQuestion(q.id)!.status).toBe("open")
 })
 
 test("stop answers the question when the asking chat has no run to interrupt", async () => {
@@ -790,6 +855,23 @@ test("a side worker exit during send back keeps the note", async () => {
     "It depends on the quota.",
     "list the quotas as options",
   ])
+})
+
+test("a stop and an answer sent together on a live chat: one wins and the asker gets it", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "After." }, { content: "spare" })
+  const h = await sideHarness(fake)
+  const { sid, q } = await ask(h)
+  const cards = h.office.cards!
+  const results = await Promise.allSettled([cards.stop(q.id), cards.answer(q.id, "Retry", "option")])
+  expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1)
+  const failed = results.find((result) => result.status === "rejected") as PromiseRejectedResult
+  expect(failed.reason).toMatchObject({ status: 409, code: "not_open" })
+  await waitFor(() => h.store.getQuestion(q.id)!.status !== "answered", { what: "the answer taken or lost" })
+  const got = h.store.getQuestion(q.id)!
+  // Whichever won reached the asker: never answered for good.
+  expect(got.status).toBe("consumed")
+  await waitFor(() => status(h, sid) === "idle", { what: "the asker at its next turn" })
 })
 
 test("stop is esc on the asking chat", async () => {

@@ -4,7 +4,8 @@ import type { PendingCall } from "@ngocbh/yian/run"
 import { pending } from "@ngocbh/yian/tools"
 import { type DiscussionEntry, Question, now, validationMessage } from "@opencorp/protocol"
 import { InvalidTransition, newId, type QuestionRecord, type SessionRecord, type Store, type WorkItemRecord } from "../store/store.ts"
-import { type AskRequest, errorName } from "../worker/rpc.ts"
+import { strip } from "../perm/redact.ts"
+import { AskRefused, type AskRequest, errorName } from "../worker/rpc.ts"
 import { formatAnswer, INTERRUPTED } from "./format.ts"
 import { normalizeOptions } from "./normalize.ts"
 
@@ -37,8 +38,10 @@ export function reply(question: QuestionRecord, carried?: Carried): unknown {
  * Each page that is a plain object keeps only `question`, `header`, `options` (default `[]`), `multi_select` (or
  * yian's `multiSelect`, default `false`) and `secret`; other keys are dropped. A call without one is the model's: its
  * options are normalized (`names` are the asker's names, for dropping `Stop <name>`), and it gets the answer as text.
- * The question is asked by `session.person` on `session.work_item_id`. A request that doesn't make a valid question
- * rejects with a `TypeError` naming only the bad fields.
+ * The question is asked by `session.person` on `session.work_item_id`. A model's call whose question is missing or
+ * blank, or whose question or options aren't well-formed text, rejects with `AskRefused`, which the model reads as
+ * the call's result; a flow's `ask` node may have an empty question, since its pages carry the text. A request that
+ * doesn't make a valid question rejects with a `TypeError` naming only the bad fields.
  */
 export function makeAskUser(
   session: SessionRecord,
@@ -53,6 +56,7 @@ export function makeAskUser(
     const fields = nodeId
       ? { source: "ask", questions: pages(request.questions), answer_schema: request.answer_schema ?? [] }
       : { source: "ask_user", options: normalizeOptions(request.options, { names }) }
+    if (!nodeId) refuseModelQuestion(request.question, fields.options!)
     const t = now()
     const data = {
       id: newId(),
@@ -73,6 +77,17 @@ export function makeAskUser(
     // Only validationMessage's text leaves: the ZodError and its issues can quote the request's values.
     if (!parsed.success) throw new TypeError(validationMessage(Question, parsed.error, data))
     return reply(onQuestion(parsed.data), carried)
+  }
+}
+
+/** Throws `AskRefused` for a model question with no text to show, or with text that isn't well-formed (a lone
+ *  surrogate); neither message quotes a value. */
+function refuseModelQuestion(question: unknown, options: readonly string[]): void {
+  if (typeof question !== "string" || strip(question) === "") {
+    throw new AskRefused("ask_user question is blank: write the question to ask the user")
+  }
+  if (!question.isWellFormed() || !options.every((option) => option.isWellFormed())) {
+    throw new AskRefused("ask_user question and options must be valid text")
   }
 }
 
@@ -189,8 +204,9 @@ export class Answers {
    * isn't listed goes stale; a listed call with no question is stored through `handlers`, as a live call would be.
    * Call only for a `waiting` run while no worker runs it (a crashed run's questions may belong to calls yian hasn't
    * recorded yet, which a resume re-invokes). Call ids outside `${runId}/` are skipped. An `answered` question whose
-   * call yian settled is left as it is. Only question calls (`ask`, `ask_user`, `ask_manager`) are rebuilt: a pending
-   * step names a tool, and re-running any other tool from it would skip the job's grant check.
+   * call yian settled is left as it is: the actor sends its answer again, which settles it. Only question calls
+   * (`ask`, `ask_user`, `ask_manager`) are rebuilt: a pending step names a tool, and re-running any other tool from
+   * it would skip the job's grant check.
    *
    * A TOOL `ask` call's recorded arguments are the node's inputs only, so its rebuilt question has no title and no
    * answer schema. A handler that throws is logged by the call id and the error's name, and the rest go on.

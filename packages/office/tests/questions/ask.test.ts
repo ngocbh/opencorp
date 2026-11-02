@@ -9,7 +9,7 @@ import { INTERRUPTED } from "../../src/questions/format.ts"
 import { DuplicateKey, NotFound, StoreError, newId, type QuestionRecord } from "../../src/store/store.ts"
 import { companyTools } from "../../src/tools/company/work.ts"
 import { EXIT_OK } from "../../src/worker/main.ts"
-import { ASK_KEYS, type AskRequest, askUserStub, BaseHandlers } from "../../src/worker/rpc.ts"
+import { ASK_KEYS, AskRefused, type AskRequest, askUserStub, BaseHandlers } from "../../src/worker/rpc.ts"
 import { openStore, question, session, workItem } from "../store/helpers.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { company } from "../tools/helpers.ts"
@@ -170,6 +170,41 @@ test("a model call with bad options still asks", async () => {
     "The user answered: fine",
   )
   expect(desk.asked[0]!.options).toEqual([])
+})
+
+test("a model call with a blank question is refused and stores nothing", async () => {
+  const { store, sid, answers } = setup()
+  const handler = makeAskUser(store.getSession(sid)!, "run-1", (q, o) => answers.ask(q, o))
+  for (const question of ["", "   ", null]) {
+    const error = await handler(modelCall({ question }), CALL).then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(error).toBeInstanceOf(AskRefused)
+    expect((error as Error).message).toBe("ask_user question is blank: write the question to ask the user")
+  }
+  expect(store.listQuestions({ sessionId: sid })).toEqual([])
+})
+
+test("a model call with text that is not valid is refused without it", async () => {
+  const { store, sid, answers } = setup()
+  const handler = makeAskUser(store.getSession(sid)!, "run-1", (q, o) => answers.ask(q, o))
+  for (const over of [{ question: "Which \ud800?" }, { options: ["A", "B\ud800"] }]) {
+    const error = await handler(modelCall(over), CALL).then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(error).toBeInstanceOf(AskRefused)
+    expect((error as Error).message).toBe("ask_user question and options must be valid text")
+  }
+  expect(store.listQuestions({ sessionId: sid })).toEqual([])
+})
+
+test("an ask node call with an empty question still asks", async () => {
+  const { store, sid, answers } = setup()
+  const handler = makeAskUser(store.getSession(sid)!, "run-1", (q, o) => answers.ask(q, o))
+  expect(isPending(await handler(askNodeCall({ question: "" }), NODE_CALL))).toBe(true)
+  expect(store.listQuestions({ sessionId: sid }).map((q) => [q.source, q.question])).toEqual([["ask", ""]])
 })
 
 test("an ask node call keeps its node pages and schema", async () => {
@@ -506,6 +541,14 @@ test("reconcile marks an unlisted question stale and stores an unstored call", a
   expect([item.status, item.assignee]).toEqual(["open", "ngocbh"])
   expect(store.listQuestions({ sessionId: sid })).toHaveLength(6)
   expect(lines).toEqual([])
+})
+
+test("reconcile logs a recorded blank model question and stores nothing", async () => {
+  const { store, sid, answers, lines } = setup()
+  const askUser = makeAskUser(store.getSession(sid)!, "run-1", (q, o) => answers.ask(q, o))
+  await answers.reconcile("run-1", [pendingCall({ arguments: { question: " " } })], { askUser })
+  expect(lines).toEqual([`could not store the question of call ${CALL}: AskRefused`])
+  expect(store.listQuestions({ sessionId: sid })).toEqual([])
 })
 
 test("reconcile rebuilds an ask node call from its recorded inputs", async () => {
