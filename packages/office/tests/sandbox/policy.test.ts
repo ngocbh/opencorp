@@ -193,7 +193,7 @@ test("a workspace inside the office install is refused", () => {
   )
 })
 
-test("a workspace that is, holds or lies inside one of the office's own files is refused", () => {
+test("a workspace that is, holds or lies inside one of the office files is refused", () => {
   const { root } = makePolicy()
   const real = fs.realpathSync(root)
   const [company, office, sub] = mkdirs(
@@ -223,7 +223,7 @@ test("a workspace that is, holds or lies inside one of the office's own files is
   expect(() => checkClearOf(other!, kept)).not.toThrow()
 })
 
-test("the office's own files are compared resolved", () => {
+test("the office files are compared resolved", () => {
   const { root } = makePolicy()
   const real = fs.realpathSync(root)
   const [company] = mkdirs(path.join(root, "home/company"))

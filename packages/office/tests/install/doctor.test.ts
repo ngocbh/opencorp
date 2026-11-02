@@ -356,7 +356,7 @@ test("the company check lays profile hand edits over the last commit, as a new s
   })
 })
 
-test("the company check shows the company's path, never the copy it lints", async () => {
+test("the company check shows the company path, never the copy it lints", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)
   // A skill that won't load is reported by its absolute path.
@@ -778,7 +778,7 @@ test("a systemd service with linger is ok", async () => {
   expect(got.service).toEqual({ name: "service", status: "ok", detail: `systemd: ${unit} is enabled` })
 })
 
-test("a service that starts a program that's gone fails and says to onboard", async () => {
+test("a service that starts a program that is gone fails and says to onboard", async () => {
   for (const mode of ["launchd", "systemd"]) {
     const dir = tempDir()
     const paths = await onboarded(dir, undefined, mode)
@@ -1022,7 +1022,7 @@ function stoppedLog(tail: string): string {
   )
 }
 
-test("a log ending in bun's missing module line fails, quoting it", async () => {
+test("a log ending in the bun missing module line fails, quoting it", async () => {
   for (const [mode, advice] of [
     ["launchd", "Run `opencorp onboard` from the install you use; its service may start code that's gone."],
     ["systemd", "Run `opencorp onboard` from the install you use; its service may start code that's gone."],
@@ -1041,7 +1041,7 @@ test("a log ending in bun's missing module line fails, quoting it", async () => 
   }
 })
 
-test("bun's missing module lines are quoted cut short", async () => {
+test("bun missing module lines are quoted cut short", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir, undefined, "background")
   const from = `error: Cannot find module './x.ts' from '/old/${"a".repeat(300)}/main.ts'`
@@ -1096,7 +1096,7 @@ test("output before a clean stop is no failed start", async () => {
   expect(got.detail).not.toContain("last start failed")
 })
 
-test("a crash marker followed by other output is that output's failed start", async () => {
+test("a crash marker followed by other output is the failed start of that output", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir, undefined, "background")
   const log = `${crashedLog()}error: Module not found "/old/main.ts"\n`
@@ -1935,7 +1935,7 @@ test("an office running from another install is told how to run this one", async
   }
 })
 
-test("an office running from an install that's gone fails", () => {
+test("an office running from an install that is gone fails", () => {
   const dir = tempDir()
   const run = launchFor(dir, new OfficePaths(path.join(dir, "home")))
   const here = installPaths(COMMAND)[0]!
@@ -1954,7 +1954,7 @@ test("an office running from an install that's gone fails", () => {
   )
 })
 
-test("the install check finds this install anywhere in the office's install folders, and skips an empty list", () => {
+test("the install check finds this install anywhere in the office install folders, and skips an empty list", () => {
   const dir = tempDir()
   const run = launchFor(dir, new OfficePaths(path.join(dir, "home")))
   const here = installPaths(COMMAND)[0]!
@@ -2196,7 +2196,7 @@ test("a worked folder holding the install fails the folders check", async () => 
 const OK_FOLDERS =
   "no worked folder holds the office install, a program it runs, a folder on its PATH, or the office's own files"
 
-test("a worked folder overlapping the office's own files fails the folders check", async () => {
+test("a worked folder overlapping the office files fails the folders check", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)
   const sub = path.join(paths.office, "sub")

@@ -898,7 +898,7 @@ test("a closed rpc rejects pending and later requests", async () => {
   expect(sent.writes()).toBe(2)
 })
 
-test("an error's kind for a log line adds its errno code and syscall, never its message", () => {
+test("the kind of an error for a log line adds its errno code and syscall, never its message", () => {
   const errno = (code: unknown, syscall?: unknown) => Object.assign(new Error("secret /x"), { code, syscall })
   expect(errorKind(errno("ENOENT", "realpath"))).toBe("Error ENOENT realpath")
   expect(errorKind(errno("EACCES"))).toBe("Error EACCES")
