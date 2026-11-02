@@ -9,7 +9,7 @@ import { embedded } from "../platform.ts"
 import { checkCompanyTool } from "../tools/company/draft.ts"
 import initYaml from "./flows/init.yaml" with { type: "file" }
 import { type LoginDefaults, loginDefaults, runSetup, slug } from "./onboard.ts"
-import { KeyboardInterrupt, NoTerminal, OnboardError, type Prompter, TRIES } from "./prompts.ts"
+import { KeyboardInterrupt, NoTerminal, OnboardError, type Prompter, TRIES, clean } from "./prompts.ts"
 
 /** What the owner is asked after the summary. */
 export const CONFIRM = "Create this company?"
@@ -81,13 +81,6 @@ export function fallbackDraft(known: Known, defaults: LoginDefaults = loginDefau
     throw new OnboardError(`can't set up the company without a terminal: ${hints}`)
   }
   return draft
-}
-
-/** `text` safe to print: line breaks and tabs become spaces and other control characters are dropped, so model
- *  text can't move the cursor or send escapes. */
-export function clean(text: string): string {
-  // C1 controls (0x80-0x9f) go too: some terminals read 0x9b as the start of an escape sequence.
-  return text.replace(/[\x00-\x1f\x7f-\x9f]/g, (c) => (c === "\n" || c === "\r" || c === "\t" ? " " : ""))
 }
 
 function who(name: string, handle: string, title: string): string {

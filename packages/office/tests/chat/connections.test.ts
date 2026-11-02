@@ -396,7 +396,7 @@ test.each(["_removed.json", "_default.json"])("a symlinked or loose list is refu
   fs.symlinkSync(real, path.join(c.dir, name))
   let error = await raised(read)
   expect(error).toBeInstanceOf(ProviderError)
-  expect((error as Error).message).toMatch(/can't open/)
+  expect((error as Error).message).toMatch(/is a symlink, not a regular file/)
   fs.unlinkSync(path.join(c.dir, name))
   await writePrivate(path.join(c.dir, name), body)
   fs.chmodSync(path.join(c.dir, name), 0o640)

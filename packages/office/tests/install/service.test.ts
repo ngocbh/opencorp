@@ -20,7 +20,7 @@ import * as service from "../../src/install/service.ts"
 import * as systemd from "../../src/install/systemd.ts"
 import { selfSpawnEnv } from "../../src/platform.ts"
 import { company } from "../company/helpers.ts"
-import { cwdOf, envNames, isGone, reexecMarks, shortDir, tempDir } from "../helpers.ts"
+import { cwdOf, envNames, fifo, isGone, reexecMarks, shortDir, tempDir } from "../helpers.ts"
 import { Runner, daemonHost, killedAtEnd, makeHost } from "./helpers.ts"
 
 /** A `which` that finds every program in `/usr/bin`. */
@@ -326,6 +326,92 @@ test("a broken record counts as no record", () => {
     fs.writeFileSync(path.join(one.office, "install.json"), text)
     expect(service.recordedMode(one)).toBeNull()
   }
+})
+
+/** A file in `dir` holding a stand-in provider key. */
+function secret(dir: string): string {
+  const file = path.join(dir, "secret.json")
+  fs.writeFileSync(file, '{"api_key":"sk-SENTINEL"}\n')
+  return file
+}
+
+test("a pidfile that is a symlink shows no pid, and nothing of its target", () => {
+  const { dir, one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  fs.symlinkSync(secret(dir), path.join(one.office, "office.pid"))
+  expect(service.pid(one)).toBe("?")
+})
+
+test("a pidfile shows its pid only when it holds a decimal number", () => {
+  const { one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  const file = path.join(one.office, "office.pid")
+  fs.writeFileSync(file, "abc\n")
+  expect(service.pid(one)).toBe("?")
+  fs.writeFileSync(file, "123\n")
+  expect(service.pid(one)).toBe("123")
+})
+
+test("a FIFO pidfile shows no pid without blocking", () => {
+  const { one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  fifo(path.join(one.office, "office.pid"))
+  const began = performance.now()
+  expect(service.pid(one)).toBe("?")
+  expect(performance.now() - began).toBeLessThan(2000)
+})
+
+test("a record that is a symlink, a FIFO or too big counts as no record", () => {
+  const { dir, one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  const file = path.join(one.office, "install.json")
+  const target = path.join(dir, "elsewhere.json")
+  fs.writeFileSync(target, '{"mode": "launchd"}')
+  fs.symlinkSync(target, file)
+  expect(service.recordedMode(one)).toBeNull()
+  fs.rmSync(file)
+  fs.writeFileSync(file, `{"mode": "launchd"}${" ".repeat(4096)}`)
+  expect(service.recordedMode(one)).toBeNull()
+  fs.rmSync(file)
+  fifo(file)
+  const began = performance.now()
+  expect(service.recordedMode(one)).toBeNull()
+  expect(performance.now() - began).toBeLessThan(2000)
+})
+
+test("start over a FIFO record runs it in the background and records that in a regular file", async () => {
+  const { dir, one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true, mode: 0o700 })
+  const file = path.join(one.office, "install.json")
+  fifo(file)
+  const { started, spawn } = recorder()
+  const began = performance.now()
+  const got = await service.start(one, makeHost(dir, new Runner(), { spawn }))
+  expect(performance.now() - began).toBeLessThan(2000)
+  expect(got.mode).toBe("background")
+  expect(started).toEqual([background(one)])
+  expect(fs.lstatSync(file).isFile()).toBe(true)
+  expect(recorded(one).mode).toBe("background")
+})
+
+test("waiting shows no log when the log is a symlink", async () => {
+  const { dir, one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  fs.symlinkSync(secret(dir), one.log)
+  const error = await refusal(service.wait(one, makeHost(dir, new Runner()), 1000))
+  expect(error).toBeInstanceOf(ServiceError)
+  expect(error.message).toContain("(no log)")
+  expect(error.message).not.toContain("SENTINEL")
+})
+
+test("waiting shows no log when the log is a FIFO, without blocking", async () => {
+  const { dir, one } = fixture()
+  fs.mkdirSync(one.office, { recursive: true })
+  fifo(one.log)
+  const began = performance.now()
+  const error = await refusal(service.wait(one, makeHost(dir, new Runner()), 1000))
+  expect(performance.now() - began).toBeLessThan(1000 + 1500)
+  expect(error.message).toContain("(no log)")
 })
 
 function installedAs(one: Launch, mode: string): void {

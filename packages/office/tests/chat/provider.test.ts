@@ -175,7 +175,7 @@ test("a symlink is refused", async () => {
   const target = write(path.join(tmp, "real.json"), {})
   fs.symlinkSync(target, path.join(tmp, "provider.json"))
   const error = await refusal(path.join(tmp, "provider.json"))
-  expect(error.message).toMatch(/can't open/)
+  expect(error.message).toMatch(/is a symlink, not a regular file/)
 })
 
 test.each(['{"env": {"KEY": 12345678}, "llm_config": "sk-secret-value"}', "sk-secret-value"])(

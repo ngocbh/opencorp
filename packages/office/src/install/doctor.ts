@@ -22,10 +22,11 @@ import { strerror } from "../sandbox/fs_helper.ts"
 import { checkWorkspace, type OfficePaths as Guards, SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
 import { fsHelper, run } from "../sandbox/run.ts"
 import { workerEnv } from "../worker/spawn.ts"
+import { tailRegular } from "./files.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, runCommand, which } from "./launch.ts"
 import * as launchd from "./launchd.ts"
 import { checkProvider, lexists, SET_UP, setupConnectionFile, stopToTopUp, withDefaultModel } from "./onboard.ts"
-import { OnboardError } from "./prompts.ts"
+import { OnboardError, clean } from "./prompts.ts"
 import * as service from "./service.ts"
 import * as systemd from "./systemd.ts"
 import { installPaths, resolveTools, workspaceGuards } from "./tools.ts"
@@ -57,8 +58,8 @@ const PROBE_TIMEOUT = 30
 /** SQLite's primary result code for a file it can't open. */
 const SQLITE_CANTOPEN = 14
 
-/** An ANSI color code, which Codex may print around a line. */
-const COLOR = /\x1b\[[0-9;]*m/g
+/** A whole CSI or OSC escape sequence, its text included: a color code Codex prints around a line, or a title. */
+const ESCAPE = /\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g
 
 /**
  * How Bun words a program that never started: `<code>: <strerror>, posix_spawn '<path>'` (Node's `spawn <path> <code>`
@@ -137,7 +138,8 @@ async function companyCheck(paths: OfficePaths, running: boolean): Promise<Check
   }
   const errors = issues.filter((i) => i.severity === "error")
   if (errors.length) {
-    const detail = errors.map((i) => `${i.path}: ${i.code}: ${i.message}`).join("; ")
+    // Some of Yian's messages run over indented lines; the report has one row per check.
+    const detail = errors.map((i) => `${i.path}: ${i.code}: ${oneLine(i.message)}`).join("; ")
     return { name: "company", status: "fail", detail }
   }
   const notes = issues.length ? [`${issues.length} lint warnings`] : []
@@ -232,6 +234,8 @@ function connectionsCheck(paths: OfficePaths, lstat: (p: string) => fs.Stats): C
     if (code === undefined) throw error
     return { name: "connections", status: "fail", detail: `can't read ${folder}: ${strerror(error) ?? code}` }
   }
+  const links: string[] = []
+  const odd: string[] = []
   const loose: string[] = []
   for (const entry of entries) {
     let m: fs.Stats
@@ -241,15 +245,16 @@ function connectionsCheck(paths: OfficePaths, lstat: (p: string) => fs.Stats): C
       if (errnoCode(error) === "ENOENT") continue // removed while this ran
       throw error
     }
-    if (!m.isFile() || m.mode & 0o077) loose.push(entry)
+    if (m.isSymbolicLink()) links.push(entry)
+    else if (!m.isFile()) odd.push(entry)
+    else if (m.mode & 0o077) loose.push(entry)
   }
-  if (loose.length) {
-    return {
-      name: "connections",
-      status: "fail",
-      detail: `${loose.join(", ")} in ${folder} must be private to its owner (mode 0600)`,
-    }
-  }
+  const problems = [
+    ...(links.length ? [`${links.join(", ")} in ${folder} must be a regular file, not a symlink`] : []),
+    ...(odd.length ? [`${odd.join(", ")} in ${folder} must be a regular file`] : []),
+    ...(loose.length ? [`${loose.join(", ")} in ${folder} must be private to its owner (mode 0600)`] : []),
+  ]
+  if (problems.length) return { name: "connections", status: "fail", detail: problems.join("; ") }
   return { name: "connections", status: "ok", detail: `${folder} is private` }
 }
 
@@ -317,28 +322,6 @@ function nextStep(run: Launch, host: Host): string {
 }
 
 /**
- * The last `LOG_TAIL_BYTES` of `file`, without the partial first line when it is cut; empty when `file` isn't a
- * regular file.
- */
-function tail(file: string): string {
-  // Non-blocking so a FIFO at the log's path can't hang the open.
-  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK)
-  try {
-    const stat = fs.fstatSync(fd)
-    if (!stat.isFile()) return ""
-    const start = Math.max(0, stat.size - LOG_TAIL_BYTES)
-    const buf = Buffer.alloc(LOG_TAIL_BYTES)
-    const text = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, start)).toString("utf8")
-    if (start === 0) return text
-    // A window that falls inside one long line holds only part of it.
-    const nl = text.indexOf("\n")
-    return nl < 0 ? "" : text.slice(nl + 1)
-  } finally {
-    fs.closeSync(fd)
-  }
-}
-
-/**
  * Why the daemon's last start failed, from the office log, or null if it didn't: the line it printed when it
  * couldn't start, or `office crashed: <type>` when the log ends with the crash marker and its frames (the frames
  * stay in the log). A marker with other lines after it belongs to an earlier start.
@@ -346,7 +329,8 @@ function tail(file: string): string {
 function crash(log: string): string | null {
   let text: string
   try {
-    text = tail(log)
+    // A link or a FIFO at the log's path is no log to read.
+    text = tailRegular(log, LOG_TAIL_BYTES) ?? ""
   } catch (error) {
     if (errnoCode(error) === undefined) throw error
     return null
@@ -363,11 +347,16 @@ function crash(log: string): string | null {
   return marker?.match(CRASH_MARKER)?.[1] ?? null
 }
 
-/** The non-empty lines of `output`, trimmed and without color codes. */
+/** `s` as one printable line: escapes and control characters gone, whitespace collapsed. */
+function oneLine(s: string): string {
+  return clean(s.replace(ESCAPE, "")).replace(/\s+/g, " ").trim()
+}
+
+/** The non-empty lines of `output`, each as `oneLine` gives it. */
 function lines(output: string): string[] {
   return output
     .split(/\r\n|\n|\r/)
-    .map((raw) => raw.replace(COLOR, "").trim())
+    .map(oneLine)
     .filter((line) => line)
 }
 
@@ -428,7 +417,7 @@ export async function codexCheck(
   const version = await ask("--version")
   if ("name" in version) return version
   if (version.code !== 0) {
-    const why = version.stderr.replace(COLOR, "").trim().slice(0, LINE_CAP) || `exit ${version.code}`
+    const why = lines(version.stderr)[0]?.slice(0, LINE_CAP) || `exit ${version.code}`
     return { name: "codex", status: "fail", detail: `${found} --version failed: ${why}` }
   }
   const login = await ask("login", "status")
@@ -549,10 +538,33 @@ function isDirectory(file: string): boolean {
   }
 }
 
-/** Where HQ listens, whether the web app is built for this office, and HQ's own warnings. */
-export function hqChecks(status: HqStatus | Unread, officeDir: string, repo: string): Check[] {
+/**
+ * Why the socket the office says HQ listens on (`socket`) isn't there, or null.
+ *
+ * The office keeps an unlinked listener, so its own status can't see the file go.
+ */
+function socketProblem(socket: unknown, lstat: (p: string) => fs.Stats): string | null {
+  if (typeof socket !== "string") return null
+  let st: fs.Stats
+  try {
+    st = lstat(socket)
+  } catch (error) {
+    const code = errnoCode(error)
+    if (code === "ENOENT") return "the socket file is gone; run `opencorp restart`"
+    return `can't check it (${code ?? "unknown error"})`
+  }
+  return st.isSocket() ? null : "something else is at that path; remove it and run `opencorp restart`"
+}
+
+/** Where HQ listens (see `hqPortChecks`), whether the web app is built for this office, and HQ's own warnings. */
+export function hqChecks(
+  status: HqStatus | Unread,
+  officeDir: string,
+  repo: string,
+  socketMissing: string | null = null,
+): Check[] {
   if (typeof status === "string") return [{ name: "hq", status: "warn", detail: UNREAD[status] }]
-  const found = hqPortChecks(status, officeDir)
+  const found = hqPortChecks(status, officeDir, socketMissing)
   const { app, office } = status.health
   if (app === null && !isDirectory(path.join(repo, "packages", "app"))) {
     // Installed from a package, not a checkout.
@@ -581,8 +593,9 @@ export function hqChecks(status: HqStatus | Unread, officeDir: string, repo: str
   return found
 }
 
-/** Where HQ listens: on hq.sock and on its web port. */
-export function hqPortChecks(status: HqStatus, officeDir: string): Check[] {
+/** Where HQ listens: on hq.sock and on its web port. `socketMissing` is why the socket isn't at its path when the
+ *  office itself saw nothing wrong, with what to do about it. */
+export function hqPortChecks(status: HqStatus, officeDir: string, socketMissing: string | null = null): Check[] {
   const { tcp } = status
   const error = tcp.error
   const retry = RETRY_MS / 1000
@@ -620,7 +633,10 @@ export function hqPortChecks(status: HqStatus, officeDir: string): Check[] {
       },
     ]
   }
-  const socketError = status.socket_error // an office from before the field has none
+  // An office from before the field has none.
+  const socketError = status.socket_error
+    ? `${status.socket_error}; run \`opencorp restart\` once that's fixed`
+    : socketMissing
   if (socketError) {
     // The web port keeps a line of its own, so what's wrong with it isn't lost under the socket's problem.
     const port: Check = tcp.listening
@@ -630,7 +646,7 @@ export function hqPortChecks(status: HqStatus, officeDir: string): Check[] {
       {
         name: "hq",
         status: "warn",
-        detail: `not listening on ${status.socket}: ${socketError}; run \`opencorp restart\` once that's fixed`,
+        detail: `not listening on ${status.socket}: ${socketError}`,
       },
       ...(tcp.enabled ? [port] : []),
     ]
@@ -757,7 +773,7 @@ export async function sandboxProblem(officeHome: string): Promise<string | null>
     const shell = await run(policy, ["/bin/sh", "-c", "exit 0"], { timeout: PROBE_TIMEOUT })
     if (shell.timedOut) return `a sandboxed command didn't finish in ${PROBE_TIMEOUT} s`
     if (shell.exit !== 0) {
-      return shell.stderr.toString("utf8").replace(COLOR, "").trim().slice(0, LINE_CAP) || `exit ${shell.exit}`
+      return oneLine(shell.stderr.toString("utf8")).slice(0, LINE_CAP) || `exit ${shell.exit}`
     }
     const listed = await run(new SandboxPolicy({ ...policy, helper }), argv, {
       stdin: JSON.stringify({ op: "list", path: "." }),
@@ -772,7 +788,7 @@ export async function sandboxProblem(officeHome: string): Promise<string | null>
     }
     if (isRecord(reply) && reply.ok === true && typeof reply.output === "string") return null
     const error = isRecord(reply) && typeof reply.error === "string" ? reply.error : ""
-    const stderr = listed.stderr.toString("utf8").replace(COLOR, "").trim().slice(0, LINE_CAP)
+    const stderr = oneLine(listed.stderr.toString("utf8")).slice(0, LINE_CAP)
     return `the file helper failed: ${error || stderr || `exit ${listed.exit}`}`
   } catch (error) {
     return messageOf(error)
@@ -899,7 +915,10 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
       found.push(versionCheck(run, info, newestSource(command)), toolsCheck(info))
       guards = info.guards
     }
-    found.push(...hqChecks(await hq(run.socket, identity), paths.office, repo))
+    const hqAnswer = await hq(run.socket, identity)
+    const missing =
+      typeof hqAnswer === "string" || hqAnswer.socket_error ? null : socketProblem(hqAnswer.socket, lstat)
+    found.push(...hqChecks(hqAnswer, paths.office, repo, missing))
   } else {
     const error = crash(run.log)
     const why = error === null ? "" : `; its last start failed: ${error}`
@@ -929,9 +948,10 @@ export function exitCode(found: Iterable<Check>): number {
   return 0
 }
 
-/** The checks as aligned lines: status, name, detail. */
+/** The checks as aligned lines: status, name, detail. Each check stays one row, whatever its detail holds. */
 export function report(found: Iterable<Check>): string {
   let out = ""
-  for (const c of found) out += `${c.status.padEnd(4)}  ${c.name.padEnd(11)}  ${c.detail}\n`
+  // Spaces are kept (a path may hold two in a row); only escapes and control characters go.
+  for (const c of found) out += `${c.status.padEnd(4)}  ${c.name.padEnd(11)}  ${clean(c.detail.replace(ESCAPE, ""))}\n`
   return out
 }

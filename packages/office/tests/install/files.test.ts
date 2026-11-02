@@ -1,9 +1,9 @@
-/** writeIfChanged: the atomic service-file write. */
+/** Office file reads that never follow a link or block on a FIFO, and the atomic service-file write. */
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
-import { writeIfChanged } from "../../src/install/files.ts"
-import { tempDir } from "../helpers.ts"
+import { readRegular, tailRegular, writeIfChanged } from "../../src/install/files.ts"
+import { fifo, tempDir } from "../helpers.ts"
 
 /** The `.tmp` names in `dir`. */
 function temps(dir: string): string[] {
@@ -66,4 +66,71 @@ test.skipIf(process.getuid?.() === 0)("an unwritable folder throws and leaves no
   } finally {
     fs.chmodSync(dir, 0o700)
   }
+})
+
+test("writeIfChanged replaces a FIFO without blocking", () => {
+  const file = path.join(tempDir(), "install.json")
+  fifo(file)
+  const began = performance.now()
+  expect(writeIfChanged(file, "new")).toBe(true)
+  expect(performance.now() - began).toBeLessThan(2000)
+  expect(fs.lstatSync(file).isFile()).toBe(true)
+  expect(fs.readFileSync(file, "utf8")).toBe("new")
+})
+
+test("writeIfChanged replaces a symlink even when its target holds the same bytes", () => {
+  const dir = tempDir()
+  const victim = path.join(dir, "victim")
+  fs.writeFileSync(victim, "same")
+  const old = new Date(Date.now() - 60_000)
+  fs.utimesSync(victim, old, old)
+  const before = fs.statSync(victim)
+  const file = path.join(dir, "svc.plist")
+  fs.symlinkSync(victim, file)
+  expect(writeIfChanged(file, "same")).toBe(true)
+  expect(fs.lstatSync(file).isFile()).toBe(true)
+  expect(fs.readFileSync(victim, "utf8")).toBe("same")
+  expect(fs.statSync(victim).mtimeMs).toBe(before.mtimeMs)
+})
+
+test("readRegular reads only a regular file within its cap", () => {
+  const dir = tempDir()
+  const file = path.join(dir, "f")
+  fs.writeFileSync(file, "hello")
+  expect(readRegular(file, 5)?.toString("utf8")).toBe("hello")
+  expect(readRegular(file, 4)).toBeNull()
+  expect(readRegular(path.join(dir, "missing"), 5)).toBeNull()
+  const link = path.join(dir, "link")
+  fs.symlinkSync(file, link)
+  expect(readRegular(link, 5)).toBeNull()
+  expect(readRegular(dir, 5)).toBeNull()
+  const pipe = path.join(dir, "pipe")
+  fifo(pipe)
+  const began = performance.now()
+  expect(readRegular(pipe, 5)).toBeNull()
+  expect(performance.now() - began).toBeLessThan(2000)
+})
+
+test.skipIf(process.getuid?.() === 0)("readRegular throws for a file it may not read", () => {
+  const file = path.join(tempDir(), "f")
+  fs.writeFileSync(file, "x", { mode: 0o000 })
+  expect(() => readRegular(file, 5)).toThrow(expect.objectContaining({ code: "EACCES" }))
+})
+
+test("tailRegular gives the end of a regular file from its first whole line", () => {
+  const dir = tempDir()
+  const file = path.join(dir, "log")
+  fs.writeFileSync(file, "one\ntwo\nthree\n")
+  expect(tailRegular(file, 100)).toBe("one\ntwo\nthree\n")
+  expect(tailRegular(file, 8)).toBe("three\n")
+  fs.writeFileSync(file, `${"x".repeat(50)}\n`)
+  expect(tailRegular(file, 10)).toBe("")
+  const link = path.join(dir, "link")
+  fs.symlinkSync(file, link)
+  expect(tailRegular(link, 100)).toBeNull()
+  const pipe = path.join(dir, "pipe")
+  fifo(pipe)
+  const began = performance.now()
+  expect(tailRegular(pipe, 100)).toBeNull()
+  expect(performance.now() - began).toBeLessThan(2000)
 })

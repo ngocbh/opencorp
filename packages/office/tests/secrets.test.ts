@@ -349,7 +349,7 @@ test("read private refuses a symlink, a directory, a file open to others and a f
   fs.symlinkSync(target, path.join(tmp, "link"))
   const symlinked = await readPrivate(path.join(tmp, "link")).catch((e: unknown) => e)
   expect(symlinked).toBeInstanceOf(PrivateFileError)
-  expect((symlinked as Error).message).toMatch(/can't open/)
+  expect((symlinked as Error).message).toMatch(/is a symlink, not a regular file/)
   expect((symlinked as Error).message).not.toContain("private-bytes")
 
   fs.mkdirSync(path.join(tmp, "dir"))

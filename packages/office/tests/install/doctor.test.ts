@@ -23,7 +23,7 @@ import { writePrivate } from "../../src/secrets.ts"
 import { Store } from "../../src/store/store.ts"
 import { git } from "../company/helpers.ts"
 import { CEO, giveDevice, makeOffice, served } from "../daemon/helpers.ts"
-import { shortDir, tempDir } from "../helpers.ts"
+import { fifo, shortDir, tempDir } from "../helpers.ts"
 import { sandboxAvailable } from "../sandbox/helpers.ts"
 import { makeHost, Runner } from "./helpers.ts"
 
@@ -111,6 +111,11 @@ test("the report keeps the python line format byte for byte", () => {
       { name: "connections", status: "fail", detail: "loose" },
     ]),
   ).toBe("warn  provider     no model\nfail  connections  loose\n")
+})
+
+test("each check stays one row in the report, whatever its detail holds", () => {
+  const out = doctor.report([{ name: "codex", status: "fail", detail: "a\nb\rc\x1b]0;t\x07d\x1b[31me\x07\x9b2J" }])
+  expect(out).toBe("fail  codex        a b cde2J\n")
 })
 
 test("a company without a first commit is told to onboard", async () => {
@@ -201,6 +206,42 @@ test("lint errors fail", async () => {
   expect(got.company!.detail).toContain("company.unknown_ceo")
 })
 
+test("a multi-line lint message stays on the company row", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  fs.mkdirSync(path.join(paths.company, "people", "minh"), { recursive: true })
+  fs.writeFileSync(
+    path.join(paths.company, "people", "minh", "person.yaml"),
+    'handle: minh\nname: Minh\nkind: agent\ntitle: Engineer\nmanager: ngocbh\nmain: ../../shared/flows/spin.yaml\n',
+  )
+  fs.writeFileSync(
+    path.join(paths.company, "shared", "flows", "spin.yaml"),
+    "id: spin\nname: spin\ninput:\n  messages: !Inbox(Message)\n  person: !str\n  talking_to: !str\n  summary: !str\n" +
+      "  history: !list(list(Message))\n  turns: !int\n  max_turns: !int\nnodes:\n  reply:\n    kind: agent\n" +
+      "    input:\n      who: ${input.talking_to}\n    output: str\n    prompt: |-\n      Say hi to ${who}.\n" +
+      "output: ${reply.output}\n",
+  )
+  const got = byName(await runChecks(dir, paths))
+  expect(got.company!.status).toBe("fail")
+  expect(got.company!.detail).toContain("flow has unread inbox inputs: inbox input `messages`")
+  expect(got.company!.detail).not.toContain("\n")
+})
+
+test.skipIf(process.getuid?.() === 0)("a people folder that cant be listed says so on the company row", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const people = path.join(paths.company, "people")
+  fs.chmodSync(people, 0o000)
+  let got: Record<string, Check>
+  try {
+    got = byName(await runChecks(dir, paths))
+  } finally {
+    fs.chmodSync(people, 0o755)
+  }
+  expect(got.company!.status).toBe("fail")
+  expect(got.company!.detail).toContain("people: repo.unreadable: can't be listed (EACCES)")
+})
+
 const SIDE_CHAT = "shared/flows/side_chat.yaml"
 
 test("a company missing template files is told to onboard again", async () => {
@@ -258,6 +299,49 @@ test("connections others can read fail without showing them", async () => {
   got = byName(await runChecks(dir, paths))
   expect(got.connections).toEqual({ name: "connections", status: "fail", detail: `${folder} is mode 0750, not 0700` })
   expect(keyShown(got)).toBe(false)
+})
+
+test("a symlinked connection is called a symlink, not a loose mode or an errno", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, PROVIDER)
+  const folder = path.join(paths.office, "connections")
+  const file = setupConnectionFile(paths.office)
+  const target = path.join(dir, "elsewhere.json")
+  fs.writeFileSync(target, JSON.stringify(PROVIDER), { mode: 0o600 })
+  fs.rmSync(file)
+  fs.symlinkSync(target, file)
+  const found = await runChecks(dir, paths)
+  const got = byName(found)
+  expect(got.provider!.status).toBe("fail")
+  expect(got.provider!.detail).toContain("is a symlink, not a regular file")
+  expect(got.connections).toEqual({
+    name: "connections",
+    status: "fail",
+    detail: `office.json in ${folder} must be a regular file, not a symlink`,
+  })
+  for (const c of [got.provider!, got.connections!]) expect(c.detail).not.toContain("ELOOP")
+  expect(doctor.report(found)).not.toContain(KEY)
+})
+
+test("a FIFO in connections must be a regular file, and loose modes are named apart from symlinks", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, PROVIDER)
+  const folder = path.join(paths.office, "connections")
+  fifo(path.join(folder, "pipe.json"))
+  let got = byName(await runChecks(dir, paths))
+  expect(got.connections).toEqual({
+    name: "connections",
+    status: "fail",
+    detail: `pipe.json in ${folder} must be a regular file`,
+  })
+  fs.rmSync(path.join(folder, "pipe.json"))
+  fs.symlinkSync(setupConnectionFile(paths.office), path.join(folder, "link.json"))
+  fs.writeFileSync(path.join(folder, "open.json"), "{}", { mode: 0o644 })
+  got = byName(await runChecks(dir, paths))
+  expect(got.connections!.detail).toBe(
+    `link.json in ${folder} must be a regular file, not a symlink; ` +
+      `open.json in ${folder} must be private to its owner (mode 0600)`,
+  )
 })
 
 test("connections that is not a directory fails with what it is", async () => {
@@ -464,6 +548,39 @@ test("an office log that isnt a regular file is no crash", async () => {
   expect(got.office!.status).toBe("warn")
 })
 
+test("a stopped offices record that is a FIFO reads as not installed without blocking", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const record = path.join(paths.office, "install.json")
+  fs.rmSync(record)
+  fifo(record)
+  const began = performance.now()
+  const got = byName(await runChecks(dir, paths))
+  expect(performance.now() - began).toBeLessThan(2000)
+  expect(got.service!.detail).toContain("not installed")
+})
+
+test("an office log that is a symlink is no crash and shows nothing of its target", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const target = path.join(dir, "elsewhere.log")
+  fs.writeFileSync(target, "opencorp office: SENTINEL\n")
+  fs.symlinkSync(target, path.join(paths.office, "office.log"))
+  const got = byName(await runChecks(dir, paths))
+  expect(got.office!.status).toBe("warn")
+  expect(got.office!.detail).not.toContain("SENTINEL")
+})
+
+test("an office log that is a FIFO is no crash, without blocking", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  fifo(path.join(paths.office, "office.log"))
+  const began = performance.now()
+  const got = byName(await runChecks(dir, paths))
+  expect(performance.now() - began).toBeLessThan(2000)
+  expect(got.office!.status).toBe("warn")
+})
+
 test("the crash marker is found at the end of a long log", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)
@@ -623,6 +740,32 @@ test("a failed codex version line is cut short and uncolored", async () => {
     status: "fail",
     detail: `${codex} --version failed: ` + `boom ${"y".repeat(300)}`.slice(0, 200),
   })
+})
+
+test("a failed codex version shows only its first printable line", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 0)
+  const codex = path.join(dir, "bin", "codex")
+  fs.writeFileSync(codex, "#!/bin/sh\nprintf '\\033]0;pwned\\007\\none\\ntwo\\n\\033]0;pwned\\007three' >&2\nexit 3\n")
+  expect(await doctor.codexCheck(env, {})).toEqual({
+    name: "codex",
+    status: "fail",
+    detail: `${codex} --version failed: one`,
+  })
+})
+
+test("a codex login status line loses its escapes and control characters", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 1, "\x1b]0;x\x07Error: bad\x07 config\r\nmore\n")
+  const check = await doctor.codexCheck(env, {})
+  expect(check.detail).toEndWith("login status` failed: Error: bad config")
+  fs.writeFileSync(path.join(dir, "login.err"), "\x1b]0;x\x07Not logged in\r\n")
+  const out = await doctor.codexCheck(env, {})
+  expect(out.detail).toContain("is signed out")
+  for (const c of ["\x1b", "\x07", "\r"]) {
+    expect(check.detail).not.toContain(c)
+    expect(out.detail).not.toContain(c)
+  }
 })
 
 test("a codex version is shown uncolored and cut short", async () => {
@@ -949,6 +1092,54 @@ for (const enabled of [true, false]) {
   })
 }
 
+for (const enabled of [true, false]) {
+  test(`a socket file gone from under the office warns and says to restart [${enabled}]`, () => {
+    const dir = tempDir()
+    const gone = "the socket file is gone; run `opencorp restart`"
+    const got = byName(doctor.hqChecks(status({ enabled, listening: enabled }), dir, dir, gone))
+    expect(got.hq).toEqual({ name: "hq", status: "warn", detail: `not listening on /h/office/hq.sock: ${gone}` })
+    if (enabled) {
+      expect(got["hq port"]).toEqual({ name: "hq port", status: "ok", detail: "web app at http://127.0.0.1:49380/" })
+    } else {
+      expect(got).not.toHaveProperty("hq port")
+    }
+  })
+}
+
+test("the offices own socket error comes before what doctor found at the path", () => {
+  const dir = tempDir()
+  const s = { ...status(), socket_error: "AF_UNIX path too long" }
+  const got = byName(doctor.hqChecks(s, dir, dir, "the socket file is gone; run `opencorp restart`"))
+  expect(got.hq!.detail).toContain("AF_UNIX path too long")
+  expect(got.hq!.detail).not.toContain("gone")
+})
+
+test("a running offices hq line says when its socket file is gone or replaced", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const running = (sock: Sock) => runningChecks(dir, paths, info(launchFor(dir, paths).home), {}, { sock })
+  expect(byName(await running("socket")).hq!.status).toBe("ok")
+  expect(byName(await running("missing")).hq).toEqual({
+    name: "hq",
+    status: "warn",
+    detail: "not listening on /h/office/hq.sock: the socket file is gone; run `opencorp restart`",
+  })
+  const file = byName(await running("file")).hq!
+  expect(file.status).toBe("warn")
+  expect(file.detail).toContain("something else is at that path; remove it and run `opencorp restart`")
+  const odd = byName(await running("throws")).hq!
+  expect(odd.status).toBe("warn")
+  expect(odd.detail).toContain("can't check it (EACCES)")
+})
+
+test("an hq status without a socket path is not looked for", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const hq = { ...status(), socket: null } as unknown as HqStatus
+  const got = byName(await runningChecks(dir, paths, info(launchFor(dir, paths).home), {}, { hq, sock: "missing" }))
+  expect(got.hq!.status).toBe("ok")
+})
+
 test("hq sock and a taken port are two warnings", () => {
   const dir = tempDir()
   const s = { ...status({ listening: false, error: "Address already in use" }), socket_error: "Permission denied" }
@@ -984,6 +1175,15 @@ test("the port checks say where the web port is and never mention the web app", 
   const unbuilt = status()
   unbuilt.health.app = null
   expect(doctor.hqPortChecks(unbuilt, dir).some((c) => c.name === "web app")).toBe(false)
+})
+
+test("the port checks say when the socket file is gone from under the office", () => {
+  const dir = tempDir()
+  const gone = "the socket file is gone; run `opencorp restart`"
+  expect(doctor.hqPortChecks(status(), dir, gone)).toEqual([
+    { name: "hq", status: "warn", detail: `not listening on /h/office/hq.sock: ${gone}` },
+    { name: "hq port", status: "ok", detail: "web app at http://127.0.0.1:49380/" },
+  ])
 })
 
 test("a taken port gives the json to write", () => {
@@ -1040,13 +1240,24 @@ function info(home: string, over: Partial<OfficeInfo> = {}): OfficeInfo {
   }
 }
 
-/** `checks` on a running office at `paths`, whose `GET /hq` answers `status()` and `GET /office` answers `office`, with
- *  `environ` as the shell's environment. */
+/** What `lstat` finds at HQ's socket path: a socket, nothing, a regular file, or an error it can't say more of. */
+type Sock = "socket" | "missing" | "file" | "throws"
+
+/** A stand-in `lstat` result (or error) for HQ's socket path. */
+function fakeStat(sock: Sock): fs.Stats {
+  if (sock === "missing") throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" })
+  if (sock === "throws") throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" })
+  return { isSocket: () => sock === "socket" } as fs.Stats
+}
+
+/** `checks` on a running office at `paths`, whose `GET /hq` answers `hq` (default `status()`) and `GET /office`
+ *  answers `office`, with `environ` as the shell's environment; `lstat` finds `sock` at HQ's socket path. */
 function runningChecks(
   dir: string,
   paths: OfficePaths,
   office: OfficeInfo | doctor.Unread,
   environ: Record<string, string> = {},
+  { sock = "socket", hq = status() }: { sock?: Sock; hq?: HqStatus } = {},
 ): Promise<Check[]> {
   return doctor.checks(paths.home, {
     host: makeHost(dir, new Runner(), { answers: async () => true }),
@@ -1055,8 +1266,9 @@ function runningChecks(
     probe: async () => null,
     codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
     environ,
-    hq: async () => status(),
+    hq: async () => hq,
     office: async () => office,
+    lstat: (p) => (p === hq.socket ? fakeStat(sock) : fs.lstatSync(p)),
   })
 }
 
@@ -1069,6 +1281,7 @@ test("a running office reports hq", async () => {
   expect(got.version).toEqual({ name: "version", status: "ok", detail: "pid 42 runs the current code" })
   expect(got.tools!.status).toBe("ok")
   expect(got.office!.detail).toContain("(pid ?)") // no pidfile
+  expect(got.connections).toBeUndefined() // none saved; the lstat stand-in reads the real folder
   expect(found.map((c) => c.name).slice(found.findIndex((c) => c.name === "office"))).toEqual([
     "office",
     "version",
@@ -1078,6 +1291,15 @@ test("a running office reports hq", async () => {
     "sandbox",
     "codex",
   ])
+})
+
+test("a pidfile that is a symlink shows no pid and nothing of its target", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, PROVIDER)
+  fs.symlinkSync(setupConnectionFile(paths.office), path.join(paths.office, "office.pid"))
+  const found = await runningChecks(dir, paths, info(launchFor(dir, paths).home))
+  expect(byName(found).office!.detail).toContain("(pid ?)")
+  expect(doctor.report(found)).not.toContain(KEY)
 })
 
 test("an office older than the code is told to restart", () => {

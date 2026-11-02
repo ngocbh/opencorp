@@ -82,7 +82,7 @@ function messageOf(error: unknown): string {
  * limit of 4096 open files.
  *
  * Throws `OfficeStartError` for an office dir that isn't ours, and `ServiceError` if the office program isn't an
- * executable file, the log can't be opened, or the daemon can't be started.
+ * executable file, the log can't be opened or isn't a regular file, or the daemon can't be started.
  */
 export function startBackground(launch: Launch, host: Host): void {
   makeOfficeDir(launch.office)
@@ -92,15 +92,21 @@ export function startBackground(launch: Launch, host: Host): void {
   if (which(program, undefined) === null) throw new ServiceError(`can't start ${program}: not an executable file`)
   let log: number
   try {
+    // Non-blocking so a FIFO at the log's path can't hang the open; it has no effect on a regular file's writes.
     log = fs.openSync(
       launch.log,
-      fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW,
+      fs.constants.O_WRONLY |
+        fs.constants.O_APPEND |
+        fs.constants.O_CREAT |
+        fs.constants.O_NOFOLLOW |
+        fs.constants.O_NONBLOCK,
       0o600,
     )
   } catch (error) {
     throw new ServiceError(`can't open the office log ${launch.log}: ${messageOf(error)}`)
   }
   try {
+    if (!fs.fstatSync(log).isFile()) throw new ServiceError(`the office log ${launch.log} isn't a regular file`)
     let child: ChildProcess
     try {
       // `-S` sets only the soft limit, as Python's daemon did: no hard cap. `;`, not `&&`: when the hard limit is
@@ -133,7 +139,7 @@ export async function stopTmux(launch: Launch, host: Host): Promise<string | nul
 }
 
 /** The pid in the office's pidfile (a regular file, not a symlink, holding a decimal pid), or null. */
-function pidOf(launch: Launch): number | null {
+export function pidOf(launch: Launch): number | null {
   let fd: number
   try {
     fd = fs.openSync(

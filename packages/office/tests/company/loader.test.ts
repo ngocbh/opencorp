@@ -120,3 +120,38 @@ test("a person file named in another case is not a person file", () => {
   expect(repo.people.has("zed")).toBe(false)
   expect(repo.errors.filter((issue) => issue.path.startsWith("people/zed/"))).toEqual([])
 })
+
+test.skipIf(process.getuid?.() === 0)("a folder that cant be listed is unreadable, by its errno code only", () => {
+  for (const folder of ["people", "people/minh", "groups", "assets"]) {
+    const root = company()
+    const dir = path.join(root, folder)
+    fs.chmodSync(dir, 0o000)
+    let repo: CompanyRepo
+    try {
+      repo = loadRepo(root)
+    } finally {
+      // Before the temp dir is removed, which needs to list it.
+      fs.chmodSync(dir, 0o700)
+    }
+    expect(repo.errors.filter((issue) => issue.code === "repo.unreadable")).toEqual([
+      { path: folder, code: "repo.unreadable", message: "can't be listed (EACCES)", severity: "error" },
+    ])
+  }
+})
+
+test("a person folder that is a symlink loop is unreadable", () => {
+  const root = company()
+  fs.symlinkSync("loop", path.join(root, "people", "loop"))
+  expect(loadRepo(root).errors).toEqual([
+    { path: "people/loop", code: "repo.unreadable", message: "can't be listed (ELOOP)", severity: "error" },
+  ])
+})
+
+test("missing groups and assets, a file in people and a dangling person link are no errors", () => {
+  const root = company()
+  fs.rmSync(path.join(root, "groups"), { recursive: true })
+  fs.rmSync(path.join(root, "assets"), { recursive: true })
+  fs.writeFileSync(path.join(root, "people", "README.md"), "people\n")
+  fs.symlinkSync(path.join(root, "nowhere"), path.join(root, "people", "gone"))
+  expect(loadRepo(root).errors).toEqual([])
+})
