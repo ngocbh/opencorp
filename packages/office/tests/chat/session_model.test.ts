@@ -887,6 +887,20 @@ test("a typed reply after the key changed goes to the fresh run as a message", a
   expect(userTexts(fake.requests().at(-1)!).at(-1)).toContain("A please")
 })
 
+test("a stored answer that never reached its run loses its answer when a fresh run replaces the run", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  fake.script(ASK_USER, { content: "fresh" })
+  const { s, q } = await asking(h)
+  // Stored with no complete sent, as when the answer's spawn failed or the office died first.
+  h.store.answerQuestion(q.id, "A", "text", null)
+  const provider = { llm_config: { provider: "vllm", model: "stub", api_key: "sk-new-key-3f1a" }, env: fake.env() }
+  await writePrivate(path.join(h.office.connections.dir, "office.json"), JSON.stringify(provider))
+  expect(await tell(h, s.id, "b")).toBe("fresh")
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(2)
+  expect(h.store.getQuestion(q.id)?.status).toBe("stale")
+})
+
 // Subscriptions.
 
 /** A subscription runs against chatgpt.com; should a test's worker ever call it, the call goes nowhere. */

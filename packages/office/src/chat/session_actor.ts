@@ -1341,25 +1341,25 @@ export class SessionActor implements LiveCalls {
   // --- spawning ---------------------------------------------------------------------------
 
   /**
-   * Spawns the session's next worker, a `kind` job whose deliveries are `#next`. The connection and model are
-   * checked first, before anything is written (a removed connection moves the session to the default). An `advance`
-   * whose run's record no longer gives what the run ran on is a fresh run instead (`#recordCheck`; a run that moved
-   * ends `moved`), as is any spawn given `replace`, carrying what `#freshCarry` keeps; otherwise an `advance` job
-   * starts with a `complete` for each stored answer that never reached the run. A `chat` job records what its run
-   * starts on, and starts from `seed` (a retry's) unless it is a fresh run's. A fresh run the record check asks for
-   * on a changed connection or model, unless `#checkProvider` moved the chat, writes its note first: `FRESH_NOTE`
-   * after a worker death (`moved` is `WORKER_REPLACED`), else `WOKEN_NOTE` when this actor never started a worker
-   * (`#startedWorker`). On failure, the job's deliveries are answered with the error (`#wakeError`) and dropped, and
-   * the error is thrown. `plain` marks a re-advance only for a settled wait. Over the cost cap, unless ending, an
-   * `advance` only delivers (`advance: false`, no record check), and none starts without deliveries; the advance
-   * waits for a raise (`#needsAdvance`). A `chat` job always advances, so over the cap its `send` and `complete`
-   * deliveries stay in `#next` for the next job, which only delivers; a chat job that fails answers them too. A
-   * fresh run (`replace`) over the cap, unless ending, is held instead (`#heldFresh`): every spawn until a raise or End
-   * keeps `#next` for it, as the fresh run would carry it, and answers its messages `queued` at once; the first spawn
-   * after starts the held fresh run, and one that fails fails the session (`COULDNT_START`), as a failed reply's fresh
-   * run does. An `advance` after restore found the run ended or unreadable is that fresh run (`#unresumable`); a run
-   * that moved ends `OFFICE_REPLACED` until the first advancing worker since restore (`#sinceRestore`). Whether a
-   * worker started.
+   * Spawns the session's next worker, a `kind` job whose deliveries are `#next`. The connection and model are checked
+   * first, before anything is written (a removed connection moves the session to the default). An `advance` whose run's
+   * record no longer gives what the run ran on is a fresh run instead (`#recordCheck`; a run that moved ends `moved`),
+   * as is any spawn given `replace`, carrying what `#freshCarry` keeps, and each stored answer that never reached the
+   * old run loses its answer; otherwise an `advance` job starts with a `complete` for each stored answer that never
+   * reached the run. A `chat` job records what its run starts on, and starts from `seed` (a retry's) unless it is a
+   * fresh run's. A fresh run the record check asks for on a changed connection or model, unless `#checkProvider` moved
+   * the chat, writes its note first: `FRESH_NOTE` after a worker death (`moved` is `WORKER_REPLACED`), else
+   * `WOKEN_NOTE` when this actor never started a worker (`#startedWorker`). On failure, the job's deliveries are
+   * answered with the error (`#wakeError`) and dropped, and the error is thrown. `plain` marks a re-advance only for a
+   * settled wait. Over the cost cap, unless ending, an `advance` only delivers (`advance: false`, no record check), and
+   * none starts without deliveries; the advance waits for a raise (`#needsAdvance`). A `chat` job always advances, so
+   * over the cap its `send` and `complete` deliveries stay in `#next` for the next job, which only delivers; a chat job
+   * that fails answers them too. A fresh run (`replace`) over the cap, unless ending, is held instead (`#heldFresh`):
+   * every spawn until a raise or End keeps `#next` for it, as the fresh run would carry it, and answers its messages
+   * `queued` at once; the first spawn after starts the held fresh run, and one that fails fails the session
+   * (`COULDNT_START`), as a failed reply's fresh run does. An `advance` after restore found the run ended or unreadable
+   * is that fresh run (`#unresumable`); a run that moved ends `OFFICE_REPLACED` until the first advancing worker since
+   * restore (`#sinceRestore`). Whether a worker started.
    */
   async #spawn(
     kind: "chat" | "advance",
@@ -1429,8 +1429,11 @@ export class SessionActor implements LiveCalls {
           store.updateSession(sid, { model_note: note })
         }
         seed = await this.#seed(session)
+        // Read before the replace moves `#runId`: the old run's stored answers no delivery carries.
+        const unread = this.#unreadAnswers(pendings)
         await this.#replace(session, spec, fresh.why, fresh.finished)
         pendings = this.#freshCarry(pendings, true)
+        for (const q of unread) this.#loseAnswer(q.id)
         // Its deliveries, which `close` answers through `#starting`.
         run = new WorkerRun(this.#runId!, "chat", pendings, [], this.#lateSend)
         this.#starting = run
@@ -1763,6 +1766,7 @@ export class SessionActor implements LiveCalls {
   /** Marks the answered question `questionId` stale, its answer dropped: no run read it. A failure is logged by its
    *  type. */
   #loseAnswer(questionId: string): void {
+    this.#resent.delete(questionId)
     try {
       this.#ctx.store.loseAnswer(questionId)
     } catch (error) {
