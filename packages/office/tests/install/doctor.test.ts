@@ -129,9 +129,32 @@ test("a company without a first commit is told to onboard", async () => {
     name: "company",
     status: "fail",
     detail:
-      `${paths.company} has no company yet (no company.yaml, or no first commit);` +
-      " run `opencorp init` to finish it",
+      `${paths.company} has no company yet (no first commit);` + " run `opencorp init` to finish it",
   })
+})
+
+test("a home too long for the socket fails the home check, even before it exists", async () => {
+  const dir = tempDir()
+  const got = byName(await runChecks(dir, new OfficePaths(path.join(dir, "h".repeat(120)))))
+  expect(got.home!.status).toBe("fail")
+  expect(got.home!.detail).toContain("socket path too long")
+  expect(got.home!.detail).toContain("--home")
+})
+
+test("a damaged company is named, with how to fix it", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  git(paths.company, "rm", "-q", "company.yaml")
+  git(paths.company, "commit", "-qm", "drop company.yaml")
+  let got = byName(await runChecks(dir, paths))
+  expect(got.company!.status).toBe("fail")
+  expect(got.company!.detail).toContain("has no company.yaml")
+  expect(got.company!.detail).toContain("log -- company.yaml")
+  fs.rmSync(path.join(paths.company, ".git"), { recursive: true })
+  got = byName(await runChecks(dir, paths))
+  expect(got.company!.status).toBe("fail")
+  expect(got.company!.detail).toContain("holds files but no git repo")
+  expect(got.company!.detail).toContain("restore its .git")
 })
 
 test("a fresh machine is told to onboard", async () => {

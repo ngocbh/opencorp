@@ -11,7 +11,7 @@ import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
 import type { RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
-import { isNew, missingFiles } from "../company_template/index.ts"
+import { companyState, missingFiles } from "../company_template/index.ts"
 import { OfficePaths } from "../daemon/office.ts"
 import { CodexMissing, codexCommand } from "../harness/codex.ts"
 import { otherPort } from "../hq/config.ts"
@@ -25,7 +25,16 @@ import { workerEnv } from "../worker/spawn.ts"
 import { tailRegular } from "./files.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, runCommand, which } from "./launch.ts"
 import * as launchd from "./launchd.ts"
-import { checkProvider, lexists, SET_UP, setupConnectionFile, stopToTopUp, withDefaultModel } from "./onboard.ts"
+import {
+  checkProvider,
+  checkSocket,
+  damageMessage,
+  lexists,
+  SET_UP,
+  setupConnectionFile,
+  stopToTopUp,
+  withDefaultModel,
+} from "./onboard.ts"
 import { OnboardError, clean } from "./prompts.ts"
 import * as service from "./service.ts"
 import * as systemd from "./systemd.ts"
@@ -97,6 +106,12 @@ function octal(mode: number): string {
 }
 
 function homeCheck(paths: OfficePaths): Check {
+  try {
+    checkSocket(paths.socket)
+  } catch (error) {
+    if (!(error instanceof OnboardError)) throw error
+    return { name: "home", status: "fail", detail: error.message }
+  }
   let st: fs.Stats
   try {
     st = fs.statSync(paths.home)
@@ -119,14 +134,16 @@ function homeCheck(paths: OfficePaths): Check {
 
 async function companyCheck(paths: OfficePaths, running: boolean): Promise<Check> {
   const root = paths.company
-  if (!fs.existsSync(path.join(root, ".git"))) {
+  const state = await companyState(root)
+  if (state.kind === "absent") {
     return { name: "company", status: "fail", detail: `no company repo at ${root}; ${SET_UP}` }
   }
-  if (await isNew(root)) {
+  if (state.kind === "damaged") return { name: "company", status: "fail", detail: damageMessage(root, state) }
+  if (state.kind === "unfinished") {
     return {
       name: "company",
       status: "fail",
-      detail: `${root} has no company yet (no company.yaml, or no first commit); run \`opencorp init\` to finish it`,
+      detail: `${root} has no company yet (no first commit); run \`opencorp init\` to finish it`,
     }
   }
   let issues: RepoIssue[]

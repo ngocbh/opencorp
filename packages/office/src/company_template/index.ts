@@ -10,9 +10,10 @@ import path from "node:path"
 import { Company, type Device, Person } from "@opencorp/protocol"
 import { readYaml } from "../company/flow_yaml.ts"
 import { errno } from "../company/flows.ts"
-import { CompanyGit } from "../company/git.ts"
+import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import { parseFile, type RepoIssue } from "../company/issues.ts"
 import { embedded } from "../platform.ts"
+import { strerror } from "../sandbox/fs_helper.ts"
 import companyYaml from "./template/company.yaml" with { type: "file" }
 import ownerYaml from "./template/people/{owner}/person.yaml" with { type: "file" }
 import chatYaml from "./template/shared/flows/chat.yaml" with { type: "file" }
@@ -130,16 +131,78 @@ export function missingFiles(root: string): string[] {
   return [...TEMPLATE.keys()].filter((rel) => !FILLED.includes(rel) && !lexists(path.join(root, rel))).sort()
 }
 
-/** Whether `root` has no company yet: no `company.yaml`, or no commit (a first write that stopped early). */
-export async function isNew(root: string): Promise<boolean> {
-  if (!fs.existsSync(path.join(root, "company.yaml")) || !fs.existsSync(path.join(root, ".git"))) return true
+/** What is wrong with a company folder that can't be used; the fix is the caller's to word. */
+export type Damage = "not-a-directory" | "unreadable" | "no-git" | "bad-git" | "no-company-yaml" | "company-yaml-deleted"
+
+/**
+ * What is at a company folder: nothing yet (`absent`), a repo with no commit (`unfinished`, a first write that
+ * stopped), a company (`ok`), or something to fix by hand (`damaged`), whose `detail` names only paths.
+ */
+export type CompanyState =
+  | { kind: "absent" }
+  | { kind: "unfinished" }
+  | { kind: "ok" }
+  | { kind: "damaged"; reason: Damage; detail: string }
+
+/** `error` (an OS error) as the damage `unreadable`; anything else is rethrown. */
+function unreadable(file: string, error: unknown): CompanyState {
+  const text = strerror(error)
+  if (text === undefined) throw error
+  return { kind: "damaged", reason: "unreadable", detail: `can't read ${file}: ${text}` }
+}
+
+/** The state of the company folder at `root` (see `CompanyState`). */
+export async function companyState(root: string): Promise<CompanyState> {
   try {
-    await new CompanyGit(root, root).head()
+    fs.lstatSync(root)
   } catch (error) {
-    if (error instanceof RangeError) return true
-    throw error
+    // Nothing can be there; the home's own checks say what's wrong with the path above it.
+    if (errno(error) === "ENOENT" || errno(error) === "ENOTDIR") return { kind: "absent" }
+    return unreadable(root, error)
   }
-  return false
+  let st: fs.Stats | undefined
+  try {
+    st = fs.statSync(root, { throwIfNoEntry: false })
+  } catch (error) {
+    if (errno(error) !== "ENOTDIR") return unreadable(root, error)
+  }
+  // A dangling symlink has no stat at all.
+  if (!st?.isDirectory()) return { kind: "damaged", reason: "not-a-directory", detail: `${root} is not a directory` }
+  try {
+    fs.lstatSync(path.join(root, ".git"))
+  } catch (error) {
+    if (errno(error) !== "ENOENT") return unreadable(root, error)
+    let entries: string[]
+    try {
+      entries = fs.readdirSync(root)
+    } catch (readError) {
+      return unreadable(root, readError)
+    }
+    if (entries.length === 0) return { kind: "absent" }
+    // `writeCompany` makes the repo before it writes a file, so these aren't from a first write that stopped.
+    return { kind: "damaged", reason: "no-git", detail: `${root} holds files but no git repo` }
+  }
+  const git = new CompanyGit(root, root)
+  try {
+    if ((await git.repoState()) === "unborn") return { kind: "unfinished" }
+    if ((await git.blobId("company.yaml")) === null) {
+      return { kind: "damaged", reason: "no-company-yaml", detail: `the last commit of ${root} has no company.yaml` }
+    }
+  } catch (error) {
+    if (error instanceof CompanyGitError) {
+      return { kind: "damaged", reason: "bad-git", detail: `git can't read the repo at ${root}: ${error.message}` }
+    }
+    return unreadable(root, error)
+  }
+  try {
+    fs.lstatSync(path.join(root, "company.yaml"))
+  } catch (error) {
+    if (errno(error) === "ENOENT") {
+      return { kind: "damaged", reason: "company-yaml-deleted", detail: `company.yaml was deleted from ${root}` }
+    }
+    return unreadable(root, error)
+  }
+  return { kind: "ok" }
 }
 
 /** The CEO in a new repo's `company.yaml` (an earlier, interrupted write's owner), or null if it doesn't say. */
@@ -157,7 +220,7 @@ function stoppedOwner(root: string): string | null {
 /**
  * Creates or tops up the company repo at `root`; returns the repo paths written, sorted.
  *
- * A new repo (see `isNew`) is created (`git init`) from the template, and every template path in it is
+ * A new repo (see `companyState`) is created (`git init`) from the template, and every template path in it is
  * committed, so a first write that stopped part way is finished; `company.yaml` and the owner's file are
  * always rewritten from the answers given, and the owner file of the CEO the old `company.yaml` names, if it
  * is someone else, is removed. An existing one gets only the template files it lacks, such as flows added to
@@ -165,8 +228,8 @@ function stoppedOwner(root: string): string | null {
  * is committed. `company` and `owner` are needed only for a new repo, and `extra` (more files by repo path,
  * such as the first teammates') is written only to one.
  *
- * @throws {RangeError} The repo is new and `company` or `owner` is not given or not valid. Nothing is
- *   written.
+ * @throws {RangeError} The folder is damaged (see `companyState`), or the repo is new and `company` or `owner`
+ *   is not given or not valid. Nothing is written.
  * @throws {CompanyGitError} Git failed.
  */
 export async function writeCompany(
@@ -175,7 +238,9 @@ export async function writeCompany(
   options: { company?: string; owner?: Owner; extra?: Readonly<Record<string, Uint8Array>> } = {},
 ): Promise<string[]> {
   const { company, owner, extra = {} } = options
-  const fresh = await isNew(root)
+  const state = await companyState(root)
+  if (state.kind === "damaged") throw new RangeError(state.detail)
+  const fresh = state.kind !== "ok"
   let wanted: Map<string, Uint8Array>
   let filled = new Set<string>()
   let stale: string | null = null

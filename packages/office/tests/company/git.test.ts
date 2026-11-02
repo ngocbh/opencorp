@@ -1274,3 +1274,76 @@ test.each(GIT_FAILURES.filter((failure) => failure !== "exit 0"))(
     await expect(g.goneSince(DANA, hired, later)).rejects.toThrow(CompanyGitError)
   },
 )
+
+test("the repo state is unborn until the first commit, then committed", async () => {
+  const root = path.join(tempDir(), "repo")
+  fs.mkdirSync(root)
+  git(root, "init", "-q", "-b", "main")
+  const g = new CompanyGit(root, root)
+  expect(await g.repoState()).toBe("unborn")
+  git(root, "commit", "-q", "--allow-empty", "-m", "first")
+  expect(await g.repoState()).toBe("committed")
+})
+
+test("a repo git can't read has no state", async () => {
+  const root = path.join(tempDir(), "repo")
+  fs.mkdirSync(path.join(root, ".git"), { recursive: true })
+  await expect(new CompanyGit(root, root).repoState()).rejects.toThrow(CompanyGitError)
+})
+
+test("a broken repo inside another is not taken for the outer one", async () => {
+  const outer = path.join(tempDir(), "outer")
+  fs.mkdirSync(outer)
+  git(outer, "init", "-q", "-b", "main")
+  git(outer, "commit", "-q", "--allow-empty", "-m", "first")
+  const inner = path.join(outer, "inner")
+  fs.mkdirSync(path.join(inner, ".git"), { recursive: true })
+  const error = await new CompanyGit(inner, inner).repoState().then(
+    () => null,
+    (e: unknown) => e,
+  )
+  expect(error).toBeInstanceOf(CompanyGitError)
+  expect((error as Error).message).toContain("not a git repository")
+  expect((error as Error).message).not.toContain(outer)
+})
+
+/** A repo at a new temp dir with one commit on main. */
+function repoWithHistory(): string {
+  const root = path.join(tempDir(), "repo")
+  fs.mkdirSync(root)
+  git(root, "init", "-q", "-b", "main")
+  git(root, "commit", "-q", "--allow-empty", "-m", "first")
+  return root
+}
+
+test("a repo whose branch ref is NUL-filled has no state", async () => {
+  const root = repoWithHistory()
+  // Git skips a broken ref with a warning, so the repo would otherwise look like it had no refs.
+  fs.writeFileSync(path.join(root, ".git", "refs", "heads", "main"), Buffer.alloc(41))
+  await expect(new CompanyGit(root, root).repoState()).rejects.toThrow(CompanyGitError)
+})
+
+test("a repo whose branch ref was deleted has no state while HEAD has a reflog", async () => {
+  const root = repoWithHistory()
+  fs.unlinkSync(path.join(root, ".git", "refs", "heads", "main"))
+  expect(fs.existsSync(path.join(root, ".git", "logs", "HEAD"))).toBe(true)
+  await expect(new CompanyGit(root, root).repoState()).rejects.toThrow(CompanyGitError)
+})
+
+test("a detached head that names a missing commit has no state", async () => {
+  const root = path.join(tempDir(), "repo")
+  fs.mkdirSync(root)
+  git(root, "init", "-q", "-b", "main")
+  fs.writeFileSync(path.join(root, ".git", "HEAD"), `${"1".repeat(40)}\n`)
+  await expect(new CompanyGit(root, root).repoState()).rejects.toThrow(CompanyGitError)
+})
+
+test("a head that names no commit while refs exist has no state", async () => {
+  const root = path.join(tempDir(), "repo")
+  fs.mkdirSync(root)
+  git(root, "init", "-q", "-b", "main")
+  git(root, "commit", "-q", "--allow-empty", "-m", "first")
+  git(root, "tag", "v1")
+  fs.writeFileSync(path.join(root, ".git", "refs", "heads", "main"), `${"0".repeat(40)}\n`)
+  await expect(new CompanyGit(root, root).repoState()).rejects.toThrow(CompanyGitError)
+})

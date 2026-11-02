@@ -10,7 +10,15 @@ import { loadConfined } from "../../src/company/flows.ts"
 import { CompanyGit } from "../../src/company/git.ts"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
-import { isNew, missingFiles, type Owner, templateFiles, writeCompany } from "../../src/company_template/index.ts"
+import {
+  type CompanyState,
+  companyState,
+  type Damage,
+  missingFiles,
+  type Owner,
+  templateFiles,
+  writeCompany,
+} from "../../src/company_template/index.ts"
 import { git } from "../company/helpers.ts"
 import { tempDir } from "../helpers.ts"
 
@@ -293,15 +301,143 @@ test("a truncated company yaml from a stopped first write is rewritten", async (
   expect(git(root, "status", "--porcelain")).toBe("")
 })
 
-test("is new until the first commit", async () => {
+test("is absent, then unfinished until the first commit, then ok", async () => {
   const { root, worktrees } = dirs()
-  expect(await isNew(root)).toBe(true)
+  expect(await companyState(root)).toEqual({ kind: "absent" })
   fs.mkdirSync(root)
   git(root, "init", "-q", "-b", "main")
   fs.writeFileSync(path.join(root, "company.yaml"), "name: Acme\n")
-  expect(await isNew(root)).toBe(true)
+  expect(await companyState(root)).toEqual({ kind: "unfinished" })
   await writeCompany(root, worktrees, { company: "Acme", owner: OWNER })
-  expect(await isNew(root)).toBe(false)
+  expect(await companyState(root)).toEqual({ kind: "ok" })
+})
+
+/** A committed company at `root`, made as init makes it. */
+async function committed(root: string): Promise<string> {
+  await writeCompany(root, path.join(path.dirname(root), "worktrees"), { company: "Acme", owner: OWNER })
+  return root
+}
+
+/** A company at `root` whose last commit removed company.yaml. */
+async function withoutCompanyYaml(root: string): Promise<string> {
+  await committed(root)
+  git(root, "rm", "-q", "company.yaml")
+  git(root, "commit", "-qm", "drop company.yaml")
+  return root
+}
+
+/** Files of a company at `root`, but no repo. */
+function withoutGit(root: string): string {
+  fs.mkdirSync(root, { recursive: true })
+  fs.writeFileSync(path.join(root, "company.yaml"), 'name: "Acme"\nceo: "me"\n')
+  return root
+}
+
+// Every row has a reason (null unless damaged): bun takes a callback with more parameters than a row as `done`.
+const STATES: [string, (tmp: string, root: string) => Promise<unknown> | unknown, CompanyState["kind"], Damage | null][] = [
+  ["missing", () => {}, "absent", null],
+  ["an empty dir", (_, root) => fs.mkdirSync(root), "absent", null],
+  [
+    "under a regular file",
+    (tmp) => fs.writeFileSync(path.join(tmp, "file"), ""),
+    "absent",
+    null,
+  ],
+  [
+    "a repo with no commit",
+    (_, root) => {
+      fs.mkdirSync(root)
+      git(root, "init", "-q", "-b", "main")
+    },
+    "unfinished",
+    null,
+  ],
+  ["a first write that stopped", (_, root) => stoppedBeforeTheCommit(root, "Acme", OWNER), "unfinished", null],
+  ["a company", (_, root) => committed(root), "ok", null],
+  [
+    "a symlink to a company",
+    async (tmp, root) => fs.symlinkSync(await committed(path.join(tmp, "real", "company")), root),
+    "ok",
+    null,
+  ],
+  ["a regular file", (_, root) => fs.writeFileSync(root, ""), "damaged", "not-a-directory"],
+  ["a dangling symlink", (tmp, root) => fs.symlinkSync(path.join(tmp, "gone"), root), "damaged", "not-a-directory"],
+  ["files without a repo", (_, root) => withoutGit(root), "damaged", "no-git"],
+  ["an empty .git", (_, root) => fs.mkdirSync(path.join(root, ".git"), { recursive: true }), "damaged", "bad-git"],
+  [
+    "a NUL-filled branch ref",
+    async (_, root) => {
+      fs.writeFileSync(path.join(await committed(root), ".git", "refs", "heads", "main"), Buffer.alloc(41))
+    },
+    "damaged",
+    "bad-git",
+  ],
+  [
+    "a deleted branch ref",
+    async (_, root) => fs.unlinkSync(path.join(await committed(root), ".git", "refs", "heads", "main")),
+    "damaged",
+    "bad-git",
+  ],
+  ["no company.yaml in the last commit", (_, root) => withoutCompanyYaml(root), "damaged", "no-company-yaml"],
+  [
+    "company.yaml deleted from the folder",
+    async (_, root) => fs.unlinkSync(path.join(await committed(root), "company.yaml")),
+    "damaged",
+    "company-yaml-deleted",
+  ],
+]
+
+test.each(STATES)("the state of %s", async (_, make, kind, reason) => {
+  const tmp = tempDir()
+  const root = _ === "under a regular file" ? path.join(tmp, "file", "company") : path.join(tmp, "company")
+  await make(tmp, root)
+  const state = await companyState(root)
+  expect(state.kind).toBe(kind)
+  if (state.kind === "damaged") {
+    expect(state.reason).toBe(reason!)
+    expect(state.detail).toContain(root)
+  }
+})
+
+test("an empty .git inside another repo is damaged, not the outer repo", async () => {
+  const tmp = tempDir()
+  const outer = await committed(path.join(tmp, "outer"))
+  const root = path.join(outer, "company")
+  fs.mkdirSync(path.join(root, ".git"), { recursive: true })
+  const state = await companyState(root)
+  expect(state.kind === "damaged" && state.reason).toBe("bad-git")
+})
+
+test.skipIf(process.geteuid!() === 0)("a company that cant be looked at is damaged", async () => {
+  const tmp = tempDir()
+  const parent = path.join(tmp, "locked")
+  fs.mkdirSync(parent)
+  const root = path.join(parent, "company")
+  await committed(root)
+  fs.chmodSync(parent, 0)
+  try {
+    const state = await companyState(root)
+    expect(state.kind === "damaged" && state.reason).toBe("unreadable")
+  } finally {
+    fs.chmodSync(parent, 0o700)
+  }
+})
+
+test("writing refuses a damaged company and changes nothing", async () => {
+  const tmp = tempDir()
+  const repo = await withoutCompanyYaml(path.join(tmp, "a", "company"))
+  const log = git(repo, "log", "--format=%H")
+  const status = git(repo, "status", "--porcelain")
+  await expect(writeCompany(repo, path.join(tmp, "wt"), { company: "Acme", owner: OWNER })).rejects.toThrow(
+    RangeError,
+  )
+  expect(git(repo, "log", "--format=%H")).toBe(log)
+  expect(git(repo, "status", "--porcelain")).toBe(status)
+  const bare = withoutGit(path.join(tmp, "b", "company"))
+  await expect(writeCompany(bare, path.join(tmp, "wt"), { company: "Acme", owner: OWNER })).rejects.toThrow(
+    RangeError,
+  )
+  expect(fs.readdirSync(bare)).toEqual(["company.yaml"])
 })
 
 test.each(PACKAGED_FLOWS)("every packaged flow is found missing and topped up [%s]", async (flow) => {
