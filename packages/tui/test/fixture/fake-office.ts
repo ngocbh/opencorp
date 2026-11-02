@@ -190,8 +190,19 @@ export function createFakeOffice(
     missing?: Iterable<string>
     /** The company's `profile_max_chars`; a longer profile is `over_budget`. */
     profileMaxChars?: number
-    /** HQ's TCP listener: off by default; on, it listens unless `listening` is false (`error` says why not). */
-    hq?: { tcp?: boolean; listening?: boolean; port?: number; error?: string }
+    /**
+     * HQ's TCP listener: off by default; on, it listens unless `listening` is false (`error` says why not). The web
+     * app is built unless `app` is false; `socketError` is why hq.sock isn't listening; `warnings` are GET /hq's.
+     */
+    hq?: {
+      tcp?: boolean
+      listening?: boolean
+      port?: number
+      error?: string
+      app?: boolean
+      socketError?: string
+      warnings?: string[]
+    }
   } = {},
 ) {
   const nextId = counter()
@@ -761,9 +772,13 @@ export function createFakeOffice(
         next_retry_at: null,
       },
       url: hqListening() ? `http://127.0.0.1:${hqOpts.port}/` : null,
-      health: { ok: true, office: { api: "0.0.1+fake" }, app: null },
-      socket_error: null,
-      warnings: [],
+      health: {
+        ok: true,
+        office: { api: "0.0.1+fake" },
+        app: hqOpts.app === false ? null : { build: "fake", api: "0.0.1+fake" },
+      },
+      socket_error: hqOpts.socketError ?? null,
+      warnings: hqOpts.warnings ?? [],
     }
   }
   /** Refuses unless `handle` is a human and `actor` is them or the CEO: HQ's rule, the one for devices. */
@@ -1341,6 +1356,8 @@ export function createFakeOffice(
     requests,
     /** Humans' passwords by handle; set one to give a human a password. */
     passwords,
+    /** HQ's settings as `hq` gave them; read on every request, so a test may change them mid-run. */
+    hq: hqOpts,
     /** Route keys (`"POST /sessions/:id/prompt"`) or exact paths (`"GET /sessions/S2/messages"`) answered with 501. */
     notImplemented,
     /** Codex card ids whose answer comes back stale, as when Codex no longer waits for the card. */

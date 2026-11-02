@@ -559,7 +559,10 @@ export function hqChecks(status: HqStatus | Unread, officeDir: string, repo: str
     found.push({
       name: "web app",
       status: "warn",
-      detail: "this install has no web app; it's built in a checkout of the opencorp repo",
+      detail:
+        "this install has no web app; it's built in a checkout of the opencorp repo. To serve one, point " +
+        `"app_dir" in ${path.join(officeDir, "hq.json")} at packages/app/dist in a checkout at this version ` +
+        `(v${VERSION}), built there, then run \`opencorp restart\``,
     })
   } else if (app === null) {
     found.push({ name: "web app", status: "warn", detail: `not built: run \`bun run build\` in ${repo}` })

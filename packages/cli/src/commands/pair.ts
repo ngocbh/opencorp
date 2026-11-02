@@ -3,7 +3,7 @@
 import { isMissingRoute, isNotImplemented, OfficeUnavailable } from "@opencorp/client"
 import { opencorpHome } from "@opencorp/client/node"
 import { otherPort, SETTINGS_IGNORED } from "@opencorp/office/hq/config"
-import type { HqTcp, PairCode } from "@opencorp/protocol"
+import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
 import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
@@ -13,9 +13,16 @@ import { bareHandle, localIdentity, NO_OFFICE, officeClient } from "../office"
 /**
  * The local port the printed SSH forwards use for hq.sock: any free one works there, since hq.sock takes any port. Not
  * HQ's TCP default (49380), which an office on the browser's machine may hold; a different port also keeps that
- * office's cookie apart from this one's, since the cookie's name carries the port.
+ * office's cookie apart from this one's, since the cookie's name carries the port. When HQ's own TCP port is this one,
+ * `socketPort` picks the next.
  */
 export const LOCAL_PORT = 49381
+
+/**
+ * The local port for a forward of hq.sock when HQ's TCP port is `port`: `LOCAL_PORT`, or the next one when HQ's TCP
+ * port is `LOCAL_PORT`, since the socket forward is the fallback for when that port is busy and mustn't bind it too.
+ */
+export const socketPort = (port: number) => (port === LOCAL_PORT ? LOCAL_PORT + 1 : LOCAL_PORT)
 
 type Env = Record<string, string | undefined>
 
@@ -45,9 +52,49 @@ function expiry(ts: string, now: number) {
 /** HQ's web port as a phrase: "HQ's web port 49380", or without a number for `port: 0` (any free one). */
 const webPort = (port: number) => (port ? `HQ's web port ${port}` : "HQ's web port")
 
+const APP_MISSING = "HQ's web app isn't built, so the link won't load yet; `opencorp doctor` says why."
+const NO_SOCKET = "(HQ's socket isn't listening here, so there's no fallback through it; `opencorp doctor` says why.)"
+
+/** How to turn TCP on in `hqJson`: fix the file when GET /hq's `warnings` say it was ignored, else add the key. */
+const tcpOn = (hqJson: string, warnings: readonly string[]) =>
+  warnings.some((w) => w.startsWith(SETTINGS_IGNORED))
+    ? `fix ${shellWord(hqJson)} so it has "tcp": true`
+    : `add "tcp": true to ${shellWord(hqJson)}`
+
+/** How to move HQ's web port off `port`, which another program holds, by setting another in `hqJson`. */
+const otherPortHint = (port: number, hqJson: string) => [
+  `If another program holds port ${port}, set "port" in ${shellWord(hqJson)} to a free one, for ` +
+    `example {"port": ${otherPort(port)}}, or 0 for any free port (its URL then changes with each restart).`,
+  // On Linux the file holds "tcp": true, so replacing it would turn the web port off.
+  "Create the file if it doesn't exist; keep any keys it already has. Then run `opencorp restart`.",
+]
+
 /**
- * What `pair` prints for `code`, and the redirect file to open, if it should open one. `tcp` is HQ's TCP status when
- * there's no URL, or null when it couldn't be read; `warnings` are GET /hq's.
+ * Why HQ can't be reached at all: hq.sock isn't listening (`socketError`) and neither is its web port (`tcp`, or null
+ * when it stopped listening after HQ's status was read), with GET /hq's `warnings` and how to fix it.
+ */
+function unreachable(socketError: string, tcp: HqTcp | null, warnings: readonly string[], hqJson: string): string[] {
+  const state = !tcp
+    ? "HQ's web port stopped listening just now"
+    : !tcp.enabled
+      ? "HQ's web port is off"
+      : tcp.error
+        ? `${webPort(tcp.port)} isn't listening (${tcp.error})`
+        : `${webPort(tcp.port)} isn't listening yet`
+  const lines = [`opencorp pair: HQ can't be reached: hq.sock isn't listening (${socketError}), and ${state}.`]
+  // With hq.sock down, the web port is the only way in, over SSH too (by forwarding it).
+  if (tcp && !tcp.enabled) {
+    lines.push(...warnings.map((w) => `  ${w}`))
+    lines.push(`To reach it over TCP, ${tcpOn(hqJson, warnings)}, then run \`opencorp restart\`.`)
+  } else if (tcp?.error && tcp.port) lines.push(...otherPortHint(tcp.port, hqJson))
+  else if (!tcp || !tcp.error) lines.push("Run `opencorp pair` again once the web port is listening.")
+  lines.push("`opencorp doctor` says more; run `opencorp restart` once that's fixed.")
+  return lines
+}
+
+/**
+ * What `pair` prints for `code`, and the redirect file to open, if it should open one. `status` is HQ's (`GET /hq`),
+ * or null when it couldn't be read; a field an older office doesn't send counts as unknown.
  *
  * With TCP off because hq.json was ignored, the fix is to repair the file, not to add `"tcp": true` to it.
  */
@@ -59,15 +106,21 @@ export function pairOutput(
     host: string
     noOpen: boolean
     hqJson: string
-    tcp: HqTcp | null
-    warnings: readonly string[]
+    status: HqStatus | null
     now?: number
   },
 ): { lines: string[]; open?: string } {
+  const tcp = o.status?.tcp ?? null
+  const socketError = o.status?.socket_error ?? null
+  const appMissing = o.status?.health?.app === null
+  const warnings = o.status?.warnings ?? []
   const lines = [`This link signs a browser in once, ${expiry(code.expires_at, o.now ?? Date.now())}.`]
+  if (appMissing) lines.push(APP_MISSING)
   const ssh = overSsh(o.env)
+  const local = socketPort(code.port)
   if (code.url && !ssh) {
-    const open = !o.noOpen && canOpen(o.env, o.platform) && code.open_file ? code.open_file : undefined
+    const open =
+      !o.noOpen && !appMissing && canOpen(o.env, o.platform) && code.open_file ? code.open_file : undefined
     lines.push(open ? "Opening it in your browser. If the page doesn't open or load, use:" : "Open it in your browser:")
     lines.push(`  ${code.url}`)
     return { lines, open }
@@ -79,39 +132,32 @@ export function pairOutput(
       forward(code.port, `127.0.0.1:${code.port}`, o.host),
       "then open:",
       `  ${code.url}`,
-      `If port ${code.port} is in use on your machine (an office runs there), forward HQ's socket instead:`,
-      forward(LOCAL_PORT, shellWord(code.socket), o.host),
-      "then open:",
-      `  http://127.0.0.1:${LOCAL_PORT}${code.path}`,
     )
-  } else {
-    if (!o.tcp) lines.push("Couldn't read the web port's status.")
-    else if (!o.tcp.enabled) lines.push("HQ's web port is off here.", ...o.warnings.map((w) => `  ${w}`))
-    else if (o.tcp.error)
-      lines.push(`${webPort(o.tcp.port)} isn't listening (${o.tcp.error}); \`opencorp doctor\` says more.`)
-    else lines.push(`${webPort(o.tcp.port)} isn't listening yet.`)
-    // Here, another port is the fix; port 0 is never taken, so its error is a server that ended.
-    if (!ssh && o.tcp?.enabled && o.tcp.error && o.tcp.port)
+    if (socketError) lines.push(NO_SOCKET)
+    else
       lines.push(
-        `If another program holds port ${o.tcp.port}, set "port" in ${shellWord(o.hqJson)} to a free one, for ` +
-          `example {"port": ${otherPort(o.tcp.port)}}, or 0 for any free port ` +
-          "(its URL then changes with each restart).",
-        // On Linux the file holds "tcp": true, so replacing it would turn the web port off.
-        "Create the file if it doesn't exist; keep any keys it already has. Then run `opencorp restart`.",
+        `If port ${code.port} is in use on your machine (an office runs there), forward HQ's socket instead:`,
+        forward(local, shellWord(code.socket), o.host),
+        "then open:",
+        `  http://127.0.0.1:${local}${code.path}`,
       )
+  } else {
+    if (!tcp) lines.push("Couldn't read the web port's status.")
+    else if (!tcp.enabled) lines.push("HQ's web port is off here.", ...warnings.map((w) => `  ${w}`))
+    else if (tcp.error)
+      lines.push(`${webPort(tcp.port)} isn't listening (${tcp.error}); \`opencorp doctor\` says more.`)
+    else lines.push(`${webPort(tcp.port)} isn't listening yet.`)
+    // Here, another port is the fix; port 0 is never taken, so its error is a server that ended.
+    if (!ssh && tcp?.enabled && tcp.error && tcp.port) lines.push(...otherPortHint(tcp.port, o.hqJson))
     lines.push(
       "On the machine with your browser, forward HQ's socket:",
-      forward(LOCAL_PORT, shellWord(code.socket), o.host),
+      forward(local, shellWord(code.socket), o.host),
       "then open:",
-      `  http://127.0.0.1:${LOCAL_PORT}${code.path}`,
-      `(hq.sock takes any port, so any free local port works in place of ${LOCAL_PORT}.)`,
+      `  http://127.0.0.1:${local}${code.path}`,
+      `(hq.sock takes any port, so any free local port works in place of ${local}.)`,
     )
-    if (!ssh && o.tcp && !o.tcp.enabled)
-      lines.push(
-        o.warnings.some((w) => w.startsWith(SETTINGS_IGNORED))
-          ? `To open it here instead, fix ${shellWord(o.hqJson)} so it has "tcp": true, then run \`opencorp restart\`.`
-          : `To open it here instead, add "tcp": true to ${shellWord(o.hqJson)}, then run \`opencorp restart\`.`,
-      )
+    if (!ssh && tcp && !tcp.enabled)
+      lines.push(`To open it here instead, ${tcpOn(o.hqJson, warnings)}, then run \`opencorp restart\`.`)
   }
   lines.push(`(In place of ${o.host}, use however you reach this machine.)`)
   return { lines }
@@ -151,21 +197,33 @@ export async function pair(argv: string[], deps: PairDeps = realPairDeps): Promi
   const noOpen = !!values["no-open"]
   try {
     const office = officeClient(localIdentity())
-    // A redirect file only when it will be opened: otherwise it would sit in the office dir until it expires.
+    const hqJson = path.join(opencorpHome(), "office", "hq.json")
+    // Read before minting, so no code is made when HQ can't be reached. Unreadable (an older office, say): as before.
+    const status = await office.hq.status().catch(() => null)
+    const tcp = status?.tcp
+    const socketError = status?.socket_error ?? null
+    if (socketError && tcp?.listening === false) {
+      for (const line of unreachable(socketError, tcp, status?.warnings ?? [], hqJson)) deps.error(line)
+      return 1
+    }
+    // A redirect file only when it will be opened: otherwise it would sit in the office dir until it expires. A link
+    // to an app that isn't built won't load, so it isn't opened.
     const code = await office.hq.pair({
       handle: values.handle === undefined ? null : bareHandle(values.handle),
-      open_file: !noOpen && canOpen(deps.env, deps.platform),
+      open_file: !noOpen && canOpen(deps.env, deps.platform) && status?.health?.app !== null,
     })
-    // Without a URL, why matters: TCP off (say how to turn it on) or its port taken (say so, and point at doctor).
-    const st = code.url ? null : await office.hq.status().catch(() => null)
+    if (!code.url && socketError) {
+      // The web port stopped listening after the read. The code isn't shown, has no file and expires unused.
+      for (const line of unreachable(socketError, null, [], hqJson)) deps.error(line)
+      return 1
+    }
     const out = pairOutput(code, {
       env: deps.env,
       platform: deps.platform,
       host: deps.hostname(),
       noOpen,
-      hqJson: path.join(opencorpHome(), "office", "hq.json"),
-      tcp: st?.tcp ?? null,
-      warnings: st?.warnings ?? [],
+      hqJson,
+      status,
     })
     for (const line of out.lines) deps.print(line)
     if (out.open) {

@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
-import type { PairCode } from "@opencorp/protocol"
+import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
-import { canOpen, pair, pairOutput, type PairDeps } from "../src/commands/pair"
+import { canOpen, pair, pairOutput, type PairDeps, socketPort } from "../src/commands/pair"
 
 const code = (over: Partial<PairCode> = {}): PairCode => ({
   path: "/pair#CODE1234567890abcdefgh",
@@ -14,8 +14,21 @@ const code = (over: Partial<PairCode> = {}): PairCode => ({
   open_file: "/home/u/.opencorp/office/pair-1a2b.html",
   ...over,
 })
-const opts = { host: "misha", noOpen: false, hqJson: "/home/u/.opencorp/office/hq.json", tcp: null, warnings: [] }
+const opts = { host: "misha", noOpen: false, hqJson: "/home/u/.opencorp/office/hq.json", status: null }
 const tcpOff = { enabled: false, port: 49380, listening: false, error: null, next_retry_at: null }
+const tcpListening = { enabled: true, port: 49380, listening: true, error: null, next_retry_at: null }
+/** HQ's status with `tcp`, hq.sock listening and the app built, as `over` doesn't say otherwise. */
+const st = (tcp: HqTcp, over: Partial<HqStatus> = {}): HqStatus => ({
+  socket: "/home/u/.opencorp/office/hq.sock",
+  tcp,
+  url: null,
+  health: { ok: true, office: { api: "x" }, app: { build: "b", api: "x" } },
+  socket_error: null,
+  warnings: [],
+  ...over,
+})
+const APP_MISSING = "HQ's web app isn't built, so the link won't load yet; `opencorp doctor` says why."
+const NO_SOCKET = "(HQ's socket isn't listening here, so there's no fallback through it; `opencorp doctor` says why.)"
 const SOCKET_FORWARD = "  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49381:/home/u/.opencorp/office/hq.sock misha"
 const taken = {
   enabled: true,
@@ -77,23 +90,53 @@ test("over SSH with TCP listening, it forwards the same port, or hq.sock if that
   expect(out.lines).toContain("  http://127.0.0.1:49381/pair#CODE1234567890abcdefgh")
 })
 
+test("the socket forward's local port moves off HQ's own TCP port", () => {
+  expect(socketPort(49380)).toBe(49381)
+  expect(socketPort(49381)).toBe(49382)
+})
+
+test("over SSH with HQ's TCP port on 49381, the socket fallback uses 49382", () => {
+  const out = pairOutput(code({ port: 49381, url: "http://127.0.0.1:49381/pair#X", open_file: null }), {
+    ...opts,
+    env: { SSH_CONNECTION: "1 2 3 4" },
+    platform: "linux",
+  })
+  expect(out.lines).toContain("  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49381:127.0.0.1:49381 misha")
+  expect(out.lines).toContain(
+    "  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49382:/home/u/.opencorp/office/hq.sock misha",
+  )
+  expect(out.lines).toContain("  http://127.0.0.1:49382/pair#CODE1234567890abcdefgh")
+  expect(out.lines.join("\n")).not.toContain("127.0.0.1:49381:/home")
+})
+
+test("with no URL and HQ's port on 49381, the socket forward and its hint use 49382", () => {
+  const off = code({ url: null, open_file: null, port: 49381 })
+  const out = pairOutput(off, { ...opts, status: st({ ...tcpOff, port: 49381 }), env: {}, platform: "linux" }).lines
+  expect(out).toContain(
+    "  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49382:/home/u/.opencorp/office/hq.sock misha",
+  )
+  expect(out).toContain("  http://127.0.0.1:49382/pair#CODE1234567890abcdefgh")
+  expect(out.join("\n")).toContain("in place of 49382")
+})
+
 test("with TCP off, it prints a forward of hq.sock, and locally how to turn TCP on", () => {
   const off = code({ url: null, open_file: null })
-  const local = pairOutput(off, { ...opts, tcp: tcpOff, env: {}, platform: "linux" }).lines
+  const local = pairOutput(off, { ...opts, status: st(tcpOff), env: {}, platform: "linux" }).lines
   expect(local).toContain("HQ's web port is off here.")
   expect(local).toContain(SOCKET_FORWARD)
   expect(local).toContain("  http://127.0.0.1:49381/pair#CODE1234567890abcdefgh")
   expect(local.join("\n")).toContain("any free local port works")
   expect(local.join("\n")).toContain('"tcp": true to /home/u/.opencorp/office/hq.json')
   const ssh = { SSH_CONNECTION: "1 2 3 4" }
-  const remote = pairOutput(off, { ...opts, tcp: tcpOff, env: ssh, platform: "linux" }).lines
+  const remote = pairOutput(off, { ...opts, status: st(tcpOff), env: ssh, platform: "linux" }).lines
   expect(remote.join("\n")).not.toContain('"tcp": true')
 })
 
 test("with TCP off because hq.json was ignored, it says why and to fix the file, not to add tcp", () => {
   const off = code({ url: null, open_file: null })
   const warning = "settings ignored, so the web port stays off until hq.json is fixed (restart to apply): x"
-  const local = pairOutput(off, { ...opts, tcp: tcpOff, warnings: [warning], env: {}, platform: "darwin" }).lines
+  const status = st(tcpOff, { warnings: [warning] })
+  const local = pairOutput(off, { ...opts, status, env: {}, platform: "darwin" }).lines
   expect(local).toContain("HQ's web port is off here.")
   expect(local).toContain(`  ${warning}`)
   expect(local).toContain(
@@ -102,7 +145,7 @@ test("with TCP off because hq.json was ignored, it says why and to fix the file,
   expect(local.join("\n")).not.toContain('add "tcp": true')
   expect(local).toContain(SOCKET_FORWARD)
   const ssh = { SSH_CONNECTION: "1 2 3 4" }
-  const remote = pairOutput(off, { ...opts, tcp: tcpOff, warnings: [warning], env: ssh, platform: "darwin" }).lines
+  const remote = pairOutput(off, { ...opts, status, env: ssh, platform: "darwin" }).lines
   expect(remote).toContain(`  ${warning}`)
   expect(remote.join("\n")).not.toContain("To open it here")
 })
@@ -110,7 +153,8 @@ test("with TCP off because hq.json was ignored, it says why and to fix the file,
 test("with TCP off and a warning that isnt about hq.json, it still says to add tcp", () => {
   const off = code({ url: null, open_file: null })
   const warning = "some other warning"
-  const local = pairOutput(off, { ...opts, tcp: tcpOff, warnings: [warning], env: {}, platform: "darwin" }).lines
+  const status = st(tcpOff, { warnings: [warning] })
+  const local = pairOutput(off, { ...opts, status, env: {}, platform: "darwin" }).lines
   expect(local).toContain(`  ${warning}`)
   expect(local.join("\n")).toContain('add "tcp": true to /home/u/.opencorp/office/hq.json')
   expect(local.join("\n")).not.toContain("fix /home/u/.opencorp/office/hq.json")
@@ -118,7 +162,7 @@ test("with TCP off and a warning that isnt about hq.json, it still says to add t
 
 test("with TCP on but not listening, it says why, forwards hq.sock, and doesn't say to turn TCP on", () => {
   const off = code({ url: null, open_file: null })
-  const lines = (tcp: typeof taken) => pairOutput(off, { ...opts, tcp, env: {}, platform: "darwin" }).lines
+  const lines = (tcp: typeof taken) => pairOutput(off, { ...opts, status: st(tcp), env: {}, platform: "darwin" }).lines
   expect(lines({ ...taken, error: null })).toContain("HQ's web port 49380 isn't listening yet.")
   expect(lines({ ...taken, port: 0, error: null })).toContain("HQ's web port isn't listening yet.")
   expect(lines({ ...taken, port: 0 })).toContain(
@@ -132,7 +176,7 @@ test("with TCP on but not listening, it says why, forwards hq.sock, and doesn't 
 
 test("with the port taken here, it says how to pick another port before the hq.sock forward", () => {
   const off = code({ url: null, open_file: null })
-  const out = pairOutput(off, { ...opts, tcp: taken, env: {}, platform: "darwin" }).lines
+  const out = pairOutput(off, { ...opts, status: st(taken), env: {}, platform: "darwin" }).lines
   const advice = out.findIndex((l) => l.startsWith("If another program holds port 49380"))
   expect(out[advice]).toBe(
     'If another program holds port 49380, set "port" in /home/u/.opencorp/office/hq.json to a free one, for ' +
@@ -144,20 +188,20 @@ test("with the port taken here, it says how to pick another port before the hq.s
   expect(advice).toBeGreaterThan(0)
   expect(advice).toBeLessThan(out.indexOf(SOCKET_FORWARD))
   const ssh = { SSH_CONNECTION: "1 2 3 4" }
-  const remote = pairOutput(off, { ...opts, tcp: taken, env: ssh, platform: "darwin" }).lines
+  const remote = pairOutput(off, { ...opts, status: st(taken), env: ssh, platform: "darwin" }).lines
   expect(remote.join("\n")).not.toContain("If another program holds")
-  const binding = pairOutput(off, { ...opts, tcp: { ...taken, error: null }, env: {}, platform: "darwin" }).lines
+  const binding = pairOutput(off, { ...opts, status: st({ ...taken, error: null }), env: {}, platform: "darwin" }).lines
   expect(binding.join("\n")).not.toContain("If another program holds")
-  const local = pairOutput(off, { ...opts, tcp: tcpOff, env: {}, platform: "darwin" }).lines
+  const local = pairOutput(off, { ...opts, status: st(tcpOff), env: {}, platform: "darwin" }).lines
   expect(local.join("\n")).not.toContain("If another program holds")
   const anyPort = { ...taken, port: 0, error: "its server ended (it failed: x)" }
-  const ended = pairOutput(off, { ...opts, tcp: anyPort, env: {}, platform: "darwin" }).lines
+  const ended = pairOutput(off, { ...opts, status: st(anyPort), env: {}, platform: "darwin" }).lines
   expect(ended.join("\n")).not.toContain("If another program holds")
 })
 
 test("when HQ's status can't be read, it says so rather than guess, and forwards hq.sock", () => {
   const off = code({ url: null, open_file: null })
-  const out = pairOutput(off, { ...opts, tcp: null, env: {}, platform: "darwin" }).lines
+  const out = pairOutput(off, { ...opts, status: null, env: {}, platform: "darwin" }).lines
   expect(out).toContain("Couldn't read the web port's status.")
   expect(out.join("\n")).not.toContain("is off")
   expect(out.join("\n")).not.toContain('"tcp": true')
@@ -166,9 +210,64 @@ test("when HQ's status can't be read, it says so rather than guess, and forwards
 
 test("a socket or hq.json path with spaces or quotes is shell-quoted", () => {
   const off = code({ url: null, open_file: null, socket: "/home/u v/it's/hq.sock" })
-  const out = pairOutput(off, { ...opts, hqJson: "/home/u v/hq.json", tcp: tcpOff, env: {}, platform: "linux" }).lines
+  const hqJson = "/home/u v/hq.json"
+  const out = pairOutput(off, { ...opts, hqJson, status: st(tcpOff), env: {}, platform: "linux" }).lines
   expect(out).toContain(`  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49381:'/home/u v/it'\\''s/hq.sock' misha`)
   expect(out.join("\n")).toContain(`"tcp": true to '/home/u v/hq.json'`)
+})
+
+test("over SSH with hq.sock not listening, it forwards the TCP port and offers no socket fallback", () => {
+  const out = pairOutput(code({ port: 50001, url: "http://127.0.0.1:50001/pair#X", open_file: null }), {
+    ...opts,
+    status: st({ ...tcpListening, port: 50001 }, { socket_error: "EADDRINUSE" }),
+    env: { SSH_CONNECTION: "1 2 3 4" },
+    platform: "linux",
+  })
+  expect(out.lines).toContain("  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:50001:127.0.0.1:50001 misha")
+  expect(out.lines).toContain("  http://127.0.0.1:50001/pair#X")
+  expect(out.lines.join("\n")).not.toContain("forward HQ's socket instead")
+  expect(out.lines.join("\n")).not.toContain("hq.sock misha")
+  expect(out.lines).toContain(NO_SOCKET)
+})
+
+test("a status from an older office, with no socket_error, keeps the socket fallback", () => {
+  const s = st(tcpListening)
+  delete s.socket_error
+  const out = pairOutput(code({ open_file: null }), {
+    ...opts,
+    status: s,
+    env: { SSH_CONNECTION: "1 2 3 4" },
+    platform: "linux",
+  })
+  expect(out.lines).toContain(SOCKET_FORWARD)
+  expect(out.lines).not.toContain(NO_SOCKET)
+})
+
+test("locally with the app not built, it doesn't open the link, says why, and still prints it", () => {
+  const status = st(tcpListening, { health: { ok: true, office: { api: "x" }, app: null } })
+  const out = pairOutput(code(), { ...opts, status, env: {}, platform: "darwin" })
+  expect(out.open).toBeUndefined()
+  expect(out.lines[1]).toBe(APP_MISSING)
+  expect(out.lines).toContain("Open it in your browser:")
+  expect(out.lines).toContain("  http://127.0.0.1:49380/pair#CODE1234567890abcdefgh")
+})
+
+test("over SSH, or with no URL, the app not being built is said too", () => {
+  const unbuilt = { ok: true as const, office: { api: "x" }, app: null }
+  const ssh = pairOutput(code({ open_file: null }), {
+    ...opts,
+    status: st(tcpListening, { health: unbuilt }),
+    env: { SSH_CONNECTION: "1 2 3 4" },
+    platform: "linux",
+  })
+  expect(ssh.lines).toContain(APP_MISSING)
+  const off = pairOutput(code({ url: null, open_file: null }), {
+    ...opts,
+    status: st(tcpOff, { health: unbuilt }),
+    env: {},
+    platform: "linux",
+  })
+  expect(off.lines).toContain(APP_MISSING)
 })
 
 let office: FakeOffice | undefined
@@ -302,6 +401,117 @@ test("a missing opener prints why and still exits 0: the link is already printed
   expect(errors).toEqual([
     `Couldn't start xdg-open (Executable not found in $PATH: "xdg-open"); open the link above.`,
   ])
+})
+
+for (const env of [{}, { SSH_CONNECTION: "1 2 3 4" }] as Record<string, string>[])
+  test(`with hq.sock dead and TCP off, it says why, mints nothing and exits 1 [${Object.keys(env)}]`, async () => {
+    start({ tcp: false, socketError: "AF_UNIX path too long" })
+    const { d, printed, errors } = deps(env)
+    expect(await pair([], d)).toBe(1)
+    expect(office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")).toBe(false)
+    expect(printed.join("\n")).not.toContain("ssh -N")
+    const said = errors.join("\n")
+    expect(said).toContain("AF_UNIX path too long")
+    expect(said).toContain("`opencorp doctor`")
+    expect(said).toContain(`"tcp": true to ${path.join(home, "office", "hq.json")}`)
+    expect(said).not.toContain("pair#")
+  })
+
+test("with hq.sock dead and the web port taken or not up yet, it says why and exits 1", async () => {
+  start({ tcp: true, listening: false, error: "Address already in use", socketError: "x" })
+  let { d, errors } = deps()
+  expect(await pair([], d)).toBe(1)
+  expect(office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")).toBe(false)
+  expect(errors.join("\n")).toContain("HQ's web port 49380 isn't listening (Address already in use)")
+  expect(errors.join("\n")).not.toContain('"tcp": true')
+  office!.stop()
+  start({ tcp: true, listening: false, socketError: "x" })
+  ;({ d, errors } = deps())
+  expect(await pair([], d)).toBe(1)
+  expect(errors.join("\n")).toContain("Run `opencorp pair` again once the web port is listening.")
+  expect(errors.join("\n")).not.toContain("pair#")
+})
+
+for (const env of [{}, { SSH_CONNECTION: "1 2 3 4" }] as Record<string, string>[])
+  test(`with hq.sock dead and hq.json ignored, it says to fix the file [${Object.keys(env)}]`, async () => {
+    const warning = "settings ignored, so the web port stays off until hq.json is fixed (restart to apply): x"
+    start({ tcp: false, socketError: "x", warnings: [warning] })
+    const { d, errors } = deps(env)
+    expect(await pair([], d)).toBe(1)
+    const said = errors.join("\n")
+    expect(errors).toContain(`  ${warning}`)
+    expect(said).toContain(`fix ${path.join(home, "office", "hq.json")} so it has "tcp": true`)
+    expect(said).not.toContain('add "tcp": true')
+  })
+
+for (const env of [{}, { SSH_CONNECTION: "1 2 3 4" }] as Record<string, string>[])
+  test(`with hq.sock dead and the web port taken, it says how to pick another port [${Object.keys(env)}]`, async () => {
+    start({ tcp: true, listening: false, error: "Address already in use", socketError: "x" })
+    const { d, errors } = deps(env)
+    expect(await pair([], d)).toBe(1)
+    expect(errors).toContain(
+      `If another program holds port 49380, set "port" in ${path.join(home, "office", "hq.json")} to a free one, ` +
+        'for example {"port": 49390}, or 0 for any free port (its URL then changes with each restart).',
+    )
+    expect(errors).toContain(
+      "Create the file if it doesn't exist; keep any keys it already has. Then run `opencorp restart`.",
+    )
+  })
+
+test("with hq.sock dead but TCP listening, it prints the URL locally and the TCP forward over SSH", async () => {
+  start({ tcp: true, listening: true, socketError: "x" })
+  let { d, printed } = deps()
+  expect(await pair([], d)).toBe(0)
+  expect(printed.join("\n")).toMatch(/http:\/\/127\.0\.0\.1:49380\/pair#/)
+  ;({ d, printed } = deps({ SSH_CONNECTION: "1 2 3 4" }, "linux"))
+  expect(await pair([], d)).toBe(0)
+  expect(printed).toContain("  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49380:127.0.0.1:49380 mac")
+  expect(printed.join("\n")).not.toContain("hq.sock mac")
+})
+
+test("if the web port stops listening while the code is minted, with hq.sock dead, it shows no code", async () => {
+  start({ tcp: true, listening: true, socketError: "x" })
+  const release = office!.hold("POST /hq/pair")
+  const { d, printed, errors, spawned } = deps()
+  const run = pair([], d)
+  const deadline = Date.now() + 2000
+  while (!office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")) {
+    if (Date.now() > deadline) throw new Error("POST /hq/pair never came")
+    await Bun.sleep(5)
+  }
+  office!.hq.listening = false
+  release()
+  expect(await run).toBe(1)
+  expect([...printed, ...errors].join("\n")).not.toContain("pair#")
+  expect(spawned).toEqual([])
+  expect(errors.join("\n")).toContain("stopped listening")
+})
+
+test("with the app not built, it asks for no file, opens nothing, warns and still prints the link", async () => {
+  start({ tcp: true, listening: true, app: false })
+  const { d, printed, spawned } = deps()
+  expect(await pair([], d)).toBe(0)
+  expect(pairBody()).toEqual({ handle: null, open_file: false })
+  expect(spawned).toEqual([])
+  expect(printed).toContain(APP_MISSING)
+  expect(printed.join("\n")).toMatch(/http:\/\/127\.0\.0\.1:49380\/pair#/)
+})
+
+test("it reads HQ's status before it mints the code", async () => {
+  start({ tcp: true, listening: true })
+  const { d } = deps()
+  expect(await pair([], d)).toBe(0)
+  const at = (method: string, p: string) => office!.requests.findIndex((r) => r.method === method && r.path === p)
+  expect(at("GET", "/hq")).toBeGreaterThanOrEqual(0)
+  expect(at("GET", "/hq")).toBeLessThan(at("POST", "/hq/pair"))
+})
+
+test("when HQ's status can't be read, it opens the link as before", async () => {
+  start({ tcp: true, listening: true }, { missing: ["GET /hq"] })
+  const { d, spawned } = deps()
+  expect(await pair([], d)).toBe(0)
+  expect(pairBody()).toEqual({ handle: null, open_file: true })
+  expect(spawned).toHaveLength(1)
 })
 
 test("without an office it says so and exits 3", async () => {
