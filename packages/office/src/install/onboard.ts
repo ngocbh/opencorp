@@ -54,6 +54,7 @@ import {
   type Host,
   type Launch,
   launch,
+  resolveHome,
   runCommand,
   ServiceError,
 } from "./launch.ts"
@@ -1046,11 +1047,14 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
       }
       throw new OnboardError(`can't write the company repo at ${company}: ${(error as Error).message}`)
     }
+    // The repo is never cloned over a company, so a given --from does nothing; the URL isn't echoed, as it may
+    // hold credentials.
+    const ignored = !fresh && options.source ? " (--from ignored: there's a company here already)" : ""
     if (missing.length > 0) {
-      prompter.say(`Company repo: ${company}. ${stopToTopUp(missing.length)}`)
+      prompter.say(`Company repo: ${company}. ${stopToTopUp(missing.length)}${ignored}`)
     } else if (written.length > 0 || !fresh) {
       const done = written.length > 0 ? `added ${written.length} template files to` : "up to date at"
-      prompter.say(`Company repo: ${done} ${company}`)
+      prompter.say(`Company repo: ${done} ${company}${ignored}`)
     }
     const repo = loadRepo(root)
     const errors = (await lint(repo)).filter((issue) => issue.severity === "error")
@@ -1119,7 +1123,25 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
     throw error
   }
   prompter.say(`Office: running under ${installed.mode ?? "a process started by hand"}; log at ${one.log}`)
+  // Before the done line, so the export comes before the `opencorp` it says to run.
+  if (!clientFinds(one.home, environ, host.userHome)) {
+    prompter.say(
+      "This shell's `opencorp` looks for its office elsewhere; to reach this one, first run " +
+        `\`export OPENCORP_HOME=${shQuote(one.home)}\` (add it to your shell profile to keep it).`,
+    )
+  }
   prompter.say("Done. Run `opencorp` in a project folder to talk to your team.")
+}
+
+/** Whether `opencorp` run with `environ` finds the office at `home` (a real path): its home is `$OPENCORP_HOME`,
+ *  else `<userHome>/.opencorp`, with a leading `~` expanded. */
+function clientFinds(home: string, environ: Env, userHome: string): boolean {
+  try {
+    return resolveHome(environ.OPENCORP_HOME || path.join(userHome, ".opencorp")) === home
+  } catch {
+    // A home that can't be resolved can't be this one.
+    return false
+  }
 }
 
 /** How long, in ms, the model check waits for an answer: under the daemon's 90 s wait for its worker, so the

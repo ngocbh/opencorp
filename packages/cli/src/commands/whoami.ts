@@ -16,13 +16,18 @@ function absent(file: string): boolean {
   }
 }
 
+const USAGE = "usage: opencorp whoami"
+
 /**
  * `opencorp whoami`: the handle and device in this device's identity, and who the office takes it to be. With no
  * identity file it says to log in; a file it can't use gets only the warning that says why.
  */
 export const run: CommandRun = async (argv) => {
   try {
-    parseArgs({ args: argv, options: {} })
+    if (parseArgs({ args: argv, options: { help: { type: "boolean", short: "h" } } }).values.help) {
+      console.log(USAGE)
+      return 0
+    }
   } catch (e) {
     console.error(`opencorp whoami: ${e instanceof Error ? e.message : e}`)
     return 2

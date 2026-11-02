@@ -18,11 +18,20 @@ if (!internal && !import.meta.url.endsWith(".ts")) {
 /** A command's entry point: takes the arguments after its name, resolves to an exit code. */
 export type CommandRun = (argv: string[]) => Promise<number>
 
-/** Every command, by name. The first is the default when `opencorp` gets no command name. */
-export const commands: Record<string, { summary: string; load: () => Promise<{ run: CommandRun }> }> = {
-  tui: { summary: "Talk to a person in this folder (the default)", load: () => import("./commands/tui") },
-  end: { summary: "End a session", load: () => import("./commands/end") },
-  profile: { summary: "Edit a person's profile in $EDITOR", load: () => import("./commands/profile") },
+/** Every command, by name, with the arguments the help shows after it. The first is the default when `opencorp` gets
+ *  no command name. */
+export const commands: Record<string, { args?: string; summary: string; load: () => Promise<{ run: CommandRun }> }> = {
+  tui: {
+    args: "[options]",
+    summary: "Talk to a person in this folder (the default)",
+    load: () => import("./commands/tui"),
+  },
+  end: { args: "[SESSION_ID]", summary: "End a session", load: () => import("./commands/end") },
+  profile: {
+    args: "edit PERSON",
+    summary: "Edit a person's profile in $EDITOR",
+    load: () => import("./commands/profile"),
+  },
   login: { summary: "Log this device in, with your password if you have one", load: () => import("./commands/login") },
   password: {
     summary: "Set your password, which logging in a new device asks for",
@@ -46,32 +55,64 @@ export const commands: Record<string, { summary: string; load: () => Promise<{ r
 
 const DEFAULT = "tui"
 
+/** `opencorp --help`: every command with its arguments, the TUI's options and the environment they read. */
 function help() {
-  const width = Math.max(...Object.keys(commands).map((n) => n.length))
+  const named = Object.entries(commands).map(([name, c]) => [c.args ? `${name} ${c.args}` : name, c.summary])
+  const width = Math.max(...named.map(([n]) => n.length))
   return [
     "Usage: opencorp [command] [options]",
     "",
     "Commands:",
-    ...Object.entries(commands).map(([name, c]) => `  ${name.padEnd(width)}  ${c.summary}`),
+    ...named.map(([name, summary]) => `  ${name.padEnd(width)}  ${summary}`),
     "",
     "With no command, or only options, opencorp runs `tui`.",
+    "",
+    // The same lines as tui's own usage (commands/tui.ts), which this file can't import before it runs.
+    "tui options:",
+    "  -s, --session ID   resume a session",
+    "  -c, --continue     continue the last session in this folder",
+    "  --person HANDLE    talk to this person",
+    "  --prompt TEXT      send TEXT as the first message",
+    "",
+    "  -h, --help         show this help",
+    "  --version          print opencorp's version",
+    "Run `opencorp help COMMAND` for a command's options.",
+    "",
+    "Environment:",
+    "  OPENCORP_HOME  the office home every command uses (default ~/.opencorp); init, onboard, offboard, start,",
+    "                 stop, restart and doctor also take --home",
   ].join("\n")
+}
+
+/** The command named `name`, or undefined; names `commands` inherits from Object (`constructor`, ...) are none. */
+const command = (name: string) => (Object.hasOwn(commands, name) ? commands[name] : undefined)
+
+/** Says `name` is no command and prints the help; returns the usage error's exit code. */
+function unknown(name: string): number {
+  console.error(`opencorp: unknown command: ${name}\n\n${help()}`)
+  return 2
 }
 
 /** Runs the command `argv` names (or the default); resolves to the process exit code. */
 export async function main(argv: string[]): Promise<number> {
   const [first, ...rest] = argv
+  // `help help` and `help -h` ask for this help, which the checks below print.
+  if (first === "help" && rest.length > 0 && !["help", "-h", "--help"].includes(rest[0]!)) {
+    const named = command(rest[0]!)
+    return named ? (await named.load()).run(["--help"]) : unknown(rest[0]!)
+  }
   if (first === "-h" || first === "--help" || first === "help") {
     console.log(help())
     return 0
   }
-  if (first === undefined || first.startsWith("-")) return (await commands[DEFAULT].load()).run(argv)
-  const command = commands[first]
-  if (!command) {
-    console.error(`opencorp: unknown command: ${first}\n\n${help()}`)
-    return 2
+  if (first === "--version") {
+    console.log((await import("../package.json", { with: { type: "json" } })).default.version)
+    return 0
   }
-  return (await command.load()).run(rest)
+  if (first === undefined || first.startsWith("-")) return (await commands[DEFAULT].load()).run(argv)
+  const named = command(first)
+  if (!named) return unknown(first)
+  return (await named.load()).run(rest)
 }
 
 if (import.meta.main && !internal) process.exitCode = await main(process.argv.slice(2))

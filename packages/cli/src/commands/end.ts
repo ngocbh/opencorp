@@ -28,10 +28,22 @@ export async function endSession(opts: { client: OfficeClient; cwd: string; id?:
   return session
 }
 
+const USAGE = "usage: opencorp end [SESSION_ID]"
+
+/** `opencorp end [SESSION_ID]`: ends that session, or else this folder's newest live main session. */
 export const run: CommandRun = async (argv) => {
   let positionals: string[]
   try {
-    ;({ positionals } = parseArgs({ args: argv, allowPositionals: true, options: {} }))
+    let values: { help?: boolean }
+    ;({ values, positionals } = parseArgs({
+      args: argv,
+      allowPositionals: true,
+      options: { help: { type: "boolean", short: "h" } },
+    }))
+    if (values.help) {
+      console.log(USAGE)
+      return 0
+    }
   } catch (e) {
     console.error(`opencorp end: ${e instanceof Error ? e.message : e}`)
     return 2

@@ -19,6 +19,8 @@ import { prompter } from "../prompt"
 /** The company's CEO among `people`: the human with no manager. */
 export const ceoOf = (people: Person[]) => people.find((p) => p.kind === "human" && !p.manager)?.handle
 
+const USAGE = "usage: opencorp login [--handle H] [--device NAME] [--force]"
+
 /** How many passwords `opencorp login` tries before it stops. */
 const TRIES = 3
 
@@ -40,11 +42,20 @@ export const run: CommandRun = async (argv) => {
   try {
     ;({ values } = parseArgs({
       args: argv,
-      options: { handle: { type: "string" }, device: { type: "string" }, force: { type: "boolean" } },
+      options: {
+        handle: { type: "string" },
+        device: { type: "string" },
+        force: { type: "boolean" },
+        help: { type: "boolean", short: "h" },
+      },
     }))
   } catch (e) {
     console.error(`opencorp login: ${e instanceof Error ? e.message : e}`)
     return 2
+  }
+  if (values.help) {
+    console.log(USAGE)
+    return 0
   }
   const file = identityPath()
   const device = values.device ?? deviceName()

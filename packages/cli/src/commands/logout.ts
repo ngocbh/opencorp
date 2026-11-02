@@ -6,13 +6,18 @@ import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { warnIfTokenless } from "../office"
 
+const USAGE = "usage: opencorp logout"
+
 /**
  * `opencorp logout`: removes this device from its person's devices, sent with its own token, then
  * deletes `identity.json`. With no office, deletes it anyway and says the entry remains.
  */
 export const run: CommandRun = async (argv) => {
   try {
-    parseArgs({ args: argv, options: {} })
+    if (parseArgs({ args: argv, options: { help: { type: "boolean", short: "h" } } }).values.help) {
+      console.log(USAGE)
+      return 0
+    }
   } catch (e) {
     console.error(`opencorp logout: ${e instanceof Error ? e.message : e}`)
     return 2

@@ -19,9 +19,12 @@ export function drawable(env: Record<string, string | undefined>, stdinTTY: bool
   return stdinTTY && stdoutTTY && !!env.TERM && env.TERM !== "dumb"
 }
 
+/** Whether this process's terminal can draw the setup screen or the TUI (`drawable` on its env, stdin and stdout). */
+export const terminal = () => drawable(process.env, Boolean(process.stdin.isTTY), Boolean(process.stdout.isTTY))
+
 export const realSetupDeps: SetupDeps = {
   ...realDeps,
-  terminal: () => drawable(process.env, Boolean(process.stdin.isTTY), Boolean(process.stdout.isTTY)),
+  terminal,
   screen: async (spec) => {
     // The screen is Solid JSX, loaded as `opencorp` loads the TUI.
     const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin")

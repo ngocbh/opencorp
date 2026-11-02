@@ -9,9 +9,14 @@ import { offboard } from "../src/commands/offboard"
 import { restart } from "../src/commands/restart"
 import { start } from "../src/commands/start"
 import { stop } from "../src/commands/stop"
-import { main } from "../src/main"
+import { tui } from "../src/commands/tui"
 import { type Deps, INTERRUPT_GRACE_MS, install, installSpawn, officeAnswers, realDeps } from "../src/office"
 import { createFakeOffice } from "@opencorp/tui/fake-office"
+
+/** What a client says when no office answers at `home`. */
+const notRunningAt = (home: string) =>
+  `The office at ${home} isn't running. Run \`opencorp start\` (or \`opencorp doctor\` if it won't start);` +
+  " set $OPENCORP_HOME if your office is elsewhere."
 
 const WRAPPER = path.resolve(import.meta.dir, "../bin/opencorp")
 
@@ -391,8 +396,9 @@ test("`opencorp` with no office says so and exits 3 before loading the TUI", asy
   const error = console.error
   console.error = (...a: unknown[]) => void err.push(a.join(" "))
   try {
-    expect(await main(["--continue"])).toBe(3)
-    expect(err).toEqual(["The office isn't running. Run `opencorp start` (or `opencorp doctor` if it won't start)."])
+    // On a terminal: without one, the TUI refuses before it asks the office.
+    expect(await tui(["--continue"], { terminal: () => true, assetRoot: () => null })).toBe(3)
+    expect(err).toEqual([notRunningAt(home)])
   } finally {
     console.error = error
     fs.rmSync(home, { recursive: true, force: true })
