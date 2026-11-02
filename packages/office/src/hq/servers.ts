@@ -1,5 +1,4 @@
 /** HQ's listeners: one node:http server each, so HQ's limits and failures never reach office.sock. */
-import fs from "node:fs"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import { stamp } from "@opencorp/protocol"
 import {
@@ -12,7 +11,15 @@ import {
   logLine,
   trackRequests,
 } from "../daemon/http.ts"
-import { hasLoopback6, listenTcp, listenUnix, messageOf, removeStaleSocket } from "../daemon/sockets.ts"
+import {
+  type SocketId,
+  hasLoopback6,
+  listenTcp,
+  listenUnix,
+  messageOf,
+  removeOwnSocket,
+  removeStaleSocket,
+} from "../daemon/sockets.ts"
 import { createHqApp } from "./api.ts"
 import type { Hq } from "./core.ts"
 import { BODY_TIMEOUT } from "./guard.ts"
@@ -68,7 +75,8 @@ export class Listeners {
   #timer6: ReturnType<typeof setTimeout> | null = null
   /** The reason the last WARNING about the ::1 bind gave. */
   #said6: string | null = null
-  #ownsSocket = false
+  /** hq.sock as this office made it, so the stop never removes another office's. */
+  #socketId: SocketId | null = null
   #stopping = false
 
   /** `loopback6` says whether to hold ::1 too, and `listen` binds TCP; tests replace them. */
@@ -104,13 +112,13 @@ export class Listeners {
   async start(): Promise<void> {
     const hq = this.#hq
     try {
-      // The office holds its lock, so no live office owns a socket there.
-      removeStaleSocket(hq.socket)
+      // A listener there is refused, not replaced: the office's start already refused one, so it came later.
+      await removeStaleSocket(hq.socket)
       const tracked = trackRequests(createHqApp(hq, { port: null }))
       const server = createServer(tracked.listener, HQ_LIMITS)
-      await listenUnix(server, hq.socket)
+      const id = await listenUnix(server, hq.socket)
       this.#keep({ server, port: null, address: null, requests: tracked })
-      this.#ownsSocket = true
+      this.#socketId = id
       hq.socketError = null
     } catch (error) {
       // Kept for GET /hq and doctor: a path too long for sun_path mustn't fail silently, and hq.sock failing
@@ -284,8 +292,8 @@ export class Listeners {
 
   /** Stops binding, refuses new connections and closes idle ones, gives every server's running handlers up to
    *  HANDLER_WAIT_MS to finish (their streams already ended with the office's bus), then closes every server and its
-   *  connections, and removes hq.sock. What goes wrong on the way is logged: the office's other stop hooks still
-   *  run. Never rejects. */
+   *  connections, and removes hq.sock if it is still its own. What goes wrong on the way is logged: the office's other
+   *  stop hooks still run. Never rejects. */
   async stop(): Promise<void> {
     const hq = this.#hq
     this.#stopping = true
@@ -311,14 +319,15 @@ export class Listeners {
     this.#servers = []
     hq.boundPort = hq.tcpError = hq.nextRetryAt = hq.socketError = hq.loopback6Error = null
     this.#said = this.#said6 = null
-    // Never what start found there and refused.
-    if (this.#ownsSocket)
+    // Never what start found there and refused, nor a socket that replaced this one.
+    if (this.#socketId !== null)
       try {
-        fs.rmSync(hq.socket, { force: true })
+        if (!removeOwnSocket(hq.socket, this.#socketId))
+          this.#log("WARNING", `HQ left ${hq.socket}: it is no longer this office's socket`)
       } catch (error) {
         this.#log("ERROR", `HQ couldn't remove ${hq.socket}: ${messageOf(error)}`)
       }
-    this.#ownsSocket = false
+    this.#socketId = null
     this.#stopping = false
   }
 }

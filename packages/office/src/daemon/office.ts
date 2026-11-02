@@ -58,6 +58,11 @@ export class OfficePaths {
     this.secrets = path.join(this.office, "secrets")
   }
 
+  /** HQ's unix socket, in the office dir. */
+  get hqSocket(): string {
+    return path.join(this.office, "hq.sock")
+  }
+
   /** The directory a session's worker runs in. */
   runDir(sessionId: string): string {
     return path.join(this.runs, sessionId)

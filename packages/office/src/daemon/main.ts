@@ -3,7 +3,6 @@
 import fs from "node:fs"
 import type { Server } from "node:http"
 import os from "node:os"
-import path from "node:path"
 import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform"
 import { oneReplyProblem } from "../chat/check.ts"
 import { ChatHarness } from "../chat/harness.ts"
@@ -14,7 +13,8 @@ import { HeadWatcher } from "../company/watch.ts"
 import { EXTENSIONS, type Extension, ExtensionError, loadExtensions } from "../extensions/index.ts"
 import { CodexSessions } from "../harness/sessions.ts"
 import { attach } from "../hq/core.ts"
-import { daemonArgs, daemonEnv, resolveHome } from "../install/launch.ts"
+import { daemonArgs, daemonEnv, requireCompany, resolveHome, wantedHome } from "../install/launch.ts"
+import { args, isDaemonLine, startTime } from "../install/proc.ts"
 import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
 import { Monitor } from "../perm/monitor.ts"
 import { selfCommand } from "../platform.ts"
@@ -39,10 +39,13 @@ import { Office, OfficePaths } from "./office.ts"
 import { allRoutes } from "./routes/index.ts"
 import {
   OfficeStartError,
+  type SocketId,
   checkSocketPath,
   listenUnix,
   makeOfficeDir,
   messageOf,
+  probeSocket,
+  removeOwnSocket,
   removeStaleSocket,
 } from "./sockets.ts"
 
@@ -88,11 +91,12 @@ export class PidFile {
     readonly lockPath: string,
   ) {}
 
-  /** Takes the lock and writes our pid, the pidfile made 0600. `AlreadyRunning` (with the pid the pidfile names,
-   *  or null) when another holder has the lock; `OfficeStartError` for a pidfile that is a symlink, not a regular
-   *  file or hard-linked, a lock file that isn't private, or another open failure. Never follows a symlink and
-   *  never truncates another file. */
-  async acquire(): Promise<void> {
+  /** Takes the lock, runs `check` with the pid the pidfile names (or null), then writes our pid, the pidfile made
+   *  0600. `AlreadyRunning` (with the pid the pidfile names, or null) when another holder has the lock; what `check`
+   *  throws, with the lock released and the pidfile untouched; `OfficeStartError` for a pidfile that is a symlink,
+   *  not a regular file or hard-linked, a lock file that isn't private, or another open failure. Never follows a
+   *  symlink and never truncates another file. */
+  async acquire(check?: (pid: number | null) => Promise<void>): Promise<void> {
     let lock: FileLock
     try {
       lock = await waitForLock(this.lockPath, { timeoutMs: LOCK_WAIT_MS, private: true })
@@ -102,6 +106,12 @@ export class PidFile {
         throw new OfficeStartError(error.message)
       }
       throw new OfficeStartError(`can't lock ${this.lockPath}: ${messageOf(error)}`)
+    }
+    try {
+      await check?.(readPid(this.path))
+    } catch (error) {
+      lock.release()
+      throw error
     }
     const { O_RDWR, O_CREAT, O_NOFOLLOW } = fs.constants
     let fd: number
@@ -141,14 +151,24 @@ export class PidFile {
     this.#held = { lock, fd }
   }
 
-  /** Removes the pidfile and releases the lock; harmless when not held. */
-  release(): void {
+  /** Removes the pidfile if it is still the file this holder wrote, and releases the lock; harmless when not held.
+   *  False when another file was at the path, which is left; true otherwise. */
+  release(): boolean {
     const held = this.#held
-    if (held === undefined) return
+    if (held === undefined) return true
     try {
-      fs.closeSync(held.fd)
-      // Removed while the lock is still ours, so it can't remove a newer daemon's pidfile.
-      fs.rmSync(this.path, { force: true })
+      // Compared by inode, not by the lock: a lock file deleted and made again lets a second daemon in, and its
+      // pidfile must stay.
+      let ours: boolean
+      try {
+        const mine = fs.fstatSync(held.fd, { bigint: true })
+        const st = fs.lstatSync(this.path, { bigint: true, throwIfNoEntry: false })
+        ours = st === undefined || (st.dev === mine.dev && st.ino === mine.ino)
+      } finally {
+        fs.closeSync(held.fd)
+      }
+      if (ours) fs.rmSync(this.path, { force: true })
+      return ours
     } finally {
       held.lock.release()
       this.#held = undefined
@@ -350,39 +370,67 @@ function close(server: Server): Promise<void> {
 }
 
 /**
+ * Throws `AlreadyRunning` when another office still serves this home although its lock was free (office.lock was
+ * deleted, and yian's lock holds only while the path names the same file): `pid`, the pidfile's, is a live
+ * `daemon --home <home>` process (read with `ps`), or office.sock or hq.sock has a listener. A socket that can't be
+ * probed is an `OfficeStartError`, so a service manager tries again. Otherwise removes a stale office.sock. A
+ * non-socket at either path is left for `removeStaleSocket` (office.sock) or HQ (hq.sock) to report.
+ */
+async function refuseLiveDaemon(paths: OfficePaths, pid: number | null, ps: string | undefined): Promise<void> {
+  // startTime spawns nothing, so ps runs only for a live pid.
+  const alive = pid !== null && pid !== process.pid && startTime(pid) !== null
+  if (alive && ps !== undefined && isDaemonLine(args(pid, ps), paths.home)) throw new AlreadyRunning(pid)
+  // A live socket names the pidfile's pid only when ps couldn't say it is someone else.
+  const named = alive && ps === undefined ? pid : null
+  for (const sock of [paths.socket, paths.hqSocket]) {
+    if (!fs.lstatSync(sock, { throwIfNoEntry: false })?.isSocket()) continue
+    const state = await probeSocket(sock)
+    if (state === "live") throw new AlreadyRunning(named)
+    if (state === "unknown") throw new OfficeStartError(`can't tell whether ${sock} is in use`)
+  }
+  await removeStaleSocket(paths.socket)
+}
+
+/**
  * Runs the daemon for `paths` until SIGINT, SIGTERM or SIGHUP.
  *
- * The start: the office dir, the lock and pidfile, the stop signals (installed before anything opens, so a signal
- * during the start stops the office once it has started instead of killing the process mid-start), the company
- * repo and socket path checks, the tools (git required), the office (store, company clone, reaped workers), the
- * extensions, HQ (attached last, so its listeners start after everything else and stop first), the office's start,
- * and last the socket: it listens only once everything is ready. A failed start undoes what it did, in reverse.
+ * The start: the company repo check (first, so a start on a home without one makes nothing), the office dir, the
+ * socket path check, the tools, the lock, the check that no other office still serves this home (`refuseLiveDaemon`,
+ * before anything is written; it also removes a stale socket), the pidfile, the stop signals (installed before
+ * anything opens, so a signal during the start stops the office once it has started instead of killing the process
+ * mid-start), the office (git required; store, company clone, reaped workers), the extensions, HQ (attached last, so
+ * its listeners start after everything else and stop first), the office's start, and last the socket: it listens
+ * only once everything is ready. A failed start undoes what it did, in reverse.
  *
  * The stop: the office stops first (its bus closes before anything else, because SSE responses never end on their
  * own, so the handler wait isn't held by them), then the server takes no new connections and idle ones close,
  * request handlers still running get up to `HANDLER_WAIT_MS` to answer, the remaining connections and the server
- * close, the socket file goes, the store closes, and last the pidfile and lock.
+ * close, the socket file goes (only if it is still this office's), the store closes, and last the pidfile (likewise)
+ * and lock.
  */
 async function run(
   paths: OfficePaths,
   { extensions, write, tools: given }: { extensions: readonly Extension[]; write: Write; tools?: Tools },
 ): Promise<void> {
   const log = officeLogger(write)
+  // First, unlike design §2.3's order (office dir, lock, then this check), so a start on a home without a company
+  // makes nothing there.
+  requireCompany(paths.home)
   makeOfficeDir(paths.office)
+  checkSocketPath(paths.socket)
+  // `main` can run without `pinDaemon` (tests); after the pin this filter changes nothing.
+  const env = daemonEnv(process.env)
+  const tools = given ?? resolveTools(env)
   const pidfile = new PidFile(paths.pidfile, paths.lock)
-  await pidfile.acquire()
+  // Before the pidfile is written and before buildOffice: its reap would kill a live office's workers, and its
+  // migrations would touch that office's store.
+  await pidfile.acquire((pid) => refuseLiveDaemon(paths, pid, tools.ps))
   try {
     const { promise: stopped, resolve: stop } = Promise.withResolvers<void>()
     // Resolving twice does nothing, so the first signal wins.
     const onSignal = () => stop()
     for (const sig of STOP_SIGNALS) process.on(sig, onSignal)
     try {
-      if (!fs.existsSync(path.join(paths.company, ".git")))
-        throw new OfficeStartError(`no company repo at ${paths.company}`)
-      checkSocketPath(paths.socket)
-      // `main` can run without `pinDaemon` (tests); after the pin this filter changes nothing.
-      const env = daemonEnv(process.env)
-      const tools = given ?? resolveTools(env)
       // A tool's install folder is write-denied in every sandboxed call, so it must not take in the office's
       // worktrees, the sessions' tmpdirs or the temp folder the calls' canaries go in.
       const guards = workspaceGuards(tools, env, selfCommand(), [os.homedir(), paths.home, os.tmpdir()])
@@ -396,7 +444,6 @@ async function run(
         }
         // Last, so HQ starts after everything else and stops first.
         attach(office, { log: (line) => write(line + "\n") })
-        removeStaleSocket(paths.socket) // we hold the lock, so no live daemon owns it
         try {
           await office.start()
         } catch (error) {
@@ -411,8 +458,9 @@ async function run(
           }),
         )
         const server = createServer(requests.listener)
+        let socketId: SocketId
         try {
-          await listenUnix(server, paths.socket)
+          socketId = await listenUnix(server, paths.socket)
         } catch (error) {
           await office.stop()
           throw error
@@ -433,7 +481,8 @@ async function run(
           await requests.settled(HANDLER_WAIT_MS)
           server.closeAllConnections()
           await close(server)
-          fs.rmSync(paths.socket, { force: true })
+          if (!removeOwnSocket(paths.socket, socketId))
+            log("WARNING", "opencorp.daemon.main")(`left ${paths.socket}: it is no longer this office's socket`)
         }
       } finally {
         office.store.close()
@@ -442,7 +491,8 @@ async function run(
       for (const sig of STOP_SIGNALS) process.off(sig, onSignal)
     }
   } finally {
-    pidfile.release()
+    if (!pidfile.release())
+      log("WARNING", "opencorp.daemon.main")(`left ${paths.pidfile}: it is no longer this office's pidfile`)
   }
 }
 
@@ -456,11 +506,11 @@ export interface MainOptions {
 }
 
 /**
- * Runs the daemon for `--home` (default `~/.opencorp`) until SIGINT, SIGTERM or SIGHUP; resolves to the exit
- * code: 0 after a clean stop or when this home's office is already running (a service manager restarts only on
- * failure, so a duplicate start must not look like one), 1 when it can't start or crashed, 2 for bad arguments.
- * The start and stop are `run`'s. Writes are synchronous by default: the process exits as soon as this returns, so
- * nothing may wait in a stream buffer.
+ * Runs the daemon for `--home` (default `$OPENCORP_HOME`, else `~/.opencorp`: `wantedHome`) until SIGINT, SIGTERM or
+ * SIGHUP; resolves to the exit code: 0 after a clean stop or when this home's office is already running (a service
+ * manager restarts only on failure, so a duplicate start must not look like one), 1 when it can't start or crashed,
+ * 2 for bad arguments. The start and stop are `run`'s. Writes are synchronous by default: the process exits as soon
+ * as this returns, so nothing may wait in a stream buffer.
  *
  * The tools are resolved once at start, as the absolute paths found on the daemon's PATH; nothing is looked up by
  * name later.
@@ -478,7 +528,7 @@ export async function main(
     return 2
   }
   try {
-    const wanted = value ?? path.join(os.homedir(), ".opencorp")
+    const wanted = wantedHome(value, process.env)
     let home: string
     try {
       home = resolveHome(wanted)

@@ -130,6 +130,41 @@ test("an empty opencorp home means the default", async () => {
   expect(s.out()).toContain(`no company repo at ${dir}/.opencorp/company`)
 })
 
+test.each(["init", "onboard", "offboard", "doctor", "start", "restart"])(
+  "an empty home is a usage error [%s]",
+  async (command) => {
+    for (const flag of [["--home", ""], ["--home="]]) {
+      const dir = tempDir()
+      const runner = new Runner()
+      const s = {
+        ...standIns(dir),
+        host: makeHost(dir, runner),
+        // Where an empty home used to fall back to: nothing may be read or written there.
+        environ: { OPENCORP_HOME: path.join(dir, "elsewhere") },
+        init: mustNotRun,
+        onboard: mustNotRun,
+        offboard: mustNotRun,
+      }
+      expect(await main([command, ...flag], s)).toBe(2)
+      expect(s.err()).toStartWith(`usage: opencorp install ${command}`)
+      expect(s.err()).toContain(`opencorp install ${command}: error: argument --home: the home can't be empty\n`)
+      expect(s.out()).toBe("")
+      expect(runner.calls).toEqual([])
+      expect(fs.readdirSync(dir)).toEqual([])
+    }
+  },
+)
+
+test("offboard with yes and an empty home removes nothing", async () => {
+  const dir = tempDir()
+  const office = path.join(dir, "elsewhere", "office")
+  fs.mkdirSync(office, { recursive: true })
+  const s = { ...standIns(dir), environ: { OPENCORP_HOME: path.join(dir, "elsewhere") } }
+  expect(await main(["offboard", "--yes", "--home", ""], s)).toBe(2)
+  expect(s.err()).toContain("argument --home: the home can't be empty")
+  expect(fs.statSync(office).isDirectory()).toBe(true)
+})
+
 /** What a stand-in for init, onboard or offboard was called with. */
 interface Call<O> {
   home: string
@@ -524,6 +559,20 @@ test("a start that finds an unverified holder points at doctor not restart", asy
   expect(await main(["start", "--home", home], s)).toBe(1)
   expect(s.err()).toContain("`opencorp doctor` shows what it is")
   expect(s.err()).not.toContain("opencorp restart")
+})
+
+test.each(["start", "restart"])("a home that is a file is not a directory [%s]", async (command) => {
+  const dir = tempDir()
+  const file = path.join(dir, "home")
+  fs.writeFileSync(file, "")
+  const runner = new Runner()
+  let s = { ...standIns(dir), host: makeHost(dir, runner) }
+  expect(await main([command, "--home", file], s)).toBe(1)
+  expect(s.err()).toBe(`opencorp: ${fs.realpathSync(file)} is not a directory\n`)
+  s = { ...standIns(dir), host: makeHost(dir, runner) }
+  expect(await main([command, "--home", path.join(file, "sub")], s)).toBe(1)
+  expect(s.err()).toStartWith(`opencorp: can't use the home ${path.join(fs.realpathSync(file), "sub")}: `)
+  expect(runner.calls).toEqual([])
 })
 
 /** A home for a real office, kept off HQ's TCP port, which the owner's own office holds: `install(argv)` runs

@@ -7,7 +7,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
-import { makeOfficeDir } from "../daemon/sockets.ts"
+import { makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
 import { reexec, selfCommand } from "../platform.ts"
 
 /** A service manager refused to install or start the office; the message says why. */
@@ -105,6 +105,19 @@ export function resolveHome(value: string): string {
   }
 }
 
+/** The home a command asked for, unresolved: `value` (its `--home`), else `$OPENCORP_HOME`, else `~/.opencorp`
+ *  under `userHome`. An empty `$OPENCORP_HOME` counts as unset. */
+export function wantedHome(value: string | undefined, environ: Env, userHome = os.homedir()): string {
+  return value ?? (environ.OPENCORP_HOME || path.join(userHome, ".opencorp"))
+}
+
+/** Throws `OfficeStartError` unless `home` holds a company clone (`company/.git`). The daemon checks this before
+ *  it makes anything, so a start on a wrong or missing home leaves nothing behind. */
+export function requireCompany(home: string): void {
+  const company = path.join(home, "company")
+  if (!fs.existsSync(path.join(company, ".git"))) throw new OfficeStartError(`no company repo at ${company}`)
+}
+
 /** The daemon's arguments: `--home <path>` and the re-exec's `--reexeced` mark, nothing else; throws on any other
  *  argument and on an empty home. The daemon's one parser, used before and after the re-exec, so the two can't
  *  disagree. */
@@ -148,14 +161,15 @@ function messageOf(error: unknown): string {
 }
 
 /**
- * Pins a starting daemon to the office's env and folder: unless it already runs with `daemonEnv` of its env, in the
- * realpath of `office/` (made first), it re-execs itself there with `--reexeced`, same pid; one started with
+ * Pins a starting daemon on `--home` (default `$OPENCORP_HOME`, else `~/.opencorp`: `wantedHome`) to the office's
+ * env and folder: unless it already runs with `daemonEnv` of its env, in the realpath of `office/` (made first, once
+ * the home is known to hold a company), it re-execs itself there with `--reexeced`, same pid; one started with
  * `--reexeced` that still differs exits instead. A service's added variables (launchd's `XPC_*`, systemd's
  * `INVOCATION_ID`) cause one re-exec too.
  *
- * Resolves to `undefined` when the daemon may run on, else the exit code: 2 for bad arguments, 1 for a home or
- * office dir that can't be used, a check still failing after the re-exec, or a re-exec that failed. Messages name
- * variables, never their values, and a failed re-exec only by its error's code or type.
+ * Resolves to `undefined` when the daemon may run on, else the exit code: 2 for bad arguments, 1 for a home without
+ * a company or an office dir that can't be used, a check still failing after the re-exec, or a re-exec that failed.
+ * Messages name variables, never their values, and a failed re-exec only by its error's code or type.
  */
 export function pinDaemon(argv: readonly string[], options: PinOptions = {}): number | undefined {
   const { environ = process.env, cwd = () => process.cwd(), command = selfCommand(), exec = reexec } = options
@@ -167,18 +181,21 @@ export function pinDaemon(argv: readonly string[], options: PinOptions = {}): nu
     write(`opencorp office: ${messageOf(error)}\n`)
     return 2
   }
-  const wanted = args.home ?? path.join(os.homedir(), ".opencorp")
+  const wanted = wantedHome(args.home, environ)
   let home: string
   try {
+    // Resolved here, against the caller's cwd: the re-exec passes the realpath as `--home`, and `daemonEnv` drops
+    // `OPENCORP_HOME`.
     home = resolveHome(wanted)
   } catch (error) {
-    // The caller's argument, or the default under `$HOME`, which isn't a secret.
+    // The caller's argument or `OPENCORP_HOME`, or the default under `$HOME`; a home path isn't a secret.
     write(`opencorp office: can't resolve the home ${wanted}: ${messageOf(error)}\n`)
     return 1
   }
   const office = path.join(home, "office")
   let officeReal: string
   try {
+    requireCompany(home)
     makeOfficeDir(office)
     officeReal = fs.realpathSync(office)
   } catch (error) {
@@ -324,6 +341,10 @@ export interface Host {
   clock(): number
   /** Whether the office on `socket` answers within `timeoutMs` (`officeAnswers`). */
   answers(socket: string, timeoutMs?: number): Promise<boolean>
+  /** Whether another process holds the lock file at `lockPath`. Left out, `onboard.ts`'s `officeRunning` uses yian's
+   *  `isLocked`, which this module may not import. Never called inside the daemon: closing another descriptor on the
+   *  lock file would drop the daemon's own lock. */
+  locked?(lockPath: string): boolean
 }
 
 /** Whether `file` is a non-directory this process may execute. */

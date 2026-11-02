@@ -270,6 +270,53 @@ test("a stale hq sock is replaced", async () => {
   }
 })
 
+test("a live hq sock at start is left and reported", async () => {
+  const { office, hq } = await setup()
+  shortOffice(office)
+  hq.config = { ...hq.config, tcp: false }
+  const other = net.createServer((conn) => conn.end())
+  onTestFinished(() => closeServer(other))
+  await listenUnix(other, hq.socket)
+  const ino = fs.lstatSync(hq.socket).ino
+  const listeners = new Listeners(hq)
+  await listeners.start()
+  try {
+    expect(hq.socketError).toMatch(/live listener/)
+    expect(listeners.servers).toHaveLength(0)
+  } finally {
+    await listeners.stop()
+  }
+  expect(fs.lstatSync(hq.socket).ino).toBe(ino)
+  await new Promise<void>((resolve, reject) => {
+    const conn = net.connect({ path: hq.socket }, () => {
+      conn.destroy()
+      resolve()
+    })
+    conn.on("error", reject)
+  })
+})
+
+test("stop leaves an hq sock that isnt its own", async () => {
+  const { office, hq, logs } = await setup()
+  shortOffice(office)
+  hq.config = { ...hq.config, tcp: false }
+  const listeners = new Listeners(hq)
+  await listeners.start()
+  let ino: number
+  try {
+    expect(hq.socketError).toBeNull()
+    fs.unlinkSync(hq.socket)
+    const other = net.createServer()
+    await listenUnix(other, hq.socket)
+    await closeServer(other)
+    ino = fs.lstatSync(hq.socket).ino
+  } finally {
+    await listeners.stop()
+  }
+  expect(fs.lstatSync(hq.socket).ino).toBe(ino!)
+  expect(logs.some((line) => line.includes(`WARNING`) && line.includes(`HQ left ${hq.socket}`))).toBe(true)
+})
+
 test("a taken port is retried and picked up once free", async () => {
   const { office, hq, logs } = await setup()
   shortOffice(office)

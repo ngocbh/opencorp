@@ -365,6 +365,9 @@ test(
     expect(result.error).toBeUndefined()
     expect(result.stderr).toContain("no company repo at")
     expect(result.status).toBe(1)
+    // The company is checked before the office dir or its lock is made. (The home is also $HOME, where Bun may
+    // keep a cache.)
+    expect(fs.existsSync(path.join(home, "office"))).toBe(false)
     expect(fs.existsSync(path.join(proj, "MARKER"))).toBe(false)
   },
   60_000,

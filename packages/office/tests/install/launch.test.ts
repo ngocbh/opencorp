@@ -3,8 +3,9 @@ import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
 import net from "node:net"
+import os from "node:os"
 import path from "node:path"
-import { expect, onTestFinished, test } from "bun:test"
+import { expect, onTestFinished, spyOn, test } from "bun:test"
 import {
   Launch,
   type PinOptions,
@@ -13,8 +14,10 @@ import {
   launch,
   officeAnswers,
   pinDaemon,
+  requireCompany,
   resolveHome,
   runCommand,
+  wantedHome,
   which,
 } from "../../src/install/launch.ts"
 import { sameProcess, startTime } from "../../src/install/proc.ts"
@@ -157,6 +160,14 @@ test("the daemon parser takes home and reexeced and nothing else", () => {
   expect(() => daemonArgs(["--home="])).toThrow("the home can't be empty")
 })
 
+test("the wanted home is the flag, else OPENCORP_HOME, else the default", () => {
+  expect(wantedHome("/f", { OPENCORP_HOME: "/x" }, "/u")).toBe("/f")
+  expect(wantedHome(undefined, { OPENCORP_HOME: "/x" }, "/u")).toBe("/x")
+  // An empty value counts as unset.
+  expect(wantedHome(undefined, { OPENCORP_HOME: "" }, "/u")).toBe("/u/.opencorp")
+  expect(wantedHome(undefined, {}, "/u")).toBe("/u/.opencorp")
+})
+
 const COMMAND: [string] = ["/opt/opencorp/bin/opencorp"]
 
 /** A `pinDaemon` run on `argv` with a stub re-exec that records its calls and returns, and a `write` that keeps
@@ -178,13 +189,19 @@ function pin(argv: string[], options: Omit<PinOptions, "exec" | "write" | "comma
   return { code, calls, text }
 }
 
+/** `home` with a company clone's `.git`, which the daemon checks for before it makes anything. */
+function withCompany(home: string): string {
+  fs.mkdirSync(path.join(home, "company", ".git"), { recursive: true })
+  return home
+}
+
 /** A clean caller env for `home`. */
 function clean(home: string): Record<string, string> {
   return { PATH: "/usr/bin:/bin", HOME: home, LANG: "en_US.UTF-8" }
 }
 
 test("a daemon already in the office env and folder runs on", () => {
-  const home = tempDir()
+  const home = withCompany(tempDir())
   const office = path.join(home, "office")
   const got = pin(["--home", home], { environ: daemonEnv(clean(home)), cwd: () => office })
   expect(got.code).toBeUndefined()
@@ -194,7 +211,7 @@ test("a daemon already in the office env and folder runs on", () => {
 })
 
 test("a daemon with another env re-execs into the office env and folder", () => {
-  const home = tempDir()
+  const home = withCompany(tempDir())
   const office = path.join(home, "office")
   const argv = [...COMMAND, "daemon", "--home", home, "--reexeced"]
   const reexec = (env: Record<string, string>) => ({ argv, env, cwd: office })
@@ -222,8 +239,36 @@ test("a daemon with another env re-execs into the office env and folder", () => 
   expect(deleted.calls).toEqual([reexec(clean(home))])
 })
 
+test("with OPENCORP_HOME set and no flag the daemon re-execs on that home", () => {
+  // A stand-in user home, so a daemon that ignored OPENCORP_HOME could never reach the owner's ~/.opencorp.
+  const userHome = tempDir()
+  const homedir = spyOn(os, "homedir").mockReturnValue(userHome)
+  onTestFinished(() => homedir.mockRestore())
+  const home = withCompany(tempDir())
+  const office = path.join(home, "office")
+  const got = pin([], { environ: { ...clean(home), OPENCORP_HOME: home }, cwd: () => office })
+  expect(got.code).toBe(1)
+  expect(got.calls).toEqual([
+    { argv: [...COMMAND, "daemon", "--home", fs.realpathSync(home), "--reexeced"], env: clean(home), cwd: office },
+  ])
+  expect(got.calls[0]!.env.OPENCORP_HOME).toBeUndefined()
+  // A relative value resolves against the caller's cwd, before the re-exec moves to the office.
+  const parent = path.dirname(home)
+  const cwd = process.cwd()
+  process.chdir(parent)
+  try {
+    const relative = pin([], { environ: { ...clean(home), OPENCORP_HOME: path.basename(home) }, cwd: () => office })
+    expect(relative.calls.map((c) => c.argv)).toEqual([
+      [...COMMAND, "daemon", "--home", fs.realpathSync(home), "--reexeced"],
+    ])
+  } finally {
+    process.chdir(cwd)
+  }
+  expect(fs.readdirSync(userHome)).toEqual([])
+})
+
 test("a daemon that still differs after its re-exec exits 1 naming variables not values", () => {
-  const home = tempDir()
+  const home = withCompany(tempDir())
   const environ = { ...clean(home), OPENAI_API_KEY: "sk-live-0000" }
   const got = pin(["--home", home, "--reexeced"], { environ, cwd: () => tempDir() })
   expect(got.code).toBe(1)
@@ -244,7 +289,7 @@ test("bad arguments exit 2 before any re-exec", () => {
 })
 
 test("a refused office dir exits 1 before any re-exec", () => {
-  const home = tempDir()
+  const home = withCompany(tempDir())
   const office = path.join(home, "office")
   fs.symlinkSync(tempDir(), office)
   const got = pin(["--home", home], { environ: clean(home), cwd: () => tempDir() })
@@ -254,7 +299,7 @@ test("a refused office dir exits 1 before any re-exec", () => {
 })
 
 test("a failed re-exec exits 1 with the errors code and never its message", () => {
-  const home = tempDir()
+  const home = withCompany(tempDir())
   const options = { environ: { ...clean(home), OPENAI_API_KEY: "sk-live-0000" }, cwd: () => tempDir() }
   const coded = pin(["--home", home], options, () => {
     throw Object.assign(new Error("boom sk-live-0000"), { code: "ENOENT" })
@@ -266,6 +311,27 @@ test("a failed re-exec exits 1 with the errors code and never its message", () =
   })
   expect(typed.code).toBe(1)
   expect(typed.text).toBe("opencorp office: can't re-exec into the office's env: RangeError\n")
+})
+
+test("a home with no company exits 1 and creates nothing before any re-exec", () => {
+  const home = tempDir()
+  const bare = pin(["--home", home], { environ: clean(home), cwd: () => tempDir() })
+  expect(bare.code).toBe(1)
+  expect(bare.text).toBe(`opencorp office: no company repo at ${path.join(fs.realpathSync(home), "company")}\n`)
+  expect(fs.readdirSync(home)).toEqual([])
+  expect(bare.calls).toEqual([])
+  const parent = tempDir()
+  const nested = pin(["--home", path.join(parent, "a", "b")], { environ: clean(parent), cwd: () => tempDir() })
+  expect(nested.code).toBe(1)
+  expect(nested.text).toStartWith("opencorp office: no company repo at ")
+  expect(fs.existsSync(path.join(parent, "a"))).toBe(false)
+  expect(nested.calls).toEqual([])
+})
+
+test("require company throws for a home without a company clone", () => {
+  const home = tempDir()
+  expect(() => requireCompany(home)).toThrow(`no company repo at ${path.join(home, "company")}`)
+  requireCompany(withCompany(home))
 })
 
 test("the pre re-exec check imports only node builtins platform and sockets", () => {

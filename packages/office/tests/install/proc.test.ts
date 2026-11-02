@@ -3,7 +3,15 @@ import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
-import { args, killGroup, linuxStartTime, sameProcess, startTime, stopProcess } from "../../src/install/proc.ts"
+import {
+  args,
+  isDaemonLine,
+  killGroup,
+  linuxStartTime,
+  sameProcess,
+  startTime,
+  stopProcess,
+} from "../../src/install/proc.ts"
 import { isGone, NO_GROUP, ps, psStat, startGroup, tempDir, waitFor } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -345,4 +353,13 @@ test("stopProcess refuses ids that are not another process without signalling", 
   expect(self).not.toBeNull()
   expect(await stopProcess(process.pid, self!, { timeout: 50, killWait: 50 })).toBe(false)
   expect(kill).not.toHaveBeenCalled()
+})
+
+test("a daemon line ends with daemon --home <home>, optionally --reexeced", () => {
+  expect(isDaemonLine("/b/bun /x/main.ts daemon --home /h", "/h")).toBe(true)
+  expect(isDaemonLine("/b/bun /x/main.ts daemon --home /h --reexeced", "/h")).toBe(true)
+  expect(isDaemonLine("/b/bun /x/main.ts daemon --home /z/h", "/h")).toBe(false)
+  expect(isDaemonLine("/b/bun /x/main.ts daemon --home /h/x", "/h")).toBe(false)
+  expect(isDaemonLine("/b/bun /x/main.ts daemon --home /h --other", "/h")).toBe(false)
+  expect(isDaemonLine(null, "/h")).toBe(false)
 })

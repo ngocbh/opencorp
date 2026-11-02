@@ -6,7 +6,7 @@ import path from "node:path"
 import { makeOfficeDir } from "../daemon/sockets.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
 import { type Completed, type Host, type Launch, ServiceError, daemonEnv, which } from "./launch.ts"
-import { args, startTime, stopProcess as stopPid } from "./proc.ts"
+import { args, isDaemonLine, startTime, stopProcess as stopPid } from "./proc.ts"
 import { resolveTools } from "./tools.ts"
 
 /** The office's tmux session, `opencorp-<name>`. */
@@ -191,8 +191,7 @@ export function pidOf(launch: Launch): number | null {
  * The process in the office's pidfile, if it is this office's daemon: its args end with `daemon --home <home>`,
  * optionally followed by `--reexeced`. Null when there is none, or it can't be inspected (no `ps`, a read fails).
  *
- * The start time is read before the args, so a pid reused in between fails `stopPid`'s re-check. The program is
- * left out of the match, since it may show up as the binary it links to.
+ * The start time is read before the args, so a pid reused in between fails `stopPid`'s re-check.
  */
 export function daemon(launch: Launch, ps: string | undefined): { pid: number; started: number } | null {
   const pid = pidOf(launch)
@@ -205,10 +204,7 @@ export function daemon(launch: Launch, ps: string | undefined): { pid: number; s
 export function verify(pid: number, launch: Launch, ps: string): { pid: number; started: number } | null {
   const started = startTime(pid)
   if (started === null) return null
-  const line = args(pid, ps)
-  if (line === null) return null
-  const tail = ` daemon --home ${launch.home}`
-  return line.endsWith(tail) || line.endsWith(`${tail} --reexeced`) ? { pid, started } : null
+  return isDaemonLine(args(pid, ps), launch.home) ? { pid, started } : null
 }
 
 /** How long a stop waits after SIGTERM before SIGKILL: the daemon's worst-case stop is about 20 s, and its store

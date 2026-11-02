@@ -9,19 +9,21 @@
  * Exit codes: 0 done, 1 failed, 2 usage, 3 (`start`, `restart`) no office yet, 130 Ctrl-C.
  */
 import { Console } from "node:console"
+import fs from "node:fs"
 import path from "node:path"
 import type { Readable, Writable } from "node:stream"
 import { parseArgs } from "node:util"
 import { identityPath, readIdentity } from "../auth/identity.ts"
 import { handleProblem } from "../company/naming.ts"
 import { companyState } from "../company_template/index.ts"
-import { OfficeStartError } from "../daemon/sockets.ts"
+import { messageOf, OfficeStartError } from "../daemon/sockets.ts"
 import { repr } from "../perm/redact.ts"
+import { strerror } from "../sandbox/fs_helper.ts"
 import { type CheckOptions, checks, exitCode, hqPortChecks, hqStatus, report } from "./doctor.ts"
 import * as fallback from "./fallback.ts"
 import { init } from "./init.ts"
 import { JsonPrompter, type TextOut } from "./json_prompts.ts"
-import { defaultHost, type Env, type Host, type Launch, launch, ServiceError } from "./launch.ts"
+import { defaultHost, type Env, type Host, type Launch, launch, ServiceError, wantedHome } from "./launch.ts"
 import { Declined, OffboardError, offboard } from "./offboard.ts"
 import {
   checkSocket,
@@ -272,6 +274,8 @@ function parse(command: string, argv: string[]): Args | string {
   }
   const args = parsed.values as Args
   if (args.help) return args
+  // An empty home would resolve to the cwd, and falling back to the default would point offboard at the real office.
+  if (args.home === "") return "argument --home: the home can't be empty"
   // In argv order, as argparse words it: the later flag is the one not allowed.
   const given = parsed.tokens.flatMap((t) => (t.kind === "option" && EXCLUSIVE.includes(t.name) ? [t.name] : []))
   const later = given.find((name) => name !== given[0])
@@ -366,10 +370,10 @@ export async function run(argv: string[], setup: Partial<Setup> = {}): Promise<n
   return exit(code)
 }
 
-/** The home to use: `--home`, else `$OPENCORP_HOME` (empty is unset), else `~/.opencorp`; resolved by each
- *  command through `launch`. */
+/** The home to use (`wantedHome`): `--home`, which `parse` refuses empty, else `$OPENCORP_HOME` (empty is unset),
+ *  else `~/.opencorp`; resolved by each command through `launch`. */
 function home(value: string | undefined, s: Setup): string {
-  return value || s.environ.OPENCORP_HOME || path.join(s.host.userHome, ".opencorp")
+  return wantedHome(value, s.environ, s.host.userHome)
 }
 
 /** The prompter for init and onboard: the setup screen's with `--json-prompts`, else the terminal's, which asks
@@ -578,6 +582,22 @@ async function runningPid(run: Launch, s: Setup): Promise<number | "?"> {
   return (await service.officePid(run, s.host, s.lookup)) ?? service.pid(run)
 }
 
+/** Whether the office's home is there but can't hold an office (a file, or a path that can't be read); says so on
+ *  stderr. A missing home isn't bad: it is one that isn't onboarded yet. */
+function badHome(run: Launch, s: Setup): boolean {
+  let st: fs.Stats | undefined
+  try {
+    st = fs.statSync(run.home, { throwIfNoEntry: false })
+  } catch (error) {
+    s.stderr.write(`opencorp: can't use the home ${run.home}: ${strerror(error) ?? messageOf(error)}\n`)
+    return true
+  }
+  if (st === undefined || st.isDirectory()) return false
+  // `opencorp init` can't fix this, so it isn't NOT_ONBOARDED.
+  s.stderr.write(`opencorp: ${run.home} is not a directory\n`)
+  return true
+}
+
 async function startCommand(args: Args, s: Setup): Promise<number> {
   const run = launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome })
   if (socketTooLong(run, s)) return 1
@@ -586,6 +606,7 @@ async function startCommand(args: Args, s: Setup): Promise<number> {
     await reportHq(run.home, s)
     return 0
   }
+  if (badHome(run, s)) return 1
   const refused = await notOnboarded(run, s)
   if (refused !== null) return refused
   const up = await cameUp(run, s, service.start, "start")
@@ -602,6 +623,7 @@ async function startCommand(args: Args, s: Setup): Promise<number> {
 async function restartCommand(args: Args, s: Setup): Promise<number> {
   const run = launch(home(args.home, s), { environ: s.environ, userHome: s.host.userHome })
   if (socketTooLong(run, s)) return 1
+  if (badHome(run, s)) return 1
   const lookup = await service.findDaemon(run, s.host, s.lookup)
   // A running office whose company is gone is told how to stop it, not that there's no office; its new daemon
   // would refuse to start. An office that said its pid answered already.

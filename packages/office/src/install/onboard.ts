@@ -17,7 +17,7 @@ import {
   SUPPORTED_LLM_PROVIDERS,
   ValidationError,
 } from "@ngocbh/yian/llm_clients"
-import { type FileLock, FileLockError, sqliteErrorCode, waitForLock, withWarnings } from "@ngocbh/yian/platform"
+import { type FileLock, FileLockError, isLocked, sqliteErrorCode, waitForLock, withWarnings } from "@ngocbh/yian/platform"
 import type { RunFlowOptions, RunResult } from "@ngocbh/yian/run"
 import { addDevice, DeviceRefused } from "../auth/devices.ts"
 import {
@@ -727,15 +727,34 @@ export function checkSocket(socket: string): void {
   }
 }
 
-/** Makes the home and office dirs, both 0700. Throws `OnboardError` when they can't be made, or the office dir
- *  isn't this user's. */
+/**
+ * Whether the office of `one` is running: it answers on its socket, or a process holds its lock (`office.lock`), as a
+ * daemon that is starting, stopping, hung or stopped does. Throws `OnboardError` when the lock can't be checked, so
+ * an office that may be running is never taken for a stopped one.
+ */
+export async function officeRunning(one: Launch, host: Host): Promise<boolean> {
+  if (await host.answers(one.socket)) return true
+  const lockPath = path.join(one.office, "office.lock")
+  try {
+    return (host.locked ?? isLocked)(lockPath)
+  } catch (error) {
+    const why = strerror(error) ?? (error instanceof Error ? error.message : String(error))
+    throw new OnboardError(`can't tell whether the office is running: can't check ${lockPath}: ${why}`)
+  }
+}
+
+/** Makes the home and office dirs, both 0700. Throws `OnboardError` when they can't be made, the home is there but
+ *  isn't a directory, or the office dir isn't this user's. */
 export function makeHome(home: string): void {
   try {
+    if (fs.statSync(home, { throwIfNoEntry: false })?.isDirectory() === false)
+      throw new OnboardError(`${home} is not a directory`)
     fs.mkdirSync(home, { recursive: true, mode: 0o700 })
     // mkdir leaves an existing home's mode alone; the home holds the company and the office.
     fs.chmodSync(home, 0o700)
     makeOfficeDir(path.join(home, "office"))
   } catch (error) {
+    if (error instanceof OnboardError) throw error
     if (error instanceof OfficeStartError) throw new OnboardError(error.message)
     const text = strerror(error)
     if (text === undefined) throw error
@@ -987,8 +1006,8 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
 
   step(1, "Company", "This office works for one company, whose people and flows live in its git repo.")
   // A running office is the only writer of its company clone (CompanyGit's lock is in-process), so the template
-  // top-up waits until it is stopped.
-  const running = await host.answers(one.socket)
+  // top-up waits until it is stopped. One that holds its lock but doesn't answer counts as running.
+  const running = await officeRunning(one, host)
   const state = await companyState(company)
   if (state.kind === "damaged") throw new OnboardError(damageMessage(company, state))
   const fresh = state.kind !== "ok"
