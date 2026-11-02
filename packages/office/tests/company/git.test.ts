@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { stamp } from "@opencorp/protocol"
 import { CompanyGit, CompanyGitError, type CompanyGitOptions, CompanyRepoBusy, oneLine } from "../../src/company/git.ts"
 import { tempDir } from "../helpers.ts"
@@ -452,6 +452,77 @@ test("prune and pin of the same sha serialize on the lock", async () => {
   const [pinned] = await Promise.all([g.pin(a), g.prune(() => [])])
   expect(pinned).toBe(dir)
   expect(fs.readFileSync(path.join(dir, ".opencorp-pin"), "utf8")).toBe(`${a}\n`)
+  expect(fs.readFileSync(path.join(dir, PROFILE), "utf8")).toBe("# Minh, Engineer\n")
+})
+
+test("a cached pin raced against a prune hands out a whole dir", async () => {
+  let t = 0
+  let onClock: (() => void) | undefined
+  const { company, g } = setup({
+    clock: () => {
+      onClock?.()
+      return t
+    },
+  })
+  const a = await g.head()
+  const dir = await g.pin(a)
+  await moveHead(company, g, "a")
+  const whole = () =>
+    fs.readFileSync(path.join(dir, ".opencorp-pin"), "utf8") === `${a}\n` &&
+    fs.readFileSync(path.join(dir, PROFILE), "utf8") === "# Minh, Engineer\n"
+  // The cached pin starts inside prune's section before its window check (so it is spared), just after the
+  // check while the removal begins (so it waits and rebuilds), or after the prune (so it rebuilds).
+  const cases = [
+    ["before the check", []],
+    ["after the check", [a]],
+    ["after the prune", [a]],
+  ] as const
+  for (const [when, removed] of cases) {
+    await g.pin(a)
+    t += 5000 // past the window, so only the race can spare the pin
+    const started = Promise.withResolvers<void>()
+    const pruned = g.prune(
+      () => {
+        if (when === "before the check") started.resolve()
+        // The next clock read is prune's window check, which marks the sha as removing in the same step.
+        if (when === "after the check") {
+          onClock = () => {
+            onClock = undefined
+            started.resolve()
+          }
+        }
+        return []
+      },
+      { graceMs: 1000 },
+    )
+    if (when === "after the prune") await pruned
+    else await started.promise
+    expect(await g.pin(a)).toBe(dir)
+    expect(whole()).toBe(true)
+    expect((await pruned).removed).toEqual([...removed])
+    expect(whole()).toBe(true)
+  }
+})
+
+// chflags makes one file undeletable; Linux needs root for its counterpart. The rm visits ".a" before the marker,
+// so without the marker going first the rm would stop with ".a/x" gone and the marker still there.
+test.skipIf(process.platform !== "darwin")("a prune whose rm fails partway leaves the pin to be rebuilt", async () => {
+  let stuck = ""
+  // Registered before the temp dir's removal, which runs callbacks in registration order.
+  onTestFinished(() => void (stuck && spawnSync("chflags", ["nouchg", stuck])))
+  const { company, g } = setup()
+  fs.mkdirSync(path.join(company, ".a"))
+  for (const name of ["x", "y"]) fs.writeFileSync(path.join(company, ".a", name), `${name}\n`)
+  await g.commit([".a"], "dot files")
+  const a = await g.head()
+  const dir = await prebuilt(company, g.worktrees, a)
+  await moveHead(company, g, "a")
+  stuck = path.join(dir, ".a", "y")
+  expect(spawnSync("chflags", ["uchg", stuck]).status).toBe(0)
+  await expect(g.prune(() => [])).rejects.toThrow()
+  expect(spawnSync("chflags", ["nouchg", stuck]).status).toBe(0)
+  expect(await g.pin(a)).toBe(dir)
+  expect(fs.readFileSync(path.join(dir, ".a", "x"), "utf8")).toBe("x\n")
   expect(fs.readFileSync(path.join(dir, PROFILE), "utf8")).toBe("# Minh, Engineer\n")
 })
 

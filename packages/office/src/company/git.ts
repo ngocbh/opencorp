@@ -278,6 +278,8 @@ export class CompanyGit {
   readonly #clock: () => number
   /** When `pin` last handed out each sha's dir, by `#clock`. */
   readonly #lastPinned = new Map<string, number>()
+  /** The shas whose pins `prune` is removing right now; `pin` takes the locked path for them. */
+  readonly #removing = new Set<string>()
   #queue: Promise<unknown> = Promise.resolve()
   #ceiling: string | undefined
   // What `commitHandEdits` last reported waiting for, and the conflicted profiles it last skipped, so
@@ -770,10 +772,14 @@ export class CompanyGit {
    */
   async pin(commit: string): Promise<string> {
     if (this.#holding()) throw new Error(NOT_REENTRANT)
+    // Stamped before the lockless check, in the same synchronous step as it: either prune sees the stamp and
+    // spares the pin, or this sees prune's removal and waits for the lock to rebuild, or the marker is gone.
     if (COMMIT_ID.test(commit)) {
+      this.#lastPinned.set(commit, this.#clock())
       const dir = path.join(this.worktrees, commit)
       // The marker is written last and a pin never changes, so a marked dir is complete.
-      if ((await fs.promises.stat(path.join(dir, PIN_MARKER)).catch(() => null))?.isFile()) return dir
+      const removing = this.#removing.has(commit)
+      if (!removing && (await fs.promises.stat(path.join(dir, PIN_MARKER)).catch(() => null))?.isFile()) return dir
     }
     const sha = await this.resolve(commit)
     const dir = path.join(this.worktrees, sha)
@@ -822,19 +828,29 @@ export class CompanyGit {
         await this.locked(async () => {
           // Read under the lock: a `pin` queued before this section has stamped its sha by now.
           if (new Set(keep()).has(sha) || sha === (await this.readHead())) return
+          // From the stamp check to marking the sha as removing, no await: a cached `pin` stamps synchronously
+          // before checking `#removing`, so the two can't miss each other.
           const stamp = this.#lastPinned.get(sha)
           const age = stamp === undefined ? Infinity : this.#clock() - stamp
           if (age < graceMs) {
             retryInMs = Math.min(retryInMs ?? Infinity, graceMs - age)
             return
           }
-          const dir = path.join(this.worktrees, sha)
-          const st = await fs.promises.lstat(dir).catch(() => null)
-          if (st?.isSymbolicLink()) await fs.promises.unlink(dir)
-          else if (st?.isDirectory()) await fs.promises.rm(dir, { recursive: true, force: true })
-          else return
-          removed.push(sha)
-          this.#lastPinned.delete(sha)
+          this.#removing.add(sha)
+          try {
+            const dir = path.join(this.worktrees, sha)
+            const st = await fs.promises.lstat(dir).catch(() => null)
+            if (st?.isSymbolicLink()) await fs.promises.unlink(dir)
+            else if (st?.isDirectory()) {
+              // The marker goes first, so an rm that fails partway leaves a dir `pin` rebuilds, not hands out.
+              await fs.promises.rm(path.join(dir, PIN_MARKER), { force: true })
+              await fs.promises.rm(dir, { recursive: true, force: true })
+            } else return
+            removed.push(sha)
+            this.#lastPinned.delete(sha)
+          } finally {
+            this.#removing.delete(sha)
+          }
         })
       }
     } finally {
