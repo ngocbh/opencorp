@@ -62,13 +62,6 @@ defs:
       max_turns: !int
       history_budget: !int
     nodes:
-      context:
-        kind: call
-        call: context
-        input:
-          summary: ${input.summary}
-          history: ${input.history}
-          history_budget: ${input.history_budget}
       # The turn: everything sent since the last one. Messages read along with a close aren't answered.
       heard:
         kind: tool
@@ -80,7 +73,16 @@ defs:
         kind: case
         cases:
           - when: ${heard.output.events != [] and not heard.output.closed}
-            then: reply
+            then: context
+      # The fold sits after the take, so it runs only inside a person's turn: a finished turn rests
+      # idle, and an Esc or End during the fold stops that turn.
+      context:
+        kind: call
+        call: context
+        input:
+          summary: ${input.summary}
+          history: ${input.history}
+          history_budget: ${input.history_budget}
       reply:
         kind: agent
         long_term_memory: profile
@@ -112,8 +114,8 @@ defs:
     output:
       person: ${input.person}
       talking_to: ${input.talking_to}
-      summary: ${context.output.summary}
-      history: ${context.output.history + [heard.output.events + (reply.new_messages :- [])]}
+      summary: ${context.output?.summary :- input.summary}
+      history: ${(context.output?.history :- input.history) + [heard.output.events + (reply.new_messages :- [])]}
       closed: ${heard.output.closed}
       turns: ${input.turns + 1}
       max_turns: ${input.max_turns}

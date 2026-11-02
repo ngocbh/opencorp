@@ -68,8 +68,8 @@ function frame(w: ScriptedWorker, name: string, nodeId: string, data: Record<str
   w.handlers.event(w.worker, { type: "event", name, data: { node_id: nodeId, ...data } })
 }
 
-/** Turn `i`'s first frames as the chat flow sends them: its take waits at once, while its context (compact_history's
- *  call containers, its case, its fold skipped under budget) runs beside it. */
+/** Turn `i`'s first frames as a flow that compacts beside its take sends them: its take waits at once, while its
+ *  context (compact_history's call containers, its case, its fold skipped under budget) runs beside it. */
 function nextTurn(w: ScriptedWorker, i: number): void {
   frame(w, "NodeStarted", `chat#${i}/context`)
   frame(w, "NodeStarted", `chat#${i}/heard`)
