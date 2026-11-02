@@ -15,7 +15,7 @@ import { type AnswerKind, type CardActor, type Cards, SIDE_END_WAIT_MS } from ".
 import { CARRIED_NOTE, INTERRUPTED, SENT_BACK } from "../../src/questions/format.ts"
 import { FRAMING, firstMessage } from "../../src/questions/seed.ts"
 import { BACK_HINT, SEED_FILE } from "../../src/questions/side.ts"
-import { CARD_CLOSED, OFFICE_STOPPED } from "../../src/runs/outcomes.ts"
+import { CARD_CLOSED, OFFICE_STOPPED, SIDE_OPEN_FAILED } from "../../src/runs/outcomes.ts"
 import { InvalidTransition, type QuestionRecord, type Store, newId } from "../../src/store/store.ts"
 import type { FakeLLM, ScriptedReply } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
@@ -1621,6 +1621,66 @@ test("a refused message to a live side chat leaves it live", async () => {
   expect(end).not.toHaveBeenCalled()
 })
 
+test("a first message that cant wake its run ends the side chat it opened", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const cards = h.office.cards!
+  const { q } = await ask(h)
+  const cantWake = new HarnessError(503, "cant_wake", "the run can't wake")
+  promptOnce(h, cantWake)
+  expect(await rejection(() => cards.openSide(q.id, "x"))).toBe(cantWake)
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
+  expect(texts(h, sideId, "user")).toEqual([])
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+  const side = await chat(h, q, "why?", 1)
+  expect(h.store.getSession(side.id)!.run_ids).toHaveLength(2)
+  expect(await framings(fake, 2)).toBe(1)
+})
+
+test("a refused first message whose run End cant reach is abandoned as a failed open", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK)
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  // Refused once its run is up, so End's refusal isn't the one a start the harness doesn't hold gets.
+  spyOn(h.harness, "prompt").mockImplementationOnce(async (sessionId) => {
+    await waitFor(() => status(h, sessionId) === "idle", { what: "the side run to wait for a message" })
+    throw REFUSED
+  })
+  spyOn(h.harness, "end").mockImplementationOnce(() => Promise.reject(new HarnessError(409, "not_live", "no run")))
+  const abandon = spyOn(h.harness, "abandon")
+  expect(await rejection(() => h.office.cards!.openSide(q.id, "x"))).toBe(REFUSED)
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  expect(abandon).toHaveBeenCalledWith(sideId, SIDE_OPEN_FAILED)
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
+  expect(h.store.runsOfSession(sideId).map((row) => row.endReason)).toEqual([SIDE_OPEN_FAILED])
+})
+
+test("a refused first message while the office stops leaves the side chat to the start sweep", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK)
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  promptOnce(h, REFUSED)
+  spyOn(h.harness, "end").mockImplementationOnce(() =>
+    Promise.reject(new HarnessError(503, "stopping", "the office is stopping")),
+  )
+  const abandon = spyOn(h.harness, "abandon")
+  expect(await rejection(() => h.office.cards!.openSide(q.id, "x"))).toBe(REFUSED)
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  await Bun.sleep(200)
+  expect(abandon).not.toHaveBeenCalled()
+  expect(status(h, sideId)).not.toBe("ended")
+  await h.reopen()
+  await h.harness.restore()
+  h.office.cards!.sweep()
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
+  expect(texts(h, sideId, "user")).toEqual([])
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+})
+
 test("an open queued behind a failing open reaches a fresh run", async () => {
   const fake = await fakeLlm()
   fake.script(ASK, { content: "Quota." })
@@ -1889,6 +1949,33 @@ test("the start sweep keeps a side chat whose only message is blank", async () =
   h.office.cards!.sweep()
   await Bun.sleep(300)
   expect(status(h, side.id)).toBe("idle")
+})
+
+test("the start sweep keeps a reopened side chat whose new run got no message", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." }, { content: "Still quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  await h.harness.end(side.id)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  // The office stops inside the reopen: the message and the open's End are both refused.
+  const stopping = new HarnessError(503, "stopping", "the office is stopping")
+  promptOnce(h, stopping)
+  spyOn(h.harness, "end").mockImplementationOnce(() => Promise.reject(stopping))
+  expect(await rejection(() => h.office.cards!.openSide(q.id, "x"))).toBe(stopping)
+  await waitFor(() => status(h, side.id) === "idle" && h.store.getSession(side.id)!.run_ids.length === 2, {
+    what: "the new run to wait for a message",
+  })
+  await h.reopen()
+  await h.harness.restore()
+  h.office.cards!.sweep()
+  await Bun.sleep(300)
+  expect(status(h, side.id)).not.toBe("ended")
+  expect(h.store.runsOfSession(side.id).map((row) => row.endReason)).not.toContain(SIDE_OPEN_FAILED)
+  // It sleeps until a fresh run, which the next open starts.
+  await chat(h, q, "again", 2)
+  expect(texts(h, side.id, "user")).toEqual(["why?", "again"])
 })
 
 test("a start sweep that cant read a side chats log logs its error type and goes on", async () => {

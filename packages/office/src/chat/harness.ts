@@ -493,7 +493,8 @@ export class ChatHarness implements SessionHarness {
     }
     try {
       const stored = this.store.answerQuestion(questionId, value, kind, answerer)
-      // Store listeners (the cards' discussion copy) may have written to it before `answerQuestion` returned.
+      // Store listeners (the cards' discussion copy) may have written to it before `answerQuestion` returned;
+      // not when called from a listener or inside a transaction.
       return this.store.getQuestion(questionId) ?? stored
     } catch (error) {
       if (error instanceof InvalidTransition) {

@@ -99,7 +99,9 @@ export class Cards {
   /** Send-backs and the copies after a side worker exits, one at a time, so a copy can't replace a send-back's note
    *  before the answer lands. The copy made at an answer runs in the store listener, not on this queue. */
   #discussion: Promise<unknown> = Promise.resolve()
-  /** The questions whose discussion was copied at their answer, while they stay `answered`: one copy per answer. */
+  /** The questions whose discussion was copied at their answer, while they stay `answered`: one copy per answer.
+   *  In memory only: after a restart no writer touches a question still `answered` before `Answers.ask` consumes
+   *  it, so no second copy is made. */
   readonly #copied = new Set<string>()
   /** Side chat opens, one at a time per question, so a question gets one side session; by question id. Its own
    *  queues: an open waits on the harness (a reopen on its last run's cancel), which a copy or another card's open
@@ -305,7 +307,9 @@ export class Cards {
   }
 
   /** Copies answered question `questionId`'s discussion, unless it was copied since it was answered; an error is
-   *  logged by its type, so the side chat still ends. */
+   *  logged by its type, so the side chat still ends. Runs inside the store listener, so a caller that re-reads the
+   *  question right after `answerQuestion` sees the copy; not when `answerQuestion` is called from a store listener
+   *  or inside an outer `store.transaction()`, which hold the events back until later. */
   #copyOnce(questionId: string): void {
     if (this.#copied.has(questionId)) return
     this.#copied.add(questionId)
@@ -401,7 +405,9 @@ export class Cards {
    * reply (one whose first reply was seen running is busy, and restore resumed it). Restore may still have resumed
    * its run: it reads `starting` until the resumed run shows one. Its run, when stored with no log (its worker never
    * started it), ends as the office stopped, with no end time. A side session of an open card that no human message
-   * reached is ended too, for the same reason: an office stop came inside its open.
+   * reached is ended too, for the same reason: an office stop came inside its open. The check reads every run of the
+   * session, so a reopened side chat whose new run's first message died in an office stop is kept: its history has a
+   * message, and the next open prompts it.
    */
   sweep(): void {
     for (const q of this.store.listQuestions({ status: "open" })) {
