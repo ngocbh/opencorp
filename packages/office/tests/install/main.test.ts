@@ -158,8 +158,8 @@ test.each(["init", "onboard", "offboard", "doctor", "start", "restart"])(
         offboard: mustNotRun,
       }
       expect(await main([command, ...flag], s)).toBe(2)
-      expect(s.err()).toStartWith(`usage: opencorp install ${command}`)
-      expect(s.err()).toContain(`opencorp install ${command}: error: argument --home: the home can't be empty\n`)
+      expect(s.err()).toStartWith(`usage: opencorp ${command}`)
+      expect(s.err()).toContain(`opencorp ${command}: error: argument --home: the home can't be empty\n`)
       expect(s.out()).toBe("")
       expect(runner.calls).toEqual([])
       expect(fs.readdirSync(dir)).toEqual([])
