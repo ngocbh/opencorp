@@ -13,6 +13,7 @@ import { interruptible } from "../../util/status"
 import { costCapArgument, dollars, useCostCap } from "../../component/cost-cap"
 import { personLabel } from "../../util/transcript"
 import { leaveBindings } from "./leave"
+import { display } from "../../util/printable"
 
 const SIDE_MODE = "side"
 
@@ -40,7 +41,7 @@ export function SideHeader(props: { question: Question; session: Session | undef
           )}
         </Show>
       </text>
-      <text fg={theme.textMuted}>About: {props.question.question}</text>
+      <text fg={theme.textMuted}>About: {display(props.question.question)}</text>
       <Show when={props.question.gate}>
         <text fg={theme.warning}>{asker()}'s explanation (the requester), not neutral advice</text>
       </Show>

@@ -347,3 +347,214 @@ test("Esc on a waiting session interrupts it", async () => {
     office.stop()
   }
 })
+
+/**
+ * Records the unhandled errors raised while `fn` runs; a submit that touches the torn-down prompt raises "EditBuffer
+ * is destroyed" this way, after the app has stopped.
+ */
+async function unhandled(fn: () => Promise<void>) {
+  const errors: unknown[] = []
+  const record = (e: unknown) => errors.push(e)
+  process.on("unhandledRejection", record)
+  process.on("uncaughtException", record)
+  try {
+    await fn()
+    // Let a continuation that resolved with the last request run.
+    await Bun.sleep(100)
+  } finally {
+    process.off("unhandledRejection", record)
+    process.off("uncaughtException", record)
+  }
+  return errors.map(String)
+}
+
+/** Runs `fn` with stdout captured; returns what was written. */
+async function stdoutOf(fn: () => Promise<unknown>) {
+  const write = process.stdout.write.bind(process.stdout)
+  let out = ""
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    out += String(chunk)
+    return true
+  }) as typeof process.stdout.write
+  try {
+    await fn()
+  } finally {
+    process.stdout.write = write
+  }
+  return out
+}
+
+const prompts = (office: ReturnType<typeof createFakeOffice>) =>
+  office.requests.filter((r) => r.method === "POST" && /^\/sessions\/[^/]+\/prompt$/.test(r.path))
+
+/** Returns the id of the session the office creates after this call. */
+function created(office: ReturnType<typeof createFakeOffice>) {
+  const seeded = new Set(office.state.sessions.map((s) => s.id))
+  return () => office.state.sessions.find((s) => !seeded.has(s.id))!.id
+}
+
+test("quitting while the first send creates its session still sends it, without touching the gone prompt", async () => {
+  const office = createFakeOffice()
+  const fresh = created(office)
+  const errors = await unhandled(async () => {
+    const app = await bootFrame(createStub(office))
+    const release = office.hold("POST /sessions")
+    try {
+      await app.until((f) => f.includes("@minh"))
+      app.input.typeText("hello")
+      app.input.pressEnter()
+      await until(() => office.requests.some((r) => r.method === "POST" && r.path === "/sessions"))
+      await stdoutOf(() => app.stop())
+      release()
+      await until(() => prompts(office).length === 1)
+      expect(prompts(office)[0]).toMatchObject({ path: `/sessions/${fresh()}/prompt`, body: { text: "hello" } })
+      expect(office.requests.some((r) => r.path === `/sessions/${fresh()}/messages`)).toBe(false)
+    } finally {
+      release()
+      await stdoutOf(() => app.stop())
+      office.stop()
+    }
+  })
+  expect(errors).toEqual([])
+})
+
+test("quitting while the first prompt goes out exits cleanly, naming the new session", async () => {
+  const office = createFakeOffice()
+  const fresh = created(office)
+  const errors = await unhandled(async () => {
+    const app = await bootFrame(createStub(office))
+    const release = office.hold("POST /sessions/:id/prompt")
+    try {
+      await app.until((f) => f.includes("@minh"))
+      app.input.typeText("hello")
+      app.input.pressEnter()
+      await until(() => prompts(office).length === 1)
+      const out = await stdoutOf(() => app.stop())
+      expect(out).toContain(`opencorp -s ${fresh()}`)
+      release()
+    } finally {
+      release()
+      await stdoutOf(() => app.stop())
+      office.stop()
+    }
+  })
+  expect(errors).toEqual([])
+})
+
+test("a first prompt that fails after the quit raises nothing", async () => {
+  const office = createFakeOffice()
+  office.broken.add("POST /sessions/:id/prompt")
+  const errors = await unhandled(async () => {
+    const app = await bootFrame(createStub(office))
+    const release = office.hold("POST /sessions/:id/prompt")
+    try {
+      await app.until((f) => f.includes("@minh"))
+      app.input.typeText("hello")
+      app.input.pressEnter()
+      await until(() => prompts(office).length === 1)
+      await stdoutOf(() => app.stop())
+      release()
+    } finally {
+      release()
+      await stdoutOf(() => app.stop())
+      office.stop()
+    }
+  })
+  expect(errors).toEqual([])
+})
+
+test("quitting while the new session's messages load, with an update queued, still sends the prompt", async () => {
+  const office = createFakeOffice()
+  const other = office.state.sessions[0].id
+  const errors = await unhandled(async () => {
+    const app = await bootFrame(createStub(office))
+    const release = office.hold("GET /sessions/:id/messages")
+    try {
+      await app.until((f) => f.includes("@minh"))
+      app.input.typeText("hello")
+      app.input.pressEnter()
+      await until(() => office.requests.some((r) => r.method === "GET" && r.path.endsWith("/messages")))
+      // An event the TUI queues for its next flush, which the quit then cancels.
+      office.updateSession(other, { cost: 0.5 })
+      await Bun.sleep(5)
+      await stdoutOf(() => app.stop())
+      release()
+      await until(() => prompts(office).length === 1)
+    } finally {
+      release()
+      await stdoutOf(() => app.stop())
+      office.stop()
+    }
+  })
+  expect(errors).toEqual([])
+})
+
+test("switching sessions while the first send creates its session keeps the text out of the next prompt", async () => {
+  const office = createFakeOffice()
+  const s0 = office.state.sessions[0].id
+  const fresh = created(office)
+  const errors = await unhandled(async () => {
+    const app = await bootFrame(createStub(office))
+    const release = office.hold("POST /sessions")
+    try {
+      await app.until((f) => f.includes("@minh"))
+      app.input.typeText("hello")
+      app.input.pressEnter()
+      await until(() => office.requests.some((r) => r.method === "POST" && r.path === "/sessions"))
+      app.input.pressKey("p", { ctrl: true })
+      await app.until((f) => f.includes("Commands"))
+      await Bun.sleep(50)
+      app.input.typeText("Switch session")
+      await app.until((f) => f.split("Switch session").length > 2)
+      app.input.pressEnter()
+      await app.until((f) => f.includes("@minh · /tmp/proj ·"))
+      app.input.pressEnter()
+      await app.until((f) => f.includes("@minh · idle"))
+      release()
+      await until(() => prompts(office).length === 1)
+      expect(prompts(office)[0]).toMatchObject({ path: `/sessions/${fresh()}/prompt`, body: { text: "hello" } })
+      await Bun.sleep(100)
+      await app.setup.renderOnce()
+      expect(app.frame()).toContain("@minh · idle")
+      expect(app.frame()).not.toContain("hello")
+      expect(prompts(office).filter((r) => r.path === `/sessions/${s0}/prompt`)).toEqual([])
+    } finally {
+      release()
+      await stdoutOf(() => app.stop())
+      office.stop()
+    }
+  })
+  expect(errors).toEqual([])
+})
+
+test("a card that takes the prompt's place while a steer goes out keeps it out of the prompt after", async () => {
+  const office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  const errors = await unhandled(async () => {
+    const app = await bootFrame(createStub(office), { sessionID: id })
+    try {
+      await app.until((f) => f.includes("@minh · idle"))
+      office.setStatus(id, "busy")
+      await app.until((f) => f.includes("@minh · busy"))
+      const release = office.hold("POST /sessions/:id/prompt")
+      app.input.typeText("steer")
+      app.input.pressEnter()
+      await until(() => prompts(office).length === 1)
+      office.addQuestion({ session_id: id, question: "Retry the flaky test?", options: ["Back off", "Fail fast"] })
+      await app.until((f) => f.includes("Retry the flaky test?"))
+      release()
+      await Bun.sleep(100)
+      app.input.pressKey("2")
+      await app.until((f) => !f.includes("Retry the flaky test?") && f.includes("esc interrupt"))
+      await Bun.sleep(100)
+      await app.setup.renderOnce()
+      // Only the transcript shows it, as the message that went out.
+      expect(app.frame().split("steer").length).toBe(2)
+      expect(prompts(office).map((r) => r.body)).toEqual([{ text: "steer" }])
+    } finally {
+      await stdoutOf(() => app.stop())
+      office.stop()
+    }
+  })
+  expect(errors).toEqual([])
+})

@@ -17,6 +17,23 @@ test("the home screen against a running office shows the logo, the prompt, and t
   }
 })
 
+test("the footer's people hint names the key that opens the people picker", async () => {
+  const office = createFakeOffice()
+  const app = await bootFrame(createStub(office))
+  try {
+    const f = await app.until((f) => f.includes("@minh") && f.includes("people"))
+    expect(f).toContain("ctrl+x p people")
+    expect(f).not.toContain("tab people")
+    app.input.pressKey("x", { ctrl: true })
+    await app.setup.renderOnce()
+    app.input.pressKey("p")
+    await app.until((f) => f.includes("Who do you want to talk to?") && f.includes("Hire new…"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("Tab cycles through agents, skipping humans; --person picks one at start", async () => {
   const s = seed()
   s.people.push({ handle: "lan", name: "Lan", kind: "agent", title: "QA engineer", manager: "ngocbh" })

@@ -8,6 +8,7 @@ import { useTuiPaths } from "../../context/runtime"
 import { abbreviateHome } from "../../runtime"
 import { personLabel } from "../../util/transcript"
 import { getScrollAcceleration } from "../../util/scroll"
+import { display } from "../../util/printable"
 
 const usd = (n: number) => `$${n.toFixed(2)}`
 // Millions from 999,950 on, where thousands would round up to "1000.0k".
@@ -78,7 +79,7 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                 </Show>
               </box>
               <box>
-                <text fg={theme.textMuted}>{abbreviateHome(current().cwd, paths.home)}</text>
+                <text fg={theme.textMuted}>{display(abbreviateHome(current().cwd, paths.home))}</text>
                 <text fg={theme.textMuted}>
                   {statusLabel(current())}
                   <Show when={costLabel(current(), office.connections())}>{(cost) => <span> · {cost()}</span>}</Show>

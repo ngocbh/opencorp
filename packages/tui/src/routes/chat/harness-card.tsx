@@ -12,6 +12,7 @@ import { interruptible } from "../../util/status"
 import { buildAnswer, cardModel } from "./answer"
 import { leaveBindings } from "./leave"
 import { QuestionView } from "./question-view"
+import { display } from "../../util/printable"
 
 /**
  * An open card for a Codex request: Codex asks, and the only action is an answer. No side chat, send back or stop:
@@ -32,7 +33,7 @@ export function HarnessCard(props: {
   const tuiConfig = useTuiConfig()
   const dialog = useDialog()
   const model = createMemo(() => cardModel(props.question))
-  const title = () => props.question.title ?? props.question.question
+  const title = () => display(props.question.title ?? props.question.question)
   const focusKey = useCommandShortcut("session.card.focus")
   // Esc interrupts while a turn is starting, running or waiting, as in the prompt.
   const canInterrupt = createMemo(() =>
@@ -108,7 +109,7 @@ export function HarnessCard(props: {
       >
         <Show when={props.question.title}>
           <box paddingLeft={1}>
-            <text fg={theme.text}>{props.question.title}</text>
+            <text fg={theme.text}>{display(props.question.title ?? "")}</text>
           </box>
         </Show>
       </QuestionView>

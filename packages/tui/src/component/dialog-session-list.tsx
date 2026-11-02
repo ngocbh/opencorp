@@ -14,6 +14,7 @@ import { working } from "../util/status"
 import { personLabel } from "../util/transcript"
 import { Spinner } from "./spinner"
 import { useCommandShortcut } from "../keymap"
+import { display } from "../util/printable"
 
 /** Main sessions, newest updated first; only those in `cwd` when it is given. */
 export function listedSessions(sessions: readonly Session[], cwd?: string) {
@@ -28,7 +29,7 @@ export function sessionRow(session: Session, people: readonly Person[], opts: { 
   const cwd =
     session.cwd === home || session.cwd.startsWith(home + "/") ? "~" + session.cwd.slice(home.length) : session.cwd
   const age = Locale.relative(Date.parse(session.updated_at), opts.now)
-  const row = `${personLabel(people, session.person)} · ${cwd} · ${age}`
+  const row = `${personLabel(people, session.person)} · ${display(cwd)} · ${age}`
   return session.status === "waiting" ? `${row} · ${statusLabel(session)}` : row
 }
 

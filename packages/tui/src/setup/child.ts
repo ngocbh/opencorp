@@ -1,4 +1,5 @@
 import type { SetupPrompt } from "@opencorp/protocol"
+import { printable } from "../util/printable"
 
 /** The running install: its prompts, a way to answer, and how it ended. */
 export interface SetupChild {
@@ -18,11 +19,6 @@ export interface SetupChild {
 
 const STDERR_MAX = 65536
 
-/** `text` without control characters, which could move the cursor or retitle the terminal. */
-export function plain(text: string): string {
-  return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "")
-}
-
 /** `line` as the prompt it holds, or as a `say` of the raw line when it holds none. */
 function parse(line: string): SetupPrompt {
   let value: any
@@ -33,18 +29,18 @@ function parse(line: string): SetupPrompt {
   const opt = (x: unknown) => x === undefined || str(x)
   const int = (x: unknown) => Number.isInteger(x)
   if (value && typeof value === "object") {
-    if (value.type === "say" && str(value.text)) return { type: "say", text: plain(value.text) }
+    if (value.type === "say" && str(value.text)) return { type: "say", text: printable(value.text) }
     if (value.type === "step" && int(value.number) && int(value.total) && str(value.title) && str(value.why))
       return {
         type: "step",
         number: value.number,
         total: value.total,
-        title: plain(value.title),
-        why: plain(value.why),
+        title: printable(value.title),
+        why: printable(value.why),
       }
     if (value.type === "ask" && str(value.question) && opt(value.default))
-      return { type: "ask", question: plain(value.question), default: plain(value.default ?? "") }
-    if (value.type === "secret" && str(value.question)) return { type: "secret", question: plain(value.question) }
+      return { type: "ask", question: printable(value.question), default: printable(value.default ?? "") }
+    if (value.type === "secret" && str(value.question)) return { type: "secret", question: printable(value.question) }
     if (
       value.type === "choose" &&
       str(value.question) &&
@@ -55,13 +51,13 @@ function parse(line: string): SetupPrompt {
     )
       return {
         type: "choose",
-        question: plain(value.question),
-        options: value.options.map(plain),
-        default: plain(value.default ?? ""),
+        question: printable(value.question),
+        options: value.options.map(printable),
+        default: printable(value.default ?? ""),
         typed: value.typed === true,
       }
   }
-  return { type: "say", text: plain(line) }
+  return { type: "say", text: printable(line) }
 }
 
 /** Calls `onText` with the text `reader` reads, chunk by chunk, until its stream ends or is cancelled. */

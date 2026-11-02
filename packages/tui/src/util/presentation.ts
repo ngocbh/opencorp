@@ -1,4 +1,5 @@
 import { logo } from "../logo"
+import { display } from "./printable"
 
 const reset = "\x1b[0m"
 const bold = "\x1b[1m"
@@ -28,7 +29,7 @@ export function sessionEpilogue(input: { title: string; sessionID?: string }) {
   return [
     ...wordmark("  "),
     "",
-    `  ${weak("Session")}${bold}${input.title}${reset}`,
+    `  ${weak("Session")}${bold}${display(input.title)}${reset}`,
     `  ${weak("")}Saved. ${bold}/sessions${reset} in this folder brings it back.`,
     `  ${weak("Continue")}${bold}opencorp -s ${input.sessionID}${reset}`,
     "",
