@@ -2,8 +2,15 @@
 // live in the office's `opencorp install` entry, in this same binary; it runs in the home dir with the setup env
 // (this env without the names that change how Bun starts). `opencorp` never starts the office on its own: the
 // service `opencorp init` or `opencorp onboard` installed does.
-import { createOfficeClient } from "@opencorp/client"
-import { readIdentity, type Identity, defaultSocket, identityPath, opencorpHome } from "@opencorp/client/node"
+import { createOfficeClient, OfficeDropped, OfficeError, OfficeTimeout, OfficeUnavailable } from "@opencorp/client"
+import {
+  readIdentity,
+  type Identity,
+  defaultSocket,
+  identityPath,
+  opencorpHome,
+  socketProblem,
+} from "@opencorp/client/node"
 import { selfCommand, selfSpawnCwd, selfSpawnEnv } from "@opencorp/office/platform"
 import fs from "node:fs"
 import os from "node:os"
@@ -154,9 +161,34 @@ export const notRunning = () =>
   `The office at ${opencorpHome()} isn't running. ` +
   "Run `opencorp start` (or `opencorp doctor` if it won't start); set $OPENCORP_HOME if your office is elsewhere."
 
-/** Says the office isn't running; returns `NO_OFFICE`. */
-export function officeNotRunning(): number {
-  console.error(notRunning())
+/**
+ * Why the office can't be reached, for a message: `about` is the failure, or the socket path to look at (default the
+ * default socket). Undefined when there's no socket, so the office just isn't running.
+ */
+export function unreachableReason(about: unknown = defaultSocket()): string | undefined {
+  if (about instanceof OfficeDropped) return about.message
+  if (about instanceof OfficeUnavailable) return socketProblem(about.socket)
+  return socketProblem(typeof about === "string" ? about : defaultSocket())
+}
+
+/**
+ * Says the office can't be reached, and why when there's a socket that doesn't answer (`about`: the failure, or the
+ * socket path looked at), or that it answered `officeDown`'s check too slowly or with an error; returns `NO_OFFICE`.
+ */
+export function officeNotRunning(about?: unknown, print: (line: string) => void = console.error): number {
+  if (about instanceof OfficeTimeout) {
+    const within = about.timeoutMs / 1000
+    print(`The office didn't answer within ${within} s; it may be busy or stuck. Run \`opencorp doctor\`.`)
+    return NO_OFFICE
+  }
+  if (about instanceof OfficeError && !(about instanceof OfficeUnavailable)) {
+    print(`The office answered its health check with HTTP ${about.status}. Run \`opencorp doctor\`.`)
+    return NO_OFFICE
+  }
+  const reason = unreachableReason(about)
+  if (reason === undefined) print(notRunning())
+  else if (about instanceof OfficeDropped) print(`${reason}. Run \`opencorp doctor\`.`)
+  else print(`The office can't be reached: ${reason}. Run \`opencorp doctor\`.`)
   return NO_OFFICE
 }
 
@@ -196,12 +228,18 @@ export async function warnIfTokenless(): Promise<void> {
   }
 }
 
-/** Whether an office answers `GET /health`, which needs no token, on the unix socket `socket` within 2 s. */
-export async function officeAnswers(socket: string): Promise<boolean> {
+/**
+ * Why no office answers `GET /health`, which needs no token, on the unix socket `socket` within `timeoutMs`, or
+ * undefined when one does: `OfficeTimeout` for one too slow, an `OfficeError` with the status of one that answered
+ * with an error, `OfficeUnavailable` when nothing took the connection. `officeNotRunning` says each.
+ */
+export async function officeDown(socket: string, timeoutMs = 2000): Promise<OfficeError | undefined> {
+  const timeout = AbortSignal.timeout(timeoutMs)
+  let res: Response
   try {
-    const res = await fetch("http://office/health", { unix: socket, signal: AbortSignal.timeout(2000) })
-    return res.ok
-  } catch {
-    return false
+    res = await fetch("http://office/health", { unix: socket, signal: timeout })
+  } catch (e) {
+    return timeout.aborted ? new OfficeTimeout("GET", "/health", timeoutMs) : new OfficeUnavailable(socket, e)
   }
+  return res.ok ? undefined : new OfficeError(res.status, "bad_response", `GET /health: HTTP ${res.status}`)
 }

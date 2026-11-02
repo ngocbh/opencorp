@@ -8,6 +8,7 @@ import {
   newToken,
   readIdentity,
   tokenSha256,
+  UnusableToken,
   writeIdentity,
 } from "../src/identity"
 import { identityPath } from "../src/paths"
@@ -102,4 +103,50 @@ test("no file is no identity; a broken one says to log in again without echoing 
   } catch (e) {
     expect(String(e)).not.toContain(token)
   }
+})
+
+test("a token a header can't carry is UnusableToken, naming the file, the handle and the device but not the token", () => {
+  const file = path.join(tmp(), "identity.json")
+  for (const token of ["act_a\r\nb", "act_abc ", "act_é"]) {
+    fs.writeFileSync(file, JSON.stringify({ handle: "ngocbh", device: "mac", token }), { mode: 0o600 })
+    let e: unknown
+    try {
+      readIdentity(file)
+    } catch (error) {
+      e = error
+    }
+    expect(e).toBeInstanceOf(UnusableToken)
+    const u = e as UnusableToken
+    expect([u.handle, u.device]).toEqual(["ngocbh", "mac"])
+    expect(u.message).toBe(`${file} holds a token that can't be sent; run \`opencorp login --force\``)
+    expect(Bun.inspect(u)).not.toContain(token)
+  }
+})
+
+test("a handle or device no office can list is refused, before the token is looked at", () => {
+  const file = path.join(tmp(), "identity.json")
+  const bad = [
+    { handle: "", device: "mac" },
+    { handle: ".", device: "mac" },
+    { handle: "a/b", device: "mac" },
+    { handle: "NgocBH", device: "mac" },
+    { handle: "ngocbh", device: "" },
+    { handle: "ngocbh", device: "." },
+    { handle: "ngocbh", device: "a/b" },
+  ]
+  for (const token of [newToken(), "act_a\nb"])
+    for (const who of bad) {
+      fs.writeFileSync(file, JSON.stringify({ ...who, token }), { mode: 0o600 })
+      let e: unknown
+      try {
+        readIdentity(file)
+      } catch (error) {
+        e = error
+      }
+      expect([who, e instanceof Error, e instanceof UnusableToken]).toEqual([who, true, false])
+      expect((e as Error).message).toBe(
+        `${file} names a handle or device no office lists; run \`opencorp login --force\``,
+      )
+      expect(Bun.inspect(e)).not.toContain(token)
+    }
 })

@@ -4,7 +4,8 @@
 // then replay the buffer on top.
 import type { Event, LiveEvent, Message, Person, Question } from "@opencorp/protocol"
 import type { OfficeClient } from "./client"
-import { failureKind, OfficeError, OfficeUnavailable, UnknownDevice } from "./errors"
+import { BadToken, failureKind, OfficeError, OfficeUnavailable, UnknownDevice } from "./errors"
+import { runEach } from "./queue"
 import type { StreamEvent, SubscribeOptions, Subscription } from "./sse"
 import { applyLive, applyMeta, replay, upsertQuestion, upsertSession, type OfficeState } from "./store"
 
@@ -130,7 +131,8 @@ export function createOfficeSync(opts: {
   function fire(events: StreamEvent[]) {
     for (const e of events) {
       if (e.type !== "meta" && e.type !== "live") continue
-      for (const fn of listeners.get(e.event.type) ?? []) fn(e.event)
+      // One listener's bug mustn't cost the others their event, or the stream (and the state) its update.
+      runEach(listeners.get(e.event.type) ?? [], e.event)
     }
   }
 
@@ -171,8 +173,9 @@ export function createOfficeSync(opts: {
         generation++
         buffer = undefined
         // A reset or dropped stream reconnects at once, so it shouldn't flash "offline".
-        // A refused token won't pass on a retry, so it reads as an error, not as no office.
-        if (e.type === "unreachable" && e.error instanceof UnknownDevice) setStatus("error", e.error.message, e.error)
+        // A refused token, or one that can't be sent, won't pass on a retry, so it reads as an error, not as no office.
+        if (e.type === "unreachable" && (e.error instanceof UnknownDevice || e.error instanceof BadToken))
+          setStatus("error", e.error.message, e.error)
         else if (e.type === "unreachable") setStatus("offline", undefined, e.error)
         else if (status !== "error") setStatus("connecting")
         return
@@ -396,7 +399,7 @@ export function createOfficeSync(opts: {
         if (folderPeople) s.folderPeople = folderPeople
       })
     },
-    /** Calls `fn` for each event of `type` once it is applied; returns an unsubscribe. */
+    /** Calls `fn` for each event of `type` once it is applied (a throw is logged); returns an unsubscribe. */
     on<K extends keyof OfficeEvents>(type: K, fn: (e: OfficeEvents[K]) => void) {
       const set = listeners.get(type) ?? new Set()
       listeners.set(type, set)

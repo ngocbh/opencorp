@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import type { Message, Question } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "../fixture/fake-office"
-import { createOfficeClient, emptyState, openQuestions, createOfficeSync } from "@opencorp/client"
+import { createOfficeClient, emptyState, openQuestions, createOfficeSync, type OfficeStatus } from "@opencorp/client"
 import { until } from "../fixture/until"
 
 const fast = { minDelayMs: 10, maxDelayMs: 40 }
@@ -12,13 +12,20 @@ afterEach(() => {
   office?.stop()
   office = undefined
 })
-function start(socket: string, stream = fast, maxBuffered?: number, timeoutMs?: number) {
+function start(
+  socket: string,
+  stream = fast,
+  maxBuffered?: number,
+  timeoutMs?: number,
+  onStatus?: (s: OfficeStatus) => void,
+) {
   const state = emptyState()
   const sync = createOfficeSync({
     client: createOfficeClient({ socket, timeoutMs }),
     cwd: "/tmp/proj",
     state: () => state,
     mutate: (f) => f(state),
+    onStatus,
     stream,
     maxBuffered,
   })
@@ -178,6 +185,74 @@ test("on() sees applied events", async () => {
   office.addQuestion({})
   await Bun.sleep(30)
   expect(seen).toEqual([q.id])
+})
+
+const boom = () => {
+  throw new Error("listener bug")
+}
+
+test("a throwing on() listener doesn't stop the stream or the other listeners", async () => {
+  office = createFakeOffice()
+  const statuses: OfficeStatus[] = []
+  const logged = await quietly(async () => {
+    const { sync } = start(office!.socket, fast, undefined, undefined, (s) => statuses.push(s))
+    await until(() => sync.status() === "online")
+    let seen = 0
+    sync.on("question.created", boom)
+    sync.on("question.created", () => void seen++)
+    for (let i = 0; i < 3; i++) office!.addQuestion({})
+    await until(() => seen === 3)
+    await Bun.sleep(50)
+  })
+  expect(statuses).toEqual(["online"])
+  expect(count(office, "GET /people")).toBe(1)
+  expect(logged.map((args) => args[0])).toEqual(Array(3).fill("Failed to apply an office update"))
+})
+
+test("a listener that throws on a buffered bootstrap event leaves the sync online", async () => {
+  office = createFakeOffice()
+  const statuses: OfficeStatus[] = []
+  const release = office.hold("GET /sessions")
+  const logged = await quietly(async () => {
+    const { sync } = start(office!.socket, fast, undefined, undefined, (s) => statuses.push(s))
+    sync.on("question.created", boom)
+    await until(() => count(office!, "GET /sessions?limit=50") === 1)
+    office!.addQuestion({})
+    await Bun.sleep(30)
+    release()
+    await until(() => sync.status() === "online")
+    await Bun.sleep(100)
+    expect(sync.status()).toBe("online")
+  })
+  expect(statuses).toEqual(["online"])
+  expect(count(office, "GET /people")).toBe(1)
+  expect(logged.map((args) => args[0])).toContain("Failed to apply an office update")
+})
+
+test("a listener that throws on a session's replayed window still loads the session", async () => {
+  office = createFakeOffice()
+  const logged = await quietly(async () => {
+    const { state, sync } = start(office!.socket)
+    await until(() => sync.status() === "online")
+    const id = office!.state.sessions[0].id
+    office!.state.messages[id] = [
+      { id: "M", session_id: id, role: "assistant", parts: [{ id: "p1", type: "text", text: "hel" }], created_at: "t" },
+    ]
+    sync.on("part.updated", boom)
+    const release = office!.hold("GET /sessions/:id/messages")
+    const done = sync.syncSession(id)
+    await until(() => count(office!, `GET /sessions/${id}/messages`) === 1)
+    office!.live({
+      type: "part.updated",
+      session_id: id,
+      data: { message_id: "M", part: { id: "p2", type: "text", text: "world" } },
+    })
+    await Bun.sleep(30)
+    release()
+    await done
+    expect(state.messages[id][0].parts.map((p) => (p as { text: string }).text)).toEqual(["hel", "world"])
+  })
+  expect(logged.map((args) => args[0])).toContain("Failed to apply an office update")
 })
 
 test("refreshQuestion re-reads a question the stream never updated", async () => {

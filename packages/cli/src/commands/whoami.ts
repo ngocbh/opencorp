@@ -44,7 +44,7 @@ export const run: CommandRun = async (argv) => {
     )
     return 0
   } catch (e) {
-    if (e instanceof OfficeUnavailable) return officeNotRunning()
+    if (e instanceof OfficeUnavailable) return officeNotRunning(e)
     console.error(`opencorp whoami: ${e instanceof Error ? e.message : e}`)
     return 1
   }

@@ -4,7 +4,7 @@ import { createOfficeClient, UnknownDevice } from "@opencorp/client"
 import { defaultSocket } from "@opencorp/client/node"
 import { tuiAssetRoot } from "@opencorp/office/platform"
 import type { CommandRun } from "../main"
-import { localIdentity, officeAnswers, officeNotRunning } from "../office"
+import { localIdentity, officeDown, officeNotRunning } from "../office"
 import { terminal } from "../setup"
 
 /** What `opencorp tui --help` prints; `opencorp --help` repeats the option lines. */
@@ -96,7 +96,8 @@ export async function tui(argv: string[], deps: TuiDeps = realTuiDeps): Promise<
   }
   const socket = defaultSocket()
   // Asked before the TUI loads, so no office is one line, not a TUI waiting on the socket.
-  if (!(await officeAnswers(socket))) return officeNotRunning()
+  const down = await officeDown(socket)
+  if (down) return officeNotRunning(down)
   const token = localIdentity()?.token
   // Likewise a device the office refuses: one line, not a TUI that can't load anything.
   try {

@@ -1,10 +1,19 @@
 import { afterEach, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { chmodSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import net from "node:net"
 import path from "node:path"
 import { createOfficeClient } from "../src/client"
-import { OfficeError, OfficeTimeout, OfficeUnavailable, UnknownDevice } from "../src/errors"
+import {
+  BadToken,
+  failureKind,
+  OfficeDropped,
+  OfficeError,
+  OfficeTimeout,
+  OfficeUnavailable,
+  UnknownDevice,
+} from "../src/errors"
 import { transportOf } from "../src/http"
-import { subscribe, type StreamEvent } from "../src/sse"
+import { subscribe, type RunLiveFrame, type StreamEvent } from "../src/sse"
 import { emptyState } from "../src/store"
 import { createOfficeSync, type OfficeStatus } from "../src/sync"
 import { onStop, serve, stopServers } from "./serve"
@@ -223,4 +232,322 @@ test("a stream refused with one status and then another reports each; repeated n
   await Bun.sleep(50) // more refused connections: still one report
   expect(seen.map((e) => e.type)).toEqual(["unreachable", "unreachable", "unreachable"])
   expect((seen[2] as { error?: any }).error).not.toBeInstanceOf(OfficeError)
+})
+
+/** A client over a recording unix socket server. */
+function socketClient() {
+  const dir = mkdtempSync("/tmp/oct-")
+  onStop(() => rmSync(dir, { recursive: true, force: true }))
+  const socket = path.join(dir, "o.sock")
+  const { seen } = serve({ unix: socket })
+  return { client: createOfficeClient({ socket }), seen }
+}
+
+type Client = ReturnType<typeof createOfficeClient>
+const body = {} as never
+
+/** Each method that puts a caller's value in the path, how to call it with `bad` there, and the office's not_found. */
+const GUARDED: [string, (c: Client, bad: string) => Promise<unknown>, (bad: string) => string][] = [
+  ["sessions.get", (c, b) => c.sessions.get(b), (b) => `no session ${b}`],
+  ["sessions.messages", (c, b) => c.sessions.messages(b), (b) => `no session ${b}`],
+  ["sessions.prompt", (c, b) => c.sessions.prompt(b, body), (b) => `no session ${b}`],
+  ["sessions.steer", (c, b) => c.sessions.steer(b, body), (b) => `no session ${b}`],
+  ["sessions.interrupt", (c, b) => c.sessions.interrupt(b), (b) => `no session ${b}`],
+  ["sessions.end", (c, b) => c.sessions.end(b), (b) => `no session ${b}`],
+  ["sessions.continue", (c, b) => c.sessions.continue(b), (b) => `no session ${b}`],
+  ["sessions.costCap", (c, b) => c.sessions.costCap(b, body), (b) => `no session ${b}`],
+  ["sessions.setModel", (c, b) => c.sessions.setModel(b, body), (b) => `no session ${b}`],
+  ["questions.get", (c, b) => c.questions.get(b), (b) => `no question ${b}`],
+  ["questions.answer", (c, b) => c.questions.answer(b, body), (b) => `no question ${b}`],
+  ["questions.side", (c, b) => c.questions.side(b, body), (b) => `no question ${b}`],
+  ["questions.sendBack", (c, b) => c.questions.sendBack(b, body), (b) => `no question ${b}`],
+  ["questions.stop", (c, b) => c.questions.stop(b), (b) => `no question ${b}`],
+  ["questions.dismissCarried", (c, b) => c.questions.dismissCarried(b), (b) => `no question ${b}`],
+  ["runs.get", (c, b) => c.runs.get(b), (b) => `no run ${b}`],
+  ["runs.nodes", (c, b) => c.runs.nodes(b), (b) => `no run ${b}`],
+  ["runs.events", (c, b) => c.runs.events(b), (b) => `no run ${b}`],
+  ["runs.event", (c, b) => c.runs.event(b, 1), (b) => `no run ${b}`],
+  ["devices.add", (c, b) => c.devices.add(b, body), (b) => `no person @${b}`],
+  ["devices.remove", (c, b) => c.devices.remove(b, "mac"), (b) => `no person @${b}`],
+  ["devices.remove (name)", (c, b) => c.devices.remove("ann", b), () => "@ann has no device by that name"],
+  ["people.setPassword", (c, b) => c.people.setPassword(b, body), (b) => `no person @${b}`],
+  ["hq.removeBrowser", (c, b) => c.hq.removeBrowser(b), (b) => `no browser session ${b}`],
+  ["connections.models", (c, b) => c.connections.models(b), (b) => `there is no connection '${b}' on this office`],
+  ["connections.remove", (c, b) => c.connections.remove(b), (b) => `there is no connection '${b}' on this office`],
+  ["connections.login", (c, b) => c.connections.login(b), (b) => `no sign-in ${b}`],
+  ["connections.cancelLogin", (c, b) => c.connections.cancelLogin(b), (b) => `no sign-in ${b}`],
+  ["workItems.get", (c, b) => c.workItems.get(b), (b) => `no work item ${b}`],
+  ["workItems.comments", (c, b) => c.workItems.comments(b), (b) => `no work item ${b}`],
+  ["profiles.get", (c, b) => c.profiles.get(b), (b) => `no person ${b}`],
+  ["profiles.put", (c, b) => c.profiles.put(b, body), (b) => `no person ${b}`],
+  ["profiles.manager", (c, b) => c.profiles.manager(b, body), (b) => `no person ${b}`],
+  ["profiles.proposals", (c, b) => c.profiles.proposals(b), (b) => `no person ${b}`],
+  ["proposals.apply", (c, b) => c.proposals.apply(b), (b) => `no profile proposal ${b}`],
+]
+
+/** Methods with no caller value in the path (a query string carries any). */
+const NO_PATH_SEGMENT = new Set([
+  "whoami",
+  "health",
+  "company.get",
+  "company.tree",
+  "company.file", // its path goes in the query
+  "costs.since",
+  "runs.list",
+  "runs.children", // the parent goes in the query
+  "pair",
+  "signIn",
+  "logout",
+  "hq.status",
+  "hq.pair",
+  "hq.browsers",
+  "login",
+  "people.list",
+  "people.inFolder", // a folder path, slashes and all: tested on its own
+  "people.hire",
+  "sessions.list",
+  "sessions.create",
+  "connections.list",
+  "connections.add",
+  "connections.setDefault",
+  "connections.startLogin",
+  "questions.list",
+  "events.subscribe",
+])
+
+/** Methods that put an id in the path but aren't guarded. */
+const UNGUARDED = new Set([
+  // Builds a link and sends nothing; HQ shows it only once `runs.get` (guarded) found the run.
+  "runs.logUrl",
+])
+
+test("an id no path segment can carry is not_found, in the office's words, and nothing is sent", async () => {
+  const { client, seen } = socketClient()
+  for (const [name, call, missing] of GUARDED)
+    for (const bad of ["", ".", "..", "a/b", "../x"]) {
+      let p: Promise<unknown>
+      try {
+        p = call(client, bad)
+      } catch (e) {
+        throw new Error(`${name}(${JSON.stringify(bad)}) threw instead of rejecting: ${e}`)
+      }
+      const e = await failure(p)
+      expect([name, bad, e instanceof OfficeError, e.status, e.code, e.message]).toEqual([
+        name,
+        bad,
+        true,
+        404,
+        "not_found",
+        missing(bad),
+      ])
+    }
+  expect(seen).toEqual([])
+})
+
+test("ids a path segment can carry are sent, encoded", async () => {
+  const { client, seen } = socketClient()
+  for (const id of ["S1", "a.b", "...", "%2e", "a%2Fb"]) await client.sessions.get(id)
+  expect(seen.map((r) => r.path)).toEqual([
+    "/sessions/S1",
+    "/sessions/a.b",
+    "/sessions/...",
+    "/sessions/%252e",
+    "/sessions/a%252Fb",
+  ])
+})
+
+test("people.inFolder answers [] for a folder no request can name, and sends a folder path whole", async () => {
+  const { client, seen } = socketClient()
+  for (const cwd of ["", ".", "..", "/a/../b", "../x"]) expect(await client.people.inFolder(cwd)).toEqual([])
+  expect(seen).toEqual([])
+  await client.people.inFolder("/Users/me/proj")
+  expect(seen.map((r) => r.path)).toEqual(["/folders/%2FUsers%2Fme%2Fproj/people"])
+})
+
+test("runs.live with an id no path segment can carry ends closed with not_found, and sends nothing", async () => {
+  const { client, seen } = socketClient()
+  for (const bad of ["", ".", "..", "a/b", "../x"]) {
+    const frames: RunLiveFrame[] = []
+    client.runs.live(bad, (f) => frames.push(f))
+    expect(frames).toEqual([]) // reported as runLive reports a failure: not from inside the call
+    await Bun.sleep(0)
+    expect(frames.length).toBe(1)
+    const [f] = frames as [{ type: string; error?: any }]
+    expect([f.type, f.error instanceof OfficeError, f.error?.status, f.error?.code, f.error?.message]).toEqual([
+      "closed",
+      true,
+      404,
+      "not_found",
+      `no run ${bad}`,
+    ])
+  }
+  // A stream closed or aborted before then reports nothing.
+  const frames: RunLiveFrame[] = []
+  client.runs.live("..", (f) => frames.push(f)).close()
+  const abort = new AbortController()
+  client.runs.live("..", (f) => frames.push(f), { signal: abort.signal })
+  abort.abort()
+  await Bun.sleep(0)
+  expect(frames).toEqual([])
+  expect(seen).toEqual([])
+})
+
+test("every client method is guarded, carries no path value, or is listed as unguarded", () => {
+  const names: string[] = []
+  const walk = (o: Record<string, unknown>, prefix: string) => {
+    for (const [k, v] of Object.entries(o))
+      if (typeof v === "function") names.push(prefix + k)
+      else if (v && typeof v === "object") walk(v as Record<string, unknown>, `${prefix}${k}.`)
+  }
+  walk(createOfficeClient({ socket: "/nowhere" }), "")
+  // runs.live reports through its handler, so it's tested on its own.
+  const guarded = new Set([...GUARDED.map(([name]) => name.split(" ")[0]), "runs.live"])
+  expect(names.filter((n) => !guarded.has(n) && !NO_PATH_SEGMENT.has(n) && !UNGUARDED.has(n))).toEqual([])
+})
+
+const BAD_TOKENS = ["act_abc\r\nX-Evil: 1", "act_a\nb", "act_a\0b", "act_é", "act_abc ", "act_abc\n"]
+
+test("a token a header can't carry is bad_token, sent nowhere, and never in the error", async () => {
+  const dir = mkdtempSync("/tmp/oct-")
+  onStop(() => rmSync(dir, { recursive: true, force: true }))
+  const socket = path.join(dir, "o.sock")
+  const { seen } = serve({ unix: socket })
+  for (const token of BAD_TOKENS) {
+    const e = await failure(createOfficeClient({ socket, token }).whoami())
+    expect(e).toBeInstanceOf(BadToken)
+    expect(e).not.toBeInstanceOf(OfficeUnavailable)
+    expect([e.status, e.code]).toEqual([0, "bad_token"])
+    expect(e.message).toContain("opencorp login --force")
+    for (const text of [e.message, String(e.cause), Bun.inspect(e)]) {
+      expect(text).not.toContain(token)
+      expect(text).not.toContain("act_")
+    }
+  }
+  expect(seen).toEqual([])
+})
+
+test("a token a header can't carry fails the stream without the token in its error", async () => {
+  const dir = mkdtempSync("/tmp/oct-")
+  onStop(() => rmSync(dir, { recursive: true, force: true }))
+  const socket = path.join(dir, "o.sock")
+  const { seen } = serve({ unix: socket })
+  const first = await new Promise<StreamEvent>((resolve) => {
+    const sub = subscribe({ socket }, (e) => {
+      sub.close()
+      resolve(e)
+    }, { token: "act_abc\r\nX-Evil: 1" })
+  })
+  const error = (first as { error?: any }).error
+  expect(first.type).toBe("unreachable")
+  expect(error).toBeInstanceOf(BadToken)
+  expect([error.status, error.code]).toEqual([0, "bad_token"])
+  // A refusal, not a network failure: retrying won't help.
+  expect(failureKind(error)).not.toBe("network")
+  expect(Bun.inspect(error)).not.toContain("act_")
+  expect(seen).toEqual([])
+})
+
+test("a token a header can't carry reaches onStatus as an error saying to log in again, not as offline", async () => {
+  const dir = mkdtempSync("/tmp/oct-")
+  onStop(() => rmSync(dir, { recursive: true, force: true }))
+  const socket = path.join(dir, "o.sock")
+  const { seen: sent } = serve({ unix: socket })
+  const seen: [OfficeStatus, string | undefined, unknown][] = []
+  const state = emptyState()
+  const sync = createOfficeSync({
+    client: createOfficeClient({ socket, token: "act_abc " }),
+    state: () => state,
+    mutate: (f) => f(state),
+    onStatus: (s, error, cause) => seen.push([s, error, cause]),
+    stream: { minDelayMs: 10, maxDelayMs: 40, token: "act_abc " },
+  })
+  sync.start()
+  onStop(sync.stop)
+  while (!seen.length) await Bun.sleep(5)
+  const [status, message, cause] = seen[0]
+  expect(status).toBe("error")
+  expect(cause).toBeInstanceOf(BadToken)
+  expect(message).toContain("run `opencorp login --force`")
+  expect(sent).toEqual([])
+})
+
+/** A unix socket server that reads a request, starts an answer and drops the connection. */
+async function dropping() {
+  const dir = mkdtempSync("/tmp/oct-")
+  const socket = path.join(dir, "o.sock")
+  const server = net.createServer((c) =>
+    c.once("data", () => {
+      c.write("HTTP/1.1 200 OK\r\nContent-Le")
+      c.destroy()
+    }),
+  )
+  await new Promise<void>((resolve) => server.listen(socket, resolve))
+  onStop(() => {
+    server.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+  return socket
+}
+
+test("a connection dropped before the answer is OfficeDropped; a write may have been applied", async () => {
+  const socket = await dropping()
+  const read = await failure(createOfficeClient({ socket }).whoami())
+  expect(read).toBeInstanceOf(OfficeDropped)
+  expect(read).toBeInstanceOf(OfficeUnavailable)
+  expect(read.status).toBe(0)
+  expect(read.message).toBe("GET /whoami: the office dropped the connection before answering")
+  const write = await failure(createOfficeClient({ socket }).sessions.end("S1"))
+  expect(write).toBeInstanceOf(OfficeDropped)
+  expect(write.message).toBe(
+    "POST /sessions/S1/end: the office dropped the connection before answering; the change may have been applied, so check before trying again",
+  )
+})
+
+test("a connection reset, a broken pipe or Bun's ConnectionClosed is OfficeDropped", async () => {
+  const real = globalThis.fetch
+  try {
+    for (const code of ["ECONNRESET", "EPIPE", "ConnectionClosed"]) {
+      globalThis.fetch = (async () => {
+        throw Object.assign(new Error("dropped"), { code })
+      }) as unknown as typeof fetch
+      const e = await failure(createOfficeClient({ socket: "/nowhere.sock" }).sessions.end("S1"))
+      expect([code, e instanceof OfficeDropped]).toEqual([code, true])
+    }
+    globalThis.fetch = (async () => {
+      throw Object.assign(new Error("refused"), { code: "ECONNREFUSED" })
+    }) as unknown as typeof fetch
+    const e = await failure(createOfficeClient({ socket: "/nowhere.sock" }).sessions.end("S1"))
+    expect(e).toBeInstanceOf(OfficeUnavailable)
+    expect(e).not.toBeInstanceOf(OfficeDropped)
+  } finally {
+    globalThis.fetch = real
+  }
+})
+
+test("a socket that can't be reached is OfficeUnavailable naming it, without guessing why", async () => {
+  const dir = mkdtempSync("/tmp/oct-")
+  onStop(() => rmSync(dir, { recursive: true, force: true }))
+  const plain = path.join(dir, "plain")
+  writeFileSync(plain, "")
+  // A socket no server holds any more: moved aside while its server closes, so the file stays.
+  const stale = path.join(dir, "stale.sock")
+  const server = net.createServer()
+  await new Promise<void>((resolve) => server.listen(stale, resolve))
+  renameSync(stale, `${stale}.x`)
+  await new Promise<void>((resolve) => server.close(() => resolve()))
+  renameSync(`${stale}.x`, stale)
+  const sockets = [path.join(dir, "missing.sock"), plain, stale]
+  // A live socket nobody may write to; root may write anyway.
+  if (process.getuid?.() !== 0) {
+    const locked = path.join(dir, "locked.sock")
+    serve({ unix: locked })
+    chmodSync(locked, 0)
+    sockets.push(locked)
+  }
+  for (const socket of sockets) {
+    const e = await failure(createOfficeClient({ socket }).whoami())
+    expect(e).toBeInstanceOf(OfficeUnavailable)
+    expect(e).not.toBeInstanceOf(OfficeDropped)
+    expect(e.message).toBe(`can't connect to the office at ${socket}`)
+  }
 })

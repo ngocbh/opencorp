@@ -74,6 +74,8 @@ test("a missing socket is OfficeUnavailable", async () => {
   const err = await failure(request("/tmp/act-missing/o.sock", "GET", "/people"))
   expect(err).toBeInstanceOf(OfficeUnavailable)
   expect([err.status, err.code]).toEqual([0, "office_unavailable"])
+  // The client can't tell a missing socket from a stale one; the CLI, which can look, says which.
+  expect(err.message).toBe("can't connect to the office at /tmp/act-missing/o.sock")
 })
 
 test("a body that breaks off mid-read is a bad_response", async () => {

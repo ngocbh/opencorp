@@ -12,7 +12,10 @@ export class OfficeError extends Error {
   }
 }
 
-/** Nothing answers at the office's socket or base URL. */
+/**
+ * The office's socket or base URL didn't answer. Over a socket the client can't tell why (no socket, a stale one, no
+ * permission all fail alike), so the message doesn't guess; Node callers can look at the path (`socketProblem`).
+ */
 export class OfficeUnavailable extends OfficeError {
   constructor(
     readonly socket: string,
@@ -22,10 +25,27 @@ export class OfficeUnavailable extends OfficeError {
     super(
       0,
       "office_unavailable",
-      remote ? `can't reach the office at ${socket}` : `the office is not running (no socket at ${socket})`,
+      remote ? `can't reach the office at ${socket}` : `can't connect to the office at ${socket}`,
     )
     this.name = "OfficeUnavailable"
     this.cause = cause
+  }
+}
+
+/** The office took the connection and dropped it before answering; a write may have been applied. */
+export class OfficeDropped extends OfficeUnavailable {
+  constructor(
+    socket: string,
+    readonly method: string,
+    readonly path: string,
+    cause?: unknown,
+    remote = false,
+  ) {
+    super(socket, cause, remote)
+    this.name = "OfficeDropped"
+    this.message =
+      `${method} ${path}: the office dropped the connection before answering` +
+      (method === "GET" ? "" : "; the change may have been applied, so check before trying again")
   }
 }
 
@@ -41,6 +61,21 @@ export class UnknownDevice extends OfficeError {
         : "the office doesn't know this device: run `opencorp login`",
     )
     this.name = "UnknownDevice"
+  }
+}
+
+/**
+ * This device's token holds characters a request header can't carry, so the client sent nothing. A refusal like
+ * `UnknownDevice`, not an office that's away: a retry won't help, logging in again will.
+ */
+export class BadToken extends OfficeError {
+  constructor() {
+    super(
+      0,
+      "bad_token",
+      "this device's token can't be sent (it holds characters a token can't have); run `opencorp login --force`",
+    )
+    this.name = "BadToken"
   }
 }
 
@@ -91,9 +126,10 @@ export const isNoLog = (e: unknown) => e instanceof OfficeError && e.status === 
 
 /**
  * What kind of failure `e` is, to tell a new failure from a repeat of the last: the class and status when the office
- * answered, "network" when it didn't (no answer, a dropped connection), "none" for no failure.
+ * answered or the client refused to send (`BadToken`), "network" when it didn't answer (no answer, a dropped
+ * connection), "none" for no failure.
  */
 export function failureKind(e: unknown) {
   if (e === undefined) return "none"
-  return e instanceof OfficeError && e.status > 0 ? `${e.name} ${e.status}` : "network"
+  return e instanceof OfficeError && (e.status > 0 || e instanceof BadToken) ? `${e.name} ${e.status}` : "network"
 }

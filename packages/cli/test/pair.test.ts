@@ -4,6 +4,7 @@ import path from "node:path"
 import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
 import { canOpen, pair, pairOutput, type PairDeps, socketPort } from "../src/commands/pair"
+import { staleSocket } from "./sockets"
 
 /** What a client says when no office answers at `home`. */
 const notRunningAt = (home: string) =>
@@ -523,6 +524,16 @@ test("without an office it says so and exits 3", async () => {
   const { d, errors } = deps()
   expect(await pair([], d)).toBe(3)
   expect(errors).toEqual([notRunningAt(home)])
+})
+
+test("with a socket nothing answers on, it says so and exits 3", async () => {
+  const socket = path.join(home, "office", "office.sock")
+  await staleSocket(socket)
+  const { d, errors } = deps()
+  expect(await pair([], d)).toBe(3)
+  expect(errors).toEqual([
+    `The office can't be reached: nothing answers on ${socket}; the office may have stopped or crashed. Run \`opencorp doctor\`.`,
+  ])
 })
 
 test("an unknown option is a usage error", async () => {
