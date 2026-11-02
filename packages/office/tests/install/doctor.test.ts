@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
 import { openSqlite } from "@ngocbh/yian/platform"
-import { expect, onTestFinished, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { Identity, IdentityUnreadable, identityPath, readIdentity, writeIdentity } from "../../src/auth/identity.ts"
 import { newToken } from "../../src/auth/tokens.ts"
 import { writeCompany } from "../../src/company_template/index.ts"
@@ -32,6 +32,9 @@ import { CEO, giveDevice, makeOffice, served } from "../daemon/helpers.ts"
 import { fifo, isGone, ps, shortDir, tempDir, waitFor } from "../helpers.ts"
 import { sandboxAvailable } from "../sandbox/helpers.ts"
 import { makeHost, Runner, standIn } from "./helpers.ts"
+
+// Most tests run doctor several times, and each run exports the company's last commit with git.
+setDefaultTimeout(30_000)
 
 const KEY = "sk-ant-test-0123456789"
 const PROVIDER = { llm_config: { provider: "anthropic", api_key: KEY } }
@@ -228,7 +231,7 @@ test("the assets folder of the binary is checked beside the home, only when ther
   // A checkout loads OpenTUI's files from node_modules: there is no folder to check.
   expect(byName(await runChecks(dir, paths, { assets: null }))["tui assets"]).toBeUndefined()
   expect(byName(await runChecks(dir, paths))["tui assets"]).toBeUndefined()
-}, 30_000)
+})
 
 test("an onboarded office that isnt running is only a warning", async () => {
   const dir = tempDir()
@@ -414,6 +417,22 @@ test.skipIf(process.getuid?.() === 0)("a people folder that cant be listed says 
   }
   expect(got.company!.status).toBe("fail")
   expect(got.company!.detail).toContain("people: repo.unreadable: can't be listed (EACCES)")
+})
+
+test("a working tree file the daemon reads that wont load fails the company check, shown once", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const rel = "people/ngocbh/person.yaml"
+  fs.writeFileSync(path.join(paths.company, rel), "handle: [\n")
+  // Logins and device changes read it from the working tree, and say to run doctor.
+  const got = byName(await runChecks(dir, paths)).company!
+  expect(got.status).toBe("fail")
+  expect(got.detail).toContain(`${rel}: repo.unreadable: `)
+  expect(got.detail).toContain(unsaved(rel))
+  git(paths.company, "commit", "-qam", "break")
+  const committed = byName(await runChecks(dir, paths)).company!
+  expect(committed.status).toBe("fail")
+  expect(committed.detail.split(`${rel}: repo.unreadable: `)).toHaveLength(2)
 })
 
 const SIDE_CHAT = "shared/flows/side_chat.yaml"
@@ -781,7 +800,7 @@ test("a service that starts a program that's gone fails and says to onboard", as
       })
     }
   }
-}, 30_000)
+})
 
 test("a loaded service whose file is gone or unreadable warns", async () => {
   const dir = tempDir()
@@ -1020,7 +1039,7 @@ test("a log ending in bun's missing module line fails, quoting it", async () => 
     expect(got.detail).toContain('its last start failed: error: Module not found "/old/packages/cli/src/main.ts" (log:')
     expect(got.detail).toContain(`(log: ${path.join(paths.office, "office.log")}). ${advice}`)
   }
-}, 30_000)
+})
 
 test("bun's missing module lines are quoted cut short", async () => {
   const dir = tempDir()

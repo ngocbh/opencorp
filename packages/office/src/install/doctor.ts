@@ -57,9 +57,6 @@ const SIGNED_OUT = "not logged in"
 /** The most of a line from `codex --version` or `codex login status` the report shows. */
 const LINE_CAP = 200
 
-/** How the loader says the OS refused a repo folder or file (`repo.unreadable`), as against bad contents. */
-const CANT_READ = /^can't be (?:listed|read)\b/
-
 /** The most of a plist or unit file doctor reads: `opencorp onboard` writes about 2 KiB. */
 const SERVICE_FILE_CAP = 64 * 1024
 
@@ -160,8 +157,9 @@ function uncommittedNote(paths: string[]): string {
 
 /**
  * Lints the company repo's last commit, which sessions run, with the profile hand edits a new session commits first
- * laid over it, and says what uncommitted changes sessions won't see. It reads the clone without writing to it, so it
- * can run beside the daemon; missing template files are looked for in the working tree, where onboard adds them.
+ * laid over it, and says what uncommitted changes sessions won't see. The working tree's company, person, group and
+ * asset files, which the daemon also reads live, must load too. It reads the clone without writing to it, so it can
+ * run beside the daemon; missing template files are looked for in the working tree, where onboard adds them.
  */
 async function companyCheck(paths: OfficePaths, running: boolean): Promise<Check> {
   const root = paths.company
@@ -194,9 +192,11 @@ async function companyCheck(paths: OfficePaths, running: boolean): Promise<Check
     const shown = (text: string) => text.replaceAll(real, home).replaceAll(copied, home)
     try {
       issues = (await lint(loadRepo(tree))).map((i) => ({ ...i, message: shown(i.message) }))
-      // The daemon reads devices and passwords from the working tree itself, so what it can't read there fails too.
-      const unread = loadRepo(root).errors.filter((i) => i.code === "repo.unreadable" && CANT_READ.test(i.message))
-      issues.unshift(...unread)
+      // Logins, devices, passwords and asset grants read the working tree's company, person, group and asset files
+      // live, so what won't load there fails too; once, when the last commit has the same issue.
+      const key = (i: RepoIssue) => `${i.path}\0${i.code}\0${i.message}`
+      const linted = new Set(issues.map(key))
+      issues.unshift(...loadRepo(root).errors.filter((i) => !linted.has(key(i))))
     } catch (error) {
       // A repo that won't even load is the finding.
       return { name: "company", status: "fail", detail: `${root} doesn't load: ${shown(messageOf(error))}` }
