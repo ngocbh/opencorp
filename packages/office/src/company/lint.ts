@@ -353,13 +353,49 @@ function checkSkills(repo: CompanyRepo): RepoIssue[] {
   return issues
 }
 
-/** Agents should have a profile; humans may skip it. */
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+
+/** Agents should have a profile; humans may skip it. A profile.md must be a regular UTF-8 file. */
 function* checkProfiles(repo: CompanyRepo): Iterable<RepoIssue> {
   for (const [handle, person] of sorted(repo.people)) {
-    if (person.kind === "agent" && !isFile(path.join(repo.root, "people", handle, "profile.md"))) {
-      yield repoIssue(`people/${handle}/profile.md`, "person.no_profile",
-        "agents learn into profile.md; create one", "warning")
+    const rel = `people/${handle}/profile.md`
+    const found = profileState(path.join(repo.root, rel))
+    if (found === "absent" && person.kind === "agent") {
+      yield repoIssue(rel, "person.no_profile", "agents learn into profile.md; create one", "warning")
     }
+    // Errors, as chats with that person can't start.
+    if (found === "not_a_file") {
+      yield repoIssue(rel, "person.profile_not_a_file", "profile.md must be a regular file, not a symlink or folder")
+    }
+    if (found === "not_utf8") {
+      yield repoIssue(rel, "person.profile_not_utf8", "profile.md is not UTF-8; save it as UTF-8")
+    }
+  }
+}
+
+/** Whether the profile.md at `p` is absent, not a regular file (a symlink, a folder), not UTF-8, or fine. */
+function profileState(p: string): "absent" | "not_a_file" | "not_utf8" | "ok" {
+  const absent = (error: unknown) => ["ENOENT", "ENOTDIR", "EBADF"].includes(errno(error) ?? "")
+  let fd: number
+  try {
+    if (!fs.lstatSync(p).isFile()) return "not_a_file"
+    // No follow, so a symlink swapped in since isn't read; no block, so a FIFO isn't waited on.
+    const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
+    fd = fs.openSync(p, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  } catch (error) {
+    if (absent(error)) return "absent"
+    if (errno(error) === "ELOOP") return "not_a_file"
+    throw error
+  }
+  try {
+    if (!fs.fstatSync(fd).isFile()) return "not_a_file"
+    UTF8.decode(fs.readFileSync(fd))
+    return "ok"
+  } catch (error) {
+    if (error instanceof TypeError) return "not_utf8"
+    throw error
+  } finally {
+    fs.closeSync(fd)
   }
 }
 

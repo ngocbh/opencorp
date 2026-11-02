@@ -11,6 +11,9 @@ import { bareHandle, officeClient, officeNotRunning } from "../office"
 
 const USAGE = "Usage: opencorp profile edit PERSON"
 
+// ignoreBOM keeps a byte order mark as U+FEFF, as the office's profile store does.
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+
 /** A usage error: printed with the usage line, exit 2. */
 class Usage extends Error {}
 
@@ -22,12 +25,19 @@ async function person(client: OfficeClient, name: string): Promise<Person> {
   return found
 }
 
-/** Writes `text` to `file` and opens `editor` on it; resolves to what was saved. */
-async function edit(editor: string, file: string, text: string) {
+/** Writes `text` to `file` and opens `editor` on it; resolves to what was saved, or null if it isn't UTF-8. */
+async function edit(editor: string, file: string, text: string): Promise<string | null> {
   writeFileSync(file, text, { mode: 0o600 })
   // Async, not spawnSync: the process keeps serving its event loop while the editor is open.
   await launchEditor(editor, file)
-  return readFileSync(file, "utf8")
+  const bytes = readFileSync(file)
+  try {
+    return UTF8.decode(bytes)
+  } catch (error) {
+    // The fatal decoder throws a TypeError on bytes that aren't UTF-8.
+    if (error instanceof TypeError) return null
+    throw error
+  }
 }
 
 /**
@@ -35,13 +45,16 @@ async function edit(editor: string, file: string, text: string) {
  * version it started from, which the office commits as a hand edit. If the profile changed
  * meanwhile, the editor re-opens on the new text with the rejected edit under a marker line;
  * saving drops the marker and everything below it. An empty save writes nothing. An edit that
- * ends up unsaved is kept in a file, and the path printed. Exits 1 on office errors, an empty
- * save and an unsaved edit, 2 on usage errors, 3 when the office isn't running.
+ * ends up unsaved is kept in a file, and the path printed; a save that isn't UTF-8 is kept as the
+ * editor left it. Exits 1 on office errors, an empty save, a save that isn't UTF-8 and an unsaved
+ * edit, 2 on usage errors, 3 when the office isn't running.
  */
 export const run: CommandRun = async (argv) => {
   let dir: string | undefined
   // The user's latest changed text until the office accepts it; kept if `opencorp` exits first.
   let unsaved: string | undefined
+  // Set when the file holds a save that isn't UTF-8, which is kept byte for byte.
+  let keepAsIs = false
   try {
     const { positionals } = parseArgs({ args: argv, allowPositionals: true, options: {} })
     const [sub, name, ...rest] = positionals
@@ -57,7 +70,13 @@ export const run: CommandRun = async (argv) => {
     let draft = base.text
     let conflicted = false
     for (;;) {
-      const text = withoutConflict(await edit(editor, file, draft))
+      const saved = await edit(editor, file, draft)
+      if (saved === null) {
+        console.error("opencorp profile: the file is not UTF-8; nothing saved")
+        keepAsIs = true
+        return 1
+      }
+      const text = withoutConflict(saved)
       if (text === base.text) {
         // After a lost race, an unchanged save means the rejected edit was left unmerged.
         if (conflicted) {
@@ -98,7 +117,7 @@ export const run: CommandRun = async (argv) => {
     console.error(`opencorp profile: ${e instanceof Error ? e.message : e}${usage ? `\n${USAGE}` : ""}`)
     return usage ? 2 : 1
   } finally {
-    if (dir) keepOrRemove(dir, unsaved)
+    if (dir) keepOrRemove(dir, keepAsIs ? null : unsaved)
   }
 }
 
@@ -109,11 +128,12 @@ function reportSaved(who: Person, profile: Profile) {
   return 0
 }
 
-/** Removes the temp `dir`, or, if there is an `unsaved` edit, leaves it there and says where. */
-function keepOrRemove(dir: string, unsaved: string | undefined) {
+/** Removes the temp `dir`, or, if there is an `unsaved` edit, leaves it there and says where. `null` keeps the file
+ *  as the editor left it. */
+function keepOrRemove(dir: string, unsaved: string | null | undefined) {
   if (unsaved === undefined) return rmSync(dir, { recursive: true, force: true })
   const file = path.join(dir, "profile.md")
-  writeFileSync(file, unsaved)
+  if (unsaved !== null) writeFileSync(file, unsaved)
   // The editor may have replaced the file with one of its own permissions.
   chmodSync(file, 0o600)
   console.error(`opencorp profile: your edit is kept in ${file}`)

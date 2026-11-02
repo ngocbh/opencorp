@@ -13,6 +13,7 @@ import {
 import { z } from "zod"
 import { type CompanyRepo, loadRepo, missingPerson } from "../../company/loader.ts"
 import { applyProposal, ProposalNotFound, ProposalNotOpen } from "../../profile/manager.ts"
+import { ProfileUnreadable } from "../../profile/store.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, RawReply, type Route } from "../http.ts"
 import type { RequestContext, SessionHarness } from "../office.ts"
@@ -56,6 +57,14 @@ function conflict(error: MarkdownVersionMismatch): RawReply {
   return new RawReply(409, {}, JSON.stringify(versions))
 }
 
+/** A 409 `unreadable_profile` for a profile.md that isn't UTF-8, a symlink or not a regular file; its message names
+ *  only the repo path. Rethrows any other error. */
+// Only this class: other RangeErrors from the store (a bad commit id, an unknown version) quote values.
+function unreadable(error: unknown): never {
+  if (error instanceof ProfileUnreadable) throw new HttpError(409, "unreadable_profile", error.message)
+  throw error
+}
+
 /** Whether `text` is longer than `maxChars`, counting code points as Python's `len` did. */
 function overBudget(text: string, maxChars: number): boolean {
   return [...text].length > maxChars
@@ -63,7 +72,7 @@ function overBudget(text: string, maxChars: number): boolean {
 
 /** The profile routes. */
 export const ROUTES: readonly Route<RequestContext>[] = [
-  // A person's profile text and version.
+  // A person's profile text and version; 409 `unreadable_profile` for a profile.md that can't be read.
   {
     method: "GET",
     path: "/profiles/:handle",
@@ -71,11 +80,17 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     handler: async (ctx, params): Promise<Profile> => {
       const handle = params.handle!
       const { store, maxChars } = open(ctx, handle, "GET")
-      const [text, version] = await store.read()
+      let text: string, version: string
+      try {
+        ;[text, version] = await store.read()
+      } catch (error) {
+        unreadable(error)
+      }
       return { person: handle, text, version, over_budget: overBudget(text, maxChars) }
     },
   },
-  // Replaces a profile if `base_version` is current; 409 with both versions if not.
+  // Replaces a profile if `base_version` is current; 409 with both versions if not, 409 `unreadable_profile` for a
+  // profile.md that can't be written.
   {
     method: "PUT",
     path: "/profiles/:handle",
@@ -89,11 +104,13 @@ export const ROUTES: readonly Route<RequestContext>[] = [
       const { text, base_version } = body as ProfileWriteRequest
       // The guard's result can't reach the handler, and the load is cheap.
       const { store, maxChars } = open(ctx, handle, "PUT")
+      // JSON can carry one, but UTF-8 can't; the store would refuse it as a 500.
+      if (!text.isWellFormed()) throw new HttpError(422, "invalid_body", "text: holds a lone surrogate")
       let version: string
       try {
         version = await store.write(text, { baseVersion: base_version, provenance: { source: "hand edit" } })
       } catch (error) {
-        if (!(error instanceof MarkdownVersionMismatch)) throw error
+        if (!(error instanceof MarkdownVersionMismatch)) unreadable(error)
         return conflict(error)
       }
       const profile = Profile.parse({ person: handle, text, version, over_budget: overBudget(text, maxChars) })
@@ -129,21 +146,25 @@ export const ROUTES: readonly Route<RequestContext>[] = [
       return ctx.office.store.listProfileProposals(handle)
     },
   },
-  // Applies an open proposal as the verified person; 409 with both versions if the profile changed since.
+  // Applies an open proposal as the verified person; 404 once its person is gone, 409 with both versions if the
+  // profile changed since.
   {
     method: "POST",
     path: "/profile-proposals/:id/apply",
     reply: Profile,
     handler: async (ctx, params) => {
       const owner = actingPerson(ctx)
-      const maxChars = maxCharsOf(loadRepo(ctx.office.git.root))
+      const proposal = ctx.office.store.getProfileProposal(params.id!)
+      // An unknown id is applyProposal's 404. The person check is as racy as the other profile routes'.
+      const repo = proposal ? withPerson(ctx, proposal.person) : loadRepo(ctx.office.git.root)
+      const maxChars = maxCharsOf(repo)
       try {
         return await applyProposal(ctx.office.store, ctx.office.git, params.id!, { owner, maxChars })
       } catch (error) {
         if (error instanceof ProposalNotFound) throw new HttpError(404, "not_found", error.message)
         if (error instanceof ProposalNotOpen) throw new HttpError(409, "not_open", error.message)
         if (error instanceof MarkdownVersionMismatch) return conflict(error)
-        throw error
+        unreadable(error)
       }
     },
   },

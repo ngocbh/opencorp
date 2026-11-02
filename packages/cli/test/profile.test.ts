@@ -60,6 +60,14 @@ function kept(err: string) {
   return readFileSync(file, "utf8")
 }
 
+/** The raw bytes of the file `err` says the edit is kept in; checks it is private to the user. */
+function keptBytes(err: string) {
+  const file = /^opencorp profile: your edit is kept in (.+)$/m.exec(err)?.[1]
+  if (!file) throw new Error(`no kept file in: ${err}`)
+  expect(statSync(file).mode & 0o777).toBe(0o600)
+  return readFileSync(file)
+}
+
 test("edit opens the profile in $EDITOR and saves it over the version it read", async () => {
   const before = office.state.profiles.minh!
   editor(`printf -- '- Likes short replies.\\n' >> "$1"\n`)
@@ -191,6 +199,51 @@ test("a failed re-read after a conflict keeps the edit in a file", async () => {
   const r = await pending
   expect(r.code).toBe(1)
   expect(kept(r.err)).toBe(before.text + "My line.\n")
+})
+
+test("a save that isn't UTF-8 sends nothing and keeps the file as the editor left it", async () => {
+  const before = office.state.profiles.minh!
+  editor(`printf '\\377\\376' >> "$1"\n`)
+  const r = await profile("edit", "minh")
+  expect(r.code).toBe(1)
+  expect(r.err).toContain("opencorp profile: the file is not UTF-8; nothing saved")
+  expect(puts()).toEqual([])
+  expect(keptBytes(r.err)).toEqual(Buffer.concat([Buffer.from(before.text), Buffer.from([0xff, 0xfe])]))
+  expect(office.state.profiles.minh).toEqual(before)
+})
+
+test("an editor that deletes the file reports the read error, exits 1 and leaves no temp file", async () => {
+  const before = office.state.profiles.minh!
+  editor(`printf '%s' "$1" > ${home}/path; rm "$1"\n`)
+  const r = await profile("edit", "minh")
+  expect(r.code).toBe(1)
+  expect(r.err).toContain("ENOENT")
+  expect(r.err).not.toContain("not UTF-8")
+  expect(puts()).toEqual([])
+  expect(existsSync(path.dirname(readFileSync(path.join(home, "path"), "utf8")))).toBe(false)
+  expect(office.state.profiles.minh).toEqual(before)
+})
+
+test("after a conflict, a save that isn't UTF-8 keeps the editor's bytes", async () => {
+  const before = office.state.profiles.minh!
+  const theirs = before.text + "Their line.\n"
+  racingEditor(`printf '\\377' >> "$1"`)
+  const { r } = await editDuringHandEdit(theirs)
+  expect(r.code).toBe(1)
+  expect(r.err).toContain("opencorp profile: the file is not UTF-8; nothing saved")
+  const seen = readFileSync(path.join(home, "seen.md"))
+  expect(seen.toString("utf8")).toContain("My line.")
+  expect(keptBytes(r.err)).toEqual(Buffer.concat([seen, Buffer.from([0xff])]))
+  expect(puts()).toHaveLength(2) // the rejected save and the hand edit
+  expect(office.state.profiles.minh!.text).toBe(theirs)
+})
+
+test("a byte order mark survives the save", async () => {
+  const before = office.state.profiles.minh!
+  editor(`{ printf '\\357\\273\\277'; cat "$1"; } > "$1.new" && mv "$1.new" "$1"\n`)
+  const r = await profile("edit", "minh")
+  expect(r.code).toBe(0)
+  expect(puts()).toEqual([{ text: `\uFEFF${before.text}`, base_version: before.version }])
 })
 
 test("a finished edit leaves no temp file behind", async () => {

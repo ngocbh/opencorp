@@ -23,7 +23,7 @@ import { BadConnectionName, ConnectionGone, isFile } from "./connections.ts"
 import type { Hooks } from "./hooks.ts"
 import { DEADLINE_MS, ListTimeout, type ModelCache } from "./models.ts"
 import { ProviderError } from "./provider.ts"
-import { type RunSpec, mainSpec, managerSpec, sideSpec } from "./run_spec.ts"
+import { defaultsOf, type RunSpec, mainSpec, managerSpec, sideSpec } from "./run_spec.ts"
 import { type ActorContext, KEEP_MS, SessionActor, named, ownModel } from "./session_actor.ts"
 import { HarnessError, LIVE, notAnAgent } from "./state.ts"
 import type { Transcript } from "./transcript.ts"
@@ -323,7 +323,9 @@ export class ChatHarness implements SessionHarness {
     const { store, git } = this.office
     const repo = loadRepo(await git.pin(session.repo_commit))
     if (session.kind === "profile_manager") {
-      return managerSpec({ repo, tools: profileTools(store, new GitProfileStore(git, session.person), session) })
+      const profile = new GitProfileStore(git, session.person)
+      const tools = profileTools(store, profile, session, { maxChars: defaultsOf(repo).profile_max_chars })
+      return managerSpec({ repo, tools })
     }
     const monitor = this.monitor
     if (session.kind === "side") {

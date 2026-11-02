@@ -12,6 +12,13 @@ export const EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
 
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
 
+/** profile.md exists but can't be read or written as a profile: it isn't UTF-8, is a symlink, or isn't a regular
+ *  file. A RangeError, so yian's store contract (store_invalid, not retryable) and the worker RPC's mapping stay as
+ *  they are; its message names only the profile's repo path. */
+export class ProfileUnreadable extends RangeError {
+  override name = "ProfileUnreadable"
+}
+
 /** The git blob id of `data`. */
 export function blobId(data: Uint8Array): string {
   return createHash("sha1").update(`blob ${data.length}\0`).update(data).digest("hex")
@@ -80,8 +87,8 @@ export class GitProfileStore implements MarkdownStore {
   /**
    * Returns `[text, version]`. Reading the current version commits pending hand edits first.
    *
-   * Throws a RangeError for an unknown version or text that isn't UTF-8, and a Node system error
-   * when git fails.
+   * Throws a RangeError for an unknown version, `ProfileUnreadable` for text that isn't UTF-8 or a
+   * profile.md that is a symlink or not a regular file, and a Node system error when git fails.
    */
   async read(version: string | null = null): Promise<readonly [string, string]> {
     if (version !== null) {
@@ -92,7 +99,10 @@ export class GitProfileStore implements MarkdownStore {
     let found: { current: string; data: Uint8Array | null }
     try {
       found = await this.git.locked(async (locked) => {
+        // Before, so a symlink or folder isn't committed as a hand edit; after, for one swapped in meanwhile.
+        this.#checkFile()
         await locked.commitHandEdits()
+        this.#checkFile()
         const head = await this.#current()
         return { current: head, data: await this.#blob(head) }
       })
@@ -110,8 +120,9 @@ export class GitProfileStore implements MarkdownStore {
    *
    * If a write with the same `provenance.commit_id` was already committed for this profile,
    * returns its version and writes nothing (a retried write). Throws a TypeError for non-strings,
-   * `MarkdownVersionMismatch` for a stale base, a RangeError for a bad commit id, a lone surrogate
-   * or a profile path through a symlink, and a Node system error when git fails.
+   * `MarkdownVersionMismatch` for a stale base, a RangeError for a bad commit id or a lone surrogate,
+   * `ProfileUnreadable` for a profile path through a symlink or a profile.md that isn't a regular
+   * file, and a Node system error when git fails.
    */
   async write(
     text: string,
@@ -142,6 +153,7 @@ export class GitProfileStore implements MarkdownStore {
       const done = await this.#committed(commitId)
       if (done !== null) return done
     }
+    this.#checkFile()
     await locked.commitHandEdits() // a pending hand edit is the current version
     const current = await this.#current()
     if (current !== baseVersion) throw new MarkdownVersionMismatch(baseVersion, current)
@@ -189,15 +201,26 @@ export class GitProfileStore implements MarkdownStore {
     return sha === null ? null : ((await this.git.blobId(this.path, sha)) ?? EMPTY_BLOB)
   }
 
-  /** The profile's path in the clone; a RangeError if it leaves the person's directory. */
+  /** The profile's path in the clone; `ProfileUnreadable` if it leaves the person's directory or isn't a regular
+   *  file. */
   // Protected, not #private, so a test can make a hand edit just before the replace.
   protected target(): string {
     const target = path.join(this.git.root, this.path)
     const person = path.join(fs.realpathSync(this.git.root), "people", this.handle)
-    if (lstatIfExists(target)?.isSymbolicLink() || fs.realpathSync(path.dirname(target)) !== person) {
-      throw new RangeError(`${this.path} goes through a symlink; not writing it`)
+    const st = lstatIfExists(target)
+    if (st?.isSymbolicLink() || fs.realpathSync(path.dirname(target)) !== person) {
+      throw new ProfileUnreadable(`${this.path} goes through a symlink`)
     }
+    // Reading a folder fails with EISDIR, and a FIFO would block.
+    if (st && !st.isFile()) throw new ProfileUnreadable(`${this.path} is not a regular file`)
     return target
+  }
+
+  /** `ProfileUnreadable` if profile.md in the working tree is a symlink or not a regular file; absent is fine. */
+  #checkFile(): void {
+    const st = lstatIfExists(path.join(this.git.root, this.path))
+    if (st?.isSymbolicLink()) throw new ProfileUnreadable(`${this.path} is a symlink, not a regular file`)
+    if (st && !st.isFile()) throw new ProfileUnreadable(`${this.path} is not a regular file`)
   }
 
   /** Replaces `target` with `data` through a temporary file in the same directory. */
@@ -245,12 +268,12 @@ export class GitProfileStore implements MarkdownStore {
     return version === EMPTY_BLOB ? new Uint8Array() : await this.git.readBlob(version)
   }
 
-  /** `data` as UTF-8 text, a leading byte order mark kept; a RangeError if it isn't UTF-8. */
+  /** `data` as UTF-8 text, a leading byte order mark kept; `ProfileUnreadable` if it isn't UTF-8. */
   #decode(data: Uint8Array): string {
     try {
       return UTF8.decode(data)
     } catch (error) {
-      if (error instanceof TypeError) throw new RangeError(`${this.path} is not UTF-8`)
+      if (error instanceof TypeError) throw new ProfileUnreadable(`${this.path} is not UTF-8`)
       throw error
     }
   }
