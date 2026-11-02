@@ -265,17 +265,15 @@ test("login with another --device or --handle than the saved identity still asks
 test("a saved identity with a token or device name the office can't take asks for --force", async () => {
   await opencorp(trusted, "login", "--device", "mac")
   const file = path.join(other, "identity.json")
-  for (const saved of [
-    { handle: "ngocbh", device: "laptop", token: "act_short" },
-    { handle: "ngocbh", device: "Bad Name", token: "act_" + "A".repeat(43) },
-  ]) {
+  const cantPickUp = `opencorp login: this device already has an identity (${file}) that login can't pick up; pass --force to replace it`
+  // readIdentity refuses a device name no office lists, and says so once before login does.
+  const unlisted = `opencorp: ${file} names a handle or device no office lists; run \`opencorp login --force\``
+  for (const [saved, err] of [
+    [{ handle: "ngocbh", device: "laptop", token: "act_short" }, cantPickUp],
+    [{ handle: "ngocbh", device: "Bad Name", token: "act_" + "A".repeat(43) }, `${unlisted}\n${cantPickUp}`],
+  ] as const) {
     fs.writeFileSync(file, JSON.stringify(saved), { mode: 0o600 })
-    const r = await opencorp(other, "login")
-    expect(r).toEqual({
-      code: 1,
-      out: "",
-      err: `opencorp login: this device already has an identity (${file}) that login can't pick up; pass --force to replace it`,
-    })
+    expect(await opencorp(other, "login")).toEqual({ code: 1, out: "", err })
   }
 })
 
