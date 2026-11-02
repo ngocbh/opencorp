@@ -491,7 +491,7 @@ test("messages in order", async () => {
   expect(r.json()).toEqual(JSON.parse(JSON.stringify(runs)))
 })
 
-test("messages of a log that can't be read are a 500 that names no path", async () => {
+test("messages of a log with a bad line show the messages before it", async () => {
   const fake = await fakeLlm()
   const h = await makeHarness(fake)
   const { sock } = await served(h.office)
@@ -501,6 +501,27 @@ test("messages of a log that can't be read are a 500 that names no path", async 
   await settled(h, sock, sid, 2)
   const runId = h.store.getSession(sid)!.run_ids.at(-1)!
   fs.appendFileSync(path.join(h.office.paths.runs, runId, "log.jsonl"), "not a record\n")
+  const r = await get(sock, `/sessions/${sid}/messages`)
+  expect(r.status).toBe(200)
+  expect(said(z.array(Message).parse(r.json())).map(([role, text]) => [role, text])).toEqual([
+    ["user", "hi"],
+    ["assistant", "hello"],
+  ])
+})
+
+test("messages of a log that can not be read are a 500 that names no path", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const { sock } = await served(h.office)
+  fake.script({ content: "hello" })
+  const sid = await open(h, sock)
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "hi" })).json()).toEqual({ ok: true })
+  await settled(h, sock, sid, 2)
+  const runId = h.store.getSession(sid)!.run_ids.at(-1)!
+  // A folder where the log was: opening it works, reading it fails EISDIR.
+  const log = path.join(h.office.paths.runs, runId, "log.jsonl")
+  fs.renameSync(log, `${log}.moved`)
+  fs.mkdirSync(log)
   const r = await get(sock, `/sessions/${sid}/messages`)
   expect(r.status).toBe(500)
   expect(r.json()).toEqual({ error: "internal_error", message: "internal error" })
