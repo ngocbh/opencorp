@@ -174,9 +174,9 @@ test("the first hire into a new company lints clean", async () => {
   await writeCompany(root, worktrees, { company: "Acme", owner: OWNER })
   const hiring = new Hiring(new CompanyGit(root, worktrees))
   const form = { name: "Minh", handle: "minh", title: "Engineer", manager: "ngocbh" }
-  const preview = await hiring.hire(HireRequest.parse({ ...form }))
+  const preview = await hiring.hire(HireRequest.parse({ ...form }), "ngocbh")
   expect(preview.issues).toEqual([])
-  await hiring.hire(HireRequest.parse({ ...form, confirm: true }))
+  await hiring.hire(HireRequest.parse({ ...form, confirm: true }), "ngocbh")
   expect(await lint(loadRepo(root))).toEqual([])
 })
 

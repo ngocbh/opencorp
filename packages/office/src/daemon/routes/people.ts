@@ -2,7 +2,9 @@
 import { HireRequest, HireResponse, Person as PersonSchema } from "@opencorp/protocol"
 import { z } from "zod"
 import { HireRefused } from "../../chat/hire.ts"
+import { mayHireUnder } from "../../company/access.ts"
 import { loadRepo } from "../../company/loader.ts"
+import { actingPerson } from "../auth.ts"
 import { HttpError, type Params, type Route } from "../http.ts"
 import type { RequestContext } from "../office.ts"
 
@@ -33,10 +35,17 @@ export function folderPeople(ctx: RequestContext, params: Params): Person[] {
   return found.map(([, handle]) => served(repo.people.get(handle)!))
 }
 
-/** Preview a hire (writes nothing, lint issues included), or confirm the preview and commit it. */
+/** Preview a hire (writes nothing, lint issues included), or confirm the preview and commit it. Only someone who
+ *  would have profile access to the new hire may: the CEO, or a human on the chain from its manager up. */
 export async function hire(ctx: RequestContext, _params: Params, body: unknown) {
+  const request = body as z.output<typeof HireRequest>
+  const actor = actingPerson(ctx)
+  // Checked after the body is read, unlike a guard: the manager it needs is in the body.
+  if (!mayHireUnder(loadRepo(ctx.office.git.root), actor, request.manager)) {
+    throw new HttpError(403, "forbidden", "only the CEO or a human in the new hire's manager chain can hire them")
+  }
   try {
-    return await ctx.office.hiring.hire(body as z.output<typeof HireRequest>)
+    return await ctx.office.hiring.hire(request, actor)
   } catch (error) {
     if (error instanceof HireRefused) throw new HttpError(422, error.code, error.message)
     throw error

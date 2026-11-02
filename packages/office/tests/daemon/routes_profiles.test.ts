@@ -50,6 +50,15 @@ async function proposeText(office: Office, text: string): Promise<ProfileProposa
   return propose(office.store, s, profile, version, base, text)
 }
 
+/** Makes `manager` the manager of `handle` in the repo at `company`, committed. */
+function setManager(company: string, handle: string, manager: string): void {
+  const file = path.join(company, "people", handle, "person.yaml")
+  const data = parseYaml(fs.readFileSync(file, "utf8")) as Record<string, unknown>
+  data.manager = manager
+  fs.writeFileSync(file, stringify(data))
+  git(company, "commit", "-qam", `${handle} reports to ${manager}`)
+}
+
 /** Sets `defaults.profile_max_chars` in the working tree's company.yaml. */
 function setMaxChars(company: string, chars: number): void {
   const file = path.join(company, "company.yaml")
@@ -113,7 +122,7 @@ test("put writes emits and returns the profile", async () => {
   expect(body.text).toBe("# Minh\nterse\n")
   expect(body.version).toBe(blob("# Minh\nterse\n"))
   expect(fs.readFileSync(path.join(office.paths.company, "people/minh/profile.md"), "utf8")).toBe("# Minh\nterse\n")
-  expect(stores.get("minh")!.provenance).toEqual([{ source: "hand edit" }])
+  expect(stores.get("minh")!.provenance).toEqual([{ source: "ngocbh via profile edit" }])
   const event = events.at(-1)!
   expect([event.type, event.subject_id, event.data]).toEqual(["profile.updated", "minh", body])
 })
@@ -166,7 +175,7 @@ test("the office profile store defaults to the git store", async () => {
   const { sock } = await served(office)
   const r = await put(sock, { text: "# Minh\nterse\n", base_version: blob(MINH) })
   expect(r.status).toBe(200)
-  expect(git(office.paths.company, "log", "-1", "--format=%s")).toBe("profile(@minh): hand edit")
+  expect(git(office.paths.company, "log", "-1", "--format=%s")).toBe("profile(@minh): ngocbh via profile edit")
   expect((await request(sock, "GET", "/profiles/minh")).json()).toMatchObject({ version: blob("# Minh\nterse\n") })
 })
 
@@ -222,6 +231,7 @@ test("apply is credited to the verified person", async () => {
   const office = makeOffice()
   const { sock } = await served(office, { tokens: true })
   addHuman(office.paths.company, "ava")
+  setManager(office.paths.company, "minh", "ava")
   const token = newToken()
   giveDevice(office.paths.company, "ava", "pc", token)
   const p = await proposeText(office, `${MINH}- One.\n`)
@@ -486,6 +496,7 @@ test("learning is credited to the verified person", async () => {
   const { store, git: g, paths } = h.office
   const { sock } = await served(h.office, { tokens: true })
   addHuman(paths.company, "ava")
+  setManager(paths.company, "minh", "ava")
   const token = newToken()
   giveDevice(paths.company, "ava", "pc", token)
   fake.script({ content: "What should change?" })
@@ -499,4 +510,79 @@ test("learning is credited to the verified person", async () => {
   const applied = await request(sock, "POST", `/profile-proposals/${p.id}/apply`, { headers: bearer(token) })
   expect(applied.status).toBe(200)
   expect(git(paths.company, "log", "-1", "--format=%s")).toBe("profile(@minh): ava via profile manager")
+})
+
+// Who may change a profile: the CEO, or a human on the person's manager chain.
+
+/** An office checking tokens, with human bob (under the CEO) and devices for bob and the CEO; their tokens. */
+async function withBob(office: Office) {
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  addHuman(company, "bob")
+  const [ceo, bob] = [newToken(), newToken()]
+  giveDevice(company, "ngocbh", "mac", ceo)
+  giveDevice(company, "bob", "pc", bob)
+  return { sock, company, ceo: bearer(ceo), bob: bearer(bob) }
+}
+
+test("profile writes need the CEO or a human manager", async () => {
+  const office = makeOffice()
+  const { sock, company, bob } = await withBob(office)
+  for (const target of ["/profiles/minh", "/profiles/ngocbh", "/profiles/bob"]) {
+    const r = await request(sock, "PUT", target, { headers: bob, body: "not json" })
+    expect([target, r.status, errorOf(r)]).toEqual([target, 403, "forbidden"])
+  }
+  const refused = await request(sock, "PUT", "/profiles/minh", { headers: bob, body: "not json" })
+  expect((refused.json() as { message: string }).message).toBe(
+    "only the CEO or @minh's human managers can change @minh's profile",
+  )
+  // Reading stays open.
+  expect((await request(sock, "GET", "/profiles/minh", { headers: bob })).status).toBe(200)
+  expect((await request(sock, "GET", "/profiles/minh/proposals", { headers: bob })).status).toBe(200)
+
+  setManager(company, "minh", "bob")
+  const r = await request(sock, "PUT", "/profiles/minh", {
+    headers: { ...bob, "content-type": "application/json" },
+    body: JSON.stringify({ text: "# Minh\nterse\n", base_version: blob(MINH) }),
+  })
+  expect(r.status).toBe(200)
+  expect(git(company, "log", "-1", "--format=%s")).toBe("profile(@minh): bob via profile edit")
+})
+
+test("the manager route checks the person then access before the body", async () => {
+  const h = await managerHarness(await fakeLlm())
+  const { sock, ceo, bob } = await withBob(h.office)
+  const cases: [Record<string, string>, string, number, string][] = [
+    [ceo, "/profiles/ghost/manager", 404, "not_found"],
+    [bob, "/profiles/ghost/manager", 404, "not_found"],
+    [bob, "/profiles/minh/manager", 403, "forbidden"],
+  ]
+  for (const [headers, target, code, error] of cases) {
+    const r = await request(sock, "POST", target, {
+      headers: { ...headers, "content-type": "application/json" },
+      body: "garbage",
+    })
+    expect([target, r.status, errorOf(r)]).toEqual([target, code, error])
+  }
+  expect(h.store.listSessions({ kind: "profile_manager" })).toEqual([])
+})
+
+test("apply needs profile access", async () => {
+  const office = makeOffice()
+  const { sock, company, ceo, bob } = await withBob(office)
+  const p = await proposeText(office, `${MINH}- One.\n`)
+  const apply = (id: string, headers: Record<string, string>) =>
+    request(sock, "POST", `/profile-proposals/${id}/apply`, { headers })
+  let r = await apply(p.id, bob)
+  expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
+  expect(office.store.getProfileProposal(p.id)!.status).toBe("open")
+  r = await apply(ULID, bob)
+  expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
+
+  fs.rmSync(path.join(company, "people/minh"), { recursive: true })
+  git(company, "add", "-A")
+  git(company, "commit", "-qm", "minh leaves")
+  r = await apply(p.id, bob)
+  expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
+  expect((await apply(p.id, ceo)).status).not.toBe(403)
 })

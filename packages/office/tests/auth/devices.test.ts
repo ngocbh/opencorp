@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import type { Device } from "@opencorp/protocol"
-import { addDevice, DeviceRefused, login, removeDevice, setPassword } from "../../src/auth/devices.ts"
+import { addDevice, DeviceRefused, login, mayChangePerson, removeDevice, setPassword } from "../../src/auth/devices.ts"
 import { Roster } from "../../src/auth/roster.ts"
 import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
 import { readYaml } from "../../src/company/flow_yaml.ts"
@@ -297,4 +297,44 @@ test("an unknown handle costs one password check", async () => {
     // A lower bound: scrypt at the office's cost takes far longer, and load only slows it.
     expect(performance.now() - start).toBeGreaterThanOrEqual(20)
   }
+})
+
+test("a password change checks the person before the policy", async () => {
+  const { g } = setup(AVA)
+  expect(await refusal(setPassword(g, "ngocbh", "short", "ava"))).toEqual([
+    403,
+    "forbidden",
+    "only @ngocbh or the CEO can change @ngocbh's password",
+  ])
+  expect((await refusal(setPassword(g, "ghost", "short", "ngocbh"))).slice(0, 2)).toEqual([404, "not_found"])
+  expect((await refusal(setPassword(g, "minh", "short", "ngocbh"))).slice(0, 2)).toEqual([422, "not_a_human"])
+})
+
+test("may change person refuses as the change would", async () => {
+  const { root } = setup(AVA)
+  const refused = async (call: () => void) => refusal(Promise.resolve().then(call))
+  expect((await refused(() => mayChangePerson(root, "ghost", "ngocbh"))).slice(0, 2)).toEqual([404, "not_found"])
+  expect((await refused(() => mayChangePerson(root, "minh", "ngocbh"))).slice(0, 2)).toEqual([422, "not_a_human"])
+  expect(await refused(() => mayChangePerson(root, "ngocbh", "ava", "password"))).toEqual([
+    403,
+    "forbidden",
+    "only @ngocbh or the CEO can change @ngocbh's password",
+  ])
+  mayChangePerson(root, "ava", "ava")
+  mayChangePerson(root, "ava", "ngocbh", "password")
+})
+
+test("device and password commits name their actor", async () => {
+  const { root, g } = setup(AVA)
+  const body = () => git(root, "log", "-1", "--format=%B").trim()
+  await addDevice(g, "ava", device("pc"), "ngocbh")
+  expect(body()).toBe("devices(@ava): add pc\n\nActor: @ngocbh")
+  await removeDevice(g, "ava", "pc", "ava")
+  expect(body()).toBe("devices(@ava): remove pc\n\nActor: @ava")
+  await setPassword(g, "ava", PASSWORD, "ngocbh")
+  expect(body()).toBe("password(@ava): set\n\nActor: @ngocbh")
+  await setPassword(g, "ngocbh", PASSWORD, "ngocbh")
+  const mac = device("mac")
+  await login(g, { handle: "ngocbh", password: PASSWORD, device: "mac", token_sha256: mac.token_sha256 })
+  expect(body()).toBe("devices(@ngocbh): add mac\n\nActor: @ngocbh")
 })

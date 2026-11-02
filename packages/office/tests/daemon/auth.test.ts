@@ -1005,3 +1005,40 @@ test("an untracked stream is not ended", async () => {
   await office.tokens.recheck()
   expect(ended).toBe(0)
 })
+
+test("device and password routes check the person before the body", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  addHuman(company, "bob")
+  const [ceo, bob] = [newToken(), newToken()]
+  giveDevice(company, "ngocbh", "mac", ceo)
+  giveDevice(company, "bob", "pc", bob)
+  const head = subjects(company)
+  let r = await send(sock, "POST", "/people/ngocbh/devices", { name: "x" }, bearer(bob))
+  expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
+  r = await request(sock, "PUT", "/people/ngocbh/password", { headers: bearer(bob), body: "not json" })
+  expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
+  r = await send(sock, "PUT", "/people/ngocbh/password", { password: "hunter222" }, bearer(bob))
+  expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
+  r = await send(sock, "PUT", "/people/ghost/password", { password: "x" }, bearer(ceo))
+  expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
+  r = await send(sock, "POST", "/people/ghost/devices", { name: "x" }, bearer(ceo))
+  expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
+  r = await send(sock, "POST", "/people/minh/devices", { name: "SENTINEL-VALUE" }, bearer(ceo))
+  expect([r.status, errorOf(r)]).toEqual([422, "not_a_human"])
+  expect(r.text).not.toContain("SENTINEL-VALUE")
+  expect(subjects(company)).toEqual(head)
+})
+
+test("a device commit names who made it", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  addHuman(company, "ava")
+  const ceo = newToken()
+  giveDevice(company, "ngocbh", "mac", ceo)
+  const r = await send(sock, "POST", "/people/ava/devices", device("pc", newToken()), bearer(ceo))
+  expect(r.status).toBe(200)
+  expect(git(company, "log", "-1", "--format=%B").trim()).toBe("devices(@ava): add pc\n\nActor: @ngocbh")
+})

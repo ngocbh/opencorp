@@ -1,10 +1,11 @@
 /** People routes. */
 import fs from "node:fs"
 import path from "node:path"
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { stringify } from "yaml"
+import { newToken } from "../../src/auth/tokens.ts"
 import { git, gitStatus, startMerge } from "../company/helpers.ts"
-import { makeOffice, request, served } from "./helpers.ts"
+import { addHuman, bearer, giveDevice, makeOffice, request, served } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -18,9 +19,9 @@ function folder(cwd: string): string {
   return `/folders/${encodeURIComponent(cwd)}/people`
 }
 
-function post(sock: string, body: unknown): Promise<Reply> {
+function post(sock: string, body: unknown, headers: Record<string, string> = {}): Promise<Reply> {
   return request(sock, "POST", "/people", {
-    headers: { "content-type": "application/json" },
+    headers: { ...headers, "content-type": "application/json" },
     body: JSON.stringify(body),
   })
 }
@@ -183,4 +184,42 @@ test("people are served without their password hash", async () => {
   expect(r.status).toBe(200)
   expect(r.text).not.toContain("scrypt")
   expect((r.json() as Served[]).find((p) => p.handle === "ngocbh")?.password_hash).toBeNull()
+})
+
+test("hiring needs profile access to the new hire", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  addHuman(company, "bob")
+  const tokens = { ceo: newToken(), bob: newToken() }
+  giveDevice(company, "ngocbh", "mac", tokens.ceo)
+  giveDevice(company, "bob", "pc", tokens.bob)
+  const [ceo, bob] = [bearer(tokens.ceo), bearer(tokens.bob)]
+  const hire = spyOn(office.hiring, "hire")
+  const head = await office.git.head()
+  const secret = { name: "Zed Quux", handle: "zed", title: "Vault Keeper" }
+  for (const body of [
+    { ...secret, manager: "ngocbh" },
+    { ...secret, manager: "ngocbh", confirm: true },
+    { ...secret, manager: "ghost" },
+    { ...secret, manager: "minh" },
+  ]) {
+    const r = await post(sock, body, bob)
+    expect([body.manager, r.status, errorOf(r)]).toEqual([body.manager, 403, "forbidden"])
+    for (const echoed of ["Zed", "zed", "Vault"]) expect(r.text).not.toContain(echoed)
+  }
+  expect(hire).not.toHaveBeenCalled()
+  expect(fs.existsSync(path.join(company, "people/zed"))).toBe(false)
+  expect(await office.git.head()).toBe(head)
+
+  // The CEO may hire under an unknown manager's name, and gets its lint error.
+  let r = await post(sock, { ...secret, manager: "ghost" }, ceo)
+  expect(r.status).toBe(200)
+  expect((r.json() as Hired).issues.map((i) => (i as { code: string }).code)).toEqual(["person.unknown_manager"])
+
+  r = await post(sock, { ...secret, manager: "bob" }, bob)
+  expect(r.status).toBe(200)
+  r = await post(sock, { ...secret, manager: "bob", confirm: true }, bob)
+  expect(r.status).toBe(200)
+  expect(git(company, "log", "-1", "--format=%B")).toBe("hire(@zed): Zed Quux, Vault Keeper\n\nActor: @bob")
 })

@@ -5,6 +5,7 @@ import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { type HireRequest, type HireResponse, Person as PersonSchema } from "@opencorp/protocol"
 import { z } from "zod"
+import { actorLine } from "../company/access.ts"
 import { errno, outsideRoot, resolvePath } from "../company/flows.ts"
 import { writeYaml } from "../company/flow_yaml.ts"
 import { type CompanyGit, CompanyGitError } from "../company/git.ts"
@@ -53,9 +54,10 @@ export class Hiring {
     readonly maxPreviews = 100,
   ) {}
 
-  /** Preview `request`, or with `confirm` commit its preview; reject with `HireRefused` if a confirm can't. */
-  hire(request: Request): Promise<HireResult> {
-    return request.confirm ? this.confirm(request) : this.preview(request)
+  /** Preview `request`, or with `confirm` commit its preview as `actor`; reject with `HireRefused` if a confirm
+   *  can't. */
+  hire(request: Request, actor: string): Promise<HireResult> {
+    return request.confirm ? this.confirm(request, actor) : this.preview(request)
   }
 
   /** The person, diff, and lint issues the hire would make; nothing is written. Only issues the hire brings
@@ -69,8 +71,9 @@ export class Hiring {
     return { person, diff: diff(files), issues, commit: null }
   }
 
-  /** Write and commit the previewed hire, unless its fields changed or it brings a lint error. */
-  async confirm(request: Request): Promise<HireResult> {
+  /** Write and commit the previewed hire, naming `actor` in the commit, unless its fields changed or it brings a
+   *  lint error. */
+  async confirm(request: Request, actor: string): Promise<HireResult> {
     const previewed = this.#previews.get(request.handle)
     if (!previewed || !isDeepStrictEqual(previewed, form(request))) {
       const changed = "the hire changed since its preview (or was never previewed); preview it again"
@@ -106,7 +109,7 @@ export class Hiring {
             fs.closeSync(fd)
           }
         }
-        const commit = await locked.commit(Object.keys(files), subject(person))
+        const commit = await locked.commit(Object.keys(files), subject(person) + actorLine(actor))
         return [person, files, issues, commit] as const
       } catch (failure) {
         // Left on disk, the profile would be committed later as a hand edit.
