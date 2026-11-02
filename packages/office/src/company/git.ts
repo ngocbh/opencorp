@@ -936,8 +936,9 @@ export class CompanyGit {
     // Without it `git status` may refresh the index under index.lock, which would fail the daemon's own git add.
     const env = { GIT_OPTIONAL_LOCKS: "0" }
     const status = ["status", "--porcelain", "-z", "--untracked-files=all"]
-    // A profile with a merge conflict is left out of `handEdits`, as `commitHandEdits` skips it.
-    const handEdits = statusPaths((await this.#run([...status, "--", PROFILES], { env })).stdout).paths
+    // As `commitHandEdits` does: nothing while a human's operation is in progress, and no conflicted profile.
+    const busy = (await this.#operation()) !== null
+    const handEdits = busy ? [] : statusPaths((await this.#run([...status, "--", PROFILES], { env })).stdout).paths
     const { paths, conflicted } = statusPaths((await this.#run(status, { env })).stdout)
     const edits = new Set(handEdits)
     return { handEdits, uncommitted: [...paths, ...conflicted].sort().filter((p) => !edits.has(p)) }

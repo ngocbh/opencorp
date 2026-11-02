@@ -1644,6 +1644,19 @@ test("pending sorts profile hand edits from other uncommitted changes", async ()
   })
 })
 
+test("pending lays no hand edit over the commit while a human operation is in progress", async () => {
+  const { company, g } = setup()
+  startMerge(company, "company.yaml")
+  fs.writeFileSync(path.join(company, PROFILE), "# Minh\nedited\n")
+  expect(await g.pending()).toEqual({ handEdits: [], uncommitted: ["company.yaml", PROFILE] })
+})
+
+test("pending counts a conflicted profile as uncommitted, not as a hand edit", async () => {
+  const { company, g } = setup()
+  stashPopConflict(company, PROFILE)
+  expect(await g.pending()).toEqual({ handEdits: [], uncommitted: [PROFILE] })
+})
+
 test("pending of a clean clone is empty", async () => {
   const { g } = setup()
   expect(await g.pending()).toEqual({ handEdits: [], uncommitted: [] })
