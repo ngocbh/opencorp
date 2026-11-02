@@ -416,12 +416,17 @@ const PATTERNS: {
     site: "ModelName", def: "SetModelRequest", path: ["model"], bad: " gpt-4o-mini",
     invalid: ["SetModelRequest.padded-model"],
   },
+  {
+    site: "HireRequest name/title", def: "HireRequest", path: ["name"], bad: "a\nb",
+    invalid: ["HireRequest.newline-name", "HireRequest.nul-title", "HireRequest.ansi-name",
+      "HireRequest.line-separator-title"],
+  },
 ]
 
 test("every pattern carries the u flag", () => {
   const text = sources().map(([, source]) => source).join("\n")
   const literals = [...text.matchAll(/\.regex\(\/((?:\\.|[^\/\\\n])+)\/([a-z]*)\)/g)]
-  expect(PATTERNS.length).toBe(16)
+  expect(PATTERNS.length).toBe(17)
   // Each `.regex(` site needs its own PATTERNS row.
   expect(text.split(".regex(").length - 1).toBe(PATTERNS.length)
   expect(literals.length).toBe(PATTERNS.length)
@@ -488,4 +493,14 @@ test("a new chat may leave its model to the office", () => {
   const { model: _, ...data } = load(FIXTURES, "CreateSessionRequest") as Record<string, unknown>
   expect(Schemas.CreateSessionRequest.parse(data).model).toBeNull()
   expect(Schemas.CreateSessionRequest.parse({ ...data, model: null }).model).toBeNull()
+})
+
+test("a hire's name and title are trimmed and keep Unicode", () => {
+  const hire = load(FIXTURES, "HireRequest") as Record<string, unknown>
+  const parsed = Schemas.HireRequest.parse({ ...hire, name: "  Nguyễn Văn Tuấn  ", title: "Dev 👩‍💻 lead" })
+  expect([parsed.name, parsed.title]).toEqual(["Nguyễn Văn Tuấn", "Dev 👩‍💻 lead"])
+  const codes = (name: string, title: string) =>
+    Schemas.HireRequest.safeParse({ ...hire, name, title }).error?.issues.map((i) => [i.code, i.path]) ?? []
+  expect(codes("a".repeat(100), "x".repeat(200))).toEqual([])
+  expect(codes("a".repeat(101), "x".repeat(201))).toEqual([["too_big", ["name"]], ["too_big", ["title"]]])
 })

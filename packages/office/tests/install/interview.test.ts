@@ -165,6 +165,9 @@ test("a fallback with problems names the flag to pass", () => {
   const bad = refusal(() => fallbackDraft({ handle: "Me" }, login))
   expect(bad).toBeInstanceOf(OnboardError)
   expect(bad.message).toMatch(/@Me .*; pass --handle/)
+  const broken = refusal(() => fallbackDraft({ agent: "Mi\nnh", agent_handle: "minh" }, login))
+  expect(broken).toBeInstanceOf(OnboardError)
+  expect(broken.message).toMatch(/name can't hold line breaks.*; pass --agent$/)
 })
 
 test("the summary lists the company you and each teammate", () => {
@@ -353,6 +356,17 @@ test("confirm sends problems back without asking the owner", async () => {
     draft: pyJson(badOutput(), true),
     changes: draftProblems(draftFromOutput(badOutput())).join("\n"),
     accepted: false,
+  })
+  expect(prompter.seen).toEqual([])
+})
+
+test("confirm sends back a teammate name a hire would refuse", async () => {
+  const { state, prompter } = confirming()
+  const answers = { ...OUT, teammates: [{ ...OUT.teammates[0]!, name: "Mi\nnh" }] }
+  const changes = draftProblems(draftFromOutput(answers))
+  expect(changes).toEqual(["the teammate @minh's name can't hold line breaks or control characters"])
+  expect(await confirm({ answers }, state)).toEqual({
+    draft: pyJson(answers, true), changes: changes.join("\n"), accepted: false,
   })
   expect(prompter.seen).toEqual([])
 })

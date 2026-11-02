@@ -1,6 +1,6 @@
 /** A proposed company and its problems. */
 import { expect, test } from "bun:test"
-import { type Draft, draftFromOutput, draftProblems } from "../../src/company/draft.ts"
+import { type Draft, draftFromOutput, draftProblems, fieldProblems } from "../../src/company/draft.ts"
 import type { Owner } from "../../src/company_template/index.ts"
 
 const ME: Owner = { handle: "ngocbh", name: "Hong Ngoc Bui", title: "CEO", passwordHash: null }
@@ -53,6 +53,29 @@ const MISSING: [string, Draft][] = [
 
 test.each(MISSING)("a missing name or title is a problem [%s]", (_, answers) => {
   expect(draftProblems(answers)).toHaveLength(1)
+})
+
+test("a teammate with a blank name or title needs one", () => {
+  const team = [{ name: "  ", handle: "minh", title: "", about: "" }]
+  expect(fieldProblems({ company: "Acme", owner: ME, team })).toEqual([
+    ["teammate.name", "the teammate @minh needs a name"],
+    ["teammate.title", "the teammate @minh needs a title"],
+  ])
+})
+
+test("a teammate's name and title are one line of text a hire takes", () => {
+  const one = (name: string, title: string) =>
+    fieldProblems({ company: "Acme", owner: ME, team: [{ name, handle: "minh", title, about: "" }] })
+  const broken = "the teammate @minh's name can't hold line breaks or control characters"
+  expect(one("Mi\nnh", "Engineer")).toEqual([["teammate.name", broken]])
+  expect(one("\u001b[31mMinh", "Engineer")).toEqual([["teammate.name", broken]])
+  expect(one("Minh", "x".repeat(201))).toEqual([
+    ["teammate.title", "the teammate @minh's title is too long (at most 200 characters)"],
+  ])
+  expect(one("Minh", "Eng\u2028ineer")).toEqual([
+    ["teammate.title", "the teammate @minh's title can't hold line breaks or control characters"],
+  ])
+  expect(one("  Nguyễn Minh 👩‍💻 ", "Engineer")).toEqual([])
 })
 
 test("answers come from the flows output", () => {

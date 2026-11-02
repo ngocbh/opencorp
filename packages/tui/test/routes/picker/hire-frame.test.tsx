@@ -132,7 +132,9 @@ test("a failed confirm drops the preview, so the next Enter previews again", asy
     const f = await app.until((f) => f.includes("@lan is already taken") && f.includes("enter preview"))
     expect(f).not.toContain("+handle: lan")
     app.input.pressEnter()
-    await app.until((f) => f.includes("+handle: lan") && f.includes("edit to fix"))
+    // The new preview names the clash; a taken handle's files are there already, so there's no diff.
+    const again = await app.until((f) => f.includes("@lan is already taken") && f.includes("edit to fix"))
+    expect(again).not.toContain("+handle: lan")
     expect(office.requests.filter((r) => r.method === "POST").map((r) => (r.body as any).confirm)).toEqual([false, true, false])
   } finally {
     await app.stop()

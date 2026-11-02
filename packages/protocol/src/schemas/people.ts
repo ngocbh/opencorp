@@ -45,10 +45,20 @@ export const Group = z.strictObject({
 })
 export type Group = z.input<typeof Group>
 
+/**
+ * Text of one line: trimmed, then 1 to `max` UTF-16 code units, with no control character (C0, DEL, C1), lone
+ * surrogate or Unicode line or paragraph separator. Format characters such as an emoji's zero-width joiner pass.
+ */
+function oneLineText(max: number) {
+  return z.string().trim().min(1).max(max).regex(/^[^\p{Cc}\p{Cs}\u2028\u2029]*$/u)
+}
+
+/** The body of POST /people: the new agent's name (at most 100 code units) and title (at most 200), each one
+ *  line of text, its handle and its manager; `confirm` commits the preview. */
 export const HireRequest = z.strictObject({
-  name: z.string().min(1),
+  name: oneLineText(100),
   handle: Handle,
-  title: z.string(),
+  title: oneLineText(200),
   manager: Handle,
   confirm: z.boolean().default(false),
 })

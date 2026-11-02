@@ -51,7 +51,7 @@ function personPath(handle: string): string {
   return `people/${handle}/person.yaml`
 }
 
-/** Each cycle in a child → parent map once, as its sorted ids. */
+/** Each cycle in a child → parent map once, as its ids in child → parent order starting from the smallest. */
 function cycles(links: ReadonlyMap<string, string | null>): string[][] {
   const seen = new Set<string>()
   const found: string[][] = []
@@ -63,8 +63,10 @@ function cycles(links: ReadonlyMap<string, string | null>): string[][] {
       node = links.get(node)
     }
     if (node != null && path.includes(node)) {
-      const cycle = path.slice(path.indexOf(node)).sort()
-      const key = JSON.stringify(cycle)
+      const loop = path.slice(path.indexOf(node))
+      const first = loop.indexOf([...loop].sort()[0]!)
+      const cycle = [...loop.slice(first), ...loop.slice(0, first)]
+      const key = JSON.stringify([...loop].sort())
       if (!seen.has(key)) {
         seen.add(key)
         found.push(cycle)
@@ -100,12 +102,14 @@ function* checkIdCase(repo: CompanyRepo): Iterable<RepoIssue> {
 function* checkManagers(repo: CompanyRepo): Iterable<RepoIssue> {
   for (const [handle, person] of sorted(repo.people)) {
     if (person.manager !== null && !repo.people.has(person.manager)) {
-      yield repoIssue(personPath(handle), "person.unknown_manager", person.manager)
+      yield repoIssue(personPath(handle), "person.unknown_manager",
+        `manager @${person.manager} isn't a person in the company`)
     }
   }
   const links = new Map([...repo.people].map(([handle, person]) => [handle, person.manager]))
   for (const cycle of cycles(links)) {
-    yield repoIssue(personPath(cycle[0]!), "person.manager_cycle", cycle.join(" -> "))
+    const loop = [...cycle, cycle[0]].map((h) => `@${h}`).join(" -> ")
+    yield repoIssue(personPath(cycle[0]!), "person.manager_cycle", `reporting lines loop: ${loop}`)
   }
 }
 
@@ -114,7 +118,7 @@ function* checkCeo(repo: CompanyRepo): Iterable<RepoIssue> {
   if (repo.company === null) return
   const ceo = repo.people.get(repo.company.ceo)
   if (ceo === undefined) {
-    yield repoIssue("company.yaml", "company.unknown_ceo", repo.company.ceo)
+    yield repoIssue("company.yaml", "company.unknown_ceo", `ceo @${repo.company.ceo} isn't a person in the company`)
     return
   }
   // Agents can't sign in or hold devices, and the office acts as the CEO for tokenless requests.
@@ -130,15 +134,16 @@ function* checkCeo(repo: CompanyRepo): Iterable<RepoIssue> {
 function* checkGroups(repo: CompanyRepo): Iterable<RepoIssue> {
   for (const [id, group] of sorted(repo.groups)) {
     if (group.parent !== null && !repo.groups.has(group.parent)) {
-      yield repoIssue(`groups/${id}.yaml`, "group.unknown_parent", group.parent)
+      yield repoIssue(`groups/${id}.yaml`, "group.unknown_parent", `parent group ${group.parent} doesn't exist`)
     }
     if (group.head !== null && !repo.people.has(group.head)) {
-      yield repoIssue(`groups/${id}.yaml`, "group.unknown_head", group.head)
+      yield repoIssue(`groups/${id}.yaml`, "group.unknown_head", `head @${group.head} isn't a person in the company`)
     }
   }
   const links = new Map([...repo.groups].map(([id, group]) => [id, group.parent]))
   for (const cycle of cycles(links)) {
-    yield repoIssue(`groups/${cycle[0]}.yaml`, "group.parent_cycle", cycle.join(" -> "))
+    yield repoIssue(`groups/${cycle[0]}.yaml`, "group.parent_cycle",
+      `parent groups loop: ${[...cycle, cycle[0]].join(" -> ")}`)
   }
 }
 
@@ -146,7 +151,7 @@ function* checkGroups(repo: CompanyRepo): Iterable<RepoIssue> {
 function* checkPersonGroups(repo: CompanyRepo): Iterable<RepoIssue> {
   for (const [handle, person] of sorted(repo.people)) {
     for (const id of person.groups) {
-      if (!repo.groups.has(id)) yield repoIssue(personPath(handle), "person.unknown_group", id)
+      if (!repo.groups.has(id)) yield repoIssue(personPath(handle), "person.unknown_group", `group ${id} doesn't exist`)
     }
   }
 }
@@ -167,10 +172,12 @@ function* checkAssets(repo: CompanyRepo): Iterable<RepoIssue> {
       const colon = grant.who.lastIndexOf(":")
       const kind = colon < 0 ? "" : grant.who.slice(0, colon)
       const known: ReadonlyMap<string, unknown> = kind === "group" ? repo.groups : repo.people
-      if (!known.has(grant.who.slice(colon + 1))) yield repoIssue(file, "asset.unknown_grantee", grant.who)
+      if (!known.has(grant.who.slice(colon + 1))) {
+        yield repoIssue(file, "asset.unknown_grantee", `grantee ${grant.who} isn't a person or group in the company`)
+      }
       for (const tool of grant.can) {
         if (tool !== "admin" && !Object.hasOwn(asset.tools, tool)) {
-          yield repoIssue(file, "asset.unknown_tool", tool)
+          yield repoIssue(file, "asset.unknown_tool", `tool ${JSON.stringify(tool)} isn't one of this asset's tools`)
         } else if (gated.has(tool)) {
           yield repoIssue(file, "asset.gated_tool_granted",
             `${tool} is gated; gated tools are not exposed to agents yet`, "warning")
@@ -346,7 +353,8 @@ function checkSkills(repo: CompanyRepo): RepoIssue[] {
     const own = skillRoot(path.join(repo.root, "people", handle, "skills"), `people/${handle}/skills`, issues)
     for (const name of person.skills) {
       if (!own.has(name) && !shared.has(name)) {
-        issues.push(repoIssue(personPath(handle), "person.unknown_skill", name))
+        issues.push(repoIssue(personPath(handle), "person.unknown_skill",
+          `skill ${JSON.stringify(name)} isn't in people/${handle}/skills or shared/skills`))
       }
     }
   }
@@ -414,7 +422,9 @@ function* checkDevices(repo: CompanyRepo): Iterable<RepoIssue> {
     }
     const names = person.devices.map((device) => device.name)
     const twice = new Set(names.filter((name, i) => names.indexOf(name) !== i))
-    for (const name of [...twice].sort()) yield repoIssue(personPath(handle), "person.duplicate_device", name)
+    for (const name of [...twice].sort()) {
+      yield repoIssue(personPath(handle), "person.duplicate_device", `device ${name} is listed twice`)
+    }
     if (person.kind === "human") {
       for (const device of person.devices) {
         const handles = owners.get(device.token_sha256) ?? new Set()

@@ -625,13 +625,14 @@ export function createFakeOffice(
     check(!extra.length, `unexpected fields: ${extra.join(", ")}`)
     check(HANDLE.test(body.handle), "handle must be lowercase letters, digits and dashes")
     const file = `people/${body.handle}/person.yaml`
+    const taken = state.people.some((p) => p.handle === body.handle)
     const issues: RepoIssue[] = [
-      ...(state.people.some((p) => p.handle === body.handle)
+      ...(taken
         ? [{ path: file, code: "person.duplicate_handle", message: `@${body.handle} is already taken` }]
         : []),
       ...(state.people.some((p) => p.handle === body.manager)
         ? []
-        : [{ path: file, code: "person.unknown_manager", message: body.manager }]),
+        : [{ path: file, code: "person.unknown_manager", message: `manager @${body.manager} isn't a person in the company` }]),
     ].map((i) => ({ ...i, severity: "error" as const }))
     const person: Person = {
       handle: body.handle,
@@ -640,7 +641,8 @@ export function createFakeOffice(
       title: body.title,
       manager: body.manager,
     }
-    const diff = `+++ b/${file}\n+name: ${person.name}\n+handle: ${person.handle}\n+kind: agent\n+title: ${person.title}\n+manager: ${person.manager}\n`
+    // A taken handle's files are there already, so the office's diff adds nothing.
+    const diff = taken ? "" : `+++ b/${file}\n+name: ${person.name}\n+handle: ${person.handle}\n+kind: agent\n+title: ${person.title}\n+manager: ${person.manager}\n`
     if (!body.confirm) {
       state.hires[body.handle] = body
       return Response.json({ person: served(person), diff, issues, commit: null } satisfies HireResponse)

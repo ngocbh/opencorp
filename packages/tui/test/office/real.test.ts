@@ -129,6 +129,7 @@ test("a hire confirm repeats the preview; a taken handle is a lint issue on prev
   const changed = await failure(client().people.hire({ ...req, title: "Lead", confirm: true }))
   expect([changed.status, changed.code]).toEqual([422, "lint_failed"])
   const dup = await client().people.hire({ ...req, handle: "minh", confirm: false })
+  expect(dup.diff).toBe("")
   expect(dup.issues).toEqual([
     { path: "people/minh/person.yaml", code: "person.duplicate_handle", message: "@minh is already taken", severity: "error" },
   ])
@@ -144,21 +145,23 @@ test("a hire confirm never previewed is lint_failed", async () => {
 })
 
 test("a hire checks the body like the office; an unknown manager is a lint issue", async () => {
+  const KAI = "manager @kai isn't a person in the company"
   const req = { name: "Hoa", handle: "hoa", title: "QA", manager: "ngocbh" }
   for (const body of [
     { ...req, handle: "Hoa" },
     { ...req, extra: 1 },
     { ...req, id: "minh" },
+    { ...req, name: "Ho\u0000a" },
   ]) {
     const e = await failure(client().people.hire(body as any))
     expect([e.status, e.code]).toEqual([422, "invalid_body"])
   }
   const orphan = await client().people.hire({ ...req, manager: "kai", confirm: false })
   expect(orphan.issues).toEqual([
-    { path: "people/hoa/person.yaml", code: "person.unknown_manager", message: "kai", severity: "error" },
+    { path: "people/hoa/person.yaml", code: "person.unknown_manager", message: KAI, severity: "error" },
   ])
   const refused = await failure(client().people.hire({ ...req, manager: "kai", confirm: true }))
-  expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", "kai"])
+  expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", KAI])
 })
 
 test("unknown paths and wrong methods", async () => {
