@@ -20,7 +20,15 @@ import {
 import { type FileLock, FileLockError, sqliteErrorCode, waitForLock, withWarnings } from "@ngocbh/yian/platform"
 import type { RunFlowOptions, RunResult } from "@ngocbh/yian/run"
 import { addDevice, DeviceRefused } from "../auth/devices.ts"
-import { deviceName, Identity, identityPath, readIdentity, writeIdentity } from "../auth/identity.ts"
+import {
+  deviceName,
+  Identity,
+  IdentityUnreadable,
+  identityPath,
+  loadIdentity,
+  readIdentity,
+  writeIdentity,
+} from "../auth/identity.ts"
 import { checkPassword } from "../auth/passwords.ts"
 import { newToken, tokenSha256 } from "../auth/tokens.ts"
 import { azureBaseUrl, Connections } from "../chat/connections.ts"
@@ -28,7 +36,7 @@ import * as models from "../chat/models.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
 import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import { lint } from "../company/lint.ts"
-import { loadRepo } from "../company/loader.ts"
+import { type CompanyRepo, loadRepo } from "../company/loader.ts"
 import { type CompanyState, companyState, missingFiles, type Owner, writeCompany } from "../company_template/index.ts"
 import { checkSocketPath, makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
 import { redact as redactSecrets, repr } from "../perm/redact.ts"
@@ -800,6 +808,11 @@ export async function knownIdentity(home: string): Promise<Identity | undefined>
   return lexists(file) ? await readIdentity(file) : undefined
 }
 
+/** Whether `people` lists `me`'s token for its handle. */
+function lists(people: CompanyRepo["people"], me: Identity): boolean {
+  return people.get(me.handle)?.devices.some((d) => d.token_sha256 === tokenSha256(me.token)) ?? false
+}
+
 /**
  * This device's identity in the company at `root`: kept if the company lists it, else made and committed.
  *
@@ -818,10 +831,7 @@ async function join(
 ): Promise<Identity | null> {
   const people = loadRepo(root).people
   const known = await knownIdentity(home)
-  if (known !== undefined) {
-    const sha = tokenSha256(known.token)
-    if (people.get(known.handle)?.devices.some((d) => d.token_sha256 === sha)) return known
-  }
+  if (known !== undefined && lists(people, known)) return known
   const humans = [...people.values()]
     .filter((p) => p.kind === "human")
     .map((p) => p.handle)
@@ -1003,6 +1013,8 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
     prompter.say(`Company repo: cloned ${redact(url)}`)
   }
   let me: Identity | null = null
+  // Why this device acts as no one, when that isn't simply a missing identity.
+  let note: string | undefined
   try {
     let written: string[] = []
     let missing: string[] = []
@@ -1021,7 +1033,8 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
       const done = written.length > 0 ? `added ${written.length} template files to` : "up to date at"
       prompter.say(`Company repo: ${done} ${company}`)
     }
-    const errors = (await lint(loadRepo(root))).filter((issue) => issue.severity === "error")
+    const repo = loadRepo(root)
+    const errors = (await lint(repo)).filter((issue) => issue.severity === "error")
     if (errors.length > 0) {
       throw new OnboardError(
         "the company repo has errors; fix them and run `opencorp onboard` again:\n" +
@@ -1030,10 +1043,8 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
     }
 
     step(2, "This device", "The office takes requests only from devices its humans list, once any human lists one.")
-    me = fresh
-      ? await join(root, worktrees, one.home, prompter, options.loginDefaults ?? loginDefaults)
-      : ((await knownIdentity(one.home)) ?? null)
     if (fresh) {
+      me = await join(root, worktrees, one.home, prompter, options.loginDefaults ?? loginDefaults)
       try {
         // An empty dir: rename can't put a directory over a full one.
         if (fs.statSync(company, { throwIfNoEntry: false })?.isDirectory()) fs.rmdirSync(company)
@@ -1043,6 +1054,22 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
         if (text === undefined) throw error
         throw new OnboardError(`can't move the clone into ${company}: ${text}`)
       }
+    } else {
+      const file = identityPath(one.home)
+      let known: Identity | undefined
+      try {
+        known = await loadIdentity(file)
+      } catch (error) {
+        if (!(error instanceof IdentityUnreadable)) throw error
+        note = `This device's identity can't be used: ${error.message}`
+      }
+      // The working tree, as join() reads it; the office's roster is HEAD's, which a later commit can change.
+      if (known && lists(repo.people, known)) me = known
+      else if (known) {
+        note =
+          `This device's identity (${file}) is @${known.handle}'s ${known.device}, but the company doesn't list its` +
+          " token; `opencorp login` says how to get it listed."
+      }
     }
   } catch (error) {
     if (fresh) removePath(root)
@@ -1051,7 +1078,7 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
   if (me) {
     prompter.say(`This device: ${me.device}, acting as @${me.handle} (its token is in ${identityPath(one.home)})`)
   } else {
-    prompter.say("This device has no identity yet; run `opencorp login` to use opencorp from it.")
+    prompter.say(note ?? "This device has no identity yet; run `opencorp login` to use opencorp from it.")
   }
 
   step(3, "Model", "Your agents think with this model; its key stays in this office, readable only by you.")

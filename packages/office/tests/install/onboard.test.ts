@@ -360,6 +360,47 @@ test("a human without a password joins and is told to set one", async () => {
   )
 })
 
+/** Onboards the existing company at `home`, on a running office; resolves to what onboarding said. */
+async function onboardExisting(dir: string, home: string): Promise<string[]> {
+  const ask = new Script()
+  await onboard(home, ask, {
+    ...base(dir),
+    stdin: provider(),
+    host: makeHost(dir, new Runner(), { answers: async () => true }),
+  })
+  return ask.seen
+}
+
+test("an existing company with an unreadable identity says why", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  await company(home)
+  fs.chmodSync(home, 0o700) // as onboarding leaves it; writeIdentity refuses a home that isn't private
+  const file = path.join(home, "identity.json")
+  await writeIdentity(file, new Identity("me", "mac", newToken()))
+  fs.chmodSync(file, 0o644)
+  const seen = await onboardExisting(dir, home)
+  const said = seen.filter((line) => line.startsWith("This device's identity can't be used:"))
+  expect(said).toHaveLength(1)
+  expect(said[0]).toContain(`\`chmod 600 ${file}\``)
+  expect(seen.some((line) => line.includes("no identity yet"))).toBe(false)
+  expect(fs.statSync(file).mode & 0o777).toBe(0o644)
+})
+
+test("an existing company that doesn't list this device's token says so, not acting as", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  await company(home)
+  fs.chmodSync(home, 0o700) // as onboarding leaves it; writeIdentity refuses a home that isn't private
+  const file = path.join(home, "identity.json")
+  await writeIdentity(file, new Identity("me", "mac", newToken()))
+  const seen = await onboardExisting(dir, home)
+  expect(seen).toContain(
+    `This device's identity (${file}) is @me's mac, but the company doesn't list its token; \`opencorp login\` says how to get it listed.`,
+  )
+  expect(seen.some((line) => line.includes("acting as"))).toBe(false)
+})
+
 test("an identity the company already lists is kept and nothing is asked", async () => {
   const dir = tempDir()
   const home = path.join(dir, "home")

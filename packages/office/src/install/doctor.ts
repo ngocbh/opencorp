@@ -6,7 +6,7 @@ import path from "node:path"
 import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
 import { FileLockError, openSqlite, type Sqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
-import { type Identity, identityPath, readIdentity } from "../auth/identity.ts"
+import { type Identity, IdentityUnreadable, identityPath, loadIdentity } from "../auth/identity.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
 import type { RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
@@ -858,6 +858,9 @@ export function foldersCheck(store: string, guards: Guards, home: string): Check
   }
 }
 
+// Logging in again wouldn't help: the identity line says what to fix.
+const IDENTITY_UNREAD = "identity.json can't be read (see the identity line), so the office doesn't know this device"
+
 /** What `checks` reads and runs; tests pass stand-ins. */
 export interface CheckOptions {
   /** The machine (default `defaultHost()`). */
@@ -882,11 +885,16 @@ export interface CheckOptions {
   office?: (socket: string, identity: Identity | undefined) => Promise<OfficeInfo | service.Unread>
   /** Looks at a path without following a symlink (default `fs.lstatSync`). */
   lstat?: (p: string) => fs.Stats
+  /** Reads this device's identity, rejecting with `IdentityUnreadable` when it can't be used (default
+   *  `loadIdentity`). */
+  loadIdentity?: (file: string) => Promise<Identity | undefined>
 }
 
 /**
  * Every check for the office at `home`, in the order onboarding sets things up. A running office is asked what it
- * runs and where HQ listens with this device's identity, read once; that read can wait on a busy `<home>/.lock`.
+ * runs and where HQ listens with this device's identity, read once; that read can wait on a busy `<home>/.lock`. An
+ * identity file that can't be used gets its own line, which the version and HQ lines point at when the office
+ * refuses them.
  *
  * Worked folders are checked against the guards the running daemon pinned (`GET /office`); when the office wasn't
  * read, against the ones an office started from this shell with `command` would pin, which can differ from a running
@@ -895,13 +903,15 @@ export interface CheckOptions {
 export async function checks(home: string, options: CheckOptions): Promise<Check[]> {
   const { host = defaultHost(), command = selfCommand(), repo = CHECKOUT, environ = process.env } = options
   const { codex = codexCheck, hq = hqStatus, office = service.officeInfo, probe = sandboxProblem } = options
+  const load = options.loadIdentity ?? loadIdentity
   const lstat = options.lstat ?? ((p: string) => fs.lstatSync(p))
   const run = launch(home, { command, environ, userHome: host.userHome })
   const paths = new OfficePaths(run.home)
   const running = await host.answers(run.socket)
   const found: Check[] = []
   let guards: Guards | undefined
-  found.push(homeCheck(paths))
+  const homeLine = homeCheck(paths)
+  found.push(homeLine)
   found.push(await companyCheck(paths, running))
   found.push(await providerCheck(paths))
   const added = connectionsCheck(paths, lstat)
@@ -916,21 +926,43 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
       detail: `${run.socket} is not a socket; remove it, then run \`opencorp start\``,
     })
   } else if (running) {
-    const identity = await readIdentity(identityPath(run.home))
+    const file = identityPath(run.home)
+    let identity: Identity | undefined
+    let bad: IdentityUnreadable | undefined
+    try {
+      identity = await load(file)
+    } catch (error) {
+      if (!(error instanceof IdentityUnreadable)) throw error
+      bad = error
+    }
     const info = await office(run.socket, identity)
     const ours = typeof info !== "string" && info.home === run.home ? info : null
     const pidfile = service.pid(run)
     found.push({ name: "office", status: "ok", detail: `answering on ${run.socket} (pid ${ours?.pid ?? pidfile})` })
     if (ours !== null && pidfile !== ours.pid) found.push(pidfileCheck(run, ours.pid, pidfile, lstat))
-    if (typeof info === "string") found.push({ name: "version", status: "warn", detail: VERSION_UNREAD[info] })
+    if (bad) {
+      // The home line already says how to make the home private.
+      const detail =
+        bad.reason === "folder" && homeLine.status !== "ok"
+          ? `${file} can't be read while the home isn't private; see the home line`
+          : bad.message
+      found.push({ name: "identity", status: "warn", detail })
+    }
+    if (info === "refused" && bad) {
+      found.push({ name: "version", status: "warn", detail: `${IDENTITY_UNREAD}, so it won't say what it runs` })
+    } else if (typeof info === "string") found.push({ name: "version", status: "warn", detail: VERSION_UNREAD[info] })
     else {
       found.push(versionCheck(run, info, newestSource(command)), toolsCheck(info))
       guards = info.guards
     }
     const hqAnswer = await hq(run.socket, identity)
-    const missing =
-      typeof hqAnswer === "string" || hqAnswer.socket_error ? null : socketProblem(hqAnswer.socket, lstat)
-    found.push(...hqChecks(hqAnswer, paths.office, repo, missing))
+    if (hqAnswer === "refused" && bad) {
+      found.push({ name: "hq", status: "warn", detail: `${IDENTITY_UNREAD}, so it won't say where HQ listens` })
+    } else {
+      const missing =
+        typeof hqAnswer === "string" || hqAnswer.socket_error ? null : socketProblem(hqAnswer.socket, lstat)
+      found.push(...hqChecks(hqAnswer, paths.office, repo, missing))
+    }
   } else {
     const hung = fallback.daemon(run, resolveTools(run.env).ps)
     if (hung !== null) {

@@ -8,7 +8,7 @@ import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
 import { openSqlite } from "@ngocbh/yian/platform"
 import { expect, onTestFinished, test } from "bun:test"
-import { Identity, identityPath, readIdentity, writeIdentity } from "../../src/auth/identity.ts"
+import { Identity, IdentityUnreadable, identityPath, readIdentity, writeIdentity } from "../../src/auth/identity.ts"
 import { newToken } from "../../src/auth/tokens.ts"
 import { writeCompany } from "../../src/company_template/index.ts"
 import { logLine } from "../../src/daemon/http.ts"
@@ -1357,13 +1357,18 @@ function fakeStat(sock: Sock): fs.Stats {
 }
 
 /** `checks` on a running office at `paths`, whose `GET /hq` answers `hq` (default `status()`) and `GET /office`
- *  answers `office`, with `environ` as the shell's environment; `lstat` finds `sock` at HQ's socket path. */
+ *  answers `office`, with `environ` as the shell's environment and `loadIdentity` reading the identity; `lstat` finds
+ *  `sock` at HQ's socket path. */
 function runningChecks(
   dir: string,
   paths: OfficePaths,
   office: OfficeInfo | service.Unread,
   environ: Record<string, string> = {},
-  { sock = "socket", hq = status() }: { sock?: Sock; hq?: HqStatus } = {},
+  {
+    sock = "socket",
+    hq = status(),
+    loadIdentity,
+  }: Pick<doctor.CheckOptions, "loadIdentity"> & { sock?: Sock; hq?: HqStatus | service.Unread } = {},
 ): Promise<Check[]> {
   return doctor.checks(paths.home, {
     host: makeHost(dir, new Runner(), { answers: async () => true }),
@@ -1374,7 +1379,8 @@ function runningChecks(
     environ,
     hq: async () => hq,
     office: async () => office,
-    lstat: (p) => (p === hq.socket ? fakeStat(sock) : fs.lstatSync(p)),
+    lstat: (p) => (typeof hq !== "string" && p === hq.socket ? fakeStat(sock) : fs.lstatSync(p)),
+    loadIdentity,
   })
 }
 
@@ -1529,6 +1535,67 @@ test("an office that cant say what it runs warns on the version line", async () 
   }
   expect(doctor.VERSION_UNREAD.refused).toContain("`opencorp login`")
   expect(doctor.VERSION_UNREAD.unreachable).toContain("`opencorp restart`")
+})
+
+/** `paths` with the CEO's identity saved in its home. */
+async function withIdentity(paths: OfficePaths): Promise<string> {
+  const file = identityPath(paths.home)
+  await writeIdentity(file, new Identity("ngocbh", "mac", newToken()))
+  return file
+}
+
+test("an unreadable identity gets its own line, and version and hq don't say log in", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const file = await withIdentity(paths)
+  fs.chmodSync(file, 0o644)
+  const got = byName(await runningChecks(dir, paths, "refused", {}, { hq: "refused" }))
+  expect(got.identity!.status).toBe("warn")
+  expect(got.identity!.detail).toContain(`\`chmod 600 ${launchFor(dir, paths).home}/identity.json\``)
+  for (const line of [got.version!, got.hq!]) {
+    expect(line.status).toBe("warn")
+    expect(line.detail).toContain("see the identity line")
+    expect(line.detail).not.toContain("opencorp login")
+  }
+})
+
+test("a home that isn't private points the identity line at the home line", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  await withIdentity(paths)
+  fs.chmodSync(paths.home, 0o755)
+  const got = byName(await runningChecks(dir, paths, "refused", {}, { hq: "refused" }))
+  expect(got.home!.status).toBe("warn")
+  expect(got.identity!.status).toBe("warn")
+  expect(got.identity!.detail).toContain("see the home line")
+  expect(got.identity!.detail).not.toContain("chmod 700")
+})
+
+test("a folder problem the home line doesn't see goes on the identity line", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const problem = new IdentityUnreadable("folder", "/h must be a directory of yours, not a symlink")
+  const got = byName(
+    await runningChecks(dir, paths, "refused", {}, {
+      loadIdentity: async () => {
+        throw problem
+      },
+    }),
+  )
+  expect(got.home!.status).toBe("ok")
+  expect(got.identity).toEqual({ name: "identity", status: "warn", detail: problem.message })
+})
+
+test("a missing identity on a refusing office still says log in; a readable one adds no line", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const missing = byName(await runningChecks(dir, paths, "refused"))
+  expect(missing.identity).toBeUndefined()
+  expect(missing.version!.detail).toContain("`opencorp login`")
+  await withIdentity(paths)
+  const readable = byName(await runningChecks(dir, paths, info(launchFor(dir, paths).home)))
+  expect(readable.identity).toBeUndefined()
+  expect(readable.version!.status).toBe("ok")
 })
 
 test("office info is read with this devices token", async () => {

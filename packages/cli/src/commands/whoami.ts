@@ -1,11 +1,25 @@
 // `opencorp whoami`: who this device is, locally and to the office.
 import { OfficeUnavailable } from "@opencorp/client"
 import { identityPath } from "@opencorp/client/node"
+import fs from "node:fs"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { localIdentity, officeClient, officeNotRunning } from "../office"
 
-/** `opencorp whoami`: the handle and device in this device's identity, and who the office takes it to be. */
+/** Whether nothing is at `file`. */
+function absent(file: string): boolean {
+  try {
+    fs.lstatSync(file)
+    return false
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ENOENT"
+  }
+}
+
+/**
+ * `opencorp whoami`: the handle and device in this device's identity, and who the office takes it to be. With no
+ * identity file it says to log in; a file it can't use gets only the warning that says why.
+ */
 export const run: CommandRun = async (argv) => {
   try {
     parseArgs({ args: argv, options: {} })
@@ -14,11 +28,8 @@ export const run: CommandRun = async (argv) => {
     return 2
   }
   const me = localIdentity()
-  console.log(
-    me
-      ? `This device: ${me.device}, as @${me.handle} (${identityPath()})`
-      : "This device has no identity; run `opencorp login`",
-  )
+  if (me) console.log(`This device: ${me.device}, as @${me.handle} (${identityPath()})`)
+  else if (absent(identityPath())) console.log("This device has no identity; run `opencorp login`")
   try {
     const office = await officeClient(me).whoami()
     console.log(
