@@ -8,6 +8,7 @@ import { VERSION } from "@opencorp/protocol/version"
 import { FileLockError, isLocked, openSqlite, type Sqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
 import { type Identity, IdentityUnreadable, identityPath, loadIdentity } from "../auth/identity.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
+import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import type { RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
@@ -19,13 +20,20 @@ import { RETRY_MS } from "../hq/servers.ts"
 import { CHECKOUT } from "../hq/version.ts"
 import { selfCommand, tuiAssetRoot } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
-import { checkWorkspace, type OfficePaths as Guards, SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
+import {
+  checkClearOf,
+  checkWorkspace,
+  type OfficePaths as Guards,
+  SandboxPolicy,
+  UnsafeWorkspace,
+} from "../sandbox/policy.ts"
 import { fsHelper, run } from "../sandbox/run.ts"
 import { latestVersion, newerStore, userVersion } from "../store/migrate.ts"
 import { storeProblem } from "../store/problem.ts"
 import { StoreError } from "../store/store.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import * as fallback from "./fallback.ts"
+import { readRegular } from "./files.ts"
 import { defaultHost, type Env, type Host, type Launch, launch, runCommand, which } from "./launch.ts"
 import * as launchd from "./launchd.ts"
 import {
@@ -48,6 +56,9 @@ const SIGNED_OUT = "not logged in"
 
 /** The most of a line from `codex --version` or `codex login status` the report shows. */
 const LINE_CAP = 200
+
+/** The most of a plist or unit file doctor reads: `opencorp onboard` writes about 2 KiB. */
+const SERVICE_FILE_CAP = 64 * 1024
 
 /** Seconds each sandboxed call of the sandbox probe may take. */
 const PROBE_TIMEOUT = 30
@@ -135,6 +146,21 @@ function homeCheck(paths: OfficePaths): Check {
   return { name: "home", status: "ok", detail: paths.home }
 }
 
+/** What the company line says about `paths`, uncommitted changes that sessions don't run: a few named, the rest
+ *  counted. */
+function uncommittedNote(paths: string[]): string {
+  const shown = paths.slice(0, 3).map(oneLine).join(", ") + (paths.length > 3 ? ", …" : "")
+  const [s, are, them] = paths.length === 1 ? ["", "isn't", "it"] : ["s", "aren't", "them"]
+  const counted = `${paths.length} uncommitted change${s} (${shown}) ${are} in the last commit`
+  return `${counted}, which sessions run: commit ${them} to use ${them}`
+}
+
+/**
+ * Lints the company repo's last commit, which sessions run, with the profile hand edits a new session commits first
+ * laid over it, and says what uncommitted changes sessions won't see. The working tree's company, person, group and
+ * asset files, which the daemon also reads live, must load too. It reads the clone without writing to it, so it can
+ * run beside the daemon; missing template files are looked for in the working tree, where onboard adds them.
+ */
 async function companyCheck(paths: OfficePaths, running: boolean): Promise<Check> {
   const root = paths.company
   const state = await companyState(root)
@@ -149,20 +175,47 @@ async function companyCheck(paths: OfficePaths, running: boolean): Promise<Check
       detail: `${root} has no company yet (no first commit); run \`opencorp init\` to finish it`,
     }
   }
+  let tmp: string | undefined
   let issues: RepoIssue[]
+  let uncommitted: string[]
   try {
-    issues = await lint(loadRepo(root))
+    // Not `pin`: the daemon owns the pinned worktrees, and its lock doesn't reach this process.
+    const git = new CompanyGit(root, paths.worktrees)
+    const pending = await git.pending()
+    uncommitted = pending.uncommitted
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-doctor-"))
+    const tree = path.join(tmp, path.basename(root))
+    fs.mkdirSync(tree)
+    await git.exportTree("HEAD", tree, pending.handEdits)
+    // Messages name the copy's paths; show them as the company's, and a path beside the copy as one beside it.
+    const [copied, real, home] = [tmp, fs.realpathSync(tmp), path.dirname(root)]
+    const shown = (text: string) => text.replaceAll(real, home).replaceAll(copied, home)
+    try {
+      issues = (await lint(loadRepo(tree))).map((i) => ({ ...i, message: shown(i.message) }))
+      // Logins, devices, passwords and asset grants read the working tree's company, person, group and asset files
+      // live, so what won't load there fails too; once, when the last commit has the same issue.
+      const key = (i: RepoIssue) => `${i.path}\0${i.code}\0${i.message}`
+      const linted = new Set(issues.map(key))
+      issues.unshift(...loadRepo(root).errors.filter((i) => !linted.has(key(i))))
+    } catch (error) {
+      // A repo that won't even load is the finding.
+      return { name: "company", status: "fail", detail: `${root} doesn't load: ${shown(messageOf(error))}` }
+    }
   } catch (error) {
-    // A repo that won't even load is the finding.
-    return { name: "company", status: "fail", detail: `${root} doesn't load: ${messageOf(error)}` }
+    const why = error instanceof CompanyGitError ? oneLine(error.message) : (errnoCode(error) ?? nameOf(error))
+    return { name: "company", status: "fail", detail: `can't read the last commit of ${root}: ${why}` }
+  } finally {
+    if (tmp !== undefined) fs.rmSync(tmp, { recursive: true, force: true })
   }
   const errors = issues.filter((i) => i.severity === "error")
   if (errors.length) {
     // Some of Yian's messages run over indented lines; the report has one row per check.
-    const detail = errors.map((i) => `${i.path}: ${i.code}: ${oneLine(i.message)}`).join("; ")
-    return { name: "company", status: "fail", detail }
+    const found = errors.map((i) => `${i.path}: ${i.code}: ${oneLine(i.message)}`)
+    if (uncommitted.length) found.push(uncommittedNote(uncommitted))
+    return { name: "company", status: "fail", detail: found.join("; ") }
   }
   const notes = issues.length ? [`${issues.length} lint warnings`] : []
+  if (uncommitted.length) notes.push(uncommittedNote(uncommitted))
   const missing = missingFiles(root)
   if (missing.length) {
     const todo = running ? stopToTopUp(missing.length) : "`opencorp onboard` adds them"
@@ -322,12 +375,57 @@ async function linger(host: Host): Promise<boolean | null> {
   return done.stdout.trim() === "Linger=yes"
 }
 
+/**
+ * What's wrong with the service file `file` (a `what`: plist or unit) of the `<mode>: <name>` service, which is
+ * `state` (loaded or enabled), read with `parse`; null when every absolute path it runs before `daemon` (the program,
+ * and a checkout's `main.ts`) is there. A loaded service outlives its file, so a file that's gone or can't be read
+ * only warns.
+ */
+function serviceFileCheck(
+  [mode, name, state]: [mode: string, name: string, state: string],
+  what: string,
+  file: string,
+  parse: (text: string) => string[] | null,
+): Check | null {
+  const again = "`opencorp onboard` writes it again"
+  const warn = (why: string): Check => ({
+    name: "service",
+    status: "warn",
+    detail: `${mode}: ${name} is ${state}, but its ${what} ${file} ${why}; ${again}`,
+  })
+  let bytes: Buffer | null
+  try {
+    bytes = readRegular(file, SERVICE_FILE_CAP)
+  } catch (error) {
+    return warn(`can't be read (${errnoCode(error) ?? nameOf(error)})`)
+  }
+  if (bytes === null) return warn(lexists(file) ? "isn't a regular file of at most 64 KiB" : "is gone")
+  const text = bytes.toString("utf8")
+  const words = parse(text)
+  const at = words?.indexOf("daemon") ?? -1
+  if (words === null || at < 0) {
+    const detail = `${mode}: ${name} is ${state}, but doctor can't read what ${file} starts; ${again}`
+    return { name: "service", status: "warn", detail }
+  }
+  const gone = words.slice(0, at).find((word) => path.isAbsolute(word) && !fs.existsSync(word))
+  if (gone === undefined) return null
+  return {
+    name: "service",
+    status: "fail",
+    detail: `${mode}: ${name} runs ${gone}, which is gone, so the office can't start; run \`opencorp onboard\``,
+  }
+}
+
 async function serviceCheck(run: Launch, host: Host): Promise<Check> {
   const mode = service.recordedMode(run)
   if (mode === "launchd") {
     const name = launchd.label(run)
     const problem = await launchd.notLoaded(run, host)
-    if (problem === null) return { name: "service", status: "ok", detail: `launchd: ${name} is loaded` }
+    if (problem === null) {
+      const file = launchd.plistPath(run, host)
+      const found = serviceFileCheck([mode, name, "loaded"], "plist", file, launchd.programArguments)
+      return found ?? { name: "service", status: "ok", detail: `launchd: ${name} is loaded` }
+    }
     return {
       name: "service",
       status: "fail",
@@ -344,6 +442,8 @@ async function serviceCheck(run: Launch, host: Host): Promise<Check> {
         detail: `systemd: ${name} is not enabled (${problem}); run \`opencorp onboard\``,
       }
     }
+    const found = serviceFileCheck([mode, name, "enabled"], "unit", systemd.unitPath(run, host), systemd.execStart)
+    if (found !== null) return found
     if ((await linger(host)) === false) {
       return {
         name: "service",
@@ -377,13 +477,19 @@ function serviceStatus(run: Launch, host: Host): string {
 
 /** What to do about an office that isn't answering, after `failure` (its last start's, or null): fix that or
  *  `opencorp start`, and where its service's status is. */
-function nextStep(run: Launch, host: Host, failure: string | null): string {
-  const first =
-    failure === null
-      ? "Run `opencorp start`."
-      : failure.startsWith("office crashed:")
-        ? "Its stack is in the log; fix the cause, then run `opencorp start`."
-        : "Fix that, then run `opencorp start`."
+function nextStep(run: Launch, host: Host, failure: service.Failure | null): string {
+  const mode = service.recordedMode(run)
+  let first: string
+  if (failure === null) first = "Run `opencorp start`."
+  else if (failure.foreign) {
+    // A service file `opencorp restart` reuses may name a checkout that moved; only onboard writes a new one.
+    first =
+      mode === "launchd" || mode === "systemd"
+        ? "Run `opencorp onboard` from the install you use; its service may start code that's gone."
+        : "Run `opencorp start`."
+  } else if (failure.text.startsWith("office crashed:")) {
+    first = "Its stack is in the log; fix the cause, then run `opencorp start`."
+  } else first = "Fix that, then run `opencorp start`."
   return first + serviceStatus(run, host)
 }
 
@@ -728,12 +834,40 @@ export function newestSource(command: readonly [string, ...string[]]): number {
   return Math.max(0, ...sourceRoots(installPaths(command)[0]!).map(newestUnder))
 }
 
-/** Whether `info` is this office's daemon (`launch`'s home), runs this install's version, and started after its code
- *  last changed (`newest`, ms). */
-export function versionCheck(launch: Launch, info: OfficeInfo, newest: number): Check {
+/** How to make an office running under the recorded service `mode` run this install's code. */
+function restartHere(mode: string | null): string {
+  // launchd and systemd start the program their service file names, which `opencorp restart` reuses.
+  if (mode === "launchd" || mode === "systemd") return "stop the office and run `opencorp onboard` from this install"
+  return "run `opencorp restart` from this install"
+}
+
+/**
+ * Whether `info` is this office's daemon (`launch`'s home), runs from this install (`here`, the first of its
+ * `installPaths`), runs this install's version, and started after its code last changed (`newest`, ms). `mode` is the
+ * office's recorded service mode, which decides how it picks up this install. An office from an install that's gone
+ * fails: it starts each session's worker from there.
+ */
+export function versionCheck(
+  launch: Launch,
+  info: OfficeInfo,
+  newest: number,
+  here: string,
+  mode: string | null,
+): Check {
   if (info.home !== launch.home) {
     const detail = `pid ${info.pid} is not this office's daemon: it serves ${info.home}`
     return { name: "version", status: "warn", detail }
+  }
+  // The daemon's guards start with its own `installPaths`, as realpaths; a tool's install folder may follow them.
+  const install = info.guards.install
+  if (install.length && !install.includes(here)) {
+    const there = install[0]!
+    if (!fs.existsSync(there)) {
+      const detail = `the office runs from ${there}, which is gone, so sessions can't start; ${restartHere(mode)}`
+      return { name: "version", status: "fail", detail }
+    }
+    const detail = `the office runs from ${there}, not this install (${here}); to run this install's code, `
+    return { name: "version", status: "warn", detail: detail + restartHere(mode) }
   }
   if (info.version !== VERSION) {
     return {
@@ -880,13 +1014,14 @@ export function storeCheck(store: string, lstat: (p: string) => fs.Stats): Check
 }
 
 /**
- * Whether any folder someone worked in (the store's `worked_folders`) is one `checkWorkspace` refuses with `guards`
- * and the user's `home`: one holding the office install, a program it runs or a folder on its PATH, one holding the
- * home directory, or one inside a sensitive home path. Sessions there are refused until the install, the program or
- * the folder moves. Null when the office has no store, or a store without the table; a folder that no longer exists is
- * skipped.
+ * Whether any folder someone worked in (the store's `worked_folders`) is one the daemon refuses: one `checkWorkspace`
+ * refuses with `guards` and the user's `home` (one holding the office install, a program it runs or a folder on its
+ * PATH, one holding the home directory, or one inside a sensitive home path), or one that overlaps `kept`, the
+ * office's own files (its company repo and office folder). Sessions there are refused until the install, the program
+ * or the folder moves. Null when the office has no store, or a store without the table; a folder that no longer
+ * exists is skipped.
  */
-export function foldersCheck(store: string, guards: Guards, home: string): Check | null {
+export function foldersCheck(store: string, guards: Guards, home: string, kept: readonly string[]): Check | null {
   if (!fs.existsSync(store)) return null
   let cwds: string[]
   try {
@@ -902,6 +1037,7 @@ export function foldersCheck(store: string, guards: Guards, home: string): Check
     if (!fs.existsSync(cwd)) continue
     try {
       checkWorkspace(cwd, { ...guards, home })
+      checkClearOf(cwd, kept)
     } catch (error) {
       const why = errnoCode(error) ?? nameOf(error)
       refused.push(error instanceof UnsafeWorkspace ? error.message : `${cwd}: can't be checked (${why})`)
@@ -911,7 +1047,8 @@ export function foldersCheck(store: string, guards: Guards, home: string): Check
   return {
     name: "folders",
     status: "ok",
-    detail: "no worked folder holds the office install, a program it runs or a folder on its PATH",
+    detail:
+      "no worked folder holds the office install, a program it runs, a folder on its PATH, or the office's own files",
   }
 }
 
@@ -1032,7 +1169,8 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
       found.push({ name: "version", status: "warn", detail: `${IDENTITY_UNREAD}, so it won't say what it runs` })
     } else if (typeof info === "string") found.push({ name: "version", status: "warn", detail: VERSION_UNREAD[info] })
     else {
-      found.push(versionCheck(run, info, newestSource(command)), toolsCheck(info))
+      const here = installPaths(command)[0]!
+      found.push(versionCheck(run, info, newestSource(command), here, service.recordedMode(run)), toolsCheck(info))
       guards = info.guards
     }
     const hqAnswer = await hq(run.socket, identity)
@@ -1059,7 +1197,7 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
       const linked = lstatOrNull(lstat, run.log)?.isSymbolicLink()
         ? `; ${run.log} is a symlink, which doctor doesn't read`
         : ""
-      const why = (error === null ? "" : `; its last start failed: ${error}`) + linked
+      const why = (error === null ? "" : `; its last start failed: ${error.text}`) + linked
       found.push({
         name: "office",
         status: error === null ? "warn" : "fail",
@@ -1079,6 +1217,7 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
           paths.store,
           guards ?? workspaceGuards(resolveTools(run.env), run.env, command, [host.userHome, paths.home, os.tmpdir()]),
           host.userHome,
+          [paths.company, paths.office],
         )
   if (folders !== null) found.push(folders)
   // run.env is the environment an office set up or started from this shell gets, which can differ from the running

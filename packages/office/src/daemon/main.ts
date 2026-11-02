@@ -490,6 +490,8 @@ async function run(
           if (!removeOwnSocket(paths.socket, socketId))
             log("WARNING", "opencorp.daemon.main")(`left ${paths.socket}: it is no longer this office's socket`)
         }
+        // On a clean stop only: doctor reads output after the office's last line as a failed start.
+        log("INFO", "opencorp.daemon.main")("office stopped")
       } finally {
         office.store.close()
       }

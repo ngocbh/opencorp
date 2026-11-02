@@ -54,6 +54,25 @@ test("xml special characters and newlines survive the plist", () => {
   expect(back.StandardErrorPath).toBe(odd.log)
 })
 
+test("the program arguments are read back from the plist", () => {
+  const golden = fs.readFileSync(path.join(GOLDEN, "launchd.plist"), "utf8")
+  const argv = ["/opt/opencorp/bin/opencorp", "daemon", "--home", "/Users/owner/.opencorp"]
+  expect(launchd.programArguments(golden)).toEqual(argv)
+  const odd = launch("/Users/o <&> \"q\" 'a'\nb/$x/.opencorp", {
+    command: ["/opt/a&amp;b<c>/bin/opencorp", "", "--flag=1 2"],
+    environ: { LANG: "<&>" },
+    userHome: "/Users/o",
+  })
+  expect(launchd.programArguments(launchd.plist(odd).toString("utf8"))).toEqual([...odd.argv])
+})
+
+test("a plist of another layout has no program arguments", () => {
+  const golden = fs.readFileSync(path.join(GOLDEN, "launchd.plist"), "utf8")
+  for (const text of ["", "<plist/>", golden.replace("<array>", "<array >"), golden.replace(/\t/g, "  ")]) {
+    expect(launchd.programArguments(text)).toBeNull()
+  }
+})
+
 test("a first install writes the plist and bootstraps it", async () => {
   const home = tempDir()
   const runner = new Runner([[["launchctl", "print"], 113, "Could not find service"]])

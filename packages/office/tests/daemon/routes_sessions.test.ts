@@ -740,6 +740,25 @@ test("a new chat in a folder the office cant open or name is a 422 that names no
   expect(h.store.listSessions()).toEqual([])
 })
 
+test("a start that fails on a missing file logs its errno code, not its message", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const lines: string[] = []
+  const { sock } = await served(h.office, { log: (line) => lines.push(line) })
+  const gone = Object.assign(new Error("ENOENT: sentinel '/old/checkout/fs_helper.ts'"), {
+    code: "ENOENT",
+    syscall: "realpath",
+    path: "/old/checkout/fs_helper.ts",
+  })
+  spyOn(h.harness, "spec").mockRejectedValue(gone)
+  const r = await post(sock, "/sessions", { person: "minh", cwd: h.folder })
+  expect([r.status, errorOf(r)]).toEqual([500, "start_failed"])
+  expect(h.logs.some((line) => line.endsWith("can't start (Error ENOENT realpath)"))).toBe(true)
+  for (const text of [...h.logs, ...lines, r.text]) {
+    expect(text).not.toContain("sentinel")
+    expect(text).not.toContain("/old/checkout")
+  }
+})
+
 /** [label, target, body, status, error code]. */
 const BAD_CHAT_REQUESTS: [string, string, unknown, number, string][] = [
   ["create nobody 404", "/sessions", { person: "nobody", cwd: "/tmp" }, 404, "not_found"],

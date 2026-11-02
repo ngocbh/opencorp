@@ -250,6 +250,21 @@ function check(workspace: string, office: OfficePaths, cache: Lookups): void {
   }
 }
 
+/** Throws `UnsafeWorkspace` if `workspace` is, holds or lies inside any of `kept` (the office's own files), all
+ *  compared resolved. */
+export function checkClearOf(workspace: string, kept: readonly string[]): void {
+  const ws = realPath(workspace)
+  for (const entry of kept) {
+    const own = realPath(entry)
+    if (within(ws, own) || within(own, ws)) {
+      throw new UnsafeWorkspace(
+        `workspace ${ws} overlaps the office's files at ${own}`,
+        "it overlaps the office's files; use a project folder",
+      )
+    }
+  }
+}
+
 /** What a `SandboxPolicy` is built from; a policy's own fields are a superset, so
  *  `new SandboxPolicy({ ...policy, helper })` rebuilds one with every check re-run; `withHelper` keeps the
  *  check and changes only the helper. */

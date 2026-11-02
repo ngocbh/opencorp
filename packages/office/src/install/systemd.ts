@@ -33,6 +33,36 @@ function arg(value: string): string {
   return plain(value).split("$").join("$$")
 }
 
+/** The words of the `ExecStart` line of a unit `unit` wrote (`text`), with `arg`'s quoting and doubling undone; null
+ *  when there is no such line or a quote isn't closed. */
+export function execStart(text: string): string[] | null {
+  const line = /^ExecStart=(.*)$/m.exec(text)?.[1]
+  if (line === undefined) return null
+  const words: string[] = []
+  let at = 0
+  while (at <= line.length) {
+    let word = ""
+    if (line[at] === '"') {
+      at++
+      while (at < line.length && line[at] !== '"') {
+        if (line[at] === "\\") at++
+        word += line[at] ?? ""
+        at++
+      }
+      if (at >= line.length) return null // no closing quote
+      at++
+      if (at < line.length && line[at] !== " ") return null
+    } else {
+      const end = line.indexOf(" ", at)
+      word = line.slice(at, end < 0 ? line.length : end)
+      at += word.length
+    }
+    words.push(word.replaceAll("$$", "$").replaceAll("%%", "%"))
+    at++ // the space
+  }
+  return words
+}
+
 /**
  * The unit: the daemon, restarted only when it fails, output appended to the log, with room for 4096 open files.
  * Throws `RangeError` if a value holds a newline.

@@ -3,7 +3,13 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { expect, onTestFinished, spyOn, test } from "bun:test"
-import { checkWorkspace, type OfficePaths, SandboxPolicy, UnsafeWorkspace } from "../../src/sandbox/policy.ts"
+import {
+  checkClearOf,
+  checkWorkspace,
+  type OfficePaths,
+  SandboxPolicy,
+  UnsafeWorkspace,
+} from "../../src/sandbox/policy.ts"
 import { makePolicy } from "./helpers.ts"
 
 /** A read-only, offline policy over `workspace`. */
@@ -184,6 +190,47 @@ test("a workspace inside the office install is refused", () => {
   expect(() => policyAt(ws, tmp, { home, install: [install] })).toThrow(UnsafeWorkspace)
   expect(() => policyAt(ws, tmp, { home, install: [install] })).toThrow(
     `workspace ${ws} is inside ${install}, where the office or a program it runs is installed; use a project folder`,
+  )
+})
+
+test("a workspace that is, holds or lies inside one of the office files is refused", () => {
+  const { root } = makePolicy()
+  const real = fs.realpathSync(root)
+  const [company, office, sub] = mkdirs(
+    path.join(root, "home/company"),
+    path.join(root, "home/office"),
+    path.join(root, "home/office/sub"),
+  )
+  const kept = [company!, office!]
+  const cases: [string, string][] = [
+    [company!, company!],
+    [path.join(root, "home"), company!],
+    [sub!, office!],
+  ]
+  for (const [ws, overlapped] of cases) {
+    const wsReal = path.join(real, path.relative(root, ws))
+    const keptReal = path.join(real, path.relative(root, overlapped))
+    expect(() => checkClearOf(ws, kept)).toThrow(UnsafeWorkspace)
+    expect(() => checkClearOf(ws, kept)).toThrow(`workspace ${wsReal} overlaps the office's files at ${keptReal}`)
+    try {
+      checkClearOf(ws, kept)
+    } catch (error) {
+      expect((error as UnsafeWorkspace).reason).toBe("it overlaps the office's files; use a project folder")
+    }
+  }
+  // A folder beside them is fine.
+  const [other] = mkdirs(path.join(root, "home/other"))
+  expect(() => checkClearOf(other!, kept)).not.toThrow()
+})
+
+test("the office files are compared resolved", () => {
+  const { root } = makePolicy()
+  const real = fs.realpathSync(root)
+  const [company] = mkdirs(path.join(root, "home/company"))
+  const link = path.join(root, "link")
+  fs.symlinkSync(company!, link)
+  expect(() => checkClearOf(link, [company!])).toThrow(
+    `workspace ${path.join(real, "home/company")} overlaps the office's files at ${path.join(real, "home/company")}`,
   )
 })
 

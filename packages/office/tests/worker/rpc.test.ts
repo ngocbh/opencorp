@@ -14,6 +14,7 @@ import {
   askUserStub,
   BaseHandlers,
   errnoFields,
+  errorKind,
   isRequest,
   modelFromSchema,
   type OfficeTool,
@@ -895,4 +896,21 @@ test("a closed rpc rejects pending and later requests", async () => {
   expect(await second).toBe(closed)
   expect(await rejection(sent.rpc.request("store_read", { store: "profile" }))).toBe(closed)
   expect(sent.writes()).toBe(2)
+})
+
+test("the kind of an error for a log line adds its errno code and syscall, never its message", () => {
+  const errno = (code: unknown, syscall?: unknown) => Object.assign(new Error("secret /x"), { code, syscall })
+  expect(errorKind(errno("ENOENT", "realpath"))).toBe("Error ENOENT realpath")
+  expect(errorKind(errno("EACCES"))).toBe("Error EACCES")
+  expect(errorKind(Object.assign(new TypeError("secret"), { code: "ERR_INVALID_ARG_TYPE" }))).toBe("TypeError")
+  for (const code of ["enoent x", "ENOENT secret", 2, "E".repeat(40)]) expect(errorKind(errno(code))).toBe("Error")
+  expect(errorKind(errno("ENOENT", "realpath /x"))).toBe("Error ENOENT")
+  const trap = new Error("secret")
+  Object.defineProperty(trap, "code", {
+    get() {
+      throw new Error("no")
+    },
+  })
+  expect(errorKind(trap)).toBe("Error")
+  expect(errorKind("secret")).toBe("string")
 })
