@@ -80,7 +80,7 @@ function help() {
     "",
     "Environment:",
     "  OPENCORP_HOME  the office home every command uses (default ~/.opencorp); init, onboard, offboard, start,",
-    "                 restart and doctor also take --home",
+    "                 stop, restart and doctor also take --home",
   ].join("\n")
 }
 
