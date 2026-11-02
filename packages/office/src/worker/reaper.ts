@@ -43,7 +43,8 @@ export function reap(store: Store, key?: string, read: Readings = REAL): WorkerR
   const killed: WorkerRecord[] = []
   for (const record of store.listWorkers()) {
     if (key !== undefined && record.key !== key) continue
-    if (mayKill(record, read) && killGroup(record.pgid)) killed.push(record)
+    // Unattended leftovers are often shell members; stop the group so none runs its next step mid-kill.
+    if (mayKill(record, read) && killGroup(record.pgid, { stopFirst: true })) killed.push(record)
     store.removeWorker(record.key, record.pid)
   }
   return killed

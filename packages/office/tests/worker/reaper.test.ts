@@ -129,7 +129,8 @@ test("reap signals a leaderless group only when every check passes", () => {
   store.recordWorker("s1", row)
   expect(reap(store, undefined, leaderGone)).toEqual([])
   expect(kill).toHaveBeenCalledTimes(1)
-  expect(kill).toHaveBeenCalledWith(-NO_GROUP, "SIGKILL")
+  // On macOS the group is stopped before it is killed; the mocked ESRCH ends the kill at that first send.
+  expect(kill).toHaveBeenCalledWith(-NO_GROUP, process.platform === "darwin" ? "SIGSTOP" : "SIGKILL")
   expect(store.listWorkers()).toEqual([])
   kill.mockClear()
 
