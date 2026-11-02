@@ -1,4 +1,5 @@
 /** Session routes. */
+import fs from "node:fs"
 import http from "node:http"
 import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
@@ -480,6 +481,22 @@ test("messages in order", async () => {
   expect(ids).toEqual([...ids].sort())
   const runs = new Transcript(h.office.paths.runs).messages(sid, h.store.getSession(sid)!.run_ids)
   expect(r.json()).toEqual(JSON.parse(JSON.stringify(runs)))
+})
+
+test("messages of a log that can't be read are a 500 that names no path", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const { sock } = await served(h.office)
+  fake.script({ content: "hello" })
+  const sid = await open(h, sock)
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "hi" })).json()).toEqual({ ok: true })
+  await settled(h, sock, sid, 2)
+  const runId = h.store.getSession(sid)!.run_ids.at(-1)!
+  fs.appendFileSync(path.join(h.office.paths.runs, runId, "log.jsonl"), "not a record\n")
+  const r = await get(sock, `/sessions/${sid}/messages`)
+  expect(r.status).toBe(500)
+  expect(r.json()).toEqual({ error: "internal_error", message: "internal error" })
+  expect(r.text).not.toContain(runId)
 })
 
 test("a chat over the routes", async () => {

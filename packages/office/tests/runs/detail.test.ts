@@ -8,8 +8,9 @@ import { expect, test } from "bun:test"
 import { type RunIndexRow, type RunInspection, updateRunIndex } from "@ngocbh/yian/run"
 import { COULDNT_START } from "../../src/runs/outcomes.ts"
 import { refresh, RunLogReader, UnreadableLog, UnsupportedSchema } from "../../src/runs/reader.ts"
-import { Inspections, Live, type LiveRun, readIndex } from "../../src/runs/records.ts"
-import { INDEX_TTL_MS, LOG_GONE, NoLog, NOT_STARTED, NOT_STARTED_YET, RunLogs } from "../../src/runs/service.ts"
+import { RunIndexer } from "../../src/runs/indexer.ts"
+import { Inspections, Live, type LiveRun } from "../../src/runs/records.ts"
+import { LOG_GONE, NoLog, NOT_STARTED, NOT_STARTED_YET, RunLogs } from "../../src/runs/service.ts"
 import { NotFound, newId, type RunRow, type Store } from "../../src/store/store.ts"
 import { tempDir } from "../helpers.ts"
 import { openStore, session } from "../store/helpers.ts"
@@ -332,31 +333,20 @@ test("run updated is built from the runs summary", async () => {
   expect(runsFor(o).runUpdated(newId())).toBeNull()
 })
 
-test("run updated reads the index once until the index changes", async () => {
+test("run pages read the indexer's rows, not the index file", async () => {
   const o = office()
   aRun(o, { runId: RUN })
-  const file = chatLog(logFile(o, RUN), 1)
-  updateRunIndex(o.runsDir)
-  // Written well before the first read, so that read is trusted past INDEX_TTL_MS.
-  const old = new Date(Date.now() - 10 * INDEX_TTL_MS)
-  fs.utimesSync(path.join(o.runsDir, "index.sqlite"), old, old)
-  let reads = 0
-  const runs = new RunLogs({
-    store: o.store,
-    runsDir: o.runsDir,
-    live: () => new Live(),
-    readIndex: (runsDir, log) => {
-      reads += 1
-      return readIndex(runsDir, log)
-    },
-  })
-  runs.runUpdated(RUN)
-  runs.runUpdated(RUN)
-  await Bun.sleep(INDEX_TTL_MS + 100)
-  runs.runUpdated(RUN)
-  expect(reads).toBe(1)
-  chatLog(file, 2)
-  updateRunIndex(o.runsDir)
-  runs.runUpdated(RUN)
-  expect(reads).toBe(2)
+  const file = logFile(o, RUN)
+  chatLog(file, 1)
+  const usage = { input_tokens: 7n, output_tokens: 2n }
+  fs.appendFileSync(file, line(12, "node_step", { node_id: "chat#1/ask", n: 1n, step: { kind: "model_call", usage } }))
+  const indexer = new RunIndexer(o.runsDir)
+  try {
+    expect(await indexer.update()).toBe(true)
+    const runs = runsFor(o, { index: () => indexer.rows() })
+    fs.rmSync(path.join(o.runsDir, "index.sqlite"))
+    expect((await runs.detail(RUN)).usage).toMatchObject({ input_tokens: 7, output_tokens: 2 })
+  } finally {
+    await indexer.close()
+  }
 })

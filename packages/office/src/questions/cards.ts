@@ -43,8 +43,8 @@ export interface CardActor {
 /** What side chats ask of the session actor besides the card actions: the chat harness has it; a stand-in or the
  *  Codex sessions don't, and their cards have no "Chat about this". */
 export interface SideActor extends CardActor {
-  /** The office's transcript, which the side chats' discussions are read from. */
-  readonly transcript: Pick<Transcript, "messages" | "runningReply">
+  /** The office's transcript, which the side chats' discussions and seeds are read from. */
+  readonly transcript: Pick<Transcript, "messages" | "runningReply" | "refresh">
   /** The answers, for the discussion a card carries from an expired one. */
   readonly answers: Pick<Answers, "carried">
   /** The run spec of `session`; throws `HarnessError` (422) for a missing flow or a refused folder. */
@@ -405,6 +405,8 @@ export class Cards {
     if (asker === undefined) throw new HarnessError(409, "not_open", `question ${question.id} has no session`)
     const repo = loadRepo(await this.office.git.pin(asker.repo_commit))
     const defaults = repo.company?.defaults ?? CompanyDefaults.parse({})
+    // Read on first without holding the event loop, so the seed's synchronous read takes only what was added since.
+    await actor.transcript.refresh(asker.run_ids)
     const seed = buildSeed(this.store, actor.transcript, repo, question, {
       maxChars: defaults.side_seed_max_chars,
       carried: actor.answers.carried(question),

@@ -669,9 +669,8 @@ async function framings(fake: FakeLLM, n: number): Promise<number> {
 }
 
 /** The authors of session `sid`'s user messages whose text is `text` (any text when null). */
-function authors(h: Harness, sid: string, text: string | null = null): (string | null | undefined)[] {
-  return h.harness
-    .messages(sid)
+async function authors(h: Harness, sid: string, text: string | null = null): Promise<(string | null | undefined)[]> {
+  return (await h.harness.messages(sid))
     .filter((m) => m.role === "user" && (text === null || m.parts.some((p) => p.type === "text" && p.text === text)))
     .map((m) => m.author)
 }
@@ -823,7 +822,7 @@ test.each(DECIDE)("a side chat and the decision are credited to who acted [%s]",
     what: "the side reply",
   })
   expect(contentText((await messagesOf(fake, 2))[0]!)).toContain("You're talking with Lan (@lan), your peer.")
-  expect(authors(h, side.id)).toEqual(["lan"])
+  expect(await authors(h, side.id)).toEqual(["lan"])
   expect(h.store.getRun(h.store.getSession(side.id)!.run_ids[0]!)!.driver).toBe("lan")
   expect((await decide(cards, q)).answered_by).toBe("lan")
 })
@@ -846,7 +845,7 @@ test("a side chat reopened by someone else is theirs", async () => {
     what: "the reply",
   })
   expect(contentText((await messagesOf(fake, 3))[0]!)).toContain("You're talking with Lan (@lan), your peer.")
-  expect(authors(h, side.id, "how often?")).toEqual(["lan"])
+  expect(await authors(h, side.id, "how often?")).toEqual(["lan"])
 })
 
 test("a refused reopen stores nothing", async () => {

@@ -235,6 +235,8 @@ export class Office {
       store,
       runsDir: paths.runs,
       live: () => this.harness?.live?.() ?? new Live(),
+      // The rows the index thread read after the last update: no SQLite read or lock probe on this thread.
+      index: () => this.runIndex.rows(),
       pin: (commit) => git.pin(commit),
       log,
     })

@@ -622,12 +622,13 @@ test("the actor brings the run index up to date before it reports a runs end", a
   await actor.start()
   await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
   expect(await actor.prompt("/exit")).toBe("turn")
-  // The registry drops the worker at its exit; the actor's own exit job waits behind the update.
-  await waitFor(() => calls > 0 && o.registry.get(sid) === undefined, { what: "the update and the worker's exit" })
+  // The registry drops the worker at its exit; the actor's own exit job waits behind the update. The first turn's
+  // waiting result asked for one update already.
+  await waitFor(() => calls > 1 && o.registry.get(sid) === undefined, { what: "the update and the worker's exit" })
   expect(status(o, sid)).not.toBe("ended")
   updated(true)
   await waitFor(() => status(o, sid) === "ended", { what: "the end" })
-  expect(calls).toBe(1)
+  expect(calls).toBe(2)
 })
 
 test("a stuck run index update does not stall a runs end", async () => {
@@ -650,7 +651,82 @@ test("a stuck run index update does not stall a runs end", async () => {
   expect(status(o, sid)).not.toBe("ended")
   sleeps.find(({ ms }) => ms === INDEX_WAIT_MS)!.wake()
   await waitFor(() => status(o, sid) === "ended", { what: "the end" })
-  expect(calls).toBe(1)
+  expect(calls).toBe(2)
+})
+
+/** Resolves once `calls` stayed the same length for 100 ms: the node events' run.updated calls are over. */
+async function quiet(calls: unknown[]): Promise<void> {
+  for (let n = -1; n !== calls.length; ) {
+    n = calls.length
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+}
+
+test("a turn's waiting result brings the run index up to date without holding the turn", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  let calls = 0
+  const updates: ((ok: boolean) => void)[] = []
+  const runIndex = {
+    update: () => {
+      calls += 1
+      return new Promise<boolean>((resolve) => updates.push(resolve))
+    },
+  }
+  const changed: string[] = []
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid, { runIndex, runChanged: (runId) => void changed.push(runId) })
+  await actor.start()
+  // Idle can come before the waiting result (history compaction may run beside the take), so wait for both.
+  await waitFor(() => status(o, sid) === "idle" && calls === 1, { what: "the first turn" })
+  // Still idle while the update is pending: the turn wasn't held for it.
+  expect(status(o, sid)).toBe("idle")
+  const runId = session(o, sid).run_ids.at(-1)!
+  await quiet(changed)
+  const before = changed.length
+  updates[0]!(true)
+  await waitFor(() => changed.length > before, { what: "the run's run.updated" })
+  expect(changed.slice(before)).toEqual([runId])
+})
+
+test("a turn's index update that fails sends no run.updated", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const updates: ((ok: boolean) => void)[] = []
+  const runIndex = { update: () => new Promise<boolean>((resolve) => updates.push(resolve)) }
+  const changed: string[] = []
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid, { runIndex, runChanged: (runId) => void changed.push(runId) })
+  await actor.start()
+  await waitFor(() => status(o, sid) === "idle" && updates.length === 1, { what: "the first turn" })
+  await quiet(changed)
+  const before = changed.length
+  updates[0]!(false)
+  await quiet(changed)
+  expect(changed.length).toBe(before)
+})
+
+test("an ending update that outlasts the wait still sends the run's run.updated", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const { scheduler, sleeps } = steppedScheduler(Date.now())
+  const updates: ((ok: boolean) => void)[] = []
+  const runIndex = { update: () => new Promise<boolean>((resolve) => updates.push(resolve)) }
+  const changed: string[] = []
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid, { runIndex, scheduler, runChanged: (runId) => void changed.push(runId) })
+  await actor.start()
+  await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
+  const runId = session(o, sid).run_ids.at(-1)!
+  expect(await actor.prompt("/exit")).toBe("turn")
+  await waitFor(() => sleeps.some(({ ms }) => ms === INDEX_WAIT_MS), { what: "the bounded wait" })
+  sleeps.find(({ ms }) => ms === INDEX_WAIT_MS)!.wake()
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  await quiet(changed)
+  const before = changed.length
+  updates.at(-1)!(true)
+  await waitFor(() => changed.length > before, { what: "the late run.updated" })
+  expect(changed.slice(before)).toEqual([runId])
 })
 
 test("a message after end is refused as ending", async () => {

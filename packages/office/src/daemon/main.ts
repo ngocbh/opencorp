@@ -18,7 +18,7 @@ import { daemonArgs, daemonEnv, resolveHome } from "../install/launch.ts"
 import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
 import { Monitor } from "../perm/monitor.ts"
 import { selfCommand } from "../platform.ts"
-import { Inspections, YianRuns, readIndex, sweep } from "../runs/records.ts"
+import { Inspections, YianRuns, sweep } from "../runs/records.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { Store } from "../store/store.ts"
 import { reap } from "../worker/reaper.ts"
@@ -242,8 +242,8 @@ async function sweepOnStart(office: Office, log: ReturnType<typeof officeLogger>
       log("WARNING", "opencorp.daemon.main")("the start sweep was skipped (the run index is not up to date)")
       return
     }
-    const runs = office.paths.runs
-    sweep(office.store, new YianRuns(readIndex(runs, log("WARNING", "opencorp.runs.records")), new Inspections(runs)))
+    // The rows the update just read, on the index thread.
+    sweep(office.store, new YianRuns(office.runIndex.rows(), new Inspections(office.paths.runs)))
   } catch (error) {
     log("ERROR", "opencorp.daemon.main")(`the start sweep failed: ${errorType(error)}`)
   } finally {

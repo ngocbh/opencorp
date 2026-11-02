@@ -1,8 +1,10 @@
+import { Database } from "bun:sqlite"
 import { expect, onTestFinished, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
-import { inspectRun, readRunIndex } from "@ngocbh/yian/run"
-import { CLOSE_MS, type IndexThread, INDEX_TIMEOUT_MS, RunIndexer } from "../../src/runs/indexer.ts"
+import { inspectRun, readRunIndex, type RunIndexRow } from "@ngocbh/yian/run"
+import { type Port, REBUILD_RETRY_MS, serve } from "../../src/runs/index_thread.ts"
+import { CLOSE_MS, type IndexThread, INDEX_TIMEOUT_MS, RETRY_MS, RunIndexer } from "../../src/runs/indexer.ts"
 import { tempDir } from "../helpers.ts"
 import { committed, fifoAt, RUN, runStarted, started, succeeded } from "./helpers.ts"
 
@@ -37,11 +39,12 @@ class FakeThread implements IndexThread {
 }
 
 /** An indexer over fake threads: `threads` holds each thread it started, `lines` its log. */
-function fake(runsDir = "/nonexistent/runs") {
+function fake(runsDir = "/nonexistent/runs", { now }: { now?: () => number } = {}) {
   const threads: FakeThread[] = []
   const lines: string[] = []
   const indexer = new RunIndexer(runsDir, {
     log: (line) => lines.push(line),
+    ...(now ? { now } : {}),
     start: () => {
       const thread = new FakeThread()
       threads.push(thread)
@@ -52,9 +55,9 @@ function fake(runsDir = "/nonexistent/runs") {
 }
 
 /** An indexer over a real thread, closed when the test finishes. */
-function real(runsDir: string) {
+function real(runsDir: string, { timeoutMs }: { timeoutMs?: number } = {}) {
   const lines: string[] = []
-  const indexer = new RunIndexer(runsDir, { log: (line) => lines.push(line) })
+  const indexer = new RunIndexer(runsDir, { log: (line) => lines.push(line), ...(timeoutMs ? { timeoutMs } : {}) })
   onTestFinished(() => indexer.close())
   return { indexer, lines }
 }
@@ -77,6 +80,7 @@ test("an update brings the index up to date on its thread", async () => {
   const rows = readRunIndex(runs)
   expect(rows.map((row) => row.runId)).toEqual([RUN])
   expect(rows[0]!.status).toBe(inspectRun(log).status)
+  expect(indexer.rows().get(RUN)?.status).toBe(inspectRun(log).status)
   expect(lines).toEqual([])
 })
 
@@ -286,7 +290,7 @@ test("an index file that isn't a database is rebuilt from the logs", async () =>
   const { indexer, lines } = real(runs)
   expect(await indexer.update()).toBe(true)
   expect(readRunIndex(runs).map((row) => row.runId)).toEqual([RUN])
-  expect(lines).toEqual(["run index damaged (SQLITE_NOTADB), rebuilding it"])
+  expect(lines).toEqual(["run index unusable (SQLITE_NOTADB), rebuilding it"])
   for (const suffix of ["-journal", "-wal", "-shm"]) expect(fs.existsSync(index + suffix)).toBe(false)
 })
 
@@ -302,7 +306,7 @@ test("a damaged index is rebuilt from the logs", async () => {
   fs.closeSync(fd)
   expect(await indexer.update()).toBe(true)
   expect(readRunIndex(runs).map((row) => row.runId)).toEqual([RUN])
-  expect(lines).toEqual(["run index damaged (SQLITE_CORRUPT), rebuilding it"])
+  expect(lines).toEqual(["run index unusable (SQLITE_CORRUPT), rebuilding it"])
 })
 
 test("an index that can't be opened is left as it is", async () => {
@@ -312,8 +316,9 @@ test("an index that can't be opened is left as it is", async () => {
   const { indexer, lines } = real(runs)
   expect(await indexer.update()).toBe(false)
   expect(fs.statSync(path.join(runs, "index.sqlite")).isDirectory()).toBe(true)
-  expect(lines).toHaveLength(1)
-  expect(lines[0]).toMatch(/^run index update failed \(\w+\)$/)
+  // The read after the update can't open it either.
+  expect(lines).toEqual(["run index update failed (SQLITE_CANTOPEN)", "run index read failed (SQLITE_CANTOPEN)"])
+  expect(indexer.rows().size).toBe(0)
 })
 
 test("damage the thread reports is logged by its code", async () => {
@@ -322,11 +327,245 @@ test("damage the thread reports is logged by its code", async () => {
   threads[0]!.reply({ ok: true, skipped: [], rebuilt: "SQLITE_CORRUPT" })
   expect(await update).toBe(true)
   const failed = indexer.update()
-  threads[0]!.reply({ ok: false, error: "SQLiteError", skipped: [], rebuilt: "SQLITE_NOTADB" })
+  threads[0]!.reply({ ok: false, error: "SQLITE_IOERR", skipped: [], rebuilt: "SQLITE_NOTADB" })
   expect(await failed).toBe(false)
   expect(lines).toEqual([
-    "run index damaged (SQLITE_CORRUPT), rebuilding it",
-    "run index damaged (SQLITE_NOTADB), rebuilding it",
-    "run index update failed (SQLiteError)",
+    "run index unusable (SQLITE_CORRUPT), rebuilding it",
+    "run index unusable (SQLITE_NOTADB), rebuilding it",
+    "run index update failed (SQLITE_IOERR)",
   ])
+})
+
+const isRoot = process.getuid?.() === 0
+const RUN2 = "01JA1H000000000000000000R2"
+
+/** Adds a second ended run to `runs`, for an update to write. */
+function secondRun(runs: string): void {
+  fs.mkdirSync(path.join(runs, RUN2))
+  const log = fs.readFileSync(path.join(runs, RUN, "log.jsonl"), "utf8")
+  fs.writeFileSync(path.join(runs, RUN2, "log.jsonl"), log.replaceAll(RUN, RUN2))
+}
+
+test("a busy index is never rebuilt", async () => {
+  const { runs } = oneRun()
+  const { indexer, lines } = real(runs, { timeoutMs: 100 })
+  expect(await indexer.update()).toBe(true)
+  const db = new Database(path.join(runs, "index.sqlite"))
+  try {
+    db.exec("BEGIN IMMEDIATE")
+    expect(await indexer.update()).toBe(false)
+    expect(lines.at(-1)).toBe("run index update failed (RunIndexBusyError)")
+  } finally {
+    db.exec("ROLLBACK")
+    db.close()
+  }
+  expect(readRunIndex(runs).map((row) => row.runId)).toEqual([RUN])
+  expect(lines.some((line) => line.includes("rebuilding"))).toBe(false)
+})
+
+test("an index whose runs table is gone is rebuilt", async () => {
+  const { runs } = oneRun()
+  const { indexer, lines } = real(runs)
+  expect(await indexer.update()).toBe(true)
+  // The layout version stays, so yian trusts the table that isn't there.
+  const db = new Database(path.join(runs, "index.sqlite"))
+  db.exec("DROP TABLE runs")
+  db.close()
+  expect(await indexer.update()).toBe(true)
+  expect(lines).toEqual(["run index unusable (SQLITE_ERROR), rebuilding it"])
+  expect(readRunIndex(runs).map((row) => row.runId)).toEqual([RUN])
+  expect(indexer.rows().has(RUN)).toBe(true)
+})
+
+test.skipIf(isRoot)("a read-only index file is rebuilt as a private file", async () => {
+  const { runs } = oneRun()
+  const index = path.join(runs, "index.sqlite")
+  const { indexer, lines } = real(runs)
+  expect(await indexer.update()).toBe(true)
+  fs.chmodSync(index, 0o400)
+  secondRun(runs)
+  expect(await indexer.update()).toBe(true)
+  expect(fs.statSync(index).mode & 0o777).toBe(0o600)
+  expect(lines).toEqual(["run index unusable (SQLITE_READONLY), rebuilding it"])
+  expect([...indexer.rows().keys()].sort()).toEqual([RUN, RUN2])
+})
+
+/** A port `serve` answers on: `replies` holds what it posted. */
+function port(): Port & { replies: Record<string, unknown>[]; send(): Record<string, unknown> } {
+  let listener: (message: unknown) => void = () => {}
+  const replies: Record<string, unknown>[] = []
+  return {
+    replies,
+    on(_event, fn) {
+      listener = fn
+    },
+    postMessage(reply) {
+      replies.push(reply as Record<string, unknown>)
+    },
+    send() {
+      listener("update")
+      return replies.at(-1)!
+    },
+  }
+}
+
+test.skipIf(isRoot)("a rebuild that fails isn't tried again for a while", () => {
+  const { runs } = oneRun()
+  const index = path.join(runs, "index.sqlite")
+  let now = 1_000_000
+  const p = port()
+  serve(p, runs, 100, { now: () => now })
+  expect(p.send()).toMatchObject({ ok: true })
+  secondRun(runs)
+  // The index can't be written, and the folder won't let it be removed.
+  fs.chmodSync(index, 0o400)
+  fs.chmodSync(runs, 0o500)
+  try {
+    const first = p.send()
+    expect(first).toMatchObject({ ok: false, rebuilt: "SQLITE_READONLY", error: "EACCES" })
+    now += 60_000
+    const second = p.send()
+    expect(second).toMatchObject({ ok: false, error: "SQLITE_READONLY" })
+    expect(second).not.toHaveProperty("rebuilt")
+    now += REBUILD_RETRY_MS
+    expect(p.send()).toMatchObject({ ok: false, rebuilt: "SQLITE_READONLY", error: "EACCES" })
+    // Each reply still carries the rows the index has.
+    expect((first.rows as RunIndexRow[]).map((row) => row.runId)).toEqual([RUN])
+  } finally {
+    fs.chmodSync(runs, 0o700)
+    fs.chmodSync(index, 0o600)
+  }
+})
+
+test("a row the read skips is logged by its log path, and an unsafe id never", async () => {
+  const { runs } = oneRun()
+  const { indexer, lines } = real(runs, { timeoutMs: 100 })
+  expect(await indexer.update()).toBe(true)
+  const db = new Database(path.join(runs, "index.sqlite"))
+  try {
+    for (const id of [RUN2, "../evil"]) {
+      db.run(
+        `INSERT INTO runs SELECT ?, flow, started_at, ended_at, parent_run_id, last_seq, result, input_tokens,
+           output_tokens, cache_read_tokens, reasoning_tokens, "offset", 'not a scan' FROM runs WHERE run_id = ?`,
+        [id, RUN],
+      )
+    }
+    // Held, so the update fails before it drops the rows that have no log, and the read after it still reads.
+    db.exec("BEGIN IMMEDIATE")
+    expect(await indexer.update()).toBe(false)
+  } finally {
+    db.exec("ROLLBACK")
+    db.close()
+  }
+  expect(lines).toContain(`run index skipped ${path.join(runs, RUN2, "log.jsonl")}`)
+  expect(lines.some((line) => line.includes("evil"))).toBe(false)
+  expect([...indexer.rows().keys()]).toEqual([RUN])
+})
+
+/** An index row for the fake threads' replies. */
+function row(runId = RUN): RunIndexRow {
+  return {
+    runId,
+    flow: null,
+    status: "succeeded",
+    startedAt: "2026-10-20T10:00:00.000Z",
+    endedAt: "2026-10-20T10:00:01.000Z",
+    parentRunId: null,
+    lastSeq: 3,
+    result: null,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    reasoningTokens: 0,
+    offset: 100,
+    waits: [],
+    ready: false,
+    wakeAt: null,
+  }
+}
+
+test("rows are kept before the update settles", async () => {
+  const { indexer, threads } = fake()
+  let seen = false
+  const update = indexer.update().then(() => (seen = indexer.rows().has(RUN)))
+  threads[0]!.reply({ ok: true, skipped: [], rows: [row()] })
+  await update
+  expect(seen).toBe(true)
+})
+
+test("a failed update's rows are used while none are held", async () => {
+  const { indexer, threads } = fake()
+  const update = indexer.update()
+  threads[0]!.reply({ ok: false, error: "RunIndexBusyError", skipped: [], rows: [row()] })
+  expect(await update).toBe(false)
+  expect(indexer.rows().has(RUN)).toBe(true)
+})
+
+test("a failed update's rows never replace the rows held", async () => {
+  const { indexer, threads } = fake()
+  const first = indexer.update()
+  threads[0]!.reply({ ok: true, skipped: [], rows: [row()] })
+  await first
+  // A rebuild whose second update failed reads an empty index.
+  const rebuilt = indexer.update()
+  threads[0]!.reply({ ok: false, rebuilt: "SQLITE_ERROR", error: "RunIndexBusyError", skipped: [], rows: [] })
+  expect(await rebuilt).toBe(false)
+  // This read asks for another update.
+  expect(indexer.rows().has(RUN)).toBe(true)
+  expect(threads[0]!.posts).toBe(3)
+  // An index of another yian version's layout reads empty too.
+  threads[0]!.reply({ ok: false, error: "SQLITE_ERROR", skipped: [], rows: [] })
+  await Promise.resolve()
+  expect(indexer.rows().has(RUN)).toBe(true)
+})
+
+test("a read that fails, a dead thread and close keep the rows", async () => {
+  const { indexer, threads, lines } = fake()
+  const first = indexer.update()
+  threads[0]!.reply({ ok: true, skipped: [], rows: [row()] })
+  await first
+  const unread = indexer.update()
+  threads[0]!.reply({ ok: true, skipped: [], rows: null, readError: "SQLITE_IOERR" })
+  expect(await unread).toBe(true)
+  expect(lines).toEqual(["run index read failed (SQLITE_IOERR)"])
+  expect(indexer.rows().has(RUN)).toBe(true)
+  const dying = indexer.update()
+  threads[0]!.emit("exit", 1)
+  expect(await dying).toBe(false)
+  expect(indexer.rows().has(RUN)).toBe(true)
+  await indexer.close()
+  expect(indexer.rows().has(RUN)).toBe(true)
+})
+
+test("rows after a failed update ask for another update, at most once a minute", async () => {
+  let now = 1_000_000
+  const { indexer, threads } = fake("/nonexistent/runs", { now: () => now })
+  indexer.rows()
+  expect(threads).toHaveLength(0)
+  const failed = indexer.update()
+  threads[0]!.reply({ ok: false, error: "SQLITE_IOERR", skipped: [], rows: [] })
+  await failed
+  expect(threads[0]!.posts).toBe(1)
+  indexer.rows()
+  expect(threads[0]!.posts).toBe(2)
+  // An update in flight isn't asked for again.
+  indexer.rows()
+  expect(threads[0]!.posts).toBe(2)
+  threads[0]!.reply({ ok: false, error: "SQLITE_IOERR", skipped: [], rows: [] })
+  await Promise.resolve()
+  now += 1000
+  indexer.rows()
+  expect(threads[0]!.posts).toBe(2)
+  now += RETRY_MS
+  indexer.rows()
+  expect(threads[0]!.posts).toBe(3)
+  threads[0]!.reply({ ok: true, skipped: [], rows: [row()] })
+  await Promise.resolve()
+  now += RETRY_MS
+  indexer.rows()
+  expect(threads[0]!.posts).toBe(3)
+  await indexer.close()
+  now += RETRY_MS
+  indexer.rows()
+  expect(threads[0]!.posts).toBe(3)
 })

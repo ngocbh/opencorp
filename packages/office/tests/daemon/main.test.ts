@@ -7,7 +7,8 @@ import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { isLocked } from "@ngocbh/yian/platform"
-import { readRunIndex } from "@ngocbh/yian/run"
+import { readRunIndex, updateRunIndex } from "@ngocbh/yian/run"
+import { Database } from "bun:sqlite"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { Identity, identityPath, writeIdentity } from "../../src/auth/identity.ts"
 import { newToken } from "../../src/auth/tokens.ts"
@@ -936,10 +937,37 @@ test("a damaged index is rebuilt at the start, and the start sweep runs", async 
   const built = officeWithOpenRun(paths, out.write)
   office = built.office
   await office.start()
-  expect(out.text()).toContain("run index damaged (SQLITE_NOTADB), rebuilding it")
+  expect(out.text()).toContain("run index unusable (SQLITE_NOTADB), rebuilding it")
   expect(out.text()).not.toContain("the start sweep was skipped")
   // SQLite's message names the damage and must not reach the log; the code name is logged on purpose.
   expect(out.text()).not.toMatch(/not a database|malformed/)
+  expect(office.store.getRun(built.open)!.endReason).not.toBeNull()
+})
+
+test("an index whose table doesn't fit yian's layout is rebuilt at the start, and the start sweep runs", async () => {
+  let office: Office | undefined
+  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const paths = new OfficePaths(home())
+  fs.mkdirSync(paths.runs, { recursive: true })
+  updateRunIndex(paths.runs)
+  // The layout version stays, so yian trusts a table that isn't there.
+  const db = new Database(path.join(paths.runs, "index.sqlite"))
+  db.exec("DROP TABLE runs")
+  db.close()
+  const out = collect()
+  const built = officeWithOpenRun(paths, out.write)
+  office = built.office
+  await office.start()
+  expect(out.text()).toContain("run index unusable (SQLITE_ERROR), rebuilding it")
+  expect(out.text()).not.toContain("the start sweep was skipped")
+  expect(out.text()).not.toMatch(/no such table/)
   expect(office.store.getRun(built.open)!.endReason).not.toBeNull()
 })
 
@@ -960,8 +988,9 @@ test("an index that stays broken skips the start sweep and does not stop the off
   const built = officeWithOpenRun(paths, out.write)
   office = built.office
   await office.start()
-  expect(out.text()).toMatch(/run index update failed \([A-Za-z_$][\w$]*\)/)
+  expect(out.text()).toContain("run index update failed (SQLITE_CANTOPEN)")
   expect(out.text()).toContain("the start sweep was skipped (the run index is not up to date)")
+  expect(fs.statSync(path.join(paths.runs, "index.sqlite")).isDirectory()).toBe(true)
   expect(out.text()).not.toContain("rebuilding it")
   expect(out.text()).not.toMatch(/unable to open|not a database|malformed/)
   expect(office.store.getRun(built.open)!.endReason).toBeNull()

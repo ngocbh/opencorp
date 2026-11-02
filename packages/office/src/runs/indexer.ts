@@ -1,6 +1,8 @@
 /** Keeps yian's run index up to date from the daemon: updates run one at a time on the index thread
- *  (`index_thread.ts`), and calls made while one runs share the next. */
+ *  (`index_thread.ts`), and calls made while one runs share the next. Each update's reply carries the index's rows,
+ *  which the daemon reads instead of the index file. */
 import { Worker } from "node:worker_threads"
+import type { RunIndexRow } from "@ngocbh/yian/run"
 import { threadEntry } from "../platform.ts"
 import { errorName } from "../worker/rpc.ts"
 
@@ -10,6 +12,11 @@ export const INDEX_TIMEOUT_MS = 2000
 /** How long close waits for the thread to stop, in milliseconds: longer than INDEX_TIMEOUT_MS, as a healthy thread can
  *  be in SQLite's busy wait for the lock. */
 export const CLOSE_MS = 3000
+
+/** How long after a failed update a read of the rows may ask for another, in milliseconds. */
+export const RETRY_MS = 60_000
+
+const EMPTY: ReadonlyMap<string, RunIndexRow> = new Map()
 
 // The skipped logs already logged; cleared when full, so a damaged log is logged again only after many others.
 const SKIPPED_CAP = 10_000
@@ -36,18 +43,27 @@ function startThread(runsDir: string, timeoutMs: number): IndexThread {
   return new Worker(threadEntry("runs_indexer"), { workerData: { runsDir, timeoutMs } })
 }
 
-/** Runs `updateRunIndex` over one runs folder on one thread; never rejects. */
+/** Runs `updateRunIndex` over one runs folder on one thread, and keeps the rows the read after each update found;
+ *  never rejects.
+ *
+ *  The daemon is the index's only writer (design 5.2), so its rows change only through these updates: a build by
+ *  another writer (yian's CLI) in between shows at the next update. */
 export class RunIndexer {
   readonly #runsDir: string
   readonly #log: (line: string) => void
   readonly #start: (runsDir: string, timeoutMs: number) => IndexThread
   readonly #timeoutMs: number
   readonly #closeMs: number
+  readonly #now: () => number
   #thread: IndexThread | null = null
   #current: Update | null = null
   #next: Update | null = null
   #closed = false
   readonly #skipped = new Set<string>()
+  #rows: Map<string, RunIndexRow> | null = null
+  // Whether the last update worked; null before the first.
+  #ok: boolean | null = null
+  #retriedAt = -Infinity
 
   constructor(
     runsDir: string,
@@ -56,6 +72,7 @@ export class RunIndexer {
       start?: (runsDir: string, timeoutMs: number) => IndexThread
       timeoutMs?: number
       closeMs?: number
+      now?: () => number
     } = {},
   ) {
     this.#runsDir = runsDir
@@ -63,6 +80,18 @@ export class RunIndexer {
     this.#start = options.start ?? startThread
     this.#timeoutMs = options.timeoutMs ?? INDEX_TIMEOUT_MS
     this.#closeMs = options.closeMs ?? CLOSE_MS
+    this.#now = options.now ?? Date.now
+  }
+
+  /** The index's rows by run id as the last read found them; empty before one worked. After a failed update this
+   *  asks for another (not awaited), at most once per `RETRY_MS`, so an index that broke heals without a worker's
+   *  exit. */
+  rows(): ReadonlyMap<string, RunIndexRow> {
+    if (this.#ok === false && !this.#closed && !this.#current && this.#now() - this.#retriedAt >= RETRY_MS) {
+      this.#retriedAt = this.#now()
+      void this.update()
+    }
+    return this.#rows ?? EMPTY
   }
 
   /** Brings the index up to date with an update that starts after this call: `true` when it did, `false` when it
@@ -141,13 +170,15 @@ export class RunIndexer {
   }
 
   #reply(reply: unknown): void {
-    const { ok, error, skipped, rebuilt } = (reply ?? {}) as {
+    const { ok, error, skipped, rebuilt, rows, readError } = (reply ?? {}) as {
       ok?: unknown
       error?: unknown
       skipped?: unknown
       rebuilt?: unknown
+      rows?: unknown
+      readError?: unknown
     }
-    if (typeof rebuilt === "string") this.#log(`run index damaged (${rebuilt}), rebuilding it`)
+    if (typeof rebuilt === "string") this.#log(`run index unusable (${rebuilt}), rebuilding it`)
     if (Array.isArray(skipped)) {
       for (const path of skipped) {
         if (typeof path !== "string" || this.#skipped.has(path)) continue
@@ -157,6 +188,15 @@ export class RunIndexer {
       }
     }
     if (ok !== true) this.#log(`run index update failed (${typeof error === "string" ? error : "Error"})`)
+    if (typeof readError === "string") this.#log(`run index read failed (${readError})`)
+    // After a failed update the read may have found an index just dropped for a rebuild, or one of another yian
+    // version's layout, both empty: it replaces no rows held, and fills them only when none are.
+    if (Array.isArray(rows) && (ok === true || this.#rows === null)) {
+      const kept = rows.filter((row: RunIndexRow | null) => typeof row?.runId === "string") as RunIndexRow[]
+      this.#rows = new Map(kept.map((row) => [row.runId, row]))
+    }
+    this.#ok = ok === true
+    // Stored before the update settles: the actor awaits it before it reports an end, whose run.updated reads them.
     this.#settle(ok === true)
   }
 

@@ -2003,16 +2003,27 @@ export class SessionActor implements LiveCalls {
 
   /** A `result` or `error`: a waiting run's waits become the actor's. Acted on at the worker's exit. An ending result
    *  first brings the run index up to date (bounded by `INDEX_WAIT_MS`), so the run's end, reported at the exit
-   *  queued behind this job, never finds the index behind it. */
+   *  queued behind this job, never finds the index behind it; an update that outlasts the wait sends the run's
+   *  run.updated once it lands. A `waiting` result (a turn's end, after which the worker parks) asks for an update
+   *  without waiting for it, so the run's tokens catch up, and sends run.updated once it lands. */
   async #result(run: WorkerRun, frame: Frame): Promise<void> {
     if (run !== this.#run || this.#finished) return
     const { runIndex } = this.#ctx
+    const changed = (ok: boolean) => {
+      if (ok) this.#ctx.runChanged?.(run.runId)
+    }
     if (runIndex !== undefined && frame.type === "result" && ENDING.includes(String(frame.status))) {
       const done = new AbortController()
-      await Promise.race([runIndex.update(), this.#ctx.scheduler.sleep(INDEX_WAIT_MS, done.signal).catch(() => {})])
+      const update = runIndex.update()
+      const sleep = this.#ctx.scheduler.sleep(INDEX_WAIT_MS, done.signal).catch(() => {})
+      const inTime = await Promise.race([update.then(() => true), sleep.then(() => false)])
       done.abort()
+      if (!inTime) void update.then(changed)
       // A close during the wait ends the job, as `#post` skips the jobs after a close.
       if (this.#closed) return
+    } else if (runIndex !== undefined && frame.type === "result" && frame.status === "waiting") {
+      // Not awaited: the turn settles now. update never rejects.
+      void runIndex.update().then(changed)
     }
     this.#disarm()
     if (frame.type === "result" && frame.status === "waiting") this.#waits = waitsOf(frame)
