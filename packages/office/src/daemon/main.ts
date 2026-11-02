@@ -290,9 +290,10 @@ function openStore<T>(file: string, step: () => T): T {
  *  the relay's viewers end on stop), its Codex sessions on the chat hooks, and the chat harness over the registry
  *  with a `Monitor`: the harness is the office's workers and its session harness, so the office's stop closes it
  *  first (the Codex sessions, then the workers). On start: the run index brought up to date and the start sweep,
- *  then the harness's restore (before the extensions' start callbacks), then a model warm-up (not awaited) and the
- *  HEAD watcher; on stop, the sign-ins still waiting are cancelled and the watcher stops. `OfficeStartError` when
- *  `tools` has no git, or the store can't be opened or read (`storeProblem`). */
+ *  then the harness's restore (before the extensions' start callbacks), then a model warm-up (not awaited), the
+ *  HEAD watcher and pin pruning (now, after each session ends or fails, and after each worker exit); on stop, the
+ *  sign-ins still waiting are cancelled and the watcher stops. `OfficeStartError` when `tools` has no git, or the
+ *  store can't be opened or read (`storeProblem`). */
 export function buildOffice(
   paths: OfficePaths,
   { tools, guards, write }: { tools: Tools; guards: SandboxOfficePaths; write: Write },
@@ -309,8 +310,11 @@ export function buildOffice(
     openStore(paths.store, () => reap(store))
     const workers = new WorkerRegistry(store, {
       log: (level, line) => log(level, "opencorp.worker.spawn")(line),
-      // update never rejects.
-      onExit: () => void office.runIndex.update(),
+      // Neither rejects. An exit may free its session's pin.
+      onExit: () => {
+        void office.runIndex.update()
+        void office.prunePins()
+      },
     })
     const office = new Office({
       paths,
@@ -353,6 +357,8 @@ export function buildOffice(
     const watcher = new HeadWatcher(office, { log: log("ERROR", "opencorp.company.watch") })
     office.onStart.push(() => watcher.start())
     office.onStop.push(() => watcher.stop())
+    // After the restore, which re-pins the live sessions; watchPins doesn't wait for its first prune.
+    office.onStart.push(() => office.watchPins())
     return office
   } catch (error) {
     store.close()

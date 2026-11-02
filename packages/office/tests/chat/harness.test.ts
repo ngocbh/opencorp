@@ -1900,6 +1900,32 @@ test("a reopened session starts a fresh run seeded from its last run and driven 
   await waitFor(() => same(texts(h, s.id), ["First.", "Second."]), { what: "the second reply" })
 })
 
+test("a reopened session whose pin was pruned still seeds its history", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "First." }, { content: "Second." })
+  const h = await makeHarness(fake, { files: LAN })
+  const s = await start(h)
+  await h.harness.prompt(s.id, "remember-this-text")
+  await waitFor(() => same(texts(h, s.id), ["First."]) && status(h, s.id) === "idle", { what: "the reply" })
+  await h.harness.end(s.id)
+  await waitFor(() => status(h, s.id) === "ended", { what: "the end" })
+  await asleep(h, s.id)
+  // HEAD moves on, so the ended session's pin is no one's.
+  fs.appendFileSync(path.join(h.office.paths.company, "notes.md"), "later\n")
+  await h.office.git.commit(["notes.md"], "notes")
+  const pin = path.join(h.office.paths.worktrees, s.repo_commit)
+  expect((await h.office.git.prune(() => [], { graceMs: 0 })).removed).toContain(s.repo_commit)
+  expect(fs.existsSync(pin)).toBe(false)
+  h.store.updateSession(s.id, { status: "starting", opened_by: "lan" })
+  await h.harness.startRun(s.id)
+  await waitFor(() => status(h, s.id) === "idle", { what: "the reopened run's turn" })
+  expect(fs.existsSync(path.join(pin, ".opencorp-pin"))).toBe(true)
+  await h.harness.prompt(s.id, "and now")
+  const request = await asked(fake, 2)
+  expect(request).toContain("remember-this-text")
+  expect(request).toContain("First.")
+})
+
 test("a reopened session whose start fails leaves its earlier run untouched", async () => {
   const fake = await fakeLlm()
   const h = await makeHarness(fake)
