@@ -426,6 +426,22 @@ test("a blank message never reopens a side chat that ended", async () => {
   expect(h.store.getQuestion(qid)!.discussion).toEqual(discussion)
 })
 
+test("a side chat open whose message is refused returns 422 and ends the side session", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK)
+  const o = await cardsOffice(fake)
+  const { h, sock } = o
+  const { qid } = await asked(o)
+  // A lone surrogate: the run refuses the message.
+  const r = await post(sock, `/questions/${qid}/side`, { text: "\ud800" })
+  expect([r.status, errorOf(r)]).toEqual([422, "refused"])
+  expect(r.text).not.toContain("\\ud800")
+  const sideId = h.store.getQuestion(qid)!.side_session_id!
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
+  expect(texts(h, sideId, "user")).toEqual([])
+  expect(h.store.getQuestion(qid)!.status).toBe("open")
+})
+
 test("send back and stop", async () => {
   const fake = await fakeLlm()
   fake.script(ASK, { content: "Retries hide flakes." }, ASK) // the sent-back reply asks again

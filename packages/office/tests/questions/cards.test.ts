@@ -4,18 +4,18 @@ import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
 import { iterRunRecords } from "@ngocbh/yian/run"
-import type { Scheduler } from "@ngocbh/yian/platform"
+import { realScheduler, type Scheduler } from "@ngocbh/yian/platform"
 import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { type Question, stamp } from "@opencorp/protocol"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { HarnessError, notWaiting } from "../../src/chat/state.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { register } from "../../src/extensions/questions.ts"
-import type { AnswerKind, CardActor, Cards } from "../../src/questions/cards.ts"
+import { type AnswerKind, type CardActor, type Cards, SIDE_END_WAIT_MS } from "../../src/questions/cards.ts"
 import { CARRIED_NOTE, INTERRUPTED, SENT_BACK } from "../../src/questions/format.ts"
 import { FRAMING, firstMessage } from "../../src/questions/seed.ts"
 import { BACK_HINT, SEED_FILE } from "../../src/questions/side.ts"
-import { CARD_CLOSED, OFFICE_STOPPED } from "../../src/runs/outcomes.ts"
+import { CARD_CLOSED, OFFICE_STOPPED, SIDE_OPEN_FAILED } from "../../src/runs/outcomes.ts"
 import { InvalidTransition, type QuestionRecord, type Store, newId } from "../../src/store/store.ts"
 import type { FakeLLM, ScriptedReply } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
@@ -887,6 +887,117 @@ test("stop is esc on the asking chat", async () => {
   await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
 })
 
+/** Asks the scripted question, chats one round in its side chat ("why?", "Quota."), then sends "and the cost?",
+ *  whose reply the fake holds; the fake answers the asker's next request with "Retrying.". */
+async function midSideReply(fake: FakeLLM) {
+  fake.script(ASK, { content: "Quota." }, { content: "Per call.", hold: true }, { content: "Retrying." })
+  const h = await sideHarness(fake)
+  const { sid, q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  await h.office.cards!.openSide(q.id, "and the cost?")
+  await fake.waitForRequests(3)
+  return { h, sid, q, side }
+}
+
+test("a typed answer in the asking chat carries the side messages since the last copy", async () => {
+  const fake = await fakeLlm()
+  const { h, sid, q, side } = await midSideReply(fake)
+  try {
+    expect(discussed(h, q.id)).toEqual(["why?", "Quota."])
+    await h.harness.prompt(sid, "Retry")
+    expect(discussed(h, q.id)).toEqual(["why?", "Quota.", "and the cost?"])
+    // The asker's model gets the same discussion in the answer.
+    const result = contentOf(await messagesOf(fake, 4))
+    expect(result).toContain("and the cost?")
+    expect(result).not.toContain("Per call.")
+  } finally {
+    fake.release()
+  }
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  await waitFor(() => texts(h, sid).at(-1) === "Retrying.", { what: "the asker's reply" })
+  expect(discussed(h, q.id)).toEqual(["why?", "Quota.", "and the cost?"])
+})
+
+test("esc in the asking chat carries the side discussion", async () => {
+  const fake = await fakeLlm()
+  const { h, sid, q, side } = await midSideReply(fake)
+  try {
+    await h.harness.interrupt(sid)
+    const stopped = h.store.getQuestion(q.id)!
+    expect([stopped.status, stopped.answer_kind]).toEqual(["consumed", "interrupted"])
+    expect(discussed(h, q.id)).toEqual(["why?", "Quota.", "and the cost?"])
+  } finally {
+    fake.release()
+  }
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  expect(discussed(h, q.id)).toEqual(["why?", "Quota.", "and the cost?"])
+})
+
+test("end during the side chats first reply keeps its first message", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Because.", hold: true })
+  const h = await sideHarness(fake)
+  const { sid, q } = await ask(h)
+  const side = await h.office.cards!.openSide(q.id, "explain")
+  try {
+    await fake.waitForRequests(2)
+    expect(status(h, side.id)).toBe("starting")
+    await h.harness.end(sid)
+    await waitFor(() => h.store.getQuestion(q.id)!.status === "consumed", { what: "the question to close" })
+    expect(h.store.getQuestion(q.id)!.discussion).toEqual([{ role: "user", text: "explain" }])
+  } finally {
+    fake.release()
+  }
+  await waitFor(() => status(h, side.id) === "ended" && status(h, sid) === "ended", { what: "both chats to end" })
+  expect(h.store.getQuestion(q.id)!.discussion).toEqual([{ role: "user", text: "explain" }])
+})
+
+test("an answer to a question whose session has no live run carries the discussion", async () => {
+  const fake = await fakeLlm()
+  const { h, sid, q, side } = await midSideReply(fake)
+  try {
+    // Stored ended without its actor, so the answer takes the harness's own path.
+    h.store.updateSession(sid, notWaiting("ended"))
+    const answered = await h.harness.answer(q.id, "Retry", "option")
+    expect(answered.discussion.map((e) => e.text)).toEqual(["why?", "Quota.", "and the cost?"])
+  } finally {
+    fake.release()
+  }
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+})
+
+test("a discussion copy that throws still ends the side chat", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  spyOn(h.harness.transcript, "messages").mockImplementationOnce(() => {
+    throw new TypeError("the side chat said why?")
+  })
+  h.store.answerQuestion(q.id, "Retry", "option", null)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  expect(h.logs.filter((line) => line.includes("discussion"))).toEqual([
+    `question ${q.id}'s discussion can't be copied (TypeError)`,
+  ])
+  expect(h.logs.filter((line) => line.includes("why?"))).toEqual([])
+})
+
+test("the discussion is copied once per answer", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  const snapshot = spyOn(h.office.cards!, "snapshot")
+  h.store.answerQuestion(q.id, "Retry", "option", null)
+  expect(snapshot).toHaveBeenCalledTimes(1)
+  // Another change while it is answered copies nothing more: the record stays what the asker's model got.
+  h.store.updateQuestion(q.id, { carried_from: null })
+  expect(snapshot).toHaveBeenCalledTimes(1)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+})
+
 const DECIDE: [string, (cards: Cards, q: QuestionRecord) => Promise<QuestionRecord>][] = [
   ["answer", (cards, q) => cards.answer(q.id, "Back off", "option", { by: "lan" })],
   ["send_back", (cards, q) => cards.sendBack(q.id, "", { by: "lan" })],
@@ -984,6 +1095,166 @@ test("a side chat open waits only behind opens of its own question", async () =>
   } finally {
     release()
   }
+})
+
+/** A real-clock scheduler whose sleeps of `SIDE_END_WAIT_MS` (a side chat open waiting for an end) end only when
+ *  the test calls `expire()`. */
+function sideEndTimer(): { scheduler: Scheduler; expire: () => void; waiting: () => number } {
+  const held: (() => void)[] = []
+  const scheduler: Scheduler = {
+    now: () => realScheduler.now(),
+    sleep: (ms, signal) => {
+      if (ms !== SIDE_END_WAIT_MS) return realScheduler.sleep(ms, signal)
+      return new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) return reject(signal.reason)
+        const go = () => resolve()
+        signal?.addEventListener(
+          "abort",
+          () => {
+            const i = held.indexOf(go)
+            if (i >= 0) held.splice(i, 1)
+            reject(signal.reason)
+          },
+          { once: true },
+        )
+        held.push(go)
+      })
+    },
+  }
+  return { scheduler, expire: () => held.splice(0).forEach((go) => go()), waiting: () => held.length }
+}
+
+/** Chats one round in `q`'s side chat, then Ends it with End's job to its worker held: the side chat stays `ending`
+ *  until `release()`. */
+async function endingSide(h: Harness, q: QuestionRecord) {
+  const side = await chat(h, q, "why?", 1)
+  // Parked, so End's job goes through a spawn the test can hold.
+  await waitFor(() => !running(h.registry, side.id), { what: "the side worker to park" })
+  const held = h.hold()
+  const ending = h.harness.end(side.id).catch(() => undefined)
+  await held.entered
+  expect(status(h, side.id)).toBe("ending")
+  return { side, release: held.release, ending }
+}
+
+test("chat about this while its side chat ends waits for the end and reopens it", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." }, { content: "Again: quota." })
+  const timer = sideEndTimer()
+  const h = await sideHarness(fake, { scheduler: timer.scheduler })
+  const { q } = await ask(h)
+  const { side, release, ending } = await endingSide(h, q)
+  let opened = false
+  const opening = h.office.cards!.openSide(q.id, "again").finally(() => (opened = true))
+  try {
+    await waitFor(() => timer.waiting() === 1, { what: "the open to wait for the end" })
+    await Bun.sleep(100)
+    expect(opened).toBe(false)
+  } finally {
+    release()
+  }
+  await ending
+  const reopened = await opening
+  expect(reopened.id).toBe(side.id)
+  expect(h.store.getSession(side.id)!.run_ids).toHaveLength(2)
+  expect(texts(h, side.id, "user")).toEqual(["why?", "again"])
+  await waitFor(() => texts(h, side.id).at(-1) === "Again: quota." && status(h, side.id) === "idle", {
+    what: "the reply",
+  })
+  expect(timer.waiting()).toBe(0)
+})
+
+test("an open waiting on an ending side chat times out with 409 ending", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const timer = sideEndTimer()
+  const h = await sideHarness(fake, { scheduler: timer.scheduler })
+  const { q } = await ask(h)
+  const { side, release, ending } = await endingSide(h, q)
+  try {
+    const opening = refusal(() => h.office.cards!.openSide(q.id, "again"))
+    await waitFor(() => timer.waiting() === 1, { what: "the open to wait for the end" })
+    timer.expire()
+    const error = await opening
+    expect([error.status, error.code]).toEqual([409, "ending"])
+    expect(h.store.getSession(side.id)!.run_ids).toHaveLength(1)
+    expect(texts(h, side.id, "user")).toEqual(["why?"])
+  } finally {
+    release()
+  }
+  await ending
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+})
+
+test("an open waiting on an ending side chat answers 503 when the cards close", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const timer = sideEndTimer()
+  const h = await sideHarness(fake, { scheduler: timer.scheduler })
+  const { q } = await ask(h)
+  const { side, release, ending } = await endingSide(h, q)
+  try {
+    const opening = refusal(() => h.office.cards!.openSide(q.id, "again"))
+    await waitFor(() => timer.waiting() === 1, { what: "the open to wait for the end" })
+    await h.office.cards!.close()
+    const error = await opening
+    expect([error.status, error.code]).toEqual([503, "stopping"])
+    expect(timer.waiting()).toBe(0)
+  } finally {
+    release()
+  }
+  await ending
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  expect(texts(h, side.id, "user")).toEqual(["why?"])
+})
+
+test("an open queued behind a waiting open answers 503 too when the cards close, without a wait", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const timer = sideEndTimer()
+  const h = await sideHarness(fake, { scheduler: timer.scheduler })
+  const { q } = await ask(h)
+  const { side, release, ending } = await endingSide(h, q)
+  try {
+    const first = refusal(() => h.office.cards!.openSide(q.id, "again"))
+    const second = refusal(() => h.office.cards!.openSide(q.id, "and again"))
+    await waitFor(() => timer.waiting() === 1, { what: "the first open to wait for the end" })
+    let closed = false
+    const closing = h.office.cards!.close().then(() => (closed = true))
+    await waitFor(() => closed, { what: "the cards to close" })
+    await closing
+    for (const error of [await first, await second]) expect([error.status, error.code]).toEqual([503, "stopping"])
+    expect(timer.waiting()).toBe(0)
+  } finally {
+    // Frees a second open that waited, so a failing run doesn't hang.
+    timer.expire()
+    release()
+  }
+  await ending
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  expect(texts(h, side.id, "user")).toEqual(["why?"])
+})
+
+test("an open waiting on an ending side chat goes on when the end fails it", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." }, { content: "Again: quota." })
+  const timer = sideEndTimer()
+  const h = await sideHarness(fake, { scheduler: timer.scheduler })
+  const { q } = await ask(h)
+  const { side, release, ending } = await endingSide(h, q)
+  h.failNextSpawn() // End's job to the worker fails, which fails the side session
+  const opening = h.office.cards!.openSide(q.id, "again")
+  try {
+    await waitFor(() => timer.waiting() === 1, { what: "the open to wait for the end" })
+  } finally {
+    release()
+  }
+  await ending
+  await opening
+  expect(h.store.getSession(side.id)!.run_ids).toHaveLength(2)
+  await waitFor(() => texts(h, side.id).at(-1) === "Again: quota." && status(h, side.id) === "idle", {
+    what: "the reply",
+  })
 })
 
 /** The entries of `h`'s session dirs root. */
@@ -1273,11 +1544,174 @@ test("a question answered while its side chat starts ends it", async () => {
     h.store.answerQuestion(q.id, "Retry", "option", null) // another client answered meanwhile
     return runId
   }
+  const prompt = spyOn(h.harness, "prompt")
   const error = await refusal(() => h.office.cards!.openSide(q.id, "why?"))
   expect([error.status, error.code]).toEqual([409, "not_open"])
   const sideId = h.store.getQuestion(q.id)!.side_session_id!
   await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
   expect(texts(h, sideId, "user")).toEqual([])
+  expect(prompt).not.toHaveBeenCalled()
+})
+
+/** Makes the harness's next prompt reject with `error`. */
+function promptOnce(h: Harness, error: unknown) {
+  return spyOn(h.harness, "prompt").mockImplementationOnce(() => Promise.reject(error))
+}
+
+/** The error `action` rejected with; fails the test if it resolved. */
+async function rejection(action: () => Promise<unknown>): Promise<unknown> {
+  try {
+    await action()
+  } catch (error) {
+    return error
+  }
+  throw new Error("expected a rejection")
+}
+
+const REFUSED = new HarnessError(422, "refused", "the run refused the message")
+
+test("a refused first message ends the side chat it opened", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const cards = h.office.cards!
+  const { q } = await ask(h)
+  promptOnce(h, REFUSED)
+  expect(await rejection(() => cards.openSide(q.id, "x"))).toBe(REFUSED)
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
+  expect(texts(h, sideId, "user")).toEqual([])
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+  // The next open starts a fresh run of it, and the seed still goes.
+  const side = await chat(h, q, "why?", 1)
+  expect(side.id).toBe(sideId)
+  expect(h.store.getSession(sideId)!.run_ids).toHaveLength(2)
+  expect(await framings(fake, 2)).toBe(1)
+  expect(await lastUser(fake, 2)).toEndWith("why?")
+})
+
+test("a refused message to a reopened side chat ends the new run", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const cards = h.office.cards!
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  await h.harness.end(side.id)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  promptOnce(h, REFUSED)
+  expect(await rejection(() => cards.openSide(q.id, "x"))).toBe(REFUSED)
+  await waitFor(() => status(h, side.id) === "ended" && h.store.getSession(side.id)!.run_ids.length === 2, {
+    what: "the new run to end",
+  })
+  expect(texts(h, side.id, "user")).toEqual(["why?"])
+})
+
+test("a refused message to a live side chat leaves it live", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  const end = spyOn(h.harness, "end")
+  promptOnce(h, REFUSED)
+  expect(await rejection(() => h.office.cards!.openSide(q.id, "x"))).toBe(REFUSED)
+  await Bun.sleep(200)
+  expect(status(h, side.id)).toBe("idle")
+  expect(end).not.toHaveBeenCalled()
+})
+
+test("a first message that cant wake its run ends the side chat it opened", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const cards = h.office.cards!
+  const { q } = await ask(h)
+  const cantWake = new HarnessError(503, "cant_wake", "the run can't wake")
+  promptOnce(h, cantWake)
+  expect(await rejection(() => cards.openSide(q.id, "x"))).toBe(cantWake)
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
+  expect(texts(h, sideId, "user")).toEqual([])
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+  const side = await chat(h, q, "why?", 1)
+  expect(h.store.getSession(side.id)!.run_ids).toHaveLength(2)
+  expect(await framings(fake, 2)).toBe(1)
+})
+
+test("a refused first message whose run End cant reach is abandoned as a failed open", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK)
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  // Refused once its run is up, so End's refusal isn't the one a start the harness doesn't hold gets.
+  spyOn(h.harness, "prompt").mockImplementationOnce(async (sessionId) => {
+    await waitFor(() => status(h, sessionId) === "idle", { what: "the side run to wait for a message" })
+    throw REFUSED
+  })
+  spyOn(h.harness, "end").mockImplementationOnce(() => Promise.reject(new HarnessError(409, "not_live", "no run")))
+  const abandon = spyOn(h.harness, "abandon")
+  expect(await rejection(() => h.office.cards!.openSide(q.id, "x"))).toBe(REFUSED)
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  expect(abandon).toHaveBeenCalledWith(sideId, SIDE_OPEN_FAILED)
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
+  expect(h.store.runsOfSession(sideId).map((row) => row.endReason)).toEqual([SIDE_OPEN_FAILED])
+})
+
+test("a refused first message while the office stops leaves the side chat to the start sweep", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK)
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  promptOnce(h, REFUSED)
+  spyOn(h.harness, "end").mockImplementationOnce(() =>
+    Promise.reject(new HarnessError(503, "stopping", "the office is stopping")),
+  )
+  const abandon = spyOn(h.harness, "abandon")
+  expect(await rejection(() => h.office.cards!.openSide(q.id, "x"))).toBe(REFUSED)
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  await Bun.sleep(200)
+  expect(abandon).not.toHaveBeenCalled()
+  expect(status(h, sideId)).not.toBe("ended")
+  await h.reopen()
+  await h.harness.restore()
+  h.office.cards!.sweep()
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
+  expect(texts(h, sideId, "user")).toEqual([])
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+})
+
+test("an open queued behind a failing open reaches a fresh run", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const cards = h.office.cards!
+  const { q } = await ask(h)
+  promptOnce(h, REFUSED)
+  const first = rejection(() => cards.openSide(q.id, "x"))
+  const second = cards.openSide(q.id, "why?")
+  expect(await first).toBe(REFUSED)
+  const side = await second
+  await waitFor(() => texts(h, side.id).join() === "Quota." && status(h, side.id) === "idle", {
+    what: "the side reply",
+  })
+  expect(texts(h, side.id, "user")).toEqual(["why?"])
+  expect(h.store.getSession(side.id)!.run_ids).toHaveLength(2)
+})
+
+test("a message refused because the card closed meanwhile answers 409 not open", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK)
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  spyOn(h.harness, "prompt").mockImplementationOnce(async (sid: string) => {
+    h.store.answerQuestion(q.id, "Retry", "option", null) // another client answered meanwhile
+    throw new HarnessError(409, "ending", `session ${sid} is ending`)
+  })
+  const error = await refusal(() => h.office.cards!.openSide(q.id, "why?"))
+  expect([error.status, error.code]).toEqual([409, "not_open"])
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
 })
 
 test("a card answered after its side runs row commits ends the side chat once", async () => {
@@ -1481,6 +1915,85 @@ test("a side chat stored starting at the sweep leaves a run with a log to yian",
   h.office.cards!.sweep()
   expect(status(h, side.id)).toBe("ended")
   expect(h.store.getRun(runId)!.endReason).toBeNull()
+})
+
+test("the start sweep ends an open cards side chat that never got a message", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK)
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  // The office stops inside the open: the message and the open's End are both refused.
+  const stopping = new HarnessError(503, "stopping", "the office is stopping")
+  promptOnce(h, stopping)
+  spyOn(h.harness, "end").mockImplementationOnce(() => Promise.reject(stopping))
+  expect(await rejection(() => h.office.cards!.openSide(q.id, "why?"))).toBe(stopping)
+  const sideId = h.store.getQuestion(q.id)!.side_session_id!
+  await waitFor(() => status(h, sideId) === "idle", { what: "the side run to wait for a message" })
+  await h.reopen()
+  await h.harness.restore()
+  h.office.cards!.sweep()
+  await waitFor(() => status(h, sideId) === "ended", { what: "the side session to end" })
+  expect(h.store.runsOfSession(sideId).map((row) => row.endReason)).toEqual([null])
+  expect(texts(h, sideId, "user")).toEqual([])
+  expect(h.store.getQuestion(q.id)!.status).toBe("open")
+})
+
+test("the start sweep keeps a side chat whose only message is blank", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Ask me anything." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "   ", 1)
+  await h.reopen()
+  await h.harness.restore()
+  h.office.cards!.sweep()
+  await Bun.sleep(300)
+  expect(status(h, side.id)).toBe("idle")
+})
+
+test("the start sweep keeps a reopened side chat whose new run got no message", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." }, { content: "Still quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  await h.harness.end(side.id)
+  await waitFor(() => status(h, side.id) === "ended", { what: "the side session to end" })
+  // The office stops inside the reopen: the message and the open's End are both refused.
+  const stopping = new HarnessError(503, "stopping", "the office is stopping")
+  promptOnce(h, stopping)
+  spyOn(h.harness, "end").mockImplementationOnce(() => Promise.reject(stopping))
+  expect(await rejection(() => h.office.cards!.openSide(q.id, "x"))).toBe(stopping)
+  await waitFor(() => status(h, side.id) === "idle" && h.store.getSession(side.id)!.run_ids.length === 2, {
+    what: "the new run to wait for a message",
+  })
+  await h.reopen()
+  await h.harness.restore()
+  h.office.cards!.sweep()
+  await Bun.sleep(300)
+  expect(status(h, side.id)).not.toBe("ended")
+  expect(h.store.runsOfSession(side.id).map((row) => row.endReason)).not.toContain(SIDE_OPEN_FAILED)
+  // It sleeps until a fresh run, which the next open starts.
+  await chat(h, q, "again", 2)
+  expect(texts(h, side.id, "user")).toEqual(["why?", "again"])
+})
+
+test("a start sweep that cant read a side chats log logs its error type and goes on", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Quota." })
+  const h = await sideHarness(fake)
+  const { q } = await ask(h)
+  const side = await chat(h, q, "why?", 1)
+  await h.reopen()
+  await h.harness.restore()
+  spyOn(h.harness.transcript, "messages").mockImplementationOnce(() => {
+    throw new TypeError("the side chat said why?")
+  })
+  h.office.cards!.sweep()
+  expect(h.logs).toContain(`side session ${side.id}'s log can't be read (TypeError)`)
+  expect(h.logs.filter((line) => line.includes("why?"))).toEqual([])
+  await Bun.sleep(300)
+  expect(status(h, side.id)).toBe("idle")
 })
 
 test("a side chat resumes after an office restart", async () => {
