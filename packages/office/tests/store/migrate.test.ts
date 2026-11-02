@@ -109,7 +109,7 @@ test("every migration file is in the ladder", () => {
 
 test("the office migrations bring a fresh database to version 5", () => {
   const db = open()
-  expect(migrate(db)).toBe(5)
+  expect(migrate(db)).toBe(6)
   const questions = db.prepare("PRAGMA table_info(questions)").all()
   expect(questions.map((c) => c.name)).toContain("call_id")
   const turns = db.prepare("PRAGMA table_info(sessions)").all().find((c) => c.name === "turns")

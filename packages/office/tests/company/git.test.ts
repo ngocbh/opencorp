@@ -1048,3 +1048,229 @@ test.each(OPERATIONS)("hand edits wait while a %s is in progress", async (_, sta
   expect(await g.commitHandEdits()).toEqual([PROFILE])
   expect(git(company, "show", `HEAD:${PROFILE}`)).toBe("# edited")
 })
+
+const DANA = "people/dana/person.yaml"
+
+/** Writes and commits dana's person file in `root` with `name`; returns the new HEAD. */
+function hire(root: string, name = "Dana"): string {
+  fs.mkdirSync(path.join(root, "people/dana"), { recursive: true })
+  fs.writeFileSync(path.join(root, DANA), `handle: dana\nname: ${name}\nkind: human\ntitle: Eng\nmanager: ngocbh\n`)
+  git(root, "add", DANA)
+  git(root, "commit", "-q", "-m", `hire ${name}`)
+  return git(root, "rev-parse", "HEAD")
+}
+
+/** Deletes and commits dana's person file in `root`; returns the new HEAD. */
+function fire(root: string): string {
+  git(root, "rm", "-q", DANA)
+  git(root, "commit", "-q", "-m", "remove dana")
+  return git(root, "rev-parse", "HEAD")
+}
+
+/** Commits `text` to `file`, not dana's, in `root`; returns the new HEAD. */
+function other(root: string, text: string, file = "notes.md"): string {
+  fs.writeFileSync(path.join(root, file), `${text}\n`)
+  git(root, "add", file)
+  git(root, "commit", "-q", "-m", text)
+  return git(root, "rev-parse", "HEAD")
+}
+
+test("gone since is false for an untouched file, and for the same commit without running git", async () => {
+  const recording = recordingGit(tempDir())
+  const { company, g } = setup({ git: recording.git })
+  const hired = hire(company)
+  expect(await g.goneSince(DANA, hired, hired)).toBe(false)
+  expect(recording.calls()).toHaveLength(0)
+  const later = other(company, "unrelated")
+  fs.appendFileSync(path.join(company, DANA), "groups: []\n")
+  git(company, "commit", "-q", "-am", "edit dana")
+  expect(await g.goneSince(DANA, hired, later)).toBe(false)
+  expect(await g.goneSince(DANA, hired, git(company, "rev-parse", "HEAD"))).toBe(false)
+})
+
+test("gone since is true for a delete, and for a delete then a re-add", async () => {
+  const { company, g } = setup()
+  const hired = hire(company)
+  const fired = fire(company)
+  expect(await g.goneSince(DANA, hired, fired)).toBe(true)
+  const again = hire(company)
+  expect(await g.goneSince(DANA, hired, again)).toBe(true)
+  expect(await g.goneSince(DANA, hired, other(company, "later"))).toBe(true)
+  expect(await g.goneSince(DANA, again, other(company, "later still"))).toBe(false)
+})
+
+test("gone since is true when the file was a symlink at a commit between", async () => {
+  const { company, g } = setup()
+  const hired = hire(company)
+  const file = path.join(company, DANA)
+  const text = fs.readFileSync(file)
+  fs.rmSync(file)
+  fs.symlinkSync("../ngocbh/person.yaml", file)
+  git(company, "add", DANA)
+  git(company, "commit", "-q", "-m", "dana is a link")
+  fs.rmSync(file)
+  fs.writeFileSync(file, text)
+  git(company, "add", DANA)
+  git(company, "commit", "-q", "-m", "dana is a file again")
+  expect(await g.goneSince(DANA, hired, git(company, "rev-parse", "HEAD"))).toBe(true)
+})
+
+test("gone since sees a delete and re-add on a side branch that was merged", async () => {
+  const { company, g } = setup()
+  const hired = hire(company)
+  git(company, "checkout", "-q", "-b", "side")
+  fire(company)
+  hire(company)
+  git(company, "checkout", "-q", "main")
+  other(company, "on main")
+  git(company, "merge", "-q", "--no-ff", "--no-edit", "side")
+  expect(await g.goneSince(DANA, hired, git(company, "rev-parse", "HEAD"))).toBe(true)
+})
+
+test.each([["on"], ["first-parent"], ["combined"], ["follow"]])(
+  "gone since sees a delete made only by a merge whatever the repos log config [%s]",
+  async (setting) => {
+    const { company, g } = setup()
+    if (setting === "follow") git(company, "config", "log.follow", "true")
+    else git(company, "config", "log.diffMerges", setting)
+    const hired = hire(company)
+    git(company, "checkout", "-q", "-b", "side")
+    other(company, "on side", "side.md")
+    git(company, "checkout", "-q", "main")
+    other(company, "on main")
+    git(company, "merge", "-q", "--no-ff", "--no-commit", "side")
+    git(company, "rm", "-q", DANA)
+    git(company, "commit", "-q", "-m", "merge side, removing dana")
+    expect(await g.goneSince(DANA, hired, git(company, "rev-parse", "HEAD"))).toBe(true)
+  },
+)
+
+test.each([["on"], ["first-parent"], ["combined"]])(
+  "gone since sees a merge drop a file only its merged branch had, whatever the repos log config [%s]",
+  async (setting) => {
+    const { company, g } = setup()
+    git(company, "config", "log.diffMerges", setting)
+    git(company, "checkout", "-q", "-b", "side")
+    const hired = hire(company)
+    git(company, "checkout", "-q", "main")
+    other(company, "on main")
+    git(company, "merge", "-q", "--no-ff", "--no-commit", "side")
+    git(company, "rm", "-qf", DANA)
+    git(company, "commit", "-q", "-m", "merge side without dana")
+    expect(await g.goneSince(DANA, hired, git(company, "rev-parse", "HEAD"))).toBe(true)
+  },
+)
+
+test("gone since is false after merging a branch forked before the file was added, either way", async () => {
+  const { company, g } = setup()
+  const base = git(company, "rev-parse", "HEAD")
+  const hired = hire(company)
+  git(company, "checkout", "-q", "-b", "side", base)
+  other(company, "on side")
+  git(company, "checkout", "-q", "main")
+  git(company, "merge", "-q", "--no-ff", "--no-edit", "side")
+  expect(await g.goneSince(DANA, hired, git(company, "rev-parse", "HEAD"))).toBe(false)
+  git(company, "checkout", "-q", "side")
+  git(company, "merge", "-q", "--no-ff", "--no-edit", hired)
+  expect(await g.goneSince(DANA, hired, git(company, "rev-parse", "HEAD"))).toBe(false)
+})
+
+test("gone since is false after a rebase over upstream commits when the add was upstream", async () => {
+  const { company, g } = setup()
+  hire(company)
+  const local = other(company, "local")
+  git(company, "branch", "upstream", "HEAD~1")
+  git(company, "checkout", "-q", "upstream")
+  other(company, "upstream", "upstream.md")
+  git(company, "checkout", "-q", "main")
+  git(company, "rebase", "-q", "upstream")
+  const rebased = git(company, "rev-parse", "HEAD")
+  expect(rebased).not.toBe(local)
+  expect(await g.goneSince(DANA, local, rebased)).toBe(false)
+})
+
+test("gone since is true after a reset to before the add and an add again", async () => {
+  const { company, g } = setup()
+  const hired = hire(company)
+  git(company, "reset", "-q", "--hard", "HEAD~1")
+  const again = hire(company, "Dana Two")
+  expect(await g.goneSince(DANA, hired, again)).toBe(true)
+})
+
+test("gone since is true after a reset back to before a delete, from the re-add", async () => {
+  const { company, g } = setup()
+  const hired = hire(company)
+  fire(company)
+  const again = hire(company, "Dana Two")
+  git(company, "reset", "-q", "--hard", hired)
+  const back = other(company, "after the reset")
+  expect(await g.goneSince(DANA, again, back)).toBe(true)
+})
+
+test("gone since is false back to an older commit that still holds the file", async () => {
+  const { company, g } = setup()
+  const hired = hire(company)
+  const later = other(company, "later")
+  expect(await g.goneSince(DANA, later, hired)).toBe(false)
+})
+
+test("gone since is true from a commit the clone lacks, and across unrelated histories", async () => {
+  const { company, g } = setup()
+  const hired = hire(company)
+  expect(await g.goneSince(DANA, "f".repeat(40), hired)).toBe(true)
+  git(company, "checkout", "-q", "--orphan", "fresh")
+  const unrelated = hire(company)
+  expect(await g.goneSince(DANA, hired, unrelated)).toBe(true)
+})
+
+test("gone since takes only full commit ids and a relative path with no nul", async () => {
+  const recording = recordingGit(tempDir())
+  const { company, g } = setup({ git: recording.git })
+  const hired = hire(company)
+  for (const [from, to] of [
+    ["HEAD", hired],
+    [hired, "HEAD"],
+    [hired, `${hired}~1`],
+    [hired.slice(0, 12), hired],
+  ]) {
+    await expect(g.goneSince(DANA, from!, to!)).rejects.toBeInstanceOf(RangeError)
+  }
+  await expect(g.goneSince(`/${DANA}`, hired, hired)).rejects.toBeInstanceOf(RangeError)
+  await expect(g.goneSince(`${DANA}\0x`, hired, hired)).rejects.toBeInstanceOf(RangeError)
+  expect(recording.calls()).toHaveLength(0)
+})
+
+test("gone since matches a glob looking path literally", async () => {
+  const { company, g } = setup()
+  hire(company)
+  const glob = "people/*/person.yaml"
+  fs.mkdirSync(path.join(company, "people/*"))
+  fs.writeFileSync(path.join(company, glob), "not a person\n")
+  git(company, "add", "--", `:(literal)${glob}`)
+  git(company, "commit", "-q", "-m", "a folder named *")
+  const before = git(company, "rev-parse", "HEAD")
+  expect(await g.goneSince(glob, before, fire(company))).toBe(false)
+})
+
+test.each(
+  ["^{commit}", "--all", DANA].flatMap((match) => GIT_FAILURES.map((failure) => [match, failure] as const)),
+)("gone since throws when git fails instead of answering [%s: %s]", async (match, failure) => {
+  const dir = tempDir()
+  const root = company(dir)
+  const hired = hire(root)
+  const later = other(root, "later")
+  const g = new CompanyGit(root, path.join(dir, "worktrees"), { git: failingGit(dir, match, failure) })
+  await expect(g.goneSince(DANA, hired, later)).rejects.toThrow(CompanyGitError)
+})
+
+test.each(GIT_FAILURES.filter((failure) => failure !== "exit 0"))(
+  "gone since throws when its log fails [%s]",
+  async (failure) => {
+    const dir = tempDir()
+    const root = company(dir)
+    const hired = hire(root)
+    const later = other(root, "later")
+    const g = new CompanyGit(root, path.join(dir, "worktrees"), { git: failingGit(dir, "--diff-filter=D", failure) })
+    await expect(g.goneSince(DANA, hired, later)).rejects.toThrow(CompanyGitError)
+  },
+)

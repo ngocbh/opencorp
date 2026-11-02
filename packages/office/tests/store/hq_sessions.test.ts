@@ -17,6 +17,7 @@ function record(over?: Partial<ConstructorParameters<typeof HqSessionRecord>[0]>
     label: "Safari",
     secretSha256: "a".repeat(64),
     passwordFp: "0".repeat(16),
+    issuedSha: "c".repeat(40),
     issuedBy: "ngocbh",
     via: "pair",
     createdAt: NOW,
@@ -35,6 +36,18 @@ test("a session round trips and is found by its secret hash", () => {
   expect(store.hqSessionBySecret("b".repeat(64), NOW)).toBeUndefined()
 })
 
+test("the commit a session was issued at round trips, null included", () => {
+  const store = openStore()
+  const issued = record({ secretSha256: "1".repeat(64) })
+  const old = record({ secretSha256: "2".repeat(64), issuedSha: null })
+  store.addHqSession(issued)
+  store.addHqSession(old)
+  expect(store.getHqSession(issued.id)?.issuedSha).toBe("c".repeat(40))
+  expect(store.hqSessionBySecret("1".repeat(64), NOW)?.issuedSha).toBe("c".repeat(40))
+  expect(store.getHqSession(old.id)?.issuedSha).toBeNull()
+  expect(store.listHqSessions("ngocbh").map((r) => r.issuedSha).sort()).toEqual(["c".repeat(40), null])
+})
+
 test("an expired session isnt found by its secret hash", () => {
   const store = openStore()
   store.addHqSession(record())
@@ -45,15 +58,17 @@ test("its public form has no secret hash or fingerprint", () => {
   const pub = record().public()
   expect("secret_sha256" in pub || "password_fp" in pub).toBe(false)
   expect("secretSha256" in pub || "passwordFp" in pub).toBe(false)
+  expect("issuedSha" in pub || "issued_sha" in pub).toBe(false)
   expect(pub.via).toBe("pair")
   expect(BrowserSession.safeParse(pub).success).toBe(true)
 })
 
 test("its repr has no secret hash or fingerprint", () => {
-  const r = record({ secretSha256: "e".repeat(64), passwordFp: "f".repeat(16) })
+  const r = record({ secretSha256: "e".repeat(64), passwordFp: "f".repeat(16), issuedSha: "d".repeat(40) })
   for (const text of [inspect(r), JSON.stringify(r)]) {
     expect(text).not.toContain("e".repeat(64))
     expect(text).not.toContain("f".repeat(16))
+    expect(text).not.toContain("d".repeat(40))
   }
   expect(inspect(r)).toStartWith("HqSessionRecord {")
   expect(inspect(r)).toContain(r.id)

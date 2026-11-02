@@ -466,9 +466,9 @@ export interface WorkerRecord {
   startTime: number
 }
 
-/** A browser signed in to HQ, as stored: with its secret's sha256 and its password fingerprint, which never
- *  print (inspect and JSON leave them out; they stay public readonly fields so equality checks see them). Expiry
- *  compares as text: every time comes from now(). */
+/** A browser signed in to HQ, as stored: with its secret's sha256, its password fingerprint and the commit it was
+ *  issued at, which never print (inspect and JSON leave them out; they stay public readonly fields so equality checks
+ *  see them). Expiry compares as text: every time comes from now(). */
 export class HqSessionRecord {
   readonly id: string
   readonly person: string
@@ -476,6 +476,8 @@ export class HqSessionRecord {
   readonly label: string | null
   readonly secretSha256: string
   readonly passwordFp: string
+  /** HEAD when the session was issued; null for a row from before it was recorded. */
+  readonly issuedSha: string | null
   readonly issuedBy: string
   readonly via: z.output<typeof BrowserSession>["via"]
   readonly createdAt: string
@@ -489,6 +491,7 @@ export class HqSessionRecord {
     label: string | null
     secretSha256: string
     passwordFp: string
+    issuedSha: string | null
     issuedBy: string
     via: z.output<typeof BrowserSession>["via"]
     createdAt: string
@@ -501,6 +504,7 @@ export class HqSessionRecord {
     this.label = fields.label
     this.secretSha256 = fields.secretSha256
     this.passwordFp = fields.passwordFp
+    this.issuedSha = fields.issuedSha
     this.issuedBy = fields.issuedBy
     this.via = fields.via
     this.createdAt = fields.createdAt
@@ -544,6 +548,7 @@ function hqSessionRecord(r: SqliteRow): HqSessionRecord {
     label: r.label as string | null,
     secretSha256: r.secret_sha256 as string,
     passwordFp: r.password_fp as string,
+    issuedSha: r.issued_sha as string | null,
     issuedBy: r.issued_by as string,
     via: r.via as HqSessionRecord["via"],
     createdAt: r.created_at as string,
@@ -1560,6 +1565,7 @@ export class Store {
         label: record.label,
         secret_sha256: record.secretSha256,
         password_fp: record.passwordFp,
+        issued_sha: record.issuedSha,
         issued_by: record.issuedBy,
         via: record.via,
         created_at: record.createdAt,

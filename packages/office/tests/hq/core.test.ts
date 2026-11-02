@@ -49,6 +49,7 @@ test("attach puts hq on the office and prunes expired sessions at start", async 
       label: "Safari",
       secretSha256: "a".repeat(64),
       passwordFp: "0".repeat(16),
+      issuedSha: null,
       issuedBy: "ngocbh",
       via: "pair",
       createdAt: "2026-10-19T10:00:00.000Z",
@@ -70,7 +71,7 @@ test("attach puts hq on the office and prunes expired sessions at start", async 
 test("mint without tcp has no url or file", async () => {
   const office = makeOffice()
   const hq = attach(office, { log, listen: false })
-  const code = await hq.mint("ngocbh", { issuer: "ngocbh", openFile: true })
+  const code = await hq.mint("ngocbh", { issuer: "ngocbh", openFile: true, sha: await office.git.readHead() })
   expect(code.url).toBeNull()
   expect(code.open_file).toBeNull()
   expect(code.path).toStartWith("/pair#")
@@ -87,7 +88,7 @@ test("mint while listening writes a file that stopping deletes", async () => {
   await office.start()
   let file: string
   try {
-    const code = await hq.mint("ngocbh", { issuer: "ngocbh", openFile: true })
+    const code = await hq.mint("ngocbh", { issuer: "ngocbh", openFile: true, sha: await office.git.readHead() })
     expect(code.url).toBe(`http://127.0.0.1:49999${code.path}`)
     expect(code.port).toBe(49999)
     file = path.resolve(office.paths.office, code.open_file!)
@@ -208,7 +209,7 @@ test("stop forgets the codes even when the listeners fail to stop", async () => 
   const listeners = hq.listeners!
   const realStop = listeners.stop.bind(listeners)
   try {
-    await hq.mint("ngocbh", { issuer: "ngocbh", openFile: false })
+    await hq.mint("ngocbh", { issuer: "ngocbh", openFile: false, sha: await office.git.readHead() })
     listeners.stop = async () => {
       throw new Error("boom")
     }

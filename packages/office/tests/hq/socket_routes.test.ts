@@ -8,7 +8,7 @@ import type { Office } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { git } from "../company/helpers.ts"
 import { CEO, ULID, addHuman, bearer, giveDevice, makeOffice, request, serve } from "../daemon/helpers.ts"
-import { handEdit, makeHq } from "./helpers.ts"
+import { handEdit, makeHq, web } from "./helpers.ts"
 
 type HeaderMap = Record<string, string>
 
@@ -88,6 +88,61 @@ test("only the person or the ceo may pair for them", async () => {
   expect(r.status).toBe(200)
   expect(hq.codes.redeem(r.json().path.split("#")[1])!.handle).toBe("ann")
   expect((await sock.post("/hq/pair", {}, bearer(ann))).status).toBe(200)
+})
+
+test("a pairing code is checked at the commit it was minted at", async () => {
+  const { office, hq, company, sock } = await setup()
+  addHuman(company, "ann")
+  const minted = await office.git.readHead()
+  const codeOf = async () => (await sock.post("/hq/pair", { handle: "ann" })).json().path.split("#")[1] as string
+  expect(hq.codes.redeem(await codeOf())!.sha).toBe(minted)
+  const code = await codeOf()
+  git(company, "rm", "-q", "people/ann/person.yaml")
+  git(company, "commit", "-qm", "remove ann")
+  addHuman(company, "ann") // the handle is a human again, but not the one the code was for
+  const r = await (await web(hq)).post("/api/pair", { code })
+  expect(r.status).toBe(422)
+  expect(r.json()).toEqual({ error: "not_a_human", message: "the person isn't a human in the company at HEAD" })
+  expect(r.headers["set-cookie"]).toBeUndefined()
+  expect(r.text).not.toContain(code)
+  expect(office.store.listHqSessions("ann")).toEqual([])
+})
+
+test("only the ceo lists and ends the sessions of someone who isnt a human at head", async () => {
+  const { office, hq, company, sock } = await setup()
+  for (const handle of ["ann", "bob", "carl"]) addHuman(company, handle)
+  const [ceo, bob] = [newToken(), newToken()]
+  giveDevice(company, CEO, "mac", ceo)
+  giveDevice(company, "bob", "laptop", bob)
+  const [ended] = await hq.sessions.issue("ann", { issuedBy: CEO, label: null })
+  const [listed] = await hq.sessions.issue("ann", { issuedBy: CEO, label: null })
+  const [agents] = await hq.sessions.issue("carl", { issuedBy: CEO, label: null })
+  git(company, "rm", "-q", "people/ann/person.yaml")
+  git(company, "commit", "-qm", "remove ann")
+  handEdit(company, "carl", { kind: "agent" })
+
+  const notFound = { error: "not_found", message: "no person @ann" }
+  expect((await sock.get("/hq/browsers?person=ann", bearer(bob))).json()).toEqual(notFound)
+  const refused = await sock.delete(`/hq/browsers/${ended.id}`, bearer(bob))
+  expect([refused.status, refused.json()]).toEqual([404, notFound])
+  expect((await sock.get("/hq/browsers?person=carl", bearer(bob))).status).toBe(422)
+  expect((await sock.delete(`/hq/browsers/${agents.id}`, bearer(bob))).status).toBe(422)
+  expect(office.store.listHqSessions().map((r) => r.id).sort()).toEqual([ended.id, listed.id, agents.id].sort())
+
+  expect((await sock.delete(`/hq/browsers/${ended.id}`, bearer(ceo))).json()).toEqual({ ok: true })
+  expect(office.store.getHqSession(ended.id)).toBeUndefined()
+  // Listing them ends what's left, as any check of theirs would.
+  for (const handle of ["ann", "carl"]) {
+    const r = await sock.get(`/hq/browsers?person=${handle}`, bearer(ceo))
+    expect([r.status, r.json()]).toEqual([200, []])
+  }
+  expect(office.store.listHqSessions()).toEqual([])
+  // With no stored sessions left, or none ever (a typo, an agent), the CEO gets 404 or 422 as before.
+  expect((await sock.get("/hq/browsers?person=ann", bearer(ceo))).json()).toEqual(notFound)
+  expect((await sock.get("/hq/browsers?person=nobody", bearer(ceo))).status).toBe(404)
+  expect((await sock.get("/hq/browsers?person=minh", bearer(ceo))).status).toBe(422)
+  // Pairing still needs a human at HEAD.
+  expect((await sock.post("/hq/pair", { handle: "ann" }, bearer(ceo))).status).toBe(404)
 })
 
 test("browsers are listed and removed by their person or the ceo", async () => {

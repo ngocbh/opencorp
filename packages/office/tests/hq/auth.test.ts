@@ -353,7 +353,8 @@ test("pairing replaces the old session even while its person file cant be read",
   const client = await web(hq)
   const first = ((await pair(client, hq)).json() as Body).id as string
   handEdit(office.paths.company, CEO, { nickname: "typo" })
-  const code = (await hq.mint("lan", { issuer: CEO, openFile: false })).path.split("#")[1]!
+  const minted = await hq.mint("lan", { issuer: CEO, openFile: false, sha: await office.git.readHead() })
+  const code = minted.path.split("#")[1]!
   const r = await client.post("/api/pair", { code })
   expect([r.status, (r.json() as Body).person]).toEqual([200, "lan"])
   expect(office.store.getHqSession(first)).toBeUndefined()

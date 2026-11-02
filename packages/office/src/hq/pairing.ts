@@ -16,10 +16,11 @@ export const MAX_PENDING = 16
 
 const LEFTOVER = [/^pair-.*\.html$/, /^\.pair-.*\.html\..*\.tmp$/]
 
-/** Who a code signs a browser in as, who asked for it, and until when. */
+/** Who a code signs a browser in as, who asked for it, the commit they were checked at, and until when. */
 export interface Pending {
   handle: string
   issuer: string
+  sha: string
   expiresAt: Date
   file: string | null
 }
@@ -52,10 +53,16 @@ export class PairCodes {
     this.#log = log
   }
 
-  /** A new code for `handle`; with `openFile` and a URL for it, a 0600 redirect file in the office dir. */
+  /** A new code for `handle`, checked at commit `sha`; with `openFile` and a URL for it, a 0600 redirect file in the
+   *  office dir. */
   async mint(
     handle: string,
-    { issuer, url, openFile }: { issuer: string; url: (code: string) => string | null; openFile: boolean },
+    {
+      issuer,
+      url,
+      openFile,
+      sha,
+    }: { issuer: string; url: (code: string) => string | null; openFile: boolean; sha: string },
   ): Promise<Minted> {
     const code = randomBytes(16).toString("base64url")
     const link = url(code)
@@ -75,7 +82,7 @@ export class PairCodes {
     // A second past expiry, so the sweep sees the code as expired.
     const timer = setTimeout(() => this.sweep(), TTL + 1000)
     timer.unref()
-    this.#pending.set(key(code), { pending: { handle, issuer, expiresAt, file }, timer })
+    this.#pending.set(key(code), { pending: { handle, issuer, sha, expiresAt, file }, timer })
     // Never the code.
     this.#log(logLine("INFO", "opencorp.hq.pairing", `pairing code minted for @${handle} by @${issuer}`))
     return { code, expiresAt, file }

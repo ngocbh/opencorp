@@ -1,5 +1,6 @@
 /** Browser sessions on HQ: a session cookie with per-browser revocation. Office-local rows hold the sha256 of a
- *  32-byte secret, last 30 days, and end when the person at HEAD stops being a human or their password changes. */
+ *  32-byte secret, last 30 days, and end when the person at HEAD stops being a human or their password changes, or
+ *  when their person file was deleted at any commit since the session was issued. */
 import { createHash, randomBytes, randomInt } from "node:crypto"
 import { inspect } from "node:util"
 import {
@@ -9,10 +10,10 @@ import {
   stamp,
 } from "@opencorp/protocol"
 import type { z } from "zod"
-import type { CompanyGit } from "../company/git.ts"
+import { type CompanyGit, isCommitId } from "../company/git.ts"
 import { parseFile } from "../company/issues.ts"
 import type { CompanySnapshots } from "../company/snapshot.ts"
-import { HttpError } from "../daemon/http.ts"
+import { errorType, HttpError, logLine } from "../daemon/http.ts"
 import { HqSessionRecord, newId, type Store } from "../store/store.ts"
 
 type BrowserSession = z.output<typeof BrowserSessionSchema>
@@ -106,6 +107,9 @@ export class Fingerprints {
   }
 }
 
+/** Whether `relpath` may hold a different file at commit `to` than at `from` (`CompanyGit.goneSince`). */
+export type GoneSince = (git: CompanyGit, relpath: string, from: string, to: string) => Promise<boolean>
+
 /** The session a request's cookie carries, and the company at HEAD it was checked against. */
 export interface Who {
   id: string
@@ -119,6 +123,7 @@ interface Live {
   expiresAt: string
   person: string
   passwordFp: string
+  issuedSha: string | null
   revoked: boolean
   /** Each open stream's cut, oldest first. */
   streams: Set<AbortController>
@@ -126,18 +131,24 @@ interface Live {
 
 /** A live, unrevoked entry for the session `record`. */
 function entry(record: HqSessionRecord): Live {
-  const { expiresAt, person, passwordFp } = record
-  return { expiresAt, person, passwordFp, revoked: false, streams: new Set() }
+  const { expiresAt, person, passwordFp, issuedSha } = record
+  return { expiresAt, person, passwordFp, issuedSha, revoked: false, streams: new Set() }
 }
 
 /** Issues, checks and revokes browser sessions. Holds no cookie secret; inspect and JSON show only how many
  *  sessions it tracks, since the in-memory entries hold password fingerprints. */
 export class BrowserSessions {
+  /** How many history answers are kept. */
+  static readonly KEEP_GONE = 1024
   readonly store: Store
   readonly snapshots: CompanySnapshots
   /** What time it is; tests swap it. */
   clock: () => Date
   readonly #fingerprints: Fingerprints
+  readonly #goneSince: GoneSince
+  readonly #log: (line: string) => void
+  // By "<to> <from> <person>"; a Map keeps insertion order, so its first key is the oldest answer.
+  readonly #gone = new Map<string, Promise<boolean>>()
   readonly #live = new Map<string, Live>()
 
   constructor(
@@ -146,12 +157,21 @@ export class BrowserSessions {
     {
       clock = () => new Date(),
       passwordFps: load = passwordFps,
-    }: { clock?: () => Date; passwordFps?: (git: CompanyGit, sha: string) => Promise<Humans> } = {},
+      goneSince = (git, relpath, from, to) => git.goneSince(relpath, from, to),
+      log = () => {},
+    }: {
+      clock?: () => Date
+      passwordFps?: (git: CompanyGit, sha: string) => Promise<Humans>
+      goneSince?: GoneSince
+      log?: (line: string) => void
+    } = {},
   ) {
     this.store = store
     this.snapshots = snapshots
     this.clock = clock
     this.#fingerprints = new Fingerprints(snapshots.git, load)
+    this.#goneSince = goneSince
+    this.#log = log
   }
 
   /** How many sessions are held in memory (live, or revoked and not yet expired). */
@@ -163,6 +183,29 @@ export class BrowserSessions {
   async #atHead(): Promise<[CompanyView | null, Humans]> {
     const view = await this.snapshots.head()
     return [view, view === null ? { fps: new Map(), unreadable: new Set() } : await this.#fingerprints.at(view.sha)]
+  }
+
+  /**
+   * Whether `person`'s file was deleted at some commit between `from`, where a session or pairing code of theirs was
+   * issued, and `to`, or may otherwise be another person's there: such a session has ended even when the handle is a
+   * human with the same password again. Loaded once per (to, from, person) however many checks ask at the same time.
+   */
+  #goneBetween(person: string, from: string | null, to: string): Promise<boolean> {
+    // A row from before sessions recorded their commit, or with one that isn't a commit id, can't show its person
+    // stayed, so it ends rather than failing every check.
+    if (from === null || !isCommitId(from)) return Promise.resolve(true)
+    if (from === to) return Promise.resolve(false)
+    const key = `${to} ${from} ${person}`
+    const cached = this.#gone.get(key)
+    if (cached !== undefined) return cached
+    const load = this.#goneSince(this.snapshots.git, `people/${person}/person.yaml`, from, to)
+    this.#gone.set(key, load)
+    // As in `Fingerprints.at`: callers see the error through `load`; a failed answer is asked again next time.
+    load.catch(() => {
+      if (this.#gone.get(key) === load) this.#gone.delete(key)
+    })
+    while (this.#gone.size > BrowserSessions.KEEP_GONE) this.#gone.delete(this.#gone.keys().next().value!)
+    return load
   }
 
   /** `person`'s password hash at HEAD (null unless they are a human with a password there), and whether their
@@ -188,6 +231,9 @@ export class BrowserSessions {
    * is no longer that one, the session isn't issued (`HttpError(409, "password_changed")`), since a password change
    * ends the sessions of the old password.
    *
+   * `since` is the commit a pairing code was minted at: when `person`'s file was deleted after it, the code was for
+   * someone who has left, and no session is issued (`HttpError(422, "not_a_human")`).
+   *
    * The name is made here (`web-<6 characters>`), so no name conflict can fail the request after a pairing code is
    * spent.
    */
@@ -198,14 +244,17 @@ export class BrowserSessions {
       label,
       via = "pair",
       checked,
-    }: { issuedBy: string; label: string | null; via?: BrowserSession["via"]; checked?: string },
+      since,
+    }: { issuedBy: string; label: string | null; via?: BrowserSession["via"]; checked?: string; since?: string },
   ): Promise<[BrowserSession, string]> {
-    const [, { fps }] = await this.#atHead()
+    const [view, { fps }] = await this.#atHead()
     const fp = fps.get(person)
     // A 422 names the field, not its value.
-    if (fp === undefined) throw new HttpError(422, "not_a_human", "the person isn't a human in the company at HEAD")
+    const notAHuman = () => new HttpError(422, "not_a_human", "the person isn't a human in the company at HEAD")
+    if (view === null || fp === undefined) throw notAHuman()
     if (checked !== undefined && fp !== checked)
       throw new HttpError(409, "password_changed", `@${person}'s password changed while signing in`)
+    if (since !== undefined && (await this.#goneBetween(person, since, view.sha))) throw notAHuman()
     const secret = randomBytes(32).toString("base64url")
     const at = this.clock()
     let name = "web-"
@@ -217,6 +266,7 @@ export class BrowserSessions {
       label,
       secretSha256: secretSha256(secret),
       passwordFp: fp,
+      issuedSha: view.sha,
       issuedBy,
       via,
       createdAt: stamp(at),
@@ -234,8 +284,8 @@ export class BrowserSessions {
     return this.#proof(cookie, stamp(this.clock()))?.id ?? null
   }
 
-  /** The session `cookie` carries, if it's live and its person, at HEAD, is still a human with the same password; a
-   *  session failing those checks is ended. */
+  /** The session `cookie` carries, if it's live and its person, at HEAD, is still a human with the same password and
+   *  their file wasn't deleted since the session was issued; a session failing those checks is ended. */
   async check(cookie: string | null | undefined): Promise<Who | null> {
     const at = this.clock()
     const now = stamp(at)
@@ -243,9 +293,23 @@ export class BrowserSessions {
     if (row === null) return null // only a cookie that proves the secret gets past here
     const sid = row.id
     const [view, humans] = await this.#atHead()
+    let gone: boolean
+    try {
+      gone = view === null || (await this.#goneBetween(row.person, row.issuedSha, view.sha))
+    } catch (error) {
+      // Refused without ending it, as when the person's file can't be read, so this browser can still pair or sign
+      // in again; a HEAD that can't be read throws above instead.
+      const text = `couldn't read the history of HQ session ${sid}'s person; refusing it: ${errorType(error)}`
+      this.#log(logLine("ERROR", "opencorp.hq.sessions", text))
+      return null
+    }
+    if (view === null || gone) {
+      await this.revoke(sid)
+      return null
+    }
     // A typo, or a field from a newer writer, isn't offboarding: refuse until the file reads again.
     if (humans.unreadable.has(row.person)) return null
-    if (view === null || humans.fps.get(row.person) !== row.passwordFp) {
+    if (humans.fps.get(row.person) !== row.passwordFp) {
       await this.revoke(sid)
       return null
     }
@@ -284,23 +348,28 @@ export class BrowserSessions {
   }
 
   /**
-   * `person`'s sessions, newest first, as checked at HEAD: a session whose person's password changed there is ended
-   * (its row deleted, its streams closed) and left out, as `check` would on its next use. A `person.yaml` that can't
-   * be read there ends none, as `check` doesn't.
+   * `person`'s sessions, newest first, as checked at HEAD: a session whose person's password changed there, or whose
+   * person's file was deleted since it was issued, is ended (its row deleted, its streams closed) and left out, as
+   * `check` would on its next use. A `person.yaml` that can't be read there ends no other session, as `check` doesn't.
    */
   async listLive(person: string): Promise<HqSessionRecord[]> {
     const rows = this.store.listHqSessions(person)
     // HEAD is read after the rows, as in `check`, so a session issued under a newer password is never checked
     // against an older one.
-    const [, humans] = await this.#atHead()
-    if (humans.unreadable.has(person)) return rows
+    const [view, humans] = await this.#atHead()
     const fp = humans.fps.get(person)
+    // The history is read only for rows the fingerprint keeps; rows issued at one commit share one read.
+    const kept = (row: HqSessionRecord) => humans.unreadable.has(person) || row.passwordFp === fp
+    const gone = await Promise.all(
+      rows.map((row) => view === null || !kept(row) || this.#goneBetween(row.person, row.issuedSha, view.sha)),
+    )
     const live: HqSessionRecord[] = []
-    for (const row of rows) {
-      if (row.passwordFp === fp) live.push(row)
+    for (const [i, row] of rows.entries()) {
+      if (!gone[i]) live.push(row)
       else await this.revoke(row.id)
     }
-    return live
+    // A session revoked while the history was read is left out.
+    return live.filter((row) => !this.#live.get(row.id)?.revoked)
   }
 
   /**
@@ -337,12 +406,20 @@ export class BrowserSessions {
     return live !== undefined && !live.revoked && live.expiresAt > stamp(this.clock())
   }
 
-  /** Whether `sid`'s person is still a human with the same password at commit `sha`; ends the session if not. A
-   *  `person.yaml` that can't be read there refuses without ending it, as `check` does. */
+  /** Whether `sid`'s person is still a human with the same password at commit `sha`, their file not deleted since the
+   *  session was issued; ends the session if not. A `person.yaml` that can't be read there refuses without ending it,
+   *  as `check` does. */
   async stillValid(sid: string, sha: string): Promise<boolean> {
     const live = this.#live.get(sid)
     if (live === undefined || live.revoked) return false
-    const humans = await this.#fingerprints.at(sha)
+    const [gone, humans] = await Promise.all([
+      this.#goneBetween(live.person, live.issuedSha, sha),
+      this.#fingerprints.at(sha),
+    ])
+    if (gone) {
+      await this.revoke(sid)
+      return false
+    }
     if (humans.unreadable.has(live.person)) return false
     if (humans.fps.get(live.person) === live.passwordFp) return !live.revoked // a revoke during the load wins
     await this.revoke(sid)

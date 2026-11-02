@@ -24,7 +24,8 @@ function pairCodes(dir: string, clock = new Clock(), lines: string[] = []): Pair
   return codes
 }
 
-const MINT = { issuer: "ngocbh", url: pairUrl, openFile: false }
+const SHA = "c".repeat(40)
+const MINT = { issuer: "ngocbh", url: pairUrl, openFile: false, sha: SHA }
 
 test("a code is 128 bits and works once", async () => {
   const codes = pairCodes(tempDir())
@@ -34,7 +35,7 @@ test("a code is 128 bits and works once", async () => {
   expect(minted.file).toBeNull()
   expect(minted.expiresAt).toEqual(new Date(T0.getTime() + TTL))
   const pending = codes.redeem(minted.code)
-  expect([pending?.handle, pending?.issuer]).toEqual(["ngocbh", "ngocbh"])
+  expect([pending?.handle, pending?.issuer, pending?.sha]).toEqual(["ngocbh", "ngocbh", SHA])
   expect(codes.redeem(minted.code)).toBeNull()
 })
 
@@ -127,6 +128,7 @@ test("its inspect and json show no key or code", async () => {
     expect(text).toContain("pending")
     expect(text).not.toContain(minted.code)
     expect(text).not.toContain(key)
+    expect(text).not.toContain(SHA)
   }
   expect(JSON.parse(JSON.stringify(codes))).toEqual({ officeDir: dir, pending: 1 })
 })

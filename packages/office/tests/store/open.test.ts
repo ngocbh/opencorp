@@ -76,6 +76,7 @@ test("hq sessions has every column and a unique secret hash", () => {
     "created_at",
     "expires_at",
     "last_used_at",
+    "issued_sha",
   ])
   const row = [
     "S1",
@@ -88,6 +89,7 @@ test("hq sessions has every column and a unique secret hash", () => {
     "pair",
     "2026-10-19T10:00:00.000Z",
     "2026-11-18T10:00:00.000Z",
+    null,
     null,
   ]
   const insert = db.prepare(`INSERT INTO hq_sessions VALUES (${row.map(() => "?").join(", ")})`)
