@@ -1139,8 +1139,8 @@ export class SessionActor implements LiveCalls {
     return waits.length > 0 && waits.every((wait) => this.#chat.isTurn(wait.node) && !wait.settled)
   }
 
-  /** Whether worker run `run` waits only at its turn. Other nodes may run beside the waiting take (the next turn's
-   *  history compaction runs in parallel with it): the take reads any message sent meanwhile. */
+  /** Whether worker run `run` waits only at its turn. Other nodes may run beside the waiting take (a flow that
+   *  compacts history in parallel with it): the take reads any message sent meanwhile. */
   #runAtTurn(run: WorkerRun): boolean {
     const waiting = [...run.waiting.keys()]
     return (
