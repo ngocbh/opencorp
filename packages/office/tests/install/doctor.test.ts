@@ -301,7 +301,7 @@ test("a locked office that doesnt answer gets the stop to top up advice", async 
   fs.unlinkSync(path.join(paths.company, SIDE_CHAT))
   const got = byName(await runChecks(dir, paths, { locked: () => true }))
   expect(got.company!.detail).toContain(
-    "The office is running; stop it and run `opencorp onboard` again to add 1 template file.",
+    "The office is running; run `opencorp stop`, then `opencorp onboard` again to add 1 template file.",
   )
   // Everything that asks the office still needs it to answer.
   expect(got.office!.detail).toStartWith("not answering on ")
