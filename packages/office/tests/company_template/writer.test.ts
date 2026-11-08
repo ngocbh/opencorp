@@ -65,6 +65,20 @@ test("a new company has the owner as ceo and lints clean", async () => {
   expect(git(root, "log", "--format=%s").split("\n")).toEqual(["init: create the company"])
 })
 
+test("a new company ignores the .yian folders yian keeps in a memory folder, and gets the ignore file back", async () => {
+  const { root, worktrees } = dirs()
+  expect(await writeCompany(root, worktrees, { company: "Acme", owner: OWNER })).toContain(".gitignore")
+  const journal = "people/ngocbh/memory/.yian/journal.jsonl"
+  fs.mkdirSync(path.join(root, path.dirname(journal)), { recursive: true })
+  fs.writeFileSync(path.join(root, journal), "{}\n")
+  expect(git(root, "check-ignore", journal)).toBe(journal)
+  expect(git(root, "status", "--porcelain", "--untracked-files=all")).toBe("")
+  fs.unlinkSync(path.join(root, ".gitignore"))
+  commitAll(root, "drop the ignore file")
+  expect(missingFiles(root)).toEqual([".gitignore"])
+  expect(await writeCompany(root, worktrees)).toEqual([".gitignore"])
+})
+
 test("the owners devices are in the first commit", async () => {
   const { root, worktrees } = dirs()
   const mac = { name: "mac", token_sha256: "ab".repeat(32) }
