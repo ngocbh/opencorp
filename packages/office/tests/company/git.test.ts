@@ -690,7 +690,7 @@ function signHead(root: string): string {
   return id
 }
 
-test("find commit and commit info never run a repo gpg program", async () => {
+test("commit info never runs a repo gpg program", async () => {
   const { tmp, company, g } = setup()
   fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
   await g.commit([PROFILE], "profile(@minh): x\n\nCommit-Id: c-1")
@@ -700,7 +700,6 @@ test("find commit and commit info never run a repo gpg program", async () => {
     git(company, "config", key, wire.script)
   }
   git(company, "config", "log.showSignature", "true")
-  expect(await g.findCommit(PROFILE, "Commit-Id: c-1")).toBe(signed)
   expect((await g.commitInfo(signed)).subject).toBe("profile(@minh): x")
   expect(wire.tripped()).toBe(false)
 })
@@ -718,7 +717,6 @@ test("every call but init pins the work tree, and reads never show a signature",
   const { company, g } = setup({ git: recording.git })
   fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
   const head = await g.commit([PROFILE], "edit")
-  await g.findCommit(PROFILE, "edit")
   await g.commitInfo(head)
   await g.pin(head)
   fs.mkdirSync(path.join(dir, "fresh"))
@@ -730,12 +728,12 @@ test("every call but init pins the work tree, and reads never show a signature",
   }
   expect(calls.filter((args) => subcommand(args) === "init")).not.toHaveLength(0)
   const logs = calls.filter((args) => subcommand(args) === "log")
-  expect(logs).toHaveLength(2) // findCommit and commitInfo
+  expect(logs).toHaveLength(1) // commitInfo
   for (const args of logs) expect(args).toContain("--no-show-signature")
   expect(calls.find((args) => subcommand(args) === "commit")).toContain("--cleanup=whitespace")
 })
 
-test("a repo commit cleanup cannot strip the commit id trailer", async () => {
+test("a repo commit cleanup cannot strip a message's trailer", async () => {
   const message = "profile(@minh): x\n\nCommit-Id: c-1"
   const plain = setup()
   const { company, g } = setup()
@@ -745,7 +743,6 @@ test("a repo commit cleanup cannot strip the commit id trailer", async () => {
     fs.writeFileSync(path.join(root, PROFILE), "# edited\n")
     await each.commit([PROFILE], message)
   }
-  expect(await g.findCommit(PROFILE, "Commit-Id: c-1")).toBe(await g.head())
   const body = (root: string) => git(root, "cat-file", "commit", "HEAD").split("\n\n").slice(1).join("\n\n")
   expect(body(company)).toBe(message)
   expect(body(company)).toBe(body(plain.company))
@@ -777,7 +774,7 @@ test("a repo commit and log encoding do not change what the office writes or rea
   const head = await g.commit([PROFILE], "profile(@minh): café\n\nCommit-Id: naïve")
   expect(git(company, "cat-file", "commit", "HEAD")).not.toMatch(/^encoding /m)
   expect((await g.commitInfo(head)).subject).toBe("profile(@minh): café")
-  expect(await g.findCommit(PROFILE, "Commit-Id: naïve")).toBe(head)
+  expect(git(company, "cat-file", "commit", "HEAD")).toEndWith("\n\nprofile(@minh): café\n\nCommit-Id: naïve")
 })
 
 /** A script in `dir` that leaves a mark each time it runs, then runs the shell `then`. */
@@ -997,18 +994,6 @@ test.each(["0".repeat(40), "HEAD", "HEAD:company.yaml", "--help", "E69DE29BB2D1D
 test("read blob refuses a commit id", async () => {
   const { g } = setup()
   expect(await g.readBlob(await g.head())).toBeNull()
-})
-
-test("find commit matches a whole line on the path", async () => {
-  const { company, g } = setup()
-  fs.writeFileSync(path.join(company, PROFILE), "# one\n")
-  const first = await g.commit([PROFILE], "profile(@minh): one\n\nCommit-Id: c-1")
-  fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
-  await g.commit(["groups/eng.yaml"], "group\n\nCommit-Id: c-2")
-  expect(await g.findCommit(PROFILE, "Commit-Id: c-1")).toBe(first)
-  expect(await g.findCommit(PROFILE, "Commit-Id: c-")).toBeNull() // a prefix is not a match
-  expect(await g.findCommit(PROFILE, "Commit-Id: c-2")).toBeNull() // another path's commit
-  expect(await g.findCommit("groups/eng.yaml", "Commit-Id: c-2")).toBe(await g.head())
 })
 
 test("a commit that fails after staging leaves nothing staged and keeps the working files", async () => {
