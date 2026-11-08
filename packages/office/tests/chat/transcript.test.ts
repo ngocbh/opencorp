@@ -5,7 +5,7 @@ import path from "node:path"
 import { iterRunRecords, type LiveViewCall, type PoolCommitRecord, type RunLogEntry } from "@ngocbh/yian/run"
 import { pending } from "@ngocbh/yian/tools"
 import { Message, type ToolPart } from "@opencorp/protocol"
-import { INTERRUPTED_TEXT, type LiveCalls, tooLargeText, Transcript } from "../../src/chat/transcript.ts"
+import { type LiveCalls, tooLargeText, Transcript } from "../../src/chat/transcript.ts"
 import { MAIN_CHAT } from "../../src/chat/turns.ts"
 import { newId } from "../../src/store/store.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
@@ -449,9 +449,10 @@ test("an interrupted reply ends with the interrupted marker", async () => {
   const transcript = new Transcript(runs)
   const sessionId = newId()
   const read = messages(runs, sessionId, ["r1"], { transcript })
+  // The interrupt stopped the held model call before its first chunk, so none of its text landed.
   expect(shown(read)).toEqual([
     ["user", ["one"]],
-    ["assistant", ["Thinking " + INTERRUPTED_TEXT]],
+    ["assistant", ["[interrupted]"]],
     ["user", ["queued"]],
     ["assistant", ["Got it."]],
   ])
@@ -480,14 +481,25 @@ test("a reply interrupted after a tool call ends with the marker after it", asyn
   expect(read[1]!.parts.at(-1)!.id).toBe(`r1:chat#0/reply:${(cut.envelope.record as unknown as { n: number }).n}`)
 })
 
-test("a reply interrupted before it streamed text shows its cut call and the marker", async () => {
+test("a reply interrupted during a tool call shows the call it cut and the marker", async () => {
   const fake = await fakeLlm()
+  const calls = [
+    { id: "c1", name: "toolbox_stub" },
+    { id: "c2", name: "toolbox_stub" },
+  ]
+  fake.script({ content: "", tool_calls: calls }, { content: "Unused." })
   const runs = tempDir()
-  await interruptMidReply(fake, { content: "", tool_calls: [{ id: "c1", name: "toolbox_stub" }] }, { runs })
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  const office = new DeliverDuringTool({ id: "cut", op: "interrupt", inbox: "messages" })
+  const rec = await run(advanceJob(job, { deliver: [send("s1", "Plan the trip.")] }), office, { env: fake.env() })
+  expect(waitingAt(rec)).toEqual(["chat#1/heard"])
   const reply = messages(runs, newId(), ["r1"])[1]!
   expect(reply.role).toBe("assistant")
-  expect(tools([reply])).toEqual([["c1", "interrupted", {}, "Not run: interrupted by the user."]])
-  expect(shown([reply])).toEqual([["assistant", ["interrupted", "[interrupted]"]]])
+  expect(tools([reply])).toEqual([
+    ["c1", "completed", "ok", null],
+    ["c2", "interrupted", {}, "Not run: interrupted by the user."],
+  ])
+  expect(shown([reply])).toEqual([["assistant", ["completed", "interrupted", "[interrupted]"]]])
 })
 
 test("the transcript shows nothing of the runs inputs or other nodes", async () => {

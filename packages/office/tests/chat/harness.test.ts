@@ -262,9 +262,9 @@ test("a steer reaches the running reply", async () => {
   ])
 })
 
-// Pins ngocbh/yian#1171: the worker's view keeps the call after a steer, named by the steer step's n, so the fetched
-// messages show its text twice while the worker runs. Once yian names the call by its step, expect "Done." once.
-test("a steered replys text shows twice while its worker runs", async () => {
+// The worker's view names the call after a steer by its own step (ngocbh/yian#1171), so the fetched messages show
+// its text once while the worker runs.
+test("a steered replys text shows once while its worker runs", async () => {
   const fake = await fakeLlm()
   // The third call holds the worker after the steered call's step is written.
   fake.script(
@@ -291,7 +291,7 @@ test("a steered replys text shows twice while its worker runs", async () => {
     ["user", ["hi"]],
     ["assistant", ["Working"]],
     ["user", ["Also mention Rome."]],
-    ["assistant", ["Done.", "Done."]],
+    ["assistant", ["Done."]],
   ])
 })
 

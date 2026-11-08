@@ -646,10 +646,9 @@ test("a failed attempt leaves no text behind", async () => {
   expect(lines).toEqual([])
 })
 
-// Pins ngocbh/yian#1171: the call after a steer goes live under the steer step's n, one before its own step, so no
-// record the relay sees ends it and its text shows twice until the worker exits. Once yian names the call by its step,
-// both views before the exit equal `want`: assert that instead.
-test("a steered reply shows its text twice until its worker exits", async () => {
+// The call after a steer goes live under its own step's n (ngocbh/yian#1171), so the record that ends it ends its
+// live part too, and its text shows once while the worker runs.
+test("a steered reply shows its text once while its worker runs", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Working", tool_calls: [{ id: "c1", name: "toolbox_stub" }] }, { content: "Rome." })
   const job = await waitingChat(fake)
@@ -676,17 +675,7 @@ test("a steered reply shows its text twice until its worker exits", async () => 
   const texts = (messages: Message[]) =>
     messages.flatMap((m) => m.parts.flatMap((part) => (part.type === "text" && part.text !== "" ? [part.text] : [])))
   expect(texts(want)).toEqual(["Working", "Rome."])
-  const record = (entry: RunLogEntry) => entry.envelope.record as unknown as { n: number; step: { kind: string } }
-  const steered = [...iterRunRecords(job.log, { kinds: ["node_step"] })].find(
-    (entry) => entry.nodeId === REPLY && record(entry).step.kind === "steer",
-  )!
-  // The live call's part, named by the steer step's n, beside the recorded call's part.
-  const stale: Part = { id: `r1:${REPLY}:${record(steered).n}`, type: "text", text: "Rome." }
-  for (const shown of [read, live]) {
-    expect(texts(shown)).toEqual(["Working", "Rome.", "Rome."])
-    expect(shown.flatMap((m) => m.parts)).toContainEqual(stale)
-  }
-  // The exit shows the run without the worker's calls, which empties the stale part.
+  for (const shown of [read, live]) expect(withoutEmptyText(shown)).toEqual(want)
   expect(withoutEmptyText(fold(events))).toEqual(want)
   expect(lines).toEqual([])
 })

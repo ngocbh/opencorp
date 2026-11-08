@@ -71,16 +71,7 @@ test.skipIf(!sandboxAvailable())(
       what: "the interrupted turn to stop",
     })
     await office.prompt(sid, "Start over")
-    // An Esc during a silent model call stops the reply at its first chunk (yian #1146), so the held reply's text
-    // lands whole; its workspace_write_file call is not run.
-    await office.settled(sid, [
-      "Marked it done.",
-      "Looking.",
-      "Added both.",
-      "Writing.",
-      "[interrupted]",
-      "Starting over.",
-    ])
+    await office.settled(sid, ["Marked it done.", "Looking.", "Added both.", "[interrupted]", "Starting over."])
     expect(fs.existsSync(path.join(workspace, "never.txt"))).toBe(false)
     expect(fake.requests()).toHaveLength(6) // Esc made no model call of its own
     expect(asked(fake.requests()[5]!)).toContain("Write never.txt") // the stopped turn stays in the history
