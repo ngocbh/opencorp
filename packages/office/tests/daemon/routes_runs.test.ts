@@ -504,12 +504,17 @@ test("a log that is a fifo is no log at once on every route that reads it", asyn
   const file = office.runs.logPath(runId)
   fs.rmSync(file)
   fifoAt(file)
-  // Not GET /runs/{id}: yian's inspection of a run still opens its log itself.
   for (const suffix of LOG_ROUTES) {
     const target = `/runs/${runId}${suffix}`
     expect(await refused(sock, target)).toEqual([target, 404, "no_log", false, true])
   }
-})
+  // yian's inspection of a run the index hasn't settled opens the log too, for the list and the run's page.
+  const start = performance.now()
+  const head = await get(sock, `/runs/${runId}`)
+  const list = await get(sock, "/runs")
+  expect([head.status, body(head).log_state, list.status, ids(list)]).toEqual([200, "missing", 200, [runId]])
+  expect(performance.now() - start).toBeLessThan(1000)
+}, 15_000)
 
 test("a schema that isnt a number isnt echoed", async () => {
   const { office, sock } = await servedQuietly()

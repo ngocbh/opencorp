@@ -8,6 +8,8 @@ import { CLOSE_MS, type IndexThread, INDEX_TIMEOUT_MS, RETRY_MS, RunIndexer } fr
 import { tempDir } from "../helpers.ts"
 import { committed, fifoAt, RUN, runStarted, started, succeeded } from "./helpers.ts"
 
+const RUN2 = "01JA1H000000000000000000R2"
+
 type Event = "message" | "error" | "exit"
 
 /** A thread that records what it is sent and replies when the test says. */
@@ -153,6 +155,23 @@ test("skipped logs are logged by their path only", async () => {
   expect(await indexer.update()).toBe(true)
   expect(lines).toEqual([`run index skipped ${log}`])
 })
+
+test("a log that is a fifo is skipped at once and the other logs are indexed", async () => {
+  const runs = tempDir()
+  const log = path.join(runs, RUN, "log.jsonl")
+  fs.mkdirSync(path.dirname(log))
+  fs.writeFileSync(log, Buffer.concat([runStarted(0), started(1, "a"), committed(2, "a", {}), succeeded(3, "a", 2)]))
+  const { indexer, lines } = real(runs)
+  expect(await indexer.update()).toBe(true)
+  const fifo = path.join(runs, RUN2, "log.jsonl")
+  fs.mkdirSync(path.dirname(fifo))
+  fifoAt(fifo)
+  const start = performance.now()
+  // The second update would find the index's lock held if the first were stuck in it.
+  expect([await indexer.update(), await indexer.update()]).toEqual([true, true])
+  expect(performance.now() - start).toBeLessThan(1000)
+  expect([[...indexer.rows().keys()], lines]).toEqual([[RUN], [`run index skipped ${fifo}`]])
+}, 15_000)
 
 test("close stops the thread and later updates resolve false", async () => {
   const { indexer, threads, lines } = fake()
@@ -337,7 +356,6 @@ test("damage the thread reports is logged by its code", async () => {
 })
 
 const isRoot = process.getuid?.() === 0
-const RUN2 = "01JA1H000000000000000000R2"
 
 /** Adds a second ended run to `runs`, for an update to write. */
 function secondRun(runs: string): void {
