@@ -278,7 +278,7 @@ test("a stop frame stops a run waiting on a question", async () => {
 
 test("a stop frame stops a run waiting on an office tool", async () => {
   const fake = await fakeLlm()
-  fake.script({ content: "", tool_calls: [{ name: "shout", arguments: { text: "hi" } }] })
+  fake.script({ content: "", tool_calls: [{ name: "toolbox_shout", arguments: { text: "hi" } }] })
   let called = false
   const hanging: OfficeTool = {
     ...shout,
@@ -489,7 +489,7 @@ class Refollowing extends Recorder {
 
 test("a follow frame sends a fresh snapshot", async () => {
   const fake = await fakeLlm()
-  fake.script({ content: "", tool_calls: [{ name: "shout", arguments: { text: "hi" } }] }, { content: "done" })
+  fake.script({ content: "", tool_calls: [{ name: "toolbox_shout", arguments: { text: "hi" } }] }, { content: "done" })
   const rec = new Refollowing({ tools: { toolbox: { shout } } })
   const job = makeJob(base(), "flows/tools.yaml", {}, rec)
   await run(job, rec, { env: fake.env() })
@@ -505,7 +505,7 @@ test("a follow frame sends a fresh snapshot", async () => {
 test("a record frame over the frame limit goes without its line", async () => {
   const fake = await fakeLlm()
   const big = `${"w".repeat(1023)} `.repeat(100)
-  fake.script({ content: big, tool_calls: [{ name: "shout", arguments: { text: "hi" } }] }, { content: "done" })
+  fake.script({ content: big, tool_calls: [{ name: "toolbox_shout", arguments: { text: "hi" } }] }, { content: "done" })
   const ok: OfficeTool = { ...shout, call: () => "ok" }
   const rec = new Recorder({ tools: { toolbox: { shout: ok } } })
   const job = makeJob(base(), "flows/tools.yaml", {}, rec)
@@ -524,7 +524,10 @@ test("a live frame too large to send is named on stderr by its type", async () =
   const fake = await fakeLlm()
   // One word, so one chunk frame over the limit.
   const word = "z".repeat(100 * 1024)
-  fake.script({ content: word, tool_calls: [{ name: "shout", arguments: { text: "hi" } }] }, { content: "done" })
+  fake.script(
+    { content: word, tool_calls: [{ name: "toolbox_shout", arguments: { text: "hi" } }] },
+    { content: "done" },
+  )
   const rec = new Recorder({ tools: { toolbox: { shout } } })
   const job = makeJob(base(), "flows/tools.yaml", {}, rec)
   const worker = await inProcessWorker(job, rec, { env: fake.env(), maxFrame: 96 * 1024 })

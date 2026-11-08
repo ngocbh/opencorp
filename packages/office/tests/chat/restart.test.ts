@@ -885,8 +885,8 @@ function blocker(): { groups: Record<string, Record<string, OfficeTool>>; entere
   return { groups: { toolbox: { block } }, entered }
 }
 
-/** A model turn that calls `block`. */
-const BLOCK: ScriptedReply = { tool_calls: [{ name: "block", arguments: {} }] }
+/** A model turn that calls the toolbox's `block`. */
+const BLOCK: ScriptedReply = { tool_calls: [{ name: "toolbox_block", arguments: {} }] }
 
 /** Session `sid`'s assistant parts, each as its type and its text or state, with `live` giving the calls in
  *  flight. */

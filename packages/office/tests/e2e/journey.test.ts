@@ -23,7 +23,7 @@ test.skipIf(!sandboxAvailable())(
     fake.script(
       {
         match: "Mark the README done",
-        tool_calls: [{ name: "edit_file", arguments: { path: "README.md", old: "TODO", new: "done" } }],
+        tool_calls: [{ name: "workspace_edit_file", arguments: { path: "README.md", old: "TODO", new: "done" } }],
       },
       { match: "Mark the README done", content: "Marked it done." },
     )
@@ -34,11 +34,11 @@ test.skipIf(!sandboxAvailable())(
     await office.prompt(sid, "Mark the README done")
     await office.settled(sid, ["Marked it done."])
     expect(fs.readFileSync(path.join(workspace, "README.md"), "utf8")).toBe("# Demo\n\nStatus: done\n")
-    expect(await office.tools(sid)).toEqual([["edit_file", "completed"]])
+    expect(await office.tools(sid)).toEqual([["workspace_edit_file", "completed"]])
 
     // 2. Steer mid-reply: the TUI sends the follow-up with prompt, and it reaches the model's next call.
     fake.script(
-      { content: "Looking.", tool_calls: [{ name: "list", arguments: { path: "." } }], hold: true },
+      { content: "Looking.", tool_calls: [{ name: "workspace_list", arguments: { path: "." } }], hold: true },
       { content: "Added both." },
     )
     await office.prompt(sid, "Add a changelog")
@@ -56,7 +56,7 @@ test.skipIf(!sandboxAvailable())(
     fake.script(
       {
         content: "Writing.",
-        tool_calls: [{ name: "write_file", arguments: { path: "never.txt", content: "x" } }],
+        tool_calls: [{ name: "workspace_write_file", arguments: { path: "never.txt", content: "x" } }],
         hold: true,
       },
       { content: "Starting over." },
@@ -72,7 +72,7 @@ test.skipIf(!sandboxAvailable())(
     })
     await office.prompt(sid, "Start over")
     // An Esc during a silent model call stops the reply at its first chunk (yian #1146), so the held reply's text
-    // lands whole; its write_file call is not run.
+    // lands whole; its workspace_write_file call is not run.
     await office.settled(sid, [
       "Marked it done.",
       "Looking.",

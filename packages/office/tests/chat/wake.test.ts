@@ -75,7 +75,7 @@ test("a call after close all is refused as the office stopping", async () => {
     "the office is stopping",
   )
   await expect(
-    Promise.resolve().then(() => handlers.toolCall(worker, "workspace", "workspace_stub", {}, "c2")),
+    Promise.resolve().then(() => handlers.toolCall(worker, "workspace", "stub", {}, "c2")),
   ).rejects.toThrow("the office is stopping")
   expect(o.office.store.listQuestions({ sessionId: sid })).toEqual([])
 })

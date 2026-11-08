@@ -272,7 +272,7 @@ test("unread sends of a refused advance reach the fresh run once in order", asyn
   const fake = await fakeLlm()
   fake.script({ content: "ok" })
   const r1 = await waitingChat(fake)
-  const toolbox = [{ name: "toolbox_stub", description: "Does something else.", parameters: EMPTY }]
+  const toolbox = [{ name: "stub", description: "Does something else.", parameters: EMPTY }]
   const refused = advanceJob(r1, {
     groups: { ...r1.groups, toolbox },
     deliver: [send("a", "a"), send("b", "b")],

@@ -852,7 +852,7 @@ async function slowCallOffice(fake: Awaited<ReturnType<typeof fakeLlm>>) {
 
 test("esc answers an office call in flight", async () => {
   const fake = await fakeLlm()
-  fake.script({ tool_calls: [{ name: "slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
+  fake.script({ tool_calls: [{ name: "toolbox_slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
   const { o, called, replies } = await slowCallOffice(fake)
   const { actor, sid } = await startActor(o)
   await actor.prompt("hi")
@@ -867,7 +867,7 @@ test("esc answers an office call in flight", async () => {
 
 test("end answers an office call in flight and interrupts the workspace", async () => {
   const fake = await fakeLlm()
-  fake.script({ tool_calls: [{ name: "slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
+  fake.script({ tool_calls: [{ name: "toolbox_slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
   const { o, called, replies } = await slowCallOffice(fake)
   const { actor, sid } = await startActor(o)
   await actor.prompt("hi")

@@ -177,14 +177,14 @@ export function send(id: string, text: string, author?: string): Delivery {
 /** A close of the messages inbox. */
 export const CLOSE: Delivery = { id: "close", op: "close", inbox: "messages" }
 
-/** A `Recorder` serving one no-op tool, `<group>_stub`, for each group `name`'s flow names, and the tools of `extra`,
- *  by group, merged in. */
+/** A `Recorder` serving one no-op tool, `stub` (which a model calls `<group>_stub`), for each group `name`'s flow
+ *  names, and the tools of `extra`, by group, merged in. */
 export class TemplateOffice extends Recorder {
   constructor(name = "chat", extra: Record<string, Record<string, OfficeTool>> = {}) {
     const tools: Record<string, Record<string, OfficeTool>> = Object.fromEntries(
       GROUPS[name]!.map((group) => [
         group,
-        { [`${group}_stub`]: { description: "Does nothing.", parameters: EMPTY, call: () => "ok" } },
+        { stub: { description: "Does nothing.", parameters: EMPTY, call: () => "ok" } },
       ]),
     )
     for (const [group, named] of Object.entries(extra)) tools[group] = { ...tools[group], ...named }
@@ -387,9 +387,9 @@ export const GATE_ANSWER = { db: "Postgres", features: ["auth"] }
 /** Prices the fake's model at $1 an input token, so one call can pass the company's $5 cap. */
 export const PRICES = { stub: { input: 1_000_000, output: 0 } }
 
-/** A model turn that calls `noop` and costs $6 at `PRICES`, over the company's $5 cap. */
+/** A model turn that calls the toolbox's `noop` and costs $6 at `PRICES`, over the company's $5 cap. */
 export const PRICEY: ScriptedReply = {
-  tool_calls: [{ name: "noop", arguments: {} }],
+  tool_calls: [{ name: "toolbox_noop", arguments: {} }],
   usage: { prompt_tokens: 6, completion_tokens: 1 },
 }
 

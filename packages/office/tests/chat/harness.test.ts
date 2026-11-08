@@ -103,7 +103,7 @@ async function asked(fake: FakeLLM, n: number): Promise<string> {
 }
 
 /** A model call of the fake toolbox's echo tool. */
-const ECHO = { name: "fake__echo", arguments: { text: "x" } }
+const ECHO = { name: "toolbox_fake__echo", arguments: { text: "x" } }
 
 /** The author of each user message of session `sid`, by its text. */
 async function authors(h: Harness, sid: string): Promise<Record<string, string | null>> {

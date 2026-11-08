@@ -448,7 +448,7 @@ test(
   async () => {
     const fake = await fakeLlm()
     const h = await makeHarness(fake, { connections: { second: "stub-2" } })
-    const echo = { name: "fake__echo", arguments: { text: "x" } }
+    const echo = { name: "toolbox_fake__echo", arguments: { text: "x" } }
     fake.script(
       { content: "Working", tool_calls: [echo], hold: 30 },
       { content: "Done on one." },

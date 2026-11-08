@@ -35,7 +35,7 @@ type ChatRequest = { tools: { function: { name: string } }[]; messages: unknown 
 test("office tool groups run in the office", async () => {
   const fake = await fakeLlm()
   fake.script(
-    { content: "Working", tool_calls: [{ name: "shout", arguments: { text: "hi" } }] },
+    { content: "Working", tool_calls: [{ name: "toolbox_shout", arguments: { text: "hi" } }] },
     { content: "Done." },
   )
   const shout: OfficeTool = {
@@ -48,10 +48,10 @@ test("office tool groups run in the office", async () => {
   const rec = await run(job, new Recorder({ tools }), { env: fake.env() })
   expect(rec.outcome?.output).toBe("Done.")
   const [first, second] = fake.requests() as [ChatRequest, ChatRequest]
-  expect(first.tools.map((t) => t.function.name)).toEqual(["shout"])
+  expect(first.tools.map((t) => t.function.name)).toEqual(["toolbox_shout"])
   expect(JSON.stringify(second.messages)).toContain("HI")
   const toolEvents = rec.frames.filter((f) => f.name === "ToolCallFinished").map((f) => f.data as { name: string })
-  expect(toolEvents.map((e) => e.name)).toEqual(["shout"])
+  expect(toolEvents.map((e) => e.name)).toEqual(["toolbox_shout"])
 })
 
 test("a missing group fails before any model call", async () => {

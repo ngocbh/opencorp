@@ -174,17 +174,17 @@ test("an orphan take commit leaves its messages queued", async () => {
   ])
 })
 
-/** A chat run whose reply calls `shell` three times and `search` once, its last shell call answering last; its job,
- *  run to waiting at the next turn under `runs` as `r1`. */
+/** A chat run whose reply calls the toolbox's `shell` three times and `search` once, its last shell call answering
+ *  last; its job, run to waiting at the next turn under `runs` as `r1`. */
 async function toolRun(runs: string): Promise<Job> {
   const fake = await fakeLlm()
   fake.script(
     {
       content: "",
       tool_calls: [
-        { id: "c1", name: "shell", arguments: { command: "ls", count: 3 } },
-        { id: "c2", name: "search", arguments: { pattern: "x" } },
-        { id: "c3", name: "shell", arguments: { command: "sleep 9" } },
+        { id: "c1", name: "toolbox_shell", arguments: { command: "ls", count: 3 } },
+        { id: "c2", name: "toolbox_search", arguments: { pattern: "x" } },
+        { id: "c3", name: "toolbox_shell", arguments: { command: "sleep 9" } },
       ],
     },
     { content: "done" },
@@ -323,7 +323,7 @@ test("a failed model attempt shows nothing", async () => {
 
 test("a tool call whose arguments did not parse shows no tool part", async () => {
   const fake = await fakeLlm()
-  fake.script({ content: "Trying.", tool_calls: [{ id: "bad", name: "shell", arguments: "{not json" }] })
+  fake.script({ content: "Trying.", tool_calls: [{ id: "bad", name: "workspace_shell", arguments: "{not json" }] })
   const runs = tempDir()
   const job = await waitingChat(fake, "chat", {}, { runs })
   await advance(job, fake, [send("s1", "hi")])
@@ -332,7 +332,7 @@ test("a tool call whose arguments did not parse shows no tool part", async () =>
   expect(parts.find((part) => part.type === "tool_call")).toEqual({
     type: "tool_call",
     id: "bad",
-    name: "shell",
+    name: "workspace_shell",
     raw_arguments: "{not json",
   })
   expect(shown(messages(runs, newId(), ["r1"]))).toEqual([
@@ -835,7 +835,7 @@ const REPLY = "chat#0/reply"
 /** A hand-built log under `runs` (as RUN): the run's start, the reply's start, a model call of one tool, and a
  *  tool result whose output is `output`, with `extra` fields; returns the tool result line's size. */
 function bigToolResult(runs: string, output: string, extra: Record<string, unknown> = {}): number {
-  const toolCall = { type: "tool_call", id: "c1", name: "fake__echo", arguments: { text: "x" } }
+  const toolCall = { type: "tool_call", id: "c1", name: "toolbox_fake__echo", arguments: { text: "x" } }
   const call = { kind: "model_call", purpose: "chat", error: null, output: { parts: [toolCall] } }
   const step = { call_id: "c1", closed: null, is_error: false, kind: "tool_result", output, ...extra }
   const result = line(3, "node_step", { node_id: REPLY, n: 2n, step })

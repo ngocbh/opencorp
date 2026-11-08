@@ -28,7 +28,7 @@ import {
 setDefaultTimeout(30_000)
 
 const TOOL_THEN_DONE: ScriptedReply[] = [
-  { content: "Working", tool_calls: [{ name: "shout", arguments: { text: "hi" } }] },
+  { content: "Working", tool_calls: [{ name: "toolbox_shout", arguments: { text: "hi" } }] },
   { content: "Done." },
 ]
 
@@ -159,7 +159,7 @@ test("an interrupt returns the text so far", async () => {
     role: "assistant",
     parts: [
       { type: "text", text: "Working" },
-      { type: "tool_call", name: "shout" },
+      { type: "tool_call", name: "toolbox_shout" },
     ],
   })
 })
