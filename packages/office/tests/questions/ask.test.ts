@@ -4,7 +4,7 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { isPending, pending, ToolSet } from "@ngocbh/yian/tools"
 import { Question } from "@opencorp/protocol"
 import { loadRepo } from "../../src/company/loader.ts"
-import { Answers, ASK_MANAGER_CALL, makeAskUser, type OnQuestion } from "../../src/questions/ask.ts"
+import { Answers, ASK_MANAGER_CALL, isAskManagerCall, makeAskUser, type OnQuestion } from "../../src/questions/ask.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { DuplicateKey, NotFound, StoreError, newId, type QuestionRecord } from "../../src/store/store.ts"
 import { companyTools } from "../../src/tools/company/work.ts"
@@ -593,11 +593,15 @@ test("reconcile rebuilds an ask node call from its recorded inputs", async () =>
   expect(lines).toEqual([])
 })
 
-test("reconcile rebuilds an ask_manager call as yian records it", async () => {
+// The company group grants it as `company_ask_manager`; a flow may grant it by its own name, `ask_manager`.
+test.each([
+  ["company", "company_ask_manager"],
+  ["ask_manager", "ask_manager"],
+])("reconcile rebuilds an ask_manager call as yian records it [tools: %s]", async (grant, shown) => {
   const fake = await fakeLlm()
-  fake.script({ tool_calls: [{ name: "company_ask_manager", arguments: { question: "Deploy now?" } }] })
+  fake.script({ tool_calls: [{ name: shown, arguments: { question: "Deploy now?" } }] })
   const b = base()
-  writeFiles(b.pin, { "flows/managed.yaml": agentFlow("managed", { node: "    tools: [company]\n" }) })
+  writeFiles(b.pin, { "flows/managed.yaml": agentFlow("managed", { node: `    tools: [${grant}]\n` }) })
   const parameters = { type: "object", properties: { question: { type: "string" } }, required: ["question"] }
   const parked = { description: "Ask.", parameters, call: () => pending() }
   const handlers = new Pending({ tools: { company: { ask_manager: parked } } })
@@ -606,8 +610,8 @@ test("reconcile rebuilds an ask_manager call as yian records it", async () => {
   expect(await worker.wait()).toBe(EXIT_OK)
   expect(handlers.outcome?.status, String(handlers.outcome?.message)).toBe("waiting")
   // The session actor tells a model question's wait by its tool, from the result and from the log.
-  expect(waitsOf(handlers).map((wait) => wait.tool)).toEqual([ASK_MANAGER_CALL])
-  expect(inspectRun(job.log).waits.map((wait) => wait.tool)).toEqual([ASK_MANAGER_CALL])
+  expect(waitsOf(handlers).map((wait) => isAskManagerCall(String(wait.tool)))).toEqual([true])
+  expect(inspectRun(job.log).waits.map((wait) => isAskManagerCall(wait.tool))).toEqual([true])
   const calls = pendingCalls(job.log)
 
   const { store, sid, answers, lines } = setup()

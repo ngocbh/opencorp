@@ -228,8 +228,11 @@ describe("TUI inline tool wrapping", () => {
       pattern: "p",
       include: "*.py",
     })
-    // A workspace tool's bare name is no name a model calls any more.
-    expect(toolView("read_file").view).toBe("generic")
+    // A flow may grant a workspace tool by its own name, which the model then calls.
+    for (const name of ["read_file", "write_file", "edit_file", "list", "search", "shell"]) {
+      expect(toolView(name, { path: "a.py" })).toEqual(toolView(`workspace_${name}`, { path: "a.py" }))
+    }
+    expect(toolView("read_file").view).toBe("read")
   })
 
   test("a Codex file change is a patch: a new file all added, a deleted one all removed, an update as sent", () => {
