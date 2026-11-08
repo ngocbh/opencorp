@@ -589,22 +589,6 @@ test("a hard-linked profile is an error", async () => {
   expect(await issues(root)).toContain("person.profile_not_a_file people/minh/memory/profile.md")
 })
 
-test("a profile over 4 x profile_max_chars is an error that says chats leave it out", async () => {
-  const company = { ...(baseFiles()["company.yaml"] as Record<string, any>) }
-  company.defaults = { ...company.defaults, profile_max_chars: 5 }
-  const root = makeCompany({ "company.yaml": company, "people/minh/memory/profile.md": "é".repeat(21) })
-  const [issue, ...rest] = await withCode(root, "person.profile_too_long")
-  expect(rest).toEqual([])
-  expect([issue!.path, issue!.severity, issue!.message]).toEqual([
-    "people/minh/memory/profile.md",
-    "error",
-    "memory/profile.md holds 21 characters, more than the 20 a profile may hold (4 × profile_max_chars); chats"
-      + " leave it out until it is shortened",
-  ])
-  fs.writeFileSync(path.join(root, "people/minh/memory/profile.md"), "é".repeat(20))
-  expect(await codes(root)).toEqual(new Set())
-})
-
 test("a profile outside the memory folder is not a profile", async () => {
   const root = makeCompany({ "people/minh/memory/profile.md": null, "people/minh/profile.md": "# Minh\n" })
   expect(await issues(root, "warning")).toContain("person.no_profile people/minh/memory/profile.md")

@@ -179,9 +179,8 @@ export class Office {
   transcript: Transcript | undefined
   /** The office's one live relay, set by `buildOffice`; the session actors' context takes it. */
   live: LiveRelay | undefined
-  /** Builds the profile store for one person at a `profile_max_chars`, per request; null means the profile routes
-   *  answer 501. */
-  profileStore: ((handle: string, maxChars: number) => GitProfileStore) | null
+  /** Builds the profile store for one person, per request; null means the profile routes answer 501. */
+  profileStore: ((handle: string) => GitProfileStore) | null
   /** When this office object was built, which is the daemon's start, as a protocol timestamp. */
   readonly startedAt: string = now()
   /** Run in order by `start`, each awaited. */
@@ -223,7 +222,7 @@ export class Office {
     bus: Bus
     workers?: WorkerPool
     /** Builds a person's profile store; defaults to their memory folder in `git`'s clone, null for none. */
-    profileStore?: ((handle: string, maxChars: number) => GitProfileStore) | null
+    profileStore?: ((handle: string) => GitProfileStore) | null
     tools?: Tools
     guards?: SandboxOfficePaths
     connections?: ConnectionsOptions
@@ -259,8 +258,7 @@ export class Office {
     })
     this.runNotifier = new RunNotifier((event) => this.bus.publishMeta(event), { log })
     this.workers = workers
-    this.profileStore =
-      profileStore === undefined ? (handle, maxChars) => new GitProfileStore(git, handle, { maxChars }) : profileStore
+    this.profileStore = profileStore === undefined ? (handle) => new GitProfileStore(git, handle) : profileStore
     this.tools = tools
     this.guards = guards
     this.log = log

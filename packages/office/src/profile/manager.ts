@@ -37,12 +37,13 @@ export const STALE_EDIT =
   "the profile changed since you read it; call profile_read again and propose an edit of the version it gives"
 
 /** The `profile` tool group of a profile-manager session, which the model sees as `profile_read` and
- *  `profile_propose_edit`. `propose_edit` refuses text over 4 × the company's `profile_max_chars` code points, and an
- *  edit whose base version isn't the profile's (`STALE_EDIT`); it diffs against the current text. */
+ *  `profile_propose_edit`. `propose_edit` refuses text over 4 × `maxChars` (the company's `profile_max_chars`) code
+ *  points, and an edit whose base version isn't the profile's (`STALE_EDIT`); it diffs against the current text. */
 export function profileTools(
   store: Store,
   profile: GitProfileStore,
   session: SessionRecord,
+  { maxChars }: { maxChars: number },
 ): { read: ProfileTool; propose_edit: ProfileTool } {
   // Both schemas as the Python office's pydantic wrote them.
   return {
@@ -72,7 +73,7 @@ export function profileTools(
           throw new TypeError("text and base_version must be strings")
         }
         // The budget is soft, so applying over-budget text works; the cap only bounds what the model can store.
-        const cap = profile.maxFileChars
+        const cap = 4 * maxChars
         const n = [...text].length
         if (n > cap) {
           throw new RangeError(`text is ${n} characters; a proposal may hold at most ${cap} (4 × profile_max_chars)`)
@@ -141,7 +142,7 @@ export async function applyProposal(
     const proposal = store.getProfileProposal(proposalId)
     if (proposal === undefined) throw new ProposalNotFound(`no profile proposal ${proposalId}`)
     if (proposal.status !== "open") throw new ProposalNotOpen(`profile proposal ${proposalId} is ${proposal.status}`)
-    const profile = new GitProfileStore(git, proposal.person, { maxChars })
+    const profile = new GitProfileStore(git, proposal.person)
     let written: { version: string; commit: string | null }
     try {
       written = await profile.write(proposal.text, {

@@ -6,14 +6,14 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { type Author, FileMemory, type MemorySession } from "@ngocbh/yian"
 import { CompanyGit, CompanyGitError, CompanyRepoBusy, repoBusy } from "../../src/company/git.ts"
 import {
-  changeSource,
   commitMessage,
   EMPTY_VERSION,
   GitProfileStore,
   ProfileConflict,
   profileHash,
   ProfileRefused,
-  profileSettings,
+  PROFILE_MAX_CHARS,
+  PROFILE_SETTINGS,
   ProfileUnreadable,
 } from "../../src/profile/store.ts"
 import { company, failingGit, git, recordingGit, stashPopConflict } from "../company/helpers.ts"
@@ -31,7 +31,7 @@ function setup() {
   const dir = tempDir()
   const root = company(dir)
   const g = new CompanyGit(root, path.join(dir, "worktrees"))
-  return { dir, root, g, store: new GitProfileStore(g, "minh", { maxChars: 32000 }) }
+  return { dir, root, g, store: new GitProfileStore(g, "minh") }
 }
 
 const subject = (root: string) => git(root, "log", "-1", "--format=%s")
@@ -57,10 +57,10 @@ async function history(session: MemorySession): Promise<unknown[][]> {
 
 // Settings
 
-test("the settings follow profile_max_chars and give every cap", () => {
-  expect(profileSettings(1000)).toEqual({
-    maxFileChars: 4000,
-    maxRecallChars: 4000,
+test("the settings are fixed, give every cap, and let a profile fill the memory", () => {
+  expect(PROFILE_SETTINGS).toEqual({
+    maxFileChars: 1_000_000,
+    maxRecallChars: 1_000_000,
     maxTotalChars: 1_000_000,
     maxHistoryChars: 1_000_000,
     maxFiles: 1_000,
@@ -71,15 +71,15 @@ test("the settings follow profile_max_chars and give every cap", () => {
     maxChangeIds: 10_000,
     lockTimeoutMs: 30_000,
   })
-  // A file may always fill the memory.
-  expect(profileSettings(1_000_000).maxTotalChars).toBe(4_000_000)
+  expect(PROFILE_MAX_CHARS).toBe(1_000_000)
 })
 
 test("the memory is minh's identity with profile.md as its index", async () => {
   const { store } = setup()
   const session = await store.fileMemory().open({ create: true, itemType: null, signal: SIGNAL })
   expect(session.info.identity).toBe("people/minh")
-  expect(session.info.settings).toMatchObject({ index: "profile.md", max_file_chars: 128000n, max_recall_chars: 128000n })
+  expect(session.info.settings).toMatchObject({ max_file_chars: 1_000_000n, max_recall_chars: 1_000_000n })
+  expect(session.info.settings.index).toBe("profile.md")
   expect((await session.snapshot()).recall).toEqual({ text: MINH, cut: null, hint: null })
   await session.close()
 })
@@ -90,13 +90,13 @@ test("constructor does no io", () => {
   const dir = tempDir()
   const recording = recordingGit(dir)
   const g = new CompanyGit(path.join(dir, "missing"), path.join(dir, "worktrees"), { git: recording.git })
-  new GitProfileStore(g, "minh", { maxChars: 10 })
+  new GitProfileStore(g, "minh")
   expect(recording.calls()).toEqual([])
 })
 
 test.each([[""], ["../minh"], ["minh/x"], ["Minh"], ["a_b"], ["-minh"]])("constructor refuses a bad handle [%s]", (handle) => {
   const g = new CompanyGit(path.join(tempDir(), "missing"), path.join(tempDir(), "worktrees"))
-  expect(() => new GitProfileStore(g, handle, { maxChars: 10 })).toThrow(/not a handle/)
+  expect(() => new GitProfileStore(g, handle)).toThrow(/not a handle/)
 })
 
 test("read returns the text and its FileMemory hash", async () => {
@@ -135,20 +135,19 @@ test("a non utf8 profile is unreadable", async () => {
 })
 
 test("a profile over the memory's file cap is unreadable and says why", async () => {
-  const { root, g } = setup()
-  const store = new GitProfileStore(g, "minh", { maxChars: 10 })
-  fs.writeFileSync(path.join(root, PROFILE), "é".repeat(41))
+  const { root, store } = setup()
+  fs.writeFileSync(path.join(root, PROFILE), "é".repeat(PROFILE_MAX_CHARS + 1))
   const error = await rejection(store.read())
   expect(error).toBeInstanceOf(ProfileUnreadable)
   expect((error as Error).message).toBe(
-    "people/minh/memory/profile.md holds 41 characters, more than the 40 a profile may hold " +
-      "(4 × profile_max_chars); chats leave it out until it is shortened by hand",
+    "people/minh/memory/profile.md holds 1000001 characters, more than the 1000000 a profile may hold; " +
+      "chats leave it out until it is shortened by hand",
   )
   // Its bytes alone are over: a character takes at most four.
-  fs.writeFileSync(path.join(root, PROFILE), "x".repeat(161))
+  fs.writeFileSync(path.join(root, PROFILE), "x".repeat(4 * PROFILE_MAX_CHARS + 1))
   expect(((await rejection(store.read())) as Error).message).toMatch(/^people\/minh\/memory\/profile.md holds more than/)
-  fs.writeFileSync(path.join(root, PROFILE), "é".repeat(40))
-  expect((await store.read()).text).toBe("é".repeat(40))
+  fs.writeFileSync(path.join(root, PROFILE), "é".repeat(PROFILE_MAX_CHARS))
+  expect((await store.read()).text).toHaveLength(PROFILE_MAX_CHARS)
 })
 
 test("a hard-linked profile is unreadable", async () => {
@@ -216,7 +215,7 @@ test("another person's symlinked memory folder doesn't stop a read or a write", 
   const { dir, root, g } = setup()
   fs.renameSync(path.join(root, "people/minh/memory"), path.join(dir, "elsewhere"))
   fs.symlinkSync(path.join(dir, "elsewhere"), path.join(root, "people/minh/memory"))
-  const ngoc = new GitProfileStore(g, "ngocbh", { maxChars: 32000 })
+  const ngoc = new GitProfileStore(g, "ngocbh")
   expect(await ngoc.read()).toEqual({ text: "", version: EMPTY_VERSION })
   expect(await write(ngoc, "# Ngoc\n", EMPTY_VERSION)).toBe(hash("# Ngoc\n"))
 })
@@ -225,7 +224,7 @@ test("a git failure passes through", async () => {
   const dir = tempDir()
   fs.mkdirSync(path.join(dir, "not-a-repo"))
   const g = new CompanyGit(path.join(dir, "not-a-repo"), path.join(dir, "worktrees"))
-  const error = await rejection(new GitProfileStore(g, "minh", { maxChars: 10 }).read())
+  const error = await rejection(new GitProfileStore(g, "minh").read())
   expect(error).toBeInstanceOf(CompanyGitError)
 })
 
@@ -234,10 +233,6 @@ test("a git failure passes through", async () => {
 test("commit messages are one line", () => {
   expect(commitMessage("minh", "ngocbh via profile edit")).toBe("profile(@minh): ngocbh via profile edit")
   expect(commitMessage("minh\n\nCommit-Id: x", "a\nb  c\x1c\0d")).toBe("profile(@minh Commit-Id: x): a b c d")
-  expect(changeSource("append notes.md", { kind: "agent", name: "chat#0/reply", run: "r1" })).toBe(
-    "append notes.md by agent chat#0/reply in run r1",
-  )
-  expect(changeSource("undo c-1", OWNER)).toBe("undo c-1 by user ngocbh")
 })
 
 // Writes
@@ -291,7 +286,7 @@ test("a hand edit just before the change is a conflict and is kept", async () =>
       )
     }
   }
-  const error = await rejection(write(new HandEditing(g, "minh", { maxChars: 32000 }), "# Minh\nby model\n", hash(MINH)))
+  const error = await rejection(write(new HandEditing(g, "minh"), "# Minh\nby model\n", hash(MINH)))
   expect(error).toMatchObject({ expected: hash(MINH), current: hash("# Minh\nby hand\n") })
   expect(read(root)).toBe("# Minh\nby hand\n")
   expect(git(root, "status", "--porcelain")).toBe(`M ${PROFILE}`)
@@ -347,17 +342,16 @@ test("a retried create returns its version once the profile exists", async () =>
 test("change ids are per profile", async () => {
   const { g, store } = setup()
   await write(store, "# Minh\nv1\n", hash(MINH), "c-1")
-  const boss = new GitProfileStore(g, "ngocbh", { maxChars: 32000 })
+  const boss = new GitProfileStore(g, "ngocbh")
   expect(await write(boss, "# Boss\n", EMPTY_VERSION, "c-1")).toBe(hash("# Boss\n"))
 })
 
 test("text over the memory's file cap is refused and writes nothing", async () => {
-  const { root, g } = setup()
-  const store = new GitProfileStore(g, "minh", { maxChars: 10 })
+  const { root, store } = setup()
   const head = git(root, "rev-parse", "HEAD")
-  const error = await rejection(write(store, "x".repeat(41), hash(MINH)))
+  const error = await rejection(write(store, "x".repeat(PROFILE_MAX_CHARS + 1), hash(MINH)))
   expect(error).toBeInstanceOf(ProfileRefused)
-  expect((error as Error).message).toBe("`profile.md` would hold 41 characters; a file may hold 40")
+  expect((error as Error).message).toBe("`profile.md` would hold 1000001 characters; a file may hold 1000000")
   expect(read(root)).toBe(MINH)
   expect(git(root, "rev-parse", "HEAD")).toBe(head)
 })
@@ -372,7 +366,7 @@ test("a lone surrogate or a non string is refused and writes nothing", async () 
 
 test("two concurrent writes with one base: one wins", async () => {
   const { g } = setup()
-  const stores = ["a", "b"].map(() => new GitProfileStore(g, "minh", { maxChars: 32000 }))
+  const stores = ["a", "b"].map(() => new GitProfileStore(g, "minh"))
   const results = await Promise.allSettled(stores.map((s, i) => write(s, `# Minh\n${i}\n`, hash(MINH), `c-${i}`)))
   const won = results.filter((r) => r.status === "fulfilled")
   const lost = results.filter((r) => r.status === "rejected")
@@ -395,7 +389,6 @@ test("a failed commit leaves the change for the hand-edit sweep", async () => {
       git: failingGit(dir, "--cleanup=whitespace", "echo 'fatal: boom' >&2; exit 128"),
     }),
     "minh",
-    { maxChars: 32000 },
   )
   expect(await write(failing, "# Minh\nv1\n", hash(MINH))).toBe(hash("# Minh\nv1\n"))
   expect(read(root)).toBe("# Minh\nv1\n")
@@ -421,42 +414,15 @@ test("a write to a profile with an unresolved conflict is refused and the confli
 const AGENT: Author = { kind: "agent", name: "chat#0/reply", run: "r1", node: "chat#0/reply" }
 const APPEND = { op: "append", path: "notes.md", text: "likes tests" }
 
-test("a change a run applies is committed, once", async () => {
+test("a run opens the folder as yian's FileMemory; the office never resets it through the run's memory", async () => {
   const { root, store } = setup()
-  const session = await store.memory().open({ create: true, itemType: null, signal: SIGNAL })
-  expect(session.info.identity).toBe("people/minh")
-  const applied = await session.apply({ id: "r1/call-1", change: APPEND, author: AGENT, signal: SIGNAL })
-  expect(applied.ok).toBe(true)
-  expect(read(root, "people/minh/memory/notes.md")).toBe("likes tests")
-  expect(subject(root)).toBe("profile(@minh): append notes.md by agent chat#0/reply in run r1")
-  expect(git(root, "status", "--porcelain")).toBe("")
-  const before = count(root)
-  expect(await session.apply({ id: "r1/call-1", change: APPEND, author: AGENT, signal: SIGNAL })).toEqual(applied)
-  expect(count(root)).toBe(before)
+  const memory = store.memory()
+  expect((memory.constructor as typeof FileMemory).contract).toBe(FileMemory.contract)
+  const session = await memory.open({ create: true, itemType: null, signal: SIGNAL })
+  expect([session.info.identity, (await session.snapshot()).recall.text]).toEqual(["people/minh", MINH])
   await session.close()
-})
-
-test("an undo and an erase a run applies are committed; a refused change commits nothing", async () => {
-  const { root, store } = setup()
-  const session = await store.memory().open({ create: true, itemType: null, signal: SIGNAL })
-  await session.apply({ id: "a-1", change: APPEND, author: AGENT, signal: SIGNAL })
-  const before = count(root)
-  const refused = await session.apply({
-    id: "a-2",
-    change: { op: "create", path: "notes.md", text: "again" },
-    author: AGENT,
-    signal: SIGNAL,
-  })
-  expect(refused.ok).toBe(false)
-  expect(count(root)).toBe(before)
-  expect((await session.undo({ id: "u-1", changeId: "a-1", author: OWNER, signal: SIGNAL })).ok).toBe(true)
-  expect(subject(root)).toBe("profile(@minh): undo a-1 by user ngocbh")
-  expect(fs.existsSync(path.join(root, "people/minh/memory/notes.md"))).toBe(false)
-  await session.erase({ id: "e-1", target: { path: "profile.md", text: "Engineer" }, author: OWNER, signal: SIGNAL })
-  expect(read(root)).toBe("# Minh, \n")
-  expect(subject(root)).toBe("profile(@minh): erase profile.md by user ngocbh")
-  expect(git(root, "status", "--porcelain")).toBe("")
-  await session.close()
+  await expect(memory.reset({ signal: SIGNAL })).rejects.toThrow("the office doesn't reset a profile")
+  expect(read(root)).toBe(MINH)
 })
 
 test("a change the commit missed is picked up as a hand edit", async () => {
@@ -469,19 +435,4 @@ test("a change the commit missed is picked up as a hand edit", async () => {
   await store.read()
   expect(subject(root)).toBe("profile(@minh): hand edit")
   expect(git(root, "status", "--porcelain")).toBe("")
-})
-
-test("a run's change is refused while the repo is mid-operation", async () => {
-  const { root, store } = setup()
-  stashPopConflict(root, PROFILE)
-  const session = await store.memory().open({ create: true, itemType: null, signal: SIGNAL })
-  const error = await rejection(session.apply({ id: "a-1", change: APPEND, author: AGENT, signal: SIGNAL }))
-  expect(repoBusy(error)?.status).toBe(409)
-  expect(fs.existsSync(path.join(root, "people/minh/memory/notes.md"))).toBe(false)
-  await session.close()
-})
-
-test("the memory has FileMemory's contract", () => {
-  const { store } = setup()
-  expect((store.memory().constructor as typeof FileMemory).contract).toBe(FileMemory.contract)
 })

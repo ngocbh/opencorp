@@ -122,9 +122,8 @@ test("the main spec runs the persons main flow with their tools memory and skill
   expect(spec.chat).toBe(MAIN_CHAT)
   expect(Object.keys(spec.groups({ session: o.session, runId: "r1" }))).toEqual(["toolbox", "workspace", "company"])
   expect(Object.keys(spec.memories)).toEqual(["profile"])
-  // minh's memory folder, with the pinned company's profile_max_chars.
-  const fileChars = BigInt(4 * o.defaults.profile_max_chars)
-  expect(await opened(spec.memories.profile!)).toEqual([FileMemory.contract, "people/minh", fileChars])
+  // minh's memory folder, with the same settings in every company.
+  expect(await opened(spec.memories.profile!)).toEqual([FileMemory.contract, "people/minh", 1_000_000n])
   expect(spec.skills).toEqual(["deploy"])
   expect(spec.skills).toEqual(o.minh.skills)
   expect(spec.names).toEqual(["minh", "Minh"])
@@ -155,8 +154,7 @@ test("the side spec has read only lookups and room for its seed", async () => {
   const listed = JSON.parse(groups.work_items!.list_work_items!.call({}) as string) as { title: string }[]
   expect(listed.map((i) => i.title)).toEqual(["Ship v2"])
   expect(spec.skills).toEqual([])
-  const fileChars = BigInt(4 * o.defaults.profile_max_chars)
-  expect(await opened(spec.memories.profile!)).toEqual([FileMemory.contract, "people/minh", fileChars])
+  expect(await opened(spec.memories.profile!)).toEqual([FileMemory.contract, "people/minh", 1_000_000n])
   expect(spec.names).toEqual(["minh", "Minh"])
   expect(spec.inputs).toEqual({
     person: personInputs(o.repo, o.minh),

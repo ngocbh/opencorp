@@ -78,10 +78,10 @@ function personOf(repo: CompanyRepo, session: SessionRecord): Person {
   return person
 }
 
-/** The flow's `profile` memory: `handle`'s memory folder in the company clone, with the settings of the pinned
- *  company's `profile_max_chars`, so every advance of a run binds the settings it recorded. */
-function profileMemory(git: CompanyGit, handle: string, maxChars: number): Record<string, MemoryBase> {
-  return { profile: new GitProfileStore(git, handle, { maxChars }).memory() }
+/** The flow's `profile` memory: `handle`'s memory folder in the company clone, whose settings are the same in every
+ *  company, so every advance of a run binds the settings it recorded. */
+function profileMemory(git: CompanyGit, handle: string): Record<string, MemoryBase> {
+  return { profile: new GitProfileStore(git, handle).memory() }
 }
 
 /**
@@ -123,7 +123,7 @@ export function mainSpec({
       const ctx = { store, repo, session, runId, onQuestion, carried, monitor, workspace }
       return build(["toolbox", "workspace", "company"], ctx)
     },
-    memories: profileMemory(git, person.handle, defaults.profile_max_chars),
+    memories: profileMemory(git, person.handle),
     skills: [...person.skills],
     names: [person.handle, person.name],
     workspace,
@@ -169,7 +169,7 @@ export function sideSpec({
     },
     groups: ({ session, runId }) =>
       build(["workspace", "work_items"], { store, session, runId, monitor, workspace, readOnly: true, question }),
-    memories: profileMemory(git, person.handle, defaults.profile_max_chars),
+    memories: profileMemory(git, person.handle),
     skills: [],
     names: [person.handle, person.name],
     workspace,

@@ -3,7 +3,6 @@ import fs from "node:fs"
 import path from "node:path"
 import { type ComposedFlow, LoadError } from "@ngocbh/yian"
 import { loadSkillDir, type Skill, SkillError } from "@ngocbh/yian/skills"
-import { CompanyDefaults } from "@opencorp/protocol"
 import { MAIN_CHAT } from "../chat/turns.ts"
 import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "./flows.ts"
 import { type RepoIssue, repoIssue } from "./issues.ts"
@@ -373,14 +372,13 @@ function checkSkills(repo: CompanyRepo): RepoIssue[] {
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
 
 /** Agents should have a profile; humans may skip it. A profile, `memory/profile.md`, must be a regular UTF-8 file in a
- *  memory folder that is a real folder, within the 4 × `profile_max_chars` characters a file of the memory may hold. */
+ *  memory folder that is a real folder. */
 function* checkProfiles(repo: CompanyRepo): Iterable<RepoIssue> {
-  const maxFileChars = 4 * (repo.company?.defaults ?? CompanyDefaults.parse({})).profile_max_chars
   for (const [handle, person] of sorted(repo.people)) {
     const rel = profilePath(handle)
-    const found = profileState(path.join(repo.root, rel), maxFileChars)
+    const found = profileState(path.join(repo.root, rel))
     if (found === "absent" && person.kind === "agent") {
-      yield repoIssue(rel, "person.no_profile", "agents learn into memory/profile.md; create one", "warning")
+      yield repoIssue(rel, "person.no_profile", "an agent's chats read memory/profile.md; create one", "warning")
     }
     // Errors: chats with that person can't start without the folder, and leave any other such profile out of their
     // memory, which the office can't read or write either.
@@ -395,21 +393,12 @@ function* checkProfiles(repo: CompanyRepo): Iterable<RepoIssue> {
     if (found === "not_utf8") {
       yield repoIssue(rel, "person.profile_not_utf8", "memory/profile.md is not UTF-8; save it as UTF-8")
     }
-    if (typeof found === "number") {
-      yield repoIssue(rel, "person.profile_too_long",
-        `memory/profile.md holds ${found} characters, more than the ${maxFileChars} a profile may hold`
-        + " (4 × profile_max_chars); chats leave it out until it is shortened")
-    }
   }
 }
 
 /** Whether the profile at `p` is absent, in a memory folder that isn't a folder (a symlink, a file), not a regular
- *  file (a symlink, a folder, a hard link), not UTF-8, or fine; or its characters, when it holds more than
- *  `maxFileChars`. */
-function profileState(
-  p: string,
-  maxFileChars: number,
-): "absent" | "not_a_folder" | "not_a_file" | "not_utf8" | "ok" | number {
+ *  file (a symlink, a folder, a hard link), not UTF-8, or fine. */
+function profileState(p: string): "absent" | "not_a_folder" | "not_a_file" | "not_utf8" | "ok" {
   const absent = (error: unknown) => ["ENOENT", "ENOTDIR", "EBADF"].includes(errno(error) ?? "")
   let fd: number
   try {
@@ -427,8 +416,8 @@ function profileState(
     const st = fs.fstatSync(fd)
     // yian's FileMemory leaves a file with another link out of the memory.
     if (!st.isFile() || st.nlink > 1) return "not_a_file"
-    const chars = [...UTF8.decode(fs.readFileSync(fd))].length
-    return chars > maxFileChars ? chars : "ok"
+    UTF8.decode(fs.readFileSync(fd))
+    return "ok"
   } catch (error) {
     if (error instanceof TypeError) return "not_utf8"
     throw error

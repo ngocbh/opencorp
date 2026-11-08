@@ -9,7 +9,7 @@ import { onTestFinished, spyOn } from "bun:test"
 import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import type { Store } from "../../src/store/store.ts"
-import { profileSettings } from "../../src/profile/store.ts"
+import { PROFILE_SETTINGS } from "../../src/profile/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
@@ -250,7 +250,7 @@ export function workerFor(handlers: WorkerHandlers, over: Partial<JobInput> = {}
  *  holding `text` as its profile when given. */
 export function profileMemory(root: string, text?: string): FileMemory {
   if (text !== undefined) writeFiles(root, { "profile.md": text })
-  return new FileMemory({ root, id: "people/minh", index: "profile.md", ...profileSettings(32000) })
+  return new FileMemory({ root, id: "people/minh", index: "profile.md", ...PROFILE_SETTINGS })
 }
 
 /** A fresh temp root holding the worker tests' pin and an empty runs folder. */

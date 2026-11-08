@@ -45,7 +45,7 @@ function put(sock: string, body: unknown): Promise<Reply> {
 /** A proposal of `text` over minh's current profile, from a new profile-manager session. */
 async function proposeText(office: Office, text: string): Promise<ProfileProposalRecord> {
   const s = office.store.createSession(session({ kind: "profile_manager" }))
-  const profile = new GitProfileStore(office.git, "minh", { maxChars: 32000 })
+  const profile = new GitProfileStore(office.git, "minh")
   const { text: base, version } = await profile.read()
   return propose(office.store, s, profile, version, base, text)
 }
@@ -285,30 +285,17 @@ test("put with a lone surrogate is 422 and writes nothing", async () => {
 
 const PROFILE = "people/minh/memory/profile.md"
 
-test("a profile over 4 x profile_max_chars is 409 unreadable_profile on get and put", async () => {
+test("a profile over 4 x profile_max_chars is read and written as before, over budget", async () => {
   const office = makeOffice()
   const { sock } = await served(office)
   setMaxChars(office.paths.company, 5)
-  fs.writeFileSync(path.join(office.paths.company, PROFILE), "x".repeat(21))
-  const message =
-    "people/minh/memory/profile.md holds 21 characters, more than the 20 a profile may hold " +
-    "(4 × profile_max_chars); chats leave it out until it is shortened by hand"
+  const long = "x".repeat(21)
+  fs.writeFileSync(path.join(office.paths.company, PROFILE), long)
   const got = await request(sock, "GET", "/profiles/minh")
-  expect([got.status, got.json()]).toEqual([409, { error: "unreadable_profile", message }])
-  const r = await put(sock, { text: "short\n", base_version: hash("x".repeat(21)) })
-  expect([r.status, r.json()]).toEqual([409, { error: "unreadable_profile", message }])
-})
-
-test("put of text over 4 x profile_max_chars is 422 refused and writes nothing", async () => {
-  const office = makeOffice()
-  const { sock } = await served(office)
-  setMaxChars(office.paths.company, 5)
-  const r = await put(sock, { text: "x".repeat(21), base_version: hash(MINH) })
-  expect([r.status, r.json()]).toEqual([
-    422,
-    { error: "refused", message: "`profile.md` would hold 21 characters; a file may hold 20" },
-  ])
-  expect(fs.readFileSync(path.join(office.paths.company, PROFILE), "utf8")).toBe(MINH)
+  const body = { person: "minh", text: long, version: hash(long), over_budget: true }
+  expect([got.status, got.json()]).toEqual([200, body])
+  const r = await put(sock, { text: `${long}y`, base_version: hash(long) })
+  expect([r.status, (r.json() as { over_budget: boolean }).over_budget]).toEqual([200, true])
 })
 
 test("get of a non UTF-8 profile is 409 unreadable_profile", async () => {
@@ -433,7 +420,7 @@ test("the profile manager over the routes", async () => {
   const created = r.json() as { id: string; kind: string; person: string }
   expect([created.kind, created.person]).toEqual(["profile_manager", "minh"])
   const manager = store.getSession(created.id)!
-  const profile = new GitProfileStore(g, "minh", { maxChars: 32000 })
+  const profile = new GitProfileStore(g, "minh")
   let { text, version } = await profile.read()
   const first = await propose(store, manager, profile, version, text, `${MINH}\n- One.\n`)
   r = await request(sock, "GET", "/profiles/minh/proposals")
@@ -521,7 +508,7 @@ test("learning is credited to the verified person", async () => {
   expect(r.status).toBe(200)
   expect((r.json() as { opened_by: string }).opened_by).toBe("ava")
   const manager = store.getSession((r.json() as { id: string }).id)!
-  const profile = new GitProfileStore(g, "minh", { maxChars: 32000 })
+  const profile = new GitProfileStore(g, "minh")
   const { text, version } = await profile.read()
   const p = await propose(store, manager, profile, version, text, `${text}- One.\n`)
   const applied = await request(sock, "POST", `/profile-proposals/${p.id}/apply`, { headers: bearer(token) })

@@ -33,13 +33,13 @@ function office({ maxChars = 32000 }: { maxChars?: number } = {}) {
   const g = new CompanyGit(company(dir), path.join(dir, "worktrees"))
   const store = openStore()
   const s = store.createSession(session({ kind: "profile_manager" }))
-  return { git: g, store, s, tools: profileTools(store, new GitProfileStore(g, "minh", { maxChars }), s) }
+  return { git: g, store, s, tools: profileTools(store, new GitProfileStore(g, "minh"), s, { maxChars }) }
 }
 
 const subject = (g: CompanyGit) => git(g.root, "log", "-1", "--format=%s")
 
 /** minh's profile version in `g`'s clone. */
-const versionOf = async (g: CompanyGit) => (await new GitProfileStore(g, "minh", { maxChars: 32000 }).read()).version
+const versionOf = async (g: CompanyGit) => (await new GitProfileStore(g, "minh").read()).version
 
 /** What `promise` rejects with; throws if it fulfils. */
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
@@ -112,7 +112,7 @@ function numbered(n: number, prefix: string, other?: string): string[] {
 /** The diff `propose` stores for `text` over `base`. */
 async function diffOf(base: string, text: string): Promise<string> {
   const { git: g, store, s } = office()
-  return (await propose(store, s, new GitProfileStore(g, "minh", { maxChars: 32000 }), "0".repeat(64), base, text)).diff
+  return (await propose(store, s, new GitProfileStore(g, "minh"), "0".repeat(64), base, text)).diff
 }
 
 test("a large edit gets one whole-file hunk", async () => {
@@ -200,7 +200,7 @@ test("an applied proposal is committed once and a retried apply returns its vers
   await tools.propose_edit.call({ text: "# Minh\n", base_version: base })
   const proposal = store.listProfileProposals("minh", { status: "open" })[0]!
   // The office stopped after the write, before the proposal was marked applied.
-  const profile = new GitProfileStore(g, "minh", { maxChars: 32000 })
+  const profile = new GitProfileStore(g, "minh")
   const author = { kind: "user", name: "ngocbh" } as const
   const first = await profile.write("# Minh\n", {
     baseVersion: base,

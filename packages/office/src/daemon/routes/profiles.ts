@@ -45,7 +45,7 @@ function open(
   }
   const repo = withPerson(ctx, handle)
   const maxChars = maxCharsOf(repo)
-  return { store: factory(handle, maxChars), maxChars, repo }
+  return { store: factory(handle), maxChars, repo }
 }
 
 /** 403 unless the acting person may change `handle`'s profile in `repo`: the CEO or one of their human managers. */

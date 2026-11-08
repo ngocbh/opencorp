@@ -78,7 +78,7 @@ test("a session's calls round trip", async () => {
   const { root, memory } = await remote()
   const session = await memory.open({ create: true, itemType: null, signal: SIGNAL })
   expect([session.created, session.info.type, session.info.identity]).toEqual([true, "FileMemory", "people/minh"])
-  expect(session.info.settings).toMatchObject({ index: "profile.md", max_file_chars: 128000n })
+  expect(session.info.settings).toMatchObject({ index: "profile.md", max_file_chars: 1_000_000n })
   expect(session.info.tools.map((tool) => tool.name)).toEqual(FileMemory.contract.tools.map((tool) => tool.name))
   const { recall } = await session.snapshot()
   expect(recall).toEqual({ text: "# Minh\n", cut: null, hint: null })

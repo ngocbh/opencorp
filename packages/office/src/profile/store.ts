@@ -1,22 +1,18 @@
 /** A person's profile folder, `people/<handle>/memory/`, as yian's FileMemory with `profile.md` as its index: chats
- *  bind it as their `profile` memory, the office reads and writes the profile through it, and each change that
- *  applies is committed to the company clone. */
+ *  bind it as their `profile` memory and only read it, and the office reads and writes the profile through it,
+ *  committing each write to the company clone. */
 import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import {
   type Applied,
   type Author,
-  type ChangeEntry,
-  type Erased,
   FileMemory,
   type FileMemoryOptions,
   MemoryBase,
   type MemoryContract,
   memoryErrorKind,
-  type MemoryInfo,
   type MemorySession,
-  type Recall,
 } from "@ngocbh/yian"
 import type { JsonObject } from "@ngocbh/yian/run"
 import { Handle } from "@opencorp/protocol"
@@ -37,31 +33,32 @@ export function profileHash(data: Uint8Array): string {
 /** The version of a missing or empty profile: the hash of no bytes. */
 export const EMPTY_VERSION = profileHash(new Uint8Array())
 
-/** The profile memory's settings that don't follow `profile_max_chars`: yian's defaults, written out so no
- *  `YIAN_FILE_MEMORY_*` or `YIAN_MEMORY_*` variable changes them. */
-const FIXED = {
-  maxFiles: 1_000,
-  maxDepth: 4,
-  maxReadChars: 20_000,
-  maxResults: 100,
-  maxUndo: 100,
-  maxChangeIds: 10_000,
-  lockTimeoutMs: 30_000,
-} as const
+/** The characters a profile may hold: yian's default for all files of a FileMemory. */
+export const PROFILE_MAX_CHARS = 1_000_000
 
 /**
- * The settings of the profile memory of a company whose `profile_max_chars` is `maxChars`. A file may hold the
- * 4 × `maxChars` characters a proposal may, and the recall covers a whole file, so a chat reads the whole profile.
- * Each is given, so the environment changes none: a run records them and refuses an advance whose settings differ.
+ * The settings of every profile memory, the same in every company and at every pin: a run records them and refuses an
+ * advance whose settings differ. A file may hold as much as the whole memory, and the recall covers a whole file, so
+ * a chat reads the whole profile. Each is given, so no `YIAN_FILE_MEMORY_*` or `YIAN_MEMORY_*` variable changes one;
+ * the rest are yian's defaults.
  */
-export function profileSettings(maxChars: number): Omit<FileMemoryOptions, "root" | "id" | "index" | "scheduler"> {
-  const maxFileChars = 4 * maxChars
-  const maxTotalChars = Math.max(1_000_000, maxFileChars)
-  return { ...FIXED, maxFileChars, maxRecallChars: maxFileChars, maxTotalChars, maxHistoryChars: maxTotalChars }
-}
+export const PROFILE_SETTINGS: Readonly<Omit<FileMemoryOptions, "root" | "id" | "index" | "scheduler">> =
+  Object.freeze({
+    maxFileChars: PROFILE_MAX_CHARS,
+    maxRecallChars: PROFILE_MAX_CHARS,
+    maxTotalChars: PROFILE_MAX_CHARS,
+    maxHistoryChars: PROFILE_MAX_CHARS,
+    maxFiles: 1_000,
+    maxDepth: 4,
+    maxReadChars: 20_000,
+    maxResults: 100,
+    maxUndo: 100,
+    maxChangeIds: 10_000,
+    lockTimeoutMs: 30_000,
+  })
 
-/** The profile or its folders can't be read or written as a profile: the profile isn't UTF-8, holds more characters
- *  than a file of the memory may, or is a hard link; or it, its memory folder, its person's folder or `people` is a
+/** The profile or its folders can't be read or written as a profile: the profile isn't UTF-8, holds more than
+ *  `PROFILE_MAX_CHARS` characters, or is a hard link; or it, its memory folder, its person's folder or `people` is a
  *  symlink or not a regular file or folder. Its message names only repo paths. */
 export class ProfileUnreadable extends RangeError {
   override name = "ProfileUnreadable"
@@ -89,11 +86,6 @@ export function commitMessage(handle: string, source: string): string {
   return `profile(@${oneLine(handle)}): ${oneLine(source)}`
 }
 
-/** What a memory change was, for its commit's subject: `<what> by <author>`, with the author's run when it has one. */
-export function changeSource(what: string, author: Author): string {
-  return `${what} by ${author.kind} ${author.name}${author.run === undefined ? "" : ` in run ${author.run}`}`
-}
-
 /** The member a change that applied wrote: its result's `path`; null for one that didn't apply. */
 function appliedPath(applied: Applied): string | null {
   return applied.ok && typeof applied.result.path === "string" ? applied.result.path : null
@@ -104,11 +96,11 @@ const NEVER = new AbortController().signal
 
 /**
  * `people/<handle>/memory/` in the company clone, as yian's FileMemory with `profile.md` as its index, the identity
- * `people/<handle>` and the settings of `profileSettings(maxChars)`.
+ * `people/<handle>` and `PROFILE_SETTINGS`.
  *
- * Versions are FileMemory's file hashes. Each change that applies is committed under the repo lock, after the hand
- * edits pending then; a crash between a change and its commit leaves a hand edit, which `commitHandEdits` commits.
- * The constructor does no I/O: the office builds one per request.
+ * Versions are FileMemory's file hashes. Each write is committed under the repo lock, after the hand edits pending
+ * then; a crash between a write and its commit leaves a hand edit, which `commitHandEdits` commits. The constructor
+ * does no I/O: the office builds one per request.
  */
 export class GitProfileStore {
   readonly git: CompanyGit
@@ -117,21 +109,13 @@ export class GitProfileStore {
   readonly path: string
   /** The memory folder's repo path, `people/<handle>/memory`. */
   readonly folder: string
-  /** The company's `profile_max_chars`. */
-  readonly maxChars: number
 
-  constructor(git: CompanyGit, handle: string, { maxChars }: { maxChars: number }) {
+  constructor(git: CompanyGit, handle: string) {
     if (!Handle.safeParse(handle).success) throw new RangeError(`not a handle: ${JSON.stringify(handle)}`)
     this.git = git
     this.handle = handle
     this.path = profilePath(handle)
     this.folder = path.posix.dirname(this.path)
-    this.maxChars = maxChars
-  }
-
-  /** The characters one file of the memory may hold: 4 × `maxChars`. */
-  get maxFileChars(): number {
-    return 4 * this.maxChars
   }
 
   /** yian's FileMemory on the memory folder. Throws `ProfileUnreadable` when `people`, the person's folder or the
@@ -142,13 +126,14 @@ export class GitProfileStore {
       root: path.join(this.git.root, this.folder),
       id: `people/${this.handle}`,
       index: PROFILE_INDEX,
-      ...profileSettings(this.maxChars),
+      ...PROFILE_SETTINGS,
     })
   }
 
-  /** The memory folder as a memory a run binds: yian's FileMemory, each change that applies committed. */
+  /** The memory folder as a memory a run binds, its folders checked as each run opens it. A run only reads it: the
+   *  worker's end of it changes nothing. */
   memory(): MemoryBase {
-    return new CommittedMemory(this)
+    return new ProfileFolder(this)
   }
 
   /**
@@ -191,9 +176,10 @@ export class GitProfileStore {
     this.#checkFile()
     const { result: applied, commit } = await this.committed(
       async () => {
-        const { missing } = this.#current()
         const session = await memory.open({ create: true, itemType: null, signal: NEVER })
         try {
+          // Read once the memory is open: its open settles a change a crash cut off.
+          const { missing } = this.#current()
           return await writeProfile(session, { text, baseVersion, missing, changeId, author })
         } finally {
           await session.close()
@@ -210,7 +196,7 @@ export class GitProfileStore {
   }
 
   /**
-   * Runs `change`, a change to the memory folder, under the repo lock once pending hand edits are committed, then
+   * Runs `change`, a write to the memory folder, under the repo lock once pending hand edits are committed, then
    * commits the member `changed(result)` names, if any, as `source`; returns the change's result and HEAD after the
    * commit (null when nothing was to be committed, or the commit failed). Refuses with a 409 `CompanyRepoBusy` before
    * the change runs while a human's operation is in progress or the folder has an unresolved conflict. A commit that
@@ -258,7 +244,7 @@ export class GitProfileStore {
       if (!st.isFile()) throw new ProfileUnreadable(`${this.path} is not a regular file`)
       if (st.nlink > 1) throw new ProfileUnreadable(`${this.path} is a hard link; replace it with a copy`)
       // A UTF-8 character takes at most four bytes, so a bigger file is over the cap unread.
-      if (st.size > 4 * this.maxFileChars) throw this.#tooLong(null)
+      if (st.size > 4 * PROFILE_MAX_CHARS) throw this.#tooLong(null)
       data = fs.readFileSync(fd)
     } finally {
       fs.closeSync(fd)
@@ -270,7 +256,7 @@ export class GitProfileStore {
       throw new ProfileUnreadable(`${this.path} is not UTF-8`)
     }
     const chars = [...text].length
-    if (chars > this.maxFileChars) throw this.#tooLong(chars)
+    if (chars > PROFILE_MAX_CHARS) throw this.#tooLong(chars)
     return { text, version: profileHash(data), missing: false }
   }
 
@@ -278,7 +264,7 @@ export class GitProfileStore {
   #tooLong(chars: number | null): ProfileUnreadable {
     const holds = chars === null ? "holds" : `holds ${chars} characters,`
     return new ProfileUnreadable(
-      `${this.path} ${holds} more than the ${this.maxFileChars} a profile may hold (4 × profile_max_chars); ` +
+      `${this.path} ${holds} more than the ${PROFILE_MAX_CHARS} a profile may hold; ` +
         "chats leave it out until it is shortened by hand",
     )
   }
@@ -326,9 +312,9 @@ async function writeProfile(
   }
 }
 
-/** A profile folder bound to a run: yian's FileMemory, each change that applies committed by its store. Its `reset`
- *  commits the files it deletes as hand edits. */
-class CommittedMemory extends MemoryBase {
+/** A profile folder bound to a run: yian's FileMemory, opened once its folders are checked. The office never resets
+ *  a profile; it writes one only through `GitProfileStore.write`. */
+class ProfileFolder extends MemoryBase {
   static override readonly contract: MemoryContract = FileMemory.contract
 
   constructor(readonly store: GitProfileStore) {
@@ -340,67 +326,11 @@ class CommittedMemory extends MemoryBase {
     itemType: JsonObject | null
     signal: AbortSignal
   }): Promise<MemorySession> {
-    return new CommittedSession(this.store, await this.store.fileMemory().open(o))
+    return await this.store.fileMemory().open(o)
   }
 
-  override async reset(o: { signal: AbortSignal }): Promise<void> {
-    const memory = this.store.fileMemory()
-    await this.store.git.locked(async (locked) => {
-      await locked.refuseBusy([this.store.folder])
-      await memory.reset(o)
-      await locked.commitHandEdits()
-    })
-  }
-}
-
-/** A FileMemory session whose changes that apply are committed by `store`. */
-class CommittedSession implements MemorySession {
-  readonly #store: GitProfileStore
-  readonly #inner: MemorySession
-
-  constructor(store: GitProfileStore, inner: MemorySession) {
-    this.#store = store
-    this.#inner = inner
-  }
-
-  get info(): MemoryInfo {
-    return this.#inner.info
-  }
-
-  get created(): boolean {
-    return this.#inner.created
-  }
-
-  snapshot(): Promise<{ version: string; recall: Recall }> {
-    return this.#inner.snapshot()
-  }
-
-  call(tool: string, args: JsonObject, o: { signal: AbortSignal }): Promise<JsonObject> {
-    return this.#inner.call(tool, args, o)
-  }
-
-  async apply(c: { id: string; change: JsonObject; author: Author; signal: AbortSignal }): Promise<Applied> {
-    const source = changeSource(`${String(c.change.op)} ${String(c.change.path)}`, c.author)
-    return (await this.#store.committed(() => this.#inner.apply(c), appliedPath, source)).result
-  }
-
-  async undo(o: { id: string; changeId: string; author: Author; signal: AbortSignal }): Promise<Applied> {
-    const source = changeSource(`undo ${o.changeId}`, o.author)
-    return (await this.#store.committed(() => this.#inner.undo(o), appliedPath, source)).result
-  }
-
-  async erase(o: { id: string; target: JsonObject; author: Author; signal: AbortSignal }): Promise<Erased> {
-    const member = typeof o.target.path === "string" ? o.target.path : null
-    const source = changeSource(`erase ${String(member)}`, o.author)
-    return (await this.#store.committed(() => this.#inner.erase(o), () => member, source)).result
-  }
-
-  history(o: { limit: number }): Promise<ChangeEntry[]> {
-    return this.#inner.history(o)
-  }
-
-  close(): Promise<void> {
-    return this.#inner.close()
+  override async reset(_o: { signal: AbortSignal }): Promise<void> {
+    throw new Error("the office doesn't reset a profile")
   }
 }
 
