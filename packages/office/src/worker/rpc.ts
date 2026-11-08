@@ -1,5 +1,5 @@
 /** Request/reply calls over a worker channel, and the office-side handler interface. */
-import { type Author, type MemoryBase, memoryErrorKind } from "@ngocbh/yian"
+import { type MemoryBase, memoryErrorKind } from "@ngocbh/yian"
 import { AuthError } from "@ngocbh/yian/llm_clients"
 import type { JsonObject } from "@ngocbh/yian/run"
 import {
@@ -26,18 +26,13 @@ export const ASK_KEYS = ["question", "questions", "answer_schema", "title", "nod
 export type AskRequest = Record<(typeof ASK_KEYS)[number], unknown>
 
 /** Worker -> office request frame type -> office -> worker reply frame type. A `memory_<op>` request is the memory
- *  call `op` (`MemoryRequest`). */
+ *  call `op` (`MemoryRequest`): a worker only reads a memory, so no request changes one. */
 export const REQUEST_REPLIES = {
   ask_user: "answer",
   tool_call: "tool_result",
   memory_open: "memory_reply",
-  memory_reset: "memory_reply",
   memory_snapshot: "memory_reply",
   memory_call: "memory_reply",
-  memory_apply: "memory_reply",
-  memory_undo: "memory_reply",
-  memory_erase: "memory_reply",
-  memory_history: "memory_reply",
   memory_close: "memory_reply",
 } as const
 /** A worker -> office request frame type. */
@@ -276,6 +271,8 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
   /** The worker kept its process after the job's `kept` result and answered every delivery sent before; it runs no
    *  job until `next`, which hands its frames to other handlers. */
   parked(worker: W): void
+  /** The worker took its next job with other handlers: these get none of its frames after. */
+  released(worker: W): void
   /** The worker process is gone; called once, last. */
   exited(worker: W, returncode: number | null): void
   /**
@@ -296,8 +293,8 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
 }
 
 /** Handlers that ignore notifications, refuse questions, and serve the given tools and memories.
- *  `tools` is `{group: {name: tool}}`; `memories` is `{name: memory}`. Subclass it and override what you need; an
- *  `exited` override calls this one, which closes the sessions the worker left open. */
+ *  `tools` is `{group: {name: tool}}`; `memories` is `{name: memory}`, which the worker only reads. Subclass it and
+ *  override what you need; a `released` or `exited` override calls this one, which closes the sessions left open. */
 export class BaseHandlers implements WorkerHandlers {
   /** A copy of the given tools, each group copied too. */
   readonly tools: Record<string, Record<string, OfficeTool>>
@@ -323,6 +320,11 @@ export class BaseHandlers implements WorkerHandlers {
   error(_worker: unknown, _frame: Frame): void {}
 
   parked(_worker: unknown): void {}
+
+  /** Closes the memory sessions the worker's job left open: they belong to it. */
+  released(_worker: unknown): void {
+    void this.memories.close()
+  }
 
   /** Closes the memory sessions the worker left open: they belong to its connection. */
   exited(_worker: unknown, _returncode: number | null): void {
@@ -475,16 +477,12 @@ function requestArgs(kind: RequestType, frame: Frame): RequestArgs {
   }
 }
 
-/** The memory request a `memory_<op>` frame carries, its fields read with `need` and `maybe`. A change's own id is
- *  `change_id`, since `id` numbers the request, and an undo names the change it undoes as `undoes`. */
+/** The memory request a `memory_<op>` frame carries, its fields read with `need` and `maybe`. */
 function memoryRequest(
   kind: Exclude<RequestType, "ask_user" | "tool_call">,
   need: <T>(key: string, check: (value: unknown) => value is T) => T,
   maybe: <T>(key: string, check: (value: unknown) => value is T) => T | null,
 ): MemoryRequest {
-  const object = (key: string) => need(key, isPlainObject) as JsonObject
-  // The memory checks an author's fields.
-  const author = () => need("author", isPlainObject) as unknown as Author
   switch (kind) {
     case "memory_open":
       return {
@@ -493,38 +491,13 @@ function memoryRequest(
         create: need("create", isBoolean),
         itemType: maybe("item_type", isPlainObject) as JsonObject | null,
       }
-    case "memory_reset":
-      return { op: "reset", memory: need("memory", isString) }
     case "memory_snapshot":
       return { op: "snapshot", session: need("session", isString) }
-    case "memory_call":
-      return { op: "call", session: need("session", isString), tool: need("tool", isString), args: object("args") }
-    case "memory_apply":
-      return {
-        op: "apply",
-        session: need("session", isString),
-        id: need("change_id", isString),
-        change: object("change"),
-        author: author(),
-      }
-    case "memory_undo":
-      return {
-        op: "undo",
-        session: need("session", isString),
-        id: need("change_id", isString),
-        changeId: need("undoes", isString),
-        author: author(),
-      }
-    case "memory_erase":
-      return {
-        op: "erase",
-        session: need("session", isString),
-        id: need("change_id", isString),
-        target: object("target"),
-        author: author(),
-      }
-    case "memory_history":
-      return { op: "history", session: need("session", isString), limit: Number(need("limit", isCount)) }
+    case "memory_call": {
+      const session = need("session", isString)
+      const tool = need("tool", isString)
+      return { op: "call", session, tool, args: need("args", isPlainObject) as JsonObject }
+    }
     case "memory_close":
       return { op: "close", session: need("session", isString) }
   }
@@ -536,12 +509,6 @@ function isString(value: unknown): value is string {
 
 function isBoolean(value: unknown): value is boolean {
   return typeof value === "boolean"
-}
-
-/** Whether `value` is a whole number of 0 or more, as a number or (past 2^53) a bigint. */
-function isCount(value: unknown): value is number | bigint {
-  if (typeof value === "bigint") return value >= 0n
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -561,7 +528,7 @@ function checkJob(job: Job, args: RequestArgs): void {
   if (args.kind === "tool_call") {
     const specs = Object.hasOwn(job.groups, args.group) ? job.groups[args.group]! : []
     if (!specs.some((spec) => spec.name === args.name)) throw new Error(noTool(args.group, args.name))
-  } else if (args.kind === "memory" && (args.request.op === "open" || args.request.op === "reset")) {
+  } else if (args.kind === "memory" && args.request.op === "open") {
     if (!job.memory.includes(args.request.memory)) throw new Error(noMemory(args.request.memory))
   }
 }

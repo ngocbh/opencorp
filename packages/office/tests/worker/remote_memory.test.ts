@@ -2,9 +2,8 @@
  *  memory, and its errors mapped back to yian's. */
 import fs from "node:fs"
 import path from "node:path"
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import {
-  ChangeIdReusedError,
   FileMemory,
   loadFlow,
   MemoryBase,
@@ -85,21 +84,28 @@ test("a session's calls round trip", async () => {
   expect(recall).toEqual({ text: "# Minh\n", cut: null, hint: null })
   const read = await session.call("read", { path: "profile.md" }, { signal: SIGNAL })
   expect(read).toMatchObject({ path: "profile.md", text: "# Minh" })
-  const change: JsonObject = { op: "append", path: "notes.md", text: "likes tests" }
-  const applied = await session.apply({ id: "c-1", change, author: AUTHOR, signal: SIGNAL })
-  expect(applied).toMatchObject({ ok: true, result: { path: "notes.md" } })
-  expect(fs.readFileSync(path.join(root, "notes.md"), "utf8")).toBe("likes tests")
-  const [last] = await session.history({ limit: 1 })
-  expect([last!.id, last!.op, last!.author]).toEqual(["c-1", "append", AUTHOR])
-  expect((await session.undo({ id: "u-1", changeId: "c-1", author: AUTHOR, signal: SIGNAL })).ok).toBe(true)
-  expect(fs.existsSync(path.join(root, "notes.md"))).toBe(false)
-  const target = { path: "profile.md", text: "Minh" }
-  const erased = await session.erase({ id: "e-1", target, author: AUTHOR, signal: SIGNAL })
-  expect(erased.disabledUndos).toEqual([])
-  expect(fs.readFileSync(path.join(root, "profile.md"), "utf8")).toBe("# \n")
+  expect(await session.call("search", { query: "minh" }, { signal: SIGNAL })).toMatchObject({ matches: [{ line: 1n }] })
   await session.close()
-  await memory.reset({ signal: SIGNAL })
-  expect(fs.existsSync(path.join(root, "profile.md"))).toBe(false)
+  expect(fs.readFileSync(path.join(root, "profile.md"), "utf8")).toBe("# Minh\n")
+})
+
+test("changes, undo, erase, history and reset are refused in the worker, sending nothing", async () => {
+  const { root, memory } = await remote()
+  const session = await memory.open({ create: true, itemType: null, signal: SIGNAL })
+  const sent = spyOn(memory.rpc, "request")
+  const change: JsonObject = { op: "append", path: "profile.md", text: "x" }
+  const reason = "the office keeps this memory; a run only reads it"
+  const refused = { ok: false, reason, current: null } as const
+  expect(await session.apply({ id: "c-1", change, author: AUTHOR, signal: SIGNAL })).toEqual(refused)
+  expect(await session.undo({ id: "u-1", changeId: "c-1", author: AUTHOR, signal: SIGNAL })).toEqual(refused)
+  const erase = session.erase({ id: "e-1", target: { path: "profile.md" }, author: AUTHOR, signal: SIGNAL })
+  for (const call of [erase, session.history({ limit: 1 }), memory.reset({ signal: SIGNAL })]) {
+    expect(((await rejection(call)) as Error).message).toBe(reason)
+  }
+  expect(sent).not.toHaveBeenCalled()
+  sent.mockRestore()
+  await session.close()
+  expect(fs.readFileSync(path.join(root, "profile.md"), "utf8")).toBe("# Minh\n")
 })
 
 test("a closed session is gone from the office", async () => {
@@ -108,17 +114,6 @@ test("a closed session is gone from the office", async () => {
   await session.close()
   const error = await rejection(session.snapshot())
   expect(error).toMatchObject({ code: "EIO", syscall: "read", message: "no such memory session" })
-})
-
-test("a reused change id is yian's ChangeIdReusedError", async () => {
-  const { memory } = await remote()
-  const session = await memory.open({ create: true, itemType: null, signal: SIGNAL })
-  await session.apply({ id: "c-1", change: { op: "append", path: "a.md", text: "x" }, author: AUTHOR, signal: SIGNAL })
-  const again = { id: "c-1", change: { op: "append", path: "a.md", text: "y" }, author: AUTHOR, signal: SIGNAL }
-  const error = await rejection(session.apply(again))
-  expect(error).toBeInstanceOf(ChangeIdReusedError)
-  expect([memoryErrorKind(error), (error as ChangeIdReusedError).id]).toEqual(["change_id_reused", "c-1"])
-  await session.close()
 })
 
 test("a missing memory is yian's MemoryMissingError", async () => {
@@ -154,7 +149,6 @@ test("any other failure is a system error", async () => {
   const opened = await rejection(memory.open({ create: true, itemType: null, signal: SIGNAL }))
   expect(opened).toMatchObject({ code: "EIO", syscall: "read", message: "disk on fire" })
   expect(memoryErrorKind(opened)).toBeNull()
-  expect(await rejection(memory.reset({ signal: SIGNAL }))).toMatchObject({ code: "EIO", syscall: "write" })
   const unnamed = new RemoteMemory(memory.rpc, "notes")
   const error = await rejection(unnamed.open({ create: true, itemType: null, signal: SIGNAL }))
   expect(error).toMatchObject({ code: "EIO", syscall: "read", message: "no memory named 'notes'" })
@@ -164,9 +158,8 @@ test("a closed channel is a system error", async () => {
   const { memory } = await remote()
   const session = await memory.open({ create: true, itemType: null, signal: SIGNAL })
   memory.rpc.channel.close()
-  const change = { op: "append", path: "a.md", text: "x" }
-  const error = await rejection(session.apply({ id: "c-1", change, author: AUTHOR, signal: SIGNAL }))
-  expect(error).toMatchObject({ code: "EIO", syscall: "write" })
+  const error = await rejection(session.call("read", { path: "profile.md" }, { signal: SIGNAL }))
+  expect(error).toMatchObject({ code: "EIO", syscall: "read" })
 })
 
 test("an aborted call rejects with the signal's reason", async () => {

@@ -1,21 +1,16 @@
 /** The office's end of a worker's memories: the memories its job names, and the sessions the worker opens on them. */
 import { randomUUID } from "node:crypto"
-import type { Author, MemoryBase, MemorySession } from "@ngocbh/yian"
+import type { MemoryBase, MemorySession } from "@ngocbh/yian"
 import type { JsonObject } from "@ngocbh/yian/run"
 import { repr } from "../perm/redact.ts"
 import type { Frame } from "./channel.ts"
 
-/** A worker's memory request, by its frame type `memory_<op>`: `open` and `reset` name a memory of the job; the
- *  others name a session `open` made. */
+/** A worker's memory request, by its frame type `memory_<op>`: `open` names a memory of the job; the others name the
+ *  session `open` made. A worker only reads: nothing it sends changes a memory, or names an author or a change id. */
 export type MemoryRequest =
   | { op: "open"; memory: string; create: boolean; itemType: JsonObject | null }
-  | { op: "reset"; memory: string }
   | { op: "snapshot"; session: string }
   | { op: "call"; session: string; tool: string; args: JsonObject }
-  | { op: "apply"; session: string; id: string; change: JsonObject; author: Author }
-  | { op: "undo"; session: string; id: string; changeId: string; author: Author }
-  | { op: "erase"; session: string; id: string; target: JsonObject; author: Author }
-  | { op: "history"; session: string; limit: number }
   | { op: "close"; session: string }
 
 /** Why a request names a memory the office doesn't serve; the same text whether the job or the host refuses it. */
@@ -23,14 +18,22 @@ export function noMemory(name: string): string {
   return `no memory named ${repr(name)}`
 }
 
+/** An open session, the memory it is on, and the names of that memory's read tools. */
+interface Opened {
+  readonly memory: string
+  readonly session: MemorySession
+  readonly reads: ReadonlySet<string>
+}
+
 /**
  * The office's end of one worker's memories: `memories` by name, and the sessions the worker opened on them, each by
- * an id the office made. `answer` runs one request on them; `close` closes the sessions open, once the worker is
- * gone.
+ * an id the office made. A worker reads them as a run whose grants only read: it may hold one session on each memory
+ * at a time (a run call opens each once), take its snapshot, call its read tools and close it. `answer` runs one
+ * request; `close` closes the sessions open, once the worker is gone or has moved on to other handlers.
  */
 export class MemoryHost {
   readonly memories: Readonly<Record<string, MemoryBase>>
-  readonly #sessions = new Map<string, MemorySession>()
+  readonly #sessions = new Map<string, Opened>()
   /** Aborts the calls in flight when `close` runs; a fresh one serves the requests after. */
   #live = new AbortController()
 
@@ -39,48 +42,39 @@ export class MemoryHost {
   }
 
   /** Runs `request` and returns its reply's fields. Throws what the memory or its session throws, and an Error for
-   *  a memory or a session it doesn't have. */
+   *  a memory, a session or a read tool it doesn't have, or a second session on one memory. */
   async answer(request: MemoryRequest): Promise<Frame> {
     const { signal } = this.#live
     switch (request.op) {
       case "open": {
-        const { create, itemType } = request
-        const session = await this.#memory(request.memory).open({ create, itemType, signal })
-        // The worker went while the memory opened.
-        if (signal.aborted) {
+        const memory = this.#memory(request.memory)
+        this.#checkClosed(request.memory)
+        const contract = (memory.constructor as typeof MemoryBase).contract
+        const reads = new Set(contract.tools.filter((tool) => !tool.write).map((tool) => tool.name))
+        const session = await memory.open({ create: request.create, itemType: request.itemType, signal })
+        try {
+          // The worker went while the memory opened, or another open of it got in first.
+          signal.throwIfAborted()
+          this.#checkClosed(request.memory)
+        } catch (error) {
           await session.close()
-          throw signal.reason
+          throw error
         }
         const id = randomUUID()
-        this.#sessions.set(id, session)
+        this.#sessions.set(id, { memory: request.memory, session, reads })
         return { session: id, info: session.info, created: session.created }
       }
-      case "reset":
-        await this.#memory(request.memory).reset({ signal })
-        return {}
       case "snapshot": {
-        const { version, recall } = await this.#session(request.session).snapshot()
+        const { version, recall } = await this.#opened(request.session).session.snapshot()
         return { version, recall }
       }
-      case "call":
-        return { result: await this.#session(request.session).call(request.tool, request.args, { signal }) }
-      case "apply": {
-        const { id, change, author } = request
-        return { applied: await this.#session(request.session).apply({ id, change, author, signal }) }
+      case "call": {
+        const { session, reads } = this.#opened(request.session)
+        if (!reads.has(request.tool)) throw new Error(`no read tool ${repr(request.tool)}`)
+        return { result: await session.call(request.tool, request.args, { signal }) }
       }
-      case "undo": {
-        const { id, changeId, author } = request
-        return { applied: await this.#session(request.session).undo({ id, changeId, author, signal }) }
-      }
-      case "erase": {
-        const { id, target, author } = request
-        const erased = await this.#session(request.session).erase({ id, target, author, signal })
-        return { version: erased.version, disabled_undos: erased.disabledUndos }
-      }
-      case "history":
-        return { changes: await this.#session(request.session).history({ limit: request.limit }) }
       case "close": {
-        const session = this.#session(request.session)
+        const { session } = this.#opened(request.session)
         this.#sessions.delete(request.session)
         await session.close()
         return {}
@@ -94,7 +88,7 @@ export class MemoryHost {
     this.#live = new AbortController()
     const sessions = [...this.#sessions.values()]
     this.#sessions.clear()
-    await Promise.allSettled(sessions.map((session) => session.close()))
+    await Promise.allSettled(sessions.map((open) => open.session.close()))
   }
 
   #memory(name: string): MemoryBase {
@@ -102,9 +96,16 @@ export class MemoryHost {
     return this.memories[name]!
   }
 
-  #session(id: string): MemorySession {
-    const session = this.#sessions.get(id)
-    if (session === undefined) throw new Error("no such memory session")
-    return session
+  /** Throws when the worker holds a session on the memory `name`. */
+  #checkClosed(name: string): void {
+    for (const open of this.#sessions.values()) {
+      if (open.memory === name) throw new Error(`memory ${repr(name)} is open already`)
+    }
+  }
+
+  #opened(id: string): Opened {
+    const opened = this.#sessions.get(id)
+    if (opened === undefined) throw new Error("no such memory session")
+    return opened
   }
 }

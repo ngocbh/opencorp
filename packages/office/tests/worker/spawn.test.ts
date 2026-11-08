@@ -5,6 +5,7 @@ import fs from "node:fs"
 import type net from "node:net"
 import path from "node:path"
 import { inspect } from "node:util"
+import type { MemoryBase } from "@ngocbh/yian"
 import { inspectRun } from "@ngocbh/yian/run"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { INHERITED_ENV as LAUNCH_ENV } from "../../src/install/launch.ts"
@@ -36,6 +37,7 @@ import {
   makeRegistry,
   officeEnd,
   Pending,
+  profileMemory,
   Recorder,
   runWorker,
   waitsOf,
@@ -1041,8 +1043,8 @@ test("a grandchild of a spawned worker does not hold the channel open", async ()
 })
 
 /** A registry with a worker parked on a kept inbox job of session s1: the registry, the worker, its job and the
- *  recorder it parked with. */
-async function parkedInRegistry(): Promise<{
+ *  recorder it parked with, which serves `memories`. */
+async function parkedInRegistry(memories: Record<string, MemoryBase> = {}): Promise<{
   registry: ReturnType<typeof makeRegistry>
   store: ReturnType<typeof openStore>
   worker: Worker
@@ -1053,7 +1055,7 @@ async function parkedInRegistry(): Promise<{
   const store = openStore()
   const registry = makeRegistry(store)
   const job = makeJob(where, "flows/inbox.yaml", { inputs: {}, keep: true })
-  const rec = new Recorder()
+  const rec = new Recorder({ memories })
   const worker = await registry.spawn(job, path.join(where.root, "sessions", "s1"), rec)
   await waitFor(() => rec.parks === 1, { timeout: 30_000, what: "the worker to park" })
   return { registry, store, worker, job, rec }
@@ -1084,6 +1086,16 @@ test("next sends the job and swaps job and handlers", async () => {
   expect(after.returncode).toBe(0)
   expect(rec.returncode).toBeNull()
   expect(registry.get("s1")).toBeUndefined()
+})
+
+test("next closes the memory sessions the last job's handlers held", async () => {
+  const profile = profileMemory(path.join(tempDir(), "memory"), "# Minh\n")
+  const { registry, worker, job, rec } = await parkedInRegistry({ profile })
+  // A session the last job's run left open on the office's side.
+  const open = { op: "open", memory: "profile", create: true, itemType: null } as const
+  const { session } = (await rec.memory(worker, open)) as { session: string }
+  expect(await registry.next(worker, advanceJob(job), new Recorder())).toBe(true)
+  await expect(rec.memory(worker, { op: "snapshot", session })).rejects.toThrow("no such memory session")
 })
 
 test("next is false once the channel closed", async () => {

@@ -196,9 +196,9 @@ export class Worker implements JobWorker {
   }
 
   /**
-   * Runs `job` with `handlers` in this parked worker: both replace the current ones, then the `start` frame goes.
-   * False, with nothing changed, unless the worker is parked and the frame was sent (the channel closed meanwhile);
-   * rejects with `FrameTooLarge`, nothing changed, for a frame over the limit.
+   * Runs `job` with `handlers` in this parked worker: both replace the current ones, then the `start` frame goes, and
+   * the replaced handlers are `released`. False, with nothing changed, unless the worker is parked and the frame was
+   * sent (the channel closed meanwhile); rejects with `FrameTooLarge`, nothing changed, for a frame over the limit.
    */
   async next(job: Job, handlers: WorkerHandlers<Worker>): Promise<boolean> {
     if (!this.#parked) return false
@@ -209,7 +209,10 @@ export class Worker implements JobWorker {
     this.#parked = false
     this.#between = false
     try {
-      if (await this.#send({ type: "start", job })) return true
+      if (await this.#send({ type: "start", job })) {
+        this.#notify("released", () => before.handlers.released(this))
+        return true
+      }
     } catch (error) {
       this.#restore(before)
       throw error

@@ -219,6 +219,11 @@ export class TemplateOffice extends Recorder {
     return this.#profile.answer(request)
   }
 
+  override released(worker: unknown): void {
+    super.released(worker)
+    void this.#profile?.close()
+  }
+
   override exited(worker: unknown, returncode: number | null): void {
     super.exited(worker, returncode)
     void this.#profile?.close()

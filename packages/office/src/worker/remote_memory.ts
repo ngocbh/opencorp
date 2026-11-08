@@ -4,7 +4,6 @@ import {
   type Applied,
   type Author,
   type ChangeEntry,
-  ChangeIdReusedError,
   type Erased,
   FileMemory,
   MemoryBase,
@@ -20,15 +19,19 @@ import { ReportedToolError } from "@ngocbh/yian/tools"
 import { ChannelClosed, type Frame } from "./channel.ts"
 import { RemoteError, type RequestType, type Rpc } from "./rpc.ts"
 
+/** Why a run can't change, undo, erase, list the history of or reset an office memory: the office keeps it. */
+export const READ_ONLY = "the office keeps this memory; a run only reads it"
+
 /**
- * The office memory `name` of the worker's job, with FileMemory's contract: `open` and `reset` and each call of a
- * session it opens are one `memory_<op>` request.
+ * The office memory `name` of the worker's job, with FileMemory's contract, which a run only reads: `open`, and a
+ * session's `snapshot`, read tool `call` and `close`, are each one `memory_<op>` request. A change or an undo is
+ * refused with `READ_ONLY`, which the model reads, and an erase, the history and `reset` throw it; none sends
+ * anything.
  *
- * An error reply is thrown as yian's memory contract has it: `busy`, `change_id_reused` (from a change) and `missing`
- * as yian's `MemoryBusyError`, `ChangeIdReusedError` and `MemoryMissingError`; `refused`, a refusal the model reads,
- * as a `ReportedToolError`, permanent when the reply says so; and any other reply or a closed channel as a Node system
- * error (code `EIO`, syscall `read` or `write`). An aborted signal rejects with its reason; the office's call may
- * still complete, which a change's id makes safe to send again.
+ * An error reply is thrown as yian's memory contract has it: `busy` and `missing` as yian's `MemoryBusyError` and
+ * `MemoryMissingError`; `refused`, a refusal the model reads, as a `ReportedToolError`, permanent when the reply says
+ * so; and any other reply or a closed channel as a Node system error (code `EIO`, syscall `read`). An aborted signal
+ * rejects with its reason.
  */
 export class RemoteMemory extends MemoryBase {
   static override readonly contract: MemoryContract = FileMemory.contract
@@ -46,13 +49,13 @@ export class RemoteMemory extends MemoryBase {
     signal: AbortSignal
   }): Promise<MemorySession> {
     const fields = { memory: this.name, create: o.create, item_type: o.itemType }
-    const reply = await request(this.rpc, "memory_open", fields, { signal: o.signal, syscall: "read" })
+    const reply = await request(this.rpc, "memory_open", fields, { signal: o.signal })
     // The office end is trusted office code: its reply fields are what its session gave.
     return new RemoteSession(this.rpc, reply.session as string, reply.info as MemoryInfo, reply.created === true)
   }
 
-  override async reset(o: { signal: AbortSignal }): Promise<void> {
-    await request(this.rpc, "memory_reset", { memory: this.name }, { signal: o.signal, syscall: "write" })
+  override async reset(_o: { signal: AbortSignal }): Promise<void> {
+    throw new Error(READ_ONLY)
   }
 }
 
@@ -71,71 +74,63 @@ class RemoteSession implements MemorySession {
   }
 
   async snapshot(): Promise<{ version: string; recall: Recall }> {
-    const reply = await this.#request("memory_snapshot", {}, { syscall: "read" })
+    const reply = await this.#request("memory_snapshot", {})
     return { version: reply.version as string, recall: reply.recall as Recall }
   }
 
   async call(tool: string, args: JsonObject, o: { signal: AbortSignal }): Promise<JsonObject> {
-    const reply = await this.#request("memory_call", { tool, args }, { signal: o.signal, syscall: "read" })
+    const reply = await this.#request("memory_call", { tool, args }, { signal: o.signal })
     return reply.result as JsonObject
   }
 
-  async apply(c: { id: string; change: JsonObject; author: Author; signal: AbortSignal }): Promise<Applied> {
-    const fields = { change_id: c.id, change: c.change, author: c.author }
-    const reply = await this.#request("memory_apply", fields, { signal: c.signal, syscall: "write", changeId: c.id })
-    return reply.applied as Applied
+  /** A refusal, as a cap's is: the change writes nothing. */
+  async apply(_c: { id: string; change: JsonObject; author: Author; signal: AbortSignal }): Promise<Applied> {
+    return { ok: false, reason: READ_ONLY, current: null }
   }
 
-  async undo(o: { id: string; changeId: string; author: Author; signal: AbortSignal }): Promise<Applied> {
-    const fields = { change_id: o.id, undoes: o.changeId, author: o.author }
-    const reply = await this.#request("memory_undo", fields, { signal: o.signal, syscall: "write", changeId: o.id })
-    return reply.applied as Applied
+  async undo(_o: { id: string; changeId: string; author: Author; signal: AbortSignal }): Promise<Applied> {
+    return { ok: false, reason: READ_ONLY, current: null }
   }
 
-  async erase(o: { id: string; target: JsonObject; author: Author; signal: AbortSignal }): Promise<Erased> {
-    const fields = { change_id: o.id, target: o.target, author: o.author }
-    const reply = await this.#request("memory_erase", fields, { signal: o.signal, syscall: "write", changeId: o.id })
-    return { version: reply.version as string, disabledUndos: reply.disabled_undos as string[] }
+  async erase(_o: { id: string; target: JsonObject; author: Author; signal: AbortSignal }): Promise<Erased> {
+    throw new Error(READ_ONLY)
   }
 
-  async history(o: { limit: number }): Promise<ChangeEntry[]> {
-    return (await this.#request("memory_history", { limit: o.limit }, { syscall: "read" })).changes as ChangeEntry[]
+  async history(_o: { limit: number }): Promise<ChangeEntry[]> {
+    throw new Error(READ_ONLY)
   }
 
   async close(): Promise<void> {
-    await this.#request("memory_close", {}, { syscall: "read" })
+    await this.#request("memory_close", {})
   }
 
-  #request(type: RequestType, fields: Frame, options: RequestOptions): Promise<Frame> {
+  #request(type: RequestType, fields: Frame, options: RequestOptions = {}): Promise<Frame> {
     return request(this.#rpc, type, { session: this.#id, ...fields }, options)
   }
 }
 
-/** How a request is sent, and what its errors become: the call's signal, the syscall of its I/O error, and a change's
- *  id, which a reused-id reply names. */
-type RequestOptions = { signal?: AbortSignal; syscall: "read" | "write"; changeId?: string }
+/** How a request is sent: the call's signal. */
+type RequestOptions = { signal?: AbortSignal }
 
 /** Sends one memory request; rejects with the error yian's contract has for its reply (see `RemoteMemory`). */
 async function request(rpc: Rpc, type: RequestType, fields: Frame, options: RequestOptions): Promise<Frame> {
-  const { signal, syscall, changeId } = options
   try {
-    return await rpc.request(type, fields, { signal })
+    return await rpc.request(type, fields, { signal: options.signal })
   } catch (error) {
     if (error instanceof RemoteError) {
       if (error.code === "busy") throw new MemoryBusyError(error.message)
       if (error.code === "missing") throw new MemoryMissingError(error.message)
-      if (error.code === "change_id_reused" && changeId !== undefined) throw new ChangeIdReusedError(changeId)
       if (error.code === "refused") {
         throw new ReportedToolError(error.message, { permanent: error.reply.permanent === true })
       }
-      throw systemError(error.message, syscall)
+      throw systemError(error.message)
     }
-    if (error instanceof ChannelClosed) throw systemError(error.message, syscall)
+    if (error instanceof ChannelClosed) throw systemError(error.message)
     throw error
   }
 }
 
 /** A Node system error, as a memory throws for storage it can't reach. */
-function systemError(message: string, syscall: "read" | "write"): Error {
-  return Object.assign(new Error(message), { code: "EIO", syscall })
+function systemError(message: string): Error {
+  return Object.assign(new Error(message), { code: "EIO", syscall: "read" })
 }

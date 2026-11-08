@@ -603,6 +603,7 @@ export class ChatHarness implements SessionHarness {
       parked: (worker) => {
         if (!this.#stopping) handlers.parked(worker)
       },
+      released: (worker) => handlers.released(worker),
       exited: (worker, returncode) => {
         if (!this.#stopping) handlers.exited(worker, returncode)
       },

@@ -1,4 +1,5 @@
 /** Worker requests: the office answers each with its handlers, checked against the job, with value-free errors. */
+import fs from "node:fs"
 import { PassThrough } from "node:stream"
 import { expect, onTestFinished, test } from "bun:test"
 import {
@@ -77,7 +78,6 @@ const throwingLog: RpcLog = () => {
 }
 
 const OPEN = { type: "memory_open", id: 1, memory: "profile", create: true, item_type: null }
-const RESET = { type: "memory_reset", id: 2, memory: "profile" }
 
 /** A `tool_call` frame for tool `name` of group `g`, with a call id of the job's run. */
 function call(name: string, args: Record<string, unknown> = { text: "x" }): Frame {
@@ -142,9 +142,7 @@ test("a memory's errors keep yian's kinds", async () => {
   ]
   for (const [error, reply] of cases) {
     const memories = { profile: new Failing(() => error) }
-    for (const frame of [OPEN, RESET]) {
-      expect(await answer(frame, { memories })).toEqual({ type: "memory_reply", id: frame.id, ...reply })
-    }
+    expect(await answer(OPEN, { memories })).toEqual({ type: "memory_reply", id: 1, ...reply })
   }
   const parse = tool(() => {
     throw new Error("bad text")
@@ -177,15 +175,8 @@ test("a malformed request is failed not a memory's error", async () => {
   const cases: [Frame, string][] = [
     [{ type: "memory_open", id: 1, create: true }, "memory_open request is missing 'memory'"],
     [{ ...OPEN, create: "yes" }, "memory_open request has a bad 'create'"],
-    [
-      { type: "memory_apply", id: 1, session: "s", change_id: "c", change: [], author: {} },
-      "memory_apply request has a bad 'change'",
-    ],
-    [{ type: "memory_history", id: 1, session: "s", limit: -1 }, "memory_history request has a bad 'limit'"],
-    [
-      { type: "memory_undo", id: 1, session: "s", change_id: "u", author: {} },
-      "memory_undo request is missing 'undoes'",
-    ],
+    [{ type: "memory_call", id: 1, session: "s", tool: "read", args: [] }, "memory_call request has a bad 'args'"],
+    [{ type: "memory_close", id: 1 }, "memory_close request is missing 'session'"],
   ]
   for (const [frame, message] of cases) {
     expect(await answer(frame, { memories })).toEqual({ type: "memory_reply", id: 1, error: "failed", message })
@@ -201,15 +192,8 @@ test("memory replies are plain json", async () => {
   const session = opened.session as string
   const ask = (frame: Frame) => answerRequest({ id: 3, session, ...frame }, handlers, worker)
   expect(await ask({ type: "memory_snapshot" })).toMatchObject({ recall: { text: "# Minh\n", cut: null, hint: null } })
-  const author = { kind: "agent", name: "reply" }
-  const change = { op: "append", path: "a.md", text: "x" }
-  const applied = await ask({ type: "memory_apply", change_id: "c-1", change, author })
-  expect(applied).toMatchObject({ type: "memory_reply", id: 3, applied: { ok: true, result: { path: "a.md" } } })
-  const history = await ask({ type: "memory_history", limit: 5 })
-  expect((history.changes as Frame[]).map((c) => [c.id, c.op])).toEqual([["c-1", "append"]])
-  expect(await ask({ type: "memory_undo", change_id: "u-1", undoes: "c-1", author })).toMatchObject({
-    applied: { ok: true },
-  })
+  const read = await ask({ type: "memory_call", tool: "read", args: { path: "profile.md" } })
+  expect(read).toMatchObject({ type: "memory_reply", id: 3, result: { path: "profile.md", text: "# Minh" } })
   expect(await ask({ type: "memory_close" })).toEqual({ type: "memory_reply", id: 3 })
   expect(await ask({ type: "memory_snapshot" })).toEqual({
     type: "memory_reply",
@@ -217,6 +201,62 @@ test("memory replies are plain json", async () => {
     error: "failed",
     message: "no such memory session",
   })
+})
+
+/** An office profile memory in a temp folder holding `# Minh\n`, handlers serving it, a worker whose job names it,
+ *  and the session a `memory_open` opened on it. */
+async function openProfile() {
+  const root = `${tempDir()}/memory`
+  const handlers = new BaseHandlers({ memories: { profile: profileMemory(root, "# Minh\n") } })
+  const worker = workerFor(handlers)
+  const opened = await answerRequest(OPEN, handlers, worker)
+  return { root, handlers, worker, session: opened.session as string }
+}
+
+test.each([
+  ["memory_apply", { change_id: "c-1", change: { op: "append", path: "profile.md", text: "x" }, author: {} }],
+  ["memory_undo", { change_id: "u-1", undoes: "c-1", author: {} }],
+  ["memory_erase", { change_id: "e-1", target: { path: "profile.md" }, author: {} }],
+  ["memory_history", { limit: 5 }],
+  ["memory_reset", { memory: "profile" }],
+])("a worker can't change or reset a memory, nor read its history [%s]", async (type, fields) => {
+  const { root, handlers, worker, session } = await openProfile()
+  expect(isRequest(type)).toBe(false)
+  // No request type of the office takes it: the worker's channel drops it unanswered.
+  await expect(answerRequest({ type, id: 2, session, ...fields }, handlers, worker)).rejects.toThrow(TypeError)
+  expect(fs.readFileSync(`${root}/profile.md`, "utf8")).toBe("# Minh\n")
+})
+
+test("a memory call takes only the memory's read tools", async () => {
+  const { root, handlers, worker, session } = await openProfile()
+  for (const tool of ["append", "rewrite", "delete", "nope"]) {
+    const args = { path: "profile.md", text: "x", if_hash: "h" }
+    const reply = await answerRequest({ type: "memory_call", id: 2, session, tool, args }, handlers, worker)
+    expect([reply.error, reply.message]).toEqual(["failed", `no read tool '${tool}'`])
+  }
+  for (const tool of ["list", "read", "search"]) {
+    const args = tool === "search" ? { query: "minh" } : tool === "read" ? { path: "profile.md" } : {}
+    const reply = await answerRequest({ type: "memory_call", id: 2, session, tool, args }, handlers, worker)
+    expect(reply.error).toBeUndefined()
+  }
+  expect(fs.readFileSync(`${root}/profile.md`, "utf8")).toBe("# Minh\n")
+})
+
+test("a worker opens each memory once at a time", async () => {
+  const { handlers, worker, session } = await openProfile()
+  const again = await answerRequest(OPEN, handlers, worker)
+  expect([again.error, again.message]).toEqual(["failed", "memory 'profile' is open already"])
+  await answerRequest({ type: "memory_close", id: 3, session }, handlers, worker)
+  expect((await answerRequest(OPEN, handlers, worker)).error).toBeUndefined()
+})
+
+test("the sessions a worker left open close when it exits or moves on to its next job", async () => {
+  for (const leave of [(h: BaseHandlers) => h.exited(null, 0), (h: BaseHandlers) => h.released(null)]) {
+    const { handlers, worker, session } = await openProfile()
+    leave(handlers)
+    const snapshot = await answerRequest({ type: "memory_snapshot", id: 2, session }, handlers, worker)
+    expect([snapshot.error, snapshot.message]).toEqual(["failed", "no such memory session"])
+  }
 })
 
 test("a forged tool call for a group the job was not given is refused", async () => {
@@ -241,13 +281,8 @@ test("a forged memory request for a memory the job was not given is refused", as
   const notes = new Failing(() => ran.push("notes"))
   const handlers = new BaseHandlers({ memories: { profile: new Failing(), notes } })
   const worker = workerFor(handlers, { memory: ["profile"] })
-  for (const frame of [
-    { ...OPEN, memory: "notes" },
-    { ...RESET, memory: "notes" },
-  ]) {
-    const reply = await answerRequest(frame, handlers, worker)
-    expect([reply.type, reply.error, reply.message]).toEqual(["memory_reply", "failed", "no memory named 'notes'"])
-  }
+  const reply = await answerRequest({ ...OPEN, memory: "notes" }, handlers, worker)
+  expect([reply.type, reply.error, reply.message]).toEqual(["memory_reply", "failed", "no memory named 'notes'"])
   expect(ran).toEqual([])
 })
 
@@ -274,13 +309,8 @@ test("object method names are never tools or memories", async () => {
     expect([group.error, group.message]).toEqual(["failed", `no tool 'shout' in group '${key}'`])
     const name = await answerRequest({ ...shout, name: key }, handlers, worker)
     expect([name.error, name.message]).toEqual(["failed", `no tool '${key}' in group 'toolbox'`])
-    for (const frame of [
-      { ...OPEN, memory: key },
-      { ...RESET, memory: key },
-    ]) {
-      const reply = await answerRequest(frame, handlers, worker)
-      expect([reply.error, reply.message]).toEqual(["failed", `no memory named '${key}'`])
-    }
+    const reply = await answerRequest({ ...OPEN, memory: key }, handlers, worker)
+    expect([reply.error, reply.message]).toEqual(["failed", `no memory named '${key}'`])
   }
   expect(ran).toEqual([])
   for (const type of ["toString", "__proto__", "constructor"]) expect(isRequest(type)).toBe(false)
@@ -294,7 +324,8 @@ test("object method names are never tools or memories", async () => {
   await expect(bare.toolCall(null, "__proto__", "constructor", {})).rejects.toThrow(
     "no tool 'constructor' in group '__proto__'",
   )
-  await expect(new BaseHandlers().memory(null, { op: "reset", memory: "toString" })).rejects.toThrow(
+  const open = { op: "open", memory: "toString", create: true, itemType: null } as const
+  await expect(new BaseHandlers().memory(null, open)).rejects.toThrow(
     "no memory named 'toString'",
   )
   await expect(new BaseHandlers().memory(null, { op: "snapshot", session: "toString" })).rejects.toThrow(
@@ -397,10 +428,8 @@ test("an error whose name or message cannot be read is a failed reply", async ()
     ["INFO", "worker tool_call request failed: Error"],
   ])
   const memories = { profile: new Failing(revoked) }
-  for (const frame of [OPEN, RESET]) {
-    const reply = await answer(frame, { memories })
-    expect([reply.type, reply.error, reply.message]).toEqual(["memory_reply", "failed", "Error"])
-  }
+  const reply = await answer(OPEN, { memories })
+  expect([reply.type, reply.error, reply.message]).toEqual(["memory_reply", "failed", "Error"])
   expect(await answer(call("badName"), { tools, log: throwingLog })).toEqual(first)
 })
 
