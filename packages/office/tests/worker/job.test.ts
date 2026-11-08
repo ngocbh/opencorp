@@ -19,10 +19,10 @@ test("a job round trips through json", () => {
   const job = parseJob({
     ...BASE,
     inputs: { big: 2n ** 64n + 1n, text: "hi" },
-    memory: { profile: { store: "profile" } },
+    memory: ["profile"],
     groups: { workspace: [{ name: "shell" }] },
   })
-  expect(job.memory.profile).toEqual({ kind: "profile", store: "profile", max_chars: 32000, llm_config: null })
+  expect(job.memory).toEqual(["profile"])
   const shell = { name: "shell", description: "", parameters: { type: "object", properties: {} } }
   expect(job.groups.workspace).toEqual([shell])
   expect(job.inputs.big).toBe(2n ** 64n + 1n)

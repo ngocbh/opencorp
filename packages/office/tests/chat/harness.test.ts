@@ -1846,7 +1846,7 @@ test("a profile manager spec has only the profile tools and no workspace", async
   // Its folder is the company's own, which no chat's workspace may be: a profile manager has none to check.
   const s = await stored(h, { kind: "profile_manager", cwd: h.office.paths.company, status: "starting" })
   const spec = await h.harness.spec(s)
-  expect([spec.flow, spec.workspace, spec.memory]).toEqual(["shared/flows/profile_manager.yaml", undefined, {}])
+  expect([spec.flow, spec.workspace, spec.memories]).toEqual(["shared/flows/profile_manager.yaml", undefined, {}])
   const groups = spec.groups({ session: s, runId: "run-1" })
   expect(Object.entries(groups).map(([group, tools]) => [group, Object.keys(tools)])).toEqual([
     ["profile", ["read", "propose_edit"]],

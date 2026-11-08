@@ -1794,6 +1794,23 @@ test("a profile edited between two messages does not stop the next advance", asy
   expect(session(o, sid).run_ids).toHaveLength(1)
 })
 
+test("a reply has the profile in its system prompt, and a bad profile.md is left out, not a failure", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  expect(await say(o, actor, sid, "a")).toBe("one")
+  /** The system prompt of the fake's `n`th request. */
+  const system = (n: number) => String((fake.requests()[n]!.messages as { content: unknown }[])[0]!.content)
+  expect(system(0)).toContain('<memory name="profile">\n# Minh, Engineer\n\n</memory>')
+  // A profile.md that isn't UTF-8 isn't part of the memory: the chat goes on without it.
+  const bad = Buffer.from("# M\xffinh\n", "latin1")
+  const p = await chatOffice(fake, { files: { "people/minh/memory/profile.md": bad } })
+  const started = await startActor(p)
+  expect(await say(p, started.actor, started.sid, "b")).toBe("two")
+  expect(system(1)).toContain('<memory name="profile">\n1 entry skipped: not part of the memory\n</memory>')
+})
+
 test("a run log with a bad line answers the next message from a fresh run", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "one" }, { content: "two" })

@@ -106,7 +106,8 @@ test("the profile memory is the office's, bound as a flow input", async () => {
   expect(job.memory).toEqual(["profile"])
   expect((await run(job, handlers, { env: fake.env() })).outcome?.status).toBe("succeeded")
   const [system] = fake.requests()[0]!.messages as { role: string; content: string }[]
-  expect([system!.role, system!.content]).toEqual(["system", '<memory name="profile"># Minh\nPrefers terse answers.\n</memory>'])
+  const recall = '<memory name="profile"># Minh\nPrefers terse answers.\n</memory>'
+  expect([system!.role, system!.content]).toEqual(["system", recall])
   // The office made the memory's own files in its folder.
   expect(fs.readFileSync(path.join(where.root, "memory", ".yian", "identity"), "utf8")).toBe("people/minh")
 })

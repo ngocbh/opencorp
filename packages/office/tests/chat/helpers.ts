@@ -29,14 +29,25 @@ import { Answers } from "../../src/questions/ask.ts"
 import { SecretStore, writePrivate } from "../../src/secrets.ts"
 import { newId, type QuestionRecord, type SessionRecord, type WorkItemRecord } from "../../src/store/store.ts"
 import { FakeLLM, LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
+import type { Frame } from "../../src/worker/channel.ts"
 import { type Delivery, Job, type JobInput } from "../../src/worker/job.ts"
-import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
+import { MemoryHost, type MemoryRequest } from "../../src/worker/memory_host.ts"
+import type { JobWorker, OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
 import type { Worker, WorkerRegistry } from "../../src/worker/spawn.ts"
 import { baseFiles, person } from "../company/helpers.ts"
 import { CEO, makeOffice } from "../daemon/helpers.ts"
 import { type Codex, makeCodex } from "../harness/helpers.ts"
 import { NO_GROUP, tempDir, waitFor } from "../helpers.ts"
-import { advanceJob, inProcessWorker, makeJob, makeRegistry, Recorder, run, waitsOf } from "../worker/helpers.ts"
+import {
+  advanceJob,
+  inProcessWorker,
+  makeJob,
+  makeRegistry,
+  profileMemory,
+  Recorder,
+  run,
+  waitsOf,
+} from "../worker/helpers.ts"
 
 /** The template's chat flow, as a hire's main points at it. */
 export const CHAT_FLOW = fs.readFileSync(
@@ -177,9 +188,21 @@ export function send(id: string, text: string, author?: string): Delivery {
 /** A close of the messages inbox. */
 export const CLOSE: Delivery = { id: "close", op: "close", inbox: "messages" }
 
+/** The memories each template flow declares, which the office binds. */
+export const MEMORIES: Record<string, string[]> = { chat: ["profile"], side_chat: ["profile"], profile_manager: [] }
+
+/** minh's profile for the template runs of `pin`: a FileMemory in `profile/` beside the pin, which every run of
+ *  that pin binds, and a test may write `profile.md` in before the first. */
+export function templateProfile(pin: string): ReturnType<typeof profileMemory> {
+  return profileMemory(path.join(path.dirname(pin), "profile"))
+}
+
 /** A `Recorder` serving one no-op tool, `stub` (which a model calls `<group>_stub`), for each group `name`'s flow
- *  names, and the tools of `extra`, by group, merged in. */
+ *  names, and the tools of `extra`, by group, merged in; and the `profile` memory, `templateProfile` of the job's
+ *  pin. */
 export class TemplateOffice extends Recorder {
+  #profile: MemoryHost | null = null
+
   constructor(name = "chat", extra: Record<string, Record<string, OfficeTool>> = {}) {
     const tools: Record<string, Record<string, OfficeTool>> = Object.fromEntries(
       GROUPS[name]!.map((group) => [
@@ -189,6 +212,16 @@ export class TemplateOffice extends Recorder {
     )
     for (const [group, named] of Object.entries(extra)) tools[group] = { ...tools[group], ...named }
     super({ tools })
+  }
+
+  override memory(worker: unknown, request: MemoryRequest): Promise<Frame> {
+    this.#profile ??= new MemoryHost({ profile: templateProfile((worker as JobWorker).job.pin) })
+    return this.#profile.answer(request)
+  }
+
+  override exited(worker: unknown, returncode: number | null): void {
+    super.exited(worker, returncode)
+    void this.#profile?.close()
   }
 }
 
@@ -216,6 +249,7 @@ export function templateJob(
   const who = name === "profile_manager" ? {} : { person: PERSON, talking_to: "" }
   const fields: Partial<JobInput> = {
     inputs: { ...who, summary: "", history: [], turns: 0, max_turns: 500, ...inputs },
+    memory: MEMORIES[name],
     ...(runId === undefined ? {} : { run_id: runId }),
     ...over,
   }

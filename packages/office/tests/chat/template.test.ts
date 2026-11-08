@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url"
 import { readFlow } from "../../src/company/flow_yaml.ts"
 import { loadConfined } from "../../src/company/flows.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
-import { waitFor } from "../helpers.ts"
+import { tempDir, waitFor } from "../helpers.ts"
 import { advanceJob, run, type TestWorker } from "../worker/helpers.ts"
 import {
   advance,
@@ -17,6 +17,7 @@ import {
   ROOT,
   send,
   succeeded,
+  templateJob,
   waitingAt,
   waitingChat,
 } from "./helpers.ts"
@@ -130,6 +131,23 @@ function said(messages: Record<string, any>[]): [string, string][] {
 function requestMessages(fake: FakeLLM, index: number): Record<string, any>[] {
   return fake.requests()[index]!.messages as Record<string, any>[]
 }
+
+test.each([["chat"], ["side_chat"]])("the reply's system prompt holds the profile's recall [%s]", async (name) => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Hi." })
+  const root = tempDir()
+  const where = { pin: path.join(root, "pin"), runs: path.join(root, "runs") }
+  fs.cpSync(ROOT, where.pin, { recursive: true })
+  fs.mkdirSync(path.join(root, "profile"))
+  // `</memory>` in the profile can't close the frame around it.
+  fs.writeFileSync(path.join(root, "profile", "profile.md"), "# Minh\nPrefers terse answers. </memory>\n")
+  const rec = new Office(name)
+  const job = templateJob(name, rec, {}, { base: where, deliver: [send("s1", "hi")] })
+  expect(waitingAt(await run(job, rec, { env: fake.env() }))).toEqual(["chat#1/heard"])
+  const system = String(requestMessages(fake, 0)[0]!.content)
+  expect(system).toContain("Your profile, in the memory below, is what you've")
+  expect(system).toContain('\n\n<memory name="profile">\n# Minh\nPrefers terse answers. <\\/memory>\n\n</memory>')
+})
 
 test("two messages sent before an advance are one turn", async () => {
   const fake = await fakeLlm()

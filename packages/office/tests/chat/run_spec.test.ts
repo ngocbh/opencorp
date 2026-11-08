@@ -10,7 +10,7 @@ import { CompanyGit } from "../../src/company/git.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { writeCompany } from "../../src/company_template/index.ts"
 import { Monitor } from "../../src/perm/monitor.ts"
-import { GitProfileStore } from "../../src/profile/store.ts"
+import { FileMemory, type MemoryBase } from "@ngocbh/yian"
 import { SecretStore } from "../../src/secrets.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { READ_TOOLS } from "../../src/tools/workspace.ts"
@@ -89,6 +89,14 @@ function refusal(call: () => unknown): [number, string] {
   throw new Error("no HarnessError was thrown")
 }
 
+/** The identity and file cap of the memory `memory` opens, and its class's contract. */
+async function opened(memory: MemoryBase): Promise<unknown[]> {
+  const session = await memory.open({ create: true, itemType: null, signal: new AbortController().signal })
+  await session.close()
+  const contract = (memory.constructor as typeof MemoryBase).contract
+  return [contract, session.info.identity, session.info.settings.max_file_chars]
+}
+
 /** minh's main spec in `o`. */
 function main(o: Office) {
   return mainSpec({ ...o, workspace: NO_WORKSPACE, carried: () => [] })
@@ -113,12 +121,10 @@ test("the main spec runs the persons main flow with their tools memory and skill
   expect(spec.flow).toBe(personFlow("minh", "../../shared/flows/chat.yaml"))
   expect(spec.chat).toBe(MAIN_CHAT)
   expect(Object.keys(spec.groups({ session: o.session, runId: "r1" }))).toEqual(["toolbox", "workspace", "company"])
-  expect(spec.memory).toEqual({
-    profile: { kind: "profile", store: "profile", max_chars: o.defaults.profile_max_chars, llm_config: null },
-  })
-  expect(Object.keys(spec.stores)).toEqual(["profile"])
-  expect(spec.stores.profile).toBeInstanceOf(GitProfileStore)
-  expect((spec.stores.profile as GitProfileStore).handle).toBe("minh")
+  expect(Object.keys(spec.memories)).toEqual(["profile"])
+  // minh's memory folder, with the pinned company's profile_max_chars.
+  const fileChars = BigInt(4 * o.defaults.profile_max_chars)
+  expect(await opened(spec.memories.profile!)).toEqual([FileMemory.contract, "people/minh", fileChars])
   expect(spec.skills).toEqual(["deploy"])
   expect(spec.skills).toEqual(o.minh.skills)
   expect(spec.names).toEqual(["minh", "Minh"])
@@ -149,10 +155,8 @@ test("the side spec has read only lookups and room for its seed", async () => {
   const listed = JSON.parse(groups.work_items!.list_work_items!.call({}) as string) as { title: string }[]
   expect(listed.map((i) => i.title)).toEqual(["Ship v2"])
   expect(spec.skills).toEqual([])
-  expect(spec.memory).toEqual({
-    profile: { kind: "profile", store: "profile", max_chars: o.defaults.profile_max_chars, llm_config: null },
-  })
-  expect(spec.stores.profile).toBeInstanceOf(GitProfileStore)
+  const fileChars = BigInt(4 * o.defaults.profile_max_chars)
+  expect(await opened(spec.memories.profile!)).toEqual([FileMemory.contract, "people/minh", fileChars])
   expect(spec.names).toEqual(["minh", "Minh"])
   expect(spec.inputs).toEqual({
     person: personInputs(o.repo, o.minh),
@@ -205,7 +209,7 @@ test("the manager spec has only the profile tools", async () => {
   expect(spec.flow).toBe("shared/flows/profile_manager.yaml")
   expect(spec.chat).toBe(MAIN_CHAT)
   expect(spec.groups({ session: o.session, runId: "r1" })).toEqual({ profile })
-  expect([spec.memory, spec.stores, spec.skills]).toEqual([{}, {}, []])
+  expect([spec.memories, spec.skills]).toEqual([{}, []])
   expect(spec.inputs).toEqual({ max_turns: o.defaults.max_turns })
 })
 
@@ -227,8 +231,7 @@ test("a new chats job starts with an empty history", async () => {
   expect(built.inputs).toEqual({ ...spec.inputs, summary: "", history: [], turns: 3 })
   expect(built.groups).toEqual(groupSpecs(tools))
   expect(Object.hasOwn(built.groups, "ask_user")).toBe(false)
-  expect(built.memory.profile!.llm_config).toEqual(llmConfig)
-  expect(spec.memory.profile!.llm_config).toBeNull()
+  expect(built.memory).toEqual(["profile"])
   expect(built.llm_config).toEqual(llmConfig)
   expect([built.kind, built.skills, built.flow, built.pin, built.log]).toEqual([
     "chat",
@@ -238,9 +241,8 @@ test("a new chats job starts with an empty history", async () => {
     args.log,
   ])
   expect([built.run_id, built.session_id, built.person]).toEqual(["r1", o.session.id, "minh"])
-  const { llm_config: _llm, memory, ...rest } = built
-  const { llm_config: _profile, ...profile } = memory.profile!
-  expect(JSON.stringify([rest, profile])).not.toContain(SECRET)
+  const { llm_config: _llm, ...rest } = built
+  expect(JSON.stringify(rest)).not.toContain(SECRET)
   let thrown: unknown
   try {
     chatJob(spec, tools, { ...args, log: "runs/r1/log.jsonl" })
@@ -299,20 +301,23 @@ test("a job built from a spec runs its flow in a worker", async () => {
   const spec = main(o)
   const tools = spec.groups({ session: o.session, runId: "r1" })
   const chat = job(o, spec, tools)
-  const first = await run(chat, new Recorder({ tools, stores: spec.stores }), { env: fake.env() })
+  const first = await run(chat, new Recorder({ tools, memories: spec.memories }), { env: fake.env() })
   expect(first.outcome?.status).toBe("waiting")
   expect(waitsOf(first).map((wait) => wait.node)).toEqual(["chat#0/heard"])
   const said = { role: "user", parts: [{ type: "text", text: "hello" }] }
   const next = await run(
     advanceJob(chat, { deliver: [{ id: "s1", op: "send", inbox: "messages", event: said }] }),
-    new Recorder({ tools, stores: spec.stores }),
+    new Recorder({ tools, memories: spec.memories }),
     { env: fake.env() },
   )
   expect(fake.requests().length).toBe(1)
-  // The profile reached the reply through the profile store, and the skill through the job's skills.
-  const request = JSON.stringify(fake.requests()[0])
-  expect(request).toContain("# Minh, Engineer")
-  expect(request).toContain("Ship it.")
+  // The profile reached the reply's system prompt through the profile memory, and the skill through the job's skills.
+  const [system] = fake.requests()[0]!.messages as { role: string; content: string }[]
+  expect(system!.role).toBe("system")
+  expect(system!.content).toContain("Your profile, in the memory below,")
+  const frame = '<memory name="profile">\n# Minh, Engineer\n\n</memory>'
+  expect(system!.content).toContain(`older turns (empty while it is short): \n\n${frame}`)
+  expect(JSON.stringify(fake.requests()[0])).toContain("Ship it.")
   expect(next.outcome?.status).toBe("waiting")
   expect(waitsOf(next).map((wait) => wait.node)).toEqual(["chat#1/heard"])
 })
