@@ -11,6 +11,7 @@ import type { Job, JobInput } from "../../src/worker/job.ts"
 import { advanceAppended, EXIT_FAILED, notResumed } from "../../src/worker/main.ts"
 import type { WorkerHandlers } from "../../src/worker/rpc.ts"
 import { fakeLlm } from "../chat/helpers.ts"
+import { fifoAt } from "../runs/helpers.ts"
 import { openStore } from "../store/helpers.ts"
 import {
   advanceJob,
@@ -192,6 +193,21 @@ test("an advance whose log is gone is not resumed", async () => {
     unreadable: true,
   })
   expect(fs.existsSync(path.dirname(waiting.log))).toBe(false)
+})
+
+test("an advance whose log is a fifo is not resumed", async () => {
+  const waiting = await waitingInbox()
+  fs.rmSync(waiting.log)
+  fifoAt(waiting.log)
+  const rec = await run(advanceJob(waiting, { deliver: [HI] }), new Recorder())
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", refused: "not_started" }])
+  expect(rec.outcome).toEqual({
+    type: "result",
+    status: "not_resumed",
+    run_id: "r1",
+    error_type: "EINVAL",
+    unreadable: true,
+  })
 })
 
 test("a delivery-only job on an unreadable log is not resumed", async () => {

@@ -243,11 +243,12 @@ export function notResumed(error: unknown, appended: boolean): boolean {
 }
 
 /** For an error reading a run log that a host can't fix by trying again, its errno code (`ENOENT`, `ENOTDIR`: the log
- *  or its folder is gone) or its type (a `RangeError`: a line that isn't a record this version reads); else null.
- *  Never its message, which quotes the log's path and values. */
+ *  or its folder is gone; `EINVAL`: it isn't a regular file, such as a FIFO, which yian refuses to read) or its type
+ *  (a `RangeError`: a line that isn't a record this version reads); else null. Never its message, which quotes the
+ *  log's path and values. */
 export function unreadableLog(error: unknown): string | null {
   const code = (error as NodeJS.ErrnoException | null)?.code
-  if (code === "ENOENT" || code === "ENOTDIR") return code
+  if (code === "ENOENT" || code === "ENOTDIR" || code === "EINVAL") return code
   return error instanceof RangeError ? errorName(error) : null
 }
 
