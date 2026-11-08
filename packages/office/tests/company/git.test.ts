@@ -1324,6 +1324,68 @@ test("hand edits skip a profile with an unresolved conflict and say so once", as
   expect(logged).toHaveLength(1)
 })
 
+test.each(["people/minh/memory", "people/minh"])(
+  "a profile under a symlinked folder is skipped and said once, and other hand edits still commit [%s]",
+  async (folder) => {
+    const logged: string[] = []
+    const { tmp, company, g } = setup({ log: (line) => logged.push(line) })
+    // Moved elsewhere and linked back: git lists the profile as deleted, but lstat finds it through the link.
+    fs.renameSync(path.join(company, folder), path.join(tmp, "elsewhere"))
+    fs.symlinkSync(path.join(tmp, "elsewhere"), path.join(company, folder))
+    const other = "people/ngocbh/memory/profile.md"
+    fs.mkdirSync(path.join(company, "people/ngocbh/memory"))
+    fs.writeFileSync(path.join(company, other), "# Ngoc\n")
+    expect((await g.pending()).handEdits).toEqual([other])
+    expect(await g.commitHandEdits()).toEqual([other])
+    expect(git(company, "show", `HEAD:${PROFILE}`)).toBe("# Minh, Engineer")
+    expect(logged).toHaveLength(1)
+    expect(logged[0]).toContain(`${JSON.stringify([PROFILE])}: a folder on its path is a symlink`)
+    expect(await g.commitHandEdits()).toEqual([])
+    expect(logged).toHaveLength(1)
+  },
+)
+
+test("a .yian file or symlink in a memory folder is never a hand edit", async () => {
+  const { tmp, company, g } = setup()
+  fs.writeFileSync(path.join(company, "people/minh/memory/.yian"), "x\n")
+  fs.mkdirSync(path.join(company, "people/minh/memory/notes"))
+  fs.symlinkSync(tmp, path.join(company, "people/minh/memory/notes/.yian"))
+  expect(await g.pending()).toEqual({
+    handEdits: [],
+    uncommitted: ["people/minh/memory/.yian", "people/minh/memory/notes/.yian"],
+  })
+  expect(await g.commitHandEdits()).toEqual([])
+})
+
+test("a nested git repo in a memory folder is never a hand edit, new, changed or deleted; said once", async () => {
+  const logged: string[] = []
+  const { company, g } = setup({ log: (line) => logged.push(line) })
+  const notes = "people/minh/memory/notes"
+  fs.mkdirSync(path.join(company, notes))
+  fs.writeFileSync(path.join(company, notes, "a.md"), "a\n")
+  const nested = (...args: string[]) => git(path.join(company, notes), ...args)
+  nested("init", "-q", "-b", "main")
+  nested("add", "a.md")
+  nested("commit", "-qm", "a")
+  const head = await g.head()
+  expect(await g.commitHandEdits()).toEqual([])
+  expect(await g.head()).toBe(head)
+  const skipped = JSON.stringify([`${notes}/`])
+  expect(logged).toEqual([`hand edits skip ${skipped}: a nested git repo; only files are committed`])
+  // One a human committed as a gitlink: a new commit in it, then its removal.
+  git(company, "add", notes)
+  git(company, "commit", "-qm", "a gitlink")
+  fs.writeFileSync(path.join(company, notes, "a.md"), "b\n")
+  nested("commit", "-qam", "b")
+  expect(await g.pending()).toEqual({ handEdits: [], uncommitted: [notes] })
+  expect(await g.commitHandEdits()).toEqual([])
+  fs.rmSync(path.join(company, notes), { recursive: true })
+  expect(await g.commitHandEdits()).toEqual([])
+  expect(git(company, "ls-files", "-s", notes)).toStartWith("160000 ")
+  expect(logged).toHaveLength(2)
+  expect(logged[1]).toContain(JSON.stringify([notes]))
+})
+
 test.each(OPERATIONS)("hand edits wait while a %s is in progress", async (_, start, what, abort) => {
   const logged: string[] = []
   const { company, g } = setup({ log: (line) => logged.push(line) })

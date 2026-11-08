@@ -169,6 +169,15 @@ test.each([
   expect(fs.readFileSync(path.join(outside, "profile.md"), "utf8")).toBe(MINH)
 })
 
+test("another person's symlinked memory folder doesn't stop a read or a write", async () => {
+  const { dir, root, g } = setup()
+  fs.renameSync(path.join(root, "people/minh/memory"), path.join(dir, "elsewhere"))
+  fs.symlinkSync(path.join(dir, "elsewhere"), path.join(root, "people/minh/memory"))
+  const ngoc = new GitProfileStore(g, "ngocbh")
+  expect(await ngoc.read()).toEqual(["", EMPTY_BLOB])
+  expect(await ngoc.write("# Ngoc\n", { baseVersion: EMPTY_BLOB })).toBe(blobId(bytes("# Ngoc\n")))
+})
+
 test("a byte order mark is kept", async () => {
   const { root, store } = setup()
   fs.writeFileSync(path.join(root, PROFILE), "\uFEFF# Minh\n")
@@ -562,9 +571,9 @@ test("write refuses a symlinked person directory", async () => {
   fs.renameSync(path.join(root, "people/minh"), outside)
   fs.symlinkSync(outside, path.join(root, "people/minh"))
   const error = await rejection(new GitProfileStore(g, "minh").write("pwned\n", { baseVersion: blobId(bytes(MINH)) }))
-  // git refuses to add a path beyond a symbolic link, so the hand-edit sweep fails first.
-  expect(error).not.toBeInstanceOf(MarkdownVersionMismatch)
-  expect(error).toMatchObject({ code: "EIO", syscall: "write" })
+  // The hand-edit sweep skips the profile, which git won't add through the link, so target() refuses it.
+  expect(error).toBeInstanceOf(ProfileUnreadable)
+  expect((error as Error).message).toMatch(/symlink/)
   expect(fs.readFileSync(path.join(outside, "memory/profile.md"), "utf8")).toBe(MINH)
 })
 

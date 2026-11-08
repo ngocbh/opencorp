@@ -30,9 +30,14 @@ const LOCKDOWN = [
 const FILTERED = new Set(["add", "checkout-index", "commit", "reset", "rm", "status", "worktree"])
 const PIN_MARKER = ".opencorp-pin"
 const WRITE = 0o222
-// Every file in a person's memory folder, people/<handle>/memory/, but none in a `.yian/` folder, where yian keeps a
-// memory's journal, lock and identity. `:(glob)` makes `*` match one path segment and `**/` any number of them.
-const PROFILES = [":(glob)people/*/memory/**", ":(glob,exclude)people/*/memory/**/.yian/**"]
+// Every file in a person's memory folder, people/<handle>/memory/, but none named `.yian` or in a `.yian/` folder,
+// where yian keeps a memory's journal, lock and identity. `:(glob)` makes `*` match one path segment and `**/` any
+// number of them.
+const PROFILES = [
+  ":(glob)people/*/memory/**",
+  ":(glob,exclude)people/*/memory/**/.yian",
+  ":(glob,exclude)people/*/memory/**/.yian/**",
+]
 const BLOB_ID = /^[0-9a-f]{40}$/
 const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
 /** How long `prune` spares a pin after `pin` handed it out. It covers the gap until the store records the use:
@@ -151,7 +156,8 @@ function encodePath(text: string): Buffer {
   return Buffer.concat(parts)
 }
 
-/** The info fields and path of each entry of `git ls-tree -z` output (`<info>\t<path>`, NUL-terminated). */
+/** The info fields and path of each entry of `git ls-tree -z` or `git ls-files -s -z` output (`<info>\t<path>`,
+ *  NUL-terminated). */
 function lsTreeEntries(out: Buffer): { info: string[]; path: string }[] {
   return decodePath(out)
     .split("\0")
@@ -269,7 +275,8 @@ export interface LockedGit {
    *  `CompanyRepoBusy` while the repo is mid-operation, a path is conflicted, or a lock stays taken. */
   commit(paths: string[], message: string): Promise<string>
   /** Commits each changed, new, or deleted file in a `people/<handle>/memory/` folder (none in a `.yian/` folder) on
-   *  its own; returns their paths. Commits nothing while the repo is mid-operation, and skips a conflicted file. */
+   *  its own; returns their paths. Commits nothing while the repo is mid-operation, and skips a conflicted file, one
+   *  under a symlinked folder, and a nested git repo. */
   commitHandEdits(): Promise<string[]>
 }
 
@@ -309,10 +316,10 @@ export class CompanyGit {
   readonly #removing = new Set<string>()
   #queue: Promise<unknown> = Promise.resolve()
   #ceiling: string | undefined
-  // What `commitHandEdits` last reported waiting for, and the conflicted profiles it last skipped, so
-  // each is logged once.
+  // What `commitHandEdits` last reported waiting for, and the paths it last skipped for each reason, so each is
+  // logged once.
   #waiting = ""
-  #skipped = "[]"
+  readonly #skipped = new Map<string, string>()
   readonly #writer: LockedGit = {
     commit: (paths, message) => this.#commit(paths, message),
     commitHandEdits: () => this.#commitHandEdits(),
@@ -894,7 +901,8 @@ export class CompanyGit {
   }
 
   /** Commits each changed, new, or deleted file in a `people/<handle>/memory/` folder (none in a `.yian/` folder) on
-   *  its own; returns their paths. Commits nothing while the repo is mid-operation, and skips a conflicted file. */
+   *  its own; returns their paths. Commits nothing while the repo is mid-operation, and skips a conflicted file, one
+   *  under a symlinked folder, and a nested git repo. */
   commitHandEdits(): Promise<string[]> {
     return this.locked((git) => git.commitHandEdits())
   }
@@ -904,7 +912,8 @@ export class CompanyGit {
    *
    * While a human's operation is in progress it commits nothing: HEAD is still a whole company, so chats keep
    * starting from it, and a commit now would land inside their merge or rebase. A profile with an unresolved
-   * conflict is skipped, since committing it would mark it resolved with the markers in it.
+   * conflict is skipped, since committing it would mark it resolved with the markers in it. So are the paths
+   * `#sortHandEdits` finds git can't or shouldn't commit, so one person's folder never stops another's edits.
    */
   async #commitHandEdits(): Promise<string[]> {
     const operation = await this.#operation()
@@ -915,17 +924,45 @@ export class CompanyGit {
     // --untracked-files=all lists a new memory file inside a wholly untracked people/<new>/.
     const out = await this.#run(["status", "--porcelain", "-z", "--untracked-files=all", "--", ...PROFILES])
     const { paths, conflicted } = statusPaths(out.stdout)
-    const skipped = JSON.stringify(conflicted)
-    if (conflicted.length && skipped !== this.#skipped) {
-      this.#log(`hand edits skip ${skipped}: an unresolved merge conflict; resolve it and commit`)
-    }
-    this.#skipped = skipped
-    for (const rel of paths) {
+    const { ready, linked, nested } = await this.#sortHandEdits(paths)
+    this.#skip(conflicted, "an unresolved merge conflict; resolve it and commit")
+    this.#skip(linked, "a folder on its path is a symlink, which git won't commit through; make it a real folder")
+    this.#skip(nested, "a nested git repo; only files are committed")
+    for (const rel of ready) {
       // The folder under people/ is the handle; one line, so a hand-made name can't add a trailer.
       const handle = rel.split("/")[1]!.split(WHITESPACE).filter(Boolean).join(" ")
       await this.#commit([rel], `profile(@${handle}): hand edit`)
     }
-    return paths
+    return ready
+  }
+
+  /** Logs that hand edits skip `paths` for `why`, unless they are the paths last skipped for it. */
+  #skip(paths: string[], why: string): void {
+    const shown = JSON.stringify(paths)
+    if (paths.length && shown !== this.#skipped.get(why)) this.#log(`hand edits skip ${shown}: ${why}`)
+    this.#skipped.set(why, shown)
+  }
+
+  /**
+   * The memory paths `git status` listed, sorted: `ready` to commit; `linked`, under a folder that is a symlink, which
+   * `git add` refuses to go through; and `nested`, a nested git repo or a gitlink, which holds no memory file.
+   */
+  async #sortHandEdits(
+    paths: string[],
+    env?: Record<string, string>,
+  ): Promise<{ ready: string[]; linked: string[]; nested: string[] }> {
+    const sorted = { ready: [] as string[], linked: [] as string[], nested: [] as string[] }
+    if (!paths.length) return sorted
+    // A gitlink is listed by its own path, changed or deleted; an untracked nested repo by its folder, with a slash.
+    const index = lsTreeEntries((await this.#run(["ls-files", "-s", "-z", "--", ...PROFILES], { env })).stdout)
+    const gitlinks = new Set(index.filter((e) => e.info[0] === "160000").map((e) => e.path))
+    for (const rel of paths) {
+      if (rel.endsWith("/") || gitlinks.has(rel)) sorted.nested.push(rel)
+      // A path through a file fails the walk; git stages that deletion fine.
+      else if (await underSymlink(this.root, rel).catch(() => false)) sorted.linked.push(rel)
+      else sorted.ready.push(rel)
+    }
+    return sorted
   }
 
   /**
@@ -937,9 +974,10 @@ export class CompanyGit {
     // Without it `git status` may refresh the index under index.lock, which would fail the daemon's own git add.
     const env = { GIT_OPTIONAL_LOCKS: "0" }
     const status = ["status", "--porcelain", "-z", "--untracked-files=all"]
-    // As `commitHandEdits` does: nothing while a human's operation is in progress, and no conflicted profile.
+    // As `commitHandEdits` does: nothing while a human's operation is in progress, and no path it skips.
     const busy = (await this.#operation()) !== null
-    const handEdits = busy ? [] : statusPaths((await this.#run([...status, "--", ...PROFILES], { env })).stdout).paths
+    const listed = busy ? [] : statusPaths((await this.#run([...status, "--", ...PROFILES], { env })).stdout).paths
+    const handEdits = (await this.#sortHandEdits(listed, env)).ready
     const { paths, conflicted } = statusPaths((await this.#run(status, { env })).stdout)
     const edits = new Set(handEdits)
     return { handEdits, uncommitted: [...paths, ...conflicted].sort().filter((p) => !edits.has(p)) }
