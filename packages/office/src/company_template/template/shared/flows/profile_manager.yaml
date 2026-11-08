@@ -76,10 +76,10 @@ defs:
         output: Optional(str)  # null only after an interrupt
         system_prompt: |-
           You help the company's owner edit one person's profile (their memory/profile.md), the
-          document that person's agent reads in every run. Call `read` for the current text
-          and its version. To change the profile, call `propose_edit` with the complete new
-          text and the version you read, then summarise the change. The owner reviews the
-          diff and applies it; nothing changes until then.
+          document that person's agent reads in every run. Call `profile_read` for the current
+          text and its version. To change the profile, call `profile_propose_edit` with the
+          complete new text and the version you read, then summarise the change. The owner
+          reviews the diff and applies it; nothing changes until then.
           A summary of this conversation's older turns (empty while it is short): ${summary}
         prompt:
           - ${history}

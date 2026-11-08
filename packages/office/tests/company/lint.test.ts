@@ -339,8 +339,8 @@ test("a main flow must declare person and talking_to", async () => {
   expect(rest).toEqual([])
   expect([issue!.path, issue!.severity]).toEqual(["people/minh/person.yaml", "error"])
   expect(issue!.message).toBe(
-    "../../shared/flows/chat.yaml doesn't declare the messages, person, talking_to, summary, history, turns"
-      + " and max_turns inputs; the office passes them to a main flow and Yian refuses inputs a flow doesn't"
+    "../../shared/flows/chat.yaml doesn't declare the messages, person, talking_to, summary, history, turns,"
+      + " max_turns and profile inputs; the office passes them to a main flow and Yian refuses inputs a flow doesn't"
       + " declare, so declare them under input: as the template's shared/flows/chat.yaml does",
   )
 })
@@ -350,6 +350,16 @@ test("a main flow missing one input names only that one", async () => {
   const root = makeCompany({ "shared/flows/chat.yaml": flow })
   const [issue] = await withCode(root, "person.main_inputs_missing")
   expect(issue!.message).toStartWith("../../shared/flows/chat.yaml doesn't declare the talking_to input;")
+})
+
+test("a main flow's profile must be a FileMemory", async () => {
+  const root = makeCompany({ "shared/flows/chat.yaml": MAIN.replace("profile: !FileMemory", "profile: !str") })
+  const [issue, ...rest] = await withCode(root, "person.main_chat_shape")
+  expect(rest).toEqual([])
+  expect(issue!.message).toBe(
+    "../../shared/flows/chat.yaml's profile input isn't a FileMemory; the office binds the person's memory folder"
+      + " there, so declare `profile: !FileMemory` as the template's shared/flows/chat.yaml does",
+  )
 })
 
 test("only the main flow needs the office inputs", async () => {
@@ -571,6 +581,28 @@ test("a symlinked memory folder or a file in its place is an error", async () =>
     expect(await issues(root)).toEqual(new Set(["person.profile_not_a_file people/minh/memory"]))
     expect(await codes(root, "warning")).not.toContain("person.no_profile")
   }
+})
+
+test("a hard-linked profile is an error", async () => {
+  const root = makeCompany()
+  fs.linkSync(path.join(root, "people/minh/memory/profile.md"), path.join(path.dirname(root), "elsewhere.md"))
+  expect(await issues(root)).toContain("person.profile_not_a_file people/minh/memory/profile.md")
+})
+
+test("a profile over 4 x profile_max_chars is an error that says chats leave it out", async () => {
+  const company = { ...(baseFiles()["company.yaml"] as Record<string, any>) }
+  company.defaults = { ...company.defaults, profile_max_chars: 5 }
+  const root = makeCompany({ "company.yaml": company, "people/minh/memory/profile.md": "é".repeat(21) })
+  const [issue, ...rest] = await withCode(root, "person.profile_too_long")
+  expect(rest).toEqual([])
+  expect([issue!.path, issue!.severity, issue!.message]).toEqual([
+    "people/minh/memory/profile.md",
+    "error",
+    "memory/profile.md holds 21 characters, more than the 20 a profile may hold (4 × profile_max_chars); chats"
+      + " leave it out until it is shortened",
+  ])
+  fs.writeFileSync(path.join(root, "people/minh/memory/profile.md"), "é".repeat(20))
+  expect(await codes(root)).toEqual(new Set())
 })
 
 test("a profile outside the memory folder is not a profile", async () => {

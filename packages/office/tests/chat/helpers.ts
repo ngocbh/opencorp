@@ -359,6 +359,7 @@ input:
   history: !list(list(Message))
   turns: !int
   max_turns: !int
+  profile: !FileMemory
 nodes:
   setup:
     kind: tool

@@ -6,7 +6,7 @@ import path from "node:path"
 import { stringify } from "yaml"
 import { tempDir } from "../helpers.ts"
 
-/** The input block a main chat declares: what the office passes a main flow. */
+/** The input block a main chat declares: what the office passes a main flow, the person's profile memory included. */
 export const MAIN_INPUTS = `typedefs:
   Person:
     name: str
@@ -22,6 +22,7 @@ input:
   history: !list(list(Message))
   turns: !int
   max_turns: !int
+  profile: !FileMemory
 `
 
 export const CHAT = `id: chat

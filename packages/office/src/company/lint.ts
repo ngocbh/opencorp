@@ -3,6 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { type ComposedFlow, LoadError } from "@ngocbh/yian"
 import { loadSkillDir, type Skill, SkillError } from "@ngocbh/yian/skills"
+import { CompanyDefaults } from "@opencorp/protocol"
 import { MAIN_CHAT } from "../chat/turns.ts"
 import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "./flows.ts"
 import { type RepoIssue, repoIssue } from "./issues.ts"
@@ -188,12 +189,14 @@ function* checkAssets(repo: CompanyRepo): Iterable<RepoIssue> {
   }
 }
 
-/** The inputs the office passes a main flow; Yian refuses inputs a flow doesn't declare. */
-const MAIN_INPUTS = ["messages", "person", "talking_to", "summary", "history", "turns", "max_turns"]
+/** The inputs the office passes a main flow; Yian refuses inputs a flow doesn't declare. The office binds the
+ *  person's memory folder to `profile`. */
+const MAIN_INPUTS = ["messages", "person", "talking_to", "summary", "history", "turns", "max_turns", "profile"]
 
 /** The fields of a compiled node or type the chat-shape checks read; yian exports none of their classes. */
 interface Shape {
   kind?: string
+  memory?: string
   element?: Shape
   required?: ReadonlySet<string>
   nullable?: boolean
@@ -226,6 +229,11 @@ function chatShapeProblems(ref: string, flow: ComposedFlow): string[] {
   if (element?.kind !== "object" || !element.required?.has("role") || !element.required.has("parts")) {
     problems.push(`${ref}'s ${MAIN_CHAT.inbox} input isn't an inbox of messages; the office sends what people say`
       + ` there, so declare \`${MAIN_CHAT.inbox}: !Inbox(Message)\` ${like}`)
+  }
+  const profile = flow.input.find((p) => p.name === "profile")?.contract?.type as Shape | undefined
+  if (profile?.kind !== "memory" || profile.memory !== "FileMemory") {
+    problems.push(`${ref}'s profile input isn't a FileMemory; the office binds the person's memory folder there, so`
+      + ` declare \`profile: !FileMemory\` ${like}`)
   }
   const compiled = flow.compiled as unknown as Compiled
   const loop = compiled.nodes.get(loopName)
@@ -365,32 +373,43 @@ function checkSkills(repo: CompanyRepo): RepoIssue[] {
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
 
 /** Agents should have a profile; humans may skip it. A profile, `memory/profile.md`, must be a regular UTF-8 file in a
- *  memory folder that is a real folder. */
+ *  memory folder that is a real folder, within the 4 × `profile_max_chars` characters a file of the memory may hold. */
 function* checkProfiles(repo: CompanyRepo): Iterable<RepoIssue> {
+  const maxFileChars = 4 * (repo.company?.defaults ?? CompanyDefaults.parse({})).profile_max_chars
   for (const [handle, person] of sorted(repo.people)) {
     const rel = profilePath(handle)
-    const found = profileState(path.join(repo.root, rel))
+    const found = profileState(path.join(repo.root, rel), maxFileChars)
     if (found === "absent" && person.kind === "agent") {
       yield repoIssue(rel, "person.no_profile", "agents learn into memory/profile.md; create one", "warning")
     }
-    // Errors, as chats with that person can't start.
+    // Errors: chats with that person can't start without the folder, and leave any other such profile out of their
+    // memory, which the office can't read or write either.
     if (found === "not_a_folder") {
       yield repoIssue(path.posix.dirname(rel), "person.profile_not_a_file",
         "memory must be a folder, not a symlink or file")
     }
     if (found === "not_a_file") {
       yield repoIssue(rel, "person.profile_not_a_file",
-        "memory/profile.md must be a regular file, not a symlink or folder")
+        "memory/profile.md must be a regular file, not a symlink, folder or hard link")
     }
     if (found === "not_utf8") {
       yield repoIssue(rel, "person.profile_not_utf8", "memory/profile.md is not UTF-8; save it as UTF-8")
+    }
+    if (typeof found === "number") {
+      yield repoIssue(rel, "person.profile_too_long",
+        `memory/profile.md holds ${found} characters, more than the ${maxFileChars} a profile may hold`
+        + " (4 × profile_max_chars); chats leave it out until it is shortened")
     }
   }
 }
 
 /** Whether the profile at `p` is absent, in a memory folder that isn't a folder (a symlink, a file), not a regular
- *  file (a symlink, a folder), not UTF-8, or fine. */
-function profileState(p: string): "absent" | "not_a_folder" | "not_a_file" | "not_utf8" | "ok" {
+ *  file (a symlink, a folder, a hard link), not UTF-8, or fine; or its characters, when it holds more than
+ *  `maxFileChars`. */
+function profileState(
+  p: string,
+  maxFileChars: number,
+): "absent" | "not_a_folder" | "not_a_file" | "not_utf8" | "ok" | number {
   const absent = (error: unknown) => ["ENOENT", "ENOTDIR", "EBADF"].includes(errno(error) ?? "")
   let fd: number
   try {
@@ -405,9 +424,11 @@ function profileState(p: string): "absent" | "not_a_folder" | "not_a_file" | "no
     throw error
   }
   try {
-    if (!fs.fstatSync(fd).isFile()) return "not_a_file"
-    UTF8.decode(fs.readFileSync(fd))
-    return "ok"
+    const st = fs.fstatSync(fd)
+    // yian's FileMemory leaves a file with another link out of the memory.
+    if (!st.isFile() || st.nlink > 1) return "not_a_file"
+    const chars = [...UTF8.decode(fs.readFileSync(fd))].length
+    return chars > maxFileChars ? chars : "ok"
   } catch (error) {
     if (error instanceof TypeError) return "not_utf8"
     throw error
