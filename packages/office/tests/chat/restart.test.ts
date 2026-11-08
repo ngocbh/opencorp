@@ -35,6 +35,7 @@ import {
   newSession,
   noWorkersLeft,
   reopen,
+  replyRunning,
   running,
   say,
   session,
@@ -95,6 +96,8 @@ test("a message to a waiting run survives an office restart and is answered afte
   const { actor: first, sid } = await startActor(o)
   const runId = first.runId!
   await heldReply(fake, first, "a")
+  // The model's request shows only the worker's side; a steer needs the actor to have seen the reply start.
+  await replyRunning(o)
   // Sent while the reply is held: the run's log has it.
   expect(await first.prompt("b")).toBe("steer")
   const actor = await stopMidReply(o, first)
