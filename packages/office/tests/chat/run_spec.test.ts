@@ -57,7 +57,7 @@ async function office() {
     owner: { handle: "ngocbh", name: "Ngoc" },
     extra: {
       "people/minh/person.yaml": Buffer.from(stringify(MINH)),
-      "people/minh/profile.md": Buffer.from("# Minh, Engineer\n"),
+      "people/minh/memory/profile.md": Buffer.from("# Minh, Engineer\n"),
       "shared/skills/deploy/SKILL.md": Buffer.from("---\nname: deploy\ndescription: Ship it.\n---\nShip.\n"),
     },
   })

@@ -1784,8 +1784,8 @@ test("a profile edited between two messages does not stop the next advance", asy
   expect(await say(o, actor, sid, "a")).toBe("one")
   await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
   const { git } = o.office
-  fs.writeFileSync(path.join(git.root, "people/minh/profile.md"), "# Minh, Engineer\n\nLikes tests.\n")
-  await git.commit(["people/minh/profile.md"], "Edit minh's profile")
+  fs.writeFileSync(path.join(git.root, "people/minh/memory/profile.md"), "# Minh, Engineer\n\nLikes tests.\n")
+  await git.commit(["people/minh/memory/profile.md"], "Edit minh's profile")
   const before = o.kinds.length
   expect(await say(o, actor, sid, "b")).toBe("two")
   // The run's recorded profile is still served: the advance resumes it, with no fresh run.

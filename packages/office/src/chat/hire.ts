@@ -10,7 +10,7 @@ import { writeYaml } from "../company/flow_yaml.ts"
 import { type CompanyGit, CompanyGitError, oneLine } from "../company/git.ts"
 import { parseFile, repoIssue, type RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
-import { type CompanyRepo, loadRepo } from "../company/loader.ts"
+import { type CompanyRepo, loadRepo, profilePath } from "../company/loader.ts"
 import { strip } from "../perm/redact.ts"
 
 /** What a hire from the short form gets besides its name, handle, title, and manager. */
@@ -102,6 +102,8 @@ export class Hiring {
       }
       try {
         for (const [rel, text] of Object.entries(files)) {
+          // Inside the person's folder this hire just made, so nothing there is a link.
+          fs.mkdirSync(path.dirname(path.join(this.git.root, rel)), { recursive: true })
           const fd = fs.openSync(path.join(this.git.root, rel), CREATE_NEW, 0o644)
           try {
             fs.writeFileSync(fd, text)
@@ -172,8 +174,8 @@ export class Hiring {
       const key = (i: RepoIssue) => JSON.stringify([i.path, i.code, i.message])
       const known = new Set((await lint(before)).map(key))
       const issues = (await lint(after))
-        // A confirm writes profile.md with person.yaml.
-        .filter((i) => !(i.code === "person.no_profile" && i.path === `${base}/profile.md`))
+        // A confirm writes the profile with person.yaml.
+        .filter((i) => !(i.code === "person.no_profile" && i.path === profilePath(person.handle)))
         .map((i) => ({
           ...i,
           severity: known.has(key(i)) && !i.path.startsWith(`${base}/`) ? ("warning" as const) : i.severity,
@@ -239,8 +241,8 @@ function diff(files: Record<string, string>): string {
   return out
 }
 
-/** The agent `request` hires and its files by repo path: person.yaml, and a profile.md headed with its name
- *  and title, followed by `about` if given. */
+/** The agent `request` hires and its files by repo path: person.yaml, and a profile (`memory/profile.md`) headed
+ *  with its name and title, followed by `about` if given. */
 export function agentFiles(request: HireForm, about = ""): [Person, Record<string, string>] {
   const { name, handle, title, manager } = request
   const person = PersonSchema.parse({ name, handle, title, manager, ...NEW_AGENT })
@@ -249,7 +251,7 @@ export function agentFiles(request: HireForm, about = ""): [Person, Record<strin
   // One line: init passes model text, and a line break would add lines to the memory the agent reads.
   const profile = `# ${oneLine(person.name)}, ${oneLine(person.title)}\n` + (text ? `\n${text}\n` : "")
   const body = withoutDefaults(PersonSchema, person)
-  return [person, { [`${base}/person.yaml`]: writeYaml(body), [`${base}/profile.md`]: profile }]
+  return [person, { [`${base}/person.yaml`]: writeYaml(body), [profilePath(person.handle)]: profile }]
 }
 
 /** `value`'s fields in `schema`'s order, each left out when equal to its default, nested objects too, as

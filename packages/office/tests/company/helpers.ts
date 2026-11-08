@@ -143,7 +143,7 @@ export function baseFiles(): Record<string, unknown> {
       harnesses: ["composer"],
       harness_policy: { sandbox: "workspace-write", network: false },
     },
-    "people/minh/profile.md": "# Minh, Engineer\n",
+    "people/minh/memory/profile.md": "# Minh, Engineer\n",
     "shared/flows/chat.yaml": MAIN,
     "shared/skills/code-review/SKILL.md": "---\nname: code-review\ndescription: Review code.\n---\nReview.\n",
     "groups/eng.yaml": { id: "eng", name: "Engineering", parent: null, head: null },

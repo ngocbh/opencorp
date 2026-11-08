@@ -8,7 +8,7 @@ import { git } from "../company/helpers.ts"
 import { CEO, makeOffice } from "../daemon/helpers.ts"
 import { hqClient, makeHq, signedIn, web } from "./helpers.ts"
 
-const PROFILE = "people/minh/profile.md"
+const PROFILE = "people/minh/memory/profile.md"
 
 type Body = Record<string, unknown>
 type Tree = { commit: { id: string }; entries: unknown[] }

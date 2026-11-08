@@ -46,7 +46,7 @@ const GOLDEN = {
   "people/lan/person.yaml":
     "handle: lan\nname: Lan\nkind: agent\ntitle: QA\nmanager: ngocbh\n" +
     "main: ../../shared/flows/chat.yaml\nharnesses:\n- composer\nharness_policy:\n  sandbox: workspace-write\n",
-  "people/lan/profile.md": "# Lan, QA\n",
+  "people/lan/memory/profile.md": "# Lan, QA\n",
 }
 
 test("a hires person file is laid out as python wrote it", () => {
@@ -78,7 +78,8 @@ test("a preview writes nothing and a confirm commits", async () => {
   expect(done.commit).toBe(await git.head())
   expect(done.commit).not.toBe(head)
   expect(done.person).toEqual(preview.person)
-  expect(fs.readdirSync(path.join(git.root, "people/lan")).sort()).toEqual(["person.yaml", "profile.md"])
+  expect(fs.readdirSync(path.join(git.root, "people/lan")).sort()).toEqual(["memory", "person.yaml"])
+  expect(fs.readdirSync(path.join(git.root, "people/lan/memory"))).toEqual(["profile.md"])
   const repo = loadRepo(git.root)
   const lan = repo.people.get("lan")
   expect([lan?.handle, lan?.main]).toEqual(["lan", "../../shared/flows/chat.yaml"])
@@ -93,7 +94,7 @@ test("a new hire gets the m1 defaults", async () => {
   const lan = loadRepo(git.root).people.get("lan")!
   expect([lan.kind, lan.harnesses, lan.groups, lan.skills]).toEqual(["agent", ["composer"], [], []])
   expect(lan.harness_policy).toEqual({ sandbox: "workspace-write", network: false })
-  expect(fs.readFileSync(path.join(git.root, "people/lan/profile.md"), "utf8")).toBe("# Lan, QA\n")
+  expect(fs.readFileSync(path.join(git.root, "people/lan/memory/profile.md"), "utf8")).toBe("# Lan, QA\n")
   expect(runGit(git.root, "log", "-1", "--format=%s")).toBe("hire(@lan): Lan, QA")
 })
 
@@ -104,9 +105,9 @@ test("agent files are a hires files with an optional line about the work", async
   await hiring.hire(req(FORM, true), "ngocbh")
   const [lan, files] = agentFiles(FORM)
   expect(lan).toEqual(loadRepo(git.root).people.get("lan")!)
-  const rels = ["people/lan/person.yaml", "people/lan/profile.md"]
+  const rels = ["people/lan/person.yaml", "people/lan/memory/profile.md"]
   expect(files).toEqual(Object.fromEntries(rels.map((rel) => [rel, fs.readFileSync(path.join(git.root, rel), "utf8")])))
-  expect(agentFiles(FORM, "Tests every release.")[1]["people/lan/profile.md"]).toBe(
+  expect(agentFiles(FORM, "Tests every release.")[1]["people/lan/memory/profile.md"]).toBe(
     "# Lan, QA\n\nTests every release.\n",
   )
 })
@@ -200,7 +201,7 @@ test("a newline in the title or name is refused by the schema", () => {
 
 test("the profile heading is one line", () => {
   const files = agentFiles({ ...FORM, name: "Lan\n# Injected", title: "QA\u2028x\0" })[1]
-  expect(files["people/lan/profile.md"]).toBe("# Lan # Injected, QA x\n")
+  expect(files["people/lan/memory/profile.md"]).toBe("# Lan # Injected, QA x\n")
 })
 
 test("a title that skips the schema commits a one-line subject and cant forge a commit trailer", async () => {
@@ -254,10 +255,10 @@ test("a new preview of a handle replaces the old one", async () => {
 
 test("a preview leaves hand edits alone", async () => {
   const git = makeGit()
-  fs.writeFileSync(path.join(git.root, "people/minh/profile.md"), "# Minh, Engineer\n\nLikes tests.\n")
+  fs.writeFileSync(path.join(git.root, "people/minh/memory/profile.md"), "# Minh, Engineer\n\nLikes tests.\n")
   const head = await git.head()
   await new Hiring(git).hire(req(FORM), "ngocbh")
-  expect([await git.head(), status(git.root)]).toEqual([head, " M people/minh/profile.md\n"])
+  expect([await git.head(), status(git.root)]).toEqual([head, " M people/minh/memory/profile.md\n"])
 })
 
 test("issue messages name the company repo not the scratch copy", async () => {
@@ -321,7 +322,7 @@ test("a preview through a symlinked company folder writes nothing in the repo", 
   const again = await hiring.hire(req(FORM), "ngocbh")
   expect(again.issues.map((i) => i.code)).not.toContain("person.duplicate_handle")
   expect((await hiring.hire(req(FORM, true), "ngocbh")).commit).toBe(runGit(real, "rev-parse", "HEAD"))
-  expect(fs.readdirSync(path.join(real, "people/lan")).sort()).toEqual(["person.yaml", "profile.md"])
+  expect(fs.readdirSync(path.join(real, "people/lan")).sort()).toEqual(["memory", "person.yaml"])
 })
 
 test("an in repo people link is refused at preview as at confirm", async () => {

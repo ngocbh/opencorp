@@ -52,7 +52,7 @@ export function useProfileCommands() {
 }
 
 /**
- * A person's profile: the rendered `profile.md`, its version, and whether it is over budget; `e`
+ * A person's profile: the rendered `memory/profile.md`, its version, and whether it is over budget; `e`
  * edits it, `m` asks the profile manager for a change, and `a` applies the change it proposes.
  */
 export function Profile() {

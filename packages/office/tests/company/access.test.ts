@@ -62,7 +62,7 @@ test("the walk stops at an unknown manager", () => {
 })
 
 test("a person gone from the repo is the CEO only", () => {
-  const repo = repoWith({ "people/minh/person.yaml": null, "people/minh/profile.md": null })
+  const repo = repoWith({ "people/minh/person.yaml": null, "people/minh/memory/profile.md": null })
   expect(mayEditProfile(repo, "bob", "minh")).toBe(false)
   expect(mayEditProfile(repo, "ngocbh", "minh")).toBe(true)
 })

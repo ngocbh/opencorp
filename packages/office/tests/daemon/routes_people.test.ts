@@ -49,7 +49,7 @@ test("hire previews then commits", async () => {
   const newHead = await office.git.head()
   expect((r.json() as Hired).commit).toBe(newHead)
   expect(newHead).not.toBe(head)
-  expect(fs.readdirSync(path.join(company, "people/ava")).sort()).toEqual(["person.yaml", "profile.md"])
+  expect(fs.readdirSync(path.join(company, "people/ava")).sort()).toEqual(["memory", "person.yaml"])
   expect(handles(await request(sock, "GET", "/people"))).toContain("ava")
 })
 

@@ -13,6 +13,7 @@ import { Hooks } from "../../src/chat/hooks.ts"
 import type { LoginsOptions } from "../../src/chat/logins.ts"
 import { type ModelCacheOptions, ownModels } from "../../src/chat/models.ts"
 import { CompanyGit } from "../../src/company/git.ts"
+import { profilePath } from "../../src/company/loader.ts"
 import { Bus } from "../../src/daemon/bus.ts"
 import { type Limits, type RequestInfo, type Route, createServer, requestListener } from "../../src/daemon/http.ts"
 import { LiveRelay, type LiveWorker } from "../../src/daemon/live.ts"
@@ -149,14 +150,14 @@ export function standInHarness(over: Partial<SessionHarness> = {}): SessionHarne
   }
 }
 
-/** Sets `office.profileStore` to one `BlobFileStore` per person over `<company>/people/<handle>/profile.md`, made
- *  on first use; returns them by handle (Python's `profile_stores` fixture). */
+/** Sets `office.profileStore` to one `BlobFileStore` per person over `<company>/people/<handle>/memory/profile.md`,
+ *  made on first use; returns them by handle (Python's `profile_stores` fixture). */
 export function blobStores(office: Office): Map<string, BlobFileStore> {
   const stores = new Map<string, BlobFileStore>()
   office.profileStore = (handle) => {
     let store = stores.get(handle)
     if (store === undefined) {
-      store = new BlobFileStore(path.join(office.paths.company, "people", handle, "profile.md"))
+      store = new BlobFileStore(path.join(office.paths.company, profilePath(handle)))
       stores.set(handle, store)
     }
     return store

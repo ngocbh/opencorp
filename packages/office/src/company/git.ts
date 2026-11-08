@@ -30,8 +30,9 @@ const LOCKDOWN = [
 const FILTERED = new Set(["add", "checkout-index", "commit", "reset", "rm", "status", "worktree"])
 const PIN_MARKER = ".opencorp-pin"
 const WRITE = 0o222
-// `:(glob)` makes `*` match one path segment, so only people/<handle>/profile.md matches.
-const PROFILES = ":(glob)people/*/profile.md"
+// Every file in a person's memory folder, people/<handle>/memory/, but none in a `.yian/` folder, where yian keeps a
+// memory's journal, lock and identity. `:(glob)` makes `*` match one path segment and `**/` any number of them.
+const PROFILES = [":(glob)people/*/memory/**", ":(glob,exclude)people/*/memory/**/.yian/**"]
 const BLOB_ID = /^[0-9a-f]{40}$/
 const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
 /** How long `prune` spares a pin after `pin` handed it out. It covers the gap until the store records the use:
@@ -267,8 +268,8 @@ export interface LockedGit {
   /** Stages `paths` and commits them; returns the new HEAD, or HEAD unchanged if nothing changed. Rejects with
    *  `CompanyRepoBusy` while the repo is mid-operation, a path is conflicted, or a lock stays taken. */
   commit(paths: string[], message: string): Promise<string>
-  /** Commits each changed, new, or deleted `people/<handle>/profile.md` on its own; returns their paths. Commits
-   *  nothing while the repo is mid-operation, and skips a conflicted profile. */
+  /** Commits each changed, new, or deleted file in a `people/<handle>/memory/` folder (none in a `.yian/` folder) on
+   *  its own; returns their paths. Commits nothing while the repo is mid-operation, and skips a conflicted file. */
   commitHandEdits(): Promise<string[]>
 }
 
@@ -892,8 +893,8 @@ export class CompanyGit {
     return { removed, retryInMs }
   }
 
-  /** Commits each changed, new, or deleted `people/<handle>/profile.md` on its own; returns their paths. Commits
-   *  nothing while the repo is mid-operation, and skips a conflicted profile. */
+  /** Commits each changed, new, or deleted file in a `people/<handle>/memory/` folder (none in a `.yian/` folder) on
+   *  its own; returns their paths. Commits nothing while the repo is mid-operation, and skips a conflicted file. */
   commitHandEdits(): Promise<string[]> {
     return this.locked((git) => git.commitHandEdits())
   }
@@ -911,8 +912,8 @@ export class CompanyGit {
     if (waiting && waiting !== this.#waiting) this.#log(`hand edits wait: ${waiting}`)
     this.#waiting = waiting
     if (operation !== null) return []
-    // --untracked-files=all lists a new profile inside a wholly untracked people/<new>/.
-    const out = await this.#run(["status", "--porcelain", "-z", "--untracked-files=all", "--", PROFILES])
+    // --untracked-files=all lists a new memory file inside a wholly untracked people/<new>/.
+    const out = await this.#run(["status", "--porcelain", "-z", "--untracked-files=all", "--", ...PROFILES])
     const { paths, conflicted } = statusPaths(out.stdout)
     const skipped = JSON.stringify(conflicted)
     if (conflicted.length && skipped !== this.#skipped) {
@@ -920,8 +921,8 @@ export class CompanyGit {
     }
     this.#skipped = skipped
     for (const rel of paths) {
-      // The directory is the handle; one line, so a hand-made name can't add a trailer.
-      const handle = path.posix.basename(path.posix.dirname(rel)).split(WHITESPACE).filter(Boolean).join(" ")
+      // The folder under people/ is the handle; one line, so a hand-made name can't add a trailer.
+      const handle = rel.split("/")[1]!.split(WHITESPACE).filter(Boolean).join(" ")
       await this.#commit([rel], `profile(@${handle}): hand edit`)
     }
     return paths
@@ -929,7 +930,7 @@ export class CompanyGit {
 
   /**
    * The working tree's uncommitted paths, untracked files included and ignored ones not: `handEdits`, the
-   * `people/<handle>/profile.md` paths `commitHandEdits` would commit, and `uncommitted`, every other one. Read-only;
+   * memory files `commitHandEdits` would commit, and `uncommitted`, every other one. Read-only;
    * it never writes the index, so it takes no lock and can run beside the daemon.
    */
   async pending(): Promise<{ handEdits: string[]; uncommitted: string[] }> {
@@ -938,7 +939,7 @@ export class CompanyGit {
     const status = ["status", "--porcelain", "-z", "--untracked-files=all"]
     // As `commitHandEdits` does: nothing while a human's operation is in progress, and no conflicted profile.
     const busy = (await this.#operation()) !== null
-    const handEdits = busy ? [] : statusPaths((await this.#run([...status, "--", PROFILES], { env })).stdout).paths
+    const handEdits = busy ? [] : statusPaths((await this.#run([...status, "--", ...PROFILES], { env })).stdout).paths
     const { paths, conflicted } = statusPaths((await this.#run(status, { env })).stdout)
     const edits = new Set(handEdits)
     return { handEdits, uncommitted: [...paths, ...conflicted].sort().filter((p) => !edits.has(p)) }

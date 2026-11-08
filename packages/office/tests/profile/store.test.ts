@@ -1,4 +1,4 @@
-/** GitProfileStore: profile.md in the company clone as a MarkdownStore versioned by git blob id (Python's
+/** GitProfileStore: memory/profile.md in the company clone as a MarkdownStore versioned by git blob id (Python's
  *  `tests/profile/test_store.py`). */
 import fs from "node:fs"
 import path from "node:path"
@@ -13,7 +13,7 @@ import { tempDir } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
 
-const PROFILE = "people/minh/profile.md"
+const PROFILE = "people/minh/memory/profile.md"
 const MINH = "# Minh, Engineer\n"
 
 /** A base company in a fresh temp dir, a `CompanyGit` on it, and minh's profile store. */
@@ -117,7 +117,7 @@ test("non utf8 profile is a range error", async () => {
   const error = await rejection(store.read())
   expect(error).toBeInstanceOf(RangeError)
   expect(error).toBeInstanceOf(ProfileUnreadable)
-  expect((error as Error).message).toBe("people/minh/profile.md is not UTF-8")
+  expect((error as Error).message).toBe("people/minh/memory/profile.md is not UTF-8")
 })
 
 test("read refuses a symlinked profile", async () => {
@@ -146,7 +146,27 @@ test("read refuses a folder at profile.md", async () => {
   folderProfile(root)
   const error = await rejection(store.read())
   expect(error).toBeInstanceOf(ProfileUnreadable)
-  expect((error as Error).message).toBe("people/minh/profile.md is not a regular file")
+  expect((error as Error).message).toBe("people/minh/memory/profile.md is not a regular file")
+})
+
+test.each([
+  ["a symlink", "people/minh/memory is a symlink, not a folder"],
+  ["a file", "people/minh/memory is not a folder"],
+])("read and write refuse a memory folder that is %s", async (kind, message) => {
+  const { dir, root, store } = setup()
+  const base = (await store.read())[1]
+  const outside = path.join(dir, "outside")
+  fs.renameSync(path.join(root, "people/minh/memory"), outside)
+  if (kind === "a symlink") fs.symlinkSync(outside, path.join(root, "people/minh/memory"))
+  else fs.writeFileSync(path.join(root, "people/minh/memory"), "x\n")
+  const head = git(root, "rev-parse", "HEAD")
+  for (const call of [store.read(), store.write("pwned\n", { baseVersion: base })]) {
+    const error = await rejection(call)
+    expect(error).toBeInstanceOf(ProfileUnreadable)
+    expect((error as Error).message).toBe(message)
+  }
+  expect(git(root, "rev-parse", "HEAD")).toBe(head)
+  expect(fs.readFileSync(path.join(outside, "profile.md"), "utf8")).toBe(MINH)
 })
 
 test("a byte order mark is kept", async () => {
@@ -241,10 +261,11 @@ test("a hand edit makes the base stale", async () => {
   expect(subject(root)).toBe("profile(@minh): hand edit")
 })
 
-test("write with the empty base creates a missing profile", async () => {
+test("write with the empty base creates a missing profile and its memory folder", async () => {
   const { root, g, store } = setup()
   git(root, "rm", "-q", PROFILE)
   git(root, "commit", "-q", "-m", "drop")
+  expect(fs.existsSync(path.join(root, "people/minh/memory"))).toBe(false)
   const version = await store.write("# Minh\n", { baseVersion: EMPTY_BLOB })
   expect(version).toBe((await g.blobId(PROFILE))!)
   expect(version).toBe(blobId(bytes("# Minh\n")))
@@ -279,7 +300,7 @@ test("write refuses a folder at profile.md", async () => {
   const head = git(root, "rev-parse", "HEAD")
   const error = await rejection(store.write("x\n", { baseVersion: blobId(bytes(MINH)) }))
   expect(error).toBeInstanceOf(ProfileUnreadable)
-  expect((error as Error).message).toBe("people/minh/profile.md is not a regular file")
+  expect((error as Error).message).toBe("people/minh/memory/profile.md is not a regular file")
   expect(git(root, "rev-parse", "HEAD")).toBe(head)
 })
 
@@ -544,7 +565,7 @@ test("write refuses a symlinked person directory", async () => {
   // git refuses to add a path beyond a symbolic link, so the hand-edit sweep fails first.
   expect(error).not.toBeInstanceOf(MarkdownVersionMismatch)
   expect(error).toMatchObject({ code: "EIO", syscall: "write" })
-  expect(fs.readFileSync(path.join(outside, "profile.md"), "utf8")).toBe(MINH)
+  expect(fs.readFileSync(path.join(outside, "memory/profile.md"), "utf8")).toBe(MINH)
 })
 
 test("write refuses a person folder that resolves elsewhere", async () => {
@@ -558,7 +579,7 @@ test("write refuses a person folder that resolves elsewhere", async () => {
   const error = await rejection(store.write("pwned\n", { baseVersion: EMPTY_BLOB }))
   expect(error).toBeInstanceOf(RangeError)
   expect((error as Error).message).toMatch(/symlink/)
-  expect(fs.existsSync(path.join(outside, "profile.md"))).toBe(false)
+  expect(fs.existsSync(path.join(outside, "memory"))).toBe(false)
 })
 
 test("a lone surrogate is a range error and writes nothing", async () => {
