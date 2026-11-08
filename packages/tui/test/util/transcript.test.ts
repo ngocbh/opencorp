@@ -18,7 +18,7 @@ const tool = (fields: Partial<ToolPart>): ToolPart => ({
   id: "t",
   type: "tool",
   call_id: "c",
-  tool: "shell",
+  tool: "workspace_shell",
   state: "completed",
   input: { command: "ls" },
   ...fields,
@@ -31,9 +31,9 @@ describe("formatPart", () => {
       "_File:_ a.png (image/png)\n\n",
     )
     expect(formatPart(tool({ output: "a\nb" }), { toolDetails: true })).toBe(
-      '**Tool: shell**\n\n**Input:**\n```json\n{\n  "command": "ls"\n}\n```\n\n**Output:**\n```\na\nb\n```\n\n',
+      '**Tool: workspace_shell**\n\n**Input:**\n```json\n{\n  "command": "ls"\n}\n```\n\n**Output:**\n```\na\nb\n```\n\n',
     )
-    expect(formatPart(tool({ output: "x" }), { toolDetails: false })).toBe("**Tool: shell**\n\n")
+    expect(formatPart(tool({ output: "x" }), { toolDetails: false })).toBe("**Tool: workspace_shell**\n\n")
   })
 
   test("an error part is its message", () => {
