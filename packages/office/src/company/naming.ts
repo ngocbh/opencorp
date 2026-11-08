@@ -21,10 +21,15 @@ export function groupToolName(group: string, tool: string): string {
 
 /**
  * The toolbox's name for `tool` on `assetId`: `cluster-a` + `submit_job` → `cluster_a__submit_job`. A model sees it
- * through the toolbox group, as `toolbox_cluster_a__submit_job`.
+ * through the toolbox group, as `shownAssetToolName` says.
  *
  * Ids have no `_` (protocol `Id`), so the mapping is one-to-one and the first `__` always ends the asset part.
  */
 export function assetToolName(assetId: string, tool: string): string {
   return `${assetId.replaceAll("-", "_")}__${tool}`
+}
+
+/** The name a model sees for `tool` on `assetId`, through the toolbox group: `toolbox_cluster_a__submit_job`. */
+export function shownAssetToolName(assetId: string, tool: string): string {
+  return groupToolName("toolbox", assetToolName(assetId, tool))
 }

@@ -342,7 +342,9 @@ export function buildOffice(
     office.onStop.push(() => office.live?.close())
     const hooks = new Hooks({ log: log("ERROR", "opencorp.chat.hooks") })
     office.codex = new CodexSessions(office, hooks, { log: log("WARNING", "opencorp.harness.session") })
-    const monitor = new Monitor(paths.company, store, office.secrets)
+    const monitor = new Monitor(paths.company, store, office.secrets, undefined, {
+      log: log("WARNING", "opencorp.perm.monitor"),
+    })
     // After the transcript and the relay, which its actors share.
     const harness = new ChatHarness(office, { monitor, hooks, workers, log: log("WARNING", "opencorp.chat.harness") })
     // Office.stop closes its workers first: the harness's stop closes the Codex sessions, then the registry.

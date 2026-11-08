@@ -3,7 +3,7 @@ import type { Asset as AssetSchema, Grant as GrantSchema } from "@opencorp/proto
 import type { z } from "zod"
 import { builtinKinds, type KindTool, type Kinds } from "../assets/registry.ts"
 import { type CompanyRepo, loadRepo } from "../company/loader.ts"
-import { assetToolName } from "../company/naming.ts"
+import { assetToolName, shownAssetToolName, TOOL_NAME } from "../company/naming.ts"
 import { type SecretStore, SecretNotSetError } from "../secrets.ts"
 import type { Store } from "../store/store.ts"
 import type { ToolOutcome, WorkspaceCall, WorkspaceTools } from "../tools/workspace.ts"
@@ -38,17 +38,27 @@ export class Monitor {
   readonly store: Store
   readonly secrets: SecretStore
   readonly kinds: Kinds
+  readonly #log: (line: string) => void
 
-  constructor(root: string, store: Store, secrets: SecretStore, kinds: Kinds = builtinKinds()) {
+  /** `log` (default: `console.error`) gets a line for each tool left out of a listing for its name. */
+  constructor(
+    root: string,
+    store: Store,
+    secrets: SecretStore,
+    kinds: Kinds = builtinKinds(),
+    { log = console.error }: { log?: (line: string) => void } = {},
+  ) {
     this.root = root
     this.store = store
     this.secrets = secrets
     this.kinds = kinds
+    this.#log = log
   }
 
   /** The asset tools `person` holds grants for, as `{name: tool}`: the `toolbox` group. Pass it to `groupSpecs`
-   *  for `Job.groups`. Each tool's `call` calls `call` with `runId` and `sessionId`. Gated tools and tools of
-   *  unknown kinds are never listed. */
+   *  for `Job.groups`. Each tool's `call` calls `call` with `runId` and `sessionId`. Gated tools, tools of unknown
+   *  kinds, and tools whose name a model would see past yian's limit (yian would refuse every run granted them;
+   *  lint says so too) are never listed. */
   tools(
     person: string,
     { runId = null, sessionId = null }: { runId?: string | null; sessionId?: string | null } = {},
@@ -61,6 +71,14 @@ export class Monitor {
       for (const [tool, spec] of Object.entries(asset.tools)) {
         const impl = kindTool(this.kinds, asset.kind, tool)
         if (impl === undefined || spec.risk === "gated" || grants(asset, tool, covering).length === 0) continue
+        const shown = shownAssetToolName(aid, tool)
+        if (!TOOL_NAME.test(shown)) {
+          this.#log(
+            `${aid}'s tool ${tool} is left out of the toolbox: ${JSON.stringify(shown)}, the name a model would see, ` +
+              `must match ${TOOL_NAME.source}`,
+          )
+          continue
+        }
         const name = assetToolName(aid, tool)
         const description = impl.description || name
         // The description joins the schema, as langchain's tool_call_schema does for a dict schema.

@@ -58,6 +58,20 @@ test("admin allows every tool but gated ones are never listed", async () => {
   )
 })
 
+test("a tool whose name a model would see past yian's limit is never listed, and the log says why", async () => {
+  // A model sees cluster-a's tools as `toolbox_cluster_a__<tool>`: 19 characters before the tool's own.
+  const [fits, over] = ["f".repeat(45), "o".repeat(46)]
+  const kinds = { ...KINDS, cluster: { ...KINDS.cluster, [fits]: { run: () => "ok" }, [over]: { run: () => "ok" } } }
+  const asset = cluster([{ who: "minh", can: [fits, over] }], { tools: { [fits]: {}, [over]: {} } })
+  const lines: string[] = []
+  const { monitor } = await makeMonitor({ "assets/cluster-a.yaml": asset }, kinds, { log: (line) => lines.push(line) })
+  expect(names(monitor, "minh")).toEqual([`cluster_a__${fits}`, "fake__echo"])
+  expect(lines).toEqual([
+    `cluster-a's tool ${over} is left out of the toolbox: "toolbox_cluster_a__${over}", the name a model would see, ` +
+      "must match ^[A-Za-z_][A-Za-z0-9_-]{0,63}$",
+  ])
+})
+
 test("tools of an unknown kind are not listed", async () => {
   const { monitor } = await makeMonitor({
     "assets/odd.yaml": { id: "odd", kind: "nope", tools: { x: {} }, grants: [{ who: "minh", can: ["x"] }] },

@@ -8,7 +8,7 @@ import { MAIN_CHAT } from "../chat/turns.ts"
 import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "./flows.ts"
 import { type RepoIssue, repoIssue } from "./issues.ts"
 import { type CompanyRepo, profilePath } from "./loader.ts"
-import { assetToolName, groupToolName, TOOL_NAME } from "./naming.ts"
+import { shownAssetToolName, TOOL_NAME } from "./naming.ts"
 
 /** One lint check: the issues it finds in a repo. */
 type Check = (repo: CompanyRepo) => Iterable<RepoIssue> | AsyncIterable<RepoIssue>
@@ -163,7 +163,7 @@ function* checkAssets(repo: CompanyRepo): Iterable<RepoIssue> {
   for (const [id, asset] of sorted(repo.assets)) {
     const file = `assets/${id}.yaml`
     for (const tool of Object.keys(asset.tools)) {
-      const shown = groupToolName("toolbox", assetToolName(id, tool))
+      const shown = shownAssetToolName(id, tool)
       if (!TOOL_NAME.test(shown)) {
         yield repoIssue(file, "asset.tool_name_invalid",
           `${JSON.stringify(shown)}, the name a model sees, must match ${TOOL_NAME.source}`)
