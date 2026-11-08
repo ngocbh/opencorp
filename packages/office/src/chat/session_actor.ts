@@ -1541,7 +1541,7 @@ export class SessionActor implements LiveCalls {
       })
       if (run.kind === "chat") store.setRunConfig(runId, runRecord(name, model, provider))
       const defaultPrice = await this.#defaultPrice(name)
-      const handlers = this.#handlers(run, ask, tools, spec.stores)
+      const handlers = this.#handlers(run, ask, tools, spec.memories)
       // The office may have stopped during the awaits above.
       if (this.#closed) throw stopping()
       run.provider = provider
@@ -1969,7 +1969,7 @@ export class SessionActor implements LiveCalls {
     run: WorkerRun,
     ask: (request: AskRequest, callId: string) => Promise<unknown>,
     tools: Record<string, Record<string, OfficeTool>>,
-    stores: RunSpec["stores"],
+    memories: RunSpec["memories"],
   ): WorkerHandlers<ActorWorker> {
     const actor = this
     return new (class extends BaseHandlers {
@@ -2005,7 +2005,8 @@ export class SessionActor implements LiveCalls {
         if (actor.#finished && run === actor.#run) actor.#forgetRuns(actor.#finishedRuns)
       }
 
-      override exited(worker: ActorWorker): void {
+      override exited(worker: ActorWorker, returncode: number | null): void {
+        super.exited(worker, returncode)
         run.exited = true
         if (actor.#parked?.worker === worker) {
           // A parked worker that dies (killed, crashed) is no death: the next run call spawns a new one.
@@ -2036,7 +2037,7 @@ export class SessionActor implements LiveCalls {
         // The workspace kills its own calls when interrupted.
         return group === "workspace" ? call() : actor.#cancellable(call)
       }
-    })({ tools, stores })
+    })({ tools, memories })
   }
 
   // --- worker frames ----------------------------------------------------------------------

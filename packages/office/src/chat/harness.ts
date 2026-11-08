@@ -330,8 +330,8 @@ export class ChatHarness implements SessionHarness {
     const { store, git } = this.office
     const repo = loadRepo(await git.pin(session.repo_commit))
     if (session.kind === "profile_manager") {
-      const profile = new GitProfileStore(git, session.person)
-      const tools = profileTools(store, profile, session, { maxChars: defaultsOf(repo).profile_max_chars })
+      const profile = new GitProfileStore(git, session.person, { maxChars: defaultsOf(repo).profile_max_chars })
+      const tools = profileTools(store, profile, session)
       return managerSpec({ repo, tools })
     }
     const monitor = this.monitor
@@ -609,9 +609,7 @@ export class ChatHarness implements SessionHarness {
       askUser: (worker, request, callId) => this.#inCall(() => handlers.askUser(worker, request, callId)),
       toolCall: (worker, group, name, args, callId) =>
         this.#inCall(() => handlers.toolCall(worker, group, name, args, callId)),
-      storeRead: (worker, store, version) => this.#inCall(() => handlers.storeRead(worker, store, version)),
-      storeWrite: (worker, store, text, baseVersion, provenance) =>
-        this.#inCall(() => handlers.storeWrite(worker, store, text, baseVersion, provenance)),
+      memory: (worker, request) => this.#inCall(() => handlers.memory(worker, request)),
     }
   }
 
