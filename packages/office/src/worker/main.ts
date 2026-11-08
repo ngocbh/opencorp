@@ -8,7 +8,6 @@ import {
   complete,
   DeliveryRefused,
   interrupt,
-  ProfileMemory,
   RunBusyError,
   runFlow,
   send,
@@ -29,7 +28,7 @@ import { MAIN_CHAT } from "../chat/turns.ts"
 import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
 import { Delivery, type Job, parseJob, STOP_REASON } from "./job.ts"
-import { RemoteMarkdownStore } from "./remote_store.ts"
+import { RemoteMemory } from "./remote_memory.ts"
 import { askUserStub, errnoFields, errorMessage, errorName, remoteTool, REPLY_TYPES, Rpc } from "./rpc.ts"
 
 export const EXIT_OK = 0
@@ -63,19 +62,9 @@ export function jobTools(job: Job, rpc: Rpc) {
   }
 }
 
-/** Yian's `memory` for the job: a `ProfileMemory` over the office store of each spec; `null` when there is none. */
-export function jobMemory(job: Job, rpc: Rpc, env: Env): Map<string, ProfileMemory> | null {
-  const memory = new Map(
-    Object.entries(job.memory).map(([name, spec]) => [
-      name,
-      new ProfileMemory(new RemoteMarkdownStore(rpc, spec.store), {
-        llmConfig: spec.llm_config,
-        maxChars: spec.max_chars,
-        env,
-      }),
-    ]),
-  )
-  return memory.size > 0 ? memory : null
+/** The memory inputs of the job's flow, by name: each the office's memory of that name, over the channel. */
+export function jobMemory(job: Job, rpc: Rpc): Record<string, RemoteMemory> {
+  return Object.fromEntries(job.memory.map((name) => [name, new RemoteMemory(rpc, name)]))
 }
 
 /** A delivery's answer: a `deliver_reply` without its `type` and `id`. */
@@ -236,8 +225,8 @@ function waitingFields(log: string): Frame {
 }
 
 /** Whether an `advance` that threw `error` was refused before it appended anything: a yian refusal (each is a
- *  `RangeError`: `LoadError`, `MemorySetupError`, `DefaultsMismatchError`, a resume refusal) and nothing of its
- *  own appended. */
+ *  `RangeError`: `LoadError`, `DefaultsMismatchError`, a resume refusal such as a memory whose settings differ from
+ *  the recorded ones) and nothing of its own appended. */
 export function notResumed(error: unknown, appended: boolean): boolean {
   return error instanceof RangeError && !appended
 }
@@ -613,11 +602,11 @@ async function runJob(
       process.stderr.write(`opencorp __worker: a live frame was dropped (${errorName(error)})\n`),
   })
   follow.bind(live)
+  const memory = jobMemory(job, rpc)
   const common = {
     log,
     onEvent,
     live,
-    memory: jobMemory(job, rpc, read),
     tools: jobTools(job, rpc),
     skills: pickSkills(job.pin, job.person, job.skills),
     signal,
@@ -642,7 +631,8 @@ async function runJob(
         { quiet: true },
       )
     }
-    result = await runFlow(flow, inputs, {
+    // A memory is a flow input.
+    result = await runFlow(flow, { ...inputs, ...memory }, {
       ...common,
       runId: job.run_id,
       numWorkers: job.num_workers,
@@ -687,6 +677,8 @@ async function runJob(
     try {
       result = await advance({
         ...common,
+        // Every advance of an unfinished run binds its memories again; a run with none takes no `memory`.
+        ...(job.memory.length > 0 ? { memory } : {}),
         codeRoot: job.pin,
         // `null` keeps the recorded bound: a changed one would make a waiting run write RunResumed.
         numWorkers: null,
@@ -698,6 +690,10 @@ async function runJob(
       deliveries.refuse()
       // The type only: a yian message can quote a value or a path.
       return { status: "not_resumed", run_id: job.run_id, error_type: errorName(error) }
+    }
+    // A crash resume keeps the recall the run started with; a memory that changed since is only worth a line.
+    for (const drift of result.memoryDrift) {
+      process.stderr.write(`opencorp __worker: memory ${drift.input} changed since the run started\n`)
     }
   }
   return {

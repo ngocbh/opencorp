@@ -1,25 +1,43 @@
 /** Request/reply calls over a worker channel, and the office-side handler interface. */
-import { MarkdownVersionMismatch, type MarkdownStore } from "@ngocbh/yian"
-import { type AskHandler, type FunctionTool, isPending, pending, ReportedToolError, tool } from "@ngocbh/yian/tools"
+import { type Author, type MemoryBase, memoryErrorKind } from "@ngocbh/yian"
+import type { JsonObject } from "@ngocbh/yian/run"
+import {
+  type AskHandler,
+  type FunctionTool,
+  isPending,
+  isPermanentToolError,
+  isReportedToolError,
+  pending,
+  ReportedToolError,
+  tool,
+} from "@ngocbh/yian/tools"
 import { z } from "zod"
 import { repr } from "../perm/redact.ts"
 import { ChannelClosed, type Channel, type Frame } from "./channel.ts"
 import type { DeclaredTool, Job, ToolSpec } from "./job.ts"
+import { MemoryHost, type MemoryRequest, noMemory } from "./memory_host.ts"
 
-/** JSON object data, as a store write's provenance holds it. */
-export type JsonObject = NonNullable<Parameters<MarkdownStore["write"]>[1]["provenance"]>
+export type { JsonObject }
 
 /** The keys Yian passes to an `ask_user` handler. */
 export const ASK_KEYS = ["question", "questions", "answer_schema", "title", "node_id", "options"] as const
 /** An `ask_user` request: each of the `ASK_KEYS`, `null` when absent. */
 export type AskRequest = Record<(typeof ASK_KEYS)[number], unknown>
 
-/** Worker -> office request frame type -> office -> worker reply frame type. */
+/** Worker -> office request frame type -> office -> worker reply frame type. A `memory_<op>` request is the memory
+ *  call `op` (`MemoryRequest`). */
 export const REQUEST_REPLIES = {
   ask_user: "answer",
   tool_call: "tool_result",
-  store_read: "store_reply",
-  store_write: "store_reply",
+  memory_open: "memory_reply",
+  memory_reset: "memory_reply",
+  memory_snapshot: "memory_reply",
+  memory_call: "memory_reply",
+  memory_apply: "memory_reply",
+  memory_undo: "memory_reply",
+  memory_erase: "memory_reply",
+  memory_history: "memory_reply",
+  memory_close: "memory_reply",
 } as const
 /** A worker -> office request frame type. */
 export type RequestType = keyof typeof REQUEST_REPLIES
@@ -239,7 +257,7 @@ export interface JobWorker {
 /**
  * What the office does with a worker's frames. `worker` is the worker the frame came from.
  *
- * Notifications (`event` through `exited`) must not block. Requests (`askUser` through `storeWrite`) may: what they
+ * Notifications (`event` through `exited`) must not block. Requests (`askUser` through `memory`) may: what they
  * return (or resolve to) is the reply, and what they throw becomes an error reply.
  */
 export interface WorkerHandlers<W extends JobWorker = JobWorker> {
@@ -271,36 +289,26 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
    * the office answers the call later by `complete` on `callId`.
    */
   toolCall(worker: W, group: string, name: string, args: Record<string, unknown>, callId: string): unknown
-  /** `MarkdownStore.read` on the office store named `store`. */
-  storeRead(
-    worker: W,
-    store: string,
-    version: string | null,
-  ): readonly [string, string] | Promise<readonly [string, string]>
-  /** `MarkdownStore.write` on the office store named `store`. */
-  storeWrite(
-    worker: W,
-    store: string,
-    text: string,
-    baseVersion: string,
-    provenance: JsonObject | null,
-  ): string | Promise<string>
+  /** Runs the memory call `request` on the office memory the job names, or on a session the worker opened on one;
+   *  resolves to the reply's fields. */
+  memory(worker: W, request: MemoryRequest): Frame | Promise<Frame>
 }
 
-/** Handlers that ignore notifications, refuse questions, and serve the given tools and stores.
- *  `tools` is `{group: {name: tool}}`; `stores` is `{name: store}`. Subclass it and override what you need. */
+/** Handlers that ignore notifications, refuse questions, and serve the given tools and memories.
+ *  `tools` is `{group: {name: tool}}`; `memories` is `{name: memory}`. Subclass it and override what you need; an
+ *  `exited` override calls this one, which closes the sessions the worker left open. */
 export class BaseHandlers implements WorkerHandlers {
   /** A copy of the given tools, each group copied too. */
   readonly tools: Record<string, Record<string, OfficeTool>>
-  /** A copy of the given stores. */
-  readonly stores: Record<string, MarkdownStore>
+  /** The given memories, and the sessions the worker opens on them. */
+  readonly memories: MemoryHost
 
   constructor({
     tools = {},
-    stores = {},
-  }: { tools?: Record<string, Record<string, OfficeTool>>; stores?: Record<string, MarkdownStore> } = {}) {
+    memories = {},
+  }: { tools?: Record<string, Record<string, OfficeTool>>; memories?: Record<string, MemoryBase> } = {}) {
     this.tools = Object.fromEntries(Object.entries(tools).map(([group, named]) => [group, { ...named }]))
-    this.stores = { ...stores }
+    this.memories = new MemoryHost(memories)
   }
 
   event(_worker: unknown, _frame: Frame): void {}
@@ -315,7 +323,10 @@ export class BaseHandlers implements WorkerHandlers {
 
   parked(_worker: unknown): void {}
 
-  exited(_worker: unknown, _returncode: number | null): void {}
+  /** Closes the memory sessions the worker left open: they belong to its connection. */
+  exited(_worker: unknown, _returncode: number | null): void {
+    void this.memories.close()
+  }
 
   askUser(_worker: unknown, _request: AskRequest, _callId?: string): unknown {
     throw new Error("nobody is here to answer")
@@ -334,27 +345,8 @@ export class BaseHandlers implements WorkerHandlers {
     return await named[name]!.call(args, { callId })
   }
 
-  storeRead(
-    _worker: unknown,
-    store: string,
-    version: string | null,
-  ): readonly [string, string] | Promise<readonly [string, string]> {
-    return this.#store(store).read(version)
-  }
-
-  storeWrite(
-    _worker: unknown,
-    store: string,
-    text: string,
-    baseVersion: string,
-    provenance: JsonObject | null,
-  ): string | Promise<string> {
-    return this.#store(store).write(text, { baseVersion, provenance })
-  }
-
-  #store(name: string): MarkdownStore {
-    if (!Object.hasOwn(this.stores, name)) throw new Error(noStore(name))
-    return this.stores[name]!
+  memory(_worker: unknown, request: MemoryRequest): Promise<Frame> {
+    return this.memories.answer(request)
   }
 }
 
@@ -366,11 +358,10 @@ export type RpcLog = (level: "INFO" | "WARNING", line: string) => void
  * or tool call whose handler returns Yian's `pending()` is `{pending: true}`.
  *
  * A malformed request, a question or tool call whose `call_id` isn't of `worker.job`'s run, a tool not in the job's
- * groups, or a failing tool or question is `{error: "failed", message}`; a question the handler refuses with
- * `AskRefused` is `{error: "refused", message}`. A store error is `mismatch` (with `expected`
- * and `current`) for `MarkdownVersionMismatch`; `unknown_version` for a `RangeError` from a read and `invalid` for one
- * from a write; `invalid` for a `TypeError`; and `unavailable` for anything else, a store the job doesn't name
- * included. Throws a `TypeError` for a frame whose type isn't a request type.
+ * groups, a memory the job doesn't name, or a failing tool, question or memory call is `{error: "failed", message}`;
+ * a question the handler refuses with `AskRefused` is `{error: "refused", message}`. A memory call's error branded by
+ * yian is its kind (`busy`, `change_id_reused` or `missing`), and a refusal the model reads (a `ReportedToolError`)
+ * is `{error: "refused", message, permanent}`. Throws a `TypeError` for a frame whose type isn't a request type.
  */
 export async function answerRequest(
   frame: Frame,
@@ -385,7 +376,7 @@ export async function answerRequest(
   try {
     args = requestArgs(kind, frame)
   } catch (error) {
-    // Checked apart from the handler call, so a malformed request isn't taken for a store error.
+    // Checked apart from the handler call, so a malformed request isn't taken for a memory's error.
     return { ...head, ...failed(kind, error, log) }
   }
   try {
@@ -399,22 +390,16 @@ export async function answerRequest(
         const result = await handlers.toolCall(worker, args.group, args.name, args.args, args.callId)
         return isPending(result) ? { ...head, pending: true } : { ...head, result: result ?? null }
       }
-      case "store_read": {
-        const [text, version] = await handlers.storeRead(worker, args.store, args.version)
-        return { ...head, text, version }
-      }
-      case "store_write": {
-        const { store, text, baseVersion, provenance } = args
-        return { ...head, version: await handlers.storeWrite(worker, store, text, baseVersion, provenance) }
-      }
+      case "memory":
+        return { ...head, ...(await handlers.memory(worker, args.request)) }
     }
   } catch (error) {
-    if (isInstance(error, MarkdownVersionMismatch)) {
-      const { expected, current } = error
-      return { ...head, error: "mismatch", message: errorMessage(error), expected, current }
-    }
-    if (kind === "store_read" || kind === "store_write") {
-      return { ...head, error: storeCode(kind, error), message: errorMessage(error) }
+    if (args.kind === "memory") {
+      const memoryKind = memoryErrorKind(error)
+      if (memoryKind !== null) return { ...head, error: memoryKind, message: errorMessage(error) }
+      if (isReportedToolError(error)) {
+        return { ...head, error: "refused", message: errorMessage(error), permanent: isPermanentToolError(error) }
+      }
     }
     if (kind === "ask_user" && isInstance(error, AskRefused)) {
       write(log, "INFO", `worker ask_user request refused: ${errorName(error)}`)
@@ -453,8 +438,7 @@ export async function replyTo(
 type RequestArgs =
   | { kind: "ask_user"; request: AskRequest; callId: string }
   | { kind: "tool_call"; group: string; name: string; args: Record<string, unknown>; callId: string }
-  | { kind: "store_read"; store: string; version: string | null }
-  | { kind: "store_write"; store: string; text: string; baseVersion: string; provenance: JsonObject | null }
+  | { kind: "memory"; request: MemoryRequest }
 
 /** The handler arguments a request frame carries; throws a `TypeError` naming a missing or bad field, never its
  *  value. */
@@ -485,21 +469,78 @@ function requestArgs(kind: RequestType, frame: Frame): RequestArgs {
         args: maybe("args", isPlainObject) ?? {},
         callId: need("call_id", isString),
       }
-    case "store_read":
-      return { kind, store: need("store", isString), version: maybe("version", isString) }
-    case "store_write":
+    default:
+      return { kind: "memory", request: memoryRequest(kind, need, maybe) }
+  }
+}
+
+/** The memory request a `memory_<op>` frame carries, its fields read with `need` and `maybe`. A change's own id is
+ *  `change_id`, since `id` numbers the request, and an undo names the change it undoes as `undoes`. */
+function memoryRequest(
+  kind: Exclude<RequestType, "ask_user" | "tool_call">,
+  need: <T>(key: string, check: (value: unknown) => value is T) => T,
+  maybe: <T>(key: string, check: (value: unknown) => value is T) => T | null,
+): MemoryRequest {
+  const object = (key: string) => need(key, isPlainObject) as JsonObject
+  // The memory checks an author's fields.
+  const author = () => need("author", isPlainObject) as unknown as Author
+  switch (kind) {
+    case "memory_open":
       return {
-        kind,
-        store: need("store", isString),
-        text: need("text", isString),
-        baseVersion: need("base_version", isString),
-        provenance: maybe("provenance", isPlainObject) as JsonObject | null,
+        op: "open",
+        memory: need("memory", isString),
+        create: need("create", isBoolean),
+        itemType: maybe("item_type", isPlainObject) as JsonObject | null,
       }
+    case "memory_reset":
+      return { op: "reset", memory: need("memory", isString) }
+    case "memory_snapshot":
+      return { op: "snapshot", session: need("session", isString) }
+    case "memory_call":
+      return { op: "call", session: need("session", isString), tool: need("tool", isString), args: object("args") }
+    case "memory_apply":
+      return {
+        op: "apply",
+        session: need("session", isString),
+        id: need("change_id", isString),
+        change: object("change"),
+        author: author(),
+      }
+    case "memory_undo":
+      return {
+        op: "undo",
+        session: need("session", isString),
+        id: need("change_id", isString),
+        changeId: need("undoes", isString),
+        author: author(),
+      }
+    case "memory_erase":
+      return {
+        op: "erase",
+        session: need("session", isString),
+        id: need("change_id", isString),
+        target: object("target"),
+        author: author(),
+      }
+    case "memory_history":
+      return { op: "history", session: need("session", isString), limit: Number(need("limit", isCount)) }
+    case "memory_close":
+      return { op: "close", session: need("session", isString) }
   }
 }
 
 function isString(value: unknown): value is string {
   return typeof value === "string"
+}
+
+function isBoolean(value: unknown): value is boolean {
+  return typeof value === "boolean"
+}
+
+/** Whether `value` is a whole number of 0 or more, as a number or (past 2^53) a bigint. */
+function isCount(value: unknown): value is number | bigint {
+  if (typeof value === "bigint") return value >= 0n
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -509,7 +550,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** Throws for a question or tool call whose call id isn't of `job`'s run, then the handlers' own refusal for a tool
- *  not in `job.groups` or a store no `job.memory` spec names; `ask_user` needs no grant. */
+ *  not in `job.groups` or a memory `job.memory` doesn't name; `ask_user` and a call on an open session need no grant
+ *  (the handlers know the sessions they opened). */
 function checkJob(job: Job, args: RequestArgs): void {
   // A fixed text, so the reply never echoes the id sent.
   if ((args.kind === "ask_user" || args.kind === "tool_call") && !args.callId.startsWith(`${job.run_id}/`)) {
@@ -518,25 +560,14 @@ function checkJob(job: Job, args: RequestArgs): void {
   if (args.kind === "tool_call") {
     const specs = Object.hasOwn(job.groups, args.group) ? job.groups[args.group]! : []
     if (!specs.some((spec) => spec.name === args.name)) throw new Error(noTool(args.group, args.name))
-  } else if (args.kind !== "ask_user") {
-    if (!Object.values(job.memory).some((spec) => spec.store === args.store)) throw new Error(noStore(args.store))
+  } else if (args.kind === "memory" && (args.request.op === "open" || args.request.op === "reset")) {
+    if (!job.memory.includes(args.request.memory)) throw new Error(noMemory(args.request.memory))
   }
-}
-
-/** A store error's reply code. A write's `RangeError` is never an unknown version (a lone surrogate, a non-finite
- *  provenance number or an undecodable current file), and a `TypeError` is a value the store refuses. */
-function storeCode(kind: "store_read" | "store_write", error: unknown): string {
-  if (isInstance(error, RangeError)) return kind === "store_read" ? "unknown_version" : "invalid"
-  return isInstance(error, TypeError) ? "invalid" : "unavailable"
 }
 
 // The same texts whether the job check or the handlers refuse, so a worker can't tell which did.
 function noTool(group: string, name: string): string {
   return `no tool ${repr(name)} in group ${repr(group)}`
-}
-
-function noStore(name: string): string {
-  return `no store named ${repr(name)}`
 }
 
 function failed(kind: RequestType, error: unknown, log: RpcLog): Frame {

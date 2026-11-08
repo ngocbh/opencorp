@@ -1,7 +1,6 @@
 /** Loading a job's flow, office tools, skills and profile memory in the worker. */
 import fs from "node:fs"
 import path from "node:path"
-import { FileMarkdownStore } from "@ngocbh/yian"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { groupSpecs } from "../../src/worker/job.ts"
 import { pickSkills } from "../../src/worker/main.ts"
@@ -9,7 +8,7 @@ import type { OfficeTool } from "../../src/worker/rpc.ts"
 import { fakeLlm, nextRun, TemplateOffice, send, templateJob } from "../chat/helpers.ts"
 import { tempDir } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
-import { base, makeJob, makeRegistry, Recorder, run, runWorker, writeFiles } from "./helpers.ts"
+import { base, makeJob, makeRegistry, profileMemory, Recorder, run, runWorker, writeFiles } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -97,16 +96,29 @@ test("only listed skills reach the prompt", async () => {
   expect(prompt).not.toContain("Ship it.")
 })
 
-test("profile memory reads through the office", async () => {
+test("the profile memory is the office's, bound as a flow input", async () => {
   const fake = await fakeLlm()
   const where = base()
-  const profile = path.join(where.root, "profile.md")
-  fs.writeFileSync(profile, "# Minh\nPrefers terse answers.\n")
+  const memory = profileMemory(path.join(where.root, "memory"), "# Minh\nPrefers terse answers.\n")
   fake.script({ content: "ok" })
-  const job = makeJob(where, "flows/profiled.yaml", { memory: { profile: { store: "minh-profile" } } })
-  const handlers = new Recorder({ stores: { "minh-profile": new FileMarkdownStore(profile) } })
+  const handlers = new Recorder({ memories: { profile: memory } })
+  const job = makeJob(where, "flows/profiled.yaml", {}, handlers)
+  expect(job.memory).toEqual(["profile"])
   expect((await run(job, handlers, { env: fake.env() })).outcome?.status).toBe("succeeded")
-  expect(JSON.stringify(fake.requests()[0]!.messages)).toContain("Prefers terse answers.")
+  const [system] = fake.requests()[0]!.messages as { role: string; content: string }[]
+  expect([system!.role, system!.content]).toEqual(["system", '<memory name="profile"># Minh\nPrefers terse answers.\n</memory>'])
+  // The office made the memory's own files in its folder.
+  expect(fs.readFileSync(path.join(where.root, "memory", ".yian", "identity"), "utf8")).toBe("people/minh")
+})
+
+test("a flow without the memory input is refused before any model call", async () => {
+  const fake = await fakeLlm()
+  const where = base()
+  const handlers = new Recorder({ memories: { profile: profileMemory(path.join(where.root, "memory"), "# Minh\n") } })
+  const rec = await run(makeJob(where, "flows/echo.yaml", {}, handlers), handlers, { env: fake.env() })
+  expect(rec.returncode).toBe(1)
+  expect(String(rec.outcome?.message)).toContain("profile")
+  expect(fake.requests()).toEqual([])
 })
 
 test("a planted env file or bunfig preload in the worker cwd is not loaded", async () => {
