@@ -7,7 +7,7 @@ import { MAIN_CHAT } from "../chat/turns.ts"
 import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "./flows.ts"
 import { type RepoIssue, repoIssue } from "./issues.ts"
 import { type CompanyRepo, profilePath } from "./loader.ts"
-import { assetToolName, TOOL_NAME } from "./naming.ts"
+import { assetToolName, groupToolName, TOOL_NAME } from "./naming.ts"
 
 /** One lint check: the issues it finds in a repo. */
 type Check = (repo: CompanyRepo) => Iterable<RepoIssue> | AsyncIterable<RepoIssue>
@@ -156,15 +156,16 @@ function* checkPersonGroups(repo: CompanyRepo): Iterable<RepoIssue> {
   }
 }
 
-/** Tool names fit the model's limits; grants name real subjects and tools. */
+/** Tool names, as a model sees them through the toolbox, fit the model's limits; grants name real subjects and
+ *  tools. */
 function* checkAssets(repo: CompanyRepo): Iterable<RepoIssue> {
   for (const [id, asset] of sorted(repo.assets)) {
     const file = `assets/${id}.yaml`
     for (const tool of Object.keys(asset.tools)) {
-      const name = assetToolName(id, tool)
-      if (!TOOL_NAME.test(name)) {
+      const shown = groupToolName("toolbox", assetToolName(id, tool))
+      if (!TOOL_NAME.test(shown)) {
         yield repoIssue(file, "asset.tool_name_invalid",
-          `${JSON.stringify(name)} must match ${TOOL_NAME.source}`)
+          `${JSON.stringify(shown)}, the name a model sees, must match ${TOOL_NAME.source}`)
       }
     }
     const gated = new Set(Object.keys(asset.tools).filter((tool) => asset.tools[tool]!.risk === "gated"))

@@ -169,6 +169,18 @@ test("tool name too long", async () => {
   expect(await codes(makeCompany({ "assets/fake.yaml": fake }))).toContain("asset.tool_name_invalid")
 })
 
+test("a tool name fits when the model's toolbox name does, at most 64 characters", async () => {
+  // A model sees fake's `t…` as `toolbox_fake__t…`: 14 characters before the tool's own.
+  const fits = "t".repeat(50)
+  const over = "u".repeat(51)
+  const tools = { [fits]: {}, [over]: {} }
+  const fake = asset({ tools, grants: [{ who: "group:eng", can: [fits, over] }] })
+  const found = await withCode(makeCompany({ "assets/fake.yaml": fake }), "asset.tool_name_invalid")
+  expect(found.map((issue) => issue.message)).toEqual([
+    `"toolbox_fake__${over}", the name a model sees, must match ^[A-Za-z_][A-Za-z0-9_-]{0,63}$`,
+  ])
+})
+
 test("gated tool granted directly is a warning", async () => {
   const root = makeCompany({ "assets/fake.yaml": asset({ tools: { echo: { risk: "gated" } } }) })
   expect(await codes(root)).toEqual(new Set())
