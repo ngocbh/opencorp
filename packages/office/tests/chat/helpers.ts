@@ -326,7 +326,9 @@ export const ASKED = {
 }
 
 /** A model turn that asks the person's manager. */
-export const ASK_MANAGER: ScriptedReply = { tool_calls: [{ name: "ask_manager", arguments: { question: "Budget?" } }] }
+export const ASK_MANAGER: ScriptedReply = {
+  tool_calls: [{ name: "company_ask_manager", arguments: { question: "Budget?" } }],
+}
 
 /** A human designer, lan, managed by the CEO. */
 export const LAN = {

@@ -13,6 +13,11 @@ export function handleProblem(handle: string): string | null {
 
 export const TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/
 
+/** The name a model sees, and yian records, for `tool` of the host tool group `group`: `<group>_<tool>`. */
+export function groupToolName(group: string, tool: string): string {
+  return `${group}_${tool}`
+}
+
 /**
  * The model-visible name of `tool` on `assetId`: `cluster-a` + `submit_job` → `cluster_a__submit_job`.
  *

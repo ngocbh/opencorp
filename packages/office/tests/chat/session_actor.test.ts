@@ -15,6 +15,7 @@ import {
 } from "../../src/chat/session_actor.ts"
 import { HarnessError } from "../../src/chat/state.ts"
 import { PING } from "../../src/daemon/bus.ts"
+import { ASK_MANAGER_CALL } from "../../src/questions/ask.ts"
 import { INTERRUPTED, MAX_ANSWER_BYTES } from "../../src/questions/format.ts"
 import {
   CARD_CLOSED,
@@ -25,7 +26,7 @@ import {
   WORKER_STOPPED,
 } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
-import { StoreUnwritable } from "../../src/store/store.ts"
+import { type QuestionRecord, StoreUnwritable } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Delivery, STOP_REASON } from "../../src/worker/job.ts"
 import { type Worker, WorkerExists } from "../../src/worker/spawn.ts"
@@ -2089,7 +2090,8 @@ test("a not resumed advance starts a fresh run with the deliveries it never appl
   await first.handlers.toolCall(first.worker, "company", "ask_manager", { question: "Budget?" }, `${old}/c3`)
   const asked = o.office.store.listQuestions({ sessionId: sid })
   expect(asked).toHaveLength(3)
-  const waits = asked.map((q) => ({ ...TAKE, node: "chat#0/reply", call_id: q.call_id!, tool: q.source, inbox: null }))
+  const tool = (q: QuestionRecord) => (q.source === "ask_manager" ? ASK_MANAGER_CALL : q.source)
+  const waits = asked.map((q) => ({ ...TAKE, node: "chat#0/reply", call_id: q.call_id!, tool: tool(q), inbox: null }))
   first.handlers.result(first.worker, waitingResult(old, waits))
   first.handlers.exited(first.worker, 0)
   await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })

@@ -20,7 +20,7 @@ import type { LiveRelay } from "../daemon/live.ts"
 import type { OfficePaths } from "../daemon/office.ts"
 import type { Env } from "../install/launch.ts"
 import { redact } from "../perm/redact.ts"
-import { type Answers, makeAskUser, type OnQuestion } from "../questions/ask.ts"
+import { type Answers, ASK_MANAGER_CALL, makeAskUser, type OnQuestion } from "../questions/ask.ts"
 import type { AnswerKind } from "../questions/cards.ts"
 import { formatAnswer, MAX_ANSWER_BYTES } from "../questions/format.ts"
 import type { RunIndexer } from "../runs/indexer.ts"
@@ -850,7 +850,7 @@ export class SessionActor implements LiveCalls {
   #agentWaits(): boolean {
     const asked = this.#ctx.store.listQuestions({ runId: this.#runId!, status: "open" })
     if (asked.some((q) => q.source === "ask_user" || q.source === "ask_manager")) return true
-    return (this.#waits ?? []).some((w) => !w.settled && (w.tool === "ask_user" || w.tool === "ask_manager"))
+    return (this.#waits ?? []).some((w) => !w.settled && (w.tool === "ask_user" || w.tool === ASK_MANAGER_CALL))
   }
 
   /** A steer is a message: the running reply reads it before its next model call, else the next turn does. */
