@@ -22,6 +22,7 @@ import {
   type RunResult,
   runLogPath,
 } from "@ngocbh/yian/run"
+import { AuthError } from "@ngocbh/yian/llm_clients"
 import { loadSkills, type Skill } from "@ngocbh/yian/skills"
 import { cancelReplaced, readSeed } from "../chat/history.ts"
 import { MAIN_CHAT } from "../chat/turns.ts"
@@ -29,7 +30,17 @@ import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
 import { Delivery, type Job, parseJob, STOP_REASON } from "./job.ts"
 import { RemoteMemory } from "./remote_memory.ts"
-import { askUserStub, errnoFields, errorMessage, errorName, remoteTool, REPLY_TYPES, Rpc } from "./rpc.ts"
+import {
+  askUserStub,
+  errnoFields,
+  errorMessage,
+  errorName,
+  plainAuthError,
+  remoteTool,
+  REPLY_TYPES,
+  Rpc,
+  SIGN_IN_UNUSABLE,
+} from "./rpc.ts"
 
 export const EXIT_OK = 0
 export const EXIT_FAILED = 1
@@ -216,6 +227,15 @@ function wireWaits(waits: RunInspection["waits"]): Frame[] {
     deadline: w.deadline,
     settled: w.settled,
   }))
+}
+
+/** `error`'s message for the office to show. yian's credential store errors (an `AuthError` that isn't plain) name
+ *  the auth file, which the office never shows a person: fixed text in their place, and a line here naming the
+ *  error's type. */
+function shownMessage(error: unknown): string {
+  if (plainAuthError(error) || !(error instanceof AuthError)) return errorMessage(error)
+  process.stderr.write(`opencorp __worker: ${SIGN_IN_UNUSABLE} (${error.constructor.name})\n`)
+  return SIGN_IN_UNUSABLE
 }
 
 /** A waiting run's `status`, `waits` and `failure` as its log says now. */
@@ -529,7 +549,7 @@ async function serveJob(
     deliveries.refuse()
     last = {
       type: "error",
-      message: `${errorName(error)}: ${errorMessage(error)}`,
+      message: `${errorName(error)}: ${shownMessage(error)}`,
       traceback: stackFrames(error),
       ...errnoFields(error),
     }

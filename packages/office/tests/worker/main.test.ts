@@ -25,7 +25,7 @@ import {
   report,
   serve,
 } from "../../src/worker/main.ts"
-import type { AskRequest, OfficeTool } from "../../src/worker/rpc.ts"
+import { type AskRequest, type OfficeTool, SIGN_IN_UNUSABLE } from "../../src/worker/rpc.ts"
 import { fakeLlm, logPrefix, send, TemplateOffice, waitingChat } from "../chat/helpers.ts"
 import { captureStderr, shortDir, tempDir, waitFor } from "../helpers.ts"
 import {
@@ -557,6 +557,20 @@ test("the stubs of an event drop its values and keep what the office reads", () 
     { ...call, result: null, error: null },
     { node_id: "reply" },
   ])
+})
+
+test("an auth store refusal at run start reaches the office without its path", async () => {
+  const fake = await fakeLlm()
+  const dir = tempDir()
+  const auth = path.join(dir, "chatgpt.auth.json")
+  fs.writeFileSync(auth, "{}")
+  // Readable by others: yian's store refuses it, naming the file and the chmod that fixes it.
+  fs.chmodSync(auth, 0o644)
+  const lines = captureStderr()
+  const rec = await run(makeJob(base()), new Recorder(), { env: { ...fake.env(), YIAN_AUTH_FILE: auth } })
+  expect(rec.outcome).toMatchObject({ type: "error", message: `AuthError: ${SIGN_IN_UNUSABLE}` })
+  expect(lines).toContain("opencorp __worker: the connection's sign-in can't be used (StorageError)")
+  expect(JSON.stringify(rec.outcome) + lines.join("\n")).not.toContain(dir)
 })
 
 test("an event with no value field gets only the minimal stub", () => {

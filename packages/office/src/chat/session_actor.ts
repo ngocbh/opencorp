@@ -55,6 +55,7 @@ import {
   errorKind,
   errorName,
   type OfficeTool,
+  SIGN_IN_UNUSABLE,
   type WorkerHandlers,
 } from "../worker/rpc.ts"
 import { RegistryClosed, type Worker, workerEnv } from "../worker/spawn.ts"
@@ -3275,7 +3276,9 @@ function whyFailed(outcome: Frame | null, provider: Pick<Provider, "llm_config">
   if (outcome === null) return "its worker stopped or couldn't start; see the office log"
   const failure = failureOf(outcome)
   const cause = failure.cause_type
-  const message = failure.message || outcome.message || "no reason given"
+  // yian's credential store errors name the auth file, and a recorded failure keeps only their name, AuthError, which
+  // its plain auth errors share: none of their text is shown. A worker's error frame already left the store's out.
+  const message = cause === "AuthError" ? SIGN_IN_UNUSABLE : failure.message || outcome.message || "no reason given"
   const why = redactKey(cause ? `${cause}: ${message}` : String(message), provider) as string
   const chars = [...why]
   return chars.length <= WHY_CHARS ? why : `${chars.slice(0, WHY_CHARS - 1).join("")}…`

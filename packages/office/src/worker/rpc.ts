@@ -1,5 +1,6 @@
 /** Request/reply calls over a worker channel, and the office-side handler interface. */
 import { type Author, type MemoryBase, memoryErrorKind } from "@ngocbh/yian"
+import { AuthError } from "@ngocbh/yian/llm_clients"
 import type { JsonObject } from "@ngocbh/yian/run"
 import {
   type AskHandler,
@@ -605,6 +606,15 @@ export function errorKind(error: unknown): string {
     }
   } catch {}
   return kind.join(" ")
+}
+
+/** What the office says, in place of its message, of an auth error that isn't a plain `AuthError`. */
+export const SIGN_IN_UNUSABLE = "the connection's sign-in can't be used"
+
+/** Whether `error` is a plain `AuthError`: fixed text naming what failed and its HTTP status, never a path or a
+ *  key. yian's credential store throws a subclass, whose message names the auth file and how to fix it. */
+export function plainAuthError(error: unknown): error is AuthError {
+  return error instanceof AuthError && Object.getPrototypeOf(error) === AuthError.prototype
 }
 
 /** A thrown value's message for a reply; never throws. `String(value)` can, so another non-`Error` gets fixed text. */

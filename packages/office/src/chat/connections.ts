@@ -6,6 +6,7 @@ import { AuthError, AuthStore } from "@ngocbh/yian/llm_clients"
 import { type Connection, OFFICE } from "@opencorp/protocol"
 import type { z } from "zod"
 import { PrivateFileError, readPrivate, writePrivate } from "../secrets.ts"
+import { plainAuthError } from "../worker/rpc.ts"
 import {
   checked,
   checkLlmConfig,
@@ -53,12 +54,6 @@ export class ConnectionUnusable extends RunMoved {
     super(message)
     this.connection = connection
   }
-}
-
-/** Whether `error` is a plain `AuthError`: fixed text naming what failed and its HTTP status, never a path or a
- *  key. yian's credential store throws a subclass, whose message names the auth file and how to fix it. */
-export function plainAuthError(error: unknown): error is AuthError {
-  return error instanceof AuthError && Object.getPrototypeOf(error) === AuthError.prototype
 }
 
 type Method = "api_key" | "subscription"

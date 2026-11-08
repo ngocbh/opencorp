@@ -10,14 +10,8 @@ import {
 } from "@ngocbh/yian/llm_clients"
 import type { ModelList } from "@opencorp/protocol"
 import type { z } from "zod"
-import {
-  BadConnectionName,
-  type ConnectionFile,
-  type Connections,
-  configHash,
-  plainAuthError,
-  providerLabel,
-} from "./connections.ts"
+import { plainAuthError } from "../worker/rpc.ts"
+import { BadConnectionName, type ConnectionFile, type Connections, configHash, providerLabel } from "./connections.ts"
 import { type LlmConfig, type Provider, ProviderError } from "./provider.ts"
 
 /** How long one listing may take, in ms: under the TUI's 15 s read timeout. */
