@@ -125,7 +125,10 @@ test("a not resumed advance refuses the deliveries it still holds", async () => 
 test("an advance whose code file is gone is not resumed", async () => {
   const where = base()
   const chat = makeJob(where, "flows/coded.yaml", { inputs: {} })
-  expect((await run(chat, new Recorder())).outcome?.status).toBe("waiting")
+  // The run starts in a worker process, as the office starts it, so this process has no compiled flow of the run's
+  // to reuse: the advance recompiles the recorded flow.
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  expect((await runWorker(makeRegistry(), chat, new Recorder(), sessionDir)).outcome?.status).toBe("waiting")
   fs.rmSync(path.join(where.pin, "flows", "helpers.ts"))
   await expectNotResumed(advanceJob(chat), "LoadError")
 })
