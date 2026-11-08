@@ -595,7 +595,7 @@ export function createFakeOffice(
     for (const old of Object.values(state.proposals))
       if (old.session_id === s.id && old.status === "open")
         updateProposal({ ...old, status: "discarded" }, "profile_proposal.updated")
-    const file = `people/${s.person}/profile.md`
+    const file = `people/${s.person}/memory/profile.md`
     // Without the `===` line, like the office's difflib diff.
     const diff = createTwoFilesPatch(`a/${file}`, `b/${file}`, current.text, text).replace(/^=+\n/, "")
     return updateProposal(

@@ -98,9 +98,9 @@ export function source(): Source {
     "README.md": text(`# Acme\n\nThe company repo.\n${LONG_LINE}\n`),
     "company.yaml": text("name: Acme\nceo: ngocbh\n"),
     "people/ngocbh/person.yaml": text("handle: ngocbh\nname: Ngoc\nkind: human\ntitle: CEO\nmanager: null\n"),
-    "people/ngocbh/profile.md": text("# Ngoc\n\nRuns Acme.\n"),
+    "people/ngocbh/memory/profile.md": text("# Ngoc\n\nRuns Acme.\n"),
     "people/kai/person.yaml": text("# Kai writes the code.\nhandle: kai\nname: Kai\nkind: agent\ntitle: Engineer\nmanager: lead\n"),
-    "people/kai/profile.md": text("# Kai\n\nTests first.\n"),
+    "people/kai/memory/profile.md": text("# Kai\n\nTests first.\n"),
     "people/lead/person.yaml": text("handle: lead\nname: Lead\nkind: agent\ntitle: Tech lead\nmanager: ngocbh\n"),
     "assets/logo.png": { content: "binary" },
     "assets/big.csv": { content: "too_large" },
@@ -109,7 +109,16 @@ export function source(): Source {
     "latest.md": { content: "symlink", target: "README.md" },
     "vendor/yian": { content: "submodule" },
   }
-  const folders = ["assets", "people", "people/kai", "people/lead", "people/ngocbh", "vendor"]
+  const folders = [
+    "assets",
+    "people",
+    "people/kai",
+    "people/kai/memory",
+    "people/lead",
+    "people/ngocbh",
+    "people/ngocbh/memory",
+    "vendor",
+  ]
   const type = (f: SourceFile): CompanyTreeEntry["type"] =>
     f.content === "symlink" ? "symlink" : f.content === "submodule" ? "submodule" : "file"
   const entries: CompanyTreeEntry[] = [

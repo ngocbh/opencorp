@@ -59,7 +59,8 @@ test("openProposal is the person's newest open proposal", () => {
 
 test("diffLines drops the file headers and keeps hunks", () => {
   // The office's header: difflib with git's a/ and b/ paths.
-  const diff = "--- a/people/minh/profile.md\n+++ b/people/minh/profile.md\n@@ -1,2 +1,2 @@\n # Minh\n-old\n+new\n"
+  const headers = "--- a/people/minh/memory/profile.md\n+++ b/people/minh/memory/profile.md\n"
+  const diff = `${headers}@@ -1,2 +1,2 @@\n # Minh\n-old\n+new\n`
   expect(diffLines(diff)).toEqual(["@@ -1,2 +1,2 @@", " # Minh", "-old", "+new"])
   expect(diffLines("--- a\n+++ b\n@@ -1 +1 @@\n--- x\n+++ y\n")).toEqual(["@@ -1 +1 @@", "--- x", "+++ y"])
 })
