@@ -278,6 +278,9 @@ export interface LockedGit {
    *  its own; returns their paths. Commits nothing while the repo is mid-operation, and skips a conflicted file, one
    *  under a symlinked folder, and a nested git repo. */
   commitHandEdits(): Promise<string[]>
+  /** Rejects with the 409 `CompanyRepoBusy` a `commit` of `paths` would refuse with now: a human's operation is in
+   *  progress, or a path in `paths` (or under one) has an unresolved conflict. */
+  refuseBusy(paths: string[]): Promise<void>
 }
 
 export interface CompanyGitOptions {
@@ -323,6 +326,7 @@ export class CompanyGit {
   readonly #writer: LockedGit = {
     commit: (paths, message) => this.#commit(paths, message),
     commitHandEdits: () => this.#commitHandEdits(),
+    refuseBusy: (paths) => this.#refuseBusy(paths),
   }
 
   constructor(root: string, worktrees: string, options: CompanyGitOptions = {}) {
