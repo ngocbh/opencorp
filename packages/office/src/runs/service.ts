@@ -217,7 +217,7 @@ export class RunLogs {
   async #logState(
     row: RunRow,
     indexRow: RunIndexRow | undefined,
-  ): Promise<Pick<RunDetail, "log_state" | "log_message" | "flow_fingerprint" | "learnable" | "models">> {
+  ): Promise<Pick<RunDetail, "log_state" | "log_message" | "flow_fingerprint" | "models">> {
     const file = this.logPath(row.runId)
     const gone = { log_state: "missing", log_message: LOG_GONE } as const
     if (!fs.existsSync(file)) {
@@ -238,7 +238,7 @@ export class RunLogs {
       if (isMissing(error)) return gone
       throw error
     }
-    return { log_state: "ok", flow_fingerprint: index.fingerprint, learnable: index.learnable, models: index.models }
+    return { log_state: "ok", flow_fingerprint: index.fingerprint, models: index.models }
   }
 
   /** Node attempts that started before seq `before`, newest first, with their kinds, errors cut to ERROR_CHARS;

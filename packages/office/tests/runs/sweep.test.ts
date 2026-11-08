@@ -44,11 +44,14 @@ function indexRow(runId: string, status: RunStatus): RunIndexRow {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     reasoningTokens: 0,
     offset: 10,
     waits: [],
     ready: false,
     wakeAt: null,
+    memories: [],
+    unreadable: null,
   }
 }
 
@@ -60,7 +63,6 @@ function inspection(status: RunStatus): RunInspection {
     runId: null,
     schema: SCHEMA,
     flowFingerprint: null,
-    learnable: false,
     lastSeq: 3,
     startedAt: T,
     endedAt: T,

@@ -28,7 +28,7 @@ import { cutReason } from "../store/store.ts"
 import { recordedKinds } from "./nodes.ts"
 
 /** The run-log schema this office reads: yian's SCHEMA_VERSION at the submodule pin. */
-export const SCHEMA = 23
+export const SCHEMA = 29
 /** Every this-many records, the index keeps the record's byte offset, so a page seeks near its first record. */
 export const SPARSE_EVERY = 64
 /** The index also keeps the offset of a record that starts this many bytes or more past its last kept one, so a seek
@@ -169,7 +169,6 @@ export interface Index {
   /** The end of the first line: the run start's size. */
   startEnd: number | null
   fingerprint: string | null
-  learnable: boolean | null
   /** Each static path's model, from the run start. */
   models: Record<string, string>
   /** Node id → its latest attempt, while it has no outcome. */
@@ -275,7 +274,6 @@ function emptyIndex(st: Stat): Index {
     runId: null,
     startEnd: null,
     fingerprint: null,
-    learnable: null,
     models: {},
     open: new Map(),
     dividers: [],
@@ -405,11 +403,9 @@ function apply(index: Index, entry: RunLogEntry, nodeCap: number): void {
   if (kind === "run_started") {
     const start = record as {
       flowFingerprint: string
-      learnable: boolean
       effectiveLlmByStaticPath: Record<string, Record<string, unknown>>
     }
     index.fingerprint = own(start.flowFingerprint)
-    index.learnable = start.learnable
     index.held -= modelChars(index.models)
     // Built with fromEntries, so a static path named like an Object member is an own key.
     index.models = Object.fromEntries(

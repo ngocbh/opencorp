@@ -354,11 +354,14 @@ test("runs are on the allowlist", async () => {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     reasoningTokens: 0,
     offset: 10,
     waits: [],
     ready: false,
     wakeAt: null,
+    memories: [],
+    unreadable: null,
   })
   const ids = (r: Reply) => (r.json() as { runs: { run_id: string }[] }).runs.map((x) => x.run_id)
   let r = await client.get("/api/runs", {

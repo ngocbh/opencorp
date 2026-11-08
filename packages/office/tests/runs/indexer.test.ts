@@ -446,7 +446,8 @@ test("a row the read skips is logged by its log path, and an unsafe id never", a
     for (const id of [RUN2, "../evil"]) {
       db.run(
         `INSERT INTO runs SELECT ?, flow, started_at, ended_at, parent_run_id, last_seq, result, input_tokens,
-           output_tokens, cache_read_tokens, reasoning_tokens, "offset", 'not a scan' FROM runs WHERE run_id = ?`,
+           output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens, "offset", 'not a scan',
+           unreadable_seq, unreadable_reason, log_size, log_mtime, max_line_bytes, memories FROM runs WHERE run_id = ?`,
         [id, RUN],
       )
     }
@@ -476,11 +477,14 @@ function row(runId = RUN): RunIndexRow {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     reasoningTokens: 0,
     offset: 100,
     waits: [],
     ready: false,
     wakeAt: null,
+    memories: [],
+    unreadable: null,
   }
 }
 

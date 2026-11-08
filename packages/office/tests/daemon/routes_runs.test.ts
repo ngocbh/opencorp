@@ -85,11 +85,14 @@ function indexRow(runId: string, over: Partial<RunIndexRow> = {}): RunIndexRow {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     reasoningTokens: 0,
     offset: 10,
     waits: [],
     ready: false,
     wakeAt: null,
+    memories: [],
+    unreadable: null,
     ...over,
   }
 }
