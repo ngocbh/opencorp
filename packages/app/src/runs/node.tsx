@@ -1,5 +1,5 @@
-// One node attempt's detail on the run page: its output, route or error, its model, and its evidence, read from the
-// record that ended it. Beside the Timeline on a desktop (or over its whole width, expanded); a modal sheet over
+// One node attempt's detail on the run page: its output, route or error, and its model, read from the record that
+// ended it. Beside the Timeline on a desktop (or over its whole width, expanded); a modal sheet over
 // everything on a phone.
 import type { RunDetail, RunEvent, RunNode } from "@opencorp/protocol"
 import Maximize2 from "lucide-solid/icons/maximize-2"
@@ -8,7 +8,6 @@ import {
   createEffect,
   createSignal,
   createUniqueId,
-  For,
   Index,
   on,
   onCleanup,
@@ -44,15 +43,6 @@ export const pretty = (value: unknown) => (typeof value === "string" ? value : J
 
 /** A record too large to preview, as a page and node detail say it. */
 export const tooLarge = (size: number) => `${(size / 2 ** 20).toFixed(1)} MB record: too large to preview; download the log`
-
-/** The evidence a learnable flow records for a node, each folded under its label. */
-const EVIDENCE: [label: string, key: string][] = [
-  ["Inputs", "bound_inputs"],
-  ["Prompt", "prompt"],
-  ["System prompt", "base_system_prompt"],
-  ["Memory", "memory_sections"],
-  ["Model turns and tool calls", "interactions"],
-]
 
 type Payload = Record<string, unknown>
 const asObject = (v: unknown): Payload | undefined => (v && typeof v === "object" && !Array.isArray(v) ? (v as Payload) : undefined)
@@ -142,10 +132,6 @@ export function NodeDetail(props: {
   const handle = () => {
     const h = payload()?.handle ?? props.node.handle
     return typeof h === "string" ? h : null
-  }
-  const evidence = () => {
-    const ev = asObject(payload()?.evidence)
-    return ev ? EVIDENCE.filter(([, key]) => ev[key] != null).map(([label, key]) => ({ label, value: ev[key] })) : []
   }
 
   return (
@@ -247,22 +233,11 @@ export function NodeDetail(props: {
                   </Part>
                 )}
               </Show>
-              <For each={evidence()}>
-                {(part) => (
-                  <details>
-                    <summary class={`cursor-pointer rounded ${RING}`}>{part.label}</summary>
-                    <pre class={`mt-1 ${PRE}`}>{pretty(part.value)}</pre>
-                  </details>
-                )}
-              </For>
               <Show when={(r().cut ?? []).length}>
                 <p class={MUTED}>Part of this record is too large to show whole; download the log.</p>
               </Show>
             </>
           )}
-        </Show>
-        <Show when={props.detail.learnable === false}>
-          <p class={MUTED}>Evidence isn't recorded: this flow isn't learnable.</p>
         </Show>
       </Show>
     </div>
