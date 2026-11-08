@@ -573,6 +573,8 @@ test("any file in a memory folder is a hand edit named by the persons handle", a
 
 test("yian's .yian folders and files outside a memory folder are never hand edits", async () => {
   const { company, g } = setup()
+  // Even in a clone that doesn't ignore .yian/, as a company's .gitignore does.
+  fs.writeFileSync(path.join(company, ".git", "info", "exclude"), "")
   const tracked = "people/minh/memory/.yian/identity"
   fs.mkdirSync(path.join(company, "people/minh/memory/.yian"))
   fs.writeFileSync(path.join(company, tracked), "a\n")
