@@ -409,6 +409,22 @@ test.each([
   }
 })
 
+test("a subscription whose sign in file can't be used names no path", async () => {
+  const dir = path.join(tempDir(), "connections")
+  const auth = await signedIn(dir)
+  // Readable by others: yian's store refuses it, naming the file and the chmod that fixes it.
+  fs.chmodSync(auth, 0o644)
+  const lines: string[] = []
+  const got = await listModels(subscription(), "chatgpt", {
+    request: never().send,
+    authFile: auth,
+    log: (line) => void lines.push(line),
+  })
+  expect([got.listed, got.error, got.models]).toEqual([false, "the listing failed", [{ id: "gpt-5.5", name: null }]])
+  expect(lines).toEqual(["listing the models of connection chatgpt failed (StorageError)"])
+  expect(JSON.stringify(got) + lines.join("\n")).not.toContain(dir)
+})
+
 test("a subscription without its sign in offers its own model", async () => {
   const request = never()
   const dir = path.join(tempDir(), "connections")

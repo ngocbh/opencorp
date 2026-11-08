@@ -187,6 +187,26 @@ test("the sign in is saved before the connection", async () => {
   }
 })
 
+test("a sign in its auth store refuses names no path", async () => {
+  const conns = await connections()
+  // yian's lock beside the sign-in's file is a symlink, so its store refuses the save, naming the lock's path.
+  const target = path.join(path.dirname(conns.office), "elsewhere")
+  fs.writeFileSync(target, "")
+  fs.symlinkSync(target, `${conns.authFile("chatgpt")}.lock`)
+  const logins = make(conns, new HTTP(FLOW))
+  try {
+    const failed = await until(logins, (await logins.start({ by: "ngocbh" })).id, "failed")
+    expect([failed.message, failed.connection]).toEqual(["the sign-in couldn't be saved as a connection", null])
+    expect(logs.filter((line) => line.startsWith("sign-in"))).toEqual([
+      `sign-in ${failed.id} couldn't save its connection (StorageError)`,
+    ])
+    expect(JSON.stringify(failed) + logs.join("\n")).not.toContain(conns.office)
+    expect(await conns.names()).toEqual(["office"])
+  } finally {
+    await logins.closeAll()
+  }
+})
+
 test("a second sign in is a new connection", async () => {
   const conns = await connections()
   const logins = make(conns, new HTTP([...FLOW, ...FLOW, ...FLOW]))

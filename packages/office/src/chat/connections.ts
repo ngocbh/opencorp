@@ -55,6 +55,12 @@ export class ConnectionUnusable extends RunMoved {
   }
 }
 
+/** Whether `error` is a plain `AuthError`: fixed text naming what failed and its HTTP status, never a path or a
+ *  key. yian's credential store throws a subclass, whose message names the auth file and how to fix it. */
+export function plainAuthError(error: unknown): error is AuthError {
+  return error instanceof AuthError && Object.getPrototypeOf(error) === AuthError.prototype
+}
+
 type Method = "api_key" | "subscription"
 
 /** A connection file: a `Provider` plus how it signs in. */
@@ -464,9 +470,13 @@ export class Connections {
     try {
       await new AuthStore(this.authFile(name), { lockTimeoutMs: this.#signInLockTimeoutMs }).delete()
     } catch (error) {
+      if (plainAuthError(error)) {
+        throw new ProviderError(`can't remove the sign-in of connection '${name}': ${error.message}`)
+      }
       if (!(error instanceof AuthError)) throw error
-      // yian's AuthError messages are fixed text, with no path or key in them
-      throw new ProviderError(`can't remove the sign-in of connection '${name}': ${error.message}`)
+      // The store's own error names the auth file: the log says which connection, the person gets no path.
+      this.#log(`couldn't remove the sign-in of connection ${name} (${error.constructor.name})`)
+      throw new ProviderError(`can't remove the sign-in of connection '${name}': its sign-in file can't be used`)
     }
   }
 
