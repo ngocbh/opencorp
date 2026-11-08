@@ -360,11 +360,10 @@ export class RunLogs {
    *  ends or starts while the page is built never reads as interrupted. */
   #page(wanted: RunFilter, parent: string | null, before: string | null, limit: number): RunPage {
     const live = this.#live()
-    const index = this.#index()
-    const yian = new YianRuns(index, this.#inspections)
+    const yian = new YianRuns(this.#index(), this.#inspections)
     const links = new Map<string, string>()
     const ended: string[] = []
-    for (const row of index.values()) {
+    for (const row of yian.rows()) {
       if (row.parentRunId !== null) links.set(row.runId, row.parentRunId)
       if (ENDED.has(row.status)) ended.push(row.runId)
     }

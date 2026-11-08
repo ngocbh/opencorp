@@ -121,20 +121,27 @@ function rowFacts(row: RunIndexRow): YianRun {
   return { status: row.status, failure: null, waits: row.waits, parentRunId: row.parentRunId, endedAt: row.endedAt }
 }
 
-/** yian's facts about runs: one read of its run index, and its logs for what the index can't say. */
+/** yian's facts about runs: one read of its run index, and its logs for what the index can't say. A row yian marks
+ *  unreadable counts as no row: it holds where the records before the bad one left the run, which isn't where the
+ *  run is. */
 export class YianRuns {
   readonly #index: ReadonlyMap<string, RunIndexRow>
   readonly #inspections: Inspections
   #children: Map<string, string[]> | undefined
 
   constructor(index: ReadonlyMap<string, RunIndexRow>, inspections: Inspections) {
-    this.#index = index
+    this.#index = new Map([...index].filter(([, row]) => row.unreadable === null))
     this.#inspections = inspections
   }
 
   /** The run's index row, if the index has one. */
   row(runId: string): RunIndexRow | undefined {
     return this.#index.get(runId)
+  }
+
+  /** Every index row. */
+  rows(): Iterable<RunIndexRow> {
+    return this.#index.values()
   }
 
   /** The run ids of the index rows whose parent is one of `parentIds`, by parent id; a parent with none is left

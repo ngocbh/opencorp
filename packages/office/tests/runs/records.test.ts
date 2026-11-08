@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
-import { openSqlite } from "@ngocbh/yian/platform"
+import { openSqlite, withWarnings } from "@ngocbh/yian/platform"
 import { type RunIndexRow, type RunInspection, updateRunIndex, type WaitInfo } from "@ngocbh/yian/run"
 import {
   CANCELLED,
@@ -23,7 +23,7 @@ import { SCHEMA } from "../../src/runs/reader.ts"
 import { newId, type RunRow, type SessionRecord } from "../../src/store/store.ts"
 import { tempDir } from "../helpers.ts"
 import { openStore, question, session } from "../store/helpers.ts"
-import { committed, RUN, runStarted, started, succeeded } from "./helpers.ts"
+import { committed, line, RUN, runStarted, started, succeeded, waiting } from "./helpers.ts"
 
 const T = "2026-10-20T10:00:00.000Z"
 
@@ -309,6 +309,39 @@ test("a stale waiting or stopped row asks the log", () => {
   const index = new Map([["R", indexRow("R", { status: "waiting" })]])
   const missing = new YianRuns(index, new Inspections(tempDir(), () => inspection({ status: "succeeded" })))
   expect(statusOf(row(s, "R"), s, new Live(), missing).status).toBe("finished")
+})
+
+test("an index row marked unreadable counts as no row", () => {
+  const s = session({ status: "ended", run_ids: ["R"] })
+  const unreadable = { seq: 4, reason: "a line that isn't a record" }
+  for (const status of ["waiting", "succeeded", "running"] as const) {
+    const yian = yianOf([indexRow("R", { status, parentRunId: "P", unreadable })])
+    expect([yian.row("R"), [...yian.rows()], yian.children(["P"]), yian.endedOrRunning("R")]).toEqual([
+      undefined,
+      [],
+      new Map(),
+      false,
+    ])
+    expect(statusOf(row(s, "R"), s, new Live(), yian)).toMatchObject({
+      status: "interrupted",
+      reason: NO_OUTCOME,
+      yian: null,
+    })
+  }
+})
+
+test("a log yian can read only up to a bad line shows no outcome, not the status before it", () => {
+  const runsDir = tempDir()
+  fs.mkdirSync(path.join(runsDir, RUN))
+  const records = [runStarted(0), started(1, "a"), waiting(2, "a"), line(3, "run_waiting", { node_ids: ["a"] })]
+  fs.writeFileSync(path.join(runsDir, RUN, "log.jsonl"), Buffer.concat([...records, Buffer.from("garbage\n")]))
+  withWarnings(() => {}, () => updateRunIndex(runsDir))
+  const index = readIndex(runsDir)
+  // yian keeps a row of the records before the bad line, marked unreadable at it.
+  expect(index.get(RUN)).toMatchObject({ status: "waiting", unreadable: { seq: 4 } })
+  const s = session({ status: "ended", run_ids: [RUN] })
+  const yian = new YianRuns(index, new Inspections(runsDir))
+  expect(statusOf(row(s, RUN), s, new Live(), yian)).toMatchObject({ status: "interrupted", reason: NO_OUTCOME })
 })
 
 test("a run with no outcome is warned about once", () => {
