@@ -1,6 +1,5 @@
-/** Profile routes: read and edit a person's profile (`memory/profile.md`) through the office's MarkdownStore, and
- *  list and apply the profile manager's proposals. */
-import { type MarkdownStore, MarkdownVersionMismatch } from "@ngocbh/yian"
+/** Profile routes: read and edit a person's profile (`memory/profile.md`) through the office's profile store, a
+ *  FileMemory, and list and apply the profile manager's proposals. */
 import {
   CompanyDefaults,
   Profile,
@@ -14,7 +13,8 @@ import { z } from "zod"
 import { mayEditProfile } from "../../company/access.ts"
 import { type CompanyRepo, loadRepo, missingPerson } from "../../company/loader.ts"
 import { applyProposal, ProposalNotFound, ProposalNotOpen } from "../../profile/manager.ts"
-import { ProfileUnreadable } from "../../profile/store.ts"
+import { type GitProfileStore, ProfileConflict, ProfileRefused, ProfileUnreadable } from "../../profile/store.ts"
+import { newId } from "../../store/store.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, RawReply, type Route } from "../http.ts"
 import type { RequestContext, SessionHarness } from "../office.ts"
@@ -38,13 +38,14 @@ function open(
   ctx: RequestContext,
   handle: string,
   method: string,
-): { store: MarkdownStore; maxChars: number; repo: CompanyRepo } {
+): { store: GitProfileStore; maxChars: number; repo: CompanyRepo } {
   const factory = ctx.office.profileStore
   if (factory === null) {
     throw new HttpError(501, "not_implemented", `${method} /profiles/${handle} is not implemented yet`)
   }
   const repo = withPerson(ctx, handle)
-  return { store: factory(handle), maxChars: maxCharsOf(repo), repo }
+  const maxChars = maxCharsOf(repo)
+  return { store: factory(handle, maxChars), maxChars, repo }
 }
 
 /** 403 unless the acting person may change `handle`'s profile in `repo`: the CEO or one of their human managers. */
@@ -65,16 +66,18 @@ function managerStart(ctx: RequestContext, handle: string): NonNullable<SessionH
 }
 
 /** A 409 reply with both versions, for a write whose base version is no longer current. */
-function conflict(error: MarkdownVersionMismatch): RawReply {
+function conflict(error: ProfileConflict): RawReply {
   const versions = VersionConflict.parse({ expected: error.expected, current: error.current })
   return new RawReply(409, {}, JSON.stringify(versions))
 }
 
-/** A 409 `unreadable_profile` for a profile that isn't UTF-8, a symlink or not a regular file, or whose memory folder
- *  is a symlink or not a folder; its message names only the repo path. Rethrows any other error. */
-// Only this class: other RangeErrors from the store (a bad commit id, an unknown version) quote values.
-function unreadable(error: unknown): never {
+/** A 409 `unreadable_profile` for a profile that isn't one (not UTF-8, over the characters a profile may hold, a hard
+ *  link, a symlink or not a regular file, or in a folder that is a symlink or not a folder), its message naming only
+ *  the repo path; a 422 `refused` for text the memory refuses, with its reason. Rethrows any other error. */
+// Only these classes: other RangeErrors from the store quote values.
+function refused(error: unknown): never {
   if (error instanceof ProfileUnreadable) throw new HttpError(409, "unreadable_profile", error.message)
+  if (error instanceof ProfileRefused) throw new HttpError(422, "refused", error.message)
   throw error
 }
 
@@ -93,17 +96,18 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     handler: async (ctx, params): Promise<Profile> => {
       const handle = params.handle!
       const { store, maxChars } = open(ctx, handle, "GET")
-      let text: string, version: string
+      let read: { text: string; version: string }
       try {
-        ;[text, version] = await store.read()
+        read = await store.read()
       } catch (error) {
-        unreadable(error)
+        refused(error)
       }
+      const { text, version } = read
       return { person: handle, text, version, over_budget: overBudget(text, maxChars) }
     },
   },
-  // Replaces a profile if `base_version` is current; 409 with both versions if not, 409 `unreadable_profile` for a
-  // profile that can't be written.
+  // Replaces a profile if `base_version` is current, as the acting person; 409 with both versions if not, 409
+  // `unreadable_profile` for a profile that can't be written, 422 `refused` for text over its cap.
   {
     method: "PUT",
     path: "/profiles/:handle",
@@ -120,13 +124,20 @@ export const ROUTES: readonly Route<RequestContext>[] = [
       checkProfileEdit(ctx, repo, handle)
       // JSON can carry one, but UTF-8 can't; the store would refuse it as a 500.
       if (!text.isWellFormed()) throw new HttpError(422, "invalid_body", "text: holds a lone surrogate")
-      // Named for who wrote it, so the commit isn't taken for a hand edit of the file.
-      const provenance = { source: `${actingPerson(ctx)} via profile edit` }
+      const by = actingPerson(ctx)
       let version: string
       try {
-        version = await store.write(text, { baseVersion: base_version, provenance })
+        const written = await store.write(text, {
+          baseVersion: base_version,
+          // Each request is its own change.
+          changeId: newId(),
+          author: { kind: "user", name: by },
+          // Named for who wrote it, so the commit isn't taken for a hand edit of the file.
+          source: `${by} via profile edit`,
+        })
+        version = written.version
       } catch (error) {
-        if (!(error instanceof MarkdownVersionMismatch)) unreadable(error)
+        if (!(error instanceof ProfileConflict)) refused(error)
         return conflict(error)
       }
       const profile = Profile.parse({ person: handle, text, version, over_budget: overBudget(text, maxChars) })
@@ -186,8 +197,8 @@ export const ROUTES: readonly Route<RequestContext>[] = [
       } catch (error) {
         if (error instanceof ProposalNotFound) throw new HttpError(404, "not_found", error.message)
         if (error instanceof ProposalNotOpen) throw new HttpError(409, "not_open", error.message)
-        if (error instanceof MarkdownVersionMismatch) return conflict(error)
-        unreadable(error)
+        if (error instanceof ProfileConflict) return conflict(error)
+        refused(error)
       }
     },
   },

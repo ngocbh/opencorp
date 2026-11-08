@@ -1,4 +1,5 @@
-/** Profile routes over `office.profileStore` (a git-blob-versioned file store here), and the profile manager's. */
+/** Profile routes over `office.profileStore`, the office's FileMemory on a person's memory folder, and the profile
+ *  manager's. */
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
@@ -7,7 +8,7 @@ import { parse as parseYaml, stringify } from "yaml"
 import { newToken } from "../../src/auth/tokens.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { MANAGER_FLOW, propose } from "../../src/profile/manager.ts"
-import { blobId, GitProfileStore } from "../../src/profile/store.ts"
+import { GitProfileStore, profileHash } from "../../src/profile/store.ts"
 import type { ProfileProposalRecord } from "../../src/store/store.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
 import { fakeLlm, makeHarness, ROOT, status } from "../chat/helpers.ts"
@@ -17,7 +18,6 @@ import { proposal, recordEvents, session } from "../store/helpers.ts"
 import {
   addHuman,
   bearer,
-  blobStores,
   giveDevice,
   makeOffice,
   request,
@@ -32,7 +32,7 @@ const MINH = "# Minh, Engineer\n"
 
 type Reply = Awaited<ReturnType<typeof request>>
 
-const blob = (text: string) => blobId(Buffer.from(text))
+const hash = (text: string) => profileHash(Buffer.from(text))
 const errorOf = (reply: Reply) => (reply.json() as { error: string }).error
 
 function put(sock: string, body: unknown): Promise<Reply> {
@@ -45,8 +45,8 @@ function put(sock: string, body: unknown): Promise<Reply> {
 /** A proposal of `text` over minh's current profile, from a new profile-manager session. */
 async function proposeText(office: Office, text: string): Promise<ProfileProposalRecord> {
   const s = office.store.createSession(session({ kind: "profile_manager" }))
-  const profile = new GitProfileStore(office.git, "minh")
-  const [base, version] = await profile.read()
+  const profile = new GitProfileStore(office.git, "minh", { maxChars: 32000 })
+  const { text: base, version } = await profile.read()
   return propose(office.store, s, profile, version, base, text)
 }
 
@@ -69,16 +69,14 @@ function setMaxChars(company: string, chars: number): void {
 
 test("get profile", async () => {
   const office = makeOffice()
-  blobStores(office)
   const { sock } = await served(office)
   const r = await request(sock, "GET", "/profiles/minh")
   expect(r.status).toBe(200)
-  expect(r.json()).toEqual({ person: "minh", text: MINH, version: blob(MINH), over_budget: false })
+  expect(r.json()).toEqual({ person: "minh", text: MINH, version: hash(MINH), over_budget: false })
 })
 
 test("over budget uses company defaults", async () => {
   const office = makeOffice()
-  blobStores(office)
   const { sock } = await served(office)
   setMaxChars(office.paths.company, 5)
   expect((await request(sock, "GET", "/profiles/minh")).json()).toMatchObject({ over_budget: true })
@@ -86,18 +84,16 @@ test("over budget uses company defaults", async () => {
 
 test("over budget counts code points", async () => {
   const office = makeOffice()
-  blobStores(office)
   const { sock } = await served(office)
   setMaxChars(office.paths.company, 5)
   // Three code points, six UTF-16 units: within a budget of five, as Python's len counts.
-  const r = await put(sock, { text: "😀😀😀", base_version: blob(MINH) })
+  const r = await put(sock, { text: "😀😀😀", base_version: hash(MINH) })
   expect(r.status).toBe(200)
   expect(r.json()).toMatchObject({ over_budget: false })
 })
 
 test("unknown person is 404", async () => {
   const office = makeOffice()
-  blobStores(office)
   const { sock } = await served(office)
   for (const r of [
     await request(sock, "GET", "/profiles/ghost"),
@@ -113,35 +109,32 @@ test("unknown person is 404", async () => {
 
 test("put writes emits and returns the profile", async () => {
   const office = makeOffice()
-  const stores = blobStores(office)
   const { sock } = await served(office)
   const events = recordEvents(office.store)
-  const r = await put(sock, { text: "# Minh\nterse\n", base_version: blob(MINH) })
+  const r = await put(sock, { text: "# Minh\nterse\n", base_version: hash(MINH) })
   expect(r.status).toBe(200)
   const body = r.json() as { text: string; version: string }
   expect(body.text).toBe("# Minh\nterse\n")
-  expect(body.version).toBe(blob("# Minh\nterse\n"))
+  expect(body.version).toBe(hash("# Minh\nterse\n"))
   expect(fs.readFileSync(path.join(office.paths.company, PROFILE), "utf8")).toBe("# Minh\nterse\n")
-  expect(stores.get("minh")!.provenance).toEqual([{ source: "ngocbh via profile edit" }])
+  expect(git(office.paths.company, "log", "-1", "--format=%s")).toBe("profile(@minh): ngocbh via profile edit")
   const event = events.at(-1)!
   expect([event.type, event.subject_id, event.data]).toEqual(["profile.updated", "minh", body])
 })
 
 test("put with stale base is 409 with both versions", async () => {
   const office = makeOffice()
-  blobStores(office)
   const { sock } = await served(office)
-  const stale = blob("old\n")
+  const stale = hash("old\n")
   const r = await put(sock, { text: "x", base_version: stale })
   expect(r.status).toBe(409)
   expect(r.headers["content-type"]).toStartWith("application/json")
-  expect(r.json()).toEqual({ expected: stale, current: blob(MINH) })
+  expect(r.json()).toEqual({ expected: stale, current: hash(MINH) })
   expect(fs.readFileSync(path.join(office.paths.company, "people/minh/memory/profile.md"), "utf8")).toBe(MINH)
 })
 
 test("put with bad version is 422", async () => {
   const office = makeOffice()
-  blobStores(office)
   const { sock } = await served(office)
   const r = await put(sock, { text: "x", base_version: "sha256:abc" })
   expect(r.status).toBe(422)
@@ -151,7 +144,6 @@ test("put with bad version is 422", async () => {
 
 test("no profile store is 501", async () => {
   const office = makeOffice()
-  blobStores(office)
   const { sock } = await served(office)
   office.profileStore = null
   expect((await request(sock, "GET", "/profiles/minh")).status).toBe(501)
@@ -159,7 +151,6 @@ test("no profile store is 501", async () => {
 
 test("put checks the person and store before the body", async () => {
   const office = makeOffice()
-  blobStores(office)
   const { sock } = await served(office)
   let r = await request(sock, "PUT", "/profiles/ghost", { body: "not json" })
   expect(r.status).toBe(404)
@@ -173,10 +164,10 @@ test("put checks the person and store before the body", async () => {
 test("the office profile store defaults to the git store", async () => {
   const office = makeOffice()
   const { sock } = await served(office)
-  const r = await put(sock, { text: "# Minh\nterse\n", base_version: blob(MINH) })
+  const r = await put(sock, { text: "# Minh\nterse\n", base_version: hash(MINH) })
   expect(r.status).toBe(200)
   expect(git(office.paths.company, "log", "-1", "--format=%s")).toBe("profile(@minh): ngocbh via profile edit")
-  expect((await request(sock, "GET", "/profiles/minh")).json()).toMatchObject({ version: blob("# Minh\nterse\n") })
+  expect((await request(sock, "GET", "/profiles/minh")).json()).toMatchObject({ version: hash("# Minh\nterse\n") })
 })
 
 test("put on a profile with an unresolved conflict is 409 company_repo_busy and keeps the conflict", async () => {
@@ -186,10 +177,11 @@ test("put on a profile with an unresolved conflict is 409 company_repo_busy and 
   const rel = "people/minh/memory/profile.md"
   stashPopConflict(company, rel)
   const conflicted = fs.readFileSync(path.join(company, rel))
+  // The memory is the working tree, markers and all.
   const got = await request(sock, "GET", "/profiles/minh")
   expect(got.status).toBe(200)
-  expect(got.json()).toMatchObject({ text: "committed\n", version: blob("committed\n") })
-  const r = await put(sock, { text: "# Minh\nterse\n", base_version: blob("committed\n") })
+  expect(got.json()).toMatchObject({ text: conflicted.toString(), version: profileHash(conflicted) })
+  const r = await put(sock, { text: "# Minh\nterse\n", base_version: profileHash(conflicted) })
   expect(r.status).toBe(409)
   expect(r.json()).toEqual({
     error: "company_repo_busy",
@@ -215,7 +207,6 @@ test("proposals are listed oldest first and 404 for no person", async () => {
 
 test("a person whose file doesnt load is named as such", async () => {
   const office = makeOffice()
-  blobStores(office)
   const { sock } = await served(office)
   fs.writeFileSync(path.join(office.paths.company, "people/minh/person.yaml"), "handle: [SECRETVALUE\n")
   for (const target of ["/profiles/minh", "/profiles/minh/proposals"]) {
@@ -239,7 +230,7 @@ test("apply is credited to the verified person", async () => {
   const r = await request(sock, "POST", `/profile-proposals/${p.id}/apply`, { headers: bearer(token) })
   expect(r.status).toBe(200)
   const text = `${MINH}- One.\n`
-  expect(r.json()).toEqual({ person: "minh", text, version: blob(text), over_budget: false })
+  expect(r.json()).toEqual({ person: "minh", text, version: hash(text), over_budget: false })
   expect(git(office.paths.company, "log", "-1", "--format=%s")).toBe("profile(@minh): ava via profile manager")
   expect(office.store.getProfileProposal(p.id)!.status).toBe("applied")
   expect(events.at(-1)!.type).toBe("profile.updated")
@@ -264,7 +255,7 @@ test("apply after a hand edit is 409 with both versions", async () => {
   const r = await request(sock, "POST", `/profile-proposals/${p.id}/apply`)
   expect(r.status).toBe(409)
   expect(r.headers["content-type"]).toStartWith("application/json")
-  expect(r.json()).toEqual({ expected: blob(MINH), current: blob("# Minh, Staff Engineer\n") })
+  expect(r.json()).toEqual({ expected: hash(MINH), current: hash("# Minh, Staff Engineer\n") })
   expect(office.store.getProfileProposal(p.id)!.status).toBe("stale")
   expect(fs.readFileSync(file, "utf8")).toBe("# Minh, Staff Engineer\n")
 })
@@ -283,7 +274,7 @@ test("put with a lone surrogate is 422 and writes nothing", async () => {
   // Raw, as JSON.stringify would escape it the same way but the test should show what goes on the wire.
   const r = await request(sock, "PUT", "/profiles/minh", {
     headers: { "content-type": "application/json" },
-    body: `{"text":"# Minh\\ud800\\n","base_version":"${blob(MINH)}"}`,
+    body: `{"text":"# Minh\\ud800\\n","base_version":"${hash(MINH)}"}`,
   })
   expect(r.status).toBe(422)
   expect(r.json()).toMatchObject({ error: "invalid_body", message: "text: holds a lone surrogate" })
@@ -293,6 +284,32 @@ test("put with a lone surrogate is 422 and writes nothing", async () => {
 })
 
 const PROFILE = "people/minh/memory/profile.md"
+
+test("a profile over 4 x profile_max_chars is 409 unreadable_profile on get and put", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  setMaxChars(office.paths.company, 5)
+  fs.writeFileSync(path.join(office.paths.company, PROFILE), "x".repeat(21))
+  const message =
+    "people/minh/memory/profile.md holds 21 characters, more than the 20 a profile may hold " +
+    "(4 × profile_max_chars); chats leave it out until it is shortened by hand"
+  const got = await request(sock, "GET", "/profiles/minh")
+  expect([got.status, got.json()]).toEqual([409, { error: "unreadable_profile", message }])
+  const r = await put(sock, { text: "short\n", base_version: hash("x".repeat(21)) })
+  expect([r.status, r.json()]).toEqual([409, { error: "unreadable_profile", message }])
+})
+
+test("put of text over 4 x profile_max_chars is 422 refused and writes nothing", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office)
+  setMaxChars(office.paths.company, 5)
+  const r = await put(sock, { text: "x".repeat(21), base_version: hash(MINH) })
+  expect([r.status, r.json()]).toEqual([
+    422,
+    { error: "refused", message: "`profile.md` would hold 21 characters; a file may hold 20" },
+  ])
+  expect(fs.readFileSync(path.join(office.paths.company, PROFILE), "utf8")).toBe(MINH)
+})
 
 test("get of a non UTF-8 profile is 409 unreadable_profile", async () => {
   const office = makeOffice()
@@ -336,7 +353,7 @@ test("a folder profile is 409 on get and put", async () => {
   const message = "people/minh/memory/profile.md is not a regular file"
   const got = await request(sock, "GET", "/profiles/minh")
   expect([got.status, got.json()]).toEqual([409, { error: "unreadable_profile", message }])
-  const r = await put(sock, { text: "x\n", base_version: blob(MINH) })
+  const r = await put(sock, { text: "x\n", base_version: hash(MINH) })
   expect([r.status, r.json()]).toEqual([409, { error: "unreadable_profile", message }])
 })
 
@@ -416,8 +433,8 @@ test("the profile manager over the routes", async () => {
   const created = r.json() as { id: string; kind: string; person: string }
   expect([created.kind, created.person]).toEqual(["profile_manager", "minh"])
   const manager = store.getSession(created.id)!
-  const profile = new GitProfileStore(g, "minh")
-  let [text, version] = await profile.read()
+  const profile = new GitProfileStore(g, "minh", { maxChars: 32000 })
+  let { text, version } = await profile.read()
   const first = await propose(store, manager, profile, version, text, `${MINH}\n- One.\n`)
   r = await request(sock, "GET", "/profiles/minh/proposals")
   expect((r.json() as { id: string }[]).map((p) => p.id)).toEqual([first.id])
@@ -428,12 +445,12 @@ test("the profile manager over the routes", async () => {
   r = await request(sock, "POST", `/profile-proposals/${first.id}/apply`)
   expect([r.status, errorOf(r)]).toEqual([409, "not_open"])
 
-  ;[text, version] = await profile.read()
+  ;({ text, version } = await profile.read())
   const second = await propose(store, manager, profile, version, text, `${text}- Two.\n`)
   fs.writeFileSync(path.join(g.root, "people/minh/memory/profile.md"), `${MINH}\n- Hand edit.\n`)
   r = await request(sock, "POST", `/profile-proposals/${second.id}/apply`)
   expect(r.status).toBe(409)
-  expect(r.json()).toEqual({ expected: version, current: (await profile.read())[1] })
+  expect(r.json()).toEqual({ expected: version, current: (await profile.read()).version })
   expect(store.getProfileProposal(second.id)!.status).toBe("stale")
 })
 
@@ -504,8 +521,8 @@ test("learning is credited to the verified person", async () => {
   expect(r.status).toBe(200)
   expect((r.json() as { opened_by: string }).opened_by).toBe("ava")
   const manager = store.getSession((r.json() as { id: string }).id)!
-  const profile = new GitProfileStore(g, "minh")
-  const [text, version] = await profile.read()
+  const profile = new GitProfileStore(g, "minh", { maxChars: 32000 })
+  const { text, version } = await profile.read()
   const p = await propose(store, manager, profile, version, text, `${text}- One.\n`)
   const applied = await request(sock, "POST", `/profile-proposals/${p.id}/apply`, { headers: bearer(token) })
   expect(applied.status).toBe(200)
@@ -543,7 +560,7 @@ test("profile writes need the CEO or a human manager", async () => {
   setManager(company, "minh", "bob")
   const r = await request(sock, "PUT", "/profiles/minh", {
     headers: { ...bob, "content-type": "application/json" },
-    body: JSON.stringify({ text: "# Minh\nterse\n", base_version: blob(MINH) }),
+    body: JSON.stringify({ text: "# Minh\nterse\n", base_version: hash(MINH) }),
   })
   expect(r.status).toBe(200)
   expect(git(company, "log", "-1", "--format=%s")).toBe("profile(@minh): bob via profile edit")

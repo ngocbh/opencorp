@@ -94,9 +94,9 @@ export function changeSource(what: string, author: Author): string {
   return `${what} by ${author.kind} ${author.name}${author.run === undefined ? "" : ` in run ${author.run}`}`
 }
 
-/** `result.path` when it is a string: the member a change wrote. */
-function changedPath(result: JsonObject): string | null {
-  return typeof result.path === "string" ? result.path : null
+/** The member a change that applied wrote: its result's `path`; null for one that didn't apply. */
+function appliedPath(applied: Applied): string | null {
+  return applied.ok && typeof applied.result.path === "string" ? applied.result.path : null
 }
 
 /** A signal that never aborts, for the office's own writes, which the memory's lock timeout bounds. */
@@ -167,9 +167,10 @@ export class GitProfileStore {
 
   /**
    * Writes `text` over the profile if `baseVersion` is its version, as change `changeId` by `author`, and commits it
-   * as `source`; returns the new version. A missing profile is created when `baseVersion` is `EMPTY_VERSION`; any
-   * other is rewritten with `baseVersion` as `if_hash`. A change id the memory already applied returns that change's
-   * outcome and writes nothing.
+   * as `source`; returns the new version and HEAD after the commit (HEAD as it was when the text didn't change, null
+   * when the commit failed). A missing profile is created when `baseVersion` is `EMPTY_VERSION`; any other is
+   * rewritten with `baseVersion` as `if_hash`. A change id the memory already applied returns that change's outcome
+   * and writes nothing.
    *
    * Throws a TypeError for non-strings, a RangeError for a lone surrogate, `ProfileConflict` for a stale base,
    * `ProfileRefused` for text over a cap of the memory, `ProfileUnreadable` for a profile that isn't one, a 409
@@ -178,8 +179,9 @@ export class GitProfileStore {
    */
   async write(
     text: string,
-    { baseVersion, changeId, author, source }: { baseVersion: string; changeId: string; author: Author; source: string },
-  ): Promise<string> {
+    o: { baseVersion: string; changeId: string; author: Author; source: string },
+  ): Promise<{ version: string; commit: string | null }> {
+    const { baseVersion, changeId, author, source } = o
     if (typeof text !== "string" || typeof baseVersion !== "string") {
       throw new TypeError("text and baseVersion must be strings")
     }
@@ -187,7 +189,7 @@ export class GitProfileStore {
     const memory = this.fileMemory()
     // Before the hand edits are committed, as `read` does: a folder at profile.md fails git's commit.
     this.#checkFile()
-    const applied = await this.committed(
+    const { result: applied, commit } = await this.committed(
       async () => {
         const { missing } = this.#current()
         const session = await memory.open({ create: true, itemType: null, signal: NEVER })
@@ -197,10 +199,10 @@ export class GitProfileStore {
           await session.close()
         }
       },
-      (applied) => (applied.ok ? changedPath(applied.result) : null),
+      appliedPath,
       source,
     )
-    if (applied.ok) return applied.result.hash as string
+    if (applied.ok) return { version: applied.result.hash as string, commit }
     const current = applied.current?.hash
     const now = typeof current === "string" ? current : this.#current().version
     if (now !== baseVersion) throw new ProfileConflict(baseVersion, now)
@@ -209,25 +211,30 @@ export class GitProfileStore {
 
   /**
    * Runs `change`, a change to the memory folder, under the repo lock once pending hand edits are committed, then
-   * commits the member `changed(result)` names, if any, as `source`; returns the change's result. Refuses with a 409
-   * `CompanyRepoBusy` before the change runs while a human's operation is in progress or the folder has an
-   * unresolved conflict. A commit that fails after the change leaves it on disk for `commitHandEdits`: the change
-   * happened, so the caller hears it did.
+   * commits the member `changed(result)` names, if any, as `source`; returns the change's result and HEAD after the
+   * commit (null when nothing was to be committed, or the commit failed). Refuses with a 409 `CompanyRepoBusy` before
+   * the change runs while a human's operation is in progress or the folder has an unresolved conflict. A commit that
+   * fails after the change leaves it on disk for `commitHandEdits`: the change happened, so the caller hears it did.
    */
-  async committed<T>(change: () => Promise<T>, changed: (result: T) => string | null, source: string): Promise<T> {
+  async committed<T>(
+    change: () => Promise<T>,
+    changed: (result: T) => string | null,
+    source: string,
+  ): Promise<{ result: T; commit: string | null }> {
     return await this.git.locked(async (locked) => {
       await locked.refuseBusy([this.folder])
       await locked.commitHandEdits()
       const result = await change()
       const member = changed(result)
+      let commit: string | null = null
       if (member !== null) {
         try {
-          await locked.commit([`${this.folder}/${member}`], commitMessage(this.handle, source))
+          commit = await locked.commit([`${this.folder}/${member}`], commitMessage(this.handle, source))
         } catch {
           // Committed later as a hand edit.
         }
       }
-      return result
+      return { result, commit }
     })
   }
 
@@ -328,7 +335,11 @@ class CommittedMemory extends MemoryBase {
     super()
   }
 
-  override async open(o: { create: boolean; itemType: JsonObject | null; signal: AbortSignal }): Promise<MemorySession> {
+  override async open(o: {
+    create: boolean
+    itemType: JsonObject | null
+    signal: AbortSignal
+  }): Promise<MemorySession> {
     return new CommittedSession(this.store, await this.store.fileMemory().open(o))
   }
 
@@ -368,29 +379,20 @@ class CommittedSession implements MemorySession {
     return this.#inner.call(tool, args, o)
   }
 
-  apply(c: { id: string; change: JsonObject; author: Author; signal: AbortSignal }): Promise<Applied> {
-    return this.#store.committed(
-      () => this.#inner.apply(c),
-      (applied) => (applied.ok ? changedPath(applied.result) : null),
-      changeSource(`${String(c.change.op)} ${String(c.change.path)}`, c.author),
-    )
+  async apply(c: { id: string; change: JsonObject; author: Author; signal: AbortSignal }): Promise<Applied> {
+    const source = changeSource(`${String(c.change.op)} ${String(c.change.path)}`, c.author)
+    return (await this.#store.committed(() => this.#inner.apply(c), appliedPath, source)).result
   }
 
-  undo(o: { id: string; changeId: string; author: Author; signal: AbortSignal }): Promise<Applied> {
-    return this.#store.committed(
-      () => this.#inner.undo(o),
-      (applied) => (applied.ok ? changedPath(applied.result) : null),
-      changeSource(`undo ${o.changeId}`, o.author),
-    )
+  async undo(o: { id: string; changeId: string; author: Author; signal: AbortSignal }): Promise<Applied> {
+    const source = changeSource(`undo ${o.changeId}`, o.author)
+    return (await this.#store.committed(() => this.#inner.undo(o), appliedPath, source)).result
   }
 
-  erase(o: { id: string; target: JsonObject; author: Author; signal: AbortSignal }): Promise<Erased> {
+  async erase(o: { id: string; target: JsonObject; author: Author; signal: AbortSignal }): Promise<Erased> {
     const member = typeof o.target.path === "string" ? o.target.path : null
-    return this.#store.committed(
-      () => this.#inner.erase(o),
-      () => member,
-      changeSource(`erase ${String(member)}`, o.author),
-    )
+    const source = changeSource(`erase ${String(member)}`, o.author)
+    return (await this.#store.committed(() => this.#inner.erase(o), () => member, source)).result
   }
 
   history(o: { limit: number }): Promise<ChangeEntry[]> {

@@ -46,9 +46,9 @@ const rejection = (promise: Promise<unknown>) =>
     (caught: unknown) => caught,
   )
 
-/** A write by the owner, as the profile routes make one. */
-const write = (store: GitProfileStore, text: string, baseVersion: string, changeId = "c-1") =>
-  store.write(text, { baseVersion, changeId, author: OWNER, source: "ngocbh via profile edit" })
+/** A write by the owner, as the profile routes make one; resolves to the new version. */
+const write = async (store: GitProfileStore, text: string, baseVersion: string, changeId = "c-1") =>
+  (await store.write(text, { baseVersion, changeId, author: OWNER, source: "ngocbh via profile edit" })).version
 
 /** The change `session` has in its history, newest first, as `[op, path, author]`. */
 async function history(session: MemorySession): Promise<unknown[][]> {
