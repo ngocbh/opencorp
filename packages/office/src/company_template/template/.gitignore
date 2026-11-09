@@ -1,0 +1,2 @@
+# yian keeps each memory's journal, lock and identity in a .yian folder; they stay out of the repo.
+.yian/

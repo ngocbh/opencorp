@@ -1,4 +1,4 @@
-# The profile manager: the owner chats with it to edit one person's profile.md. It reads the
+# The profile manager: the owner chats with it to edit one person's memory/profile.md. It reads the
 # profile and proposes edits; the owner applies them from the profile view. It has the same
 # turn, context and reply node names and the same messages inbox as chat.yaml, so the office
 # drives it like a chat.
@@ -75,7 +75,7 @@ defs:
           said: ${heard.output.events}
         output: Optional(str)  # null only after an interrupt
         system_prompt: |-
-          You help the company's owner edit one person's profile (their profile.md), the
+          You help the company's owner edit one person's profile (their memory/profile.md), the
           document that person's agent reads in every run. Call `read` for the current text
           and its version. To change the profile, call `propose_edit` with the complete new
           text and the version you read, then summarise the change. The owner reviews the

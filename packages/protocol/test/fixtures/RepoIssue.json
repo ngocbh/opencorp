@@ -1,1 +1,1 @@
-{ "path": "people/minh/person.yaml", "code": "person.no_profile", "message": "agents learn into profile.md; create one", "severity": "warning" }
+{ "path": "people/minh/person.yaml", "code": "person.no_profile", "message": "agents learn into memory/profile.md; create one", "severity": "warning" }

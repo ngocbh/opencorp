@@ -107,6 +107,12 @@ export function loadRepo(root: string): CompanyRepo {
   return { root, company, people, groups, assets, errors }
 }
 
+/** The repo path of `handle`'s profile: the index file of their memory folder, `people/<handle>/memory/`, which
+ *  holds only memory, never `person.yaml`. */
+export function profilePath(handle: string): string {
+  return `people/${handle}/memory/profile.md`
+}
+
 /** Whether `issues` has one for `handle`'s person file. Only the exact `people/<handle>/person.yaml` path counts. */
 export function personFileBroken(issues: readonly { path: string }[], handle: string): boolean {
   // Matched against paths from the folder listing, so a handle with a slash or dots never matches.

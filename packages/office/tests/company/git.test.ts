@@ -28,7 +28,7 @@ import {
 
 setDefaultTimeout(30_000)
 
-const PROFILE = "people/minh/profile.md"
+const PROFILE = "people/minh/memory/profile.md"
 const OFFICE = "OpenCorp office <office@opencorp.local>"
 const GROUP = "id: eng\nname: Eng\nparent: null\nhead: null\n"
 const GIT_URL = new URL("../../src/company/git.ts", import.meta.url).href
@@ -100,7 +100,7 @@ test("blob id ignores other files", async () => {
   fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
   await g.commit(["groups/eng.yaml"], "edit group")
   expect(await g.blobId(PROFILE)).toBe(before)
-  expect(await g.blobId("people/nobody/profile.md")).toBeNull()
+  expect(await g.blobId("people/nobody/memory/profile.md")).toBeNull()
 })
 
 test.each(GIT_FAILURES)("blob id throws when git fails instead of reporting a missing file [%s]", async (failure) => {
@@ -109,7 +109,7 @@ test.each(GIT_FAILURES)("blob id throws when git fails instead of reporting a mi
   const g = new CompanyGit(root, path.join(dir, "worktrees"), { git: failingGit(dir, `:${PROFILE}`, failure) })
   await expect(g.blobId(PROFILE)).rejects.toThrow(CompanyGitError)
   expect(await g.blobId("company.yaml")).not.toBeNull()
-  expect(await g.blobId("people/nobody/profile.md")).toBeNull()
+  expect(await g.blobId("people/nobody/memory/profile.md")).toBeNull()
 })
 
 test("blob id with no commit yet is null", async () => {
@@ -147,8 +147,8 @@ test("files lists blobs under a folder at a commit", async () => {
   await g.commit(["people/ava/person.yaml"], "add ava")
   const atHead = await g.files("people", head)
   expect([...atHead.keys()].sort()).toEqual([
+    "people/minh/memory/profile.md",
     "people/minh/person.yaml",
-    "people/minh/profile.md",
     "people/ngocbh/person.yaml",
   ])
   expect(atHead.get(PROFILE)).toBe((await g.blobId(PROFILE))!)
@@ -562,6 +562,36 @@ test("hand edit is committed with handle", async () => {
   expect(git(company, "status", "--porcelain")).toBe("")
 })
 
+test("any file in a memory folder is a hand edit named by the persons handle", async () => {
+  const { company, g } = setup()
+  const notes = "people/minh/memory/notes/tests.md"
+  fs.mkdirSync(path.join(company, "people/minh/memory/notes"))
+  fs.writeFileSync(path.join(company, notes), "Likes tests.\n")
+  expect(await g.commitHandEdits()).toEqual([notes])
+  expect(git(company, "log", "-1", "--format=%s")).toBe("profile(@minh): hand edit")
+})
+
+test("yian's .yian folders and files outside a memory folder are never hand edits", async () => {
+  const { company, g } = setup()
+  const tracked = "people/minh/memory/.yian/identity"
+  fs.mkdirSync(path.join(company, "people/minh/memory/.yian"))
+  fs.writeFileSync(path.join(company, tracked), "a\n")
+  git(company, "add", "-f", tracked)
+  git(company, "commit", "-q", "-m", "track a .yian file")
+  fs.writeFileSync(path.join(company, tracked), "b\n")
+  const untracked = ["people/minh/memory/.yian/journal.jsonl", "people/minh/memory/notes/.yian/lock"]
+  fs.mkdirSync(path.join(company, "people/minh/memory/notes/.yian"), { recursive: true })
+  for (const rel of untracked) fs.writeFileSync(path.join(company, rel), "x\n")
+  const outside = "people/minh/profile.md"
+  fs.writeFileSync(path.join(company, outside), "# Minh\n")
+  fs.writeFileSync(path.join(company, PROFILE), "# Minh\nedited\n")
+  const head = await g.head()
+  expect(await g.pending()).toEqual({ handEdits: [PROFILE], uncommitted: [tracked, ...untracked, outside].sort() })
+  expect(await g.commitHandEdits()).toEqual([PROFILE])
+  expect(git(company, "rev-list", "--count", `${head}..HEAD`)).toBe("1")
+  expect(git(company, "show", `HEAD:${tracked}`)).toBe("a")
+})
+
 test("other dirty files stay dirty", async () => {
   const { company, g } = setup()
   fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
@@ -571,10 +601,10 @@ test("other dirty files stay dirty", async () => {
 
 test("new profile is committed", async () => {
   const { company, g } = setup()
-  fs.mkdirSync(path.join(company, "people/ava"))
+  fs.mkdirSync(path.join(company, "people/ava/memory"), { recursive: true })
   fs.writeFileSync(path.join(company, "people/ava/person.yaml"), "handle: ava\n")
-  fs.writeFileSync(path.join(company, "people/ava/profile.md"), "# Ava\n")
-  expect(await g.commitHandEdits()).toEqual(["people/ava/profile.md"])
+  fs.writeFileSync(path.join(company, "people/ava/memory/profile.md"), "# Ava\n")
+  expect(await g.commitHandEdits()).toEqual(["people/ava/memory/profile.md"])
   expect(git(company, "log", "-1", "--format=%s")).toBe("profile(@ava): hand edit")
   expect(git(company, "status", "--porcelain")).toBe("?? people/ava/person.yaml")
 })
@@ -589,11 +619,12 @@ test("deleted profile is committed", async () => {
 
 test("staged rename commits both paths", async () => {
   const { company, g } = setup()
-  git(company, "mv", PROFILE, "people/ngocbh/profile.md")
-  expect(await g.commitHandEdits()).toEqual([PROFILE, "people/ngocbh/profile.md"])
+  fs.mkdirSync(path.join(company, "people/ngocbh/memory"))
+  git(company, "mv", PROFILE, "people/ngocbh/memory/profile.md")
+  expect(await g.commitHandEdits()).toEqual([PROFILE, "people/ngocbh/memory/profile.md"])
   expect(git(company, "status", "--porcelain")).toBe("")
   expect(await g.blobId(PROFILE)).toBeNull()
-  expect(await g.blobId("people/ngocbh/profile.md")).not.toBeNull()
+  expect(await g.blobId("people/ngocbh/memory/profile.md")).not.toBeNull()
 })
 
 test("git dir in the environment is ignored", async () => {
@@ -723,7 +754,7 @@ test.each([[["core.bare", "false"]], [["core.bare", "true"]]])(
   async (extra) => {
     const { tmp, company, g } = setup()
     const elsewhere = path.join(tmp, "elsewhere")
-    fs.mkdirSync(path.join(elsewhere, "people/minh"), { recursive: true })
+    fs.mkdirSync(path.join(elsewhere, "people/minh/memory"), { recursive: true })
     fs.writeFileSync(path.join(elsewhere, PROFILE), "# elsewhere\n")
     git(company, "config", extra[0]!, extra[1]!)
     git(company, "config", "core.worktree", elsewhere)
@@ -832,9 +863,9 @@ test("the users xdg git attributes and ignore files are not read", async () => {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("XDG_")))
   for (const extra of [{}, { XDG_CONFIG_HOME: xdg }]) {
     const { company, g } = setup({ env: { ...env, HOME: home, ...extra } })
-    const added = "people/new/profile.md"
+    const added = "people/new/memory/profile.md"
     const crlf = "# New\r\n"
-    fs.mkdirSync(path.join(company, "people/new"))
+    fs.mkdirSync(path.join(company, "people/new/memory"), { recursive: true })
     fs.writeFileSync(path.join(company, added), crlf)
     expect(await g.commitHandEdits()).toEqual([added])
     const id = createHash("sha1").update(`blob ${crlf.length}\0${crlf}`).digest("hex")
@@ -867,19 +898,19 @@ test("git failure carries stderr", async () => {
 
 test("worktree rename commits both paths", async () => {
   const { company, g } = setup()
-  fs.mkdirSync(path.join(company, "people/ava"))
-  fs.renameSync(path.join(company, PROFILE), path.join(company, "people/ava/profile.md"))
-  git(company, "add", "-N", "people/ava/profile.md") // status now reports " R new\0old"
-  expect(await g.commitHandEdits()).toEqual(["people/ava/profile.md", PROFILE])
+  fs.mkdirSync(path.join(company, "people/ava/memory"), { recursive: true })
+  fs.renameSync(path.join(company, PROFILE), path.join(company, "people/ava/memory/profile.md"))
+  git(company, "add", "-N", "people/ava/memory/profile.md") // status now reports " R new\0old"
+  expect(await g.commitHandEdits()).toEqual(["people/ava/memory/profile.md", PROFILE])
   expect(git(company, "status", "--porcelain")).toBe("")
   expect(await g.blobId(PROFILE)).toBeNull()
-  expect(await g.blobId("people/ava/profile.md")).not.toBeNull()
+  expect(await g.blobId("people/ava/memory/profile.md")).not.toBeNull()
 })
 
 test("glob characters in paths are literal", async () => {
   const { company, g } = setup()
-  const odd = "people/[mn]inh/profile.md"
-  fs.mkdirSync(path.join(company, "people/[mn]inh"))
+  const odd = "people/[mn]inh/memory/profile.md"
+  fs.mkdirSync(path.join(company, "people/[mn]inh/memory"), { recursive: true })
   fs.writeFileSync(path.join(company, odd), "# odd\n")
   fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
   await g.commit([odd], "odd")
@@ -913,14 +944,15 @@ test("broken symlink is committed not deleted", async () => {
 
 test("non utf8 paths round trip", async () => {
   const { company, g } = setup()
-  const odd = "people/b\udcffd/profile.md" // the byte 0xff, surrogate-escaped; APFS cannot hold it
+  const odd = "people/b\udcffd/memory/profile.md" // the byte 0xff, surrogate-escaped; APFS cannot hold it
   const blob = git(company, "hash-object", "-w", PROFILE)
-  const entry = [Buffer.from(`100644 ${blob}\t`), Buffer.from("people/b\xffd/profile.md", "latin1"), Buffer.from("\n")]
+  const name = Buffer.from("people/b\xffd/memory/profile.md", "latin1")
+  const entry = [Buffer.from(`100644 ${blob}\t`), name, Buffer.from("\n")]
   gitInput(company, Buffer.concat(entry), "update-index", "--add", "--index-info")
   git(company, "commit", "-q", "-m", "odd path")
   expect(await g.commitHandEdits()).toEqual([odd]) // absent from disk, so a deletion
   expect(await g.blobId(odd)).toBeNull()
-  // quotePath prints the name as "people/b\377d/profile.md", so it is gone if no line holds people/b
+  // quotePath prints the name as "people/b\377d/memory/profile.md", so it is gone if no line holds people/b
   expect(git(company, "ls-tree", "-r", "--name-only", "HEAD")).not.toContain("people/b")
   expect(git(company, "status", "--porcelain")).toBe("")
 })
@@ -1034,8 +1066,8 @@ test("a path holding a nul or starting with a slash is refused before git runs",
 
 test("a hand made directory name cannot forge a trailer", async () => {
   const { company, g } = setup()
-  const rel = "people/m\n\nCommit-Id: c-1/profile.md"
-  fs.mkdirSync(path.dirname(path.join(company, rel)))
+  const rel = "people/m\n\nCommit-Id: c-1/memory/profile.md"
+  fs.mkdirSync(path.dirname(path.join(company, rel)), { recursive: true })
   fs.writeFileSync(path.join(company, rel), "# M\n")
   expect(await g.commitHandEdits()).toEqual([rel])
   expect(git(company, "log", "-1", "--format=%B").trim()).toBe("profile(@m Commit-Id: c-1): hand edit")
@@ -1050,7 +1082,7 @@ test("list tree lists every entry with its kind blob and size", async () => {
   const { company, g } = setup()
   fs.writeFileSync(path.join(company, "run.sh"), "echo hi\n")
   fs.chmodSync(path.join(company, "run.sh"), 0o755)
-  fs.symlinkSync("people/minh/profile.md", path.join(company, "link"))
+  fs.symlinkSync("people/minh/memory/profile.md", path.join(company, "link"))
   await g.commit(["run.sh", "link"], "more kinds")
   git(company, "update-index", "--add", "--cacheinfo", `160000,${await g.head()},vendor/lib`)
   git(company, "commit", "-q", "-m", "a submodule")
@@ -1060,7 +1092,7 @@ test("list tree lists every entry with its kind blob and size", async () => {
   expect(found.get(PROFILE)!.size).toBe("# Minh, Engineer\n".length)
   expect(found.get(PROFILE)!.blob).toBe((await g.blobId(PROFILE))!)
   expect([found.get("run.sh")!.type, found.get("link")!.type]).toEqual(["file", "symlink"])
-  expect(found.get("link")!.size).toBe("people/minh/profile.md".length)
+  expect(found.get("link")!.size).toBe("people/minh/memory/profile.md".length)
   expect([found.get("vendor/lib")!.type, found.get("vendor/lib")!.size]).toEqual(["submodule", null])
 })
 
@@ -1238,7 +1270,7 @@ test("a root without .git never writes to an enclosing repo", async () => {
   const tmp = tempDir()
   const outer = writeRepo(path.join(tmp, "outer"), { "readme.md": "outer\n" })
   const inner = path.join(outer, "inner")
-  fs.mkdirSync(path.join(inner, "people/minh"), { recursive: true })
+  fs.mkdirSync(path.join(inner, "people/minh/memory"), { recursive: true })
   fs.writeFileSync(path.join(inner, "x.txt"), "x\n")
   fs.writeFileSync(path.join(inner, PROFILE), "# Minh\n")
   const state = () => [git(outer, "ls-files"), git(outer, "status", "--porcelain"), git(outer, "rev-parse", "HEAD")]
@@ -1280,7 +1312,8 @@ test("hand edits skip a profile with an unresolved conflict and say so once", as
   const logged: string[] = []
   const { company, g } = setup({ log: (line) => logged.push(line) })
   stashPopConflict(company, PROFILE)
-  const other = "people/ngocbh/profile.md"
+  const other = "people/ngocbh/memory/profile.md"
+  fs.mkdirSync(path.join(company, "people/ngocbh/memory"))
   fs.writeFileSync(path.join(company, other), "# Ngoc\n")
   expect(await g.commitHandEdits()).toEqual([other])
   expect(git(company, "show", `HEAD:${PROFILE}`)).not.toContain("<<<<<<<")
@@ -1289,6 +1322,68 @@ test("hand edits skip a profile with an unresolved conflict and say so once", as
   expect(logged[0]).toContain(JSON.stringify(PROFILE))
   expect(await g.commitHandEdits()).toEqual([])
   expect(logged).toHaveLength(1)
+})
+
+test.each(["people/minh/memory", "people/minh"])(
+  "a profile under a symlinked folder is skipped and said once, and other hand edits still commit [%s]",
+  async (folder) => {
+    const logged: string[] = []
+    const { tmp, company, g } = setup({ log: (line) => logged.push(line) })
+    // Moved elsewhere and linked back: git lists the profile as deleted, but lstat finds it through the link.
+    fs.renameSync(path.join(company, folder), path.join(tmp, "elsewhere"))
+    fs.symlinkSync(path.join(tmp, "elsewhere"), path.join(company, folder))
+    const other = "people/ngocbh/memory/profile.md"
+    fs.mkdirSync(path.join(company, "people/ngocbh/memory"))
+    fs.writeFileSync(path.join(company, other), "# Ngoc\n")
+    expect((await g.pending()).handEdits).toEqual([other])
+    expect(await g.commitHandEdits()).toEqual([other])
+    expect(git(company, "show", `HEAD:${PROFILE}`)).toBe("# Minh, Engineer")
+    expect(logged).toHaveLength(1)
+    expect(logged[0]).toContain(`${JSON.stringify([PROFILE])}: a folder on its path is a symlink`)
+    expect(await g.commitHandEdits()).toEqual([])
+    expect(logged).toHaveLength(1)
+  },
+)
+
+test("a .yian file or symlink in a memory folder is never a hand edit", async () => {
+  const { tmp, company, g } = setup()
+  fs.writeFileSync(path.join(company, "people/minh/memory/.yian"), "x\n")
+  fs.mkdirSync(path.join(company, "people/minh/memory/notes"))
+  fs.symlinkSync(tmp, path.join(company, "people/minh/memory/notes/.yian"))
+  expect(await g.pending()).toEqual({
+    handEdits: [],
+    uncommitted: ["people/minh/memory/.yian", "people/minh/memory/notes/.yian"],
+  })
+  expect(await g.commitHandEdits()).toEqual([])
+})
+
+test("a nested git repo in a memory folder is never a hand edit, new, changed or deleted; said once", async () => {
+  const logged: string[] = []
+  const { company, g } = setup({ log: (line) => logged.push(line) })
+  const notes = "people/minh/memory/notes"
+  fs.mkdirSync(path.join(company, notes))
+  fs.writeFileSync(path.join(company, notes, "a.md"), "a\n")
+  const nested = (...args: string[]) => git(path.join(company, notes), ...args)
+  nested("init", "-q", "-b", "main")
+  nested("add", "a.md")
+  nested("commit", "-qm", "a")
+  const head = await g.head()
+  expect(await g.commitHandEdits()).toEqual([])
+  expect(await g.head()).toBe(head)
+  const skipped = JSON.stringify([`${notes}/`])
+  expect(logged).toEqual([`hand edits skip ${skipped}: a nested git repo; only files are committed`])
+  // One a human committed as a gitlink: a new commit in it, then its removal.
+  git(company, "add", notes)
+  git(company, "commit", "-qm", "a gitlink")
+  fs.writeFileSync(path.join(company, notes, "a.md"), "b\n")
+  nested("commit", "-qam", "b")
+  expect(await g.pending()).toEqual({ handEdits: [], uncommitted: [notes] })
+  expect(await g.commitHandEdits()).toEqual([])
+  fs.rmSync(path.join(company, notes), { recursive: true })
+  expect(await g.commitHandEdits()).toEqual([])
+  expect(git(company, "ls-files", "-s", notes)).toStartWith("160000 ")
+  expect(logged).toHaveLength(2)
+  expect(logged[1]).toContain(JSON.stringify([notes]))
 })
 
 test.each(OPERATIONS)("hand edits wait while a %s is in progress", async (_, start, what, abort) => {
@@ -1636,17 +1731,18 @@ function privateTmp(): string {
 
 test("pending sorts profile hand edits from other uncommitted changes", async () => {
   const { company, g } = setup()
-  fs.writeFileSync(path.join(company, "people/ngocbh/profile.md"), "# Ngoc\n")
-  git(company, "add", "people/ngocbh/profile.md")
+  fs.mkdirSync(path.join(company, "people/ngocbh/memory"))
+  fs.writeFileSync(path.join(company, "people/ngocbh/memory/profile.md"), "# Ngoc\n")
+  git(company, "add", "people/ngocbh/memory/profile.md")
   git(company, "commit", "-q", "-m", "profile")
   fs.writeFileSync(path.join(company, PROFILE), "# Minh\nedited\n")
-  fs.unlinkSync(path.join(company, "people/ngocbh/profile.md"))
-  fs.mkdirSync(path.join(company, "people/ava"))
-  fs.writeFileSync(path.join(company, "people/ava/profile.md"), "# Ava\n")
+  fs.unlinkSync(path.join(company, "people/ngocbh/memory/profile.md"))
+  fs.mkdirSync(path.join(company, "people/ava/memory"), { recursive: true })
+  fs.writeFileSync(path.join(company, "people/ava/memory/profile.md"), "# Ava\n")
   fs.writeFileSync(path.join(company, "shared/flows/chat.yaml"), "id: chat\n")
   fs.writeFileSync(path.join(company, "shared/b.txt"), "b\n")
   expect(await g.pending()).toEqual({
-    handEdits: ["people/ava/profile.md", PROFILE, "people/ngocbh/profile.md"],
+    handEdits: ["people/ava/memory/profile.md", PROFILE, "people/ngocbh/memory/profile.md"],
     uncommitted: ["shared/b.txt", "shared/flows/chat.yaml"],
   })
 })
@@ -1687,15 +1783,15 @@ test("export tree writes the commit with the overlay from the working tree and n
   const committed = fs.readFileSync(path.join(company, "shared/flows/chat.yaml"), "utf8")
   fs.writeFileSync(path.join(company, "shared/flows/chat.yaml"), "id: edited\n")
   fs.writeFileSync(path.join(company, PROFILE), "# Minh\nedited\n")
-  fs.mkdirSync(path.join(company, "people/ava"))
-  fs.writeFileSync(path.join(company, "people/ava/profile.md"), "# Ava\n")
-  fs.symlinkSync("profile.md", path.join(company, "people/ava/linked.md"))
+  fs.mkdirSync(path.join(company, "people/ava/memory"), { recursive: true })
+  fs.writeFileSync(path.join(company, "people/ava/memory/profile.md"), "# Ava\n")
+  fs.symlinkSync("memory/profile.md", path.join(company, "people/ava/linked.md"))
   const dir = path.join(tmp, "export")
-  await g.exportTree("HEAD", dir, [PROFILE, "people/ava/linked.md", "people/gone/profile.md"])
+  await g.exportTree("HEAD", dir, [PROFILE, "people/ava/linked.md", "people/gone/memory/profile.md"])
   expect(fs.readFileSync(path.join(dir, "shared/flows/chat.yaml"), "utf8")).toBe(committed)
   expect(fs.readFileSync(path.join(dir, PROFILE), "utf8")).toBe("# Minh\nedited\n")
-  expect(fs.readlinkSync(path.join(dir, "people/ava/linked.md"))).toBe("profile.md")
-  expect(fs.existsSync(path.join(dir, "people/ava/profile.md"))).toBe(false)
+  expect(fs.readlinkSync(path.join(dir, "people/ava/linked.md"))).toBe("memory/profile.md")
+  expect(fs.existsSync(path.join(dir, "people/ava/memory/profile.md"))).toBe(false)
   expect(fs.existsSync(path.join(dir, "people/gone"))).toBe(false)
   expect(fs.readFileSync(path.join(dir, "company.yaml"), "utf8")).toContain("test-corp")
   expect(fs.existsSync(path.join(dir, ".git"))).toBe(false)
@@ -1751,10 +1847,10 @@ test.each([
   git(company, "add", `people/${committed}`)
   git(company, "commit", "-q", "-m", "link")
   fs.unlinkSync(path.join(company, "people", committed))
-  fs.mkdirSync(path.join(company, "people/x"))
-  fs.writeFileSync(path.join(company, "people/x/profile.md"), "# X\n")
+  fs.mkdirSync(path.join(company, "people/x/memory"), { recursive: true })
+  fs.writeFileSync(path.join(company, "people/x/memory/profile.md"), "# X\n")
   const dir = path.join(tmp, "export")
-  await g.exportTree("HEAD", dir, ["people/x/profile.md"])
+  await g.exportTree("HEAD", dir, ["people/x/memory/profile.md"])
   expect(fs.readdirSync(outside)).toEqual(["sentinel"])
   expect(fs.readFileSync(path.join(outside, "sentinel"), "utf8")).toBe("keep\n")
   expect(fs.lstatSync(path.join(dir, "people", committed)).isSymbolicLink()).toBe(true)

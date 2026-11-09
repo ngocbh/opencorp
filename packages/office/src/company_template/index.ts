@@ -3,7 +3,7 @@
  *
  * Every file under `template/` is a template file, at the same path in the repo. `company.yaml` and
  * `people/{owner}/person.yaml` are filled in with the company name and the owner; the rest (the shared
- * flows) are copied as they are.
+ * flows and `.gitignore`) are copied as they are.
  */
 import fs from "node:fs"
 import path from "node:path"
@@ -14,6 +14,7 @@ import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import { parseFile, type RepoIssue } from "../company/issues.ts"
 import { embedded } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
+import gitignore from "./template/.gitignore" with { type: "file" }
 import companyYaml from "./template/company.yaml" with { type: "file" }
 import ownerYaml from "./template/people/{owner}/person.yaml" with { type: "file" }
 import chatYaml from "./template/shared/flows/chat.yaml" with { type: "file" }
@@ -31,6 +32,7 @@ const FILLED = ["company.yaml", `${OWNER_DIR}/person.yaml`]
 const TEMPLATE: ReadonlyMap<string, string> = new Map<string, string>([
   [`${OWNER_DIR}/person.yaml`, ownerYaml],
   ["company.yaml", companyYaml],
+  [".gitignore", gitignore],
   ["shared/flows/chat.yaml", chatYaml],
   ["shared/flows/compact_history.yaml", compactHistoryYaml],
   ["shared/flows/profile_manager.yaml", profileManagerYaml],

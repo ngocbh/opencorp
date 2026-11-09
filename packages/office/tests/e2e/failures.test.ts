@@ -220,7 +220,7 @@ test(
   TIMEOUT,
 )
 
-const PROFILE = "people/minh/profile.md"
+const PROFILE = "people/minh/memory/profile.md"
 
 test(
   "a device change mid-merge or under a stale lock is refused as company_repo_busy and stays out of the index",

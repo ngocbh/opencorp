@@ -157,7 +157,7 @@ test("View source in the panel opens the person's folder and closes the panel", 
   await page.getByRole("complementary", { name: "Kai" }).getByRole("link", { name: "View source" }).click()
   await expect(page).toHaveURL(/\/org\?view=source&path=people\/kai$/)
   await expect(page.getByRole("complementary")).toHaveCount(0)
-  await expect(entries(page)).toHaveText(["person.yaml", "profile.md"])
+  await expect(entries(page)).toHaveText(["memory", "person.yaml"])
   await expect(item(page, "kai")).toHaveAttribute("aria-selected", "true")
   await expect(item(page, "kai")).toBeFocused() // the panel that had focus is gone
 })
@@ -172,13 +172,14 @@ test("a new commit refetches the tree and the open file", async ({ page, request
 })
 
 test("a file gone from the latest commit says so and links its nearest folder", async ({ page, request }) => {
-  await page.goto("/org?view=source&path=people/kai/profile.md")
+  await page.goto("/org?view=source&path=people/kai/memory/profile.md")
   await expect(lines(page).first()).toHaveText("# Kai")
   await commit(request, (s) => {
-    delete s.files["people/kai/profile.md"]
-    s.tree.entries = s.tree.entries.filter((e) => e.path !== "people/kai/profile.md")
+    delete s.files["people/kai/memory/profile.md"]
+    // Git keeps no empty folder, so the memory folder goes with its only file.
+    s.tree.entries = s.tree.entries.filter((e) => !e.path.startsWith("people/kai/memory"))
   })
-  await expect(gone(page)).toHaveText("people/kai/profile.md isn't in the latest commit. Open people/kai.")
+  await expect(gone(page)).toHaveText("people/kai/memory/profile.md isn't in the latest commit. Open people/kai.")
   await expect(lines(page)).toHaveCount(0)
   await gone(page).getByRole("link", { name: "people/kai" }).click()
   await expect(page).toHaveURL(/path=people\/kai$/)
@@ -187,7 +188,7 @@ test("a file gone from the latest commit says so and links its nearest folder", 
 
 test("a folder gone from the latest commit links the folder above it", async ({ page, request }) => {
   await page.goto("/org?view=source&path=people/kai")
-  await expect(entries(page)).toHaveText(["person.yaml", "profile.md"])
+  await expect(entries(page)).toHaveText(["memory", "person.yaml"])
   await commit(request, (s) => void (s.tree.entries = s.tree.entries.filter((e) => !e.path.startsWith("people/kai"))))
   await expect(gone(page)).toHaveText("people/kai isn't in the latest commit. Open people.")
   await expect(gone(page).getByRole("link", { name: "people" })).toBeVisible()
@@ -324,7 +325,7 @@ test("on a phone, View source in the sheet opens the person's folder", async ({ 
   await page.getByRole("dialog", { name: "Kai" }).getByRole("link", { name: "View source" }).click()
   await expect(page.getByRole("dialog")).toHaveCount(0)
   await expect(page).toHaveURL(/path=people\/kai$/)
-  await expect(entries(page)).toHaveText(["person.yaml", "profile.md"])
+  await expect(entries(page)).toHaveText(["memory", "person.yaml"])
   await expect(pane(page)).toBeFocused()
 })
 

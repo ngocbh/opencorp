@@ -331,9 +331,9 @@ test("the company check names a few uncommitted changes and counts the rest", as
 /** Commits an agent `bot` to the company at `paths`, with a profile, whose main flow is `main` (a repo path). */
 function commitAgent(paths: OfficePaths, main = "shared/flows/chat.yaml"): void {
   const person = `handle: bot\nname: Bot\nkind: agent\ntitle: Helper\nmanager: ngocbh\nmain: ../../${main}\n`
-  fs.mkdirSync(path.join(paths.company, "people/bot"))
+  fs.mkdirSync(path.join(paths.company, "people/bot/memory"), { recursive: true })
   fs.writeFileSync(path.join(paths.company, "people/bot/person.yaml"), person)
-  fs.writeFileSync(path.join(paths.company, "people/bot/profile.md"), "# Bot\n")
+  fs.writeFileSync(path.join(paths.company, "people/bot/memory/profile.md"), "# Bot\n")
   git(paths.company, "add", "people/bot")
   git(paths.company, "commit", "-qm", "bot")
 }
@@ -344,11 +344,12 @@ test("the company check lays profile hand edits over the last commit, as a new s
   commitAgent(paths)
   expect(byName(await runChecks(dir, paths)).company).toEqual({ name: "company", status: "ok", detail: paths.company })
   // A changed or new profile is no uncommitted change: the next session commits it.
-  fs.writeFileSync(path.join(paths.company, "people/bot/profile.md"), "# Bot\nedited\n")
-  fs.writeFileSync(path.join(paths.company, "people/ngocbh/profile.md"), "# Ngoc\n")
+  fs.writeFileSync(path.join(paths.company, "people/bot/memory/profile.md"), "# Bot\nedited\n")
+  fs.mkdirSync(path.join(paths.company, "people/ngocbh/memory"))
+  fs.writeFileSync(path.join(paths.company, "people/ngocbh/memory/profile.md"), "# Ngoc\n")
   expect(byName(await runChecks(dir, paths)).company).toEqual({ name: "company", status: "ok", detail: paths.company })
   // A deleted one is linted as gone.
-  fs.unlinkSync(path.join(paths.company, "people/bot/profile.md"))
+  fs.unlinkSync(path.join(paths.company, "people/bot/memory/profile.md"))
   expect(byName(await runChecks(dir, paths)).company).toEqual({
     name: "company",
     status: "warn",

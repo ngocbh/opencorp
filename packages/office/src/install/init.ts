@@ -98,8 +98,8 @@ export interface InitOptions {
  * The model comes first: the office's setup connection from `stdin` or asked for. The company, its CEO (you), its
  * first teammates, the CEO's password hash and the remote come from the init flow with that model, which starts
  * from `known`. Without a terminal, they come from `known` and defaults, with the password and the remote asked
- * here. The company is one commit, each teammate with a seeded `profile.md`. The CEO's `person.yaml` holds only
- * the hash of their password, which is asked without echo (and skipped without a terminal); with `device`, it
+ * here. The company is one commit, each teammate with a seeded `memory/profile.md`. The CEO's `person.yaml` holds
+ * only the hash of their password, which is asked without echo (and skipped without a terminal); with `device`, it
  * lists this device, whose token goes in `identity.json`. The remote, `known.remote` or asked for, is added and
  * pushed to.
  *

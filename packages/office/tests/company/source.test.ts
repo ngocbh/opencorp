@@ -15,7 +15,7 @@ const HASH = "$scrypt$ln=15,r=8,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNoaGFzaA"
 const SHA = "d".repeat(64)
 const TOKEN = "act_" + "Z".repeat(43)
 const HUMAN = "people/ngocbh/person.yaml"
-const PROFILE = "people/minh/profile.md"
+const PROFILE = "people/minh/memory/profile.md"
 
 /** A base company, its CompanyGit (worktrees beside it) and a CompanySource on it. */
 function setup(options: { treeCap?: number } = {}) {
@@ -137,7 +137,7 @@ test("file names and the commit subject are listed as stored", async () => {
 
 // Which commit
 
-test.each(["HEAD", "HEAD@{1}", "stash@{0}", ":/init", "-x", "main", null, "", "HEAD:people/minh/profile.md"])(
+test.each(["HEAD", "HEAD@{1}", "stash@{0}", ":/init", "-x", "main", null, "", "HEAD:people/minh/memory/profile.md"])(
   "at must be a served head [%s]",
   async (at) => {
     const { g, src } = setup()
@@ -195,7 +195,7 @@ test.each(["", "/company.yaml", "people/", "people//minh", "people/./minh", "peo
   },
 )
 
-test.each(["nope.md", "people", "people/minh", ":people/minh/profile.md", "PEOPLE/minh/profile.md"])(
+test.each(["nope.md", "people", "people/minh", ":people/minh/memory/profile.md", "PEOPLE/minh/profile.md"])(
   "a path not in the listing or a folder is no file [%s]",
   async (p) => {
     const { g, src } = setup()

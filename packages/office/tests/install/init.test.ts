@@ -160,7 +160,7 @@ test("init trims a teammate's name and title as a hire does", async () => {
   await expect(runInit(dir, new Script([PASSWORD, PASSWORD, "1"]), FLAGS, interviewed(padded))).rejects.toThrow(STOP)
   const minh = loadRepo(company).people.get("minh-dev")
   expect([minh?.name, minh?.title]).toEqual(["Minh", "Engineer"])
-  expect(fs.readFileSync(path.join(company, "people/minh-dev/profile.md"), "utf8")).toBe("# Minh, Engineer\n")
+  expect(fs.readFileSync(path.join(company, "people/minh-dev/memory/profile.md"), "utf8")).toBe("# Minh, Engineer\n")
 })
 
 test("init makes the company its ceo and seeded teammates in one commit", async () => {
@@ -176,10 +176,10 @@ test("init makes the company its ceo and seeded teammates in one commit", async 
     lan: ["agent", "QA", "ngocbh"],
     "minh-dev": ["agent", "Engineer", "ngocbh"],
   })
-  expect(fs.readFileSync(path.join(company, "people/lan/profile.md"), "utf8")).toBe(
+  expect(fs.readFileSync(path.join(company, "people/lan/memory/profile.md"), "utf8")).toBe(
     "# Lan, QA\n\nTests every release.\n",
   )
-  expect(fs.readFileSync(path.join(company, "people/minh-dev/profile.md"), "utf8")).toBe("# Minh, Engineer\n")
+  expect(fs.readFileSync(path.join(company, "people/minh-dev/memory/profile.md"), "utf8")).toBe("# Minh, Engineer\n")
   expect(await lint(repo)).toEqual([])
   expect(missingFiles(company)).toEqual([])
   expect(git(company, "log", "--format=%s").split("\n")).toEqual(["init: create the company"])
@@ -246,7 +246,7 @@ test("the flow with a model makes the company and never sends a secret", async (
     ngocbh: ["human", "CEO"],
     lan: ["agent", "QA"],
   })
-  expect(fs.readFileSync(path.join(company, "people/lan/profile.md"), "utf8")).toBe(
+  expect(fs.readFileSync(path.join(company, "people/lan/memory/profile.md"), "utf8")).toBe(
     "# Lan, QA\n\nTests every release.\n",
   )
   expect(ask.seen).toContain("Tell me about the company.")

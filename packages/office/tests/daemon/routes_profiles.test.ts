@@ -121,7 +121,7 @@ test("put writes emits and returns the profile", async () => {
   const body = r.json() as { text: string; version: string }
   expect(body.text).toBe("# Minh\nterse\n")
   expect(body.version).toBe(blob("# Minh\nterse\n"))
-  expect(fs.readFileSync(path.join(office.paths.company, "people/minh/profile.md"), "utf8")).toBe("# Minh\nterse\n")
+  expect(fs.readFileSync(path.join(office.paths.company, PROFILE), "utf8")).toBe("# Minh\nterse\n")
   expect(stores.get("minh")!.provenance).toEqual([{ source: "ngocbh via profile edit" }])
   const event = events.at(-1)!
   expect([event.type, event.subject_id, event.data]).toEqual(["profile.updated", "minh", body])
@@ -136,7 +136,7 @@ test("put with stale base is 409 with both versions", async () => {
   expect(r.status).toBe(409)
   expect(r.headers["content-type"]).toStartWith("application/json")
   expect(r.json()).toEqual({ expected: stale, current: blob(MINH) })
-  expect(fs.readFileSync(path.join(office.paths.company, "people/minh/profile.md"), "utf8")).toBe(MINH)
+  expect(fs.readFileSync(path.join(office.paths.company, "people/minh/memory/profile.md"), "utf8")).toBe(MINH)
 })
 
 test("put with bad version is 422", async () => {
@@ -183,7 +183,7 @@ test("put on a profile with an unresolved conflict is 409 company_repo_busy and 
   const office = makeOffice()
   const { sock } = await served(office)
   const company = office.paths.company
-  const rel = "people/minh/profile.md"
+  const rel = "people/minh/memory/profile.md"
   stashPopConflict(company, rel)
   const conflicted = fs.readFileSync(path.join(company, rel))
   const got = await request(sock, "GET", "/profiles/minh")
@@ -259,7 +259,7 @@ test("apply after a hand edit is 409 with both versions", async () => {
   const office = makeOffice()
   const { sock } = await served(office)
   const p = await proposeText(office, "# Minh\n")
-  const file = path.join(office.paths.company, "people/minh/profile.md")
+  const file = path.join(office.paths.company, "people/minh/memory/profile.md")
   fs.writeFileSync(file, "# Minh, Staff Engineer\n")
   const r = await request(sock, "POST", `/profile-proposals/${p.id}/apply`)
   expect(r.status).toBe(409)
@@ -292,7 +292,7 @@ test("put with a lone surrogate is 422 and writes nothing", async () => {
   expect(git(office.paths.company, "rev-parse", "HEAD")).toBe(head)
 })
 
-const PROFILE = "people/minh/profile.md"
+const PROFILE = "people/minh/memory/profile.md"
 
 test("get of a non UTF-8 profile is 409 unreadable_profile", async () => {
   const office = makeOffice()
@@ -300,7 +300,7 @@ test("get of a non UTF-8 profile is 409 unreadable_profile", async () => {
   fs.writeFileSync(path.join(office.paths.company, PROFILE), Buffer.from("# M\xffinh\n", "latin1"))
   const r = await request(sock, "GET", "/profiles/minh")
   expect(r.status).toBe(409)
-  expect(r.json()).toEqual({ error: "unreadable_profile", message: "people/minh/profile.md is not UTF-8" })
+  expect(r.json()).toEqual({ error: "unreadable_profile", message: "people/minh/memory/profile.md is not UTF-8" })
 })
 
 test("a symlinked profile is 409 on get and put", async () => {
@@ -333,7 +333,7 @@ test("a folder profile is 409 on get and put", async () => {
   const office = makeOffice()
   const { sock } = await served(office)
   folderProfile(office.paths.company)
-  const message = "people/minh/profile.md is not a regular file"
+  const message = "people/minh/memory/profile.md is not a regular file"
   const got = await request(sock, "GET", "/profiles/minh")
   expect([got.status, got.json()]).toEqual([409, { error: "unreadable_profile", message }])
   const r = await put(sock, { text: "x\n", base_version: blob(MINH) })
@@ -430,7 +430,7 @@ test("the profile manager over the routes", async () => {
 
   ;[text, version] = await profile.read()
   const second = await propose(store, manager, profile, version, text, `${text}- Two.\n`)
-  fs.writeFileSync(path.join(g.root, "people/minh/profile.md"), `${MINH}\n- Hand edit.\n`)
+  fs.writeFileSync(path.join(g.root, "people/minh/memory/profile.md"), `${MINH}\n- Hand edit.\n`)
   r = await request(sock, "POST", `/profile-proposals/${second.id}/apply`)
   expect(r.status).toBe(409)
   expect(r.json()).toEqual({ expected: version, current: (await profile.read())[1] })

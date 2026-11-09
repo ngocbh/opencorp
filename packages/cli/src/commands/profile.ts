@@ -41,7 +41,7 @@ async function edit(editor: string, file: string, text: string): Promise<string 
 }
 
 /**
- * `opencorp profile edit PERSON`: edits a person's profile.md in $EDITOR and saves it over the
+ * `opencorp profile edit PERSON`: edits a person's profile (memory/profile.md) in $EDITOR and saves it over the
  * version it started from, which the office commits as an edit by you. If the profile changed
  * meanwhile, the editor re-opens on the new text with the rejected edit under a marker line;
  * saving drops the marker and everything below it. An empty save writes nothing. An edit that

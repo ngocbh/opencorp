@@ -358,9 +358,9 @@ test("the template flows pass lint", async () => {
     handle: "minh", name: "Minh", kind: "agent", title: "Engineer", manager: "ngocbh",
     main: "../../shared/flows/chat.yaml", harnesses: ["composer"],
   }
-  fs.mkdirSync(path.join(root, "people/minh"))
+  fs.mkdirSync(path.join(root, "people/minh/memory"), { recursive: true })
   fs.writeFileSync(path.join(root, "people/minh/person.yaml"), writeYaml(agent))
-  fs.writeFileSync(path.join(root, "people/minh/profile.md"), "# Minh, Engineer\n")
+  fs.writeFileSync(path.join(root, "people/minh/memory/profile.md"), "# Minh, Engineer\n")
   expect(await lint(loadRepo(root))).toEqual([])
 })
 
@@ -514,45 +514,63 @@ test("a file in a skills folder is skipped", async () => {
 })
 
 test("agent without profile is a warning", async () => {
-  const root = makeCompany({ "people/minh/profile.md": null })
+  const root = makeCompany({ "people/minh/memory/profile.md": null })
   expect(await codes(root)).toEqual(new Set())
-  expect(await issues(root, "warning")).toContain("person.no_profile people/minh/profile.md")
+  expect(await issues(root, "warning")).toContain("person.no_profile people/minh/memory/profile.md")
 })
 
 test("human without profile is fine", async () => {
   expect(await codes(company(), "warning")).not.toContain("person.no_profile")
 })
 
-test("profile.md that isn't UTF-8 is an error", async () => {
+test("a profile that isn't UTF-8 is an error", async () => {
   const root = makeCompany()
-  fs.writeFileSync(path.join(root, "people/minh/profile.md"), Buffer.from("# M\xffinh\n", "latin1"))
-  expect(await issues(root)).toContain("person.profile_not_utf8 people/minh/profile.md")
+  fs.writeFileSync(path.join(root, "people/minh/memory/profile.md"), Buffer.from("# M\xffinh\n", "latin1"))
+  expect(await issues(root)).toContain("person.profile_not_utf8 people/minh/memory/profile.md")
 })
 
-test("a byte order mark in profile.md is fine", async () => {
-  const root = makeCompany({ "people/minh/profile.md": "\uFEFF# Minh\n" })
+test("a byte order mark in a profile is fine", async () => {
+  const root = makeCompany({ "people/minh/memory/profile.md": "\uFEFF# Minh\n" })
   expect(await lint(loadRepo(root))).toEqual([])
 })
 
-test("a symlinked or folder profile.md is an error", async () => {
+test("a symlinked or folder profile is an error", async () => {
   const linked = makeCompany()
   const outside = path.join(path.dirname(linked), "outside.md")
   fs.writeFileSync(outside, "# Minh\n")
-  fs.rmSync(path.join(linked, "people/minh/profile.md"))
-  fs.symlinkSync(outside, path.join(linked, "people/minh/profile.md"))
+  fs.rmSync(path.join(linked, "people/minh/memory/profile.md"))
+  fs.symlinkSync(outside, path.join(linked, "people/minh/memory/profile.md"))
   const folder = makeCompany()
-  fs.rmSync(path.join(folder, "people/minh/profile.md"))
-  fs.mkdirSync(path.join(folder, "people/minh/profile.md"))
+  fs.rmSync(path.join(folder, "people/minh/memory/profile.md"))
+  fs.mkdirSync(path.join(folder, "people/minh/memory/profile.md"))
   for (const root of [linked, folder]) {
-    expect(await issues(root)).toContain("person.profile_not_a_file people/minh/profile.md")
+    expect(await issues(root)).toContain("person.profile_not_a_file people/minh/memory/profile.md")
     expect(await codes(root, "warning")).not.toContain("person.no_profile")
   }
 })
 
+test("a symlinked memory folder or a file in its place is an error", async () => {
+  const linked = makeCompany()
+  const outside = path.join(path.dirname(linked), "outside")
+  fs.renameSync(path.join(linked, "people/minh/memory"), outside)
+  fs.symlinkSync(outside, path.join(linked, "people/minh/memory"))
+  const file = makeCompany({ "people/minh/memory/profile.md": null, "people/minh/memory": "# Minh\n" })
+  for (const root of [linked, file]) {
+    expect(await issues(root)).toEqual(new Set(["person.profile_not_a_file people/minh/memory"]))
+    expect(await codes(root, "warning")).not.toContain("person.no_profile")
+  }
+})
+
+test("a profile outside the memory folder is not a profile", async () => {
+  const root = makeCompany({ "people/minh/memory/profile.md": null, "people/minh/profile.md": "# Minh\n" })
+  expect(await issues(root, "warning")).toContain("person.no_profile people/minh/memory/profile.md")
+})
+
 test("a human's unreadable profile is an error too", async () => {
   const root = company()
-  fs.writeFileSync(path.join(root, "people/ngocbh/profile.md"), Buffer.from("\xff\n", "latin1"))
-  expect(await issues(root)).toContain("person.profile_not_utf8 people/ngocbh/profile.md")
+  fs.mkdirSync(path.join(root, "people/ngocbh/memory"))
+  fs.writeFileSync(path.join(root, "people/ngocbh/memory/profile.md"), Buffer.from("\xff\n", "latin1"))
+  expect(await issues(root)).toContain("person.profile_not_utf8 people/ngocbh/memory/profile.md")
 })
 
 /** A device file entry named `name` whose token hash is `digit` 64 times. */

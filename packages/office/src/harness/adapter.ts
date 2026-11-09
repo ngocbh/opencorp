@@ -40,7 +40,7 @@ export interface HarnessOpen {
   sessionId: string
   /** The checked workspace the harness works in. */
   cwd: string
-  /** The person's profile.md text. */
+  /** The person's profile text (`memory/profile.md`). */
   profile: string
   /** The person's sandbox and network; null takes the defaults (read-only, no network). */
   policy: HarnessPolicy | null

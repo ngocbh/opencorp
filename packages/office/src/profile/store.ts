@@ -1,20 +1,22 @@
-/** A person's profile.md in the company clone as a yian MarkdownStore, versioned by git blob id. */
+/** A person's profile, `memory/profile.md`, in the company clone as a yian MarkdownStore, versioned by git blob id. */
 import { createHash, randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { type MarkdownStore, MarkdownVersionMismatch } from "@ngocbh/yian"
 import type { JsonObject } from "@ngocbh/yian/run"
 import { Handle } from "@opencorp/protocol"
+import { errno } from "../company/flows.ts"
 import { type CompanyGit, CompanyGitError, type LockedGit, oneLine, WHITESPACE } from "../company/git.ts"
+import { profilePath } from "../company/loader.ts"
 
 /** The git blob id of empty content. */
 export const EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
 
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
 
-/** profile.md exists but can't be read or written as a profile: it isn't UTF-8, is a symlink, or isn't a regular
- *  file. A RangeError, so yian's store contract (store_invalid, not retryable) and the worker RPC's mapping stay as
- *  they are; its message names only the profile's repo path. */
+/** The profile exists but can't be read or written as one: it isn't UTF-8, it or its memory folder is a symlink, or
+ *  either isn't a regular file or folder. A RangeError, so yian's store contract (store_invalid, not retryable) and
+ *  the worker RPC's mapping stay as they are; its message names only the profile's repo path. */
 export class ProfileUnreadable extends RangeError {
   override name = "ProfileUnreadable"
 }
@@ -61,7 +63,7 @@ function systemError(message: string, syscall: "read" | "write", cause?: unknown
 }
 
 /**
- * `people/<handle>/profile.md` in the company clone, as a yian `MarkdownStore`.
+ * `people/<handle>/memory/profile.md` in the company clone, as a yian `MarkdownStore`.
  *
  * Versions are git blob ids, and every version handed out is committed, so it stays readable.
  * Every write is a commit. The constructor does no I/O: the office builds one per request.
@@ -75,14 +77,15 @@ export class GitProfileStore implements MarkdownStore {
     if (!Handle.safeParse(handle).success) throw new RangeError(`not a handle: ${JSON.stringify(handle)}`)
     this.git = git
     this.handle = handle
-    this.path = `people/${handle}/profile.md`
+    this.path = profilePath(handle)
   }
 
   /**
    * Returns `[text, version]`. Reading the current version commits pending hand edits first.
    *
    * Throws a RangeError for an unknown version, `ProfileUnreadable` for text that isn't UTF-8 or a
-   * profile.md that is a symlink or not a regular file, and a Node system error when git fails.
+   * profile or memory folder that is a symlink or not a regular file or folder, and a Node system error when git
+   * fails.
    */
   async read(version: string | null = null): Promise<readonly [string, string]> {
     if (version !== null) {
@@ -115,7 +118,7 @@ export class GitProfileStore implements MarkdownStore {
    * If a write with the same `provenance.commit_id` was already committed for this profile,
    * returns its version and writes nothing (a retried write). Throws a TypeError for non-strings,
    * `MarkdownVersionMismatch` for a stale base, a RangeError for a bad commit id or a lone surrogate,
-   * `ProfileUnreadable` for a profile path through a symlink or a profile.md that isn't a regular
+   * `ProfileUnreadable` for a profile path through a symlink or a profile that isn't a regular
    * file, and a Node system error when git fails.
    */
   async write(
@@ -195,34 +198,47 @@ export class GitProfileStore implements MarkdownStore {
     return sha === null ? null : ((await this.git.blobId(this.path, sha)) ?? EMPTY_BLOB)
   }
 
-  /** The profile's path in the clone; `ProfileUnreadable` if it leaves the person's directory or isn't a regular
-   *  file. */
+  /** The profile's path in the clone, its memory folder made if missing; `ProfileUnreadable` if it leaves the
+   *  person's directory or it or its folder isn't a regular file or folder. */
   // Protected, not #private, so a test can make a hand edit just before the replace.
   protected target(): string {
     const target = path.join(this.git.root, this.path)
+    const memory = path.dirname(target)
     const person = path.join(fs.realpathSync(this.git.root), "people", this.handle)
-    const st = lstatIfExists(target)
-    if (st?.isSymbolicLink() || fs.realpathSync(path.dirname(target)) !== person) {
+    if (fs.realpathSync(path.dirname(memory)) !== person) {
       throw new ProfileUnreadable(`${this.path} goes through a symlink`)
     }
-    // Reading a folder fails with EISDIR, and a FIFO would block.
-    if (st && !st.isFile()) throw new ProfileUnreadable(`${this.path} is not a regular file`)
+    // Git drops the folder with its last file, so a new profile may need it again.
+    try {
+      fs.mkdirSync(memory)
+    } catch (error) {
+      if (errno(error) !== "EEXIST") throw error
+    }
+    this.#checkFile()
     return target
   }
 
-  /** `ProfileUnreadable` if profile.md in the working tree is a symlink or not a regular file; absent is fine. */
+  /** `ProfileUnreadable` if the profile or its memory folder in the working tree is a symlink or not a regular file
+   *  or folder; absent is fine. */
   #checkFile(): void {
+    const folder = path.dirname(this.path)
+    const memory = lstatIfExists(path.join(this.git.root, folder))
+    if (memory?.isSymbolicLink()) throw new ProfileUnreadable(`${folder} is a symlink, not a folder`)
+    if (memory && !memory.isDirectory()) throw new ProfileUnreadable(`${folder} is not a folder`)
     const st = lstatIfExists(path.join(this.git.root, this.path))
     if (st?.isSymbolicLink()) throw new ProfileUnreadable(`${this.path} is a symlink, not a regular file`)
+    // Reading a folder fails with EISDIR, and a FIFO would block.
     if (st && !st.isFile()) throw new ProfileUnreadable(`${this.path} is not a regular file`)
   }
 
-  /** Replaces `target` with `data` through a temporary file in the same directory. */
+  /** Replaces `target` with `data` through a temporary file in the person's folder. */
   #put(target: string, data: Uint8Array): void {
     // The temp file is made 0600; keep the profile's mode, or git's default for a new file.
     const existing = lstatIfExists(target)
     const mode = existing ? existing.mode & 0o777 : 0o644
-    const temporary = path.join(path.dirname(target), `.profile.md.${randomBytes(6).toString("hex")}`)
+    // Beside the memory folder, not in it, so one a crash leaves is never committed as a hand edit.
+    const person = path.dirname(path.dirname(target))
+    const temporary = path.join(person, `.profile.md.${randomBytes(6).toString("hex")}`)
     const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants
     const fd = fs.openSync(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
     let open = true

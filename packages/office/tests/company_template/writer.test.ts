@@ -65,6 +65,20 @@ test("a new company has the owner as ceo and lints clean", async () => {
   expect(git(root, "log", "--format=%s").split("\n")).toEqual(["init: create the company"])
 })
 
+test("a new company ignores the .yian folders yian keeps in a memory folder, and gets the ignore file back", async () => {
+  const { root, worktrees } = dirs()
+  expect(await writeCompany(root, worktrees, { company: "Acme", owner: OWNER })).toContain(".gitignore")
+  const journal = "people/ngocbh/memory/.yian/journal.jsonl"
+  fs.mkdirSync(path.join(root, path.dirname(journal)), { recursive: true })
+  fs.writeFileSync(path.join(root, journal), "{}\n")
+  expect(git(root, "check-ignore", journal)).toBe(journal)
+  expect(git(root, "status", "--porcelain", "--untracked-files=all")).toBe("")
+  fs.unlinkSync(path.join(root, ".gitignore"))
+  commitAll(root, "drop the ignore file")
+  expect(missingFiles(root)).toEqual([".gitignore"])
+  expect(await writeCompany(root, worktrees)).toEqual([".gitignore"])
+})
+
 test("the owners devices are in the first commit", async () => {
   const { root, worktrees } = dirs()
   const mac = { name: "mac", token_sha256: "ab".repeat(32) }
@@ -78,11 +92,12 @@ test("the owners devices are in the first commit", async () => {
 
 test("extra files go in a new companys first commit only", async () => {
   const { root, worktrees } = dirs()
-  const extra = { "people/lan/profile.md": Buffer.from("# Lan, QA\n") }
+  const extra = { "people/lan/memory/profile.md": Buffer.from("# Lan, QA\n") }
   await writeCompany(root, worktrees, { company: "Acme", owner: OWNER, extra })
-  expect(git(root, "show", "HEAD:people/lan/profile.md")).toBe("# Lan, QA")
+  expect(git(root, "show", "HEAD:people/lan/memory/profile.md")).toBe("# Lan, QA")
   expect(git(root, "log", "--format=%s").split("\n")).toEqual(["init: create the company"])
-  expect(await writeCompany(root, worktrees, { extra: { "people/mai/profile.md": Buffer.from("x") } })).toEqual([])
+  const later = { "people/mai/memory/profile.md": Buffer.from("x") }
+  expect(await writeCompany(root, worktrees, { extra: later })).toEqual([])
   expect(fs.existsSync(path.join(root, "people", "mai"))).toBe(false)
 })
 
@@ -461,7 +476,7 @@ test("the template names every file in its folder", () => {
 test("every template flow loads and lints on ts yian", async () => {
   const { root, worktrees } = dirs()
   await writeCompany(root, worktrees, { company: "Acme", owner: OWNER })
-  fs.mkdirSync(path.join(root, "people", "minh"))
+  fs.mkdirSync(path.join(root, "people", "minh", "memory"), { recursive: true })
   const minh = {
     handle: "minh",
     name: "Minh",
@@ -473,7 +488,7 @@ test("every template flow loads and lints on ts yian", async () => {
     harnesses: ["composer"],
   }
   fs.writeFileSync(path.join(root, "people", "minh", "person.yaml"), writeYaml(minh))
-  fs.writeFileSync(path.join(root, "people", "minh", "profile.md"), "# Minh, Engineer\n")
+  fs.writeFileSync(path.join(root, "people", "minh", "memory", "profile.md"), "# Minh, Engineer\n")
   expect(await lint(loadRepo(root))).toEqual([])
   for (const rel of PACKAGED_FLOWS) {
     expect((await loadConfined(root, path.join(root, rel))).name).toBe(path.basename(rel, ".yaml"))

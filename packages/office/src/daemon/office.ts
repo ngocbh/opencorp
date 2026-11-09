@@ -222,7 +222,7 @@ export class Office {
     git: CompanyGit
     bus: Bus
     workers?: WorkerPool
-    /** Builds a person's profile store; defaults to their `profile.md` in `git`'s clone, null for none. */
+    /** Builds a person's profile store; defaults to their `memory/profile.md` in `git`'s clone, null for none. */
     profileStore?: ((handle: string) => MarkdownStore) | null
     tools?: Tools
     guards?: SandboxOfficePaths

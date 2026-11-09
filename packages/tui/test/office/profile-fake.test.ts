@@ -25,7 +25,10 @@ test("propose makes one open proposal per session, with a diff against the curre
     [second.id, "open"],
   ])
   expect(second.base_version).toBe((await client().profiles.get("minh")).version)
-  expect(second.diff.split("\n").slice(0, 2)).toEqual(["--- a/people/minh/profile.md", "+++ b/people/minh/profile.md"])
+  expect(second.diff.split("\n").slice(0, 2)).toEqual([
+    "--- a/people/minh/memory/profile.md",
+    "+++ b/people/minh/memory/profile.md",
+  ])
   expect(second.diff).toContain("+Writes small, tested changes first.")
   expect(second.diff).toContain("-Writes small, tested changes.")
 })

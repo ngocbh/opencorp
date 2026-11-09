@@ -9,7 +9,8 @@ const entries: CompanyTreeEntry[] = [
   { path: "assets", type: "folder" },
   { path: "people/kai", type: "folder" },
   { path: "people/kai/person.yaml", type: "file", size: 80 },
-  { path: "people/kai/profile.md", type: "file", size: 20 },
+  { path: "people/kai/memory", type: "folder" },
+  { path: "people/kai/memory/profile.md", type: "file", size: 20 },
   { path: "people/ann", type: "folder" },
   { path: "docs", type: "symlink", size: 9 },
   { path: "vendor", type: "submodule" },
@@ -21,7 +22,7 @@ const shape = (list: Entry[]): unknown => list.map((e) => (e.type === "folder" ?
 test("folders first, then files (symlinks and submodules with them), each sorted by name", () => {
   expect(shape(buildFiles(entries))).toEqual([
     ["assets", []],
-    ["people", [["ann", []], ["kai", ["person.yaml", "profile.md"]]]],
+    ["people", [["ann", []], ["kai", [["memory", ["profile.md"]], "person.yaml"]]]],
     "company.yaml",
     "docs",
     "README.md",

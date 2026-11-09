@@ -1,5 +1,5 @@
-/** Profile routes: read and edit a person's profile.md through the office's MarkdownStore, and list and apply the
- *  profile manager's proposals. */
+/** Profile routes: read and edit a person's profile (`memory/profile.md`) through the office's MarkdownStore, and
+ *  list and apply the profile manager's proposals. */
 import { type MarkdownStore, MarkdownVersionMismatch } from "@ngocbh/yian"
 import {
   CompanyDefaults,
@@ -70,8 +70,8 @@ function conflict(error: MarkdownVersionMismatch): RawReply {
   return new RawReply(409, {}, JSON.stringify(versions))
 }
 
-/** A 409 `unreadable_profile` for a profile.md that isn't UTF-8, a symlink or not a regular file; its message names
- *  only the repo path. Rethrows any other error. */
+/** A 409 `unreadable_profile` for a profile that isn't UTF-8, a symlink or not a regular file, or whose memory folder
+ *  is a symlink or not a folder; its message names only the repo path. Rethrows any other error. */
 // Only this class: other RangeErrors from the store (a bad commit id, an unknown version) quote values.
 function unreadable(error: unknown): never {
   if (error instanceof ProfileUnreadable) throw new HttpError(409, "unreadable_profile", error.message)
@@ -85,7 +85,7 @@ function overBudget(text: string, maxChars: number): boolean {
 
 /** The profile routes. */
 export const ROUTES: readonly Route<RequestContext>[] = [
-  // A person's profile text and version; 409 `unreadable_profile` for a profile.md that can't be read.
+  // A person's profile text and version; 409 `unreadable_profile` for a profile that can't be read.
   {
     method: "GET",
     path: "/profiles/:handle",
@@ -103,7 +103,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     },
   },
   // Replaces a profile if `base_version` is current; 409 with both versions if not, 409 `unreadable_profile` for a
-  // profile.md that can't be written.
+  // profile that can't be written.
   {
     method: "PUT",
     path: "/profiles/:handle",

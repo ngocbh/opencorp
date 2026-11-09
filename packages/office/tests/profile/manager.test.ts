@@ -78,17 +78,15 @@ test("propose edit stores a proposal with its diff and replaces older ones", asy
     "# Minh, Engineer\n\n- Be brief.\n",
   ])
   const lines = latest.diff.split("\n")
-  expect(lines.slice(0, 2)).toEqual(["--- a/people/minh/profile.md", "+++ b/people/minh/profile.md"])
+  expect(lines.slice(0, 2)).toEqual(["--- a/people/minh/memory/profile.md", "+++ b/people/minh/memory/profile.md"])
   expect(lines).toContain("+- Be brief.")
   // difflib's whole output for this edit
-  expect(latest.diff).toBe(
-    "--- a/people/minh/profile.md\n+++ b/people/minh/profile.md\n@@ -1 +1,3 @@\n # Minh, Engineer\n+\n+- Be brief.\n",
-  )
+  expect(latest.diff).toBe(`${HEADERS}@@ -1 +1,3 @@\n # Minh, Engineer\n+\n+- Be brief.\n`)
   const made = tools.propose_edit.call({ text: "x", base_version: "0".repeat(40) })
   await expect(made).rejects.toBeInstanceOf(RangeError)
 })
 
-const HEADERS = "--- a/people/minh/profile.md\n+++ b/people/minh/profile.md\n"
+const HEADERS = "--- a/people/minh/memory/profile.md\n+++ b/people/minh/memory/profile.md\n"
 
 /** `n` lines `<prefix><i>\n`, every second one `<other><i>\n` when `other` is given. */
 function numbered(n: number, prefix: string, other?: string): string[] {
@@ -170,7 +168,7 @@ test("apply after a hand edit is a conflict and the proposal goes stale", async 
   const { git: g, store, tools } = office()
   await tools.propose_edit.call({ text: "# Minh\n", base_version: (await readProfile(tools)).version })
   const proposal = store.listProfileProposals("minh", { status: "open" })[0]!
-  const file = path.join(g.root, "people/minh/profile.md")
+  const file = path.join(g.root, "people/minh/memory/profile.md")
   fs.writeFileSync(file, "# Minh, Staff Engineer\n")
   const error = await rejection(applyProposal(store, g, proposal.id, { owner: "ngocbh", maxChars: 100 }))
   expect(error).toBeInstanceOf(MarkdownVersionMismatch)
@@ -221,7 +219,7 @@ function managerHarness(fake: FakeLLM) {
 type ManagerHarness = Awaited<ReturnType<typeof managerHarness>>
 
 const profileText = (h: ManagerHarness) =>
-  fs.readFileSync(path.join(h.office.git.root, "people/minh/profile.md"), "utf8")
+  fs.readFileSync(path.join(h.office.git.root, "people/minh/memory/profile.md"), "utf8")
 
 /** Applies proposal `id` as `owner`, as the apply route does. */
 const apply = (h: ManagerHarness, id: string, owner = CEO) =>
@@ -394,7 +392,7 @@ test("a store error while applying is not a not open conflict", async () => {
     GitProfileStore.prototype.write = write
   })
   GitProfileStore.prototype.write = async () => {
-    throw new Error("people/minh/profile.md goes through a symlink; not writing it")
+    throw new Error("people/minh/memory/profile.md goes through a symlink; not writing it")
   }
   const error = await rejection(applyProposal(store, g, proposal!.id, { owner: "ngocbh", maxChars: 100 }))
   expect(error).not.toBeInstanceOf(ProposalNotOpen)

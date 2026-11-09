@@ -6,7 +6,7 @@ import { loadSkillDir, type Skill, SkillError } from "@ngocbh/yian/skills"
 import { MAIN_CHAT } from "../chat/turns.ts"
 import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "./flows.ts"
 import { type RepoIssue, repoIssue } from "./issues.ts"
-import type { CompanyRepo } from "./loader.ts"
+import { type CompanyRepo, profilePath } from "./loader.ts"
 import { assetToolName, TOOL_NAME } from "./naming.ts"
 
 /** One lint check: the issues it finds in a repo. */
@@ -363,29 +363,37 @@ function checkSkills(repo: CompanyRepo): RepoIssue[] {
 
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
 
-/** Agents should have a profile; humans may skip it. A profile.md must be a regular UTF-8 file. */
+/** Agents should have a profile; humans may skip it. A profile, `memory/profile.md`, must be a regular UTF-8 file in a
+ *  memory folder that is a real folder. */
 function* checkProfiles(repo: CompanyRepo): Iterable<RepoIssue> {
   for (const [handle, person] of sorted(repo.people)) {
-    const rel = `people/${handle}/profile.md`
+    const rel = profilePath(handle)
     const found = profileState(path.join(repo.root, rel))
     if (found === "absent" && person.kind === "agent") {
-      yield repoIssue(rel, "person.no_profile", "agents learn into profile.md; create one", "warning")
+      yield repoIssue(rel, "person.no_profile", "agents learn into memory/profile.md; create one", "warning")
     }
     // Errors, as chats with that person can't start.
+    if (found === "not_a_folder") {
+      yield repoIssue(path.posix.dirname(rel), "person.profile_not_a_file",
+        "memory must be a folder, not a symlink or file")
+    }
     if (found === "not_a_file") {
-      yield repoIssue(rel, "person.profile_not_a_file", "profile.md must be a regular file, not a symlink or folder")
+      yield repoIssue(rel, "person.profile_not_a_file",
+        "memory/profile.md must be a regular file, not a symlink or folder")
     }
     if (found === "not_utf8") {
-      yield repoIssue(rel, "person.profile_not_utf8", "profile.md is not UTF-8; save it as UTF-8")
+      yield repoIssue(rel, "person.profile_not_utf8", "memory/profile.md is not UTF-8; save it as UTF-8")
     }
   }
 }
 
-/** Whether the profile.md at `p` is absent, not a regular file (a symlink, a folder), not UTF-8, or fine. */
-function profileState(p: string): "absent" | "not_a_file" | "not_utf8" | "ok" {
+/** Whether the profile at `p` is absent, in a memory folder that isn't a folder (a symlink, a file), not a regular
+ *  file (a symlink, a folder), not UTF-8, or fine. */
+function profileState(p: string): "absent" | "not_a_folder" | "not_a_file" | "not_utf8" | "ok" {
   const absent = (error: unknown) => ["ENOENT", "ENOTDIR", "EBADF"].includes(errno(error) ?? "")
   let fd: number
   try {
+    if (!fs.lstatSync(path.dirname(p)).isDirectory()) return "not_a_folder"
     if (!fs.lstatSync(p).isFile()) return "not_a_file"
     // No follow, so a symlink swapped in since isn't read; no block, so a FIFO isn't waited on.
     const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
