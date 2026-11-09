@@ -86,8 +86,6 @@ export const RunDetail = z.strictObject({
   /** The session's pinned commit: which version of the flow ran. */
   repo_commit: GitId,
   flow_fingerprint: z.string().regex(/^[0-9a-f]{64}$/u).nullable().default(null),
-  /** Whether the log keeps evidence (prompts, model turns, tool calls); null until the log is read. */
-  learnable: z.boolean().nullable().default(null),
   /** The model of each agent node, by static path, from the log's first record. */
   models: z.record(z.string(), z.string()).default(() => ({})),
   /** Null when not recorded: the office records usage only for runs the chat harness runs, not debriefs. */

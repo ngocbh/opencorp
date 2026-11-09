@@ -10,9 +10,9 @@ import { cluster, makeMonitor, TOKEN } from "./helpers.ts"
 setDefaultTimeout(60_000)
 
 const CALLS = [
-  { name: "cluster_a__submit_job", arguments: { job: "train", partition: "gpu-small" } },
-  { name: "cluster_a__submit_job", arguments: { job: "big", partition: "gpu-big" } },
-  { name: "cluster_a__broken", arguments: {} },
+  { name: "toolbox_cluster_a__submit_job", arguments: { job: "train", partition: "gpu-small" } },
+  { name: "toolbox_cluster_a__submit_job", arguments: { job: "big", partition: "gpu-big" } },
+  { name: "toolbox_cluster_a__broken", arguments: {} },
 ]
 
 test("no frame or model text holds a secret", async () => {

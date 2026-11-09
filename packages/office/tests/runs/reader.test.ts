@@ -94,7 +94,7 @@ async function refused(file: string): Promise<Error> {
 
 test("the summary has the first records facts and the open nodes", async () => {
   const index = await refresh(chatLog(path.join(tempDir(), "r.jsonl")), null)
-  expect([index.fingerprint, index.learnable, index.models]).toEqual([FP, true, { "chat/reply": "stub" }])
+  expect([index.fingerprint, index.models]).toEqual([FP, { "chat/reply": "stub" }])
   expect([[...index.open.keys()], index.lastSeq]).toEqual([["chat#2/ask"], 19])
 })
 
@@ -935,8 +935,10 @@ test("a code reference outside the code root shows no derived value and no kinds
   expect(kindOf(await reader.kinds(log, index, inside), "l#0/prep")).toBe("code")
 })
 
-test("a real log is in the schema this office reads", async () => {
+test("a real log is in the schema this office reads and starts with the fields the test logs write", async () => {
   const { log } = await realRun(tempDir(), LOOP_FLOW)
   const first = fs.readFileSync(log, "utf8").split("\n")[0]!
   expect(first).toContain(`"schema":${SCHEMA},`)
+  const fields = (text: string) => Object.keys(JSON.parse(text).payload).sort()
+  expect(fields(runStarted(0).toString())).toEqual(fields(first))
 })

@@ -293,7 +293,7 @@ test("a key in llm config reaches the model and nothing else", async () => {
   }
   const llmConfig = { ...LLM_CONFIG, api_key: SENTINEL }
 
-  fake.script({ tool_calls: [{ name: "echo", arguments: { text: "ping" } }] }, { content: "done" })
+  fake.script({ tool_calls: [{ name: "toolbox_echo", arguments: { text: "ping" } }] }, { content: "done" })
   const ok = new (relaying(Recorder, relay))({ tools: { toolbox: { echo } } })
   await runWorker(registry, makeJob(where, "flows/tools.yaml", { llm_config: llmConfig }, ok), ok, sessionDir, {
     env: fake.env(),

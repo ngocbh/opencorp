@@ -71,10 +71,11 @@ export async function makeSecrets(): Promise<SecretStore> {
 export async function makeMonitor(
   files: Record<string, unknown> = {},
   kinds: Kinds = KINDS,
+  options: { log?: (line: string) => void } = {},
 ): Promise<{ monitor: Monitor; store: Store; secrets: SecretStore }> {
   const store = openStore()
   const secrets = await makeSecrets()
-  return { monitor: new Monitor(makeCompany(files), store, secrets, kinds), store, secrets }
+  return { monitor: new Monitor(makeCompany(files), store, secrets, kinds, options), store, secrets }
 }
 
 /** Writes `content` as YAML to repo path `rel` under `root`. */

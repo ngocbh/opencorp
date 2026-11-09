@@ -3,11 +3,13 @@ import { spawn } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
+import { FileMemory } from "@ngocbh/yian"
 import { pending } from "@ngocbh/yian/tools"
 import { onTestFinished, spyOn } from "bun:test"
 import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import type { Store } from "../../src/store/store.ts"
+import { PROFILE_SETTINGS } from "../../src/profile/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
@@ -117,7 +119,18 @@ export const ASK_CUT = agentFlow("ask_cut", {
   node: "    tools: [ask_user]\n    steer_inbox: \${input.steers}\n",
   output: "Optional(str)",
 })
-export const PROFILED = agentFlow("profiled", { top: "long_term_memory: profile\n" })
+// An agent whose system prompt holds the `profile` memory's recall.
+export const PROFILED =
+  "id: profiled\nname: profiled\ninput:\n  profile: !FileMemory\n  message: !str\nnodes:\n  reply:\n    kind: agent\n" +
+  "    input:\n      profile: ${input.profile}\n      message: ${input.message}\n    output: str\n" +
+  '    system_prompt: "<memory name=\\"profile\\">${profile}</memory>"\n    prompt: "${message}"\noutput: ${reply.output}\n'
+// The profiled agent answering what the inbox flow's take heard, so the run waits with its memory bound.
+export const PROFILED_INBOX =
+  "id: profiled_inbox\nname: profiled_inbox\ninput:\n  profile: !FileMemory\n  messages: !Inbox(str)\nnodes:\n" +
+  "  heard:\n    kind: tool\n    tool_id: take\n    input:\n      from: ${input.messages}\n      take: all\n" +
+  "  reply:\n    kind: agent\n    input:\n      profile: ${input.profile}\n      said: ${heard.output.events}\n" +
+  '    output: str\n    system_prompt: "<memory name=\\"profile\\">${profile}</memory>"\n    prompt: "${said}"\n' +
+  "output: ${reply.output}\n"
 export const SKILLED = agentFlow("skilled", { node: "    skills: all\n" })
 // A run whose one node sleeps an hour, so it quiesces as waiting.
 export const NAP =
@@ -149,6 +162,7 @@ export function writePin(root: string): string {
     "flows/coded.yaml": CODED,
     "flows/helpers.ts": CODED_HELPERS,
     "flows/profiled.yaml": PROFILED,
+    "flows/profiled_inbox.yaml": PROFILED_INBOX,
     "flows/skilled.yaml": SKILLED,
     "flows/nap.yaml": NAP,
     "flows/turn.yaml": TURN,
@@ -212,14 +226,11 @@ export async function officeEnd(
 }
 
 /** A worker whose job is a fixed chat job; for `BaseHandlers`, its groups are the handlers' tools and its memory
- *  names each of their stores. `over` replaces job fields. */
+ *  names each of their memories. `over` replaces job fields. */
 export function workerFor(handlers: WorkerHandlers, over: Partial<JobInput> = {}): JobWorker {
   const granted =
     handlers instanceof BaseHandlers
-      ? {
-          groups: groupSpecs(handlers.tools),
-          memory: Object.fromEntries(Object.keys(handlers.stores).map((name) => [name, { store: name }])),
-        }
+      ? { groups: groupSpecs(handlers.tools), memory: Object.keys(handlers.memories.memories) }
       : {}
   const job = Job.parse({
     kind: "chat",
@@ -235,6 +246,13 @@ export function workerFor(handlers: WorkerHandlers, over: Partial<JobInput> = {}
   return { job }
 }
 
+/** minh's profile memory in `root`: a FileMemory with `profile.md` as its index and the profile store's settings,
+ *  holding `text` as its profile when given. */
+export function profileMemory(root: string, text?: string): FileMemory {
+  if (text !== undefined) writeFiles(root, { "profile.md": text })
+  return new FileMemory({ root, id: "people/minh", index: "profile.md", ...PROFILE_SETTINGS })
+}
+
 /** A fresh temp root holding the worker tests' pin and an empty runs folder. */
 export function base(): { root: string; pin: string; runs: string } {
   const root = tempDir()
@@ -242,8 +260,8 @@ export function base(): { root: string; pin: string; runs: string } {
 }
 
 /** A chat job running `flow` from `base.pin`, logging to `<base.runs>/<run_id>/log.jsonl`; `over` replaces fields.
- *  With `handlers`, its groups are the handlers' tools and its memory names each of their stores, unless `over` sets
- *  them. */
+ *  With `handlers`, its groups are the handlers' tools and its memory names each of their memories, unless `over`
+ *  sets them. */
 export function makeJob(
   base: { pin: string; runs: string },
   flow = "flows/echo.yaml",
@@ -251,12 +269,7 @@ export function makeJob(
   handlers?: BaseHandlers,
 ): Job {
   const runId = over.run_id ?? "r1"
-  const granted = handlers
-    ? {
-        groups: groupSpecs(handlers.tools),
-        memory: Object.fromEntries(Object.keys(handlers.stores).map((name) => [name, { store: name }])),
-      }
-    : {}
+  const granted = handlers ? { groups: groupSpecs(handlers.tools), memory: Object.keys(handlers.memories.memories) } : {}
   return Job.parse({
     kind: "chat",
     session_id: "s1",
@@ -399,7 +412,8 @@ export class Recorder extends BaseHandlers {
     this.order.push("error")
   }
 
-  override exited(_worker: unknown, returncode: number | null): void {
+  override exited(worker: unknown, returncode: number | null): void {
+    super.exited(worker, returncode)
     this.returncode = returncode
   }
 

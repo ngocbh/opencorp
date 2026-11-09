@@ -1,8 +1,17 @@
 /** Worker requests: the office answers each with its handlers, checked against the job, with value-free errors. */
+import fs from "node:fs"
 import { PassThrough } from "node:stream"
 import { expect, onTestFinished, test } from "bun:test"
-import { MarkdownVersionMismatch, type MarkdownStore } from "@ngocbh/yian"
-import { isPending, isReportedToolError, pending, ToolSet } from "@ngocbh/yian/tools"
+import {
+  ChangeIdReusedError,
+  FileMemory,
+  MemoryBase,
+  MemoryBusyError,
+  type MemoryContract,
+  MemoryMissingError,
+  type MemorySession,
+} from "@ngocbh/yian"
+import { isPending, isReportedToolError, pending, ReportedToolError, ToolSet } from "@ngocbh/yian/tools"
 import { z } from "zod"
 import { Channel, ChannelClosed, FrameTooLarge, type Frame } from "../../src/worker/channel.ts"
 import { groupSpecs, toolSpec } from "../../src/worker/job.ts"
@@ -24,8 +33,8 @@ import {
   Rpc,
   type RpcLog,
 } from "../../src/worker/rpc.ts"
-import { waitFor } from "../helpers.ts"
-import { officeEnd, recordFrames, workerFor } from "./helpers.ts"
+import { tempDir, waitFor } from "../helpers.ts"
+import { officeEnd, profileMemory, recordFrames, workerFor } from "./helpers.ts"
 
 /** A tool taking string `properties`, all required, that runs `call`. */
 function tool(call: (args: Record<string, unknown>) => unknown, properties = ["text"]): OfficeTool {
@@ -40,9 +49,22 @@ function tool(call: (args: Record<string, unknown>) => unknown, properties = ["t
   }
 }
 
-/** A store whose `read` and `write` are the given ones (by default an empty document at `v0`). */
-function store(over: Partial<MarkdownStore> = {}): MarkdownStore {
-  return { read: () => ["", "v0"] as const, write: () => "v1", ...over }
+/** A memory with FileMemory's contract whose `open` and `reset` run `fail` (the first throws what it returns), and
+ *  whose `open` otherwise gives a session that throws `error` from each call. */
+class Failing extends MemoryBase {
+  static override readonly contract: MemoryContract = FileMemory.contract
+
+  constructor(readonly fail: () => unknown = () => new Error("down")) {
+    super()
+  }
+
+  override async open(): Promise<MemorySession> {
+    throw this.fail()
+  }
+
+  override async reset(): Promise<void> {
+    throw this.fail()
+  }
 }
 
 /** A `log` that records its calls. */
@@ -55,53 +77,43 @@ const throwingLog: RpcLog = () => {
   throw new Error("log is broken")
 }
 
-const READ = { type: "store_read", id: 1, store: "profile" }
-const WRITE = { type: "store_write", id: 2, store: "profile", text: "t", base_version: "v1" }
+const OPEN = { type: "memory_open", id: 1, memory: "profile", create: true, item_type: null }
 
 /** A `tool_call` frame for tool `name` of group `g`, with a call id of the job's run. */
 function call(name: string, args: Record<string, unknown> = { text: "x" }): Frame {
   return { type: "tool_call", id: 3, group: "g", name, args, call_id: "r1/n/1/0" }
 }
 
-type Served = { tools?: Record<string, OfficeTool>; stores?: Record<string, MarkdownStore>; log?: RpcLog }
+type Served = { tools?: Record<string, OfficeTool>; memories?: Record<string, MemoryBase>; log?: RpcLog }
 
-/** The reply to `frame` from handlers holding `tools` in group `g` and `stores`, with a job granting all of them. */
-async function answer(frame: Frame, { tools = {}, stores = {}, log }: Served = {}): Promise<Frame> {
-  const handlers = new BaseHandlers({ tools: { g: tools }, stores })
+/** The reply to `frame` from handlers holding `tools` in group `g` and `memories`, with a job granting all of them. */
+async function answer(frame: Frame, { tools = {}, memories = {}, log }: Served = {}): Promise<Frame> {
+  const handlers = new BaseHandlers({ tools: { g: tools }, memories })
   return answerRequest(frame, handlers, workerFor(handlers), { log })
 }
 
 test("answer request error codes", async () => {
-  const profile = store({
-    read: (version) => {
-      throw new RangeError(`no version ${version}`)
-    },
-    write: (_text, { baseVersion }) => {
-      throw new MarkdownVersionMismatch(baseVersion, "v2")
-    },
-  })
+  const profile = new Failing(() => new MemoryBusyError("this memory is busy"))
   const lookup = tool((args) => {
     throw new Error(`'${args.key}'`)
   }, ["key"])
   const empty = tool(() => {
     throw new Error("")
   })
-  const handlers = new BaseHandlers({ tools: { g: { lookup, empty } }, stores: { profile } })
-  // The job grants a store and a tool the handlers lack, so BaseHandlers itself refuses them.
+  const handlers = new BaseHandlers({ tools: { g: { lookup, empty } }, memories: { profile } })
+  // The job grants a memory and a tool the handlers lack, so BaseHandlers itself refuses them.
   const granted = groupSpecs(handlers.tools)
   const missing = { name: "missing", description: "", parameters: { type: "object", properties: {} } }
   const worker = workerFor(handlers, {
-    memory: { profile: { store: "profile" }, other: { store: "other" } },
+    memory: ["profile", "other"],
     groups: { ...granted, g: [...granted.g!, missing] },
   })
-  expect(await answerRequest({ ...READ, version: "v0" }, handlers, worker)).toEqual({
-    type: "store_reply",
+  expect(await answerRequest(OPEN, handlers, worker)).toEqual({
+    type: "memory_reply",
     id: 1,
-    error: "unknown_version",
-    message: "no version v0",
+    error: "busy",
+    message: "this memory is busy",
   })
-  const reply = await answerRequest(WRITE, handlers, worker)
-  expect([reply.error, reply.expected, reply.current]).toEqual(["mismatch", "v1", "v2"])
   const frame = { type: "tool_call", id: 3, group: "g", name: "lookup", args: { key: "k" }, call_id: "r1/n/1/0" }
   expect(await answerRequest(frame, handlers, worker)).toEqual({
     type: "tool_result",
@@ -109,34 +121,29 @@ test("answer request error codes", async () => {
     error: "failed",
     message: "'k'",
   })
-  const other = await answerRequest({ ...READ, store: "other" }, handlers, worker)
-  expect([other.error, other.message]).toEqual(["unavailable", "no store named 'other'"])
+  const other = await answerRequest({ ...OPEN, memory: "other" }, handlers, worker)
+  expect([other.error, other.message]).toEqual(["failed", "no memory named 'other'"])
   const absent = await answerRequest(call("missing"), handlers, worker)
   expect([absent.error, absent.message]).toEqual(["failed", "no tool 'missing' in group 'g'"])
   const blank = await answerRequest(call("empty"), handlers, worker)
   expect([blank.error, blank.message]).toEqual(["failed", "Error"])
 })
 
-test("store value and os errors keep their codes", async () => {
-  const profile = store({
-    read: () => {
-      throw new RangeError("document is not valid UTF-8")
-    },
-    write: (text) => {
-      if (text === "busy") throw Object.assign(new Error("git index is locked"), { code: "EBUSY" })
-      if (text === "lone") throw new RangeError("text holds a lone surrogate")
-      throw new TypeError("text must be a string")
-    },
-  })
-  const stores = { profile }
-  const read = await answer(READ, { stores })
-  expect([read.error, read.message]).toEqual(["unknown_version", "document is not valid UTF-8"])
-  const lone = await answer({ ...WRITE, text: "lone" }, { stores })
-  expect([lone.error, lone.message]).toEqual(["invalid", "text holds a lone surrogate"])
-  const busy = await answer({ ...WRITE, text: "busy" }, { stores })
-  expect([busy.error, busy.message]).toEqual(["unavailable", "git index is locked"])
-  const refused = await answer(WRITE, { stores })
-  expect([refused.error, refused.message]).toEqual(["invalid", "text must be a string"])
+test("a memory's errors keep yian's kinds", async () => {
+  const reused = "change id `c-1` was used for another change"
+  const cases: [unknown, Record<string, unknown>][] = [
+    [new MemoryBusyError("busy now"), { error: "busy", message: "busy now" }],
+    [new MemoryMissingError("not there"), { error: "missing", message: "not there" }],
+    [new ChangeIdReusedError("c-1"), { error: "change_id_reused", message: reused }],
+    [new ReportedToolError("gone", { permanent: true }), { error: "refused", message: "gone", permanent: true }],
+    [new ReportedToolError("try again"), { error: "refused", message: "try again", permanent: false }],
+    [Object.assign(new Error("index locked"), { code: "EBUSY" }), { error: "failed", message: "index locked" }],
+    [new TypeError("bad id"), { error: "failed", message: "bad id" }],
+  ]
+  for (const [error, reply] of cases) {
+    const memories = { profile: new Failing(() => error) }
+    expect(await answer(OPEN, { memories })).toEqual({ type: "memory_reply", id: 1, ...reply })
+  }
   const parse = tool(() => {
     throw new Error("bad text")
   })
@@ -163,22 +170,93 @@ test("a failed request logs only its exception type", async () => {
   expect(calls).toEqual([["INFO", "worker tool_call request failed: TypeError"]])
 })
 
-test("a malformed request is failed not a store error", async () => {
-  const reply = await answer({ type: "store_read", id: 1 }, { stores: { profile: store() } })
-  expect(reply).toEqual({
-    type: "store_reply",
-    id: 1,
+test("a malformed request is failed not a memory's error", async () => {
+  const memories = { profile: new Failing(() => new MemoryBusyError("busy")) }
+  const cases: [Frame, string][] = [
+    [{ type: "memory_open", id: 1, create: true }, "memory_open request is missing 'memory'"],
+    [{ ...OPEN, create: "yes" }, "memory_open request has a bad 'create'"],
+    [{ type: "memory_call", id: 1, session: "s", tool: "read", args: [] }, "memory_call request has a bad 'args'"],
+    [{ type: "memory_close", id: 1 }, "memory_close request is missing 'session'"],
+  ]
+  for (const [frame, message] of cases) {
+    expect(await answer(frame, { memories })).toEqual({ type: "memory_reply", id: 1, error: "failed", message })
+  }
+})
+
+test("memory replies are plain json", async () => {
+  const memories = { profile: profileMemory(`${tempDir()}/memory`, "# Minh\n") }
+  const handlers = new BaseHandlers({ memories })
+  const worker = workerFor(handlers)
+  const opened = await answerRequest(OPEN, handlers, worker)
+  expect(opened).toMatchObject({ type: "memory_reply", id: 1, created: true, info: { identity: "people/minh" } })
+  const session = opened.session as string
+  const ask = (frame: Frame) => answerRequest({ id: 3, session, ...frame }, handlers, worker)
+  expect(await ask({ type: "memory_snapshot" })).toMatchObject({ recall: { text: "# Minh\n", cut: null, hint: null } })
+  const read = await ask({ type: "memory_call", tool: "read", args: { path: "profile.md" } })
+  expect(read).toMatchObject({ type: "memory_reply", id: 3, result: { path: "profile.md", text: "# Minh" } })
+  expect(await ask({ type: "memory_close" })).toEqual({ type: "memory_reply", id: 3 })
+  expect(await ask({ type: "memory_snapshot" })).toEqual({
+    type: "memory_reply",
+    id: 3,
     error: "failed",
-    message: "store_read request is missing 'store'",
+    message: "no such memory session",
   })
 })
 
-test("store replies are plain json", async () => {
-  const stores = { profile: store({ read: () => Object.freeze(["text", "v1"] as const), write: () => "v2" }) }
-  const read = await answer(READ, { stores })
-  const write = await answer(WRITE, { stores })
-  expect(read).toEqual({ type: "store_reply", id: 1, text: "text", version: "v1" })
-  expect(write).toEqual({ type: "store_reply", id: 2, version: "v2" })
+/** An office profile memory in a temp folder holding `# Minh\n`, handlers serving it, a worker whose job names it,
+ *  and the session a `memory_open` opened on it. */
+async function openProfile() {
+  const root = `${tempDir()}/memory`
+  const handlers = new BaseHandlers({ memories: { profile: profileMemory(root, "# Minh\n") } })
+  const worker = workerFor(handlers)
+  const opened = await answerRequest(OPEN, handlers, worker)
+  return { root, handlers, worker, session: opened.session as string }
+}
+
+test.each([
+  ["memory_apply", { change_id: "c-1", change: { op: "append", path: "profile.md", text: "x" }, author: {} }],
+  ["memory_undo", { change_id: "u-1", undoes: "c-1", author: {} }],
+  ["memory_erase", { change_id: "e-1", target: { path: "profile.md" }, author: {} }],
+  ["memory_history", { limit: 5 }],
+  ["memory_reset", { memory: "profile" }],
+])("a worker can't change or reset a memory, nor read its history [%s]", async (type, fields) => {
+  const { root, handlers, worker, session } = await openProfile()
+  expect(isRequest(type)).toBe(false)
+  // No request type of the office takes it: the worker's channel drops it unanswered.
+  await expect(answerRequest({ type, id: 2, session, ...fields }, handlers, worker)).rejects.toThrow(TypeError)
+  expect(fs.readFileSync(`${root}/profile.md`, "utf8")).toBe("# Minh\n")
+})
+
+test("a memory call takes only the memory's read tools", async () => {
+  const { root, handlers, worker, session } = await openProfile()
+  for (const tool of ["append", "rewrite", "delete", "nope"]) {
+    const args = { path: "profile.md", text: "x", if_hash: "h" }
+    const reply = await answerRequest({ type: "memory_call", id: 2, session, tool, args }, handlers, worker)
+    expect([reply.error, reply.message]).toEqual(["failed", `no read tool '${tool}'`])
+  }
+  for (const tool of ["list", "read", "search"]) {
+    const args = tool === "search" ? { query: "minh" } : tool === "read" ? { path: "profile.md" } : {}
+    const reply = await answerRequest({ type: "memory_call", id: 2, session, tool, args }, handlers, worker)
+    expect(reply.error).toBeUndefined()
+  }
+  expect(fs.readFileSync(`${root}/profile.md`, "utf8")).toBe("# Minh\n")
+})
+
+test("a worker opens each memory once at a time", async () => {
+  const { handlers, worker, session } = await openProfile()
+  const again = await answerRequest(OPEN, handlers, worker)
+  expect([again.error, again.message]).toEqual(["failed", "memory 'profile' is open already"])
+  await answerRequest({ type: "memory_close", id: 3, session }, handlers, worker)
+  expect((await answerRequest(OPEN, handlers, worker)).error).toBeUndefined()
+})
+
+test("the sessions a worker left open close when it exits or moves on to its next job", async () => {
+  for (const leave of [(h: BaseHandlers) => h.exited(null, 0), (h: BaseHandlers) => h.released(null)]) {
+    const { handlers, worker, session } = await openProfile()
+    leave(handlers)
+    const snapshot = await answerRequest({ type: "memory_snapshot", id: 2, session }, handlers, worker)
+    expect([snapshot.error, snapshot.message]).toEqual(["failed", "no such memory session"])
+  }
 })
 
 test("a forged tool call for a group the job was not given is refused", async () => {
@@ -198,66 +276,41 @@ test("a forged tool call for a group the job was not given is refused", async ()
   expect(ran).toEqual([])
 })
 
-test("a forged store request for a store the job was not given is refused", async () => {
+test("a forged memory request for a memory the job was not given is refused", async () => {
   const ran: string[] = []
-  const notes = store({
-    read: () => {
-      ran.push("read")
-      return ["secret notes", "v0"] as const
-    },
-    write: () => {
-      ran.push("write")
-      return "v1"
-    },
-  })
-  const handlers = new BaseHandlers({ stores: { profile: store(), notes } })
-  const worker = workerFor(handlers, { memory: { profile: { store: "profile" } } })
-  for (const frame of [{ ...READ, store: "notes" }, { ...WRITE, store: "notes" }]) {
-    const reply = await answerRequest(frame, handlers, worker)
-    expect([reply.type, reply.error, reply.message]).toEqual(["store_reply", "unavailable", "no store named 'notes'"])
-  }
+  const notes = new Failing(() => ran.push("notes"))
+  const handlers = new BaseHandlers({ memories: { profile: new Failing(), notes } })
+  const worker = workerFor(handlers, { memory: ["profile"] })
+  const reply = await answerRequest({ ...OPEN, memory: "notes" }, handlers, worker)
+  expect([reply.type, reply.error, reply.message]).toEqual(["memory_reply", "failed", "no memory named 'notes'"])
   expect(ran).toEqual([])
 })
 
-test("object method names are never tools or stores", async () => {
+test("object method names are never tools or memories", async () => {
   const ran: string[] = []
   const keys = ["__proto__", "constructor", "toString"]
   const shout = tool(() => "OK")
   const sneaky = tool(() => ran.push("tool"), [])
-  const notes = store({
-    read: () => {
-      ran.push("read")
-      return ["", "v0"] as const
-    },
-    write: () => {
-      ran.push("write")
-      return "v1"
-    },
-  })
+  const notes = new Failing(() => ran.push("memory"))
   const each = <T>(value: T) => Object.fromEntries(keys.map((key) => [key, value]))
   // The handlers hold each name as an own key, which the job doesn't grant, so only the job check can refuse it.
   const handlers = new BaseHandlers({
     tools: { toolbox: { shout, ...each(sneaky) }, ...each({ shout: sneaky }) },
-    stores: { profile: store(), ...each(notes) },
+    memories: { profile: new Failing(), ...each(notes) },
   })
   for (const key of keys) {
     expect([Object.hasOwn(handlers.tools, key), Object.hasOwn(handlers.tools.toolbox!, key)]).toEqual([true, true])
-    expect(Object.hasOwn(handlers.stores, key)).toBe(true)
+    expect(Object.hasOwn(handlers.memories.memories, key)).toBe(true)
   }
-  const worker = workerFor(handlers, {
-    groups: groupSpecs({ toolbox: { shout } }),
-    memory: { profile: { store: "profile" } },
-  })
+  const worker = workerFor(handlers, { groups: groupSpecs({ toolbox: { shout } }), memory: ["profile"] })
   for (const key of keys) {
     const shout = { type: "tool_call", id: 1, group: "toolbox", name: "shout", args: {}, call_id: "r1/n/1/0" }
     const group = await answerRequest({ ...shout, group: key }, handlers, worker)
     expect([group.error, group.message]).toEqual(["failed", `no tool 'shout' in group '${key}'`])
     const name = await answerRequest({ ...shout, name: key }, handlers, worker)
     expect([name.error, name.message]).toEqual(["failed", `no tool '${key}' in group 'toolbox'`])
-    for (const frame of [{ ...READ, store: key }, { ...WRITE, store: key }]) {
-      const reply = await answerRequest(frame, handlers, worker)
-      expect([reply.error, reply.message]).toEqual(["unavailable", `no store named '${key}'`])
-    }
+    const reply = await answerRequest({ ...OPEN, memory: key }, handlers, worker)
+    expect([reply.error, reply.message]).toEqual(["failed", `no memory named '${key}'`])
   }
   expect(ran).toEqual([])
   for (const type of ["toString", "__proto__", "constructor"]) expect(isRequest(type)).toBe(false)
@@ -271,7 +324,13 @@ test("object method names are never tools or stores", async () => {
   await expect(bare.toolCall(null, "__proto__", "constructor", {})).rejects.toThrow(
     "no tool 'constructor' in group '__proto__'",
   )
-  expect(() => new BaseHandlers().storeRead(null, "toString", null)).toThrow("no store named 'toString'")
+  const open = { op: "open", memory: "toString", create: true, itemType: null } as const
+  await expect(new BaseHandlers().memory(null, open)).rejects.toThrow(
+    "no memory named 'toString'",
+  )
+  await expect(new BaseHandlers().memory(null, { op: "snapshot", session: "toString" })).rejects.toThrow(
+    "no such memory session",
+  )
 })
 
 test("ask user passes the handler only the six keys", async () => {
@@ -368,11 +427,9 @@ test("an error whose name or message cannot be read is a failed reply", async ()
     ["INFO", "worker tool_call request failed: Error"],
     ["INFO", "worker tool_call request failed: Error"],
   ])
-  const stores = { profile: store({ read: revoked, write: revoked }) }
-  for (const frame of [READ, WRITE]) {
-    const reply = await answer(frame, { stores })
-    expect([reply.type, reply.error, reply.message]).toEqual(["store_reply", "unavailable", "Error"])
-  }
+  const memories = { profile: new Failing(revoked) }
+  const reply = await answer(OPEN, { memories })
+  expect([reply.type, reply.error, reply.message]).toEqual(["memory_reply", "failed", "Error"])
   expect(await answer(call("badName"), { tools, log: throwingLog })).toEqual(first)
 })
 
@@ -894,7 +951,7 @@ test("a closed rpc rejects pending and later requests", async () => {
   sent.rpc.close(closed)
   expect(await first).toBe(closed)
   expect(await second).toBe(closed)
-  expect(await rejection(sent.rpc.request("store_read", { store: "profile" }))).toBe(closed)
+  expect(await rejection(sent.rpc.request("memory_snapshot", { session: "s" }))).toBe(closed)
   expect(sent.writes()).toBe(2)
 })
 

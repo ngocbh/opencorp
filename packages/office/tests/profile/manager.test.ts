@@ -3,7 +3,6 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import { MarkdownVersionMismatch } from "@ngocbh/yian"
 import { HarnessError } from "../../src/chat/state.ts"
 import { loadConfined } from "../../src/company/flows.ts"
 import { CompanyGit } from "../../src/company/git.ts"
@@ -14,8 +13,9 @@ import {
   ProposalNotOpen,
   profileTools,
   propose,
+  STALE_EDIT,
 } from "../../src/profile/manager.ts"
-import { GitProfileStore } from "../../src/profile/store.ts"
+import { GitProfileStore, ProfileConflict } from "../../src/profile/store.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
 import { fakeLlm, makeHarness, ROOT, running, status, texts } from "../chat/helpers.ts"
@@ -37,6 +37,9 @@ function office({ maxChars = 32000 }: { maxChars?: number } = {}) {
 }
 
 const subject = (g: CompanyGit) => git(g.root, "log", "-1", "--format=%s")
+
+/** minh's profile version in `g`'s clone. */
+const versionOf = async (g: CompanyGit) => (await new GitProfileStore(g, "minh").read()).version
 
 /** What `promise` rejects with; throws if it fulfils. */
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
@@ -82,8 +85,21 @@ test("propose edit stores a proposal with its diff and replaces older ones", asy
   expect(lines).toContain("+- Be brief.")
   // difflib's whole output for this edit
   expect(latest.diff).toBe(`${HEADERS}@@ -1 +1,3 @@\n # Minh, Engineer\n+\n+- Be brief.\n`)
-  const made = tools.propose_edit.call({ text: "x", base_version: "0".repeat(40) })
-  await expect(made).rejects.toBeInstanceOf(RangeError)
+})
+
+test("propose_edit of a version that isn't the profile's asks the model to read it again", async () => {
+  const { git: g, store, tools } = office()
+  const { version } = await readProfile(tools)
+  for (const base of ["0".repeat(64), "0".repeat(40)]) {
+    await expect(tools.propose_edit.call({ text: "x", base_version: base })).rejects.toThrow(STALE_EDIT)
+  }
+  fs.writeFileSync(path.join(g.root, "people/minh/memory/profile.md"), "# Minh, by hand\n")
+  await expect(tools.propose_edit.call({ text: "x", base_version: version })).rejects.toThrow(STALE_EDIT)
+  expect(STALE_EDIT).toContain("profile_read")
+  expect(store.listProfileProposals("minh")).toEqual([])
+  // The edit of the profile as it is now diffs against that text.
+  await tools.propose_edit.call({ text: "# Minh\n", base_version: (await readProfile(tools)).version })
+  expect(store.listProfileProposals("minh")[0]!.diff).toContain("-# Minh, by hand\n+# Minh\n")
 })
 
 const HEADERS = "--- a/people/minh/memory/profile.md\n+++ b/people/minh/memory/profile.md\n"
@@ -96,7 +112,7 @@ function numbered(n: number, prefix: string, other?: string): string[] {
 /** The diff `propose` stores for `text` over `base`. */
 async function diffOf(base: string, text: string): Promise<string> {
   const { git: g, store, s } = office()
-  return (await propose(store, s, new GitProfileStore(g, "minh"), "0".repeat(40), base, text)).diff
+  return (await propose(store, s, new GitProfileStore(g, "minh"), "0".repeat(64), base, text)).diff
 }
 
 test("a large edit gets one whole-file hunk", async () => {
@@ -152,7 +168,7 @@ test("apply commits the proposal as the owner via the profile manager", async ()
   const events = recordEvents(store)
   const profile = await applyProposal(store, g, proposal.id, { owner: "ngocbh", maxChars: 5 })
   expect([profile.person, profile.text, profile.over_budget]).toEqual(["minh", "# Minh\n", true])
-  expect(profile.version).toBe((await new GitProfileStore(g, "minh").read())[1])
+  expect(profile.version).toBe(await versionOf(g))
   expect(subject(g)).toBe("profile(@minh): ngocbh via profile manager")
   const applied = store.getProfileProposal(proposal.id)!
   expect([applied.status, applied.commit]).toEqual(["applied", await g.head()])
@@ -171,11 +187,35 @@ test("apply after a hand edit is a conflict and the proposal goes stale", async 
   const file = path.join(g.root, "people/minh/memory/profile.md")
   fs.writeFileSync(file, "# Minh, Staff Engineer\n")
   const error = await rejection(applyProposal(store, g, proposal.id, { owner: "ngocbh", maxChars: 100 }))
-  expect(error).toBeInstanceOf(MarkdownVersionMismatch)
-  expect((error as MarkdownVersionMismatch).expected).toBe(proposal.base_version)
-  expect((error as MarkdownVersionMismatch).current).toBe((await new GitProfileStore(g, "minh").read())[1])
+  expect(error).toBeInstanceOf(ProfileConflict)
+  expect((error as ProfileConflict).expected).toBe(proposal.base_version)
+  expect((error as ProfileConflict).current).toBe(await versionOf(g))
   expect(store.getProfileProposal(proposal.id)!.status).toBe("stale")
   expect(fs.readFileSync(file, "utf8")).toBe("# Minh, Staff Engineer\n")
+})
+
+test("an applied proposal is committed once and a retried apply returns its version", async () => {
+  const { git: g, store, tools } = office()
+  const base = (await readProfile(tools)).version
+  await tools.propose_edit.call({ text: "# Minh\n", base_version: base })
+  const proposal = store.listProfileProposals("minh", { status: "open" })[0]!
+  // The office stopped after the write, before the proposal was marked applied.
+  const profile = new GitProfileStore(g, "minh")
+  const author = { kind: "user", name: "ngocbh" } as const
+  const first = await profile.write("# Minh\n", {
+    baseVersion: base,
+    changeId: `proposal-${proposal.id}`,
+    author,
+    source: "ngocbh via profile manager",
+  })
+  const head = await g.head()
+  expect(first.commit).toBe(head)
+  fs.appendFileSync(path.join(g.root, "people/minh/memory/notes.md"), "kept\n")
+  const applied = await applyProposal(store, g, proposal.id, { owner: "ngocbh", maxChars: 100 })
+  expect(applied.version).toBe(first.version)
+  // The notes were a hand edit, committed on their own; the proposal made no second commit.
+  expect(git(g.root, "log", "--format=%s", `${head}..HEAD`)).toBe("profile(@minh): hand edit")
+  expect(store.getProfileProposal(proposal.id)!.status).toBe("applied")
 })
 
 test("a proposal made while another is applied waits for the apply", async () => {
@@ -235,10 +275,10 @@ async function endChat(h: ManagerHarness, sid: string): Promise<void> {
 test("the profile manager proposes an edit that the owner applies", async () => {
   const fake = await fakeLlm()
   const h = await managerHarness(fake)
-  const version = (await new GitProfileStore(h.office.git, "minh").read())[1]
+  const version = await versionOf(h.office.git)
   const edited = `${MINH}\n- Likes short replies.\n`
   fake.script(
-    { tool_calls: [{ name: "propose_edit", arguments: { text: edited, base_version: version } }] },
+    { tool_calls: [{ name: "profile_propose_edit", arguments: { text: edited, base_version: version } }] },
     { content: "I proposed the edit." },
   )
   const s = await h.harness.startManager("minh", "Say that I like short replies.")
@@ -246,6 +286,11 @@ test("the profile manager proposes an edit that the owner applies", async () => 
   expect(s.cwd).toBe(fs.realpathSync(h.office.git.root))
   await waitFor(() => texts(h, s.id).join() === "I proposed the edit.", { what: "the reply" })
   expect(JSON.stringify(fake.requests()[0]!.messages)).toContain("Say that I like short replies.")
+  // The model sees the profile tools under their group, as the prompt names them.
+  const request = fake.requests()[0] as { tools: { function: { name: string } }[]; messages: { content: unknown }[] }
+  expect(request.tools.map((t) => t.function.name)).toEqual(["profile_read", "profile_propose_edit"])
+  expect(String(request.messages[0]!.content)).toContain("Call `profile_read`")
+  expect(String(request.messages[0]!.content)).toContain("call `profile_propose_edit`")
   const [proposal, ...rest] = h.store.listProfileProposals("minh")
   expect(rest).toEqual([])
   expect([proposal!.session_id, proposal!.base_version, proposal!.text, proposal!.status]).toEqual([
@@ -257,7 +302,7 @@ test("the profile manager proposes an edit that the owner applies", async () => 
   expect(profileText(h)).toBe(MINH) // nothing changes until the owner applies it
 
   const profile = await apply(h, proposal!.id)
-  expect([profile.text, profile.version]).toEqual([edited, (await new GitProfileStore(h.office.git, "minh").read())[1]])
+  expect([profile.text, profile.version]).toEqual([edited, await versionOf(h.office.git)])
   expect(subject(h.office.git)).toBe("profile(@minh): ngocbh via profile manager")
   expect(h.store.listProfileProposals("minh")[0]!.status).toBe("applied")
   expect(await rejection(apply(h, proposal!.id))).toBeInstanceOf(ProposalNotOpen)
@@ -267,9 +312,9 @@ test("the profile manager proposes an edit that the owner applies", async () => 
 test("the profile manager is opened and applied by who acted", async () => {
   const fake = await fakeLlm()
   const h = await managerHarness(fake)
-  const version = (await new GitProfileStore(h.office.git, "minh").read())[1]
+  const version = await versionOf(h.office.git)
   fake.script(
-    { tool_calls: [{ name: "propose_edit", arguments: { text: `${MINH}- x\n`, base_version: version } }] },
+    { tool_calls: [{ name: "profile_propose_edit", arguments: { text: `${MINH}- x\n`, base_version: version } }] },
     { content: "Proposed." },
   )
   const s = await h.harness.startManager("minh", "Add x.", { by: "lan" })

@@ -26,21 +26,13 @@ export function line(
 /** A `run_started` with every field yian requires, its one static path `chat/reply` on `model`. */
 export function runStarted(
   seq = 0,
-  { learnable = true, yianVersion = "0.0.0", model = "stub" }: {
-    learnable?: boolean
-    yianVersion?: string
-    model?: string
-  } = {},
+  { yianVersion = "0.0.0", model = "stub" }: { yianVersion?: string; model?: string } = {},
 ): Buffer {
   return line(seq, "run_started", {
     flow_fingerprint: FP,
     start_wiring_override: {},
     effective_llm_by_static_path: { "chat/reply": { provider: "vllm", model } },
     num_workers: 0n,
-    memory_snapshots: null,
-    memories: null,
-    memory_stacks: null,
-    learnable,
     defaults: {},
     call_time_llm: null,
     flow: null,
@@ -63,11 +55,11 @@ export function committed(seq: number, nodeId: string, value: unknown, kind = "o
 
 /** A success naming the commit at seq `commit`. */
 export function succeeded(seq: number, nodeId: string, commit: number): Buffer {
-  return line(seq, "node_succeeded", { node_id: nodeId, commit: BigInt(commit), messages: null, forward_capture: null })
+  return line(seq, "node_succeeded", { node_id: nodeId, commit: BigInt(commit), messages: null })
 }
 
 export function routed(seq: number, nodeId: string, handle: string): Buffer {
-  return line(seq, "node_routed", { node_id: nodeId, handle, terminal_failure: null, forward_capture: null })
+  return line(seq, "node_routed", { node_id: nodeId, handle, terminal_failure: null })
 }
 
 export function expanded(seq: number, nodeId: string): Buffer {
@@ -75,7 +67,6 @@ export function expanded(seq: number, nodeId: string): Buffer {
     spawner_id: nodeId,
     prune_ids: [],
     topology_digest: "0".repeat(64),
-    forward_capture: null,
   })
 }
 
@@ -89,7 +80,6 @@ export function failed(seq: number, nodeId: string, message: string): Buffer {
       cause_type: "AuthError",
       traceback: "Traceback",
     },
-    forward_capture: null,
   })
 }
 

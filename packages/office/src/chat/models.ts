@@ -1,6 +1,5 @@
 /** The models each connection offers, listed from its provider. */
 import {
-  AuthError,
   type AuthRequest,
   AuthStore,
   ModelListError as HostListError,
@@ -11,6 +10,7 @@ import {
 } from "@ngocbh/yian/llm_clients"
 import type { ModelList } from "@opencorp/protocol"
 import type { z } from "zod"
+import { plainAuthError } from "../worker/rpc.ts"
 import { BadConnectionName, type ConnectionFile, type Connections, configHash, providerLabel } from "./connections.ts"
 import { type LlmConfig, type Provider, ProviderError } from "./provider.ts"
 
@@ -204,8 +204,9 @@ export async function subscriptionModels(
     if (!(credentials instanceof OAuthCredentials)) throw new TypeError("not a subscription sign-in")
     return [...(await auth().subscriptionModels(credentials))]
   } catch (error) {
-    // Yian's messages are status-only and safe to show.
-    if (error instanceof AuthError) throw new ModelListError(error.message, error.status)
+    // A plain AuthError says only what failed and its status; the store's own errors name the auth file, so they go
+    // on to be logged by type.
+    if (plainAuthError(error)) throw new ModelListError(error.message, error.status)
     throw error
   }
 }

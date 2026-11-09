@@ -1,6 +1,6 @@
 /** How the office starts a session's runs: the run specs of a main chat, a side chat and the profile manager, and
  *  the worker job built from one. */
-import type { MarkdownStore } from "@ngocbh/yian"
+import type { MemoryBase } from "@ngocbh/yian"
 import { CompanyDefaults, type Person as PersonSchema } from "@opencorp/protocol"
 import type { z } from "zod"
 import type { CompanyGit } from "../company/git.ts"
@@ -19,7 +19,6 @@ import {
   type Parent,
   parseJob,
   personFlow,
-  type ProfileMemorySpec,
   type Seed,
 } from "../worker/job.ts"
 import type { OfficeTool } from "../worker/rpc.ts"
@@ -45,9 +44,9 @@ export interface GroupContext {
  * How to start (and restart) a session's runs.
  *
  * `flow` is relative to the session's pinned commit. `chat` names the turn and reply nodes of the conversation
- * flow. `groups` builds the office tools of one run, `{group: {tool name: tool}}`. `memory` names the profile
- * memories the flow may use, each over the store of that name in `stores`; history lives in the flow's `summary`
- * and `history` inputs, not in a memory. `names` are what the person answers to (handle, then name).
+ * flow. `groups` builds the office tools of one run, `{group: {tool name: tool}}`. `memories` are the office memories
+ * the worker binds to the flow's memory inputs of the same names, on every run call; history lives in the flow's
+ * `summary` and `history` inputs, not in a memory. `names` are what the person answers to (handle, then name).
  * `workspace` is the workspace the run's workspace tools call, if it has one. `parent` is the run (and node) the
  * session's fresh runs nest under in yian's run index, if any. Python's `learnable` is dropped: learning is
  * deferred.
@@ -57,8 +56,7 @@ export interface RunSpec {
   readonly chat: ChatFlow
   readonly inputs: Record<string, unknown>
   groups(ctx: GroupContext): Record<string, Record<string, OfficeTool>>
-  readonly memory: Record<string, ProfileMemorySpec>
-  readonly stores: Record<string, MarkdownStore>
+  readonly memories: Record<string, MemoryBase>
   readonly skills: string[]
   readonly names: readonly string[]
   readonly workspace?: Workspace
@@ -80,17 +78,18 @@ function personOf(repo: CompanyRepo, session: SessionRecord): Person {
   return person
 }
 
-/** The profile memory over the `profile` store, capped at `maxChars`; the job fills in the model config. */
-function profileMemory(maxChars: number): Record<string, ProfileMemorySpec> {
-  return { profile: { kind: "profile", store: "profile", max_chars: maxChars, llm_config: null } }
+/** The flow's `profile` memory: `handle`'s memory folder in the company clone, whose settings are the same in every
+ *  company, so every advance of a run binds the settings it recorded. */
+function profileMemory(git: CompanyGit, handle: string): Record<string, MemoryBase> {
+  return { profile: new GitProfileStore(git, handle).memory() }
 }
 
 /**
  * The run spec of a person's main chat, `repo` being the session's pinned commit.
  *
- * The person's main flow, who they are and who they're talking with, their profile as memory, their skills, and
- * the toolbox, workspace and company groups. Throws `HarnessError` (`422`) when the person isn't in `repo` or has
- * no main flow.
+ * The person's main flow, who they are and who they're talking with, their profile as its `profile` memory, their
+ * skills, and the toolbox, workspace and company groups. Throws `HarnessError` (`422`) when the person isn't in
+ * `repo` or has no main flow.
  */
 export function mainSpec({
   store,
@@ -124,8 +123,7 @@ export function mainSpec({
       const ctx = { store, repo, session, runId, onQuestion, carried, monitor, workspace }
       return build(["toolbox", "workspace", "company"], ctx)
     },
-    memory: profileMemory(defaults.profile_max_chars),
-    stores: { profile: new GitProfileStore(git, person.handle) },
+    memories: profileMemory(git, person.handle),
     skills: [...person.skills],
     names: [person.handle, person.name],
     workspace,
@@ -135,9 +133,9 @@ export function mainSpec({
 /**
  * The run spec of a side chat about `question`, `repo` being the session's pinned commit.
  *
- * The side chat flow, who the asker is and who they're talking with, their profile as memory, and read-only
- * lookups: the workspace's read tools and the work items. The caller passes a `workspace` built read-only and
- * offline whatever the person's `harness_policy` says: a side chat explains, it doesn't act. Its history budget
+ * The side chat flow, who the asker is and who they're talking with, their profile as its `profile` memory, and
+ * read-only lookups: the workspace's read tools and the work items. The caller passes a `workspace` built read-only
+ * and offline whatever the person's `harness_policy` says: a side chat explains, it doesn't act. Its history budget
  * leaves room for the seed, the first turn. Its runs nest under the question's run and node; with no question, under
  * none. Throws `HarnessError` (`422`) when the asker isn't in `repo`.
  */
@@ -171,8 +169,7 @@ export function sideSpec({
     },
     groups: ({ session, runId }) =>
       build(["workspace", "work_items"], { store, session, runId, monitor, workspace, readOnly: true, question }),
-    memory: profileMemory(defaults.profile_max_chars),
-    stores: { profile: new GitProfileStore(git, person.handle) },
+    memories: profileMemory(git, person.handle),
     skills: [],
     names: [person.handle, person.name],
     workspace,
@@ -198,8 +195,7 @@ export function managerSpec({
     chat: MAIN_CHAT,
     inputs: { max_turns: defaultsOf(repo).max_turns },
     groups: () => ({ profile: tools }),
-    memory: {},
-    stores: {},
+    memories: {},
     skills: [],
     names: [],
   }
@@ -211,9 +207,9 @@ export function managerSpec({
  *
  * A new chat starts with an empty history at `turns`, the session's turns so far; with a `seed` (the run it
  * replaces) the worker replaces the empty `summary` and `history` with that run's. Only a `chat` job carries
- * `spec.parent`: an `advance` resumes a log that already records it. A profile memory with no model
- * config of its own uses `llmConfig`. With `keep`, the worker stays parked after a run call that leaves the run
- * waiting, for the run's next job. Throws `JobError`, whose message holds no value, when a field is invalid.
+ * `spec.parent`: an `advance` resumes a log that already records it. Every job names `spec.memories`, which the
+ * worker binds on every run call. With `keep`, the worker stays parked after a run call that leaves the run waiting,
+ * for the run's next job. Throws `JobError`, whose message holds no value, when a field is invalid.
  */
 export function chatJob(
   spec: RunSpec,
@@ -244,9 +240,6 @@ export function chatJob(
     keep?: boolean
   },
 ): Job {
-  const memory = Object.fromEntries(
-    Object.entries(spec.memory).map(([name, m]) => [name, m.llm_config === null ? { ...m, llm_config: llmConfig } : m]),
-  )
   return parseJob({
     kind,
     session_id: session.id,
@@ -259,7 +252,7 @@ export function chatJob(
     llm_config: llmConfig,
     skills: spec.skills,
     groups: groupSpecs(tools),
-    memory,
+    memory: Object.keys(spec.memories),
     seed,
     deliver,
     advance,

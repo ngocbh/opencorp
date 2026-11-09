@@ -272,7 +272,7 @@ test(
 )
 
 test(
-  "a chat starts with a conflicted profile and neither HEAD nor the model sees its markers",
+  "a chat starts with a conflicted profile, which HEAD never gets and the model reads as the file holds it",
   async () => {
     const office = await openOffice()
     const company = office.paths.company
@@ -280,7 +280,8 @@ test(
     await firstTurn(office, folder(path.join(office.root, "project")))
     expect(git(company, "show", `HEAD:${PROFILE}`)).toBe("committed")
     expect(git(company, "ls-files", "-u")).toContain(PROFILE)
-    expect(JSON.stringify(office.llm.requests())).not.toContain("<<<<<<<")
+    // The profile memory is the folder as it is: a hand edit, markers and all, until the conflict is resolved.
+    expect(JSON.stringify(office.llm.requests())).toContain("<<<<<<< Updated upstream")
   },
   TIMEOUT,
 )

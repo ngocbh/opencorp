@@ -1,7 +1,8 @@
 # "Chat about this" on a question card: a chat with the person who asked, in a side
 # session of its own. The office sends the question's context and the card before the
 # human's message, and closes `messages` when the question closes. The reply has
-# read-only lookups only. Older turns fold into `summary` through compact_history, which
+# read-only lookups only, and the person's profile, the `profile` memory the office binds,
+# in its system prompt. Older turns fold into `summary` through compact_history, which
 # counts all the history's text, the seed included; the seed isn't folded only because the
 # office passes the seed's cap plus 32,000 as `history_budget`.
 id: side_chat
@@ -26,6 +27,7 @@ input:
   history: !list(list(Message))  # the kept turns, one list of messages each; [] for a new chat
   turns: !int  # the session's turns so far
   max_turns: !int  # the run ends once turns reaches it
+  profile: !FileMemory  # the person's memory folder, profile.md its index; the office binds it
   # Characters of message text before compacting, the seed included; the office passes the seed's
   # cap plus 32,000.
   history_budget: !int 32000
@@ -60,6 +62,7 @@ defs:
       closed: !bool
       turns: !int
       max_turns: !int
+      profile: !FileMemory
       history_budget: !int
     nodes:
       # The turn: everything sent since the last one. Messages read along with a close aren't answered.
@@ -85,7 +88,6 @@ defs:
           history_budget: ${input.history_budget}
       reply:
         kind: agent
-        long_term_memory: profile
         steer_inbox: ${input.messages}
         env:
           max_tool_iterations: 50
@@ -96,6 +98,7 @@ defs:
           said: ${heard.output.events}
           person: ${input.person}
           talking_to: ${input.talking_to}
+          profile: ${input.profile}
         output: Optional(str)  # null only after an interrupt
         system_prompt: |-
           You are ${person.name} (@${person.handle}), ${person.title} at ${person.company}. ${person.reports_to} ${talking_to}
@@ -105,6 +108,10 @@ defs:
           This is a side conversation about a question you asked: help the person you asked understand it
           and decide. Here you can only look things up; you can't change files or run anything.
           A summary of this conversation's older turns (empty while it is short): ${summary}
+
+          <memory name="profile">
+          ${profile}
+          </memory>
         prompt:
           - ${history}
           - ${said}
@@ -134,6 +141,7 @@ nodes:
       closed: false
       turns: ${input.turns}
       max_turns: ${input.max_turns}
+      profile: ${input.profile}
       history_budget: ${input.history_budget}
     while: not closed and turns < max_turns
 output:

@@ -1,10 +1,10 @@
 /** The office side of a run's ask_user: the handler, and storing each call's question once until it is answered. */
-import { type PendingCall, pendingCalls } from "@ngocbh/yian/run"
+import { inspectRun, type PendingCall, pendingCalls } from "@ngocbh/yian/run"
 import { expect, setDefaultTimeout, test } from "bun:test"
-import { isPending, ToolSet } from "@ngocbh/yian/tools"
+import { isPending, pending, ToolSet } from "@ngocbh/yian/tools"
 import { Question } from "@opencorp/protocol"
 import { loadRepo } from "../../src/company/loader.ts"
-import { Answers, makeAskUser, type OnQuestion } from "../../src/questions/ask.ts"
+import { Answers, ASK_MANAGER_CALL, isAskManagerCall, makeAskUser, type OnQuestion } from "../../src/questions/ask.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { DuplicateKey, NotFound, StoreError, newId, type QuestionRecord } from "../../src/store/store.ts"
 import { companyTools } from "../../src/tools/company/work.ts"
@@ -13,7 +13,17 @@ import { ASK_KEYS, AskRefused, type AskRequest, askUserStub, BaseHandlers } from
 import { openStore, question, session, workItem } from "../store/helpers.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { company } from "../tools/helpers.ts"
-import { base, inProcessWorker, makeJob, officeEnd, Pending, Recorder, writeFiles } from "../worker/helpers.ts"
+import {
+  agentFlow,
+  base,
+  inProcessWorker,
+  makeJob,
+  officeEnd,
+  Pending,
+  Recorder,
+  waitsOf,
+  writeFiles,
+} from "../worker/helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -521,7 +531,7 @@ test("reconcile marks an unlisted question stale and stores an unstored call", a
   const calls = [
     pendingCall({ callId: "run-1/reply/2/0", arguments: { question: "Which city?", options: ["Paris", "Rome"] } }),
     pendingCall({ callId: "run-1/reply/4/0", arguments: { question: "Which db?" } }),
-    pendingCall({ callId: "run-1/reply/6/0", tool: "ask_manager", arguments: { question: "Deploy now?" } }),
+    pendingCall({ callId: "run-1/reply/6/0", tool: ASK_MANAGER_CALL, arguments: { question: "Deploy now?" } }),
   ]
   const askUser = makeAskUser(s, "run-1", (q, o) => answers.ask(q, o))
   const tools = companyTools(store, loadRepo(company()), s, "run-1", (q, o) => answers.ask(q, o))
@@ -580,6 +590,41 @@ test("reconcile rebuilds an ask node call from its recorded inputs", async () =>
   const page = store.getQuestionByCall("run-1/sop#0/ask")!
   expect([page.source, page.node_id, page.question]).toEqual(["ask", "sop#0/ask", "Setup"])
   expect(page.questions).toEqual([{ question: "Why?", header: "Why", options: [], multi_select: false, secret: false }])
+  expect(lines).toEqual([])
+})
+
+// The company group grants it as `company_ask_manager`; a flow may grant it by its own name, `ask_manager`.
+test.each([
+  ["company", "company_ask_manager"],
+  ["ask_manager", "ask_manager"],
+])("reconcile rebuilds an ask_manager call as yian records it [tools: %s]", async (grant, shown) => {
+  const fake = await fakeLlm()
+  fake.script({ tool_calls: [{ name: shown, arguments: { question: "Deploy now?" } }] })
+  const b = base()
+  writeFiles(b.pin, { "flows/managed.yaml": agentFlow("managed", { node: `    tools: [${grant}]\n` }) })
+  const parameters = { type: "object", properties: { question: { type: "string" } }, required: ["question"] }
+  const parked = { description: "Ask.", parameters, call: () => pending() }
+  const handlers = new Pending({ tools: { company: { ask_manager: parked } } })
+  const job = makeJob(b, "flows/managed.yaml", {}, handlers)
+  const worker = await inProcessWorker(job, handlers, { env: fake.env() })
+  expect(await worker.wait()).toBe(EXIT_OK)
+  expect(handlers.outcome?.status, String(handlers.outcome?.message)).toBe("waiting")
+  // The session actor tells a model question's wait by its tool, from the result and from the log.
+  expect(waitsOf(handlers).map((wait) => isAskManagerCall(String(wait.tool)))).toEqual([true])
+  expect(inspectRun(job.log).waits.map((wait) => isAskManagerCall(wait.tool))).toEqual([true])
+  const calls = pendingCalls(job.log)
+
+  const { store, sid, answers, lines } = setup()
+  const s = store.getSession(sid)!
+  const tools = companyTools(store, loadRepo(company()), s, job.run_id, (q, o) => answers.ask(q, o))
+  await answers.reconcile(job.run_id, calls, {
+    askUser: makeAskUser(s, job.run_id, (q, o) => answers.ask(q, o)),
+    askManager: (args, callId) => tools.ask_manager!.call(args, { callId }),
+  })
+  const stored = store.listQuestions({ sessionId: sid })
+  expect(stored.map((q) => [q.source, q.question, q.call_id, q.status])).toEqual([
+    ["ask_manager", "Deploy now?", calls[0]!.callId, "open"],
+  ])
   expect(lines).toEqual([])
 })
 

@@ -102,22 +102,22 @@ export function checkProvider(data: unknown): Provider {
     throw error
   }
   const llm = provider.llm_config ?? {}
-  try {
-    checkLlmConfig(llm)
-  } catch (error) {
-    if (error instanceof ProviderError) throw new OnboardError(error.message)
-    throw error
-  }
+  // Before yian's check, which refuses a key with a control character in words of its own.
   const key = llm.api_key
   if (typeof key === "string") {
     // Length first: a huge key is refused without a regex test.
     if (key.length > MAX_KEY_CHARS) {
       throw new OnboardError(`llm_config.api_key is too long (at most ${MAX_KEY_CHARS} characters)`)
     }
-    // Yian refuses such a key only once a request is made, and reports it as the model's problem.
     if (!HEADER_TEXT.test(key)) {
       throw new OnboardError("llm_config.api_key must be printable ASCII with no leading or trailing spaces")
     }
+  }
+  try {
+    checkLlmConfig(llm)
+  } catch (error) {
+    if (error instanceof ProviderError) throw new OnboardError(error.message)
+    throw error
   }
   const name = llm.provider
   // Without a key, runs use the login `yian auth <name>` saved, which names its model.

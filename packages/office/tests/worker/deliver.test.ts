@@ -28,7 +28,7 @@ import {
 setDefaultTimeout(30_000)
 
 const TOOL_THEN_DONE: ScriptedReply[] = [
-  { content: "Working", tool_calls: [{ name: "shout", arguments: { text: "hi" } }] },
+  { content: "Working", tool_calls: [{ name: "toolbox_shout", arguments: { text: "hi" } }] },
   { content: "Done." },
 ]
 
@@ -159,7 +159,7 @@ test("an interrupt returns the text so far", async () => {
     role: "assistant",
     parts: [
       { type: "text", text: "Working" },
-      { type: "tool_call", name: "shout" },
+      { type: "tool_call", name: "toolbox_shout" },
     ],
   })
 })
@@ -537,15 +537,15 @@ test("an advance false job on a running run refuses its deliveries", async () =>
   expect(sent(chat, "steers")).toEqual([])
 })
 
-test("an advance confines the recorded flow to the pin", async () => {
+test("an advance from a pin other than the recorded code root is refused", async () => {
   const chat = makeJob(base(), "flows/coded.yaml", { inputs: {} })
   const started = await run(chat, new Recorder())
   expect(started.outcome?.status, String(started.outcome?.message)).toBe("waiting")
   const send = { id: "s1", op: "send", inbox: "messages", event: "hi" } as const
   const rec = await run(advanceJob(chat, { pin: tempDir(), deliver: [send] }), new Recorder())
-  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", failed: "LoadError" }])
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", failed: "RangeError" }])
   expect(rec.order).toEqual(["deliver_reply", "result"])
-  expect(rec.outcome).toEqual({ type: "result", status: "not_resumed", run_id: "r1", error_type: "LoadError" })
+  expect(rec.outcome).toEqual({ type: "result", status: "not_resumed", run_id: "r1", error_type: "RangeError" })
   expect(sent(chat, "messages")).toEqual([])
 })
 
@@ -555,13 +555,13 @@ test.each([
   { id: "d1", op: "close", inbox: "messages" },
   { id: "d1", op: "interrupt", inbox: "messages" },
   { id: "d1", op: "cancel" },
-] as const)("every delivery confines the recorded flow to the pin [$op]", async (delivery) => {
+] as const)("every delivery from a pin other than the recorded code root is refused [$op]", async (delivery) => {
   const chat = makeJob(base(), "flows/coded.yaml", { inputs: {} })
   const started = await run(chat, new Recorder())
   expect(started.outcome?.status, String(started.outcome?.message)).toBe("waiting")
   const before = fs.readFileSync(chat.log, "utf8")
   const rec = await run(advanceJob(chat, { advance: false, pin: tempDir(), deliver: [delivery] }), new Recorder())
-  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "d1", failed: "LoadError" }])
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "d1", failed: "RangeError" }])
   expect(fs.readFileSync(chat.log, "utf8")).toBe(before)
 })
 

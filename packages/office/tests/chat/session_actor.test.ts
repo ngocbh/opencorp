@@ -15,6 +15,7 @@ import {
 } from "../../src/chat/session_actor.ts"
 import { HarnessError } from "../../src/chat/state.ts"
 import { PING } from "../../src/daemon/bus.ts"
+import { ASK_MANAGER_CALL } from "../../src/questions/ask.ts"
 import { INTERRUPTED, MAX_ANSWER_BYTES } from "../../src/questions/format.ts"
 import {
   CARD_CLOSED,
@@ -25,7 +26,7 @@ import {
   WORKER_STOPPED,
 } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
-import { StoreUnwritable } from "../../src/store/store.ts"
+import { type QuestionRecord, StoreUnwritable } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Delivery, STOP_REASON } from "../../src/worker/job.ts"
 import { type Worker, WorkerExists } from "../../src/worker/spawn.ts"
@@ -851,7 +852,7 @@ async function slowCallOffice(fake: Awaited<ReturnType<typeof fakeLlm>>) {
 
 test("esc answers an office call in flight", async () => {
   const fake = await fakeLlm()
-  fake.script({ tool_calls: [{ name: "slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
+  fake.script({ tool_calls: [{ name: "toolbox_slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
   const { o, called, replies } = await slowCallOffice(fake)
   const { actor, sid } = await startActor(o)
   await actor.prompt("hi")
@@ -866,7 +867,7 @@ test("esc answers an office call in flight", async () => {
 
 test("end answers an office call in flight and interrupts the workspace", async () => {
   const fake = await fakeLlm()
-  fake.script({ tool_calls: [{ name: "slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
+  fake.script({ tool_calls: [{ name: "toolbox_slow", arguments: {} }] }, { content: "spare" }, { content: "spare too" })
   const { o, called, replies } = await slowCallOffice(fake)
   const { actor, sid } = await startActor(o)
   await actor.prompt("hi")
@@ -1793,6 +1794,23 @@ test("a profile edited between two messages does not stop the next advance", asy
   expect(session(o, sid).run_ids).toHaveLength(1)
 })
 
+test("a reply has the profile in its system prompt, and a bad profile.md is left out, not a failure", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  expect(await say(o, actor, sid, "a")).toBe("one")
+  /** The system prompt of the fake's `n`th request. */
+  const system = (n: number) => String((fake.requests()[n]!.messages as { content: unknown }[])[0]!.content)
+  expect(system(0)).toContain('<memory name="profile">\n# Minh, Engineer\n\n</memory>')
+  // A profile.md that isn't UTF-8 isn't part of the memory: the chat goes on without it.
+  const bad = Buffer.from("# M\xffinh\n", "latin1")
+  const p = await chatOffice(fake, { files: { "people/minh/memory/profile.md": bad } })
+  const started = await startActor(p)
+  expect(await say(p, started.actor, started.sid, "b")).toBe("two")
+  expect(system(1)).toContain('<memory name="profile">\n1 entry skipped: not part of the memory\n</memory>')
+})
+
 test("a run log with a bad line answers the next message from a fresh run", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "one" }, { content: "two" })
@@ -2089,7 +2107,8 @@ test("a not resumed advance starts a fresh run with the deliveries it never appl
   await first.handlers.toolCall(first.worker, "company", "ask_manager", { question: "Budget?" }, `${old}/c3`)
   const asked = o.office.store.listQuestions({ sessionId: sid })
   expect(asked).toHaveLength(3)
-  const waits = asked.map((q) => ({ ...TAKE, node: "chat#0/reply", call_id: q.call_id!, tool: q.source, inbox: null }))
+  const tool = (q: QuestionRecord) => (q.source === "ask_manager" ? ASK_MANAGER_CALL : q.source)
+  const waits = asked.map((q) => ({ ...TAKE, node: "chat#0/reply", call_id: q.call_id!, tool: tool(q), inbox: null }))
   first.handlers.result(first.worker, waitingResult(old, waits))
   first.handlers.exited(first.worker, 0)
   await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })

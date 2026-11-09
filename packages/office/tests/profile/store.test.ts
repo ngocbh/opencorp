@@ -1,22 +1,32 @@
-/** GitProfileStore: memory/profile.md in the company clone as a MarkdownStore versioned by git blob id (Python's
- *  `tests/profile/test_store.py`). */
+/** GitProfileStore: people/<handle>/memory/ in the company clone as yian's FileMemory, profile.md its index, each
+ *  change that applies committed. */
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
-import { loadFlow, type MarkdownStore, MarkdownVersionMismatch, ProfileMemory, runFlow } from "@ngocbh/yian"
-import { CompanyGit, CompanyGitError, CompanyRepoBusy, type LockedGit, repoBusy } from "../../src/company/git.ts"
-import { blobId, commitMessage, EMPTY_BLOB, GitProfileStore, ProfileUnreadable } from "../../src/profile/store.ts"
-import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
-import { fakeLlm } from "../chat/helpers.ts"
-import { company, failingGit, GIT_FAILURES, git, recordingGit, stashPopConflict } from "../company/helpers.ts"
+import { type Author, FileMemory, type MemorySession } from "@ngocbh/yian"
+import { CompanyGit, CompanyGitError, CompanyRepoBusy, repoBusy } from "../../src/company/git.ts"
+import {
+  commitMessage,
+  EMPTY_VERSION,
+  GitProfileStore,
+  ProfileConflict,
+  profileHash,
+  ProfileRefused,
+  PROFILE_MAX_CHARS,
+  PROFILE_SETTINGS,
+  ProfileUnreadable,
+} from "../../src/profile/store.ts"
+import { company, failingGit, git, recordingGit, stashPopConflict } from "../company/helpers.ts"
 import { tempDir } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
 
 const PROFILE = "people/minh/memory/profile.md"
 const MINH = "# Minh, Engineer\n"
+const OWNER: Author = { kind: "user", name: "ngocbh" }
+const SIGNAL = new AbortController().signal
 
-/** A base company in a fresh temp dir, a `CompanyGit` on it, and minh's profile store. */
+/** A base company in a fresh temp dir, a `CompanyGit` on it, and minh's profile store at the default budget. */
 function setup() {
   const dir = tempDir()
   const root = company(dir)
@@ -26,7 +36,7 @@ function setup() {
 
 const subject = (root: string) => git(root, "log", "-1", "--format=%s")
 const count = (root: string) => Number(git(root, "rev-list", "--count", "HEAD"))
-const bytes = (text: string) => new TextEncoder().encode(text)
+const hash = (text: string) => profileHash(new TextEncoder().encode(text))
 const read = (root: string, rel = PROFILE) => fs.readFileSync(path.join(root, rel), "utf8")
 
 /** What `promise` rejects with, or null if it fulfils. */
@@ -36,91 +46,119 @@ const rejection = (promise: Promise<unknown>) =>
     (caught: unknown) => caught,
   )
 
-/** `cases` as `test.each` rows labelled with their JSON, so a NUL, a newline or a number prints readably. */
-// JSON.stringify throws on a bigint, so a bigint is labelled as String writes it.
-const labelled = <T>(cases: T[]): [string, T][] =>
-  cases.map((c) => [typeof c === "bigint" ? String(c) : JSON.stringify(c), c])
+/** A write by the owner, as the profile routes make one; resolves to the new version. */
+const write = async (store: GitProfileStore, text: string, baseVersion: string, changeId = "c-1") =>
+  (await store.write(text, { baseVersion, changeId, author: OWNER, source: "ngocbh via profile edit" })).version
+
+/** The change `session` has in its history, newest first, as `[op, path, author]`. */
+async function history(session: MemorySession): Promise<unknown[][]> {
+  return (await session.history({ limit: 10 })).map((change) => [change.op, change.target.path, change.author])
+}
+
+// Settings
+
+test("the settings are fixed, give every cap, and let a profile fill the memory", () => {
+  expect(PROFILE_SETTINGS).toEqual({
+    maxFileChars: 1_000_000,
+    maxRecallChars: 1_000_000,
+    maxTotalChars: 1_000_000,
+    maxHistoryChars: 1_000_000,
+    maxFiles: 1_000,
+    maxDepth: 4,
+    maxReadChars: 20_000,
+    maxResults: 100,
+    maxUndo: 100,
+    maxChangeIds: 10_000,
+    lockTimeoutMs: 30_000,
+  })
+  expect(PROFILE_MAX_CHARS).toBe(1_000_000)
+})
+
+test("the memory is minh's identity with profile.md as its index", async () => {
+  const { store } = setup()
+  const session = await store.fileMemory().open({ create: true, itemType: null, signal: SIGNAL })
+  expect(session.info.identity).toBe("people/minh")
+  expect(session.info.settings).toMatchObject({ max_file_chars: 1_000_000n, max_recall_chars: 1_000_000n })
+  expect(session.info.settings.index).toBe("profile.md")
+  expect((await session.snapshot()).recall).toEqual({ text: MINH, cut: null, hint: null })
+  await session.close()
+})
 
 // Reads
 
 test("constructor does no io", () => {
   const dir = tempDir()
   const recording = recordingGit(dir)
-  new GitProfileStore(new CompanyGit(path.join(dir, "missing"), path.join(dir, "worktrees"), { git: recording.git }), "minh")
+  const g = new CompanyGit(path.join(dir, "missing"), path.join(dir, "worktrees"), { git: recording.git })
+  new GitProfileStore(g, "minh")
   expect(recording.calls()).toEqual([])
 })
 
-test.each(
-  labelled(["", "../minh", "minh/x", "Minh", "a_b", "-minh", "minh-", "a".repeat(33), "01J8Z3NDEKTSV4RRFFQ69G5FAV"]),
-)("constructor refuses a bad handle [%s]", (_label, handle) => {
-  const dir = tempDir()
-  const g = new CompanyGit(path.join(dir, "missing"), path.join(dir, "worktrees"))
-  let error: unknown
-  try {
-    new GitProfileStore(g, handle)
-  } catch (caught) {
-    error = caught
-  }
-  expect(error).toBeInstanceOf(RangeError)
-  expect((error as Error).message).toMatch(/not a handle/)
+test.each([[""], ["../minh"], ["minh/x"], ["Minh"], ["a_b"], ["-minh"]])("constructor refuses a bad handle [%s]", (handle) => {
+  const g = new CompanyGit(path.join(tempDir(), "missing"), path.join(tempDir(), "worktrees"))
+  expect(() => new GitProfileStore(g, handle)).toThrow(/not a handle/)
 })
 
-test("read returns text and blob id", async () => {
-  const { g, store } = setup()
-  expect(await store.read()).toEqual([MINH, blobId(bytes(MINH))])
-  expect((await store.read())[1]).toBe((await g.blobId(PROFILE))!)
+test("read returns the text and its FileMemory hash", async () => {
+  const { store } = setup()
+  expect(await store.read()).toEqual({ text: MINH, version: hash(MINH) })
 })
 
 test("read commits a pending hand edit first", async () => {
-  const { root, g, store } = setup()
+  const { root, store } = setup()
   fs.writeFileSync(path.join(root, PROFILE), "# Minh\nlikes tests\n")
-  const [text, version] = await store.read()
-  expect(text).toBe("# Minh\nlikes tests\n")
-  expect(version).toBe((await g.blobId(PROFILE))!)
+  expect(await store.read()).toEqual({ text: "# Minh\nlikes tests\n", version: hash("# Minh\nlikes tests\n") })
   expect(subject(root)).toBe("profile(@minh): hand edit")
   expect(git(root, "status", "--porcelain")).toBe("")
 })
 
-test("read keeps crlf", async () => {
+test("read keeps crlf and a byte order mark", async () => {
   const { root, store } = setup()
-  fs.writeFileSync(path.join(root, PROFILE), "# Minh\r\n")
-  expect(await store.read()).toEqual(["# Minh\r\n", blobId(bytes("# Minh\r\n"))])
+  fs.writeFileSync(path.join(root, PROFILE), "﻿# Minh\r\n")
+  expect(await store.read()).toEqual({ text: "﻿# Minh\r\n", version: hash("﻿# Minh\r\n") })
 })
 
-test("named version reads old text", async () => {
-  const { root, g, store } = setup()
-  const old = (await store.read())[1]
-  fs.writeFileSync(path.join(root, PROFILE), "# Minh\nnew\n")
-  await g.locked((locked) => locked.commit([PROFILE], "edit"))
-  expect(await store.read(old)).toEqual([MINH, old])
-})
-
-test.each(labelled(["0".repeat(40), "HEAD", "HEAD:company.yaml", "sha256:" + "0".repeat(64)]))(
-  "unknown version raises a range error [%s]",
-  async (_label, version) => {
-    const { store } = setup()
-    await expect(store.read(version)).rejects.toThrow(RangeError)
-  },
-)
-
-test("missing profile reads as empty", async () => {
+test("a missing profile reads as empty", async () => {
   const { root, store } = setup()
   git(root, "rm", "-q", PROFILE)
   git(root, "commit", "-q", "-m", "drop")
-  expect(await store.read()).toEqual(["", EMPTY_BLOB])
-  expect(await store.read(EMPTY_BLOB)).toEqual(["", EMPTY_BLOB])
+  expect(await store.read()).toEqual({ text: "", version: EMPTY_VERSION })
+  expect(EMPTY_VERSION).toBe(hash(""))
 })
 
-test("non utf8 profile is a range error", async () => {
+test("a non utf8 profile is unreadable", async () => {
   const { root, store } = setup()
   fs.writeFileSync(path.join(root, PROFILE), Buffer.from("# M\xffinh\n", "latin1"))
   const error = await rejection(store.read())
-  expect(error).toBeInstanceOf(RangeError)
   expect(error).toBeInstanceOf(ProfileUnreadable)
   expect((error as Error).message).toBe("people/minh/memory/profile.md is not UTF-8")
 })
 
-test("read refuses a symlinked profile", async () => {
+test("a profile over the memory's file cap is unreadable and says why", async () => {
+  const { root, store } = setup()
+  fs.writeFileSync(path.join(root, PROFILE), "é".repeat(PROFILE_MAX_CHARS + 1))
+  const error = await rejection(store.read())
+  expect(error).toBeInstanceOf(ProfileUnreadable)
+  expect((error as Error).message).toBe(
+    "people/minh/memory/profile.md holds 1000001 characters, more than the 1000000 a profile may hold; " +
+      "chats leave it out until it is shortened by hand",
+  )
+  // Its bytes alone are over: a character takes at most four.
+  fs.writeFileSync(path.join(root, PROFILE), "x".repeat(4 * PROFILE_MAX_CHARS + 1))
+  expect(((await rejection(store.read())) as Error).message).toMatch(/^people\/minh\/memory\/profile.md holds more than/)
+  fs.writeFileSync(path.join(root, PROFILE), "é".repeat(PROFILE_MAX_CHARS))
+  expect((await store.read()).text).toHaveLength(PROFILE_MAX_CHARS)
+})
+
+test("a hard-linked profile is unreadable", async () => {
+  const { dir, root, store } = setup()
+  fs.linkSync(path.join(root, PROFILE), path.join(dir, "elsewhere.md"))
+  const error = await rejection(store.read())
+  expect(error).toBeInstanceOf(ProfileUnreadable)
+  expect((error as Error).message).toBe("people/minh/memory/profile.md is a hard link; replace it with a copy")
+})
+
+test("read refuses a symlinked profile and commits nothing", async () => {
   const { dir, root, store } = setup()
   const outside = path.join(dir, "outside.md")
   fs.writeFileSync(outside, MINH)
@@ -129,9 +167,8 @@ test("read refuses a symlinked profile", async () => {
   const head = git(root, "rev-parse", "HEAD")
   const error = await rejection(store.read())
   expect(error).toBeInstanceOf(ProfileUnreadable)
-  expect((error as Error).message).toMatch(/symlink/)
-  expect((error as Error).message).not.toContain(outside)
-  expect(git(root, "rev-parse", "HEAD")).toBe(head) // the link isn't committed as a hand edit
+  expect((error as Error).message).toBe("people/minh/memory/profile.md is a symlink, not a regular file")
+  expect(git(root, "rev-parse", "HEAD")).toBe(head)
 })
 
 /** Replaces minh's profile.md with a folder holding a file. */
@@ -141,32 +178,37 @@ function folderProfile(root: string): void {
   fs.writeFileSync(path.join(root, PROFILE, "x"), "x\n")
 }
 
-test("read refuses a folder at profile.md", async () => {
+test("read and write refuse a folder at profile.md", async () => {
   const { root, store } = setup()
   folderProfile(root)
-  const error = await rejection(store.read())
-  expect(error).toBeInstanceOf(ProfileUnreadable)
-  expect((error as Error).message).toBe("people/minh/memory/profile.md is not a regular file")
+  for (const call of [store.read(), write(store, "x\n", hash(MINH))]) {
+    const error = await rejection(call)
+    expect(error).toBeInstanceOf(ProfileUnreadable)
+    expect((error as Error).message).toBe("people/minh/memory/profile.md is not a regular file")
+  }
 })
 
 test.each([
-  ["a symlink", "people/minh/memory is a symlink, not a folder"],
-  ["a file", "people/minh/memory is not a folder"],
-])("read and write refuse a memory folder that is %s", async (kind, message) => {
+  ["memory", "a symlink", "people/minh/memory is a symlink, not a folder"],
+  ["memory", "a file", "people/minh/memory is not a folder"],
+  ["person", "a symlink", "people/minh is a symlink, not a folder"],
+])("read, write and the memory refuse a %s folder that is %s", async (which, kind, message) => {
   const { dir, root, store } = setup()
-  const base = (await store.read())[1]
+  const rel = which === "memory" ? "people/minh/memory" : "people/minh"
   const outside = path.join(dir, "outside")
-  fs.renameSync(path.join(root, "people/minh/memory"), outside)
-  if (kind === "a symlink") fs.symlinkSync(outside, path.join(root, "people/minh/memory"))
-  else fs.writeFileSync(path.join(root, "people/minh/memory"), "x\n")
+  fs.renameSync(path.join(root, rel), outside)
+  if (kind === "a symlink") fs.symlinkSync(outside, path.join(root, rel))
+  else fs.writeFileSync(path.join(root, rel), "x\n")
   const head = git(root, "rev-parse", "HEAD")
-  for (const call of [store.read(), store.write("pwned\n", { baseVersion: base })]) {
+  const open = store.memory().open({ create: true, itemType: null, signal: SIGNAL })
+  for (const call of [store.read(), write(store, "pwned\n", hash(MINH)), open]) {
     const error = await rejection(call)
     expect(error).toBeInstanceOf(ProfileUnreadable)
     expect((error as Error).message).toBe(message)
   }
   expect(git(root, "rev-parse", "HEAD")).toBe(head)
-  expect(fs.readFileSync(path.join(outside, "profile.md"), "utf8")).toBe(MINH)
+  const left = which === "memory" ? outside : path.join(outside, "memory")
+  expect(fs.readdirSync(left)).toEqual(["profile.md"])
 })
 
 test("another person's symlinked memory folder doesn't stop a read or a write", async () => {
@@ -174,428 +216,223 @@ test("another person's symlinked memory folder doesn't stop a read or a write", 
   fs.renameSync(path.join(root, "people/minh/memory"), path.join(dir, "elsewhere"))
   fs.symlinkSync(path.join(dir, "elsewhere"), path.join(root, "people/minh/memory"))
   const ngoc = new GitProfileStore(g, "ngocbh")
-  expect(await ngoc.read()).toEqual(["", EMPTY_BLOB])
-  expect(await ngoc.write("# Ngoc\n", { baseVersion: EMPTY_BLOB })).toBe(blobId(bytes("# Ngoc\n")))
+  expect(await ngoc.read()).toEqual({ text: "", version: EMPTY_VERSION })
+  expect(await write(ngoc, "# Ngoc\n", EMPTY_VERSION)).toBe(hash("# Ngoc\n"))
 })
 
-test("a byte order mark is kept", async () => {
-  const { root, store } = setup()
-  fs.writeFileSync(path.join(root, PROFILE), "\uFEFF# Minh\n")
-  expect(await store.read()).toEqual(["\uFEFF# Minh\n", blobId(bytes("\uFEFF# Minh\n"))])
-})
-
-test("git failure is a system error", async () => {
+test("a git failure passes through", async () => {
   const dir = tempDir()
   fs.mkdirSync(path.join(dir, "not-a-repo"))
-  const store = new GitProfileStore(new CompanyGit(path.join(dir, "not-a-repo"), path.join(dir, "worktrees")), "minh")
-  const error = await store.read().then(
-    () => null,
-    (caught: unknown) => caught,
-  )
-  expect(error).toBeInstanceOf(Error)
-  expect(error).toMatchObject({ code: "EIO", syscall: "read" })
-  expect((error as Error).message).toMatch(/exited/)
-})
-
-test.each(GIT_FAILURES)("a git failure finding the version is a system error, not an empty profile [%s]", async (failure) => {
-  const { dir, root, store } = setup()
-  const first = await store.write("# Minh\nv1\n", { baseVersion: (await store.read())[1], provenance: { commit_id: "c-1" } })
-  const g = new CompanyGit(root, path.join(dir, "worktrees"), { git: failingGit(dir, `:${PROFILE}`, failure) })
-  const failing = new GitProfileStore(g, "minh")
-  expect(await rejection(failing.read())).toMatchObject({ code: "EIO", syscall: "read" })
-  expect(await rejection(failing.committed("c-1"))).toMatchObject({ code: "EIO", syscall: "read" })
-  // A write based on the empty profile must not replace the real one.
-  const write = failing.write("# Minh\nv2\n", { baseVersion: EMPTY_BLOB })
-  expect(await rejection(write)).toMatchObject({ code: "EIO", syscall: "write" })
-  expect(read(root)).toBe("# Minh\nv1\n")
-  expect(await store.read()).toEqual(["# Minh\nv1\n", first])
-  expect(count(root)).toBe(2)
+  const g = new CompanyGit(path.join(dir, "not-a-repo"), path.join(dir, "worktrees"))
+  const error = await rejection(new GitProfileStore(g, "minh").read())
+  expect(error).toBeInstanceOf(CompanyGitError)
 })
 
 // The commit message
 
-test("commit message sources", () => {
-  expect(commitMessage("minh", null)).toBe("profile(@minh): write")
-  expect(commitMessage("minh", { source: "hand edit" })).toBe("profile(@minh): hand edit")
-  expect(commitMessage("minh", { run_id: "01J", commit_id: "ac-memory-v1:ab" })).toBe(
-    "profile(@minh): from feedback on run 01J\n\nCommit-Id: ac-memory-v1:ab",
-  )
-  expect(commitMessage("minh", { source: "a\nb  c", run_id: "01J" })).toBe("profile(@minh): a b c")
-  expect(commitMessage("minh\n\nCommit-Id: x", null)).toBe("profile(@minh Commit-Id: x): write")
-})
-
-test("python whitespace collapses and blanks like python", () => {
-  expect(commitMessage("minh", { source: "\x1c\x85" })).toBe("profile(@minh): write")
-  expect(commitMessage("minh", { source: "a\x1fb" })).toBe("profile(@minh): a b")
-  expect(commitMessage("minh\x1cx", null)).toBe("profile(@minh x): write")
-  expect(commitMessage("minh", { source: "a\0b" })).toBe("profile(@minh): ab")
-  expect(commitMessage("minh", { run_id: "01\0J" })).toBe("profile(@minh): from feedback on run 01J")
+test("commit messages are one line", () => {
+  expect(commitMessage("minh", "ngocbh via profile edit")).toBe("profile(@minh): ngocbh via profile edit")
+  expect(commitMessage("minh\n\nCommit-Id: x", "a\nb  c\x1c\0d")).toBe("profile(@minh Commit-Id: x): a b c d")
 })
 
 // Writes
 
-test("write commits with the provenance message", async () => {
-  const { root, g, store } = setup()
-  const base = (await store.read())[1]
-  const version = await store.write("# Minh\nterse\n", {
-    baseVersion: base,
-    provenance: { source: "ngocbh via profile manager" },
-  })
-  expect(version).toBe(blobId(bytes("# Minh\nterse\n")))
-  expect(version).toBe((await g.blobId(PROFILE))!)
+test("a write rewrites the profile as the owner and commits it", async () => {
+  const { root, store } = setup()
+  const version = await write(store, "# Minh\nterse\n", hash(MINH))
+  expect(version).toBe(hash("# Minh\nterse\n"))
   expect(read(root)).toBe("# Minh\nterse\n")
-  expect(subject(root)).toBe("profile(@minh): ngocbh via profile manager")
+  expect(subject(root)).toBe("profile(@minh): ngocbh via profile edit")
   expect(git(root, "status", "--porcelain")).toBe("")
+  // The memory's own files are never committed.
+  expect(git(root, "ls-files", "people/minh/memory")).toBe(PROFILE)
+  const session = await store.fileMemory().open({ create: false, itemType: null, signal: SIGNAL })
+  expect(await history(session)).toEqual([["rewrite", "profile.md", OWNER]])
+  await session.close()
 })
 
-test("stale base raises with both versions and writes nothing", async () => {
+test("a stale base is a conflict with both versions and writes nothing", async () => {
   const { root, store } = setup()
-  const stale = blobId(bytes("old\n"))
+  const stale = hash("old\n")
   const head = git(root, "rev-parse", "HEAD")
-  const error = await rejection(store.write("x\n", { baseVersion: stale }))
-  expect(error).toBeInstanceOf(MarkdownVersionMismatch)
-  expect(error).toMatchObject({ expected: stale, current: blobId(bytes(MINH)) })
+  const error = await rejection(write(store, "x\n", stale))
+  expect(error).toBeInstanceOf(ProfileConflict)
+  expect(error).toMatchObject({ expected: stale, current: hash(MINH) })
   expect(read(root)).toBe(MINH)
   expect(git(root, "rev-parse", "HEAD")).toBe(head)
 })
 
-test("a hand edit makes the base stale", async () => {
+test("a hand edit makes the base stale and is committed as one", async () => {
   const { root, store } = setup()
-  const base = (await store.read())[1]
   fs.writeFileSync(path.join(root, PROFILE), "# Minh\nby hand\n")
-  const error = await rejection(store.write("# Minh\nby model\n", { baseVersion: base }))
-  expect(error).toBeInstanceOf(MarkdownVersionMismatch)
-  expect((error as MarkdownVersionMismatch).current).toBe(blobId(bytes("# Minh\nby hand\n")))
+  const error = await rejection(write(store, "# Minh\nby model\n", hash(MINH)))
+  expect(error).toMatchObject({ expected: hash(MINH), current: hash("# Minh\nby hand\n") })
   expect(read(root)).toBe("# Minh\nby hand\n")
   expect(subject(root)).toBe("profile(@minh): hand edit")
 })
 
-test("write with the empty base creates a missing profile and its memory folder", async () => {
-  const { root, g, store } = setup()
+test("a hand edit just before the change is a conflict and is kept", async () => {
+  const { root, g } = setup()
+  /** Edits the profile by hand after the hand edits are committed, before the memory changes it. */
+  class HandEditing extends GitProfileStore {
+    override committed<T>(change: () => Promise<T>, changed: (result: T) => string | null, source: string) {
+      return super.committed(
+        () => {
+          fs.writeFileSync(path.join(root, PROFILE), "# Minh\nby hand\n")
+          return change()
+        },
+        changed,
+        source,
+      )
+    }
+  }
+  const error = await rejection(write(new HandEditing(g, "minh"), "# Minh\nby model\n", hash(MINH)))
+  expect(error).toMatchObject({ expected: hash(MINH), current: hash("# Minh\nby hand\n") })
+  expect(read(root)).toBe("# Minh\nby hand\n")
+  expect(git(root, "status", "--porcelain")).toBe(`M ${PROFILE}`)
+})
+
+test("the empty base creates a missing profile and its memory folder", async () => {
+  const { root, store } = setup()
   git(root, "rm", "-q", PROFILE)
   git(root, "commit", "-q", "-m", "drop")
   expect(fs.existsSync(path.join(root, "people/minh/memory"))).toBe(false)
-  const version = await store.write("# Minh\n", { baseVersion: EMPTY_BLOB })
-  expect(version).toBe((await g.blobId(PROFILE))!)
-  expect(version).toBe(blobId(bytes("# Minh\n")))
+  expect(await write(store, "# Minh\n", EMPTY_VERSION)).toBe(hash("# Minh\n"))
+  expect(git(root, "show", `HEAD:${PROFILE}`)).toBe("# Minh")
+  expect(git(root, "status", "--porcelain")).toBe("")
+  // Any other base finds no profile to rewrite.
+  git(root, "rm", "-q", PROFILE)
+  git(root, "commit", "-q", "-m", "drop again")
+  const error = await rejection(write(store, "x\n", hash(MINH), "c-2"))
+  expect(error).toMatchObject({ expected: hash(MINH), current: EMPTY_VERSION })
+})
+
+test("the empty base rewrites an empty profile", async () => {
+  const { root, store } = setup()
+  fs.writeFileSync(path.join(root, PROFILE), "")
+  expect(await write(store, "# Minh\n", EMPTY_VERSION)).toBe(hash("# Minh\n"))
 })
 
 test("unchanged text makes no commit", async () => {
   const { root, store } = setup()
-  const base = (await store.read())[1]
   const before = count(root)
-  expect(await store.write(MINH, { baseVersion: base })).toBe(base)
+  expect(await write(store, MINH, hash(MINH))).toBe(hash(MINH))
   expect(count(root)).toBe(before)
 })
 
-test("write refuses a symlinked profile", async () => {
-  const { dir, root, store } = setup()
-  const outside = path.join(dir, "outside.md")
-  fs.writeFileSync(outside, MINH)
-  fs.unlinkSync(path.join(root, PROFILE))
-  fs.symlinkSync(outside, path.join(root, PROFILE))
-  git(root, "add", PROFILE)
-  git(root, "commit", "-qm", "link")
-  const base = git(root, "rev-parse", `HEAD:${PROFILE}`)
-  const error = await rejection(store.write("pwned\n", { baseVersion: base }))
-  expect(error).toBeInstanceOf(ProfileUnreadable)
-  expect((error as Error).message).toMatch(/symlink/)
-  expect(fs.readFileSync(outside, "utf8")).toBe(MINH)
+test("a retried change id returns its version and commits nothing, even after a later write", async () => {
+  const { root, store } = setup()
+  const first = await write(store, "# Minh\nv1\n", hash(MINH), "proposal-1")
+  const before = count(root)
+  expect(await write(store, "# Minh\nv1\n", hash(MINH), "proposal-1")).toBe(first)
+  expect(count(root)).toBe(before)
+  await write(store, "# Minh\nv2\n", first, "c-2")
+  expect(await write(store, "# Minh\nv1\n", hash(MINH), "proposal-1")).toBe(first)
+  expect(read(root)).toBe("# Minh\nv2\n")
 })
 
-test("write refuses a folder at profile.md", async () => {
+test("a retried create returns its version once the profile exists", async () => {
   const { root, store } = setup()
-  folderProfile(root)
+  git(root, "rm", "-q", PROFILE)
+  git(root, "commit", "-q", "-m", "drop")
+  const first = await write(store, "# Minh\n", EMPTY_VERSION, "proposal-1")
+  expect(await write(store, "# Minh\n", EMPTY_VERSION, "proposal-1")).toBe(first)
+})
+
+test("change ids are per profile", async () => {
+  const { g, store } = setup()
+  await write(store, "# Minh\nv1\n", hash(MINH), "c-1")
+  const boss = new GitProfileStore(g, "ngocbh")
+  expect(await write(boss, "# Boss\n", EMPTY_VERSION, "c-1")).toBe(hash("# Boss\n"))
+})
+
+test("text over the memory's file cap is refused and writes nothing", async () => {
+  const { root, store } = setup()
   const head = git(root, "rev-parse", "HEAD")
-  const error = await rejection(store.write("x\n", { baseVersion: blobId(bytes(MINH)) }))
-  expect(error).toBeInstanceOf(ProfileUnreadable)
-  expect((error as Error).message).toBe("people/minh/memory/profile.md is not a regular file")
+  const error = await rejection(write(store, "x".repeat(PROFILE_MAX_CHARS + 1), hash(MINH)))
+  expect(error).toBeInstanceOf(ProfileRefused)
+  expect((error as Error).message).toBe("`profile.md` would hold 1000001 characters; a file may hold 1000000")
+  expect(read(root)).toBe(MINH)
   expect(git(root, "rev-parse", "HEAD")).toBe(head)
 })
 
-test("a retried write still returns its version over a broken file", async () => {
+test("a lone surrogate or a non string is refused and writes nothing", async () => {
   const { root, store } = setup()
-  const provenance = { commit_id: "c-1" }
-  const version = await store.write("# Minh\nnew\n", { baseVersion: blobId(bytes(MINH)), provenance })
-  folderProfile(root)
-  expect(await store.write("# Minh\nnew\n", { baseVersion: blobId(bytes(MINH)), provenance })).toBe(version)
+  await expect(write(store, "# Minh\ud800\n", hash(MINH))).rejects.toThrow(RangeError)
+  await expect(write(store, Buffer.from("x") as unknown as string, hash(MINH))).rejects.toThrow(TypeError)
+  await expect(write(store, "x\n", Buffer.from(hash(MINH)) as unknown as string)).rejects.toThrow(TypeError)
+  expect(read(root)).toBe(MINH)
 })
 
-test("write refuses non strings", async () => {
-  const { store } = setup()
-  const base = (await store.read())[1]
-  await expect(store.write(Buffer.from("x") as unknown as string, { baseVersion: base })).rejects.toThrow(TypeError)
-  await expect(store.write("x\n", { baseVersion: Buffer.from(base) as unknown as string })).rejects.toThrow(TypeError)
-})
-
-test.each(labelled<unknown>(["", "a b", "a\nCommit-Id: b", 7, "a\x1cb", "a\x85b", "a\0b", "a\ud800", 1n]))(
-  "bad commit id is a range error [%s]",
-  async (_label, commitId) => {
-    const { store } = setup()
-    const base = (await store.read())[1]
-    const error = await rejection(store.write("x\n", { baseVersion: base, provenance: { commit_id: commitId as string } }))
-    expect(error).toBeInstanceOf(RangeError)
-    expect((error as Error).message).toMatch(/commit_id/)
-  },
-)
-
-// Concurrency and pins
-
-test("two concurrent writes with one base one wins", async () => {
+test("two concurrent writes with one base: one wins", async () => {
   const { g } = setup()
-  const base = (await new GitProfileStore(g, "minh").read())[1]
-  const results = await Promise.allSettled(
-    ["a", "b"].map((n) => new GitProfileStore(g, "minh").write(`# Minh\n${n}\n`, { baseVersion: base })),
-  )
+  const stores = ["a", "b"].map(() => new GitProfileStore(g, "minh"))
+  const results = await Promise.allSettled(stores.map((s, i) => write(s, `# Minh\n${i}\n`, hash(MINH), `c-${i}`)))
   const won = results.filter((r) => r.status === "fulfilled")
   const lost = results.filter((r) => r.status === "rejected")
   expect([won.length, lost.length]).toEqual([1, 1])
-  expect(typeof won[0]!.value).toBe("string")
-  expect(lost[0]!.reason).toBeInstanceOf(MarkdownVersionMismatch)
-  expect((await new GitProfileStore(g, "minh").read())[1]).toBe(won[0]!.value)
+  expect(lost[0]!.reason).toBeInstanceOf(ProfileConflict)
+  expect((await stores[0]!.read()).version).toBe(won[0]!.value)
 })
 
 test("writes leave pinned worktrees alone", async () => {
   const { g, store } = setup()
   const pin = await g.pin("HEAD")
-  await store.write("# Minh\nnew\n", { baseVersion: (await store.read())[1] })
+  await write(store, "# Minh\nnew\n", hash(MINH))
   expect(read(pin)).toBe(MINH)
 })
 
-test("profile memory restores a snapshot after a later write", async () => {
-  const { store } = setup()
-  // Stands in for Python's isinstance check: the store type-checks as a MarkdownStore.
-  const asStore: MarkdownStore = store
-  const memory = new ProfileMemory(asStore, { llmConfig: LLM_CONFIG })
-  const session = await memory.openRun()
-  const recorded = session.snapshot
-  session.close()
-  await store.write("# Minh\nlater\n", { baseVersion: (await store.read())[1] })
-  const restored = await memory.openRun({ snapshot: recorded })
-  expect(restored.snapshot).toEqual(recorded)
-  expect(restored.recall()).toBe(MINH)
-  restored.close()
-})
-
-test("write keeps the file mode", async () => {
-  const { root, store } = setup()
-  fs.chmodSync(path.join(root, PROFILE), 0o644)
-  await store.write("# Minh\nnew\n", { baseVersion: (await store.read())[1] })
-  expect(fs.statSync(path.join(root, PROFILE)).mode & 0o777).toBe(0o644)
-})
-
-// Retried writes
-
-test("same commit id twice makes one commit", async () => {
-  const { root, store } = setup()
-  const base = (await store.read())[1]
-  const first = await store.write("# Minh\nv1\n", { baseVersion: base, provenance: { commit_id: "c-1" } })
-  const before = count(root)
-  expect(await store.write("# Minh\nv1\n", { baseVersion: base, provenance: { commit_id: "c-1" } })).toBe(first)
-  expect(count(root)).toBe(before)
-  expect(await store.committed("c-1")).toBe(first)
-  expect(await store.committed("c-2")).toBeNull()
-})
-
-test("retry after a later write returns its own version", async () => {
-  const { root, store } = setup()
-  const base = (await store.read())[1]
-  const first = await store.write("# Minh\nv1\n", { baseVersion: base, provenance: { commit_id: "c-1" } })
-  await store.write("# Minh\nv2\n", { baseVersion: first })
-  expect(await store.write("# Minh\nv1\n", { baseVersion: base, provenance: { commit_id: "c-1" } })).toBe(first)
-  expect(read(root)).toBe("# Minh\nv2\n")
-})
-
-test("commit ids are per profile", async () => {
-  const { g } = setup()
-  const minh = new GitProfileStore(g, "minh")
-  const boss = new GitProfileStore(g, "ngocbh")
-  await minh.write("# Minh\nv1\n", { baseVersion: (await minh.read())[1], provenance: { commit_id: "c-1" } })
-  expect(await boss.committed("c-1")).toBeNull()
-  const error = await rejection(boss.committed("a b"))
-  expect(error).toBeInstanceOf(RangeError)
-  expect((error as Error).message).toMatch(/commit_id/)
-})
-
-/** A one-agent flow whose long-term memory is the profile, so backward() runs the profile learner. */
-const CHAT = `id: chat
-name: chat
-long_term_memory: profile
-input:
-  message: !str
-nodes:
-  reply:
-    kind: agent
-    input:
-      message: \${input.message}
-    prompt: \${message}
-    output: str
-output: \${reply.output}
-`
-
-test("profile memory commit is a git commit with run and commit id", async () => {
-  const { root, store } = setup()
-  const fake = await fakeLlm()
-  const env = (name: string) => fake.env()[name]
-  // The agent's reply, the AGENT backward feedback, the learner's new profile.
-  fake.script(
-    { content: "Hello." },
-    { content: '{"input_feedback":{},"self_feedback":[],"variable_feedback":{}}' },
-    { content: "<profile>\n# Minh\nTerse.\n</profile>" },
-  )
-  // The learner builds its model from ProfileMemory's own env, not the run's.
-  const memory = new ProfileMemory(store, { llmConfig: LLM_CONFIG, env })
-  const result = await runFlow(
-    await loadFlow(CHAT),
-    { message: "hi" },
-    { llmConfig: LLM_CONFIG, env, memory: new Map([["profile", memory]]), learnable: true, runId: "run-1" },
-  )
-  expect(result.status).toBe("succeeded")
-  const outcome = await result.backward("Be terse.")
-  expect(outcome.failure).toBeNull()
-  expect(outcome.status).toBe("succeeded")
-  expect((await store.read())[0]).toBe("# Minh\nTerse.\n")
-  const body = git(root, "log", "-1", "--format=%B")
-  const match = /^profile\(@minh\): from feedback on run run-1\n\nCommit-Id: (\S+)$/.exec(body)
-  expect(match).not.toBeNull()
-  expect(await store.committed(match![1]!)).toBe((await store.read())[1])
-})
-
-// Failed commits
-
-/** A store on minh's profile in `root` whose `git commit` fails after staging, as a corrupt object would. */
-function failingStore(dir: string, root: string): GitProfileStore {
-  const git = failingGit(dir, "--cleanup=whitespace", "echo 'fatal: boom' >&2; exit 128")
-  return new GitProfileStore(new CompanyGit(root, path.join(dir, "worktrees"), { git }), "minh")
-}
-
-test("a failed commit restores the profile", async () => {
+test("a failed commit leaves the change for the hand-edit sweep", async () => {
   const { dir, root, store } = setup()
-  const base = (await store.read())[1]
-  const failing = failingStore(dir, root)
-  const error = await rejection(failing.write("# Minh\nv1\n", { baseVersion: base, provenance: { commit_id: "c-1" } }))
-  expect(error).toMatchObject({ code: "EIO" })
-  expect((error as Error).message).toMatch(/boom/)
-  expect(read(root)).toBe(MINH)
-  expect(git(root, "status", "--porcelain")).toBe("")
-  expect(await store.committed("c-1")).toBeNull()
-  expect(await store.write("# Minh\nv1\n", { baseVersion: base, provenance: { commit_id: "c-1" } })).toBe(
-    blobId(bytes("# Minh\nv1\n")),
+  const failing = new GitProfileStore(
+    new CompanyGit(root, path.join(dir, "worktrees"), {
+      git: failingGit(dir, "--cleanup=whitespace", "echo 'fatal: boom' >&2; exit 128"),
+    }),
+    "minh",
   )
-  expect(await store.committed("c-1")).toBe(blobId(bytes("# Minh\nv1\n")))
-})
-
-test("a failed commit removes a new profile", async () => {
-  const { dir, root, store } = setup()
-  git(root, "rm", "-q", PROFILE)
-  git(root, "commit", "-q", "-m", "drop")
-  const error = await rejection(failingStore(dir, root).write("# Minh\n", { baseVersion: EMPTY_BLOB }))
-  expect(error).toMatchObject({ code: "EIO" })
-  expect((error as Error).message).toMatch(/boom/)
-  expect(fs.existsSync(path.join(root, PROFILE))).toBe(false)
-  expect(git(root, "status", "--porcelain")).toBe("")
-  expect(await store.committed("c-1")).toBeNull()
-  expect(await store.write("# Minh\n", { baseVersion: EMPTY_BLOB })).toBe(blobId(bytes("# Minh\n")))
+  expect(await write(failing, "# Minh\nv1\n", hash(MINH))).toBe(hash("# Minh\nv1\n"))
+  expect(read(root)).toBe("# Minh\nv1\n")
+  expect(git(root, "status", "--porcelain")).toBe(`M ${PROFILE}`)
+  expect((await store.read()).version).toBe(hash("# Minh\nv1\n"))
+  expect(subject(root)).toBe("profile(@minh): hand edit")
 })
 
 test("a write to a profile with an unresolved conflict is refused and the conflict kept", async () => {
   const { root, store } = setup()
   stashPopConflict(root, PROFILE)
   const conflicted = fs.readFileSync(path.join(root, PROFILE))
-  const [text, base] = await store.read()
-  expect(text).toBe("committed\n") // HEAD's, not the markers
-  const error = await rejection(store.write("# Minh\nv1\n", { baseVersion: base }))
-  expect(error).toMatchObject({ code: "EIO", syscall: "write" })
-  const busy = (error as Error).cause
-  expect(busy).toBeInstanceOf(CompanyRepoBusy)
-  expect((busy as CompanyRepoBusy).status).toBe(409)
-  expect(repoBusy(error)).toBe(busy as CompanyRepoBusy)
+  const error = await rejection(write(store, "# Minh\nv1\n", profileHash(conflicted)))
+  expect(error).toBeInstanceOf(CompanyRepoBusy)
+  expect(repoBusy(error)?.status).toBe(409)
   expect(git(root, "ls-files", "-u")).toContain(PROFILE)
   expect(fs.readFileSync(path.join(root, PROFILE))).toEqual(conflicted)
-  expect(git(root, "show", `HEAD:${PROFILE}`)).toBe("committed")
 })
 
-test("a forged handle cannot add a commit id", async () => {
+// The memory a run binds
+
+/** An agent's append to `notes.md` in run r1, as a run's memory tool makes it. */
+const AGENT: Author = { kind: "agent", name: "chat#0/reply", run: "r1", node: "chat#0/reply" }
+const APPEND = { op: "append", path: "notes.md", text: "likes tests" }
+
+test("a run opens the folder as yian's FileMemory; the office never resets it through the run's memory", async () => {
   const { root, store } = setup()
-  const person = path.join(root, "people/minh/person.yaml")
-  fs.writeFileSync(
-    person,
-    fs.readFileSync(person, "utf8").replace("handle: minh", 'handle: "minh\\n\\nCommit-Id: forged\\n"'),
-  )
-  await store.write("# Minh\nv1\n", { baseVersion: (await store.read())[1] })
-  expect(git(root, "log", "-1", "--format=%B")).toBe("profile(@minh): write")
-  expect(await store.committed("forged")).toBeNull()
-})
-
-test("a hand edit just before the replace is kept", async () => {
-  const { root, g } = setup()
-  /** Edits the profile by hand after the first hand-edit check, before the file is replaced. */
-  class HandEditing extends GitProfileStore {
-    protected override target(): string {
-      fs.writeFileSync(path.join(root, PROFILE), "# Minh\nby hand\n")
-      return super.target()
-    }
-  }
-  const store = new HandEditing(g, "minh")
-  const base = (await store.read())[1]
-  const error = await rejection(store.write("# Minh\nby model\n", { baseVersion: base }))
-  expect(error).toBeInstanceOf(MarkdownVersionMismatch)
-  expect((error as MarkdownVersionMismatch).current).toBe(blobId(bytes("# Minh\nby hand\n")))
-  expect(read(root)).toBe("# Minh\nby hand\n")
-  expect(subject(root)).toBe("profile(@minh): hand edit")
-})
-
-test("bytes git normalizes are not a hand edit", async () => {
-  const { root, g, store } = setup()
-  fs.writeFileSync(path.join(root, ".gitattributes"), "*.md text\n")
-  await g.locked((locked) => locked.commit([".gitattributes"], "normalize line endings"))
-  fs.writeFileSync(path.join(root, PROFILE), MINH.replaceAll("\n", "\r\n")) // same blob once normalized
-  const base = (await store.read())[1]
-  expect(base).toBe(blobId(bytes(MINH)))
-  expect(await store.write("# Minh\nv1\n", { baseVersion: base })).toBe(blobId(bytes("# Minh\nv1\n")))
-})
-
-test("write turns a git failure into a system error", async () => {
-  const dir = tempDir()
-  fs.mkdirSync(path.join(dir, "not-a-repo"))
-  const store = new GitProfileStore(new CompanyGit(path.join(dir, "not-a-repo"), path.join(dir, "worktrees")), "minh")
-  const error = await rejection(store.write("# Minh\n", { baseVersion: EMPTY_BLOB }))
-  expect(error).toBeInstanceOf(Error)
-  expect(error).toMatchObject({ code: "EIO", syscall: "write" })
-  expect((error as Error).message).toMatch(/exited/)
-})
-
-test("write refuses a symlinked person directory", async () => {
-  const { dir, root, g } = setup()
-  const outside = path.join(dir, "outside")
-  fs.renameSync(path.join(root, "people/minh"), outside)
-  fs.symlinkSync(outside, path.join(root, "people/minh"))
-  const error = await rejection(new GitProfileStore(g, "minh").write("pwned\n", { baseVersion: blobId(bytes(MINH)) }))
-  // The hand-edit sweep skips the profile, which git won't add through the link, so target() refuses it.
-  expect(error).toBeInstanceOf(ProfileUnreadable)
-  expect((error as Error).message).toMatch(/symlink/)
-  expect(fs.readFileSync(path.join(outside, "memory/profile.md"), "utf8")).toBe(MINH)
-})
-
-test("write refuses a person folder that resolves elsewhere", async () => {
-  const { dir, root, store } = setup()
-  // With no profile at HEAD the sweep has nothing to add, so the write reaches target()'s realpath check.
-  git(root, "rm", "-q", PROFILE)
-  git(root, "commit", "-q", "-m", "no profile")
-  const outside = path.join(dir, "outside")
-  fs.renameSync(path.join(root, "people/minh"), outside)
-  fs.symlinkSync(outside, path.join(root, "people/minh"))
-  const error = await rejection(store.write("pwned\n", { baseVersion: EMPTY_BLOB }))
-  expect(error).toBeInstanceOf(RangeError)
-  expect((error as Error).message).toMatch(/symlink/)
-  expect(fs.existsSync(path.join(outside, "memory"))).toBe(false)
-})
-
-test("a lone surrogate is a range error and writes nothing", async () => {
-  const { root, store } = setup()
-  const base = (await store.read())[1]
-  const head = git(root, "rev-parse", "HEAD")
-  await expect(store.write("# Minh\ud800\n", { baseVersion: base })).rejects.toThrow(RangeError)
+  const memory = store.memory()
+  expect((memory.constructor as typeof FileMemory).contract).toBe(FileMemory.contract)
+  const session = await memory.open({ create: true, itemType: null, signal: SIGNAL })
+  expect([session.info.identity, (await session.snapshot()).recall.text]).toEqual(["people/minh", MINH])
+  await session.close()
+  await expect(memory.reset({ signal: SIGNAL })).rejects.toThrow("the office doesn't reset a profile")
   expect(read(root)).toBe(MINH)
-  expect(git(root, "rev-parse", "HEAD")).toBe(head)
+})
+
+test("a change the commit missed is picked up as a hand edit", async () => {
+  const { root, store } = setup()
+  // A crash between a change and its commit: the change is on disk, uncommitted.
+  const session = await store.fileMemory().open({ create: true, itemType: null, signal: SIGNAL })
+  await session.apply({ id: "a-1", change: APPEND, author: AGENT, signal: SIGNAL })
+  await session.close()
+  expect(git(root, "status", "--porcelain")).toBe("?? people/minh/memory/notes.md")
+  await store.read()
+  expect(subject(root)).toBe("profile(@minh): hand edit")
+  expect(git(root, "status", "--porcelain")).toBe("")
 })

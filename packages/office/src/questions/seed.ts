@@ -7,6 +7,7 @@ import type { CompanyRepo } from "../company/loader.ts"
 import { pyJson, repr } from "../perm/redact.ts"
 import type { QuestionRecord, SessionRecord, Store } from "../store/store.ts"
 import { personFlow } from "../worker/job.ts"
+import { ASK_MANAGER_CALL } from "./ask.ts"
 import { cappedJson } from "./format.ts"
 
 export const FRAMING =
@@ -20,7 +21,7 @@ export const CUT = "… [the rest of the context is cut]"
 // A harness card never gets a side chat (cards.ts refuses it), so it has no line here.
 const VIA: Partial<Record<QuestionRecord["source"], string>> = {
   ask_user: "with ask_user",
-  ask_manager: "with ask_manager, to your manager",
+  ask_manager: `with ${ASK_MANAGER_CALL}, to your manager`,
   ask: "at an ask step of your flow",
 }
 

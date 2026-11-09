@@ -7,7 +7,7 @@ import { MAIN_CHAT } from "../chat/turns.ts"
 import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "./flows.ts"
 import { type RepoIssue, repoIssue } from "./issues.ts"
 import { type CompanyRepo, profilePath } from "./loader.ts"
-import { assetToolName, TOOL_NAME } from "./naming.ts"
+import { shownAssetToolName, TOOL_NAME } from "./naming.ts"
 
 /** One lint check: the issues it finds in a repo. */
 type Check = (repo: CompanyRepo) => Iterable<RepoIssue> | AsyncIterable<RepoIssue>
@@ -156,15 +156,16 @@ function* checkPersonGroups(repo: CompanyRepo): Iterable<RepoIssue> {
   }
 }
 
-/** Tool names fit the model's limits; grants name real subjects and tools. */
+/** Tool names, as a model sees them through the toolbox, fit the model's limits; grants name real subjects and
+ *  tools. */
 function* checkAssets(repo: CompanyRepo): Iterable<RepoIssue> {
   for (const [id, asset] of sorted(repo.assets)) {
     const file = `assets/${id}.yaml`
     for (const tool of Object.keys(asset.tools)) {
-      const name = assetToolName(id, tool)
-      if (!TOOL_NAME.test(name)) {
+      const shown = shownAssetToolName(id, tool)
+      if (!TOOL_NAME.test(shown)) {
         yield repoIssue(file, "asset.tool_name_invalid",
-          `${JSON.stringify(name)} must match ${TOOL_NAME.source}`)
+          `${JSON.stringify(shown)}, the name a model sees, must match ${TOOL_NAME.source}`)
       }
     }
     const gated = new Set(Object.keys(asset.tools).filter((tool) => asset.tools[tool]!.risk === "gated"))
@@ -187,12 +188,14 @@ function* checkAssets(repo: CompanyRepo): Iterable<RepoIssue> {
   }
 }
 
-/** The inputs the office passes a main flow; Yian refuses inputs a flow doesn't declare. */
-const MAIN_INPUTS = ["messages", "person", "talking_to", "summary", "history", "turns", "max_turns"]
+/** The inputs the office passes a main flow; Yian refuses inputs a flow doesn't declare. The office binds the
+ *  person's memory folder to `profile`. */
+const MAIN_INPUTS = ["messages", "person", "talking_to", "summary", "history", "turns", "max_turns", "profile"]
 
 /** The fields of a compiled node or type the chat-shape checks read; yian exports none of their classes. */
 interface Shape {
   kind?: string
+  memory?: string
   element?: Shape
   required?: ReadonlySet<string>
   nullable?: boolean
@@ -225,6 +228,11 @@ function chatShapeProblems(ref: string, flow: ComposedFlow): string[] {
   if (element?.kind !== "object" || !element.required?.has("role") || !element.required.has("parts")) {
     problems.push(`${ref}'s ${MAIN_CHAT.inbox} input isn't an inbox of messages; the office sends what people say`
       + ` there, so declare \`${MAIN_CHAT.inbox}: !Inbox(Message)\` ${like}`)
+  }
+  const profile = flow.input.find((p) => p.name === "profile")?.contract?.type as Shape | undefined
+  if (profile?.kind !== "memory" || profile.memory !== "FileMemory") {
+    problems.push(`${ref}'s profile input isn't a FileMemory; the office binds the person's memory folder there, so`
+      + ` declare \`profile: !FileMemory\` ${like}`)
   }
   const compiled = flow.compiled as unknown as Compiled
   const loop = compiled.nodes.get(loopName)
@@ -370,16 +378,17 @@ function* checkProfiles(repo: CompanyRepo): Iterable<RepoIssue> {
     const rel = profilePath(handle)
     const found = profileState(path.join(repo.root, rel))
     if (found === "absent" && person.kind === "agent") {
-      yield repoIssue(rel, "person.no_profile", "agents learn into memory/profile.md; create one", "warning")
+      yield repoIssue(rel, "person.no_profile", "an agent's chats read memory/profile.md; create one", "warning")
     }
-    // Errors, as chats with that person can't start.
+    // Errors: chats with that person can't start without the folder, and leave any other such profile out of their
+    // memory, which the office can't read or write either.
     if (found === "not_a_folder") {
       yield repoIssue(path.posix.dirname(rel), "person.profile_not_a_file",
         "memory must be a folder, not a symlink or file")
     }
     if (found === "not_a_file") {
       yield repoIssue(rel, "person.profile_not_a_file",
-        "memory/profile.md must be a regular file, not a symlink or folder")
+        "memory/profile.md must be a regular file, not a symlink, folder or hard link")
     }
     if (found === "not_utf8") {
       yield repoIssue(rel, "person.profile_not_utf8", "memory/profile.md is not UTF-8; save it as UTF-8")
@@ -388,7 +397,7 @@ function* checkProfiles(repo: CompanyRepo): Iterable<RepoIssue> {
 }
 
 /** Whether the profile at `p` is absent, in a memory folder that isn't a folder (a symlink, a file), not a regular
- *  file (a symlink, a folder), not UTF-8, or fine. */
+ *  file (a symlink, a folder, a hard link), not UTF-8, or fine. */
 function profileState(p: string): "absent" | "not_a_folder" | "not_a_file" | "not_utf8" | "ok" {
   const absent = (error: unknown) => ["ENOENT", "ENOTDIR", "EBADF"].includes(errno(error) ?? "")
   let fd: number
@@ -404,7 +413,9 @@ function profileState(p: string): "absent" | "not_a_folder" | "not_a_file" | "no
     throw error
   }
   try {
-    if (!fs.fstatSync(fd).isFile()) return "not_a_file"
+    const st = fs.fstatSync(fd)
+    // yian's FileMemory leaves a file with another link out of the memory.
+    if (!st.isFile() || st.nlink > 1) return "not_a_file"
     UTF8.decode(fs.readFileSync(fd))
     return "ok"
   } catch (error) {

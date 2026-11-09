@@ -3,8 +3,7 @@ import fs from "node:fs"
 import http, { type IncomingHttpHeaders } from "node:http"
 import net from "node:net"
 import path from "node:path"
-import { type MarkdownStore, MarkdownVersionMismatch } from "@ngocbh/yian"
-import { iterRunRecords, type JsonObject } from "@ngocbh/yian/run"
+import { iterRunRecords } from "@ngocbh/yian/run"
 import { RunLiveCall, RunLiveChunk, RunLiveEnd, RunLiveRecord, RunLiveStart } from "@opencorp/protocol"
 import { expect, onTestFinished } from "bun:test"
 import { parse as parseYaml, stringify } from "yaml"
@@ -13,7 +12,6 @@ import { Hooks } from "../../src/chat/hooks.ts"
 import type { LoginsOptions } from "../../src/chat/logins.ts"
 import { type ModelCacheOptions, ownModels } from "../../src/chat/models.ts"
 import { CompanyGit } from "../../src/company/git.ts"
-import { profilePath } from "../../src/company/loader.ts"
 import { Bus } from "../../src/daemon/bus.ts"
 import { type Limits, type RequestInfo, type Route, createServer, requestListener } from "../../src/daemon/http.ts"
 import { LiveRelay, type LiveWorker } from "../../src/daemon/live.ts"
@@ -22,7 +20,6 @@ import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
 import type { ModelCheck } from "../../src/install/onboard.ts"
 import type { Tools } from "../../src/install/tools.ts"
-import { blobId } from "../../src/profile/store.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../../src/sandbox/policy.ts"
 import { Store, newId } from "../../src/store/store.ts"
 import { git, makeCompany } from "../company/helpers.ts"
@@ -101,35 +98,6 @@ export function makeOffice({
   return office
 }
 
-/** A MarkdownStore over one file, versioned by git blob id; only the current version is readable. */
-export class BlobFileStore implements MarkdownStore {
-  /** Each write's provenance, in order. */
-  readonly provenance: (JsonObject | null)[] = []
-
-  constructor(readonly path: string) {}
-
-  #current(): [string, string] {
-    const data = fs.existsSync(this.path) ? fs.readFileSync(this.path) : Buffer.alloc(0)
-    return [data.toString(), blobId(data)]
-  }
-
-  read(version?: string | null): [string, string] {
-    const [text, current] = this.#current()
-    if (version !== undefined && version !== null && version !== current) throw new RangeError(version)
-    return [text, current]
-  }
-
-  write(text: string, { baseVersion, provenance = null }: { baseVersion: string; provenance?: JsonObject | null }) {
-    const [, current] = this.#current()
-    if (baseVersion !== current) throw new MarkdownVersionMismatch(baseVersion, current)
-    fs.mkdirSync(path.dirname(this.path), { recursive: true })
-    const data = Buffer.from(text)
-    fs.writeFileSync(this.path, data)
-    this.provenance.push(provenance)
-    return blobId(data)
-  }
-}
-
 /** A session harness for route tests (Python's per-test `FakeHarness`): every call `over` doesn't give rejects, as
  *  no test should reach it. */
 export function standInHarness(over: Partial<SessionHarness> = {}): SessionHarness {
@@ -148,21 +116,6 @@ export function standInHarness(over: Partial<SessionHarness> = {}): SessionHarne
     messages: unused("messages"),
     ...over,
   }
-}
-
-/** Sets `office.profileStore` to one `BlobFileStore` per person over `<company>/people/<handle>/memory/profile.md`,
- *  made on first use; returns them by handle (Python's `profile_stores` fixture). */
-export function blobStores(office: Office): Map<string, BlobFileStore> {
-  const stores = new Map<string, BlobFileStore>()
-  office.profileStore = (handle) => {
-    let store = stores.get(handle)
-    if (store === undefined) {
-      store = new BlobFileStore(path.join(office.paths.company, profilePath(handle)))
-      stores.set(handle, store)
-    }
-    return store
-  }
-  return stores
 }
 
 /** How `serve` builds each request's context, where its log lines go, and its server's limits. */

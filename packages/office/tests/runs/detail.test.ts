@@ -66,11 +66,14 @@ function indexRow(runId: string, over: Partial<RunIndexRow> = {}): RunIndexRow {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     reasoningTokens: 0,
     offset: 10,
     waits: [],
     ready: false,
     wakeAt: null,
+    memories: [],
+    unreadable: null,
     ...over,
   }
 }
@@ -128,11 +131,7 @@ test("a chats page has what its log and the store say", async () => {
   const row = chat(o)
   o.store.recordUsage({ sessionId: row.sessionId, runId: RUN, model: "stub", usd: 0.25 })
   const detail = await runsFor(o).detail(RUN)
-  expect([detail.log_state, detail.learnable, detail.repo_commit]).toEqual([
-    "ok",
-    true,
-    o.store.getSession(row.sessionId)!.repo_commit,
-  ])
+  expect([detail.log_state, detail.repo_commit]).toEqual(["ok", o.store.getSession(row.sessionId)!.repo_commit])
   expect(detail.flow_fingerprint).toHaveLength(64)
   expect(detail.models?.["chat/reply"]).toBe("stub")
   expect(detail.usage).toEqual({ input_tokens: 6, output_tokens: 1, usd: 0.25 })

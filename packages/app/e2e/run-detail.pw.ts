@@ -9,16 +9,13 @@ test.beforeEach(async ({ request }) => {
 const timeline = (page: Page) => page.getByRole("tree", { name: "Timeline" })
 const nodeDetail = (page: Page, id: string) => page.getByRole("region", { name: `Node ${id}` })
 
-test("node detail: output, model, evidence, and an error with its traceback folded", async ({ page }) => {
+test("node detail: output, model, and an error with its traceback folded", async ({ page }) => {
   await page.goto(`/runs/${rid(5)}`)
   await timeline(page).getByRole("treeitem", { name: /^iteration chat#2/ }).first().click()
   await timeline(page).getByRole("treeitem", { name: /chat#2\/reply.*succeeded/ }).click()
   const detail = nodeDetail(page, "chat#2/reply")
   await expect(detail).toContainText("Done.")
   await expect(detail).toContainText("gpt-5") // models["chat/reply"]: no kind needed
-  await detail.getByText("Prompt", { exact: true }).click()
-  await expect(detail.getByText("Fix the build", { exact: true })).toBeVisible()
-  await expect(detail).toContainText("workspace.read")
   await page.getByRole("button", { name: "Older nodes" }).click()
   await timeline(page).getByRole("treeitem", { name: /^iteration chat#1/ }).click()
   await timeline(page).getByRole("treeitem", { name: /chat#1\/reply.*failed/ }).click()
@@ -53,13 +50,10 @@ test("a node whose static path has no model shows none", async ({ page }) => {
   await expect(nodeDetail(page, "debrief").getByText("Model", { exact: true })).toHaveCount(0)
 })
 
-test("an open node says its output comes when it ends, and a side chat keeps no evidence", async ({ page }) => {
+test("an open node says its output comes when it ends", async ({ page }) => {
   await page.goto(`/runs/${rid(5)}`)
   await timeline(page).getByRole("treeitem", { name: /chat#3\/ask/ }).click()
   await expect(nodeDetail(page, "chat#3/ask")).toContainText("running: its output appears when it ends")
-  await page.goto(`/runs/${rid(6)}`)
-  await timeline(page).getByRole("treeitem", { name: /chat#0\/reply/ }).click()
-  await expect(nodeDetail(page, "chat#0/reply")).toContainText("Evidence isn't recorded: this flow isn't learnable.")
 })
 
 test("a restarted node says where its partial work is", async ({ page }) => {

@@ -28,6 +28,7 @@ import {
   noWorkersLeft,
   REFRESH,
   replyRunning,
+  running,
   type ScriptedWorker,
   scriptedWorker,
   session,
@@ -448,7 +449,7 @@ test(
   async () => {
     const fake = await fakeLlm()
     const h = await makeHarness(fake, { connections: { second: "stub-2" } })
-    const echo = { name: "fake__echo", arguments: { text: "x" } }
+    const echo = { name: "toolbox_fake__echo", arguments: { text: "x" } }
     fake.script(
       { content: "Working", tool_calls: [echo], hold: 30 },
       { content: "Done on one." },
@@ -551,6 +552,8 @@ test("a prompt on a connection edited to a provider yian wont take answers 503 a
   const s = await start(h)
   await h.harness.setModel(s.id, "second", "stub-2")
   expect(await tell(h, s.id, "a")).toBe("on two")
+  // The run call ends after the reply shows (its memory closes first); a prompt before then goes to the live run.
+  await waitFor(() => !running(h.registry, s.id), { what: "the run call to end" })
   const file = path.join(h.office.connections.dir, "second.json")
   const good = await Bun.file(file).text()
   const bad = { llm_config: { provider: "nope-provider", model: "stub-2" }, env: fake.env() }

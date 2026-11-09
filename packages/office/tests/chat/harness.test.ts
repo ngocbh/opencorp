@@ -15,7 +15,7 @@ import { writePrivate } from "../../src/secrets.ts"
 import { type SessionRecord, type WorkItemRecord, newId } from "../../src/store/store.ts"
 import { type FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
-import type { OfficeTool } from "../../src/worker/rpc.ts"
+import { type OfficeTool, SIGN_IN_UNUSABLE } from "../../src/worker/rpc.ts"
 import type { Worker } from "../../src/worker/spawn.ts"
 import { person } from "../company/helpers.ts"
 import { CEO } from "../daemon/helpers.ts"
@@ -103,7 +103,7 @@ async function asked(fake: FakeLLM, n: number): Promise<string> {
 }
 
 /** A model call of the fake toolbox's echo tool. */
-const ECHO = { name: "fake__echo", arguments: { text: "x" } }
+const ECHO = { name: "toolbox_fake__echo", arguments: { text: "x" } }
 
 /** The author of each user message of session `sid`, by its text. */
 async function authors(h: Harness, sid: string): Promise<Record<string, string | null>> {
@@ -262,9 +262,9 @@ test("a steer reaches the running reply", async () => {
   ])
 })
 
-// Pins ngocbh/yian#1171: the worker's view keeps the call after a steer, named by the steer step's n, so the fetched
-// messages show its text twice while the worker runs. Once yian names the call by its step, expect "Done." once.
-test("a steered replys text shows twice while its worker runs", async () => {
+// The worker's view names the call after a steer by its own step (ngocbh/yian#1171), so the fetched messages show
+// its text once while the worker runs.
+test("a steered replys text shows once while its worker runs", async () => {
   const fake = await fakeLlm()
   // The third call holds the worker after the steered call's step is written.
   fake.script(
@@ -291,7 +291,7 @@ test("a steered replys text shows twice while its worker runs", async () => {
     ["user", ["hi"]],
     ["assistant", ["Working"]],
     ["user", ["Also mention Rome."]],
-    ["assistant", ["Done.", "Done."]],
+    ["assistant", ["Done."]],
   ])
 })
 
@@ -1578,16 +1578,31 @@ test("a failed session says why without the model key", async () => {
   const workers = scriptedWorker(h)
   const s = await h.harness.startSession("minh", h.folder)
   const { worker, handlers } = workers[0]!
-  const failure = { node_id: "chat", cause_type: "AuthError", message: `bad key ${SENTINEL} ${"x".repeat(900)}` }
+  const message = `bad key ${SENTINEL} ${"x".repeat(900)}`
+  const failure = { node_id: "chat", cause_type: "AuthenticationError", message }
   handlers.result(worker, failedResult(s.run_ids[0]!, failure))
   handlers.exited(worker, 1)
   await waitFor(() => status(h, s.id) === "failed", { what: "the failure" })
   const [error, ...rest] = errors(h, s.id)
   expect(rest).toEqual([])
-  expect(error).toStartWith("The session failed (AuthError: bad key [redacted] xxx")
+  expect(error).toStartWith("The session failed (AuthenticationError: bad key [redacted] xxx")
   expect(error).not.toContain(SENTINEL)
   expect(error!.length).toBeLessThan(600)
   expect(error).toEndWith("Start a new chat.")
+})
+
+test("a session failed by yian's auth error names no file", async () => {
+  const h = await keyed(await fakeLlm())
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder)
+  const { worker, handlers } = workers[0]!
+  // yian's store errors name the auth file, and a recorded failure keeps only the error's name, AuthError.
+  const file = path.join(h.office.paths.office, "connections", "chatgpt.auth.json")
+  const message = `Credential storage at ${file} must be private to its owner; fix it with: chmod 600 ${file}`
+  handlers.result(worker, failedResult(s.run_ids[0]!, { node_id: "chat", cause_type: "AuthError", message }))
+  handlers.exited(worker, 1)
+  await waitFor(() => status(h, s.id) === "failed", { what: "the failure" })
+  expect(errors(h, s.id)).toEqual([`The session failed (AuthError: ${SIGN_IN_UNUSABLE}). Start a new chat.`])
 })
 
 /** Prompts session `id` `n` times with a 7,000-character message, waiting for each reply: five such turns are over
@@ -1846,7 +1861,7 @@ test("a profile manager spec has only the profile tools and no workspace", async
   // Its folder is the company's own, which no chat's workspace may be: a profile manager has none to check.
   const s = await stored(h, { kind: "profile_manager", cwd: h.office.paths.company, status: "starting" })
   const spec = await h.harness.spec(s)
-  expect([spec.flow, spec.workspace, spec.memory]).toEqual(["shared/flows/profile_manager.yaml", undefined, {}])
+  expect([spec.flow, spec.workspace, spec.memories]).toEqual(["shared/flows/profile_manager.yaml", undefined, {}])
   const groups = spec.groups({ session: s, runId: "run-1" })
   expect(Object.entries(groups).map(([group, tools]) => [group, Object.keys(tools)])).toEqual([
     ["profile", ["read", "propose_edit"]],

@@ -4,6 +4,7 @@ import type { PendingCall } from "@ngocbh/yian/run"
 import { pending } from "@ngocbh/yian/tools"
 import { type DiscussionEntry, Question, now, validationMessage } from "@opencorp/protocol"
 import { InvalidTransition, newId, type QuestionRecord, type SessionRecord, type Store, type WorkItemRecord } from "../store/store.ts"
+import { groupToolName } from "../company/naming.ts"
 import { strip } from "../perm/redact.ts"
 import { AskRefused, type AskRequest, errorName } from "../worker/rpc.ts"
 import { formatAnswer, INTERRUPTED } from "./format.ts"
@@ -15,6 +16,14 @@ export type OnQuestion = (question: QuestionRecord, options?: { workItem?: WorkI
 
 /** The discussion an answered question carries over from an earlier, expired one. */
 export type Carried = (question: QuestionRecord) => Iterable<DiscussionEntry>
+
+/** The name a model calls, and yian records, the company group's `ask_manager` by when a flow grants the group. */
+export const ASK_MANAGER_CALL = groupToolName("company", "ask_manager")
+
+/** Whether yian recorded `tool` for a call of `ask_manager`: granted through the company group, or by its own name. */
+export function isAskManagerCall(tool: string): boolean {
+  return tool === ASK_MANAGER_CALL || tool === "ask_manager"
+}
 
 /**
  * What a question handler returns for its stored `question`: yian's `pending()` while it is open, and the formatted
@@ -205,8 +214,8 @@ export class Answers {
    * Call only for a `waiting` run while no worker runs it (a crashed run's questions may belong to calls yian hasn't
    * recorded yet, which a resume re-invokes). Call ids outside `${runId}/` are skipped. An `answered` question whose
    * call yian settled is left as it is: the actor sends its answer again, which settles it. Only question calls
-   * (`ask`, `ask_user`, `ask_manager`) are rebuilt: a pending step names a tool, and re-running any other tool from
-   * it would skip the job's grant check.
+   * (`ask`, `ask_user`, and `ask_manager` by either name, `isAskManagerCall`) are rebuilt: a pending step names a
+   * tool, and re-running any other tool from it would skip the job's grant check.
    *
    * A TOOL `ask` call's recorded arguments are the node's inputs only, so its rebuilt question has no title and no
    * answer schema. A handler that throws is logged by the call id and the error's name, and the rest go on.
@@ -258,7 +267,7 @@ export class Answers {
             },
             call.callId,
           )
-        } else if (call.tool === "ask_manager") {
+        } else if (isAskManagerCall(call.tool)) {
           await handlers.askManager?.(args, call.callId)
         }
       } catch (error) {

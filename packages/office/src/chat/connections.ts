@@ -6,6 +6,7 @@ import { AuthError, AuthStore } from "@ngocbh/yian/llm_clients"
 import { type Connection, OFFICE } from "@opencorp/protocol"
 import type { z } from "zod"
 import { PrivateFileError, readPrivate, writePrivate } from "../secrets.ts"
+import { plainAuthError } from "../worker/rpc.ts"
 import {
   checked,
   checkLlmConfig,
@@ -464,9 +465,13 @@ export class Connections {
     try {
       await new AuthStore(this.authFile(name), { lockTimeoutMs: this.#signInLockTimeoutMs }).delete()
     } catch (error) {
+      if (plainAuthError(error)) {
+        throw new ProviderError(`can't remove the sign-in of connection '${name}': ${error.message}`)
+      }
       if (!(error instanceof AuthError)) throw error
-      // yian's AuthError messages are fixed text, with no path or key in them
-      throw new ProviderError(`can't remove the sign-in of connection '${name}': ${error.message}`)
+      // The store's own error names the auth file: the log says which connection, the person gets no path.
+      this.#log(`couldn't remove the sign-in of connection ${name} (${error.constructor.name})`)
+      throw new ProviderError(`can't remove the sign-in of connection '${name}': its sign-in file can't be used`)
     }
   }
 

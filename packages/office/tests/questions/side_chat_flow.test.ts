@@ -23,11 +23,18 @@ test("side chat template loads and has the chat shape", async () => {
   expect([turn.heard.kind, turn.heard.tool_id, turn.heard.input.from]).toEqual(["tool", "take", "${input.messages}"])
   expect(turn.route.cases).toEqual([{ when: "${heard.output.events != [] and not heard.output.closed}", then: "context" }])
   const reply = turn.reply
-  expect([reply.steer_inbox, reply.output, reply.long_term_memory]).toEqual([
+  expect([reply.steer_inbox, reply.output, reply.input.profile]).toEqual([
     "${input.messages}",
     "Optional(str)",
-    "profile",
+    "${input.profile}",
   ])
+  // The profile is a memory input the office binds, carried into each turn, and shown in the system prompt.
+  expect([flow.input.profile, flow.defs.turn.input.profile, flow.nodes.chat.input.profile]).toEqual([
+    "!FileMemory",
+    "!FileMemory",
+    "${input.profile}",
+  ])
+  expect(reply.system_prompt).toEndWith('\n\n<memory name="profile">\n${profile}\n</memory>')
 })
 
 test("side chat tools are read only lookups", () => {

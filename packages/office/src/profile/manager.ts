@@ -1,11 +1,10 @@
 /** The profile manager: a chat that proposes edits to one person's profile, and applying a proposal. */
-import { MarkdownVersionMismatch } from "@ngocbh/yian"
 import { now, Profile } from "@opencorp/protocol"
 import { structuredPatch } from "diff"
 import type { CompanyGit } from "../company/git.ts"
 import { InvalidTransition, newId, type ProfileProposalRecord, type SessionRecord, type Store } from "../store/store.ts"
 import type { OfficeTool } from "../worker/rpc.ts"
-import { GitProfileStore } from "./store.ts"
+import { GitProfileStore, ProfileConflict } from "./store.ts"
 
 /** The profile manager's flow, relative to the session's pinned commit. */
 export const MANAGER_FLOW = "shared/flows/profile_manager.yaml"
@@ -32,8 +31,14 @@ const PROPOSE_EDIT =
   "Propose the complete new text of the profile, as an edit of the version you read.\n\n" +
   "The owner reviews the diff and applies it."
 
-/** The `profile` tool group of a profile-manager session: `read` and `propose_edit`. `propose_edit` refuses text
- *  over 4 × `maxChars` (the company's `profile_max_chars`) code points. */
+/** Why `propose_edit` refuses an edit of a version that isn't the profile's: an old version can't be read, so the
+ *  model reads the profile again. */
+export const STALE_EDIT =
+  "the profile changed since you read it; call profile_read again and propose an edit of the version it gives"
+
+/** The `profile` tool group of a profile-manager session, which the model sees as `profile_read` and
+ *  `profile_propose_edit`. `propose_edit` refuses text over 4 × `maxChars` (the company's `profile_max_chars`) code
+ *  points, and an edit whose base version isn't the profile's (`STALE_EDIT`); it diffs against the current text. */
 export function profileTools(
   store: Store,
   profile: GitProfileStore,
@@ -46,7 +51,7 @@ export function profileTools(
       description: READ,
       parameters: { description: READ, properties: {}, title: "read", type: "object" },
       call: async () => {
-        const [text, version] = await profile.read()
+        const { text, version } = await profile.read()
         return { text, version }
       },
     },
@@ -74,7 +79,8 @@ export function profileTools(
           throw new RangeError(`text is ${n} characters; a proposal may hold at most ${cap} (4 × profile_max_chars)`)
         }
         if (!text.isWellFormed()) throw new RangeError("text holds a lone surrogate, which has no UTF-8 encoding")
-        const [base] = await profile.read(baseVersion) // a RangeError for a version the model made up
+        const { text: base, version } = await profile.read()
+        if (version !== baseVersion) throw new Error(STALE_EDIT)
         const proposal = await propose(store, session, profile, baseVersion, base, text)
         return `Proposed edit ${proposal.id}. The owner can apply it from the profile view.`
       },
@@ -117,11 +123,12 @@ export function propose(
 }
 
 /**
- * Writes an open proposal over its base version and commits it as `<owner> via profile manager`.
+ * Writes an open proposal over its base version as the owner, as the change `proposal-<id>`, and commits it as
+ * `<owner> via profile manager`. Its change id makes a retry after a crash return the first write's version.
  *
- * Throws `ProposalNotFound` for an unknown proposal, `ProposalNotOpen` for one that isn't open, and
- * `MarkdownVersionMismatch` when the profile has moved on (the proposal is then `stale`); the profile
- * store's own errors pass through. Emits `profile.updated`.
+ * Throws `ProposalNotFound` for an unknown proposal, `ProposalNotOpen` for one that isn't open, and `ProfileConflict`
+ * when the profile has moved on (the proposal is then `stale`); the profile store's own errors pass through. Emits
+ * `profile.updated`.
  */
 export async function applyProposal(
   store: Store,
@@ -136,22 +143,22 @@ export async function applyProposal(
     if (proposal === undefined) throw new ProposalNotFound(`no profile proposal ${proposalId}`)
     if (proposal.status !== "open") throw new ProposalNotOpen(`profile proposal ${proposalId} is ${proposal.status}`)
     const profile = new GitProfileStore(git, proposal.person)
-    const commitId = `proposal-${proposal.id}`
-    let version: string
+    let written: { version: string; commit: string | null }
     try {
-      version = await profile.write(proposal.text, {
+      written = await profile.write(proposal.text, {
         baseVersion: proposal.base_version,
-        provenance: { source: `${owner} via profile manager`, commit_id: commitId },
+        changeId: `proposal-${proposal.id}`,
+        author: { kind: "user", name: owner },
+        source: `${owner} via profile manager`,
       })
     } catch (error) {
-      if (error instanceof MarkdownVersionMismatch) store.setProfileProposalStatus(proposal.id, "stale")
+      if (error instanceof ProfileConflict) store.setProfileProposalStatus(proposal.id, "stale")
       throw error
     }
-    // A proposal of the text as it was commits nothing; its commit is then the current one. The write has released
-    // `git.locked` by now, so another commit could land first; head is close enough, as only such a proposal
-    // takes the fallback and CompanyGit has no read of a file's last commit.
-    const commit = (await git.findCommit(profile.path, `Commit-Id: ${commitId}`)) ?? (await git.head())
-    store.setProfileProposalStatus(proposal.id, "applied", { commit })
+    // A proposal of the text as it was commits nothing; its commit is then the current one. One whose commit failed
+    // waits for the hand-edit sweep; head is close enough.
+    const { version } = written
+    store.setProfileProposalStatus(proposal.id, "applied", { commit: written.commit ?? (await git.head()) })
     return [proposal, version] as const
   })
   const applied = Profile.parse({

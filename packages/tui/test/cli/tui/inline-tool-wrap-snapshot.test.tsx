@@ -210,20 +210,29 @@ async function renderFrame(component: () => JSX.Element, options: { width: numbe
 }
 
 describe("TUI inline tool wrapping", () => {
-  test("maps office tools onto renderers and falls back for unknown ones", () => {
-    expect(toolView("shell").view).toBe("shell")
+  test("maps office tools onto renderers by the names the model calls and falls back for unknown ones", () => {
+    expect(toolView("workspace_shell").view).toBe("shell")
     expect(toolView("plugin_tool").view).toBe("generic")
-    expect(toolView("list").view).toBe("list")
-    expect(toolView("read_file", { path: "a.py", offset: 2 })).toEqual({
+    expect(toolView("workspace_list").view).toBe("list")
+    expect(toolView("workspace_read_file", { path: "a.py", offset: 2 })).toEqual({
       view: "read",
       input: { filePath: "a.py", offset: 2 },
     })
-    expect(toolView("edit_file", { path: "a.py", old: "x", new: "y" }).input).toEqual({
+    expect(toolView("workspace_write_file", { path: "a.py", content: "x" }).view).toBe("write")
+    expect(toolView("workspace_edit_file", { path: "a.py", old: "x", new: "y" }).input).toEqual({
       filePath: "a.py",
       oldString: "x",
       newString: "y",
     })
-    expect(toolView("search", { pattern: "p", glob: "*.py" }).input).toEqual({ pattern: "p", include: "*.py" })
+    expect(toolView("workspace_search", { pattern: "p", glob: "*.py" }).input).toEqual({
+      pattern: "p",
+      include: "*.py",
+    })
+    // A flow may grant a workspace tool by its own name, which the model then calls.
+    for (const name of ["read_file", "write_file", "edit_file", "list", "search", "shell"]) {
+      expect(toolView(name, { path: "a.py" })).toEqual(toolView(`workspace_${name}`, { path: "a.py" }))
+    }
+    expect(toolView("read_file").view).toBe("read")
   })
 
   test("a Codex file change is a patch: a new file all added, a deleted one all removed, an update as sent", () => {

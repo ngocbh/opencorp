@@ -251,15 +251,20 @@ test("remove waits for composer to let go of the sign in", async () => {
   expect(fs.existsSync(lock)).toBe(true)
 })
 
+/** What `remove` says of a sign-in its store refuses: yian's store errors name the auth file, which no person sees. */
+const UNUSABLE = "can't remove the sign-in of connection 'chatgpt': its sign-in file can't be used"
+
 test("remove gives up on a sign in locked too long", async () => {
-  const c = new Connections(await officeDir(tempDir()), { signInLockTimeoutMs: 200 })
+  const { lines, log } = logs()
+  const c = new Connections(await officeDir(tempDir()), { signInLockTimeoutMs: 200, log })
   await c.put("chatgpt", subscription())
   await writePrivate(c.authFile("chatgpt"), "{}")
   const held = lockFile(path.join(c.dir, "chatgpt.auth.json.lock"), { private: true })
   try {
     const error = await raised(() => c.remove("chatgpt"))
     expect(error).toBeInstanceOf(ProviderError)
-    expect((error as Error).message).toMatch(/timed out/i)
+    expect((error as Error).message).toBe(UNUSABLE)
+    expect(lines).toEqual(["couldn't remove the sign-in of connection chatgpt (StorageError)"])
   } finally {
     held.release()
   }
@@ -270,9 +275,10 @@ test("remove gives up on a sign in locked too long", async () => {
   expect(tree(c.dir)).toEqual([".lock", "_removed.json", "chatgpt.auth.json.lock"])
 })
 
-test("remove refuses a symlinked lock", async () => {
+test("remove refuses a symlinked lock and names no path", async () => {
   const root = tempDir()
-  const c = new Connections(await officeDir(root))
+  const { lines, log } = logs()
+  const c = new Connections(await officeDir(root), { log })
   await c.put("chatgpt", subscription())
   await writePrivate(c.authFile("chatgpt"), "{}")
   const target = path.join(root, "elsewhere")
@@ -280,7 +286,8 @@ test("remove refuses a symlinked lock", async () => {
   fs.symlinkSync(target, path.join(c.dir, "chatgpt.auth.json.lock"))
   const error = await raised(() => c.remove("chatgpt"))
   expect(error).toBeInstanceOf(ProviderError)
-  expect((error as Error).message).toMatch(/regular private path/)
+  expect((error as Error).message).toBe(UNUSABLE)
+  expect(lines).toEqual(["couldn't remove the sign-in of connection chatgpt (StorageError)"])
   expect(fs.existsSync(target)).toBe(true)
 })
 

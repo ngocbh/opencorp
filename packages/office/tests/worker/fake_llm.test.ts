@@ -89,13 +89,16 @@ test("a tool call then a reply", async () => {
     parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
     execute: ({ text }) => String(text).toUpperCase(),
   })
-  fake.script({ content: "Working", tool_calls: [{ name: "shout", arguments: { text: "hi" } }] }, { content: "Done." })
+  fake.script(
+    { content: "Working", tool_calls: [{ name: "toolbox_shout", arguments: { text: "hi" } }] },
+    { content: "Done." },
+  )
   const result = await run(fake, await flow(root, "tools"), { message: "go" }, { tools: { toolbox: [shout] } })
   expect([result.status, result.output]).toEqual(["succeeded", "Done."])
   const requests = fake.requests()
   expect(requests).toHaveLength(2)
   const [first, second] = requests as [Record<string, any>, Record<string, any>]
-  expect(first.tools.map((t: any) => t.function.name)).toEqual(["shout"])
+  expect(first.tools.map((t: any) => t.function.name)).toEqual(["toolbox_shout"])
   expect(JSON.stringify(second.messages)).toContain("HI")
 })
 

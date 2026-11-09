@@ -163,7 +163,7 @@ test("long output scrolls inside node detail and wraps", async ({ page, request 
   const rec = { cut: [], withheld: null, size: null }
   const long = `${"x".repeat(3000)}\n${Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n")}`
   await request.post("/__fixture/run", { data: { id: rid(2), add: [node(62, "write")], addEvents: [
-    { seq: 63, kind: "node_succeeded", node_id: "write", payload: { value: long, evidence: null }, ...rec }] } })
+    { seq: 63, kind: "node_succeeded", node_id: "write", payload: { value: long }, ...rec }] } })
   await page.goto(`/runs/${rid(2)}`)
   await timeline(page).getByRole("treeitem", { name: /^write/ }).click()
   const d = detail(page)

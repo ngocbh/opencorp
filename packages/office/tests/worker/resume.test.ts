@@ -2,7 +2,7 @@
  *  `not_resumed`. */
 import fs from "node:fs"
 import path from "node:path"
-import { FileMarkdownStore, RunBusyError } from "@ngocbh/yian"
+import { FileMemory, type MemorySession, RunBusyError } from "@ngocbh/yian"
 import { inspectRun } from "@ngocbh/yian/run"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { killGroup } from "../../src/install/proc.ts"
@@ -11,6 +11,8 @@ import type { Job, JobInput } from "../../src/worker/job.ts"
 import { advanceAppended, EXIT_FAILED, notResumed } from "../../src/worker/main.ts"
 import type { WorkerHandlers } from "../../src/worker/rpc.ts"
 import { fakeLlm } from "../chat/helpers.ts"
+import { captureStderr } from "../helpers.ts"
+import { fifoAt } from "../runs/helpers.ts"
 import { openStore } from "../store/helpers.ts"
 import {
   advanceJob,
@@ -18,6 +20,7 @@ import {
   inProcessWorker,
   makeJob,
   makeRegistry,
+  profileMemory,
   Recorder,
   run,
   runWorker,
@@ -124,7 +127,10 @@ test("a not resumed advance refuses the deliveries it still holds", async () => 
 test("an advance whose code file is gone is not resumed", async () => {
   const where = base()
   const chat = makeJob(where, "flows/coded.yaml", { inputs: {} })
-  expect((await run(chat, new Recorder())).outcome?.status).toBe("waiting")
+  // The run starts in a worker process, as the office starts it, so this process has no compiled flow of the run's
+  // to reuse: the advance recompiles the recorded flow.
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  expect((await runWorker(makeRegistry(), chat, new Recorder(), sessionDir)).outcome?.status).toBe("waiting")
   fs.rmSync(path.join(where.pin, "flows", "helpers.ts"))
   await expectNotResumed(advanceJob(chat), "LoadError")
 })
@@ -136,14 +142,71 @@ test("an advance refused for a changed tool spec is not resumed", async () => {
   await expectNotResumed(advanceJob(chat, { groups: shout("Whispers the text.") }), "RangeError", fake.env())
 })
 
-test("an advance whose memory cannot be rebuilt is not resumed", async () => {
+/** minh's profile in `root` as `profileMemory` builds it, counting the sessions it opens. */
+function counted(root: string): FileMemory & { opens: number } {
+  const memory = Object.assign(profileMemory(root), { opens: 0 })
+  const open = memory.open.bind(memory)
+  memory.open = (o): Promise<MemorySession> => {
+    memory.opens += 1
+    return open(o)
+  }
+  return memory
+}
+
+/** The system prompt of the fake's `n`th request. */
+function systemOf(fake: FakeLLM, n: number): string {
+  const [system] = fake.requests()[n]!.messages as { role: string; content: string }[]
+  return system!.content
+}
+
+test("an advance whose memory isn't bound is not resumed", async () => {
   const fake = await fakeLlm()
   const where = base()
-  const profile = path.join(where.root, "profile.md")
-  fs.writeFileSync(profile, "# Minh\nPrefers terse answers.\n")
-  const chat = makeJob(where, "flows/profiled.yaml", { memory: { profile: { store: "minh-profile" } } })
-  await stoppedRun(fake, chat, new Recorder({ stores: { "minh-profile": new FileMarkdownStore(profile) } }))
-  await expectNotResumed(advanceJob(chat, { memory: {} }), "MemorySetupError", fake.env())
+  const handlers = new Recorder({ memories: { profile: profileMemory(path.join(where.root, "memory"), "# Minh\n") } })
+  const chat = makeJob(where, "flows/profiled.yaml", {}, handlers)
+  await stoppedRun(fake, chat, handlers)
+  await expectNotResumed(advanceJob(chat, { memory: [] }), "RangeError", fake.env())
+})
+
+test("an advance of a waiting run binds its memory again and keeps the recall it started with", async () => {
+  const fake = await fakeLlm()
+  const where = base()
+  const root = path.join(where.root, "memory")
+  fs.mkdirSync(root)
+  fs.writeFileSync(path.join(root, "profile.md"), "# Minh\nTerse.\n")
+  const first = counted(root)
+  const handlers = new Recorder({ memories: { profile: first } })
+  const chat = makeJob(where, "flows/profiled_inbox.yaml", { inputs: {} }, handlers)
+  expect((await run(chat, handlers)).outcome?.status).toBe("waiting")
+  expect(first.opens).toBe(1)
+  fs.writeFileSync(path.join(root, "profile.md"), "# Minh\nChatty.\n")
+  fake.script({ content: "ok" })
+  const again = counted(root)
+  const send = { id: "s1", op: "send" as const, inbox: "messages", event: "hi" }
+  const rec = await run(advanceJob(chat, { deliver: [send] }), new Recorder({ memories: { profile: again } }), {
+    env: fake.env(),
+  })
+  expect(rec.outcome?.status).toBe("succeeded")
+  expect(again.opens).toBe(1)
+  expect(systemOf(fake, 0)).toBe('<memory name="profile"># Minh\nTerse.\n</memory>')
+})
+
+test("a crash resume binds the memory again and logs that it changed", async () => {
+  const fake = await fakeLlm()
+  const where = base()
+  const root = path.join(where.root, "memory")
+  const handlers = new Recorder({ memories: { profile: profileMemory(root, "# Minh\nTerse.\n") } })
+  const chat = makeJob(where, "flows/profiled.yaml", {}, handlers)
+  await stoppedRun(fake, chat, handlers)
+  fs.writeFileSync(path.join(root, "profile.md"), "# Minh\nChatty.\n")
+  const lines = captureStderr()
+  fake.script({ content: "recovered" })
+  const again = counted(root)
+  const rec = await run(advanceJob(chat), new Recorder({ memories: { profile: again } }), { env: fake.env() })
+  expect([rec.outcome?.status, rec.outcome?.output]).toEqual(["succeeded", "recovered"])
+  expect(again.opens).toBe(1)
+  expect(systemOf(fake, 1)).toBe('<memory name="profile"># Minh\nTerse.\n</memory>')
+  expect(lines).toContain("opencorp __worker: memory profile changed since the run started")
 })
 
 test("an advance whose yian settings differ is not resumed", async () => {
@@ -192,6 +255,21 @@ test("an advance whose log is gone is not resumed", async () => {
     unreadable: true,
   })
   expect(fs.existsSync(path.dirname(waiting.log))).toBe(false)
+})
+
+test("an advance whose log is a fifo is not resumed", async () => {
+  const waiting = await waitingInbox()
+  fs.rmSync(waiting.log)
+  fifoAt(waiting.log)
+  const rec = await run(advanceJob(waiting, { deliver: [HI] }), new Recorder())
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", refused: "not_started" }])
+  expect(rec.outcome).toEqual({
+    type: "result",
+    status: "not_resumed",
+    run_id: "r1",
+    error_type: "EINVAL",
+    unreadable: true,
+  })
 })
 
 test("a delivery-only job on an unreadable log is not resumed", async () => {

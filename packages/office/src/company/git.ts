@@ -71,8 +71,6 @@ const OPERATIONS: readonly (readonly [string, string])[] = [
 const UNMERGED = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"])
 // argv can't carry bytes that aren't UTF-8, so paths go to git on stdin, NUL-separated.
 const FROM_STDIN = ["--pathspec-from-file=-", "--pathspec-file-nul"]
-// Every line boundary `splitlines` knows, so a trailer matches as a whole line however the message breaks.
-const LINE_BREAK = /\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/
 // The whitespace Python's str.split() splits on, so a newline in a folder name can't start a trailer line.
 export const WHITESPACE = /[\t\n\v\f\r \x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/
 
@@ -278,6 +276,9 @@ export interface LockedGit {
    *  its own; returns their paths. Commits nothing while the repo is mid-operation, and skips a conflicted file, one
    *  under a symlinked folder, and a nested git repo. */
   commitHandEdits(): Promise<string[]>
+  /** Rejects with the 409 `CompanyRepoBusy` a `commit` of `paths` would refuse with now: a human's operation is in
+   *  progress, or a path in `paths` (or under one) has an unresolved conflict. */
+  refuseBusy(paths: string[]): Promise<void>
 }
 
 export interface CompanyGitOptions {
@@ -323,6 +324,7 @@ export class CompanyGit {
   readonly #writer: LockedGit = {
     commit: (paths, message) => this.#commit(paths, message),
     commitHandEdits: () => this.#commitHandEdits(),
+    refuseBusy: (paths) => this.#refuseBusy(paths),
   }
 
   constructor(root: string, worktrees: string, options: CompanyGitOptions = {}) {
@@ -677,22 +679,6 @@ export class CompanyGit {
       at += size + 1
     }
     return found
-  }
-
-  /** The newest commit on HEAD that touches `relpath` and has `line` as a whole message line. */
-  async findCommit(relpath: string, line: string): Promise<string | null> {
-    const grep = ["log", "--no-show-signature", "--fixed-strings", `--grep=${line}`, "--format=%H%x00%B%x1e"]
-    const out = (await this.#run([...grep, "HEAD", "--", `:(literal)${relpath}`])).stdout.toString()
-    for (const record of out.split("\x1e")) {
-      const trimmed = record.replace(/^\n+|\n+$/g, "")
-      const nul = trimmed.indexOf("\0")
-      if (nul < 0) continue
-      const lines = trimmed.slice(nul + 1).split(LINE_BREAK)
-      if (lines.at(-1) === "") lines.pop() // as `splitlines`, a final break ends the last line
-      // --grep matches substrings; a trailer must match whole
-      if (lines.includes(line)) return trimmed.slice(0, nul)
-    }
-    return null
   }
 
   /** Stages `paths` and commits them; returns the new HEAD, or HEAD unchanged if nothing changed. Rejects with

@@ -603,15 +603,14 @@ export class ChatHarness implements SessionHarness {
       parked: (worker) => {
         if (!this.#stopping) handlers.parked(worker)
       },
+      released: (worker) => handlers.released(worker),
       exited: (worker, returncode) => {
         if (!this.#stopping) handlers.exited(worker, returncode)
       },
       askUser: (worker, request, callId) => this.#inCall(() => handlers.askUser(worker, request, callId)),
       toolCall: (worker, group, name, args, callId) =>
         this.#inCall(() => handlers.toolCall(worker, group, name, args, callId)),
-      storeRead: (worker, store, version) => this.#inCall(() => handlers.storeRead(worker, store, version)),
-      storeWrite: (worker, store, text, baseVersion, provenance) =>
-        this.#inCall(() => handlers.storeWrite(worker, store, text, baseVersion, provenance)),
+      memory: (worker, request) => this.#inCall(() => handlers.memory(worker, request)),
     }
   }
 

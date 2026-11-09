@@ -14,8 +14,10 @@ import {
   CODED_HELPERS,
   inProcessWorker,
   makeJob,
+  makeRegistry,
   Recorder,
   run,
+  runWorker,
   type TestWorker,
   writeFiles,
 } from "../worker/helpers.ts"
@@ -207,13 +209,12 @@ test("a code root refusal does not seed the history", async () => {
   const r2 = templateJob("chat", office, {}, { base: { pin: b, runs: a.runs }, run_id: "r2", seed: seedOf(r1, fake) })
   const rec = await run(r2, office, { env: fake.env() })
   expect(rec.outcome?.status).toBe("waiting")
-  expect(notSeeded(rec)).toEqual([{ error_type: "LoadError" }])
+  expect(notSeeded(rec)).toEqual([{ error_type: "RangeError" }])
   expect((await startInputs(r2, fake)).history).toEqual([])
-  // r1 ran in this process, so yian keeps an idle entry for its log; runFlow left that entry with no codeRoot, so the
-  // cancel doesn't reuse it but recompiles r1's flow, confined to B, and is refused.
+  // r1 recorded A as its code root, so the cancel, held to B, is refused too.
   expect(inspectRun(r1.log).status).toBe("waiting")
   expect(lines.filter((line) => line.includes("the replaced run was not cancelled"))).toEqual([
-    "opencorp __worker: the replaced run was not cancelled (LoadError)",
+    "opencorp __worker: the replaced run was not cancelled (RangeError)",
   ])
   expect(lines.filter((line) => [a.pin, b, r1.log].some((secret) => line.includes(secret)))).toEqual([])
 })
@@ -272,7 +273,7 @@ test("unread sends of a refused advance reach the fresh run once in order", asyn
   const fake = await fakeLlm()
   fake.script({ content: "ok" })
   const r1 = await waitingChat(fake)
-  const toolbox = [{ name: "toolbox_stub", description: "Does something else.", parameters: EMPTY }]
+  const toolbox = [{ name: "stub", description: "Does something else.", parameters: EMPTY }]
   const refused = advanceJob(r1, {
     groups: { ...r1.groups, toolbox },
     deliver: [send("a", "a"), send("b", "b")],
@@ -350,10 +351,12 @@ test("a refused cancel leaves the fresh run unharmed", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "ok" })
   const where = codedPin()
-  // A plain chat job: runFlow leaves yian's idle entry for r1's log with no codeRoot, so the cancel recompiles the
-  // recorded flow and finds its helper file gone.
+  // r1 runs in a worker process, as the office runs it, so this process has no compiled flow of r1's to reuse: the
+  // cancel recompiles the recorded flow and finds its helper file gone.
   const r1 = makeJob(where, "flows/coded.yaml", { inputs: {} })
-  expect((await run(r1, new Recorder(), { env: fake.env() })).outcome?.status).toBe("waiting")
+  const sessionDir = path.join(tempDir(), "sessions", "s1")
+  const first = await runWorker(makeRegistry(), r1, new Recorder(), sessionDir, { env: fake.env() })
+  expect(first.outcome?.status).toBe("waiting")
   fs.rmSync(path.join(where.pin, "flows", "helpers.ts"))
   const lines = captureStderr()
   const office = new TemplateOffice()

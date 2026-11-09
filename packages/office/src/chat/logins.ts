@@ -3,6 +3,7 @@ import { AuthError, AuthStore, OpenAIAuth } from "@ngocbh/yian/llm_clients"
 import type { ConnectionLogin } from "@opencorp/protocol"
 import type { z } from "zod"
 import { newId } from "../store/store.ts"
+import { plainAuthError } from "../worker/rpc.ts"
 import { ConnectionFile, type Connections } from "./connections.ts"
 import { type ModelCache, typeName } from "./models.ts"
 import { ProviderError } from "./provider.ts"
@@ -188,11 +189,11 @@ export class Logins {
     } catch (error) {
       if (error instanceof Stopped) {
         this.#end(login, { state: "cancelled" })
-      } else if (error instanceof AuthError) {
-        // yian's AuthError says only what failed and its HTTP status, never a token.
+      } else if (plainAuthError(error)) {
         this.#end(login, { state: "failed", message: error.message })
-      } else if (error instanceof ProviderError) {
-        // Its error may name the office's files; the log says which sign-in, the person gets no path.
+      } else if (error instanceof AuthError || error instanceof ProviderError) {
+        // Saving the sign-in failed: yian's store errors and the office's own may name the office's files. The log
+        // says which sign-in, the person gets no path.
         this.#log(`sign-in ${login.view.id} couldn't save its connection (${typeName(error)})`)
         this.#end(login, { state: "failed", message: "the sign-in couldn't be saved as a connection" })
       } else {

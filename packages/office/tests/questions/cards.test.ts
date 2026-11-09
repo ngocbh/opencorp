@@ -894,6 +894,9 @@ async function midSideReply(fake: FakeLLM) {
   const h = await sideHarness(fake)
   const { sid, q } = await ask(h)
   const side = await chat(h, q, "why?", 1)
+  // The copy after the reply's run call, which ends after the reply shows (its memory closes first), so the next
+  // message isn't in it.
+  await waitFor(() => discussed(h, q.id).length === 2, { what: "the first copy" })
   await h.office.cards!.openSide(q.id, "and the cost?")
   await fake.waitForRequests(3)
   return { h, sid, q, side }

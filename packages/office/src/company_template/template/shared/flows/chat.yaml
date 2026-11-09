@@ -1,8 +1,9 @@
 # A person's main chat: one LOOP iteration per turn. Each turn takes everything sent to `messages`
 # since the last one, then folds older turns into `summary` through compact_history (yian's example)
 # when the history is over budget, then the reply answers it; messages sent while the reply works
-# steer it. The kept turns ride in the LOOP as `history`. The person's profile is memory on the
-# reply. Closing `messages` ends the chat.
+# steer it. The kept turns ride in the LOOP as `history`. The person's profile is the `profile`
+# memory the office binds; the reply's system prompt holds it, and the reply can't change it.
+# Closing `messages` ends the chat.
 id: chat
 name: chat
 description: Chat with a person in the office.
@@ -25,6 +26,7 @@ input:
   history: !list(list(Message))  # the kept turns, one list of messages each; [] for a new chat
   turns: !int  # the session's turns so far
   max_turns: !int  # the run ends once turns reaches it
+  profile: !FileMemory  # the person's memory folder, profile.md its index; the office binds it
 
 defs:
   # The history so far, compacted, plus its kept turns as one list: a prompt splice must be a lone
@@ -54,6 +56,7 @@ defs:
       closed: !bool
       turns: !int
       max_turns: !int
+      profile: !FileMemory
     nodes:
       # The turn: everything sent since the last one. Messages read along with a close aren't answered.
       heard:
@@ -77,7 +80,6 @@ defs:
           history: ${input.history}
       reply:
         kind: agent
-        long_term_memory: profile
         steer_inbox: ${input.messages}
         env:
           max_tool_iterations: 100
@@ -89,6 +91,7 @@ defs:
           said: ${heard.output.events}
           person: ${input.person}
           talking_to: ${input.talking_to}
+          profile: ${input.profile}
         output: Optional(str)  # null only after an interrupt
         system_prompt: |-
           You are ${person.name} (@${person.handle}), ${person.title} at ${person.company}. ${person.reports_to} ${talking_to}
@@ -97,6 +100,10 @@ defs:
           learned about your work and the people you work with: follow it. Use your tools to gather the facts
           you need, and ask people only through the ask_user tool.
           A summary of this conversation's older turns (empty while it is short): ${summary}
+
+          <memory name="profile">
+          ${profile}
+          </memory>
         prompt:
           - ${history}
           - ${said}
@@ -125,6 +132,7 @@ nodes:
       closed: false
       turns: ${input.turns}
       max_turns: ${input.max_turns}
+      profile: ${input.profile}
     while: not closed and turns < max_turns
 output:
   summary: ${chat.output.summary}

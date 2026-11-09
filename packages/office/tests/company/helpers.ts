@@ -6,7 +6,7 @@ import path from "node:path"
 import { stringify } from "yaml"
 import { tempDir } from "../helpers.ts"
 
-/** The input block a main chat declares: what the office passes a main flow. */
+/** The input block a main chat declares: what the office passes a main flow, the person's profile memory included. */
 export const MAIN_INPUTS = `typedefs:
   Person:
     name: str
@@ -22,6 +22,7 @@ input:
   history: !list(list(Message))
   turns: !int
   max_turns: !int
+  profile: !FileMemory
 `
 
 export const CHAT = `id: chat
@@ -158,7 +159,8 @@ export function baseFiles(): Record<string, unknown> {
 }
 
 /** Writes `files` under `root` (bytes as is, strings as UTF-8, anything else as YAML) and commits
- *  them as the first commit of a new repo on `main`; returns `root`. */
+ *  them as the first commit of a new repo on `main`; returns `root`. The repo ignores `.yian/`, the folder yian
+ *  keeps a memory's journal in, as a company's `.gitignore` does, through `.git/info/exclude`, so no file is added. */
 export function writeRepo(root: string, files: Record<string, unknown>): string {
   for (const [rel, content] of Object.entries(files)) {
     const file = path.join(root, rel)
@@ -167,6 +169,8 @@ export function writeRepo(root: string, files: Record<string, unknown>): string 
     else fs.writeFileSync(file, typeof content === "string" ? content : stringify(content))
   }
   git(root, "init", "-q", "-b", "main")
+  fs.mkdirSync(path.join(root, ".git", "info"), { recursive: true })
+  fs.appendFileSync(path.join(root, ".git", "info", "exclude"), ".yian/\n")
   git(root, "add", "-A")
   git(root, "commit", "-q", "-m", "init")
   return root

@@ -16,15 +16,6 @@ export const ToolSpec = z.strictObject({
 })
 export type ToolSpec = z.output<typeof ToolSpec>
 
-/** A Yian `ProfileMemory` over the office store named `store`. */
-export const ProfileMemorySpec = z.strictObject({
-  kind: z.literal("profile").default("profile"),
-  store: z.string(),
-  max_chars: z.number().int().default(32000),
-  llm_config: z.record(z.string(), z.unknown()).nullable().default(null),
-})
-export type ProfileMemorySpec = z.output<typeof ProfileMemorySpec>
-
 // validationMessage replaces these messages with a fixed phrase; they only say what each check means.
 const absolute = z.string().refine((p) => path.posix.isAbsolute(p), "must be an absolute path")
 
@@ -65,9 +56,10 @@ export type Parent = z.output<typeof Parent>
  * the run. `seed` names the run of the same session a fresh `chat` run replaces (its log, the env that run had,
  * whether to cancel it); the worker seeds the flow's `summary` and `history` inputs from it and moves its unread
  * messages. `parent` names the run (and node) a fresh `chat` run nests under in yian's run index; an `advance`
- * resumes a log that already records it. With `keep`, a worker whose run call comes back `waiting` stays up for the
- * run's next `advance` job (`serve` says how); a `check` job never keeps. A `Job` holds the provider key in
- * `llm_config`, so it is never logged.
+ * resumes a log that already records it. `memory` names the flow's memory inputs the office keeps: the worker binds
+ * each, by that name, to the office's memory of the name, on the run call and every `advance`. With `keep`, a worker
+ * whose run call comes back `waiting` stays up for the run's next `advance` job (`serve` says how); a `check` job
+ * never keeps. A `Job` holds the provider key in `llm_config`, so it is never logged.
  */
 export const Job = z
   .strictObject({
@@ -89,7 +81,7 @@ export const Job = z
         "ask and ask_user are the worker's own tools, not groups",
       )
       .default(() => ({})),
-    memory: z.record(z.string(), ProfileMemorySpec).default(() => ({})),
+    memory: z.array(z.string()).default(() => []),
     deliver: z.array(Delivery).default(() => []),
     advance: z.boolean().default(true),
     seed: Seed.nullable().default(null),

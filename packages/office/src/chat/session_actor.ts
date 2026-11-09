@@ -20,7 +20,7 @@ import type { LiveRelay } from "../daemon/live.ts"
 import type { OfficePaths } from "../daemon/office.ts"
 import type { Env } from "../install/launch.ts"
 import { redact } from "../perm/redact.ts"
-import { type Answers, makeAskUser, type OnQuestion } from "../questions/ask.ts"
+import { type Answers, isAskManagerCall, makeAskUser, type OnQuestion } from "../questions/ask.ts"
 import type { AnswerKind } from "../questions/cards.ts"
 import { formatAnswer, MAX_ANSWER_BYTES } from "../questions/format.ts"
 import type { RunIndexer } from "../runs/indexer.ts"
@@ -55,6 +55,7 @@ import {
   errorKind,
   errorName,
   type OfficeTool,
+  SIGN_IN_UNUSABLE,
   type WorkerHandlers,
 } from "../worker/rpc.ts"
 import { RegistryClosed, type Worker, workerEnv } from "../worker/spawn.ts"
@@ -850,7 +851,7 @@ export class SessionActor implements LiveCalls {
   #agentWaits(): boolean {
     const asked = this.#ctx.store.listQuestions({ runId: this.#runId!, status: "open" })
     if (asked.some((q) => q.source === "ask_user" || q.source === "ask_manager")) return true
-    return (this.#waits ?? []).some((w) => !w.settled && (w.tool === "ask_user" || w.tool === "ask_manager"))
+    return (this.#waits ?? []).some((w) => !w.settled && (w.tool === "ask_user" || isAskManagerCall(w.tool)))
   }
 
   /** A steer is a message: the running reply reads it before its next model call, else the next turn does. */
@@ -1541,7 +1542,7 @@ export class SessionActor implements LiveCalls {
       })
       if (run.kind === "chat") store.setRunConfig(runId, runRecord(name, model, provider))
       const defaultPrice = await this.#defaultPrice(name)
-      const handlers = this.#handlers(run, ask, tools, spec.stores)
+      const handlers = this.#handlers(run, ask, tools, spec.memories)
       // The office may have stopped during the awaits above.
       if (this.#closed) throw stopping()
       run.provider = provider
@@ -1969,7 +1970,7 @@ export class SessionActor implements LiveCalls {
     run: WorkerRun,
     ask: (request: AskRequest, callId: string) => Promise<unknown>,
     tools: Record<string, Record<string, OfficeTool>>,
-    stores: RunSpec["stores"],
+    memories: RunSpec["memories"],
   ): WorkerHandlers<ActorWorker> {
     const actor = this
     return new (class extends BaseHandlers {
@@ -2005,7 +2006,8 @@ export class SessionActor implements LiveCalls {
         if (actor.#finished && run === actor.#run) actor.#forgetRuns(actor.#finishedRuns)
       }
 
-      override exited(worker: ActorWorker): void {
+      override exited(worker: ActorWorker, returncode: number | null): void {
+        super.exited(worker, returncode)
         run.exited = true
         if (actor.#parked?.worker === worker) {
           // A parked worker that dies (killed, crashed) is no death: the next run call spawns a new one.
@@ -2036,7 +2038,7 @@ export class SessionActor implements LiveCalls {
         // The workspace kills its own calls when interrupted.
         return group === "workspace" ? call() : actor.#cancellable(call)
       }
-    })({ tools, stores })
+    })({ tools, memories })
   }
 
   // --- worker frames ----------------------------------------------------------------------
@@ -3274,7 +3276,9 @@ function whyFailed(outcome: Frame | null, provider: Pick<Provider, "llm_config">
   if (outcome === null) return "its worker stopped or couldn't start; see the office log"
   const failure = failureOf(outcome)
   const cause = failure.cause_type
-  const message = failure.message || outcome.message || "no reason given"
+  // yian's credential store errors name the auth file, and a recorded failure keeps only their name, AuthError, which
+  // its plain auth errors share: none of their text is shown. A worker's error frame already left the store's out.
+  const message = cause === "AuthError" ? SIGN_IN_UNUSABLE : failure.message || outcome.message || "no reason given"
   const why = redactKey(cause ? `${cause}: ${message}` : String(message), provider) as string
   const chars = [...why]
   return chars.length <= WHY_CHARS ? why : `${chars.slice(0, WHY_CHARS - 1).join("")}…`

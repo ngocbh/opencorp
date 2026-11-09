@@ -888,27 +888,32 @@ const pick = (input: Record<string, unknown>, map: Record<string, string>) =>
     Object.entries(map).flatMap(([to, from]) => (input[from] === undefined ? [] : [[to, input[from]]])),
   )
 
-/** The renderer for an office tool, and its input renamed to the fields that renderer reads. */
+/** The renderer for an office tool, by the name the model called it (a workspace tool as `workspace_<tool>` when
+ *  its flow grants the group, else by its own name), and its input renamed to the fields that renderer reads. */
 export function toolView(
   tool: string,
   input: Record<string, unknown> = {},
 ): { view: ToolView; input: Record<string, unknown>; title?: string } {
   switch (tool) {
+    case "workspace_read_file":
     case "read_file":
       return { view: "read", input: pick(input, { filePath: "path", offset: "offset", limit: "limit" }) }
+    case "workspace_write_file":
     case "write_file":
       return { view: "write", input: pick(input, { filePath: "path", content: "content" }) }
+    case "workspace_edit_file":
     case "edit_file":
       return {
         view: "edit",
         input: pick(input, { filePath: "path", oldString: "old", newString: "new", replaceAll: "replace_all" }),
       }
-    // The workspace offers `list_dir` to the model as `list`.
+    case "workspace_list":
     case "list":
-    case "list_dir":
       return { view: "list", input: pick(input, { path: "path" }) }
+    case "workspace_search":
     case "search":
       return { view: "search", input: pick(input, { pattern: "pattern", path: "path", include: "glob" }) }
+    case "workspace_shell":
     case "shell":
       return { view: "shell", input }
     case "ask_user":

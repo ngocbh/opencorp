@@ -29,9 +29,9 @@ async function shellRunning(h: Harness): Promise<string> {
   return id
 }
 
-/** A model reply that runs `command` in the shell. */
+/** A model reply that runs `command` in the workspace's shell. */
 function shell(command: string) {
-  return { tool_calls: [{ name: "shell", arguments: { command } }] }
+  return { tool_calls: [{ name: "workspace_shell", arguments: { command } }] }
 }
 
 test.if(sandboxAvailable())("esc kills a running shell call", async () => {
@@ -44,7 +44,7 @@ test.if(sandboxAvailable())("esc kills a running shell call", async () => {
   await waitFor(() => status(h, id) === "idle", { what: "the next turn" })
   expect(performance.now() - began).toBeLessThan(10_000)
   const [tool] = await tools(h, id)
-  expect(tool).toMatchObject({ tool: "shell", state: "completed" })
+  expect(tool).toMatchObject({ tool: "workspace_shell", state: "completed" })
   expect(JSON.stringify(tool!.output)).toContain("[interrupted]")
   expect(await gone("60.1")).toBe(true)
   expect(fake.requests()).toHaveLength(1)
@@ -89,6 +89,6 @@ test.if(sandboxAvailable())("a killed worker leaves no shell call or tool part r
   await waitFor(async () => (await tools(h, id))[0]?.state === "interrupted", {
     what: "the cut call shown interrupted",
   })
-  expect((await tools(h, id))[0]!.tool).toBe("shell")
+  expect((await tools(h, id))[0]!.tool).toBe("workspace_shell")
   expect(await gone("43.9")).toBe(true)
 })

@@ -1,6 +1,5 @@
 /** The office object and its paths: what the routes and services share. */
 import path from "node:path"
-import type { MarkdownStore } from "@ngocbh/yian"
 import { type Message, Session, now } from "@opencorp/protocol"
 import { Connections, type ConnectionsOptions } from "../chat/connections.ts"
 import { Hiring } from "../chat/hire.ts"
@@ -181,7 +180,7 @@ export class Office {
   /** The office's one live relay, set by `buildOffice`; the session actors' context takes it. */
   live: LiveRelay | undefined
   /** Builds the profile store for one person, per request; null means the profile routes answer 501. */
-  profileStore: ((handle: string) => MarkdownStore) | null
+  profileStore: ((handle: string) => GitProfileStore) | null
   /** When this office object was built, which is the daemon's start, as a protocol timestamp. */
   readonly startedAt: string = now()
   /** Run in order by `start`, each awaited. */
@@ -222,8 +221,8 @@ export class Office {
     git: CompanyGit
     bus: Bus
     workers?: WorkerPool
-    /** Builds a person's profile store; defaults to their `memory/profile.md` in `git`'s clone, null for none. */
-    profileStore?: ((handle: string) => MarkdownStore) | null
+    /** Builds a person's profile store; defaults to their memory folder in `git`'s clone, null for none. */
+    profileStore?: ((handle: string) => GitProfileStore) | null
     tools?: Tools
     guards?: SandboxOfficePaths
     connections?: ConnectionsOptions

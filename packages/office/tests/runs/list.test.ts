@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test"
 import type { RunPage } from "@opencorp/protocol"
 import type { RunIndexRow, RunInspection } from "@ngocbh/yian/run"
-import { Inspections, Live, type LiveRun } from "../../src/runs/records.ts"
+import { Inspections, Live, type LiveRun, NO_OUTCOME } from "../../src/runs/records.ts"
 import { OFFICE_STOPPED, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
 import { SCHEMA } from "../../src/runs/reader.ts"
 import { RunLogs } from "../../src/runs/service.ts"
@@ -59,11 +59,14 @@ function indexRow(runId: string, over: Partial<RunIndexRow> = {}): RunIndexRow {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     reasoningTokens: 0,
     offset: 10,
     waits: [],
     ready: false,
     wakeAt: null,
+    memories: [],
+    unreadable: null,
     ...over,
   }
 }
@@ -76,7 +79,6 @@ function inspection(over: Partial<RunInspection> = {}): RunInspection {
     runId: null,
     schema: SCHEMA,
     flowFingerprint: null,
-    learnable: false,
     lastSeq: 3,
     startedAt: T,
     endedAt: null,
@@ -162,6 +164,24 @@ test("a page is top level runs newest first with how many runs each started", ()
     [[], 0],
     [[], 2],
   ])
+})
+
+test("a run whose index row is unreadable takes neither its parent link nor its end from it", () => {
+  const o = office()
+  const top = chatWith(o, { kids: 1 })
+  const kid = kidsOf(o, top)[0]!
+  o.index.set(kid, indexRow(kid, { parentRunId: top, unreadable: { seq: 4, reason: "a line that isn't a record" } }))
+  const page = runsFor(o).page()
+  const shown = new Map(page.runs.map((r) => [r.run_id, r]))
+  expect([shown.size, shown.get(top)!.children_total]).toEqual([2, 0])
+  expect([shown.get(kid)!.parent_run_id, shown.get(kid)!.status, shown.get(kid)!.reason]).toEqual([
+    null,
+    "interrupted",
+    NO_OUTCOME,
+  ])
+  // Nor as ended: an open-or-recent page still reads it, and finds it open when its log says so.
+  const inspections = new Inspections(o.runsDir, () => inspection({ status: "waiting" }))
+  expect(ids(runsFor(o, { inspections }).page({ recent: "2026-11-01T00:00:00.000Z" }))).toEqual([kid])
 })
 
 test("paging by top level run", () => {
