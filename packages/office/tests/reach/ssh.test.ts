@@ -11,19 +11,24 @@ import {
   defaultIncludes,
   descendants,
   findSsh,
+  isSocket,
   LIMITS,
   type ReachContext,
   KEEP_CHARS,
   killTree,
   lastStderr,
+  masterArgv,
   readStatuses,
   resetStatus,
   runChild,
   sshEnv,
+  startMaster,
+  waitForSocket,
   wrapperText,
   writeSshFiles,
 } from "../../src/reach/ssh.ts"
 import { isGone, shortDir, waitFor } from "../helpers.ts"
+import { fakeHome, reachCtx } from "./helpers.ts"
 import { startTime } from "../../src/install/proc.ts"
 
 setDefaultTimeout(30_000)
@@ -283,4 +288,77 @@ test("descendants lists children's children", async () => {
   expect(descendants(s31.pid)).toEqual([])
   killTree(child.pid!)
   await waitFor(() => [s30, sh, s31].every((s) => isGone(s.pid, s.started)), { timeout: 5000, what: "the tree to end" })
+})
+
+const SPEC = { host: "node1", opencorp: "/o/opencorp" }
+
+test("the master runs a remote cat on our pipe, with no ControlPersist and none of the owner's forwards, after --", () => {
+  const spec = { host: "u@n", jump: ["a", "b:2222"], port: 2200, opencorp: "/o/opencorp" }
+  expect(masterArgv("/usr/bin/ssh", spec, { config: "/c", socket: "/s" })).toEqual([
+    "/usr/bin/ssh", "-F", "/c",
+    "-M", "-S", "/s",
+    "-o", "ControlPersist=no",
+    "-o", "ClearAllForwardings=yes", "-o", "RequestTTY=no",
+    "-J", "a,b:2222",
+    "-p", "2200",
+    "--", "u@n",
+    "cat >/dev/null",
+  ])
+  expect(masterArgv("/usr/bin/ssh", { host: "n", opencorp: "/o/opencorp" }, { config: "/c", socket: "/s" })).toEqual([
+    "/usr/bin/ssh", "-F", "/c", "-M", "-S", "/s",
+    "-o", "ControlPersist=no", "-o", "ClearAllForwardings=yes", "-o", "RequestTTY=no",
+    "--", "n", "cat >/dev/null",
+  ])
+})
+
+test("waitForSocket is up after login, exited when it's refused, and timed out, killing the master, when it hangs", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const up = startMaster(ctx, SPEC, { quiet: true })
+  expect(await waitForSocket(up, 5000)).toBe("up")
+  expect(up.socket).toBe(ctx.paths.node)
+  expect(isSocket(ctx.paths.node)).toBe(true)
+  expect(fake.calls()[0]).toEqual(masterArgv(fake.ssh, SPEC, { config: ctx.paths.config, socket: ctx.paths.node }).slice(1))
+  up.lifeline.end()
+  expect(await up.exited).toBe(0)
+
+  fake.set({ login: "refuse" })
+  const refused = startMaster(ctx, SPEC, { quiet: true })
+  expect(await waitForSocket(refused, 5000)).toBe("exited")
+  expect(await refused.exited).toBe(255)
+
+  fake.set({ login: "hang" })
+  const hangs = startMaster(ctx, SPEC, { quiet: true })
+  const started = performance.now()
+  expect(await waitForSocket(hangs, 300)).toBe("timed_out")
+  expect(performance.now() - started).toBeLessThan(2000)
+  expect(await hangs.exited).not.toBe(0)
+
+  const stop = new AbortController()
+  const stopped = startMaster(ctx, SPEC, { quiet: true })
+  setTimeout(() => stop.abort(), 200)
+  expect(await waitForSocket(stopped, 5000, stop.signal)).toBe("timed_out")
+  await stopped.exited
+  expect(fake.masters()).toEqual([])
+})
+
+test("a batch context's master reads config.batch", async () => {
+  const { dir, fake } = fakeHome({ login: "tty", batch: "refuse" })
+  const ctx = await reachCtx(dir, fake, { batch: true })
+  const master = startMaster(ctx, SPEC, { quiet: true })
+  expect(await waitForSocket(master, 5000)).toBe("exited")
+  expect(fake.calls()[0]!.slice(0, 2)).toEqual(["-F", ctx.paths.batchConfig])
+  expect(fake.tty()).toEqual([])
+})
+
+test("closing our pipe ends the master when no connection is open", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const master = startMaster(ctx, SPEC, { quiet: true })
+  expect(await waitForSocket(master, 5000)).toBe("up")
+  expect(fake.masters()).toEqual([master.child.pid!])
+  master.lifeline.end()
+  expect(await master.exited).toBe(0)
+  expect(isSocket(ctx.paths.node)).toBe(false)
+  expect(fake.masters()).toEqual([])
 })

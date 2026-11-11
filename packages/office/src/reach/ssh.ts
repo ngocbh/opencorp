@@ -1,14 +1,15 @@
 /** The SSH plumbing of reaching a remote HQ: the generated configs and the ssh wrapper, the child runner, the node
  *  master and its lifeline, mux sessions and `-O` commands, and the watcher that ends every master once this process
  *  is gone. */
-import { execFileSync, spawn } from "node:child_process"
+import { type ChildProcess, execFileSync, spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import type { Writable } from "node:stream"
 import { sameProcess, startTime } from "../install/proc.ts"
 import { replaceFile, writePrivate } from "../secrets.ts"
 import type { ReachPaths } from "./paths.ts"
-import { safePath, word } from "./spec.ts"
+import { type Spec, safePath, word } from "./spec.ts"
 
 /** The owner's config, then the system's, which `-F` skips. `home` is the passwd entry's (`os.userInfo().homedir`),
  *  where ssh's own `~` points; only `realVisitDeps` calls this. */
@@ -263,3 +264,83 @@ function send(pid: number, sig: NodeJS.Signals): void {
     process.kill(pid, sig)
   } catch {}
 }
+
+/** The node master's argv: a master on `socket` whose session is a remote `cat` reading our pipe. */
+export function masterArgv(ssh: string, spec: Spec, { config, socket }: { config: string; socket: string }): string[] {
+  return [
+    ssh, "-F", config,
+    "-M", "-S", socket,
+    // Ends with its session, which ends when our pipe closes: no ControlPersist detach.
+    "-o", "ControlPersist=no",
+    // The owner's LocalForward, ExitOnForwardFailure or RequestTTY can't break it; -O forward still works.
+    "-o", "ClearAllForwardings=yes", "-o", "RequestTTY=no",
+    ...(spec.jump ? ["-J", spec.jump.join(",")] : []),
+    ...(spec.port !== undefined ? ["-p", String(spec.port)] : []),
+    "--", spec.host,
+    "cat >/dev/null",
+  ]
+}
+
+/** The node master: its process, the pipe that is its lifeline, its exit code, and its control socket. */
+export interface Master {
+  readonly child: ChildProcess
+  readonly lifeline: Writable
+  readonly exited: Promise<number>
+  readonly socket: string
+}
+
+/** Starts the node master as a foreground child, its stdin a pipe this process holds and never writes. When this
+ *  process ends, `kill -9` included, the remote cat exits and ssh ends the master once no channel is open; an HQ tab's
+ *  `/api/events` is one, so the visit's watcher also `-O exit`s it. Its stderr is the owner's unless `quiet`. */
+export function startMaster(ctx: ReachContext, spec: Spec, { quiet = false } = {}): Master {
+  const { paths } = ctx
+  const argv = masterArgv(ctx.ssh, spec, { config: ctx.batch ? paths.batchConfig : paths.config, socket: paths.node })
+  const child = spawn(argv[0]!, argv.slice(1), {
+    cwd: paths.dir,
+    env: sshEnv(ctx),
+    stdio: ["pipe", "ignore", quiet ? "ignore" : "inherit"],
+  })
+  // The master may be gone when the pipe closes (EPIPE).
+  child.stdin!.on("error", () => {})
+  const exited = new Promise<number>((resolve) => {
+    child.on("error", () => {
+      if (child.pid === undefined) resolve(127)
+    })
+    child.on("exit", (code, sig) => resolve(code ?? 128 + (sig ? (os.constants.signals[sig] ?? 0) : 0)))
+  })
+  return { child, lifeline: child.stdin!, exited, socket: paths.node }
+}
+
+/** Until the control socket exists (ssh binds it only after login), the master exits, or `timeoutMs` pass or `signal`
+ *  aborts (then it kills the master); polls every 100 ms. */
+export function waitForSocket(
+  master: Master,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<"up" | "exited" | "timed_out"> {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (result: "up" | "exited" | "timed_out") => {
+      if (done) return
+      done = true
+      clearInterval(poll)
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", stop)
+      resolve(result)
+    }
+    const stop = () => {
+      if (master.child.pid !== undefined) killTree(master.child.pid)
+      finish("timed_out")
+    }
+    const poll = setInterval(() => {
+      if (isSocket(master.socket)) finish("up")
+    }, 100)
+    const timer = setTimeout(stop, timeoutMs)
+    if (signal?.aborted) stop()
+    else signal?.addEventListener("abort", stop, { once: true })
+    void master.exited.then(() => finish("exited"))
+  })
+}
+
+/** Whether `p` is a unix socket (not following a symlink). */
+export const isSocket = (p: string) => fs.lstatSync(p, { throwIfNoEntry: false })?.isSocket() ?? false
