@@ -944,7 +944,8 @@ export class SessionActor implements LiveCalls {
   /**
    * At office start: picks the session up from where yian's log says its run stands. A run yian ended
    * keeps that end: an ending session ends as the run did; any other sleeps, its questions stale, until a fresh run.
-   * An unreadable log fails an ending session (`COULDNT_RESUME`); a run that never started has an ending session
+   * An unreadable log (a line over `LINE_CAP` among them) fails an ending session (`COULDNT_RESUME`); a run that
+   * never started has an ending session
    * ended again; a run that started and whose log is gone or unreadable is lost (`#markLost`), and an ending session
    * with a missing log is ended again; any other sleeps until a fresh run, one that never started recorded
    * `COULDNT_START` at once. A waiting run's questions are reconciled and it sleeps, its timer armed, unless it can
@@ -997,7 +998,7 @@ export class SessionActor implements LiveCalls {
     }
     let inspection: RunInspection | null = null
     try {
-      inspection = inspectRun(this.#logOf(runId))
+      inspection = inspectRun(this.#logOf(runId), { maxLineBytes: LINE_CAP })
       this.#runsStarted.add(runId)
     } catch (error) {
       this.#log(`session ${this.sessionId}: its run's log can't be read (${errorName(error)})`)
@@ -2486,8 +2487,8 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Whether the worker's `error` frame `outcome` is about run `runId`'s log, and the log is lost: an errno
-   *  `ENOENT` or `ENOTDIR` with no log there, or a `RangeError` (`RunLogSchemaError`) on a log yian refuses. The log
-   *  is read only then: any other error, `EACCES` among them, is no lost log. */
+   *  `ENOENT` or `ENOTDIR` with no log there, or a `RangeError` (`RunLogSchemaError`) on a log yian refuses, or one
+   *  with a line over `LINE_CAP`. The log is read only then: any other error, `EACCES` among them, is no lost log. */
   #logLost(runId: string, outcome: Frame): boolean {
     const log = this.#logOf(runId)
     const { code } = errnoFields(outcome)
@@ -2495,7 +2496,7 @@ export class SessionActor implements LiveCalls {
     const type = errorType(outcome)
     if (type !== "RangeError" && type !== "RunLogSchemaError") return false
     try {
-      inspectRun(log)
+      inspectRun(log, { maxLineBytes: LINE_CAP })
       return false
     } catch {
       return true
