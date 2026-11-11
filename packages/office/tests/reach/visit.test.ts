@@ -11,6 +11,7 @@ import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import type { Spec } from "../../src/reach/spec.ts"
 import { type Access, DEFAULT_PORT, readAccess, sha256, takeLock, writeAccess } from "../../src/reach/state.ts"
 import {
+  AFTER_CAP,
   BUSY,
   ASKED_FOR,
   CAPPED,
@@ -807,6 +808,20 @@ test("at the turn cap the visit prints the commands and saves nothing", async ()
   expect(v.errors.slice(at + 1)).toEqual(Array.from({ length: 29 }, (_, i) => `  (exit 0) echo ${i}`))
   expect(fs.existsSync(paths.script)).toBe(false)
   expect(fs.existsSync(paths.access)).toBe(false)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+}, 60_000)
+
+test("when the model's answer after the turn cap fails, the visit says why after the commands", async () => {
+  const { dir, fake, llm, paths } = await unlearnedHome()
+  const calls = Array.from({ length: 30 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" }))
+  llm.script(...calls, { error: 400 })
+  const v = visitDeps(dir, fake, { answers: ["1", ...Array(29).fill("1")] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors.slice(0, 2)).toEqual([NO_OFFICE_HERE, CAPPED])
+  expect(v.errors.slice(2, -1)).toEqual(Array.from({ length: 29 }, (_, i) => `  (exit 0) echo ${i}`))
+  expect(v.errors.at(-1)).toStartWith(AFTER_CAP(""))
+  expect(v.errors.at(-1)).toContain("scripted error 400")
+  expect(fs.existsSync(paths.script)).toBe(false)
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
 }, 60_000)
 

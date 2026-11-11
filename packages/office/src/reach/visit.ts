@@ -107,6 +107,8 @@ export const RELEARN_BUSY =
 export const CAPPED =
   "opencorp hq: the model stopped after 30 turns without a working path, so nothing was saved. The commands it asked for:"
 export const ASKED_FOR = "The commands the model asked for:"
+/** After the commands at the turn cap: why the model's answer after the cap failed. */
+export const AFTER_CAP = (why: string) => `opencorp hq: the model's answer after the cap failed: ${why}`
 /** Signed in longer than this, a visit hints at `--sign-in`: HQ's browser session lasts 30 days. */
 export const SIGN_IN_HINT_DAYS = 30
 export const SIGN_IN_HINT =
@@ -353,6 +355,7 @@ async function learnPath(
   }
   if (learned.capped) {
     listCommands(deps, state, CAPPED)
+    if (learned.message !== null) deps.error(AFTER_CAP(clean(state.scrub(learned.message))))
     return 1
   }
   deps.error(`opencorp hq: nothing was saved: ${clean(state.scrub(learned.message ?? learned.output ?? "the model stopped"))}`)
