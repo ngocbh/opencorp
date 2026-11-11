@@ -9,7 +9,7 @@ import type { Writable } from "node:stream"
 import { sameProcess, startTime } from "../install/proc.ts"
 import { replaceFile, writePrivate } from "../secrets.ts"
 import type { ReachPaths } from "./paths.ts"
-import { type Spec, safePath, word } from "./spec.ts"
+import { remoteCommand, type Spec, safePath, word } from "./spec.ts"
 
 /** The owner's config, then the system's, which `-F` skips. `home` is the passwd entry's (`os.userInfo().homedir`),
  *  where ssh's own `~` points; only `realVisitDeps` calls this. */
@@ -266,7 +266,7 @@ function send(pid: number, sig: NodeJS.Signals): void {
 }
 
 /** The node master's argv: a master on `socket` whose session is a remote `cat` reading our pipe. */
-export function masterArgv(ssh: string, spec: Spec, { config, socket }: { config: string; socket: string }): string[] {
+export function masterArgv(ssh: string, spec: Spec, { config, socket }: { config: string; socket: string }): [string, ...string[]] {
   return [
     ssh, "-F", config,
     "-M", "-S", socket,
@@ -295,7 +295,7 @@ export interface Master {
 export function startMaster(ctx: ReachContext, spec: Spec, { quiet = false } = {}): Master {
   const { paths } = ctx
   const argv = masterArgv(ctx.ssh, spec, { config: ctx.batch ? paths.batchConfig : paths.config, socket: paths.node })
-  const child = spawn(argv[0]!, argv.slice(1), {
+  const child = spawn(argv[0], argv.slice(1), {
     cwd: paths.dir,
     env: sshEnv(ctx),
     stdio: ["pipe", "ignore", quiet ? "ignore" : "inherit"],
@@ -344,3 +344,50 @@ export function waitForSocket(
 
 /** Whether `p` is a unix socket (not following a symlink). */
 export const isSocket = (p: string) => fs.lstatSync(p, { throwIfNoEntry: false })?.isSocket() ?? false
+
+/** A session over the master at `socket`. ControlMaster=no: never a new master. ProxyCommand=false: with no master
+ *  it fails at once instead of logging in again. No -J (ssh refuses it beside ProxyCommand). -F /dev/null: no
+ *  `Match exec` of the owner's runs. */
+export function muxArgv(ssh: string, socket: string, host: string, command: string): [string, ...string[]] {
+  return [ssh, "-F", "/dev/null", "-S", socket, "-o", "ControlMaster=no", "-o", "ProxyCommand=false", "-T", "--", host, command]
+}
+
+/** Adds a forward of 127.0.0.1:`port` to the unix socket `target`; exits 255 when it can't (a mux client ignores
+ *  ExitOnForwardFailure, so the exit is the only answer). */
+export function forwardArgv(ssh: string, socket: string, host: string, port: number, target: string): [string, ...string[]] {
+  return [ssh, "-F", "/dev/null", "-S", socket, "-O", "forward", "-L", `127.0.0.1:${port}:${target}`, "--", host]
+}
+
+/** `-O` needs a destination even with `-S`; it isn't used. */
+export const CONTROL_HOST = "opencorp-hq"
+
+/** `-O check` or `-O exit` on the master at `socket`. */
+export function controlArgv(ssh: string, socket: string, op: "check" | "exit"): [string, ...string[]] {
+  return [ssh, "-F", "/dev/null", "-S", socket, "-O", op, "--", CONTROL_HOST]
+}
+
+/** How long a `-O` command may take. */
+export const CONTROL_MS = 5000
+
+/** Runs `opencorp <args>` on HQ's machine over the node master; its output isn't echoed. */
+export function mux(ctx: ReachContext, spec: Spec, args: readonly string[]): Promise<Ran> {
+  const argv = muxArgv(ctx.ssh, ctx.paths.node, spec.host, remoteCommand(spec, args))
+  return runChild(argv, {
+    env: sshEnv(ctx),
+    cwd: ctx.paths.dir,
+    timeoutMs: ctx.limits.stepMs,
+    signal: ctx.signal,
+  })
+}
+
+/** Forwards 127.0.0.1:`port` here to the unix socket `target` on HQ's machine, over the node master. */
+export function forward(ctx: ReachContext, spec: Spec, port: number, target: string): Promise<Ran> {
+  const argv = forwardArgv(ctx.ssh, ctx.paths.node, spec.host, port, target)
+  return runChild(argv, { env: sshEnv(ctx), cwd: ctx.paths.dir, timeoutMs: CONTROL_MS, signal: ctx.signal })
+}
+
+/** `-O check` or `-O exit` on the master at `socket`. */
+export function control(ctx: ReachContext, socket: string, op: "check" | "exit"): Promise<Ran> {
+  const argv = controlArgv(ctx.ssh, socket, op)
+  return runChild(argv, { env: sshEnv(ctx), cwd: ctx.paths.dir, timeoutMs: CONTROL_MS, signal: ctx.signal })
+}

@@ -6,11 +6,16 @@ import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import {
+  CONTROL_HOST,
   cleanOutput,
+  control,
+  controlArgv,
   configText,
   defaultIncludes,
   descendants,
   findSsh,
+  forward,
+  forwardArgv,
   isSocket,
   LIMITS,
   type ReachContext,
@@ -18,6 +23,8 @@ import {
   killTree,
   lastStderr,
   masterArgv,
+  mux,
+  muxArgv,
   readStatuses,
   resetStatus,
   runChild,
@@ -361,4 +368,50 @@ test("closing our pipe ends the master when no connection is open", async () => 
   expect(await master.exited).toBe(0)
   expect(isSocket(ctx.paths.node)).toBe(false)
   expect(fake.masters()).toEqual([])
+})
+
+test("mux steps never log in again and never pass -J", () => {
+  expect(muxArgv("/usr/bin/ssh", "/s", "u@n", "'/o/opencorp' 'hq'")).toEqual([
+    "/usr/bin/ssh", "-F", "/dev/null", "-S", "/s",
+    "-o", "ControlMaster=no", "-o", "ProxyCommand=false",
+    "-T", "--", "u@n", "'/o/opencorp' 'hq'",
+  ])
+})
+
+test("-O forward binds 127.0.0.1 only and names the socket as given", () => {
+  expect(forwardArgv("/usr/bin/ssh", "/s", "u@n", 49381, "/h/office/hq.sock")).toEqual([
+    "/usr/bin/ssh", "-F", "/dev/null", "-S", "/s",
+    "-O", "forward", "-L", "127.0.0.1:49381:/h/office/hq.sock",
+    "--", "u@n",
+  ])
+})
+
+test("control commands name a placeholder host", () => {
+  expect(CONTROL_HOST).toBe("opencorp-hq")
+  for (const op of ["check", "exit"] as const)
+    expect(controlArgv("/usr/bin/ssh", "/s", op)).toEqual(["/usr/bin/ssh", "-F", "/dev/null", "-S", "/s", "-O", op, "--", "opencorp-hq"])
+})
+
+test("mux runs the remote command over the master and returns its output", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  fs.mkdirSync(path.join(dir, "remote"))
+  const opencorp = path.join(dir, "remote", "opencorp")
+  fs.writeFileSync(opencorp, '#!/bin/sh\necho "home=$OPENCORP_HOME args=$*"; echo warn >&2; exit 5\n', { mode: 0o700 })
+  const spec = { host: "node1", opencorp, env: { OPENCORP_HOME: "/the/home" } }
+  const master = startMaster(ctx, spec, { quiet: true })
+  expect(await waitForSocket(master, 5000)).toBe("up")
+  const echoed: string[] = []
+  const ran = await mux({ ...ctx, echo: (t) => echoed.push(t) }, spec, ["hq", "--check", "--json"])
+  expect(ran).toEqual({ code: 5, stdout: "home=/the/home args=hq --check --json\n", stderr: "warn\n", timedOut: false })
+  expect(echoed).toEqual([])
+  expect(fake.calls().at(-1)).toEqual(muxArgv(fake.ssh, ctx.paths.node, "node1", "env 'OPENCORP_HOME=/the/home' " + `'${opencorp}' 'hq' '--check' '--json'`).slice(1))
+  expect((await control(ctx, ctx.paths.node, "check")).code).toBe(0)
+  master.lifeline.end()
+  await master.exited
+  const started = performance.now()
+  expect((await mux(ctx, spec, ["hq"])).code).toBe(255)
+  expect(performance.now() - started).toBeLessThan(2000)
+  expect((await forward(ctx, spec, 49381, "/h/hq.sock")).code).toBe(255)
+  expect((await control(ctx, ctx.paths.node, "check")).code).toBe(255)
 })
