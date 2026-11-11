@@ -23,7 +23,7 @@ const SERVICE_TOOLS = ["launchctl", "systemctl", "loginctl", "tmux"]
 const SSH_VARS = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
 /** Python's `wait_for` default. */
 const WAIT = 40_000
-/** The pairing URL `opencorp pair` prints for HQ's TCP listener: its port and code. */
+/** The pairing URL `opencorp hq` prints for HQ's TCP listener: its port and code. */
 export const URL_RE = /http:\/\/127\.0\.0\.1:(\d+)\/pair#([A-Za-z0-9_-]+)/
 
 /** `s` single-quoted for sh. */
@@ -329,7 +329,7 @@ export class RunningOffice {
     return this.#json("PUT", target, body)
   }
 
-  /** HQ's status as `opencorp pair` and `opencorp doctor` read it: `GET /hq` on the office socket. */
+  /** HQ's status as `opencorp hq` and `opencorp doctor` read it: `GET /hq` on the office socket. */
   hqStatus(): Promise<any> {
     return this.get("/hq")
   }

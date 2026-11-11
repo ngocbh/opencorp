@@ -127,7 +127,7 @@ test("without a cookie api is 401 even with no devices", async () => {
   const body = r.json() as Body
   expect(r.status).toBe(401)
   expect(body.error).toBe("sign_in_required")
-  expect(body.message).toContain("opencorp pair")
+  expect(body.message).toContain("opencorp hq --sign-in")
   expect(r.headers).toHaveProperty("content-security-policy")
 })
 
@@ -202,7 +202,7 @@ test("a used or wrong code says to pair again", async () => {
     const r = await client.post("/api/pair", { code: bad })
     const body = r.json() as Body
     expect([r.status, body.error]).toEqual([400, "pair_code_invalid"])
-    expect(body.message).toContain("opencorp pair")
+    expect(body.message).toContain("opencorp hq --sign-in")
     expect(r.text).not.toContain(bad)
   }
 })

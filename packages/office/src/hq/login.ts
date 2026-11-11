@@ -189,7 +189,7 @@ export class Logins {
    * `CHECKS` checks are running. A `person.yaml` that can't be read fails as `UnreadablePerson`, after the same full
    * check, and counts toward the throttle like any failure: not counting it would tell callers the handle exists.
    *
-   * Pairing never comes here, so no number of failures here can lock anyone out of `opencorp pair`.
+   * Pairing never comes here, so no number of failures here can lock anyone out of `opencorp hq`.
    */
   async check(peer: string, handle: string, password: string): Promise<string> {
     const key: Key = [peer, handle]

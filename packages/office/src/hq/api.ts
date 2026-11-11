@@ -343,7 +343,7 @@ export const ROUTES: readonly Route<HqContext>[] = [
     },
   },
   // Spends a one-time code from a pairing link and signs this browser in. Open without a session. A local failure
-  // after the code is spent burns it; run `opencorp pair` again.
+  // after the code is spent burns it; run `opencorp hq --sign-in` again.
   {
     method: "POST",
     path: "/api/pair",
@@ -358,7 +358,7 @@ export const ROUTES: readonly Route<HqContext>[] = [
         throw new HttpError(
           400,
           "pair_code_invalid",
-          "This link has expired or was already used. Run `opencorp pair` again.",
+          "This link has expired or was already used. Run `opencorp hq --sign-in` again.",
         )
       const [session, value] = await hq.sessions.issue(pending.handle, {
         issuedBy: pending.issuer,
@@ -379,7 +379,7 @@ export const ROUTES: readonly Route<HqContext>[] = [
       const { handle, password, label } = body as z.output<typeof HqLoginRequest>
       // HQ listens only on 127.0.0.1, ::1 and hq.sock, so the peer is in practice always 127.0.0.1 or "" (hq.sock):
       // ::1 counts as 127.0.0.1, or a guesser would get twice the tries. The throttle keyed on it is per handle.
-      // Anyone who reaches HQ can lock a handle's password sign-in for a while, which is why `opencorp pair` never
+      // Anyone who reaches HQ can lock a handle's password sign-in for a while, which is why `opencorp hq` never
       // goes through it and stays the way in.
       const remote = req.socket.remoteAddress ?? ""
       const peer = remote === "::1" ? "127.0.0.1" : remote
@@ -425,7 +425,7 @@ export const ROUTES: readonly Route<HqContext>[] = [
           if (e.first) info(`sign-in for ${await named()} from ${where} throttled for ${e.retryAfter} s`)
           const minutes = Math.ceil(e.retryAfter / 60)
           const wait = `wait ${minutes} minute${minutes === 1 ? "" : "s"}`
-          const message = `too many tries; ${wait}, or run \`opencorp pair\` on the office machine`
+          const message = `too many tries; ${wait}, or run \`opencorp hq --sign-in\``
           return errorReply(429, "too_many_attempts", message, { "retry-after": String(e.retryAfter) })
         }
         if (e instanceof Busy) return errorReply(503, "busy", "the office is busy; try again", { "retry-after": "1" })

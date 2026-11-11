@@ -1566,11 +1566,11 @@ test("a web port server that ended is told to restart", () => {
   expect(got.detail).not.toContain("isn't free")
 })
 
-test("tcp off points at pair", () => {
+test("tcp off points at hq", () => {
   const dir = tempDir()
   const got = byName(doctor.hqChecks(status({ enabled: false, listening: false }), dir, dir))
   expect(got.hq!.status).toBe("ok")
-  expect(got.hq!.detail).toContain("opencorp pair")
+  expect(got.hq!.detail).toContain("opencorp hq")
 })
 
 test("an unbuilt or stale app warns", () => {

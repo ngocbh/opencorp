@@ -72,7 +72,7 @@ export const HqTcp = z.strictObject({
 })
 export type HqTcp = z.input<typeof HqTcp>
 
-/** GET /hq on the office socket: where HQ listens, for `opencorp pair` and `opencorp doctor`. */
+/** GET /hq on the office socket: where HQ listens, for `opencorp hq` and `opencorp doctor`. */
 export const HqStatus = z.strictObject({
   /** The path of hq.sock. */
   socket: z.string(),
@@ -132,9 +132,9 @@ export const BrowserSession = z.strictObject({
   /** The office's name for it, `web-<6 characters>`. */
   name: z.string(),
   label: z.string().nullable(),
-  /** How it signed in. `pair`: a code from `opencorp pair`; `login`: a password. */
+  /** How it signed in. `pair`: a code from `opencorp hq`; `login`: a password. */
   via: z.enum(["pair", "login"]),
-  /** Who ran `opencorp pair`, or the person who signed in with a password. */
+  /** Who ran `opencorp hq`, or the person who signed in with a password. */
   issued_by: Handle,
   created_at: Timestamp,
   expires_at: Timestamp,
