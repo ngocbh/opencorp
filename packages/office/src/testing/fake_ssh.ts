@@ -10,7 +10,9 @@ import { createHash } from "node:crypto"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
+import { setTimeout as sleep } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
+import { selfCommand } from "../platform.ts"
 
 /** ok; refuse (255, "Permission denied"); hang; tty ("fake password for <host>: " on /dev/tty, the line read appended
  *  to tty.txt). `batch` applies when the -F file holds `BatchMode yes`. */
@@ -48,6 +50,8 @@ export const fakeControlName = (host: string) => createHash("sha1").update(host)
 export const FAKE_MASTER_MAX_MS = 120_000
 
 const SELF = fileURLToPath(import.meta.url)
+/** This Bun, as the office runs its own code in a checkout, where every test runs. */
+const BUN = selfCommand()[0]
 const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 
 /** Installs `<dir>/bin/ssh`, state in `<dir>/state` (behavior.json, log.jsonl, masters/, tty.txt). */
@@ -55,12 +59,12 @@ export function installFakeSsh(dir: string, behavior: FakeSshBehavior = {}): Fak
   const bin = path.join(dir, "bin")
   const state = path.join(dir, "state")
   const ssh = path.join(bin, "ssh")
-  for (const p of [process.execPath, SELF, state])
+  for (const p of [BUN, SELF, state])
     if (p.includes("'")) throw new Error(`the fake ssh's shim can't quote ${p}`)
   fs.mkdirSync(bin, { recursive: true })
   fs.mkdirSync(path.join(state, "masters"), { recursive: true })
   // Paths baked in: ssh's children get no test variables.
-  const shim = `#!/bin/sh\nexec '${process.execPath}' ${BUN_FLAGS.join(" ")} '${SELF}' '${state}' "$@"\n`
+  const shim = `#!/bin/sh\nexec '${BUN}' ${BUN_FLAGS.join(" ")} '${SELF}' '${state}' "$@"\n`
   fs.writeFileSync(ssh, shim, { mode: 0o700 })
   const set = (b: FakeSshBehavior) => fs.writeFileSync(path.join(state, "behavior.json"), JSON.stringify(b))
   set(behavior)
@@ -371,12 +375,12 @@ class Run {
     if (!(await this.login(p.host, batch))) return 255
     if (sock !== null && controlMaster === "auto") {
       // As ControlPersist does: a master goes to the background and this session runs over it.
-      spawn(process.execPath, [...BUN_FLAGS, SELF, this.state, "--auto-master", sock, ...this.argv], {
+      spawn(BUN, [...BUN_FLAGS, SELF, this.state, "--auto-master", sock, ...this.argv], {
         detached: true,
         stdio: "ignore",
       }).unref()
       const deadline = Date.now() + 2000
-      while (!fs.existsSync(sock) && Date.now() < deadline) await Bun.sleep(20)
+      while (!fs.existsSync(sock) && Date.now() < deadline) await sleep(20)
       for (const c of held) c.destroy()
       return await this.mux(sock, p.command)
     }
@@ -529,6 +533,6 @@ class Master {
 }
 
 if (import.meta.main) {
-  const [state, ...argv] = process.argv.slice(2)
-  process.exit(await new Run(state!, argv).main())
+  const args = process.argv.slice(2)
+  process.exit(await new Run(args[0]!, args.slice(1)).main())
 }

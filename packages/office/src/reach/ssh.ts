@@ -6,6 +6,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import type { Writable } from "node:stream"
+import { setTimeout as sleep } from "node:timers/promises"
 import { sameProcess, startTime } from "../install/proc.ts"
 import { replaceFile, writePrivate } from "../secrets.ts"
 import type { ReachPaths } from "./paths.ts"
@@ -34,10 +35,10 @@ export function configText(cm: string, { batch = false, includes }: { batch?: bo
 }
 
 /** `hq/ssh/bin/ssh`, first on PATH for reach.sh and the shell tool: the real ssh by absolute path (so ProxyJump's hop,
- *  built from argv0 and `-F`, shares the config) with our config; each exit status is appended to $OPENCORP_SSH_STATUS,
- *  so a 255 counts where a pipeline or `|| true` hides it. */
+ *  built from the program name ssh was run as and `-F`, shares the config) with our config; each exit status is
+ *  appended to $OPENCORP_SSH_STATUS, so a 255 counts where a pipeline or `|| true` hides it. */
 export function wrapperText(realSsh: string): string {
-  // The hop's command holds argv0 unquoted.
+  // The hop's command holds the program name unquoted.
   if (!safePath(realSsh)) throw new Error(`ssh's path can't be used unquoted: ${realSsh}`)
   return [
     "#!/bin/sh",
@@ -419,7 +420,7 @@ export async function endNode(ctx: ReachContext, master: Master): Promise<void> 
   const asked = await control({ ...ctx, signal: undefined }, master.socket, "exit")
   const gone =
     asked.code === 0 &&
-    (await Promise.race([master.exited.then(() => true), Bun.sleep(CONTROL_MS).then(() => false)]))
+    (await Promise.race([master.exited.then(() => true), sleep(CONTROL_MS).then(() => false)]))
   if (!gone && running(master.child)) killTree(master.child.pid!)
   await master.exited
   fs.rmSync(master.socket, { force: true })
