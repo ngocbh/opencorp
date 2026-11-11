@@ -186,10 +186,11 @@ export const realHqDeps: HqDeps = {
 }
 
 /**
- * `opencorp hq [--handle H] [--no-open] [--sign-in]`: a one-time link that signs a browser in as H (you by default).
+ * `opencorp hq [--handle H] [--no-open] [--sign-in] [--json]`: a one-time link that signs a browser in as H (you by
+ * default). With `--json` it prints the minted `PairCode` as one line of JSON and opens nothing.
  */
 export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<number> {
-  let values: { handle?: string; "no-open"?: boolean; "sign-in"?: boolean; help?: boolean }
+  let values: { handle?: string; "no-open"?: boolean; "sign-in"?: boolean; json?: boolean; help?: boolean }
   try {
     ;({ values } = parseArgs({
       args: argv,
@@ -198,6 +199,7 @@ export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<num
         "no-open": { type: "boolean" },
         // Read nowhere here: every run on HQ's machine signs a browser in.
         "sign-in": { type: "boolean" },
+        json: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
     }))
@@ -225,12 +227,16 @@ export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<num
     // to an app that isn't built won't load, so it isn't opened.
     const code = await office.hq.pair({
       handle: values.handle === undefined ? null : bareHandle(values.handle),
-      open_file: !noOpen && canOpen(deps.env, deps.platform) && status?.health?.app !== null,
+      open_file: !values.json && !noOpen && canOpen(deps.env, deps.platform) && status?.health?.app !== null,
     })
     if (!code.url && socketError) {
       // The web port stopped listening after the read. The code isn't shown, has no file and expires unused.
       for (const line of unreachable(socketError, null, [], hqJson)) deps.error(line)
       return 1
+    }
+    if (values.json) {
+      deps.print(JSON.stringify(code))
+      return 0
     }
     const out = pairOutput(code, {
       env: deps.env,

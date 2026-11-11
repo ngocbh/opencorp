@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
-import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
+import { HqStatus, type HqTcp, PairCode } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
 import { canOpen, hq, pairOutput, type HqDeps, socketPort } from "../src/commands/hq"
 import { staleSocket } from "./sockets"
@@ -355,6 +355,42 @@ test("--sign-in on HQ's machine signs in as plain hq does", async () => {
   expect(await hq(["--sign-in"], d)).toBe(0)
   expect(pairBody()).toEqual({ handle: null, open_file: true })
   expect(spawned).toHaveLength(1)
+})
+
+test("--json mints a link and prints it as one line of JSON, opening nothing", async () => {
+  start({ tcp: true, listening: true })
+  const { d, spawned, printed, errors } = deps()
+  expect(await hq(["--json"], d)).toBe(0)
+  expect(pairBody()).toEqual({ handle: null, open_file: false })
+  expect(printed).toHaveLength(1)
+  const minted = PairCode.parse(JSON.parse(printed[0]!))
+  expect(minted.open_file).toBeNull()
+  expect(minted.path).toMatch(/^\/pair#/)
+  expect(spawned).toEqual([])
+  expect(errors).toEqual([])
+})
+
+test("--json takes --handle", async () => {
+  start({ tcp: true, listening: true })
+  const { d } = deps()
+  expect(await hq(["--json", "--handle", "@ngocbh"], d)).toBe(0)
+  expect(pairBody()).toEqual({ handle: "ngocbh", open_file: false })
+})
+
+test("--json without an office exits 3, says why on stderr and prints nothing", async () => {
+  const { d, printed, errors } = deps()
+  expect(await hq(["--json"], d)).toBe(3)
+  expect(errors).toEqual([notRunningAt(home)])
+  expect(printed).toEqual([])
+})
+
+test("--json with hq.sock dead and TCP off mints nothing and exits 1", async () => {
+  start({ tcp: false, socketError: "x" })
+  const { d, printed, errors } = deps()
+  expect(await hq(["--json"], d)).toBe(1)
+  expect(office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")).toBe(false)
+  expect(printed).toEqual([])
+  expect(errors.join("\n")).toContain("HQ can't be reached")
 })
 
 test("over SSH it never asks for a file or opens anything", async () => {
