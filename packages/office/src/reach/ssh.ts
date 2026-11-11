@@ -391,3 +391,36 @@ export function control(ctx: ReachContext, socket: string, op: "check" | "exit")
   const argv = controlArgv(ctx.ssh, socket, op)
   return runChild(argv, { env: sshEnv(ctx), cwd: ctx.paths.dir, timeoutMs: CONTROL_MS, signal: ctx.signal })
 }
+
+/** Ends every master whose control socket is in `cm` with `-O exit`, the node's first (so its hop goes before the login
+ *  master), then removes what's left there. Never signals a pid. Runs on stop, so it ignores the stop signal. */
+export async function exitAll(ctx: ReachContext): Promise<void> {
+  const names = readdirOrEmpty(ctx.paths.cm).sort((a, b) => (a === "node" ? -1 : b === "node" ? 1 : a.localeCompare(b)))
+  for (const name of names) {
+    const file = path.join(ctx.paths.cm, name)
+    if (isSocket(file)) await control({ ...ctx, signal: undefined }, file, "exit")
+    fs.rmSync(file, { force: true, recursive: true })
+  }
+}
+
+/** Ends the node master alone, leaving the login node's for a retry: `-O exit`, then up to `CONTROL_MS` for it to
+ *  go, else (or when `-O exit` fails) ends our own child; removes `cm/node`. */
+export async function endNode(ctx: ReachContext, master: Master): Promise<void> {
+  const asked = await control({ ...ctx, signal: undefined }, master.socket, "exit")
+  const gone =
+    asked.code === 0 &&
+    (await Promise.race([master.exited.then(() => true), Bun.sleep(CONTROL_MS).then(() => false)]))
+  if (!gone && master.child.pid !== undefined && master.child.exitCode === null && master.child.signalCode === null)
+    killTree(master.child.pid)
+  await master.exited
+  fs.rmSync(master.socket, { force: true })
+}
+
+function readdirOrEmpty(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
+    throw error
+  }
+}

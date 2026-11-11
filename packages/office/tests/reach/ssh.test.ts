@@ -3,7 +3,7 @@
 import { execFileSync, spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import {
   CONTROL_HOST,
@@ -13,6 +13,8 @@ import {
   configText,
   defaultIncludes,
   descendants,
+  endNode,
+  exitAll,
   findSsh,
   forward,
   forwardArgv,
@@ -35,7 +37,8 @@ import {
   writeSshFiles,
 } from "../../src/reach/ssh.ts"
 import { isGone, shortDir, waitFor } from "../helpers.ts"
-import { fakeHome, reachCtx } from "./helpers.ts"
+import { fakeHome, reachCtx, staleSocket } from "./helpers.ts"
+import { fakeControlName } from "../../src/testing/fake_ssh.ts"
 import { startTime } from "../../src/install/proc.ts"
 
 setDefaultTimeout(30_000)
@@ -414,4 +417,75 @@ test("mux runs the remote command over the master and returns its output", async
   expect(performance.now() - started).toBeLessThan(2000)
   expect((await forward(ctx, spec, 49381, "/h/hq.sock")).code).toBe(255)
   expect((await control(ctx, ctx.paths.node, "check")).code).toBe(255)
+})
+
+/** Runs `ssh <args>` through the wrapper with the context's env, as reach.sh would. */
+function viaWrapper(ctx: ReachContext, args: string[]) {
+  return runChild([ctx.paths.wrapper, ...args], { env: sshEnv(ctx), cwd: ctx.paths.dir, timeoutMs: 10_000 })
+}
+
+/** The `-S` socket of each `-O exit` the fake was run with, in order. */
+const exits = (calls: string[][]) =>
+  calls.filter((argv) => argv.includes("-O") && argv[argv.indexOf("-O") + 1] === "exit").map((argv) => argv[argv.indexOf("-S") + 1])
+
+/** login1's auto master, left by reach.sh's first ssh, and a node master whose hop rides it. */
+async function twoMasters(ctx: ReachContext) {
+  expect((await viaWrapper(ctx, ["login1", "true"])).code).toBe(0)
+  const login = path.join(ctx.paths.cm, fakeControlName("login1"))
+  expect(isSocket(login)).toBe(true)
+  const node = startMaster(ctx, { host: "node1", jump: ["login1"], opencorp: "/o/opencorp" }, { quiet: true })
+  expect(await waitForSocket(node, 5000)).toBe("up")
+  return { login, node }
+}
+
+test("exitAll ends each master in cm with -O exit, the node's first, and removes what's left", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const { login, node } = await twoMasters(ctx)
+  await staleSocket(path.join(ctx.paths.cm, "0dead"))
+  fs.writeFileSync(path.join(ctx.paths.cm, "junk"), "")
+  fs.symlinkSync(login, path.join(ctx.paths.cm, "alias"))
+  expect(fake.masters()).toHaveLength(2)
+  await exitAll(ctx)
+  expect(fs.readdirSync(ctx.paths.cm)).toEqual([])
+  expect(await node.exited).toBe(0)
+  await waitFor(() => fake.masters().length === 0, { timeout: 3000, what: "every master to end" })
+  // Node first, then the rest by name; never through the symlink.
+  expect(exits(fake.calls())).toEqual([ctx.paths.node, path.join(ctx.paths.cm, "0dead"), login])
+  await exitAll(ctx)
+})
+
+test("exitAll signals no process", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  await twoMasters(ctx)
+  const kill = spyOn(process, "kill")
+  onTestFinished(() => kill.mockRestore())
+  const stop = new AbortController()
+  stop.abort()
+  await exitAll({ ...ctx, signal: stop.signal })
+  expect(kill).not.toHaveBeenCalled()
+  expect(fs.readdirSync(ctx.paths.cm)).toEqual([])
+  await waitFor(() => fake.masters().length === 0, { timeout: 3000, what: "every master to end" })
+})
+
+test("endNode ends only the node master", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const { login, node } = await twoMasters(ctx)
+  await endNode(ctx, node)
+  expect(await node.exited).toBe(0)
+  expect(fs.existsSync(ctx.paths.node)).toBe(false)
+  expect(isSocket(login)).toBe(true)
+  expect((await control(ctx, login, "check")).code).toBe(0)
+  expect(fake.masters()).toHaveLength(1)
+  // A master that ignores -O exit is ended by its own process.
+  fake.set({})
+  const stubborn = startMaster(ctx, { host: "node2", opencorp: "/o/opencorp" }, { quiet: true })
+  expect(await waitForSocket(stubborn, 5000)).toBe("up")
+  fs.renameSync(ctx.paths.node, path.join(dir, "elsewhere"))
+  await staleSocket(ctx.paths.node)
+  await endNode({ ...ctx, limits: ctx.limits }, stubborn)
+  expect(await stubborn.exited).not.toBe(0)
+  expect(fs.existsSync(ctx.paths.node)).toBe(false)
 })
