@@ -47,11 +47,12 @@ import {
 
 export { DEFAULT_PORT, describe }
 
-/** How a visit was asked for: `--sign-in`, `--port N`, and whether it may open a browser. */
+/** How a visit was asked for: `--sign-in`, `--port N`, whether it may open a browser, and `--relearn`. */
 export interface VisitOptions {
   signIn: boolean
   port?: number
   open: boolean
+  relearn?: boolean
 }
 
 /** What a visit reads from and does to the machine; tests pass their own. */
@@ -93,6 +94,9 @@ export const NO_PATH = (paths: ReachPaths) =>
   `agent, or write ${paths.script}, a sh script whose last line of output is the connection spec (see the README), ` +
   "then run `opencorp hq` again."
 export const NOT_LEARNED = "opencorp hq: stopped; nothing was learned."
+export const LEARN_NEEDS_TERMINAL = "opencorp hq: learning needs a terminal; run `opencorp hq --relearn` in one."
+export const RELEARN_BUSY =
+  "opencorp hq: another `opencorp hq` here holds the connection to HQ; end it with Ctrl-C there, then run `opencorp hq --relearn`."
 export const CAPPED =
   "opencorp hq: the model stopped after 30 turns without a working path, so nothing was saved. The commands it asked for:"
 /** Signed in longer than this, a visit hints at `--sign-in`: HQ's browser session lasts 30 days. */
@@ -138,6 +142,9 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
       if (asked === false) deps.error(NOT_LEARNED)
       return asked === false ? 3 : 130
     }
+  } else if (options.relearn && !deps.prompter.interactive) {
+    deps.error(LEARN_NEEDS_TERMINAL)
+    return 1
   }
   const problem = pathProblem(paths)
   if (problem !== null) {
@@ -169,17 +176,34 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
     await writeSshFiles(paths, ssh, deps.sshIncludes)
     await cleanUp(ctx, deps.now().getTime())
     watcher = startWatcher(ctx)
-    if (learnFirst) {
-      const learned = await learnPath(ctx, deps, { notes: "", script: "", failure: "" }, port)
-      return typeof learned === "number" ? learned : await hold(ctx, learned.conn, learned.access, options, deps)
+    if (learnFirst) return await learnAndHold(ctx, deps, { notes: "", script: "", failure: "" }, port, options)
+    const saved = await readAccess(paths)
+    if (options.relearn) {
+      port = options.port ?? saved?.port ?? DEFAULT_PORT
+      if (!(await inVisit(ctx, () => askToLearn(deps, RELEARN_QUESTION, LEARN)))) {
+        deps.error(NOT_LEARNED)
+        return 1
+      }
+      return await learnAndHold(ctx, deps, { ...lastPath(paths), failure: "" }, port, options)
     }
-    const approved = await approve(ctx, deps, await readAccess(paths), options.port)
+    const approved = await approve(ctx, deps, saved, options.port)
     if (typeof approved === "number") return approved
     let access = approved
     if (options.port !== undefined && options.port !== access.port)
       access = { ...access, port: options.port, signed_in_at: null }
     port = access.port
-    const conn = await reach(ctx, port)
+    let conn: Connection
+    try {
+      conn = await reach(ctx, port)
+    } catch (error) {
+      // Only the first reach offers to relearn, defaulting to Stop: a drop's reconnect never does.
+      if (!(error instanceof ReachFailure) || error.kind !== "broken" || ctx.signal?.aborted || !deps.prompter.interactive)
+        throw error
+      const { line, code } = describe(error, port)
+      deps.error(line)
+      if (!(await inVisit(ctx, () => askToLearn(deps, RELEARN_QUESTION, STOP)))) return code
+      return await learnAndHold(ctx, deps, { ...lastPath(paths), failure: line }, port, options)
+    }
     return await hold(ctx, conn, access, options, deps)
   } catch (error) {
     return failed(error, ctx, port, deps)
@@ -197,6 +221,42 @@ async function hold(ctx: ReachContext, conn: Connection, access: Access, options
   await writeAccess(ctx.paths, { ...access, last_used_at: deps.now().toISOString() })
   deps.print(visitLine(conn))
   return waitLoop(ctx, conn, deps)
+}
+
+/** Learns a path, then holds the connection that saved it; the exit code when nothing was saved. */
+async function learnAndHold(
+  ctx: ReachContext,
+  deps: VisitDeps,
+  inputs: { notes: string; script: string; failure: string },
+  port: number,
+  options: VisitOptions,
+): Promise<number> {
+  const learned = await learnPath(ctx, deps, inputs, port)
+  return typeof learned === "number" ? learned : hold(ctx, learned.conn, learned.access, options, deps)
+}
+
+/** The most of the old notes.md or reach.sh a relearning run is given. */
+export const MAX_OLD_CHARS = 64 * 1024
+
+/** The old notes.md and reach.sh as text for a relearning run, each "" when missing or not a plain file of this
+ *  user. */
+function lastPath(paths: ReachPaths): { notes: string; script: string } {
+  const text = (file: string) => {
+    try {
+      return (readScript(file) ?? Buffer.alloc(0)).toString("utf8").slice(0, MAX_OLD_CHARS)
+    } catch (error) {
+      if (error instanceof ScriptError) return ""
+      throw error
+    }
+  }
+  return { notes: text(paths.notes), script: text(paths.script) }
+}
+
+/** `ask` at a question inside the visit, stopped by its first Ctrl-C, which a numbered list gets as SIGINT rather
+ *  than as a key. */
+function inVisit<T>(ctx: ReachContext, ask: () => Promise<T>): Promise<T> {
+  const signal = ctx.signal!
+  return Promise.race([ask(), aborted(signal).then((): never => signal.throwIfAborted() as never)])
 }
 
 /** Shows what learning risks, then asks `question` with `fallback` as the default; resolves whether the owner chose
@@ -431,6 +491,10 @@ function openOrPrint(url: string, open: boolean, deps: VisitDeps): void {
  *  spec (it rides the login master, so no Duo), check HQ over that master and through the recorded port, and only
  *  then mint over the master. No ssh files, clean-up or watcher: they're the running visit's. */
 async function alreadyRunning(options: VisitOptions, deps: VisitDeps, paths: ReachPaths, ssh: string): Promise<number> {
+  if (options.relearn) {
+    deps.error(RELEARN_BUSY)
+    return 1
+  }
   let access: Access | null
   try {
     access = await readAccess(paths)

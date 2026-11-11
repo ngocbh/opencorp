@@ -40,7 +40,7 @@ export function describe(failure: ReachFailure, port: number): { line: string; c
       return { line: `opencorp hq: couldn't connect: ${failure.message}`, code: 1 }
     case "no_office":
       return {
-        line: `opencorp hq: no office answers there: ${said}. Start the job or the office there, or fix reach.sh if HQ moved.`,
+        line: `opencorp hq: no office answers there: ${said}. Start the job or the office there, or run \`opencorp hq --relearn\` if HQ moved for good.`,
         code: 3,
       }
     case "not_ready":

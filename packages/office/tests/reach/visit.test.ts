@@ -17,6 +17,8 @@ import {
   LOST,
   NO_OFFICE_HERE,
   NO_PATH,
+  NOT_LEARNED,
+  RELEARN_BUSY,
   NOT_YET,
   RUN_THIS,
   RUNNING,
@@ -36,7 +38,7 @@ import { writePrivate } from "../../src/secrets.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../src/testing/fake_ssh.ts"
 import { control, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
-import { BEFORE_LEARNING, LEARN, LEARN_QUESTION } from "../../src/reach/risks.ts"
+import { BEFORE_LEARNING, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../src/reach/risks.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { ps, waitFor } from "../helpers.ts"
 import { fakeHome, fakeRemote, freePort, reachCtx, visitDeps } from "./helpers.ts"
@@ -111,7 +113,7 @@ test("an owner-written reach.sh is shown whole and runs only once approved", asy
   expect(access).toMatchObject({ sha256: sha256(body), port: 49381, signed_in_at: null, last_used_at: null })
   expect(fs.existsSync(marker)).toBe(true)
   expect(errors).toEqual([
-    "opencorp hq: no office answers there: no job running. Start the job or the office there, or fix reach.sh if HQ moved.",
+    "opencorp hq: no office answers there: no job running. Start the job or the office there, or run `opencorp hq --relearn` if HQ moved for good.",
   ])
 })
 
@@ -452,7 +454,7 @@ const FAILURES: [string, (h: Awaited<ReturnType<typeof approvedHome>>) => Promis
   [
     "reach.sh exit 3",
     async ({ dir }) => void (await saved(dir, `echo "no job running" >&2\nexit 3\n`)),
-    () => "opencorp hq: no office answers there: no job running. Start the job or the office there, or fix reach.sh if HQ moved.",
+    () => "opencorp hq: no office answers there: no job running. Start the job or the office there, or run `opencorp hq --relearn` if HQ moved for good.",
     3,
   ],
   [
@@ -491,7 +493,8 @@ const FAILURES: [string, (h: Awaited<ReturnType<typeof approvedHome>>) => Promis
 test.each(FAILURES)("a failed visit says what to do and exits as the table says [%s]", async (_label, arrange, line, code) => {
   const home = await approvedHome()
   await arrange(home)
-  const v = visitDeps(home.dir, home.fake)
+  // A broken path asks to relearn; the default, Stop, leaves the table's line and code.
+  const v = visitDeps(home.dir, home.fake, { answers: [""] })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(code)
   expect(v.errors).toEqual([line(home.port)])
   expect(mints(home.fake)).toEqual([])
@@ -690,7 +693,7 @@ test("at a numbered approval question the first Ctrl-C exits 130", async () => {
 
 test("a failure's own closing period isn't doubled", () => {
   expect(describeFailure(new ReachFailure("no_office", "The office isn't running."), 1).line).toBe(
-    "opencorp hq: no office answers there: The office isn't running. Start the job or the office there, or fix reach.sh if HQ moved.",
+    "opencorp hq: no office answers there: The office isn't running. Start the job or the office there, or run `opencorp hq --relearn` if HQ moved for good.",
   )
   expect(describeFailure(new ReachFailure("not_ready", "HQ can't be reached..."), 1).line).toBe(
     "opencorp hq: HQ isn't ready there: HQ can't be reached. Run `opencorp doctor` there, or update that checkout.",
@@ -795,3 +798,80 @@ test("at the turn cap the visit prints the commands and saves nothing", async ()
   expect(fs.existsSync(paths.access)).toBe(false)
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
 }, 60_000)
+
+test("--relearn gives the agent the old notes and script, and keeps the old path until the new one passes", async () => {
+  const { dir, fake, llm, spec, paths, port } = await unlearnedHome()
+  const old = `set -eu\n# the old way\nssh login1 true\nprintf '%s\\n' '${JSON.stringify({ ...spec, host: "node9" })}'\n`
+  await saved(dir, old, { port, signed_in_at: new Date().toISOString() })
+  await writePrivate(paths.notes, "The job used to run on node9.\n")
+  const script = scriptFor(spec)
+  llm.script(
+    call("save_access", { script: "set -eu\nssh login1 true\nexit 1\n", notes: NOTES, risks: [] }),
+    call("shell", { command: "cat reach.sh access.json", why: "see what's saved" }),
+    call("save_access", { script, notes: NOTES, risks: [] }),
+    { content: "HQ is on node1 now." },
+  )
+  const v = visitDeps(dir, fake, { answers: ["", "1", "1", "1"] })
+  const done = visit({ signIn: false, open: false, relearn: true }, v.deps)
+  await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 0, { what: "the visit to connect" })
+  expect(v.errors).toEqual([])
+  expect(v.prompter.seen.slice(0, BEFORE_LEARNING.length + 1)).toEqual([...BEFORE_LEARNING, RELEARN_QUESTION])
+  const [first, , third] = llm.requests().map((r) => JSON.stringify(r))
+  expect(first).toContain("# the old way")
+  expect(first).toContain("The job used to run on node9.")
+  // After the failed save, the old script and record were still the saved ones.
+  expect(third).toContain("# the old way")
+  expect(third).toContain(sha256(old))
+  expect(fs.readFileSync(paths.script, "utf8")).toBe(script)
+  // The same port: the browser's session still holds, so it opens HQ rather than signing in again.
+  expect(v.printed).toContain(`http://127.0.0.1:${port}/`)
+  v.sigint()
+  expect(await done).toBe(0)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test("--relearn without a terminal says learning needs one and runs nothing", async () => {
+  const { dir, fake } = fakeHome()
+  const marker = path.join(dir, "ran")
+  const paths = await saved(dir, NO_JOB(marker))
+  const before = fs.readFileSync(paths.access, "utf8")
+  const v = visitDeps(dir, fake, { interactive: false })
+  expect(await visit({ signIn: false, open: false, relearn: true }, v.deps)).toBe(1)
+  expect(v.errors).toEqual(["opencorp hq: learning needs a terminal; run `opencorp hq --relearn` in one."])
+  expect(fs.readFileSync(paths.access, "utf8")).toBe(before)
+  expect(fs.existsSync(marker)).toBe(false)
+  expect(fake.calls()).toEqual([])
+})
+
+test("a broken path asks to relearn with the failure, defaulting to stop", async () => {
+  const { dir, fake, llm, paths, port } = await unlearnedHome()
+  await saved(dir, `set -eu\nssh login1 true\necho "squeue: no such job" >&2\nexit 1\n`, { port })
+  const line = "opencorp hq: the saved way to reach HQ is broken: reach.sh exited 1: squeue: no such job"
+  let v = visitDeps(dir, fake, { answers: [""] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([line])
+  expect(v.prompter.seen.slice(0, BEFORE_LEARNING.length + 1)).toEqual([...BEFORE_LEARNING, RELEARN_QUESTION])
+  expect(llm.requests()).toEqual([])
+  llm.script({ content: "The job is gone; start it again." })
+  v = visitDeps(dir, fake, { answers: ["1"] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([line, "opencorp hq: nothing was saved: The job is gone; start it again."])
+  expect(JSON.stringify(llm.requests()[0])).toContain("squeue: no such job")
+  // Without a terminal there's no one to ask: the failure alone.
+  v = visitDeps(dir, fake, { interactive: false })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([line])
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test("--relearn while another opencorp hq holds the connection says to end it first", async () => {
+  const { dir, fake, paths } = await approvedHome({}, { signed_in_at: new Date().toISOString() })
+  const v = await connected(dir, fake, { signIn: false, open: false })
+  const second = visitDeps(dir, fake)
+  expect(await visit({ signIn: false, open: false, relearn: true }, second.deps)).toBe(1)
+  expect(second.errors).toEqual([RELEARN_BUSY])
+  expect(second.opened).toEqual([])
+  v.sigint()
+  expect(await v.done).toBe(0)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
