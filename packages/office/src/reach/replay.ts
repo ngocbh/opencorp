@@ -1,5 +1,5 @@
 /** The replay on every visit: run the approved reach.sh, then read what it printed and how it exited. */
-import { lastStderr, type Ran } from "./ssh.ts"
+import { lastStderr, type Ran, type ReachContext, readStatuses, resetStatus, runChild, sshEnv } from "./ssh.ts"
 import { parseSpec, type Spec } from "./spec.ts"
 
 export type Outcome = "ok" | "no_office" | "unreachable" | "broken"
@@ -23,4 +23,19 @@ export function classify(ran: Ran, statuses: readonly number[]): Reached {
   if ("problem" in parsed)
     return { outcome: "broken", detail: `reach.sh printed a spec that isn't valid: ${parsed.problem}` }
   return { outcome: "ok", spec: parsed.spec, detail: "" }
+}
+
+/** Runs `file` with `/bin/sh` in the hq folder, with only `sshEnv` (our wrapper first on PATH), stdin from /dev/null
+ *  and its stderr echoed to the owner, for up to `promptMs` (its ssh may ask for Duo); then classifies the run with
+ *  the exits the wrapper recorded. */
+export async function runScript(file: string, ctx: ReachContext): Promise<Reached> {
+  resetStatus(ctx)
+  const ran = await runChild(["/bin/sh", file], {
+    env: sshEnv(ctx),
+    cwd: ctx.paths.dir,
+    timeoutMs: ctx.limits.promptMs,
+    signal: ctx.signal,
+    echo: ctx.echo,
+  })
+  return classify(ran, readStatuses(ctx))
 }

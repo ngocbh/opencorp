@@ -1,7 +1,10 @@
 /** The replay: what a run of reach.sh means, running it, and `reach_hq`, the flow that runs it on every visit. */
+import fs from "node:fs"
+import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
-import { classify, type Reached } from "../../src/reach/replay.ts"
+import { classify, type Reached, runScript } from "../../src/reach/replay.ts"
 import type { Ran } from "../../src/reach/ssh.ts"
+import { fakeHome, reachCtx } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -25,4 +28,45 @@ test.each(ROWS)("a reach.sh run is classified [%s]", (_label, r, statuses, want)
   expect(got).toMatchObject(want)
   if (got.outcome !== "ok") expect(got).not.toHaveProperty("spec")
   if (got.outcome === "broken" && want.detail === undefined) expect(got.detail).toStartWith("reach.sh printed a spec that isn't valid:")
+})
+
+/** Writes `body` as `<home>/hq/reach.sh` (0600) and resolves to its path. */
+function writeScript(file: string, body: string): string {
+  fs.writeFileSync(file, body, { mode: 0o600 })
+  return file
+}
+
+test("reach.sh runs with only our env, stdin from /dev/null, in the hq folder, its stderr to the owner", async () => {
+  const { dir, fake } = fakeHome()
+  const echoed: string[] = []
+  const ctx = await reachCtx(dir, fake, {
+    env: { PATH: "/usr/bin:/bin", HOME: dir, SSH_AUTH_SOCK: path.join(dir, "agent"), SECRET: "x" },
+    echo: (t) => void echoed.push(t),
+  })
+  const script = writeScript(
+    ctx.paths.script,
+    [
+      "env | cut -d= -f1 | sort >&2",
+      "[ -t 0 ] || echo nostdin >&2",
+      'echo "cwd=$(pwd)" >&2',
+      `printf '%s\\n' '${JSON.stringify(SPEC)}'`,
+      "",
+    ].join("\n"),
+  )
+  const got = await runScript(script, ctx)
+  expect(got).toEqual({ outcome: "ok", spec: SPEC, detail: "" })
+  const lines = echoed.join("").split("\n").filter((l) => l !== "")
+  const names = lines.filter((l) => /^[A-Z_][A-Z0-9_]*$/.test(l) && !["PWD", "SHLVL", "_"].includes(l))
+  expect(names).toEqual(["HOME", "OPENCORP_SSH_CONFIG", "OPENCORP_SSH_STATUS", "PATH", "SSH_AUTH_SOCK"])
+  expect(lines).toContain("nostdin")
+  expect(lines).toContain(`cwd=${ctx.paths.dir}`)
+})
+
+test("a 255 inside a pipeline in reach.sh is couldn't connect", async () => {
+  const { dir, fake } = fakeHome({ login: "refuse" })
+  const ctx = await reachCtx(dir, fake)
+  const script = writeScript(ctx.paths.script, `set -eu\nssh x true | cat\nprintf '%s\\n' '${JSON.stringify(SPEC)}'\n`)
+  const got = await runScript(script, ctx)
+  expect(got.outcome).toBe("unreachable")
+  expect(got.detail).toContain("Permission denied")
 })
