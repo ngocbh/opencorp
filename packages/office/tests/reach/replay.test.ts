@@ -130,3 +130,39 @@ test("reach.sh may check for a login master before starting one: a control comma
   expect(await runScript(script, ctx)).toEqual({ outcome: "ok", spec: SPEC, detail: "" })
   expect(fake.logins()).toEqual(["login1"])
 })
+
+test("a replay runs the bytes it checked, from a private copy it removes after", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  await approved(ctx.paths, `echo "0=$0" >&2\nls -ln "$0" >&2\nprintf '%s\\n' '${JSON.stringify(SPEC)}'\n`)
+  const echoed: string[] = []
+  const got = await runReach({ ...ctx, echo: (t) => void echoed.push(t) })
+  expect(got.outcome).toBe("ok")
+  const said = echoed.join("")
+  const ran = /^0=(.*)$/m.exec(said)![1]!
+  expect(path.dirname(ran)).toBe(ctx.paths.dir)
+  expect(path.basename(ran)).toMatch(/^\.reach-[0-9]+-[0-9a-f]+\.sh$/)
+  expect(said).toContain("-rw------- 1 ")
+  expect(fs.existsSync(ran)).toBe(false)
+  expect(fs.readdirSync(ctx.paths.dir).filter((name) => name.startsWith(".reach-"))).toEqual([])
+})
+
+test("a reach.sh with another hard link, or that is a symlink, isn't run", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const marker = path.join(dir, "ran")
+  const body = `touch '${marker}'\n`
+  await approved(ctx.paths, body)
+  fs.linkSync(ctx.paths.script, path.join(dir, "elsewhere"))
+  expect(await runReach(ctx)).toEqual({
+    outcome: "broken",
+    detail: `${ctx.paths.script} has another hard link; it must be a regular file with one`,
+  })
+  fs.rmSync(ctx.paths.script)
+  fs.symlinkSync(path.join(dir, "elsewhere"), ctx.paths.script)
+  expect(await runReach(ctx)).toEqual({
+    outcome: "broken",
+    detail: `${ctx.paths.script} is a symbolic link; it must be a regular file`,
+  })
+  expect(fs.existsSync(marker)).toBe(false)
+})

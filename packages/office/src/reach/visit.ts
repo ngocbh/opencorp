@@ -11,7 +11,7 @@ import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter }
 import { writePrivate } from "../secrets.ts"
 import { classifyCheck, type Connection, connect, ReachFailure, sameHealth, signIn } from "./connect.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
-import { readScript, runReach } from "./replay.ts"
+import { readScript, runReach, ScriptError } from "./replay.ts"
 import {
   cleanOutput,
   defaultIncludes,
@@ -235,18 +235,30 @@ async function approve(
   port: number | undefined,
 ): Promise<Access | number> {
   const { paths } = ctx
-  const now = readScript(paths.script)
+  let now: Buffer | null
+  try {
+    now = readScript(paths.script)
+  } catch (error) {
+    if (!(error instanceof ScriptError)) throw error
+    deps.error(`opencorp hq: ${error.message}`)
+    return 1
+  }
   if (now === null) {
     deps.error(NO_PATH(paths))
     return 3
   }
   const digest = sha256(now)
   if (access !== null && access.sha256 === digest) return access
-  const before = access === null ? null : readScript(paths.approved)
+  const before = access === null ? null : approvedCopy(paths, access)
   const say = (line: string) => deps.prompter.say(clean(line))
   let question: string
   if (before === null) {
-    say(`${paths.script} is new. It runs on this machine with your SSH keys on every visit:`)
+    if (access === null) say(`${paths.script} is new. It runs on this machine with your SSH keys on every visit:`)
+    else
+      say(
+        `${paths.script} changed, and ${paths.approved} isn't the copy you approved, so here it is whole. ` +
+          "It runs on this machine with your SSH keys on every visit:",
+      )
     for (const line of now.toString("utf8").replace(/\n$/, "").split("\n")) say(`  ${line}`)
     question = RUN_THIS
   } else {
@@ -275,6 +287,18 @@ async function approve(
   }
   await writeAccess(paths, record)
   return record
+}
+
+/** reach.approved.sh when it's the copy `access` approved, else null: a diff against any other base could hide a
+ *  line. */
+function approvedCopy(paths: ReachPaths, access: Access): Buffer | null {
+  try {
+    const bytes = readScript(paths.approved)
+    return bytes !== null && sha256(bytes) === access.sha256 ? bytes : null
+  } catch (error) {
+    if (error instanceof ScriptError) return null
+    throw error
+  }
 }
 
 /** Signs the browser in (the first time, or with `--sign-in`) through a redirect file, or opens HQ's URL; without
