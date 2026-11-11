@@ -189,9 +189,21 @@ function checkout(h: Home, name = "checkout"): string {
   return dir
 }
 
-/** The env the scripts run with: the temp home, bash, and the stubs ahead of a plain PATH. */
+/** Git config that sends every network URL to a folder that isn't there, so no clone or pull can leave the machine. */
+function offline(): [string, string][] {
+  return ["https://", "http://", "ssh://", "git@", "git://"].map((prefix) => [prefix, path.join(root, "no-network") + "/"])
+}
+
+/** The env the scripts run with: the temp home, bash, the stubs ahead of a plain PATH, and git kept off the network. */
 function env(h: Home, extra: Record<string, string> = {}): Record<string, string> {
-  return { HOME: h.home, SHELL: "/bin/bash", PATH: `${bunDir}:${stubs}:${SYSTEM}`, STUB_LOG: h.log, ...gitConfig(), ...extra }
+  return {
+    HOME: h.home,
+    SHELL: "/bin/bash",
+    PATH: `${bunDir}:${stubs}:${SYSTEM}`,
+    STUB_LOG: h.log,
+    ...gitConfig(offline()),
+    ...extra,
+  }
 }
 
 interface RunOptions {
@@ -1326,15 +1338,15 @@ describe("both scripts", () => {
       const branch = git(CHECKOUT, "symbolic-ref", "--short", "HEAD")
       const cache = process.env.BUN_INSTALL_CACHE_DIR ?? path.join(os.homedir(), ".bun", "install", "cache")
       // Anything that tries the network gets a proxy that refuses at once.
-      const offline = "http://127.0.0.1:9"
+      const refused = "http://127.0.0.1:9"
       const extra = {
         PATH: `${path.dirname(process.execPath)}:${stubs}:${SYSTEM}`,
         BUN_INSTALL_CACHE_DIR: cache,
-        HTTP_PROXY: offline,
-        HTTPS_PROXY: offline,
-        http_proxy: offline,
-        https_proxy: offline,
-        ...gitConfig([["https://github.com/ngocbh/yian.git", path.join(CHECKOUT, "packages/yian")]]),
+        HTTP_PROXY: refused,
+        HTTPS_PROXY: refused,
+        http_proxy: refused,
+        https_proxy: refused,
+        ...gitConfig([...offline(), ["https://github.com/ngocbh/yian.git", path.join(CHECKOUT, "packages/yian")]]),
       }
       const stdin = fs.openSync(path.join(CHECKOUT, "install.sh"), "r")
       const child = spawn("sh", ["-s", "--", "--repo", CHECKOUT, "--branch", branch, "--skip-setup"], {
