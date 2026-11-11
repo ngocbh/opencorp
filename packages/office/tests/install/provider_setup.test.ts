@@ -22,6 +22,7 @@ import { loadProvider, Provider, ProviderError } from "../../src/chat/provider.t
 import {
   askDeployment,
   askModel,
+  askProviderTo,
   azureDeployments,
   checkProvider,
   ensureProvider,
@@ -45,6 +46,7 @@ import {
   TtyPrompter,
   readLine,
 } from "../../src/install/prompts.ts"
+import { tempDir } from "../helpers.ts"
 import { NO_LISTING, Script } from "./helpers.ts"
 
 const KEY = "sk-ant-test-0123456789"
@@ -880,6 +882,30 @@ test("the key is asked without echo and written private", async () => {
   ])
   expect(ask.offered).toEqual([[...SUPPORTED_LLM_PROVIDERS], ["claude-sonnet-4-5 (the default)"]])
   expect(ask.typed).toEqual([false, true])
+})
+
+test("askProviderTo asks with init's picker and writes the provider to the given file", async () => {
+  const dir = join(tempDir(), "hq")
+  mkdirSync(dir, { mode: 0o700 })
+  const target = join(dir, "provider.json")
+  const ask = new Script(["", KEY, "claude-opus-4-1"])
+  const check = answers(null)
+  const provider = await askProviderTo(target, ask, { listers: NO_LISTING, checkModel: check })
+  const llm = { provider: "anthropic", api_key: KEY, model: "claude-opus-4-1" }
+  expect(provider.llm_config).toEqual(llm)
+  expect(check.checked).toEqual([llm])
+  expect(ask.seen).toEqual([
+    "Model provider",
+    "anthropic API key (empty to use `yian auth anthropic`; not shown)",
+    "Model",
+    "Checking that the model answers...",
+  ])
+  expect(mode(dir)).toBe(0o700)
+  expect(mode(target)).toBe(0o600)
+  expect(readdirSync(dir).sort()).toEqual([".lock", "provider.json"])
+  const loaded = await loadProvider(target, Provider.parse, { missingOk: false })
+  expect(loaded.llm_config).toEqual(llm)
+  expect(loaded).toEqual(provider)
 })
 
 test("no key and no model name means the model yians login saved", async () => {
