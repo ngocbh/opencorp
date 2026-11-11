@@ -2,6 +2,7 @@
  *  another visit beside a running one, the failure table, and waiting with its reconnects. */
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
+import http from "node:http"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -27,7 +28,7 @@ import { KeyboardInterrupt, TtyPrompter } from "../../src/install/prompts.ts"
 import { defaultIncludes } from "../../src/reach/ssh.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../src/testing/fake_ssh.ts"
-import { control, type ReachContext } from "../../src/reach/ssh.ts"
+import { control, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
 import { ps, waitFor } from "../helpers.ts"
 import { fakeHome, fakeRemote, freePort, reachCtx, visitDeps } from "./helpers.ts"
 
@@ -338,6 +339,33 @@ test("--sign-in beside a running visit mints over its master and leaves the file
   expect(await nodeUp(dir, fake)).toBe(true)
   first.sigint()
   expect(await first.done).toBe(0)
+})
+
+test("--sign-in beside a visit that hasn't forwarded its port yet refuses and opens nothing", async () => {
+  const signedIn = new Date(Date.now() - DAY).toISOString()
+  const { dir, fake, remote, port, paths } = await approvedHome({}, { signed_in_at: signedIn })
+  remote.setCheck({ stdout: JSON.stringify(remote.status), delay: 3 })
+  // Another program holds the port while the running visit is still checking.
+  const other = http.createServer((_req, res) => res.end(JSON.stringify({ ok: true, other: 1 })))
+  await new Promise<void>((resolve) => other.listen({ port, host: "127.0.0.1" }, resolve))
+  onTestFinished(() => void other.close())
+  const first = visitDeps(dir, fake)
+  const done = visit({ signIn: false, open: false }, first.deps)
+  const checks = () => fake.calls().filter((argv) => argv.at(-1)!.endsWith("'hq' '--check' '--json'"))
+  await waitFor(() => checks().length === 1, { what: "the running visit's check" })
+  // Its check has read its 3 s; the second's answers at once, so the master is still up while it checks.
+  await Bun.sleep(500)
+  remote.setCheck({ stdout: JSON.stringify(remote.status) })
+  expect(isSocket(paths.node)).toBe(true)
+  const second = visitDeps(dir, fake)
+  expect(await visit({ signIn: true, open: true }, second.deps)).toBe(1)
+  expect(checks()).toHaveLength(2)
+  expect(second.errors).toEqual([NOT_YET])
+  expect([second.opened, second.printed]).toEqual([[], []])
+  expect(mints(fake)).toEqual([])
+  expect(redirects(paths)).toEqual([])
+  expect((await readAccess(paths))?.signed_in_at).toBe(signedIn)
+  expect(await done).toBe(1)
 })
 
 test("--sign-in before the running visit has connected says to try again", async () => {

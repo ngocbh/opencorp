@@ -9,7 +9,7 @@ import { createTwoFilesPatch } from "diff"
 import { which } from "../install/launch.ts"
 import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter } from "../install/prompts.ts"
 import { writePrivate } from "../secrets.ts"
-import { type Connection, connect, ReachFailure, signIn } from "./connect.ts"
+import { classifyCheck, type Connection, connect, ReachFailure, sameHealth, signIn } from "./connect.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
 import { readScript, runReach } from "./replay.ts"
 import {
@@ -19,6 +19,7 @@ import {
   findSsh,
   isSocket,
   LIMITS,
+  mux,
   quietStdin,
   type ReachContext,
   control,
@@ -87,7 +88,7 @@ export const LOST = "Connection lost; press Enter to reconnect (SSH may ask for 
 export const RUNNING = "opencorp hq: another `opencorp hq` here holds the connection to HQ."
 export const BUSY = "opencorp hq: another `opencorp hq` here is still approving or learning a path."
 export const NOT_YET =
-  "opencorp hq: another `opencorp hq` here hasn't connected yet; run `opencorp hq --sign-in` again once it has."
+  "opencorp hq: the `opencorp hq` running here isn't connected yet; run `opencorp hq --sign-in` again in a moment."
 
 /** The failure table: what to say for `failure`, and the exit code. */
 export function describe(failure: ReachFailure, port: number): { line: string; code: number } {
@@ -327,9 +328,9 @@ function openOrPrint(url: string, open: boolean, deps: VisitDeps): void {
   }
 }
 
-/** Another `opencorp hq` holds the lock: open HQ's URL; with `--sign-in` and its master up, replay reach.sh for the
- *  spec (it rides the login master, so no Duo) and mint over that master. No ssh files, clean-up or watcher: they're
- *  the running visit's. */
+/** Another `opencorp hq` holds the lock: open HQ's URL. With `--sign-in` and its master up, replay reach.sh for the
+ *  spec (it rides the login master, so no Duo), check HQ over that master and through the recorded port, and only
+ *  then mint over the master. No ssh files, clean-up or watcher: they're the running visit's. */
 async function alreadyRunning(options: VisitOptions, deps: VisitDeps, paths: ReachPaths, ssh: string): Promise<number> {
   let access: Access | null
   try {
@@ -355,8 +356,19 @@ async function alreadyRunning(options: VisitOptions, deps: VisitDeps, paths: Rea
     }
     const reached = await runReach(ctx)
     if (reached.outcome !== "ok") throw new ReachFailure(reached.outcome, reached.detail)
+    const spec = reached.spec!
+    // The running visit may not have forwarded the port yet, or may be moving it (`--port`): a code goes only to a
+    // port where HQ answers as its check says, steps b and d.
+    const status = classifyCheck(await mux(ctx, spec, ["hq", "--check", "--json"]))
+    try {
+      await sameHealth(access.port, status, ctx.limits.stepMs)
+    } catch (error) {
+      if (!(error instanceof ReachFailure) || ctx.signal?.aborted) throw error
+      deps.error(NOT_YET)
+      return 1
+    }
     // The running visit's sweep deletes the file once it expires: this process ends first.
-    await signBrowserIn(ctx, reached.spec!, access.port, options.open, deps, { removeAtExpiry: false })
+    await signBrowserIn(ctx, spec, access.port, options.open, deps, { removeAtExpiry: false })
     const now = (await readAccess(paths)) ?? access
     await writeAccess(paths, { ...now, signed_in_at: deps.now().toISOString() })
     return 0

@@ -102,6 +102,8 @@ export interface Answer {
   stdout?: string
   stderr?: string
   code?: number
+  /** Seconds to wait before answering. */
+  delay?: number
 }
 
 /** HQ's machine, here: hq.sock at `<dir>/office/hq.sock` answering `/api/health` with `HEALTH` (and 404 else), and
@@ -128,7 +130,8 @@ export async function fakeRemote(dir: string): Promise<FakeRemote> {
   for (const d of [office, bin, answers]) fs.mkdirSync(d, { recursive: true })
   const socket = path.join(office, "hq.sock")
   const opencorp = path.join(bin, "opencorp")
-  const write = (name: string, { stdout = "", stderr = "", code = 0 }: Answer) => {
+  const write = (name: string, { stdout = "", stderr = "", code = 0, delay = 0 }: Answer) => {
+    fs.writeFileSync(path.join(answers, `${name}.delay`), String(delay))
     fs.writeFileSync(path.join(answers, `${name}.stdout`), stdout)
     fs.writeFileSync(path.join(answers, `${name}.stderr`), stderr)
     fs.writeFileSync(path.join(answers, `${name}.code`), String(code))
@@ -143,6 +146,7 @@ export async function fakeRemote(dir: string): Promise<FakeRemote> {
       '  "hq --json") n=signin ;;',
       '  *) echo "fake opencorp: no $*" >&2; exit 2 ;;',
       "esac",
+      'sleep "$(cat "$d/$n.delay")"',
       'cat "$d/$n.stdout"',
       'cat "$d/$n.stderr" >&2',
       'exit "$(cat "$d/$n.code")"',
