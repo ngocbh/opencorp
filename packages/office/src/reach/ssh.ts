@@ -347,9 +347,14 @@ export const isSocket = (p: string) => fs.lstatSync(p, { throwIfNoEntry: false }
 
 /** A session over the master at `socket`. ControlMaster=no: never a new master. ProxyCommand=false: with no master
  *  it fails at once instead of logging in again. No -J (ssh refuses it beside ProxyCommand). -F /dev/null: no
- *  `Match exec` of the owner's runs. */
+ *  `Match exec` of the owner's runs. IdentityFile=none: it never authenticates, and without it ssh reads the
+ *  default keys in `~/.ssh` before failing. */
 export function muxArgv(ssh: string, socket: string, host: string, command: string): [string, ...string[]] {
-  return [ssh, "-F", "/dev/null", "-S", socket, "-o", "ControlMaster=no", "-o", "ProxyCommand=false", "-T", "--", host, command]
+  return [
+    ssh, "-F", "/dev/null", "-S", socket,
+    "-o", "ControlMaster=no", "-o", "ProxyCommand=false", "-o", "IdentityFile=none",
+    "-T", "--", host, command,
+  ]
 }
 
 /** Adds a forward of 127.0.0.1:`port` to the unix socket `target`; exits 255 when it can't (a mux client ignores
