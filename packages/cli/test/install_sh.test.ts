@@ -24,6 +24,8 @@ const SUFFIX = `  # added by ${MARK}`
 /** The POSIX shells here to run the scripts under. */
 const SHELLS = ["sh", "bash", "dash", "ksh"].filter((shell) => Bun.which(shell, { PATH: SYSTEM }))
 const TMUX = Bun.which("tmux", { PATH: "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" })
+/** A `bun` among the system's commands, which the tests of a home with no Bun would find. */
+const SYSTEM_BUN = Bun.which("bun", { PATH: SYSTEM })
 
 /** Everything this file makes. */
 let root = ""
@@ -127,7 +129,7 @@ case $* in
   *" --help") [ -z "\${STUB_HELP_FAILS:-}" ] || exit 3 ;;
   *" offboard")
     [ -z "\${STUB_OFFBOARD_FAILS:-}" ] || exit 1
-    rm -rf "$HOME/.opencorp/office" "$HOME/.opencorp/identity.json" ;;
+    [ -n "\${STUB_OFFBOARD_KEEPS:-}" ] || rm -rf "$HOME/.opencorp/office" "$HOME/.opencorp/identity.json" ;;
 esac
 `,
   )
@@ -488,7 +490,7 @@ describe("install.sh", () => {
     }
   })
 
-  test("with no Bun anywhere, installs packageManager's version with Bun's installer and builds with it by its path", async () => {
+  test.skipIf(!!SYSTEM_BUN)("with no Bun anywhere, installs packageManager's version with Bun's installer and builds with it by its path", async () => {
     const h = makeHome()
     const co = checkout(h)
     const noBun = { PATH: `${stubs}:${SYSTEM}` }
@@ -572,7 +574,7 @@ describe("install.sh", () => {
     }
   })
 
-  test("never takes a bun from a relative or empty PATH entry, which names the current folder", async () => {
+  test.skipIf(!!SYSTEM_BUN)("never takes a bun from a relative or empty PATH entry, which names the current folder", async () => {
     for (const relative of [".", ""]) {
       const h = makeHome()
       const project = path.join(h.dir, "project")
@@ -1247,6 +1249,17 @@ describe("uninstall.sh", () => {
       expect(fs.existsSync(h.clone)).toBe(false)
     })
 
+    test("when offboard ends well but leaves the office set up, it stops and changes nothing", async () => {
+      const h = makeHome()
+      expect((await run(h, "install.sh")).code).toBe(0)
+      fs.mkdirSync(path.join(h.office, "office"), { recursive: true })
+      const t = onTerminal(h, "uninstall.sh", { extra: { STUB_OFFBOARD_KEEPS: "1" } })
+      expect(await t.exit()).toBe(1)
+      expect(t.screen()).toContain(`✗ An office is still set up at ${h.office}, so nothing else was removed.`)
+      expect(fs.existsSync(h.wrapper)).toBe(true)
+      expect(fs.existsSync(h.clone)).toBe(true)
+    })
+
     test("when offboard doesn't finish, it stops and changes nothing", async () => {
       const h = makeHome()
       expect((await run(h, "install.sh")).code).toBe(0)
@@ -1346,6 +1359,12 @@ describe("both scripts", () => {
       expect(help.stdout).toContain("opencorp")
       // The build leaves the clone clean, so the next run can update it.
       expect(git(h.clone, "status", "--porcelain")).toBe("")
+      // And uninstall counts nothing a real install made as work, so it removes the clone.
+      const removed = await run(h, "uninstall.sh", { extra })
+      expect(removed.err).toBe("")
+      expect(removed.code).toBe(0)
+      expect(fs.existsSync(h.clone)).toBe(false)
+      expect(fs.existsSync(h.wrapper)).toBe(false)
     },
     600_000,
   )
