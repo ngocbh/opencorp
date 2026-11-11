@@ -166,7 +166,7 @@ test(
 )
 
 test(
-  "over ssh pair prints the same port forward and the hq sock one",
+  "over ssh hq prints the same port forward and the hq sock one",
   async () => {
     const office = await webOffice()
     const cwd = scratch(office)
@@ -187,7 +187,7 @@ test(
 )
 
 test(
-  "with tcp off pair prints the socket forward and hq sock serves any local port",
+  "with tcp off hq prints the socket forward and hq sock serves any local port",
   async () => {
     const office = await sockOffice()
     const cwd = scratch(office)
