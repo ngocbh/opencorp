@@ -815,7 +815,7 @@ export function createFakeOffice(
 
   // This office's browser sessions, newest first. Office-local, so not part of FakeState (person.yaml's view).
   const browsers: BrowserSession[] = []
-  /** Adds a browser session, as `opencorp pair` and a browser's POST /api/pair would. */
+  /** Adds a browser session, as `opencorp hq` and a browser's POST /api/pair would. */
   function addBrowser(fields: Partial<BrowserSession> & Pick<BrowserSession, "person" | "issued_by">): BrowserSession {
     const at = new Date()
     const b: BrowserSession = {

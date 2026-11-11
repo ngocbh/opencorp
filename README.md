@@ -77,9 +77,8 @@ the second hires.
 
 ### HQ
 
-`opencorp pair` makes a one-time link that signs a browser in to HQ. On macOS it opens HQ in your
-browser. On Linux HQ's web port is off by default, so pair prints how to reach HQ instead. Over SSH
-it prints the forwarding commands.
+`opencorp hq` opens HQ in your browser, signed in by a one-time link. On Linux HQ's web port is off
+by default, so it prints how to reach HQ instead. Over SSH it prints the forwarding commands.
 
 ### Check and run
 
@@ -97,7 +96,7 @@ HQ, the office's web view, reads `~/.opencorp/office/hq.json` (under `$OPENCORP_
 starts, so run `opencorp restart` after editing it. The file is optional; create it if it doesn't exist. It's a
 JSON object with any of these keys:
 
-- `tcp`: whether HQ listens on `http://127.0.0.1:<port>/`; on by default on macOS only. Off, `opencorp pair` prints
+- `tcp`: whether HQ listens on `http://127.0.0.1:<port>/`; on by default on macOS only. Off, `opencorp hq` prints
   an SSH forward of HQ's socket instead.
 - `port`: that port, 49380 by default; 0 picks any free one each start. Set another when something else holds it,
   for example `{"port": 49390}`.

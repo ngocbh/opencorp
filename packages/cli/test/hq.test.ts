@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
-import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
+import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
+import { HqStatus, type HqTcp, PairCode } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
-import { canOpen, pair, pairOutput, type PairDeps, socketPort } from "../src/commands/pair"
+import { canOpen, hq, pairOutput, type HqDeps, socketPort } from "../src/commands/hq"
 import { staleSocket } from "./sockets"
 
 /** What a client says when no office answers at `home`. */
@@ -303,7 +304,7 @@ function deps(env: Record<string, string> = {}, platform = "darwin") {
   const spawned: string[][] = []
   const printed: string[] = []
   const errors: string[] = []
-  const d: PairDeps = {
+  const d: HqDeps = {
     env,
     platform,
     hostname: () => "mac",
@@ -317,7 +318,7 @@ function deps(env: Record<string, string> = {}, platform = "darwin") {
 test("on a Mac it asks for a redirect file and opens it; the opener gets only the file's path", async () => {
   start({ tcp: true, listening: true })
   const { d, spawned, printed } = deps()
-  expect(await pair([], d)).toBe(0)
+  expect(await hq([], d)).toBe(0)
   expect(pairBody()).toEqual({ handle: null, open_file: true })
   const code = printed.join("\n").match(/pair#([A-Za-z0-9_-]+)/)![1]
   expect(spawned).toHaveLength(1)
@@ -330,14 +331,14 @@ test("on a Mac it asks for a redirect file and opens it; the opener gets only th
 test("on a Linux desktop it opens the file with xdg-open", async () => {
   start({ tcp: true, listening: true })
   const { d, spawned } = deps({ DISPLAY: ":0" }, "linux")
-  expect(await pair([], d)).toBe(0)
+  expect(await hq([], d)).toBe(0)
   expect(spawned.map((argv) => argv[0])).toEqual(["xdg-open"])
 })
 
 test("--no-open and --handle", async () => {
   start({ tcp: true, listening: true })
   const { d, spawned } = deps()
-  expect(await pair(["--no-open", "--handle", "ngocbh"], d)).toBe(0)
+  expect(await hq(["--no-open", "--handle", "ngocbh"], d)).toBe(0)
   expect(pairBody()).toEqual({ handle: "ngocbh", open_file: false })
   expect(spawned).toEqual([])
 })
@@ -345,14 +346,104 @@ test("--no-open and --handle", async () => {
 test("--handle takes a handle with its @", async () => {
   start({ tcp: true, listening: true })
   const { d } = deps()
-  expect(await pair(["--no-open", "--handle", "@ngocbh"], d)).toBe(0)
+  expect(await hq(["--no-open", "--handle", "@ngocbh"], d)).toBe(0)
   expect(pairBody()).toEqual({ handle: "ngocbh", open_file: false })
+})
+
+test("--sign-in on HQ's machine signs in as plain hq does", async () => {
+  start({ tcp: true, listening: true })
+  const { d, spawned } = deps()
+  expect(await hq(["--sign-in"], d)).toBe(0)
+  expect(pairBody()).toEqual({ handle: null, open_file: true })
+  expect(spawned).toHaveLength(1)
+})
+
+test("--json mints a link and prints it as one line of JSON, opening nothing", async () => {
+  start({ tcp: true, listening: true })
+  const { d, spawned, printed, errors } = deps()
+  expect(await hq(["--json"], d)).toBe(0)
+  expect(pairBody()).toEqual({ handle: null, open_file: false })
+  expect(printed).toHaveLength(1)
+  const minted = PairCode.parse(JSON.parse(printed[0]!))
+  expect(minted.open_file).toBeNull()
+  expect(minted.path).toMatch(/^\/pair#/)
+  expect(spawned).toEqual([])
+  expect(errors).toEqual([])
+})
+
+test("--json takes --handle", async () => {
+  start({ tcp: true, listening: true })
+  const { d } = deps()
+  expect(await hq(["--json", "--handle", "@ngocbh"], d)).toBe(0)
+  expect(pairBody()).toEqual({ handle: "ngocbh", open_file: false })
+})
+
+test("--json without an office exits 3, says why on stderr and prints nothing", async () => {
+  const { d, printed, errors } = deps()
+  expect(await hq(["--json"], d)).toBe(3)
+  expect(errors).toEqual([notRunningAt(home)])
+  expect(printed).toEqual([])
+})
+
+test("--json with hq.sock dead and TCP off mints nothing and exits 1", async () => {
+  start({ tcp: false, socketError: "x" })
+  const { d, printed, errors } = deps()
+  expect(await hq(["--json"], d)).toBe(1)
+  expect(office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")).toBe(false)
+  expect(printed).toEqual([])
+  expect(errors.join("\n")).toContain("HQ can't be reached")
+})
+
+test("--check --json prints HQ's status as one line of JSON and mints nothing", async () => {
+  start({ tcp: true, listening: true })
+  const { d, printed, errors, spawned } = deps()
+  expect(await hq(["--check", "--json"], d)).toBe(0)
+  expect(printed).toHaveLength(1)
+  const status = HqStatus.parse(JSON.parse(printed[0]!))
+  expect(status.socket).toBe(path.join(home, "office", "hq.sock"))
+  expect(office!.requests.some((r) => r.method === "GET" && r.path === "/hq")).toBe(true)
+  expect(office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")).toBe(false)
+  expect(errors).toEqual([])
+  expect(spawned).toEqual([])
+})
+
+test("--check without --json, or with another flag, is a usage error", async () => {
+  start({ tcp: true, listening: true })
+  for (const argv of [
+    ["--check"],
+    ["--check", "--json", "--no-open"],
+    ["--check", "--json", "--handle", "x"],
+    ["--check", "--json", "--sign-in"],
+  ]) {
+    const { d, printed, errors } = deps()
+    expect({ argv, code: await hq(argv, d) }).toEqual({ argv, code: 2 })
+    expect(errors.join("\n")).toContain(
+      "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--json] [--check --json]",
+    )
+    expect(printed).toEqual([])
+  }
+  expect(office!.requests).toEqual([])
+})
+
+test("--check --json without an office exits 3 and says why", async () => {
+  const { d, printed, errors } = deps()
+  expect(await hq(["--check", "--json"], d)).toBe(3)
+  expect(errors).toEqual([notRunningAt(home)])
+  expect(printed).toEqual([])
+})
+
+test("--check --json against an office without HQ's routes exits 1 and says to update", async () => {
+  start({ tcp: true }, { missing: ["GET /hq"] })
+  const { d, printed, errors } = deps()
+  expect(await hq(["--check", "--json"], d)).toBe(1)
+  expect(errors).toEqual(["opencorp hq: this office has no HQ yet; update the checkout and run `opencorp restart`"])
+  expect(printed).toEqual([])
 })
 
 test("over SSH it never asks for a file or opens anything", async () => {
   start({ tcp: true, listening: true })
   const { d, spawned, printed } = deps({ SSH_CONNECTION: "1 2 3 4" }, "linux")
-  expect(await pair([], d)).toBe(0)
+  expect(await hq([], d)).toBe(0)
   expect(pairBody()).toEqual({ handle: null, open_file: false })
   expect(spawned).toEqual([])
   expect(printed).toContain("  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49380:127.0.0.1:49380 mac")
@@ -361,7 +452,7 @@ test("over SSH it never asks for a file or opens anything", async () => {
 test("with the web port taken it reads GET /hq and says so", async () => {
   start({ tcp: true, listening: false, error: "Address already in use" })
   const { d, printed, spawned } = deps()
-  expect(await pair([], d)).toBe(0)
+  expect(await hq([], d)).toBe(0)
   expect(office!.requests.some((r) => r.method === "GET" && r.path === "/hq")).toBe(true)
   expect(printed).toContain(
     "HQ's web port 49380 isn't listening (Address already in use); `opencorp doctor` says more.",
@@ -372,7 +463,7 @@ test("with the web port taken it reads GET /hq and says so", async () => {
 test("with TCP off it says how to turn it on", async () => {
   start({ tcp: false })
   const { d, printed } = deps()
-  expect(await pair([], d)).toBe(0)
+  expect(await hq([], d)).toBe(0)
   expect(printed).toContain("HQ's web port is off here.")
   expect(printed.join("\n")).toContain(`"tcp": true to ${path.join(home, "office", "hq.json")}`)
 })
@@ -380,7 +471,7 @@ test("with TCP off it says how to turn it on", async () => {
 test("when GET /hq can't be read it says so, not that the web port is off", async () => {
   start({ tcp: false }, { missing: ["GET /hq"] })
   const { d, printed } = deps()
-  expect(await pair([], d)).toBe(0)
+  expect(await hq([], d)).toBe(0)
   expect(printed).toContain("Couldn't read the web port's status.")
   expect(printed.join("\n")).not.toContain("is off")
 })
@@ -389,8 +480,8 @@ test("an office without HQ's routes, or that answers 501 for them, says to updat
   for (const more of [{ missing: ["POST /hq/pair"] }, { notImplemented: ["POST /hq/pair"] }]) {
     start({ tcp: true }, more)
     const { d, errors } = deps()
-    expect(await pair([], d)).toBe(1)
-    expect(errors).toEqual(["opencorp pair: this office has no HQ yet; update the checkout and run `opencorp restart`"])
+    expect(await hq([], d)).toBe(1)
+    expect(errors).toEqual(["opencorp hq: this office has no HQ yet; update the checkout and run `opencorp restart`"])
     office!.stop()
     office = undefined
   }
@@ -402,7 +493,7 @@ test("a missing opener prints why and still exits 0: the link is already printed
   d.spawn = () => {
     throw new Error('Executable not found in $PATH: "xdg-open"')
   }
-  expect(await pair([], d)).toBe(0)
+  expect(await hq([], d)).toBe(0)
   expect(printed.join("\n")).toMatch(/http:\/\/127\.0\.0\.1:49380\/pair#/)
   expect(errors).toEqual([
     `Couldn't start xdg-open (Executable not found in $PATH: "xdg-open"); open the link above.`,
@@ -413,7 +504,7 @@ for (const env of [{}, { SSH_CONNECTION: "1 2 3 4" }] as Record<string, string>[
   test(`with hq.sock dead and TCP off, it says why, mints nothing and exits 1 [${Object.keys(env)}]`, async () => {
     start({ tcp: false, socketError: "AF_UNIX path too long" })
     const { d, printed, errors } = deps(env)
-    expect(await pair([], d)).toBe(1)
+    expect(await hq([], d)).toBe(1)
     expect(office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")).toBe(false)
     expect(printed.join("\n")).not.toContain("ssh -N")
     const said = errors.join("\n")
@@ -426,15 +517,15 @@ for (const env of [{}, { SSH_CONNECTION: "1 2 3 4" }] as Record<string, string>[
 test("with hq.sock dead and the web port taken or not up yet, it says why and exits 1", async () => {
   start({ tcp: true, listening: false, error: "Address already in use", socketError: "x" })
   let { d, errors } = deps()
-  expect(await pair([], d)).toBe(1)
+  expect(await hq([], d)).toBe(1)
   expect(office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")).toBe(false)
   expect(errors.join("\n")).toContain("HQ's web port 49380 isn't listening (Address already in use)")
   expect(errors.join("\n")).not.toContain('"tcp": true')
   office!.stop()
   start({ tcp: true, listening: false, socketError: "x" })
   ;({ d, errors } = deps())
-  expect(await pair([], d)).toBe(1)
-  expect(errors.join("\n")).toContain("Run `opencorp pair` again once the web port is listening.")
+  expect(await hq([], d)).toBe(1)
+  expect(errors.join("\n")).toContain("Run `opencorp hq` again once the web port is listening.")
   expect(errors.join("\n")).not.toContain("pair#")
 })
 
@@ -443,7 +534,7 @@ for (const env of [{}, { SSH_CONNECTION: "1 2 3 4" }] as Record<string, string>[
     const warning = "settings ignored, so the web port stays off until hq.json is fixed (restart to apply): x"
     start({ tcp: false, socketError: "x", warnings: [warning] })
     const { d, errors } = deps(env)
-    expect(await pair([], d)).toBe(1)
+    expect(await hq([], d)).toBe(1)
     const said = errors.join("\n")
     expect(errors).toContain(`  ${warning}`)
     expect(said).toContain(`fix ${path.join(home, "office", "hq.json")} so it has "tcp": true`)
@@ -454,7 +545,7 @@ for (const env of [{}, { SSH_CONNECTION: "1 2 3 4" }] as Record<string, string>[
   test(`with hq.sock dead and the web port taken, it says how to pick another port [${Object.keys(env)}]`, async () => {
     start({ tcp: true, listening: false, error: "Address already in use", socketError: "x" })
     const { d, errors } = deps(env)
-    expect(await pair([], d)).toBe(1)
+    expect(await hq([], d)).toBe(1)
     expect(errors).toContain(
       `If another program holds port 49380, set "port" in ${path.join(home, "office", "hq.json")} to a free one, ` +
         'for example {"port": 49390}, or 0 for any free port (its URL then changes with each restart).',
@@ -467,10 +558,10 @@ for (const env of [{}, { SSH_CONNECTION: "1 2 3 4" }] as Record<string, string>[
 test("with hq.sock dead but TCP listening, it prints the URL locally and the TCP forward over SSH", async () => {
   start({ tcp: true, listening: true, socketError: "x" })
   let { d, printed } = deps()
-  expect(await pair([], d)).toBe(0)
+  expect(await hq([], d)).toBe(0)
   expect(printed.join("\n")).toMatch(/http:\/\/127\.0\.0\.1:49380\/pair#/)
   ;({ d, printed } = deps({ SSH_CONNECTION: "1 2 3 4" }, "linux"))
-  expect(await pair([], d)).toBe(0)
+  expect(await hq([], d)).toBe(0)
   expect(printed).toContain("  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49380:127.0.0.1:49380 mac")
   expect(printed.join("\n")).not.toContain("hq.sock mac")
 })
@@ -479,7 +570,7 @@ test("if the web port stops listening while the code is minted, with hq.sock dea
   start({ tcp: true, listening: true, socketError: "x" })
   const release = office!.hold("POST /hq/pair")
   const { d, printed, errors, spawned } = deps()
-  const run = pair([], d)
+  const run = hq([], d)
   const deadline = Date.now() + 2000
   while (!office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")) {
     if (Date.now() > deadline) throw new Error("POST /hq/pair never came")
@@ -496,7 +587,7 @@ test("if the web port stops listening while the code is minted, with hq.sock dea
 test("with the app not built, it asks for no file, opens nothing, warns and still prints the link", async () => {
   start({ tcp: true, listening: true, app: false })
   const { d, printed, spawned } = deps()
-  expect(await pair([], d)).toBe(0)
+  expect(await hq([], d)).toBe(0)
   expect(pairBody()).toEqual({ handle: null, open_file: false })
   expect(spawned).toEqual([])
   expect(printed).toContain(APP_MISSING)
@@ -506,7 +597,7 @@ test("with the app not built, it asks for no file, opens nothing, warns and stil
 test("it reads HQ's status before it mints the code", async () => {
   start({ tcp: true, listening: true })
   const { d } = deps()
-  expect(await pair([], d)).toBe(0)
+  expect(await hq([], d)).toBe(0)
   const at = (method: string, p: string) => office!.requests.findIndex((r) => r.method === method && r.path === p)
   expect(at("GET", "/hq")).toBeGreaterThanOrEqual(0)
   expect(at("GET", "/hq")).toBeLessThan(at("POST", "/hq/pair"))
@@ -515,14 +606,14 @@ test("it reads HQ's status before it mints the code", async () => {
 test("when HQ's status can't be read, it opens the link as before", async () => {
   start({ tcp: true, listening: true }, { missing: ["GET /hq"] })
   const { d, spawned } = deps()
-  expect(await pair([], d)).toBe(0)
+  expect(await hq([], d)).toBe(0)
   expect(pairBody()).toEqual({ handle: null, open_file: true })
   expect(spawned).toHaveLength(1)
 })
 
 test("without an office it says so and exits 3", async () => {
   const { d, errors } = deps()
-  expect(await pair([], d)).toBe(3)
+  expect(await hq([], d)).toBe(3)
   expect(errors).toEqual([notRunningAt(home)])
 })
 
@@ -530,7 +621,7 @@ test("with a socket nothing answers on, it says so and exits 3", async () => {
   const socket = path.join(home, "office", "office.sock")
   await staleSocket(socket)
   const { d, errors } = deps()
-  expect(await pair([], d)).toBe(3)
+  expect(await hq([], d)).toBe(3)
   expect(errors).toEqual([
     `The office can't be reached: nothing answers on ${socket}; the office may have stopped or crashed. Run \`opencorp doctor\`.`,
   ])
@@ -538,13 +629,48 @@ test("with a socket nothing answers on, it says so and exits 3", async () => {
 
 test("an unknown option is a usage error", async () => {
   const { d, errors } = deps()
-  expect(await pair(["--nope"], d)).toBe(2)
-  expect(errors.join("\n")).toContain("usage: opencorp pair [--handle HANDLE] [--no-open]")
+  expect(await hq(["--nope"], d)).toBe(2)
+  expect(errors.join("\n")).toContain("usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--json] [--check --json]")
 })
 
 test("--help prints the usage and exits 0 without the office", async () => {
   const { d, printed, errors } = deps()
-  expect(await pair(["--help"], d)).toBe(0)
-  expect(printed).toEqual(["usage: opencorp pair [--handle HANDLE] [--no-open]"])
+  expect(await hq(["--help"], d)).toBe(0)
+  expect(printed).toEqual(["usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--json] [--check --json]"])
   expect(errors).toEqual([])
+})
+
+describe("against a real office", () => {
+  let real: TestOffice
+  beforeAll(async () => {
+    real = await startOffice()
+  }, 120_000)
+  afterAll(() => real?.stop())
+
+  /** The last line of `stdout`, which `--json` and `--check --json` make their only one. */
+  const lastLine = (stdout: string) => stdout.trimEnd().split("\n").at(-1)!
+
+  test("--check --json reports hq.sock and HQ's health", async () => {
+    const ran = await real.opencorp(["hq", "--check", "--json"])
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" })
+    const status = HqStatus.parse(JSON.parse(lastLine(ran.stdout)))
+    expect(status.socket).toBe(real.hqSocket)
+    expect(status.socket_error).toBeNull()
+  })
+
+  test("--json gives a code that signs a browser in through hq.sock", async () => {
+    const ran = await real.opencorp(["hq", "--json"])
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" })
+    const minted = PairCode.parse(JSON.parse(lastLine(ran.stdout)))
+    expect(minted.path).toMatch(/^\/pair#[A-Za-z0-9_-]{22}$/)
+    // hq.sock takes any port in Host, as an SSH forward's local end gives it; the cookie's name carries that port.
+    const res = await fetch("http://127.0.0.1:1/api/pair", {
+      unix: real.hqSocket,
+      method: "POST",
+      headers: { origin: "http://127.0.0.1:1", "content-type": "application/json" },
+      body: JSON.stringify({ code: minted.path.slice("/pair#".length) }),
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get("set-cookie")).toMatch(/^opencorp_hq_1=/)
+  })
 })

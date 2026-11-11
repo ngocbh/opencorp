@@ -738,7 +738,7 @@ export function hqPortChecks(status: HqStatus, officeDir: string, socketMissing:
       {
         name: "hq",
         status: "ok",
-        detail: `on ${status.socket} only (the web port is off); \`opencorp pair\` prints the SSH forward`,
+        detail: `on ${status.socket} only (the web port is off); \`opencorp hq\` prints the SSH forward`,
       },
     ]
   } else if (!error) {

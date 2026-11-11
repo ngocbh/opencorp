@@ -24,7 +24,7 @@ async function signIn(page: Page, handle: string, password: string) {
   await page.getByRole("button", { name: "Sign in" }).click()
 }
 
-test("sign-in shows the form first, with its autocomplete hints, and opencorp pair below as the other way", async ({ page }) => {
+test("sign-in shows the form first, with its autocomplete hints, and opencorp hq below as the other way", async ({ page }) => {
   await page.goto("/")
   await expect(page).toHaveURL("/sign-in")
   const handle = page.getByLabel("Handle")
@@ -32,10 +32,10 @@ test("sign-in shows the form first, with its autocomplete hints, and opencorp pa
   await expect(handle).toHaveAttribute("autocomplete", "username")
   await expect(password).toHaveAttribute("type", "password")
   await expect(password).toHaveAttribute("autocomplete", "current-password")
-  const pair = page.getByText("Or run opencorp pair on the office machine and open the link it prints.")
+  const pair = page.getByText("Or run opencorp hq --sign-in and open the link it prints.")
   await expect(pair).toBeVisible()
-  await expect(pair.locator("code")).toHaveText("opencorp pair")
-  await expect(page.getByText("Over SSH, opencorp pair prints the ssh -N -L command to run first.")).toBeVisible()
+  await expect(pair.locator("code")).toHaveText("opencorp hq --sign-in")
+  await expect(page.getByText("Over SSH, opencorp hq prints the ssh -N -L command to run first.")).toBeVisible()
   const form = await page.locator("form").boundingBox()
   const below = await pair.boundingBox()
   expect(below!.y).toBeGreaterThan(form!.y + form!.height - 1)
@@ -101,12 +101,12 @@ test("a handle that can't be one says the same without asking the office", async
 test("an office that can't take a password yet says to pair instead", async ({ page }) => {
   // What an office without /api/login answers: the 401 it gives any request without a session.
   await page.route("**/api/login", (route) =>
-    route.fulfill({ status: 401, json: { error: "sign_in_required", message: "Sign in: run `opencorp pair`." } }),
+    route.fulfill({ status: 401, json: { error: "sign_in_required", message: "Sign in: run `opencorp hq --sign-in`." } }),
   )
   await page.goto("/sign-in")
   await signIn(page, "ngocbh", PASSWORD)
-  await expect(page.getByRole("alert")).toHaveText("This office can't take a password yet; run opencorp pair.")
-  await expect(page.getByRole("alert").locator("code")).toHaveText("opencorp pair")
+  await expect(page.getByRole("alert")).toHaveText("This office can't take a password yet; run opencorp hq --sign-in.")
+  await expect(page.getByRole("alert").locator("code")).toHaveText("opencorp hq --sign-in")
   await expect(page).toHaveURL("/sign-in")
 })
 
@@ -114,8 +114,8 @@ test("too many tries says how long to wait, or to pair", async ({ page, request 
   await request.post("/__fixture/set", { data: { login: { retryAfter: 600, busy: false } } })
   await page.goto("/sign-in")
   await signIn(page, "ngocbh", PASSWORD)
-  await expect(page.getByRole("alert")).toHaveText("Too many tries; wait 10 minutes, or run opencorp pair.")
-  await expect(page.getByRole("alert").locator("code")).toHaveText("opencorp pair")
+  await expect(page.getByRole("alert")).toHaveText("Too many tries; wait 10 minutes, or run opencorp hq --sign-in.")
+  await expect(page.getByRole("alert").locator("code")).toHaveText("opencorp hq --sign-in")
   await expect(page.getByLabel("Password")).toHaveValue("")
 })
 

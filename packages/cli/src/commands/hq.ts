@@ -1,6 +1,6 @@
-// `opencorp pair`: a one-time link that signs a browser in to this office's HQ. The code is only ever printed or put
+// `opencorp hq`: a one-time link that signs a browser in to this office's HQ. The code is only ever printed or put
 // in a 0600 file the office wrote: never in a process's arguments, where other users could read it.
-import { isMissingRoute, isNotImplemented, OfficeUnavailable } from "@opencorp/client"
+import { isMissingRoute, isNotImplemented, OfficeTimeout, OfficeUnavailable } from "@opencorp/client"
 import { opencorpHome } from "@opencorp/client/node"
 import { otherPort, SETTINGS_IGNORED } from "@opencorp/office/hq/config"
 import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
@@ -29,7 +29,7 @@ type Env = Record<string, string | undefined>
 /** Whether this is an SSH session: sshd sets `SSH_CONNECTION` and `SSH_CLIENT`, and `SSH_TTY` with a terminal. */
 const overSsh = (env: Env) => !!(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
 
-/** Whether `pair` can open a browser here: a Mac or a Linux display, and not over SSH. */
+/** Whether `hq` can open a browser here: a Mac or a Linux display, and not over SSH. */
 export function canOpen(env: Env, platform: string) {
   if (overSsh(env)) return false
   return platform === "darwin" || !!env.DISPLAY || !!env.WAYLAND_DISPLAY
@@ -81,19 +81,19 @@ function unreachable(socketError: string, tcp: HqTcp | null, warnings: readonly 
       : tcp.error
         ? `${webPort(tcp.port)} isn't listening (${tcp.error})`
         : `${webPort(tcp.port)} isn't listening yet`
-  const lines = [`opencorp pair: HQ can't be reached: hq.sock isn't listening (${socketError}), and ${state}.`]
+  const lines = [`opencorp hq: HQ can't be reached: hq.sock isn't listening (${socketError}), and ${state}.`]
   // With hq.sock down, the web port is the only way in, over SSH too (by forwarding it).
   if (tcp && !tcp.enabled) {
     lines.push(...warnings.map((w) => `  ${w}`))
     lines.push(`To reach it over TCP, ${tcpOn(hqJson, warnings)}, then run \`opencorp restart\`.`)
   } else if (tcp?.error && tcp.port) lines.push(...otherPortHint(tcp.port, hqJson))
-  else if (!tcp || !tcp.error) lines.push("Run `opencorp pair` again once the web port is listening.")
+  else if (!tcp || !tcp.error) lines.push("Run `opencorp hq` again once the web port is listening.")
   lines.push("`opencorp doctor` says more; run `opencorp restart` once that's fixed.")
   return lines
 }
 
 /**
- * What `pair` prints for `code`, and the redirect file to open, if it should open one. `status` is HQ's (`GET /hq`),
+ * What `hq` prints for `code`, and the redirect file to open, if it should open one. `status` is HQ's (`GET /hq`),
  * or null when it couldn't be read; a field an older office doesn't send counts as unknown.
  *
  * With TCP off because hq.json was ignored, the fix is to repair the file, not to add `"tcp": true` to it.
@@ -163,10 +163,11 @@ export function pairOutput(
   return { lines }
 }
 
-const USAGE = "usage: opencorp pair [--handle HANDLE] [--no-open]"
+const USAGE = "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--json] [--check --json]"
+const NO_HQ = "opencorp hq: this office has no HQ yet; update the checkout and run `opencorp restart`"
 
-/** What `pair` reads from and does to the machine; tests pass fakes. */
-export type PairDeps = {
+/** What `hq` reads from and does to the machine; tests pass fakes. */
+export type HqDeps = {
   env: Env
   platform: string
   hostname(): string
@@ -176,7 +177,7 @@ export type PairDeps = {
   error(line: string): void
 }
 
-export const realPairDeps: PairDeps = {
+export const realHqDeps: HqDeps = {
   env: process.env,
   platform: process.platform,
   hostname: () => os.hostname(),
@@ -185,21 +186,64 @@ export const realPairDeps: PairDeps = {
   error: (line) => console.error(line),
 }
 
-/** `opencorp pair [--handle H] [--no-open]`: a one-time link that signs a browser in as H (you by default). */
-export async function pair(argv: string[], deps: PairDeps = realPairDeps): Promise<number> {
-  let values: { handle?: string; "no-open"?: boolean; help?: boolean }
+/** No office answers on office.sock (`OfficeDropped` is an `OfficeUnavailable`): these exit 3, as `officeNotRunning`
+ *  says why. */
+const officeDown = (e: unknown) => e instanceof OfficeUnavailable || e instanceof OfficeTimeout
+
+/** `--check --json`: GET /hq on the local office as one line of JSON. Never mints, never leaves this machine. */
+async function checkJson(deps: HqDeps): Promise<number> {
+  try {
+    deps.print(JSON.stringify(await officeClient(localIdentity()).hq.status()))
+    return 0
+  } catch (e) {
+    if (officeDown(e)) return officeNotRunning(e, deps.error)
+    deps.error(isMissingRoute(e) || isNotImplemented(e) ? NO_HQ : `opencorp hq: ${e instanceof Error ? e.message : e}`)
+    return 1
+  }
+}
+
+/**
+ * `opencorp hq [--handle H] [--no-open] [--sign-in] [--json]`: a one-time link that signs a browser in as H (you by
+ * default). With `--json` it prints the minted `PairCode` as one line of JSON and opens nothing; `--check --json`
+ * prints HQ's status instead and mints nothing.
+ */
+export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<number> {
+  let values: {
+    handle?: string
+    "no-open"?: boolean
+    "sign-in"?: boolean
+    json?: boolean
+    check?: boolean
+    help?: boolean
+  }
   try {
     ;({ values } = parseArgs({
       args: argv,
-      options: { handle: { type: "string" }, "no-open": { type: "boolean" }, help: { type: "boolean", short: "h" } },
+      options: {
+        handle: { type: "string" },
+        "no-open": { type: "boolean" },
+        // Read nowhere here: every run on HQ's machine signs a browser in.
+        "sign-in": { type: "boolean" },
+        json: { type: "boolean" },
+        check: { type: "boolean" },
+        help: { type: "boolean", short: "h" },
+      },
     }))
   } catch (e) {
-    deps.error(`opencorp pair: ${e instanceof Error ? e.message : e}\n${USAGE}`)
+    deps.error(`opencorp hq: ${e instanceof Error ? e.message : e}\n${USAGE}`)
     return 2
   }
   if (values.help) {
     deps.print(USAGE)
     return 0
+  }
+  if (values.check) {
+    // It's only what a visit from another machine runs here, so it takes nothing a person would add.
+    if (!values.json || Object.keys(values).some((k) => k !== "check" && k !== "json")) {
+      deps.error(`opencorp hq: --check needs --json and takes no other option\n${USAGE}`)
+      return 2
+    }
+    return checkJson(deps)
   }
   const noOpen = !!values["no-open"]
   try {
@@ -217,12 +261,16 @@ export async function pair(argv: string[], deps: PairDeps = realPairDeps): Promi
     // to an app that isn't built won't load, so it isn't opened.
     const code = await office.hq.pair({
       handle: values.handle === undefined ? null : bareHandle(values.handle),
-      open_file: !noOpen && canOpen(deps.env, deps.platform) && status?.health?.app !== null,
+      open_file: !values.json && !noOpen && canOpen(deps.env, deps.platform) && status?.health?.app !== null,
     })
     if (!code.url && socketError) {
       // The web port stopped listening after the read. The code isn't shown, has no file and expires unused.
       for (const line of unreachable(socketError, null, [], hqJson)) deps.error(line)
       return 1
+    }
+    if (values.json) {
+      deps.print(JSON.stringify(code))
+      return 0
     }
     const out = pairOutput(code, {
       env: deps.env,
@@ -245,12 +293,11 @@ export async function pair(argv: string[], deps: PairDeps = realPairDeps): Promi
     }
     return 0
   } catch (e) {
-    if (e instanceof OfficeUnavailable) return officeNotRunning(e, deps.error)
-    if (isMissingRoute(e) || isNotImplemented(e))
-      deps.error("opencorp pair: this office has no HQ yet; update the checkout and run `opencorp restart`")
-    else deps.error(`opencorp pair: ${e instanceof Error ? e.message : e}`)
+    if (officeDown(e)) return officeNotRunning(e, deps.error)
+    if (isMissingRoute(e) || isNotImplemented(e)) deps.error(NO_HQ)
+    else deps.error(`opencorp hq: ${e instanceof Error ? e.message : e}`)
     return 1
   }
 }
 
-export const run: CommandRun = (argv) => pair(argv)
+export const run: CommandRun = (argv) => hq(argv)

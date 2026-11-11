@@ -18,7 +18,7 @@ test(
     const office = await openOffice({ hq: { tcp: true, port: 0 } })
     const workspace = folder(path.join(office.root, "project"))
     await waitListening(office)
-    const [, port, code] = (await office.opencorp(["pair", "--no-open"], { cwd: office.root })).stdout.match(URL_RE)!
+    const [, port, code] = (await office.opencorp(["hq", "--no-open"], { cwd: office.root })).stdout.match(URL_RE)!
     await new Connections(office.paths.office).put(
       "e2e",
       ConnectionFile.parse({ llm_config: { ...LLM_CONFIG, api_key: KEY }, env: office.llm.env() }),

@@ -17,7 +17,7 @@ export const OPEN: ReadonlySet<string> = new Set([
 
 /** The 401 message for an /api request without a live session. */
 export const SIGN_IN =
-  "Sign in with your handle and password, or run `opencorp pair` on the office machine and open the link it prints."
+  "Sign in with your handle and password, or run `opencorp hq --sign-in` and open the link it prints."
 
 /** `opencorp_hq_<port>`, the port being the Host header's (the whole value without a colon): cookies ignore ports,
  *  so the name tells HQs on one host apart. */

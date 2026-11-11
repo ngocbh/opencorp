@@ -1,5 +1,5 @@
-/** HQ on a real office: `opencorp pair` and password sign-in over TCP, hq.sock with TCP off and the SSH forwards
- *  `opencorp pair` prints, the company and the event stream, signing out, and what `opencorp doctor` says about HQ. */
+/** HQ on a real office: `opencorp hq` and password sign-in over TCP, hq.sock with TCP off and the SSH forwards
+ *  `opencorp hq` prints, the company and the event stream, signing out, and what `opencorp doctor` says about HQ. */
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
@@ -10,7 +10,7 @@ import { Browser, openOffice, type RunningOffice, URL_RE, waitListening } from "
 
 const TIMEOUT = 240_000
 const CODE = /\/pair#([A-Za-z0-9_-]+)/
-/** The local port `opencorp pair` prints for an hq.sock forward. */
+/** The local port `opencorp hq` prints for an hq.sock forward. */
 const LOCAL_PORT = 49381
 const PASSWORD = "correct horse battery"
 
@@ -46,7 +46,7 @@ test(
     const office = await webOffice()
     const cwd = scratch(office)
     const status = await waitListening(office)
-    const out = (await office.opencorp(["pair", "--no-open"], { cwd })).stdout
+    const out = (await office.opencorp(["hq", "--no-open"], { cwd })).stdout
     const [, port, code] = out.match(URL_RE)!
     expect(status.url).toBe(`http://127.0.0.1:${port}/`)
     const origin = `http://127.0.0.1:${port}`
@@ -81,7 +81,7 @@ test(
     const office = await webOffice()
     const cwd = scratch(office)
     await waitListening(office)
-    const [, port, code] = (await office.opencorp(["pair", "--no-open"], { cwd })).stdout.match(URL_RE)!
+    const [, port, code] = (await office.opencorp(["hq", "--no-open"], { cwd })).stdout.match(URL_RE)!
     const browser = new Browser(`http://127.0.0.1:${port}`)
     const session = (await browser.post("/api/pair", { code })).json()
     const streams = []
@@ -135,12 +135,12 @@ test(
     expect(retryAfter).toBeGreaterThan(0)
     expect(retryAfter).toBeLessThanOrEqual(60)
     expect(Number.isInteger(retryAfter)).toBe(true)
-    expect(locked.json().message).toContain("opencorp pair")
+    expect(locked.json().message).toContain("opencorp hq --sign-in")
     // The lock is per handle: another handle's refusals still say only "wrong handle or password".
     expect((await signIn("nobody", PASSWORD)).status).toBe(401)
 
     // Pairing never goes through the password check, so the lock doesn't keep the owner out.
-    const code = (await office.opencorp(["pair", "--no-open"], { cwd })).stdout.match(URL_RE)![2]
+    const code = (await office.opencorp(["hq", "--no-open"], { cwd })).stdout.match(URL_RE)![2]
     expect((await stranger.post("/api/pair", { code })).status).toBe(200)
     expect((await stranger.get("/api/company")).status).toBe(200)
     expect(officeLog(office)).not.toContain(PASSWORD)
@@ -166,14 +166,14 @@ test(
 )
 
 test(
-  "over ssh pair prints the same port forward and the hq sock one",
+  "over ssh hq prints the same port forward and the hq sock one",
   async () => {
     const office = await webOffice()
     const cwd = scratch(office)
     const status = await waitListening(office)
     const port = status.tcp.port
     const hqSock = status.socket
-    const out = (await office.opencorp(["pair", "--no-open"], { cwd, ssh: true })).stdout
+    const out = (await office.opencorp(["hq", "--no-open"], { cwd, ssh: true })).stdout
     expect(out).toContain(`ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:${port}:127.0.0.1:${port} `)
     expect(out).toContain(`ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:${LOCAL_PORT}:${hqSock} `)
     expect(out).toContain(`http://127.0.0.1:${port}/pair#`)
@@ -187,11 +187,11 @@ test(
 )
 
 test(
-  "with tcp off pair prints the socket forward and hq sock serves any local port",
+  "with tcp off hq prints the socket forward and hq sock serves any local port",
   async () => {
     const office = await sockOffice()
     const cwd = scratch(office)
-    const out = (await office.opencorp(["pair", "--no-open"], { cwd })).stdout
+    const out = (await office.opencorp(["hq", "--no-open"], { cwd })).stdout
     const hqSock = path.join(office.paths.office, "hq.sock")
     expect(out).toContain(`ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:${LOCAL_PORT}:${hqSock} `)
     expect(out).toContain(`http://127.0.0.1:${LOCAL_PORT}/pair#`)
@@ -204,7 +204,7 @@ test(
     expect(fs.statSync(hqSock).mode & 0o777).toBe(0o600)
     const doctor = (await office.opencorp(["doctor"], { cwd, check: false })).stdout
     expect(doctor).toContain(
-      doctorLine("ok", "hq", `on ${hqSock} only (the web port is off); \`opencorp pair\` prints the SSH forward`),
+      doctorLine("ok", "hq", `on ${hqSock} only (the web port is off); \`opencorp hq\` prints the SSH forward`),
     )
   },
   TIMEOUT,
@@ -217,7 +217,7 @@ test(
     // printed it has exited by now), and not in the office's log.
     const office = await sockOffice()
     const cwd = scratch(office)
-    const out = (await office.opencorp(["pair", "--no-open"], { cwd })).stdout
+    const out = (await office.opencorp(["hq", "--no-open"], { cwd })).stdout
     const code = out.match(CODE)![1]!
     const commands = execFileSync(ps(), ["-wwaxo", "command="], { env: {}, encoding: "utf8", timeout: 5000 })
     expect(commands.split("\n").filter((line) => line.includes(code))).toEqual([])

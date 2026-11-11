@@ -32,18 +32,18 @@ test("a wrong handle or password says so", () => {
 
 test("an office that can't take a password yet says to pair instead", () => {
   expect(signInFailure(new UnknownDevice("sign_in_required", true))).toBe(
-    "This office can't take a password yet; run `opencorp pair`.",
+    "This office can't take a password yet; run `opencorp hq --sign-in`.",
   )
 })
 
 test("too many tries says how long to wait, in whole minutes rounded up, and offers pairing", () => {
   expect(signInFailure(err(429, "too_many_attempts", 600))).toBe(
-    "Too many tries; wait 10 minutes, or run `opencorp pair`.",
+    "Too many tries; wait 10 minutes, or run `opencorp hq --sign-in`.",
   )
-  expect(signInFailure(err(429, "too_many_attempts", 61))).toBe("Too many tries; wait 2 minutes, or run `opencorp pair`.")
-  expect(signInFailure(err(429, "too_many_attempts", 5))).toBe("Too many tries; wait 1 minute, or run `opencorp pair`.")
+  expect(signInFailure(err(429, "too_many_attempts", 61))).toBe("Too many tries; wait 2 minutes, or run `opencorp hq --sign-in`.")
+  expect(signInFailure(err(429, "too_many_attempts", 5))).toBe("Too many tries; wait 1 minute, or run `opencorp hq --sign-in`.")
   expect(signInFailure(err(429, "too_many_attempts"))).toBe(
-    "Too many tries; wait a few minutes, or run `opencorp pair`.",
+    "Too many tries; wait a few minutes, or run `opencorp hq --sign-in`.",
   )
 })
 

@@ -95,7 +95,7 @@ export class Hq {
     }
   }
 
-  /** Where HQ listens now, for `opencorp pair` and `opencorp doctor`. */
+  /** Where HQ listens now, for `opencorp hq` and `opencorp doctor`. */
   async status(): Promise<HqStatus> {
     return {
       socket: this.socket,
@@ -113,7 +113,7 @@ export class Hq {
     }
   }
 
-  /** What `opencorp doctor` and `opencorp pair` should mention, besides `socket_error` and TCP's own state. */
+  /** What `opencorp doctor` and `opencorp hq` should mention, besides `socket_error` and TCP's own state. */
   async warnings(): Promise<string[]> {
     const found: string[] = []
     if (this.config.problem !== null) found.push(`${SETTINGS_IGNORED} (restart to apply): ${this.config.problem}`)

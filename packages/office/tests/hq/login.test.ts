@@ -92,7 +92,7 @@ test("the cookie is the one pairing sets", async () => {
 test("without a session the 401 names both ways to sign in", async () => {
   const message = ((await (await web(await makeHq(makeOffice()))).get("/api/whoami")).json() as Body).message
   expect(message).toContain("handle and password")
-  expect(message).toContain("`opencorp pair`")
+  expect(message).toContain("`opencorp hq --sign-in`")
 })
 
 test("a wrong password is 401 bad credentials", async () => {
@@ -472,7 +472,7 @@ test("five failures give 429 with retry after even for the right password", asyn
   const body = r.json() as Body
   expect([r.status, body.error, r.headers["retry-after"]]).toEqual([429, "too_many_attempts", "60"])
   expect(r.headers["content-type"]).toBe("application/json")
-  expect(body.message).toContain("opencorp pair")
+  expect(body.message).toContain("opencorp hq --sign-in")
   expect(r.headers).not.toHaveProperty("set-cookie")
 })
 

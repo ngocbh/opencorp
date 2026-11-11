@@ -41,7 +41,7 @@ test("--help lists every command; an unknown command exits 2", async () => {
   expect(help.code).toBe(0)
   expect(help.out).toContain("Usage: opencorp [command] [options]")
   expect(help.out).toContain("With no command, or only options, opencorp runs `tui`.")
-  expect(Object.keys(commands)).toContain("pair")
+  expect(Object.keys(commands)).toContain("hq")
   expect(Object.keys(commands)).toContain("stop")
   for (const name of Object.keys(commands)) expect(help.out).toContain(name)
   const unknown = await capture(["frobnicate"])
@@ -52,6 +52,11 @@ test("--help lists every command; an unknown command exits 2", async () => {
 test("there is no feedback command", async () => {
   expect(commands.feedback).toBeUndefined()
   expect((await capture(["feedback"])).code).toBe(2)
+})
+
+test("there is no pair command, which is kept for pairing offices", async () => {
+  expect(commands.pair).toBeUndefined()
+  expect((await capture(["pair"])).code).toBe(2)
 })
 
 test("an inherited name is an unknown command", async () => {
@@ -72,7 +77,7 @@ const USAGES: Record<string, string> = {
   logout: "usage: opencorp logout",
   devices: "usage: opencorp devices list [HANDLE] [--hashes]",
   whoami: "usage: opencorp whoami",
-  pair: "usage: opencorp pair [--handle HANDLE] [--no-open]",
+  hq: "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--json] [--check --json]",
 }
 
 test("each client command prints its usage on --help or -h, without the office", async () => {
