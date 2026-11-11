@@ -45,13 +45,13 @@ export const isHandle = (handle: string) => HANDLE.test(handle)
 export function signInFailure(e: unknown) {
   // An office without /api/login refuses it as it refuses any request without a session.
   if (e instanceof UnknownDevice && e.code === "sign_in_required")
-    return "This office can't take a password yet; run `opencorp pair`."
+    return "This office can't take a password yet; run `opencorp hq --sign-in`."
   if (e instanceof OfficeError) {
     if (e.status === 401) return "Wrong handle or password."
     if (e.status === 429) {
       const minutes = e.retryAfterS === undefined ? undefined : Math.max(1, Math.ceil(e.retryAfterS / 60))
       const wait = minutes === undefined ? "a few minutes" : minutes === 1 ? "1 minute" : `${minutes} minutes`
-      return `Too many tries; wait ${wait}, or run \`opencorp pair\`.`
+      return `Too many tries; wait ${wait}, or run \`opencorp hq --sign-in\`.`
     }
     if (e.status === 503) return "The office is busy; try again."
   }

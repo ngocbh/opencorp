@@ -183,7 +183,7 @@ async function login(req: Request): Promise<Response> {
   const { handle, password, label = null } = body
   log.logins.push({ handle, label })
   if (state.login.retryAfter !== null)
-    return json({ error: "too_many_attempts", message: "too many tries; wait, or run `opencorp pair`" }, 429, {
+    return json({ error: "too_many_attempts", message: "too many tries; wait, or run `opencorp hq --sign-in`" }, 429, {
       "retry-after": String(state.login.retryAfter),
     })
   if (state.login.busy) return json({ error: "busy", message: "the office is busy; try again" }, 503)
@@ -206,8 +206,8 @@ function logout(req: Request): Response {
   return json({ ok: true }, 200, { "set-cookie": `opencorp_hq_${port}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` })
 }
 
-const SIGN_IN = "Sign in: run `opencorp pair` on the office machine and open the link it prints."
-const EXPIRED = "This link has expired or was already used. Run `opencorp pair` again."
+const SIGN_IN = "Sign in with your handle and password, or run `opencorp hq --sign-in` and open the link it prints."
+const EXPIRED = "This link has expired or was already used. Run `opencorp hq --sign-in` again."
 
 /** HQ's /api, as the office answers it, from `state`. */
 async function api(req: Request, url: URL): Promise<Response> {

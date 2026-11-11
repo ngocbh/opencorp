@@ -211,10 +211,10 @@ beforeAll(async () => {
   await chat()
   const cwd = path.join(office.root, "pair")
   fs.mkdirSync(cwd)
-  const paired = await office.opencorp(["pair", "--no-open"], { cwd })
+  const paired = await office.opencorp(["hq", "--no-open"], { cwd })
   const link = PAIR_URL.exec(paired.stdout)
   if (paired.code !== 0 || !link)
-    throw new Error(`opencorp pair exited ${paired.code}:\n${paired.stdout}${paired.stderr}`)
+    throw new Error(`opencorp hq exited ${paired.code}:\n${paired.stdout}${paired.stderr}`)
   expect(Number(link[1])).toBe(port)
   realCode = link[2]!
 }, 90_000)

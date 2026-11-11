@@ -33,7 +33,7 @@ async function signOut(page: Page) {
 }
 
 test("the pair link signs in: the chart on a desktop, the list at phone width, no CSP violation", async ({ page }) => {
-  test.skip(!pairUrl, "set HQ_PAIR_URL to a link from `opencorp pair --no-open`")
+  test.skip(!pairUrl, "set HQ_PAIR_URL to a link from `opencorp hq --no-open`")
   const violations = await watchCsp(page)
   const url = new URL(pairUrl!)
   await page.goto(url.pathname + url.hash)

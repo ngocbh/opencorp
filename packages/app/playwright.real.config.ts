@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test"
 
-// Against a running office: HQ_PAIR_URL is the link `opencorp pair --no-open` printed (single use, 5 minutes).
+// Against a running office: HQ_PAIR_URL is the link `opencorp hq --no-open` printed (single use, 5 minutes).
 const url = process.env.HQ_PAIR_URL ?? ""
 
 export default defineConfig({

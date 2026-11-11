@@ -8,7 +8,7 @@ const EXPIRED = "This link has expired or was already used."
 /** `/pair#<code>`: spends the code and signs this browser in. */
 export default function Pair() {
   const navigate = useNavigate()
-  /** Why this link didn't sign in; the page then says to run `opencorp pair` again. */
+  /** Why this link didn't sign in; the page then says to run `opencorp hq --sign-in` again. */
   const [failed, setFailed] = createSignal<string>()
   async function spend() {
     const code = location.hash.slice(1)
@@ -46,7 +46,7 @@ export default function Pair() {
         }
       >
         <p role="alert" class="mt-4">
-          {failed()} Run <code>opencorp pair</code> again.
+          {failed()} Run <code>opencorp hq --sign-in</code> again.
         </p>
       </Show>
     </main>

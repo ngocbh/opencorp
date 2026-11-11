@@ -14,7 +14,7 @@ const ERROR = "sign-in-error"
 const field =
   "mt-1 block w-full rounded border border-neutral-300 px-2 py-1 dark:border-neutral-700 dark:bg-neutral-900"
 
-/** Where a browser without a session lands: a handle and password, or `opencorp pair` on the office machine. */
+/** Where a browser without a session lands: a handle and password, or `opencorp hq --sign-in`. */
 export default function SignIn() {
   const navigate = useNavigate()
   const [failed, setFailed] = createSignal<string>()
@@ -108,10 +108,10 @@ export default function SignIn() {
         </button>
       </form>
       <p class="mt-6">
-        Or run <code>opencorp pair</code> on the office machine and open the link it prints.
+        Or run <code>opencorp hq --sign-in</code> and open the link it prints.
       </p>
       <p class="mt-2 text-sm text-neutral-500">
-        Over SSH, <code>opencorp pair</code> prints the <code>ssh -N -L</code> command to run first.
+        Over SSH, <code>opencorp hq</code> prints the <code>ssh -N -L</code> command to run first.
       </p>
     </main>
   )
