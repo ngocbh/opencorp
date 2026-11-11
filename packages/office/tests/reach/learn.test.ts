@@ -369,22 +369,26 @@ test("a second save_access after one succeeded is refused", async () => {
   expect(fake.masters()).toEqual([])
 })
 
-test("relearning keeps signed_in_at when the port is the same", async () => {
-  let c = await chain(["1"])
-  await oldPath(c.ctx, { port: c.port })
-  await saveAccess({ script: scriptFor(c.spec), notes: NOTES, risks: [] }, c.state)
-  expect(await readAccess(c.ctx.paths)).toMatchObject({
-    port: c.port,
-    last_used_at: "2026-11-02T10:00:00.000Z",
-    signed_in_at: "2026-11-02T10:00:00.000Z",
-  })
-  await exitAll(c.ctx)
-  c = await chain(["1"])
-  await oldPath(c.ctx, { port: c.port === 49381 ? 49382 : 49381 })
-  await saveAccess({ script: scriptFor(c.spec), notes: NOTES, risks: [] }, c.state)
-  expect(await readAccess(c.ctx.paths)).toMatchObject({ port: c.port, last_used_at: "2026-11-02T10:00:00.000Z", signed_in_at: null })
-  await exitAll(c.ctx)
-  expect(c.fake.masters()).toEqual([])
+test("relearning keeps signed_in_at only while the port, the host and HQ's socket are the same", async () => {
+  const kept = { last_used_at: "2026-11-02T10:00:00.000Z", signed_in_at: "2026-11-02T10:00:00.000Z" }
+  const cases: [string, (c: Chain) => Partial<Access>, string | null][] = [
+    ["all the same", (c) => ({ port: c.port, host: "node1", socket: c.remote.socket }), kept.signed_in_at],
+    ["another port", (c) => ({ port: c.port === 49381 ? 49382 : 49381, host: "node1", socket: c.remote.socket }), null],
+    ["another host", (c) => ({ port: c.port, host: "node9", socket: c.remote.socket }), null],
+    ["another socket", (c) => ({ port: c.port, host: "node1", socket: "/elsewhere/hq.sock" }), null],
+    ["none recorded", (c) => ({ port: c.port }), null],
+  ]
+  for (const [label, over, signedIn] of cases) {
+    const c = await chain(["1"])
+    await oldPath(c.ctx, over(c))
+    await saveAccess({ script: scriptFor(c.spec), notes: NOTES, risks: [] }, c.state)
+    expect({ label, access: await readAccess(c.ctx.paths) }).toMatchObject({
+      label,
+      access: { port: c.port, host: "node1", socket: c.remote.socket, last_used_at: kept.last_used_at, signed_in_at: signedIn },
+    })
+    await exitAll(c.ctx)
+    expect(c.fake.masters()).toEqual([])
+  }
 })
 
 /** The fake model, and a provider for it. */

@@ -296,7 +296,7 @@ export async function saveAccess(files: ToSave, state: Learning): Promise<string
   if (change !== null)
     throw new ReportedToolError(change ? `Not saved: the owner wants a change: ${change}` : "Not saved: the owner didn't save it.")
   const conn = await chainTest(Buffer.from(files.script, "utf8"), state)
-  await save(Buffer.from(files.script, "utf8"), files.notes, state)
+  await save(Buffer.from(files.script, "utf8"), files.notes, conn, state)
   state.connection = conn
   state.asking.prompter.say(SAVED)
   return `${SAVED} Reply with one line for the owner.`
@@ -326,8 +326,9 @@ async function chainTest(bytes: Buffer, state: Learning): Promise<Connection> {
 }
 
 /** Writes reach.sh, its approved copy, notes.md, then access.json, each 0600; the old path stays whole until reach.sh
- *  is replaced. `signed_in_at` stays when the port does: the browser's session lives in HQ's store. */
-async function save(bytes: Buffer, notes: string, state: Learning): Promise<void> {
+ *  is replaced. `signed_in_at` stays only while the port, the host and HQ's socket there are the last connection's:
+ *  the browser's cookie is tied to the port, and its session lives in that HQ's store. */
+async function save(bytes: Buffer, notes: string, conn: Connection, state: Learning): Promise<void> {
   const { paths } = state.ctx
   let old: Access | null
   try {
@@ -339,12 +340,18 @@ async function save(bytes: Buffer, notes: string, state: Learning): Promise<void
   await writePrivate(paths.script, bytes)
   await writePrivate(paths.approved, bytes)
   await writePrivate(paths.notes, notes)
+  const signedIn =
+    old !== null && old.port === state.port && old.host === conn.spec.host && old.socket === conn.socket
+      ? old.signed_in_at
+      : null
   await writeAccess(paths, {
     port: state.port,
     sha256: sha256(bytes),
     learned_at: state.now().toISOString(),
     last_used_at: old?.last_used_at ?? null,
-    signed_in_at: old !== null && old.port === state.port ? old.signed_in_at : null,
+    signed_in_at: signedIn,
+    host: conn.spec.host,
+    socket: conn.socket,
   })
 }
 

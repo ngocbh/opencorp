@@ -235,7 +235,12 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
 /** Once connected: sign the browser in or open HQ, record the visit, say what stays open, then wait until Ctrl-C. */
 async function hold(ctx: ReachContext, conn: Connection, access: Access, options: VisitOptions, deps: VisitDeps): Promise<number> {
   access = await signInOrOpen(ctx, conn, access, options, deps)
-  await writeAccess(ctx.paths, { ...access, last_used_at: deps.now().toISOString() })
+  await writeAccess(ctx.paths, {
+    ...access,
+    last_used_at: deps.now().toISOString(),
+    host: conn.spec.host,
+    socket: conn.socket,
+  })
   deps.print(visitLine(conn))
   return waitLoop(ctx, conn, deps)
 }

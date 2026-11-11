@@ -271,6 +271,8 @@ test("the first visit signs in through a redirect file and records signed_in_at"
   const access = await readAccess(paths)
   expect(access?.signed_in_at).not.toBeNull()
   expect(access?.last_used_at).not.toBeNull()
+  // What a relearn compares to keep the browser's sign-in.
+  expect(access).toMatchObject({ host: "node1", socket: remote.socket })
   v.sigint()
   expect(await v.done).toBe(0)
 })
@@ -808,7 +810,7 @@ test("at the turn cap the visit prints the commands and saves nothing", async ()
 }, 60_000)
 
 test("--relearn gives the agent the old notes and script, and keeps the old path until the new one passes", async () => {
-  const { dir, fake, llm, spec, paths, port } = await unlearnedHome()
+  const { dir, fake, llm, spec, paths, port, remote } = await unlearnedHome()
   const old = `set -eu\n# the old way\nssh login1 true\nprintf '%s\\n' '${JSON.stringify({ ...spec, host: "node9" })}'\n`
   await saved(dir, old, { port, signed_in_at: new Date().toISOString() })
   await writePrivate(paths.notes, "The job used to run on node9.\n")
@@ -831,8 +833,8 @@ test("--relearn gives the agent the old notes and script, and keeps the old path
   expect(third).toContain("# the old way")
   expect(third).toContain(sha256(old))
   expect(fs.readFileSync(paths.script, "utf8")).toBe(script)
-  // The same port: the browser's session still holds, so it opens HQ rather than signing in again.
-  expect(v.printed).toContain(`http://127.0.0.1:${port}/`)
+  // Another host than the old path's (node9): the browser may not have a session there, so it signs in again.
+  expect(v.printed).toContain(`http://127.0.0.1:${port}/pair#${remote.code}`)
   v.sigint()
   expect(await done).toBe(0)
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
