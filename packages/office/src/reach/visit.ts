@@ -38,6 +38,7 @@ import { lineCount, numberedLines, shownCode } from "./show.ts"
 import { safePath, type Spec } from "./spec.ts"
 import {
   type Access,
+  AccessError,
   cleanUp,
   DEFAULT_PORT,
   readAccess,
@@ -105,6 +106,7 @@ export const RELEARN_BUSY =
   "opencorp hq: another `opencorp hq` here holds the connection to HQ; end it with Ctrl-C there, then run `opencorp hq --relearn`."
 export const CAPPED =
   "opencorp hq: the model stopped after 30 turns without a working path, so nothing was saved. The commands it asked for:"
+export const ASKED_FOR = "The commands the model asked for:"
 /** Signed in longer than this, a visit hints at `--sign-in`: HQ's browser session lasts 30 days. */
 export const SIGN_IN_HINT_DAYS = 30
 export const SIGN_IN_HINT =
@@ -184,7 +186,15 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
     await cleanUp(ctx, deps.now().getTime())
     watcher = startWatcher(ctx)
     if (learnFirst) return await learnAndHold(ctx, deps, { notes: "", script: "", failure: "" }, port, options)
-    const saved = await readAccess(paths)
+    let saved: Access | null
+    try {
+      saved = await readAccess(paths)
+    } catch (error) {
+      // A relearn writes a new one, as save_access does.
+      if (!options.relearn || !(error instanceof AccessError)) throw error
+      deps.error(`opencorp hq: ${error.message}; relearning as if there were none.`)
+      saved = null
+    }
     if (options.relearn) {
       port = options.port ?? saved?.port ?? DEFAULT_PORT
       if (!(await inVisit(ctx, deps.stdin, () => askToLearn(deps, RELEARN_QUESTION, LEARN)))) {
@@ -323,6 +333,10 @@ async function learnPath(
   let learned: Learned
   try {
     learned = await runLearn(provider, inputs, state)
+  } catch (error) {
+    // Ctrl-C, or the owner's input ending: what ran is still worth knowing.
+    if (state.commands.length > 0) listCommands(deps, state, ASKED_FOR)
+    throw error
   } finally {
     await writeSshFiles(ctx.paths, ctx.ssh, deps.sshIncludes)
   }
@@ -333,12 +347,23 @@ async function learnPath(
     return { access, conn: state.connection }
   }
   if (learned.capped) {
-    deps.error(CAPPED)
-    for (const { command, code } of state.commands) deps.error(`  (${code === null ? "not run" : `exit ${code}`}) ${clean(command)}`)
+    listCommands(deps, state, CAPPED)
     return 1
   }
   deps.error(`opencorp hq: nothing was saved: ${clean(state.scrub(learned.message ?? learned.output ?? "the model stopped"))}`)
+  if (state.commands.length > 0) listCommands(deps, state, ASKED_FOR)
   return 1
+}
+
+/** `header`, then a line for each command the model asked for: its exit, or "not run", and its first line as it
+ *  was shown to the owner. */
+function listCommands(deps: VisitDeps, state: Learning, header: string): void {
+  deps.error(header)
+  for (const { command, code } of state.commands) {
+    const lines = command.split("\n")
+    const more = lines.length > 1 ? ` (and ${lines.length - 1} more line${lines.length > 2 ? "s" : ""})` : ""
+    deps.error(`  (${code === null ? "not run" : `exit ${code}`}) ${shownCode(lines[0]!)}${more}`)
+  }
 }
 
 /** A visit's context, its Ctrl-C (a second one exits 130 at once; the watcher then ends the masters) and the

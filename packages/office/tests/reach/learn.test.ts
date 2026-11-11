@@ -24,6 +24,7 @@ import {
   shellResult,
   WHAT_SHOULD_CHANGE,
 } from "../../src/reach/learn.ts"
+import { MAX_SCRIPT_BYTES } from "../../src/reach/replay.ts"
 import { BEFORE_LEARNING, beforeSaving } from "../../src/reach/risks.ts"
 import type { Spec } from "../../src/reach/spec.ts"
 import { exitAll, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
@@ -542,4 +543,16 @@ test("the model's key, in any form, and a sign-in code printed by a command reac
   }
   // An unfinished line still reaches the terminal, scrubbed.
   expect(shown).toContain("partial [redacted]")
+})
+
+test("save_access refuses a reach.sh or notes.md over 1 MiB before showing anything", async () => {
+  const { prompter, state } = await learning([])
+  const big = `${"#".repeat(MAX_SCRIPT_BYTES)}\n`
+  expect((await rejection(saveAccess({ script: big, notes: NOTES, risks: [] }, state))).message).toBe(
+    "Not saved: reach.sh is over 1 MiB.",
+  )
+  expect((await rejection(saveAccess({ script: "exit 3\n", notes: big, risks: [] }, state))).message).toBe(
+    "Not saved: notes.md is over 1 MiB.",
+  )
+  expect(prompter.seen).toEqual([])
 })

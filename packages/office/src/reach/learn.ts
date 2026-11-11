@@ -24,7 +24,7 @@ import { embedded } from "../platform.ts"
 import { writePrivate } from "../secrets.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import { type Connection, connect, describe, ReachFailure } from "./connect.ts"
-import { runBytes } from "./replay.ts"
+import { MAX_SCRIPT_BYTES, runBytes } from "./replay.ts"
 import type { ReachPaths } from "./paths.ts"
 import { beforeSaving } from "./risks.ts"
 import { lineCount, numberedLines, oddCharacter } from "./show.ts"
@@ -247,13 +247,15 @@ export interface ToSave {
   risks: readonly string[]
 }
 
-/** Why `files` can't be saved, or null: a secret in either file; in reach.sh anything but printable ASCII, tabs and
+/** Why `files` can't be saved, or null: either file over `MAX_SCRIPT_BYTES`, a secret in either; in reach.sh anything but printable ASCII, tabs and
  *  newlines, which could make it read other than it runs; in notes.md a control character. */
 function problemIn(files: ToSave, keys: readonly string[]): string | null {
   for (const [name, text] of [
     ["reach.sh", files.script],
     ["notes.md", files.notes],
   ] as const) {
+    // A visit reads neither past this.
+    if (Buffer.byteLength(text) > MAX_SCRIPT_BYTES) return `${name} is over 1 MiB`
     const secret = secretIn(text, keys)
     if (secret !== null) return `${name}: ${secret}; SSH asks for passwords and Duo itself, so leave them out`
   }

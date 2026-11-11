@@ -12,6 +12,7 @@ import type { Spec } from "../../src/reach/spec.ts"
 import { type Access, DEFAULT_PORT, readAccess, sha256, takeLock, writeAccess } from "../../src/reach/state.ts"
 import {
   BUSY,
+  ASKED_FOR,
   CAPPED,
   describe as describeFailure,
   lastPath,
@@ -951,4 +952,47 @@ test("Ctrl-C during the first run's model check stops the check and exits 130", 
   expect(await done).toBe(130)
   expect(stopped).toBe(true)
   expect(fs.existsSync(paths.provider)).toBe(false)
+})
+
+test("a learning run that saves nothing lists the commands the model asked for", async () => {
+  const { dir, fake, llm } = await unlearnedHome()
+  llm.script(
+    call("shell", { command: "echo hi\necho there", why: "look" }),
+    call("shell", { command: "touch x", why: "try" }),
+    { content: "I can't tell." },
+  )
+  const v = visitDeps(dir, fake, { answers: ["1", "1", "2", ""] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([
+    NO_OFFICE_HERE,
+    "opencorp hq: nothing was saved: I can't tell.",
+    ASKED_FOR,
+    "  (exit 0) echo hi (and 1 more line)",
+    "  (not run) touch x",
+  ])
+})
+
+test("Ctrl-C while learning lists the commands the model asked for", async () => {
+  const { dir, fake, llm } = await unlearnedHome()
+  llm.script(call("shell", { command: "true", why: "look" }), call("shell", { command: "echo started >&2; sleep 30", why: "wait" }))
+  const v = visitDeps(dir, fake, { answers: ["1", "1", "1"] })
+  const done = visit({ signIn: false, open: false }, v.deps)
+  await waitFor(() => v.echoed.join("").includes("started"), { what: "the second command" })
+  v.sigint()
+  expect(await done).toBe(130)
+  expect(v.errors.slice(1, 3)).toEqual([ASKED_FOR, "  (exit 0) true"])
+})
+
+test("--relearn with an access.json that isn't valid warns and relearns as if there were none", async () => {
+  const { dir, fake, llm, paths } = await unlearnedHome()
+  fs.writeFileSync(paths.script, "exit 3\n", { mode: 0o600 })
+  fs.writeFileSync(paths.access, "{nope", { mode: 0o600 })
+  llm.script({ content: "Nothing to learn." })
+  const v = visitDeps(dir, fake, { answers: [""] })
+  expect(await visit({ signIn: false, open: false, relearn: true }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([
+    `opencorp hq: ${paths.access} isn't JSON; relearning as if there were none.`,
+    "opencorp hq: nothing was saved: Nothing to learn.",
+  ])
+  expect(llm.requests()).toHaveLength(1)
 })
