@@ -393,6 +393,52 @@ test("--json with hq.sock dead and TCP off mints nothing and exits 1", async () 
   expect(errors.join("\n")).toContain("HQ can't be reached")
 })
 
+test("--check --json prints HQ's status as one line of JSON and mints nothing", async () => {
+  start({ tcp: true, listening: true })
+  const { d, printed, errors, spawned } = deps()
+  expect(await hq(["--check", "--json"], d)).toBe(0)
+  expect(printed).toHaveLength(1)
+  const status = HqStatus.parse(JSON.parse(printed[0]!))
+  expect(status.socket).toBe(path.join(home, "office", "hq.sock"))
+  expect(office!.requests.some((r) => r.method === "GET" && r.path === "/hq")).toBe(true)
+  expect(office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")).toBe(false)
+  expect(errors).toEqual([])
+  expect(spawned).toEqual([])
+})
+
+test("--check without --json, or with another flag, is a usage error", async () => {
+  start({ tcp: true, listening: true })
+  for (const argv of [
+    ["--check"],
+    ["--check", "--json", "--no-open"],
+    ["--check", "--json", "--handle", "x"],
+    ["--check", "--json", "--sign-in"],
+  ]) {
+    const { d, printed, errors } = deps()
+    expect({ argv, code: await hq(argv, d) }).toEqual({ argv, code: 2 })
+    expect(errors.join("\n")).toContain(
+      "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--json] [--check --json]",
+    )
+    expect(printed).toEqual([])
+  }
+  expect(office!.requests).toEqual([])
+})
+
+test("--check --json without an office exits 3 and says why", async () => {
+  const { d, printed, errors } = deps()
+  expect(await hq(["--check", "--json"], d)).toBe(3)
+  expect(errors).toEqual([notRunningAt(home)])
+  expect(printed).toEqual([])
+})
+
+test("--check --json against an office without HQ's routes exits 1 and says to update", async () => {
+  start({ tcp: true }, { missing: ["GET /hq"] })
+  const { d, printed, errors } = deps()
+  expect(await hq(["--check", "--json"], d)).toBe(1)
+  expect(errors).toEqual(["opencorp hq: this office has no HQ yet; update the checkout and run `opencorp restart`"])
+  expect(printed).toEqual([])
+})
+
 test("over SSH it never asks for a file or opens anything", async () => {
   start({ tcp: true, listening: true })
   const { d, spawned, printed } = deps({ SSH_CONNECTION: "1 2 3 4" }, "linux")

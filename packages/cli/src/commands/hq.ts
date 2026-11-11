@@ -1,6 +1,6 @@
 // `opencorp hq`: a one-time link that signs a browser in to this office's HQ. The code is only ever printed or put
 // in a 0600 file the office wrote: never in a process's arguments, where other users could read it.
-import { isMissingRoute, isNotImplemented, OfficeUnavailable } from "@opencorp/client"
+import { isMissingRoute, isNotImplemented, OfficeTimeout, OfficeUnavailable } from "@opencorp/client"
 import { opencorpHome } from "@opencorp/client/node"
 import { otherPort, SETTINGS_IGNORED } from "@opencorp/office/hq/config"
 import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
@@ -164,6 +164,7 @@ export function pairOutput(
 }
 
 const USAGE = "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--json] [--check --json]"
+const NO_HQ = "opencorp hq: this office has no HQ yet; update the checkout and run `opencorp restart`"
 
 /** What `hq` reads from and does to the machine; tests pass fakes. */
 export type HqDeps = {
@@ -185,12 +186,36 @@ export const realHqDeps: HqDeps = {
   error: (line) => console.error(line),
 }
 
+/** No office answers on office.sock (`OfficeDropped` is an `OfficeUnavailable`): these exit 3, as `officeNotRunning`
+ *  says why. */
+const officeDown = (e: unknown) => e instanceof OfficeUnavailable || e instanceof OfficeTimeout
+
+/** `--check --json`: GET /hq on the local office as one line of JSON. Never mints, never leaves this machine. */
+async function checkJson(deps: HqDeps): Promise<number> {
+  try {
+    deps.print(JSON.stringify(await officeClient(localIdentity()).hq.status()))
+    return 0
+  } catch (e) {
+    if (officeDown(e)) return officeNotRunning(e, deps.error)
+    deps.error(isMissingRoute(e) || isNotImplemented(e) ? NO_HQ : `opencorp hq: ${e instanceof Error ? e.message : e}`)
+    return 1
+  }
+}
+
 /**
  * `opencorp hq [--handle H] [--no-open] [--sign-in] [--json]`: a one-time link that signs a browser in as H (you by
- * default). With `--json` it prints the minted `PairCode` as one line of JSON and opens nothing.
+ * default). With `--json` it prints the minted `PairCode` as one line of JSON and opens nothing; `--check --json`
+ * prints HQ's status instead and mints nothing.
  */
 export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<number> {
-  let values: { handle?: string; "no-open"?: boolean; "sign-in"?: boolean; json?: boolean; help?: boolean }
+  let values: {
+    handle?: string
+    "no-open"?: boolean
+    "sign-in"?: boolean
+    json?: boolean
+    check?: boolean
+    help?: boolean
+  }
   try {
     ;({ values } = parseArgs({
       args: argv,
@@ -200,6 +225,7 @@ export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<num
         // Read nowhere here: every run on HQ's machine signs a browser in.
         "sign-in": { type: "boolean" },
         json: { type: "boolean" },
+        check: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
     }))
@@ -210,6 +236,14 @@ export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<num
   if (values.help) {
     deps.print(USAGE)
     return 0
+  }
+  if (values.check) {
+    // It's only what a visit from another machine runs here, so it takes nothing a person would add.
+    if (!values.json || Object.keys(values).some((k) => k !== "check" && k !== "json")) {
+      deps.error(`opencorp hq: --check needs --json and takes no other option\n${USAGE}`)
+      return 2
+    }
+    return checkJson(deps)
   }
   const noOpen = !!values["no-open"]
   try {
@@ -259,9 +293,8 @@ export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<num
     }
     return 0
   } catch (e) {
-    if (e instanceof OfficeUnavailable) return officeNotRunning(e, deps.error)
-    if (isMissingRoute(e) || isNotImplemented(e))
-      deps.error("opencorp hq: this office has no HQ yet; update the checkout and run `opencorp restart`")
+    if (officeDown(e)) return officeNotRunning(e, deps.error)
+    if (isMissingRoute(e) || isNotImplemented(e)) deps.error(NO_HQ)
     else deps.error(`opencorp hq: ${e instanceof Error ? e.message : e}`)
     return 1
   }
