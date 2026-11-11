@@ -327,7 +327,7 @@ async function learnPath(
     for (const { command, code } of state.commands) deps.error(`  (${code === null ? "not run" : `exit ${code}`}) ${clean(command)}`)
     return 1
   }
-  deps.error(`opencorp hq: nothing was saved: ${clean(learned.message ?? learned.output ?? "the model stopped")}`)
+  deps.error(`opencorp hq: nothing was saved: ${clean(state.scrub(learned.message ?? learned.output ?? "the model stopped"))}`)
   return 1
 }
 

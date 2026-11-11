@@ -814,7 +814,7 @@ test("--relearn gives the agent the old notes and script, and keeps the old path
   const script = scriptFor(spec)
   llm.script(
     call("save_access", { script: "set -eu\nssh login1 true\nexit 1\n", notes: NOTES, risks: [] }),
-    call("shell", { command: "cat reach.sh access.json", why: "see what's saved" }),
+    call("shell", { command: `cat '${paths.script}' '${paths.access}'`, why: "see what's saved" }),
     call("save_access", { script, notes: NOTES, risks: [] }),
     { content: "HQ is on node1 now." },
   )
@@ -917,4 +917,14 @@ test("the old notes and script a relearn reads are cut without splitting an emoj
   await writePrivate(paths.notes, `${"n".repeat(MAX_OLD_CHARS - 1)}\u{1F600}more`)
   await writePrivate(paths.script, "exit 3\n")
   expect(lastPath(paths)).toEqual({ notes: "n".repeat(MAX_OLD_CHARS - 1), script: "exit 3\n" })
+})
+
+test("the agent's last reply is printed without the model's key or a sign-in code", async () => {
+  const { dir, fake, llm, paths } = await unlearnedHome()
+  const key = "sk-test-0123456789abcdefghij"
+  await writePrivate(paths.provider, JSON.stringify({ llm_config: { ...LLM_CONFIG, api_key: key }, env: llm.env() }))
+  llm.script({ content: `Your key is ${key}; try http://127.0.0.1:1/pair#AbCdEfGhIjKlMnOpQrStUv` })
+  const v = visitDeps(dir, fake, { answers: ["1"] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors.at(-1)).toBe("opencorp hq: nothing was saved: Your key is [redacted]; try http://127.0.0.1:1/pair#[redacted]")
 })

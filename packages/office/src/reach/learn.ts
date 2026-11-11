@@ -1,6 +1,9 @@
 /** Learning the path to HQ: `learn_hq`, whose agent works it out with the owner, and its host tools: `shell`, which runs
  *  a command once the owner approves it, and `save_access`, which saves reach.sh and notes.md once the owner approves
  *  them and the whole chain works. */
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import type { Readable } from "node:stream"
 import { type FunctionTool, loadFlow, ReportedToolError, type ToolContext, tool } from "@ngocbh/yian"
 import { FileLockError } from "@ngocbh/yian/platform"
@@ -16,7 +19,7 @@ import {
   withDefaultModel,
 } from "../install/onboard.ts"
 import { clean, KeyboardInterrupt, OnboardError, type Prompter } from "../install/prompts.ts"
-import { redact, strip } from "../perm/redact.ts"
+import { REDACTED, redact, strip } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
 import { writePrivate } from "../secrets.ts"
 import { workerEnv } from "../worker/spawn.ts"
@@ -41,13 +44,17 @@ import learnYaml from "./flows/learn_hq.yaml" with { type: "file" }
 
 export { learnYaml }
 
+/** A one-time sign-in code as a link or `opencorp hq --json` shows it. */
+const SIGN_IN_CODE = /pair#[A-Za-z0-9_-]{22}(?![A-Za-z0-9_-])/g
+
 /** One learning run: the owner's terminal, the reach context, the model's key (never saved), the port, the clock, the
- *  commands asked for, and the connection `save_access` left open. */
+ *  commands asked for, the connection `save_access` left open, and the folder commands run in. */
 export class Learning {
   readonly asking: Asking
   /** Each command the model asked to run, with its exit code, or null when it didn't run. */
   readonly commands: { command: string; code: number | null }[] = []
   connection: Connection | null = null
+  #workDir: string | null = null
 
   constructor(
     readonly ctx: ReachContext,
@@ -59,6 +66,54 @@ export class Learning {
   ) {
     this.asking = new Asking(prompter)
   }
+
+  /** The empty private folder (0700) commands run in, made on first use: never the hq folder, whose files a command
+   *  could read or change. */
+  workDir(): string {
+    this.#workDir ??= fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-learn-")))
+    return this.#workDir
+  }
+
+  /** Removes the folder commands ran in. */
+  close(): void {
+    if (this.#workDir !== null) fs.rmSync(this.#workDir, { recursive: true, force: true })
+    this.#workDir = null
+  }
+
+  /** `text` without any form of the model's key, or a one-time sign-in code. */
+  scrub(text: string): string {
+    const keys = this.secrets.filter((key) => key !== "")
+    return (keys.length > 0 ? redact(text, [], keys) : text).replace(SIGN_IN_CODE, `pair#${REDACTED}`)
+  }
+}
+
+/** How long an unfinished line of a command's output waits for the rest before it's shown. */
+export const PARTIAL_MS = 100
+/** The longest unfinished line held back. */
+const PARTIAL_CHARS = 4096
+
+/** `echo` with each line of text scrubbed by `scrub` as a whole, so a key split across two writes is still found; an
+ *  unfinished line (a prompt's text, say) is shown after `PARTIAL_MS` without more. `flush` shows what's left. */
+function scrubbedEcho(echo: (text: string) => void, scrub: (text: string) => string) {
+  let pending = ""
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const flush = () => {
+    clearTimeout(timer)
+    if (pending !== "") echo(scrub(pending))
+    pending = ""
+  }
+  const write = (text: string) => {
+    pending += text
+    const at = pending.lastIndexOf("\n")
+    if (at !== -1) {
+      echo(scrub(pending.slice(0, at + 1)))
+      pending = pending.slice(at + 1)
+    }
+    clearTimeout(timer)
+    if (pending.length > PARTIAL_CHARS) flush()
+    else if (pending !== "") timer = setTimeout(flush, PARTIAL_MS)
+  }
+  return { write, flush }
 }
 
 /** The running learn_hq's state: a tool's `ctx.context`. */
@@ -94,8 +149,9 @@ const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/
 const ASCII_ONLY = "use only printable ASCII, tabs and newlines"
 
 /** The `shell` tool: refuses a command holding anything but printable ASCII, tabs and newlines, shows the rest
- *  numbered with why, runs it with `sh -c` once the owner approves, and returns its exit,
- *  stdout and stderr. Meanwhile stdin is paused and cooked, so ssh, not Bun, reads the terminal. */
+ *  numbered with why, runs it with `sh -c` in the run's empty folder once the owner approves,
+ *  and returns its exit, stdout and stderr, which reach the owner and the model without the model's key or a sign-in
+ *  code. Meanwhile stdin is paused and cooked, so ssh, not Bun, reads the terminal. */
 export async function runShell(args: { command: string; why: string }, state: Learning): Promise<string> {
   const { command, why } = args
   const { ctx } = state
@@ -120,16 +176,18 @@ export async function runShell(args: { command: string; why: string }, state: Le
     throw new ReportedToolError(refusal ? `The owner didn't run it: ${refusal}` : "The owner didn't run it.")
   }
   resetStatus(ctx)
+  const shown = scrubbedEcho(ctx.echo, (text) => state.scrub(text))
   const ran = await runChild(["/bin/sh", "-c", command], {
     env: sshEnv(ctx),
-    cwd: ctx.paths.dir,
+    cwd: state.workDir(),
     timeoutMs: ctx.limits.promptMs,
     signal: ctx.signal,
-    echo: ctx.echo,
+    echo: shown.write,
     echoStdout: true,
   })
+  shown.flush()
   state.commands.push({ command, code: ran.code })
-  return shellResult(ran, readStatuses(ctx))
+  return shellResult({ ...ran, stdout: state.scrub(ran.stdout), stderr: state.scrub(ran.stderr) }, readStatuses(ctx))
 }
 
 /** The command's result as one JSON object, so nothing it prints can pass for the result's own fields: `exit` (null,
@@ -154,7 +212,7 @@ export const shellTool: FunctionTool = tool({
   parameters: {
     type: "object",
     properties: {
-      command: { type: "string", description: "The command in printable ASCII, run with sh -c in OpenCorp's hq folder." },
+      command: { type: "string", description: "The command in printable ASCII, run with sh -c in an empty folder." },
       why: { type: "string", description: "One line for the owner: what the command finds out or does." },
     },
     required: ["command", "why"],
@@ -245,17 +303,19 @@ export const SAVED = "Saved, and the whole connection works."
  *  retry rides the login node's without a new Duo. */
 async function chainTest(bytes: Buffer, state: Learning): Promise<Connection> {
   const { ctx, port } = state
-  const reached = await runBytes(bytes, ctx)
+  const shown = scrubbedEcho(ctx.echo, (text) => state.scrub(text))
+  const reached = await runBytes(bytes, { ...ctx, echo: shown.write })
+  shown.flush()
   ctx.signal?.throwIfAborted()
   // The details quote output from other machines.
-  if (reached.outcome !== "ok")
-    throw new ReportedToolError(wellFormed(`Not saved: reach.sh failed the test (${reached.outcome}): ${reached.detail}`))
+  const told = (text: string) => new ReportedToolError(wellFormed(state.scrub(text)))
+  if (reached.outcome !== "ok") throw told(`Not saved: reach.sh failed the test (${reached.outcome}): ${reached.detail}`)
   try {
     return await connect(reached.spec!, port, ctx)
   } catch (error) {
     ctx.signal?.throwIfAborted()
     if (!(error instanceof ReachFailure)) throw error
-    throw new ReportedToolError(wellFormed(`Not saved: reach.sh ran, then ${describe(error, port).line.replace(/^opencorp hq: /, "")}`))
+    throw told(`Not saved: reach.sh ran, then ${describe(error, port).line.replace(/^opencorp hq: /, "")}`)
   }
 }
 
@@ -320,7 +380,8 @@ export interface Learned {
   capped: boolean
 }
 
-/** Runs learn_hq with `provider`'s model and the host tools, in this process (no workers), with no run log.
+/** Runs learn_hq with `provider`'s model and the host tools, in this process (no workers), with no run log, then
+ *  removes the folder its commands ran in.
  *  Rejects with the owner's `KeyboardInterrupt` or `OnboardError` (their input ended), and with the visit's stop. */
 export async function runLearn(
   provider: Provider,
@@ -329,16 +390,22 @@ export async function runLearn(
 ): Promise<Learned> {
   const flow = await loadFlow(embedded(learnYaml).toString("utf8"), { sourceLabel: "reach/flows/learn_hq.yaml" })
   const text = { notes: wellFormed(inputs.notes), script: wellFormed(inputs.script), failure: wellFormed(inputs.failure) }
-  const { result, message } = await runSetup(flow, text, provider, {
-    tools: {
-      shell: shellTool,
-      save_access: saveAccessTool,
-      ask: (request, c) => askOwner(request, learning(c)),
-    },
-    context: state,
-    env: workerEnv(state.ctx.env),
-    signal: state.ctx.signal,
-  })
+  let ran: Awaited<ReturnType<typeof runSetup>>
+  try {
+    ran = await runSetup(flow, text, provider, {
+      tools: {
+        shell: shellTool,
+        save_access: saveAccessTool,
+        ask: (request, c) => askOwner(request, learning(c)),
+      },
+      context: state,
+      env: workerEnv(state.ctx.env),
+      signal: state.ctx.signal,
+    })
+  } finally {
+    state.close()
+  }
+  const { result, message } = ran
   if (state.asking.stopped) throw state.asking.stopped
   return {
     output: result?.status === "succeeded" ? (result.output as string) : null,

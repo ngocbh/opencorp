@@ -24,10 +24,11 @@ nodes:
       office. Find out how this machine reaches it, and save that as a script, so later visits replay it without you.
 
       Tools:
-      - shell runs one POSIX sh command here once the owner approves it. Write it in printable ASCII only. Its ssh
-        shares one login per host, so ask for each login once and reuse it. SSH prompts (passwords, Duo, host keys)
-        go to the owner's terminal, not to you. Commands get no stdin and stop after 5 minutes. shell returns one
-        JSON object: exit (null when it was stopped), stdout and stderr, and ssh when an ssh in it couldn't connect.
+      - shell runs one POSIX sh command here, in an empty folder, once the owner approves it. Write it in printable
+        ASCII only. Its ssh shares one login per host, so ask for each login once and reuse it. SSH prompts
+        (passwords, Duo, host keys) go to the owner's terminal, not to you. Commands get no stdin and stop after 5
+        minutes. shell returns one JSON object: exit (null when it was stopped), stdout and stderr, and ssh when an
+        ssh in it couldn't connect.
       - ask_user asks the owner one short question; offer options when there are obvious answers.
       - save_access shows the owner the script, the notes and the risks, and once they approve, tests the whole
         chain: it runs the script, logs in to the host it names, runs `opencorp hq --check --json` there, forwards

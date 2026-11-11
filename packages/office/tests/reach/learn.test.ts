@@ -3,7 +3,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { PassThrough } from "node:stream"
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { ReportedToolError } from "@ngocbh/yian"
 import {
   ANSWER_GOES_TO_MODEL,
@@ -51,6 +51,7 @@ async function learning(
   const prompter = new Script(answers)
   const stdin = new PassThrough()
   const state = new Learning(ctx, prompter, stdin, secrets, port)
+  onTestFinished(() => state.close())
   return { dir, fake, ctx, prompter, stdin, state, echoed }
 }
 
@@ -123,19 +124,25 @@ test("an ssh that couldn't connect inside a command is named for the model", asy
   expect(result.stderr).toContain("Permission denied")
 })
 
-test("commands get our env, stdin from /dev/null, the hq folder and 5 minutes", async () => {
+test("commands get our env, stdin from /dev/null, an empty private folder that isn't hq/, and 5 minutes", async () => {
   const { ctx, state } = await learning(["1", "1"], {
     env: { PATH: "/usr/bin:/bin", HOME: "/h", SSH_AUTH_SOCK: "/h/agent", SECRET: "x" },
   })
-  const got = JSON.parse(await runShell({ command: "env | cut -d= -f1 | sort; [ -t 0 ] || echo nostdin; pwd", why: "env" }, state))
+  const got = JSON.parse(await runShell({ command: "env | cut -d= -f1 | sort; [ -t 0 ] || echo nostdin; ls -A; pwd", why: "env" }, state))
     .stdout as string
   const names = got
     .split("\n")
     .filter((l) => /^[A-Z_][A-Z0-9_]*$/.test(l) && !["PWD", "SHLVL", "_"].includes(l))
   expect(names).toEqual(["HOME", "OPENCORP_SSH_CONFIG", "OPENCORP_SSH_STATUS", "PATH", "SSH_AUTH_SOCK"])
-  expect(got).toContain("\nnostdin\n")
-  expect(got).toContain(`\n${ctx.paths.dir}\n`)
+  expect(got).toEndWith(`\nnostdin\n${state.workDir()}\n`)
+  expect(state.workDir()).not.toBe(ctx.paths.dir)
+  expect(path.basename(state.workDir())).toStartWith("opencorp-learn-")
+  expect(fs.statSync(state.workDir()).mode & 0o777).toBe(0o700)
+  const work = state.workDir()
+  state.close()
+  expect(fs.existsSync(work)).toBe(false)
   const short = new Learning({ ...ctx, limits: { promptMs: 300, stepMs: 300 } }, new Script(["1"]), new PassThrough(), [], 49381)
+  onTestFinished(() => short.close())
   expect(JSON.parse(await runShell({ command: "sleep 10", why: "wait" }, short))).toMatchObject({
     exit: null,
     stopped: "it didn't finish within 5 minutes",
@@ -155,6 +162,7 @@ test("after the owner approves, stdin leaves raw mode and is paused before the c
     [],
     49381,
   )
+  onTestFinished(() => state.close())
   await runShell({ command: "echo hi >&2", why: "x" }, state)
   expect(seen[0]).toEqual({ paused: true, modes: [false] })
 })
@@ -393,7 +401,7 @@ test("a learning run asks, runs approved commands and saves through save_access"
   const script = scriptFor(c.spec)
   llm.script(
     call("ask_user", { question: "Which login node do you use?" }),
-    call("shell", { command: "ssh login1 hostname", why: "check that login1 answers" }),
+    call("shell", { command: "pwd; ssh login1 true", why: "check that login1 answers" }),
     call("save_access", { script, notes: NOTES, risks: ["Duo on the node too: two prompts."] }),
     { content: "HQ is reachable." },
   )
@@ -407,7 +415,11 @@ test("a learning run asks, runs approved commands and saves through save_access"
   expect(fs.readFileSync(c.ctx.paths.script, "utf8")).toBe(script)
   expect(fs.readFileSync(c.ctx.paths.notes, "utf8")).toBe(NOTES)
   expect(c.state.connection).not.toBeNull()
-  expect(c.state.commands).toEqual([{ command: "ssh login1 hostname", code: 0 }])
+  expect(c.state.commands).toEqual([{ command: "pwd; ssh login1 true", code: 0 }])
+  // The folder commands ran in is gone once the run ends.
+  const work = /"stdout\\":\\"([^"\\]+)\\\\n/.exec(JSON.stringify(llm.requests()[2]))![1]!
+  expect(path.basename(work)).toStartWith("opencorp-learn-")
+  expect(fs.existsSync(work)).toBe(false)
   const requests = llm.requests()
   expect(requests).toHaveLength(4)
   expect(JSON.stringify(requests[1])).toContain("login1.example.edu")
@@ -510,4 +522,24 @@ test("blank-line padding can't push a line out of view: the run is one marker, a
     "Run this 62-line command?",
     "Why not? (empty to skip)",
   ])
+})
+
+test("the model's key, in any form, and a sign-in code printed by a command reach neither the model nor the terminal", async () => {
+  const { dir, state, echoed } = await learning(["1"], { secrets: [KEY] })
+  const file = path.join(dir, "leak")
+  const code = "AbCdEfGhIjKlMnOpQrStUv"
+  fs.writeFileSync(file, `${KEY}\n`)
+  const got = await runShell(
+    { command: `cat '${file}'; base64 '${file}'; echo "http://127.0.0.1:1/pair#${code}" >&2; printf 'partial ${KEY}'`, why: "look" },
+    state,
+  )
+  const shown = echoed.join("")
+  for (const text of [got, shown]) {
+    expect(text).not.toContain(KEY)
+    expect(text).not.toContain(Buffer.from(`${KEY}\n`).toString("base64").slice(0, 20))
+    expect(text).not.toContain(code)
+    expect(text).toContain("[redacted]")
+  }
+  // An unfinished line still reaches the terminal, scrubbed.
+  expect(shown).toContain("partial [redacted]")
 })
