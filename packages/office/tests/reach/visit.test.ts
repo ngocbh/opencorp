@@ -2,8 +2,9 @@
  *  another visit beside a running one, the failure table, and waiting with its reconnects. */
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
+import net from "node:net"
 import path from "node:path"
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import type { Spec } from "../../src/reach/spec.ts"
 import { type Access, DEFAULT_PORT, readAccess, sha256, takeLock, writeAccess } from "../../src/reach/state.ts"
@@ -344,4 +345,62 @@ test("with the lock held and no access.json yet, it says another run is approvin
   } finally {
     lock.release()
   }
+})
+
+/** Each row: its setup on an approved home, then the line and the code it must end with. */
+const FAILURES: [string, (h: Awaited<ReturnType<typeof approvedHome>>) => Promise<void> | void, (port: number) => string, number][] = [
+  [
+    "login refused",
+    ({ fake }) => fake.set({ login: "refuse" }),
+    () => "opencorp hq: couldn't connect: login1: Permission denied (publickey,password).",
+    1,
+  ],
+  [
+    "reach.sh exit 3",
+    async ({ dir }) => void (await saved(dir, `echo "no job running" >&2\nexit 3\n`)),
+    () => "opencorp hq: no office answers there: no job running. Start the job or the office there, or fix reach.sh if HQ moved.",
+    3,
+  ],
+  [
+    "check exit 1",
+    ({ remote }) => remote.setCheck({ code: 1, stderr: "opencorp hq: this office has no HQ yet\n" }),
+    () =>
+      "opencorp hq: HQ isn't ready there: opencorp hq: this office has no HQ yet. Run `opencorp doctor` there, or update that checkout.",
+    1,
+  ],
+  [
+    "bad spec",
+    async ({ dir, spec }) => void (await saved(dir, scriptFor({ ...spec, host: "-oProxyCommand=x" }))),
+    () => "opencorp hq: the saved way to reach HQ is broken: reach.sh printed a spec that isn't valid: host: must be [user@]host",
+    1,
+  ],
+  [
+    "port held",
+    async ({ port }) => {
+      const holder = net.createServer()
+      await new Promise<void>((resolve) => holder.listen({ port, host: "127.0.0.1" }, resolve))
+      onTestFinished(() => void holder.close())
+    },
+    (port) =>
+      `opencorp hq: port ${port} on 127.0.0.1 is taken by another program; pick a free one with \`opencorp hq --port N\` (you'll sign in again).`,
+    1,
+  ],
+  [
+    "blackhole forward",
+    ({ fake }) => fake.set({ forward: "blackhole" }),
+    (port) =>
+      `opencorp hq: HQ didn't answer through the forward (the connection through port ${port} closed before HQ answered); the node's sshd may refuse socket forwarding (AllowStreamLocalForwarding).`,
+    1,
+  ],
+]
+
+test.each(FAILURES)("a failed visit says what to do and exits as the table says [%s]", async (_label, arrange, line, code) => {
+  const home = await approvedHome()
+  await arrange(home)
+  const v = visitDeps(home.dir, home.fake)
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(code)
+  expect(v.errors).toEqual([line(home.port)])
+  expect(mints(home.fake)).toEqual([])
+  expect(fs.readdirSync(home.paths.cm)).toEqual([])
+  expect(home.fake.masters()).toEqual([])
 })

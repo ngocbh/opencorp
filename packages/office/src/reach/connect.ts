@@ -112,9 +112,9 @@ async function healthThrough(port: number, timeoutMs: number): Promise<Health> {
   try {
     // Not kept alive: an idle pooled connection is an open channel that holds the master.
     res = await fetch(`http://127.0.0.1:${port}/api/health`, { headers: { connection: "close" }, signal: timeout })
-  } catch (error) {
+  } catch {
     if (timeout.aborted) throw new ReachFailure("unreachable", `HQ's health through port ${port} didn't answer within 60 s`)
-    throw new ReachFailure("no_forward", `the connection through port ${port} closed: ${(error as Error).message}`)
+    throw new ReachFailure("no_forward", `the connection through port ${port} closed before HQ answered`)
   }
   if (res.status !== 200) {
     await res.body?.cancel()
