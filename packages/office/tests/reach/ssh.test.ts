@@ -1,6 +1,7 @@
 /** The SSH plumbing: generated configs and the wrapper, the child runner, the node master, mux and control commands,
  *  and the watcher. */
 import { execFileSync, spawn } from "node:child_process"
+import { PassThrough } from "node:stream"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
@@ -30,6 +31,7 @@ import {
   masterArgv,
   mux,
   muxArgv,
+  quietStdin,
   readStatuses,
   resetStatus,
   runChild,
@@ -695,4 +697,18 @@ test("the watcher gives up on a master that never answers its -O exit", async ()
   expect(took).toBeGreaterThan(CONTROL_MS - 500)
   expect(took).toBeLessThan(CONTROL_MS + 3000)
   expect(exits(fake.calls())).toEqual([path.join(ctx.paths.cm, "stuck")])
+})
+
+test("quietStdin pauses stdin", () => {
+  const plain = new PassThrough()
+  plain.resume()
+  quietStdin(plain)
+  expect(plain.isPaused()).toBe(true)
+  // A terminal also leaves raw mode, so ssh's /dev/tty prompt reads a line as typed.
+  const tty = Object.assign(new PassThrough(), { isTTY: true, modes: [] as boolean[] })
+  const raw = Object.assign(tty, { setRawMode: (on: boolean) => void tty.modes.push(on) })
+  raw.resume()
+  quietStdin(raw)
+  expect(raw.isPaused()).toBe(true)
+  expect(raw.modes).toEqual([false])
 })

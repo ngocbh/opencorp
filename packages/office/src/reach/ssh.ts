@@ -6,7 +6,7 @@ import fs from "node:fs"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
-import type { Writable } from "node:stream"
+import type { Readable, Writable } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
 import { sameProcess, startTime } from "../install/proc.ts"
 import { replaceFile, writePrivate } from "../secrets.ts"
@@ -167,6 +167,14 @@ export function readStatuses(ctx: ReachContext): number[] {
     .split("\n")
     .filter((line) => /^[0-9]+$/.test(line.trim()))
     .map((line) => Number(line.trim()))
+}
+
+/** Leaves raw mode on a terminal and pauses `stdin`, so this process holds no read that would take the keys meant for
+ *  ssh's prompt on /dev/tty; after each answer, before each child that may prompt. */
+export function quietStdin(stdin: Readable): void {
+  const tty = stdin as Readable & { isTTY?: boolean; setRawMode?: (on: boolean) => unknown }
+  if (tty.isTTY === true) tty.setRawMode?.(false)
+  stdin.pause()
 }
 
 /** `text` without control characters other than tab and newline: output from another machine must not drive the

@@ -5,10 +5,13 @@ import http from "node:http"
 import net from "node:net"
 import path from "node:path"
 import type { HqStatus } from "@opencorp/protocol"
+import { PassThrough } from "node:stream"
 import { onTestFinished } from "bun:test"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import { type ReachContext, writeSshFiles } from "../../src/reach/ssh.ts"
+import type { VisitDeps } from "../../src/reach/visit.ts"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "../../src/testing/fake_ssh.ts"
+import { Script } from "../install/helpers.ts"
 
 /** Limits short enough that a test which hits one still finishes. */
 export const SHORT_LIMITS = Object.freeze({ promptMs: 5000, stepMs: 5000 })
@@ -195,4 +198,51 @@ export async function fakeRemote(dir: string): Promise<FakeRemote> {
   await new Promise<void>((resolve) => server.listen(socket, resolve))
   onTestFinished(() => remote.stop())
   return remote
+}
+
+/** What a visit's `exit` throws in a test. */
+export class Exited extends Error {
+  constructor(readonly code: number) {
+    super(`exit ${code}`)
+  }
+}
+
+/** A visit's deps for a test: home `dir`, the fake ssh first on PATH, `answers` for its approvals, recorded output
+ *  and opens, a SIGINT the test sends with `sigint()`, an `exit` that throws `Exited`, and short limits. */
+export function visitDeps(
+  dir: string,
+  fake: FakeSsh,
+  { answers = [], interactive = true, ...more }: { answers?: string[]; interactive?: boolean } & Partial<VisitDeps> = {},
+) {
+  const printed: string[] = []
+  const errors: string[] = []
+  const echoed: string[] = []
+  const opened: string[] = []
+  const prompter = new Script(answers, { interactive })
+  const stdin = new PassThrough()
+  let handler: (() => void) | undefined
+  const deps: VisitDeps = {
+    home: dir,
+    env: { PATH: `${fake.bin}:/usr/bin:/bin`, HOME: dir, SSH_AUTH_SOCK: path.join(dir, "agent") },
+    prompter,
+    stdin,
+    print: (line) => void printed.push(line),
+    error: (line) => void errors.push(line),
+    echo: (text) => void echoed.push(text),
+    open: (target) => void opened.push(target),
+    now: () => new Date(),
+    onSigint: (fn) => {
+      handler = fn
+      return () => {
+        if (handler === fn) handler = undefined
+      }
+    },
+    exit: (code) => {
+      throw new Exited(code)
+    },
+    limits: SHORT_LIMITS,
+    sshIncludes: [],
+    ...more,
+  }
+  return { deps, prompter, stdin, printed, errors, echoed, opened, sigint: () => handler?.() }
 }

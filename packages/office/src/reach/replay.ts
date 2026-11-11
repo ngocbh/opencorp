@@ -2,7 +2,7 @@
  *  exited. */
 import { type FunctionTool, loadFlow, runFlow, type ToolContext, tool } from "@ngocbh/yian"
 import { embedded } from "../platform.ts"
-import { readPrivate } from "../secrets.ts"
+import { readRegular } from "../install/files.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import reachYaml from "./flows/reach_hq.yaml" with { type: "file" }
 import { lastStderr, type Ran, type ReachContext, readStatuses, resetStatus, runChild, sshEnv } from "./ssh.ts"
@@ -49,17 +49,19 @@ export async function runScript(file: string, ctx: ReachContext): Promise<Reache
   return classify(ran, readStatuses(ctx))
 }
 
+/** The most a reach.sh may hold. */
+export const MAX_SCRIPT_BYTES = 1024 * 1024
+
+/** `file`'s bytes, or null when it's missing, not a regular file (a link included) or over `MAX_SCRIPT_BYTES`. The
+ *  owner may write reach.sh with any mode: the hq folder is 0700. */
+export const readScript = (file: string) => readRegular(file, MAX_SCRIPT_BYTES)
+
 /** Runs reach.sh only when its sha256 is the approved one in access.json; else broken, and nothing runs. */
 export async function replay(ctx: ReachContext): Promise<Reached> {
   const access = await readAccess(ctx.paths)
   if (access === null) return { outcome: "broken", detail: "there's no approved reach.sh yet" }
-  let bytes: Buffer
-  try {
-    bytes = await readPrivate(ctx.paths.script)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { outcome: "broken", detail: `there's no ${ctx.paths.script}` }
-    throw error
-  }
+  const bytes = readScript(ctx.paths.script)
+  if (bytes === null) return { outcome: "broken", detail: `there's no ${ctx.paths.script}` }
   if (sha256(bytes) !== access.sha256) return { outcome: "broken", detail: "reach.sh isn't the approved one" }
   return runScript(ctx.paths.script, ctx)
 }
