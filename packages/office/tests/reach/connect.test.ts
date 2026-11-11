@@ -1,8 +1,14 @@
 /** Connecting to HQ's machine: the remote check, the master, the forward and the health through it, and sign-in. */
-import { expect, setDefaultTimeout, test } from "bun:test"
+import fs from "node:fs"
+import net from "node:net"
+import path from "node:path"
+import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import type { HqStatus } from "@opencorp/protocol"
-import { classifyCheck, type FailureKind, ReachFailure } from "../../src/reach/connect.ts"
-import type { Ran } from "../../src/reach/ssh.ts"
+import { classifyCheck, connect, type FailureKind, portFree, ReachFailure } from "../../src/reach/connect.ts"
+import { control, exitAll, isSocket, type ReachContext, type Ran, runChild, sshEnv } from "../../src/reach/ssh.ts"
+import type { Spec } from "../../src/reach/spec.ts"
+import { type FakeSsh, fakeControlName } from "../../src/testing/fake_ssh.ts"
+import { fakeHome, fakeRemote, freePort, reachCtx } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -47,4 +53,111 @@ test.each(ROWS)("the remote check is classified [%s]", (_label, r, kind, message
 
 test("the remote check is classified [a good status after a .bashrc banner]", () => {
   expect(classifyCheck(ran({ stdout: `Welcome to node1\n${json()}\n` }))).toEqual(STATUS)
+})
+
+/** A spec for node1 through login1, running the fake remote's opencorp. */
+const specFor = (opencorp: string): Spec => ({ host: "node1", jump: ["login1"], opencorp })
+
+/** What `connect` threw. */
+async function failure(p: Promise<unknown>): Promise<ReachFailure> {
+  try {
+    await p
+  } catch (error) {
+    if (error instanceof ReachFailure) return error
+    throw error
+  }
+  throw new Error("connect didn't fail")
+}
+
+/** The fake's calls that are `-O <op>`. */
+const controlCalls = (fake: FakeSsh, op: string) => fake.calls().filter((argv) => argv.includes("-O") && argv.includes(op))
+
+/** A home with a fake ssh, HQ's machine and a context for both, whose masters all end when the test does. */
+async function setup(behavior: Parameters<typeof fakeHome>[0] = {}) {
+  const { dir, fake } = fakeHome(behavior)
+  const remote = await fakeRemote(dir)
+  const ctx = await reachCtx(dir, fake)
+  onTestFinished(() => exitAll(ctx))
+  return { dir, fake, remote, ctx, spec: specFor(remote.opencorp) }
+}
+
+test("connect logs in, checks, forwards and sees the same health through the port", async () => {
+  const { fake, remote, ctx, spec } = await setup()
+  const port = await freePort()
+  const conn = await connect(spec, port, ctx)
+  expect(conn.port).toBe(port)
+  expect(conn.socket).toBe(remote.socket)
+  expect(conn.spec).toEqual(spec)
+  const calls = fake.calls().map((argv) => argv.join(" "))
+  const master = calls.findIndex((c) => c.includes(" -M -S ") && c.endsWith("-- node1 cat >/dev/null"))
+  const check = calls.findIndex((c) => c.endsWith(`'${remote.opencorp}' 'hq' '--check' '--json'`))
+  const forward = calls.findIndex((c) => c.includes(" -O forward ") && c.includes(`127.0.0.1:${port}:${remote.socket}`))
+  expect(master).toBeGreaterThanOrEqual(0)
+  expect(check).toBeGreaterThan(master)
+  expect(forward).toBeGreaterThan(check)
+  const res = await fetch(`http://127.0.0.1:${port}/api/health`, { headers: { connection: "close" } })
+  expect(await res.json()).toEqual(remote.health)
+  await exitAll(ctx)
+  expect(await conn.master.exited).toBe(0)
+  expect(fake.masters()).toEqual([])
+})
+
+test("a refused login is couldn't connect, and nothing is left running", async () => {
+  const { fake, ctx, spec } = await setup({ login: "refuse" })
+  const got = await failure(connect(spec, await freePort(), ctx))
+  expect(got.kind).toBe("unreachable")
+  expect(got.message).toBe("ssh couldn't log in to node1 (exit 255)")
+  expect(fake.masters()).toEqual([])
+  expect(fs.existsSync(ctx.paths.node)).toBe(false)
+})
+
+test("a port already taken here is port_taken before any forward", async () => {
+  const { fake, ctx, spec } = await setup()
+  const holder = net.createServer()
+  await new Promise<void>((resolve) => holder.listen({ port: 0, host: "127.0.0.1" }, resolve))
+  onTestFinished(() => void holder.close())
+  const port = (holder.address() as net.AddressInfo).port
+  expect(await portFree(port)).toBe(false)
+  const got = await failure(connect(spec, port, ctx))
+  expect([got.kind, got.message]).toEqual(["port_taken", `port ${port}`])
+  expect(controlCalls(fake, "forward")).toEqual([])
+  expect(fake.masters()).toEqual([])
+})
+
+test("a forward refused while the master lives is port_taken", async () => {
+  const { fake, ctx, spec } = await setup({ forward: "refuse" })
+  const got = await failure(connect(spec, await freePort(), ctx))
+  expect(got.kind).toBe("port_taken")
+  expect(controlCalls(fake, "check")).toHaveLength(1)
+  expect(fs.existsSync(ctx.paths.node)).toBe(false)
+})
+
+test("a forward that carries nothing is no_forward", async () => {
+  const { ctx, spec } = await setup({ forward: "blackhole" })
+  const got = await failure(connect(spec, await freePort(), ctx))
+  expect(got.kind).toBe("no_forward")
+  expect(fs.existsSync(ctx.paths.node)).toBe(false)
+})
+
+test("health through the port that differs from the check's is no_forward", async () => {
+  const { ctx, spec, remote } = await setup()
+  remote.health = { ...remote.status.health, app: { build: "other", api: "1" } }
+  const got = await failure(connect(spec, await freePort(), ctx))
+  expect([got.kind, got.message]).toEqual(["no_forward", "HQ's health through the port differs from the check's"])
+})
+
+test("a failed connect ends only cm/node", async () => {
+  const { fake, remote, ctx, spec } = await setup()
+  // As reach.sh would: a plain session to login1 leaves its auto master, which the node's hop rides.
+  const login = await runChild([ctx.paths.wrapper, "login1", "true"], { env: sshEnv(ctx), cwd: ctx.paths.dir, timeoutMs: 5000 })
+  expect(login.code).toBe(0)
+  const loginSocket = path.join(ctx.paths.cm, fakeControlName("login1"))
+  expect(isSocket(loginSocket)).toBe(true)
+  remote.setCheck({ code: 1, stderr: "opencorp hq: this office has no HQ yet\n" })
+  const got = await failure(connect(spec, await freePort(), ctx))
+  expect(got.kind).toBe("not_ready")
+  expect(fs.existsSync(ctx.paths.node)).toBe(false)
+  expect((await control(ctx, loginSocket, "check")).code).toBe(0)
+  await exitAll(ctx)
+  expect(fake.masters()).toEqual([])
 })
