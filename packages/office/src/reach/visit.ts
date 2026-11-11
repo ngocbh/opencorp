@@ -9,7 +9,7 @@ import { createTwoFilesPatch } from "diff"
 import { which } from "../install/launch.ts"
 import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter } from "../install/prompts.ts"
 import { writePrivate } from "../secrets.ts"
-import { classifyCheck, type Connection, connect, ReachFailure, sameHealth, signIn } from "./connect.ts"
+import { classifyCheck, type Connection, connect, describe, ReachFailure, sameHealth, signIn } from "./connect.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
 import { readScript, runReach, ScriptError } from "./replay.ts"
 import {
@@ -41,7 +41,7 @@ import {
   writeRedirect,
 } from "./state.ts"
 
-export { DEFAULT_PORT }
+export { DEFAULT_PORT, describe }
 
 /** How a visit was asked for: `--sign-in`, `--port N`, and whether it may open a browser. */
 export interface VisitOptions {
@@ -91,38 +91,6 @@ export const RUNNING = "opencorp hq: another `opencorp hq` here holds the connec
 export const BUSY = "opencorp hq: another `opencorp hq` here is still approving or learning a path."
 export const NOT_YET =
   "opencorp hq: the `opencorp hq` running here isn't connected yet; run `opencorp hq --sign-in` again in a moment."
-
-/** The failure table: what to say for `failure`, and the exit code. */
-export function describe(failure: ReachFailure, port: number): { line: string; code: number } {
-  // Where a sentence follows it, the message's own closing period goes.
-  const said = failure.message.replace(/\.+$/, "")
-  switch (failure.kind) {
-    case "unreachable":
-      return { line: `opencorp hq: couldn't connect: ${failure.message}`, code: 1 }
-    case "no_office":
-      return {
-        line: `opencorp hq: no office answers there: ${said}. Start the job or the office there, or fix reach.sh if HQ moved.`,
-        code: 3,
-      }
-    case "not_ready":
-      return {
-        line: `opencorp hq: HQ isn't ready there: ${said}. Run \`opencorp doctor\` there, or update that checkout.`,
-        code: 1,
-      }
-    case "broken":
-      return { line: `opencorp hq: the saved way to reach HQ is broken: ${failure.message}`, code: 1 }
-    case "port_taken":
-      return {
-        line: `opencorp hq: port ${port} on 127.0.0.1 is taken by another program; pick a free one with \`opencorp hq --port N\` (you'll sign in again).`,
-        code: 1,
-      }
-    case "no_forward":
-      return {
-        line: `opencorp hq: HQ didn't answer through the forward (${failure.message}); the node's sshd may refuse socket forwarding (AllowStreamLocalForwarding).`,
-        code: 1,
-      }
-  }
-}
 
 /** What stays open until Ctrl-C, said once connected. */
 export function visitLine(conn: Connection): string {

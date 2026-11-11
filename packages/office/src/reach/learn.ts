@@ -6,12 +6,15 @@ import { type FunctionTool, ReportedToolError, type ToolContext, tool } from "@n
 import { Asking, withOwner } from "../install/interview.ts"
 import { clean, KeyboardInterrupt, type Prompter } from "../install/prompts.ts"
 import { redact, strip } from "../perm/redact.ts"
-import type { Connection } from "./connect.ts"
+import { writePrivate } from "../secrets.ts"
+import { type Connection, connect, describe, ReachFailure } from "./connect.ts"
+import { runBytes } from "./replay.ts"
 import { beforeSaving } from "./risks.ts"
 import { cleanOutput, quietStdin, type Ran, type ReachContext, readStatuses, resetStatus, runChild, sshEnv } from "./ssh.ts"
+import { type Access, AccessError, readAccess, sha256, writeAccess } from "./state.ts"
 
-/** One learning run: the owner's terminal, the reach context, the model's key (never saved), the port, the commands
- *  asked for, and the connection `save_access` left open. */
+/** One learning run: the owner's terminal, the reach context, the model's key (never saved), the port, the clock, the
+ *  commands asked for, and the connection `save_access` left open. */
 export class Learning {
   readonly asking: Asking
   /** Each command the model asked to run, with its exit code, or null when it didn't run. */
@@ -24,6 +27,7 @@ export class Learning {
     readonly stdin: Readable,
     readonly secrets: readonly string[],
     readonly port: number,
+    readonly now: () => Date = () => new Date(),
   ) {
     this.asking = new Asking(prompter)
   }
@@ -183,5 +187,69 @@ export async function saveAccess(files: ToSave, state: Learning): Promise<string
   })
   if (change !== null)
     throw new ReportedToolError(change ? `Not saved: the owner wants a change: ${change}` : "Not saved: the owner didn't save it.")
-  return "Approved."
+  const conn = await chainTest(Buffer.from(files.script, "utf8"), state)
+  await save(Buffer.from(files.script, "utf8"), files.notes, state)
+  state.connection = conn
+  state.asking.prompter.say(SAVED)
+  return `${SAVED} Reply with one line for the owner.`
 }
+
+export const SAVED = "Saved, and the whole connection works."
+
+/** The whole chain on `bytes`, the script as it will be saved: run it, then connect as a visit does. Resolves to the
+ *  open connection; throws `ReportedToolError` naming the step that failed, having ended only the node master, so a
+ *  retry rides the login node's without a new Duo. */
+async function chainTest(bytes: Buffer, state: Learning): Promise<Connection> {
+  const { ctx, port } = state
+  const reached = await runBytes(bytes, ctx)
+  ctx.signal?.throwIfAborted()
+  if (reached.outcome !== "ok") throw new ReportedToolError(`Not saved: reach.sh failed the test (${reached.outcome}): ${reached.detail}`)
+  try {
+    return await connect(reached.spec!, port, ctx)
+  } catch (error) {
+    ctx.signal?.throwIfAborted()
+    if (!(error instanceof ReachFailure)) throw error
+    throw new ReportedToolError(`Not saved: reach.sh ran, then ${describe(error, port).line.replace(/^opencorp hq: /, "")}`)
+  }
+}
+
+/** Writes reach.sh, its approved copy, notes.md, then access.json, each 0600; the old path stays whole until reach.sh
+ *  is replaced. `signed_in_at` stays when the port does: the browser's session lives in HQ's store. */
+async function save(bytes: Buffer, notes: string, state: Learning): Promise<void> {
+  const { paths } = state.ctx
+  let old: Access | null
+  try {
+    old = await readAccess(paths)
+  } catch (error) {
+    if (!(error instanceof AccessError)) throw error
+    old = null
+  }
+  await writePrivate(paths.script, bytes)
+  await writePrivate(paths.approved, bytes)
+  await writePrivate(paths.notes, notes)
+  await writeAccess(paths, {
+    port: state.port,
+    sha256: sha256(bytes),
+    learned_at: state.now().toISOString(),
+    last_used_at: old?.last_used_at ?? null,
+    signed_in_at: old !== null && old.port === state.port ? old.signed_in_at : null,
+  })
+}
+
+/** `learn_hq`'s `save_access` tool. */
+export const saveAccessTool: FunctionTool = tool({
+  name: "save_access",
+  description:
+    "Show the owner reach.sh, notes.md and the risks; once they approve, test the whole chain (run the script, log in, " +
+    "check HQ there, forward its socket, check its health) and save both files only if it all works.",
+  parameters: {
+    type: "object",
+    properties: {
+      script: { type: "string", description: "reach.sh: POSIX sh whose last line of stdout is the spec." },
+      notes: { type: "string", description: "notes.md: how the cluster is reached and the node found, in plain words." },
+      risks: { type: "array", items: { type: "string" }, description: "Risks of this setup the owner should know." },
+    },
+    required: ["script", "notes", "risks"],
+  },
+  execute: (args, c) => saveAccess(args as unknown as ToSave, learning(c)),
+})

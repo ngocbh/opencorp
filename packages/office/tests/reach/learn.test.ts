@@ -15,15 +15,18 @@ import {
   SAVE,
   SAVE_QUESTION,
   saveAccess,
+  saveAccessTool,
   secretIn,
   shellResult,
   WHAT_SHOULD_CHANGE,
 } from "../../src/reach/learn.ts"
 import { BEFORE_LEARNING, beforeSaving } from "../../src/reach/risks.ts"
-import type { ReachContext } from "../../src/reach/ssh.ts"
+import type { Spec } from "../../src/reach/spec.ts"
+import { exitAll, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
+import { readAccess, sha256 } from "../../src/reach/state.ts"
 import type { FakeSshBehavior } from "../../src/testing/fake_ssh.ts"
 import { Script } from "../install/helpers.ts"
-import { fakeHome, reachCtx } from "./helpers.ts"
+import { fakeHome, fakeRemote, freePort, reachCtx } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -206,4 +209,41 @@ test("declining to save tells the model what should change and saves nothing", a
   expect((await rejection(saveAccess({ script: "exit 3\n", notes: NOTES, risks: [] }, unanswered.state))).message).toBe(
     "Not saved: the owner didn't save it.",
   )
+})
+
+/** reach.sh as the agent would write it: log in to login1 (leaving its master), then print `spec`; `before` runs
+ *  first. */
+const scriptFor = (spec: Spec, before = "") => `set -eu\n${before}ssh login1 true\nprintf '%s\\n' '${JSON.stringify(spec)}'\n`
+
+/** A learning run whose owner answers `answers`, HQ's machine reached as node1 through login1, and a free port. */
+async function chain(answers: string[], behavior: FakeSshBehavior = {}) {
+  const port = await freePort()
+  const run = await learning(answers, { behavior, port })
+  const remote = await fakeRemote(run.dir)
+  const spec: Spec = { host: "node1", jump: ["login1"], opencorp: remote.opencorp }
+  return { ...run, remote, spec, port }
+}
+
+test("save_access writes nothing until the whole chain passes, then keeps the connection open", async () => {
+  const { ctx, state, spec, port, echoed, fake, prompter } = await chain(["1"])
+  const early = "for f in reach.sh reach.approved.sh notes.md access.json; do [ ! -e \"$f\" ] || echo \"early $f\" >&2; done\n"
+  const script = scriptFor(spec, early)
+  const got = await saveAccess({ script, notes: NOTES, risks: [] }, state)
+  expect(got).toBe("Saved, and the whole connection works. Reply with one line for the owner.")
+  expect(echoed.join("")).not.toContain("early")
+  const { paths } = ctx
+  expect(fs.readFileSync(paths.script, "utf8")).toBe(script)
+  expect(fs.readFileSync(paths.approved, "utf8")).toBe(script)
+  expect(fs.readFileSync(paths.notes, "utf8")).toBe(NOTES)
+  for (const file of [paths.script, paths.approved, paths.notes, paths.access]) expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+  const access = await readAccess(paths)
+  expect(access).toMatchObject({ port, sha256: sha256(script), last_used_at: null, signed_in_at: null })
+  expect(Date.now() - Date.parse(access!.learned_at)).toBeLessThan(60_000)
+  expect(state.connection).toMatchObject({ spec, port })
+  expect(isSocket(paths.node)).toBe(true)
+  expect(prompter.seen.at(-1)).toBe("Saved, and the whole connection works.")
+  expect(fs.readdirSync(paths.dir).filter((name) => name.startsWith(".reach-"))).toEqual([])
+  expect(saveAccessTool.name).toBe("save_access")
+  await exitAll(ctx)
+  expect(fake.masters()).toEqual([])
 })
