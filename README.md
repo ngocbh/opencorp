@@ -87,9 +87,23 @@ when set), logs in to HQ's machine over SSH, forwards HQ's socket to `http://127
 it. It holds the connection until Ctrl-C; after a drop it tries once quietly, then reconnects each time you
 press Enter (SSH may ask for Duo again). The first visit and `--sign-in` sign the browser in, for 30 days;
 `--port N` picks another local port, which means signing in again. `--no-open` prints the link instead.
+Run it on your own machine, not on one others share such as a cluster login node: anything there that can
+reach the local port reaches HQ's sign-in page.
 
-`reach.sh` is a `sh` script you write: it finds HQ's machine (a Slurm job's node, say) and prints, as its
-last line of output, how to reach it:
+With no `reach.sh` yet, `opencorp hq` in a terminal offers to learn the way there with an agent, after
+saying what the model will see: each command it runs and its output (hostnames, your username, paths, job
+lists). The agent asks you questions, and each command it wants runs, as you and with your SSH keys, only
+once you approve it; SSH's prompts (passwords, Duo, host keys) come to you, never to the model. It then
+shows you `reach.sh` and `notes.md` (how your cluster is reached, in plain words) with the risks of your
+setup, and saves them only once you approve and the whole connection works: the script, the login, the
+check on HQ's machine, the forward and HQ's health through it. That connection becomes the visit's. The
+first learning run asks for a model with `opencorp init`'s picker and keeps it in
+`~/.opencorp/hq/provider.json` (delete it to forget the model). Later visits replay `reach.sh` and use no
+model. `opencorp hq --relearn` learns again, starting from the old notes and script, and a saved path that
+breaks offers to; the old path stays until a new one works.
+
+You can also write `reach.sh` yourself: a `sh` script that finds HQ's machine (a Slurm job's node, say) and
+prints, as its last line of output, how to reach it:
 
 ```sh
 set -eu
@@ -110,8 +124,8 @@ and `OPENCORP_SSH_STATUS`, and stdin from `/dev/null`; its stderr goes to you. I
 when HQ's office isn't there (no job, say; the reason on stderr), or 255 when it couldn't connect (`set -eu`
 passes ssh's 255 through). Any ssh in it that exits 255, even one whose failure the script handles, means
 "couldn't connect", so failover such as `ssh a true || ssh b true` isn't supported. Control commands don't
-count: `ssh -O check login || ssh -fN login` works. A new or changed `reach.sh` is shown, whole or as a diff,
-and runs only once you approve it. `opencorp hq` exits 3 when no office answers there.
+count: `ssh -O check login || ssh -fN login` works. A `reach.sh` you wrote or changed is shown, whole or as a
+diff, and runs only once you approve it. `opencorp hq` exits 3 when no office answers there.
 
 Each visit runs `opencorp hq --check` on HQ's machine, so that checkout needs this version of OpenCorp.
 

@@ -26,14 +26,16 @@ export function takeLock(paths: ReachPaths): FileLock | null {
 /** The CLI's `LOCAL_PORT`, its printed socket forwards' port; the cookie is tied to it. */
 export const DEFAULT_PORT = 49381
 
-/** `access.json`: the local port HQ is forwarded to, the approved reach.sh's sha256, and when the path was learned,
- *  last used, and last signed a browser in. */
+/** `access.json`: the local port HQ is forwarded to, the approved reach.sh's sha256, when the path was learned, last
+ *  used, and last signed a browser in, and the host and HQ's socket of the last connection (missing until one). */
 export const Access = z.strictObject({
   port: z.int().min(1024).max(65535),
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
   learned_at: Timestamp,
   last_used_at: Timestamp.nullable(),
   signed_in_at: Timestamp.nullable(),
+  host: z.string().optional(),
+  socket: z.string().optional(),
 })
 export type Access = z.output<typeof Access>
 

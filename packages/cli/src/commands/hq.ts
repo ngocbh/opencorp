@@ -165,7 +165,7 @@ export function pairOutput(
   return { lines }
 }
 
-const USAGE = "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--json] [--check --json]"
+const USAGE = "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--relearn] [--json] [--check --json]"
 const NO_HQ = "opencorp hq: this office has no HQ yet; update the checkout and run `opencorp restart`"
 
 /** What `hq` reads from and does to the machine; tests pass fakes. */
@@ -216,16 +216,18 @@ type Values = {
   "no-open"?: boolean
   "sign-in"?: boolean
   port?: string
+  relearn?: boolean
   json?: boolean
   check?: boolean
   help?: boolean
 }
 
 /**
- * `opencorp hq [--handle H] [--no-open] [--sign-in] [--port N] [--json]`. Where this machine's office answers: a
- * one-time link that signs a browser in as H (you by default); with `--json` it prints the minted `PairCode` as one
- * line of JSON and opens nothing; `--check --json` prints HQ's status instead and mints nothing. Where none answers,
- * it reaches HQ over SSH (`--port` picks the local port); `--json` and `--check` never do.
+ * `opencorp hq [--handle H] [--no-open] [--sign-in] [--port N] [--relearn] [--json]`. Where this machine's office
+ * answers: a one-time link that signs a browser in as H (you by default); with `--json` it prints the minted
+ * `PairCode` as one line of JSON and opens nothing; `--check --json` prints HQ's status instead and mints nothing.
+ * Where none answers, it reaches HQ over SSH (`--port` picks the local port, `--relearn` learns the path again with
+ * the agent); `--json` and `--check` never do.
  */
 export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<number> {
   let values: Values
@@ -238,6 +240,7 @@ export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<num
         // Read only from another machine: every run on HQ's machine signs a browser in.
         "sign-in": { type: "boolean" },
         port: { type: "string" },
+        relearn: { type: "boolean" },
         json: { type: "boolean" },
         check: { type: "boolean" },
         help: { type: "boolean", short: "h" },
@@ -262,7 +265,10 @@ export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<num
     // Unprivileged loopback ports.
     if (port < 1024 || port > 65535) return usage("--port takes a port from 1024 to 65535", deps)
   }
-  if (values.json) return port === undefined ? local(values, deps) : usage("--port is for reaching HQ from another machine", deps)
+  // Each means something only on the remote path.
+  const remoteOnly = port !== undefined ? "--port" : values.relearn ? "--relearn" : null
+  if (values.json)
+    return remoteOnly === null ? local(values, deps) : usage(`${remoteOnly} is for reaching HQ from another machine`, deps)
   // Only an office that isn't there takes the remote path: a slow one, or one answering with an error, is reported
   // by the local path, as before.
   if ((await officeDown(defaultSocket())) instanceof OfficeUnavailable) {
@@ -271,9 +277,11 @@ export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<num
       signIn: !!values["sign-in"],
       port,
       open: !values["no-open"] && canOpen(deps.env, deps.platform),
+      relearn: !!values.relearn,
     })
   }
-  if (port !== undefined) return usage("--port is for reaching HQ from another machine; HQ's office runs here", deps)
+  if (remoteOnly !== null)
+    return usage(`${remoteOnly} is for reaching HQ from another machine; HQ's office runs here`, deps)
   return local(values, deps)
 }
 

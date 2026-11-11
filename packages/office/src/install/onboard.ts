@@ -509,7 +509,12 @@ async function saveProvider(office: string, provider: Provider): Promise<void> {
     if (code === undefined) throw error
     throw new OnboardError(`can't set up ${connections.dir}: ${code}`)
   }
-  const file = setupConnectionFile(office)
+  await writeProvider(setupConnectionFile(office), provider)
+}
+
+/** Writes `provider` to `file` (0600, in a folder that must already be private to this user) and checks it loads
+ *  back. Throws `OnboardError` when it can't be written or read back; the message never holds the key. */
+export async function writeProvider(file: string, provider: Provider): Promise<void> {
   try {
     await writePrivate(file, JSON.stringify(dump(provider), null, 2) + "\n")
   } catch (error) {
@@ -539,6 +544,18 @@ export async function askProvider(
   options: Omit<ProviderOptions, "stdin">,
 ): Promise<void> {
   await saveProvider(office, await workingProvider(prompter, options.checkModel, options.last ?? {}, options.listers))
+}
+
+/** Asks the owner with init's picker until the model answers `checkModel`, then writes the provider to `file` (0600; a
+ *  private folder of this user) and resolves to it. Throws as `askProvider` does. */
+export async function askProviderTo(
+  file: string,
+  prompter: Prompter,
+  options: Omit<ProviderOptions, "stdin">,
+): Promise<Provider> {
+  const provider = await workingProvider(prompter, options.checkModel, options.last ?? {}, options.listers)
+  await writeProvider(file, provider)
+  return provider
 }
 
 /** Whether `file` exists, a symlink included; one that can't be looked at counts as missing (Python's `lexists`). */

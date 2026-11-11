@@ -31,6 +31,38 @@ export class ReachFailure extends Error {
   }
 }
 
+/** The failure table: what to say for `failure`, and the exit code. */
+export function describe(failure: ReachFailure, port: number): { line: string; code: number } {
+  // Where a sentence follows it, the message's own closing period goes.
+  const said = failure.message.replace(/\.+$/, "")
+  switch (failure.kind) {
+    case "unreachable":
+      return { line: `opencorp hq: couldn't connect: ${failure.message}`, code: 1 }
+    case "no_office":
+      return {
+        line: `opencorp hq: no office answers there: ${said}. Start the job or the office there, or run \`opencorp hq --relearn\` if HQ moved for good.`,
+        code: 3,
+      }
+    case "not_ready":
+      return {
+        line: `opencorp hq: HQ isn't ready there: ${said}. Run \`opencorp doctor\` there, or update that checkout.`,
+        code: 1,
+      }
+    case "broken":
+      return { line: `opencorp hq: the saved way to reach HQ is broken: ${failure.message}`, code: 1 }
+    case "port_taken":
+      return {
+        line: `opencorp hq: port ${port} on 127.0.0.1 is taken by another program; pick a free one with \`opencorp hq --port N\` (you'll sign in again).`,
+        code: 1,
+      }
+    case "no_forward":
+      return {
+        line: `opencorp hq: HQ didn't answer through the forward (${failure.message}); the node's sshd may refuse socket forwarding (AllowStreamLocalForwarding).`,
+        code: 1,
+      }
+  }
+}
+
 /** Valid JSON from HQ's machine that lacks what a visit reads: that checkout and this one differ. */
 export const SKEW = "HQ's machine runs a different opencorp; update one side"
 

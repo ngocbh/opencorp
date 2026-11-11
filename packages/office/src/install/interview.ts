@@ -111,7 +111,7 @@ export class Asking {
 /** What `fn` resolves to, asking the owner with `state`'s prompter. An `OnboardError` or `KeyboardInterrupt`
  *  it throws is kept in `state.stopped` and rethrown, so the run's caller throws it rather than the run's
  *  failure. */
-async function withOwner<T>(state: Asking, fn: (prompter: Prompter) => Promise<T>): Promise<T> {
+export async function withOwner<T>(state: Asking, fn: (prompter: Prompter) => Promise<T>): Promise<T> {
   try {
     return await fn(state.prompter)
   } catch (error) {

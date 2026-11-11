@@ -77,7 +77,7 @@ const USAGES: Record<string, string> = {
   logout: "usage: opencorp logout",
   devices: "usage: opencorp devices list [HANDLE] [--hashes]",
   whoami: "usage: opencorp whoami",
-  hq: "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--json] [--check --json]",
+  hq: "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--relearn] [--json] [--check --json]",
 }
 
 test("each client command prints its usage on --help or -h, without the office", async () => {

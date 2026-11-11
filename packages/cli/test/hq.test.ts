@@ -425,7 +425,7 @@ test("--check without --json, or with another flag, is a usage error", async () 
     const { d, printed, errors } = deps()
     expect({ argv, code: await hq(argv, d) }).toEqual({ argv, code: 2 })
     expect(errors.join("\n")).toContain(
-      "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--json] [--check --json]",
+      "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--relearn] [--json] [--check --json]",
     )
     expect(printed).toEqual([])
   }
@@ -621,15 +621,18 @@ test("when HQ's status can't be read, it opens the link as before", async () => 
 test("with no office answering, hq takes the remote path with its flags", async () => {
   let { d, visits, errors } = deps()
   expect(await hq(["--sign-in", "--port", "50001"], d)).toBe(0)
-  expect(visits).toEqual([{ signIn: true, port: 50001, open: true }])
+  expect(visits).toEqual([{ signIn: true, port: 50001, open: true, relearn: false }])
   expect(errors).toEqual([])
   ;({ d, visits } = deps())
   expect(await hq(["--no-open"], d)).toBe(0)
-  expect(visits).toEqual([{ signIn: false, port: undefined, open: false }])
+  expect(visits).toEqual([{ signIn: false, port: undefined, open: false, relearn: false }])
   // Where no browser can open, it prints instead.
   ;({ d, visits } = deps({}, "linux"))
   expect(await hq([], d)).toBe(0)
-  expect(visits).toEqual([{ signIn: false, port: undefined, open: false }])
+  expect(visits).toEqual([{ signIn: false, port: undefined, open: false, relearn: false }])
+  ;({ d, visits } = deps())
+  expect(await hq(["--relearn"], d)).toBe(0)
+  expect(visits).toEqual([{ signIn: false, port: undefined, open: true, relearn: true }])
 })
 
 test("with a socket nothing answers on, hq takes the remote path", async () => {
@@ -649,7 +652,7 @@ test("--json and --check --json never take the remote path", async () => {
   expect(fs.existsSync(path.join(home, "hq"))).toBe(false)
 })
 
-test("--port is refused where the office answers and beside --json or --check, and --handle where it doesn't", async () => {
+test("--port and --relearn are refused where the office answers and beside --json or --check, and --handle where it doesn't", async () => {
   const refused = async (argv: string[], message: string) => {
     const { d, visits, errors } = deps()
     expect({ argv, code: await hq(argv, d) }).toEqual({ argv, code: 2 })
@@ -658,9 +661,12 @@ test("--port is refused where the office answers and beside --json or --check, a
   }
   await refused(["--handle", "ngocbh"], "opencorp hq: --handle works only on HQ's machine")
   await refused(["--json", "--port", "50001"], "opencorp hq: --port is for reaching HQ from another machine")
+  await refused(["--json", "--relearn"], "opencorp hq: --relearn is for reaching HQ from another machine")
   await refused(["--check", "--json", "--port", "50001"], "opencorp hq: --check needs --json and takes no other option")
+  await refused(["--check", "--json", "--relearn"], "opencorp hq: --check needs --json and takes no other option")
   start({ tcp: true, listening: true })
   await refused(["--port", "50001"], "opencorp hq: --port is for reaching HQ from another machine; HQ's office runs here")
+  await refused(["--relearn"], "opencorp hq: --relearn is for reaching HQ from another machine; HQ's office runs here")
   expect(office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")).toBe(false)
 })
 
@@ -685,13 +691,13 @@ test("the remote default port is the socket forward's local port", () => {
 test("an unknown option is a usage error", async () => {
   const { d, errors } = deps()
   expect(await hq(["--nope"], d)).toBe(2)
-  expect(errors.join("\n")).toContain("usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--json] [--check --json]")
+  expect(errors.join("\n")).toContain("usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--relearn] [--json] [--check --json]")
 })
 
 test("--help prints the usage and exits 0 without the office", async () => {
   const { d, printed, errors } = deps()
   expect(await hq(["--help"], d)).toBe(0)
-  expect(printed).toEqual(["usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--json] [--check --json]"])
+  expect(printed).toEqual(["usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--relearn] [--json] [--check --json]"])
   expect(errors).toEqual([])
 })
 
@@ -730,7 +736,7 @@ describe("against a real office", () => {
   })
 })
 
-test("with no office and no reach.sh, opencorp hq says to start the office or write one, exits 3 and makes nothing", async () => {
+test("with no office, no reach.sh and no terminal, opencorp hq says to start the office, learn in a terminal or write one; exits 3 and makes nothing", async () => {
   const root = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
   try {
     const home = path.join(root, "h")
@@ -739,7 +745,8 @@ test("with no office and no reach.sh, opencorp hq says to start the office or wr
     expect(await run.exited).toBe(3)
     expect(run.stderr()).toStartWith(
       "opencorp hq: no office answers here. If HQ runs on this machine, start it with `opencorp start` (`opencorp doctor` says why it's down).\n" +
-        `To reach HQ on another machine, write ${path.join(home, "hq", "reach.sh")}`,
+        "To reach HQ on another machine, run `opencorp hq` in a terminal to learn the way there with an agent, or write " +
+        path.join(home, "hq", "reach.sh"),
     )
     expect(run.stdout()).toBe("")
     expect(fs.readdirSync(home)).toEqual([])
