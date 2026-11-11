@@ -415,6 +415,21 @@ test("an advance job with advance false only delivers", async () => {
   expect(logPayloads(chat, "node_woken")).toEqual([])
 })
 
+test("a delivery leaves yian's state for an advance with the run's key, so the advance replays nothing", async () => {
+  // Made with no key: yian's state for the waiting run holds none, as a new worker's replay of the log would.
+  const chat = makeJob(base(), "flows/coded.yaml", { inputs: {} })
+  expect((await run(chat, new Recorder())).outcome?.status).toBe("waiting")
+  const keyed = { llm_config: { ...LLM_CONFIG, api_key: "sk-test", headers: { "x-team": "a" } } }
+  const send = { id: "s1", op: "send", inbox: "messages", event: "hi" } as const
+  const delivered = await run(advanceJob(chat, { ...keyed, advance: false, deliver: [send] }), new Recorder())
+  expect(delivered.replies).toEqual([{ type: "deliver_reply", id: "s1", seq: expect.any(Number) }])
+  // A replay would compile the recorded flow again, and fail on its missing CODE file.
+  fs.unlinkSync(path.join(chat.pin, "flows/helpers.ts"))
+  const rec = await run(advanceJob(chat, keyed), new Recorder())
+  expect(rec.outcome?.status, String(rec.outcome?.error_type)).toBe("succeeded")
+  expect((rec.outcome?.output as { events: unknown[] }).events).toEqual(["hi"])
+})
+
 test("a stop before the advance reports the run as its log says", async () => {
   const chat = makeJob(base(), "flows/inbox.yaml", { inputs: {} })
   expect((await run(chat, new Recorder())).outcome?.status).toBe("waiting")
