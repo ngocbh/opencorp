@@ -184,7 +184,8 @@ export function modelFromSchema(
  * reply returns Yian's pending marker: the office answers the call later.
  *
  * An error reply throws `ReportedToolError` (`error: <message>`), which an AGENT's model reads as the call's result.
- * The request ends when the call's signal aborts, as it does when the run stops.
+ * The request ends when the call's signal aborts, as it does when the run stops. A `resumable` spec lets yian send a
+ * call again, with its call id, when a crash or stop cut it off before its result was recorded.
  */
 export function remoteTool(rpc: Rpc, group: string, spec: ToolSpec): FunctionTool {
   return tool({
@@ -193,6 +194,7 @@ export function remoteTool(rpc: Rpc, group: string, spec: ToolSpec): FunctionToo
     parameters: modelFromSchema(`${spec.name}_args`, spec.parameters),
     // The job's schema already checked that the parameters are a JSON object.
     parametersJsonSchema: spec.parameters as JsonObject,
+    resumable: spec.resumable === true,
     execute: async (args, ctx) => {
       try {
         const fields = { group, name: spec.name, args, call_id: ctx.callId }

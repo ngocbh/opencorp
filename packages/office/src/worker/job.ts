@@ -8,11 +8,13 @@ export const STOP_REASON = "the office stopped the run"
 
 const emptyParameters = (): Record<string, unknown> => ({ type: "object", properties: {} })
 
-/** A tool the office serves over the channel, as the model sees it. */
+/** A tool the office serves over the channel, as the model sees it; `resumable` when a call sent again with its call
+ *  id can't act twice, so yian may resend one a crash or stop cut off. */
 export const ToolSpec = z.strictObject({
   name: z.string(),
   description: z.string().default(""),
   parameters: z.record(z.string(), z.unknown()).default(emptyParameters),
+  resumable: z.boolean().optional(),
 })
 export type ToolSpec = z.output<typeof ToolSpec>
 
@@ -121,15 +123,18 @@ export function personFlow(handle: string, main: string): string {
   return `people/${handle}/${main}`
 }
 
-/** What an office tool declares about itself for the model. */
+/** What an office tool declares about itself: for the model, and `resumable` when its call id keys what it does. */
 export interface DeclaredTool {
   readonly description?: string
   readonly parameters?: Record<string, unknown>
+  readonly resumable?: boolean
 }
 
-/** The spec a worker needs to offer `tool` under `name`: the declared description and JSON Schema, unchanged. */
+/** The spec a worker needs to offer `tool` under `name`: the declared description and JSON Schema, unchanged, and
+ *  `resumable` when it is. */
 export function toolSpec(name: string, tool: DeclaredTool): ToolSpec {
-  return { name, description: tool.description ?? "", parameters: tool.parameters ?? emptyParameters() }
+  const spec = { name, description: tool.description ?? "", parameters: tool.parameters ?? emptyParameters() }
+  return tool.resumable === true ? { ...spec, resumable: true } : spec
 }
 
 /** `Job.groups` for office tool groups given as `{group: {tool name: tool}}`, in key order. */
