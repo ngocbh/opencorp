@@ -77,6 +77,7 @@ export const SIGN_IN_HINT =
 /** The terminal's Ctrl-C reaches the master too (one foreground group): let a concurrent SIGINT land first. */
 export const DROP_SETTLE_MS = 100
 export const LOST = "Connection lost; press Enter to reconnect (SSH may ask for Duo)"
+export const RUNNING = "opencorp hq: another `opencorp hq` here holds the connection to HQ."
 export const BUSY = "opencorp hq: another `opencorp hq` here is still approving or learning a path."
 export const NOT_YET =
   "opencorp hq: another `opencorp hq` here hasn't connected yet; run `opencorp hq --sign-in` again once it has."
@@ -321,8 +322,8 @@ async function alreadyRunning(options: VisitOptions, deps: VisitDeps, paths: Rea
     deps.error(BUSY)
     return 1
   }
-  deps.error("opencorp hq: another `opencorp hq` here holds the connection to HQ.")
   if (!options.signIn) {
+    deps.error(RUNNING)
     openOrPrint(`http://127.0.0.1:${access.port}/`, options.open, deps)
     return 0
   }

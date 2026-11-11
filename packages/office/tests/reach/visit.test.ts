@@ -7,11 +7,22 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import type { Spec } from "../../src/reach/spec.ts"
 import { type Access, DEFAULT_PORT, readAccess, sha256, takeLock, writeAccess } from "../../src/reach/state.ts"
-import { NO_PATH, RUN_THIS, SIGN_IN_HINT, USE_CHANGED, type VisitOptions, visit } from "../../src/reach/visit.ts"
+import {
+  BUSY,
+  NO_PATH,
+  NOT_YET,
+  RUN_THIS,
+  RUNNING,
+  SIGN_IN_HINT,
+  USE_CHANGED,
+  type VisitOptions,
+  visit,
+} from "../../src/reach/visit.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import type { FakeSsh, FakeSshBehavior } from "../../src/testing/fake_ssh.ts"
+import { control, type ReachContext } from "../../src/reach/ssh.ts"
 import { ps, waitFor } from "../helpers.ts"
-import { fakeHome, fakeRemote, freePort, visitDeps } from "./helpers.ts"
+import { fakeHome, fakeRemote, freePort, reachCtx, visitDeps } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -267,4 +278,70 @@ test("the visit line names what stays open until Ctrl-C", async () => {
   )
   v.sigint()
   expect(await v.done).toBe(0)
+})
+
+/** Whether the master at `cm/node` answers `-O check`. */
+async function nodeUp(dir: string, fake: FakeSsh): Promise<boolean> {
+  const ctx: ReachContext = await reachCtx(dir, fake)
+  return (await control(ctx, ctx.paths.node, "check")).code === 0
+}
+
+test("while another opencorp hq holds the lock it only opens HQ's URL, and the running visit's master survives", async () => {
+  const { dir, fake, port } = await approvedHome({}, { signed_in_at: new Date().toISOString() })
+  const first = await connected(dir, fake, { signIn: false, open: false })
+  const second = visitDeps(dir, fake)
+  expect(await visit({ signIn: false, open: true }, second.deps)).toBe(0)
+  expect(second.opened).toEqual([`http://127.0.0.1:${port}/`])
+  expect(second.errors).toEqual([RUNNING])
+  expect(second.prompter.seen).toEqual([])
+  expect(await nodeUp(dir, fake)).toBe(true)
+  first.sigint()
+  expect(await first.done).toBe(0)
+})
+
+test("--sign-in beside a running visit mints over its master and leaves the file for the sweep", async () => {
+  const signedIn = new Date(Date.now() - DAY).toISOString()
+  const { dir, fake, remote, port, paths } = await approvedHome({}, { signed_in_at: signedIn })
+  const first = await connected(dir, fake, { signIn: false, open: false })
+  const masters = fake.masters()
+  const second = visitDeps(dir, fake)
+  expect(await visit({ signIn: true, open: true }, second.deps)).toBe(0)
+  expect(second.errors).toEqual([])
+  expect(second.opened).toHaveLength(1)
+  expect(fs.readFileSync(second.opened[0]!, "utf8")).toContain(`http://127.0.0.1:${port}/pair#${remote.code}`)
+  expect(redirects(paths)).toEqual([path.basename(second.opened[0]!)])
+  expect((await readAccess(paths))?.signed_in_at).not.toBe(signedIn)
+  // It rode the running visit's masters: no new login, and they're still up.
+  expect(fake.masters().sort()).toEqual(masters.sort())
+  expect(fake.calls().filter((argv) => argv.includes("-M"))).toHaveLength(1)
+  expect(await nodeUp(dir, fake)).toBe(true)
+  first.sigint()
+  expect(await first.done).toBe(0)
+})
+
+test("--sign-in before the running visit has connected says to try again", async () => {
+  const { dir, fake } = await approvedHome({ hosts: { node1: { login: "hang" } } })
+  const first = visitDeps(dir, fake)
+  const done = visit({ signIn: false, open: false }, first.deps)
+  await waitFor(() => fake.calls().some((argv) => argv.includes("-M")), { what: "the node master" })
+  const second = visitDeps(dir, fake)
+  expect(await visit({ signIn: true, open: false }, second.deps)).toBe(1)
+  expect(second.errors).toEqual([NOT_YET])
+  first.sigint()
+  expect(await done).toBe(130)
+})
+
+test("with the lock held and no access.json yet, it says another run is approving or learning", async () => {
+  const { dir, fake } = fakeHome()
+  const paths = new ReachPaths(dir)
+  makeDirs(paths)
+  const lock = takeLock(paths)!
+  try {
+    const v = visitDeps(dir, fake)
+    expect(await visit({ signIn: false, open: true }, v.deps)).toBe(1)
+    expect(v.errors).toEqual([BUSY])
+    expect(v.opened).toEqual([])
+  } finally {
+    lock.release()
+  }
 })
