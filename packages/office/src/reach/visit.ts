@@ -137,7 +137,8 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
       return 3
     }
     deps.error(NO_OFFICE_HERE)
-    const asked = await askBeforeAnything(deps, () => askToLearn(deps, LEARN_QUESTION, LEARN))
+    // Stop by default: a stray Enter on HQ's own machine, its office stopped, must not start a model run.
+    const asked = await askBeforeAnything(deps, () => askToLearn(deps, LEARN_QUESTION, STOP))
     if (asked !== true) {
       if (asked === false) deps.error(NOT_LEARNED)
       return asked === false ? 3 : 130

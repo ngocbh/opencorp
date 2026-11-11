@@ -726,7 +726,7 @@ test("with no saved path it shows the risks, asks, then learns and goes on with 
     call("save_access", { script, notes: NOTES, risks: [] }),
     { content: "HQ is reachable from here now." },
   )
-  const v = visitDeps(dir, fake, { answers: ["", "1", "1"] })
+  const v = visitDeps(dir, fake, { answers: ["1", "1", "1"] })
   const done = visit({ signIn: false, port, open: false }, v.deps)
   await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 1, { what: "the visit to connect" })
   expect(v.errors).toEqual([NO_OFFICE_HERE])
@@ -742,11 +742,14 @@ test("with no saved path it shows the risks, asks, then learns and goes on with 
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
 })
 
-test("declining to learn exits 3, calls no model and makes nothing", async () => {
+test("declining to learn, or a stray Enter, exits 3, calls no model and makes nothing", async () => {
   const { dir, fake, llm, paths } = await unlearnedHome({ provider: false })
-  const v = visitDeps(dir, fake, { answers: ["2"] })
-  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(3)
-  expect(v.errors).toEqual([NO_OFFICE_HERE, "opencorp hq: stopped; nothing was learned."])
+  // The default is Stop: a model run needs an explicit choice.
+  for (const answer of ["2", ""]) {
+    const v = visitDeps(dir, fake, { answers: [answer] })
+    expect(await visit({ signIn: false, open: false }, v.deps)).toBe(3)
+    expect(v.errors).toEqual([NO_OFFICE_HERE, "opencorp hq: stopped; nothing was learned."])
+  }
   expect(llm.requests()).toEqual([])
   expect(fs.existsSync(paths.dir)).toBe(false)
   expect(fake.calls()).toEqual([])
@@ -768,7 +771,7 @@ test("the first learning run asks for the model and keeps it in hq/provider.json
   const checked: unknown[] = []
   // vllm at the fake model's URL: no key, the stub model.
   const v = visitDeps(dir, fake, {
-    answers: ["", "vllm", llm.baseUrl + "/v1", "", "stub"],
+    answers: ["1", "vllm", llm.baseUrl + "/v1", "", "stub"],
     checkModel: async (p) => {
       checked.push(p.llm_config)
       return null

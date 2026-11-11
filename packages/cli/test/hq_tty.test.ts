@@ -141,7 +141,8 @@ test.skipIf(!TMUX)("after the owner approves a command, ssh in it reads the pass
   )
   const t = terminal(c)
   await t.see("Learn how to reach HQ from here? This uses the model.")
-  // The default is Learn it.
+  // The default is Stop; Up picks Learn it.
+  t.keys("Up")
   t.keys("Enter")
   await t.see("Run this command?")
   // The default is Don't run it; Up picks Run it.
