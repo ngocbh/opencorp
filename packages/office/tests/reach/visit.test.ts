@@ -795,15 +795,16 @@ test("the first learning run asks for the model and keeps it in hq/provider.json
 
 test("at the turn cap the visit prints the commands and saves nothing", async () => {
   const { dir, fake, llm, paths } = await unlearnedHome()
-  llm.script(...Array.from({ length: 31 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" })))
-  const v = visitDeps(dir, fake, { answers: ["1", ...Array(31).fill("1")] })
+  // The 30th reply's call never runs, and the model's answer after the cap ends the run.
+  llm.script(
+    ...Array.from({ length: 30 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" })),
+    { content: "No working path yet." },
+  )
+  const v = visitDeps(dir, fake, { answers: ["1", ...Array(29).fill("1")] })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
   const at = v.errors.indexOf(CAPPED)
   expect(at).toBe(1)
-  const listed = v.errors.slice(at + 1)
-  expect(listed.length).toBeGreaterThanOrEqual(1)
-  expect(listed.length).toBeLessThanOrEqual(30)
-  expect(listed[0]).toBe("  (exit 0) echo 0")
+  expect(v.errors.slice(at + 1)).toEqual(Array.from({ length: 29 }, (_, i) => `  (exit 0) echo ${i}`))
   expect(fs.existsSync(paths.script)).toBe(false)
   expect(fs.existsSync(paths.access)).toBe(false)
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
