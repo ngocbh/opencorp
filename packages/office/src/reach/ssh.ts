@@ -186,18 +186,22 @@ export function runChild(
       o.echo?.(c)
     })
     const stop = () => {
+      if (!running(child)) return
       timedOut = true
-      if (running(child)) killTree(child.pid!)
+      killTree(child.pid!)
     }
     const timer = setTimeout(stop, o.timeoutMs)
     // A signal that already fired never fires "abort" again.
     if (o.signal?.aborted) stop()
     else o.signal?.addEventListener("abort", stop, { once: true })
+    const disarm = () => {
+      clearTimeout(timer)
+      o.signal?.removeEventListener("abort", stop)
+    }
     const finish = (ran: Ran) => {
       if (done) return
       done = true
-      clearTimeout(timer)
-      o.signal?.removeEventListener("abort", stop)
+      disarm()
       child.stdout!.destroy()
       child.stderr!.destroy()
       resolve(ran)
@@ -206,6 +210,8 @@ export function runChild(
       if (child.pid === undefined) finish({ code: 127, stdout: "", stderr: e.message, timedOut: false })
     })
     child.on("exit", (code, sig) => {
+      // Exited in time: neither the timer nor a stop during the drain makes it a timeout.
+      disarm()
       const exit = code ?? 128 + (sig ? (os.constants.signals[sig] ?? 0) : 0)
       setTimeout(() => finish({ code: exit, stdout, stderr, timedOut }), DRAIN_MS)
     })

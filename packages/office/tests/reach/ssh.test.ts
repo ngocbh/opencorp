@@ -283,6 +283,22 @@ test("a signal aborted before the start ends the child at once", async () => {
   expect(performance.now() - started).toBeLessThan(2000)
 })
 
+test("a child that exits in time isn't timed out while its pipes drain", async () => {
+  const ran = await runChild(["/bin/sh", "-c", "sleep 0.25; echo done"], { ...RUN, timeoutMs: 350 })
+  expect(ran).toEqual({ code: 0, stdout: "done\n", stderr: "", timedOut: false })
+})
+
+test("an abort after the child exits stops nothing", async () => {
+  const stop = new AbortController()
+  const kill = spyOn(process, "kill")
+  onTestFinished(() => kill.mockRestore())
+  const ran = runChild(["/bin/sh", "-c", "exit 0"], { ...RUN, signal: stop.signal })
+  await Bun.sleep(100)
+  stop.abort()
+  expect(await ran).toEqual({ code: 0, stdout: "", stderr: "", timedOut: false })
+  expect(kill).not.toHaveBeenCalled()
+})
+
 test("descendants lists children's children", async () => {
   const dir = shortDir()
   const inner = 'sleep 31 & echo $! >"$0/s31"; wait'
