@@ -49,6 +49,14 @@ test("the fake logs each argv and runs a plain session's command here", () => {
   expect(fake.calls()).toEqual([["-F", "/x", "-J", "login", "--", "node", "echo hi"], ["node", "exit", "3"], ["node"]])
 })
 
+test("the fake writes nothing under HOME, so one that outlives its test can't recreate the test's folder", () => {
+  const fake = fakeSsh()
+  const home = path.join(fake.state, "..", "home")
+  fs.mkdirSync(home)
+  expect(run(fake, ["node", "env"], { PATH: "/usr/bin:/bin", HOME: home }).stdout).not.toContain("BUN_")
+  expect(fs.readdirSync(home)).toEqual([])
+})
+
 test("a refused login exits 255 with ssh's words", () => {
   const fake = fakeSsh({ login: "refuse" })
   const ran = run(fake, ["u@node", "echo hi"])

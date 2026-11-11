@@ -56,6 +56,7 @@ const SELF = fileURLToPath(import.meta.url)
 /** This Bun, as the office runs its own code in a checkout, where every test runs. */
 const BUN = selfCommand()[0]
 const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
+const NO_CACHE = "BUN_RUNTIME_TRANSPILER_CACHE_PATH"
 
 /** Installs `<dir>/bin/ssh`, state in `<dir>/state` (behavior.json, log.jsonl, masters/, tty.txt). */
 export function installFakeSsh(dir: string, behavior: FakeSshBehavior = {}): FakeSsh {
@@ -66,8 +67,9 @@ export function installFakeSsh(dir: string, behavior: FakeSshBehavior = {}): Fak
     if (p.includes("'")) throw new Error(`the fake ssh's shim can't quote ${p}`)
   fs.mkdirSync(bin, { recursive: true })
   fs.mkdirSync(path.join(state, "masters"), { recursive: true })
-  // Paths baked in: ssh's children get no test variables.
-  const shim = `#!/bin/sh\nexec '${BUN}' ${BUN_FLAGS.join(" ")} '${SELF}' '${state}' "$@"\n`
+  // Paths baked in: ssh's children get no test variables. No transpiler cache, which Bun keeps under HOME: a fake
+  // that outlives its test would recreate the test's removed folder.
+  const shim = `#!/bin/sh\n${NO_CACHE}=0 exec '${BUN}' ${BUN_FLAGS.join(" ")} '${SELF}' '${state}' "$@"\n`
   fs.writeFileSync(ssh, shim, { mode: 0o700 })
   const set = (b: FakeSshBehavior) => fs.writeFileSync(path.join(state, "behavior.json"), JSON.stringify(b))
   set(behavior)
@@ -295,7 +297,8 @@ class Run {
   command(command: string, over?: net.Socket): Promise<number> {
     if (command === "") return Promise.resolve(0)
     return new Promise((resolve) => {
-      const child = spawn("/bin/sh", ["-c", command], { stdio: "inherit" })
+      const { [NO_CACHE]: _, ...env } = process.env
+      const child = spawn("/bin/sh", ["-c", command], { env, stdio: "inherit" })
       const lost = () => {
         child.kill("SIGTERM")
         resolve(255)
