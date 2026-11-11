@@ -558,14 +558,15 @@ describe("install.sh", () => {
     }
   })
 
-  test("the PATH line adds the bin folder once however often it runs, and fish's adds it too", () => {
+  test("the PATH lines it writes add the bin folder once however often a shell reads them", async () => {
     const h = makeHome()
-    // The line install.sh writes, as each shell reads it.
-    const line = `case ":$PATH:" in *:${sq(h.bin)}:*) ;; *) export PATH=${sq(h.bin)}:"$PATH" ;; esac  # added by ${MARK}`
-    const rc = path.join(h.dir, "rc")
-    fs.writeFileSync(rc, `${line}\n`)
+    const co = checkout(h)
+    for (const shell of ["/bin/sh", "/usr/bin/fish"]) {
+      expect((await run(h, "install.sh", { from: co, extra: { SHELL: shell } })).code).toBe(0)
+    }
+    const profile = path.join(h.home, ".profile")
     for (const shell of [...SHELLS, ...(Bun.which("zsh", { PATH: SYSTEM }) ? ["zsh"] : [])]) {
-      const result = spawnSync(shell, ["-c", `. ${sq(rc)}; . ${sq(rc)}; printf '%s' "$PATH"`], {
+      const result = spawnSync(shell, ["-c", `. ${sq(profile)}; . ${sq(profile)}; printf '%s' "$PATH"`], {
         env: { PATH: SYSTEM, HOME: h.home },
         encoding: "utf8",
         timeout: 10_000,
@@ -574,11 +575,9 @@ describe("install.sh", () => {
     }
     const fish = Bun.which("fish", { PATH: SYSTEM })
     if (fish) {
-      // fish_add_path leaves out a folder that isn't there; install.sh has made it by then.
-      fs.mkdirSync(h.bin, { recursive: true })
-      fs.writeFileSync(rc, `fish_add_path -g ${sq(h.bin)}  # added by ${MARK}\n`)
       // With its config, as a login fish starts: --no-config leaves out what applies fish_add_path to PATH.
-      const result = spawnSync(fish, ["-c", `source ${sq(rc)}; source ${sq(rc)}; string join : $PATH`], {
+      const config = path.join(h.home, ".config/fish/config.fish")
+      const result = spawnSync(fish, ["-c", `source ${sq(config)}; string join : $PATH`], {
         env: { PATH: SYSTEM, HOME: h.home, XDG_CONFIG_HOME: path.join(h.home, ".config") },
         encoding: "utf8",
         timeout: 10_000,
