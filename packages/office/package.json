@@ -4,7 +4,7 @@
   "license": "MIT",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/main.ts", "./platform": "./src/platform.ts", "./hq/config": "./src/hq/config.ts", "./hq/guard": "./src/hq/guard.ts", "./hq/version": "./src/hq/version.ts", "./runs/index_thread": "./src/runs/index_thread.ts", "./testing/fake_ssh": "./src/testing/fake_ssh.ts", "./testing/office": "./src/testing/office.ts" },
+  "exports": { ".": "./src/main.ts", "./platform": "./src/platform.ts", "./hq/config": "./src/hq/config.ts", "./hq/guard": "./src/hq/guard.ts", "./hq/version": "./src/hq/version.ts", "./reach/visit": "./src/reach/visit.ts", "./runs/index_thread": "./src/runs/index_thread.ts", "./testing/fake_ssh": "./src/testing/fake_ssh.ts", "./testing/office": "./src/testing/office.ts" },
   "scripts": { "test": "bun test", "typecheck": "tsc -p . && tsc -p tests/e2e" },
   "dependencies": {
     "@clack/prompts": "1.8.1",

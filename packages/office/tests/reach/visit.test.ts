@@ -3,6 +3,7 @@
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
+import os from "node:os"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
@@ -17,9 +18,13 @@ import {
   RUNNING,
   SIGN_IN_HINT,
   USE_CHANGED,
+  opener,
+  realVisitDeps,
   type VisitOptions,
   visit,
 } from "../../src/reach/visit.ts"
+import { TtyPrompter } from "../../src/install/prompts.ts"
+import { defaultIncludes } from "../../src/reach/ssh.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../src/testing/fake_ssh.ts"
 import { control, type ReachContext } from "../../src/reach/ssh.ts"
@@ -485,4 +490,17 @@ test("stdin closing while it waits for Enter ends the visit with 1", async () =>
   v.stdin.end()
   expect(await v.done).toBe(1)
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test("realVisitDeps asks on stderr, opens with open or xdg-open, and includes the passwd home's ssh config", () => {
+  const deps = realVisitDeps("/h/o")
+  expect(deps.home).toBe("/h/o")
+  expect(deps.env).toBe(process.env)
+  expect(deps.stdin).toBe(process.stdin)
+  expect(deps.prompter).toBeInstanceOf(TtyPrompter)
+  expect((deps.prompter as unknown as { output: unknown }).output).toBe(process.stderr)
+  expect([opener("darwin"), opener("linux")]).toEqual(["open", "xdg-open"])
+  // The passwd entry's home, which ssh's `~` means, whatever $HOME says; only the path, never read here.
+  expect(deps.sshIncludes).toEqual(defaultIncludes(os.userInfo().homedir))
+  expect(deps.limits).toBeUndefined()
 })

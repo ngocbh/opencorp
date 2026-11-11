@@ -1,15 +1,20 @@
 /** `opencorp hq` from a machine where no office answers: approve the saved path, replay it, connect to HQ's machine,
  *  sign the browser in or open HQ, and hold the connection until Ctrl-C, reconnecting after a drop. */
+import { spawn } from "node:child_process"
 import fs from "node:fs"
+import os from "node:os"
 import type { Readable } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createTwoFilesPatch } from "diff"
-import { clean, type Prompter, readLine } from "../install/prompts.ts"
+import { which } from "../install/launch.ts"
+import { clean, isTTY, type Prompter, readLine, TtyPrompter } from "../install/prompts.ts"
 import { writePrivate } from "../secrets.ts"
 import { type Connection, connect, ReachFailure, signIn } from "./connect.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
 import { readScript, runReach } from "./replay.ts"
 import {
+  cleanOutput,
+  defaultIncludes,
   exitAll,
   findSsh,
   isSocket,
@@ -427,4 +432,42 @@ function aborted(signal: AbortSignal): Promise<"stop"> {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** The program that opens a file or URL in the browser here. */
+export const opener = (platform: string) => (platform === "darwin" ? "open" : "xdg-open")
+
+/** This process's terminal, signals and clock. Questions and children's output go to stderr, so stdout holds only
+ *  links and the visit line; the ssh config includes the passwd entry's `~/.ssh/config`, where ssh's own `~` points. */
+export function realVisitDeps(home: string): VisitDeps {
+  return {
+    home,
+    env: process.env,
+    prompter: new TtyPrompter({
+      interactive: isTTY(process.stdin),
+      input: process.stdin,
+      output: process.stderr,
+      env: process.env,
+    }),
+    stdin: process.stdin,
+    print: (line) => void process.stdout.write(`${line}\n`),
+    error: (line) => void process.stderr.write(`${line}\n`),
+    echo: (text) => void process.stderr.write(cleanOutput(text)),
+    open: (target) => {
+      const program = opener(process.platform)
+      const file = which(program, process.env.PATH)
+      if (file === null) throw new Error(`there's no ${program} on PATH`)
+      // Detached, its output discarded: xdg-open may block without a display.
+      const child = spawn(file, [target], { stdio: "ignore", detached: true })
+      child.on("error", () => {})
+      child.unref()
+    },
+    now: () => new Date(),
+    onSigint: (fn) => {
+      process.on("SIGINT", fn)
+      return () => void process.off("SIGINT", fn)
+    },
+    exit: (code) => process.exit(code),
+    sshIncludes: defaultIncludes(os.userInfo().homedir),
+  }
 }
