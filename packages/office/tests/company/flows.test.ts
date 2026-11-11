@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
+import { LoadError } from "@ngocbh/yian"
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { loadConfined, MAX_FLOW_FILE } from "../../src/company/flows.ts"
 import { MAX_FILE } from "../../src/company/source.ts"
@@ -35,8 +36,21 @@ test("pinned version is checked", async () => {
     "shared/flows/echo.yaml": CHILD.replace("id: echo", "id: echo\nversion: '1'"),
   })
   const load = loadConfined(root, path.join(root, "shared/flows/chat.yaml"))
-  await expect(load).rejects.toBeInstanceOf(RangeError)
-  await expect(load).rejects.toThrow(/version/)
+  await expect(load).rejects.toBeInstanceOf(LoadError)
+  await expect(load).rejects.toThrow('uses: ref pinned echo@2 but the resolved file declares version: "1"')
+})
+
+test("a uses: child loads under the repo root, so its CODE outside the repo is refused", async () => {
+  // Each nested load passes the root itself; yian would also hold the child's CODE to the parent's.
+  const outside = path.join(tempDir(), "fn.ts")
+  fs.writeFileSync(outside, 'export function fn(): string {\n  return "out"\n}\n')
+  const root = makeCompany({ "shared/flows/main.yaml": usesFlow("main", ["coded"]) })
+  const code = path.relative(path.join(root, "shared/flows"), outside)
+  const coded = `id: coded\nname: coded\nnodes:\n  prep:\n    kind: code\n    code: ${code}:fn\n    output: str\n`
+  fs.writeFileSync(path.join(root, "shared/flows/coded.yaml"), `${coded}output: \${prep.output}\n`)
+  const load = loadConfined(root, path.join(root, "shared/flows/main.yaml"))
+  await expect(load).rejects.toBeInstanceOf(LoadError)
+  await expect(load).rejects.toThrow(/outside/)
 })
 
 test("a flow named with two leading dots inside the repo loads", async () => {

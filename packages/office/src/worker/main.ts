@@ -193,9 +193,15 @@ class Deliveries {
 
 /** Applies a delivery to the run at `log` through yian, confined to `codeRoot` as the run is; never rejects. A
  *  refusal is answered with its reason, any other error with its name only, since a yian message can quote a
- *  value. */
-function applier(log: string, env: Env, codeRoot: string): (delivery: Delivery) => Promise<Outcome> {
-  const options = { env, codeRoot }
+ *  value. A delivery calls no model, but given the `credentials` the job's advance passes, the state yian keeps for
+ *  that advance is reused rather than built again from the log. */
+function applier(
+  log: string,
+  env: Env,
+  codeRoot: string,
+  credentials: HostCredentials,
+): (delivery: Delivery) => Promise<Outcome> {
+  const options = { env, codeRoot, ...credentials }
   return async (delivery) => {
     try {
       switch (delivery.op) {
@@ -599,7 +605,8 @@ async function runJob(
   // advance job's log must exist.
   const log = job.kind === "advance" ? job.log : runLogPath(runs, job.run_id)
   // An off-engine delivery recompiles the recorded flow, so it is confined to the pin as the run is.
-  deliveries.bind(applier(log, read, job.pin))
+  const credentials = hostCredentials(job.llm_config)
+  deliveries.bind(applier(log, read, job.pin, credentials))
   const onEvent: EventHook = (event) => {
     // Not awaited: a delivery waits for the run to go live, which happens after this observer returns.
     if (event.type === "RunStarted" || event.type === "RunResumed") deliveries.open()
@@ -691,7 +698,6 @@ async function runJob(
     // A stop that came while the deliveries applied would make `advance` throw though it appended nothing; the run
     // is then as its log says, as after a job that only delivers.
     if (signal.aborted) return { run_id: job.run_id, output: null, ...waitingFields(log) }
-    const config = job.llm_config ?? {}
     // Read before the deliveries applied: none writes a run_resumed, node_woken or node_started record.
     const before = inspection.lastSeq
     try {
@@ -702,8 +708,7 @@ async function runJob(
         codeRoot: job.pin,
         // `null` keeps the recorded bound: a changed one would make a waiting run write RunResumed.
         numWorkers: null,
-        apiKey: typeof config.api_key === "string" ? config.api_key : null,
-        headers: stringRecord(config.headers),
+        ...credentials,
       })
     } catch (error) {
       if (!notResumed(error, advanceAppended(log, before))) throw error
@@ -728,6 +733,17 @@ async function runJob(
 /** How yian reads a variable of `env`: its own entries only. */
 function reader(env: WorkerEnv): Env {
   return (name) => (Object.hasOwn(env, name) ? env[name] : undefined)
+}
+
+/** The key and headers a run's model calls send, as yian's `advance` and deliveries take them. */
+interface HostCredentials {
+  apiKey: string | null
+  headers: Record<string, string> | null
+}
+
+/** `config`'s key and headers: `api_key` when it is a string, `headers` when it is a record of strings. */
+function hostCredentials(config: Readonly<Record<string, unknown>> | null): HostCredentials {
+  return { apiKey: typeof config?.api_key === "string" ? config.api_key : null, headers: stringRecord(config?.headers) }
 }
 
 /** `value` when it is a record of strings, else `null`. */

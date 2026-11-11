@@ -18,6 +18,7 @@ export const TITLE_CHARS = 80
 export interface CompanyTool {
   readonly description: string
   readonly parameters: Record<string, unknown>
+  readonly resumable?: boolean
   call(args: Record<string, unknown>, options?: ToolCallOptions): unknown
 }
 
@@ -57,6 +58,8 @@ export function companyTools(
   return {
     ask_manager: {
       description: ASK,
+      // The call id keys its question: a call sent again gets that question, not a second one.
+      resumable: true,
       parameters: {
         description: ASK,
         properties: {

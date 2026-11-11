@@ -8,7 +8,7 @@ import { listModels } from "../../src/chat/models.ts"
 import { loadConfined } from "../../src/company/flows.ts"
 import { type FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
-import { tempDir } from "../helpers.ts"
+import { tempDir, waitFor } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -122,6 +122,20 @@ test("a streamed reply ends with usage", async () => {
   const usages = events.filter((e) => e.type === "ModelCallFinished").map((e) => e.usage)
   expect(usages).toHaveLength(1)
   expect([usages[0].inputTokens, usages[0].outputTokens]).toEqual([7, 2])
+})
+
+test("a streamed reply held after its first piece sends that piece, then the rest once released", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "hello there", hold: true, hold_after: 1 })
+  const chunks: string[] = []
+  const flowed = await flow(pin(), "echo")
+  const call = track(run(fake, flowed, { message: "hi" }, { onStream: (chunk) => void chunks.push(chunk.chunk) }))
+  await waitFor(() => chunks.join("") === "hello ", { timeout: 10_000, what: "the first piece" })
+  await sleep(500)
+  expect(call.settled()).toBe(false)
+  expect(chunks.join("")).toBe("hello ")
+  fake.release()
+  expect((await within(call.done, 5_000)).output).toBe("hello there")
 })
 
 test("a scripted 500 is hit once and keeps the next reply", async () => {

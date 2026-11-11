@@ -459,6 +459,18 @@ test("an interrupted reply ends with the interrupted marker", async () => {
   expect(messages(runs, sessionId, ["r1"], { transcript })).toEqual(read)
 })
 
+test("a reply interrupted after its first chunk keeps that text, and the marker ends it", async () => {
+  const fake = await fakeLlm()
+  const runs = tempDir()
+  await interruptMidReply(fake, { content: "Thinking about it", hold_after: 1 }, { runs })
+  expect(shown(messages(runs, newId(), ["r1"]))).toEqual([
+    ["user", ["one"]],
+    ["assistant", ["Thinking \n\n[interrupted]"]],
+    ["user", ["queued"]],
+    ["assistant", ["Got it."]],
+  ])
+})
+
 test("a reply interrupted after a tool call ends with the marker after it", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Working", tool_calls: [{ id: "c1", name: "toolbox_stub" }] }, { content: "Unused." })

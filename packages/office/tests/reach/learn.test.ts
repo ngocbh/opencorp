@@ -436,14 +436,31 @@ test("a learning run asks, runs approved commands and saves through save_access"
 
 test("at the turn cap it lists the commands asked for and saves nothing", async () => {
   const { llm, provider } = await model()
-  const c = await chain(Array(31).fill("1"))
-  llm.script(...Array.from({ length: 31 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" })))
+  const c = await chain(Array(29).fill("1"))
+  // The 30th reply's call never runs: the model reads the cap's error result and answers once more.
+  llm.script(
+    ...Array.from({ length: 30 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" })),
+    { content: "No working path yet." },
+  )
   const got = await runLearn(provider, NO_INPUTS, c.state)
-  expect(got.capped).toBe(true)
-  expect(got.output).toBeNull()
-  expect(c.state.commands.length).toBeGreaterThanOrEqual(1)
-  expect(c.state.commands.length).toBeLessThanOrEqual(30)
-  expect(c.state.commands[0]).toEqual({ command: "echo 0", code: 0 })
+  expect(got).toEqual({ output: "No working path yet.", message: null, capped: true })
+  expect(c.state.commands).toEqual(Array.from({ length: 29 }, (_, i) => ({ command: `echo ${i}`, code: 0 })))
+  expect(JSON.stringify(llm.requests().at(-1))).toContain("Tool-call limit reached (30 turns)")
+  expect(fs.existsSync(c.ctx.paths.script)).toBe(false)
+  expect(c.state.connection).toBeNull()
+}, 60_000)
+
+test("a reply after the turn cap that still calls tools runs none of them, and nothing is saved", async () => {
+  const { llm, provider } = await model()
+  const c = await chain(Array(29).fill("1"))
+  llm.script(
+    ...Array.from({ length: 30 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" })),
+    call("save_access", { script: scriptFor(c.spec), notes: NOTES, risks: [] }),
+  )
+  const got = await runLearn(provider, NO_INPUTS, c.state)
+  expect(got).toEqual({ output: "", message: null, capped: true })
+  expect(c.state.commands).toHaveLength(29)
+  expect(llm.requests()).toHaveLength(31)
   expect(fs.existsSync(c.ctx.paths.script)).toBe(false)
   expect(c.state.connection).toBeNull()
 }, 60_000)

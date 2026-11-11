@@ -213,7 +213,8 @@
         ],
         "title": "ask_manager",
         "type": "object"
-      }
+      },
+      "resumable": true
     },
     {
       "name": "create_work_item",

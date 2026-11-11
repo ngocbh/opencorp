@@ -5,17 +5,23 @@ import path from "node:path"
 import { FileMemory, type MemorySession, RunBusyError } from "@ngocbh/yian"
 import { inspectRun } from "@ngocbh/yian/run"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { loadRepo } from "../../src/company/loader.ts"
 import { killGroup } from "../../src/install/proc.ts"
+import { Answers } from "../../src/questions/ask.ts"
+import { companyTools } from "../../src/tools/company/work.ts"
 import { type FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Job, JobInput } from "../../src/worker/job.ts"
 import { advanceAppended, EXIT_FAILED, notResumed } from "../../src/worker/main.ts"
 import type { WorkerHandlers } from "../../src/worker/rpc.ts"
+import type { Worker } from "../../src/worker/spawn.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { captureStderr } from "../helpers.ts"
 import { fifoAt } from "../runs/helpers.ts"
-import { openStore } from "../store/helpers.ts"
+import { openStore, session, workItem } from "../store/helpers.ts"
+import { company } from "../company/helpers.ts"
 import {
   advanceJob,
+  agentFlow,
   base,
   inProcessWorker,
   makeJob,
@@ -25,6 +31,7 @@ import {
   run,
   runWorker,
   type TestWorker,
+  writeFiles,
 } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -321,4 +328,43 @@ test("only records an advance writes count as appended", async () => {
   expect(advanceAppended(stopped.log, before)).toBe(true)
 
   expect(advanceAppended(waiting.log, null)).toBe(true)
+})
+
+test("an ask_manager call a crash cut off is sent again, and gets the question and work item it stored", async () => {
+  const fake = await fakeLlm()
+  const where = base()
+  writeFiles(where.pin, { "flows/managed.yaml": agentFlow("managed", { node: "    tools: [company]\n" }) })
+  const store = openStore()
+  const registry = makeRegistry(store)
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const item = store.createWorkItem(workItem({ requester: "minh" }))
+  const s = store.createSession(session({ person: "minh", work_item_id: item.id }))
+  const answers = new Answers(store)
+  const tools = { company: companyTools(store, loadRepo(company()), s, "r1", (q, o) => answers.ask(q, o)) }
+  const calls: string[] = []
+  /** Serves the company tools; the first call stores its question, then kills the worker before it replies. */
+  class CrashAfterAsking extends Recorder {
+    override async toolCall(worker: Worker, group: string, name: string, args: Record<string, unknown>, id?: string) {
+      const result = await super.toolCall(worker, group, name, args, id)
+      calls.push(id!)
+      if (calls.length > 1) return result
+      killGroup(worker.pgid)
+      return await new Promise(() => {})
+    }
+  }
+  const job = makeJob(where, "flows/managed.yaml", {}, new CrashAfterAsking({ tools }))
+  fake.script({ tool_calls: [{ name: "company_ask_manager", arguments: { question: "Deploy now?" } }] })
+  const worker = await registry.spawn(job, sessionDir, new CrashAfterAsking({ tools }), { env: fake.env() })
+  expect(await worker.wait(30_000)).toBe(-9)
+  expect(inspectRun(job.log).status).toBe("crashed")
+  const resumed = new CrashAfterAsking({ tools })
+  const rec = await runWorker(registry, advanceJob(job), resumed, sessionDir, { env: fake.env() })
+  expect(rec.outcome?.status, String(rec.outcome?.message)).toBe("waiting")
+  expect(calls).toEqual(["r1/reply/1/0", "r1/reply/1/0"])
+  const questions = store.listQuestions()
+  expect(questions.map((q) => [q.call_id, q.status])).toEqual([["r1/reply/1/0", "open"]])
+  // One work item for the question, beside the session's own.
+  expect(store.listWorkItems().map((i) => i.id).sort()).toEqual([item.id, questions[0]!.work_item_id!].sort())
+  // The model was never asked again: the call pends on the question it asked before the crash.
+  expect(fake.requests()).toHaveLength(1)
 })

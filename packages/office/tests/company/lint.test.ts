@@ -418,6 +418,16 @@ test("a main flow whose reply does not steer from the messages inbox is a lint e
   expect((await chatShapeIssue(other)).message).toContain("steer_inbox: ${input.messages}")
 })
 
+test("a reply input named __steer_inbox is refused at load, so it can't pass for the steer inbox", async () => {
+  const flow = MAIN.replace("        steer_inbox: ${input.messages}\n", "")
+    .replace("          said: ${heard.output.events}\n", "$&          __steer_inbox: ${input.messages}\n")
+  expect(flow).toContain("__steer_inbox: ${input.messages}")
+  const root = makeCompany({ "shared/flows/chat.yaml": flow })
+  expect(await codes(root)).toEqual(new Set(["person.flow_invalid"]))
+  const [issue] = await withCode(root, "person.flow_invalid")
+  expect(issue!.message).toContain("input '__steer_inbox' starts with '__'")
+})
+
 test("a main flow whose reply output is not optional is a lint error", async () => {
   const message = (await chatShapeIssue(MAIN.replace("output: Optional(str)", "output: str"))).message
   expect(message).toContain("interrupt")

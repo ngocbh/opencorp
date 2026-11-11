@@ -1138,8 +1138,8 @@ export const CHECK_LIMITS: Readonly<Record<string, string>> = Object.freeze({
 /**
  * Runs `flow` with `provider`'s model as an office run would; resolves its result (null when the run threw), and
  * why it failed (null when it didn't), without the key or URL credentials. The run's environment is `env` (by
- * default a worker's, from this process's) with `provider.env` on top, then `limits`. Rejects with `signal`'s reason
- * once it aborts.
+ * default a worker's, from this process's) with `provider.env` on top, then `limits`; `onEvent` sees the run's
+ * events as `runFlow`'s does. Rejects with `signal`'s reason once it aborts.
  */
 export async function runSetup(
   flow: ComposedFlow,
@@ -1151,12 +1151,14 @@ export async function runSetup(
     env: base,
     signal,
     limits,
+    onEvent,
   }: {
     tools: NonNullable<RunFlowOptions["tools"]>
     context?: unknown
     env?: WorkerEnv
     signal?: AbortSignal
     limits?: Readonly<Record<string, string>>
+    onEvent?: RunFlowOptions["onEvent"]
   },
 ): Promise<{ result: RunResult | null; message: string | null }> {
   // The run gets the environment office runs get, so it authenticates the way they will: a shell variable the
@@ -1173,7 +1175,7 @@ export async function runSetup(
   try {
     // No workers: the code nodes, and so the terminal, stay in this process.
     result = await withWarnings(handler, () =>
-      runFlow(flow, inputs, { llmConfig: provider.llm_config, tools, numWorkers: 0, context, env, signal }),
+      runFlow(flow, inputs, { llmConfig: provider.llm_config, tools, numWorkers: 0, context, env, signal, onEvent }),
     )
     if (result.status === "failed") message = result.failure?.message ?? "the run failed"
   } catch (error) {

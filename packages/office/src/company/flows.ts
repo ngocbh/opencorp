@@ -27,8 +27,9 @@ export class FlowOutsideRepo extends Error {
  * calls, so a later call (lint reads the live clone) always reads the files again.
  *
  * @throws {FlowOutsideRepo} For a flow or child outside `root`.
- * @throws {LoadError} For a bad flow, and for a child's other problems below.
- * @throws {RangeError} For a reference cycle, a pinned-version mismatch, a `uses:` ref with a NUL, a flow
+ * @throws {LoadError} For a bad flow (a `uses:` pin its child's version doesn't match, or a child's CODE outside
+ *   `root`, among them), and for a child's other problems below.
+ * @throws {RangeError} For a reference cycle, a `uses:` ref with a NUL, a flow
  *   that is missing, can't be opened (named by its errno only), isn't a regular file or is over
  *   `MAX_FLOW_FILE` bytes, or a flow that sets `system.paths` or whose YAML the office can't check for it.
  * @throws {TypeError} For a flow that isn't UTF-8 text.
@@ -165,15 +166,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * the flows this top-level load has already finished, by resolved path, so a diamond of `uses:` loads each
  * file once rather than once per path to it.
  *
- * Sharing one loaded flow between aliases is safe: yian copies a child for each alias, and holds a child it
- * gets again to the import-depth limit through the flow's `importDepth`. Were yian to resolve aliases
- * concurrently, the result would stay correct (each branch's `loading` still catches a cycle and each
- * alias's pinned version is still checked); some files would only load twice.
+ * Sharing one loaded flow between aliases is safe: yian copies a child for each alias, holds a child it
+ * gets again to the import-depth limit through the flow's `importDepth`, and checks each alias's pinned
+ * version itself. Were yian to resolve aliases concurrently, the result would stay correct (each branch's
+ * `loading` still catches a cycle); some files would only load twice.
  *
  * yian calls the child resolver as `(ref, version)` for `<dir>/<ref>.yaml`, and wraps anything else it
  * throws in a `LoadError` caused by it. yian ignores `system.paths` when a child resolver is given, so
- * such a flow is refused rather than loaded differently from `yian run`. yian doesn't check a child
- * resolver's flow against `codeRoot`, so each nested load passes it again.
+ * such a flow is refused rather than loaded differently from `yian run`. yian holds a child's CODE to the
+ * parent's `codeRoot`, which each load here passes anyway.
  */
 async function load(
   root: string,
@@ -195,13 +196,9 @@ async function load(
   }
   const dir = path.dirname(resolved)
   const importing = new Set([...loading, resolved])
-  const childResolver = async (ref: string, version: string | null): Promise<ComposedFlow> => {
+  const childResolver = async (ref: string): Promise<ComposedFlow> => {
     if (ref.includes("\0")) throw new RangeError(`${JSON.stringify(ref)}: embedded null byte`)
-    const child = await load(root, path.resolve(dir, ref + ".yaml"), importing, loaded)
-    if (version !== null && child.version !== version) {
-      throw new RangeError(`${ref} is version ${JSON.stringify(child.version)}, not ${JSON.stringify(version)}`)
-    }
-    return child
+    return await load(root, path.resolve(dir, ref + ".yaml"), importing, loaded)
   }
   const options = { childResolver, sourceLabel: shown, baseDir: dir, codeRoot: root }
   if (declared === undefined) {

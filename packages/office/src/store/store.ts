@@ -375,19 +375,6 @@ export function newId(): string {
   return base32(BigInt(lastTime), 10) + base32(lastRandom, 16)
 }
 
-/** Whether `db` has a transaction open. */
-function inTransaction(db: Sqlite): boolean {
-  // This probe stands in until Yian's Sqlite has an inTransaction (gap reported). BEGIN fails only while a
-  // transaction is open, and when it succeeds the ROLLBACK undoes the probe.
-  try {
-    db.exec("BEGIN")
-  } catch {
-    return true
-  }
-  db.exec("ROLLBACK")
-  return false
-}
-
 /** Throws `StoreError` if `result` is a promise or other thenable: an awaiting callback would run its
  *  continuation after the transaction ended. */
 function refuseAsync<T>(result: T): T {
@@ -418,15 +405,15 @@ export class Tx {
     if (this.over) throw new StoreError("the transaction is over")
     // Probed before every statement: a failed statement anywhere on the connection, even a read outside
     // this Tx, can end the transaction, and later statements would then each commit on their own.
-    if (!inTransaction(this.#db)) {
+    if (!this.#db.inTransaction) {
       throw new StoreError("SQLite rolled back this transaction after an error; start a new one")
     }
   }
 
-  /** Runs one statement in this transaction. */
-  run(sql: string, ...params: SqliteParam[]): void {
+  /** Runs one statement in this transaction; returns how many rows it changed (an INSERT, UPDATE or DELETE). */
+  run(sql: string, ...params: SqliteParam[]): number {
     this.checkOpen()
-    this.#db.prepare(sql).run(...params)
+    return this.#db.prepare(sql).run(...params).changes
   }
 
   /** Reads one row in this transaction. */
@@ -713,7 +700,7 @@ export class Store {
       tx.checkOpen()
       db.exec("COMMIT")
     } catch (error) {
-      if (inTransaction(db)) db.exec("ROLLBACK")
+      if (db.inTransaction) db.exec("ROLLBACK")
       throw StoreUnwritable.from(error)
     } finally {
       this.#tx = undefined
@@ -738,7 +725,7 @@ export class Store {
     } catch (error) {
       // If the error made SQLite end the whole transaction, the savepoint is gone: keep the original error
       // rather than throwing "no such savepoint".
-      if (inTransaction(db)) {
+      if (db.inTransaction) {
         db.exec(`ROLLBACK TO ${name}`)
         db.exec(`RELEASE ${name}`)
       }
@@ -1685,10 +1672,7 @@ export class Store {
 
   /** Deletes the sessions expired by `at`; returns how many. */
   pruneHqSessions(at: string): number {
-    return this.transaction((tx) => {
-      tx.run("DELETE FROM hq_sessions WHERE expires_at <= ?", at)
-      return tx.get("SELECT changes() AS n")!.n as number
-    })
+    return this.transaction((tx) => tx.run("DELETE FROM hq_sessions WHERE expires_at <= ?", at))
   }
 
   /** Closes the connection; a second call does nothing. Throws `StoreError` inside a transaction. */

@@ -44,6 +44,9 @@ import learnYaml from "./flows/learn_hq.yaml" with { type: "file" }
 
 export { learnYaml }
 
+/** The error of a tool call yian didn't run because its reply came at the turn cap. */
+const CAPPED_CALL = "tool_limit"
+
 /** A one-time sign-in code as a link or `opencorp hq --json` shows it. */
 const SIGN_IN_CODE = /pair#[A-Za-z0-9_-]{22}(?![A-Za-z0-9_-])/g
 
@@ -386,7 +389,7 @@ function askOwner(request: { question: string; options?: readonly string[] | nul
 }
 
 /** What a learning run ended with: the agent's last reply when it finished, why it failed (null when it didn't), and
- *  whether yian stopped it at the turn cap. */
+ *  whether it reached the turn cap. */
 export interface Learned {
   output: string | null
   message: string | null
@@ -394,7 +397,8 @@ export interface Learned {
 }
 
 /** Runs learn_hq with `provider`'s model and the host tools, in this process (no workers), with no run log, then
- *  removes the folder its commands ran in.
+ *  removes the folder its commands ran in. At the turn cap yian runs none of the reply's calls, finishing each with
+ *  `tool_limit`, and the model answers once more; that reply is the run's output.
  *  Rejects with the owner's `KeyboardInterrupt` or `OnboardError` (their input ended), and with the visit's stop. */
 export async function runLearn(
   provider: Provider,
@@ -404,6 +408,7 @@ export async function runLearn(
   const flow = await loadFlow(embedded(learnYaml).toString("utf8"), { sourceLabel: "reach/flows/learn_hq.yaml" })
   const text = { notes: wellFormed(inputs.notes), script: wellFormed(inputs.script), failure: wellFormed(inputs.failure) }
   let ran: Awaited<ReturnType<typeof runSetup>>
+  let capped = false
   try {
     ran = await runSetup(flow, text, provider, {
       tools: {
@@ -414,6 +419,9 @@ export async function runLearn(
       context: state,
       env: workerEnv(state.ctx.env),
       signal: state.ctx.signal,
+      onEvent: (event) => {
+        if (event.type === "ToolCallFinished" && event.error === CAPPED_CALL) capped = true
+      },
     })
   } finally {
     state.close()
@@ -423,7 +431,7 @@ export async function runLearn(
   return {
     output: result?.status === "succeeded" ? (result.output as string) : null,
     message,
-    capped: result?.failure?.code === "agent.max_tool_iterations",
+    capped,
   }
 }
 
