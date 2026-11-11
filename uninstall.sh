@@ -116,8 +116,37 @@ wrapper_checkout() {
 
 # Whether $1 and $2 are the same folder, both there.
 same_dir() {
-  sd_a=$(CDPATH='' cd -P "$1" 2>/dev/null && pwd -P) && sd_b=$(CDPATH='' cd -P "$2" 2>/dev/null && pwd -P) &&
+  sd_a=$(cd -P "$1" 2>/dev/null && pwd -P) && sd_b=$(cd -P "$2" 2>/dev/null && pwd -P) &&
     [ "$sd_a" = "$sd_b" ]
+}
+
+# Drops PATH's relative and empty entries: they name whatever folder the script runs in, so a `bun` or `git` found
+# there could be any project's.
+absolute_path() {
+  ap_out=
+  ap_rest=$PATH:
+  while [ -n "$ap_rest" ]; do
+    ap_dir=${ap_rest%%:*}
+    ap_rest=${ap_rest#*:}
+    case $ap_dir in /*) ap_out=${ap_out:+$ap_out:}$ap_dir ;; esac
+  done
+  PATH=$ap_out
+}
+
+# Stops unless $2, the path named $1, is absolute and has no newline in it.
+need_path() {
+  case $2 in
+    *"$NL"*) die "$1 holds a newline. Pick a path without one." ;;
+    /*) ;;
+    *) die "$1 must be an absolute path, not ${2:-empty}." ;;
+  esac
+}
+
+# Stops when run through sudo, as root in someone's home: their next run, as themselves, couldn't change what it made.
+not_sudo() {
+  if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
+    die "Run this as yourself, not through sudo: it works in the home of whoever runs it ($HOME)."
+  fi
 }
 
 # Whether a terminal is there to ask on: stdin is the script under `curl | bash`.
@@ -178,26 +207,44 @@ $lw_subs
 EOF
 }
 
-# Removes the clone at $1 if install.sh made it and it holds no work found nowhere else; otherwise says why it stays.
+# Removes the clone at $1 (the folder a link there points at) if install.sh made it and it holds no work found
+# nowhere else; otherwise says why it stays. A folder that was there before install.sh cloned into it is kept, empty.
 remove_clone() {
   [ -d "$1" ] || return 0
-  if [ ! -f "$1/.git/opencorp-installer" ]; then
-    ok "Left $1 in place: install.sh did not clone it."
+  rm_dir=$(cd -P "$1" && pwd -P) || { fail "Couldn't look in $1."; return 0; }
+  if [ ! -f "$rm_dir/.git/opencorp-installer" ]; then
+    ok "Left $rm_dir in place: install.sh did not clone it."
     return 0
   fi
-  rm_why=$(local_work "$1")
+  case $HOME/ in "$rm_dir"/* | "$rm_dir"//*)
+    fail "Won't remove $rm_dir, which holds your home folder."
+    return 0
+    ;;
+  esac
+  rm_why=$(local_work "$rm_dir")
   if [ -n "$rm_why" ]; then
-    warn "Left $1 in place: $rm_why."
-  elif rm -rf "$1"; then
-    ok "Removed $1"
-  else
-    fail "Couldn't remove all of $1."
+    warn "Left $rm_dir in place: $rm_why."
+    return 0
   fi
+  if LC_ALL=C grep -q -x 'folder=new' "$rm_dir/.git/opencorp-installer"; then
+    rm -rf "$rm_dir" || { fail "Couldn't remove all of $rm_dir."; return 0; }
+  else
+    for rm_f in "$rm_dir"/* "$rm_dir"/.[!.]* "$rm_dir"/..?*; do
+      if [ -e "$rm_f" ] || [ -L "$rm_f" ]; then rm -rf "$rm_f" || { fail "Couldn't remove all of $rm_dir."; return 0; }; fi
+    done
+  fi
+  ok "Removed $rm_dir"
 }
 
 # All of it runs from the last line, so a download cut off part-way runs nothing.
 main() {
   init_output
+  unset CDPATH
+  NL='
+'
+  absolute_path
+  need_path HOME "${HOME:-}"
+  not_sudo
   FAILED=0
   # The second line of the wrapper install.sh writes, which marks it as install.sh's.
   WRAPPER_MARK="# Written by opencorp install.sh; uninstall.sh removes it."
@@ -213,8 +260,9 @@ main() {
       *) die "unknown option $1 (see --help)." ;;
     esac
   done
-  case $DIR in '' | /*) ;; *) DIR=$PWD/$DIR ;; esac
+  [ -z "$DIR" ] || need_path "The install folder (--dir or OPENCORP_INSTALL_DIR)" "$DIR"
   BIN_DIR=${OPENCORP_BIN_DIR:-$HOME/.local/bin}
+  need_path OPENCORP_BIN_DIR "$BIN_DIR"
   TARGET=$BIN_DIR/opencorp
   OFFICE=${OPENCORP_HOME:-$HOME/.opencorp}
 

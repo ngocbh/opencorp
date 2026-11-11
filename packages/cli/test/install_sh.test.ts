@@ -124,6 +124,7 @@ printf '%s %s | %s | %s\\n' "$0" "$*" "$PWD" "$tty" >>"$STUB_LOG/calls"
 case $* in
   --version) echo "\${STUB_BUN_VERSION:-1.4.2}" ;;
   *" --version") echo 0.0.1 ;;
+  *" --help") [ -z "\${STUB_HELP_FAILS:-}" ] || exit 3 ;;
   *" offboard")
     [ -z "\${STUB_OFFBOARD_FAILS:-}" ] || exit 1
     rm -rf "$HOME/.opencorp/office" "$HOME/.opencorp/identity.json" ;;
@@ -197,6 +198,8 @@ interface RunOptions {
   shell?: string
   /** Shell commands run first, in the same process, before the script. */
   wrap?: string
+  /** The shell's own arguments, in place of the ones `argv` makes. */
+  raw?: string[]
   /** Run from a checkout's copy of the script, as `./install.sh` does; otherwise piped, as `curl | bash` does. */
   from?: string
   cwd?: string
@@ -219,7 +222,9 @@ function argv(script: string, o: RunOptions): { args: string[]; input?: string }
 
 /** Runs `script` with no terminal: in a session of its own, so it has no controlling terminal. */
 async function run(h: Home, script: string, o: RunOptions = {}): Promise<Result> {
-  const { args, input } = argv(script, o)
+  const made = argv(script, o)
+  const args = o.raw ?? made.args
+  const input = o.raw ? undefined : made.input
   const stdin = input ? fs.openSync(input, "r") : "ignore"
   const shell = o.shell ?? "sh"
   const command = o.wrap ? [shell, "-c", `${o.wrap} exec ${shell} "$@"`, shell, ...args] : [shell, ...args]
@@ -501,6 +506,107 @@ describe("install.sh", () => {
     // Run again, Bun's own install folder holds a Bun, so its installer isn't fetched again.
     expect((await run(h, "install.sh", { from: co, extra: noBun })).code).toBe(0)
     expect(calls(h).filter((c) => c.startsWith("curl"))).toHaveLength(1)
+  })
+
+  test("runs as a checkout's own install.sh only when called by a path with a slash, whatever the current folder holds", async () => {
+    // Piped, $0 is the shell's name: a folder holding a file of that name and a checkout's files is no checkout.
+    const h = makeHome()
+    const crafted = checkout(h, "crafted")
+    writeScript(path.join(crafted, "sh"), "#!/bin/sh\n")
+    writeScript(path.join(crafted, "install.sh"), fs.readFileSync(path.join(CHECKOUT, "install.sh"), "utf8"))
+    const piped = await run(h, "install.sh", { cwd: crafted })
+    expect(piped.code).toBe(0)
+    expect(piped.out).toContain(`→ Cloning ${source} (main) into ${h.clone}`)
+    const bun = path.join(bunDir, "bun")
+    expect(calls(h).filter((c) => c.includes(" install --frozen-lockfile | "))).toEqual([
+      `${bun} install --frozen-lockfile | ${h.clone} | no-tty`,
+    ])
+
+    // `sh install.sh` names no folder, so it clones too; `sh ./install.sh` installs the checkout it's in.
+    const other = makeHome()
+    const co = checkout(other)
+    const bare = await run(other, "install.sh", { cwd: co, raw: ["install.sh", "--repo", source] })
+    expect(bare.out).toContain(`→ Cloning ${source} (main) into ${other.clone}`)
+    const dotted = await run(other, "install.sh", { cwd: co, raw: ["./install.sh"] })
+    expect(dotted.code).toBe(0)
+    expect(dotted.out).toContain(`✓ Installing the checkout at ${co}`)
+  })
+
+  test("a CDPATH doesn't send it to another folder", async () => {
+    const h = makeHome()
+    const co = checkout(h)
+    // Another folder named like the checkout, where cd would go with this CDPATH.
+    const decoy = path.join(h.dir, "decoy")
+    fs.mkdirSync(decoy)
+    git(decoy, "clone", "-q", source, path.join(decoy, "checkout"))
+    const r = await run(h, "install.sh", { cwd: h.dir, raw: ["checkout/install.sh"], extra: { CDPATH: decoy } })
+    expect(r.code).toBe(0)
+    expect(r.out).toContain(`✓ Installing the checkout at ${co}`)
+  })
+
+  test("refuses a relative or multi-line path for the bin folder, the install folder or the home", async () => {
+    const cases: [string, RunOptions][] = [
+      ["OPENCORP_BIN_DIR must be an absolute path", { extra: { OPENCORP_BIN_DIR: "bin" } }],
+      ["must be an absolute path, not opencorp", { args: ["--dir", "opencorp"] }],
+      ["must be an absolute path, not apps/opencorp", { extra: { OPENCORP_INSTALL_DIR: "apps/opencorp" } }],
+      ["holds a newline", { args: ["--dir", "/tmp/a\nb"] }],
+      ["HOME must be an absolute path", { extra: { HOME: "" } }],
+    ]
+    for (const [message, o] of cases) {
+      const h = makeHome()
+      const r = await run(h, "install.sh", o)
+      expect(r.code, message).not.toBe(0)
+      expect(r.err, message).toContain(message)
+      expect(calls(h), message).toEqual([])
+      expect(fs.existsSync(h.clone), message).toBe(false)
+      const u = await run(h, "uninstall.sh", o)
+      expect(u.code, message).not.toBe(0)
+      expect(u.err, message).toContain(message)
+    }
+  })
+
+  test("never takes a bun from a relative or empty PATH entry, which names the current folder", async () => {
+    for (const relative of [".", ""]) {
+      const h = makeHome()
+      const project = path.join(h.dir, "project")
+      writeScript(path.join(project, "bun"), `#!/bin/sh\necho "project bun $*" >>"$STUB_LOG/calls"\necho 1.4.2\n`)
+      const r = await run(h, "install.sh", { cwd: project, extra: { PATH: `${relative}:${stubs}:${SYSTEM}` } })
+      expect(r.err).not.toContain("✗")
+      expect(r.code).toBe(0)
+      expect(calls(h).filter((c) => c.startsWith("project bun"))).toEqual([])
+      expect(calls(h)).toContain("bun-installer bun-v1.4.2")
+      expect(fs.readFileSync(h.wrapper, "utf8")).toContain(sq(path.join(h.home, ".bun/bin/bun")))
+    }
+  })
+
+  test("refuses to run through sudo, which would leave root's files in the user's home", async () => {
+    const h = makeHome()
+    const root0 = path.join(h.dir, "as-root")
+    writeScript(path.join(root0, "id"), '#!/bin/sh\n[ "$1" = -u ] && echo 0\n')
+    for (const script of ["install.sh", "uninstall.sh"]) {
+      const r = await run(h, script, { extra: { SUDO_USER: "alice", PATH: `${root0}:${bunDir}:${stubs}:${SYSTEM}` } })
+      expect(r.code, script).not.toBe(0)
+      expect(r.err, script).toContain("not through sudo")
+    }
+    expect(calls(h)).toEqual([])
+    expect(fs.existsSync(h.clone)).toBe(false)
+  })
+
+  test("refuses an install folder that's a file", async () => {
+    const h = makeHome()
+    fs.mkdirSync(path.dirname(h.clone), { recursive: true })
+    fs.writeFileSync(h.clone, "mine\n")
+    const r = await run(h, "install.sh")
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain(`✗ ${h.clone} is a file`)
+    expect(fs.readFileSync(h.clone, "utf8")).toBe("mine\n")
+  })
+
+  test("fails with ✗ when the installed opencorp --help fails", async () => {
+    const h = makeHome()
+    const r = await run(h, "install.sh", { extra: { STUB_HELP_FAILS: "1" } })
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain(`✗ ${h.wrapper} was written, but opencorp --help fails`)
   })
 
   test("piped, clones --repo with its submodule into ~/.local/share/opencorp and marks the clone, even from inside a checkout", async () => {
@@ -986,6 +1092,36 @@ describe("uninstall.sh", () => {
     expect(r.out).toContain(`✓ Removed ${dir}`)
     expect(fs.existsSync(dir)).toBe(false)
     expect(r.out).toContain(`✓ Left ${h.clone} in place: install.sh did not clone it.`)
+  })
+
+  test("empties a folder that was there before install.sh cloned into it, but keeps the folder", async () => {
+    const h = makeHome()
+    const dir = path.join(h.home, "mine")
+    fs.mkdirSync(dir)
+    expect((await run(h, "install.sh", { args: ["--dir", dir] })).code).toBe(0)
+    const r = await run(h, "uninstall.sh", { args: ["--dir", dir] })
+    expect(r.code).toBe(0)
+    expect(fs.readdirSync(dir)).toEqual([])
+  })
+
+  test("removes the clone a --dir link points at, and never a folder that holds the home", async () => {
+    const h = makeHome()
+    const dir = path.join(h.home, "apps", "opencorp")
+    expect((await run(h, "install.sh", { args: ["--dir", dir] })).code).toBe(0)
+    const link = path.join(h.home, "oc")
+    fs.symlinkSync(dir, link)
+    const r = await run(h, "uninstall.sh", { args: ["--dir", link] })
+    expect(r.code).toBe(0)
+    expect(fs.existsSync(dir)).toBe(false)
+
+    // A marker in the home's own .git, however it got there, doesn't make the home a clone to remove.
+    const other = makeHome()
+    fs.mkdirSync(path.join(other.home, ".git"))
+    fs.writeFileSync(path.join(other.home, ".git/opencorp-installer"), "folder=new\n")
+    const home = await run(other, "uninstall.sh", { args: ["--dir", other.home] })
+    expect(home.code).not.toBe(0)
+    expect(home.err).toContain(`✗ Won't remove ${other.home}`)
+    expect(fs.existsSync(path.join(other.home, ".git"))).toBe(true)
   })
 
   test("removes the clone at --dir that install.sh made there", async () => {

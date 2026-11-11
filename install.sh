@@ -61,6 +61,35 @@ quietly() {
   rm -f "$q_log"
 }
 
+# Drops PATH's relative and empty entries: they name whatever folder the script runs in, so a `bun` or `git` found
+# there could be any project's.
+absolute_path() {
+  ap_out=
+  ap_rest=$PATH:
+  while [ -n "$ap_rest" ]; do
+    ap_dir=${ap_rest%%:*}
+    ap_rest=${ap_rest#*:}
+    case $ap_dir in /*) ap_out=${ap_out:+$ap_out:}$ap_dir ;; esac
+  done
+  PATH=$ap_out
+}
+
+# Stops unless $2, the path named $1, is absolute and has no newline in it.
+need_path() {
+  case $2 in
+    *"$NL"*) die "$1 holds a newline. Pick a path without one." ;;
+    /*) ;;
+    *) die "$1 must be an absolute path, not ${2:-empty}." ;;
+  esac
+}
+
+# Stops when run through sudo, as root in someone's home: their next run, as themselves, couldn't change what it made.
+not_sudo() {
+  if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
+    die "Run this as yourself, not through sudo: it works in the home of whoever runs it ($HOME)."
+  fi
+}
+
 # Whether a terminal is there to ask on: stdin is the script under `curl | bash`.
 has_tty() { (: </dev/tty) 2>/dev/null; }
 
@@ -100,7 +129,7 @@ launcher_checkout() {
 
 # Whether $1 and $2 are the same folder, both there.
 same_dir() {
-  sd_a=$(CDPATH='' cd -P "$1" 2>/dev/null && pwd -P) && sd_b=$(CDPATH='' cd -P "$2" 2>/dev/null && pwd -P) &&
+  sd_a=$(cd -P "$1" 2>/dev/null && pwd -P) && sd_b=$(cd -P "$2" 2>/dev/null && pwd -P) &&
     [ "$sd_a" = "$sd_b" ]
 }
 
@@ -168,6 +197,12 @@ add_path_line() {
 # All of it runs from the last line, so a download cut off part-way runs nothing.
 main() {
   init_output
+  unset CDPATH
+  NL='
+'
+  absolute_path
+  need_path HOME "${HOME:-}"
+  not_sudo
   MARK="opencorp install.sh"
   # The wrapper's second line, which marks it as install.sh's.
   WRAPPER_MARK="# Written by $MARK; uninstall.sh removes it."
@@ -195,7 +230,9 @@ main() {
       *) die "unknown option $1 (see --help)." ;;
     esac
   done
+  [ -z "$DIR" ] || need_path "The install folder (--dir or OPENCORP_INSTALL_DIR)" "$DIR"
   BIN_DIR=${OPENCORP_BIN_DIR:-$HOME/.local/bin}
+  need_path OPENCORP_BIN_DIR "$BIN_DIR"
   TARGET=$BIN_DIR/opencorp
   OFFICE=${OPENCORP_HOME:-$HOME/.opencorp}
 
@@ -222,11 +259,13 @@ main() {
   # The checkout: the one this script is in, unless --dir says otherwise; else a clone.
   ROOT=
   case $0 in
-    *install.sh) if [ "$DIR_SET" = 0 ] && [ -f "$0" ] && is_checkout "$(dirname "$0")"; then ROOT=$(CDPATH='' cd "$(dirname "$0")" && pwd -P); fi ;;
+    # Piped, $0 is the shell's name, and a file of that name in the current folder proves nothing.
+    */install.sh) if [ "$DIR_SET" = 0 ] && [ -f "$0" ] && is_checkout "$(dirname "$0")"; then ROOT=$(cd "$(dirname "$0")" && pwd -P); fi ;;
   esac
-  if [ -z "$ROOT" ]; then
+  if [ -n "$ROOT" ]; then
+    need_path "The checkout's path" "$ROOT"
+  else
     DIR=${DIR:-$HOME/.local/share/opencorp}
-    case $DIR in /*) ;; *) DIR=$PWD/$DIR ;; esac
   fi
 
   # The office's service runs the checkout the office was set up from, most likely the one opencorp runs now, and
@@ -239,7 +278,9 @@ main() {
   if [ -n "$ROOT" ]; then
     ok "Installing the checkout at $ROOT"
   else
-    if [ -d "$DIR" ] && [ -n "$(ls -A "$DIR")" ]; then
+    if [ -e "$DIR" ] && [ ! -d "$DIR" ]; then
+      die "$DIR is a file, not a folder. Move it away, or pick another folder with --dir."
+    elif [ -d "$DIR" ] && [ -n "$(ls -A "$DIR")" ]; then
       if ! is_checkout "$DIR" || [ ! -e "$DIR/.git" ]; then
         die "$DIR holds something other than an OpenCorp clone. Move it away, or pick another folder with --dir."
       fi
@@ -256,17 +297,20 @@ main() {
       git -C "$DIR" submodule --quiet update --init --recursive || die "git submodule update failed in $DIR."
       ok "Updated $DIR to $(git -C "$DIR" rev-parse --short HEAD)"
     else
+      # The mark says the clone is install.sh's, so uninstall.sh may remove it: the folder too when install.sh
+      # made it, or only what's in it when the folder was there before.
+      if [ -d "$DIR" ]; then MADE=existing; else MADE=new; fi
       step "Cloning $REPO ($BRANCH) into $DIR"
       if ! git clone --quiet --recurse-submodules --branch "$BRANCH" -- "$REPO" "$DIR"; then
         # A clone whose submodule failed is install.sh's all the same: a re-run finishes it.
-        if [ -d "$DIR/.git" ]; then printf 'Cloned by %s.\n' "$MARK" >"$DIR/.git/opencorp-installer"; fi
+        if [ -d "$DIR/.git" ]; then printf '# Cloned by %s.\nfolder=%s\n' "$MARK" "$MADE" >"$DIR/.git/opencorp-installer"; fi
         die "git clone failed. Check --repo and --branch and your network, then run this again."
       fi
-      # Marks the clone as install.sh's, so uninstall.sh may remove it.
-      printf 'Cloned by %s.\n' "$MARK" >"$DIR/.git/opencorp-installer"
+      printf '# Cloned by %s.\nfolder=%s\n' "$MARK" "$MADE" >"$DIR/.git/opencorp-installer"
       ok "Cloned OpenCorp into $DIR"
     fi
-    ROOT=$(CDPATH='' cd "$DIR" && pwd -P)
+    ROOT=$(cd "$DIR" && pwd -P)
+    need_path "The clone's path" "$ROOT"
   fi
 
   BUN_FLOOR=$(sed -n 's/.*"packageManager": *"bun@\([0-9.]*\)".*/\1/p' "$ROOT/package.json")
@@ -293,7 +337,8 @@ main() {
     0) die "OpenCorp needs Bun $BUN_FLOOR or later; $BUN is $BUN_VERSION. Run 'bun upgrade', then run this again." ;;
     2) die "could not read a version from $BUN --version: $BUN_VERSION" ;;
   esac
-  BUN=$(CDPATH='' cd "$(dirname "$BUN")" && pwd -P)/$(basename "$BUN")
+  BUN=$(cd "$(dirname "$BUN")" && pwd -P)/$(basename "$BUN")
+  need_path "Bun's path" "$BUN"
   ok "Bun $BUN_VERSION at $BUN"
 
   step "Installing dependencies (bun install)"
@@ -362,7 +407,8 @@ EOF
       ;;
   esac
 
-  VERSION=$("$TARGET" --version) || die "$TARGET was written but doesn't run."
+  "$TARGET" --help >/dev/null 2>&1 || die "$TARGET was written, but opencorp --help fails. Run it to see why."
+  VERSION=$("$TARGET" --version) || die "$TARGET was written, but opencorp --version fails. Run it to see why."
   ok "Installed OpenCorp $VERSION from $ROOT"
 
   if office_set_up; then
