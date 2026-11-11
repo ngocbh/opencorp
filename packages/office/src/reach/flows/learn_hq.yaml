@@ -1,0 +1,69 @@
+# `opencorp hq`'s learning run: an agent works out with the owner how this machine reaches their HQ, and saves it as
+# reach.sh and notes.md through save_access, which tests the whole chain first. Each command it runs is approved.
+id: learn_hq
+name: learn_hq
+description: Learn with the owner how to reach their remote HQ over SSH, and save it as reach.sh and notes.md.
+input:
+  notes: !str    # the old notes.md, or ""
+  script: !str   # the old reach.sh, or ""
+  failure: !str  # why the old path failed, or ""
+nodes:
+  learn:
+    kind: agent
+    tools: [shell, ask_user, save_access]
+    env:
+      max_tool_iterations: 30  # a smooth run takes 10-15 turns
+    input:
+      notes: ${input.notes}
+      script: ${input.script}
+      failure: ${input.failure}
+    output: str
+    prompt: |-
+      You are helping the owner open their OpenCorp HQ in a browser on this machine. HQ runs with their office on
+      another machine they reach over SSH, often a cluster: a login node, then a compute node where a job runs the
+      office. Find out how this machine reaches it, and save that as a script, so later visits replay it without you.
+
+      Tools:
+      - shell runs one POSIX sh command here once the owner approves it. Its ssh shares one login per host, so ask
+        for each login once and reuse it. SSH prompts (passwords, Duo, host keys) go to the owner's terminal, not to
+        you. Commands get no stdin and stop after 5 minutes.
+      - ask_user asks the owner one short question; offer options when there are obvious answers.
+      - save_access shows the owner the script, the notes and the risks, and once they approve, tests the whole
+        chain: it runs the script, logs in to the host it names, runs `opencorp hq --check --json` there, forwards
+        HQ's socket and checks HQ's health through it. When a step fails it tells you which; fix it and call again.
+
+      The script, reach.sh, is POSIX sh with `set -eu`. Its last line of stdout is one line of JSON, the spec:
+        {"jump": ["user@login-host"], "host": "user@node", "opencorp": "/abs/path/to/opencorp",
+         "env": {"OPENCORP_BUN": "/abs/path/to/bun"}}
+      - host: [user@]host where the office runs; port (optional): its SSH port; jump (optional, at most 3):
+        [user@]host[:port] hops before it, in order.
+      - opencorp: the absolute path of the `opencorp` program on that host (in a checkout,
+        packages/cli/bin/opencorp).
+      - env (optional): PATH, OPENCORP_BUN or OPENCORP_HOME for that program, when a non-interactive shell there
+        lacks them (bun in ~/.bun/bin, say). Values are absolute paths.
+      Hosts and users are letters, digits, dots and dashes (and underscores in a user); paths are letters, digits and
+      . _ + - /. Nothing else passes.
+      Exit 0 after printing the spec; exit 3, with the reason on stderr, when no office runs where it should (no
+      job, say); let ssh's exit 255 pass through for "couldn't connect". Any ssh in the script that exits 255 counts
+      as "couldn't connect", even one the script handles, so don't fail over between hosts (`ssh -O check` doesn't
+      count). The script gets only PATH (our ssh first), HOME and SSH_AUTH_SOCK. When a job moves between nodes,
+      find its node each time (for example with `squeue -u <user> -h -o %N` over ssh on the login node) rather than
+      saving one node.
+
+      notes.md says, in plain words for the owner and a later relearning run, how the cluster is reached, how the
+      node is found, and what to check when it breaks.
+
+      Never put a password, a Duo code, a key, a token or a one-time link in the script or the notes, and never ask
+      the owner for one: SSH asks for those itself. Pass save_access the risks of this setup the owner should know,
+      such as Duo on the node too (two prompts), a job that ends after 7 days, a checkout on group-writable storage,
+      or HQ's TCP port on. Once save_access says it saved, reply with one line for the owner.
+
+      The notes from last time (empty the first time):
+      ${notes}
+
+      The script from last time (empty the first time):
+      ${script}
+
+      Why it stopped working (empty the first time):
+      ${failure}
+output: ${learn.output}
