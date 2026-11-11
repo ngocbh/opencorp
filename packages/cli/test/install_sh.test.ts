@@ -295,6 +295,8 @@ function onTerminal(h: Home, script: string, o: RunOptions = {}) {
       if (text) tmux("send-keys", "-t", "t", "-l", text)
       tmux("send-keys", "-t", "t", "Enter")
     },
+    /** Sends tmux key names, such as `C-d`. */
+    keys: (...keys: string[]) => void tmux("send-keys", "-t", "t", ...keys),
     /** The exit status, once the script has ended. */
     async exit(ms = 30_000) {
       const deadline = performance.now() + ms
@@ -503,6 +505,11 @@ describe("install.sh", () => {
     expect(calls(h)).toContain(`${bun} install --frozen-lockfile | ${co} | no-tty`)
     expect(fs.readFileSync(h.wrapper, "utf8")).toContain(sq(bun))
 
+    expect(r.out).toContain(`Bun's installer adds ${h.home}/.bun/bin to PATH in your shell's rc files itself`)
+    const untouched = makeHome()
+    const noModify = await run(untouched, "install.sh", { from: checkout(untouched), args: ["--no-modify-path"], extra: noBun })
+    expect(noModify.err).toContain(`⚠ --no-modify-path doesn't reach Bun's installer, which adds ${untouched.home}/.bun/bin to PATH`)
+
     // Run again, Bun's own install folder holds a Bun, so its installer isn't fetched again.
     expect((await run(h, "install.sh", { from: co, extra: noBun })).code).toBe(0)
     expect(calls(h).filter((c) => c.startsWith("curl"))).toHaveLength(1)
@@ -643,6 +650,21 @@ describe("install.sh", () => {
     expect(byEnv.code).toBe(0)
     expect(fs.existsSync(path.join(viaEnv, ".git/opencorp-installer"))).toBe(true)
     expect(fs.existsSync(other.clone)).toBe(false)
+  })
+
+  test("piped again, it says --repo doesn't change an existing clone, says a set-up office keeps the old code, and names a missing upstream", async () => {
+    const h = makeHome()
+    expect((await run(h, "install.sh")).code).toBe(0)
+    fs.mkdirSync(path.join(h.office, "office"), { recursive: true })
+    const r = await run(h, "install.sh", { args: ["--repo", "https://example.com/other.git"] })
+    expect(r.code).toBe(0)
+    expect(r.err).toContain(`⚠ ${h.clone} pulls from its own remote; --repo only picks where a new clone comes from.`)
+    expect(r.err).toContain(`⚠ The office at ${h.office} keeps running the code it started with until you restart it.`)
+
+    git(h.clone, "checkout", "-q", "-b", "local")
+    const loose = await run(h, "install.sh")
+    expect(loose.code).not.toBe(0)
+    expect(loose.err).toContain(`✗ ${h.clone} is on local, which has no upstream branch to pull from.`)
   })
 
   test("piped again, it updates a clean clone to the remote's new commit", async () => {
@@ -866,6 +888,55 @@ describe("install.sh", () => {
       expect(await t2.exit()).toBe(0)
       expect(t2.screen()).toContain("→ Next: in a project folder, run opencorp init.")
       expect(calls(declined).filter((c) => c.includes("main.ts init |"))).toEqual([])
+    })
+
+    test("the folder question asks again for the home, a folder that holds it, ~user, a relative path, the checkout or a file", async () => {
+      const h = makeHome()
+      fs.writeFileSync(path.join(h.home, "notes"), "notes\n")
+      const t = onTerminal(h, "install.sh")
+      await t.see("Create your company now? [Y/n]")
+      t.type("y")
+      const answers: [string, string][] = [
+        ["~", "Pick a project folder, not your home folder or a folder that holds it."],
+        ["/", "Pick a project folder, not /."],
+        ["~nobody/acme", "Give the full path, starting with / or ~/."],
+        ["acme", "Give the full path, starting with / or ~/."],
+        [`${h.clone}/work`, "Pick a project folder outside the OpenCorp checkout."],
+        ["~/notes", `${h.home}/notes isn't a folder.`],
+      ]
+      for (const [answer, message] of answers) {
+        await t.see("Project folder for it")
+        t.type(answer)
+        await t.see(message)
+      }
+      t.type("~/acme/")
+      expect(await t.exit()).toBe(0)
+      expect(calls(h).filter((c) => c.includes("main.ts init |"))).toHaveLength(1)
+      expect(calls(h).filter((c) => c.includes("main.ts init |")).at(0)).toContain(`| ${h.home}/acme | tty`)
+      expect(fs.existsSync(path.join(h.home, "~nobody"))).toBe(false)
+      expect(fs.existsSync(path.join(h.home, "acme"))).toBe(true)
+    })
+
+    test("Ctrl-D at either question means no, and nothing runs", async () => {
+      const h = makeHome()
+      const t = onTerminal(h, "install.sh")
+      await t.see("Create your company now? [Y/n]")
+      t.keys("C-d")
+      expect(await t.exit()).toBe(0)
+      expect(t.screen()).toContain("→ Next: in a project folder, run opencorp init.")
+
+      const later = makeHome()
+      const t2 = onTerminal(later, "install.sh")
+      await t2.see("Create your company now? [Y/n]")
+      t2.type("")
+      await t2.see("Project folder for it")
+      t2.keys("C-d")
+      expect(await t2.exit()).toBe(0)
+      expect(t2.screen()).toContain("→ Next: in a project folder, run opencorp init.")
+      for (const home of [h, later]) {
+        expect(calls(home).filter((c) => c.includes("main.ts init |"))).toEqual([])
+        expect(fs.existsSync(path.join(home.home, "projects"))).toBe(false)
+      }
     })
 
     test("--skip-setup asks nothing and prints the next step", async () => {
@@ -1168,6 +1239,7 @@ describe("uninstall.sh", () => {
       const t = onTerminal(h, "uninstall.sh")
       expect(await t.exit()).toBe(0)
       expect(t.screen()).toContain(`→ An office is set up at ${h.office}; running opencorp offboard first`)
+      expect(t.screen()).toContain("whatever it says about the opencorp command and the checkout, uninstall.sh sees to those next")
       expect(calls(h).filter((c) => c.includes("main.ts offboard |"))).toEqual([
         `${path.join(bunDir, "bun")} --no-install --no-env-file --config=/dev/null ${h.clone}/packages/cli/src/main.ts offboard | ${h.home} | tty`,
       ])
@@ -1191,7 +1263,7 @@ describe("uninstall.sh", () => {
 
 describe("both scripts", () => {
   for (const shell of SHELLS) {
-    test(`under ${shell}, a piped install and uninstall leave the home as it was`, async () => {
+    test(`under ${shell}, a piped uninstall takes out the wrapper, the PATH lines and the clone a piped install put in`, async () => {
       const h = makeHome()
       fs.writeFileSync(path.join(h.home, ".bashrc"), "alias ll='ls -l'\n")
       const installed = await run(h, "install.sh", { shell })
@@ -1202,10 +1274,37 @@ describe("both scripts", () => {
       expect(removed.err).not.toContain("✗")
       expect(removed.code).toBe(0)
       expect(fs.readFileSync(path.join(h.home, ".bashrc"), "utf8")).toBe("alias ll='ls -l'\n")
+      // install made .profile; the .local folders stay.
+      expect(fs.existsSync(path.join(h.home, ".profile"))).toBe(false)
       expect(fs.existsSync(h.wrapper)).toBe(false)
       expect(fs.existsSync(h.clone)).toBe(false)
     })
   }
+
+  test("a download cut off anywhere runs nothing, not even with the flags dropped", () => {
+    const h = makeHome()
+    const cuts = path.join(h.dir, "cuts")
+    fs.mkdirSync(cuts)
+    for (const script of ["install.sh", "uninstall.sh"]) {
+      const text = fs.readFileSync(path.join(CHECKOUT, script))
+      // Every line end, and every byte of the last 40, short of the whole last line (which only lacks its newline).
+      const ends = new Set<number>()
+      text.forEach((byte, i) => byte === 10 && ends.add(i + 1))
+      for (let i = Math.max(0, text.length - 40); i < text.length; i++) ends.add(i)
+      for (const end of ends) {
+        if (end < text.length - 1) fs.writeFileSync(path.join(cuts, `${script}.${end}`), text.subarray(0, end))
+      }
+    }
+    const dir = path.join(h.home, "apps", "opencorp")
+    const result = spawnSync(
+      "sh",
+      ["-c", 'for f in "$0"/*; do sh -s -- --skip-setup --no-modify-path --dir "$1" <"$f" >/dev/null 2>&1; done; exit 0', cuts, dir],
+      { env: env(h, { TMPDIR: path.join(h.dir) }), cwd: h.home, encoding: "utf8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] },
+    )
+    expect(result.status).toBe(0)
+    expect(calls(h)).toEqual([])
+    expect(fs.readdirSync(h.home)).toEqual([])
+  })
 
   test.skipIf(!process.env.OPENCORP_TEST_INSTALL)(
     "piped, installs a clone of this checkout with the real Bun, offline, and opencorp --help runs",

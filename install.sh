@@ -93,12 +93,60 @@ not_sudo() {
 # Whether a terminal is there to ask on: stdin is the script under `curl | bash`.
 has_tty() { (: </dev/tty) 2>/dev/null; }
 
-# Asks $1 on the terminal; the answer goes in ANSWER, or $2 for an empty line.
+# Asks $1 on the terminal; the answer goes in ANSWER, or $2 for an empty line. False at the end of input (Ctrl-D).
 ask() {
   printf '%s ' "$1" >/dev/tty
   ANSWER=
-  IFS= read -r ANSWER </dev/tty || ANSWER=
+  if ! IFS= read -r ANSWER </dev/tty; then
+    printf '\n' >/dev/tty
+    return 1
+  fi
   [ -n "$ANSWER" ] || ANSWER=$2
+}
+
+# Why $1 (a full path, without trailing slashes) can't be the company's project folder; false when it can be one.
+# opencorp init refuses more, and says why.
+not_a_project() {
+  case $1 in
+    '') echo "Pick a project folder, not /." ;;
+    *"$NL"*) echo "Pick a folder without a newline in its path." ;;
+    /*)
+      case $HOME/ in "$1"/*) echo "Pick a project folder, not your home folder or a folder that holds it." && return 0 ;; esac
+      case $1/ in "$ROOT"/*) echo "Pick a project folder outside the OpenCorp checkout." && return 0 ;; esac
+      case $1/ in "$OFFICE"/*) echo "Pick a project folder outside the office's home, $OFFICE." && return 0 ;; esac
+      if [ -e "$1" ] && [ ! -d "$1" ]; then echo "$1 isn't a folder." && return 0; fi
+      return 1
+      ;;
+    *) echo "Give the full path, starting with / or ~/." ;;
+  esac
+}
+
+# Offers to create the company: asks for a project folder until it gets one it can make, then runs opencorp init
+# there on the terminal.
+offer_setup() {
+  if ! ask "→ Create your company now? [Y/n]" y || case $ANSWER in [Nn]*) true ;; *) false ;; esac; then
+    step "Next: in a project folder, run opencorp init."
+    return 0
+  fi
+  while :; do
+    if ! ask "→ Project folder for it [$HOME/projects/opencorp]:" "$HOME/projects/opencorp"; then
+      step "Next: in a project folder, run opencorp init."
+      return 0
+    fi
+    case $ANSWER in "~") ANSWER=$HOME ;; "~/"*) ANSWER=$HOME/${ANSWER#"~/"} ;; esac
+    while :; do case $ANSWER in */) ANSWER=${ANSWER%/} ;; *) break ;; esac; done
+    if why=$(not_a_project "$ANSWER"); then
+      warn "$why"
+    elif ! mkdir -p "$ANSWER" 2>/dev/null; then
+      warn "Can't make $ANSWER. Pick another folder."
+    else
+      break
+    fi
+  done
+  step "Running opencorp init in $ANSWER"
+  if ! (cd "$ANSWER" && PATH="$BIN_DIR:$PATH" "$TARGET" init </dev/tty >/dev/tty 2>&1); then
+    warn "opencorp init didn't finish. Run it again: cd $(quote "$ANSWER") && opencorp init"
+  fi
 }
 
 # Whether $1 is an OpenCorp checkout.
@@ -211,6 +259,8 @@ main() {
   BRANCH=main
   BRANCH_SET=0
   REPO=${OPENCORP_REPO_URL:-https://github.com/ngocbh/opencorp.git}
+  REPO_SET=0
+  [ -z "${OPENCORP_REPO_URL:-}" ] || REPO_SET=1
   SKIP_SETUP=0
   MODIFY_PATH=1
   while [ $# -gt 0 ]; do
@@ -220,7 +270,7 @@ main() {
         case $1 in
           --dir) DIR=$2 DIR_SET=1 ;;
           --branch) BRANCH=$2 BRANCH_SET=1 ;;
-          --repo) REPO=$2 ;;
+          --repo) REPO=$2 REPO_SET=1 ;;
         esac
         shift 2
         ;;
@@ -288,12 +338,20 @@ main() {
         die "$DIR has uncommitted changes. Commit or stash them, then run this again."
       CURRENT=$(git -C "$DIR" symbolic-ref -q --short HEAD) ||
         die "$DIR isn't on a branch (its HEAD is detached). Check out a branch, then run this again."
+      git -C "$DIR" rev-parse -q --verify '@{upstream}' >/dev/null 2>&1 ||
+        die "$DIR is on $CURRENT, which has no upstream branch to pull from. Set one (git -C $(quote "$DIR") branch --set-upstream-to origin/main), or check out one that has, then run this again."
       if [ "$BRANCH_SET" = 1 ] && [ "$CURRENT" != "$BRANCH" ]; then
         warn "$DIR is on $CURRENT; --branch only picks the branch of a new clone."
       fi
+      if [ "$REPO_SET" = 1 ]; then
+        warn "$DIR pulls from its own remote; --repo only picks where a new clone comes from."
+      fi
+      if office_set_up; then
+        warn "The office at $OFFICE keeps running the code it started with until you restart it."
+      fi
       step "Updating $DIR ($CURRENT)"
       git -C "$DIR" pull --ff-only --quiet ||
-        die "git pull --ff-only failed in $DIR. If its branch has commits the remote doesn't, sort them out, then run this again."
+        die "git pull --ff-only failed in $DIR: $CURRENT and its upstream have each moved on. Sort that out, then run this again."
       git -C "$DIR" submodule --quiet update --init --recursive || die "git submodule update failed in $DIR."
       ok "Updated $DIR to $(git -C "$DIR" rev-parse --short HEAD)"
     else
@@ -330,6 +388,11 @@ main() {
     quietly install_bun "$BUN_FLOOR" ||
       die "Bun's installer failed. Install Bun $BUN_FLOOR from https://bun.sh, then run this again."
     BUN=$BUN_HOME/bin/bun
+    if [ "$MODIFY_PATH" = 0 ]; then
+      warn "--no-modify-path doesn't reach Bun's installer, which adds $BUN_HOME/bin to PATH in your shell's rc files itself. uninstall.sh leaves those lines, with Bun."
+    else
+      ok "Installed Bun $BUN_FLOOR. Bun's installer adds $BUN_HOME/bin to PATH in your shell's rc files itself; uninstall.sh leaves those lines, with Bun."
+    fi
   fi
   BUN_VERSION=$("$BUN" --version) || die "$BUN --version failed."
   older "$BUN_VERSION" "$BUN_FLOOR" && too_old=0 || too_old=$?
@@ -414,19 +477,7 @@ EOF
   if office_set_up; then
     ok "An office is set up at $OFFICE: run opencorp restart to use this version."
   elif [ "$SKIP_SETUP" = 0 ] && has_tty; then
-    ask "→ Create your company now? [Y/n]" y
-    case $ANSWER in
-      [Nn]*) step "Next: in a project folder, run opencorp init." ;;
-      *)
-        ask "→ Project folder for it [$HOME/projects/opencorp]:" "$HOME/projects/opencorp"
-        case $ANSWER in "~") ANSWER=$HOME ;; "~/"*) ANSWER=$HOME/${ANSWER#"~/"} ;; esac
-        mkdir -p "$ANSWER" || die "can't make $ANSWER. Make a project folder yourself, then run opencorp init in it."
-        step "Running opencorp init in $ANSWER"
-        if ! (cd "$ANSWER" && PATH="$BIN_DIR:$PATH" "$TARGET" init </dev/tty >/dev/tty 2>&1); then
-          warn "opencorp init didn't finish. Run it again: cd $(quote "$ANSWER") && opencorp init"
-        fi
-        ;;
-    esac
+    offer_setup
   else
     step "Next: in a project folder, run opencorp init."
   fi
@@ -443,4 +494,5 @@ EOF
   esac
 }
 
-main "$@"
+# In braces, so a download cut off inside this line is a syntax error rather than a run without the flags.
+{ main "$@"; }

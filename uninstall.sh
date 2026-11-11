@@ -275,7 +275,7 @@ main() {
     else
       die "An office is set up at $OFFICE, but there's no opencorp here to offboard it. Run opencorp offboard first, then run this again."
     fi
-    step "An office is set up at $OFFICE; running opencorp offboard first"
+    step "An office is set up at $OFFICE; running opencorp offboard first (whatever it says about the opencorp command and the checkout, uninstall.sh sees to those next)"
     "$OPENCORP" offboard </dev/tty || die "opencorp offboard didn't finish, so nothing else was removed."
     if office_set_up; then die "An office is still set up at $OFFICE, so nothing else was removed."; fi
   fi
@@ -307,4 +307,5 @@ main() {
   [ "$FAILED" = 0 ] || exit 1
 }
 
-main "$@"
+# In braces, so a download cut off inside this line is a syntax error rather than a run without the flags.
+{ main "$@"; }
