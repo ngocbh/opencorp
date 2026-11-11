@@ -66,8 +66,9 @@ export function knowsSessionOptions(ssh: string): boolean {
 }
 
 /** `hq/ssh/bin/ssh`, first on PATH for reach.sh and the shell tool: the real ssh by absolute path (so ProxyJump's hop,
- *  built from the program name ssh was run as and `-F`, shares the config) with our config; each exit status is
- *  appended to $OPENCORP_SSH_STATUS, so a 255 counts where a pipeline or `|| true` hides it. */
+ *  built from the program name ssh was run as and `-F`, shares the config) with our config; each exit status but a
+ *  control command's (`-O`) is appended to $OPENCORP_SSH_STATUS, so a 255 counts where a pipeline or `|| true` hides
+ *  it. */
 export function wrapperText(realSsh: string): string {
   // The hop's command holds the program name unquoted.
   if (!safePath(realSsh)) throw new Error(`ssh's path can't be used unquoted: ${realSsh}`)
@@ -76,8 +77,22 @@ export function wrapperText(realSsh: string): string {
     "# Written by opencorp hq on each visit.",
     `${word(realSsh)} -F "$OPENCORP_SSH_CONFIG" "$@"`,
     "status=$?",
+    // A control command (-O) opens no connection: its 255 (no master yet) isn't "couldn't connect". The options end
+    // at `--` or the destination; these take a value, which may look like an option.
+    "control=",
+    "skip=",
+    'for a in "$@"; do',
+    '  if [ -n "$skip" ]; then skip=; continue; fi',
+    "  case $a in",
+    "    --) break ;;",
+    "    -O*) control=1; break ;;",
+    "    -[BbcDEeFIiJLlmopQRSWw]) skip=1 ;;",
+    "    -*) ;;",
+    "    *) break ;;",
+    "  esac",
+    "done",
     // Single-quoted TS strings: `${…-}` is sh, not a template.
-    'if [ -n "${OPENCORP_SSH_STATUS-}" ]; then printf \'%s\\n\' "$status" >>"$OPENCORP_SSH_STATUS"; fi',
+    'if [ -z "$control" ] && [ -n "${OPENCORP_SSH_STATUS-}" ]; then printf \'%s\\n\' "$status" >>"$OPENCORP_SSH_STATUS"; fi',
     'exit "$status"',
     "",
   ].join("\n")

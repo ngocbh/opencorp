@@ -119,3 +119,14 @@ test("a replay with no access.json yet is broken and runs nothing", async () => 
   expect((await runReach(ctx)).outcome).toBe("broken")
   expect(fs.existsSync(marker)).toBe(false)
 })
+
+test("reach.sh may check for a login master before starting one: a control command's 255 isn't couldn't connect", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const script = writeScript(
+    ctx.paths.script,
+    `set -eu\nssh -O check login1 || ssh -fN login1\nprintf '%s\\n' '${JSON.stringify(SPEC)}'\n`,
+  )
+  expect(await runScript(script, ctx)).toEqual({ outcome: "ok", spec: SPEC, detail: "" })
+  expect(fake.logins()).toEqual(["login1"])
+})
