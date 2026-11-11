@@ -108,6 +108,21 @@ test("an owner-written reach.sh is shown whole and runs only once approved", asy
   ])
 })
 
+test("after the approval's answer, stdin leaves raw mode and is paused before reach.sh runs", async () => {
+  const { dir, fake } = fakeHome()
+  const paths = new ReachPaths(dir)
+  makeDirs(paths)
+  fs.writeFileSync(paths.script, 'echo "running" >&2\nexit 3\n')
+  const modes: boolean[] = []
+  const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: (on: boolean) => void modes.push(on) })
+  const seen: { paused: boolean; modes: boolean[] }[] = []
+  const v = visitDeps(dir, fake, { answers: ["1"] })
+  const deps = { ...v.deps, stdin, echo: () => void seen.push({ paused: stdin.isPaused(), modes: [...modes] }) }
+  expect(await visit({ signIn: false, open: false }, deps)).toBe(3)
+  // So Bun holds no read on the terminal that would take the keys meant for ssh's prompt.
+  expect(seen[0]).toEqual({ paused: true, modes: [false] })
+})
+
 test("an approval left unanswered stops the visit", async () => {
   const { dir, fake } = fakeHome()
   const paths = new ReachPaths(dir)

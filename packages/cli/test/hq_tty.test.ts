@@ -86,6 +86,8 @@ describe.skipIf(!TMUX)("on a real terminal", () => {
     fs.rmSync(app, { recursive: true, force: true })
   })
 
+  // This can't show that the visit quiets stdin after the question: clack already leaves raw mode and stops reading
+  // when its prompt closes, so here the keys reach ssh either way. office's visit.test.ts checks the call itself.
   test("after approving reach.sh, ssh reads the one password from the terminal, and Bun takes none of the keys", async () => {
     const c = await client(remote, { behavior: { hosts: { login1: { login: "tty" } } }, approved: false })
     onTestFinished(() => removeClient(c))
