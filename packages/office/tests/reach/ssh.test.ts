@@ -5,7 +5,19 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
-import { configText, defaultIncludes, wrapperText, writeSshFiles } from "../../src/reach/ssh.ts"
+import {
+  cleanOutput,
+  configText,
+  defaultIncludes,
+  findSsh,
+  LIMITS,
+  type ReachContext,
+  readStatuses,
+  resetStatus,
+  sshEnv,
+  wrapperText,
+  writeSshFiles,
+} from "../../src/reach/ssh.ts"
 import { shortDir } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -74,4 +86,77 @@ test("writeSshFiles writes the configs 0600 and the wrapper 0700", async () => {
   expect(fs.readFileSync(paths.config, "utf8")).toBe(configText(paths.cm, { includes: ["/i/one"] }))
   expect(fs.readFileSync(paths.batchConfig, "utf8")).toBe(configText(paths.cm, { batch: true, includes: ["/i/one"] }))
   expect(fs.readFileSync(paths.wrapper, "utf8")).toBe(wrapperText("/usr/bin/ssh"))
+})
+
+/** An executable `ssh` in `dir`. */
+function anSsh(dir: string): string {
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, "ssh"), "#!/bin/sh\nexit 0\n", { mode: 0o700 })
+  return path.join(dir, "ssh")
+}
+
+/** A context over `paths` with `env`, for the steps that only read it. */
+function context(paths: ReachPaths, env: Record<string, string | undefined>, batch = false): ReachContext {
+  return { paths, ssh: "/usr/bin/ssh", env, batch, echo: () => {}, limits: LIMITS }
+}
+
+test("findSsh takes the first ssh on PATH that isn't our wrapper", () => {
+  const dir = shortDir()
+  const paths = new ReachPaths(path.join(dir, "h"))
+  makeDirs(paths)
+  anSsh(paths.bin)
+  const a = anSsh(path.join(dir, "a"))
+  anSsh(path.join(dir, "b"))
+  fs.mkdirSync(path.join(dir, "empty"))
+  fs.mkdirSync(path.join(dir, "notexec"))
+  fs.writeFileSync(path.join(dir, "notexec", "ssh"), "", { mode: 0o600 })
+  fs.mkdirSync(path.join(dir, "adir", "ssh"), { recursive: true })
+  const pathVar = [paths.bin, "rel", "", `${dir}/empty`, `${dir}/notexec`, `${dir}/adir`, `${dir}/a`, `${dir}/b`]
+  expect(findSsh(pathVar.join(":"), paths.bin)).toBe(a)
+  // A second name for our bin folder is still ours.
+  fs.symlinkSync(paths.bin, path.join(dir, "link"))
+  expect(findSsh(`${dir}/link:${dir}/b`, paths.bin)).toBe(path.join(dir, "b", "ssh"))
+  // A relative entry is never taken, even one that holds an ssh.
+  expect(findSsh(path.relative(process.cwd(), path.join(dir, "a")), paths.bin)).toBeNull()
+  expect(findSsh(`${paths.bin}:${dir}/empty`, paths.bin)).toBeNull()
+  expect(findSsh(undefined, paths.bin)).toBeNull()
+})
+
+test("children get our wrapper first and only HOME, SSH_AUTH_SOCK and our two variables", () => {
+  const paths = new ReachPaths("/h")
+  const env = { PATH: "/usr/bin:/bin", HOME: "/home/x", SSH_AUTH_SOCK: "/a/agent", OPENCORP_HOME: "/h", SECRET: "x" }
+  const got = sshEnv(context(paths, env))
+  expect(Object.keys(got).sort()).toEqual(["HOME", "OPENCORP_SSH_CONFIG", "OPENCORP_SSH_STATUS", "PATH", "SSH_AUTH_SOCK"])
+  expect(got).toEqual({
+    PATH: `${paths.bin}:/usr/bin:/bin`,
+    HOME: "/home/x",
+    SSH_AUTH_SOCK: "/a/agent",
+    OPENCORP_SSH_CONFIG: paths.config,
+    OPENCORP_SSH_STATUS: paths.status(process.pid),
+  })
+  expect(sshEnv(context(paths, env, true)).OPENCORP_SSH_CONFIG).toBe(paths.batchConfig)
+  const bare = sshEnv(context(paths, { HOME: "/home/x" }))
+  expect("SSH_AUTH_SOCK" in bare).toBe(false)
+  expect(bare.PATH).toBe(`${paths.bin}:/usr/bin:/bin`)
+  expect(sshEnv(context(paths, { PATH: "" })).PATH).toBe(`${paths.bin}:/usr/bin:/bin`)
+})
+
+test("status files are reset before a run and read as numbers", () => {
+  const paths = new ReachPaths(path.join(shortDir(), "h"))
+  makeDirs(paths)
+  const ctx = context(paths, {})
+  expect(readStatuses(ctx)).toEqual([])
+  resetStatus(ctx)
+  const file = paths.status(process.pid)
+  expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+  expect(readStatuses(ctx)).toEqual([])
+  fs.appendFileSync(file, "255\n0\nnot a number\n\n1\n")
+  expect(readStatuses(ctx)).toEqual([255, 0, 1])
+  resetStatus(ctx)
+  expect(fs.readFileSync(file, "utf8")).toBe("")
+})
+
+test("cleanOutput keeps tabs and newlines and drops every other control character", () => {
+  expect(cleanOutput("a\x1b[2Jb\r\tc\n")).toBe("a[2Jb\tc\n")
+  expect(cleanOutput("\x00\x07\x7f\x9b31m\u00e9")).toBe("31m\u00e9")
 })

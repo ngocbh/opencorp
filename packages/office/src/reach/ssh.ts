@@ -3,7 +3,7 @@
  *  is gone. */
 import fs from "node:fs"
 import path from "node:path"
-import { writePrivate } from "../secrets.ts"
+import { replaceFile, writePrivate } from "../secrets.ts"
 import type { ReachPaths } from "./paths.ts"
 import { safePath, word } from "./spec.ts"
 
@@ -54,3 +54,84 @@ export async function writeSshFiles(paths: ReachPaths, realSsh: string, includes
   await writePrivate(paths.wrapper, wrapperText(realSsh))
   fs.chmodSync(paths.wrapper, 0o700)
 }
+
+/** The first executable `ssh` in an absolute entry of `pathVar` other than the folder `skip` (our wrapper's), or
+ *  null. */
+export function findSsh(pathVar: string | undefined, skip: string): string | null {
+  const ours = realOrSelf(skip)
+  for (const entry of (pathVar ?? "").split(":")) {
+    if (!path.isAbsolute(entry) || realOrSelf(entry) === ours) continue
+    const file = path.join(entry, "ssh")
+    try {
+      if (!fs.statSync(file).isFile()) continue
+      fs.accessSync(file, fs.constants.X_OK)
+    } catch {
+      continue
+    }
+    return file
+  }
+  return null
+}
+
+function realOrSelf(p: string): string {
+  try {
+    return fs.realpathSync(p)
+  } catch {
+    return path.resolve(p)
+  }
+}
+
+/** A step that can prompt (Duo, a password, a host key) gets 5 minutes; one over an open master 60 s. */
+export const LIMITS = Object.freeze({ promptMs: 5 * 60_000, stepMs: 60_000 })
+
+/** What every reach step needs; `signal` is the visit's Ctrl-C. */
+export interface ReachContext {
+  readonly paths: ReachPaths
+  /** The real ssh, by absolute path. */
+  readonly ssh: string
+  /** The environment the visit was started with; children get only `sshEnv`'s part of it. */
+  readonly env: Readonly<Record<string, string | undefined>>
+  /** Whether to use `config.batch`, so a login that would prompt fails at once. */
+  readonly batch: boolean
+  /** Children's output for the owner. */
+  readonly echo: (text: string) => void
+  readonly signal?: AbortSignal
+  readonly limits: { readonly promptMs: number; readonly stepMs: number }
+}
+
+/** The env of reach.sh, the shell tool and every ssh: our wrapper first on PATH, HOME, the agent socket, and the
+ *  config and status file the wrapper reads. Nothing else of the visit's env. */
+export function sshEnv(ctx: ReachContext): Record<string, string> {
+  const { paths, env } = ctx
+  return {
+    PATH: `${paths.bin}:${env.PATH || "/usr/bin:/bin"}`,
+    ...(env.HOME !== undefined ? { HOME: env.HOME } : {}),
+    ...(env.SSH_AUTH_SOCK !== undefined ? { SSH_AUTH_SOCK: env.SSH_AUTH_SOCK } : {}),
+    OPENCORP_SSH_CONFIG: ctx.batch ? paths.batchConfig : paths.config,
+    OPENCORP_SSH_STATUS: paths.status(process.pid),
+  }
+}
+
+/** Empties this process's status file (0600), before a run whose ssh exits are read after. */
+export function resetStatus(ctx: ReachContext): void {
+  replaceFile(ctx.paths.ssh, path.basename(ctx.paths.status(process.pid)), "")
+}
+
+/** The exit statuses the wrapper recorded since `resetStatus`, in order. */
+export function readStatuses(ctx: ReachContext): number[] {
+  let text: string
+  try {
+    text = fs.readFileSync(ctx.paths.status(process.pid), "utf8")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
+    throw error
+  }
+  return text
+    .split("\n")
+    .filter((line) => /^[0-9]+$/.test(line.trim()))
+    .map((line) => Number(line.trim()))
+}
+
+/** `text` without control characters other than tab and newline: output from another machine must not drive the
+ *  owner's terminal. */
+export const cleanOutput = (text: string) => text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "")
