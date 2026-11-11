@@ -2,7 +2,9 @@
  *  OPENCORP_TEST_SSHD. The client reads no `~/.ssh` (its config names its own key and known-hosts file, and no agent
  *  socket is passed); the sshd runs the account's login shell for each session, as any sshd does. */
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import fs from "node:fs"
+import http from "node:http"
 import net from "node:net"
 import path from "node:path"
 import { createInterface } from "node:readline"
@@ -28,8 +30,12 @@ import {
   waitForSocket,
   writeSshFiles,
 } from "../../src/reach/ssh.ts"
-import { isGone, waitFor } from "../helpers.ts"
-import { fakeHome, freePort, holdConnection, holdingServer, reachCtx } from "./helpers.ts"
+import { writeAccess } from "../../src/reach/state.ts"
+import { visit } from "../../src/reach/visit.ts"
+import { writePrivate } from "../../src/secrets.ts"
+import { startOffice } from "../../src/testing/office.ts"
+import { isGone, shortDir, waitFor } from "../helpers.ts"
+import { fakeHome, freePort, holdConnection, holdingServer, reachCtx, visitDeps } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -38,6 +44,7 @@ const SSH = "/usr/bin/ssh"
 const REAL = !!process.env.OPENCORP_TEST_SSHD && fs.existsSync(SSHD) && fs.existsSync(SSH)
 const DRIVER = fileURLToPath(new URL("./master_driver.ts", import.meta.url))
 const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
+const CHECKOUT = fs.realpathSync(fileURLToPath(new URL("../../../..", import.meta.url)))
 
 /** `$1` is sshd, `$2` its config: runs it in the foreground until this shell's stdin ends, then ends it. */
 const SSHD_UNDER_LIFELINE = '"$1" -D -e -f "$2" & s=$!\ncat >/dev/null\nkill "$s" 2>/dev/null\nwait "$s"\n'
@@ -309,6 +316,72 @@ describe.skipIf(!REAL)("a real sshd", () => {
     expect(await accepts(port)).toBe(false)
     await waitFor(() => server.connections.size === 0, { timeout: 5000, what: "HQ's side of the connection to close" })
     await waitFor(() => processesWith(ctx.paths.cm).length === 0, { timeout: 10_000, what: "no process on cm" })
+  })
+
+  test("a visit reaches a real office through sshd, signs in, and Ctrl-C ends every master with HQ's event stream open", async () => {
+    const app = shortDir()
+    fs.writeFileSync(path.join(app, "index.html"), "<!doctype html><title>HQ</title>\n")
+    fs.writeFileSync(path.join(app, "build.json"), JSON.stringify({ build: "b1", api: "x" }))
+    const office = await startOffice({ hq: { tcp: false, app_dir: app } })
+    onTestFinished(() => office.stop())
+    const dir = shortDir()
+    const paths = new ReachPaths(dir)
+    makeDirs(paths)
+    const spec = {
+      host: "127.0.0.1",
+      jump: ["localhost"],
+      opencorp: path.join(CHECKOUT, "packages/cli/bin/opencorp"),
+      env: { OPENCORP_HOME: office.home, OPENCORP_BUN: process.execPath },
+    }
+    const body = `set -eu\nssh localhost true\nprintf '%s\\n' '${JSON.stringify(spec)}'\n`
+    await writePrivate(paths.script, body)
+    await writePrivate(paths.approved, body)
+    const port = await freePort()
+    await writeAccess(paths, {
+      port,
+      sha256: createHash("sha256").update(body).digest("hex"),
+      learned_at: new Date().toISOString(),
+      last_used_at: null,
+      signed_in_at: null,
+    })
+    const v = visitDeps(dir, null, {
+      env: { PATH: "/usr/bin:/bin", HOME: dir },
+      sshIncludes: [sshd.clientConfig],
+      limits: LIMITS,
+    })
+    const done = visit({ signIn: true, open: false }, v.deps)
+    await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 0, {
+      what: "the visit to connect",
+    })
+    expect(v.errors).toEqual([])
+    const code = new RegExp(`^http://127\\.0\\.0\\.1:${port}/pair#([A-Za-z0-9_-]{22})$`).exec(v.printed[0]!)?.[1]
+    expect(code).toBeDefined()
+    const origin = `http://127.0.0.1:${port}`
+    const res = await fetch(`${origin}/api/pair`, {
+      method: "POST",
+      headers: { origin, "content-type": "application/json", connection: "close" },
+      body: JSON.stringify({ code }),
+    })
+    expect(res.status).toBe(200)
+    const cookie = res.headers.get("set-cookie")!.split(";")[0]!
+    expect(cookie).toStartWith(`opencorp_hq_${port}=`)
+    // A tab's event stream: an open channel through the forward that outlasts the remote cat.
+    const events = await new Promise<{ first: string; ended: Promise<void> }>((resolve, reject) => {
+      const req = http.get({ host: "127.0.0.1", port, path: "/api/events", headers: { cookie } }, (r) => {
+        r.setEncoding("utf8")
+        r.on("error", () => {})
+        const ended = new Promise<void>((end) => r.once("close", () => end()))
+        r.once("data", (chunk: string) => resolve({ first: chunk.split("\n")[0]!, ended }))
+      })
+      req.on("error", reject)
+      onTestFinished(() => req.destroy())
+    })
+    expect(events.first).toBe(": connected")
+    v.sigint()
+    expect(await done).toBe(0)
+    await events.ended
+    expect(fs.readdirSync(paths.cm)).toEqual([])
+    await waitFor(() => processesWith(paths.dir).length === 0, { timeout: 10_000, what: "no process on the hq folder" })
   })
 
   /** One step run against a context; what it yields is compared between the fake and the real ssh. */

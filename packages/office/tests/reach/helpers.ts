@@ -207,11 +207,12 @@ export class Exited extends Error {
   }
 }
 
-/** A visit's deps for a test: home `dir`, the fake ssh first on PATH, `answers` for its approvals, recorded output
- *  and opens, a SIGINT the test sends with `sigint()`, an `exit` that throws `Exited`, and short limits. */
+/** A visit's deps for a test: home `dir`, the fake ssh first on PATH (the system's ssh with `fake` null), `answers`
+ *  for its approvals, recorded output and opens, a SIGINT the test sends with `sigint()`, an `exit` that throws
+ *  `Exited`, and short limits. */
 export function visitDeps(
   dir: string,
-  fake: FakeSsh,
+  fake: FakeSsh | null,
   { answers = [], interactive = true, ...more }: { answers?: string[]; interactive?: boolean } & Partial<VisitDeps> = {},
 ) {
   const printed: string[] = []
@@ -223,7 +224,7 @@ export function visitDeps(
   let handler: (() => void) | undefined
   const deps: VisitDeps = {
     home: dir,
-    env: { PATH: `${fake.bin}:/usr/bin:/bin`, HOME: dir, SSH_AUTH_SOCK: path.join(dir, "agent") },
+    env: { PATH: fake ? `${fake.bin}:/usr/bin:/bin` : "/usr/bin:/bin", HOME: dir, SSH_AUTH_SOCK: path.join(dir, "agent") },
     prompter,
     stdin,
     print: (line) => void printed.push(line),
