@@ -1,6 +1,6 @@
 /** The connection spec: what reach.sh may print, and the remote command built from it. */
 import { expect, test } from "bun:test"
-import { lastJson, lastLine, parseSpec, Spec } from "../../src/reach/spec.ts"
+import { hqSocket, lastJson, lastLine, parseSpec, remoteCommand, Spec, word } from "../../src/reach/spec.ts"
 
 /** The design's example spec. */
 const EXAMPLE = {
@@ -78,4 +78,28 @@ test("a zod message that would quote the input says the field isn't allowed inst
   expect(extra).toEqual({ problem: "the spec: has a key that isn't allowed" })
   const nested = parseSpec(JSON.stringify({ ...GOOD, env: { LD_PRELOAD: "/x.so" } }))
   expect(nested).toEqual({ problem: "env: has a key that isn't allowed" })
+})
+
+test("the remote command single-quotes every word and sets env in a fixed order", () => {
+  const spec = { host: "h", opencorp: "/a/opencorp", env: { OPENCORP_HOME: "/h", OPENCORP_BUN: "/b/bun" } }
+  expect(remoteCommand(spec, ["hq", "--check", "--json"])).toBe(
+    "env 'OPENCORP_BUN=/b/bun' 'OPENCORP_HOME=/h' '/a/opencorp' 'hq' '--check' '--json'",
+  )
+  expect(remoteCommand({ ...spec, env: { ...spec.env, PATH: "/p:/q" } }, ["hq"])).toBe(
+    "env 'PATH=/p:/q' 'OPENCORP_BUN=/b/bun' 'OPENCORP_HOME=/h' '/a/opencorp' 'hq'",
+  )
+  expect(remoteCommand({ host: "h", opencorp: "/a/opencorp" }, ["hq", "--json"])).toBe("'/a/opencorp' 'hq' '--json'")
+  expect(remoteCommand({ host: "h", opencorp: "/a/opencorp", env: {} }, ["hq"])).toBe("'/a/opencorp' 'hq'")
+})
+
+test("a word with a quote is refused, since no checked value holds one", () => {
+  expect(word("a b$c")).toBe("'a b$c'")
+  expect(() => word("it's")).toThrow("single quote")
+  expect(() => remoteCommand({ host: "h", opencorp: "/a/opencorp" }, ["'; rm -rf /; '"])).toThrow("single quote")
+})
+
+test("HQ's socket must be a safe absolute path ending in hq.sock", () => {
+  expect(hqSocket("/h/office/hq.sock")).toBe(true)
+  for (const bad of ["/h/x:1/hq.sock", "/h/hq.sock2", "h/hq.sock", "/h/../hq.sock", "/h/my hq.sock", "/h/xhq.sock"])
+    expect([bad, hqSocket(bad)]).toEqual([bad, false])
 })

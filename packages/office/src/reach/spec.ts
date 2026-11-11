@@ -89,3 +89,19 @@ function issueMessage(issue: z.core.$ZodIssue): string {
   if (issue.code === "unrecognized_keys") return "has a key that isn't allowed"
   return /["'`]/.test(issue.message) ? "isn't allowed" : issue.message
 }
+
+/** `w` as one single-quoted sh word. Checked values hold no quote, `$`, `!` or space, so every login shell (sh, bash,
+ *  zsh, csh, fish) reads it as is; a quote is a bug, so it throws. */
+export function word(w: string): string {
+  if (w.includes("'")) throw new Error("a checked word can't hold a single quote")
+  return `'${w}'`
+}
+
+/** The command line the remote login shell runs for `opencorp <args>`: `env 'K=V' … '<opencorp>' '<arg>' …`. */
+export function remoteCommand(spec: Spec, args: readonly string[]): string {
+  const env = ENV_KEYS.flatMap((k) => (spec.env?.[k] === undefined ? [] : [word(`${k}=${spec.env[k]}`)]))
+  return [...(env.length > 0 ? ["env", ...env] : []), word(spec.opencorp), ...args.map(word)].join(" ")
+}
+
+/** Whether HQ's socket, from the remote check, can be forwarded as is. */
+export const hqSocket = (socket: string) => safePath(socket) && socket.endsWith("/hq.sock")
