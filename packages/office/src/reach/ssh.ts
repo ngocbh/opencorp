@@ -186,7 +186,7 @@ export function runChild(
     })
     const stop = () => {
       timedOut = true
-      if (child.pid !== undefined) killTree(child.pid)
+      if (running(child)) killTree(child.pid!)
     }
     const timer = setTimeout(stop, o.timeoutMs)
     // A signal that already fired never fires "abort" again.
@@ -256,6 +256,11 @@ export function killTree(pid: number): void {
   setTimeout(() => {
     for (const { pid: p, started } of tree) if (started !== null && sameProcess(p, started)) send(p, "SIGKILL")
   }, KILL_GRACE_MS).unref()
+}
+
+/** Whether `child` started and hasn't exited: once it has, its pid may be reaped and reused. */
+function running(child: ChildProcess): boolean {
+  return child.pid !== undefined && child.exitCode === null && child.signalCode === null
 }
 
 /** Sends `sig` to `pid`; a process that already went, or isn't ours, is skipped. */
@@ -329,7 +334,7 @@ export function waitForSocket(
       resolve(result)
     }
     const stop = () => {
-      if (master.child.pid !== undefined) killTree(master.child.pid)
+      if (running(master.child)) killTree(master.child.pid!)
       finish("timed_out")
     }
     const poll = setInterval(() => {
@@ -415,8 +420,7 @@ export async function endNode(ctx: ReachContext, master: Master): Promise<void> 
   const gone =
     asked.code === 0 &&
     (await Promise.race([master.exited.then(() => true), Bun.sleep(CONTROL_MS).then(() => false)]))
-  if (!gone && master.child.pid !== undefined && master.child.exitCode === null && master.child.signalCode === null)
-    killTree(master.child.pid)
+  if (!gone && running(master.child)) killTree(master.child.pid!)
   await master.exited
   fs.rmSync(master.socket, { force: true })
 }
