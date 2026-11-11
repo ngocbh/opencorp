@@ -14,6 +14,7 @@ import {
   runShell,
   SAVE,
   SAVE_QUESTION,
+  SAVED,
   saveAccess,
   saveAccessTool,
   secretIn,
@@ -23,8 +24,10 @@ import {
 import { BEFORE_LEARNING, beforeSaving } from "../../src/reach/risks.ts"
 import type { Spec } from "../../src/reach/spec.ts"
 import { exitAll, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
-import { readAccess, sha256 } from "../../src/reach/state.ts"
-import type { FakeSshBehavior } from "../../src/testing/fake_ssh.ts"
+import { type Access, readAccess, sha256, writeAccess } from "../../src/reach/state.ts"
+import { writePrivate } from "../../src/secrets.ts"
+import { fakeControlName } from "../../src/testing/fake_ssh.ts"
+import type { FakeSsh, FakeSshBehavior } from "../../src/testing/fake_ssh.ts"
 import { Script } from "../install/helpers.ts"
 import { fakeHome, fakeRemote, freePort, reachCtx } from "./helpers.ts"
 
@@ -246,4 +249,107 @@ test("save_access writes nothing until the whole chain passes, then keeps the co
   expect(saveAccessTool.name).toBe("save_access")
   await exitAll(ctx)
   expect(fake.masters()).toEqual([])
+})
+
+const OLD = "set -eu\necho old >&2\nexit 3\n"
+
+/** Saves `OLD` as the approved path, with `over` in its access.json. */
+async function oldPath(ctx: ReachContext, over: Partial<Access> = {}): Promise<void> {
+  await writePrivate(ctx.paths.script, OLD)
+  await writePrivate(ctx.paths.approved, OLD)
+  await writePrivate(ctx.paths.notes, "old notes\n")
+  await writeAccess(ctx.paths, {
+    port: 49381,
+    sha256: sha256(OLD),
+    learned_at: "2026-11-01T10:00:00.000Z",
+    last_used_at: "2026-11-02T10:00:00.000Z",
+    signed_in_at: "2026-11-02T10:00:00.000Z",
+    ...over,
+  })
+}
+
+type Chain = Awaited<ReturnType<typeof chain>>
+/** Each row: how it breaks the chain, the script to save, and what the model is told. */
+const BREAKS: [string, (c: Chain) => void, (c: Chain) => string, string][] = [
+  ["reach.sh exits 1", () => {}, () => "set -eu\nssh login1 true\necho nope >&2\nexit 1\n", "Not saved: reach.sh failed the test (broken): reach.sh exited 1: nope"],
+  [
+    "login refused",
+    ({ fake }) => fake.set({ hosts: { node1: { login: "refuse" } } }),
+    ({ spec }) => scriptFor(spec),
+    "Not saved: reach.sh ran, then couldn't connect: ssh couldn't log in to node1",
+  ],
+  [
+    "check exit 1",
+    ({ remote }) => remote.setCheck({ code: 1, stderr: "opencorp hq: this office has no HQ yet\n" }),
+    ({ spec }) => scriptFor(spec),
+    "Not saved: reach.sh ran, then HQ isn't ready there: opencorp hq: this office has no HQ yet.",
+  ],
+  [
+    "blackhole forward",
+    ({ fake }) => fake.set({ forward: "blackhole" }),
+    ({ spec }) => scriptFor(spec),
+    "Not saved: reach.sh ran, then HQ didn't answer through the forward",
+  ],
+]
+
+/** The login node's control socket. */
+const loginSocket = (ctx: ReachContext) => path.join(ctx.paths.cm, fakeControlName("login1"))
+/** How many times `host` logged in. */
+const loginsTo = (fake: FakeSsh, host: string) => fake.logins().filter((h) => h === host).length
+
+test.each(BREAKS)("a failed chain test leaves the old path and tells the model which step failed [%s]", async (_label, arrange, script, told) => {
+  const c = await chain(["1", "1"])
+  const { ctx, state, fake, remote, spec } = c
+  await oldPath(ctx, { port: c.port })
+  const before = Object.fromEntries([ctx.paths.script, ctx.paths.approved, ctx.paths.notes, ctx.paths.access].map((f) => [f, fs.readFileSync(f, "utf8")]))
+  arrange(c)
+  const error = await rejection(saveAccess({ script: script(c), notes: NOTES, risks: [] }, state))
+  expect(error).toBeInstanceOf(ReportedToolError)
+  expect(error.message).toStartWith(told)
+  for (const [file, text] of Object.entries(before)) expect(fs.readFileSync(file, "utf8")).toBe(text)
+  expect(fs.existsSync(ctx.paths.candidate)).toBe(false)
+  expect(fs.readdirSync(ctx.paths.dir).filter((name) => name.startsWith(".reach-"))).toEqual([])
+  expect(fs.existsSync(ctx.paths.node)).toBe(false)
+  expect(isSocket(loginSocket(ctx))).toBe(true)
+  expect(state.connection).toBeNull()
+  // The retry rides the login node's master: no second login there, so no second Duo.
+  fake.set({})
+  remote.setCheck({ stdout: `${JSON.stringify(remote.status)}\n` })
+  expect(await saveAccess({ script: scriptFor(spec), notes: NOTES, risks: [] }, state)).toStartWith(SAVED)
+  expect(loginsTo(fake, "login1")).toBe(1)
+  await exitAll(ctx)
+  expect(fake.masters()).toEqual([])
+})
+
+test("a second save_access after one succeeded is refused", async () => {
+  const { ctx, state, spec, fake, prompter } = await chain(["1"])
+  await saveAccess({ script: scriptFor(spec), notes: NOTES, risks: [] }, state)
+  const seen = prompter.seen.length
+  const saved = fs.readFileSync(ctx.paths.access, "utf8")
+  const error = await rejection(saveAccess({ script: "exit 3\n", notes: "other\n", risks: [] }, state))
+  expect(error).toBeInstanceOf(ReportedToolError)
+  expect(error.message).toBe("Not saved again: the path is saved and connected already; reply with one line for the owner.")
+  expect(prompter.seen.length).toBe(seen)
+  expect(fs.readFileSync(ctx.paths.access, "utf8")).toBe(saved)
+  expect(fs.readFileSync(ctx.paths.notes, "utf8")).toBe(NOTES)
+  await exitAll(ctx)
+  expect(fake.masters()).toEqual([])
+})
+
+test("relearning keeps signed_in_at when the port is the same", async () => {
+  let c = await chain(["1"])
+  await oldPath(c.ctx, { port: c.port })
+  await saveAccess({ script: scriptFor(c.spec), notes: NOTES, risks: [] }, c.state)
+  expect(await readAccess(c.ctx.paths)).toMatchObject({
+    port: c.port,
+    last_used_at: "2026-11-02T10:00:00.000Z",
+    signed_in_at: "2026-11-02T10:00:00.000Z",
+  })
+  await exitAll(c.ctx)
+  c = await chain(["1"])
+  await oldPath(c.ctx, { port: c.port === 49381 ? 49382 : 49381 })
+  await saveAccess({ script: scriptFor(c.spec), notes: NOTES, risks: [] }, c.state)
+  expect(await readAccess(c.ctx.paths)).toMatchObject({ port: c.port, last_used_at: "2026-11-02T10:00:00.000Z", signed_in_at: null })
+  await exitAll(c.ctx)
+  expect(c.fake.masters()).toEqual([])
 })

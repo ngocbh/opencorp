@@ -165,8 +165,13 @@ function problemIn(files: ToSave, keys: readonly string[]): string | null {
 }
 
 /** `save_access`: refuses files holding a secret before showing anything, then shows both files whole and the risks,
- *  the fixed ones first, and asks the owner; a cancel tells the model what the owner wants changed. */
+ *  the fixed ones first, and asks the owner; a cancel tells the model what the owner wants changed. Once approved, the
+ *  chain test runs; only when it passes are the files written and the connection kept. Refused once one has been
+ *  saved. */
 export async function saveAccess(files: ToSave, state: Learning): Promise<string> {
+  // One path per run: a second would replace what the visit is about to use.
+  if (state.connection !== null)
+    throw new ReportedToolError("Not saved again: the path is saved and connected already; reply with one line for the owner.")
   const problem = problemIn(files, state.secrets)
   if (problem !== null) throw new ReportedToolError(`Not saved: ${problem}.`)
   const { paths } = state.ctx
