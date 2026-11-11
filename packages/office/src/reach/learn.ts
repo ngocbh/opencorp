@@ -123,13 +123,17 @@ function learning(c: ToolContext<unknown>): Learning {
 }
 
 /** `fn` with the owner's terminal, as `withOwner`; the visit's Ctrl-C stops it too, since at a numbered list it
- *  arrives as SIGINT rather than as a key. */
+ *  arrives as SIGINT rather than as a key, and then pauses stdin, so the line read the question left pending can't
+ *  keep the process alive. */
 export function withOwnerOrStop<T>(state: Learning, fn: (prompter: Prompter) => Promise<T>): Promise<T> {
   const signal = state.ctx.signal
   return withOwner(state.asking, (prompter) => {
     if (signal === undefined) return fn(prompter)
     const stopped = new Promise<never>((_, reject) => {
-      const stop = () => reject(new KeyboardInterrupt())
+      const stop = () => {
+        quietStdin(state.stdin)
+        reject(new KeyboardInterrupt())
+      }
       if (signal.aborted) stop()
       else signal.addEventListener("abort", stop, { once: true })
     })

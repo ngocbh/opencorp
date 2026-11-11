@@ -16,9 +16,9 @@ const TMUX = Bun.which("tmux", { PATH: "/usr/bin:/bin:/usr/local/bin:/opt/homebr
 /** `s` as one sh word. */
 const sq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`
 
-/** A tmux server of its own (`-L`), killed and its socket removed when the test finishes, running `opencorp hq --no-open` for `c` in a
- *  120x40 window; the command's exit status lands in `<root>/exit`. */
-function terminal(c: Client) {
+/** A tmux server of its own (`-L`), killed and its socket removed when the test finishes, running `opencorp hq --no-open`
+ *  (and `args`) for `c` in a 120x40 window with `TERM` `term`; the command's exit status lands in `<root>/exit`. */
+function terminal(c: Client, { args = [], term = "xterm" }: { args?: string[]; term?: string } = {}) {
   const server = `oc-hq-${randomBytes(4).toString("hex")}`
   const tmux = (...args: string[]) =>
     execFileSync(TMUX!, ["-L", server, ...args], {
@@ -29,8 +29,8 @@ function terminal(c: Client) {
     })
   const exitFile = path.join(c.root, "exit")
   // tmux 2.7 has no `new-session -e`: the env goes in the command.
-  const env = Object.entries({ ...c.env, TERM: "xterm" }).map(([k, v]) => sq(`${k}=${v}`))
-  const command = `env -i ${env.join(" ")} ${sq(WRAPPER)} hq --no-open; echo exit=$? > ${sq(exitFile)}`
+  const env = Object.entries({ ...c.env, TERM: term }).map(([k, v]) => sq(`${k}=${v}`))
+  const command = `env -i ${env.join(" ")} ${sq(WRAPPER)} hq --no-open ${args.map(sq).join(" ")}; echo exit=$? > ${sq(exitFile)}`
   tmux("-f", "/dev/null", "new-session", "-d", "-s", "hq", "-x", "120", "-y", "40", command)
   onTestFinished(() => {
     try {
@@ -63,6 +63,8 @@ function terminal(c: Client) {
       tmux("send-keys", "-t", "hq", "-l", text)
       tmux("send-keys", "-t", "hq", "Enter")
     },
+    /** Whether the command has ended. */
+    ended: () => fs.existsSync(exitFile) && fs.readFileSync(exitFile, "utf8").includes("\n"),
     /** The `exit=N` line, once the command ended. */
     async exit(ms = 30_000) {
       const deadline = performance.now() + ms
@@ -158,3 +160,60 @@ test.skipIf(!TMUX)("after the owner approves a command, ssh in it reads the pass
   expect(c.fake.masters()).toEqual([])
   expect(pidsNaming(c.hq)).toEqual([])
 }, 120_000)
+
+/** A client whose hq/provider.json points at `llm`. */
+function withModel(c: Client, llm: FakeLLM): void {
+  fs.writeFileSync(path.join(c.hq, "provider.json"), JSON.stringify({ llm_config: LLM_CONFIG, env: llm.env() }), {
+    mode: 0o600,
+  })
+}
+
+/** Ctrl-C at a numbered question (a dumb terminal, so the terminal sends SIGINT): the process has to end at once, with
+ *  no read left pending on stdin to hold it. `question` as the screen shows it, its trailing space trimmed. */
+async function ctrlCEndsIt(t: ReturnType<typeof terminal>, question: string): Promise<void> {
+  await t.see(question)
+  const sent = performance.now()
+  t.keys("C-c")
+  while (!t.ended() && performance.now() - sent < 5000) await Bun.sleep(20)
+  expect(performance.now() - sent).toBeLessThan(1000)
+  expect(await t.exit(5000)).toBe("exit=130")
+}
+
+describe.skipIf(!TMUX)("Ctrl-C at a numbered question", () => {
+  test("to learn the path", async () => {
+    const c = await client(null)
+    onTestFinished(() => removeClient(c))
+    await ctrlCEndsIt(terminal(c, { term: "dumb" }), "Learn how to reach HQ from here? This uses the model. [Stop]:")
+    expect(pidsNaming(c.hq)).toEqual([])
+  }, 60_000)
+
+  test("to approve reach.sh", async () => {
+    const c = await client(null)
+    onTestFinished(() => removeClient(c))
+    fs.writeFileSync(path.join(c.hq, "reach.sh"), "exit 3\n", { mode: 0o600 })
+    await ctrlCEndsIt(terminal(c, { term: "dumb" }), "Run this 1-line reach.sh on every visit? [Stop]:")
+    expect(pidsNaming(c.hq)).toEqual([])
+  }, 60_000)
+
+  test("to relearn", async () => {
+    const c = await client(null)
+    onTestFinished(() => removeClient(c))
+    fs.writeFileSync(path.join(c.hq, "reach.sh"), "exit 3\n", { mode: 0o600 })
+    await ctrlCEndsIt(terminal(c, { term: "dumb", args: ["--relearn"] }), "Relearn? This uses the model. [Learn it]:")
+    expect(pidsNaming(c.hq)).toEqual([])
+  }, 60_000)
+
+  test("to run the model's command", async () => {
+    const llm = await FakeLLM.start()
+    onTestFinished(() => llm.close())
+    const c = await client(null)
+    onTestFinished(() => removeClient(c))
+    withModel(c, llm)
+    llm.script({ tool_calls: [{ name: "shell", arguments: { command: "true", why: "look" } }] })
+    const t = terminal(c, { term: "dumb" })
+    await t.see("Learn how to reach HQ from here? This uses the model. [Stop]:")
+    t.type("1")
+    await ctrlCEndsIt(t, "Run this 1-line command? [Don't run it]:")
+    expect(pidsNaming(c.hq)).toEqual([])
+  }, 60_000)
+})

@@ -8,6 +8,7 @@ import type { Readable } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createTwoFilesPatch } from "diff"
 import { which } from "../install/launch.ts"
+import type { Provider } from "../chat/provider.ts"
 import { LISTERS, type Listers, type ModelCheck, modelProblem } from "../install/onboard.ts"
 import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter } from "../install/prompts.ts"
 import { writePrivate } from "../secrets.ts"
@@ -79,8 +80,9 @@ export interface VisitDeps {
   sshIncludes: readonly string[]
   /** List deployments and models for the model picker of a first learning run. */
   listers: Listers
-  /** Why a provider's model doesn't answer, or null; checked before `hq/provider.json` is saved. */
-  checkModel: ModelCheck
+  /** Why a provider's model doesn't answer, or null; checked before `hq/provider.json` is saved, and stopped once
+   *  `signal` aborts (the owner's Ctrl-C). */
+  checkModel(provider: Provider, signal: AbortSignal): Promise<string | null>
 }
 
 export const USE = "Use it"
@@ -185,7 +187,7 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
     const saved = await readAccess(paths)
     if (options.relearn) {
       port = options.port ?? saved?.port ?? DEFAULT_PORT
-      if (!(await inVisit(ctx, () => askToLearn(deps, RELEARN_QUESTION, LEARN)))) {
+      if (!(await inVisit(ctx, deps.stdin, () => askToLearn(deps, RELEARN_QUESTION, LEARN)))) {
         deps.error(NOT_LEARNED)
         return 1
       }
@@ -206,7 +208,7 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
         throw error
       const { line, code } = describe(error, port)
       deps.error(line)
-      if (!(await inVisit(ctx, () => askToLearn(deps, RELEARN_QUESTION, STOP)))) return code
+      if (!(await inVisit(ctx, deps.stdin, () => askToLearn(deps, RELEARN_QUESTION, STOP)))) return code
       return await learnAndHold(ctx, deps, { ...lastPath(paths), failure: line }, port, options)
     }
     return await hold(ctx, conn, access, options, deps)
@@ -258,10 +260,16 @@ export function lastPath(paths: ReachPaths): { notes: string; script: string } {
 }
 
 /** `ask` at a question inside the visit, stopped by its first Ctrl-C, which a numbered list gets as SIGINT rather
- *  than as a key. */
-function inVisit<T>(ctx: ReachContext, ask: () => Promise<T>): Promise<T> {
+ *  than as a key; then `stdin` is paused, so the line read the question left pending can't keep the process alive. */
+function inVisit<T>(ctx: ReachContext, stdin: Readable, ask: () => Promise<T>): Promise<T> {
   const signal = ctx.signal!
-  return Promise.race([ask(), aborted(signal).then((): never => signal.throwIfAborted() as never)])
+  return Promise.race([
+    ask(),
+    aborted(signal).then((): never => {
+      quietStdin(stdin)
+      return signal.throwIfAborted() as never
+    }),
+  ])
 }
 
 /** Shows what learning risks, then asks `question` with `fallback` as the default; resolves whether the owner chose
@@ -274,7 +282,8 @@ async function askToLearn(deps: VisitDeps, question: string, fallback: string): 
 }
 
 /** `ask` before the visit has its context: its own Ctrl-C, which a numbered list gets as SIGINT rather than as a key.
- *  Resolves to what `ask` resolved to, or null on Ctrl-C. */
+ *  Resolves to what `ask` resolved to, or null on Ctrl-C, after which stdin is paused so the line read the question
+ *  left pending can't keep the process alive. */
 async function askBeforeAnything<T>(deps: VisitDeps, ask: () => Promise<T>): Promise<T | null> {
   const stop = new AbortController()
   const off = deps.onSigint(() => (stop.signal.aborted ? deps.exit(130) : stop.abort()))
@@ -285,6 +294,7 @@ async function askBeforeAnything<T>(deps: VisitDeps, ask: () => Promise<T>): Pro
     throw error
   } finally {
     off()
+    if (stop.signal.aborted) quietStdin(deps.stdin)
   }
 }
 
@@ -298,9 +308,9 @@ async function learnPath(
   port: number,
 ): Promise<{ access: Access; conn: Connection } | number> {
   const signal = ctx.signal!
-  // The second Ctrl-C exits at once; the first stops a model check that may take a minute.
+  // The first Ctrl-C stops a model check that may take a minute, its request included.
   const checkModel: ModelCheck = async (provider) => {
-    const problem = await Promise.race([deps.checkModel(provider), aborted(signal)])
+    const problem = await Promise.race([deps.checkModel(provider, signal), aborted(signal)])
     signal.throwIfAborted()
     return problem as string | null
   }
@@ -407,11 +417,7 @@ async function approve(
     deps.error("opencorp hq: reach.sh isn't approved, and there's no terminal to ask; run `opencorp hq` in one.")
     return 1
   }
-  // A numbered list reads a line, so Ctrl-C arrives as SIGINT, not as a key: stop at the first.
-  const answer = await Promise.race([
-    deps.prompter.choose(question, [USE, STOP], STOP),
-    aborted(ctx.signal!).then(() => ctx.signal!.throwIfAborted()),
-  ])
+  const answer = await inVisit(ctx, deps.stdin, () => deps.prompter.choose(question, [USE, STOP], STOP))
   quietStdin(deps.stdin)
   if (answer !== USE) {
     deps.error("opencorp hq: stopped; reach.sh isn't approved.")
@@ -683,6 +689,6 @@ export function realVisitDeps(home: string): VisitDeps {
     exit: (code) => process.exit(code),
     sshIncludes: defaultIncludes(os.userInfo().homedir),
     listers: LISTERS,
-    checkModel: (provider) => modelProblem(provider),
+    checkModel: (provider, signal) => modelProblem(provider, { signal }),
   }
 }

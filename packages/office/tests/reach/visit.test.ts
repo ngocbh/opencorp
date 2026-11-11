@@ -928,3 +928,27 @@ test("the agent's last reply is printed without the model's key or a sign-in cod
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
   expect(v.errors.at(-1)).toBe("opencorp hq: nothing was saved: Your key is [redacted]; try http://127.0.0.1:1/pair#[redacted]")
 })
+
+test("Ctrl-C during the first run's model check stops the check and exits 130", async () => {
+  const { dir, fake, llm, paths } = await unlearnedHome({ provider: false })
+  let started = false
+  let stopped = false
+  const v = visitDeps(dir, fake, {
+    answers: ["1", "vllm", llm.baseUrl + "/v1", "", "stub"],
+    checkModel: (_provider, signal) => {
+      started = true
+      return new Promise((resolve) =>
+        signal.addEventListener("abort", () => {
+          stopped = true
+          resolve("stopped")
+        }),
+      )
+    },
+  })
+  const done = visit({ signIn: false, open: false }, v.deps)
+  await waitFor(() => started, { what: "the model check" })
+  v.sigint()
+  expect(await done).toBe(130)
+  expect(stopped).toBe(true)
+  expect(fs.existsSync(paths.provider)).toBe(false)
+})
