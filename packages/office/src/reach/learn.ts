@@ -24,6 +24,7 @@ import { type Connection, connect, describe, ReachFailure } from "./connect.ts"
 import { runBytes } from "./replay.ts"
 import type { ReachPaths } from "./paths.ts"
 import { beforeSaving } from "./risks.ts"
+import { lineCount, numberedLines, oddCharacter } from "./show.ts"
 import { cleanOutput, quietStdin, type Ran, type ReachContext, readStatuses, resetStatus, runChild, sshEnv } from "./ssh.ts"
 import { type Access, AccessError, readAccess, sha256, writeAccess } from "./state.ts"
 import learnYaml from "./flows/learn_hq.yaml" with { type: "file" }
@@ -73,25 +74,31 @@ export function withOwnerOrStop<T>(state: Learning, fn: (prompter: Prompter) => 
 
 export const RUN = "Run it"
 export const DONT_RUN = "Don't run it"
-export const RUN_QUESTION = "Run this command?"
+/** The question for a command of `lines` lines: the count shows when the command is longer than it looks. */
+export const runQuestion = (lines: number) => `Run this ${lines}-line command?`
 export const WHY_NOT = "Why not? (empty to skip)"
 
-/** Control characters other than tab and newline: a command holding one could show other than it runs. */
+/** Control characters other than tab and newline: notes holding one could read other than they are. */
 const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/
+/** What the model is told to use instead of a character that isn't printable ASCII. */
+const ASCII_ONLY = "use only printable ASCII, tabs and newlines"
 
-/** The `shell` tool: shows the command and why, runs it with `sh -c` once the owner approves, and returns its exit,
+/** The `shell` tool: refuses a command holding anything but printable ASCII, tabs and newlines, shows the rest
+ *  numbered with why, runs it with `sh -c` once the owner approves, and returns its exit,
  *  stdout and stderr. Meanwhile stdin is paused and cooked, so ssh, not Bun, reads the terminal. */
 export async function runShell(args: { command: string; why: string }, state: Learning): Promise<string> {
   const { command, why } = args
   const { ctx } = state
-  if (CONTROL.test(command)) {
+  // A look-alike blank or an invisible character could make the command read other than it runs.
+  const odd = oddCharacter(command)
+  if (odd !== null) {
     state.commands.push({ command, code: null })
-    throw new ReportedToolError("Not run: the command holds control characters; write it with printable text, tabs and newlines only.")
+    throw new ReportedToolError(`Not run: the command holds ${odd}; ${ASCII_ONLY} (printf can write other bytes).`)
   }
   const refusal = await withOwnerOrStop(state, async (p) => {
     p.say(`The model wants to run a command: ${clean(why)}`)
-    for (const line of command.split("\n")) p.say(`  ${clean(line)}`)
-    const answer = await p.choose(RUN_QUESTION, [RUN, DONT_RUN], DONT_RUN)
+    for (const line of numberedLines(command)) p.say(line)
+    const answer = await p.choose(runQuestion(lineCount(command)), [RUN, DONT_RUN], DONT_RUN)
     quietStdin(state.stdin)
     if (answer === RUN) return null
     const reason = strip(await p.ask(WHY_NOT))
@@ -157,7 +164,9 @@ export function secretIn(text: string, keys: readonly string[]): string | null {
 
 export const SAVE = "Test it, then save it"
 export const CANCEL = "Don't save it"
-export const SAVE_QUESTION = "Save this, after testing the whole connection?"
+/** The question for a reach.sh of `lines` lines. */
+export const saveQuestion = (lines: number) =>
+  `Save this ${lines}-line reach.sh and the notes, after testing the whole connection?`
 export const WHAT_SHOULD_CHANGE = "What should change? (empty for nothing)"
 
 /** What save_access is given: reach.sh, notes.md, and the risks of this setup the owner should know. */
@@ -167,8 +176,8 @@ export interface ToSave {
   risks: readonly string[]
 }
 
-/** Why `files` can't be saved, or null: a secret in either file, or a control character, which would show other
- *  than it runs or reads. */
+/** Why `files` can't be saved, or null: a secret in either file; in reach.sh anything but printable ASCII, tabs and
+ *  newlines, which could make it read other than it runs; in notes.md a control character. */
 function problemIn(files: ToSave, keys: readonly string[]): string | null {
   for (const [name, text] of [
     ["reach.sh", files.script],
@@ -176,12 +185,15 @@ function problemIn(files: ToSave, keys: readonly string[]): string | null {
   ] as const) {
     const secret = secretIn(text, keys)
     if (secret !== null) return `${name}: ${secret}; SSH asks for passwords and Duo itself, so leave them out`
-    if (CONTROL.test(text)) return `${name} holds control characters; use printable text, tabs and newlines only`
   }
+  const odd = oddCharacter(files.script)
+  if (odd !== null) return `reach.sh holds ${odd}; ${ASCII_ONLY}`
+  if (CONTROL.test(files.notes)) return `notes.md holds control characters; ${ASCII_ONLY}, or other printable text`
   return null
 }
 
-/** `save_access`: refuses files holding a secret before showing anything, then shows both files whole and the risks,
+/** `save_access`: refuses files holding a secret or, in reach.sh, a character that isn't printable ASCII, before
+ *  showing anything; then shows both files numbered and the risks,
  *  the fixed ones first, and asks the owner; a cancel tells the model what the owner wants changed. Once approved, the
  *  chain test runs; only when it passes are the files written and the connection kept. Refused once one has been
  *  saved. */
@@ -195,12 +207,13 @@ export async function saveAccess(files: ToSave, state: Learning): Promise<string
   const change = await withOwnerOrStop(state, async (p) => {
     const say = (line: string) => p.say(clean(line))
     say(`The model wants to save how this machine reaches HQ. ${paths.script}, which runs on every visit:`)
-    for (const line of files.script.replace(/\n$/, "").split("\n")) say(`  ${line}`)
+    for (const line of numberedLines(files.script)) p.say(line)
     say(`${paths.notes}:`)
-    for (const line of files.notes.replace(/\n$/, "").split("\n")) say(`  ${line}`)
+    // Notes may hold any printable text: they're read, never run.
+    for (const line of numberedLines(files.notes, clean)) p.say(line)
     say("Before you save it:")
     for (const risk of [...beforeSaving(paths), ...files.risks]) say(`  - ${risk}`)
-    const answer = await p.choose(SAVE_QUESTION, [SAVE, CANCEL], CANCEL)
+    const answer = await p.choose(saveQuestion(lineCount(files.script)), [SAVE, CANCEL], CANCEL)
     quietStdin(state.stdin)
     if (answer === SAVE) return null
     const wanted = strip(await p.ask(WHAT_SHOULD_CHANGE))

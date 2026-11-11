@@ -32,6 +32,7 @@ import {
   writeSshFiles,
 } from "./ssh.ts"
 import { BEFORE_LEARNING, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "./risks.ts"
+import { lineCount, numberedLines, shownCode } from "./show.ts"
 import { safePath, type Spec } from "./spec.ts"
 import {
   type Access,
@@ -83,8 +84,9 @@ export interface VisitDeps {
 
 export const USE = "Use it"
 export const STOP = "Stop"
-export const RUN_THIS = "Run this reach.sh on every visit?"
-export const USE_CHANGED = "Use the changed reach.sh on every visit?"
+/** The questions for a reach.sh of `lines` lines: the count shows when it's longer than it looks. */
+export const runThis = (lines: number) => `Run this ${lines}-line reach.sh on every visit?`
+export const useChanged = (lines: number) => `Use the changed ${lines}-line reach.sh on every visit?`
 /** No office answers here: this may be HQ's own machine with its office stopped, so this comes first. */
 export const NO_OFFICE_HERE =
   "opencorp hq: no office answers here. If HQ runs on this machine, start it with `opencorp start` (`opencorp doctor` " +
@@ -391,13 +393,14 @@ async function approve(
         `${paths.script} changed, and ${paths.approved} isn't the copy you approved, so here it is whole. ` +
           "It runs on this machine with your SSH keys on every visit:",
       )
-    for (const line of now.toString("utf8").replace(/\n$/, "").split("\n")) say(`  ${line}`)
-    question = RUN_THIS
+    // Numbered, anything but printable ASCII escaped and padding collapsed: what's approved is what runs.
+    for (const line of numberedLines(now.toString("utf8"))) deps.prompter.say(line)
+    question = runThis(lineCount(now.toString("utf8")))
   } else {
     say(`${paths.script} changed since you approved it:`)
     const patch = createTwoFilesPatch("reach.approved.sh", "reach.sh", before.toString("utf8"), now.toString("utf8"))
-    for (const line of patch.replace(/\n$/, "").split("\n")) say(line)
-    question = USE_CHANGED
+    for (const line of patch.replace(/\n$/, "").split("\n")) deps.prompter.say(shownCode(line))
+    question = useChanged(lineCount(now.toString("utf8")))
   }
   if (!deps.prompter.interactive) {
     deps.error("opencorp hq: reach.sh isn't approved, and there's no terminal to ask; run `opencorp hq` in one.")

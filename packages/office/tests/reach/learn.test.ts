@@ -11,11 +11,11 @@ import {
   Learning,
   learnProvider,
   RUN,
-  RUN_QUESTION,
+  runQuestion,
   runLearn,
   runShell,
   SAVE,
-  SAVE_QUESTION,
+  saveQuestion,
   SAVED,
   saveAccess,
   saveAccessTool,
@@ -69,10 +69,11 @@ test("a command runs only once the owner approves it, and the model gets its exi
   expect(got).toBe("exit 4\nstdout:\nout\nstderr:\nerr")
   expect(prompter.seen).toEqual([
     "The model wants to run a command: see what the login node says",
-    "  echo out",
-    "  echo err >&2; exit 4",
-    RUN_QUESTION,
+    "  1  echo out",
+    "  2  echo err >&2; exit 4",
+    "Run this 2-line command?",
   ])
+  expect(runQuestion(2)).toBe("Run this 2-line command?")
   expect(prompter.offered).toEqual([[RUN, DONT_RUN]])
   expect(echoed.join("")).toContain("out\n")
   expect(echoed.join("")).toContain("err\n")
@@ -101,10 +102,14 @@ test("an unanswered approval doesn't run", async () => {
 
 test("a command with control characters is refused unseen", async () => {
   const { prompter, state } = await learning([])
-  for (const command of ["echo \x1b[2Jhi", "echo a\rb", "echo \x9bx"]) {
-    const error = await rejection(runShell({ command, why: "x" }, state))
+  for (const [command, at] of [
+    ["echo \x1b[2Jhi", "U+001B at line 1, column 6"],
+    ["echo a\rb", "U+000D at line 1, column 7"],
+    ["true\necho \x9bx", "U+009B at line 2, column 6"],
+  ]) {
+    const error = await rejection(runShell({ command: command!, why: "x" }, state))
     expect(error).toBeInstanceOf(ReportedToolError)
-    expect(error.message).toContain("control characters")
+    expect(error.message).toBe(`Not run: the command holds ${at}; use only printable ASCII, tabs and newlines (printf can write other bytes).`)
   }
   expect(prompter.seen).toEqual([])
 })
@@ -167,7 +172,8 @@ test("save_access refuses the model's key, a private key and sshpass, before sho
     [{ script: "cat <<EOF\n-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\nEOF\n" }, "it holds a private key"],
     [{ script: "sshpass -p hunter2 ssh login1 true\n" }, "it hands a password to ssh"],
     [{ script: "SSHPASS=hunter2 ssh login1 true\n" }, "it hands a password to ssh"],
-    [{ script: "echo \x1b[2J\n" }, "control characters"],
+    [{ script: "echo \x1b[2J\n" }, "reach.sh holds U+001B at line 1, column 6; use only printable ASCII, tabs and newlines"],
+    [{ notes: "a\x1b[2J\n" }, "notes.md holds control characters"],
   ]
   for (const [files, why] of cases) {
     const { prompter, state, ctx } = await learning([], { secrets: [KEY] })
@@ -185,22 +191,23 @@ test("save_access refuses the model's key, a private key and sshpass, before sho
 test("save_access shows both files whole and the fixed risks before the setup's own", async () => {
   const { prompter, state, ctx } = await learning(["2", ""])
   const script = "set -eu\nssh login1 true\nprintf '%s\\n' '{}'\n"
-  await rejection(saveAccess({ script, notes: "Line one.\n\nLine \u202etwo.\n", risks: ["Duo on the node too: two prompts."] }, state))
+  await rejection(saveAccess({ script, notes: "Line one, café.\n\nLine \u202etwo.\n", risks: ["Duo on the node too: two prompts."] }, state))
   expect(prompter.seen).toEqual([
     `The model wants to save how this machine reaches HQ. ${ctx.paths.script}, which runs on every visit:`,
-    "  set -eu",
-    "  ssh login1 true",
-    "  printf '%s\\n' '{}'",
+    "  1  set -eu",
+    "  2  ssh login1 true",
+    "  3  printf '%s\\n' '{}'",
     `${ctx.paths.notes}:`,
-    "  Line one.",
-    "  ",
-    "  Line <U+202E>two.",
+    "  1  Line one, café.",
+    "  2",
+    "  3  Line <U+202E>two.",
     "Before you save it:",
     ...beforeSaving(ctx.paths).map((line) => `  - ${line}`),
     "  - Duo on the node too: two prompts.",
-    SAVE_QUESTION,
+    "Save this 3-line reach.sh and the notes, after testing the whole connection?",
     WHAT_SHOULD_CHANGE,
   ])
+  expect(saveQuestion(3)).toBe("Save this 3-line reach.sh and the notes, after testing the whole connection?")
   expect(prompter.offered).toEqual([[SAVE, CANCEL]])
   expect(BEFORE_LEARNING.some((line) => prompter.seen.includes(line))).toBe(false)
 })
@@ -210,7 +217,7 @@ test("declining to save tells the model what should change and saves nothing", a
   const error = await rejection(saveAccess({ script: "exit 3\n", notes: NOTES, risks: [] }, state))
   expect(error).toBeInstanceOf(ReportedToolError)
   expect(error.message).toBe("Not saved: the owner wants a change: use squeue")
-  expect(prompter.seen.at(-2)).toBe(SAVE_QUESTION)
+  expect(prompter.seen.at(-2)).toBe(saveQuestion(1))
   for (const file of [ctx.paths.script, ctx.paths.notes, ctx.paths.access, ctx.paths.approved]) expect(fs.existsSync(file)).toBe(false)
   expect(fake.calls()).toEqual([])
   expect(state.connection).toBeNull()
@@ -456,4 +463,36 @@ test("learnProvider asks with the picker the first time and reuses the file afte
   const error = await rejection(learnProvider(paths, new Script([]), options))
   expect(error).toBeInstanceOf(OnboardError)
   expect(error.message).toBe(`${paths.provider}: not valid JSON; fix it, or delete it to set up the model again`)
+})
+
+/** Look-alike blanks that aren't shell whitespace, and invisible ones. */
+const LOOK_ALIKES = ["\u00a0", "\u202f", "\u3000", "\u2028", "\u2800", "\u3164"]
+
+test.each(LOOK_ALIKES)("a command or reach.sh holding a look-alike blank is refused, naming where [%p]", async (blank) => {
+  const hex = blank.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")
+  const { dir, prompter, state, ctx } = await learning([])
+  const marker = path.join(dir, "PWNED")
+  const command = `echo listing jobs${blank}# ; touch '${marker}'`
+  const error = await rejection(runShell({ command, why: "list the jobs" }, state))
+  expect(error).toBeInstanceOf(ReportedToolError)
+  expect(error.message).toStartWith(`Not run: the command holds U+${hex} at line 1, column 18;`)
+  const saving = await rejection(saveAccess({ script: `set -eu\n${command}\n`, notes: NOTES, risks: [] }, state))
+  expect(saving.message).toStartWith(`Not saved: reach.sh holds U+${hex} at line 2, column 18;`)
+  expect(prompter.seen).toEqual([])
+  expect(fs.existsSync(marker)).toBe(false)
+  expect(fs.existsSync(ctx.paths.script)).toBe(false)
+})
+
+test("blank-line padding can't push a line out of view: the run is one marker, and the question counts the lines", async () => {
+  const { prompter, state } = await learning(["2", ""])
+  const command = `touch x${"\n".repeat(61)}squeue`
+  await rejection(runShell({ command, why: "check" }, state))
+  expect(prompter.seen).toEqual([
+    "The model wants to run a command: check",
+    "   1  touch x",
+    "      (60 blank lines)",
+    "  62  squeue",
+    "Run this 62-line command?",
+    "Why not? (empty to skip)",
+  ])
 })

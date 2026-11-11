@@ -93,7 +93,7 @@ describe.skipIf(!TMUX)("on a real terminal", () => {
     const c = await client(remote, { behavior: { hosts: { login1: { login: "tty" } } }, approved: false })
     onTestFinished(() => removeClient(c))
     const t = terminal(c)
-    await t.see("Run this reach.sh on every visit?")
+    await t.see("Run this 3-line reach.sh on every visit?")
     // The default is Stop; Up picks Use it.
     t.keys("Up")
     t.keys("Enter")
@@ -144,7 +144,7 @@ test.skipIf(!TMUX)("after the owner approves a command, ssh in it reads the pass
   // The default is Stop; Up picks Learn it.
   t.keys("Up")
   t.keys("Enter")
-  await t.see("Run this command?")
+  await t.see("Run this 1-line command?")
   // The default is Don't run it; Up picks Run it.
   t.keys("Up")
   t.keys("Enter")
