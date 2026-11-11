@@ -25,6 +25,7 @@ import type { AnswerKind } from "../questions/cards.ts"
 import { formatAnswer, MAX_ANSWER_BYTES } from "../questions/format.ts"
 import type { RunIndexer } from "../runs/indexer.ts"
 import { OpenNodes } from "../runs/nodes.ts"
+import { LINE_CAP } from "../runs/reader.ts"
 import {
   COULDNT_RESUME,
   COULDNT_START,
@@ -1071,12 +1072,12 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Settles run `runId`'s questions against yian's open calls, through the handlers a spawn of the run builds from
-   *  `spec`; a failure is logged by its type. */
+   *  `spec`; a failure, a log line over `LINE_CAP` among them, is logged by its type. */
   async #reconcile(session: SessionRecord, spec: RunSpec, runId: string): Promise<void> {
     try {
       const tools = spec.groups({ session, runId, onQuestion: this.#onQuestion })
       const manager = tools.company?.ask_manager
-      await this.#ctx.answers.reconcile(runId, pendingCalls(this.#logOf(runId)), {
+      await this.#ctx.answers.reconcile(runId, pendingCalls(this.#logOf(runId), { maxLineBytes: LINE_CAP }), {
         askUser: this.#askUser(session, runId, spec),
         askManager: manager && ((args, callId) => manager.call(args, { callId })),
       })
