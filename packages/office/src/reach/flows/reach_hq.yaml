@@ -1,0 +1,23 @@
+# `opencorp hq`'s replay on every visit: run the approved reach.sh and check the spec it prints. It has no agent, so
+# a run resolves no model and reads no provider.
+id: reach_hq
+name: reach_hq
+description: Run the approved reach.sh and return the connection spec it prints, or why it couldn't.
+typedefs:
+  Spec:
+    host: str
+    port: Optional(int)
+    jump: Optional(list(str))
+    opencorp: str
+    env: Optional(dict(str, str))
+  Reached:
+    outcome: Literal(ok, no_office, unreachable, broken)
+    spec: Optional(Spec)
+    detail: str
+nodes:
+  replay:
+    kind: tool
+    tool_id: replay_access
+    input: {}
+    output: Reached
+output: ${replay.output}

@@ -35,7 +35,7 @@ test("sign-in shows the form first, with its autocomplete hints, and opencorp hq
   const pair = page.getByText("Or run opencorp hq --sign-in and open the link it prints.")
   await expect(pair).toBeVisible()
   await expect(pair.locator("code")).toHaveText("opencorp hq --sign-in")
-  await expect(page.getByText("Over SSH, opencorp hq prints the ssh -N -L command to run first.")).toBeVisible()
+  await expect(page.getByText("On another machine, opencorp hq connects to HQ over SSH and opens it.")).toBeVisible()
   const form = await page.locator("form").boundingBox()
   const below = await pair.boundingBox()
   expect(below!.y).toBeGreaterThan(form!.y + form!.height - 1)

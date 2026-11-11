@@ -80,6 +80,41 @@ the second hires.
 `opencorp hq` opens HQ in your browser, signed in by a one-time link. On Linux HQ's web port is off
 by default, so it prints how to reach HQ instead. Over SSH it prints the forwarding commands.
 
+### HQ from another machine
+
+On a machine without the office, `opencorp hq` runs `~/.opencorp/hq/reach.sh` (under `$OPENCORP_HOME`
+when set), logs in to HQ's machine over SSH, forwards HQ's socket to `http://127.0.0.1:49381/` and opens
+it. It holds the connection until Ctrl-C; after a drop it tries once quietly, then reconnects each time you
+press Enter (SSH may ask for Duo again). The first visit and `--sign-in` sign the browser in, for 30 days;
+`--port N` picks another local port, which means signing in again. `--no-open` prints the link instead.
+
+`reach.sh` is a `sh` script you write: it finds HQ's machine (a Slurm job's node, say) and prints, as its
+last line of output, how to reach it:
+
+```sh
+set -eu
+ssh me@login.example.edu true
+printf '%s\n' '{"jump": ["me@login.example.edu"], "host": "me@node12", "opencorp": "/home/me/opencorp/packages/cli/bin/opencorp", "env": {"OPENCORP_BUN": "/home/me/.bun/bin/bun"}}'
+```
+
+- `host`: `[user@]host` of HQ's machine. `port`: its SSH port, if not 22.
+- `jump`: up to 3 jump hosts, `[user@]host[:port]`, in order.
+- `opencorp`: the absolute path of `opencorp` there (a checkout's `packages/cli/bin/opencorp`).
+- `env`: `PATH`, `OPENCORP_BUN` or `OPENCORP_HOME` to set there, as absolute paths, when a
+  non-interactive shell there lacks them.
+
+Only these keys pass, each checked against a strict pattern, so nothing in the spec can become an SSH
+option or a shell word. The script runs with only `PATH` (opencorp's ssh wrapper first,
+which uses its own SSH config and records each ssh's exit), `HOME`, `SSH_AUTH_SOCK`, `OPENCORP_SSH_CONFIG`
+and `OPENCORP_SSH_STATUS`, and stdin from `/dev/null`; its stderr goes to you. It exits 0 with the spec, 3
+when HQ's office isn't there (no job, say; the reason on stderr), or 255 when it couldn't connect (`set -eu`
+passes ssh's 255 through). Any ssh in it that exits 255, even one whose failure the script handles, means
+"couldn't connect", so failover such as `ssh a true || ssh b true` isn't supported. Control commands don't
+count: `ssh -O check login || ssh -fN login` works. A new or changed `reach.sh` is shown, whole or as a diff,
+and runs only once you approve it. `opencorp hq` exits 3 when no office answers there.
+
+Each visit runs `opencorp hq --check` on HQ's machine, so that checkout needs this version of OpenCorp.
+
 ### Check and run
 
 `opencorp doctor` checks the office, its service, the provider, the sandbox, Codex, HQ and the web

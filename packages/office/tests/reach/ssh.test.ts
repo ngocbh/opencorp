@@ -1,6 +1,7 @@
 /** The SSH plumbing: generated configs and the wrapper, the child runner, the node master, mux and control commands,
  *  and the watcher. */
 import { execFileSync, spawn } from "node:child_process"
+import { PassThrough } from "node:stream"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
@@ -30,6 +31,7 @@ import {
   masterArgv,
   mux,
   muxArgv,
+  quietStdin,
   readStatuses,
   resetStatus,
   runChild,
@@ -120,6 +122,29 @@ test("the wrapper runs the real ssh with our config and records each exit status
     })
   expect(run().toString()).toBe("255\n")
   expect(() => wrapperText("/a/it's/ssh")).toThrow()
+})
+
+test("the wrapper records no status for a control command, which opens no connection", () => {
+  const dir = shortDir()
+  fs.mkdirSync(path.join(dir, "real"))
+  fs.mkdirSync(path.join(dir, "bin"))
+  // Every call fails as ssh does when it can't connect, or finds no master for -O.
+  fs.writeFileSync(path.join(dir, "real", "ssh"), "#!/bin/sh\nexit 255\n", { mode: 0o700 })
+  fs.writeFileSync(path.join(dir, "bin", "ssh"), wrapperText(path.join(dir, "real", "ssh")), { mode: 0o700 })
+  const status = path.join(dir, "status")
+  const env = { PATH: `${dir}/bin:/usr/bin:/bin`, OPENCORP_SSH_CONFIG: "/c", OPENCORP_SSH_STATUS: status }
+  const calls = [
+    "ssh -O check login1",
+    "ssh -p 22 -Ocheck login1",
+    "ssh -S /s/sock -O exit login1",
+    "ssh -o BatchMode=yes h1",
+    "ssh -l -O h2",
+    "ssh h3 ls -O",
+    "ssh -- -O",
+  ]
+  execFileSync("/bin/sh", ["-c", calls.map((c) => `${c} || true`).join("\n")], { env, timeout: 10_000 })
+  // Connections: the -o one, the one whose user is "-O", the one whose remote command holds -O, and the last.
+  expect(fs.readFileSync(status, "utf8")).toBe("255\n255\n255\n255\n")
 })
 
 test("writeSshFiles writes the configs 0600 and the wrapper 0700", async () => {
@@ -695,4 +720,18 @@ test("the watcher gives up on a master that never answers its -O exit", async ()
   expect(took).toBeGreaterThan(CONTROL_MS - 500)
   expect(took).toBeLessThan(CONTROL_MS + 3000)
   expect(exits(fake.calls())).toEqual([path.join(ctx.paths.cm, "stuck")])
+})
+
+test("quietStdin pauses stdin", () => {
+  const plain = new PassThrough()
+  plain.resume()
+  quietStdin(plain)
+  expect(plain.isPaused()).toBe(true)
+  // A terminal also leaves raw mode, so ssh's /dev/tty prompt reads a line as typed.
+  const tty = Object.assign(new PassThrough(), { isTTY: true, modes: [] as boolean[] })
+  const raw = Object.assign(tty, { setRawMode: (on: boolean) => void tty.modes.push(on) })
+  raw.resume()
+  quietStdin(raw)
+  expect(raw.isPaused()).toBe(true)
+  expect(raw.modes).toEqual([false])
 })

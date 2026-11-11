@@ -25,10 +25,13 @@ export const TRIES = 5
 export const TYPE_OWN = "Type my own answer"
 
 /** `text` safe to print: line breaks and tabs become spaces and other control characters are dropped, so model or
- *  program text can't move the cursor or send escapes. */
+ *  program text can't move the cursor or send escapes; invisible format characters (bidi controls, zero-width ones)
+ *  are shown as `<U+202E>`, so text can't read other than it runs. */
 export function clean(text: string): string {
   // C1 controls (0x80-0x9f) go too: some terminals read 0x9b as the start of an escape sequence.
-  return text.replace(/[\x00-\x1f\x7f-\x9f]/g, (c) => (c === "\n" || c === "\r" || c === "\t" ? " " : ""))
+  return text
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, (c) => (c === "\n" || c === "\r" || c === "\t" ? " " : ""))
+    .replace(/\p{Cf}/gu, (c) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}>`)
 }
 
 /** The error for stdin ending before `question` was answered. */

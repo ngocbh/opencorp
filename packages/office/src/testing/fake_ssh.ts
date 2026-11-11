@@ -35,7 +35,7 @@ export interface FakeSsh {
   /** The folder holding `ssh`, to put first on PATH. */
   readonly bin: string
   readonly ssh: string
-  /** behavior.json, log.jsonl, masters/, tty.txt. */
+  /** behavior.json, log.jsonl, masters/, tty.txt, logins.txt. */
   readonly state: string
   /** Replaces the behavior; each later call reads it. */
   set(b: FakeSshBehavior): void
@@ -43,6 +43,8 @@ export interface FakeSsh {
   calls(): string[][]
   /** The lines typed at its password prompts. */
   tty(): string[]
+  /** The host names that logged in, in order (riding a master isn't a login). */
+  logins(): string[]
   /** The pids of its masters still running. */
   masters(): number[]
 }
@@ -58,7 +60,7 @@ const BUN = selfCommand()[0]
 const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 const NO_CACHE = "BUN_RUNTIME_TRANSPILER_CACHE_PATH"
 
-/** Installs `<dir>/bin/ssh`, state in `<dir>/state` (behavior.json, log.jsonl, masters/, tty.txt). */
+/** Installs `<dir>/bin/ssh`, state in `<dir>/state` (behavior.json, log.jsonl, masters/, tty.txt, logins.txt). */
 export function installFakeSsh(dir: string, behavior: FakeSshBehavior = {}): FakeSsh {
   const bin = path.join(dir, "bin")
   const state = path.join(dir, "state")
@@ -84,6 +86,7 @@ export function installFakeSsh(dir: string, behavior: FakeSshBehavior = {}): Fak
     set,
     calls: () => lines("log.jsonl").map((line) => JSON.parse(line) as string[]),
     tty: () => lines("tty.txt"),
+    logins: () => lines("logins.txt"),
     masters: () =>
       (fs.existsSync(path.join(state, "masters")) ? fs.readdirSync(path.join(state, "masters")) : [])
         .map(Number)
@@ -233,6 +236,7 @@ class Run {
     const mode = this.mode(target, batch)
     if (mode === "hang") return await new Promise<never>(() => setTimeout(() => process.exit(255), FAKE_MASTER_MAX_MS))
     if (mode === "ok" || (mode === "tty" && this.prompt(hostName(target)))) {
+      fs.appendFileSync(path.join(this.state, "logins.txt"), hostName(target) + "\n")
       if (this.behavior.banner !== undefined) process.stderr.write(this.behavior.banner)
       return true
     }

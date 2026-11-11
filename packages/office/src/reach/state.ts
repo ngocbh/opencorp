@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { type FileLock, FileLockError, lockFile } from "@ngocbh/yian/platform"
-import { PairCode, Timestamp } from "@opencorp/protocol"
+import { Timestamp } from "@opencorp/protocol"
 import { z } from "zod"
 import { redirectPage, TTL } from "../hq/pairing.ts"
 import { readPrivate, writePrivate } from "../secrets.ts"
@@ -75,10 +75,13 @@ export const sha256 = (bytes: string | Uint8Array) => createHash("sha256").updat
 /** A one-time code as `PairCodes.mint` makes it: 16 random bytes in base64url. */
 export const CODE = /^[A-Za-z0-9_-]{22}$/
 
-/** The code in a remote `opencorp hq --json`'s `PairCode`, or null. Its `url` and `path` never reach the HTML: the
- *  link is built here. */
+/** What a visit reads of a remote `opencorp hq --json`, whatever else that checkout's version prints: the path. */
+export const RemoteCode = z.looseObject({ path: z.string() })
+
+/** The code in a remote `opencorp hq --json`'s path, or null. Its `url` and `path` never reach the HTML: the link is
+ *  built here. */
 export function codeFrom(data: unknown): string | null {
-  const parsed = PairCode.safeParse(data)
+  const parsed = RemoteCode.safeParse(data)
   if (!parsed.success || !parsed.data.path.startsWith("/pair#")) return null
   const code = parsed.data.path.slice("/pair#".length)
   return CODE.test(code) ? code : null
@@ -108,14 +111,18 @@ export function sweepRedirects(paths: ReachPaths, now: number): void {
 /** How old a status file or a learning run's candidate must be before a new visit deletes it. */
 export const STATUS_STALE_MS = 10 * 60_000
 
-/** The lock holder's start: `exitAll`, `sweepRedirects`, and `ssh/status.*` and `reach.new.sh` older than
- *  `STATUS_STALE_MS`. */
+/** The lock holder's start: `exitAll`, `sweepRedirects`, and `ssh/status.*`, `reach.new.sh` and the replays' copies
+ *  of reach.sh (`.reach-*.sh`) older than `STATUS_STALE_MS`. */
 export async function cleanUp(ctx: ReachContext, now: number): Promise<void> {
   const { paths } = ctx
   await exitAll(ctx)
   sweepRedirects(paths, now)
   removeOlder(paths.ssh, (name) => /^status\.[0-9]+$/.test(name), now - STATUS_STALE_MS)
-  removeOlder(paths.dir, (name) => name === path.basename(paths.candidate), now - STATUS_STALE_MS)
+  removeOlder(
+    paths.dir,
+    (name) => name === path.basename(paths.candidate) || /^\.reach-[0-9]+-[0-9a-f]+\.sh$/.test(name),
+    now - STATUS_STALE_MS,
+  )
 }
 
 /** Deletes the files in `dir` whose names `match` and that were last changed before `before` (ms). */

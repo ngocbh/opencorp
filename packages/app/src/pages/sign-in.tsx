@@ -111,7 +111,7 @@ export default function SignIn() {
         Or run <code>opencorp hq --sign-in</code> and open the link it prints.
       </p>
       <p class="mt-2 text-sm text-neutral-500">
-        Over SSH, <code>opencorp hq</code> prints the <code>ssh -N -L</code> command to run first.
+        On another machine, <code>opencorp hq</code> connects to HQ over SSH and opens it.
       </p>
     </main>
   )

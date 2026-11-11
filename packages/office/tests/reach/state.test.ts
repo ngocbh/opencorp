@@ -131,15 +131,17 @@ const pairCode = (p: string) => ({
   open_file: null,
 })
 
-test("only a 22-character base64url code from /pair# is taken", () => {
+test("only a 22-character base64url code from the path's /pair# is taken", () => {
   expect(CODE).toHaveLength(22)
   expect(codeFrom(pairCode(`/pair#${CODE}`))).toBe(CODE)
   expect(codeFrom({ ...pairCode(`/pair#${CODE}`), url: `http://evil/pair#${CODE}` })).toBe(CODE)
   for (const bad of [CODE.slice(1), CODE + "a", CODE.slice(1) + '"', CODE.slice(1) + "<"])
     expect([bad, codeFrom(pairCode(`/pair#${bad}`))]).toEqual([bad, null])
   expect(codeFrom(pairCode(`/other#${CODE}`))).toBeNull()
-  expect(codeFrom({ ...pairCode(`/pair#${CODE}`), extra: 1 })).toBeNull()
-  expect(codeFrom({ path: `/pair#${CODE}` })).toBeNull()
+  // Only the path counts: another version's fields, or a missing one, don't matter.
+  expect(codeFrom({ ...pairCode(`/pair#${CODE}`), extra: 1 })).toBe(CODE)
+  expect(codeFrom({ path: `/pair#${CODE}` })).toBe(CODE)
+  expect(codeFrom({ url: `/pair#${CODE}` })).toBeNull()
   expect(codeFrom(undefined)).toBeNull()
 })
 
@@ -183,11 +185,14 @@ test("start-up cleanup ends leftover masters and removes expired files and stale
   const live = await writeRedirect(ctx.paths, DEFAULT_PORT, CODE)
   const staleStatus = ctx.paths.status(1)
   const freshStatus = ctx.paths.status(2)
-  for (const f of [staleStatus, freshStatus, ctx.paths.candidate]) fs.writeFileSync(f, "255\n", { mode: 0o600 })
+  // A replay's private copy of reach.sh that a killed run left.
+  const copy = path.join(ctx.paths.dir, ".reach-1-0a1b2c3d.sh")
+  for (const f of [staleStatus, freshStatus, ctx.paths.candidate, copy]) fs.writeFileSync(f, "255\n", { mode: 0o600 })
   const now = Date.now()
   const longAgo = new Date(now - STATUS_STALE_MS - 1000)
-  for (const f of [expired, staleStatus, ctx.paths.candidate]) fs.utimesSync(f, longAgo, longAgo)
+  for (const f of [expired, staleStatus, ctx.paths.candidate, copy]) fs.utimesSync(f, longAgo, longAgo)
   await cleanUp(ctx, now)
+  expect(fs.existsSync(copy)).toBe(false)
   expect(await node.exited).toBe(0)
   expect(fs.readdirSync(ctx.paths.cm)).toEqual([])
   expect(isSocket(path.join(ctx.paths.cm, fakeControlName("login1")))).toBe(false)
