@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, onTestFinished, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
@@ -6,6 +6,7 @@ import { HqStatus, type HqTcp, PairCode } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
 import { DEFAULT_PORT, type VisitOptions } from "@opencorp/office/reach/visit"
 import { canOpen, hq, LOCAL_PORT, pairOutput, type HqDeps, socketPort } from "../src/commands/hq"
+import { builtApp, client, pidsNaming, removeClient, runHq } from "./remote"
 import { staleSocket } from "./sockets"
 
 /** What a client says when no office answers at `home`. */
@@ -727,4 +728,73 @@ describe("against a real office", () => {
     expect(res.status).toBe(200)
     expect(res.headers.get("set-cookie")).toMatch(/^opencorp_hq_1=/)
   })
+})
+
+describe("from another machine", () => {
+  let remote: TestOffice
+  let app: string
+  beforeAll(async () => {
+    app = builtApp(fs.mkdtempSync("/tmp/oc-app-"))
+    remote = await startOffice({ hq: { tcp: false, app_dir: app } })
+  }, 120_000)
+  afterAll(async () => {
+    await remote?.stop()
+    fs.rmSync(app, { recursive: true, force: true })
+  })
+
+  /** A client of `remote`, removed when the test finishes. */
+  async function machine() {
+    const c = await client(remote)
+    onTestFinished(() => removeClient(c))
+    return c
+  }
+
+  test("it connects through ssh, signs the browser in once, and ends every master on Ctrl-C", async () => {
+    const c = await machine()
+    const run = runHq(c.env, ["--no-open"], c.root)
+    await run.waitFor("Connected.", 60_000)
+    const link = new RegExp(`^http://127\\.0\\.0\\.1:${c.port}/pair#([A-Za-z0-9_-]{22})$`, "m").exec(run.stdout())
+    expect(link).not.toBeNull()
+    const origin = `http://127.0.0.1:${c.port}`
+    const res = await fetch(`${origin}/api/pair`, {
+      method: "POST",
+      headers: { origin, "content-type": "application/json", connection: "close" },
+      body: JSON.stringify({ code: link![1] }),
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get("set-cookie")).toMatch(new RegExp(`^opencorp_hq_${c.port}=`))
+    run.child.kill("SIGINT")
+    expect(await run.exited).toBe(0)
+    expect(c.fake.masters()).toEqual([])
+    expect(fs.readdirSync(c.cm)).toEqual([])
+    expect(pidsNaming(c.hq)).toEqual([])
+    const access = JSON.parse(fs.readFileSync(path.join(c.hq, "access.json"), "utf8"))
+    expect(access.signed_in_at).not.toBeNull()
+  }, 120_000)
+
+  test("a second opencorp hq while one runs only prints HQ's URL", async () => {
+    const c = await machine()
+    const first = runHq(c.env, ["--no-open"], c.root)
+    await first.waitFor("Connected.", 60_000)
+    const second = runHq(c.env, ["--no-open"], c.root)
+    expect(await second.exited).toBe(0)
+    expect(second.stdout()).toBe(`http://127.0.0.1:${c.port}/\n`)
+    expect(c.fake.calls().filter((argv) => argv.includes("-M"))).toHaveLength(1)
+    first.child.kill("SIGINT")
+    expect(await first.exited).toBe(0)
+    expect(pidsNaming(c.hq)).toEqual([])
+  }, 120_000)
+
+  // Last: it stops the office.
+  test("with the office there stopped it says no office answers and exits 3", async () => {
+    const stopped = await remote.opencorp(["stop"])
+    expect(stopped.code).toBe(0)
+    const c = await machine()
+    const run = runHq(c.env, ["--no-open"], c.root)
+    expect(await run.exited).toBe(3)
+    expect(run.stderr()).toContain("opencorp hq: no office answers there: ")
+    expect(run.stdout()).toBe("")
+    expect(c.fake.masters()).toEqual([])
+    expect(pidsNaming(c.hq)).toEqual([])
+  }, 120_000)
 })
