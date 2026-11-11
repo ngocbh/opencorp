@@ -353,6 +353,16 @@ test("waitForSocket is up after login, exited when it's refused, and timed out, 
   expect(fake.masters()).toEqual([])
 })
 
+test("a leftover cm/node never reads as up before the new master has logged in", async () => {
+  const { dir, fake } = fakeHome({ login: "hang" })
+  const ctx = await reachCtx(dir, fake)
+  await staleSocket(ctx.paths.node)
+  const master = startMaster(ctx, SPEC, { quiet: true })
+  expect(isSocket(ctx.paths.node)).toBe(false)
+  expect(await waitForSocket(master, 500)).toBe("timed_out")
+  await master.exited
+})
+
 test("a batch context's master reads config.batch", async () => {
   const { dir, fake } = fakeHome({ login: "tty", batch: "refuse" })
   const ctx = await reachCtx(dir, fake, { batch: true })

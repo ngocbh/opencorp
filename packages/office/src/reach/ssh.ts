@@ -295,11 +295,15 @@ export interface Master {
   readonly socket: string
 }
 
-/** Starts the node master as a foreground child, its stdin a pipe this process holds and never writes. When this
- *  process ends, `kill -9` included, the remote cat exits and ssh ends the master once no channel is open; an HQ tab's
- *  `/api/events` is one, so the visit's watcher also `-O exit`s it. Its stderr is the owner's unless `quiet`. */
+/** Starts the node master as a foreground child, after removing any leftover `cm/node`, its stdin a pipe this process
+ *  holds and never writes. When this process ends, `kill -9` included, the remote cat exits and ssh ends the master
+ *  once no channel is open; an HQ tab's `/api/events` is one, so the visit's watcher also `-O exit`s it. Its stderr is
+ *  the owner's unless `quiet`. */
 export function startMaster(ctx: ReachContext, spec: Spec, { quiet = false } = {}): Master {
   const { paths } = ctx
+  // The lock holder owns cm/node. A leftover there would read as up before login, and ssh would refuse to bind over
+  // it ("already exists, disabling multiplexing").
+  fs.rmSync(paths.node, { force: true })
   const argv = masterArgv(ctx.ssh, spec, { config: ctx.batch ? paths.batchConfig : paths.config, socket: paths.node })
   const child = spawn(argv[0], argv.slice(1), {
     cwd: paths.dir,
