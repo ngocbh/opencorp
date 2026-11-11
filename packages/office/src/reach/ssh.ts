@@ -1,7 +1,9 @@
 /** The SSH plumbing of reaching a remote HQ: the generated configs and the ssh wrapper, the child runner, the node
  *  master and its lifeline, mux sessions and `-O` commands, and the watcher that ends every master once this process
  *  is gone. */
+import { spawn } from "node:child_process"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { replaceFile, writePrivate } from "../secrets.ts"
 import type { ReachPaths } from "./paths.ts"
@@ -135,3 +137,90 @@ export function readStatuses(ctx: ReachContext): number[] {
 /** `text` without control characters other than tab and newline: output from another machine must not drive the
  *  owner's terminal. */
 export const cleanOutput = (text: string) => text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "")
+
+/** A finished child: its exit code (128 + n for signal n, 127 when it couldn't start), output, and whether it was ended
+ *  for its time or for the visit's stop. */
+export interface Ran {
+  code: number
+  stdout: string
+  stderr: string
+  timedOut: boolean
+}
+/** How long a child's pipes are read after it exits. */
+export const DRAIN_MS = 200
+/** How much of each stream a child keeps. */
+export const KEEP_CHARS = 64 * 1024
+/** How long a child ended with SIGTERM has before SIGKILL. */
+export const KILL_GRACE_MS = 2000
+
+/** Runs `argv` with stdin from /dev/null. It's done when it exits, plus `DRAIN_MS`: a detached ssh master's jump host
+ *  can hold the pipes open for minutes (OpenSSH 8.0). It keeps the last `KEEP_CHARS` of each stream, since the
+ *  spec and the error worth showing come last. */
+export function runChild(
+  argv: readonly [string, ...string[]],
+  o: {
+    env: Record<string, string>
+    cwd: string
+    timeoutMs: number
+    signal?: AbortSignal
+    echo?: (text: string) => void
+    echoStdout?: boolean
+  },
+): Promise<Ran> {
+  return new Promise((resolve) => {
+    const child = spawn(argv[0], argv.slice(1), { cwd: o.cwd, env: o.env, stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    let timedOut = false
+    let done = false
+    const keep = (kept: string, more: string) => (kept + more).slice(-KEEP_CHARS)
+    child.stdout!.setEncoding("utf8").on("data", (c: string) => {
+      stdout = keep(stdout, c)
+      if (o.echoStdout) o.echo?.(c)
+    })
+    child.stderr!.setEncoding("utf8").on("data", (c: string) => {
+      stderr = keep(stderr, c)
+      o.echo?.(c)
+    })
+    const stop = () => {
+      timedOut = true
+      if (child.pid !== undefined) killTree(child.pid)
+    }
+    const timer = setTimeout(stop, o.timeoutMs)
+    // A signal that already fired never fires "abort" again.
+    if (o.signal?.aborted) stop()
+    else o.signal?.addEventListener("abort", stop, { once: true })
+    const finish = (ran: Ran) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      o.signal?.removeEventListener("abort", stop)
+      child.stdout!.destroy()
+      child.stderr!.destroy()
+      resolve(ran)
+    }
+    child.on("error", (e) => {
+      if (child.pid === undefined) finish({ code: 127, stdout: "", stderr: e.message, timedOut: false })
+    })
+    child.on("exit", (code, sig) => {
+      const exit = code ?? 128 + (sig ? (os.constants.signals[sig] ?? 0) : 0)
+      setTimeout(() => finish({ code: exit, stdout, stderr, timedOut }), DRAIN_MS)
+    })
+  })
+}
+
+/** The last non-blank stderr line, cleaned, at most 300 characters. */
+export function lastStderr(ran: Ran): string {
+  const lines = cleanOutput(ran.stderr)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+  return (lines.at(-1) ?? "").slice(0, 300)
+}
+
+/** Ends `pid` with SIGTERM. */
+export function killTree(pid: number): void {
+  try {
+    process.kill(pid, "SIGTERM")
+  } catch {}
+}

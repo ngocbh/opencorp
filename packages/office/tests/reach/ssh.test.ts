@@ -3,7 +3,7 @@
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import {
   cleanOutput,
@@ -12,13 +12,17 @@ import {
   findSsh,
   LIMITS,
   type ReachContext,
+  KEEP_CHARS,
+  lastStderr,
   readStatuses,
   resetStatus,
+  runChild,
   sshEnv,
   wrapperText,
   writeSshFiles,
 } from "../../src/reach/ssh.ts"
-import { shortDir } from "../helpers.ts"
+import { isGone, shortDir, waitFor } from "../helpers.ts"
+import { startTime } from "../../src/install/proc.ts"
 
 setDefaultTimeout(30_000)
 
@@ -159,4 +163,67 @@ test("status files are reset before a run and read as numbers", () => {
 test("cleanOutput keeps tabs and newlines and drops every other control character", () => {
   expect(cleanOutput("a\x1b[2Jb\r\tc\n")).toBe("a[2Jb\tc\n")
   expect(cleanOutput("\x00\x07\x7f\x9b31m\u00e9")).toBe("31m\u00e9")
+})
+
+/** Kills `pid` when the current test finishes, if it's still the process that started at `started`. */
+function killAfter(pid: number): void {
+  const started = startTime(pid)
+  onTestFinished(() => {
+    if (!isGone(pid, started)) process.kill(pid, "SIGKILL")
+  })
+}
+
+const RUN = { env: { PATH: "/usr/bin:/bin" }, cwd: "/", timeoutMs: 10_000 }
+
+test("a child is done when it exits, even while a grandchild holds its pipes", async () => {
+  const dir = shortDir()
+  const pidFile = path.join(dir, "pid")
+  const started = performance.now()
+  const ran = await runChild(
+    ["/bin/sh", "-c", 'echo out; (sleep 30 & echo $! >"$0"); echo err >&2', pidFile],
+    RUN,
+  )
+  const grandchild = Number(fs.readFileSync(pidFile, "utf8"))
+  killAfter(grandchild)
+  expect(performance.now() - started).toBeLessThan(2000)
+  expect(ran).toEqual({ code: 0, stdout: "out\n", stderr: "err\n", timedOut: false })
+  expect(isGone(grandchild, startTime(grandchild))).toBe(false)
+})
+
+test("a program that can't start is exit 127", async () => {
+  const ran = await runChild(["/nonexistent/program"], RUN)
+  expect([ran.code, ran.stdout, ran.timedOut]).toEqual([127, "", false])
+  expect(ran.stderr).not.toBe("")
+  expect((await runChild(["/bin/sh", "-c", "exit 3"], RUN)).code).toBe(3)
+  expect((await runChild(["/bin/sh", "-c", "kill -TERM $$"], RUN)).code).toBe(143)
+})
+
+test("echo gets stderr as it comes, and stdout only when asked", async () => {
+  const script = "echo one >&2; echo two; sleep 0.3; echo three >&2"
+  const echoed: string[] = []
+  const times: number[] = []
+  const started = performance.now()
+  const echo = (text: string) => {
+    echoed.push(text)
+    times.push(performance.now() - started)
+  }
+  const ran = await runChild(["/bin/sh", "-c", script], { ...RUN, echo })
+  expect(echoed.join("")).toBe("one\nthree\n")
+  expect(times[0]).toBeLessThan(250)
+  expect(ran.stdout).toBe("two\n")
+  const both: string[] = []
+  await runChild(["/bin/sh", "-c", script], { ...RUN, echo: (t) => both.push(t), echoStdout: true })
+  expect(both.join("").split("\n").sort()).toEqual(["", "one", "three", "two"])
+  expect(lastStderr({ code: 1, stdout: "", stderr: "a\n\x1b[31mlast\x1b[0m line\n\n", timedOut: false })).toBe("[31mlast[0m line")
+  expect(lastStderr({ code: 1, stdout: "", stderr: "", timedOut: false })).toBe("")
+  expect(lastStderr({ code: 1, stdout: "", stderr: "x".repeat(400), timedOut: false })).toHaveLength(300)
+})
+
+test("past 64 KiB it keeps the last 64 KiB, so the last line survives", async () => {
+  const script = "i=0; while [ $i -lt 3000 ]; do echo line-$i-padding-padding-padding; echo e-$i >&2; i=$((i+1)); done"
+  const ran = await runChild(["/bin/sh", "-c", script], RUN)
+  expect(ran.code).toBe(0)
+  expect(ran.stdout).toHaveLength(KEEP_CHARS)
+  expect(ran.stdout.endsWith("line-2999-padding-padding-padding\n")).toBe(true)
+  expect(ran.stderr.endsWith("e-2999\n")).toBe(true)
 })
