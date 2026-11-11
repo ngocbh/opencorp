@@ -4,7 +4,8 @@ import path from "node:path"
 import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
 import { HqStatus, type HqTcp, PairCode } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
-import { canOpen, hq, pairOutput, type HqDeps, socketPort } from "../src/commands/hq"
+import { DEFAULT_PORT, type VisitOptions } from "@opencorp/office/reach/visit"
+import { canOpen, hq, LOCAL_PORT, pairOutput, type HqDeps, socketPort } from "../src/commands/hq"
 import { staleSocket } from "./sockets"
 
 /** What a client says when no office answers at `home`. */
@@ -304,6 +305,7 @@ function deps(env: Record<string, string> = {}, platform = "darwin") {
   const spawned: string[][] = []
   const printed: string[] = []
   const errors: string[] = []
+  const visits: VisitOptions[] = []
   const d: HqDeps = {
     env,
     platform,
@@ -311,8 +313,12 @@ function deps(env: Record<string, string> = {}, platform = "darwin") {
     spawn: (argv) => void spawned.push(argv),
     print: (l) => void printed.push(l),
     error: (l) => void errors.push(l),
+    visit: async (options) => {
+      visits.push(options)
+      return 0
+    },
   }
-  return { d, spawned, printed, errors }
+  return { d, spawned, printed, errors, visits }
 }
 
 test("on a Mac it asks for a redirect file and opens it; the opener gets only the file's path", async () => {
@@ -418,7 +424,7 @@ test("--check without --json, or with another flag, is a usage error", async () 
     const { d, printed, errors } = deps()
     expect({ argv, code: await hq(argv, d) }).toEqual({ argv, code: 2 })
     expect(errors.join("\n")).toContain(
-      "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--json] [--check --json]",
+      "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--json] [--check --json]",
     )
     expect(printed).toEqual([])
   }
@@ -611,32 +617,80 @@ test("when HQ's status can't be read, it opens the link as before", async () => 
   expect(spawned).toHaveLength(1)
 })
 
-test("without an office it says so and exits 3", async () => {
-  const { d, errors } = deps()
-  expect(await hq([], d)).toBe(3)
-  expect(errors).toEqual([notRunningAt(home)])
+test("with no office answering, hq takes the remote path with its flags", async () => {
+  let { d, visits, errors } = deps()
+  expect(await hq(["--sign-in", "--port", "50001"], d)).toBe(0)
+  expect(visits).toEqual([{ signIn: true, port: 50001, open: true }])
+  expect(errors).toEqual([])
+  ;({ d, visits } = deps())
+  expect(await hq(["--no-open"], d)).toBe(0)
+  expect(visits).toEqual([{ signIn: false, port: undefined, open: false }])
+  // Where no browser can open, it prints instead.
+  ;({ d, visits } = deps({}, "linux"))
+  expect(await hq([], d)).toBe(0)
+  expect(visits).toEqual([{ signIn: false, port: undefined, open: false }])
 })
 
-test("with a socket nothing answers on, it says so and exits 3", async () => {
-  const socket = path.join(home, "office", "office.sock")
-  await staleSocket(socket)
-  const { d, errors } = deps()
-  expect(await hq([], d)).toBe(3)
-  expect(errors).toEqual([
-    `The office can't be reached: nothing answers on ${socket}; the office may have stopped or crashed. Run \`opencorp doctor\`.`,
-  ])
+test("with a socket nothing answers on, hq takes the remote path", async () => {
+  await staleSocket(path.join(home, "office", "office.sock"))
+  const { d, visits } = deps()
+  expect(await hq([], d)).toBe(0)
+  expect(visits).toHaveLength(1)
+})
+
+test("--json and --check --json never take the remote path", async () => {
+  for (const argv of [["--json"], ["--check", "--json"], ["--json", "--sign-in"]]) {
+    const { d, visits, errors } = deps()
+    expect({ argv, code: await hq(argv, d) }).toEqual({ argv, code: 3 })
+    expect(errors).toEqual([notRunningAt(home)])
+    expect(visits).toEqual([])
+  }
+  expect(fs.existsSync(path.join(home, "hq"))).toBe(false)
+})
+
+test("--port is refused where the office answers and beside --json or --check, and --handle where it doesn't", async () => {
+  const refused = async (argv: string[], message: string) => {
+    const { d, visits, errors } = deps()
+    expect({ argv, code: await hq(argv, d) }).toEqual({ argv, code: 2 })
+    expect(errors.join("\n")).toContain(message)
+    expect(visits).toEqual([])
+  }
+  await refused(["--handle", "ngocbh"], "opencorp hq: --handle works only on HQ's machine")
+  await refused(["--json", "--port", "50001"], "opencorp hq: --port is for reaching HQ from another machine")
+  await refused(["--check", "--json", "--port", "50001"], "opencorp hq: --check needs --json and takes no other option")
+  start({ tcp: true, listening: true })
+  await refused(["--port", "50001"], "opencorp hq: --port is for reaching HQ from another machine; HQ's office runs here")
+  expect(office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")).toBe(false)
+})
+
+test("--port takes 1024 to 65535", async () => {
+  for (const port of ["80", "1023", "65536", "x", "", "5e4", "050001"]) {
+    const { d, visits, errors } = deps()
+    expect({ port, code: await hq(["--port", port], d) }).toEqual({ port, code: 2 })
+    expect(errors.join("\n")).toContain("opencorp hq: --port takes a port from 1024 to 65535")
+    expect(visits).toEqual([])
+  }
+  for (const port of ["1024", "65535"]) {
+    const { d, visits } = deps()
+    expect(await hq(["--port", port], d)).toBe(0)
+    expect(visits[0]?.port).toBe(Number(port))
+  }
+})
+
+test("the remote default port is the socket forward's local port", () => {
+  expect(DEFAULT_PORT).toBe(LOCAL_PORT)
 })
 
 test("an unknown option is a usage error", async () => {
   const { d, errors } = deps()
   expect(await hq(["--nope"], d)).toBe(2)
-  expect(errors.join("\n")).toContain("usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--json] [--check --json]")
+  expect(errors.join("\n")).toContain("usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--json] [--check --json]")
 })
 
 test("--help prints the usage and exits 0 without the office", async () => {
   const { d, printed, errors } = deps()
   expect(await hq(["--help"], d)).toBe(0)
-  expect(printed).toEqual(["usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--json] [--check --json]"])
+  expect(printed).toEqual(["usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--json] [--check --json]"])
   expect(errors).toEqual([])
 })
 

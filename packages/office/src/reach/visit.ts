@@ -40,6 +40,8 @@ import {
   writeRedirect,
 } from "./state.ts"
 
+export { DEFAULT_PORT }
+
 /** How a visit was asked for: `--sign-in`, `--port N`, and whether it may open a browser. */
 export interface VisitOptions {
   signIn: boolean
