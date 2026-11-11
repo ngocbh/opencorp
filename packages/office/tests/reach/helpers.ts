@@ -11,7 +11,7 @@ import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import { type ReachContext, writeSshFiles } from "../../src/reach/ssh.ts"
 import type { VisitDeps } from "../../src/reach/visit.ts"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "../../src/testing/fake_ssh.ts"
-import { Script } from "../install/helpers.ts"
+import { NO_LISTING, Script } from "../install/helpers.ts"
 
 /** Limits short enough that a test which hits one still finishes. */
 export const SHORT_LIMITS = Object.freeze({ promptMs: 5000, stepMs: 5000 })
@@ -213,7 +213,7 @@ export class Exited extends Error {
 
 /** A visit's deps for a test: home `dir`, the fake ssh first on PATH (the system's ssh with `fake` null), `answers`
  *  for its approvals, recorded output and opens, a SIGINT the test sends with `sigint()`, an `exit` that throws
- *  `Exited`, and short limits. */
+ *  `Exited`, short limits, and a model picker that lists nothing and a model check that passes. */
 export function visitDeps(
   dir: string,
   fake: FakeSsh | null,
@@ -247,6 +247,8 @@ export function visitDeps(
     },
     limits: SHORT_LIMITS,
     sshIncludes: [],
+    listers: NO_LISTING,
+    checkModel: async () => null,
     ...more,
   }
   return { deps, prompter, stdin, printed, errors, echoed, opened, sigint: () => handler?.() }

@@ -1,5 +1,6 @@
-/** `opencorp hq` from a machine where no office answers: approve the saved path, replay it, connect to HQ's machine,
- *  sign the browser in or open HQ, and hold the connection until Ctrl-C, reconnecting after a drop. */
+/** `opencorp hq` from a machine where no office answers: approve the saved path (or learn one with the agent), replay
+ *  it, connect to HQ's machine, sign the browser in or open HQ, and hold the connection until Ctrl-C, reconnecting
+ *  after a drop. */
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
@@ -7,9 +8,11 @@ import type { Readable } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createTwoFilesPatch } from "diff"
 import { which } from "../install/launch.ts"
+import { LISTERS, type Listers, type ModelCheck, modelProblem } from "../install/onboard.ts"
 import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter } from "../install/prompts.ts"
 import { writePrivate } from "../secrets.ts"
 import { classifyCheck, type Connection, connect, describe, ReachFailure, sameHealth, signIn } from "./connect.ts"
+import { Learning, learnProvider, runLearn } from "./learn.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
 import { readScript, runReach, ScriptError } from "./replay.ts"
 import {
@@ -27,6 +30,7 @@ import {
   type Watcher,
   writeSshFiles,
 } from "./ssh.ts"
+import { BEFORE_LEARNING, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "./risks.ts"
 import { safePath, type Spec } from "./spec.ts"
 import {
   type Access,
@@ -69,17 +73,28 @@ export interface VisitDeps {
   limits?: ReachContext["limits"]
   /** The `Include`s of `hq/ssh/config`: `defaultIncludes(os.userInfo().homedir)` for real; tests pass their own. */
   sshIncludes: readonly string[]
+  /** List deployments and models for the model picker of a first learning run. */
+  listers: Listers
+  /** Why a provider's model doesn't answer, or null; checked before `hq/provider.json` is saved. */
+  checkModel: ModelCheck
 }
 
 export const USE = "Use it"
 export const STOP = "Stop"
 export const RUN_THIS = "Run this reach.sh on every visit?"
 export const USE_CHANGED = "Use the changed reach.sh on every visit?"
-/** No office answers here and there's no saved path: this may be HQ's own machine with its office stopped. */
-export const NO_PATH = (paths: ReachPaths) =>
+/** No office answers here: this may be HQ's own machine with its office stopped, so this comes first. */
+export const NO_OFFICE_HERE =
   "opencorp hq: no office answers here. If HQ runs on this machine, start it with `opencorp start` (`opencorp doctor` " +
-  `says why it's down).\nTo reach HQ on another machine, write ${paths.script}, a sh script whose last line of output ` +
-  "is the connection spec (see the README), then run `opencorp hq` again."
+  "says why it's down)."
+/** No office answers here, there's no saved path and no terminal to learn one on. */
+export const NO_PATH = (paths: ReachPaths) =>
+  `${NO_OFFICE_HERE}\nTo reach HQ on another machine, run \`opencorp hq\` in a terminal to learn the way there with an ` +
+  `agent, or write ${paths.script}, a sh script whose last line of output is the connection spec (see the README), ` +
+  "then run `opencorp hq` again."
+export const NOT_LEARNED = "opencorp hq: stopped; nothing was learned."
+export const CAPPED =
+  "opencorp hq: the model stopped after 30 turns without a working path, so nothing was saved. The commands it asked for:"
 /** Signed in longer than this, a visit hints at `--sign-in`: HQ's browser session lasts 30 days. */
 export const SIGN_IN_HINT_DAYS = 30
 export const SIGN_IN_HINT =
@@ -107,13 +122,22 @@ export async function reach(ctx: ReachContext, port: number): Promise<Connection
 
 /** A visit from a machine where no office answers; resolves to its exit code: 0 for a normal end (Ctrl-C while
  *  connected), 3 for no office there (or here, with no saved path), 130 for Ctrl-C before connecting, 1 for the
- *  rest. */
+ *  rest. With no saved path it offers to learn one with the agent, and goes on with the connection that saved it. */
 export async function visit(options: VisitOptions, deps: VisitDeps): Promise<number> {
   const paths = new ReachPaths(deps.home)
   // Before anything is made under hq/: with no saved path this is as likely HQ's own machine, its office stopped.
-  if (!present(paths.script)) {
-    deps.error(NO_PATH(paths))
-    return 3
+  const learnFirst = !present(paths.script)
+  if (learnFirst) {
+    if (!deps.prompter.interactive) {
+      deps.error(NO_PATH(paths))
+      return 3
+    }
+    deps.error(NO_OFFICE_HERE)
+    const asked = await askBeforeAnything(deps, () => askToLearn(deps, LEARN_QUESTION, LEARN))
+    if (asked !== true) {
+      if (asked === false) deps.error(NOT_LEARNED)
+      return asked === false ? 3 : 130
+    }
   }
   const problem = pathProblem(paths)
   if (problem !== null) {
@@ -145,6 +169,10 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
     await writeSshFiles(paths, ssh, deps.sshIncludes)
     await cleanUp(ctx, deps.now().getTime())
     watcher = startWatcher(ctx)
+    if (learnFirst) {
+      const learned = await learnPath(ctx, deps, { notes: "", script: "", failure: "" }, port)
+      return typeof learned === "number" ? learned : await hold(ctx, learned.conn, learned.access, options, deps)
+    }
     const approved = await approve(ctx, deps, await readAccess(paths), options.port)
     if (typeof approved === "number") return approved
     let access = approved
@@ -152,10 +180,7 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
       access = { ...access, port: options.port, signed_in_at: null }
     port = access.port
     const conn = await reach(ctx, port)
-    access = await signInOrOpen(ctx, conn, access, options, deps)
-    await writeAccess(paths, { ...access, last_used_at: deps.now().toISOString() })
-    deps.print(visitLine(conn))
-    return await waitLoop(ctx, conn, deps)
+    return await hold(ctx, conn, access, options, deps)
   } catch (error) {
     return failed(error, ctx, port, deps)
   } finally {
@@ -164,6 +189,74 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
     await watcher?.release()
     fs.rmSync(paths.status(process.pid), { force: true })
   }
+}
+
+/** Once connected: sign the browser in or open HQ, record the visit, say what stays open, then wait until Ctrl-C. */
+async function hold(ctx: ReachContext, conn: Connection, access: Access, options: VisitOptions, deps: VisitDeps): Promise<number> {
+  access = await signInOrOpen(ctx, conn, access, options, deps)
+  await writeAccess(ctx.paths, { ...access, last_used_at: deps.now().toISOString() })
+  deps.print(visitLine(conn))
+  return waitLoop(ctx, conn, deps)
+}
+
+/** Shows what learning risks, then asks `question` with `fallback` as the default; resolves whether the owner chose
+ *  to learn. */
+async function askToLearn(deps: VisitDeps, question: string, fallback: string): Promise<boolean> {
+  for (const line of BEFORE_LEARNING) deps.prompter.say(clean(line))
+  const answer = await deps.prompter.choose(question, [LEARN, STOP], fallback)
+  quietStdin(deps.stdin)
+  return answer === LEARN
+}
+
+/** `ask` before the visit has its context: its own Ctrl-C, which a numbered list gets as SIGINT rather than as a key.
+ *  Resolves to what `ask` resolved to, or null on Ctrl-C. */
+async function askBeforeAnything<T>(deps: VisitDeps, ask: () => Promise<T>): Promise<T | null> {
+  const stop = new AbortController()
+  const off = deps.onSigint(() => (stop.signal.aborted ? deps.exit(130) : stop.abort()))
+  try {
+    return await Promise.race([ask(), aborted(stop.signal).then(() => null)])
+  } catch (error) {
+    if (error instanceof KeyboardInterrupt) return null
+    throw error
+  } finally {
+    off()
+  }
+}
+
+/** A learning run with the owner's consent already given: the model from `hq/provider.json` (asked for the first
+ *  time), then learn_hq. Resolves to the saved path's record and the connection that tested it, or to the exit code
+ *  once it says why nothing was saved. */
+async function learnPath(
+  ctx: ReachContext,
+  deps: VisitDeps,
+  inputs: { notes: string; script: string; failure: string },
+  port: number,
+): Promise<{ access: Access; conn: Connection } | number> {
+  const signal = ctx.signal!
+  // The second Ctrl-C exits at once; the first stops a model check that may take a minute.
+  const checkModel: ModelCheck = async (provider) => {
+    const problem = await Promise.race([deps.checkModel(provider), aborted(signal)])
+    signal.throwIfAborted()
+    return problem as string | null
+  }
+  const provider = await learnProvider(ctx.paths, deps.prompter, { listers: deps.listers, checkModel })
+  quietStdin(deps.stdin)
+  const key = provider.llm_config?.api_key
+  const state = new Learning(ctx, deps.prompter, deps.stdin, typeof key === "string" && key ? [key] : [], port, deps.now)
+  const learned = await runLearn(provider, inputs, state)
+  // Saved and connected, whatever the model did after.
+  if (state.connection !== null) {
+    const access = await readAccess(ctx.paths)
+    if (access === null) throw new Error(`${ctx.paths.access} went missing after it was saved`)
+    return { access, conn: state.connection }
+  }
+  if (learned.capped) {
+    deps.error(CAPPED)
+    for (const { command, code } of state.commands) deps.error(`  (${code === null ? "not run" : `exit ${code}`}) ${clean(command)}`)
+    return 1
+  }
+  deps.error(`opencorp hq: nothing was saved: ${clean(learned.message ?? learned.output ?? "the model stopped")}`)
+  return 1
 }
 
 /** A visit's context, its Ctrl-C (a second one exits 130 at once; the watcher then ends the masters) and the
@@ -512,5 +605,7 @@ export function realVisitDeps(home: string): VisitDeps {
     },
     exit: (code) => process.exit(code),
     sshIncludes: defaultIncludes(os.userInfo().homedir),
+    listers: LISTERS,
+    checkModel: (provider) => modelProblem(provider),
   }
 }

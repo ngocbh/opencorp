@@ -440,7 +440,10 @@ test("learnProvider asks with the picker the first time and reuses the file afte
   const { paths } = await reachCtx(dir, fake)
   const ask = new Script(["", KEY, "claude-opus-4-1"])
   const checked: unknown[] = []
-  const options = { listers: NO_LISTING, checkModel: async (p: Provider) => void checked.push(p.llm_config) ?? null }
+  const options = { listers: NO_LISTING, checkModel: async (p: Provider) => {
+    checked.push(p.llm_config)
+    return null
+  } }
   const first = await learnProvider(paths, ask, options)
   expect(ask.seen[0]).toBe(`Learning needs a model. Its connection is kept in ${paths.provider}, readable only by you.`)
   expect(first.llm_config).toEqual({ provider: "anthropic", api_key: KEY, model: "claude-opus-4-1" })

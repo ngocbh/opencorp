@@ -730,7 +730,7 @@ describe("against a real office", () => {
   })
 })
 
-test("with no office and no reach.sh, opencorp hq says to start the office or write one, exits 3 and makes nothing", async () => {
+test("with no office, no reach.sh and no terminal, opencorp hq says to start the office, learn in a terminal or write one; exits 3 and makes nothing", async () => {
   const root = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
   try {
     const home = path.join(root, "h")
@@ -739,7 +739,8 @@ test("with no office and no reach.sh, opencorp hq says to start the office or wr
     expect(await run.exited).toBe(3)
     expect(run.stderr()).toStartWith(
       "opencorp hq: no office answers here. If HQ runs on this machine, start it with `opencorp start` (`opencorp doctor` says why it's down).\n" +
-        `To reach HQ on another machine, write ${path.join(home, "hq", "reach.sh")}`,
+        "To reach HQ on another machine, run `opencorp hq` in a terminal to learn the way there with an agent, or write " +
+        path.join(home, "hq", "reach.sh"),
     )
     expect(run.stdout()).toBe("")
     expect(fs.readdirSync(home)).toEqual([])
