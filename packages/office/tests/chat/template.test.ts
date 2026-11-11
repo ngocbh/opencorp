@@ -3,8 +3,10 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { Transcript } from "../../src/chat/transcript.ts"
 import { readFlow } from "../../src/company/flow_yaml.ts"
 import { loadConfined } from "../../src/company/flows.ts"
+import { newId } from "../../src/store/store.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
 import { tempDir, waitFor } from "../helpers.ts"
 import { advanceJob, run, type TestWorker } from "../worker/helpers.ts"
@@ -161,6 +163,43 @@ test("two messages sent before an advance are one turn", async () => {
     { role: "user", content: "two" },
   ])
   expect(waitingAt(rec)).toEqual(["chat#1/heard"])
+})
+
+test.each([
+  ["chat", "max_tool_iterations: 100", "toolbox_stub"],
+  ["side_chat", "max_tool_iterations: 50", "workspace_stub"],
+])("a turn at the tool-call cap ends with the model's reply, its capped call an error, and waits [%s]", async (
+  name,
+  cap,
+  stub,
+) => {
+  const fake = await fakeLlm()
+  const root = tempDir()
+  const where = { pin: path.join(root, "pin"), runs: path.join(root, "runs") }
+  fs.cpSync(ROOT, where.pin, { recursive: true })
+  const file = path.join(where.pin, "shared", "flows", `${name}.yaml`)
+  const text = fs.readFileSync(file, "utf8")
+  expect(text).toContain(cap)
+  fs.writeFileSync(file, text.replace(cap, "max_tool_iterations: 2"))
+  const first = new Office(name)
+  const job = templateJob(name, first, {}, { base: where })
+  await run(job, first, { env: fake.env() })
+  expect(waitingAt(first)).toEqual(["chat#0/heard"])
+  // The second reply's call never runs: the model reads the cap's error result, and its next reply ends the turn.
+  const call = { tool_calls: [{ name: stub, arguments: {} }] }
+  fake.script(call, call, { content: "Out of turns." })
+  const rec = await advance(job, fake, [send("s1", "hi")], name)
+  expect(waitingAt(rec)).toEqual(["chat#1/heard"])
+  expect(fake.requests()).toHaveLength(3)
+  const reply = new Transcript(where.runs).messages(newId(), ["r1"]).at(-1)!
+  const shown = reply.parts.map((part) =>
+    part.type === "text" ? part.text : part.type === "tool" ? [part.state, part.error] : part.type,
+  )
+  expect(shown).toEqual([
+    ["completed", null],
+    ["error", "Tool-call limit reached (2 turns). No more tool calls will run; give your final answer now."],
+    "Out of turns.",
+  ])
 })
 
 test("a message sent during the reply reaches its next model call and the history", async () => {
