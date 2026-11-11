@@ -92,12 +92,7 @@ remove_path_lines() {
     return 0
   fi
   rm -f "$rl_tmp"
-  # A file install.sh made holds nothing now; .bash_profile and .bash_login it only adds to, and an empty one
-  # still changes which file a login bash reads.
-  case $1 in
-    */.bash_profile | */.bash_login) ;;
-    *) if [ ! -s "$1" ] && [ ! -L "$1" ]; then rm -f "$1" && ok "Removed $1, empty now" && return 0; fi ;;
-  esac
+  # The file stays, even when nothing is left in it: it may have been there, empty, before install.sh.
   ok "Removed the PATH line from $1"
 }
 
@@ -167,20 +162,22 @@ wgit() {
 }
 
 # Why the repo at $1 (the clone or one of its submodules) holds work found nowhere else; nothing when it holds
-# none. Anything git can't answer counts as work.
+# none. $2 is what `git status --ignored=matching` shows for what install.sh makes there, which uninstall.sh removes
+# with the clone; every other file that isn't committed is someone's work, and the first five are named. Finder's
+# .DS_Store files don't count. Anything git can't answer counts as work.
 repo_work() {
   W_DIR=$1
-  # What `git status --ignored=matching` shows for what install.sh makes: node_modules folders (the root's, each
-  # package's and yian's) and HQ's build. Every other ignored file is someone's work.
-  w_built='!! (([^"]*/)?node_modules/|packages/app/dist/)'
   w_out=$(wgit status --porcelain --untracked-files=all --ignored=matching --ignore-submodules=none) ||
     { echo "it can't be read by git"; return; }
-  if [ -n "$w_out" ]; then
-    w_status=0
-    printf '%s\n' "$w_out" | LC_ALL=C grep -a -v -x -E "$w_built" >/dev/null || w_status=$?
-    # 1: every line was install.sh's own.
-    [ "$w_status" = 1 ] || { echo "it has changes or files that aren't committed"; return; }
-  fi
+  # shellcheck disable=SC2016
+  w_out=$(printf '%s\n' "$w_out" | BUILT="^!! ($2)\$" LC_ALL=C awk '
+    $0 == "" || $0 ~ ENVIRON["BUILT"] { next }
+    { path = substr($0, 4) }
+    path ~ /(^|\/)\.DS_Store"?$/ { next }
+    { n++; if (n <= 5) names = names (n > 1 ? ", " : "") path }
+    END { if (n > 5) names = names ", and " (n - 5) " more"; if (n) print names }
+  ') || { echo "it can't be read by git"; return; }
+  [ -z "$w_out" ] || { echo "it has files that aren't committed: $w_out"; return; }
   w_out=$(wgit stash list) || { echo "it can't be read by git"; return; }
   [ -z "$w_out" ] || { echo "it has stashed changes"; return; }
   # Every ref and HEAD, so a detached HEAD, a tag or any branch counts.
@@ -192,7 +189,8 @@ repo_work() {
 
 # Why the clone at $1 holds work found nowhere else, in it or any of its submodules; nothing when it holds none.
 local_work() {
-  lw_why=$(repo_work "$1")
+  # The node_modules folders of the root and of each workspace package, and HQ's build.
+  lw_why=$(repo_work "$1" 'node_modules/|packages/[^/"]+/node_modules/|packages/app/dist/')
   [ -z "$lw_why" ] || { echo "$lw_why"; return; }
   W_DIR=$1
   # shellcheck disable=SC2016
@@ -200,7 +198,8 @@ local_work() {
     { echo "its submodules can't be read by git"; return; }
   while IFS= read -r lw_sub; do
     [ -n "$lw_sub" ] || continue
-    lw_why=$(repo_work "$1/$lw_sub")
+    # A submodule that is a workspace package gets its own node_modules folder.
+    lw_why=$(repo_work "$1/$lw_sub" 'node_modules/')
     [ -z "$lw_why" ] || { echo "its submodule $lw_sub ${lw_why#it }"; return; }
   done <<EOF
 $lw_subs

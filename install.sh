@@ -14,12 +14,13 @@ set -eu
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--dir DIR] [--branch REF] [--repo URL] [--skip-setup] [--no-modify-path]
+Usage: install.sh [--dir DIR] [--branch REF] [--repo URL] [--skip-setup] [--no-modify-path] [--switch]
 
   --dir DIR         where the clone goes (OPENCORP_INSTALL_DIR, default ~/.local/share/opencorp)
   --branch REF      the branch or tag a new clone checks out (default main)
   --repo URL        the repo to clone (OPENCORP_REPO_URL, default https://github.com/ngocbh/opencorp.git)
   --skip-setup      don't offer to create the company; print the next step instead
+  --switch          move a set-up office to this install: stop it first, then point opencorp here
   --no-modify-path  leave the shell's rc files alone
 
 Environment: OPENCORP_BIN_DIR, the folder for the `opencorp` wrapper (default ~/.local/bin);
@@ -88,6 +89,27 @@ not_sudo() {
   if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
     die "Run this as yourself, not through sudo: it works in the home of whoever runs it ($HOME)."
   fi
+}
+
+# The first bun on PATH, leaving out folders inside the current one (a project's own bin, as direnv's PATH_add
+# makes) unless the current folder is the home or holds it. PATH's relative entries are gone already.
+find_bun() {
+  fb_here=$(pwd -P)
+  fb_here=${fb_here%/}
+  fb_rest=$PATH:
+  while [ -n "$fb_rest" ]; do
+    fb_dir=${fb_rest%%:*}
+    fb_rest=${fb_rest#*:}
+    case $HOME/ in
+      "$fb_here"/* | "$PWD"/*) ;;
+      *) case $fb_dir/ in "$fb_here"/* | "$PWD"/*) continue ;; esac ;;
+    esac
+    if [ -f "$fb_dir/bun" ] && [ -x "$fb_dir/bun" ]; then
+      printf '%s\n' "$fb_dir/bun"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # Whether a terminal is there to ask on: stdin is the script under `curl | bash`.
@@ -227,6 +249,7 @@ path_lines() {
 # gets a warning with the line to add.
 add_path_line() {
   if [ -f "$1" ] && { LC_ALL=C grep -a -q -F -x -e "$2" "$1" || LC_ALL=C grep -a -q -E "$OWN_PATH_RE" "$1"; }; then
+    RELOAD=${RELOAD:-"$SOURCE $1"}
     return 0
   fi
   ap_dir=$(dirname "$1")
@@ -240,6 +263,7 @@ add_path_line() {
   fi
   printf '%s\n' "$2" >>"$1" || { warn "Couldn't write $1, so add this line to it yourself: $2"; return 0; }
   ok "Added $BIN_DIR to PATH in $1"
+  RELOAD=${RELOAD:-"$SOURCE $1"}
 }
 
 # All of it runs from the last line, so a download cut off part-way runs nothing.
@@ -262,6 +286,7 @@ main() {
   REPO_SET=0
   [ -z "${OPENCORP_REPO_URL:-}" ] || REPO_SET=1
   SKIP_SETUP=0
+  SWITCH=0
   MODIFY_PATH=1
   while [ $# -gt 0 ]; do
     case $1 in
@@ -275,6 +300,7 @@ main() {
         shift 2
         ;;
       --skip-setup) SKIP_SETUP=1 && shift ;;
+      --switch) SWITCH=1 && shift ;;
       --no-modify-path) MODIFY_PATH=0 && shift ;;
       -h | --help) usage && return 0 ;;
       *) die "unknown option $1 (see --help)." ;;
@@ -308,10 +334,15 @@ main() {
 
   # The checkout: the one this script is in, unless --dir says otherwise; else a clone.
   ROOT=
+  # Piped, $0 is the shell's name, so a file of that name in the current folder proves nothing.
   case $0 in
-    # Piped, $0 is the shell's name, and a file of that name in the current folder proves nothing.
-    */install.sh) if [ "$DIR_SET" = 0 ] && [ -f "$0" ] && is_checkout "$(dirname "$0")"; then ROOT=$(cd "$(dirname "$0")" && pwd -P); fi ;;
+    */install.sh) HERE=$(dirname "$0") ;;
+    install.sh) HERE=. ;;
+    *) HERE= ;;
   esac
+  if [ -n "$HERE" ] && [ "$DIR_SET" = 0 ] && [ -f "$HERE/install.sh" ] && is_checkout "$HERE"; then
+    ROOT=$(cd "$HERE" && pwd -P)
+  fi
   if [ -n "$ROOT" ]; then
     need_path "The checkout's path" "$ROOT"
   else
@@ -320,9 +351,13 @@ main() {
 
   # The office's service runs the checkout the office was set up from, most likely the one opencorp runs now, and
   # `opencorp restart` reuses that service: pointing opencorp at another checkout would leave the office on the old
-  # code.
+  # code. The way over is opencorp doctor's for a moved checkout: stop the office, then onboard from the new install.
+  SWITCHING=0
   if [ -n "$OLD" ] && office_set_up && ! same_dir "$OLD" "${ROOT:-$DIR}"; then
-    die "An office is set up at $OFFICE, and $TARGET runs the checkout at $OLD, whose code the office's service likely runs. To update that checkout, run its own install.sh. To move to ${ROOT:-$DIR}, run opencorp offboard first (it keeps company work that isn't pushed), then run this again."
+    if [ "$SWITCH" = 0 ]; then
+      die "An office is set up at $OFFICE, and $TARGET runs the checkout at $OLD, whose code the office's service likely runs. To update that checkout, run its own install.sh. To move the office to ${ROOT:-$DIR}, run this again with --switch: it stops the office (opencorp stop) before it points opencorp at the new checkout, and you then run opencorp onboard from the install you use, which sets the office's service up again. opencorp offboard is the destructive last resort: it deletes the office's store, connections, sign-ins and this device."
+    fi
+    SWITCHING=1
   fi
 
   if [ -n "$ROOT" ]; then
@@ -379,8 +414,8 @@ main() {
   if [ -n "${OPENCORP_BUN:-}" ]; then
     BUN=$OPENCORP_BUN
     [ -x "$BUN" ] || die "OPENCORP_BUN=$BUN is not an executable file."
-  elif command -v bun >/dev/null 2>&1; then
-    BUN=$(command -v bun)
+  elif BUN=$(find_bun); then
+    :
   elif [ -x "$BUN_HOME/bin/bun" ]; then
     BUN=$BUN_HOME/bin/bun
   else
@@ -410,6 +445,11 @@ main() {
   (cd "$ROOT" && quietly "$BUN" run build) || die "bun run build failed in $ROOT. Run it there to see why."
   ok "Installed dependencies and built HQ's web app"
 
+  if [ "$SWITCHING" = 1 ]; then
+    step "Stopping the office with the opencorp that runs $OLD"
+    "$TARGET" stop </dev/null ||
+      die "opencorp stop failed, so $TARGET still runs $OLD. Stop the office yourself (opencorp stop), then run this again with --switch."
+  fi
   WAS_LINK=
   if [ -L "$TARGET" ]; then WAS_LINK=$(readlink "$TARGET"); fi
   mkdir -p "$BIN_DIR"
@@ -444,12 +484,12 @@ EOF
         OWN_PATH_RE="^[[:space:]]*((export[[:space:]]+)?PATH=|fish_add_path[[:space:]]|set[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*(PATH|fish_user_paths)[[:space:]]).*$own/?([:\"'[:space:]]|\$)"
         case $(basename "${SHELL:-sh}") in
           zsh)
-            RELOAD=". ${ZDOTDIR:-$HOME}/.zshrc"
+            SOURCE=.
             add_path_line "${ZDOTDIR:-$HOME}/.zshrc" "$SH_LINE"
             add_path_line "${ZDOTDIR:-$HOME}/.zprofile" "$SH_LINE"
             ;;
           bash)
-            RELOAD=". $HOME/.bashrc"
+            SOURCE=.
             add_path_line "$HOME/.bashrc" "$SH_LINE"
             add_path_line "$HOME/.profile" "$SH_LINE"
             # A login bash reads only the first of .bash_profile, .bash_login and .profile.
@@ -458,11 +498,11 @@ EOF
             done
             ;;
           fish)
-            RELOAD="source ${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+            SOURCE=source
             add_path_line "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" "$FISH_LINE"
             ;;
           *)
-            RELOAD=". $HOME/.profile"
+            SOURCE=.
             add_path_line "$HOME/.profile" "$SH_LINE"
             ;;
         esac
@@ -474,8 +514,14 @@ EOF
   VERSION=$("$TARGET" --version) || die "$TARGET was written, but opencorp --version fails. Run it to see why."
   ok "Installed OpenCorp $VERSION from $ROOT"
 
-  if office_set_up; then
-    ok "An office is set up at $OFFICE: run opencorp restart to use this version."
+  if [ "$SWITCHING" = 1 ]; then
+    step "Next: run opencorp onboard, which sets the office's service up to run $ROOT."
+  elif office_set_up; then
+    if [ -n "$OLD" ] && same_dir "$OLD" "$ROOT"; then
+      ok "An office is set up at $OFFICE: run opencorp restart to use this version."
+    else
+      ok "An office is set up at $OFFICE. If its service runs $ROOT, opencorp restart picks up this version; if it runs another checkout, see opencorp doctor."
+    fi
   elif [ "$SKIP_SETUP" = 0 ] && has_tty; then
     offer_setup
   else

@@ -127,6 +127,7 @@ case $* in
   --version) echo "\${STUB_BUN_VERSION:-1.4.2}" ;;
   *" --version") echo 0.0.1 ;;
   *" --help") [ -z "\${STUB_HELP_FAILS:-}" ] || exit 3 ;;
+  *" stop") [ -z "\${STUB_STOP_FAILS:-}" ] || exit 1 ;;
   *" offboard")
     [ -z "\${STUB_OFFBOARD_FAILS:-}" ] || exit 1
     [ -n "\${STUB_OFFBOARD_KEEPS:-}" ] || rm -rf "$HOME/.opencorp/office" "$HOME/.opencorp/identity.json" ;;
@@ -451,7 +452,9 @@ describe("install.sh", () => {
     const r = await run(h, "install.sh")
     expect(r.code).not.toBe(0)
     expect(r.err).toContain(`✗ An office is set up at ${h.office}, and ${h.wrapper} runs the checkout at ${old}`)
-    expect(r.err).toContain("run opencorp offboard")
+    expect(r.err).toContain("run this again with --switch: it stops the office (opencorp stop)")
+    expect(r.err).toContain("then run opencorp onboard from the install you use")
+    expect(r.err).toContain("opencorp offboard is the destructive last resort")
     expect(fs.readlinkSync(h.wrapper)).toBe(path.join(old, "packages/cli/bin/opencorp"))
     expect(fs.existsSync(h.clone)).toBe(false)
     expect(calls(h)).toEqual([])
@@ -471,6 +474,35 @@ describe("install.sh", () => {
     const same = await run(other, "install.sh", { from: first })
     expect(same.code).toBe(0)
     expect(same.out).toContain("run opencorp restart to use this version")
+  })
+
+  test("--switch stops the office with the old checkout's opencorp, then points opencorp at the new one and says to onboard", async () => {
+    const h = makeHome()
+    const old = checkout(h, "old")
+    fs.mkdirSync(h.bin, { recursive: true })
+    fs.symlinkSync(path.join(old, "packages/cli/bin/opencorp"), h.wrapper)
+    fs.mkdirSync(path.join(h.office, "office"), { recursive: true })
+    const r = await run(h, "install.sh", { args: ["--switch"] })
+    expect(r.err).not.toContain("✗")
+    expect(r.code).toBe(0)
+    const seen = calls(h)
+    const stop = seen.findIndex((c) => c.includes(`${old}/packages/cli/src/main.ts stop |`))
+    expect(stop).toBeGreaterThan(seen.findIndex((c) => c.includes(" run build | ")))
+    expect(stop).toBeLessThan(seen.findIndex((c) => c.includes(`${h.clone}/packages/cli/src/main.ts --help |`)))
+    expect(fs.readFileSync(h.wrapper, "utf8")).toContain(sq(path.join(h.clone, "packages/cli/bin/opencorp")))
+    expect(r.out).toContain(`→ Next: run opencorp onboard, which sets the office's service up to run ${h.clone}`)
+    expect(r.out).not.toContain("opencorp restart")
+
+    // When the office won't stop, opencorp keeps running the old checkout.
+    const stuck = makeHome()
+    const was = checkout(stuck, "old")
+    fs.mkdirSync(stuck.bin, { recursive: true })
+    fs.symlinkSync(path.join(was, "packages/cli/bin/opencorp"), stuck.wrapper)
+    fs.mkdirSync(path.join(stuck.office, "office"), { recursive: true })
+    const failed = await run(stuck, "install.sh", { args: ["--switch"], extra: { STUB_STOP_FAILS: "1" } })
+    expect(failed.code).not.toBe(0)
+    expect(failed.err).toContain(`✗ opencorp stop failed, so ${stuck.wrapper} still runs ${was}`)
+    expect(fs.readlinkSync(stuck.wrapper)).toBe(path.join(was, "packages/cli/bin/opencorp"))
   })
 
   test("the wrapper names its checkout's wrapper as it is, so offboard finds it even when the path has a quote", async () => {
@@ -529,7 +561,7 @@ describe("install.sh", () => {
     expect(calls(h).filter((c) => c.startsWith("curl"))).toHaveLength(1)
   })
 
-  test("runs as a checkout's own install.sh only when called by a path with a slash, whatever the current folder holds", async () => {
+  test("runs as a checkout's own install.sh only when $0 names it, whatever the current folder holds", async () => {
     // Piped, $0 is the shell's name: a folder holding a file of that name and a checkout's files is no checkout.
     const h = makeHome()
     const crafted = checkout(h, "crafted")
@@ -543,14 +575,15 @@ describe("install.sh", () => {
       `${bun} install --frozen-lockfile | ${h.clone} | no-tty`,
     ])
 
-    // `sh install.sh` names no folder, so it clones too; `sh ./install.sh` installs the checkout it's in.
+    // `sh install.sh` and `sh ./install.sh` install the checkout they're run in.
     const other = makeHome()
     const co = checkout(other)
-    const bare = await run(other, "install.sh", { cwd: co, raw: ["install.sh", "--repo", source] })
-    expect(bare.out).toContain(`→ Cloning ${source} (main) into ${other.clone}`)
-    const dotted = await run(other, "install.sh", { cwd: co, raw: ["./install.sh"] })
-    expect(dotted.code).toBe(0)
-    expect(dotted.out).toContain(`✓ Installing the checkout at ${co}`)
+    for (const raw of [["install.sh"], ["./install.sh"]]) {
+      const local = await run(other, "install.sh", { cwd: co, raw })
+      expect(local.code).toBe(0)
+      expect(local.out).toContain(`✓ Installing the checkout at ${co}`)
+    }
+    expect(fs.existsSync(other.clone)).toBe(false)
   })
 
   test("a CDPATH doesn't send it to another folder", async () => {
@@ -598,6 +631,24 @@ describe("install.sh", () => {
       expect(calls(h)).toContain("bun-installer bun-v1.4.2")
       expect(fs.readFileSync(h.wrapper, "utf8")).toContain(sq(path.join(h.home, ".bun/bin/bun")))
     }
+  })
+
+  test.skipIf(!!SYSTEM_BUN)("never takes a bun from a PATH folder inside the current one, unless that's the home or holds it", async () => {
+    const h = makeHome()
+    const project = path.join(h.dir, "project")
+    // As direnv's PATH_add makes it.
+    writeScript(path.join(project, "bin/bun"), `#!/bin/sh\necho "project bun $*" >>"$STUB_LOG/calls"\necho 1.4.2\n`)
+    const r = await run(h, "install.sh", { cwd: project, extra: { PATH: `${project}/bin:${stubs}:${SYSTEM}` } })
+    expect(r.code).toBe(0)
+    expect(calls(h).filter((c) => c.startsWith("project bun"))).toEqual([])
+    expect(calls(h)).toContain("bun-installer bun-v1.4.2")
+
+    // Run from the home, the home's own folders on PATH still count.
+    const other = makeHome()
+    const tools = path.join(other.home, "tools")
+    writeScript(path.join(tools, "bun"), fs.readFileSync(path.join(bunDir, "bun"), "utf8"))
+    expect((await run(other, "install.sh", { extra: { PATH: `${tools}:${stubs}:${SYSTEM}` } })).code).toBe(0)
+    expect(fs.readFileSync(other.wrapper, "utf8")).toContain(sq(path.join(tools, "bun")))
   })
 
   test("refuses to run through sudo, which would leave root's files in the user's home", async () => {
@@ -769,12 +820,14 @@ describe("install.sh", () => {
         )
       }
 
-      // Uninstall takes each line out again, and the files install made, now empty, go too.
+      // Uninstall takes each line out again; a file install made stays, empty.
       const r = await run(h, "uninstall.sh", { extra: { SHELL: shell } })
       expect(r.err).not.toContain("✗")
       expect(r.code).toBe(0)
       for (const f of all) expect(pathLines(path.join(h.home, f))).toBe(0)
-      expect(all.filter((f) => fs.existsSync(path.join(h.home, f)))).toEqual([".bash_profile"])
+      for (const f of files.filter((f) => f !== ".bash_profile")) {
+        expect(fs.readFileSync(path.join(h.home, f), "utf8")).toBe("")
+      }
       // Only a file install added to gains a final newline.
       const ending = files.includes(".bash_profile") ? "\n" : ""
       expect(fs.readFileSync(path.join(h.home, ".bash_profile"), "utf8")).toBe(`alias ll='ls -l'${ending}`)
@@ -858,15 +911,21 @@ describe("install.sh", () => {
     expect(fs.readFileSync(bashrc, "utf8")).toBe("alias ll='ls -l'\n")
     expect(pathLines(path.join(h.home, ".profile"))).toBe(1)
     expect(r.out).toContain("✓ Installed OpenCorp 0.0.1")
+    expect(r.out).toContain(`→ To use opencorp in this shell, run: . ${h.home}/.profile`)
   })
 
-  test("with an office set up, it says to restart the office instead of offering to create one", async () => {
+  test("with an office set up, it offers no company, and says to restart only when opencorp ran this checkout before", async () => {
     const h = makeHome()
+    const co = checkout(h)
     fs.mkdirSync(path.join(h.office, "office"), { recursive: true })
-    const r = await run(h, "install.sh", { from: checkout(h) })
-    expect(r.code).toBe(0)
-    expect(r.out).toContain(`✓ An office is set up at ${h.office}: run opencorp restart to use this version.`)
-    expect(r.out).not.toContain("opencorp init")
+    const unknown = await run(h, "install.sh", { from: co })
+    expect(unknown.code).toBe(0)
+    expect(unknown.out).toContain(
+      `✓ An office is set up at ${h.office}. If its service runs ${co}, opencorp restart picks up this version; if it runs another checkout, see opencorp doctor.`,
+    )
+    expect(unknown.out).not.toContain("opencorp init")
+    const again = await run(h, "install.sh", { from: co })
+    expect(again.out).toContain(`✓ An office is set up at ${h.office}: run opencorp restart to use this version.`)
   })
 
   describe.skipIf(!TMUX)("on a terminal", () => {
@@ -983,8 +1042,8 @@ describe("uninstall.sh", () => {
     expect(fs.lstatSync(path.join(h.home, ".bashrc")).isSymbolicLink()).toBe(true)
     expect(fs.readFileSync(dotfile, "utf8")).toBe("alias ll='ls -l'\n")
     expect(fs.statSync(dotfile).mode & 0o777).toBe(0o600)
-    // install made .profile, so uninstall removes it once it's empty again.
-    expect(fs.existsSync(path.join(h.home, ".profile"))).toBe(false)
+    // An rc file is never removed, even one install made: it stays, empty.
+    expect(fs.readFileSync(path.join(h.home, ".profile"), "utf8")).toBe("")
   })
 
   test("keeps every byte of an rc file around its PATH line, in a UTF-8 locale", async () => {
@@ -1045,11 +1104,11 @@ describe("uninstall.sh", () => {
   })
 
   test("keeps a clone with work that isn't anywhere else, whatever the user's git config, and says why", async () => {
-    const changes = "it has changes or files that aren't committed"
+    const files = (names: string) => `it has files that aren't committed: ${names}`
     const commits = "it has commits that aren't pushed"
     const yian = (h: Home) => path.join(h.clone, "packages/yian")
     const work: [string, string, (h: Home) => void][] = [
-      ["an untracked file", changes, (h) => fs.writeFileSync(path.join(h.clone, "draft"), "draft\n")],
+      ["an untracked file", files("draft"), (h) => fs.writeFileSync(path.join(h.clone, "draft"), "draft\n")],
       ["a commit on its branch", commits, (h) => commitFile(h.clone, "LOCAL")],
       [
         "a stash",
@@ -1097,10 +1156,10 @@ describe("uninstall.sh", () => {
           git(yian(h), "stash", "-q")
         },
       ],
-      ["an untracked file in the submodule", changes, (h) => fs.writeFileSync(path.join(yian(h), "notes"), "notes\n")],
+      ["an untracked file in the submodule", files("packages/yian"), (h) => fs.writeFileSync(path.join(yian(h), "notes"), "notes\n")],
       [
         "an untracked file hidden by status.showUntrackedFiles=no",
-        changes,
+        files("draft.md"),
         (h) => {
           fs.writeFileSync(path.join(h.home, ".gitconfig"), "[status]\n\tshowUntrackedFiles = no\n")
           fs.writeFileSync(path.join(h.clone, "draft.md"), "draft\n")
@@ -1108,7 +1167,7 @@ describe("uninstall.sh", () => {
       ],
       [
         "a file a global excludes file hides",
-        changes,
+        files("notes/"),
         (h) => {
           fs.writeFileSync(path.join(h.home, ".gitignore_global"), "notes/\n")
           fs.writeFileSync(path.join(h.home, ".gitconfig"), `[core]\n\texcludesFile = ${h.home}/.gitignore_global\n`)
@@ -1116,10 +1175,25 @@ describe("uninstall.sh", () => {
           fs.writeFileSync(path.join(h.clone, "notes/todo.md"), "todo\n")
         },
       ],
-      ["an ignored .env", changes, (h) => fs.writeFileSync(path.join(h.clone, ".env"), "KEY=secret\n")],
+      ["an ignored .env", files(".env"), (h) => fs.writeFileSync(path.join(h.clone, ".env"), "KEY=secret\n")],
+      [
+        "a node_modules folder install doesn't make",
+        files("scratch/node_modules/"),
+        (h) => {
+          fs.mkdirSync(path.join(h.clone, "scratch/node_modules"), { recursive: true })
+          fs.writeFileSync(path.join(h.clone, "scratch/node_modules/notes"), "notes\n")
+        },
+      ],
+      [
+        "seven untracked files, of which it names five",
+        files("a1, a2, a3, a4, a5, and 2 more"),
+        (h) => {
+          for (let i = 1; i <= 7; i++) fs.writeFileSync(path.join(h.clone, `a${i}`), "\n")
+        },
+      ],
       [
         "ignored plans in docs/plans",
-        changes,
+        files("docs/"),
         (h) => {
           fs.mkdirSync(path.join(h.clone, "docs/plans"), { recursive: true })
           fs.writeFileSync(path.join(h.clone, "docs/plans/design.md"), "plan\n")
@@ -1138,9 +1212,11 @@ describe("uninstall.sh", () => {
     }
   })
 
-  test("removes a clone whose only ignored files are what install makes: node_modules folders and HQ's build", async () => {
+  test("removes a clone whose only ignored files are what install makes, the root's and packages' node_modules and HQ's build, or .DS_Store", async () => {
     const h = makeHome()
     expect((await run(h, "install.sh")).code).toBe(0)
+    fs.writeFileSync(path.join(h.clone, ".DS_Store"), "")
+    fs.writeFileSync(path.join(h.clone, "packages/cli/.DS_Store"), "")
     for (const dir of ["node_modules/.bin", "packages/cli/node_modules/x", "packages/app/dist/assets", "packages/yian/node_modules/y"]) {
       fs.mkdirSync(path.join(h.clone, dir), { recursive: true })
       fs.writeFileSync(path.join(h.clone, dir, "f"), "built\n")
@@ -1299,8 +1375,8 @@ describe("both scripts", () => {
       expect(removed.err).not.toContain("✗")
       expect(removed.code).toBe(0)
       expect(fs.readFileSync(path.join(h.home, ".bashrc"), "utf8")).toBe("alias ll='ls -l'\n")
-      // install made .profile; the .local folders stay.
-      expect(fs.existsSync(path.join(h.home, ".profile"))).toBe(false)
+      // The .profile install made stays, empty, as do the .local folders.
+      expect(fs.readFileSync(path.join(h.home, ".profile"), "utf8")).toBe("")
       expect(fs.existsSync(h.wrapper)).toBe(false)
       expect(fs.existsSync(h.clone)).toBe(false)
     })
@@ -1336,7 +1412,11 @@ describe("both scripts", () => {
     async () => {
       const h = makeHome()
       const branch = git(CHECKOUT, "symbolic-ref", "--short", "HEAD")
-      const cache = process.env.BUN_INSTALL_CACHE_DIR ?? path.join(os.homedir(), ".bun", "install", "cache")
+      // A copy of Bun's real cache, which bun install may write to.
+      const cache = path.join(root, "bun-cache")
+      fs.cpSync(process.env.BUN_INSTALL_CACHE_DIR ?? path.join(os.homedir(), ".bun", "install", "cache"), cache, {
+        recursive: true,
+      })
       // Anything that tries the network gets a proxy that refuses at once.
       const refused = "http://127.0.0.1:9"
       const extra = {
