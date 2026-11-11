@@ -98,7 +98,7 @@ export interface ReachContext {
   readonly env: Readonly<Record<string, string | undefined>>
   /** Whether to use `config.batch`, so a login that would prompt fails at once. */
   readonly batch: boolean
-  /** Children's output for the owner. */
+  /** Children's output for the owner, already cleaned, as it comes. */
   readonly echo: (text: string) => void
   readonly signal?: AbortSignal
   readonly limits: { readonly promptMs: number; readonly stepMs: number }
@@ -157,8 +157,8 @@ export const KEEP_CHARS = 64 * 1024
 export const KILL_GRACE_MS = 2000
 
 /** Runs `argv` with stdin from /dev/null. It's done when it exits, plus `DRAIN_MS`: a detached ssh master's jump host
- *  can hold the pipes open for minutes (OpenSSH 8.0). It keeps the last `KEEP_CHARS` of each stream, since the
- *  spec and the error worth showing come last. */
+ *  can hold the pipes open for minutes (OpenSSH 8.0). It keeps the last `KEEP_CHARS` of each stream as it came, since
+ *  the spec and the error worth showing come last; `echo` gets stderr (and stdout with `echoStdout`) cleaned. */
 export function runChild(
   argv: readonly [string, ...string[]],
   o: {
@@ -179,11 +179,11 @@ export function runChild(
     const keep = (kept: string, more: string) => (kept + more).slice(-KEEP_CHARS)
     child.stdout!.setEncoding("utf8").on("data", (c: string) => {
       stdout = keep(stdout, c)
-      if (o.echoStdout) o.echo?.(c)
+      if (o.echoStdout) o.echo?.(cleanOutput(c))
     })
     child.stderr!.setEncoding("utf8").on("data", (c: string) => {
       stderr = keep(stderr, c)
-      o.echo?.(c)
+      o.echo?.(cleanOutput(c))
     })
     const stop = () => {
       if (!running(child)) return
@@ -303,8 +303,9 @@ export interface Master {
 
 /** Starts the node master as a foreground child, after removing any leftover `cm/node`, its stdin a pipe this process
  *  holds and never writes. When this process ends, `kill -9` included, the remote cat exits and ssh ends the master
- *  once no channel is open; an HQ tab's `/api/events` is one, so the visit's watcher also `-O exit`s it. Its stderr is
- *  the owner's unless `quiet`. */
+ *  once no channel is open; an HQ tab's `/api/events` is one, so the visit's watcher also `-O exit`s it. Its stderr
+ *  (banners, a node's login-shell output, Duo's menu; ssh's prompts go to /dev/tty) reaches `ctx.echo` cleaned, unless
+ *  `quiet`. */
 export function startMaster(ctx: ReachContext, spec: Spec, { quiet = false } = {}): Master {
   const { paths } = ctx
   // The lock holder owns cm/node. A leftover there would read as up before login, and ssh would refuse to bind over
@@ -314,10 +315,14 @@ export function startMaster(ctx: ReachContext, spec: Spec, { quiet = false } = {
   const child = spawn(argv[0], argv.slice(1), {
     cwd: paths.dir,
     env: sshEnv(ctx),
-    stdio: ["pipe", "ignore", quiet ? "ignore" : "inherit"],
+    stdio: ["pipe", "ignore", quiet ? "ignore" : "pipe"],
   })
   // The master may be gone when the pipe closes (EPIPE).
   child.stdin!.on("error", () => {})
+  // Text from another machine must not drive the owner's terminal.
+  child.stderr?.setEncoding("utf8").on("data", (c: string) => ctx.echo(cleanOutput(c)))
+  // Read until the master exits, plus DRAIN_MS: its jump host may hold the pipe open longer (ssh ignores SIGPIPE).
+  child.once("exit", () => setTimeout(() => child.stderr?.destroy(), DRAIN_MS))
   const exited = new Promise<number>((resolve) => {
     child.on("error", () => {
       if (child.pid === undefined) resolve(127)

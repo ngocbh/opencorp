@@ -27,6 +27,8 @@ export interface FakeSshBehavior extends FakeHost {
   forward?: "ok" | "refuse" | "blackhole"
   /** How long an auto master stays after its last connection closes; default 10 s. */
   persistMs?: number
+  /** Written to stderr after each login that succeeds, as sshd's Banner or a node's login shell would. */
+  banner?: string
 }
 export interface FakeSsh {
   /** The folder holding `ssh`, to put first on PATH. */
@@ -226,9 +228,11 @@ class Run {
   /** Logs in to `target`: false (after ssh's words on stderr) when it's refused. */
   async login(target: string, batch: boolean): Promise<boolean> {
     const mode = this.mode(target, batch)
-    if (mode === "ok") return true
     if (mode === "hang") return await new Promise<never>(() => setTimeout(() => process.exit(255), FAKE_MASTER_MAX_MS))
-    if (mode === "tty" && this.prompt(hostName(target))) return true
+    if (mode === "ok" || (mode === "tty" && this.prompt(hostName(target)))) {
+      if (this.behavior.banner !== undefined) process.stderr.write(this.behavior.banner)
+      return true
+    }
     process.stderr.write(`${shown(target)}: Permission denied (publickey,password).\r\n`)
     return false
   }

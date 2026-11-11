@@ -379,6 +379,31 @@ test("a leftover cm/node never reads as up before the new master has logged in",
   await master.exited
 })
 
+test("the master's stderr reaches the owner cleaned, as it comes, and not at all when quiet", async () => {
+  const { dir, fake } = fakeHome({ banner: "\x1b]0;owned\x07\x1b[2Jwelcome\r\n" })
+  const echoed: string[] = []
+  const ctx = await reachCtx(dir, fake, { echo: (t) => echoed.push(t) })
+  const master = startMaster(ctx, SPEC)
+  expect(await waitForSocket(master, 5000)).toBe("up")
+  await waitFor(() => echoed.join("") === "]0;owned[2Jwelcome\n", { timeout: 2000, what: "the banner, cleaned" })
+  master.lifeline.end()
+  await master.exited
+  echoed.length = 0
+  const quiet = startMaster(ctx, SPEC, { quiet: true })
+  expect(await waitForSocket(quiet, 5000)).toBe("up")
+  quiet.lifeline.end()
+  await quiet.exited
+  await Bun.sleep(300)
+  expect(echoed).toEqual([])
+})
+
+test("runChild echoes output cleaned and keeps it as it came", async () => {
+  const echoed: string[] = []
+  const ran = await runChild(["/bin/sh", "-c", "printf 'a\\033[2Jb\\n' >&2"], { ...RUN, echo: (t) => echoed.push(t) })
+  expect(echoed.join("")).toBe("a[2Jb\n")
+  expect(ran.stderr).toBe("a\x1b[2Jb\n")
+})
+
 test("a batch context's master reads config.batch", async () => {
   const { dir, fake } = fakeHome({ login: "tty", batch: "refuse" })
   const ctx = await reachCtx(dir, fake, { batch: true })
