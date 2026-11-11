@@ -3,6 +3,7 @@
  *  is gone. */
 import { type ChildProcess, execFileSync, spawn } from "node:child_process"
 import fs from "node:fs"
+import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import type { Writable } from "node:stream"
@@ -419,14 +420,32 @@ export function control(ctx: ReachContext, socket: string, op: "check" | "exit")
 }
 
 /** Ends every master whose control socket is in `cm` with `-O exit`, the node's first (so its hop goes before the login
- *  master), then removes what's left there. Never signals a pid. Runs on stop, so it ignores the stop signal. */
+ *  master), then removes each file there, except a socket whose `-O exit` failed while something still listens on it:
+ *  the watcher, or the next visit, tries that one again. Never signals a pid. Runs on stop, so it ignores the stop
+ *  signal. */
 export async function exitAll(ctx: ReachContext): Promise<void> {
   const names = readdirOrEmpty(ctx.paths.cm).sort((a, b) => (a === "node" ? -1 : b === "node" ? 1 : a.localeCompare(b)))
   for (const name of names) {
     const file = path.join(ctx.paths.cm, name)
-    if (isSocket(file)) await control({ ...ctx, signal: undefined }, file, "exit")
+    if (isSocket(file) && (await control({ ...ctx, signal: undefined }, file, "exit")).code !== 0 && (await listening(file)))
+      continue
     fs.rmSync(file, { force: true, recursive: true })
   }
+}
+
+/** Whether something accepts connections on the unix socket `file` (within `CONTROL_MS`). */
+function listening(file: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const c = net.connect(file)
+    const done = (answer: boolean) => {
+      clearTimeout(timer)
+      c.destroy()
+      resolve(answer)
+    }
+    const timer = setTimeout(() => done(false), CONTROL_MS)
+    c.once("connect", () => done(true))
+    c.once("error", () => done(false))
+  })
 }
 
 /** Ends the node master alone, leaving the login node's for a retry: `-O exit`, then up to `CONTROL_MS` for it to
@@ -450,14 +469,27 @@ function readdirOrEmpty(dir: string): string[] {
   }
 }
 
-/** `$1` is the real ssh, `$2` the `cm` folder. INT and HUP are ignored (its `cat` and ssh inherit that); once stdin
- *  ends, `-O exit` on `cm/node` first (its hop goes before the login master), then on every other socket. A gone
- *  socket gives a harmless 255. */
+/** `$1` is the real ssh, `$2` the `cm` folder. INT and HUP are ignored (its `cat`, ssh and sleeps inherit that); once
+ *  stdin ends, `-O exit` on `cm/node` first (its hop goes before the login master), then on every other socket that
+ *  isn't a symlink (one could name the owner's own master). Each `-O exit` gets `CONTROL_MS`, kept in POSIX sh since
+ *  macOS has no `timeout`: a guard kills it then, and is itself ended, with its sleep, once the exit returns. */
 export const WATCHER = `trap '' INT HUP
+ssh=$1
+cm=$2
+quit() {
+  [ -S "$1" ] && [ ! -h "$1" ] || return 0
+  "$ssh" -F /dev/null -S "$1" -O exit ${CONTROL_HOST} &
+  p=$!
+  ( trap 'kill "$t" 2>/dev/null; exit 0' TERM; sleep ${CONTROL_MS / 1000} & t=$!; wait "$t"; kill "$p" 2>/dev/null ) &
+  g=$!
+  wait "$p"
+  kill "$g" 2>/dev/null
+  wait "$g"
+}
 cat >/dev/null
-"$1" -F /dev/null -S "$2/node" -O exit ${CONTROL_HOST}
-for s in "$2"/*; do
-  if [ -S "$s" ]; then "$1" -F /dev/null -S "$s" -O exit ${CONTROL_HOST}; fi
+quit "$cm/node"
+for s in "$cm"/*; do
+  [ "$s" = "$cm/node" ] || quit "$s"
 done
 exit 0
 `

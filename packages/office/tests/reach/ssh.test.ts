@@ -2,11 +2,13 @@
  *  and the watcher. */
 import { execFileSync, spawn } from "node:child_process"
 import fs from "node:fs"
+import net from "node:net"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import {
   CONTROL_HOST,
+  CONTROL_MS,
   cleanOutput,
   control,
   controlArgv,
@@ -603,4 +605,67 @@ test("released after exitAll, it exits at once", async () => {
   expect(watcher.child.exitCode).toBe(0)
   await watcher.release()
   await waitFor(() => fake.masters().length === 0, { timeout: 3000, what: "every master to end" })
+})
+
+/** A server on `file` that takes each control request and answers `answer`, or never answers when it's null; closed
+ *  when the test finishes. */
+async function controlServer(file: string, answer: string | null): Promise<void> {
+  const server = net.createServer((c) => {
+    c.on("error", () => {})
+    c.once("data", () => {
+      if (answer !== null) c.end(`${answer}\n`)
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(file, resolve))
+  onTestFinished(() => {
+    server.close()
+    fs.rmSync(file, { force: true })
+  })
+}
+
+test("exitAll keeps a socket whose -O exit failed while something still listens there", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const refusing = path.join(ctx.paths.cm, "refusing")
+  await controlServer(refusing, "error no")
+  await staleSocket(path.join(ctx.paths.cm, "dead"))
+  await exitAll(ctx)
+  expect(fs.readdirSync(ctx.paths.cm)).toEqual(["refusing"])
+  expect(exits(fake.calls())).toEqual([path.join(ctx.paths.cm, "dead"), refusing])
+})
+
+test("the watcher leaves alone a symlink in cm, even at cm/node, to a socket outside it", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const outside = path.join(dir, "owner.sock")
+  const owner = spawn(fake.ssh, ["-M", "-S", outside, "--", "owner", "cat >/dev/null"], { env: { PATH: "/usr/bin:/bin" }, stdio: ["pipe", "ignore", "ignore"] })
+  onTestFinished(() => owner.kill("SIGKILL"))
+  await waitFor(() => isSocket(outside), { what: "the owner's master" })
+  fs.symlinkSync(outside, ctx.paths.node)
+  fs.symlinkSync(outside, path.join(ctx.paths.cm, "alias"))
+  const watcher = startWatcher(ctx)
+  onTestFinished(() => watcher.child.kill("SIGKILL"))
+  await watcher.release()
+  expect(watcher.child.exitCode).toBe(0)
+  expect(exits(fake.calls())).toEqual([])
+  expect((await control(ctx, outside, "check")).code).toBe(0)
+  await exitAll(ctx)
+  expect((await control(ctx, outside, "check")).code).toBe(0)
+  expect(fs.readdirSync(ctx.paths.cm)).toEqual([])
+})
+
+test("the watcher gives up on a master that never answers its -O exit", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  await controlServer(path.join(ctx.paths.cm, "stuck"), null)
+  const watcher = startWatcher(ctx)
+  onTestFinished(() => watcher.child.kill("SIGKILL"))
+  await waitFor(() => descendants(watcher.child.pid!).length > 0, { what: "the watcher's cat" })
+  const started = performance.now()
+  await watcher.release()
+  const took = performance.now() - started
+  expect(watcher.child.exitCode).toBe(0)
+  expect(took).toBeGreaterThan(CONTROL_MS - 500)
+  expect(took).toBeLessThan(CONTROL_MS + 3000)
+  expect(exits(fake.calls())).toEqual([path.join(ctx.paths.cm, "stuck")])
 })
