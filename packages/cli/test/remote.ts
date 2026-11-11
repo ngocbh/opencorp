@@ -40,8 +40,9 @@ export function reachScript(office: TestOffice): string {
   return `set -eu\nssh login1 true\nprintf '%s\\n' '${JSON.stringify(spec)}'\n`
 }
 
-/** The client: `root/c` is its OPENCORP_HOME, with reach.sh (approved unless `approved` is false, with access.json
- *  on a free port) and the fake ssh in `root/fake` first on PATH. */
+/** The client: `root/c` is its OPENCORP_HOME, with reach.sh for `office` (approved unless `approved` is false, with
+ *  access.json on a free port; none with `office` null, only a 0700 hq folder) and the fake ssh in `root/fake` first
+ *  on PATH. */
 export interface Client {
   readonly root: string
   readonly home: string
@@ -54,7 +55,7 @@ export interface Client {
 }
 
 export async function client(
-  office: TestOffice,
+  office: TestOffice | null,
   { behavior = {}, approved = true }: { behavior?: FakeSshBehavior; approved?: boolean } = {},
 ): Promise<Client> {
   const root = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
@@ -63,10 +64,10 @@ export async function client(
   const hq = path.join(home, "hq")
   fs.mkdirSync(hq, { recursive: true, mode: 0o700 })
   fs.chmodSync(home, 0o700)
-  const body = reachScript(office)
-  fs.writeFileSync(path.join(hq, "reach.sh"), body, { mode: 0o600 })
+  const body = office === null ? null : reachScript(office)
+  if (body !== null) fs.writeFileSync(path.join(hq, "reach.sh"), body, { mode: 0o600 })
   const port = await freePort()
-  if (approved) {
+  if (body !== null && approved) {
     fs.writeFileSync(path.join(hq, "reach.approved.sh"), body, { mode: 0o600 })
     const access = {
       port,

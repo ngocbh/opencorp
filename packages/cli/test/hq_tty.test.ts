@@ -1,10 +1,11 @@
-// `opencorp hq` from another machine on a real terminal, in tmux: the approval question and ssh's password prompts
-// share it, and every key meant for ssh reaches ssh.
+// `opencorp hq` from another machine on a real terminal, in tmux: the approval and learning questions and ssh's
+// password prompts share it, and every key meant for ssh reaches ssh.
 import { afterAll, beforeAll, describe, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { execFileSync } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
+import { FakeLLM, LLM_CONFIG } from "@opencorp/office/testing/fake_llm"
 import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
 import { builtApp, type Client, client, pidsNaming, removeClient, WRAPPER } from "./remote"
 
@@ -124,3 +125,35 @@ describe.skipIf(!TMUX)("on a real terminal", () => {
     expect(pidsNaming(c.hq)).toEqual([])
   }, 120_000)
 })
+
+test.skipIf(!TMUX)("after the owner approves a command, ssh in it reads the password from the terminal", async () => {
+  const llm = await FakeLLM.start()
+  onTestFinished(() => llm.close())
+  // No reach.sh, and no office there: the model stops before saving anything.
+  const c = await client(null, { behavior: { hosts: { login1: { login: "tty" } } } })
+  onTestFinished(() => removeClient(c))
+  fs.writeFileSync(path.join(c.hq, "provider.json"), JSON.stringify({ llm_config: LLM_CONFIG, env: llm.env() }), {
+    mode: 0o600,
+  })
+  llm.script(
+    { tool_calls: [{ name: "shell", arguments: { command: "ssh login1 true", why: "log in to login1" } }] },
+    { content: "Stopping here." },
+  )
+  const t = terminal(c)
+  await t.see("Learn how to reach HQ from here? This uses the model.")
+  // The default is Learn it.
+  t.keys("Enter")
+  await t.see("Run this command?")
+  // The default is Don't run it; Up picks Run it.
+  t.keys("Up")
+  t.keys("Enter")
+  await t.see("fake password for login1:")
+  t.type("hunter2")
+  await t.see("nothing was saved: Stopping here.")
+  expect(await t.exit()).toBe("exit=1")
+  expect(c.fake.tty()).toEqual(["hunter2"])
+  const second = JSON.stringify(llm.requests()[1])
+  expect(second).toContain("exit 0")
+  expect(c.fake.masters()).toEqual([])
+  expect(pidsNaming(c.hq)).toEqual([])
+}, 120_000)
