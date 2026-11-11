@@ -17,6 +17,7 @@ import {
   waitForSocket,
 } from "./ssh.ts"
 import { hqSocket, lastJson, type Spec } from "./spec.ts"
+import { codeFrom } from "./state.ts"
 
 export type FailureKind = "unreachable" | "no_office" | "not_ready" | "broken" | "port_taken" | "no_forward"
 /** A step of reaching HQ failed; `kind` is its row of the failure table. */
@@ -128,4 +129,21 @@ async function healthThrough(port: number, timeoutMs: number): Promise<Health> {
   const parsed = Health.safeParse(body)
   if (!parsed.success) throw new ReachFailure("no_forward", `GET /api/health through port ${port} isn't HQ's health`)
   return parsed.data
+}
+
+/** A one-time pairing code from `opencorp hq --json` over the master. The code arrives on stdout, so it never enters
+ *  argv, a run log (this isn't a flow) or a model. */
+export async function signIn(ctx: ReachContext, spec: Spec): Promise<string> {
+  const ran = await mux(ctx, spec, ["hq", "--json"])
+  if (ran.timedOut || ran.code === 255)
+    throw new ReachFailure(
+      "unreachable",
+      ran.timedOut ? "`opencorp hq --json` there didn't answer within 60 s" : lastStderr(ran) || "ssh exited 255",
+    )
+  if (ran.code === 3) throw new ReachFailure("no_office", lastStderr(ran) || "no office answers there")
+  if (ran.code !== 0)
+    throw new ReachFailure("not_ready", lastStderr(ran) || `\`opencorp hq --json\` exited ${ran.code} there`)
+  const code = codeFrom(lastJson(ran.stdout))
+  if (code === null) throw new ReachFailure("broken", "`opencorp hq --json` there printed no pairing code")
+  return code
 }

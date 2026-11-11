@@ -4,7 +4,7 @@ import net from "node:net"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import type { HqStatus } from "@opencorp/protocol"
-import { classifyCheck, connect, type FailureKind, portFree, ReachFailure } from "../../src/reach/connect.ts"
+import { classifyCheck, connect, type FailureKind, portFree, ReachFailure, signIn } from "../../src/reach/connect.ts"
 import { control, exitAll, isSocket, type ReachContext, type Ran, runChild, sshEnv } from "../../src/reach/ssh.ts"
 import type { Spec } from "../../src/reach/spec.ts"
 import { type FakeSsh, fakeControlName } from "../../src/testing/fake_ssh.ts"
@@ -160,4 +160,34 @@ test("a failed connect ends only cm/node", async () => {
   expect((await control(ctx, loginSocket, "check")).code).toBe(0)
   await exitAll(ctx)
   expect(fake.masters()).toEqual([])
+})
+
+test("sign-in takes the code from opencorp hq --json over the master", async () => {
+  const { fake, remote, ctx, spec } = await setup()
+  await connect(spec, await freePort(), ctx)
+  expect(await signIn(ctx, spec)).toBe(remote.code)
+  expect(fake.calls().some((argv) => argv.at(-1)!.endsWith(`'${remote.opencorp}' 'hq' '--json'`))).toBe(true)
+})
+
+test("a code in the wrong format is broken and never written", async () => {
+  const { remote, ctx, spec } = await setup()
+  await connect(spec, await freePort(), ctx)
+  remote.setSignIn({
+    stdout: JSON.stringify({ path: "/pair#short", url: null, socket: remote.socket, port: 1, expires_at: "2026-11-11T10:00:00.000Z", open_file: null }),
+  })
+  const got = await failure(signIn(ctx, spec))
+  expect([got.kind, got.message]).toEqual(["broken", "`opencorp hq --json` there printed no pairing code"])
+  expect(fs.readdirSync(ctx.paths.dir).filter((name) => name.startsWith("pair-"))).toEqual([])
+})
+
+test("sign-in with no office there is no_office, and with the master gone couldn't connect", async () => {
+  const { remote, ctx, spec } = await setup()
+  await connect(spec, await freePort(), ctx)
+  remote.setSignIn({ code: 3, stderr: "The office isn't running\n" })
+  const none = await failure(signIn(ctx, spec))
+  expect([none.kind, none.message]).toEqual(["no_office", "The office isn't running"])
+  remote.setSignIn({ code: 1, stderr: "opencorp hq: HQ can't be reached\n" })
+  expect((await failure(signIn(ctx, spec))).kind).toBe("not_ready")
+  await exitAll(ctx)
+  expect((await failure(signIn(ctx, spec))).kind).toBe("unreachable")
 })
