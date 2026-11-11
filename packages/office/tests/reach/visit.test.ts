@@ -56,12 +56,31 @@ async function saved(dir: string, body: string, over: Partial<Access> = {}): Pro
 
 const NO_JOB = (marker: string) => `touch '${marker}'\necho "no job running" >&2\nexit 3\n`
 
-test("with no reach.sh it says how to write one and exits 1", async () => {
+test("with no reach.sh it says to start the office here or write one, exits 3 and makes nothing", async () => {
   const { dir, fake } = fakeHome()
   const { deps, errors } = visitDeps(dir, fake)
-  expect(await visit({ signIn: false, open: false }, deps)).toBe(1)
-  expect(errors).toEqual([NO_PATH(new ReachPaths(dir))])
-  expect(fake.masters()).toEqual([])
+  expect(await visit({ signIn: false, open: false }, deps)).toBe(3)
+  const paths = new ReachPaths(dir)
+  expect(errors).toEqual([NO_PATH(paths)])
+  expect(errors[0]).toStartWith(
+    "opencorp hq: no office answers here. If HQ runs on this machine, start it with `opencorp start` (`opencorp doctor` says why it's down).\n",
+  )
+  expect(errors[0]).toContain(`To reach HQ on another machine, write ${paths.script}`)
+  expect(fs.existsSync(paths.dir)).toBe(false)
+  expect(fake.calls()).toEqual([])
+})
+
+test("a home too long for SSH's sockets matters only once there's a reach.sh", async () => {
+  const { dir, fake } = fakeHome()
+  const home = path.join(dir, "a-folder-name-long-enough-to-pass-the-limit")
+  let v = visitDeps(home, fake)
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(3)
+  expect(v.errors).toEqual([NO_PATH(new ReachPaths(home))])
+  fs.mkdirSync(path.join(home, "hq"), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(path.join(home, "hq", "reach.sh"), "exit 3\n")
+  v = visitDeps(home, fake)
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors[0]).toContain("SSH's control sockets under it need at most 39")
 })
 
 test("an owner-written reach.sh is shown whole and runs only once approved", async () => {
@@ -384,6 +403,7 @@ test("with the lock held and no access.json yet, it says another run is approvin
   const { dir, fake } = fakeHome()
   const paths = new ReachPaths(dir)
   makeDirs(paths)
+  fs.writeFileSync(paths.script, "exit 3\n")
   const lock = takeLock(paths)!
   try {
     const v = visitDeps(dir, fake)

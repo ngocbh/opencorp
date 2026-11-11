@@ -730,6 +730,24 @@ describe("against a real office", () => {
   })
 })
 
+test("with no office and no reach.sh, opencorp hq says to start the office or write one, exits 3 and makes nothing", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
+  try {
+    const home = path.join(root, "h")
+    fs.mkdirSync(home, { mode: 0o700 })
+    const run = runHq({ PATH: "/usr/bin:/bin", HOME: root, OPENCORP_HOME: home, OPENCORP_BUN: process.execPath }, [], root)
+    expect(await run.exited).toBe(3)
+    expect(run.stderr()).toStartWith(
+      "opencorp hq: no office answers here. If HQ runs on this machine, start it with `opencorp start` (`opencorp doctor` says why it's down).\n" +
+        `To reach HQ on another machine, write ${path.join(home, "hq", "reach.sh")}`,
+    )
+    expect(run.stdout()).toBe("")
+    expect(fs.readdirSync(home)).toEqual([])
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 describe("from another machine", () => {
   let remote: TestOffice
   let app: string

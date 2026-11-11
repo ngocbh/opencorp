@@ -75,9 +75,11 @@ export const USE = "Use it"
 export const STOP = "Stop"
 export const RUN_THIS = "Run this reach.sh on every visit?"
 export const USE_CHANGED = "Use the changed reach.sh on every visit?"
+/** No office answers here and there's no saved path: this may be HQ's own machine with its office stopped. */
 export const NO_PATH = (paths: ReachPaths) =>
-  `opencorp hq: no office answers here, and there's no saved way to reach HQ. Write ${paths.script}, a sh script whose ` +
-  "last line of output is the connection spec (see the README), then run `opencorp hq` again."
+  "opencorp hq: no office answers here. If HQ runs on this machine, start it with `opencorp start` (`opencorp doctor` " +
+  `says why it's down).\nTo reach HQ on another machine, write ${paths.script}, a sh script whose last line of output ` +
+  "is the connection spec (see the README), then run `opencorp hq` again."
 /** Signed in longer than this, a visit hints at `--sign-in`: HQ's browser session lasts 30 days. */
 export const SIGN_IN_HINT_DAYS = 30
 export const SIGN_IN_HINT =
@@ -134,9 +136,15 @@ export async function reach(ctx: ReachContext, port: number): Promise<Connection
 }
 
 /** A visit from a machine where no office answers; resolves to its exit code: 0 for a normal end (Ctrl-C while
- *  connected), 3 for no office there, 130 for Ctrl-C before connecting, 1 for the rest. */
+ *  connected), 3 for no office there (or here, with no saved path), 130 for Ctrl-C before connecting, 1 for the
+ *  rest. */
 export async function visit(options: VisitOptions, deps: VisitDeps): Promise<number> {
   const paths = new ReachPaths(deps.home)
+  // Before anything is made under hq/: with no saved path this is as likely HQ's own machine, its office stopped.
+  if (!present(paths.script)) {
+    deps.error(NO_PATH(paths))
+    return 3
+  }
   const problem = pathProblem(paths)
   if (problem !== null) {
     deps.error(problem)
@@ -230,7 +238,7 @@ async function approve(
   const now = readScript(paths.script)
   if (now === null) {
     deps.error(NO_PATH(paths))
-    return 1
+    return 3
   }
   const digest = sha256(now)
   if (access !== null && access.sha256 === digest) return access
@@ -430,6 +438,16 @@ async function lineOrStop(stdin: Readable, signal: AbortSignal): Promise<string 
   const line = await Promise.race([readLine(stdin).catch(() => undefined), aborted(signal).then(() => undefined)])
   if (signal.aborted) stdin.pause()
   return line
+}
+
+/** Whether anything, a dangling link included, is at `file`. */
+function present(file: string): boolean {
+  try {
+    return fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined
+  } catch {
+    // A file where a folder on its path should be.
+    return false
+  }
 }
 
 /** Resolves "stop" once `signal` aborts. */
