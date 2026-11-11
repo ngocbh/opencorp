@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
+import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
 import { HqStatus, type HqTcp, PairCode } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
 import { canOpen, hq, pairOutput, type HqDeps, socketPort } from "../src/commands/hq"
@@ -637,4 +638,39 @@ test("--help prints the usage and exits 0 without the office", async () => {
   expect(await hq(["--help"], d)).toBe(0)
   expect(printed).toEqual(["usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--json] [--check --json]"])
   expect(errors).toEqual([])
+})
+
+describe("against a real office", () => {
+  let real: TestOffice
+  beforeAll(async () => {
+    real = await startOffice()
+  }, 120_000)
+  afterAll(() => real?.stop())
+
+  /** The last line of `stdout`, which `--json` and `--check --json` make their only one. */
+  const lastLine = (stdout: string) => stdout.trimEnd().split("\n").at(-1)!
+
+  test("--check --json reports hq.sock and HQ's health", async () => {
+    const ran = await real.opencorp(["hq", "--check", "--json"])
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" })
+    const status = HqStatus.parse(JSON.parse(lastLine(ran.stdout)))
+    expect(status.socket).toBe(real.hqSocket)
+    expect(status.socket_error).toBeNull()
+  })
+
+  test("--json gives a code that signs a browser in through hq.sock", async () => {
+    const ran = await real.opencorp(["hq", "--json"])
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" })
+    const minted = PairCode.parse(JSON.parse(lastLine(ran.stdout)))
+    expect(minted.path).toMatch(/^\/pair#[A-Za-z0-9_-]{22}$/)
+    // hq.sock takes any port in Host, as an SSH forward's local end gives it; the cookie's name carries that port.
+    const res = await fetch("http://127.0.0.1:1/api/pair", {
+      unix: real.hqSocket,
+      method: "POST",
+      headers: { origin: "http://127.0.0.1:1", "content-type": "application/json" },
+      body: JSON.stringify({ code: minted.path.slice("/pair#".length) }),
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get("set-cookie")).toMatch(/^opencorp_hq_1=/)
+  })
 })
