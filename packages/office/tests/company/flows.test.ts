@@ -40,7 +40,8 @@ test("pinned version is checked", async () => {
   await expect(load).rejects.toThrow('uses: ref pinned echo@2 but the resolved file declares version: "1"')
 })
 
-test("a uses: child's CODE outside the repo is refused", async () => {
+test("a uses: child loads under the repo root, so its CODE outside the repo is refused", async () => {
+  // Each nested load passes the root itself; yian would also hold the child's CODE to the parent's.
   const outside = path.join(tempDir(), "fn.ts")
   fs.writeFileSync(outside, 'export function fn(): string {\n  return "out"\n}\n')
   const root = makeCompany({ "shared/flows/main.yaml": usesFlow("main", ["coded"]) })
