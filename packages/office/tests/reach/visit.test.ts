@@ -10,6 +10,7 @@ import type { Spec } from "../../src/reach/spec.ts"
 import { type Access, DEFAULT_PORT, readAccess, sha256, takeLock, writeAccess } from "../../src/reach/state.ts"
 import {
   BUSY,
+  LOST,
   NO_PATH,
   NOT_YET,
   RUN_THIS,
@@ -20,7 +21,7 @@ import {
   visit,
 } from "../../src/reach/visit.ts"
 import { writePrivate } from "../../src/secrets.ts"
-import type { FakeSsh, FakeSshBehavior } from "../../src/testing/fake_ssh.ts"
+import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../src/testing/fake_ssh.ts"
 import { control, type ReachContext } from "../../src/reach/ssh.ts"
 import { ps, waitFor } from "../helpers.ts"
 import { fakeHome, fakeRemote, freePort, reachCtx, visitDeps } from "./helpers.ts"
@@ -403,4 +404,85 @@ test.each(FAILURES)("a failed visit says what to do and exits as the table says 
   expect(mints(home.fake)).toEqual([])
   expect(fs.readdirSync(home.paths.cm)).toEqual([])
   expect(home.fake.masters()).toEqual([])
+})
+
+/** The control sockets the fake's `-O exit` calls named, in order. */
+const exits = (fake: FakeSsh) =>
+  fake.calls().filter((argv) => argv.includes("-O") && argv.includes("exit")).map((argv) => argv[argv.indexOf("-S") + 1])
+
+/** Drops the connection: SIGTERM to the node master, found by its control socket in its arguments. */
+function dropNode(paths: ReachPaths): void {
+  const line = processes(`-S ${paths.node}`).find((l) => l.includes(" -M "))
+  if (line === undefined) throw new Error("no node master")
+  process.kill(Number(line.split(/\s+/)[0]), "SIGTERM")
+}
+
+/** The visit lines printed so far. */
+const visitLines = (printed: string[]) => printed.filter((line) => line.startsWith("Connected."))
+
+test("Ctrl-C while connected ends every master and exits 0", async () => {
+  const { dir, fake, paths } = await approvedHome({}, { signed_in_at: new Date().toISOString() })
+  const v = await connected(dir, fake, { signIn: false, open: false })
+  expect(exits(fake)).toEqual([])
+  v.sigint()
+  expect(await v.done).toBe(0)
+  expect(exits(fake)).toEqual([paths.node, path.join(paths.cm, fakeControlName("login1"))])
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test("a drop is retried once quietly in BatchMode before asking for Enter", async () => {
+  const { dir, fake, paths } = await approvedHome({ batch: "ok", banner: "Welcome to the cluster\n" }, {
+    signed_in_at: new Date().toISOString(),
+  })
+  const v = await connected(dir, fake, { signIn: false, open: false })
+  expect(v.echoed.join("")).toContain("Welcome to the cluster")
+  const echoed = v.echoed.length
+  const batched = () => fake.calls().filter((argv) => argv.includes(paths.batchConfig))
+  expect(batched()).toEqual([])
+  dropNode(paths)
+  await waitFor(() => visitLines(v.printed).length === 2, { what: "the visit to reconnect" })
+  expect(v.errors).toEqual([])
+  expect(batched().some((argv) => argv.includes("-M"))).toBe(true)
+  expect(batched().some((argv) => argv.includes("login1"))).toBe(true)
+  expect(v.echoed.length).toBe(echoed)
+  v.sigint()
+  expect(await v.done).toBe(0)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test("when the quiet try fails it waits for Enter, and again after each failure", async () => {
+  const { dir, fake } = fakeHome({ batch: "refuse" })
+  const remote = await fakeRemote(dir)
+  const fail = path.join(dir, "fail")
+  const spec: Spec = { host: "node1", jump: ["login1"], opencorp: remote.opencorp }
+  const paths = await saved(dir, `[ ! -e '${fail}' ] || exit 1\n${scriptFor(spec)}`, {
+    port: await freePort(),
+    signed_in_at: new Date().toISOString(),
+  })
+  // No answers: a relearning question would fail the visit.
+  const v = await connected(dir, fake, { signIn: false, open: false })
+  const lost = () => v.errors.filter((line) => line === LOST).length
+  dropNode(paths)
+  await waitFor(() => lost() === 1, { what: "the first press Enter" })
+  fs.writeFileSync(fail, "")
+  v.stdin.write("\n")
+  await waitFor(() => lost() === 2, { what: "the second press Enter" })
+  expect(v.errors).toEqual([LOST, "opencorp hq: the saved way to reach HQ is broken: reach.sh exited 1", LOST])
+  fs.rmSync(fail)
+  v.stdin.write("\n")
+  await waitFor(() => visitLines(v.printed).length === 2, { what: "the visit to reconnect" })
+  expect(v.prompter.seen).toEqual([])
+  v.sigint()
+  expect(await v.done).toBe(0)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test("stdin closing while it waits for Enter ends the visit with 1", async () => {
+  const { dir, fake, paths } = await approvedHome({ batch: "refuse" }, { signed_in_at: new Date().toISOString() })
+  const v = await connected(dir, fake, { signIn: false, open: false })
+  dropNode(paths)
+  await waitFor(() => v.errors.includes(LOST), { what: "press Enter" })
+  v.stdin.end()
+  expect(await v.done).toBe(1)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
 })
