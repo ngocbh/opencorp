@@ -92,7 +92,8 @@ export async function writeRedirect(paths: ReachPaths, port: number, code: strin
   return file
 }
 
-/** Deletes `file` once its code expired, never sooner: the browser reads it after `open` returns. */
+/** Deletes `file` once its code expired, never sooner: the browser reads it after `open` returns. A process that ends
+ *  first leaves the 0600 file, holding only an expired code by then, to the next visit's sweep. */
 export function removeAtExpiry(file: string, ms: number = TTL): void {
   setTimeout(() => fs.rmSync(file, { force: true }), ms).unref()
 }

@@ -15,7 +15,11 @@ import { remoteCommand, type Spec, safePath, word } from "./spec.ts"
 
 /** The owner's config, then the system's, which `-F` skips. `home` is the passwd entry's (`os.userInfo().homedir`),
  *  where ssh's own `~` points; only `realVisitDeps` calls this. */
-export const defaultIncludes = (home: string) => [path.join(home, ".ssh", "config"), "/etc/ssh/ssh_config"]
+export const defaultIncludes = (home: string) => [
+  path.join(home, ".ssh", "config"),
+  // Apple's and the distributions' system config; a Homebrew or Nix ssh reads its own under its prefix instead.
+  "/etc/ssh/ssh_config",
+]
 
 /** `hq/ssh/config` (`config.batch` with `batch`): our options first, since ssh keeps the first value it reads, so the
  *  owner's ControlPath can't win and our `-O exit` never ends their masters. With `sessionOptions` (an ssh that knows
@@ -396,14 +400,14 @@ export function waitForSocket(
 /** Whether `p` is a unix socket (not following a symlink). */
 export const isSocket = (p: string) => fs.lstatSync(p, { throwIfNoEntry: false })?.isSocket() ?? false
 
-/** A session over the master at `socket`. ControlMaster=no: never a new master. ProxyCommand=false: with no master
- *  it fails at once instead of logging in again. No -J (ssh refuses it beside ProxyCommand). -F /dev/null: no
+/** A session over the master at `socket`. ControlMaster=no: never a new master. ProxyCommand=/usr/bin/false (by path,
+ *  so no PATH lookup): with no master it fails at once instead of logging in again. No -J (ssh refuses it beside ProxyCommand). -F /dev/null: no
  *  `Match exec` of the owner's runs. IdentityFile=none: it never authenticates, and without it ssh reads the
  *  default keys in `~/.ssh` before failing. */
 export function muxArgv(ssh: string, socket: string, host: string, command: string): [string, ...string[]] {
   return [
     ssh, "-F", "/dev/null", "-S", socket,
-    "-o", "ControlMaster=no", "-o", "ProxyCommand=false", "-o", "IdentityFile=none",
+    "-o", "ControlMaster=no", "-o", "ProxyCommand=/usr/bin/false", "-o", "IdentityFile=none",
     "-T", "--", host, command,
   ]
 }

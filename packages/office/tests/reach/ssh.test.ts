@@ -457,7 +457,7 @@ test("closing our pipe ends the master when no connection is open", async () => 
 test("mux steps never log in again and never pass -J", () => {
   expect(muxArgv("/usr/bin/ssh", "/s", "u@n", "'/o/opencorp' 'hq'")).toEqual([
     "/usr/bin/ssh", "-F", "/dev/null", "-S", "/s",
-    "-o", "ControlMaster=no", "-o", "ProxyCommand=false", "-o", "IdentityFile=none",
+    "-o", "ControlMaster=no", "-o", "ProxyCommand=/usr/bin/false", "-o", "IdentityFile=none",
     "-T", "--", "u@n", "'/o/opencorp' 'hq'",
   ])
 })
