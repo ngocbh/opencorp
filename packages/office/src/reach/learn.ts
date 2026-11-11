@@ -5,8 +5,9 @@ import type { Readable } from "node:stream"
 import { type FunctionTool, ReportedToolError, type ToolContext, tool } from "@ngocbh/yian"
 import { Asking, withOwner } from "../install/interview.ts"
 import { clean, KeyboardInterrupt, type Prompter } from "../install/prompts.ts"
-import { strip } from "../perm/redact.ts"
+import { redact, strip } from "../perm/redact.ts"
 import type { Connection } from "./connect.ts"
+import { beforeSaving } from "./risks.ts"
 import { cleanOutput, quietStdin, type Ran, type ReachContext, readStatuses, resetStatus, runChild, sshEnv } from "./ssh.ts"
 
 /** One learning run: the owner's terminal, the reach context, the model's key (never saved), the port, the commands
@@ -123,3 +124,64 @@ export const shellTool: FunctionTool = tool({
   },
   execute: (args, c) => runShell(args as { command: string; why: string }, learning(c)),
 })
+
+/** Why `text` can't be saved, or null: it holds the model's key (any form `perm/redact.ts`'s three-argument `redact`
+ *  finds), a private key, or a password handed to ssh. */
+export function secretIn(text: string, keys: readonly string[]): string | null {
+  if (keys.some((key) => key !== "" && redact(text, [], [key]) !== text)) return "it holds the model's API key"
+  if (/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(text)) return "it holds a private key"
+  if (/\bsshpass\b|\bSSHPASS=/.test(text)) return "it hands a password to ssh"
+  return null
+}
+
+export const SAVE = "Test it, then save it"
+export const CANCEL = "Don't save it"
+export const SAVE_QUESTION = "Save this, after testing the whole connection?"
+export const WHAT_SHOULD_CHANGE = "What should change? (empty for nothing)"
+
+/** What save_access is given: reach.sh, notes.md, and the risks of this setup the owner should know. */
+export interface ToSave {
+  script: string
+  notes: string
+  risks: readonly string[]
+}
+
+/** Why `files` can't be saved, or null: a secret in either file, or a control character, which would show other
+ *  than it runs or reads. */
+function problemIn(files: ToSave, keys: readonly string[]): string | null {
+  for (const [name, text] of [
+    ["reach.sh", files.script],
+    ["notes.md", files.notes],
+  ] as const) {
+    const secret = secretIn(text, keys)
+    if (secret !== null) return `${name}: ${secret}; SSH asks for passwords and Duo itself, so leave them out`
+    if (CONTROL.test(text)) return `${name} holds control characters; use printable text, tabs and newlines only`
+  }
+  return null
+}
+
+/** `save_access`: refuses files holding a secret before showing anything, then shows both files whole and the risks,
+ *  the fixed ones first, and asks the owner; a cancel tells the model what the owner wants changed. */
+export async function saveAccess(files: ToSave, state: Learning): Promise<string> {
+  const problem = problemIn(files, state.secrets)
+  if (problem !== null) throw new ReportedToolError(`Not saved: ${problem}.`)
+  const { paths } = state.ctx
+  const change = await withOwnerOrStop(state, async (p) => {
+    const say = (line: string) => p.say(clean(line))
+    say(`The model wants to save how this machine reaches HQ. ${paths.script}, which runs on every visit:`)
+    for (const line of files.script.replace(/\n$/, "").split("\n")) say(`  ${line}`)
+    say(`${paths.notes}:`)
+    for (const line of files.notes.replace(/\n$/, "").split("\n")) say(`  ${line}`)
+    say("Before you save it:")
+    for (const risk of [...beforeSaving(paths), ...files.risks]) say(`  - ${risk}`)
+    const answer = await p.choose(SAVE_QUESTION, [SAVE, CANCEL], CANCEL)
+    quietStdin(state.stdin)
+    if (answer === SAVE) return null
+    const wanted = strip(await p.ask(WHAT_SHOULD_CHANGE))
+    quietStdin(state.stdin)
+    return wanted
+  })
+  if (change !== null)
+    throw new ReportedToolError(change ? `Not saved: the owner wants a change: ${change}` : "Not saved: the owner didn't save it.")
+  return "Approved."
+}
