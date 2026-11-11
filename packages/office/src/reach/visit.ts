@@ -409,7 +409,9 @@ async function waitLoop(ctx: ReachContext, conn: Connection, deps: VisitDeps): P
 }
 
 /** After a drop: close our masters, try once quietly in BatchMode (it fails at once where a login needs Duo), then
- *  reconnect each time the owner presses Enter. Never offers relearning. Null when stdin ends or on Ctrl-C. */
+ *  reconnect each time the owner presses Enter; Enters typed before the prompt don't count. A failed retry has
+ *  ended only the node master (`connect` does that), so the next rides the login master without a new Duo. Never
+ *  offers relearning. Null when stdin ends or on Ctrl-C. */
 async function reconnect(ctx: ReachContext, port: number, deps: VisitDeps): Promise<Connection | null> {
   await exitAll(ctx)
   try {
@@ -420,6 +422,7 @@ async function reconnect(ctx: ReachContext, port: number, deps: VisitDeps): Prom
   const signal = ctx.signal!
   for (;;) {
     if (signal.aborted) return null
+    await drain(deps.stdin)
     deps.error(LOST)
     if ((await lineOrStop(deps.stdin, signal)) === undefined) return null
     quietStdin(deps.stdin)
@@ -428,9 +431,23 @@ async function reconnect(ctx: ReachContext, port: number, deps: VisitDeps): Prom
     } catch (error) {
       if (signal.aborted) return null
       deps.error(error instanceof ReachFailure ? describe(error, port).line : `opencorp hq: ${messageOf(error)}`)
-      await exitAll(ctx)
     }
   }
+}
+
+/** How long `drain` reads what's waiting on stdin. */
+export const DRAIN_INPUT_MS = 50
+
+/** Discards what's waiting on `stdin` (buffered here, or typed into the terminal while nothing read it), then pauses
+ *  it again. */
+async function drain(stdin: Readable): Promise<void> {
+  if (stdin.readableEnded || stdin.destroyed) return
+  const discard = () => {}
+  stdin.on("data", discard)
+  stdin.resume()
+  await sleep(DRAIN_INPUT_MS)
+  stdin.off("data", discard)
+  stdin.pause()
 }
 
 /** A line from `stdin`, or undefined once it ends or `signal` aborts (then stdin is paused). */

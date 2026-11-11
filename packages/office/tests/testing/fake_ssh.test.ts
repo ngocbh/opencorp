@@ -79,6 +79,13 @@ test("each jump host logs in before the destination, by its own mode", () => {
   expect(run(fake, ["-J", "gw,other", "node", "echo hi"]).stderr).toContain("other: Permission denied")
 })
 
+test("the fake records each host that logged in, in order", () => {
+  const fake = fakeSsh({ hosts: { node: { login: "refuse" } } })
+  expect(run(fake, ["-J", "u@login:2222", "gw", "true"]).code).toBe(0)
+  expect(run(fake, ["-J", "login", "node", "true"]).code).toBe(255)
+  expect(fake.logins()).toEqual(["login", "gw", "login"])
+})
+
 test("BatchMode in the -F file uses the host's batch mode and never prompts", () => {
   const dir = shortDir()
   const batch = config(dir, ["# ours", "BatchMode yes"])
