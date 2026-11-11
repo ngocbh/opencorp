@@ -17,7 +17,8 @@ export interface ScriptedToolCall {
 
 /** One scripted answer: any of `content`, `tool_calls`, `usage`; `match`, a substring the request's messages must
  *  contain; `error`, an HTTP status to return instead; `hold`, `true` to wait until `release()`, or at most that
- *  many seconds; `cut`, for a streamed request, to end the response after the content and tool calls with no
+ *  many seconds; `hold_after`, for a streamed request, how many pieces of `content` go out before the hold (none by
+ *  default); `cut`, for a streamed request, to end the response after the content and tool calls with no
  *  `finish_reason` chunk, usage or `[DONE]` (a stream cut short). */
 export interface ScriptedReply {
   content?: string
@@ -26,6 +27,7 @@ export interface ScriptedReply {
   match?: string
   error?: number
   hold?: boolean | number
+  hold_after?: number
   cut?: true
 }
 
@@ -204,7 +206,9 @@ export class FakeLLM {
       const error = { message: "no scripted reply matches this request", type: "server_error", request: body }
       return send(res, 500, { error }, NO_RETRY)
     }
-    if (reply.hold) await this.#hold(reply.hold)
+    // A streamed reply that holds after some of its content holds once those pieces are out.
+    const shownFirst = body.stream && !reply.error ? (reply.hold_after ?? 0) : 0
+    if (reply.hold && shownFirst === 0) await this.#hold(reply.hold)
     if (reply.error) {
       const error = { message: `scripted error ${reply.error}`, type: "server_error" }
       return send(res, Number(reply.error), { error }, NO_RETRY)
@@ -229,8 +233,16 @@ export class FakeLLM {
         if (body.stream_options?.include_usage) frames.push({ ...head, choices: [], usage: usageOf(reply) })
         done = "data: [DONE]\n\n"
       }
+      const wire = (some: Obj[]) => some.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")
       res.writeHead(200, { "content-type": "text/event-stream" })
-      res.end(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("") + done)
+      if (reply.hold && shownFirst > 0) {
+        // The role chunk and the first pieces.
+        res.write(wire(frames.slice(0, shownFirst + 1)))
+        await this.#hold(reply.hold)
+        if (res.destroyed) return
+        frames.splice(0, shownFirst + 1)
+      }
+      res.end(wire(frames) + done)
       return
     }
     const message: Obj = { role: "assistant", content: reply.content || (calls.length ? null : "") }

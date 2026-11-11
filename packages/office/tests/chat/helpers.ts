@@ -310,8 +310,9 @@ export async function waitingChat(
 }
 
 /** Holds the reply's first model call (answering `held`), sends "queued", interrupts, then releases; returns the
- *  recorder of that run, which answers "queued" as its next turn and waits at the one after. The run logs under
- *  `runs` (a temp folder by default) as `r1`. */
+ *  recorder of that run, which answers "queued" as its next turn and waits at the one after. With `held.hold_after`,
+ *  the interrupt waits until the run has streamed text. The run logs under `runs` (a temp folder by default) as
+ *  `r1`. */
 export async function interruptMidReply(
   fake: FakeLLM,
   held: ScriptedReply,
@@ -322,6 +323,10 @@ export async function interruptMidReply(
   const cut = new TemplateOffice()
   const worker = await inProcessWorker(advanceJob(job, { deliver: [send("s1", "one")] }), cut, { env: fake.env() })
   await fake.waitForRequests(1, 30_000)
+  if (held.hold_after) {
+    const streamed = () => cut.streams.some((frame) => frame.type === "chunk" && frame.text !== "")
+    await waitFor(streamed, { timeout: 10_000, what: "the first chunk" })
+  }
   expect(await worker.deliver(send("queued", "queued"))).toBe(true)
   await waitFor(() => cut.replies.some((reply) => reply.id === "queued"), { timeout: 10_000, what: "the send" })
   expect(await worker.deliver({ id: "cut", op: "interrupt", inbox: "messages" })).toBe(true)
