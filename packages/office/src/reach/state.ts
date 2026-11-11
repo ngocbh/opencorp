@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { type FileLock, FileLockError, lockFile } from "@ngocbh/yian/platform"
-import { PairCode, Timestamp } from "@opencorp/protocol"
+import { Timestamp } from "@opencorp/protocol"
 import { z } from "zod"
 import { redirectPage, TTL } from "../hq/pairing.ts"
 import { readPrivate, writePrivate } from "../secrets.ts"
@@ -75,10 +75,13 @@ export const sha256 = (bytes: string | Uint8Array) => createHash("sha256").updat
 /** A one-time code as `PairCodes.mint` makes it: 16 random bytes in base64url. */
 export const CODE = /^[A-Za-z0-9_-]{22}$/
 
-/** The code in a remote `opencorp hq --json`'s `PairCode`, or null. Its `url` and `path` never reach the HTML: the
- *  link is built here. */
+/** What a visit reads of a remote `opencorp hq --json`, whatever else that checkout's version prints: the path. */
+export const RemoteCode = z.looseObject({ path: z.string() })
+
+/** The code in a remote `opencorp hq --json`'s path, or null. Its `url` and `path` never reach the HTML: the link is
+ *  built here. */
 export function codeFrom(data: unknown): string | null {
-  const parsed = PairCode.safeParse(data)
+  const parsed = RemoteCode.safeParse(data)
   if (!parsed.success || !parsed.data.path.startsWith("/pair#")) return null
   const code = parsed.data.path.slice("/pair#".length)
   return CODE.test(code) ? code : null

@@ -37,6 +37,12 @@ const ROWS: [string, Ran, FailureKind, string][] = [
   ["a socket that isn't hq.sock", ran({ stdout: json({ socket: "/h/o/office.sock" }) }), "broken", "HQ's socket path there can't be forwarded as is"],
   ["hq.sock not listening", ran({ stdout: json({ socket_error: "ENOENT\x1b[2J" }) }), "not_ready", "hq.sock isn't listening (ENOENT[2J)"],
   ["the app not built", ran({ stdout: json({ health: { ...HEALTH, app: null } }) }), "not_ready", "HQ's web app isn't built"],
+  [
+    "a status without its socket",
+    ran({ stdout: JSON.stringify({ ...STATUS, socket: undefined }) }),
+    "not_ready",
+    "HQ's machine runs a different opencorp; update one side",
+  ],
 ]
 
 test.each(ROWS)("the remote check is classified [%s]", (_label, r, kind, message) => {
@@ -52,7 +58,7 @@ test.each(ROWS)("the remote check is classified [%s]", (_label, r, kind, message
 })
 
 test("the remote check is classified [a good status after a .bashrc banner]", () => {
-  expect(classifyCheck(ran({ stdout: `Welcome to node1\n${json()}\n` }))).toEqual(STATUS)
+  expect(classifyCheck(ran({ stdout: `Welcome to node1\n${json()}\n` }))).toEqual({ socket: STATUS.socket, health: HEALTH })
 })
 
 /** A spec for node1 through login1, running the fake remote's opencorp. */
@@ -190,4 +196,25 @@ test("sign-in with no office there is no_office, and with the master gone couldn
   expect((await failure(signIn(ctx, spec))).kind).toBe("not_ready")
   await exitAll(ctx)
   expect((await failure(signIn(ctx, spec))).kind).toBe("unreachable")
+})
+
+test("a status, health and code each with one extra field all work", async () => {
+  const { remote, ctx, spec } = await setup()
+  const health = { ...remote.status.health, later: { field: 1 } }
+  remote.health = health
+  remote.setCheck({ stdout: JSON.stringify({ ...remote.status, health, added_later: true }) })
+  remote.setSignIn({
+    stdout: JSON.stringify({ path: `/pair#${remote.code}`, url: null, socket: remote.socket, port: 1, expires_at: "2026-11-11T10:00:00.000Z", open_file: null, added_later: 1 }),
+  })
+  const conn = await connect(spec, await freePort(), ctx)
+  expect(conn.socket).toBe(remote.socket)
+  expect(await signIn(ctx, spec)).toBe(remote.code)
+})
+
+test("a code that isn't a pairing code at all is a different opencorp there", async () => {
+  const { remote, ctx, spec } = await setup()
+  await connect(spec, await freePort(), ctx)
+  remote.setSignIn({ stdout: JSON.stringify({ link: `/pair#${remote.code}` }) })
+  const got = await failure(signIn(ctx, spec))
+  expect([got.kind, got.message]).toEqual(["not_ready", "HQ's machine runs a different opencorp; update one side"])
 })

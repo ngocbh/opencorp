@@ -131,15 +131,17 @@ const pairCode = (p: string) => ({
   open_file: null,
 })
 
-test("only a 22-character base64url code from /pair# is taken", () => {
+test("only a 22-character base64url code from the path's /pair# is taken", () => {
   expect(CODE).toHaveLength(22)
   expect(codeFrom(pairCode(`/pair#${CODE}`))).toBe(CODE)
   expect(codeFrom({ ...pairCode(`/pair#${CODE}`), url: `http://evil/pair#${CODE}` })).toBe(CODE)
   for (const bad of [CODE.slice(1), CODE + "a", CODE.slice(1) + '"', CODE.slice(1) + "<"])
     expect([bad, codeFrom(pairCode(`/pair#${bad}`))]).toEqual([bad, null])
   expect(codeFrom(pairCode(`/other#${CODE}`))).toBeNull()
-  expect(codeFrom({ ...pairCode(`/pair#${CODE}`), extra: 1 })).toBeNull()
-  expect(codeFrom({ path: `/pair#${CODE}` })).toBeNull()
+  // Only the path counts: another version's fields, or a missing one, don't matter.
+  expect(codeFrom({ ...pairCode(`/pair#${CODE}`), extra: 1 })).toBe(CODE)
+  expect(codeFrom({ path: `/pair#${CODE}` })).toBe(CODE)
+  expect(codeFrom({ url: `/pair#${CODE}` })).toBeNull()
   expect(codeFrom(undefined)).toBeNull()
 })
 
