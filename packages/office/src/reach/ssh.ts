@@ -1,10 +1,11 @@
 /** The SSH plumbing of reaching a remote HQ: the generated configs and the ssh wrapper, the child runner, the node
  *  master and its lifeline, mux sessions and `-O` commands, and the watcher that ends every master once this process
  *  is gone. */
-import { spawn } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { sameProcess, startTime } from "../install/proc.ts"
 import { replaceFile, writePrivate } from "../secrets.ts"
 import type { ReachPaths } from "./paths.ts"
 import { safePath, word } from "./spec.ts"
@@ -218,9 +219,47 @@ export function lastStderr(ran: Ran): string {
   return (lines.at(-1) ?? "").slice(0, 300)
 }
 
-/** Ends `pid` with SIGTERM. */
-export function killTree(pid: number): void {
+/** The processes below `pid` as `ps` lists them now, deepest first. */
+export function descendants(pid: number): number[] {
+  const ps = ["/bin/ps", "/usr/bin/ps"].find((file) => fs.existsSync(file))
+  if (ps === undefined) return []
+  let out: string
   try {
-    process.kill(pid, "SIGTERM")
+    out = execFileSync(ps, ["-A", "-o", "pid=,ppid="], {
+      env: { LC_ALL: "C" },
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
+      timeout: 5000,
+    })
+  } catch {
+    return []
+  }
+  const children = new Map<number, number[]>()
+  for (const line of out.split("\n")) {
+    const [child, parent] = line.trim().split(/\s+/).map(Number)
+    if (!Number.isInteger(child) || !Number.isInteger(parent)) continue
+    children.set(parent!, [...(children.get(parent!) ?? []), child!])
+  }
+  const found: number[] = []
+  for (let level = children.get(pid) ?? []; level.length > 0; level = level.flatMap((p) => children.get(p) ?? []))
+    found.push(...level.filter((p) => p !== pid && !found.includes(p)))
+  return found.reverse()
+}
+
+/** Ends `pid` and its descendants, read from `ps` now: SIGTERM, then SIGKILL after `KILL_GRACE_MS` to each still
+ *  running. `pid` first, so a shell can't run its next command once its child ends. Children can't lead a group of
+ *  their own (ssh's prompts need the foreground tty), so this walks the tree instead of signalling a group. */
+export function killTree(pid: number): void {
+  const tree = [pid, ...descendants(pid)].map((p) => ({ pid: p, started: startTime(p) }))
+  for (const { pid: p } of tree) send(p, "SIGTERM")
+  setTimeout(() => {
+    for (const { pid: p, started } of tree) if (started !== null && sameProcess(p, started)) send(p, "SIGKILL")
+  }, KILL_GRACE_MS).unref()
+}
+
+/** Sends `sig` to `pid`; a process that already went, or isn't ours, is skipped. */
+function send(pid: number, sig: NodeJS.Signals): void {
+  try {
+    process.kill(pid, sig)
   } catch {}
 }

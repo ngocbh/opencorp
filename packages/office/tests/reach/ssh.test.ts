@@ -1,6 +1,6 @@
 /** The SSH plumbing: generated configs and the wrapper, the child runner, the node master, mux and control commands,
  *  and the watcher. */
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
@@ -9,10 +9,12 @@ import {
   cleanOutput,
   configText,
   defaultIncludes,
+  descendants,
   findSsh,
   LIMITS,
   type ReachContext,
   KEEP_CHARS,
+  killTree,
   lastStderr,
   readStatuses,
   resetStatus,
@@ -226,4 +228,59 @@ test("past 64 KiB it keeps the last 64 KiB, so the last line survives", async ()
   expect(ran.stdout).toHaveLength(KEEP_CHARS)
   expect(ran.stdout.endsWith("line-2999-padding-padding-padding\n")).toBe(true)
   expect(ran.stderr.endsWith("e-2999\n")).toBe(true)
+})
+
+/** The pid a script wrote to `file`, once it's there; killed when the test finishes. */
+async function pidIn(file: string): Promise<{ pid: number; started: number | null }> {
+  const text = await waitFor(() => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim() : ""), { what: file })
+  const pid = Number(text)
+  killAfter(pid)
+  return { pid, started: startTime(pid) }
+}
+
+/** Two sleeps under a shell, their pids written under `dir`. */
+const TWO_SLEEPS = 'sleep 30 & echo $! >"$0/s30"; sleep 31 & echo $! >"$0/s31"; wait'
+
+test("a child that runs out of time is ended with its descendants", async () => {
+  const dir = shortDir()
+  const ran = runChild(["/bin/sh", "-c", TWO_SLEEPS, dir], { ...RUN, timeoutMs: 300 })
+  const sleeps = [await pidIn(path.join(dir, "s30")), await pidIn(path.join(dir, "s31"))]
+  expect((await ran).timedOut).toBe(true)
+  await waitFor(() => sleeps.every((s) => isGone(s.pid, s.started)), { timeout: 5000, what: "both sleeps to end" })
+})
+
+test("an aborted signal ends a child as a timeout does", async () => {
+  const dir = shortDir()
+  const stop = new AbortController()
+  const ran = runChild(["/bin/sh", "-c", TWO_SLEEPS, dir], { ...RUN, signal: stop.signal })
+  const sleeps = [await pidIn(path.join(dir, "s30")), await pidIn(path.join(dir, "s31"))]
+  stop.abort()
+  const done = await ran
+  expect([done.timedOut, done.code]).toEqual([true, 143])
+  await waitFor(() => sleeps.every((s) => isGone(s.pid, s.started)), { timeout: 5000, what: "both sleeps to end" })
+})
+
+test("a signal aborted before the start ends the child at once", async () => {
+  const started = performance.now()
+  const ran = await runChild(["/bin/sh", "-c", "sleep 30"], { ...RUN, signal: AbortSignal.abort() })
+  expect(ran.timedOut).toBe(true)
+  expect(performance.now() - started).toBeLessThan(2000)
+})
+
+test("descendants lists children's children", async () => {
+  const dir = shortDir()
+  const inner = 'sleep 31 & echo $! >"$0/s31"; wait'
+  const child = spawn("/bin/sh", ["-c", `sleep 30 & echo $! >"$0/s30"; /bin/sh -c '${inner}' "$0" & echo $! >"$0/sh"; wait`, dir], {
+    env: { PATH: "/usr/bin:/bin" },
+    stdio: "ignore",
+  })
+  killAfter(child.pid!)
+  const [s30, sh, s31] = [await pidIn(path.join(dir, "s30")), await pidIn(path.join(dir, "sh")), await pidIn(path.join(dir, "s31"))]
+  const found = descendants(child.pid!)
+  expect([...found].sort()).toEqual([s30.pid, sh.pid, s31.pid].sort())
+  // Deepest first: the inner sleep before the shell that started it.
+  expect(found.indexOf(s31.pid)).toBeLessThan(found.indexOf(sh.pid))
+  expect(descendants(s31.pid)).toEqual([])
+  killTree(child.pid!)
+  await waitFor(() => [s30, sh, s31].every((s) => isGone(s.pid, s.started)), { timeout: 5000, what: "the tree to end" })
 })
