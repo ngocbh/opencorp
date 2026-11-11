@@ -49,3 +49,43 @@ export const Spec = z.strictObject({
     .optional(),
 })
 export type Spec = z.output<typeof Spec>
+
+/** The last non-blank line of `text`, trimmed, or null: a login banner or a `.bashrc` may print above it. */
+export function lastLine(text: string): string | null {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+  return lines.at(-1) ?? null
+}
+
+/** `lastLine(text)` parsed as JSON, or `undefined` when there's none or it isn't JSON. */
+export function lastJson(text: string): unknown {
+  const line = lastLine(text)
+  if (line === null) return undefined
+  try {
+    return JSON.parse(line)
+  } catch {
+    return undefined
+  }
+}
+
+/** The spec on the last line of `stdout`, or what's wrong with it: field names and our own words, never a value,
+ *  since the output came from another machine. */
+export function parseSpec(stdout: string): { spec: Spec } | { problem: string } {
+  const data = lastJson(stdout)
+  if (data === undefined) return { problem: "its last line of output isn't JSON" }
+  const parsed = Spec.safeParse(data)
+  if (parsed.success) return { spec: parsed.data }
+  return {
+    problem: parsed.error.issues
+      .map((issue) => `${issue.path.map(String).join(".") || "the spec"}: ${issueMessage(issue)}`)
+      .join("; "),
+  }
+}
+
+/** An issue's message, unless zod's own words would quote the input (an unknown key's name, say). */
+function issueMessage(issue: z.core.$ZodIssue): string {
+  if (issue.code === "unrecognized_keys") return "has a key that isn't allowed"
+  return /["'`]/.test(issue.message) ? "isn't allowed" : issue.message
+}

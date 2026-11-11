@@ -1,6 +1,6 @@
 /** The connection spec: what reach.sh may print, and the remote command built from it. */
 import { expect, test } from "bun:test"
-import { Spec } from "../../src/reach/spec.ts"
+import { lastJson, lastLine, parseSpec, Spec } from "../../src/reach/spec.ts"
 
 /** The design's example spec. */
 const EXAMPLE = {
@@ -49,4 +49,33 @@ test.each(BAD)("a spec that could inject an option or a shell word is refused [%
 test("a jump host may carry a user and a port", () => {
   const spec = { ...GOOD, jump: ["u@login:2222", "gw"] }
   expect(Spec.parse(spec)).toEqual(spec)
+})
+
+test("only the last non-blank line of output counts, so banners above are ignored", () => {
+  expect(lastLine('Welcome\r\n{"a":1}\r\n\n')).toBe('{"a":1}')
+  expect(lastLine("")).toBeNull()
+  expect(lastLine(" \n\t\n")).toBeNull()
+  expect(lastJson('Welcome\n{"a":1}\n')).toEqual({ a: 1 })
+  expect(lastJson("Welcome\nnot json")).toBeUndefined()
+  expect(lastJson("")).toBeUndefined()
+})
+
+test("a last line that isn't a valid spec is a problem that names fields, never values", () => {
+  expect(parseSpec("x\nnot json")).toEqual({ problem: "its last line of output isn't JSON" })
+  expect(parseSpec(`Welcome\n${JSON.stringify(EXAMPLE)}\n`)).toEqual({ spec: EXAMPLE })
+  const bad = parseSpec(JSON.stringify({ ...GOOD, host: "-oProxyCommand=evil" }))
+  expect("problem" in bad && bad.problem).toContain("host")
+  expect("problem" in bad && bad.problem).not.toContain("evil")
+  const nested = parseSpec(JSON.stringify({ ...GOOD, env: { PATH: "evil:/usr/bin" }, jump: ["a", "-evil"] }))
+  expect("problem" in nested && nested.problem).toContain("env.PATH")
+  expect("problem" in nested && nested.problem).toContain("jump.1")
+  expect("problem" in nested && nested.problem).not.toContain("evil")
+  expect(parseSpec("[1]")).toEqual({ problem: expect.stringContaining("the spec: ") })
+})
+
+test("a zod message that would quote the input says the field isn't allowed instead", () => {
+  const extra = parseSpec(JSON.stringify({ ...GOOD, "\u001b[2Jproxy": 1 }))
+  expect(extra).toEqual({ problem: "the spec: has a key that isn't allowed" })
+  const nested = parseSpec(JSON.stringify({ ...GOOD, env: { LD_PRELOAD: "/x.so" } }))
+  expect(nested).toEqual({ problem: "env: has a key that isn't allowed" })
 })
