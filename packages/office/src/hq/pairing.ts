@@ -16,6 +16,16 @@ export const MAX_PENDING = 16
 
 const LEFTOVER = [/^pair-.*\.html$/, /^\.pair-.*\.html\..*\.tmp$/]
 
+/** A page that sends the browser on to `link` at once, its link escaped: what a redirect file holds, so the code never
+ *  sits in an opener's arguments. */
+export function redirectPage(link: string): string {
+  const href = escapeHtml(link)
+  return (
+    `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${href}">` +
+    `<title>OpenCorp HQ</title><a href="${href}">Open OpenCorp HQ</a>\n`
+  )
+}
+
 /** Who a code signs a browser in as, who asked for it, the commit they were checked at, and until when. */
 export interface Pending {
   handle: string
@@ -69,11 +79,7 @@ export class PairCodes {
     let file: string | null = null
     if (openFile && link !== null) {
       file = path.join(this.officeDir, `pair-${randomBytes(8).toString("hex")}.html`)
-      const href = escapeHtml(link)
-      const page =
-        `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${href}">` +
-        `<title>OpenCorp HQ</title><a href="${href}">Open OpenCorp HQ</a>\n`
-      await writePrivate(file, page)
+      await writePrivate(file, redirectPage(link))
     }
     // After the write, so other mints that ran meanwhile count toward the cap.
     this.sweep()

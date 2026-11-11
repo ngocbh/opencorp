@@ -4,7 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
 import { expect, onTestFinished, test } from "bun:test"
-import { MAX_PENDING, PairCodes, TTL } from "../../src/hq/pairing.ts"
+import { MAX_PENDING, PairCodes, redirectPage, TTL } from "../../src/hq/pairing.ts"
 import { tempDir } from "../helpers.ts"
 
 const T0 = new Date("2026-10-19T10:00:00Z")
@@ -131,4 +131,14 @@ test("its inspect and json show no key or code", async () => {
     expect(text).not.toContain(SHA)
   }
   expect(JSON.parse(JSON.stringify(codes))).toEqual({ officeDir: dir, pending: 1 })
+})
+
+test("the redirect page is a meta refresh to the escaped link", async () => {
+  const page = redirectPage("http://x/pair#a&b")
+  expect(page).toContain('content="0;url=http://x/pair#a&amp;b"')
+  expect(page).toContain('<a href="http://x/pair#a&amp;b">')
+  expect(redirectPage('http://x/pair#"><script>')).not.toContain("<script>")
+  const codes = pairCodes(tempDir())
+  const minted = await codes.mint("ngocbh", { ...MINT, openFile: true })
+  expect(fs.readFileSync(minted.file!, "utf8")).toBe(redirectPage(pairUrl(minted.code)))
 })
