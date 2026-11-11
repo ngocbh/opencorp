@@ -39,7 +39,10 @@ const REAL = !!process.env.OPENCORP_TEST_SSHD && fs.existsSync(SSHD) && fs.exist
 const DRIVER = fileURLToPath(new URL("./master_driver.ts", import.meta.url))
 const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 
-/** The running sshd: its folder, port, client config, and the `timeout` that bounds it. */
+/** `$1` is sshd, `$2` its config: runs it in the foreground until this shell's stdin ends, then ends it. */
+const SSHD_UNDER_LIFELINE = '"$1" -D -e -f "$2" & s=$!\ncat >/dev/null\nkill "$s" 2>/dev/null\nwait "$s"\n'
+
+/** The running sshd: its folder, port, client config, and the shell whose stdin is its lifeline. */
 let sshd: { dir: string; port: number; clientConfig: string; child: ChildProcess; stderr: string[] }
 
 /** Runs a key tool to its end, with only a system PATH. */
@@ -152,11 +155,13 @@ describe.skipIf(!REAL)("a real sshd", () => {
         "",
       ].join("\n"),
     )
-    // Bounded, so a crashed run can't leave it listening.
-    const child = spawn("/usr/bin/timeout", ["600", SSHD, "-D", "-e", "-f", config], {
+    // Under a lifeline, as the master is: a shell that ends sshd once its stdin, a pipe this process holds, closes,
+    // so even a killed test run leaves no sshd listening.
+    const child = spawn("/bin/sh", ["-c", SSHD_UNDER_LIFELINE, "oc-sshd", SSHD, config], {
       env: { PATH: "/usr/bin:/bin" },
-      stdio: ["ignore", "ignore", "pipe"],
+      stdio: ["pipe", "ignore", "pipe"],
     })
+    child.stdin!.on("error", () => {})
     const stderr: string[] = []
     child.stderr!.setEncoding("utf8").on("data", (c: string) => stderr.push(c))
     sshd = { dir, port, clientConfig, child, stderr }
@@ -167,7 +172,7 @@ describe.skipIf(!REAL)("a real sshd", () => {
     if (sshd === undefined) return
     const tree = descendants(sshd.child.pid!).map((pid) => ({ pid, started: startTime(pid) }))
     const exited = new Promise((resolve) => sshd.child.once("exit", resolve))
-    sshd.child.kill("SIGTERM")
+    sshd.child.stdin!.end()
     await Promise.race([exited, Bun.sleep(5000)])
     for (const { pid, started } of tree) if (!isGone(pid, started)) process.kill(pid, "SIGKILL")
     sshd.child.kill("SIGKILL")
@@ -236,7 +241,7 @@ describe.skipIf(!REAL)("a real sshd", () => {
   })
 
   /** Starts the driver on `ctx`'s home in `mode`; resolves once its master is up, with the sleep it started. */
-  async function driver(ctx: ReachContext, mode: "plain" | "watcher", port: number) {
+  async function driver(ctx: ReachContext, mode: "plain" | "watcher" | "jump", port: number) {
     const child = spawn(process.execPath, [...BUN_FLAGS, DRIVER, ctx.paths.home, mode, String(port)], {
       env: { PATH: "/usr/bin:/bin" },
       stdio: ["ignore", "pipe", "inherit"],
@@ -278,6 +283,31 @@ describe.skipIf(!REAL)("a real sshd", () => {
     expect(await accepts(port)).toBe(false)
     await waitFor(() => fs.readdirSync(ctx.paths.cm).length === 0, { timeout: 5000, what: "cm to empty" })
     expect(performance.now() - started).toBeLessThan(5000)
+    await waitFor(() => processesWith(ctx.paths.cm).length === 0, { timeout: 10_000, what: "no process on cm" })
+  })
+
+  test("with a -J login master and a connection held, the watcher ends both masters within seconds of a SIGKILL", async () => {
+    const ctx = await realCtx()
+    const server = await holdingServer(path.join(ctx.paths.home, "hq.sock"))
+    const port = await freePort()
+    const held = await driver(ctx, "jump", port)
+    const names = fs.readdirSync(ctx.paths.cm).sort()
+    expect(names).toHaveLength(2)
+    expect(names[0]).toMatch(/^[0-9a-f]{40}$/)
+    expect(names[1]).toBe("node")
+    const login = path.join(ctx.paths.cm, names[0]!)
+    const conn = await holdConnection(port)
+    await waitFor(() => server.connections.size === 1, { what: "the forwarded connection" })
+    const started = performance.now()
+    held.child.kill("SIGKILL")
+    await held.exited
+    await conn.closed
+    await waitFor(() => fs.readdirSync(ctx.paths.cm).length === 0, { timeout: 5000, what: "cm to empty" })
+    expect(performance.now() - started).toBeLessThan(5000)
+    expect((await control(ctx, ctx.paths.node, "check")).code).toBe(255)
+    expect((await control(ctx, login, "check")).code).toBe(255)
+    expect(await accepts(port)).toBe(false)
+    await waitFor(() => server.connections.size === 0, { timeout: 5000, what: "HQ's side of the connection to close" })
     await waitFor(() => processesWith(ctx.paths.cm).length === 0, { timeout: 10_000, what: "no process on cm" })
   })
 
