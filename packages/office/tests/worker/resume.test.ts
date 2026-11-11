@@ -330,7 +330,7 @@ test("only records an advance writes count as appended", async () => {
   expect(advanceAppended(waiting.log, null)).toBe(true)
 })
 
-test("an ask_manager call a crash cut off is sent again on resume, and gets the question it stored", async () => {
+test("an ask_manager call a crash cut off is sent again, and gets the question and work item it stored", async () => {
   const fake = await fakeLlm()
   const where = base()
   writeFiles(where.pin, { "flows/managed.yaml": agentFlow("managed", { node: "    tools: [company]\n" }) })
@@ -361,7 +361,10 @@ test("an ask_manager call a crash cut off is sent again on resume, and gets the 
   const rec = await runWorker(registry, advanceJob(job), resumed, sessionDir, { env: fake.env() })
   expect(rec.outcome?.status, String(rec.outcome?.message)).toBe("waiting")
   expect(calls).toEqual(["r1/reply/1/0", "r1/reply/1/0"])
-  expect(store.listQuestions().map((q) => [q.call_id, q.status])).toEqual([["r1/reply/1/0", "open"]])
+  const questions = store.listQuestions()
+  expect(questions.map((q) => [q.call_id, q.status])).toEqual([["r1/reply/1/0", "open"]])
+  // One work item for the question, beside the session's own.
+  expect(store.listWorkItems().map((i) => i.id).sort()).toEqual([item.id, questions[0]!.work_item_id!].sort())
   // The model was never asked again: the call pends on the question it asked before the crash.
   expect(fake.requests()).toHaveLength(1)
 })
