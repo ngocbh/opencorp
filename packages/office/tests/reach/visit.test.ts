@@ -23,7 +23,7 @@ import {
   type VisitOptions,
   visit,
 } from "../../src/reach/visit.ts"
-import { TtyPrompter } from "../../src/install/prompts.ts"
+import { KeyboardInterrupt, TtyPrompter } from "../../src/install/prompts.ts"
 import { defaultIncludes } from "../../src/reach/ssh.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../src/testing/fake_ssh.ts"
@@ -95,6 +95,20 @@ test("an approval left unanswered stops the visit", async () => {
   expect(fs.existsSync(paths.access)).toBe(false)
   expect(fs.existsSync(paths.approved)).toBe(false)
   expect(fs.existsSync(marker)).toBe(false)
+})
+
+test("Ctrl-C at the approval question exits 130 and approves nothing", async () => {
+  const { dir, fake } = fakeHome()
+  const paths = new ReachPaths(dir)
+  makeDirs(paths)
+  fs.writeFileSync(paths.script, NO_JOB(path.join(dir, "ran")))
+  const v = visitDeps(dir, fake)
+  v.prompter.choose = async () => {
+    throw new KeyboardInterrupt()
+  }
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(130)
+  expect(v.errors).toEqual([])
+  expect(fs.existsSync(paths.access)).toBe(false)
 })
 
 test("a changed reach.sh shows the diff and asks once; no stops the visit", async () => {

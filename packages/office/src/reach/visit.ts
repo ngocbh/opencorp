@@ -7,7 +7,7 @@ import type { Readable } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createTwoFilesPatch } from "diff"
 import { which } from "../install/launch.ts"
-import { clean, isTTY, type Prompter, readLine, TtyPrompter } from "../install/prompts.ts"
+import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter } from "../install/prompts.ts"
 import { writePrivate } from "../secrets.ts"
 import { type Connection, connect, ReachFailure, signIn } from "./connect.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
@@ -26,7 +26,7 @@ import {
   type Watcher,
   writeSshFiles,
 } from "./ssh.ts"
-import { safePath } from "./spec.ts"
+import { safePath, type Spec } from "./spec.ts"
 import {
   type Access,
   cleanUp,
@@ -159,17 +159,7 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
   const lock = takeLock(paths)
   if (lock === null) return alreadyRunning(options, deps, paths, ssh)
   using _lock = lock
-  const stop = new AbortController()
-  const off = deps.onSigint(() => (stop.signal.aborted ? deps.exit(130) : stop.abort()))
-  const ctx: ReachContext = {
-    paths,
-    ssh,
-    env: deps.env,
-    batch: false,
-    echo: deps.echo,
-    signal: stop.signal,
-    limits: deps.limits ?? LIMITS,
-  }
+  const { ctx, off } = start(paths, ssh, deps)
   let watcher: Watcher | undefined
   let port = options.port ?? DEFAULT_PORT
   try {
@@ -188,20 +178,43 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
     deps.print(visitLine(conn))
     return await waitLoop(ctx, conn, deps)
   } catch (error) {
-    if (stop.signal.aborted) return 130
-    if (error instanceof ReachFailure) {
-      const { line, code } = describe(error, port)
-      deps.error(line)
-      return code
-    }
-    deps.error(`opencorp hq: ${messageOf(error)}`)
-    return 1
+    return failed(error, ctx, port, deps)
   } finally {
     off()
     await exitAll(ctx)
     await watcher?.release()
     fs.rmSync(paths.status(process.pid), { force: true })
   }
+}
+
+/** A visit's context, its Ctrl-C (a second one exits 130 at once; the watcher then ends the masters) and the
+ *  function that stops listening for it. */
+function start(paths: ReachPaths, ssh: string, deps: VisitDeps): { ctx: ReachContext; off: () => void } {
+  const stop = new AbortController()
+  const off = deps.onSigint(() => (stop.signal.aborted ? deps.exit(130) : stop.abort()))
+  const ctx: ReachContext = {
+    paths,
+    ssh,
+    env: deps.env,
+    batch: false,
+    echo: deps.echo,
+    signal: stop.signal,
+    limits: deps.limits ?? LIMITS,
+  }
+  return { ctx, off }
+}
+
+/** What a visit that threw `error` says, and its exit code: 130 for Ctrl-C (at a question, too), the failure
+ *  table's row for a `ReachFailure`, else 1. */
+function failed(error: unknown, ctx: ReachContext, port: number, deps: VisitDeps): number {
+  if (ctx.signal?.aborted || error instanceof KeyboardInterrupt) return 130
+  if (error instanceof ReachFailure) {
+    const { line, code } = describe(error, port)
+    deps.error(line)
+    return code
+  }
+  deps.error(`opencorp hq: ${messageOf(error)}`)
+  return 1
 }
 
 /** The saved path, approved: reach.sh's sha256 must be access.json's. A script the owner wrote or changed is shown
@@ -277,7 +290,7 @@ async function signInOrOpen(
 /** Mints a code over the master and opens it through a 0600 redirect file, or prints the link. */
 async function signBrowserIn(
   ctx: ReachContext,
-  spec: Connection["spec"],
+  spec: Spec,
   port: number,
   open: boolean,
   deps: VisitDeps,
@@ -334,17 +347,7 @@ async function alreadyRunning(options: VisitOptions, deps: VisitDeps, paths: Rea
     openOrPrint(`http://127.0.0.1:${access.port}/`, options.open, deps)
     return 0
   }
-  const stop = new AbortController()
-  const off = deps.onSigint(() => (stop.signal.aborted ? deps.exit(130) : stop.abort()))
-  const ctx: ReachContext = {
-    paths,
-    ssh,
-    env: deps.env,
-    batch: false,
-    echo: deps.echo,
-    signal: stop.signal,
-    limits: deps.limits ?? LIMITS,
-  }
+  const { ctx, off } = start(paths, ssh, deps)
   try {
     if (!isSocket(paths.node) || (await control(ctx, paths.node, "check")).code !== 0) {
       deps.error(NOT_YET)
@@ -358,14 +361,7 @@ async function alreadyRunning(options: VisitOptions, deps: VisitDeps, paths: Rea
     await writeAccess(paths, { ...now, signed_in_at: deps.now().toISOString() })
     return 0
   } catch (error) {
-    if (stop.signal.aborted) return 130
-    if (error instanceof ReachFailure) {
-      const { line, code } = describe(error, access.port)
-      deps.error(line)
-      return code
-    }
-    deps.error(`opencorp hq: ${messageOf(error)}`)
-    return 1
+    return failed(error, ctx, access.port, deps)
   } finally {
     off()
     fs.rmSync(paths.status(process.pid), { force: true })
