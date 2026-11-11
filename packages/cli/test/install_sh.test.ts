@@ -409,6 +409,62 @@ describe("install.sh", () => {
     expect(fs.readFileSync(theirs, "utf8")).toBe(before)
   })
 
+  test("refuses a launcher of the user's that only mentions opencorp install.sh, and uninstall leaves it", async () => {
+    const h = makeHome()
+    const mine = "#!/bin/sh\n# Written by opencorp install.sh, then changed by me.\necho mine\n"
+    writeScript(h.wrapper, mine)
+    const r = await run(h, "install.sh")
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain(`✗ ${h.wrapper} exists and was not written by install.sh`)
+    expect((await run(h, "uninstall.sh")).code).toBe(0)
+    expect(fs.readFileSync(h.wrapper, "utf8")).toBe(mine)
+  })
+
+  test("with an office set up, it won't point opencorp at another checkout, since the office's service runs the old one", async () => {
+    // The README's manual link, to a checkout the office was set up from.
+    const h = makeHome()
+    const old = checkout(h, "old")
+    fs.mkdirSync(h.bin, { recursive: true })
+    fs.symlinkSync(path.join(old, "packages/cli/bin/opencorp"), h.wrapper)
+    fs.mkdirSync(path.join(h.office, "office"), { recursive: true })
+    const r = await run(h, "install.sh")
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain(`✗ An office is set up at ${h.office}, and ${h.wrapper} runs the checkout at ${old}`)
+    expect(r.err).toContain("run opencorp offboard")
+    expect(fs.readlinkSync(h.wrapper)).toBe(path.join(old, "packages/cli/bin/opencorp"))
+    expect(fs.existsSync(h.clone)).toBe(false)
+    expect(calls(h)).toEqual([])
+
+    // The wrapper install.sh wrote for one checkout, and ./install.sh run from another.
+    const other = makeHome()
+    const first = checkout(other, "first")
+    expect((await run(other, "install.sh", { from: first })).code).toBe(0)
+    fs.mkdirSync(path.join(other.office, "office"), { recursive: true })
+    const wrapper = fs.readFileSync(other.wrapper, "utf8")
+    const again = await run(other, "install.sh", { from: checkout(other, "second") })
+    expect(again.code).not.toBe(0)
+    expect(again.err).toContain(`runs the checkout at ${first}`)
+    expect(fs.readFileSync(other.wrapper, "utf8")).toBe(wrapper)
+
+    // The same checkout again is an update.
+    const same = await run(other, "install.sh", { from: first })
+    expect(same.code).toBe(0)
+    expect(same.out).toContain("run opencorp restart to use this version")
+  })
+
+  test("the wrapper names its checkout's wrapper as it is, so offboard finds it even when the path has a quote", async () => {
+    const h = makeHome()
+    fs.mkdirSync(path.join(h.dir, "it's"))
+    const co = path.join(h.dir, "it's", "checkout")
+    git(h.dir, "clone", "-q", source, co)
+    expect((await run(h, "install.sh", { from: co })).code).toBe(0)
+    const lines = fs.readFileSync(h.wrapper, "utf8").split("\n")
+    expect(lines[1]).toBe("# Written by opencorp install.sh; uninstall.sh removes it.")
+    // offboard's launchers() looks for this path in a launcher's text.
+    expect(lines[2]).toBe(`# Runs ${co}/packages/cli/bin/opencorp`)
+    expect(runWrapper(h, ["--version"]).out.trim()).toBe("0.0.1")
+  })
+
   test("refuses a Bun older than packageManager's and names its version, and takes any later one", async () => {
     for (const version of ["1.4.1", "1.3.9", "0.9.10"]) {
       const h = makeHome()
@@ -918,6 +974,18 @@ describe("uninstall.sh", () => {
     git(other.dir, "clone", "-q", source, other.clone)
     const byDefault = await run(other, "uninstall.sh")
     expect(byDefault.out).toContain(`✓ Left ${other.clone} in place: install.sh did not clone it.`)
+  })
+
+  test("finds the clone a --dir install made through the wrapper, and also looks at the default folder", async () => {
+    const h = makeHome()
+    const dir = path.join(h.home, "apps", "opencorp")
+    expect((await run(h, "install.sh", { args: ["--dir", dir] })).code).toBe(0)
+    git(h.dir, "clone", "-q", source, h.clone)
+    const r = await run(h, "uninstall.sh")
+    expect(r.code).toBe(0)
+    expect(r.out).toContain(`✓ Removed ${dir}`)
+    expect(fs.existsSync(dir)).toBe(false)
+    expect(r.out).toContain(`✓ Left ${h.clone} in place: install.sh did not clone it.`)
   })
 
   test("removes the clone at --dir that install.sh made there", async () => {

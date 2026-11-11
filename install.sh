@@ -77,12 +77,31 @@ is_checkout() {
   [ -f "$1/packages/cli/bin/opencorp" ] && grep -q '"name": *"opencorp-workspace"' "$1/package.json" 2>/dev/null
 }
 
-# Whether $1 is a link to an OpenCorp checkout's packages/cli/bin/opencorp (the README's manual step).
-links_to_checkout() {
-  [ -L "$1" ] || return 1
-  l_to=$(readlink "$1")
-  case $l_to in /*) ;; *) l_to=$(dirname "$1")/$l_to ;; esac
-  case $l_to in */packages/cli/bin/opencorp) is_checkout "${l_to%/packages/cli/bin/opencorp}" ;; *) return 1 ;; esac
+# Whether $1 is the wrapper install.sh writes: its second line is WRAPPER_MARK, exactly.
+is_wrapper() {
+  [ -f "$1" ] && [ "$(LC_ALL=C sed -n '2{p;q;}' "$1" 2>/dev/null)" = "$WRAPPER_MARK" ]
+}
+
+# The OpenCorp checkout the launcher $1 runs: the one install.sh's wrapper names on its third line, or the one a
+# link to a checkout's packages/cli/bin/opencorp (the README's manual step) points into.
+launcher_checkout() {
+  if is_wrapper "$1"; then
+    lc_to=$(LC_ALL=C sed -n '3{p;q;}' "$1")
+    case $lc_to in "# Runs "*) lc_to=${lc_to#"# Runs "} ;; *) return 1 ;; esac
+  elif [ -L "$1" ]; then
+    lc_to=$(readlink "$1")
+    case $lc_to in /*) ;; *) lc_to=$(dirname "$1")/$lc_to ;; esac
+  else
+    return 1
+  fi
+  case $lc_to in */packages/cli/bin/opencorp) lc_to=${lc_to%/packages/cli/bin/opencorp} ;; *) return 1 ;; esac
+  is_checkout "$lc_to" && printf '%s\n' "$lc_to"
+}
+
+# Whether $1 and $2 are the same folder, both there.
+same_dir() {
+  sd_a=$(CDPATH='' cd -P "$1" 2>/dev/null && pwd -P) && sd_b=$(CDPATH='' cd -P "$2" 2>/dev/null && pwd -P) &&
+    [ "$sd_a" = "$sd_b" ]
 }
 
 # Whether version $1 (x.y.z, perhaps with a -pre or +build suffix) is older than $2 (x.y.z); 2 when
@@ -150,6 +169,8 @@ add_path_line() {
 main() {
   init_output
   MARK="opencorp install.sh"
+  # The wrapper's second line, which marks it as install.sh's.
+  WRAPPER_MARK="# Written by $MARK; uninstall.sh removes it."
   DIR=${OPENCORP_INSTALL_DIR:-}
   DIR_SET=0
   BRANCH=main
@@ -188,9 +209,14 @@ main() {
     warn "bubblewrap (bwrap) is missing, and the office needs it to sandbox commands. Install it with your package manager (apt install bubblewrap, dnf install bubblewrap, or pacman -S bubblewrap), then run opencorp doctor."
   fi
 
-  # Refuse early, before installing anything, if the target is someone else's file.
-  if [ -e "$TARGET" ] && ! grep -q "$MARK" "$TARGET" 2>/dev/null && ! links_to_checkout "$TARGET"; then
-    die "$TARGET exists and was not written by install.sh. Move it away, or set OPENCORP_BIN_DIR."
+  # Refuse early, before installing anything, if the target is someone else's file. install.sh replaces only its
+  # own wrapper, a link to a checkout's wrapper, and a link to nothing.
+  OLD=
+  if [ -e "$TARGET" ]; then
+    OLD=$(launcher_checkout "$TARGET") || OLD=
+    if [ -z "$OLD" ] && ! is_wrapper "$TARGET"; then
+      die "$TARGET exists and was not written by install.sh. Move it away, or set OPENCORP_BIN_DIR."
+    fi
   fi
 
   # The checkout: the one this script is in, unless --dir says otherwise; else a clone.
@@ -198,11 +224,21 @@ main() {
   case $0 in
     *install.sh) if [ "$DIR_SET" = 0 ] && [ -f "$0" ] && is_checkout "$(dirname "$0")"; then ROOT=$(CDPATH='' cd "$(dirname "$0")" && pwd -P); fi ;;
   esac
+  if [ -z "$ROOT" ]; then
+    DIR=${DIR:-$HOME/.local/share/opencorp}
+    case $DIR in /*) ;; *) DIR=$PWD/$DIR ;; esac
+  fi
+
+  # The office's service runs the checkout the office was set up from, most likely the one opencorp runs now, and
+  # `opencorp restart` reuses that service: pointing opencorp at another checkout would leave the office on the old
+  # code.
+  if [ -n "$OLD" ] && office_set_up && ! same_dir "$OLD" "${ROOT:-$DIR}"; then
+    die "An office is set up at $OFFICE, and $TARGET runs the checkout at $OLD, whose code the office's service likely runs. To update that checkout, run its own install.sh. To move to ${ROOT:-$DIR}, run opencorp offboard first (it keeps company work that isn't pushed), then run this again."
+  fi
+
   if [ -n "$ROOT" ]; then
     ok "Installing the checkout at $ROOT"
   else
-    DIR=${DIR:-$HOME/.local/share/opencorp}
-    case $DIR in /*) ;; *) DIR=$PWD/$DIR ;; esac
     if [ -d "$DIR" ] && [ -n "$(ls -A "$DIR")" ]; then
       if ! is_checkout "$DIR" || [ ! -e "$DIR/.git" ]; then
         die "$DIR holds something other than an OpenCorp clone. Move it away, or pick another folder with --dir."
@@ -272,8 +308,9 @@ main() {
   TMP=$TARGET.tmp.$$
   cat >"$TMP" <<EOF
 #!/bin/sh
-# Written by $MARK: runs the OpenCorp checkout at $ROOT with Bun.
-# A Bun set in OPENCORP_BUN wins over the one install.sh found.
+$WRAPPER_MARK
+# Runs $ROOT/packages/cli/bin/opencorp
+# with the Bun install.sh found; a Bun set in OPENCORP_BUN wins.
 if [ -z "\${OPENCORP_BUN:-}" ]; then OPENCORP_BUN=$(quote "$BUN"); export OPENCORP_BUN; fi
 exec $(quote "$ROOT/packages/cli/bin/opencorp") "\$@"
 EOF

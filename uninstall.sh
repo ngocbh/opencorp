@@ -101,6 +101,25 @@ remove_path_lines() {
   ok "Removed the PATH line from $1"
 }
 
+# Whether $1 is the wrapper install.sh writes: its second line is WRAPPER_MARK, exactly.
+is_wrapper() {
+  [ -f "$1" ] && [ "$(LC_ALL=C sed -n '2{p;q;}' "$1" 2>/dev/null)" = "$WRAPPER_MARK" ]
+}
+
+# The checkout install.sh's wrapper $1 runs, from its third line.
+wrapper_checkout() {
+  wc_to=$(LC_ALL=C sed -n '3{p;q;}' "$1")
+  case $wc_to in "# Runs "*/packages/cli/bin/opencorp) ;; *) return 1 ;; esac
+  wc_to=${wc_to#"# Runs "}
+  printf '%s\n' "${wc_to%/packages/cli/bin/opencorp}"
+}
+
+# Whether $1 and $2 are the same folder, both there.
+same_dir() {
+  sd_a=$(CDPATH='' cd -P "$1" 2>/dev/null && pwd -P) && sd_b=$(CDPATH='' cd -P "$2" 2>/dev/null && pwd -P) &&
+    [ "$sd_a" = "$sd_b" ]
+}
+
 # Whether a terminal is there to ask on: stdin is the script under `curl | bash`.
 has_tty() { (: </dev/tty) 2>/dev/null; }
 
@@ -159,11 +178,29 @@ $lw_subs
 EOF
 }
 
+# Removes the clone at $1 if install.sh made it and it holds no work found nowhere else; otherwise says why it stays.
+remove_clone() {
+  [ -d "$1" ] || return 0
+  if [ ! -f "$1/.git/opencorp-installer" ]; then
+    ok "Left $1 in place: install.sh did not clone it."
+    return 0
+  fi
+  rm_why=$(local_work "$1")
+  if [ -n "$rm_why" ]; then
+    warn "Left $1 in place: $rm_why."
+  elif rm -rf "$1"; then
+    ok "Removed $1"
+  else
+    fail "Couldn't remove all of $1."
+  fi
+}
+
 # All of it runs from the last line, so a download cut off part-way runs nothing.
 main() {
   init_output
   FAILED=0
-  MARK="opencorp install.sh"
+  # The second line of the wrapper install.sh writes, which marks it as install.sh's.
+  WRAPPER_MARK="# Written by opencorp install.sh; uninstall.sh removes it."
   DIR=${OPENCORP_INSTALL_DIR:-}
   while [ $# -gt 0 ]; do
     case $1 in
@@ -176,15 +213,14 @@ main() {
       *) die "unknown option $1 (see --help)." ;;
     esac
   done
-  DIR=${DIR:-$HOME/.local/share/opencorp}
-  case $DIR in /*) ;; *) DIR=$PWD/$DIR ;; esac
+  case $DIR in '' | /*) ;; *) DIR=$PWD/$DIR ;; esac
   BIN_DIR=${OPENCORP_BIN_DIR:-$HOME/.local/bin}
   TARGET=$BIN_DIR/opencorp
   OFFICE=${OPENCORP_HOME:-$HOME/.opencorp}
 
   if office_set_up; then
     has_tty || die "An office is set up at $OFFICE. Run opencorp offboard on a terminal first, then run this again."
-    if [ -f "$TARGET" ] && grep -q "$MARK" "$TARGET" 2>/dev/null; then
+    if is_wrapper "$TARGET"; then
       OPENCORP=$TARGET
     elif command -v opencorp >/dev/null 2>&1; then
       OPENCORP=$(command -v opencorp)
@@ -196,13 +232,19 @@ main() {
     if office_set_up; then die "An office is still set up at $OFFICE, so nothing else was removed."; fi
   fi
 
-  if [ -e "$TARGET" ]; then
-    if grep -q "$MARK" "$TARGET" 2>/dev/null; then
-      rm -f "$TARGET"
-      ok "Removed $TARGET"
-    else
-      ok "Left $TARGET in place: install.sh did not write it."
-    fi
+  # The clones to look at: the one --dir names, or else the one the wrapper runs and the default one.
+  CLONE=${DIR:-}
+  OTHER=
+  if [ -z "$CLONE" ]; then
+    if is_wrapper "$TARGET"; then CLONE=$(wrapper_checkout "$TARGET") || CLONE=; fi
+    OTHER=$HOME/.local/share/opencorp
+    if [ -z "$CLONE" ]; then CLONE=$OTHER OTHER=; elif same_dir "$CLONE" "$OTHER"; then OTHER=; fi
+  fi
+
+  if is_wrapper "$TARGET"; then
+    if rm -f "$TARGET"; then ok "Removed $TARGET"; else fail "Couldn't remove $TARGET."; fi
+  elif [ -e "$TARGET" ]; then
+    ok "Left $TARGET in place: install.sh did not write it."
   fi
 
   path_lines
@@ -211,19 +253,8 @@ main() {
     remove_path_lines "$rc"
   done
 
-  if [ -d "$DIR" ]; then
-    if [ ! -f "$DIR/.git/opencorp-installer" ]; then
-      ok "Left $DIR in place: install.sh did not clone it."
-    else
-      why=$(local_work "$DIR")
-      if [ -n "$why" ]; then
-        warn "Left $DIR in place: $why."
-      else
-        rm -rf "$DIR"
-        ok "Removed $DIR"
-      fi
-    fi
-  fi
+  remove_clone "$CLONE"
+  if [ -n "$OTHER" ]; then remove_clone "$OTHER"; fi
   ok "Left Bun and the office home ($OFFICE) in place."
   [ "$FAILED" = 0 ] || exit 1
 }
