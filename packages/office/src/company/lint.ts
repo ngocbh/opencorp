@@ -2,7 +2,6 @@
 import fs from "node:fs"
 import path from "node:path"
 import { type ComposedFlow, LoadError } from "@ngocbh/yian"
-import { statOrNull } from "@ngocbh/yian/platform"
 import { loadSkillDir, type Skill, SkillError } from "@ngocbh/yian/skills"
 import { MAIN_CHAT } from "../chat/turns.ts"
 import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "./flows.ts"
@@ -30,6 +29,16 @@ function isFile(p: string): boolean {
 /** Whether `p` is a directory; false for a path that doesn't exist or can't be one, as `Path.is_dir`. */
 function isDir(p: string): boolean {
   return statOrNull(p)?.isDirectory() ?? false
+}
+
+/** `p`'s stat, or null for a path that doesn't exist or can't be one; other errors are thrown. */
+function statOrNull(p: string): fs.Stats | null {
+  try {
+    return fs.statSync(p)
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR", "EBADF", "ELOOP"].includes(errno(error) ?? "")) return null
+    throw error
+  }
 }
 
 /** `items`' entries sorted by key, as Python's `sorted(d.items())`. */
