@@ -87,6 +87,8 @@ beforeAll(() => {
   const yian = path.join(root, "yian")
   fs.mkdirSync(yian)
   git(yian, "init", "-q", "-b", "main")
+  fs.writeFileSync(path.join(yian, ".gitignore"), "node_modules/\n")
+  git(yian, "add", ".gitignore")
   commitFile(yian, "README")
 
   // An OpenCorp checkout as far as the scripts see one: the root package.json, the real wrapper, and a submodule.
@@ -95,6 +97,8 @@ beforeAll(() => {
   git(source, "init", "-q", "-b", "main")
   const pkg = { name: "opencorp-workspace", private: true, packageManager: "bun@1.4.2", scripts: { build: "true" } }
   fs.writeFileSync(path.join(source, "package.json"), JSON.stringify(pkg, null, 2) + "\n")
+  // What this repo ignores.
+  fs.writeFileSync(path.join(source, ".gitignore"), fs.readFileSync(path.join(CHECKOUT, ".gitignore"), "utf8"))
   const wrapper = fs.readFileSync(path.join(CHECKOUT, "packages/cli/bin/opencorp"), "utf8")
   writeScript(path.join(source, "packages/cli/bin/opencorp"), wrapper)
   for (const script of ["install.sh", "uninstall.sh"]) {
@@ -682,28 +686,111 @@ describe("uninstall.sh", () => {
     expect(fs.readFileSync(h.wrapper, "utf8")).toContain("echo mine")
   })
 
-  test("keeps a clone with work that isn't pushed, and says why", async () => {
-    const work: [string, (clone: string) => void][] = [
-      ["it has uncommitted changes", (clone) => fs.writeFileSync(path.join(clone, "draft"), "draft\n")],
-      ["it has commits that aren't pushed", (clone) => commitFile(clone, "LOCAL")],
+  test("keeps a clone with work that isn't anywhere else, whatever the user's git config, and says why", async () => {
+    const changes = "it has changes or files that aren't committed"
+    const commits = "it has commits that aren't pushed"
+    const yian = (h: Home) => path.join(h.clone, "packages/yian")
+    const work: [string, string, (h: Home) => void][] = [
+      ["an untracked file", changes, (h) => fs.writeFileSync(path.join(h.clone, "draft"), "draft\n")],
+      ["a commit on its branch", commits, (h) => commitFile(h.clone, "LOCAL")],
       [
+        "a stash",
         "it has stashed changes",
-        (clone) => {
-          fs.appendFileSync(path.join(clone, "package.json"), "\n")
-          git(clone, "stash", "-q")
+        (h) => {
+          fs.appendFileSync(path.join(h.clone, "package.json"), "\n")
+          git(h.clone, "stash", "-q")
+        },
+      ],
+      [
+        "a commit on a detached HEAD",
+        commits,
+        (h) => {
+          git(h.clone, "checkout", "-q", "--detach")
+          commitFile(h.clone, "DETACHED")
+        },
+      ],
+      [
+        "a commit only a tag holds",
+        commits,
+        (h) => {
+          git(h.clone, "checkout", "-q", "-b", "side")
+          commitFile(h.clone, "TAGGED")
+          git(h.clone, "tag", "kept")
+          git(h.clone, "checkout", "-q", "main")
+          git(h.clone, "branch", "-q", "-D", "side")
+        },
+      ],
+      ["a linked worktree", "it has other worktrees", (h) => git(h.clone, "worktree", "add", "-q", "--detach", path.join(h.dir, "wt"))],
+      [
+        "a commit on a branch in the submodule, checked back out at the recorded commit",
+        `its submodule packages/yian has commits that aren't pushed`,
+        (h) => {
+          const recorded = git(yian(h), "rev-parse", "HEAD")
+          git(yian(h), "checkout", "-q", "-b", "side")
+          commitFile(yian(h), "SIDE")
+          git(yian(h), "checkout", "-q", "--detach", recorded)
+        },
+      ],
+      [
+        "a stash in the submodule",
+        "its submodule packages/yian has stashed changes",
+        (h) => {
+          fs.appendFileSync(path.join(yian(h), "README"), "more\n")
+          git(yian(h), "stash", "-q")
+        },
+      ],
+      ["an untracked file in the submodule", changes, (h) => fs.writeFileSync(path.join(yian(h), "notes"), "notes\n")],
+      [
+        "an untracked file hidden by status.showUntrackedFiles=no",
+        changes,
+        (h) => {
+          fs.writeFileSync(path.join(h.home, ".gitconfig"), "[status]\n\tshowUntrackedFiles = no\n")
+          fs.writeFileSync(path.join(h.clone, "draft.md"), "draft\n")
+        },
+      ],
+      [
+        "a file a global excludes file hides",
+        changes,
+        (h) => {
+          fs.writeFileSync(path.join(h.home, ".gitignore_global"), "notes/\n")
+          fs.writeFileSync(path.join(h.home, ".gitconfig"), `[core]\n\texcludesFile = ${h.home}/.gitignore_global\n`)
+          fs.mkdirSync(path.join(h.clone, "notes"))
+          fs.writeFileSync(path.join(h.clone, "notes/todo.md"), "todo\n")
+        },
+      ],
+      ["an ignored .env", changes, (h) => fs.writeFileSync(path.join(h.clone, ".env"), "KEY=secret\n")],
+      [
+        "ignored plans in docs/plans",
+        changes,
+        (h) => {
+          fs.mkdirSync(path.join(h.clone, "docs/plans"), { recursive: true })
+          fs.writeFileSync(path.join(h.clone, "docs/plans/design.md"), "plan\n")
         },
       ],
     ]
-    for (const [why, make] of work) {
+    for (const [what, why, make] of work) {
       const h = makeHome()
       expect((await run(h, "install.sh")).code).toBe(0)
-      make(h.clone)
+      make(h)
       const r = await run(h, "uninstall.sh")
-      expect(r.code).toBe(0)
-      expect(r.err).toContain(`⚠ Left ${h.clone} in place: ${why}.`)
-      expect(fs.existsSync(path.join(h.clone, ".git"))).toBe(true)
-      expect(fs.existsSync(h.wrapper)).toBe(false)
+      expect(r.code, what).toBe(0)
+      expect(r.err, what).toContain(`⚠ Left ${h.clone} in place: ${why}.`)
+      expect(fs.existsSync(path.join(h.clone, ".git")), what).toBe(true)
+      expect(fs.existsSync(h.wrapper), what).toBe(false)
     }
+  })
+
+  test("removes a clone whose only ignored files are what install makes: node_modules folders and HQ's build", async () => {
+    const h = makeHome()
+    expect((await run(h, "install.sh")).code).toBe(0)
+    for (const dir of ["node_modules/.bin", "packages/cli/node_modules/x", "packages/app/dist/assets", "packages/yian/node_modules/y"]) {
+      fs.mkdirSync(path.join(h.clone, dir), { recursive: true })
+      fs.writeFileSync(path.join(h.clone, dir, "f"), "built\n")
+    }
+    const r = await run(h, "uninstall.sh")
+    expect(r.err).not.toContain("Left")
+    expect(r.code).toBe(0)
+    expect(fs.existsSync(h.clone)).toBe(false)
   })
 
   test("keeps a checkout install.sh didn't clone, at --dir or the default", async () => {

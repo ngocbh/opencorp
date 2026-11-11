@@ -48,14 +48,51 @@ office_set_up() {
   return 1
 }
 
-# Why the clone at $1 holds work found nowhere else; nothing when it holds none.
-unpushed() {
-  u_out=$(git -C "$1" status --porcelain) || { echo "git can't read it"; return; }
-  [ -z "$u_out" ] || { echo "it has uncommitted changes"; return; }
-  u_out=$(git -C "$1" stash list) || { echo "git can't read it"; return; }
-  [ -z "$u_out" ] || { echo "it has stashed changes"; return; }
-  u_out=$(git -C "$1" log --branches --not --remotes --format=%h) || { echo "git can't read it"; return; }
-  [ -z "$u_out" ] || echo "it has commits that aren't pushed"
+# git in the repo at W_DIR, run the same whatever the user's git config says.
+wgit() {
+  LC_ALL=C git --no-optional-locks -c core.quotePath=true -c status.showUntrackedFiles=all \
+    -c core.fsmonitor=false -c core.untrackedCache=false -C "$W_DIR" "$@"
+}
+
+# Why the repo at $1 (the clone or one of its submodules) holds work found nowhere else; nothing when it holds
+# none. Anything git can't answer counts as work.
+repo_work() {
+  W_DIR=$1
+  # What `git status --ignored=matching` shows for what install.sh makes: node_modules folders (the root's, each
+  # package's and yian's) and HQ's build. Every other ignored file is someone's work.
+  w_built='!! (([^"]*/)?node_modules/|packages/app/dist/)'
+  w_out=$(wgit status --porcelain --untracked-files=all --ignored=matching --ignore-submodules=none) ||
+    { echo "it can't be read by git"; return; }
+  if [ -n "$w_out" ]; then
+    w_status=0
+    printf '%s\n' "$w_out" | LC_ALL=C grep -a -v -x -E "$w_built" >/dev/null || w_status=$?
+    # 1: every line was install.sh's own.
+    [ "$w_status" = 1 ] || { echo "it has changes or files that aren't committed"; return; }
+  fi
+  w_out=$(wgit stash list) || { echo "it can't be read by git"; return; }
+  [ -z "$w_out" ] || { echo "it has stashed changes"; return; }
+  # Every ref and HEAD, so a detached HEAD, a tag or any branch counts.
+  w_out=$(wgit rev-list --all --not --remotes) || { echo "it can't be read by git"; return; }
+  [ -z "$w_out" ] || { echo "it has commits that aren't pushed"; return; }
+  w_out=$(wgit worktree list --porcelain) || { echo "it can't be read by git"; return; }
+  [ "$(printf '%s\n' "$w_out" | LC_ALL=C grep -a -c '^worktree ')" -le 1 ] || echo "it has other worktrees"
+}
+
+# Why the clone at $1 holds work found nowhere else, in it or any of its submodules; nothing when it holds none.
+local_work() {
+  lw_why=$(repo_work "$1")
+  [ -z "$lw_why" ] || { echo "$lw_why"; return; }
+  W_DIR=$1
+  # shellcheck disable=SC2016
+  lw_subs=$(wgit submodule --quiet foreach --recursive 'printf "%s\n" "$displaypath"') ||
+    { echo "its submodules can't be read by git"; return; }
+  while IFS= read -r lw_sub; do
+    [ -n "$lw_sub" ] || continue
+    lw_why=$(repo_work "$1/$lw_sub")
+    [ -z "$lw_why" ] || { echo "its submodule $lw_sub ${lw_why#it }"; return; }
+  done <<EOF
+$lw_subs
+EOF
 }
 
 # All of it runs from the last line, so a download cut off part-way runs nothing.
@@ -118,7 +155,7 @@ main() {
     if [ ! -f "$DIR/.git/opencorp-installer" ]; then
       ok "Left $DIR in place: install.sh did not clone it."
     else
-      why=$(unpushed "$DIR")
+      why=$(local_work "$DIR")
       if [ -n "$why" ]; then
         warn "Left $DIR in place: $why."
       else
