@@ -117,7 +117,7 @@ test("a refused login is couldn't connect, and nothing is left running", async (
   expect(fs.existsSync(ctx.paths.node)).toBe(false)
 })
 
-test("a port already taken here is port_taken before any forward", async () => {
+test("a port already taken here is port_taken before any login, so it costs no Duo", async () => {
   const { fake, ctx, spec } = await setup()
   const holder = net.createServer()
   await new Promise<void>((resolve) => holder.listen({ port: 0, host: "127.0.0.1" }, resolve))
@@ -127,6 +127,8 @@ test("a port already taken here is port_taken before any forward", async () => {
   const got = await failure(connect(spec, port, ctx))
   expect([got.kind, got.message]).toEqual(["port_taken", `port ${port}`])
   expect(controlCalls(fake, "forward")).toEqual([])
+  expect(fake.calls().filter((argv) => argv.includes("-M"))).toEqual([])
+  expect(fake.logins()).toEqual([])
   expect(fake.masters()).toEqual([])
 })
 

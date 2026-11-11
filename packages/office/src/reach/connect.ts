@@ -97,6 +97,8 @@ export function portFree(port: number): Promise<boolean> {
  *  the check's. On any failure it ends only the node master (a retry needs no new Duo for the login node) and throws
  *  `ReachFailure`. */
 export async function connect(spec: Spec, port: number, ctx: ReachContext): Promise<Connection> {
+  // Before logging in, so a port that's taken costs no Duo; checked again before the forward, minutes later.
+  if (!(await portFree(port))) throw new ReachFailure("port_taken", `port ${port}`)
   const master = startMaster(ctx, spec, { quiet: ctx.batch })
   try {
     const up = await waitForSocket(master, ctx.limits.promptMs, ctx.signal)

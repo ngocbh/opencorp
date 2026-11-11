@@ -12,12 +12,14 @@ import type { Spec } from "../../src/reach/spec.ts"
 import { type Access, DEFAULT_PORT, readAccess, sha256, takeLock, writeAccess } from "../../src/reach/state.ts"
 import {
   BUSY,
+  describe as describeFailure,
   LOST,
   NO_PATH,
   NOT_YET,
   RUN_THIS,
   RUNNING,
   SIGN_IN_HINT,
+  STOP,
   USE_CHANGED,
   opener,
   realVisitDeps,
@@ -25,6 +27,8 @@ import {
   visit,
 } from "../../src/reach/visit.ts"
 import { KeyboardInterrupt, TtyPrompter } from "../../src/install/prompts.ts"
+import { ReachFailure } from "../../src/reach/connect.ts"
+import { PassThrough } from "node:stream"
 import { defaultIncludes } from "../../src/reach/ssh.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../src/testing/fake_ssh.ts"
@@ -364,14 +368,14 @@ test("--sign-in beside a visit that hasn't forwarded its port yet refuses and op
   const signedIn = new Date(Date.now() - DAY).toISOString()
   const { dir, fake, remote, port, paths } = await approvedHome({}, { signed_in_at: signedIn })
   remote.setCheck({ stdout: JSON.stringify(remote.status), delay: 3 })
-  // Another program holds the port while the running visit is still checking.
-  const other = http.createServer((_req, res) => res.end(JSON.stringify({ ok: true, other: 1 })))
-  await new Promise<void>((resolve) => other.listen({ port, host: "127.0.0.1" }, resolve))
-  onTestFinished(() => void other.close())
   const first = visitDeps(dir, fake)
   const done = visit({ signIn: false, open: false }, first.deps)
   const checks = () => fake.calls().filter((argv) => argv.at(-1)!.endsWith("'hq' '--check' '--json'"))
   await waitFor(() => checks().length === 1, { what: "the running visit's check" })
+  // Another program takes the port while the running visit is still checking.
+  const other = http.createServer((_req, res) => res.end(JSON.stringify({ ok: true, other: 1 })))
+  await new Promise<void>((resolve) => other.listen({ port, host: "127.0.0.1" }, resolve))
+  onTestFinished(() => void other.close())
   // Its check has read its 3 s; the second's answers at once, so the master is still up while it checks.
   await Bun.sleep(500)
   remote.setCheck({ stdout: JSON.stringify(remote.status) })
@@ -641,4 +645,32 @@ test("bidi and other invisible characters in reach.sh are shown escaped", async 
   const v = visitDeps(dir, fake, { answers: ["2"] })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
   expect(v.prompter.seen).toContain("  echo 'safe<U+202E>; rm -rf x <U+2066>'<U+200B>")
+})
+
+test("at a numbered approval question the first Ctrl-C exits 130", async () => {
+  const { dir, fake } = fakeHome()
+  const paths = new ReachPaths(dir)
+  makeDirs(paths)
+  fs.writeFileSync(paths.script, NO_JOB(path.join(dir, "ran")))
+  const v = visitDeps(dir, fake)
+  const shown = new PassThrough()
+  let text = ""
+  shown.setEncoding("utf8").on("data", (chunk: string) => (text += chunk))
+  // A dumb terminal: the list is numbered and a line answers it, so Ctrl-C reaches the visit as SIGINT.
+  const prompter = new TtyPrompter({ input: v.stdin, output: shown, interactive: true, env: { TERM: "dumb" } })
+  const done = visit({ signIn: false, open: false }, { ...v.deps, prompter })
+  await waitFor(() => text.includes(`${RUN_THIS} [${STOP}]: `), { what: "the question" })
+  v.sigint()
+  expect(await done).toBe(130)
+  expect(v.errors).toEqual([])
+  expect(fs.existsSync(paths.access)).toBe(false)
+})
+
+test("a failure's own closing period isn't doubled", () => {
+  expect(describeFailure(new ReachFailure("no_office", "The office isn't running."), 1).line).toBe(
+    "opencorp hq: no office answers there: The office isn't running. Start the job or the office there, or fix reach.sh if HQ moved.",
+  )
+  expect(describeFailure(new ReachFailure("not_ready", "HQ can't be reached..."), 1).line).toBe(
+    "opencorp hq: HQ isn't ready there: HQ can't be reached. Run `opencorp doctor` there, or update that checkout.",
+  )
 })

@@ -94,17 +94,19 @@ export const NOT_YET =
 
 /** The failure table: what to say for `failure`, and the exit code. */
 export function describe(failure: ReachFailure, port: number): { line: string; code: number } {
+  // Where a sentence follows it, the message's own closing period goes.
+  const said = failure.message.replace(/\.+$/, "")
   switch (failure.kind) {
     case "unreachable":
       return { line: `opencorp hq: couldn't connect: ${failure.message}`, code: 1 }
     case "no_office":
       return {
-        line: `opencorp hq: no office answers there: ${failure.message}. Start the job or the office there, or fix reach.sh if HQ moved.`,
+        line: `opencorp hq: no office answers there: ${said}. Start the job or the office there, or fix reach.sh if HQ moved.`,
         code: 3,
       }
     case "not_ready":
       return {
-        line: `opencorp hq: HQ isn't ready there: ${failure.message}. Run \`opencorp doctor\` there, or update that checkout.`,
+        line: `opencorp hq: HQ isn't ready there: ${said}. Run \`opencorp doctor\` there, or update that checkout.`,
         code: 1,
       }
     case "broken":
@@ -271,7 +273,11 @@ async function approve(
     deps.error("opencorp hq: reach.sh isn't approved, and there's no terminal to ask; run `opencorp hq` in one.")
     return 1
   }
-  const answer = await deps.prompter.choose(question, [USE, STOP], STOP)
+  // A numbered list reads a line, so Ctrl-C arrives as SIGINT, not as a key: stop at the first.
+  const answer = await Promise.race([
+    deps.prompter.choose(question, [USE, STOP], STOP),
+    aborted(ctx.signal!).then(() => ctx.signal!.throwIfAborted()),
+  ])
   quietStdin(deps.stdin)
   if (answer !== USE) {
     deps.error("opencorp hq: stopped; reach.sh isn't approved.")
