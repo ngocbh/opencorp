@@ -1,15 +1,17 @@
 /** A visit from a machine where no office answers: approving the saved path, connecting, signing in or opening,
  *  another visit beside a running one, the failure table, and waiting with its reconnects. */
+import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
-import { ReachPaths } from "../../src/reach/paths.ts"
-import { type Spec } from "../../src/reach/spec.ts"
-import { type Access, DEFAULT_PORT, readAccess, sha256, writeAccess } from "../../src/reach/state.ts"
-import { NO_PATH, RUN_THIS, USE_CHANGED, visit } from "../../src/reach/visit.ts"
-import { makeDirs } from "../../src/reach/paths.ts"
+import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
+import type { Spec } from "../../src/reach/spec.ts"
+import { type Access, DEFAULT_PORT, readAccess, sha256, takeLock, writeAccess } from "../../src/reach/state.ts"
+import { NO_PATH, RUN_THIS, USE_CHANGED, type VisitOptions, visit } from "../../src/reach/visit.ts"
 import { writePrivate } from "../../src/secrets.ts"
-import { fakeHome, fakeRemote, visitDeps } from "./helpers.ts"
+import type { FakeSsh, FakeSshBehavior } from "../../src/testing/fake_ssh.ts"
+import { ps, waitFor } from "../helpers.ts"
+import { fakeHome, fakeRemote, freePort, visitDeps } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -94,4 +96,74 @@ test("a changed reach.sh shows the diff and asks once; no stops the visit", asyn
   expect(fs.existsSync(marker)).toBe(false)
   expect(errors).toEqual(["opencorp hq: stopped; reach.sh isn't approved."])
   expect(fake.calls()).toEqual([])
+})
+
+/** The command lines of this user's processes that mention `text`, but not the `ps` listing them. */
+function processes(text: string): string[] {
+  const out = execFileSync(ps(), ["-A", "-o", "pid=,args="], { env: { LC_ALL: "C" }, encoding: "utf8", timeout: 5000 })
+  return out
+    .split("\n")
+    .filter((line) => line.includes(text) && !line.includes(" -o pid=,args="))
+    .map((line) => line.trim())
+}
+
+/** A home with HQ's machine reached as node1 through login1: an approved reach.sh and a free port. */
+async function approvedHome(behavior: FakeSshBehavior = {}, over: Partial<Access> = {}) {
+  const { dir, fake } = fakeHome(behavior)
+  const remote = await fakeRemote(dir)
+  const spec: Spec = { host: "node1", jump: ["login1"], opencorp: remote.opencorp }
+  const port = await freePort()
+  const paths = await saved(dir, scriptFor(spec), { port, ...over })
+  return { dir, fake, remote, spec, port, paths }
+}
+
+/** Starts a visit and waits for its "Connected." line. */
+async function connected(dir: string, fake: FakeSsh, options: VisitOptions, more: Parameters<typeof visitDeps>[2] = {}) {
+  const v = visitDeps(dir, fake, more)
+  const done = visit(options, v.deps)
+  await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 0, { what: "the visit to connect" })
+  expect(v.errors).toEqual([])
+  return { ...v, done }
+}
+
+/** What's left of a visit once it returned: control sockets, fake masters, and processes naming the hq folder. */
+function leftover(fake: FakeSsh, paths: ReachPaths) {
+  return { cm: fs.readdirSync(paths.cm), masters: fake.masters(), processes: processes(paths.dir) }
+}
+
+test("a visit writes the ssh files with the given includes and starts one watcher", async () => {
+  const { dir, fake, paths } = await approvedHome()
+  const inc = path.join(dir, "inc")
+  const v = await connected(dir, fake, { signIn: false, open: false }, { sshIncludes: [inc] })
+  expect(fs.readFileSync(paths.config, "utf8")).toContain(`Include "${inc}"`)
+  expect(fs.readFileSync(paths.batchConfig, "utf8")).toContain(`Include "${inc}"`)
+  expect(fs.statSync(paths.wrapper).mode & 0o777).toBe(0o700)
+  expect(processes(paths.cm).filter((line) => line.includes("opencorp-hq-watch"))).toHaveLength(1)
+  v.sigint()
+  expect(await v.done).toBe(0)
+})
+
+test("a visit's end runs exitAll, then releases the watcher, before the lock is free", async () => {
+  const { dir, fake, paths } = await approvedHome()
+  const v = await connected(dir, fake, { signIn: false, open: false })
+  expect(takeLock(paths)).toBeNull()
+  expect(fake.masters().length).toBe(2)
+  v.sigint()
+  expect(await v.done).toBe(0)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+  const lock = takeLock(paths)
+  expect(lock).not.toBeNull()
+  lock!.release()
+})
+
+test("Ctrl-C before connecting returns 130 and leaves nothing", async () => {
+  const { dir, fake, paths } = await approvedHome({ hosts: { node1: { login: "hang" } } })
+  const v = visitDeps(dir, fake)
+  const done = visit({ signIn: false, open: false }, v.deps)
+  await waitFor(() => fake.calls().some((argv) => argv.includes("-M")), { what: "the node master" })
+  v.sigint()
+  expect(await done).toBe(130)
+  expect(v.errors).toEqual([])
+  await waitFor(() => processes(paths.dir).length === 0, { what: "the hung login to end", timeout: 10_000 })
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
 })
