@@ -24,7 +24,8 @@ curl -fsSL https://raw.githubusercontent.com/ngocbh/opencorp/main/install.sh | b
 ```
 
 It clones OpenCorp into `~/.local/share/opencorp`, installs [Bun](https://bun.sh) 1.4.2 if there's
-no Bun, installs the dependencies, builds the HQ web app, writes the `opencorp` command into
+no Bun (Bun's own installer adds `~/.bun/bin` to your rc files, even with `--no-modify-path`),
+installs the dependencies, builds the HQ web app, writes the `opencorp` command into
 `~/.local/bin`, and puts that folder on your `PATH` in your shell's rc files. On a terminal it then
 offers to create your company in a project folder (`~/projects/opencorp` by default). Run it again
 to update. Options go after `bash -s --`: `--dir`, `--branch`, `--repo`, `--skip-setup` and
@@ -39,7 +40,8 @@ curl -fsSL https://raw.githubusercontent.com/ngocbh/opencorp/main/uninstall.sh |
 
 While an office is set up, it first runs `opencorp offboard`, which asks before it removes anything
 and keeps company work that isn't pushed. Then it removes the command, its `PATH` lines and the
-clone (unless the clone holds work that isn't pushed). Bun and `~/.opencorp` stay.
+clone (unless the clone holds work found nowhere else, ignored files such as `.env` included). Bun,
+its rc lines and `~/.opencorp` stay.
 
 Codex is optional: to use Codex sessions, install it (`npm install -g @openai/codex`) and run
 `codex login` before `opencorp init`.
