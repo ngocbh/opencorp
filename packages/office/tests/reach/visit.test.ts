@@ -7,7 +7,7 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import type { Spec } from "../../src/reach/spec.ts"
 import { type Access, DEFAULT_PORT, readAccess, sha256, takeLock, writeAccess } from "../../src/reach/state.ts"
-import { NO_PATH, RUN_THIS, USE_CHANGED, type VisitOptions, visit } from "../../src/reach/visit.ts"
+import { NO_PATH, RUN_THIS, SIGN_IN_HINT, USE_CHANGED, type VisitOptions, visit } from "../../src/reach/visit.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import type { FakeSsh, FakeSshBehavior } from "../../src/testing/fake_ssh.ts"
 import { ps, waitFor } from "../helpers.ts"
@@ -166,4 +166,105 @@ test("Ctrl-C before connecting returns 130 and leaves nothing", async () => {
   expect(v.errors).toEqual([])
   await waitFor(() => processes(paths.dir).length === 0, { what: "the hung login to end", timeout: 10_000 })
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+/** The fake's mux calls that ran `opencorp hq --json` there: a code minted. */
+const mints = (fake: FakeSsh) => fake.calls().filter((argv) => argv.at(-1)!.endsWith("'hq' '--json'"))
+/** The redirect files in the hq folder. */
+const redirects = (paths: ReachPaths) => fs.readdirSync(paths.dir).filter((name) => name.startsWith("pair-"))
+const DAY = 24 * 60 * 60_000
+
+test("the first visit signs in through a redirect file and records signed_in_at", async () => {
+  const { dir, fake, remote, port, paths } = await approvedHome()
+  const v = await connected(dir, fake, { signIn: false, open: true })
+  expect(v.opened).toHaveLength(1)
+  const file = v.opened[0]!
+  expect(path.dirname(file)).toBe(paths.dir)
+  expect(path.basename(file)).toMatch(/^pair-[0-9a-f]{16}\.html$/)
+  expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+  expect(fs.readFileSync(file, "utf8")).toContain(`href="http://127.0.0.1:${port}/pair#${remote.code}"`)
+  const access = await readAccess(paths)
+  expect(access?.signed_in_at).not.toBeNull()
+  expect(access?.last_used_at).not.toBeNull()
+  v.sigint()
+  expect(await v.done).toBe(0)
+})
+
+test("a later visit opens HQ's URL and mints nothing", async () => {
+  const { dir, fake, port, paths } = await approvedHome({}, { signed_in_at: new Date().toISOString() })
+  const v = await connected(dir, fake, { signIn: false, open: true })
+  expect(v.opened).toEqual([`http://127.0.0.1:${port}/`])
+  expect(mints(fake)).toEqual([])
+  expect(redirects(paths)).toEqual([])
+  expect(v.printed).not.toContain(SIGN_IN_HINT)
+  v.sigint()
+  expect(await v.done).toBe(0)
+})
+
+test("--sign-in mints again, and --port moves the port and signs in again", async () => {
+  const signedIn = new Date(Date.now() - DAY).toISOString()
+  const { dir, fake, remote, port, paths } = await approvedHome({}, { signed_in_at: signedIn })
+  let v = await connected(dir, fake, { signIn: true, open: false })
+  expect(v.printed).toContain(`http://127.0.0.1:${port}/pair#${remote.code}`)
+  expect(mints(fake)).toHaveLength(1)
+  v.sigint()
+  expect(await v.done).toBe(0)
+  expect((await readAccess(paths))?.signed_in_at).not.toBe(signedIn)
+  const moved = await freePort()
+  v = await connected(dir, fake, { signIn: false, port: moved, open: false })
+  expect(v.printed).toContain(`http://127.0.0.1:${moved}/pair#${remote.code}`)
+  expect(mints(fake)).toHaveLength(2)
+  const res = await fetch(`http://127.0.0.1:${moved}/api/health`, { headers: { connection: "close" } })
+  expect(res.status).toBe(200)
+  v.sigint()
+  expect(await v.done).toBe(0)
+  expect((await readAccess(paths))?.port).toBe(moved)
+})
+
+test("after 30 days signed in it hints at --sign-in", async () => {
+  const old = new Date(Date.now() - 31 * DAY).toISOString()
+  const { dir, fake } = await approvedHome({}, { signed_in_at: old })
+  const v = await connected(dir, fake, { signIn: false, open: false })
+  expect(v.printed).toContain(SIGN_IN_HINT)
+  expect(mints(fake)).toEqual([])
+  v.sigint()
+  expect(await v.done).toBe(0)
+})
+
+test("without opening it prints the URL or the sign-in link", async () => {
+  const { dir, fake, remote, port, paths } = await approvedHome()
+  let v = await connected(dir, fake, { signIn: false, open: false })
+  expect(v.printed).toContain(`http://127.0.0.1:${port}/pair#${remote.code}`)
+  expect([v.opened, redirects(paths)]).toEqual([[], []])
+  v.sigint()
+  expect(await v.done).toBe(0)
+  v = await connected(dir, fake, { signIn: false, open: false })
+  expect(v.printed).toContain(`http://127.0.0.1:${port}/`)
+  v.sigint()
+  expect(await v.done).toBe(0)
+})
+
+test("when the opener can't start it says why and prints the link", async () => {
+  const { dir, fake, remote, port } = await approvedHome()
+  const v = visitDeps(dir, fake, {
+    open: () => {
+      throw new Error("no xdg-open")
+    },
+  })
+  const done = visit({ signIn: false, open: true }, v.deps)
+  await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")), { what: "the visit to connect" })
+  expect(v.errors).toEqual(["opencorp hq: couldn't open a browser (no xdg-open); open this link:"])
+  expect(v.printed).toContain(`http://127.0.0.1:${port}/pair#${remote.code}`)
+  v.sigint()
+  expect(await done).toBe(0)
+})
+
+test("the visit line names what stays open until Ctrl-C", async () => {
+  const { dir, fake, port } = await approvedHome()
+  const v = await connected(dir, fake, { signIn: false, open: false })
+  expect(v.printed.at(-1)).toBe(
+    `Connected. Until Ctrl-C these stay open: SSH to node1 through login1, and HQ at http://127.0.0.1:${port}/.`,
+  )
+  v.sigint()
+  expect(await v.done).toBe(0)
 })
