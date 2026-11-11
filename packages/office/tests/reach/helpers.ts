@@ -51,3 +51,39 @@ export async function staleSocket(file: string) {
   await new Promise<void>((resolve) => server.close(() => resolve()))
   fs.renameSync(`${file}.x`, file)
 }
+
+/** A port free on 127.0.0.1 a moment ago. */
+export async function freePort(): Promise<number> {
+  const server = net.createServer()
+  await new Promise<void>((resolve) => server.listen({ port: 0, host: "127.0.0.1" }, resolve))
+  const { port } = server.address() as net.AddressInfo
+  await new Promise<void>((resolve) => server.close(() => resolve()))
+  return port
+}
+
+/** A server on the unix socket `file` that echoes and holds each connection; closed when the test finishes. */
+export async function holdingServer(file: string): Promise<{ server: net.Server; connections: Set<net.Socket> }> {
+  const connections = new Set<net.Socket>()
+  const server = net.createServer((c) => {
+    connections.add(c)
+    c.on("error", () => {})
+    c.once("close", () => connections.delete(c))
+    c.pipe(c)
+  })
+  await new Promise<void>((resolve) => server.listen(file, resolve))
+  onTestFinished(() => {
+    for (const c of connections) c.destroy()
+    server.close()
+  })
+  return { server, connections }
+}
+
+/** An open connection to 127.0.0.1:`port`, and a promise of its close; destroyed when the test finishes. */
+export async function holdConnection(port: number): Promise<{ socket: net.Socket; closed: Promise<void> }> {
+  const socket = net.connect({ port, host: "127.0.0.1" })
+  socket.on("error", () => {})
+  onTestFinished(() => socket.destroy())
+  const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()))
+  await new Promise<void>((resolve, reject) => socket.once("connect", resolve).once("error", reject))
+  return { socket, closed }
+}

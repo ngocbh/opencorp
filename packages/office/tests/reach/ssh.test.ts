@@ -32,12 +32,13 @@ import {
   runChild,
   sshEnv,
   startMaster,
+  startWatcher,
   waitForSocket,
   wrapperText,
   writeSshFiles,
 } from "../../src/reach/ssh.ts"
 import { isGone, shortDir, waitFor } from "../helpers.ts"
-import { fakeHome, reachCtx, staleSocket } from "./helpers.ts"
+import { fakeHome, freePort, holdConnection, holdingServer, reachCtx, staleSocket } from "./helpers.ts"
 import { fakeControlName } from "../../src/testing/fake_ssh.ts"
 import { startTime } from "../../src/install/proc.ts"
 
@@ -488,4 +489,67 @@ test("endNode ends only the node master", async () => {
   await endNode({ ...ctx, limits: ctx.limits }, stubborn)
   expect(await stubborn.exited).not.toBe(0)
   expect(fs.existsSync(ctx.paths.node)).toBe(false)
+})
+
+/** Whether `pid` still runs `ms` from now. */
+async function stillThere(pid: number, ms: number): Promise<boolean> {
+  const started = startTime(pid)
+  await Bun.sleep(ms)
+  return !isGone(pid, started)
+}
+
+test("once its pipe closes, the watcher ends every master in cm, even one holding a forwarded connection", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const watcher = startWatcher(ctx)
+  onTestFinished(() => watcher.child.kill("SIGKILL"))
+  const exited = new Promise<number | null>((resolve) => watcher.child.on("exit", (code) => resolve(code)))
+  const { login, node } = await twoMasters(ctx)
+  const hq = path.join(dir, "hq.sock")
+  const server = await holdingServer(hq)
+  const port = await freePort()
+  const spec = { host: "node1", jump: ["login1"], opencorp: "/o/opencorp" }
+  expect((await forward(ctx, spec, port, hq)).code).toBe(0)
+  const held = await holdConnection(port)
+  await waitFor(() => server.connections.size === 1, { what: "the forwarded connection" })
+  // Our pipe to the master closes too, as it would when this process dies.
+  node.lifeline.end()
+  expect(await stillThere(node.child.pid!, 300)).toBe(true)
+  const started = performance.now()
+  watcher.child.stdin!.end()
+  await held.closed
+  expect(await node.exited).toBe(0)
+  expect(await exited).toBe(0)
+  await waitFor(() => fake.masters().length === 0, { timeout: 3000, what: "every master to end" })
+  expect(performance.now() - started).toBeLessThan(3000)
+  expect(isSocket(ctx.paths.node) || isSocket(login)).toBe(false)
+  expect(exits(fake.calls())).toEqual([ctx.paths.node, login])
+})
+
+test("the watcher and its cat ignore INT and HUP", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const watcher = startWatcher(ctx)
+  onTestFinished(() => watcher.child.kill("SIGKILL"))
+  await waitFor(() => descendants(watcher.child.pid!).length > 0, { what: "the watcher's cat" })
+  const tree = [watcher.child.pid!, ...descendants(watcher.child.pid!)]
+  for (const pid of tree) for (const sig of ["SIGINT", "SIGHUP"] as const) process.kill(pid, sig)
+  for (const pid of tree) expect(await stillThere(pid, 300)).toBe(true)
+  await watcher.release()
+  expect(watcher.child.exitCode).toBe(0)
+})
+
+test("released after exitAll, it exits at once", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const watcher = startWatcher(ctx)
+  onTestFinished(() => watcher.child.kill("SIGKILL"))
+  await twoMasters(ctx)
+  await exitAll(ctx)
+  const started = performance.now()
+  await watcher.release()
+  expect(performance.now() - started).toBeLessThan(2000)
+  expect(watcher.child.exitCode).toBe(0)
+  await watcher.release()
+  await waitFor(() => fake.masters().length === 0, { timeout: 3000, what: "every master to end" })
 })

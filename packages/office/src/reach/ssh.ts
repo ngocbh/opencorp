@@ -424,3 +424,51 @@ function readdirOrEmpty(dir: string): string[] {
     throw error
   }
 }
+
+/** `$1` is the real ssh, `$2` the `cm` folder. INT and HUP are ignored (its `cat` and ssh inherit that); once stdin
+ *  ends, `-O exit` on `cm/node` first (its hop goes before the login master), then on every other socket. A gone
+ *  socket gives a harmless 255. */
+export const WATCHER = `trap '' INT HUP
+cat >/dev/null
+"$1" -F /dev/null -S "$2/node" -O exit ${CONTROL_HOST}
+for s in "$2"/*; do
+  if [ -S "$s" ]; then "$1" -F /dev/null -S "$s" -O exit ${CONTROL_HOST}; fi
+done
+exit 0
+`
+
+/** `$0` names it in `ps`, so `pgrep -f opencorp-hq-watch` finds a leftover. */
+export const watcherArgv = (ssh: string, cm: string) => ["/bin/sh", "-c", WATCHER, "opencorp-hq-watch", ssh, cm]
+
+/** The visit's watcher: its process, and `release()`, which lets it run its exits and resolves once it's gone. */
+export interface Watcher {
+  readonly child: ChildProcess
+  release(): Promise<void>
+}
+
+/** Starts the visit's watcher on a second pipe this process holds and never writes, so it ends every master once this
+ *  process ends, even by `kill -9`. `release()` ends its stdin and resolves on its exit (SIGKILL after
+ *  `2 * CONTROL_MS`): after `exitAll`, before the lock goes. */
+export function startWatcher(ctx: ReachContext): Watcher {
+  const child = spawn("/bin/sh", watcherArgv(ctx.ssh, ctx.paths.cm).slice(1), {
+    cwd: ctx.paths.dir,
+    env: { PATH: "/usr/bin:/bin" },
+    stdio: ["pipe", "ignore", "ignore"],
+  })
+  child.stdin!.on("error", () => {})
+  const exited = new Promise<void>((resolve) => {
+    child.on("error", () => {
+      if (child.pid === undefined) resolve()
+    })
+    child.on("exit", () => resolve())
+  })
+  return {
+    child,
+    async release() {
+      child.stdin!.end()
+      const timer = setTimeout(() => child.kill("SIGKILL"), 2 * CONTROL_MS)
+      await exited
+      clearTimeout(timer)
+    },
+  }
+}
