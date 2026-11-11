@@ -2,8 +2,13 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
-import { classify, type Reached, runScript } from "../../src/reach/replay.ts"
+import { classify, type Reached, runReach, runScript } from "../../src/reach/replay.ts"
+import type { ReachPaths } from "../../src/reach/paths.ts"
 import type { Ran } from "../../src/reach/ssh.ts"
+import { DEFAULT_PORT, sha256, writeAccess } from "../../src/reach/state.ts"
+import { writePrivate } from "../../src/secrets.ts"
+import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import { fakeLlm } from "../chat/helpers.ts"
 import { fakeHome, reachCtx } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -69,4 +74,48 @@ test("a 255 inside a pipeline in reach.sh is couldn't connect", async () => {
   const got = await runScript(script, ctx)
   expect(got.outcome).toBe("unreachable")
   expect(got.detail).toContain("Permission denied")
+})
+
+/** Writes `body` as the approved reach.sh: the script and its sha256 in access.json. */
+async function approved(paths: ReachPaths, body: string): Promise<void> {
+  await writePrivate(paths.script, body)
+  await writePrivate(paths.approved, body)
+  await writeAccess(paths, {
+    port: DEFAULT_PORT,
+    sha256: sha256(body),
+    learned_at: "2026-11-11T10:00:00.000Z",
+    last_used_at: null,
+    signed_in_at: null,
+  })
+}
+
+test("a replay makes no model call even with a provider file next to it", async () => {
+  const llm = await fakeLlm()
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  await writePrivate(ctx.paths.provider, JSON.stringify({ llm_config: LLM_CONFIG, env: llm.env() }))
+  const spec = { ...SPEC, port: 2222, env: { OPENCORP_HOME: "/h/o" } }
+  await approved(ctx.paths, `printf '%s\\n' '${JSON.stringify(spec)}'\n`)
+  expect(await runReach(ctx)).toEqual({ outcome: "ok", spec, detail: "" })
+  expect(llm.requests()).toEqual([])
+})
+
+test("a replay runs no reach.sh whose sha256 isn't the approved one", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const marker = path.join(dir, "ran")
+  await approved(ctx.paths, `printf '%s\\n' '${JSON.stringify(SPEC)}'\n`)
+  await writePrivate(ctx.paths.script, `touch '${marker}'\nprintf '%s\\n' '${JSON.stringify(SPEC)}'\n`)
+  const got = await runReach(ctx)
+  expect(got).toEqual({ outcome: "broken", detail: "reach.sh isn't the approved one" })
+  expect(fs.existsSync(marker)).toBe(false)
+})
+
+test("a replay with no access.json yet is broken and runs nothing", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const marker = path.join(dir, "ran")
+  await writePrivate(ctx.paths.script, `touch '${marker}'\n`)
+  expect((await runReach(ctx)).outcome).toBe("broken")
+  expect(fs.existsSync(marker)).toBe(false)
 })
