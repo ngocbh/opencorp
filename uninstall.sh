@@ -36,6 +36,70 @@ die() {
   printf '%s✗%s %s\n' "$C_ERR" "$C_OFF" "$1" >&2
   exit 1
 }
+# An error that doesn't stop the rest; the script ends with status 1.
+fail() {
+  printf '%s✗%s %s\n' "$C_ERR" "$C_OFF" "$1" >&2
+  FAILED=1
+}
+
+# Single-quotes $1 for a shell script.
+quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# The marked lines install.sh writes to put BIN_DIR on PATH: SH_LINE for sh-like shells, FISH_LINE for fish.
+path_lines() {
+  SUFFIX="  # added by opencorp install.sh"
+  # shellcheck disable=SC2016
+  SH_LINE="case \":\$PATH:\" in *:$(quote "$BIN_DIR"):*) ;; *) export PATH=$(quote "$BIN_DIR"):\"\$PATH\" ;; esac$SUFFIX"
+  FISH_LINE="fish_add_path --path $(quote "$BIN_DIR")$SUFFIX"
+}
+
+# The size in bytes of file $1, or of standard input.
+bytes() {
+  if [ $# -gt 0 ]; then LC_ALL=C wc -c <"$1"; else LC_ALL=C wc -c; fi | tr -d ' '
+}
+
+# Takes the marked PATH lines out of the rc file $1, keeping every other byte. On any failure the file is left as it
+# was, and says so.
+remove_path_lines() {
+  [ -f "$1" ] || return 0
+  rl_sh=$(LC_ALL=C grep -a -c -F -x -e "$SH_LINE" "$1") || true
+  rl_fish=$(LC_ALL=C grep -a -c -F -x -e "$FISH_LINE" "$1") || true
+  case $rl_sh.$rl_fish in
+    0.0) return 0 ;;
+    *[!0-9.]* | .* | *.) fail "Couldn't read $1. Take out the line that ends in '$SUFFIX' yourself."; return 0 ;;
+  esac
+  if [ ! -w "$1" ]; then
+    fail "$1 isn't writable, so its PATH line stays. Take out this line yourself: $SH_LINE"
+    return 0
+  fi
+  rl_tmp=$(mktemp) || { fail "Couldn't make a temp file, so $1 is as it was."; return 0; }
+  rl_status=0
+  LC_ALL=C grep -a -v -F -x -e "$SH_LINE" -e "$FISH_LINE" "$1" >"$rl_tmp" || rl_status=$?
+  # The old file less the marked lines, each with its newline; grep ends a last line that had none.
+  rl_want=$(($(bytes "$1") - rl_sh * $(printf '%s\n' "$SH_LINE" | bytes) - rl_fish * $(printf '%s\n' "$FISH_LINE" | bytes)))
+  if [ -n "$(tail -c 1 "$1")" ]; then rl_want=$((rl_want + 1)); fi
+  # Status 1 is grep's for no lines left.
+  if [ "$rl_status" -gt 1 ] || [ "$(bytes "$rl_tmp")" != "$rl_want" ]; then
+    rm -f "$rl_tmp"
+    fail "Couldn't rewrite $1, so it's as it was. Take out the line that ends in '$SUFFIX' yourself."
+    return 0
+  fi
+  # Write back through the original file, so its permissions and any symlink stay.
+  if ! cat "$rl_tmp" >"$1" || ! cmp -s "$rl_tmp" "$1"; then
+    fail "Writing $1 stopped part-way. Its whole new text is in $rl_tmp: copy that over it."
+    return 0
+  fi
+  rm -f "$rl_tmp"
+  # A file install.sh made holds nothing now; .bash_profile and .bash_login it only adds to, and an empty one
+  # still changes which file a login bash reads.
+  case $1 in
+    */.bash_profile | */.bash_login) ;;
+    *) if [ ! -s "$1" ] && [ ! -L "$1" ]; then rm -f "$1" && ok "Removed $1, empty now" && return 0; fi ;;
+  esac
+  ok "Removed the PATH line from $1"
+}
 
 # Whether a terminal is there to ask on: stdin is the script under `curl | bash`.
 has_tty() { (: </dev/tty) 2>/dev/null; }
@@ -98,6 +162,7 @@ EOF
 # All of it runs from the last line, so a download cut off part-way runs nothing.
 main() {
   init_output
+  FAILED=0
   MARK="opencorp install.sh"
   DIR=${OPENCORP_INSTALL_DIR:-}
   while [ $# -gt 0 ]; do
@@ -140,15 +205,10 @@ main() {
     fi
   fi
 
+  path_lines
   for rc in "$HOME/.bashrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login" \
     "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zprofile" "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"; do
-    [ -f "$rc" ] && grep -qF "$MARK" "$rc" || continue
-    tmp=$(mktemp)
-    grep -vF "$MARK" "$rc" >"$tmp" || true
-    # Write back through the original file, so its permissions and any symlink stay.
-    cat "$tmp" >"$rc"
-    rm -f "$tmp"
-    ok "Removed the PATH line from $rc"
+    remove_path_lines "$rc"
   done
 
   if [ -d "$DIR" ]; then
@@ -165,6 +225,7 @@ main() {
     fi
   fi
   ok "Left Bun and the office home ($OFFICE) in place."
+  [ "$FAILED" = 0 ] || exit 1
 }
 
 main "$@"

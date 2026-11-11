@@ -118,13 +118,31 @@ install_bun() {
   [ -x "$BUN_HOME/bin/bun" ]
 }
 
-# Adds the marked line $2 to the rc file $1, unless the file already puts BIN_DIR on PATH.
+# The marked lines that put BIN_DIR on PATH: SH_LINE for sh-like shells, FISH_LINE for fish. uninstall.sh
+# takes out exactly these lines.
+path_lines() {
+  SUFFIX="  # added by opencorp install.sh"
+  # shellcheck disable=SC2016
+  SH_LINE="case \":\$PATH:\" in *:$(quote "$BIN_DIR"):*) ;; *) export PATH=$(quote "$BIN_DIR"):\"\$PATH\" ;; esac$SUFFIX"
+  FISH_LINE="fish_add_path --path $(quote "$BIN_DIR")$SUFFIX"
+}
+
+# Adds the marked line $2 to the rc file $1, unless the file already puts BIN_DIR on PATH; a file it can't write
+# gets a warning with the line to add.
 add_path_line() {
-  if [ -f "$1" ] && { grep -qF "$MARK" "$1" || grep -Eq "$OWN_PATH_RE" "$1"; }; then return 0; fi
-  mkdir -p "$(dirname "$1")"
+  if [ -f "$1" ] && { LC_ALL=C grep -a -q -F -x -e "$2" "$1" || LC_ALL=C grep -a -q -E "$OWN_PATH_RE" "$1"; }; then
+    return 0
+  fi
+  ap_dir=$(dirname "$1")
+  if ! mkdir -p "$ap_dir" 2>/dev/null || { [ -e "$1" ] && [ ! -w "$1" ]; } || { [ ! -e "$1" ] && [ ! -w "$ap_dir" ]; }; then
+    warn "Can't write $1, so add this line to it yourself: $2"
+    return 0
+  fi
   # A last line without its newline would run into ours.
-  if [ -s "$1" ] && [ -n "$(tail -c 1 "$1")" ]; then printf '\n' >>"$1"; fi
-  printf '%s  # added by %s\n' "$2" "$MARK" >>"$1"
+  if [ -s "$1" ] && [ -n "$(tail -c 1 "$1")" ]; then
+    printf '\n' >>"$1" || { warn "Couldn't write $1, so add this line to it yourself: $2"; return 0; }
+  fi
+  printf '%s\n' "$2" >>"$1" || { warn "Couldn't write $1, so add this line to it yourself: $2"; return 0; }
   ok "Added $BIN_DIR to PATH in $1"
 }
 
@@ -273,32 +291,34 @@ EOF
     *":$BIN_DIR:"* | *":$BIN_DIR/:"*) ;;
     *)
       if [ "$MODIFY_PATH" = 1 ]; then
+        path_lines
+        # A file whose own line puts BIN_DIR on PATH: a PATH= at the start of a line (as Ubuntu's .profile has),
+        # fish_add_path, or fish's set, naming the folder (relative to the home, or in full).
         case $BIN_DIR in "$HOME"/*) own=${BIN_DIR#"$HOME"/} ;; *) own=$BIN_DIR ;; esac
-        OWN_PATH_RE="^[[:space:]]*([^#[:space:]].*)?(PATH|fish_add_path).*$(printf '%s' "$own" | sed 's/[.[\*^$+?(){}|]/\\&/g')"
-        # shellcheck disable=SC2016
-        line="case \":\$PATH:\" in *:$(quote "$BIN_DIR"):*) ;; *) export PATH=$(quote "$BIN_DIR"):\"\$PATH\" ;; esac"
+        own=$(printf '%s' "$own" | sed 's/[.[\*^$+?(){}|]/\\&/g')
+        OWN_PATH_RE="^[[:space:]]*((export[[:space:]]+)?PATH=|fish_add_path[[:space:]]|set[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*(PATH|fish_user_paths)[[:space:]]).*$own/?([:\"'[:space:]]|\$)"
         case $(basename "${SHELL:-sh}") in
           zsh)
             RELOAD=". ${ZDOTDIR:-$HOME}/.zshrc"
-            add_path_line "${ZDOTDIR:-$HOME}/.zshrc" "$line"
-            add_path_line "${ZDOTDIR:-$HOME}/.zprofile" "$line"
+            add_path_line "${ZDOTDIR:-$HOME}/.zshrc" "$SH_LINE"
+            add_path_line "${ZDOTDIR:-$HOME}/.zprofile" "$SH_LINE"
             ;;
           bash)
             RELOAD=". $HOME/.bashrc"
-            add_path_line "$HOME/.bashrc" "$line"
-            add_path_line "$HOME/.profile" "$line"
+            add_path_line "$HOME/.bashrc" "$SH_LINE"
+            add_path_line "$HOME/.profile" "$SH_LINE"
             # A login bash reads only the first of .bash_profile, .bash_login and .profile.
             for rc in "$HOME/.bash_profile" "$HOME/.bash_login"; do
-              if [ -f "$rc" ]; then add_path_line "$rc" "$line"; fi
+              if [ -f "$rc" ]; then add_path_line "$rc" "$SH_LINE"; fi
             done
             ;;
           fish)
             RELOAD="source ${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
-            add_path_line "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" "fish_add_path -g $(quote "$BIN_DIR")"
+            add_path_line "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" "$FISH_LINE"
             ;;
           *)
             RELOAD=". $HOME/.profile"
-            add_path_line "$HOME/.profile" "$line"
+            add_path_line "$HOME/.profile" "$SH_LINE"
             ;;
         esac
       fi

@@ -19,6 +19,8 @@ setDefaultTimeout(60_000)
 const CHECKOUT = fs.realpathSync(path.resolve(import.meta.dir, "../../.."))
 const SYSTEM = "/usr/bin:/bin"
 const MARK = "opencorp install.sh"
+/** The end of each PATH line install.sh writes. */
+const SUFFIX = `  # added by ${MARK}`
 /** The POSIX shells here to run the scripts under. */
 const SHELLS = ["sh", "bash", "dash", "ksh"].filter((shell) => Bun.which(shell, { PATH: SYSTEM }))
 const TMUX = Bun.which("tmux", { PATH: "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" })
@@ -193,6 +195,8 @@ interface RunOptions {
   args?: string[]
   extra?: Record<string, string>
   shell?: string
+  /** Shell commands run first, in the same process, before the script. */
+  wrap?: string
   /** Run from a checkout's copy of the script, as `./install.sh` does; otherwise piped, as `curl | bash` does. */
   from?: string
   cwd?: string
@@ -217,7 +221,9 @@ function argv(script: string, o: RunOptions): { args: string[]; input?: string }
 async function run(h: Home, script: string, o: RunOptions = {}): Promise<Result> {
   const { args, input } = argv(script, o)
   const stdin = input ? fs.openSync(input, "r") : "ignore"
-  const child = spawn(o.shell ?? "sh", args, {
+  const shell = o.shell ?? "sh"
+  const command = o.wrap ? [shell, "-c", `${o.wrap} exec ${shell} "$@"`, shell, ...args] : [shell, ...args]
+  const child = spawn(command[0]!, command.slice(1), {
     cwd: o.cwd ?? h.home,
     env: env(h, o.extra),
     detached: true,
@@ -302,13 +308,13 @@ function calls(h: Home): string[] {
   return fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean) : []
 }
 
-/** How many of the installer's PATH lines `rc` holds. */
+/** How many of the installer's PATH lines `rc` holds: lines that end in its marker. */
 function pathLines(rc: string): number {
   if (!fs.existsSync(rc)) return 0
   return fs
-    .readFileSync(rc, "utf8")
+    .readFileSync(rc, "latin1")
     .split("\n")
-    .filter((line) => line.includes(MARK)).length
+    .filter((line) => line.endsWith(SUFFIX)).length
 }
 
 /** Runs the installed wrapper with `args`, with no Bun on PATH. */
@@ -559,6 +565,21 @@ describe("install.sh", () => {
       if (files.includes(".bash_profile")) {
         expect(fs.readFileSync(path.join(h.home, ".bash_profile"), "utf8")).toStartWith("alias ll='ls -l'\ncase ")
       }
+      if (shell.endsWith("fish")) {
+        expect(fs.readFileSync(path.join(h.home, ".config/fish/config.fish"), "utf8")).toBe(
+          `fish_add_path --path ${sq(h.bin)}${SUFFIX}\n`,
+        )
+      }
+
+      // Uninstall takes each line out again, and the files install made, now empty, go too.
+      const r = await run(h, "uninstall.sh", { extra: { SHELL: shell } })
+      expect(r.err).not.toContain("✗")
+      expect(r.code).toBe(0)
+      for (const f of all) expect(pathLines(path.join(h.home, f))).toBe(0)
+      expect(all.filter((f) => fs.existsSync(path.join(h.home, f)))).toEqual([".bash_profile"])
+      // Only a file install added to gains a final newline.
+      const ending = files.includes(".bash_profile") ? "\n" : ""
+      expect(fs.readFileSync(path.join(h.home, ".bash_profile"), "utf8")).toBe(`alias ll='ls -l'${ending}`)
     }
   })
 
@@ -587,6 +608,16 @@ describe("install.sh", () => {
         timeout: 10_000,
       })
       expect(result.stdout.trim().split(":").filter((dir) => dir === h.bin)).toEqual([h.bin])
+      // The user's own fish_add_path, after the line has run, still saves its folder for good.
+      const theirs = path.join(h.dir, "their-bin")
+      fs.mkdirSync(theirs)
+      const scope = spawnSync(fish, ["-c", `fish_add_path ${sq(theirs)}; set --show fish_user_paths`], {
+        env: { PATH: SYSTEM, HOME: h.home, XDG_CONFIG_HOME: path.join(h.home, ".config") },
+        encoding: "utf8",
+        timeout: 10_000,
+      })
+      expect(scope.stdout).toContain("$fish_user_paths: set in universal scope")
+      expect(scope.stdout).not.toContain("$fish_user_paths: set in global scope")
     }
   })
 
@@ -598,6 +629,37 @@ describe("install.sh", () => {
     expect((await run(h, "install.sh", { from: checkout(h) })).code).toBe(0)
     expect(fs.readFileSync(path.join(h.home, ".profile"), "utf8")).toBe(profile)
     expect(pathLines(path.join(h.home, ".bashrc"))).toBe(1)
+  })
+
+  test("a line that only looks like it puts the bin folder on PATH doesn't count", async () => {
+    const h = makeHome()
+    fs.writeFileSync(path.join(h.home, ".bashrc"), '[ "$(hostname)" = laptop ] && export PATH="$HOME/.local/bin:$PATH"\n')
+    fs.writeFileSync(path.join(h.home, ".profile"), 'export PYTHONPATH="$HOME/.local/bin/pylib"\n')
+    expect((await run(h, "install.sh", { from: checkout(h) })).code).toBe(0)
+    expect(pathLines(path.join(h.home, ".bashrc"))).toBe(1)
+    expect(pathLines(path.join(h.home, ".profile"))).toBe(1)
+  })
+
+  test("a line of the user's that mentions opencorp install.sh is theirs: install adds its own, and uninstall leaves theirs", async () => {
+    const h = makeHome()
+    const theirs = 'export PATH="$HOME/go/bin:$PATH"  # moved here; see opencorp install.sh notes\n'
+    fs.writeFileSync(path.join(h.home, ".bashrc"), theirs)
+    expect((await run(h, "install.sh")).code).toBe(0)
+    expect(pathLines(path.join(h.home, ".bashrc"))).toBe(1)
+    expect((await run(h, "uninstall.sh")).code).toBe(0)
+    expect(fs.readFileSync(path.join(h.home, ".bashrc"), "utf8")).toBe(theirs)
+  })
+
+  test("skips an rc file it can't write, with a warning that gives the line to add", async () => {
+    const h = makeHome()
+    const bashrc = path.join(h.home, ".bashrc")
+    fs.writeFileSync(bashrc, "alias ll='ls -l'\n", { mode: 0o444 })
+    const r = await run(h, "install.sh", { from: checkout(h) })
+    expect(r.code).toBe(0)
+    expect(r.err).toContain(`⚠ Can't write ${bashrc}, so add this line to it yourself: case `)
+    expect(fs.readFileSync(bashrc, "utf8")).toBe("alias ll='ls -l'\n")
+    expect(pathLines(path.join(h.home, ".profile"))).toBe(1)
+    expect(r.out).toContain("✓ Installed OpenCorp 0.0.1")
   })
 
   test("with an office set up, it says to restart the office instead of offering to create one", async () => {
@@ -674,7 +736,56 @@ describe("uninstall.sh", () => {
     expect(fs.lstatSync(path.join(h.home, ".bashrc")).isSymbolicLink()).toBe(true)
     expect(fs.readFileSync(dotfile, "utf8")).toBe("alias ll='ls -l'\n")
     expect(fs.statSync(dotfile).mode & 0o777).toBe(0o600)
-    expect(fs.readFileSync(path.join(h.home, ".profile"), "utf8")).toBe("")
+    // install made .profile, so uninstall removes it once it's empty again.
+    expect(fs.existsSync(path.join(h.home, ".profile"))).toBe(false)
+  })
+
+  test("keeps every byte of an rc file around its PATH line, in a UTF-8 locale", async () => {
+    const h = makeHome()
+    const utf8 = { LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" }
+    // A Latin-1 byte, a NUL, a CRLF line, and no newline at the end.
+    const original = Buffer.from("export A=1\n# caf\xe9\n\x00binary\r\nalias x=y", "latin1")
+    const bashrc = path.join(h.home, ".bashrc")
+    fs.writeFileSync(bashrc, original)
+    expect((await run(h, "install.sh", { extra: utf8 })).code).toBe(0)
+    expect(pathLines(bashrc)).toBe(1)
+    const r = await run(h, "uninstall.sh", { extra: utf8 })
+    expect(r.err).not.toContain("✗")
+    expect(r.code).toBe(0)
+    expect(fs.readFileSync(bashrc)).toEqual(Buffer.concat([original, Buffer.from("\n")]))
+  })
+
+  test("leaves an rc file as it was when the new one can't be written in full, and says so with ✗", async () => {
+    const h = makeHome()
+    const bashrc = path.join(h.home, ".bashrc")
+    const big = "# a long rc file\n".repeat(20_000)
+    fs.writeFileSync(bashrc, big)
+    expect((await run(h, "install.sh")).code).toBe(0)
+    const before = fs.readFileSync(bashrc)
+    const tmp = path.join(h.dir, "tmp")
+    fs.mkdirSync(tmp)
+    // Files past 64 blocks can't be written, so the new copy of the rc stops part-way.
+    const r = await run(h, "uninstall.sh", { shell: "sh", wrap: 'trap "" XFSZ; ulimit -f 64;', extra: { TMPDIR: tmp } })
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain(`✗ Couldn't rewrite ${bashrc}, so it's as it was`)
+    expect(r.out).not.toContain(`Removed the PATH line from ${bashrc}`)
+    expect(fs.readFileSync(bashrc)).toEqual(before)
+    expect(fs.readdirSync(tmp)).toEqual([])
+  })
+
+  test("leaves an rc file it can't write as it was, says so with ✗, and removes the rest", async () => {
+    const h = makeHome()
+    expect((await run(h, "install.sh")).code).toBe(0)
+    const bashrc = path.join(h.home, ".bashrc")
+    fs.chmodSync(bashrc, 0o444)
+    const before = fs.readFileSync(bashrc)
+    const r = await run(h, "uninstall.sh")
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain(`✗ ${bashrc} isn't writable, so its PATH line stays. Take out this line yourself: case `)
+    expect(fs.readFileSync(bashrc)).toEqual(before)
+    expect(pathLines(path.join(h.home, ".profile"))).toBe(0)
+    expect(fs.existsSync(h.wrapper)).toBe(false)
+    expect(fs.existsSync(h.clone)).toBe(false)
   })
 
   test("leaves an opencorp it didn't write in place", async () => {
