@@ -349,6 +349,14 @@ test("--handle takes a handle with its @", async () => {
   expect(pairBody()).toEqual({ handle: "ngocbh", open_file: false })
 })
 
+test("--sign-in on HQ's machine signs in as plain hq does", async () => {
+  start({ tcp: true, listening: true })
+  const { d, spawned } = deps()
+  expect(await hq(["--sign-in"], d)).toBe(0)
+  expect(pairBody()).toEqual({ handle: null, open_file: true })
+  expect(spawned).toHaveLength(1)
+})
+
 test("over SSH it never asks for a file or opens anything", async () => {
   start({ tcp: true, listening: true })
   const { d, spawned, printed } = deps({ SSH_CONNECTION: "1 2 3 4" }, "linux")

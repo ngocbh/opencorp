@@ -185,13 +185,21 @@ export const realHqDeps: HqDeps = {
   error: (line) => console.error(line),
 }
 
-/** `opencorp hq [--handle H] [--no-open]`: a one-time link that signs a browser in as H (you by default). */
+/**
+ * `opencorp hq [--handle H] [--no-open] [--sign-in]`: a one-time link that signs a browser in as H (you by default).
+ */
 export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<number> {
-  let values: { handle?: string; "no-open"?: boolean; help?: boolean }
+  let values: { handle?: string; "no-open"?: boolean; "sign-in"?: boolean; help?: boolean }
   try {
     ;({ values } = parseArgs({
       args: argv,
-      options: { handle: { type: "string" }, "no-open": { type: "boolean" }, help: { type: "boolean", short: "h" } },
+      options: {
+        handle: { type: "string" },
+        "no-open": { type: "boolean" },
+        // Read nowhere here: every run on HQ's machine signs a browser in.
+        "sign-in": { type: "boolean" },
+        help: { type: "boolean", short: "h" },
+      },
     }))
   } catch (e) {
     deps.error(`opencorp hq: ${e instanceof Error ? e.message : e}\n${USAGE}`)
