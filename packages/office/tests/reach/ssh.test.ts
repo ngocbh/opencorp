@@ -21,6 +21,7 @@ import {
   forward,
   forwardArgv,
   isSocket,
+  knowsSessionOptions,
   LIMITS,
   type ReachContext,
   KEEP_CHARS,
@@ -71,6 +72,27 @@ test("the generated config puts our options before the includes, since ssh keeps
   expect(defaultIncludes("/u")).toEqual(["/u/.ssh/config", "/etc/ssh/ssh_config"])
 })
 
+test("where ssh knows them, the config pins the session options the owner's could use to defeat the lifeline", () => {
+  const lines = configText("/h/hq/cm", { includes: ["/i"], sessionOptions: true }).split("\n")
+  const pinned = ["SessionType default", "StdinNull no", "ForkAfterAuthentication no"]
+  for (const line of pinned) expect(lines.indexOf(line)).toBeGreaterThan(0)
+  for (const line of pinned) expect(lines.indexOf(line)).toBeLessThan(lines.indexOf('Include "/i"'))
+  // No IgnoreUnknown: the first one read wins, so ours would void the owner's (say, for UseKeychain).
+  expect(lines.some((line) => line.startsWith("IgnoreUnknown"))).toBe(false)
+  expect(configText("/h/hq/cm", { includes: [] })).not.toContain("SessionType")
+})
+
+test("knowsSessionOptions asks the ssh itself, and agrees with its version", () => {
+  const dir = shortDir()
+  const old = path.join(dir, "old-ssh")
+  fs.writeFileSync(old, '#!/bin/sh\ncase "$*" in *SessionType*) echo "Bad configuration option: sessiontype" >&2; exit 255;; esac\nexit 0\n', { mode: 0o700 })
+  expect(knowsSessionOptions(old)).toBe(false)
+  expect(knowsSessionOptions(path.join(dir, "missing"))).toBe(false)
+  const version = execFileSync("/usr/bin/ssh", ["-V"], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", stdio: ["ignore", "ignore", "pipe"] })
+  const [major, minor] = (/OpenSSH_([0-9]+)\.([0-9]+)/.exec(version) ?? []).slice(1).map(Number)
+  expect(knowsSessionOptions("/usr/bin/ssh")).toBe(major! > 8 || (major === 8 && minor! >= 7))
+})
+
 test("the wrapper runs the real ssh with our config and records each exit status, even inside a pipeline", () => {
   const dir = shortDir()
   const expected = path.join(dir, "the config")
@@ -107,8 +129,11 @@ test("writeSshFiles writes the configs 0600 and the wrapper 0700", async () => {
   expect(fs.statSync(paths.config).mode & 0o777).toBe(0o600)
   expect(fs.statSync(paths.batchConfig).mode & 0o777).toBe(0o600)
   expect(fs.statSync(paths.wrapper).mode & 0o777).toBe(0o700)
-  expect(fs.readFileSync(paths.config, "utf8")).toBe(configText(paths.cm, { includes: ["/i/one"] }))
-  expect(fs.readFileSync(paths.batchConfig, "utf8")).toBe(configText(paths.cm, { batch: true, includes: ["/i/one"] }))
+  const sessionOptions = knowsSessionOptions("/usr/bin/ssh")
+  expect(fs.readFileSync(paths.config, "utf8")).toBe(configText(paths.cm, { includes: ["/i/one"], sessionOptions }))
+  expect(fs.readFileSync(paths.batchConfig, "utf8")).toBe(
+    configText(paths.cm, { batch: true, includes: ["/i/one"], sessionOptions }),
+  )
   expect(fs.readFileSync(paths.wrapper, "utf8")).toBe(wrapperText("/usr/bin/ssh"))
 })
 
@@ -328,6 +353,7 @@ test("the master runs a remote cat on our pipe, with no ControlPersist and none 
     "-M", "-S", "/s",
     "-o", "ControlPersist=no",
     "-o", "ClearAllForwardings=yes", "-o", "RequestTTY=no",
+    "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
     "-J", "a,b:2222",
     "-p", "2200",
     "--", "u@n",
@@ -336,6 +362,7 @@ test("the master runs a remote cat on our pipe, with no ControlPersist and none 
   expect(masterArgv("/usr/bin/ssh", { host: "n", opencorp: "/o/opencorp" }, { config: "/c", socket: "/s" })).toEqual([
     "/usr/bin/ssh", "-F", "/c", "-M", "-S", "/s",
     "-o", "ControlPersist=no", "-o", "ClearAllForwardings=yes", "-o", "RequestTTY=no",
+    "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
     "--", "n", "cat >/dev/null",
   ])
 })

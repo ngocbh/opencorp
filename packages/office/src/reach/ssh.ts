@@ -1,7 +1,7 @@
 /** The SSH plumbing of reaching a remote HQ: the generated configs and the ssh wrapper, the child runner, the node
  *  master and its lifeline, mux sessions and `-O` commands, and the watcher that ends every master once this process
  *  is gone. */
-import { type ChildProcess, execFileSync, spawn } from "node:child_process"
+import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 import os from "node:os"
@@ -18,9 +18,14 @@ import { remoteCommand, type Spec, safePath, word } from "./spec.ts"
 export const defaultIncludes = (home: string) => [path.join(home, ".ssh", "config"), "/etc/ssh/ssh_config"]
 
 /** `hq/ssh/config` (`config.batch` with `batch`): our options first, since ssh keeps the first value it reads, so the
- *  owner's ControlPath can't win and our `-O exit` never ends their masters. Each include is double-quoted (a home
- *  may hold a space); there's no default, so a test can't include the real `~/.ssh/config` by leaving it out. */
-export function configText(cm: string, { batch = false, includes }: { batch?: boolean; includes: readonly string[] }): string {
+ *  owner's ControlPath can't win and our `-O exit` never ends their masters. With `sessionOptions` (an ssh that knows
+ *  them, OpenSSH 8.7 on) it also pins the session options whose `none`, `yes` and `yes` would defeat the master's cat
+ *  lifeline. Each include is double-quoted (a home may hold a space); there's no default, so a test can't include the
+ *  real `~/.ssh/config` by leaving it out. */
+export function configText(
+  cm: string,
+  { batch = false, includes, sessionOptions = false }: { batch?: boolean; includes: readonly string[]; sessionOptions?: boolean },
+): string {
   if (includes.some((file) => /["\n]/.test(file))) throw new Error("an included ssh config's path can't hold \" or a newline")
   return [
     "# Written by opencorp hq on each visit; edits are lost.",
@@ -30,9 +35,30 @@ export function configText(cm: string, { batch = false, includes }: { batch?: bo
     "ControlPersist 60",
     "ServerAliveInterval 15",
     "ServerAliveCountMax 3",
+    // Not behind IgnoreUnknown for older ssh: the first IgnoreUnknown read wins, so ours would void the owner's.
+    ...(sessionOptions ? ["SessionType default", "StdinNull no", "ForkAfterAuthentication no"] : []),
     ...includes.map((file) => `Include "${file}"`),
     "",
   ].join("\n")
+}
+
+const knows = new Map<string, boolean>()
+
+/** Whether the ssh at `ssh` accepts SessionType, StdinNull and ForkAfterAuthentication (OpenSSH 8.7 on): `ssh -G`
+ *  checks the options without connecting or reading a config. Remembered per path. */
+export function knowsSessionOptions(ssh: string): boolean {
+  let known = knows.get(ssh)
+  if (known === undefined) {
+    const options = ["SessionType=default", "StdinNull=no", "ForkAfterAuthentication=no"].flatMap((o) => ["-o", o])
+    const ran = spawnSync(ssh, ["-G", "-F", "/dev/null", ...options, "--", CONTROL_HOST], {
+      env: { PATH: "/usr/bin:/bin" },
+      stdio: "ignore",
+      timeout: CONTROL_MS,
+    })
+    known = ran.status === 0
+    knows.set(ssh, known)
+  }
+  return known
 }
 
 /** `hq/ssh/bin/ssh`, first on PATH for reach.sh and the shell tool: the real ssh by absolute path (so ProxyJump's hop,
@@ -55,8 +81,9 @@ export function wrapperText(realSsh: string): string {
 
 /** Writes both configs (0600) and the wrapper (0700) for this visit. */
 export async function writeSshFiles(paths: ReachPaths, realSsh: string, includes: readonly string[]): Promise<void> {
-  await writePrivate(paths.config, configText(paths.cm, { includes }))
-  await writePrivate(paths.batchConfig, configText(paths.cm, { batch: true, includes }))
+  const sessionOptions = knowsSessionOptions(realSsh)
+  await writePrivate(paths.config, configText(paths.cm, { includes, sessionOptions }))
+  await writePrivate(paths.batchConfig, configText(paths.cm, { batch: true, includes, sessionOptions }))
   await writePrivate(paths.wrapper, wrapperText(realSsh))
   fs.chmodSync(paths.wrapper, 0o700)
 }
@@ -287,6 +314,8 @@ export function masterArgv(ssh: string, spec: Spec, { config, socket }: { config
     "-o", "ControlPersist=no",
     // The owner's LocalForward, ExitOnForwardFailure or RequestTTY can't break it; -O forward still works.
     "-o", "ClearAllForwardings=yes", "-o", "RequestTTY=no",
+    // ClearAllForwardings leaves these: a long-lived master needn't hand the node the owner's agent or display.
+    "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
     ...(spec.jump ? ["-J", spec.jump.join(",")] : []),
     ...(spec.port !== undefined ? ["-p", String(spec.port)] : []),
     "--", spec.host,

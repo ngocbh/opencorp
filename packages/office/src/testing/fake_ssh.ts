@@ -2,7 +2,8 @@
  *  plain session, a master, a mux client or an `-O` command.
  *
  *  Each host logs in by its mode (`FakeHost`); a session's command runs here under `/bin/sh -c`. From the `-F` file
- *  (and `-o`) it reads only `ControlMaster`, `ControlPath` (`%C` is `fakeControlName`) and `BatchMode`. A master
+ *  (and `-o`) it reads only `ControlMaster`, `ControlPath` (`%C` is `fakeControlName`) and `BatchMode`; `-G` accepts
+ *  every option, as a current ssh would. A master
  *  listens on its control socket and takes one JSON line per connection: `{"op":"check"|"exit"|"session"}` or
  *  `{"op":"forward","port":P,"target":T}`, answering `ok` or `error <why>`. */
 import { spawn, spawnSync } from "node:child_process"
@@ -354,6 +355,8 @@ class Run {
 
   async main(): Promise<number> {
     if (this.argv[0] === "--auto-master") return await this.autoMaster(this.argv[1]!, this.argv.slice(2))
+    // `ssh -G` only checks options, as a newer ssh does; it isn't a call worth logging.
+    if (this.argv.includes("-G")) return 0
     fs.appendFileSync(path.join(this.state, "log.jsonl"), JSON.stringify(this.argv) + "\n")
     const p = parse(this.argv)
     const { controlMaster, controlPath, batch } = options(p)

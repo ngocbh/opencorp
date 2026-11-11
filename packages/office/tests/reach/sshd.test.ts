@@ -1,7 +1,7 @@
 /** The SSH plumbing against a real, unprivileged sshd on a high port under a temp folder. Opt-in: set
  *  OPENCORP_TEST_SSHD. The client reads no `~/.ssh` (its config names its own key and known-hosts file, and no agent
  *  socket is passed); the sshd runs the account's login shell for each session, as any sshd does. */
-import { type ChildProcess, execFileSync, spawn } from "node:child_process"
+import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
@@ -17,6 +17,7 @@ import {
   exitAll,
   forward,
   isSocket,
+  knowsSessionOptions,
   LIMITS,
   type Master,
   mux,
@@ -175,6 +176,10 @@ describe.skipIf(!REAL)("a real sshd", () => {
 
   test("a real master logs in, runs mux sessions and a socket forward, and ends on -O exit", async () => {
     const ctx = await realCtx()
+    // This ssh takes the generated config, with or without the session options it may not know.
+    const parsed = spawnSync(SSH, ["-G", "-F", ctx.paths.config, "127.0.0.1"], { env: { PATH: "/usr/bin:/bin" }, stdio: "ignore", timeout: 10_000 })
+    expect(parsed.status).toBe(0)
+    expect(fs.readFileSync(ctx.paths.config, "utf8").includes("SessionType default")).toBe(knowsSessionOptions(SSH))
     const spec = { host: "127.0.0.1", opencorp: remoteOpencorp(ctx) }
     const node = master(ctx, spec)
     expect(await waitForSocket(node, 20_000)).toBe("up")
