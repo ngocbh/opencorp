@@ -14,6 +14,8 @@ import {
   BUSY,
   CAPPED,
   describe as describeFailure,
+  lastPath,
+  MAX_OLD_CHARS,
   LOST,
   NO_OFFICE_HERE,
   NO_PATH,
@@ -907,3 +909,12 @@ test.each(["\u00a0", "\u202f", "\u3000", "\u2028", "\u2800", "\u3164"])(
     expect(v.errors).toEqual(["opencorp hq: stopped; reach.sh isn't approved."])
   },
 )
+
+test("the old notes and script a relearn reads are cut without splitting an emoji", async () => {
+  const { dir } = fakeHome()
+  const paths = new ReachPaths(dir)
+  makeDirs(paths)
+  await writePrivate(paths.notes, `${"n".repeat(MAX_OLD_CHARS - 1)}\u{1F600}more`)
+  await writePrivate(paths.script, "exit 3\n")
+  expect(lastPath(paths)).toEqual({ notes: "n".repeat(MAX_OLD_CHARS - 1), script: "exit 3\n" })
+})

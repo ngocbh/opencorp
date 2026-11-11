@@ -208,6 +208,25 @@ export function quietStdin(stdin: Readable): void {
   stdin.pause()
 }
 
+const isHigh = (unit: number) => unit >= 0xd800 && unit <= 0xdbff
+const isLow = (unit: number) => unit >= 0xdc00 && unit <= 0xdfff
+
+/** The first `n` UTF-16 units of `text`, less the half of a surrogate pair the cut would leave at its end. */
+export function headChars(text: string, n: number): string {
+  const cut = text.slice(0, n)
+  return cut.length > 0 && isHigh(cut.charCodeAt(cut.length - 1)) ? cut.slice(0, -1) : cut
+}
+
+/** The last `n` UTF-16 units of `text`, less the half of a surrogate pair the cut would leave at its start. */
+export function tailChars(text: string, n: number): string {
+  const cut = n <= 0 ? "" : text.slice(-n)
+  return cut.length > 0 && isLow(cut.charCodeAt(0)) ? cut.slice(1) : cut
+}
+
+/** `text` with each lone surrogate as U+FFFD: text that goes to a model must be valid Unicode. */
+export const wellFormed = (text: string) =>
+  text.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, "\ufffd")
+
 /** `text` without control characters other than tab and newline: output from another machine must not drive the
  *  owner's terminal. */
 export const cleanOutput = (text: string) => text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "")
@@ -247,7 +266,7 @@ export function runChild(
     let stderr = ""
     let timedOut = false
     let done = false
-    const keep = (kept: string, more: string) => (kept + more).slice(-KEEP_CHARS)
+    const keep = (kept: string, more: string) => tailChars(kept + more, KEEP_CHARS)
     child.stdout!.setEncoding("utf8").on("data", (c: string) => {
       stdout = keep(stdout, c)
       if (o.echoStdout) o.echo?.(cleanOutput(c))
@@ -295,7 +314,7 @@ export function lastStderr(ran: Ran): string {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line !== "")
-  return (lines.at(-1) ?? "").slice(0, 300)
+  return headChars(lines.at(-1) ?? "", 300)
 }
 
 /** The processes below `pid` as `ps` lists them now, deepest first. */

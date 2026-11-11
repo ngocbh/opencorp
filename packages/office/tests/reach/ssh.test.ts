@@ -29,6 +29,7 @@ import {
   type ReachContext,
   KEEP_CHARS,
   killTree,
+  headChars,
   lastStderr,
   masterArgv,
   mux,
@@ -37,6 +38,8 @@ import {
   readStatuses,
   resetStatus,
   runChild,
+  tailChars,
+  wellFormed,
   sshEnv,
   startMaster,
   startWatcher,
@@ -295,6 +298,24 @@ test("echo gets stderr as it comes, and stdout only when asked", async () => {
   expect(lastStderr({ code: 1, stdout: "", stderr: "a\n\x1b[31mlast\x1b[0m line\n\n", timedOut: false })).toBe("[31mlast[0m line")
   expect(lastStderr({ code: 1, stdout: "", stderr: "", timedOut: false })).toBe("")
   expect(lastStderr({ code: 1, stdout: "", stderr: "x".repeat(400), timedOut: false })).toHaveLength(300)
+})
+
+const EMOJI = "\u{1F600}"
+
+test("cuts never split a surrogate pair, and lone surrogates become U+FFFD", () => {
+  expect(headChars(`ab${EMOJI}`, 3)).toBe("ab")
+  expect(headChars(`ab${EMOJI}`, 4)).toBe(`ab${EMOJI}`)
+  expect(tailChars(`${EMOJI}ab`, 3)).toBe("ab")
+  expect(tailChars(`${EMOJI}ab`, 4)).toBe(`${EMOJI}ab`)
+  expect(wellFormed(`a\ud83db\ude00c${EMOJI}`)).toBe(`a\ufffdb\ufffdc${EMOJI}`)
+  expect(lastStderr({ code: 1, stdout: "", stderr: `${"x".repeat(299)}${EMOJI}y\n`, timedOut: false })).toBe("x".repeat(299))
+})
+
+test("past 64 KiB, a kept stream starting inside an emoji drops its half", async () => {
+  // The emoji's two UTF-16 units straddle the cut: the stream is one unit longer than what's kept.
+  const script = `printf '\\360\\237\\230\\200'; head -c ${KEEP_CHARS - 1} /dev/zero | tr '\\0' x`
+  const ran = await runChild(["/bin/sh", "-c", script], RUN)
+  expect(ran.stdout).toBe("x".repeat(KEEP_CHARS - 1))
 })
 
 test("past 64 KiB it keeps the last 64 KiB, so the last line survives", async () => {

@@ -159,6 +159,11 @@ test("after the owner approves, stdin leaves raw mode and is paused before the c
   expect(seen[0]).toEqual({ paused: true, modes: [false] })
 })
 
+test("a lone surrogate in a command's output reaches the model as U+FFFD", () => {
+  const ran = { code: 0, stdout: "a\ud83db", stderr: "\ude00", timedOut: false }
+  expect(JSON.parse(shellResult(ran, []))).toEqual({ exit: 0, stdout: "a\ufffdb", stderr: "\ufffd" })
+})
+
 test("a result is one JSON object, so output can't pass for its fields", () => {
   const ran = { code: 0, stdout: "", stderr: "", timedOut: false }
   expect(shellResult(ran, [])).toBe('{"exit":0,"stdout":"","stderr":""}')

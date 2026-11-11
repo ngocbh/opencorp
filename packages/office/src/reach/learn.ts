@@ -25,7 +25,17 @@ import { runBytes } from "./replay.ts"
 import type { ReachPaths } from "./paths.ts"
 import { beforeSaving } from "./risks.ts"
 import { lineCount, numberedLines, oddCharacter } from "./show.ts"
-import { cleanOutput, quietStdin, type Ran, type ReachContext, readStatuses, resetStatus, runChild, sshEnv } from "./ssh.ts"
+import {
+  cleanOutput,
+  quietStdin,
+  type Ran,
+  type ReachContext,
+  readStatuses,
+  resetStatus,
+  runChild,
+  sshEnv,
+  wellFormed,
+} from "./ssh.ts"
 import { type Access, AccessError, readAccess, sha256, writeAccess } from "./state.ts"
 import learnYaml from "./flows/learn_hq.yaml" with { type: "file" }
 
@@ -129,8 +139,8 @@ export function shellResult(ran: Ran, statuses: readonly number[]): string {
     exit: ran.timedOut ? null : ran.code,
     ...(ran.timedOut ? { stopped: "it didn't finish within 5 minutes" } : {}),
     ...(statuses.includes(255) ? { ssh: "an ssh in it exited 255: it couldn't connect" } : {}),
-    stdout: cleanOutput(ran.stdout),
-    stderr: cleanOutput(ran.stderr),
+    stdout: wellFormed(cleanOutput(ran.stdout)),
+    stderr: wellFormed(cleanOutput(ran.stderr)),
   })
 }
 
@@ -237,13 +247,15 @@ async function chainTest(bytes: Buffer, state: Learning): Promise<Connection> {
   const { ctx, port } = state
   const reached = await runBytes(bytes, ctx)
   ctx.signal?.throwIfAborted()
-  if (reached.outcome !== "ok") throw new ReportedToolError(`Not saved: reach.sh failed the test (${reached.outcome}): ${reached.detail}`)
+  // The details quote output from other machines.
+  if (reached.outcome !== "ok")
+    throw new ReportedToolError(wellFormed(`Not saved: reach.sh failed the test (${reached.outcome}): ${reached.detail}`))
   try {
     return await connect(reached.spec!, port, ctx)
   } catch (error) {
     ctx.signal?.throwIfAborted()
     if (!(error instanceof ReachFailure)) throw error
-    throw new ReportedToolError(`Not saved: reach.sh ran, then ${describe(error, port).line.replace(/^opencorp hq: /, "")}`)
+    throw new ReportedToolError(wellFormed(`Not saved: reach.sh ran, then ${describe(error, port).line.replace(/^opencorp hq: /, "")}`))
   }
 }
 
@@ -316,7 +328,8 @@ export async function runLearn(
   state: Learning,
 ): Promise<Learned> {
   const flow = await loadFlow(embedded(learnYaml).toString("utf8"), { sourceLabel: "reach/flows/learn_hq.yaml" })
-  const { result, message } = await runSetup(flow, inputs, provider, {
+  const text = { notes: wellFormed(inputs.notes), script: wellFormed(inputs.script), failure: wellFormed(inputs.failure) }
+  const { result, message } = await runSetup(flow, text, provider, {
     tools: {
       shell: shellTool,
       save_access: saveAccessTool,

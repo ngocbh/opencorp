@@ -20,6 +20,7 @@ import {
   defaultIncludes,
   exitAll,
   findSsh,
+  headChars,
   isSocket,
   LEARNING_PERSIST_S,
   LIMITS,
@@ -244,10 +245,10 @@ export const MAX_OLD_CHARS = 64 * 1024
 
 /** The old notes.md and reach.sh as text for a relearning run, each "" when missing or not a plain file of this
  *  user. */
-function lastPath(paths: ReachPaths): { notes: string; script: string } {
+export function lastPath(paths: ReachPaths): { notes: string; script: string } {
   const text = (file: string) => {
     try {
-      return (readScript(file) ?? Buffer.alloc(0)).toString("utf8").slice(0, MAX_OLD_CHARS)
+      return headChars((readScript(file) ?? Buffer.alloc(0)).toString("utf8"), MAX_OLD_CHARS)
     } catch (error) {
       if (error instanceof ScriptError) return ""
       throw error
