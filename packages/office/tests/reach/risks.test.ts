@@ -15,11 +15,18 @@ test("the fixed risks are the design's, and the provider file is named", () => {
   expectRisks(BEFORE_LEARNING, [
     ["model", "each command it runs", "output and errors", "hostnames", "username", "paths", "job lists"],
     ["Approving a command runs it as you", "SSH keys", "only you check it"],
+    ["While learning runs", "anything running as you on this machine", "SSH connections without Duo"],
   ])
   const saving = beforeSaving(new ReachPaths("/h"))
   expectRisks(saving, [
     ["The script", "`opencorp hq --check` on HQ's machine", "now and on every visit"],
-    ["While `opencorp hq` runs", "anything running as you on this machine", "SSH connections without Duo", "60 s"],
+    [
+      "While `opencorp hq` runs",
+      "anything running as you on this machine",
+      "SSH connections without Duo",
+      "the login node's for 60 s more",
+      "10 minutes on a visit that learned its path",
+    ],
     [
       "reach the port reaches HQ",
       "sign in",

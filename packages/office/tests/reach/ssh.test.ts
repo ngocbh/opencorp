@@ -14,6 +14,8 @@ import {
   control,
   controlArgv,
   configText,
+  LEARNING_PERSIST_S,
+  PERSIST_S,
   defaultIncludes,
   descendants,
   endNode,
@@ -48,6 +50,12 @@ import { fakeControlName } from "../../src/testing/fake_ssh.ts"
 import { startTime } from "../../src/install/proc.ts"
 
 setDefaultTimeout(30_000)
+
+test("a learning run's config keeps a login master 10 minutes after its last use, a visit's 60 s", () => {
+  expect(configText("/h/hq/cm", { includes: [] })).toContain("\nControlPersist 60\n")
+  expect(configText("/h/hq/cm", { includes: [], persist: LEARNING_PERSIST_S })).toContain("\nControlPersist 600\n")
+  expect([PERSIST_S, LEARNING_PERSIST_S]).toEqual([60, 600])
+})
 
 test("the generated config puts our options before the includes, since ssh keeps the first value", () => {
   expect(configText("/h/hq/cm", { includes: ["/t/a b/cfg"] })).toBe(

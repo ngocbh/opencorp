@@ -12,7 +12,7 @@ import { LISTERS, type Listers, type ModelCheck, modelProblem } from "../install
 import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter } from "../install/prompts.ts"
 import { writePrivate } from "../secrets.ts"
 import { classifyCheck, type Connection, connect, describe, ReachFailure, sameHealth, signIn } from "./connect.ts"
-import { Learning, learnProvider, runLearn } from "./learn.ts"
+import { type Learned, Learning, learnProvider, runLearn } from "./learn.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
 import { readScript, runReach, ScriptError } from "./replay.ts"
 import {
@@ -21,6 +21,7 @@ import {
   exitAll,
   findSsh,
   isSocket,
+  LEARNING_PERSIST_S,
   LIMITS,
   mux,
   quietStdin,
@@ -304,7 +305,14 @@ async function learnPath(
   quietStdin(deps.stdin)
   const key = provider.llm_config?.api_key
   const state = new Learning(ctx, deps.prompter, deps.stdin, typeof key === "string" && key ? [key] : [], port, deps.now)
-  const learned = await runLearn(provider, inputs, state)
+  // Masters started while learning keep their ControlPersist; a reconnect's start from the visit's config again.
+  await writeSshFiles(ctx.paths, ctx.ssh, deps.sshIncludes, { persist: LEARNING_PERSIST_S })
+  let learned: Learned
+  try {
+    learned = await runLearn(provider, inputs, state)
+  } finally {
+    await writeSshFiles(ctx.paths, ctx.ssh, deps.sshIncludes)
+  }
   // Saved and connected, whatever the model did after.
   if (state.connection !== null) {
     const access = await readAccess(ctx.paths)

@@ -21,6 +21,12 @@ export const defaultIncludes = (home: string) => [
   "/etc/ssh/ssh_config",
 ]
 
+/** How long a login master stays after its last session (ControlPersist), in seconds, on a visit. */
+export const PERSIST_S = 60
+/** The same while learning: the owner and the model may take minutes between commands, and each new login would ask
+ *  for Duo again. */
+export const LEARNING_PERSIST_S = 600
+
 /** `hq/ssh/config` (`config.batch` with `batch`): our options first, since ssh keeps the first value it reads, so the
  *  owner's ControlPath can't win and our `-O exit` never ends their masters. With `sessionOptions` (an ssh that knows
  *  them, OpenSSH 8.7 on) it also pins the session options whose `none`, `yes` and `yes` would defeat the master's cat
@@ -28,7 +34,12 @@ export const defaultIncludes = (home: string) => [
  *  real `~/.ssh/config` by leaving it out. */
 export function configText(
   cm: string,
-  { batch = false, includes, sessionOptions = false }: { batch?: boolean; includes: readonly string[]; sessionOptions?: boolean },
+  {
+    batch = false,
+    includes,
+    sessionOptions = false,
+    persist = PERSIST_S,
+  }: { batch?: boolean; includes: readonly string[]; sessionOptions?: boolean; persist?: number },
 ): string {
   if (includes.some((file) => /["\n]/.test(file))) throw new Error("an included ssh config's path can't hold \" or a newline")
   return [
@@ -36,7 +47,7 @@ export function configText(
     ...(batch ? ["BatchMode yes"] : []),
     "ControlMaster auto",
     `ControlPath ${cm}/%C`,
-    "ControlPersist 60",
+    `ControlPersist ${persist}`,
     "ServerAliveInterval 15",
     "ServerAliveCountMax 3",
     // Not behind IgnoreUnknown for older ssh: the first IgnoreUnknown read wins, so ours would void the owner's.
@@ -98,11 +109,16 @@ export function wrapperText(realSsh: string): string {
   ].join("\n")
 }
 
-/** Writes both configs (0600) and the wrapper (0700) for this visit. */
-export async function writeSshFiles(paths: ReachPaths, realSsh: string, includes: readonly string[]): Promise<void> {
+/** Writes both configs (0600), with `persist` as their ControlPersist, and the wrapper (0700) for this visit. */
+export async function writeSshFiles(
+  paths: ReachPaths,
+  realSsh: string,
+  includes: readonly string[],
+  { persist = PERSIST_S }: { persist?: number } = {},
+): Promise<void> {
   const sessionOptions = knowsSessionOptions(realSsh)
-  await writePrivate(paths.config, configText(paths.cm, { includes, sessionOptions }))
-  await writePrivate(paths.batchConfig, configText(paths.cm, { batch: true, includes, sessionOptions }))
+  await writePrivate(paths.config, configText(paths.cm, { includes, sessionOptions, persist }))
+  await writePrivate(paths.batchConfig, configText(paths.cm, { batch: true, includes, sessionOptions, persist }))
   await writePrivate(paths.wrapper, wrapperText(realSsh))
   fs.chmodSync(paths.wrapper, 0o700)
 }

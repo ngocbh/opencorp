@@ -878,3 +878,13 @@ test("--relearn while another opencorp hq holds the connection says to end it fi
   expect(await v.done).toBe(0)
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
 })
+
+test("while learning, login masters stay 10 minutes after their last use; afterwards a visit's stay 60 s", async () => {
+  const { dir, fake, llm, paths } = await unlearnedHome()
+  llm.script(call("shell", { command: 'grep ControlPersist "$OPENCORP_SSH_CONFIG"', why: "look" }), { content: "Done." })
+  const v = visitDeps(dir, fake, { answers: ["1", "1"] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(JSON.stringify(llm.requests()[1])).toContain("ControlPersist 600")
+  expect(fs.readFileSync(paths.config, "utf8")).toContain("\nControlPersist 60\n")
+  expect(fs.readFileSync(paths.batchConfig, "utf8")).toContain("\nControlPersist 60\n")
+})
