@@ -239,7 +239,8 @@ function chatShapeProblems(ref: string, flow: ComposedFlow): string[] {
       + ` the turn's agent ${replyName} ${like}`)
     return problems
   }
-  // "__steer_inbox" is yian's STEER_INBOX_KEY, which yian doesn't export.
+  // "__steer_inbox" is yian's STEER_INBOX_KEY, which yian doesn't export. Only steer_inbox: sets it: yian refuses a
+  // flow's own input or variable named with a leading "__".
   const steer = loop.child.wiring.get(replyName)?.get("__steer_inbox")
   if (reply.steerInbox !== true || !readsInput(steer, MAIN_CHAT.inbox)) {
     problems.push(`${ref}'s ${MAIN_CHAT.reply} doesn't read the ${MAIN_CHAT.inbox} inbox as its steer inbox, so`
