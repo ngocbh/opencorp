@@ -154,7 +154,7 @@ test.skipIf(!TMUX)("after the owner approves a command, ssh in it reads the pass
   expect(await t.exit()).toBe("exit=1")
   expect(c.fake.tty()).toEqual(["hunter2"])
   const second = JSON.stringify(llm.requests()[1])
-  expect(second).toContain("exit 0")
+  expect(second).toContain('\\"exit\\":0')
   expect(c.fake.masters()).toEqual([])
   expect(pidsNaming(c.hq)).toEqual([])
 }, 120_000)

@@ -122,30 +122,29 @@ export async function runShell(args: { command: string; why: string }, state: Le
   return shellResult(ran, readStatuses(ctx))
 }
 
-/** `exit N` (or "stopped" once it ran out of time), "an ssh in it exited 255: it couldn't connect" when one did, then
- *  `stdout:` and `stderr:`, each "(none)" when empty. */
+/** The command's result as one JSON object, so nothing it prints can pass for the result's own fields: `exit` (null,
+ *  with `stopped`, once it ran out of time), `ssh` when an ssh in it exited 255, and its `stdout` and `stderr`. */
 export function shellResult(ran: Ran, statuses: readonly number[]): string {
-  const text = (stream: string) => cleanOutput(stream).replace(/\n$/, "") || "(none)"
-  return [
-    ran.timedOut ? "stopped: it didn't finish within 5 minutes" : `exit ${ran.code}`,
-    ...(statuses.includes(255) ? ["an ssh in it exited 255: it couldn't connect"] : []),
-    "stdout:",
-    text(ran.stdout),
-    "stderr:",
-    text(ran.stderr),
-  ].join("\n")
+  return JSON.stringify({
+    exit: ran.timedOut ? null : ran.code,
+    ...(ran.timedOut ? { stopped: "it didn't finish within 5 minutes" } : {}),
+    ...(statuses.includes(255) ? { ssh: "an ssh in it exited 255: it couldn't connect" } : {}),
+    stdout: cleanOutput(ran.stdout),
+    stderr: cleanOutput(ran.stderr),
+  })
 }
 
 /** `learn_hq`'s `shell` tool. */
 export const shellTool: FunctionTool = tool({
   name: "shell",
   description:
-    "Run one POSIX sh command on this machine once the owner approves it; returns its exit code, stdout and stderr. " +
+    "Run one POSIX sh command on this machine once the owner approves it; returns its exit code, stdout and stderr " +
+    "as one JSON object. " +
     "SSH prompts go to the owner's terminal. No stdin; stopped after 5 minutes.",
   parameters: {
     type: "object",
     properties: {
-      command: { type: "string", description: "The command, run with sh -c in OpenCorp's hq folder." },
+      command: { type: "string", description: "The command in printable ASCII, run with sh -c in OpenCorp's hq folder." },
       why: { type: "string", description: "One line for the owner: what the command finds out or does." },
     },
     required: ["command", "why"],
@@ -289,6 +288,18 @@ export const saveAccessTool: FunctionTool = tool({
   execute: (args, c) => saveAccess(args as unknown as ToSave, learning(c)),
 })
 
+/** Said before each of the agent's questions. */
+export const ANSWER_GOES_TO_MODEL =
+  "Your answer goes to the model. Type passwords, passphrases and codes only at ssh's own prompts, never here."
+
+/** `ask_user`: the agent's question, marked as its own, after a line on where the answer goes. */
+function askOwner(request: { question: string; options?: readonly string[] | null }, state: Learning): Promise<string> {
+  return withOwnerOrStop(state, (p) => {
+    p.say(ANSWER_GOES_TO_MODEL)
+    return askUser({ ...request, question: `The agent asks: ${request.question}` }, state.asking)
+  })
+}
+
 /** What a learning run ended with: the agent's last reply when it finished, why it failed (null when it didn't), and
  *  whether yian stopped it at the turn cap. */
 export interface Learned {
@@ -309,7 +320,7 @@ export async function runLearn(
     tools: {
       shell: shellTool,
       save_access: saveAccessTool,
-      ask: (request, c) => withOwnerOrStop(learning(c), () => askUser(request, learning(c).asking)),
+      ask: (request, c) => askOwner(request, learning(c)),
     },
     context: state,
     env: workerEnv(state.ctx.env),
