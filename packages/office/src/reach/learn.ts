@@ -2,16 +2,33 @@
  *  a command once the owner approves it, and `save_access`, which saves reach.sh and notes.md once the owner approves
  *  them and the whole chain works. */
 import type { Readable } from "node:stream"
-import { type FunctionTool, ReportedToolError, type ToolContext, tool } from "@ngocbh/yian"
-import { Asking, withOwner } from "../install/interview.ts"
-import { clean, KeyboardInterrupt, type Prompter } from "../install/prompts.ts"
+import { type FunctionTool, loadFlow, ReportedToolError, type ToolContext, tool } from "@ngocbh/yian"
+import { FileLockError } from "@ngocbh/yian/platform"
+import { loadProvider, type Provider, ProviderError } from "../chat/provider.ts"
+import { Asking, askUser, withOwner } from "../install/interview.ts"
+import {
+  askProviderTo,
+  checkProvider,
+  type Listers,
+  lexists,
+  type ModelCheck,
+  runSetup,
+  withDefaultModel,
+} from "../install/onboard.ts"
+import { clean, KeyboardInterrupt, OnboardError, type Prompter } from "../install/prompts.ts"
 import { redact, strip } from "../perm/redact.ts"
+import { embedded } from "../platform.ts"
 import { writePrivate } from "../secrets.ts"
+import { workerEnv } from "../worker/spawn.ts"
 import { type Connection, connect, describe, ReachFailure } from "./connect.ts"
 import { runBytes } from "./replay.ts"
+import type { ReachPaths } from "./paths.ts"
 import { beforeSaving } from "./risks.ts"
 import { cleanOutput, quietStdin, type Ran, type ReachContext, readStatuses, resetStatus, runChild, sshEnv } from "./ssh.ts"
 import { type Access, AccessError, readAccess, sha256, writeAccess } from "./state.ts"
+import learnYaml from "./flows/learn_hq.yaml" with { type: "file" }
+
+export { learnYaml }
 
 /** One learning run: the owner's terminal, the reach context, the model's key (never saved), the port, the clock, the
  *  commands asked for, and the connection `save_access` left open. */
@@ -258,3 +275,63 @@ export const saveAccessTool: FunctionTool = tool({
   },
   execute: (args, c) => saveAccess(args as unknown as ToSave, learning(c)),
 })
+
+/** What a learning run ended with: the agent's last reply when it finished, why it failed (null when it didn't), and
+ *  whether yian stopped it at the turn cap. */
+export interface Learned {
+  output: string | null
+  message: string | null
+  capped: boolean
+}
+
+/** Runs learn_hq with `provider`'s model and the host tools, in this process (no workers), with no run log.
+ *  Rejects with the owner's `KeyboardInterrupt` or `OnboardError` (their input ended), and with the visit's stop. */
+export async function runLearn(
+  provider: Provider,
+  inputs: { notes: string; script: string; failure: string },
+  state: Learning,
+): Promise<Learned> {
+  const flow = await loadFlow(embedded(learnYaml).toString("utf8"), { sourceLabel: "reach/flows/learn_hq.yaml" })
+  const { result, message } = await runSetup(flow, inputs, provider, {
+    tools: {
+      shell: shellTool,
+      save_access: saveAccessTool,
+      ask: (request, c) => withOwnerOrStop(learning(c), () => askUser(request, learning(c).asking)),
+    },
+    context: state,
+    env: workerEnv(state.ctx.env),
+    signal: state.ctx.signal,
+  })
+  if (state.asking.stopped) throw state.asking.stopped
+  return {
+    output: result?.status === "succeeded" ? (result.output as string) : null,
+    message,
+    capped: result?.failure?.code === "agent.max_tool_iterations",
+  }
+}
+
+/** The model for learning: `hq/provider.json`, else asked for with init's picker, checked, and saved there (delete
+ *  the file to forget the model). Throws `OnboardError` when the file can't be used, naming it. */
+export async function learnProvider(
+  paths: ReachPaths,
+  prompter: Prompter,
+  options: { listers: Listers; checkModel: ModelCheck },
+): Promise<Provider> {
+  const file = paths.provider
+  if (!lexists(file)) {
+    prompter.say(`Learning needs a model. Its connection is kept in ${file}, readable only by you.`)
+    return askProviderTo(file, prompter, options)
+  }
+  const again = "fix it, or delete it to set up the model again"
+  try {
+    return withDefaultModel(await loadProvider(file, checkProvider, { missingOk: false }))
+  } catch (error) {
+    // A ProviderError's message names the file; checkProvider's doesn't.
+    if (error instanceof ProviderError) throw new OnboardError(`${error.message}; ${again}`)
+    if (error instanceof OnboardError) throw new OnboardError(`${file}: ${error.message}; ${again}`)
+    if (error instanceof FileLockError) throw new OnboardError(`can't read ${file}: ${error.message}`)
+    const code = (error as NodeJS.ErrnoException | null)?.code
+    if (typeof code === "string") throw new OnboardError(`can't read ${file}: ${code}`)
+    throw error
+  }
+}

@@ -8,6 +8,7 @@ import { loadFlow } from "@ngocbh/yian"
 import { readFlow } from "../../src/company/flow_yaml.ts"
 import { loadConfined } from "../../src/company/flows.ts"
 import { embedded } from "../../src/platform.ts"
+import { learnYaml } from "../../src/reach/learn.ts"
 import { reachYaml } from "../../src/reach/replay.ts"
 
 setDefaultTimeout(30_000)
@@ -43,7 +44,10 @@ test("learn_hq's agent sees only the old notes, script and failure, with shell, 
   expect(placeholders).toEqual(["notes", "script", "failure"])
 })
 
-test("reach_hq loads from its embedded bytes", async () => {
-  const flow = await loadFlow(embedded(reachYaml).toString("utf8"), { sourceLabel: "reach/flows/reach_hq.yaml" })
-  expect(flow.name).toBe("reach_hq")
+test.each([
+  ["reach_hq", reachYaml],
+  ["learn_hq", learnYaml],
+])("%s loads from its embedded bytes", async (name, file) => {
+  const flow = await loadFlow(embedded(file).toString("utf8"), { sourceLabel: `reach/flows/${name}.yaml` })
+  expect(flow.name).toBe(name)
 })

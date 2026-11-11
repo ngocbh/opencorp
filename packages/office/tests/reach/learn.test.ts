@@ -9,8 +9,10 @@ import {
   CANCEL,
   DONT_RUN,
   Learning,
+  learnProvider,
   RUN,
   RUN_QUESTION,
+  runLearn,
   runShell,
   SAVE,
   SAVE_QUESTION,
@@ -28,7 +30,11 @@ import { type Access, readAccess, sha256, writeAccess } from "../../src/reach/st
 import { writePrivate } from "../../src/secrets.ts"
 import { fakeControlName } from "../../src/testing/fake_ssh.ts"
 import type { FakeSsh, FakeSshBehavior } from "../../src/testing/fake_ssh.ts"
-import { Script } from "../install/helpers.ts"
+import { Provider } from "../../src/chat/provider.ts"
+import { OnboardError } from "../../src/install/prompts.ts"
+import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
+import { fakeLlm } from "../chat/helpers.ts"
+import { NO_LISTING, Script } from "../install/helpers.ts"
 import { fakeHome, fakeRemote, freePort, reachCtx } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -352,4 +358,99 @@ test("relearning keeps signed_in_at when the port is the same", async () => {
   expect(await readAccess(c.ctx.paths)).toMatchObject({ port: c.port, last_used_at: "2026-11-02T10:00:00.000Z", signed_in_at: null })
   await exitAll(c.ctx)
   expect(c.fake.masters()).toEqual([])
+})
+
+/** The fake model, and a provider for it. */
+async function model() {
+  const llm = await fakeLlm()
+  return { llm, provider: Provider.parse({ llm_config: LLM_CONFIG, env: llm.env() }) }
+}
+
+const NO_INPUTS = { notes: "", script: "", failure: "" }
+const call = (name: string, args: unknown): ScriptedReply => ({ tool_calls: [{ name, arguments: args }] })
+
+test("a learning run asks, runs approved commands and saves through save_access", async () => {
+  const { llm, provider } = await model()
+  const c = await chain(["login1.example.edu", "1", "1"])
+  const script = scriptFor(c.spec)
+  llm.script(
+    call("ask_user", { question: "Which login node do you use?" }),
+    call("shell", { command: "ssh login1 hostname", why: "check that login1 answers" }),
+    call("save_access", { script, notes: NOTES, risks: ["Duo on the node too: two prompts."] }),
+    { content: "HQ is reachable." },
+  )
+  const got = await runLearn(provider, NO_INPUTS, c.state)
+  expect(got).toEqual({ output: "HQ is reachable.", message: null, capped: false })
+  expect(c.prompter.seen[0]).toBe("Which login node do you use?")
+  expect(fs.readFileSync(c.ctx.paths.script, "utf8")).toBe(script)
+  expect(fs.readFileSync(c.ctx.paths.notes, "utf8")).toBe(NOTES)
+  expect(c.state.connection).not.toBeNull()
+  expect(c.state.commands).toEqual([{ command: "ssh login1 hostname", code: 0 }])
+  const requests = llm.requests()
+  expect(requests).toHaveLength(4)
+  expect(JSON.stringify(requests[1])).toContain("login1.example.edu")
+  expect(JSON.stringify(requests[2])).toContain("exit 0\\nstdout:")
+  expect(JSON.stringify(requests[3])).toContain(`${SAVED} Reply with one line for the owner.`)
+  await exitAll(c.ctx)
+  expect(c.fake.masters()).toEqual([])
+})
+
+test("at the turn cap it lists the commands asked for and saves nothing", async () => {
+  const { llm, provider } = await model()
+  const c = await chain(Array(31).fill("1"))
+  llm.script(...Array.from({ length: 31 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" })))
+  const got = await runLearn(provider, NO_INPUTS, c.state)
+  expect(got.capped).toBe(true)
+  expect(got.output).toBeNull()
+  expect(c.state.commands.length).toBeGreaterThanOrEqual(1)
+  expect(c.state.commands.length).toBeLessThanOrEqual(30)
+  expect(c.state.commands[0]).toEqual({ command: "echo 0", code: 0 })
+  expect(fs.existsSync(c.ctx.paths.script)).toBe(false)
+  expect(c.state.connection).toBeNull()
+}, 60_000)
+
+/** A prompter whose input has ended. */
+class Closed extends Script {
+  static readonly error = new OnboardError("no answer to 'Which node?' (stdin closed)")
+  override async ask(question: string): Promise<string> {
+    this.seen.push(question)
+    throw Closed.error
+  }
+  override async choose(question: string): Promise<string> {
+    this.seen.push(question)
+    throw Closed.error
+  }
+}
+
+test("the owner's input ending stops the run with that error", async () => {
+  const { llm, provider } = await model()
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const state = new Learning(ctx, new Closed(), new PassThrough(), [], 49381)
+  llm.script(call("ask_user", { question: "Which node?" }))
+  expect(await rejection(runLearn(provider, NO_INPUTS, state))).toBe(Closed.error)
+  const shell = new Learning(ctx, new Closed(), new PassThrough(), [], 49381)
+  llm.script(call("shell", { command: "true", why: "x" }))
+  expect(await rejection(runLearn(provider, NO_INPUTS, shell))).toBe(Closed.error)
+  expect(llm.pending()).toEqual([])
+})
+
+test("learnProvider asks with the picker the first time and reuses the file after", async () => {
+  const { dir, fake } = fakeHome()
+  const { paths } = await reachCtx(dir, fake)
+  const ask = new Script(["", KEY, "claude-opus-4-1"])
+  const checked: unknown[] = []
+  const options = { listers: NO_LISTING, checkModel: async (p: Provider) => void checked.push(p.llm_config) ?? null }
+  const first = await learnProvider(paths, ask, options)
+  expect(ask.seen[0]).toBe(`Learning needs a model. Its connection is kept in ${paths.provider}, readable only by you.`)
+  expect(first.llm_config).toEqual({ provider: "anthropic", api_key: KEY, model: "claude-opus-4-1" })
+  expect(fs.statSync(paths.provider).mode & 0o777).toBe(0o600)
+  const again = new Script([])
+  expect((await learnProvider(paths, again, options)).llm_config).toEqual(first.llm_config)
+  expect(again.seen).toEqual([])
+  expect(checked).toHaveLength(1)
+  fs.writeFileSync(paths.provider, "{nope", { mode: 0o600 })
+  const error = await rejection(learnProvider(paths, new Script([]), options))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toBe(`${paths.provider}: not valid JSON; fix it, or delete it to set up the model again`)
 })
