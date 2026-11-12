@@ -99,7 +99,9 @@ beforeAll(() => {
   source = path.join(root, "source")
   fs.mkdirSync(source)
   git(source, "init", "-q", "-b", "main")
-  const pkg = { name: "opencorp-workspace", private: true, packageManager: "bun@1.4.2", scripts: { build: "true" } }
+  // The build runs `bun` by name, as the real root script does.
+  const build = "bun run --filter '@opencorp/app' build"
+  const pkg = { name: "opencorp-workspace", private: true, packageManager: "bun@1.4.2", scripts: { build } }
   fs.writeFileSync(path.join(source, "package.json"), JSON.stringify(pkg, null, 2) + "\n")
   // What this repo ignores.
   fs.writeFileSync(path.join(source, ".gitignore"), fs.readFileSync(path.join(CHECKOUT, ".gitignore"), "utf8"))
@@ -116,7 +118,8 @@ beforeAll(() => {
   git(source, "checkout", "-q", "main")
 
   // The stub bun logs its calls (and whether stdin is a terminal), answers `--version` for itself and for
-  // `opencorp --version`, and stands in for `opencorp offboard` by removing the office's state.
+  // `opencorp --version`, runs package.json's build script for `run build` as Bun does, and stands in for
+  // `opencorp offboard` by removing the office's state.
   bunDir = path.join(root, "bun-bin")
   writeScript(
     path.join(bunDir, "bun"),
@@ -125,6 +128,7 @@ if [ -t 0 ]; then tty=tty; else tty=no-tty; fi
 printf '%s %s | %s | %s\\n' "$0" "$*" "$PWD" "$tty" >>"$STUB_LOG/calls"
 case $* in
   --version) echo "\${STUB_BUN_VERSION:-1.4.2}" ;;
+  "run build") sh -c "$(sed -n 's/^ *"build": *"\\(.*\\)"$/\\1/p' package.json)" ;;
   *" --version") echo 0.0.1 ;;
   *" --help") [ -z "\${STUB_HELP_FAILS:-}" ] || exit 3 ;;
   *" stop") [ -z "\${STUB_STOP_FAILS:-}" ] || exit 1 ;;
@@ -559,6 +563,43 @@ describe("install.sh", () => {
     // Run again, Bun's own install folder holds a Bun, so its installer isn't fetched again.
     expect((await run(h, "install.sh", { from: co, extra: noBun })).code).toBe(0)
     expect(calls(h).filter((c) => c.startsWith("curl"))).toHaveLength(1)
+  })
+
+  test.skipIf(!!SYSTEM_BUN)("the build's bun by name is a Bun only in ~/.bun/bin, which isn't on PATH", async () => {
+    const h = makeHome()
+    const co = checkout(h)
+    const bun = path.join(h.home, ".bun/bin/bun")
+    writeScript(bun, fs.readFileSync(path.join(bunDir, "bun"), "utf8"))
+    const r = await run(h, "install.sh", { from: co, extra: { PATH: `${stubs}:${SYSTEM}` } })
+    expect(r.err).not.toContain("✗")
+    expect(r.code).toBe(0)
+    expect(calls(h).filter((c) => c.startsWith("curl"))).toEqual([])
+    expect(calls(h)).toContain(`${bun} run --filter @opencorp/app build | ${co} | no-tty`)
+  })
+
+  test.skipIf(!!SYSTEM_BUN)("the build's bun by name is the Bun its installer just put in ~/.bun/bin, which isn't on PATH", async () => {
+    const h = makeHome()
+    const co = checkout(h)
+    const r = await run(h, "install.sh", { from: co, extra: { PATH: `${stubs}:${SYSTEM}` } })
+    expect(r.err).not.toContain("✗")
+    expect(r.code).toBe(0)
+    expect(calls(h)).toContain("bun-installer bun-v1.4.2")
+    expect(calls(h)).toContain(`${path.join(h.home, ".bun/bin/bun")} run --filter @opencorp/app build | ${co} | no-tty`)
+  })
+
+  test("the build's bun by name is the Bun it chose, ahead of another on PATH, and that Bun in the bin folder still gets the bin folder on PATH in the rc files", async () => {
+    const h = makeHome()
+    const co = checkout(h)
+    const chosen = path.join(h.bin, "bun")
+    writeScript(chosen, fs.readFileSync(path.join(bunDir, "bun"), "utf8"))
+    const r = await run(h, "install.sh", { from: co, extra: { OPENCORP_BUN: chosen } })
+    expect(r.err).not.toContain("✗")
+    expect(r.code).toBe(0)
+    expect(calls(h).filter((c) => c.includes(" run --filter "))).toEqual([
+      `${chosen} run --filter @opencorp/app build | ${co} | no-tty`,
+    ])
+    expect(pathLines(path.join(h.home, ".bashrc"))).toBe(1)
+    expect(r.out).toContain(`→ To use opencorp in this shell, run: . ${h.home}/.bashrc`)
   })
 
   test("runs as a checkout's own install.sh only when $0 names it, whatever the current folder holds", async () => {
@@ -1417,10 +1458,13 @@ describe("both scripts", () => {
       fs.cpSync(process.env.BUN_INSTALL_CACHE_DIR ?? path.join(os.homedir(), ".bun", "install", "cache"), cache, {
         recursive: true,
       })
+      // The real Bun is only in the home's ~/.bun/bin, which isn't on PATH, as when Bun's installer just put it there.
+      fs.mkdirSync(path.join(h.home, ".bun/bin"), { recursive: true })
+      fs.symlinkSync(process.execPath, path.join(h.home, ".bun/bin/bun"))
       // Anything that tries the network gets a proxy that refuses at once.
       const refused = "http://127.0.0.1:9"
       const extra = {
-        PATH: `${path.dirname(process.execPath)}:${stubs}:${SYSTEM}`,
+        PATH: `${stubs}:${SYSTEM}`,
         BUN_INSTALL_CACHE_DIR: cache,
         HTTP_PROXY: refused,
         HTTPS_PROXY: refused,

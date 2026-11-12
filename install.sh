@@ -438,6 +438,13 @@ main() {
   BUN=$(cd "$(dirname "$BUN")" && pwd -P)/$(basename "$BUN")
   need_path "Bun's path" "$BUN"
   ok "Bun $BUN_VERSION at $BUN"
+  # The PATH install.sh was given, which the checks below of whether the user's shell has BIN_DIR on PATH look at.
+  USER_PATH=$PATH
+  # What runs from here (the build's scripts, opencorp init) calls `bun` by name, and Bun's installer puts its folder
+  # on PATH only for new shells. So the chosen Bun's folder goes first, and a `bun` by name is that Bun, never one in
+  # a project folder further on.
+  PATH=$(dirname "$BUN"):$PATH
+  export PATH
 
   step "Installing dependencies (bun install)"
   (cd "$ROOT" && quietly "$BUN" install --frozen-lockfile) || die "bun install failed in $ROOT. Run it there to see why."
@@ -472,7 +479,7 @@ EOF
 
   # Put BIN_DIR on PATH for new login shells, unless it already is.
   RELOAD=
-  case ":$PATH:" in
+  case ":$USER_PATH:" in
     *":$BIN_DIR:"* | *":$BIN_DIR/:"*) ;;
     *)
       if [ "$MODIFY_PATH" = 1 ]; then
@@ -528,7 +535,7 @@ EOF
     step "Next: in a project folder, run opencorp init."
   fi
 
-  case ":$PATH:" in
+  case ":$USER_PATH:" in
     *":$BIN_DIR:"* | *":$BIN_DIR/:"*) ;;
     *)
       if [ -n "$RELOAD" ]; then
