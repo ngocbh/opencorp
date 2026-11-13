@@ -6,17 +6,22 @@ import os from "node:os"
 import path from "node:path"
 import type { Readable } from "node:stream"
 import { type FunctionTool, loadFlow, ReportedToolError, type ToolContext, tool } from "@ngocbh/yian"
+import { AuthError, AuthStore } from "@ngocbh/yian/llm_clients"
 import { FileLockError } from "@ngocbh/yian/platform"
+import { ConnectionFile } from "../chat/connections.ts"
 import { loadProvider, type Provider, ProviderError } from "../chat/provider.ts"
 import { Asking, askUser, withOwner } from "../install/interview.ts"
 import {
   askProviderTo,
   checkProvider,
+  isSubscription,
   type Listers,
   lexists,
   type ModelCheck,
   runSetup,
+  type SubscriptionAuth,
   withDefaultModel,
+  withSignIn,
 } from "../install/onboard.ts"
 import { clean, KeyboardInterrupt, OnboardError, type Prompter } from "../install/prompts.ts"
 import { REDACTED, redact, strip } from "../perm/redact.ts"
@@ -50,8 +55,8 @@ const CAPPED_CALL = "tool_limit"
 /** A one-time sign-in code as a link or `opencorp hq --json` shows it. */
 const SIGN_IN_CODE = /pair#[A-Za-z0-9_-]{22}(?![A-Za-z0-9_-])/g
 
-/** One learning run: the owner's terminal, the reach context, the model's key (never saved), the port, the clock, the
- *  commands asked for, the connection `save_access` left open, and the folder commands run in. */
+/** One learning run: the owner's terminal, the reach context, the model's key or sign-in tokens (never saved), the
+ *  port, the clock, the commands asked for, the connection `save_access` left open, and the folder commands run in. */
 export class Learning {
   readonly asking: Asking
   /** Each command the model asked to run, with its exit code, or null when it didn't run. */
@@ -83,7 +88,7 @@ export class Learning {
     this.#workDir = null
   }
 
-  /** `text` without any form of the model's key, or a one-time sign-in code. */
+  /** `text` without any form of the model's key or sign-in tokens, or a one-time sign-in code. */
   scrub(text: string): string {
     const keys = this.secrets.filter((key) => key !== "")
     return (keys.length > 0 ? redact(text, [], keys) : text).replace(SIGN_IN_CODE, `pair#${REDACTED}`)
@@ -227,10 +232,12 @@ export const shellTool: FunctionTool = tool({
   execute: (args, c) => runShell(args as { command: string; why: string }, learning(c)),
 })
 
-/** Why `text` can't be saved, or null: it holds the model's key (any form `perm/redact.ts`'s three-argument `redact`
- *  finds), a private key, or a password handed to ssh. */
+/** Why `text` can't be saved, or null: it holds the model's key or a sign-in token (any form `perm/redact.ts`'s
+ *  three-argument `redact` finds), a private key, or a password handed to ssh. */
 export function secretIn(text: string, keys: readonly string[]): string | null {
-  if (keys.some((key) => key !== "" && redact(text, [], [key]) !== text)) return "it holds the model's API key"
+  if (keys.some((key) => key !== "" && redact(text, [], [key]) !== text)) {
+    return "it holds the model's API key or sign-in token"
+  }
   if (/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(text)) return "it holds a private key"
   if (/\bsshpass\b|\bSSHPASS=/.test(text)) return "it hands a password to ssh"
   return null
@@ -435,21 +442,61 @@ export async function runLearn(
   }
 }
 
-/** The model for learning: `hq/provider.json`, else asked for with init's picker, checked, and saved there (delete
- *  the file to forget the model). Throws `OnboardError` when the file can't be used, naming it. */
+/**
+ * The model for learning, as its runs get it: `hq/provider.json`, else asked for with init's picker, checked, and
+ * saved there. A ChatGPT subscription keeps its sign-in in `hq/auth.json`, and the runs get `YIAN_AUTH_FILE` naming
+ * it; one whose sign-in is missing or can't be read is asked for again. Delete both files to forget the model.
+ * `auth` and `signal` are the picker's for a device sign-in. Throws `OnboardError` when the file can't be used,
+ * naming it.
+ */
 export async function learnProvider(
   paths: ReachPaths,
   prompter: Prompter,
-  options: { listers: Listers; checkModel: ModelCheck },
+  options: { listers: Listers; checkModel: ModelCheck; auth?: SubscriptionAuth; signal?: AbortSignal },
 ): Promise<Provider> {
   const file = paths.provider
+  const { listers, checkModel, auth, signal } = options
+  const ask = async () =>
+    withSignIn(
+      await askProviderTo(file, prompter, { listers, checkModel, signIn: { file: paths.auth, auth, signal } }),
+      paths.auth,
+    )
   if (!lexists(file)) {
     prompter.say(`Learning needs a model. Its connection is kept in ${file}, readable only by you.`)
-    return askProviderTo(file, prompter, options)
+    return ask()
   }
+  const provider = await savedProvider(file)
+  if (!isSubscription(provider)) return provider
+  const problem = signInProblem(paths.auth)
+  if (problem === null) return withSignIn(provider, paths.auth)
+  const why = `${file} signs in to a ChatGPT subscription, but ${problem}`
+  if (!prompter.interactive) throw new OnboardError(`${why}; delete both and run \`opencorp hq\` again`)
+  prompter.say(`${why}; set up the model again.`)
+  return ask()
+}
+
+/** Why the ChatGPT sign-in in yian's store at `file` can't be used, or null when it holds one. Reads without the lock
+ *  and makes nothing. */
+function signInProblem(file: string): string | null {
+  if (!lexists(file)) return `its sign-in ${file} is missing`
+  let method: string | undefined
+  try {
+    method = new AuthStore(file).selection("openai")?.method
+  } catch (error) {
+    // yian's store says which file and how to fix it, never a value.
+    if (error instanceof AuthError) return `its sign-in can't be read: ${error.message.replace(/\.$/, "")}`
+    throw error
+  }
+  return method === "subscription" ? null : `its sign-in ${file} holds no ChatGPT sign-in`
+}
+
+/** `hq/provider.json` at `file`, checked. Throws `OnboardError` when it can't be used, naming it. */
+async function savedProvider(file: string): Promise<Provider> {
   const again = "fix it, or delete it to set up the model again"
   try {
-    return withDefaultModel(await loadProvider(file, checkProvider, { missingOk: false }))
+    return withDefaultModel(
+      await loadProvider(file, (data) => checkProvider(data, ConnectionFile.parse), { missingOk: false }),
+    )
   } catch (error) {
     // A ProviderError's message names the file; checkProvider's doesn't.
     if (error instanceof ProviderError) throw new OnboardError(`${error.message}; ${again}`)

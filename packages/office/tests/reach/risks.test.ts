@@ -38,9 +38,9 @@ test("the fixed risks are the design's, and the provider file is named", () => {
     ],
     ["new node", "host key", "the way your cluster documents"],
     ["cluster's layout", "backups copy them"],
-    ["/h/hq/provider.json holds a key or a token"],
+    ["/h/hq/provider.json", "/h/hq/auth.json", "the model's key or its ChatGPT sign-in"],
   ])
-  expect(saving.at(-1)).toBe("/h/hq/provider.json holds a key or a token.")
+  expect(saving.at(-1)).toBe("/h/hq/provider.json or /h/hq/auth.json holds the model's key or its ChatGPT sign-in.")
   expect(LEARN).toBe("Learn it")
   expect(LEARN_QUESTION).toContain("uses the model")
   expect(RELEARN_QUESTION).toContain("uses the model")

@@ -43,7 +43,9 @@ import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../src/t
 import { control, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { BEFORE_LEARNING, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../src/reach/risks.ts"
+import { signInLine } from "../../src/install/onboard.ts"
 import { fakeLlm } from "../chat/helpers.ts"
+import { DEVICE_CODE, DEVICE_URL, fakeSubscription } from "../install/helpers.ts"
 import { ps, waitFor } from "../helpers.ts"
 import { fakeHome, fakeRemote, freePort, reachCtx, visitDeps } from "./helpers.ts"
 
@@ -274,6 +276,17 @@ test("the first visit signs in through a redirect file and records signed_in_at"
   expect(access?.last_used_at).not.toBeNull()
   // What a relearn compares to keep the browser's sign-in.
   expect(access).toMatchObject({ host: "node1", socket: remote.socket })
+  v.sigint()
+  expect(await v.done).toBe(0)
+})
+
+test("a replay reads neither hq/provider.json nor hq/auth.json", async () => {
+  const { dir, fake, paths } = await approvedHome({}, { signed_in_at: new Date().toISOString() })
+  // Unreadable, so any read would fail.
+  fs.writeFileSync(paths.provider, '{"method": "subscription", "llm_config": {"provider": "openai"}}', { mode: 0o000 })
+  fs.writeFileSync(paths.auth, "{nope", { mode: 0o000 })
+  const v = await connected(dir, fake, { signIn: false, open: false })
+  expect(v.prompter.seen).toEqual([])
   v.sigint()
   expect(await v.done).toBe(0)
 })
@@ -969,6 +982,20 @@ test("Ctrl-C during the first run's model check stops the check and exits 130", 
   v.sigint()
   expect(await done).toBe(130)
   expect(stopped).toBe(true)
+  expect(fs.existsSync(paths.provider)).toBe(false)
+})
+
+test("Ctrl-C while the first run's ChatGPT sign-in waits exits 130 and saves nothing", async () => {
+  const { dir, fake, paths } = await unlearnedHome({ provider: false })
+  const subscription = fakeSubscription({ approved: new Promise(() => {}) })
+  // Learn it, openai, the subscription.
+  const v = visitDeps(dir, fake, { answers: ["1", "openai", ""], auth: subscription.auth })
+  const done = visit({ signIn: false, open: false }, v.deps)
+  await waitFor(() => v.prompter.seen.includes(signInLine(DEVICE_URL, DEVICE_CODE)), { what: "the code" })
+  v.sigint()
+  expect(await done).toBe(130)
+  expect(subscription.signals.map((signal) => signal.aborted)).toEqual([true])
+  expect(fs.existsSync(paths.auth)).toBe(false)
   expect(fs.existsSync(paths.provider)).toBe(false)
 })
 

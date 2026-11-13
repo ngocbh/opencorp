@@ -18,7 +18,7 @@ export const beforeSaving = (paths: ReachPaths): string[] => [
   "Anything on this machine that can reach the port reaches HQ, though HQ still asks it to sign in (its cookie is SameSite=Strict, and the Host header is checked). So don't run `opencorp hq` on a machine others share, such as a cluster login node: they share 127.0.0.1.",
   "Each new node HQ runs on asks you to accept its host key; check it the way your cluster documents.",
   "The saved files record the cluster's layout, and backups copy them.",
-  `${paths.provider} holds a key or a token.`,
+  `${paths.provider} or ${paths.auth} holds the model's key or its ChatGPT sign-in.`,
 ]
 
 /** The answer that starts a learning run. */

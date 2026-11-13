@@ -34,9 +34,12 @@ import { fakeControlName } from "../../src/testing/fake_ssh.ts"
 import type { FakeSsh, FakeSshBehavior } from "../../src/testing/fake_ssh.ts"
 import { Provider } from "../../src/chat/provider.ts"
 import { OnboardError } from "../../src/install/prompts.ts"
+import { ReachPaths } from "../../src/reach/paths.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
-import { NO_LISTING, Script } from "../install/helpers.ts"
+import { AuthStore } from "@ngocbh/yian/llm_clients"
+import { HOW_SIGN_IN, providerSecrets } from "../../src/install/onboard.ts"
+import { ACCESS_TOKEN, ACCOUNT, fakeSubscription, NO_LISTING, REFRESH_TOKEN, Script } from "../install/helpers.ts"
 import { fakeHome, fakeRemote, freePort, reachCtx } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -512,6 +515,112 @@ test("learnProvider asks with the picker the first time and reuses the file afte
   const error = await rejection(learnProvider(paths, new Script([]), options))
   expect(error).toBeInstanceOf(OnboardError)
   expect(error.message).toBe(`${paths.provider}: not valid JSON; fix it, or delete it to set up the model again`)
+})
+
+/** learnProvider's options with the fake subscription; `checked` gets each provider the model check is given. */
+function subscribed() {
+  const checked: Provider[] = []
+  const options = {
+    listers: NO_LISTING,
+    auth: fakeSubscription().auth,
+    checkModel: async (p: Provider) => {
+      checked.push(p)
+      return null
+    },
+  }
+  return { checked, options }
+}
+
+const SUBSCRIBED_LLM = { provider: "openai", model: "gpt-5.5-codex" }
+
+test("learnProvider can sign in to a ChatGPT subscription, keeps it in hq/auth.json, and gives runs YIAN_AUTH_FILE", async () => {
+  const { dir, fake } = fakeHome()
+  const { paths } = await reachCtx(dir, fake)
+  const { checked, options } = subscribed()
+  // openai, the subscription, its first model.
+  const ask = new Script(["openai", "", ""])
+  const first = await learnProvider(paths, ask, options)
+  expect(ask.seen.slice(0, 3)).toEqual([
+    `Learning needs a model. Its connection is kept in ${paths.provider}, readable only by you.`,
+    "Model provider",
+    HOW_SIGN_IN,
+  ])
+  // Only the variable is added: the rest of the run's env is the worker's, as for a key.
+  expect(first.env).toEqual({ YIAN_AUTH_FILE: paths.auth })
+  expect(first.llm_config).toEqual(SUBSCRIBED_LLM)
+  expect(checked.map((p) => [p.llm_config, p.env])).toEqual([[SUBSCRIBED_LLM, { YIAN_AUTH_FILE: paths.auth }]])
+  expect(JSON.parse(fs.readFileSync(paths.provider, "utf8"))).toEqual({ method: "subscription", llm_config: SUBSCRIBED_LLM })
+  expect(fs.statSync(paths.auth).mode & 0o777).toBe(0o600)
+  // What the learning run scrubs from what reaches the model and the terminal, and refuses to save.
+  expect(providerSecrets(first)).toEqual([ACCESS_TOKEN, REFRESH_TOKEN, ACCOUNT])
+  const again = new Script([])
+  const second = await learnProvider(paths, again, options)
+  expect(again.seen).toEqual([])
+  expect([second.llm_config, second.env]).toEqual([SUBSCRIBED_LLM, { YIAN_AUTH_FILE: paths.auth }])
+  expect(checked).toHaveLength(1)
+})
+
+test("a subscription's provider.json whose sign-in is missing or can't be read says so and asks again", async () => {
+  const cases: [string, (paths: ReachPaths) => void, (paths: ReachPaths) => string][] = [
+    ["missing", () => {}, (paths) => `its sign-in ${paths.auth} is missing`],
+    [
+      "open to others",
+      (paths) => fs.writeFileSync(paths.auth, "{}", { mode: 0o644 }),
+      (paths) => `its sign-in can't be read: Credential storage at ${paths.auth} must be private to its owner`,
+    ],
+    [
+      "not a sign-in",
+      (paths) => fs.writeFileSync(paths.auth, "{nope", { mode: 0o600 }),
+      (paths) => `its sign-in can't be read: Credential storage at ${paths.auth}`,
+    ],
+  ]
+  for (const [, damage, problem] of cases) {
+    const { dir, fake } = fakeHome()
+    const { paths } = await reachCtx(dir, fake)
+    await writePrivate(paths.provider, JSON.stringify({ method: "subscription", llm_config: SUBSCRIBED_LLM }))
+    damage(paths)
+    const { checked, options } = subscribed()
+    const ask = new Script(["openai", "", ""])
+    const got = await learnProvider(paths, ask, options)
+    expect(ask.seen[0]).toStartWith(`${paths.provider} signs in to a ChatGPT subscription, but ${problem(paths)}`)
+    expect(ask.seen[0]).toEndWith("; set up the model again.")
+    expect(ask.seen[1]).toBe("Model provider")
+    expect(checked).toHaveLength(1)
+    expect([got.llm_config, got.env]).toEqual([SUBSCRIBED_LLM, { YIAN_AUTH_FILE: paths.auth }])
+    expect(new AuthStore(paths.auth).selection("openai")).toMatchObject({ method: "subscription" })
+  }
+  // With no one to ask, it says how to start over.
+  const { dir, fake } = fakeHome()
+  const { paths } = await reachCtx(dir, fake)
+  await writePrivate(paths.provider, JSON.stringify({ method: "subscription", llm_config: SUBSCRIBED_LLM }))
+  const error = await rejection(learnProvider(paths, new Script([], { interactive: false }), subscribed().options))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toBe(
+    `${paths.provider} signs in to a ChatGPT subscription, but its sign-in ${paths.auth} is missing;` +
+      " delete both and run `opencorp hq` again",
+  )
+})
+
+test("a provider.json that sets YIAN_AUTH_FILE itself is refused", async () => {
+  const { dir, fake } = fakeHome()
+  const { paths } = await reachCtx(dir, fake)
+  const other = path.join(dir, "other.json")
+  await writePrivate(paths.provider, JSON.stringify({ llm_config: SUBSCRIBED_LLM, env: { YIAN_AUTH_FILE: other } }))
+  const error = await rejection(learnProvider(paths, new Script([]), subscribed().options))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("YIAN_AUTH_FILE is set by the office")
+})
+
+test("the learning run reads the sign-in YIAN_AUTH_FILE names", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const provider = await learnProvider(ctx.paths, new Script(["openai", "", ""]), subscribed().options)
+  // Damaged after it was checked, so the run stops reading it, before any request.
+  fs.writeFileSync(ctx.paths.auth, "{nope", { mode: 0o600 })
+  const state = new Learning(ctx, new Script([]), new PassThrough(), [], 49381)
+  const got = await runLearn(provider, NO_INPUTS, state)
+  expect(got.output).toBeNull()
+  expect(got.message).toContain(`Credential storage at ${ctx.paths.auth}`)
 })
 
 /** Look-alike blanks that aren't shell whitespace, and invisible ones. */
