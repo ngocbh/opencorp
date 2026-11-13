@@ -9,7 +9,17 @@ import { buffer } from "node:stream/consumers"
 import { isDeepStrictEqual } from "node:util"
 import type { Device } from "@opencorp/protocol"
 import { type ComposedFlow, loadFlow, runFlow } from "@ngocbh/yian"
-import { type AuthRequest, LLMConfig, SUPPORTED_LLM_PROVIDERS, ValidationError } from "@ngocbh/yian/llm_clients"
+import {
+  AuthError,
+  type AuthRequest,
+  AuthStore,
+  callCredentials,
+  LLMConfig,
+  type OAuthCredentials,
+  OpenAIAuth,
+  SUPPORTED_LLM_PROVIDERS,
+  ValidationError,
+} from "@ngocbh/yian/llm_clients"
 import { type FileLock, FileLockError, isLocked, sqliteErrorCode, waitForLock, withWarnings } from "@ngocbh/yian/platform"
 import type { RunFlowOptions, RunResult } from "@ngocbh/yian/run"
 import { addDevice, DeviceRefused } from "../auth/devices.ts"
@@ -24,7 +34,7 @@ import {
 } from "../auth/identity.ts"
 import { checkPassword } from "../auth/passwords.ts"
 import { newToken, tokenSha256 } from "../auth/tokens.ts"
-import { azureBaseUrl, Connections } from "../chat/connections.ts"
+import { AUTH_FILE_ENV, azureBaseUrl, ConnectionFile, Connections } from "../chat/connections.ts"
 import * as models from "../chat/models.ts"
 import { checkLlmConfig, loadProvider, Provider, ProviderError } from "../chat/provider.ts"
 import { CompanyGit, CompanyGitError } from "../company/git.ts"
@@ -35,8 +45,9 @@ import { checkSocketPath, makeOfficeDir, OfficeStartError } from "../daemon/sock
 import { redact as redactSecrets, repr } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
-import { PrivateFileError, writePrivate } from "../secrets.ts"
+import { checkFolder, PrivateFileError, writePrivate } from "../secrets.ts"
 import type { WorkerEnv } from "../worker/main.ts"
+import { plainAuthError } from "../worker/rpc.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import { shQuote } from "./fallback.ts"
 import checkModelYaml from "./flows/check_model.yaml" with { type: "file" }
@@ -51,7 +62,7 @@ import {
   runCommand,
   ServiceError,
 } from "./launch.ts"
-import { NoTerminal, OnboardError, type Prompter, TRIES } from "./prompts.ts"
+import { clean, NoTerminal, OnboardError, type Prompter, TRIES } from "./prompts.ts"
 import * as service from "./service.ts"
 
 /** What to do when a home has no company. */
@@ -91,12 +102,12 @@ export const MAX_KEY_CHARS = 16384
  *  (`src/llm/auth.ts`) checks a key when it sends it. */
 const HEADER_TEXT = /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/
 
-/** `data` as a provider whose `llm_config` yian accepts and whose key can be sent as a header; throws
- *  `OnboardError`, whose message never holds a value from `data`. */
-export function checkProvider(data: unknown): Provider {
+/** `data` as a provider (`parse` checks its fields; `Provider.parse` by default) whose `llm_config` yian accepts and
+ *  whose key can be sent as a header; throws `OnboardError`, whose message never holds a value from `data`. */
+export function checkProvider(data: unknown, parse: (data: unknown) => Provider = Provider.parse): Provider {
   let provider: Provider
   try {
-    provider = Provider.parse(data)
+    provider = parse(data)
   } catch (error) {
     if (error instanceof ProviderError) throw new OnboardError(`the provider isn't valid: ${error.message}`)
     throw error
@@ -358,8 +369,15 @@ export async function askModel(
   )
 }
 
-/** The provider the owner gives, each question defaulting to its answer in `last`, which gets these answers. */
-async function askProviderData(prompter: Prompter, last: Answers, listers: Listers): Promise<unknown> {
+/** The provider the owner gives, each question defaulting to its answer in `last`, which gets these answers. With
+ *  `signIn`, openai asks how it signs in first: a ChatGPT subscription resolves to `Subscribed`, or to null when the
+ *  sign-in failed and the owner was told why. */
+async function askProviderData(
+  prompter: Prompter,
+  last: Answers,
+  listers: Listers,
+  signIn?: SignIn,
+): Promise<unknown> {
   const choices = SUPPORTED_LLM_PROVIDERS.join(", ")
   const name = await askUntil(
     prompter,
@@ -382,6 +400,13 @@ async function askProviderData(prompter: Prompter, last: Answers, listers: Liste
     const baseUrl = azureBaseUrl(last.endpoint)
     last.model = await askDeployment(prompter, baseUrl, last.key, last.model ?? "", listers)
     return { llm_config: { provider: "openai", base_url: baseUrl, api_key: last.key, model: last.model } }
+  }
+  if (name === "openai" && signIn !== undefined) {
+    const method = await prompter.choose(HOW_SIGN_IN, [SUBSCRIPTION, API_KEY], last.method ?? SUBSCRIPTION)
+    // One way of signing in rarely offers the model picked for the other.
+    if (method !== last.method) delete last.model
+    last.method = method
+    if (method === SUBSCRIPTION) return subscribe(prompter, last, signIn)
   }
   const llm: Record<string, string> = { provider: name }
   if (models.KEYLESS.includes(name)) {
@@ -416,6 +441,214 @@ async function askProviderData(prompter: Prompter, last: Answers, listers: Liste
   return { llm_config: llm }
 }
 
+/** Asked for openai when the caller keeps a sign-in, and its answers. */
+export const HOW_SIGN_IN = "How do you sign in?"
+export const SUBSCRIPTION = "ChatGPT subscription"
+export const API_KEY = "API key"
+
+/** Makes yian's `OpenAIAuth` for one sign-in or refresh, given the signal that stops it. */
+export type SubscriptionAuth = (options: {
+  signal: AbortSignal
+}) => Pick<OpenAIAuth, "deviceLogin" | "subscriptionModels" | "refresh">
+
+/** yian's own `OpenAIAuth`. */
+export const OPENAI_AUTH: SubscriptionAuth = (options) => new OpenAIAuth(options)
+
+/** yian's fix for a failed sign-in, which names the store `yian auth` keeps, never the caller's own. yian adds it to
+ *  every such failure, a lost connection included. */
+const YIAN_AUTH_HINT = /\. Run 'yian auth openai' and start a new run/g
+
+/** Whether yian's auth error `text` says OpenAI refused the sign-in (an HTTP 401 or 403, or a code yian reads as an
+ *  unusable grant, such as a 400 `invalid_grant`), or a refresh moved it to another account, so only signing in again
+ *  helps. A timeout, a lost connection, a 429 or a 5xx may pass. */
+export function signInRefused(text: string): boolean {
+  return /(?:; sign in again|\(HTTP 40[13](?:, [a-z_]+)?\)|changed account identity)$/.test(text)
+}
+
+/** `message` with each of yian's hints to run `yian auth openai` replaced by the fix for the caller's sign-in:
+ *  `refused` after a refusal (`signInRefused`), else `retry`. */
+export function signInRemedy(message: string, remedies: { refused: string; retry: string }): string {
+  // A function, so a `$` in a remedy's path stays as written.
+  return message.replace(YIAN_AUTH_HINT, (_hint: string, at: number) => {
+    return `: ${signInRefused(message.slice(0, at)) ? remedies.refused : remedies.retry}`
+  })
+}
+
+/** Where the picker keeps a ChatGPT subscription's sign-in, and how it signs in. */
+export interface SignIn {
+  /** yian's auth store for the sign-in, in a folder private to this user. */
+  file: string
+  /** Makes yian's `OpenAIAuth` (the real one by default). */
+  auth?: SubscriptionAuth
+  /** Stops a device sign-in while it waits: the owner's Ctrl-C. */
+  signal?: AbortSignal
+}
+
+/** What the owner is told to do with the device sign-in's `url` and `code`: over SSH, or with no browser here, the
+ *  code is entered on another device. */
+export function signInLine(url: string, code: string): string {
+  return (
+    `Sign in to ChatGPT: open ${url} in a browser, on any device, and enter the code ${code}.` +
+    " Waiting (Ctrl-C stops it)..."
+  )
+}
+
+/** A ChatGPT subscription the owner signed in to: the provider's data, and the sign-in's credentials. */
+class Subscribed {
+  constructor(
+    readonly data: unknown,
+    readonly creds: OAuthCredentials,
+  ) {}
+}
+
+/** Signs in to a ChatGPT subscription with a device code, then asks for one of its models, the first by default;
+ *  resolves null when the sign-in failed and the owner was told why. Rejects with `signIn.signal`'s reason once it
+ *  aborts, and with `OnboardError` when the sign-in's folder isn't private to this user (checked first, so the owner
+ *  never signs in for nothing) or the sign-in failed and there's no one to tell. */
+async function subscribe(prompter: Prompter, last: Answers, signIn: SignIn): Promise<Subscribed | null> {
+  const folder = path.dirname(signIn.file)
+  try {
+    checkFolder(folder, "folder")
+  } catch (error) {
+    if (error instanceof PrivateFileError) throw new OnboardError(`can't keep the sign-in: ${error.message}`)
+    const code = errnoCode(error)
+    if (code === undefined) throw error
+    throw new OnboardError(`can't keep the sign-in in ${folder}: ${code}`)
+  }
+  const signal = signIn.signal ?? new AbortController().signal
+  const auth = (signIn.auth ?? OPENAI_AUTH)({ signal })
+  let creds: OAuthCredentials
+  let listed: readonly string[]
+  try {
+    creds = await auth.deviceLogin((url, code) => prompter.say(signInLine(clean(url), clean(code))))
+    listed = await auth.subscriptionModels(creds)
+  } catch (error) {
+    signal.throwIfAborted()
+    // Fixed text naming what failed and its status, never a token.
+    if (!plainAuthError(error)) throw error
+    if (!prompter.interactive) throw new OnboardError(`the ChatGPT sign-in failed: ${error.message}`)
+    prompter.say(`That doesn't work: ${error.message}`)
+    return null
+  }
+  const fallback = last.model && listed.includes(last.model) ? last.model : listed[0]
+  const model = await prompter.choose("Model", listed, fallback)
+  last.model = model
+  return new Subscribed({ method: "subscription", llm_config: { provider: "openai", model } }, creds)
+}
+
+/** Whether `provider` signs in to a ChatGPT subscription. */
+export function isSubscription(provider: Provider): provider is ConnectionFile {
+  return provider instanceof ConnectionFile && provider.method === "subscription"
+}
+
+/** What a run on `provider` gets: a subscription's env also names its sign-in, `file`, in `YIAN_AUTH_FILE`, as a
+ *  run on an added subscription connection gets it; any other provider as it is. */
+export function withSignIn(provider: Provider, file: string): Provider {
+  if (!isSubscription(provider)) return provider
+  const { llm_config, env, prices } = provider
+  return Provider.parse({ llm_config, env: { ...env, [AUTH_FILE_ENV]: file }, prices })
+}
+
+/** The secrets a run on `provider` in `base` (a worker's env from this process's by default) with `provider.env` on
+ *  top may send, as yian lists them now: its key, or the login it would use (the sign-in `YIAN_AUTH_FILE` names, or
+ *  yian's own store in the run's `HOME`) read again, so tokens refreshed since are in it. */
+export function providerSecrets(provider: Provider, base?: WorkerEnv): string[] {
+  const vars: Record<string, string | undefined> = { ...(base ?? workerEnv(process.env)), ...provider.env }
+  const env = (name: string) => (Object.hasOwn(vars, name) ? vars[name] : undefined)
+  return [...callCredentials(provider.llm_config, { env })]
+}
+
+/** Removes the sign-in at `file` through yian's own store, under its lock; the lock file stays, and nothing there is
+ *  fine. Throws `OnboardError`, whose message names the file, never a token. */
+export async function removeSignIn(file: string): Promise<void> {
+  try {
+    await new AuthStore(file).delete()
+  } catch (error) {
+    if (!(error instanceof AuthError)) throw error
+    throw new OnboardError(`can't remove the sign-in: ${error.message}`)
+  }
+}
+
+/** Where a new sign-in for `file` waits while its model is checked: beside it, so that taking it is a rename, and a
+ *  hard stop during the check leaves the old sign-in, and the provider it was checked with, as they were. */
+export function pendingSignIn(file: string): string {
+  return file.endsWith(".json") ? `${file.slice(0, -".json".length)}.new.json` : `${file}.new`
+}
+
+/** Removes a sign-in waiting for `file` and its lock file, which only a stopped check leaves behind; a symlink is
+ *  removed, never followed. Throws `OnboardError`. */
+export function removePendingSignIn(file: string): void {
+  const pending = pendingSignIn(file)
+  for (const leftover of [pending, `${pending}.lock`]) {
+    try {
+      fs.rmSync(leftover, { force: true })
+    } catch (error) {
+      const code = errnoCode(error)
+      if (code === undefined) throw error
+      throw new OnboardError(`can't remove ${leftover}: ${code}`)
+    }
+  }
+}
+
+/** Saves `creds` for `model` (yian's own store, 0600) to wait for `file`, in place of any left there. Throws
+ *  `OnboardError`, whose message names the file, never a token. */
+async function saveSignIn(file: string, creds: OAuthCredentials, model: string): Promise<void> {
+  removePendingSignIn(file)
+  try {
+    await new AuthStore(pendingSignIn(file)).save("openai", creds, model)
+  } catch (error) {
+    if (!(error instanceof AuthError)) throw error
+    // yian's store says which file and how to fix it, never a value.
+    throw new OnboardError(`can't save the sign-in: ${error.message}`)
+  }
+}
+
+/** Moves the sign-in waiting for `file` into place. Throws `OnboardError`. */
+function takeSignIn(file: string): void {
+  const pending = pendingSignIn(file)
+  try {
+    fs.renameSync(pending, file)
+  } catch (error) {
+    const code = errnoCode(error)
+    if (code === undefined) throw error
+    throw new OnboardError(`can't move the sign-in to ${file}: ${code}`)
+  }
+  // Its lock guarded the file that is now `file`, which has its own.
+  removePendingSignIn(file)
+}
+
+/** Saves `creds` to wait for `file`, then whether `provider`'s model answers `checkModel` run with that sign-in, as
+ *  `answers` checks; the waiting sign-in is removed again unless it does. */
+async function signedInAnswers(
+  prompter: Prompter,
+  provider: Provider,
+  creds: OAuthCredentials,
+  file: string,
+  checkModel: ModelCheck | undefined,
+): Promise<boolean> {
+  await saveSignIn(file, creds, String(provider.llm_config?.model))
+  // Setting up again is how the owner signs in again here.
+  const check = checkModel && (async (p: Provider) => {
+    const problem = await checkModel(p)
+    return problem === null
+      ? null
+      : signInRemedy(problem, { refused: `choose "${SET_UP_AGAIN}"`, retry: `choose "${TRY_AGAIN}"` })
+  })
+  let works: boolean
+  try {
+    works = check === undefined || (await answers(prompter, withSignIn(provider, pendingSignIn(file)), check))
+  } catch (error) {
+    try {
+      removePendingSignIn(file)
+    } catch {
+      // The error that stopped the check is the one to throw; the next start removes it.
+    }
+    throw error
+  }
+  if (!works) removePendingSignIn(file)
+  return works
+}
+
 /** When the model doesn't answer: check the same provider again. */
 export const TRY_AGAIN = "Try again"
 /** When the model doesn't answer: ask for the provider again, starting from the last answers. */
@@ -442,30 +675,39 @@ async function answers(prompter: Prompter, provider: Provider, checkModel: Model
 }
 
 /** Asks for a provider until yian takes it and its model answers `checkModel`, starting from the answers in
- *  `last`; only Ctrl-C or the input ending stops it. */
+ *  `last`; only Ctrl-C or the input ending stops it. With `signIn`, a ChatGPT subscription's sign-in is saved to wait
+ *  beside `signIn.file` (`pendingSignIn`) and the model checked with it; it stays only once the model answers. */
 async function workingProvider(
   prompter: Prompter,
   checkModel: ModelCheck | undefined,
   last: Answers,
   listers: Listers,
+  signIn?: SignIn,
 ): Promise<Provider> {
   for (;;) {
-    const data = await askProviderData(prompter, last, listers)
+    const data = await askProviderData(prompter, last, listers, signIn)
+    // The sign-in failed, and the owner was told why.
+    if (data === null) continue
+    const subscribed = data instanceof Subscribed ? data : undefined
     let provider: Provider
     try {
-      provider = checkProvider(data)
+      provider = subscribed === undefined ? checkProvider(data) : checkProvider(subscribed.data, ConnectionFile.parse)
     } catch (error) {
       if (!(error instanceof OnboardError) || !prompter.interactive) throw error
       prompter.say(`That doesn't work: ${error.message}`)
       continue
     }
-    if (checkModel === undefined || (await answers(prompter, provider, checkModel))) return provider
+    if (subscribed !== undefined) {
+      if (await signedInAnswers(prompter, provider, subscribed.creds, signIn!.file, checkModel)) return provider
+    } else if (checkModel === undefined || (await answers(prompter, provider, checkModel))) return provider
   }
 }
 
 /** The owner's last answers while setting up the model, so asking again starts where they left off. */
 export interface Answers {
   provider?: string
+  /** How openai signs in: `SUBSCRIPTION` or `API_KEY`. */
+  method?: string
   endpoint?: string
   key?: string
   model?: string
@@ -488,9 +730,11 @@ export interface ProviderOptions {
   last?: Answers
 }
 
-/** `provider`'s fields that differ from their defaults, in file order (Python's `model_dump(exclude_defaults)`). */
+/** `provider`'s fields that differ from their defaults, in file order (Python's `model_dump(exclude_defaults)`); a
+ *  subscription says so first. */
 function dump(provider: Provider): Record<string, unknown> {
   const data: Record<string, unknown> = {}
+  if (isSubscription(provider)) data.method = "subscription"
   if (provider.llm_config !== null) data.llm_config = provider.llm_config
   if (Object.keys(provider.env).length > 0) data.env = provider.env
   if (Object.keys(provider.prices).length > 0) data.prices = provider.prices
@@ -527,7 +771,7 @@ export async function writeProvider(file: string, provider: Provider): Promise<v
     throw new OnboardError(`can't write ${file}: ${code}`)
   }
   try {
-    await loadProvider(file, Provider.parse, { missingOk: false })
+    await loadProvider(file, isSubscription(provider) ? ConnectionFile.parse : Provider.parse, { missingOk: false })
   } catch (error) {
     if (error instanceof FileLockError) throw new OnboardError(`can't read ${file}: ${error.message}`)
     if (error instanceof ProviderError) throw new OnboardError(error.message)
@@ -546,15 +790,42 @@ export async function askProvider(
   await saveProvider(office, await workingProvider(prompter, options.checkModel, options.last ?? {}, options.listers))
 }
 
-/** Asks the owner with init's picker until the model answers `checkModel`, then writes the provider to `file` (0600; a
- *  private folder of this user) and resolves to it. Throws as `askProvider` does. */
+/**
+ * Asks the owner with init's picker until the model answers `checkModel`, then writes the provider to `file` (0600; a
+ * private folder of this user) and resolves to it. Throws as `askProvider` does.
+ *
+ * With `signIn`, openai may sign in to a ChatGPT subscription. Its sign-in waits beside `signIn.file` while the model
+ * is checked with it, and is removed when the model doesn't answer or the check is stopped. Once the model answers,
+ * the sign-in at `signIn.file` is removed, `file` is written, and only then the new sign-in moves to `signIn.file`. A
+ * stop at any point so leaves `file` beside the sign-in it was checked with, or beside none, which asks again; the
+ * caller removes a sign-in still waiting (`removePendingSignIn`) when it next starts, as this does first. Any other
+ * provider removes a sign-in left at `signIn.file`.
+ */
 export async function askProviderTo(
   file: string,
   prompter: Prompter,
-  options: Omit<ProviderOptions, "stdin">,
+  options: Omit<ProviderOptions, "stdin"> & { signIn?: SignIn },
 ): Promise<Provider> {
-  const provider = await workingProvider(prompter, options.checkModel, options.last ?? {}, options.listers)
-  await writeProvider(file, provider)
+  const { signIn } = options
+  if (signIn !== undefined) removePendingSignIn(signIn.file)
+  const provider = await workingProvider(prompter, options.checkModel, options.last ?? {}, options.listers, signIn)
+  if (signIn === undefined) {
+    await writeProvider(file, provider)
+    return provider
+  }
+  const subscription = isSubscription(provider)
+  try {
+    await removeSignIn(signIn.file)
+    await writeProvider(file, provider)
+    if (subscription) takeSignIn(signIn.file)
+  } catch (error) {
+    try {
+      if (subscription) removePendingSignIn(signIn.file)
+    } catch {
+      // The error that stopped the save is the one to throw; the next start removes it.
+    }
+    throw error
+  }
   return provider
 }
 
@@ -1137,9 +1408,9 @@ export const CHECK_LIMITS: Readonly<Record<string, string>> = Object.freeze({
 
 /**
  * Runs `flow` with `provider`'s model as an office run would; resolves its result (null when the run threw), and
- * why it failed (null when it didn't), without the key or URL credentials. The run's environment is `env` (by
- * default a worker's, from this process's) with `provider.env` on top, then `limits`; `onEvent` sees the run's
- * events as `runFlow`'s does. Rejects with `signal`'s reason once it aborts.
+ * why it failed (null when it didn't), without the key, the sign-in's tokens or URL credentials. The run's
+ * environment is `env` (by default a worker's, from this process's) with `provider.env` on top, then `limits`;
+ * `onEvent` sees the run's events as `runFlow`'s does. Rejects with `signal`'s reason once it aborts.
  */
 export async function runSetup(
   flow: ComposedFlow,
@@ -1184,10 +1455,10 @@ export async function runSetup(
     message = error instanceof Error ? error.message : String(error)
   }
   if (message !== null) {
-    const key = provider.llm_config?.api_key
-    // Every form of the key, as chat runs scrub theirs: yian scrubs the key only as written and escaped, and a
-    // provider may quote it in another letter case or base64-encoded.
-    if (typeof key === "string" && key) message = redactSecrets(message, [], [key])
+    const secrets = providerSecrets(provider, base)
+    // Every form of the key or sign-in tokens, as chat runs scrub theirs: yian scrubs a key only as written and
+    // escaped, and a provider may quote it in another letter case or base64-encoded.
+    if (secrets.length > 0) message = redactSecrets(message, [], secrets)
     message = redact(message).replace(/\.+$/, "")
   }
   return { result, message }

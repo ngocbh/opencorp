@@ -5,9 +5,10 @@ import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished } from "bun:test"
+import { OAuthCredentials } from "@ngocbh/yian/llm_clients"
 import type { InitOutput } from "../../src/company/draft.ts"
 import { type Completed, type Host, type Launch, launch, officeAnswers } from "../../src/install/launch.ts"
-import type { Listers } from "../../src/install/onboard.ts"
+import type { Listers, SubscriptionAuth } from "../../src/install/onboard.ts"
 import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { type Prompter, stepLines } from "../../src/install/prompts.ts"
 import { repr } from "../../src/perm/redact.ts"
@@ -159,6 +160,65 @@ export function flowReplies(
 export const NO_LISTING: Listers = {
   azureDeployments: async () => [],
   providerModels: async () => [],
+}
+
+/** The fake ChatGPT sign-in's tokens and account, which nothing may show, and the device sign-in's URL and code. */
+export const ACCESS_TOKEN = "fake-access-4f1c2a9e7b3d"
+export const REFRESH_TOKEN = "fake-refresh-0d8e3b6a5c1f"
+export const ACCOUNT = "account-7c2e9f"
+export const DEVICE_URL = "https://auth.example.test/codex/device"
+export const DEVICE_CODE = "WXYZ-1234"
+/** The models the fake subscription lists, the first by priority. */
+export const SUBSCRIPTION_MODELS = ["gpt-5.5-codex", "gpt-5.5"]
+
+/**
+ * A stand-in for yian's `OpenAIAuth` that reaches no server: each device sign-in shows `DEVICE_URL` and
+ * `DEVICE_CODE`, then throws the next of `failures` if any is left, else resolves the fake credentials once
+ * `approved` does (at once without it); it rejects with its signal's reason once that aborts. The subscription lists
+ * `SUBSCRIPTION_MODELS`. A refresh resolves `refreshed`, or throws it when it's an error; without it, a refresh fails
+ * the test. `signals` holds the signal each sign-in was made with, and `refreshes` counts the refreshes.
+ */
+export function fakeSubscription({
+  failures = [],
+  approved,
+  refreshed,
+}: { failures?: Error[]; approved?: Promise<void>; refreshed?: OAuthCredentials | Error } = {}) {
+  const left = [...failures]
+  const signals: AbortSignal[] = []
+  const creds = new OAuthCredentials({
+    accessToken: ACCESS_TOKEN,
+    refreshToken: REFRESH_TOKEN,
+    expiresAt: Date.now() / 1000 + 3600,
+    accountId: ACCOUNT,
+  })
+  const auth: SubscriptionAuth = ({ signal }) => {
+    signals.push(signal)
+    return {
+      deviceLogin: async (show) => {
+        await show(DEVICE_URL, DEVICE_CODE)
+        const failure = left.shift()
+        if (failure !== undefined) throw failure
+        await new Promise<void>((resolve, reject) => {
+          if (signal.aborted) return reject(signal.reason)
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+          void (approved ?? Promise.resolve()).then(resolve)
+        })
+        return creds
+      },
+      subscriptionModels: async (given) => {
+        expect(given).toBe(creds)
+        return SUBSCRIPTION_MODELS
+      },
+      refresh: async () => {
+        refreshes.count++
+        if (refreshed === undefined) throw new Error("the fake wasn't meant to refresh")
+        if (refreshed instanceof Error) throw refreshed
+        return refreshed
+      },
+    }
+  }
+  const refreshes = { count: 0 }
+  return { auth, creds, signals, refreshes }
 }
 
 /** A process the test host started: its pid and the start time read right after the spawn. */

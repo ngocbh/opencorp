@@ -42,8 +42,10 @@ import { writePrivate } from "../../src/secrets.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../src/testing/fake_ssh.ts"
 import { control, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
-import { BEFORE_LEARNING, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../src/reach/risks.ts"
+import { beforeLearning, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../src/reach/risks.ts"
+import { signInLine } from "../../src/install/onboard.ts"
 import { fakeLlm } from "../chat/helpers.ts"
+import { DEVICE_CODE, DEVICE_URL, fakeSubscription } from "../install/helpers.ts"
 import { ps, waitFor } from "../helpers.ts"
 import { fakeHome, fakeRemote, freePort, reachCtx, visitDeps } from "./helpers.ts"
 
@@ -274,6 +276,17 @@ test("the first visit signs in through a redirect file and records signed_in_at"
   expect(access?.last_used_at).not.toBeNull()
   // What a relearn compares to keep the browser's sign-in.
   expect(access).toMatchObject({ host: "node1", socket: remote.socket })
+  v.sigint()
+  expect(await v.done).toBe(0)
+})
+
+test("a replay reads neither hq/provider.json nor hq/auth.json", async () => {
+  const { dir, fake, paths } = await approvedHome({}, { signed_in_at: new Date().toISOString() })
+  // Unreadable, so any read would fail.
+  fs.writeFileSync(paths.provider, '{"method": "subscription", "llm_config": {"provider": "openai"}}', { mode: 0o000 })
+  fs.writeFileSync(paths.auth, "{nope", { mode: 0o000 })
+  const v = await connected(dir, fake, { signIn: false, open: false })
+  expect(v.prompter.seen).toEqual([])
   v.sigint()
   expect(await v.done).toBe(0)
 })
@@ -738,7 +751,7 @@ test("with no saved path it shows the risks, asks, then learns and goes on with 
   const done = visit({ signIn: false, port, open: false }, v.deps)
   await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 1, { what: "the visit to connect" })
   expect(v.errors).toEqual([NO_OFFICE_HERE])
-  expect(v.prompter.seen.slice(0, BEFORE_LEARNING.length + 1)).toEqual([...BEFORE_LEARNING, LEARN_QUESTION])
+  expect(v.prompter.seen.slice(0, beforeLearning(paths).length + 1)).toEqual([...beforeLearning(paths), LEARN_QUESTION])
   expect(v.prompter.offered[0]).toEqual([LEARN, STOP])
   expect(fs.readFileSync(paths.script, "utf8")).toBe(script)
   expect(v.printed).toContain(`http://127.0.0.1:${port}/pair#${remote.code}`)
@@ -841,7 +854,7 @@ test("--relearn gives the agent the old notes and script, and keeps the old path
   const done = visit({ signIn: false, open: false, relearn: true }, v.deps)
   await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 0, { what: "the visit to connect" })
   expect(v.errors).toEqual([])
-  expect(v.prompter.seen.slice(0, BEFORE_LEARNING.length + 1)).toEqual([...BEFORE_LEARNING, RELEARN_QUESTION])
+  expect(v.prompter.seen.slice(0, beforeLearning(paths).length + 1)).toEqual([...beforeLearning(paths), RELEARN_QUESTION])
   const [first, , third] = llm.requests().map((r) => JSON.stringify(r))
   expect(first).toContain("# the old way")
   expect(first).toContain("The job used to run on node9.")
@@ -876,7 +889,7 @@ test("a broken path asks to relearn with the failure, defaulting to stop", async
   let v = visitDeps(dir, fake, { answers: [""] })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
   expect(v.errors).toEqual([line])
-  expect(v.prompter.seen.slice(0, BEFORE_LEARNING.length + 1)).toEqual([...BEFORE_LEARNING, RELEARN_QUESTION])
+  expect(v.prompter.seen.slice(0, beforeLearning(paths).length + 1)).toEqual([...beforeLearning(paths), RELEARN_QUESTION])
   expect(llm.requests()).toEqual([])
   llm.script({ content: "The job is gone; start it again." })
   v = visitDeps(dir, fake, { answers: ["1"] })
@@ -969,6 +982,20 @@ test("Ctrl-C during the first run's model check stops the check and exits 130", 
   v.sigint()
   expect(await done).toBe(130)
   expect(stopped).toBe(true)
+  expect(fs.existsSync(paths.provider)).toBe(false)
+})
+
+test("Ctrl-C while the first run's ChatGPT sign-in waits exits 130 and saves nothing", async () => {
+  const { dir, fake, paths } = await unlearnedHome({ provider: false })
+  const subscription = fakeSubscription({ approved: new Promise(() => {}) })
+  // Learn it, openai, the subscription.
+  const v = visitDeps(dir, fake, { answers: ["1", "openai", ""], auth: subscription.auth })
+  const done = visit({ signIn: false, open: false }, v.deps)
+  await waitFor(() => v.prompter.seen.includes(signInLine(DEVICE_URL, DEVICE_CODE)), { what: "the code" })
+  v.sigint()
+  expect(await done).toBe(130)
+  expect(subscription.signals.map((signal) => signal.aborted)).toEqual([true])
+  expect(fs.existsSync(paths.auth)).toBe(false)
   expect(fs.existsSync(paths.provider)).toBe(false)
 })
 

@@ -9,9 +9,17 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { createTwoFilesPatch } from "diff"
 import { which } from "../install/launch.ts"
 import type { Provider } from "../chat/provider.ts"
-import { LISTERS, type Listers, type ModelCheck, modelProblem } from "../install/onboard.ts"
+import {
+  LISTERS,
+  type Listers,
+  type ModelCheck,
+  modelProblem,
+  providerSecrets,
+  type SubscriptionAuth,
+} from "../install/onboard.ts"
 import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter } from "../install/prompts.ts"
 import { writePrivate } from "../secrets.ts"
+import { workerEnv } from "../worker/spawn.ts"
 import { classifyCheck, type Connection, connect, describe, ReachFailure, sameHealth, signIn } from "./connect.ts"
 import { type Learned, Learning, learnProvider, runLearn } from "./learn.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
@@ -33,7 +41,7 @@ import {
   type Watcher,
   writeSshFiles,
 } from "./ssh.ts"
-import { BEFORE_LEARNING, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "./risks.ts"
+import { beforeLearning, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "./risks.ts"
 import { lineCount, numberedLines, shownCode } from "./show.ts"
 import { safePath, type Spec } from "./spec.ts"
 import {
@@ -84,6 +92,8 @@ export interface VisitDeps {
   /** Why a provider's model doesn't answer, or null; checked before `hq/provider.json` is saved, and stopped once
    *  `signal` aborts (the owner's Ctrl-C). */
   checkModel(provider: Provider, signal: AbortSignal): Promise<string | null>
+  /** Makes yian's `OpenAIAuth` for the picker's ChatGPT sign-in (the real one by default). */
+  auth?: SubscriptionAuth
 }
 
 export const USE = "Use it"
@@ -292,7 +302,7 @@ function inVisit<T>(ctx: ReachContext, stdin: Readable, ask: () => Promise<T>): 
 /** Shows what learning risks, then asks `question` with `fallback` as the default; resolves whether the owner chose
  *  to learn. */
 async function askToLearn(deps: VisitDeps, question: string, fallback: string): Promise<boolean> {
-  for (const line of BEFORE_LEARNING) deps.prompter.say(clean(line))
+  for (const line of beforeLearning(new ReachPaths(deps.home))) deps.prompter.say(clean(line))
   const answer = await deps.prompter.choose(question, [LEARN, STOP], fallback)
   quietStdin(deps.stdin)
   return answer === LEARN
@@ -331,10 +341,17 @@ async function learnPath(
     signal.throwIfAborted()
     return problem as string | null
   }
-  const provider = await learnProvider(ctx.paths, deps.prompter, { listers: deps.listers, checkModel })
+  // The first Ctrl-C stops a device sign-in too.
+  const provider = await learnProvider(ctx.paths, deps.prompter, {
+    listers: deps.listers,
+    checkModel,
+    auth: deps.auth,
+    signal,
+  })
   quietStdin(deps.stdin)
-  const key = provider.llm_config?.api_key
-  const state = new Learning(ctx, deps.prompter, deps.stdin, typeof key === "string" && key ? [key] : [], port, deps.now)
+  // Read again at each use: the run's first model call may refresh a subscription's tokens.
+  const secrets = () => providerSecrets(provider, workerEnv(ctx.env))
+  const state = new Learning(ctx, deps.prompter, deps.stdin, secrets, port, deps.now)
   // Masters started while learning keep their ControlPersist; a reconnect's start from the visit's config again.
   await writeSshFiles(ctx.paths, ctx.ssh, deps.sshIncludes, { persist: LEARNING_PERSIST_S })
   let learned: Learned

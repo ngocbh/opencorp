@@ -132,8 +132,10 @@ shows you `reach.sh` and `notes.md` (how your cluster is reached, in plain words
 setup, and saves them only once you approve and the whole connection works: the script, the login, the
 check on HQ's machine, the forward and HQ's health through it. That connection becomes the visit's. The
 first learning run asks for a model with `opencorp init`'s picker and keeps it in
-`~/.opencorp/hq/provider.json` (delete it to forget the model). Later visits replay `reach.sh` and use no
-model. `opencorp hq --relearn` learns again, starting from the old notes and script, and a saved path that
+`~/.opencorp/hq/provider.json`. For OpenAI you can sign in to your ChatGPT subscription instead of giving
+an API key: it shows a link and a code to enter in a browser on any device, and keeps the sign-in in
+`~/.opencorp/hq/auth.json`. To forget the model, delete `provider.json` and `auth.json`. Later visits replay
+`reach.sh` and use no model. `opencorp hq --relearn` learns again, starting from the old notes and script, and a saved path that
 breaks offers to; the old path stays until a new one works.
 
 You can also write `reach.sh` yourself: a `sh` script that finds HQ's machine (a Slurm job's node, say) and
