@@ -3,7 +3,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
-import { type AuthRequest, HttpResponse, OpenAIAuth } from "@ngocbh/yian/llm_clients"
+import { type AuthRequest, AuthStore, HttpResponse, OAuthCredentials, OpenAIAuth } from "@ngocbh/yian/llm_clients"
 import { stringify } from "yaml"
 import { Identity, identityPath, writeIdentity } from "../../src/auth/identity.ts"
 import { newToken } from "../../src/auth/tokens.ts"
@@ -186,6 +186,37 @@ test("everyone signed in sees connections without keys", async () => {
     can_manage: false,
   })
   expect(json(await get(sock, "/connections", owner)).can_manage).toBe(true)
+})
+
+test("an office connection on a ChatGPT subscription shows as one, its models listed through its sign-in, its tokens never sent", async () => {
+  const seen: Record<string, string | null> = {}
+  const { office, sock } = await setup({
+    lister: async (conn, name, { authFile }) => {
+      seen[name] = authFile
+      return { connection: name, models: [{ id: "gpt-5.5", name: null }], listed: true, error: null }
+    },
+  })
+  const owner = await asOwner(office)
+  await writePrivate(
+    path.join(office.connections.dir, "office.json"),
+    JSON.stringify({ method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } }),
+  )
+  const tokens = ["office-access-5c1e93b7f2a0", "office-refresh-0a7d2c19e4b8", "office-account-7f3b"]
+  const creds = new OAuthCredentials({
+    accessToken: tokens[0],
+    refreshToken: tokens[1],
+    expiresAt: Date.now() / 1000 + 3600,
+    accountId: tokens[2],
+  })
+  await new AuthStore(office.connections.authFile("office")).save("openai", creds, "gpt-5.5")
+  const listed = await get(sock, "/connections", owner)
+  expect(json(listed).connections).toEqual([
+    { name: "office", provider: "chatgpt", method: "subscription", model: "gpt-5.5", default: true },
+  ])
+  const models = await get(sock, "/connections/office/models", owner)
+  expect(models.status).toBe(200)
+  expect(seen).toEqual({ office: office.connections.authFile("office") })
+  for (const reply of [listed, models]) for (const token of tokens) expect(reply.text).not.toContain(token)
 })
 
 test("the owner adds a connection", async () => {

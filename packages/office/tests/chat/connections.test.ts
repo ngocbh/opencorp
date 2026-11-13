@@ -148,9 +148,10 @@ test.each(["Office", "..", "../x", "a/b", "_default", "_removed", "chatgpt.auth"
     const root = tempDir()
     const c = new Connections(await officeDir(root, { llm_config: { provider: "anthropic", api_key: SENTINEL } }))
     const before = tree(root)
-    const calls: (() => unknown)[] = [() => c.put(bad, apiKey()), () => c.remove(bad), () => c.authFile(bad)]
+    const calls: (() => unknown)[] = [() => c.put(bad, apiKey()), () => c.remove(bad)]
     if (bad !== OFFICE) {
       calls.push(
+        () => c.authFile(bad),
         () => c.get(bad),
         () => c.info(bad),
         () => c.resolve(bad, null),
@@ -711,6 +712,52 @@ test("a subscription resolves to its own auth file and no key", async () => {
   expect(() =>
     ConnectionFile.parse({ method: "subscription", llm_config: { provider: "anthropic", model: "m" } }),
   ).toThrow(ProviderError)
+})
+
+test("an office.json on a ChatGPT subscription runs on office.auth.json, and its info says so", async () => {
+  const root = tempDir()
+  const c = new Connections(
+    await officeDir(root, { method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } }),
+  )
+  const auth = path.join(root, "office", "connections", "office.auth.json")
+  expect(c.authFile(OFFICE)).toBe(auth)
+  expect((await c.get(OFFICE)).method).toBe("subscription")
+  const missing = await raised(() => c.resolve(null, null))
+  expect(missing).toBeInstanceOf(ProviderError)
+  expect((missing as Error).message).toBe("connection 'office' has no sign-in; run `opencorp onboard` to sign in again")
+  await writePrivate(auth, "{}")
+  const p = await c.resolve(null, null)
+  expect(p.llm_config).toEqual({ provider: "openai", model: "gpt-5.5" })
+  expect(p.env).toEqual({ YIAN_AUTH_FILE: auth })
+  expect((await c.resolve(OFFICE, "gpt-5.4")).llm_config).toEqual({ provider: "openai", model: "gpt-5.4" })
+  expect(await c.forRun(runRecord(OFFICE, null, p), "r1")).toEqual(p)
+  expect(await c.info(OFFICE)).toEqual({
+    name: OFFICE,
+    provider: "chatgpt",
+    method: "subscription",
+    model: "gpt-5.5",
+    default: true,
+  })
+  // Its sign-in is no connection of its own.
+  expect(await c.names()).toEqual([OFFICE])
+  expect((await c.infos())[0].map((i) => i.name)).toEqual([OFFICE])
+})
+
+test("an office.json on a subscription keeps a connection's rules: openai, no key, no YIAN_AUTH_FILE of its own", async () => {
+  const bad = [
+    { method: "subscription", llm_config: { provider: "anthropic", model: "m" } },
+    { method: "subscription", llm_config: { provider: "openai", model: "m", api_key: SENTINEL } },
+    { method: "subscription", llm_config: { provider: "openai", model: "m" }, env: { YIAN_AUTH_FILE: "/elsewhere" } },
+    { method: "browser", llm_config: { provider: "openai", model: "m" } },
+  ]
+  for (const data of bad) {
+    const error = await raised(async () => new Connections(await officeDir(tempDir(), data)).get(OFFICE))
+    expect(error).toBeInstanceOf(ProviderError)
+    expect((error as Error).message).not.toContain(SENTINEL)
+  }
+  // Written by a key: as before.
+  const keyed = new Connections(await officeDir(tempDir(), { method: "api_key", llm_config: { provider: "anthropic", api_key: SENTINEL } }))
+  expect(await keyed.info(OFFICE)).toMatchObject({ method: "api_key", provider: "anthropic" })
 })
 
 test("a subscription without its sign in fails clearly", async () => {

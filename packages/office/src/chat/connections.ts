@@ -97,6 +97,19 @@ export class ConnectionFile extends Provider {
     const { llm_config, env, prices } = provider
     return new ConnectionFile({ llm_config, env, prices }, "api_key")
   }
+
+  /** `data` checked as office.json: on a subscription, as `parse` checks any connection; else as `Provider.parse`
+   *  checks it, `method` `api_key` or left out (`office`). Throws `ProviderError` with value-free text. Never uses
+   *  `this`, so it can be passed unbound. */
+  static parseOffice(data: unknown = {}): ConnectionFile {
+    if (typeof data === "object" && data !== null && Object.hasOwn(data, "method")) {
+      const { method, ...rest } = data as Record<string, unknown>
+      if (method === "subscription") return ConnectionFile.parse(data)
+      if (method !== "api_key") throw new ProviderError("method: expected api_key or subscription")
+      return ConnectionFile.office(Provider.parse(rest))
+    }
+    return ConnectionFile.office(Provider.parse(data))
+  }
 }
 
 /** What a run was started on: its connection and model, and a hash of what they gave it; the values
@@ -200,9 +213,7 @@ export class Connections {
    *  `ConnectionGone` when there is no such connection or it was removed, and `ProviderError` when its file
    *  can't be used. */
   async get(name: string): Promise<ConnectionFile> {
-    if (name === OFFICE) {
-      return ConnectionFile.office(await loadProvider(path.join(this.dir, "office.json"), Provider.parse))
-    }
+    if (name === OFFICE) return loadProvider(path.join(this.dir, "office.json"), ConnectionFile.parseOffice)
     checkName(name)
     if ((await this.#removed()).has(name)) throw new ConnectionGone(`connection '${name}' was removed`)
     return this.#load(name)
@@ -370,9 +381,9 @@ export class Connections {
     })
   }
 
-  /** Where subscription `name` keeps its sign-in (yian's own auth store). */
+  /** Where subscription `name`, `office` included, keeps its sign-in (yian's own auth store). */
   authFile(name: string): string {
-    checkName(name)
+    if (name !== OFFICE) checkName(name)
     return path.join(this.dir, `${name}.auth.json`)
   }
 
@@ -390,7 +401,8 @@ export class Connections {
       const auth = this.authFile(name)
       if (!isFile(auth)) {
         // Without its store, yian would fall back to no credentials at all.
-        throw new ProviderError(`connection '${name}' has no sign-in; remove it and connect again`)
+        const fix = name === OFFICE ? "run `opencorp onboard` to sign in again" : "remove it and connect again"
+        throw new ProviderError(`connection '${name}' has no sign-in; ${fix}`)
       }
       env[AUTH_FILE_ENV] = auth
     }
@@ -495,8 +507,9 @@ export class Connections {
     if (llm.provider != null && typeof llm.provider !== "string") {
       throw new ProviderError(`connection '${name}' names a provider that isn't text`)
     }
-    // Without a key, office runs on yian's own login.
-    const method = name === OFFICE ? ("api_key" in llm ? "api_key" : "none") : conn.method
+    // Without a key, office runs on yian's own login, unless it signs in to a subscription of its own.
+    const method =
+      name === OFFICE && conn.method !== "subscription" ? ("api_key" in llm ? "api_key" : "none") : conn.method
     const provider = conn.method === "subscription" ? "chatgpt" : providerLabel(llm)
     return { name, provider, method, model, default: name === defaultName }
   }
