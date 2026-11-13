@@ -60,7 +60,14 @@ import {
   type WorkerHandlers,
 } from "../worker/rpc.ts"
 import { RegistryClosed, type Worker, workerEnv } from "../worker/spawn.ts"
-import { BadConnectionName, type Connections, configHash, runRecord, runSecrets } from "./connections.ts"
+import {
+  AUTH_FILE_ENV,
+  BadConnectionName,
+  type Connections,
+  configHash,
+  runRecord,
+  runSecrets,
+} from "./connections.ts"
 import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "./cost.ts"
 import type { Hooks } from "./hooks.ts"
 import { type Price, type Provider, ProviderError } from "./provider.ts"
@@ -2677,9 +2684,13 @@ export class SessionActor implements LiveCalls {
     const where = this.#chat.isReply(id) ? "its reply failed" : `its context failed at ${nodePath(id, run.provider)}`
     this.#log(`session ${this.sessionId}: ${where} (${type})`)
     const reason = whyFailed(outcome, run.provider)
-    const hint = refusedKey(failure, reason)
-      ? ` Check connection '${this.#ranOn(run.runId)}', or pick another model with /model.`
-      : ""
+    const ranOn = this.#ranOn(run.runId)
+    // Only a terminal can sign the office's own subscription in again.
+    const fix =
+      ranOn === OFFICE && run.provider?.env[AUTH_FILE_ENV]
+        ? "Run `opencorp onboard` in a terminal to sign in again"
+        : `Check connection '${ranOn}'`
+    const hint = refusedKey(failure, reason) ? ` ${fix}, or pick another model with /model.` : ""
     const what = staticPathOf(id) === this.#chat.summarizer ? "Summarizing the older messages" : "The reply"
     this.#notice(`${what} failed (${reason}). Send your message again.${hint}`)
     this.#deaths = 0

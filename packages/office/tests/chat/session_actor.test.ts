@@ -1085,6 +1085,35 @@ test("an office connection's ChatGPT tokens, as they are when a run fails, never
   }
 })
 
+test("a reply on an office connection whose ChatGPT sign-in was refused says to sign in again with opencorp onboard", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  await writePrivate(
+    path.join(o.office.connections.dir, "office.json"),
+    JSON.stringify({ method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } }),
+  )
+  const creds = new OAuthCredentials({
+    accessToken: "office-access-0123456789",
+    refreshToken: "office-refresh-0123456789",
+    expiresAt: Date.now() / 1000 + 3600,
+    accountId: "office-account-0123456789",
+  })
+  await new AuthStore(o.office.connections.authFile("office")).save("openai", creds, "gpt-5.5")
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const { worker, handlers } = workers[0]!
+  handlers.event(worker, { type: "event", name: "NodeStarted", data: { node_id: "chat#0/reply" } })
+  const failure = { node_id: "chat#0/reply", cause_type: "AuthError", message: "OpenAI refused the sign-in" }
+  handlers.result(worker, { type: "result", status: "failed", run_id: actor.runId!, output: null, failure, waits: [] })
+  handlers.exited(worker, 1)
+  await waitFor(() => errors(o, sid).length === 1, { what: "the failed reply" })
+  expect(errors(o, sid)[0]).toEndWith(
+    "Send your message again. Run `opencorp onboard` in a terminal to sign in again, or pick another model with /model.",
+  )
+})
+
 test("a message after end is refused as ending", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
