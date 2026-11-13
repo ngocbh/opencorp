@@ -32,6 +32,10 @@ export class ReachPaths {
   get provider(): string {
     return path.join(this.dir, "provider.json")
   }
+  /** The ChatGPT subscription's sign-in when `provider` is one: yian's own auth store. */
+  get auth(): string {
+    return path.join(this.dir, "auth.json")
+  }
   /** The generated configs, the wrapper and the exit-status files. */
   get ssh(): string {
     return path.join(this.dir, "ssh")
