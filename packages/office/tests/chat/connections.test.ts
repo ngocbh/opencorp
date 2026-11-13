@@ -760,6 +760,26 @@ test("an office.json on a subscription keeps a connection's rules: openai, no ke
   expect(await keyed.info(OFFICE)).toMatchObject({ method: "api_key", provider: "anthropic" })
 })
 
+test("a sign-in that is a symlink is refused before yian sees it, naming no path", async () => {
+  const root = tempDir()
+  const c = new Connections(
+    await officeDir(root, { method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } }),
+  )
+  await c.put("chatgpt", subscription())
+  const elsewhere = path.join(root, "elsewhere.json")
+  await writePrivate(elsewhere, "{}")
+  for (const name of [OFFICE, "chatgpt"]) {
+    fs.symlinkSync(elsewhere, c.authFile(name))
+    const error = await raised(() => c.resolve(name, null))
+    expect(error).toBeInstanceOf(ProviderError)
+    const fix = name === OFFICE ? "run `opencorp onboard` to sign in again" : "remove it and connect again"
+    expect((error as Error).message).toBe(
+      `connection '${name}' has a sign-in that isn't a regular file of this user, such as a symlink; ${fix}`,
+    )
+    expect((error as Error).message).not.toContain(root)
+  }
+})
+
 test("a subscription without its sign in fails clearly", async () => {
   const c = new Connections(await officeDir(tempDir()))
   await c.put("chatgpt", subscription())

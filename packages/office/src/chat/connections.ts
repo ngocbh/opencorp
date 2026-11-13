@@ -399,10 +399,15 @@ export class Connections {
     const env: Record<string, string> = { ...conn.env }
     if (conn.method === "subscription") {
       const auth = this.authFile(name)
-      if (!isFile(auth)) {
-        // Without its store, yian would fall back to no credentials at all.
-        const fix = name === OFFICE ? "run `opencorp onboard` to sign in again" : "remove it and connect again"
-        throw new ProviderError(`connection '${name}' has no sign-in; ${fix}`)
+      const fix = name === OFFICE ? "run `opencorp onboard` to sign in again" : "remove it and connect again"
+      // Not followed: yian would refuse a symlink only once the run starts, in words that hide this fix.
+      const st = fs.lstatSync(auth, { throwIfNoEntry: false })
+      // Without its store, yian would fall back to no credentials at all.
+      if (st === undefined) throw new ProviderError(`connection '${name}' has no sign-in; ${fix}`)
+      if (!st.isFile() || st.uid !== process.geteuid!()) {
+        throw new ProviderError(
+          `connection '${name}' has a sign-in that isn't a regular file of this user, such as a symlink; ${fix}`,
+        )
       }
       env[AUTH_FILE_ENV] = auth
     }
