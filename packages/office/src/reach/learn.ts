@@ -20,6 +20,7 @@ import {
   lexists,
   type ModelCheck,
   OPENAI_AUTH,
+  removePendingSignIn,
   runSetup,
   signInRemedy,
   SUBSCRIPTION,
@@ -504,6 +505,8 @@ export async function learnProvider(
       await askProviderTo(file, prompter, { listers, checkModel, last, signIn: { file: paths.auth, auth, signal } }),
       paths.auth,
     )
+  // Left by a check stopped hard: it was never checked.
+  removePendingSignIn(paths.auth)
   if (!lexists(file)) {
     prompter.say(`Learning needs a model. Its connection is kept in ${file}, readable only by you.`)
     return ask()

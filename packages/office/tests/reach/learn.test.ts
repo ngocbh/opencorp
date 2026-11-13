@@ -554,7 +554,10 @@ test("learnProvider can sign in to a ChatGPT subscription, keeps it in hq/auth.j
   // Only the variable is added: the rest of the run's env is the worker's, as for a key.
   expect(first.env).toEqual({ YIAN_AUTH_FILE: paths.auth })
   expect(first.llm_config).toEqual(SUBSCRIBED_LLM)
-  expect(checked.map((p) => [p.llm_config, p.env])).toEqual([[SUBSCRIBED_LLM, { YIAN_AUTH_FILE: paths.auth }]])
+  // Checked on the new sign-in while it waits beside hq/auth.json.
+  const pending = path.join(paths.dir, "auth.new.json")
+  expect(checked.map((p) => [p.llm_config, p.env])).toEqual([[SUBSCRIBED_LLM, { YIAN_AUTH_FILE: pending }]])
+  expect(fs.existsSync(pending)).toBe(false)
   expect(JSON.parse(fs.readFileSync(paths.provider, "utf8"))).toEqual({ method: "subscription", llm_config: SUBSCRIBED_LLM })
   expect(fs.statSync(paths.auth).mode & 0o777).toBe(0o600)
   // What the learning run scrubs from what reaches the model and the terminal, and refuses to save.
@@ -674,6 +677,16 @@ async function expiredHome(model = "gpt-5.5") {
 
 const REFUSED = new AuthError("OpenAI authentication request failed (HTTP 401, refresh_token_expired); sign in again", {
   status: 401,
+})
+
+test("learning removes a sign-in a stopped check left waiting beside hq/auth.json", async () => {
+  const { paths } = await expiredHome()
+  const pending = path.join(paths.dir, "auth.new.json")
+  await new AuthStore(pending).save("openai", tokens("stray", 3600), "gpt-5.5")
+  const subscription = fakeSubscription({ refreshed: tokens("new", 3600) })
+  await learnProvider(paths, new Script([]), { listers: NO_LISTING, checkModel: async () => null, auth: subscription.auth })
+  expect(fs.existsSync(pending)).toBe(false)
+  expect(fs.existsSync(`${pending}.lock`)).toBe(false)
 })
 
 test("an expired sign-in that refreshes is used without asking, its new tokens saved", async () => {

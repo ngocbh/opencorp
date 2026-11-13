@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { PassThrough, Readable, Writable } from "node:stream"
 import { fileURLToPath } from "node:url"
 import { afterEach, expect, test } from "bun:test"
@@ -29,6 +29,7 @@ import {
   ensureProvider,
   HOW_SIGN_IN,
   type Listers,
+  pendingSignIn,
   MAX_KEY_CHARS,
   type ModelCheck,
   type ProviderOptions,
@@ -929,21 +930,25 @@ function hqDir(): { dir: string; target: string; auth: string } {
   return { dir, target: join(dir, "provider.json"), auth: join(dir, "auth.json") }
 }
 
-/** A model check that, before answering with the next of `problems`, finds the run's `YIAN_AUTH_FILE` naming `auth`,
- *  a 0600 file holding the fake sign-in for the model checked, and no provider file at `target` yet. */
+/** A model check that, before answering with the next of `problems`, finds the run's `YIAN_AUTH_FILE` naming the
+ *  sign-in waiting beside `auth`, a 0600 file holding the fake sign-in for the model checked, and `target` and `auth`
+ *  as they were before. */
 function signedInCheck(
   target: string,
   auth: string,
   ...problems: (string | null)[]
 ): ModelCheck & { checked: unknown[] } {
   const check = answers(...problems)
+  const before = [target, auth].map((file) => (existsSync(file) ? readFileSync(file, "utf8") : null))
   const signedIn: ModelCheck = async (provider) => {
-    expect(provider.env[AUTH_FILE_ENV]).toBe(auth)
-    expect(mode(auth)).toBe(0o600)
-    const store = new AuthStore(auth)
+    const pending = pendingSignIn(auth)
+    expect(pending).toBe(join(dirname(auth), "auth.new.json"))
+    expect(provider.env[AUTH_FILE_ENV]).toBe(pending)
+    expect(mode(pending)).toBe(0o600)
+    const store = new AuthStore(pending)
     expect(store.savedSecrets("openai")).toEqual([ACCESS_TOKEN, REFRESH_TOKEN, ACCOUNT])
     expect(store.selection("openai")).toMatchObject({ method: "subscription", model: provider.llm_config?.model })
-    expect(existsSync(target)).toBe(false)
+    expect([target, auth].map((file) => (existsSync(file) ? readFileSync(file, "utf8") : null))).toEqual(before)
     return check(provider)
   }
   return Object.assign(signedIn, { checked: check.checked })
@@ -987,7 +992,7 @@ test("a ChatGPT subscription signs in with a device code, and its model is check
   expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ method: "subscription", llm_config: llm })
   expect(mode(target)).toBe(0o600)
   expect(mode(auth)).toBe(0o600)
-  expect(readdirSync(dir).sort()).toEqual([".lock", "auth.json", "auth.json.lock", "provider.json"])
+  expect(readdirSync(dir).sort()).toEqual([".lock", "auth.json", "provider.json"])
   expect(new AuthStore(auth).selection("openai")).toMatchObject({ method: "subscription", model: "gpt-5.5" })
   noToken(ask.seen)
   for (const name of readdirSync(dir).filter((name) => name !== "auth.json")) {
@@ -1049,8 +1054,7 @@ test("a subscription whose model doesn't answer keeps its sign-in to try again, 
   expect(subscription.checked).toHaveLength(2)
   expect(keyed.checked).toEqual([{ provider: "openai", api_key: KEY, model: "gpt-5.5" }])
   expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ llm_config: { provider: "openai", api_key: KEY, model: "gpt-5.5" } })
-  // yian keeps the store's lock file.
-  expect(readdirSync(dir).sort()).toEqual([".lock", "auth.json.lock", "provider.json"])
+  expect(readdirSync(dir).sort()).toEqual([".lock", "provider.json"])
   noToken(ask.seen)
 })
 
@@ -1068,18 +1072,39 @@ test("a subscription's model check that yian tells to run yian auth says to set 
   for (const line of ask.seen) expect(line).not.toContain("yian auth")
 })
 
-test("a model check stopped by Ctrl-C removes the sign-in", async () => {
+test("a model check stopped by Ctrl-C removes the new sign-in and leaves the old provider and sign-in as they were", async () => {
   const { dir, target, auth } = hqDir()
-  const fake = fakeSubscription()
+  const old = '{"method": "subscription", "llm_config": {"provider": "openai", "model": "gpt-4.1"}}'
+  writeFileSync(target, old, { mode: 0o600 })
+  writeFileSync(auth, "the old sign-in", { mode: 0o600 })
   const interrupt = new KeyboardInterrupt()
-  const check: ModelCheck = async () => {
-    expect(existsSync(auth)).toBe(true)
+  const check = signedInCheck(target, auth)
+  const stopped: ModelCheck = async (provider) => {
+    await expect(check(provider)).rejects.toThrow("no problem left")
     throw interrupt
   }
   const ask = new Script(["openai", "", ""])
-  const error = await rejection(askProviderTo(target, ask, { listers: NO_LISTING, checkModel: check, signIn: { file: auth, auth: fake.auth } }))
+  const error = await rejection(
+    askProviderTo(target, ask, { listers: NO_LISTING, checkModel: stopped, signIn: { file: auth, auth: fakeSubscription().auth } }),
+  )
   expect(error).toBe(interrupt)
-  expect(readdirSync(dir)).toEqual(["auth.json.lock"])
+  expect(readdirSync(dir).sort()).toEqual(["auth.json", "provider.json"])
+  expect([readFileSync(target, "utf8"), readFileSync(auth, "utf8")]).toEqual([old, "the old sign-in"])
+})
+
+test("a sign-in a stopped check left waiting is removed when the picker starts", async () => {
+  const { dir, target, auth } = hqDir()
+  await new AuthStore(pendingSignIn(auth)).save("openai", fakeSubscription().creds, "gpt-5.5")
+  expect(readdirSync(dir).sort()).toEqual(["auth.new.json", "auth.new.json.lock"])
+  const seen: string[][] = []
+  const ask = new Script(["openai", "2", KEY, ""])
+  const check: ModelCheck = async (provider) => {
+    seen.push(readdirSync(dir).sort())
+    return answers(null)(provider)
+  }
+  await askProviderTo(target, ask, { listers: NO_LISTING, checkModel: check, signIn: { file: auth, auth: fakeSubscription().auth } })
+  expect(seen).toEqual([[]])
+  expect(readdirSync(dir).sort()).toEqual([".lock", "provider.json"])
 })
 
 test("with an API key, openai asks today's questions and removes a sign-in left from before", async () => {

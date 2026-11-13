@@ -547,14 +547,33 @@ export async function removeSignIn(file: string): Promise<void> {
   }
 }
 
-/** Saves `creds` for `model` to `file` (0600, yian's own store), in place of what was there. Throws `OnboardError`,
- *  whose message names the file, never a token. */
+/** Where a new sign-in for `file` waits while its model is checked: beside it, so that taking it is a rename, and a
+ *  hard stop during the check leaves the old sign-in, and the provider it was checked with, as they were. */
+export function pendingSignIn(file: string): string {
+  return file.endsWith(".json") ? `${file.slice(0, -".json".length)}.new.json` : `${file}.new`
+}
+
+/** Removes a sign-in waiting for `file` and its lock file, which only a stopped check leaves behind; a symlink is
+ *  removed, never followed. Throws `OnboardError`. */
+export function removePendingSignIn(file: string): void {
+  const pending = pendingSignIn(file)
+  for (const leftover of [pending, `${pending}.lock`]) {
+    try {
+      fs.rmSync(leftover, { force: true })
+    } catch (error) {
+      const code = errnoCode(error)
+      if (code === undefined) throw error
+      throw new OnboardError(`can't remove ${leftover}: ${code}`)
+    }
+  }
+}
+
+/** Saves `creds` for `model` (yian's own store, 0600) to wait for `file`, in place of any left there. Throws
+ *  `OnboardError`, whose message names the file, never a token. */
 async function saveSignIn(file: string, creds: OAuthCredentials, model: string): Promise<void> {
-  const store = new AuthStore(file)
+  removePendingSignIn(file)
   try {
-    // A sign-in left there that can't be read would stop the save.
-    await store.delete()
-    await store.save("openai", creds, model)
+    await new AuthStore(pendingSignIn(file)).save("openai", creds, model)
   } catch (error) {
     if (!(error instanceof AuthError)) throw error
     // yian's store says which file and how to fix it, never a value.
@@ -562,8 +581,22 @@ async function saveSignIn(file: string, creds: OAuthCredentials, model: string):
   }
 }
 
-/** Saves `creds` to `file`, then whether `provider`'s model answers `checkModel` run with that sign-in, as `answers`
- *  checks; the sign-in is removed again unless it does. */
+/** Moves the sign-in waiting for `file` into place, over any there. Throws `OnboardError`. */
+function takeSignIn(file: string): void {
+  const pending = pendingSignIn(file)
+  try {
+    fs.renameSync(pending, file)
+  } catch (error) {
+    const code = errnoCode(error)
+    if (code === undefined) throw error
+    throw new OnboardError(`can't move the sign-in to ${file}: ${code}`)
+  }
+  // Its lock guarded the file that is now `file`, which has its own.
+  removePendingSignIn(file)
+}
+
+/** Saves `creds` to wait for `file`, then whether `provider`'s model answers `checkModel` run with that sign-in, as
+ *  `answers` checks; the waiting sign-in is removed again unless it does. */
 async function signedInAnswers(
   prompter: Prompter,
   provider: Provider,
@@ -579,13 +612,16 @@ async function signedInAnswers(
   })
   let works: boolean
   try {
-    works = check === undefined || (await answers(prompter, withSignIn(provider, file), check))
+    works = check === undefined || (await answers(prompter, withSignIn(provider, pendingSignIn(file)), check))
   } catch (error) {
-    // The error that stopped the check is the one to throw.
-    await removeSignIn(file).catch(() => {})
+    try {
+      removePendingSignIn(file)
+    } catch {
+      // The error that stopped the check is the one to throw; the next start removes it.
+    }
     throw error
   }
-  if (!works) await removeSignIn(file)
+  if (!works) removePendingSignIn(file)
   return works
 }
 
@@ -615,8 +651,8 @@ async function answers(prompter: Prompter, provider: Provider, checkModel: Model
 }
 
 /** Asks for a provider until yian takes it and its model answers `checkModel`, starting from the answers in
- *  `last`; only Ctrl-C or the input ending stops it. With `signIn`, a ChatGPT subscription's sign-in is saved to
- *  `signIn.file` and the model checked with it; it stays only once the model answers. */
+ *  `last`; only Ctrl-C or the input ending stops it. With `signIn`, a ChatGPT subscription's sign-in is saved to wait
+ *  beside `signIn.file` (`pendingSignIn`) and the model checked with it; it stays only once the model answers. */
 async function workingProvider(
   prompter: Prompter,
   checkModel: ModelCheck | undefined,
@@ -734,9 +770,11 @@ export async function askProvider(
  * Asks the owner with init's picker until the model answers `checkModel`, then writes the provider to `file` (0600; a
  * private folder of this user) and resolves to it. Throws as `askProvider` does.
  *
- * With `signIn`, openai may sign in to a ChatGPT subscription: its sign-in is saved to `signIn.file` and the model
- * checked with it before `file` is written, and it's removed again when the model doesn't answer, the check is
- * stopped or `file` can't be written. Any other provider removes a sign-in left there.
+ * With `signIn`, openai may sign in to a ChatGPT subscription. Its sign-in waits beside `signIn.file` while the model
+ * is checked with it, and is removed when the model doesn't answer or the check is stopped, so a hard stop leaves the
+ * old sign-in and provider as they were. Once the model answers, it is moved to `signIn.file` just before `file` is
+ * written, and removed again if `file` can't be written. Any other provider removes a sign-in left there. A sign-in
+ * left waiting by a stopped check is removed first.
  */
 export async function askProviderTo(
   file: string,
@@ -744,9 +782,13 @@ export async function askProviderTo(
   options: Omit<ProviderOptions, "stdin"> & { signIn?: SignIn },
 ): Promise<Provider> {
   const { signIn } = options
+  if (signIn !== undefined) removePendingSignIn(signIn.file)
   const provider = await workingProvider(prompter, options.checkModel, options.last ?? {}, options.listers, signIn)
   const subscription = isSubscription(provider)
-  if (signIn !== undefined && !subscription) await removeSignIn(signIn.file)
+  if (signIn !== undefined) {
+    if (subscription) takeSignIn(signIn.file)
+    else await removeSignIn(signIn.file)
+  }
   try {
     await writeProvider(file, provider)
   } catch (error) {
