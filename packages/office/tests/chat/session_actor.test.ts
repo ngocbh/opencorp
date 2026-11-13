@@ -1064,24 +1064,27 @@ test("an office connection's ChatGPT tokens, as they are when a run fails, never
   const runId = actor.runId!
   const { worker, handlers } = workers[0]!
   expect(worker.job.llm_config).toEqual({ provider: "openai", model: "gpt-5.5" })
-  // yian refreshed the tokens during the run.
+  // yian refreshed the tokens during the run; the old access token may still be quoted.
   await new AuthStore(auth).save("openai", tokens(2), "gpt-5.5")
   const fresh = tokens(2)
+  const old = tokens(1)
   const failure = {
     node_id: "chat",
     cause_type: "AuthError",
     message: `refused ${fresh.accessToken} ${"x".repeat(900)}`,
-    details: [fresh.refreshToken, fresh.accountId],
+    details: [fresh.refreshToken, fresh.accountId, old.accessToken, old.refreshToken],
   }
   handlers.result(worker, { type: "result", status: "failed", run_id: runId, output: null, failure, waits: [] })
   handlers.exited(worker, 1)
   await waitFor(() => status(o, sid) === "failed" && seen.length === 2, { what: "the failure" })
   const [[, , frame]] = seen as [[unknown, string, { failure: typeof failure }]]
   expect(frame.failure.message).toStartWith("refused [redacted] xxx")
-  expect(frame.failure.details).toEqual(["[redacted]", "[redacted]"])
+  expect(frame.failure.details).toEqual(["[redacted]", "[redacted]", "[redacted]", "[redacted]"])
   const stored = JSON.stringify([session(o, sid), o.office.store.getRun(runId)])
   for (const text of [JSON.stringify(seen), o.logs.join("\n"), stored]) {
-    for (const secret of [fresh.accessToken, fresh.refreshToken, fresh.accountId]) expect(text).not.toContain(secret)
+    for (const secret of [fresh.accessToken, fresh.refreshToken, fresh.accountId, old.accessToken, old.refreshToken]) {
+      expect(text).not.toContain(secret)
+    }
   }
 })
 

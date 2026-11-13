@@ -1555,6 +1555,8 @@ export class SessionActor implements LiveCalls {
       // The office may have stopped during the awaits above.
       if (this.#closed) throw stopping()
       run.provider = provider
+      // Read before the run starts, so a token its first call refreshes away is still scrubbed from its failure.
+      runSecrets(provider)
       run.ranOn = { name, model }
       run.defaultPrice = defaultPrice
       run.seed = seed

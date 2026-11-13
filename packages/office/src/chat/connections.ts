@@ -576,14 +576,29 @@ export function runSecrets(provider: Pick<Provider, "llm_config" | "env">): stri
   if (typeof key === "string" && key !== "") found.push(key)
   const auth = provider.env[AUTH_FILE_ENV]
   if (auth) {
+    let seen = SEEN.get(auth)
+    if (seen === undefined) SEEN.set(auth, (seen = new Set()))
     try {
-      found.push(...new AuthStore(auth).savedSecrets("openai"))
+      for (const secret of new AuthStore(auth).savedSecrets("openai")) {
+        // Moved to the end, so the oldest go first.
+        seen.delete(secret)
+        seen.add(secret)
+      }
     } catch (error) {
       if (!(error instanceof AuthError)) throw error
     }
+    while (seen.size > MAX_SEEN) seen.delete(seen.values().next().value!)
+    found.push(...seen)
   }
   return found
 }
+
+/** Every token `runSecrets` read from each sign-in file in this process: an old access token stays valid, and may be
+ *  quoted, after a refresh replaced it. */
+const SEEN = new Map<string, Set<string>>()
+
+/** The most tokens kept per sign-in file: about ten refreshes' worth, each older one long expired. */
+const MAX_SEEN = 32
 
 /** The sha256 hex of `provider`'s key, as yian identifies keys; null without one. */
 export function keyId(provider: Provider): string | null {
