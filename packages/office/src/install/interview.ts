@@ -2,13 +2,13 @@
  *  remote), and the draft without a terminal. */
 import { type FunctionTool, loadFlow, type ToolContext, tool } from "@ngocbh/yian"
 import { hashPassword, passwordProblem } from "../auth/passwords.ts"
-import { loadProvider, Provider } from "../chat/provider.ts"
+import type { Provider } from "../chat/provider.ts"
 import { type Draft, type InitOutput, draftFromOutput, draftProblems, fieldProblems } from "../company/draft.ts"
 import { pyJson, strip } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
 import { checkCompanyTool } from "../tools/company/draft.ts"
 import initYaml from "./flows/init.yaml" with { type: "file" }
-import { type LoginDefaults, loginDefaults, runSetup, slug } from "./onboard.ts"
+import { type LoginDefaults, loginDefaults, runSetup, setupProvider, slug } from "./onboard.ts"
 import { KeyboardInterrupt, NoTerminal, OnboardError, type Prompter, TRIES, clean } from "./prompts.ts"
 
 /** What the owner is asked after the summary. */
@@ -297,7 +297,8 @@ export async function runInitFlow(
 
 /**
  * The new company with its CEO's password hash, and the git remote URL (empty for none), from the init flow run
- * with the model in the provider file `file`, starting from `known`.
+ * with the model in the office's setup connection `file` (on a subscription, with the sign-in beside it), starting
+ * from `known`.
  *
  * A missing provider file is an empty provider, so the run fails as a `ModelError`. Rejects as `runInitFlow` does,
  * and with `ProviderError` when the provider file can't be used.
@@ -308,7 +309,7 @@ export async function initFlow(
   known: Known,
   defaults: LoginDefaults = loginDefaults,
 ): Promise<[Draft, string]> {
-  const provider = await loadProvider(file, Provider.parse)
+  const provider = await setupProvider(file)
   const output = await runInitFlow(provider, prompter, known, defaults)
   return [draftFromOutput(output), output.remote]
 }

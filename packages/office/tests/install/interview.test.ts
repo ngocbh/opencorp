@@ -514,6 +514,21 @@ test("init flow gives the draft with the hash and the remote apart", async () =>
   expect(url).toBe("git@example.com:a.git")
 })
 
+test("init flow on a subscription office.json runs on the sign-in beside it", async () => {
+  const dir = tempDir()
+  const file = path.join(dir, "office.json")
+  await writePrivate(file, JSON.stringify({ method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } }))
+  // A sign-in the run can't read, so it stops reading it, before any request.
+  const auth = path.join(dir, "office.auth.json")
+  await writePrivate(auth, "{nope")
+  const error = await initFlow(file, owner(), {}, login).then(
+    () => null,
+    (e: unknown) => e as Error,
+  )
+  expect(error).toBeInstanceOf(ModelError)
+  expect(error!.message).toContain(`Credential storage at ${auth}`)
+})
+
 test.each([
   ["--company", { company: " " }], ["--name", { name: " " }], ["--handle", { handle: "Me" }],
   ["--agent", { agent: " " }], ["--agent-handle", { agent_handle: "Bad_Handle" }],

@@ -199,6 +199,14 @@ test(
       expect(choose).toMatchObject({ type: "choose", question: "Model provider" })
       expect(choose.options).toContain("openai")
       proc.stdin.write('{"answer":"openai"}\n')
+      // The key, not the ChatGPT subscription, whose device sign-in would reach OpenAI.
+      expect(await next()).toMatchObject({
+        type: "choose",
+        question: "How do you sign in?",
+        options: ["ChatGPT subscription", "API key"],
+        default: "ChatGPT subscription",
+      })
+      proc.stdin.write('{"answer":"API key"}\n')
       expect((await next()).type).toBe("secret")
       proc.stdin.end()
       const code = await Promise.race([exited, Bun.sleep(20_000).then(() => "timed out" as const)])

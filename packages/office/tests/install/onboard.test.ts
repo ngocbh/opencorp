@@ -854,7 +854,7 @@ test(
     fs.writeFileSync(path.join(dir, "office", "hq.json"), '{"tcp": false}')
     const environ = { ...gitEnv(selfSpawnEnv(process.env)), HOME: tempDir() }
     try {
-      await onboard(dir, new Script(["lan", "openai", "", ""]), {
+      await onboard(dir, new Script(["lan", "openai", "2", "", ""]), {
         source,
         mode: "background",
         host: daemonHost(dir, spawned),
