@@ -996,6 +996,21 @@ test("providerSecrets reads a subscription's tokens as they are now, and the log
   expect(providerSecrets(Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: KEY } }), base)).toEqual([KEY])
 })
 
+test("a model check on the sign-in YIAN_AUTH_FILE names says why without any copy of what that sign-in sends", async () => {
+  const dir = tempDir()
+  const auth = path.join(dir, "auth.json")
+  // A key login, not a subscription: yian sends a subscription only to OpenAI's own host, and this test reaches none.
+  await new AuthStore(auth).save("openai", new ApiKeyCredentials(MIXED_KEY), "gpt-5.5")
+  const url = await refusingLlm(`bad key: ${keyCopies(MIXED_KEY).join(" and ")}`)
+  const provider = Provider.parse({
+    llm_config: { provider: "openai", model: "gpt-5.5" },
+    env: { YIAN_AUTH_FILE: auth, OPENAI_BASE_URL: `${url}/v1` },
+  })
+  const problem = await modelProblem(provider, { env: { HOME: dir } })
+  expect(problem).toContain("bad key: [redacted] and [redacted] and [redacted]")
+  for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) expect(problem).not.toContain(copy)
+})
+
 test("a model that never answers times out", async () => {
   const fake = await fakeLlm()
   fake.script({ hold: true })

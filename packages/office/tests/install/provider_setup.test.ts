@@ -1092,6 +1092,26 @@ test("a model check stopped by Ctrl-C removes the new sign-in and leaves the old
   expect([readFileSync(target, "utf8"), readFileSync(auth, "utf8")]).toEqual([old, "the old sign-in"])
 })
 
+test("a provider file that can't be written after the model answers removes the sign-in", async () => {
+  const { dir, target, auth } = hqDir()
+  // A folder where the file goes: the write fails.
+  mkdirSync(target, { mode: 0o700 })
+  const ask = new Script(["openai", "", ""])
+  const error = await rejection(
+    askProviderTo(target, ask, {
+      listers: NO_LISTING,
+      checkModel: answers(null),
+      signIn: { file: auth, auth: fakeSubscription().auth },
+    }),
+  )
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toStartWith(`can't write ${target}`)
+  expect(existsSync(auth)).toBe(false)
+  expect(existsSync(pendingSignIn(auth))).toBe(false)
+  noToken([error.message])
+  expect(readdirSync(dir).filter((name) => name.startsWith("auth"))).toEqual(["auth.json.lock"])
+})
+
 test("a sign-in a stopped check left waiting is removed when the picker starts", async () => {
   const { dir, target, auth } = hqDir()
   await new AuthStore(pendingSignIn(auth)).save("openai", fakeSubscription().creds, "gpt-5.5")
