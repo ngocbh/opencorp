@@ -11,11 +11,13 @@ import { isDeepStrictEqual } from "node:util"
 import { expect, onTestFinished, test } from "bun:test"
 import type { Device } from "@opencorp/protocol"
 import { loadFlow } from "@ngocbh/yian"
+import { ApiKeyCredentials, AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
 import { lockFile } from "@ngocbh/yian/platform"
 import { stringify } from "yaml"
 import { deviceName, Identity, readIdentity, writeIdentity } from "../../src/auth/identity.ts"
 import { hashPassword } from "../../src/auth/passwords.ts"
 import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
+import { ConnectionFile } from "../../src/chat/connections.ts"
 import { Provider } from "../../src/chat/provider.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { writeCompany } from "../../src/company_template/index.ts"
@@ -27,11 +29,13 @@ import {
   type OnboardOptions,
   onboard,
   ownerDefaults,
+  providerSecrets,
   redact,
   runSetup,
   setupConnectionFile,
   stopToTopUp,
   WHO,
+  withSignIn,
 } from "../../src/install/onboard.ts"
 import * as fallback from "../../src/install/fallback.ts"
 import { launch } from "../../src/install/launch.ts"
@@ -963,6 +967,33 @@ test("a model that quotes the key in another case or base64 says why without any
   )
   expect(problem).toContain("bad key: [redacted] and [redacted] and [redacted]")
   for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) expect(problem).not.toContain(copy)
+})
+
+test("providerSecrets reads a subscription's tokens as they are now, and the login yian's own store holds", async () => {
+  const dir = tempDir()
+  const auth = path.join(dir, "auth.json")
+  const tokens = (n: number) =>
+    new OAuthCredentials({
+      accessToken: `access-${n}-0123456789`,
+      refreshToken: `refresh-${n}-0123456789`,
+      expiresAt: Date.now() / 1000 + 3600,
+      accountId: "account-0123456789",
+    })
+  await new AuthStore(auth).save("openai", tokens(1), "gpt-5.5")
+  const subscription = withSignIn(
+    ConnectionFile.parse({ method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } }),
+    auth,
+  )
+  const base = { HOME: dir }
+  expect(providerSecrets(subscription, base)).toEqual(["access-1-0123456789", "refresh-1-0123456789", "account-0123456789"])
+  await new AuthStore(auth).save("openai", tokens(2), "gpt-5.5")
+  expect(providerSecrets(subscription, base)).toEqual(["access-2-0123456789", "refresh-2-0123456789", "account-0123456789"])
+  // openai with no key runs on the login in the run's HOME, which yian's own store holds.
+  const keyless = Provider.parse({ llm_config: { provider: "openai", model: "gpt-5.5" } })
+  expect(providerSecrets(keyless, base)).toEqual([])
+  await new AuthStore(path.join(dir, ".config", "yian", "auth.json")).save("openai", new ApiKeyCredentials(KEY), "gpt-5.5")
+  expect(providerSecrets(keyless, base)).toEqual([KEY])
+  expect(providerSecrets(Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: KEY } }), base)).toEqual([KEY])
 })
 
 test("a model that never answers times out", async () => {

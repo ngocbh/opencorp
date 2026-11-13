@@ -38,7 +38,10 @@ import { ReachPaths } from "../../src/reach/paths.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { AuthStore } from "@ngocbh/yian/llm_clients"
-import { HOW_SIGN_IN, providerSecrets } from "../../src/install/onboard.ts"
+import { OAuthCredentials } from "@ngocbh/yian/llm_clients"
+import { ConnectionFile } from "../../src/chat/connections.ts"
+import { HOW_SIGN_IN, providerSecrets, withSignIn } from "../../src/install/onboard.ts"
+import { workerEnv } from "../../src/worker/spawn.ts"
 import { ACCESS_TOKEN, ACCOUNT, fakeSubscription, NO_LISTING, REFRESH_TOKEN, Script } from "../install/helpers.ts"
 import { fakeHome, fakeRemote, freePort, reachCtx } from "./helpers.ts"
 
@@ -621,6 +624,40 @@ test("the learning run reads the sign-in YIAN_AUTH_FILE names", async () => {
   const got = await runLearn(provider, NO_INPUTS, state)
   expect(got.output).toBeNull()
   expect(got.message).toContain(`Credential storage at ${ctx.paths.auth}`)
+})
+
+/** Subscription tokens for `name`, expiring `inSeconds` from now. */
+function tokens(name: string, inSeconds: number): OAuthCredentials {
+  return new OAuthCredentials({
+    accessToken: `${name}-access-0123456789`,
+    refreshToken: `${name}-refresh-0123456789`,
+    expiresAt: Date.now() / 1000 + inSeconds,
+    accountId: ACCOUNT,
+  })
+}
+
+test("tokens yian refreshes during the run are scrubbed from command output with the old ones, and kept out of notes.md", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const old = tokens("old", -60)
+  const saved = await new AuthStore(ctx.paths.auth).save("openai", old, "gpt-5.5")
+  const provider = withSignIn(ConnectionFile.parse({ method: "subscription", llm_config: SUBSCRIBED_LLM }), ctx.paths.auth)
+  // As visit.ts makes it.
+  const state = new Learning(ctx, new Script(["1"]), new PassThrough(), () => providerSecrets(provider, workerEnv(ctx.env)), 49381)
+  onTestFinished(() => state.close())
+  // The run's first model call refreshes the expired tokens through yian's own store, which writes the new ones.
+  const fresh = tokens("new", 3600)
+  await new AuthStore(ctx.paths.auth).credentials("openai", saved.credentialId, { refresh: async () => fresh })
+  expect(new AuthStore(ctx.paths.auth).savedSecrets("openai")[0]).toBe(fresh.accessToken)
+  const result = JSON.parse(
+    await runShell({ command: `cat '${ctx.paths.auth}'; echo ${old.accessToken}`, why: "look" }, state),
+  ) as { stdout: string }
+  expect(result.stdout).toContain("[redacted]")
+  for (const token of [fresh.accessToken, fresh.refreshToken, old.accessToken]) expect(result.stdout).not.toContain(token)
+  const error = await rejection(saveAccess({ script: "echo {}\n", notes: `${fresh.refreshToken}\n`, risks: [] }, state))
+  expect(error.message).toBe(
+    "Not saved: notes.md: it holds the model's API key or sign-in token; SSH asks for passwords and Duo itself, so leave them out.",
+  )
 })
 
 /** Look-alike blanks that aren't shell whitespace, and invisible ones. */

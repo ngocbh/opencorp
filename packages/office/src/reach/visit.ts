@@ -19,6 +19,7 @@ import {
 } from "../install/onboard.ts"
 import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter } from "../install/prompts.ts"
 import { writePrivate } from "../secrets.ts"
+import { workerEnv } from "../worker/spawn.ts"
 import { classifyCheck, type Connection, connect, describe, ReachFailure, sameHealth, signIn } from "./connect.ts"
 import { type Learned, Learning, learnProvider, runLearn } from "./learn.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
@@ -348,7 +349,9 @@ async function learnPath(
     signal,
   })
   quietStdin(deps.stdin)
-  const state = new Learning(ctx, deps.prompter, deps.stdin, providerSecrets(provider), port, deps.now)
+  // Read again at each use: the run's first model call may refresh a subscription's tokens.
+  const secrets = () => providerSecrets(provider, workerEnv(ctx.env))
+  const state = new Learning(ctx, deps.prompter, deps.stdin, secrets, port, deps.now)
   // Masters started while learning keep their ControlPersist; a reconnect's start from the visit's config again.
   await writeSshFiles(ctx.paths, ctx.ssh, deps.sshIncludes, { persist: LEARNING_PERSIST_S })
   let learned: Learned

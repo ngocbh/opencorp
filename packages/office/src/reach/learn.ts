@@ -55,24 +55,38 @@ const CAPPED_CALL = "tool_limit"
 /** A one-time sign-in code as a link or `opencorp hq --json` shows it. */
 const SIGN_IN_CODE = /pair#[A-Za-z0-9_-]{22}(?![A-Za-z0-9_-])/g
 
-/** One learning run: the owner's terminal, the reach context, the model's key or sign-in tokens (never saved), the
- *  port, the clock, the commands asked for, the connection `save_access` left open, and the folder commands run in. */
+/** One learning run: the owner's terminal, the reach context, where the model's key or sign-in tokens come from
+ *  (never saved), the port, the clock, the commands asked for, the connection `save_access` left open, and the folder
+ *  commands run in. */
 export class Learning {
   readonly asking: Asking
   /** Each command the model asked to run, with its exit code, or null when it didn't run. */
   readonly commands: { command: string; code: number | null }[] = []
   connection: Connection | null = null
   #workDir: string | null = null
+  readonly #source: () => readonly string[]
+  readonly #seen = new Set<string>()
 
+  /** `secrets` is the key or tokens, or a function that reads them as they are now: yian refreshes a subscription's
+   *  tokens during the run. */
   constructor(
     readonly ctx: ReachContext,
     prompter: Prompter,
     readonly stdin: Readable,
-    readonly secrets: readonly string[],
+    secrets: readonly string[] | (() => readonly string[]),
     readonly port: number,
     readonly now: () => Date = () => new Date(),
   ) {
     this.asking = new Asking(prompter)
+    this.#source = typeof secrets === "function" ? secrets : () => secrets
+    // Before the run, which may replace them.
+    this.secrets()
+  }
+
+  /** The model's key or sign-in tokens as they are now, and every one seen before, which a command may still print. */
+  secrets(): string[] {
+    for (const secret of this.#source()) if (secret !== "") this.#seen.add(secret)
+    return [...this.#seen]
   }
 
   /** The empty private folder (0700) commands run in, made on first use: never the hq folder, whose files a command
@@ -90,7 +104,7 @@ export class Learning {
 
   /** `text` without any form of the model's key or sign-in tokens, or a one-time sign-in code. */
   scrub(text: string): string {
-    const keys = this.secrets.filter((key) => key !== "")
+    const keys = this.secrets()
     return (keys.length > 0 ? redact(text, [], keys) : text).replace(SIGN_IN_CODE, `pair#${REDACTED}`)
   }
 }
@@ -284,7 +298,7 @@ export async function saveAccess(files: ToSave, state: Learning): Promise<string
   // One path per run: a second would replace what the visit is about to use.
   if (state.connection !== null)
     throw new ReportedToolError("Not saved again: the path is saved and connected already; reply with one line for the owner.")
-  const problem = problemIn(files, state.secrets)
+  const problem = problemIn(files, state.secrets())
   if (problem !== null) throw new ReportedToolError(`Not saved: ${problem}.`)
   const { paths } = state.ctx
   const change = await withOwnerOrStop(state, async (p) => {

@@ -13,6 +13,7 @@ import {
   AuthError,
   type AuthRequest,
   AuthStore,
+  callCredentials,
   LLMConfig,
   type OAuthCredentials,
   OpenAIAuth,
@@ -515,19 +516,13 @@ export function withSignIn(provider: Provider, file: string): Provider {
   return Provider.parse({ llm_config, env: { ...env, [AUTH_FILE_ENV]: file }, prices })
 }
 
-/** The secrets a run on `provider` may send: its key, else the tokens of the sign-in its env names, as saved; none
- *  when that sign-in can't be read. */
-export function providerSecrets(provider: Provider): string[] {
-  const key = provider.llm_config?.api_key
-  if (typeof key === "string" && key) return [key]
-  const file = provider.env[AUTH_FILE_ENV]
-  if (!file) return []
-  try {
-    return [...new AuthStore(file).savedSecrets("openai")]
-  } catch (error) {
-    if (error instanceof AuthError) return []
-    throw error
-  }
+/** The secrets a run on `provider` in `base` (a worker's env from this process's by default) with `provider.env` on
+ *  top may send, as yian lists them now: its key, or the login it would use (the sign-in `YIAN_AUTH_FILE` names, or
+ *  yian's own store in the run's `HOME`) read again, so tokens refreshed since are in it. */
+export function providerSecrets(provider: Provider, base?: WorkerEnv): string[] {
+  const vars: Record<string, string | undefined> = { ...(base ?? workerEnv(process.env)), ...provider.env }
+  const env = (name: string) => (Object.hasOwn(vars, name) ? vars[name] : undefined)
+  return [...callCredentials(provider.llm_config, { env })]
 }
 
 /** Removes the sign-in at `file` through yian's own store, under its lock; the lock file stays, and nothing there is
@@ -1371,7 +1366,7 @@ export async function runSetup(
     message = error instanceof Error ? error.message : String(error)
   }
   if (message !== null) {
-    const secrets = providerSecrets(provider)
+    const secrets = providerSecrets(provider, base)
     // Every form of the key or sign-in tokens, as chat runs scrub theirs: yian scrubs a key only as written and
     // escaped, and a provider may quote it in another letter case or base64-encoded.
     if (secrets.length > 0) message = redactSecrets(message, [], secrets)
