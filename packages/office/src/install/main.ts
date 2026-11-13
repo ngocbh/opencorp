@@ -34,8 +34,10 @@ import {
   type Listers,
   type ModelCheck,
   modelProblem,
+  OPENAI_AUTH,
   onboard,
   SET_UP,
+  type SubscriptionAuth,
   WHO,
 } from "./onboard.ts"
 import { isTTY, KeyboardInterrupt, OnboardError, type Prompter, TtyPrompter } from "./prompts.ts"
@@ -60,6 +62,8 @@ export interface Setup {
   listers: Listers
   /** Checks the model answers before the provider is saved (`modelProblem`). */
   checkModel: ModelCheck
+  /** Makes yian's `OpenAIAuth` for a ChatGPT sign-in or its refresh (`OPENAI_AUTH`). */
+  auth: SubscriptionAuth
   /** Runs `opencorp init`. */
   init: typeof init
   /** Runs `opencorp onboard`. */
@@ -95,6 +99,7 @@ function defaults(given: Partial<Setup>): Setup {
     host: given.host ?? defaultHost(),
     listers: given.listers ?? LISTERS,
     checkModel: given.checkModel ?? modelProblem,
+    auth: given.auth ?? OPENAI_AUTH,
     init: given.init ?? init,
     onboard: given.onboard ?? onboard,
     offboard: given.offboard ?? offboard,
@@ -442,6 +447,7 @@ async function initCommand(args: Args, s: Setup): Promise<number> {
     s.init(home(args.home, s), prompter(args, stdin === undefined, s), {
       listers: s.listers,
       checkModel: s.checkModel,
+      auth: s.auth,
       known,
       mode: args.service,
       stdin,
@@ -460,6 +466,7 @@ async function onboardCommand(args: Args, s: Setup): Promise<number> {
     s.onboard(home(args.home, s), prompter(args, stdin === undefined, s, { [WHO]: args.handle ?? "" }), {
       listers: s.listers,
       checkModel: s.checkModel,
+      auth: s.auth,
       mode: args.service,
       stdin,
       source: args.from,

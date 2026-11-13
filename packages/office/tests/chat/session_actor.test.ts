@@ -3,6 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveEvent, Message } from "@opencorp/protocol"
 import {
@@ -1035,6 +1036,85 @@ test("an ending update that outlasts the wait still sends the run's run.updated"
   updates.at(-1)!(true)
   await waitFor(() => changed.length > before, { what: "the late run.updated" })
   expect(changed.slice(before)).toEqual([runId])
+})
+
+test("an office connection's ChatGPT tokens, as they are when a run fails, never reach a reason a hook or the store", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  await writePrivate(
+    path.join(o.office.connections.dir, "office.json"),
+    JSON.stringify({ method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } }),
+  )
+  const auth = o.office.connections.authFile("office")
+  const tokens = (n: number) =>
+    new OAuthCredentials({
+      accessToken: `office-access-${n}-0123456789`,
+      refreshToken: `office-refresh-${n}-0123456789`,
+      expiresAt: Date.now() / 1000 + 3600,
+      accountId: "office-account-0123456789",
+    })
+  await new AuthStore(auth).save("openai", tokens(1), "gpt-5.5")
+  const workers = scriptedWorker(o)
+  const seen: unknown[] = []
+  o.hooks.runFinished.push((...args) => void seen.push(args))
+  o.hooks.sessionEnded.push((...args) => void seen.push(args))
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const { worker, handlers } = workers[0]!
+  expect(worker.job.llm_config).toEqual({ provider: "openai", model: "gpt-5.5" })
+  // yian refreshed the tokens during the run; the old access token may still be quoted.
+  await new AuthStore(auth).save("openai", tokens(2), "gpt-5.5")
+  const fresh = tokens(2)
+  const old = tokens(1)
+  const failure = {
+    node_id: "chat",
+    cause_type: "AuthError",
+    message: `refused ${fresh.accessToken} ${"x".repeat(900)}`,
+    details: [fresh.refreshToken, fresh.accountId, old.accessToken, old.refreshToken],
+  }
+  handlers.result(worker, { type: "result", status: "failed", run_id: runId, output: null, failure, waits: [] })
+  handlers.exited(worker, 1)
+  await waitFor(() => status(o, sid) === "failed" && seen.length === 2, { what: "the failure" })
+  const [[, , frame]] = seen as [[unknown, string, { failure: typeof failure }]]
+  expect(frame.failure.message).toStartWith("refused [redacted] xxx")
+  expect(frame.failure.details).toEqual(["[redacted]", "[redacted]", "[redacted]", "[redacted]"])
+  const stored = JSON.stringify([session(o, sid), o.office.store.getRun(runId)])
+  for (const text of [JSON.stringify(seen), o.logs.join("\n"), stored]) {
+    for (const secret of [fresh.accessToken, fresh.refreshToken, fresh.accountId, old.accessToken, old.refreshToken]) {
+      expect(text).not.toContain(secret)
+    }
+  }
+})
+
+test("a reply on an office connection whose ChatGPT sign-in was refused says to sign in again with opencorp onboard", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  await writePrivate(
+    path.join(o.office.connections.dir, "office.json"),
+    JSON.stringify({ method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } }),
+  )
+  const creds = new OAuthCredentials({
+    accessToken: "office-access-0123456789",
+    refreshToken: "office-refresh-0123456789",
+    expiresAt: Date.now() / 1000 + 3600,
+    accountId: "office-account-0123456789",
+  })
+  await new AuthStore(o.office.connections.authFile("office")).save("openai", creds, "gpt-5.5")
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const { worker, handlers } = workers[0]!
+  handlers.event(worker, { type: "event", name: "NodeStarted", data: { node_id: "chat#0/reply" } })
+  const failure = { node_id: "chat#0/reply", cause_type: "AuthError", message: "OpenAI refused the sign-in" }
+  handlers.result(worker, { type: "result", status: "failed", run_id: actor.runId!, output: null, failure, waits: [] })
+  handlers.exited(worker, 1)
+  await waitFor(() => errors(o, sid).length === 1, { what: "the failed reply" })
+  expect(errors(o, sid)[0]).toEndWith(
+    "Send your message again. Run `opencorp onboard` in a terminal to sign in again, or pick another model with /model.",
+  )
 })
 
 test("a message after end is refused as ending", async () => {

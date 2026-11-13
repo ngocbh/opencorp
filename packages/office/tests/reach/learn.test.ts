@@ -748,7 +748,7 @@ test("a refresh that may work later stops learning, says to try again later, and
     expect(error).toBeInstanceOf(OnboardError)
     expect(error.message).toBe(
       `OpenAI didn't refresh the ChatGPT sign-in in ${paths.auth}: OpenAI authentication request failed ${shown};` +
-        " try `opencorp hq` again later",
+        " try again later",
     )
     expect(ask.seen).toEqual([])
     expect(fs.readFileSync(paths.auth, "utf8")).toBe(before)

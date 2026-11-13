@@ -31,6 +31,7 @@ import {
   redact,
   setupConnectionFile,
   setupLock,
+  type SubscriptionAuth,
   userGit,
 } from "./onboard.ts"
 import { OnboardError, type Prompter } from "./prompts.ts"
@@ -90,6 +91,8 @@ export interface InitOptions {
   loginDefaults?: LoginDefaults
   /** Runs the init flow (`initFlow` by default). */
   interview?: typeof initFlow
+  /** Makes yian's `OpenAIAuth` for a ChatGPT sign-in or its refresh (the real one by default). */
+  auth?: SubscriptionAuth
 }
 
 /**
@@ -158,8 +161,14 @@ async function initLocked(one: Launch, prompter: Prompter, options: InitOptions)
   const file = setupConnectionFile(one.office)
   // So setting the model up again in step 2 starts from step 1's answers.
   const answers: Answers = {}
-  const { listers, checkModel } = options
-  const wrote = await ensureProvider(one.office, prompter, { listers, stdin: options.stdin, checkModel, last: answers })
+  const { listers, checkModel, auth } = options
+  const wrote = await ensureProvider(one.office, prompter, {
+    listers,
+    stdin: options.stdin,
+    checkModel,
+    last: answers,
+    auth,
+  })
   prompter.say(`Model provider: ${wrote ? "saved to" : "up to date at"} ${file}`)
 
   prompter.step(
@@ -179,7 +188,7 @@ async function initLocked(one: Launch, prompter: Prompter, options: InitOptions)
       } catch (error) {
         if (!(error instanceof ModelError)) throw error
         if (await modelFailed(prompter, error.message)) {
-          await askProvider(one.office, prompter, { listers, checkModel, last: answers })
+          await askProvider(one.office, prompter, { listers, checkModel, last: answers, auth })
         }
       }
     }
@@ -219,6 +228,7 @@ async function initLocked(one: Launch, prompter: Prompter, options: InitOptions)
   await onboardLocked(one, prompter, {
     listers,
     checkModel,
+    auth,
     mode: options.mode,
     host,
     environ,

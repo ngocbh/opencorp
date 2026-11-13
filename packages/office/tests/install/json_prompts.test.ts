@@ -3,8 +3,13 @@ import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { PassThrough, Readable } from "node:stream"
 import { expect, test } from "bun:test"
+import fs from "node:fs"
+import path from "node:path"
 import { JsonPrompter } from "../../src/install/json_prompts.ts"
+import { ensureProvider, HOW_SIGN_IN, signInLine } from "../../src/install/onboard.ts"
 import { OnboardError } from "../../src/install/prompts.ts"
+import { tempDir } from "../helpers.ts"
+import { ACCESS_TOKEN, DEVICE_CODE, DEVICE_URL, fakeSubscription, NO_LISTING, REFRESH_TOKEN } from "./helpers.ts"
 
 const OFFICE = fileURLToPath(new URL("../..", import.meta.url))
 const PROMPTS = fileURLToPath(new URL("../../src/install/prompts.ts", import.meta.url))
@@ -188,4 +193,22 @@ test("an empty choice list is refused before anything is sent", async () => {
   const caught = await rejection(p.choose("Q", []))
   expect(caught).toBeInstanceOf(Error)
   expect(out.text).toBe("")
+})
+
+test("the setup screen gets the sign-in question, then the device link and code as a line it shows, and no token", async () => {
+  const office = path.join(tempDir(), "office")
+  fs.mkdirSync(office, { mode: 0o700 })
+  // openai, the subscription, its first model.
+  const [p, out] = prompter(["openai", "ChatGPT subscription", ""])
+  await ensureProvider(office, p, { listers: NO_LISTING, checkModel: async () => null, auth: fakeSubscription().auth })
+  const lines = sent(out)
+  expect(lines).toContainEqual({
+    type: "choose",
+    question: HOW_SIGN_IN,
+    options: ["ChatGPT subscription", "API key"],
+    default: "ChatGPT subscription",
+    typed: false,
+  })
+  expect(lines).toContainEqual({ type: "say", text: signInLine(DEVICE_URL, DEVICE_CODE) })
+  for (const token of [ACCESS_TOKEN, REFRESH_TOKEN]) expect(out.text).not.toContain(token)
 })

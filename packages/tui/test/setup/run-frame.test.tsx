@@ -23,6 +23,33 @@ test("steps and lines show in the transcript; with no question the spinner says 
   }
 })
 
+test("a ChatGPT device sign-in shows its link and code whole, and the transcript keeps them", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp init")
+  const url = "https://auth.openai.com/codex/device"
+  // The install's line (signInLine), as its JSON prompter sends it.
+  const line =
+    `Sign in to ChatGPT: open ${url} in a browser, on any device, and enter the code WXYZ-1234.` +
+    " Waiting (Ctrl-C stops it)..."
+  try {
+    const options = ["ChatGPT subscription", "API key"]
+    child.push({ type: "choose", question: "How do you sign in?", options, default: "ChatGPT subscription" })
+    await app.until((f) => f.includes("1. ChatGPT subscription") && f.includes("2. API key"))
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["ChatGPT subscription"])
+    child.push({ type: "say", text: line })
+    const f = await app.until((f) => f.includes("WXYZ-1234"))
+    expect(f).toContain(url)
+    expect(f).toContain("Working…")
+    child.end(0)
+    expect(await app.task).toBe(0)
+    expect(app.out()).toContain(`${line}\n`)
+  } finally {
+    await app.stop()
+  }
+})
+
 test("the header name is the command after install in the argv", () => {
   const argv = ["/bin/bun", "--no-install", "--no-env-file", "--config=/dev/null", "/c/main.ts", "install", "init"]
   expect(commandName([...argv, "--json-prompts"])).toBe("opencorp init")

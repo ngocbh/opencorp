@@ -7,7 +7,9 @@ import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
 import { FileLockError, isLocked, openSqlite, type Sqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
 import { type Identity, IdentityUnreadable, identityPath, loadIdentity } from "../auth/identity.ts"
-import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
+import { AuthError, AuthStore } from "@ngocbh/yian/llm_clients"
+import { ConnectionFile } from "../chat/connections.ts"
+import { loadProvider, type Provider, ProviderError } from "../chat/provider.ts"
 import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import type { RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
@@ -31,6 +33,7 @@ import { fsHelper, run } from "../sandbox/run.ts"
 import { latestVersion, newerStore, userVersion } from "../store/migrate.ts"
 import { storeProblem } from "../store/problem.ts"
 import { StoreError } from "../store/store.ts"
+import { plainAuthError } from "../worker/rpc.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import * as fallback from "./fallback.ts"
 import { readRegular } from "./files.ts"
@@ -40,9 +43,11 @@ import {
   checkProvider,
   checkSocket,
   damageMessage,
+  isSubscription,
   lexists,
   SET_UP,
   setupConnectionFile,
+  setupSignInFile,
   stopToTopUp,
   withDefaultModel,
 } from "./onboard.ts"
@@ -243,8 +248,8 @@ async function providerCheck(paths: OfficePaths): Promise<Check> {
     saved = await loadProvider(
       file,
       (data) => {
-        Provider.parse(data)
-        return checkProvider(data)
+        ConnectionFile.parseOffice(data)
+        return checkProvider(data, ConnectionFile.parseOffice)
       },
       { missingOk: false },
     )
@@ -259,6 +264,7 @@ async function providerCheck(paths: OfficePaths): Promise<Check> {
     if (code === undefined) throw error
     return { name: "provider", status: "fail", detail: `can't read ${file}: ${strerror(error) ?? code}` }
   }
+  if (isSubscription(saved)) return signInCheck(paths)
   const llm = saved.llm_config ?? {}
   const name = (typeof llm.provider === "string" && llm.provider) || "default provider"
   const login = Object.hasOwn(llm, "api_key") ? "key saved" : "yian's own login"
@@ -278,6 +284,39 @@ async function providerCheck(paths: OfficePaths): Promise<Check> {
     }
   }
   return { name: "provider", status: "ok", detail: `${name}, ${login}` }
+}
+
+/** The provider check of an office connection on a ChatGPT subscription: its sign-in is there, readable, private and
+ *  unexpired. Offline: an expired token is refreshed by the office's next run, not here. */
+async function signInCheck(paths: OfficePaths): Promise<Check> {
+  const file = setupConnectionFile(paths.office)
+  const auth = setupSignInFile(paths.office)
+  const fail = (problem: string): Check => ({
+    name: "provider",
+    status: "fail",
+    detail: `${file} signs in to a ChatGPT subscription, but ${problem}; run \`opencorp onboard\` to sign in again`,
+  })
+  if (!lexists(auth)) return fail(`its sign-in ${auth} is missing`)
+  const store = new AuthStore(auth)
+  try {
+    const selection = store.selection("openai")
+    if (selection?.method !== "subscription") return fail(`its sign-in ${auth} holds no ChatGPT sign-in`)
+    // No refresh: a token that expires soon throws instead.
+    await store.credentials("openai", selection.credentialId)
+  } catch (error) {
+    if (!(error instanceof AuthError)) throw error
+    // yian's store says which file and how to fix it; its plain errors hold no value either.
+    const why = error.message.replace(/\.$/, "")
+    if (!plainAuthError(error) || !why.includes("expired")) return fail(`its sign-in can't be read: ${why}`)
+    return {
+      name: "provider",
+      status: "warn",
+      detail:
+        "openai, ChatGPT subscription signed in, but its token has expired; the office's next run refreshes it, and" +
+        " `opencorp onboard` signs in again if OpenAI refuses",
+    }
+  }
+  return { name: "provider", status: "ok", detail: "openai, ChatGPT subscription signed in" }
 }
 
 /** Whether office/connections and every file in it are private; null when there is no such folder. */

@@ -97,6 +97,19 @@ export class ConnectionFile extends Provider {
     const { llm_config, env, prices } = provider
     return new ConnectionFile({ llm_config, env, prices }, "api_key")
   }
+
+  /** `data` checked as office.json: on a subscription, as `parse` checks any connection; else as `Provider.parse`
+   *  checks it, `method` `api_key` or left out (`office`). Throws `ProviderError` with value-free text. Never uses
+   *  `this`, so it can be passed unbound. */
+  static parseOffice(data: unknown = {}): ConnectionFile {
+    if (typeof data === "object" && data !== null && Object.hasOwn(data, "method")) {
+      const { method, ...rest } = data as Record<string, unknown>
+      if (method === "subscription") return ConnectionFile.parse(data)
+      if (method !== "api_key") throw new ProviderError("method: expected api_key or subscription")
+      return ConnectionFile.office(Provider.parse(rest))
+    }
+    return ConnectionFile.office(Provider.parse(data))
+  }
 }
 
 /** What a run was started on: its connection and model, and a hash of what they gave it; the values
@@ -200,9 +213,7 @@ export class Connections {
    *  `ConnectionGone` when there is no such connection or it was removed, and `ProviderError` when its file
    *  can't be used. */
   async get(name: string): Promise<ConnectionFile> {
-    if (name === OFFICE) {
-      return ConnectionFile.office(await loadProvider(path.join(this.dir, "office.json"), Provider.parse))
-    }
+    if (name === OFFICE) return loadProvider(path.join(this.dir, "office.json"), ConnectionFile.parseOffice)
     checkName(name)
     if ((await this.#removed()).has(name)) throw new ConnectionGone(`connection '${name}' was removed`)
     return this.#load(name)
@@ -370,9 +381,9 @@ export class Connections {
     })
   }
 
-  /** Where subscription `name` keeps its sign-in (yian's own auth store). */
+  /** Where subscription `name`, `office` included, keeps its sign-in (yian's own auth store). */
   authFile(name: string): string {
-    checkName(name)
+    if (name !== OFFICE) checkName(name)
     return path.join(this.dir, `${name}.auth.json`)
   }
 
@@ -388,9 +399,15 @@ export class Connections {
     const env: Record<string, string> = { ...conn.env }
     if (conn.method === "subscription") {
       const auth = this.authFile(name)
-      if (!isFile(auth)) {
-        // Without its store, yian would fall back to no credentials at all.
-        throw new ProviderError(`connection '${name}' has no sign-in; remove it and connect again`)
+      const fix = name === OFFICE ? "run `opencorp onboard` to sign in again" : "remove it and connect again"
+      // Not followed: yian would refuse a symlink only once the run starts, in words that hide this fix.
+      const st = fs.lstatSync(auth, { throwIfNoEntry: false })
+      // Without its store, yian would fall back to no credentials at all.
+      if (st === undefined) throw new ProviderError(`connection '${name}' has no sign-in; ${fix}`)
+      if (!st.isFile() || st.uid !== process.geteuid!()) {
+        throw new ProviderError(
+          `connection '${name}' has a sign-in that isn't a regular file of this user, such as a symlink; ${fix}`,
+        )
       }
       env[AUTH_FILE_ENV] = auth
     }
@@ -495,8 +512,9 @@ export class Connections {
     if (llm.provider != null && typeof llm.provider !== "string") {
       throw new ProviderError(`connection '${name}' names a provider that isn't text`)
     }
-    // Without a key, office runs on yian's own login.
-    const method = name === OFFICE ? ("api_key" in llm ? "api_key" : "none") : conn.method
+    // Without a key, office runs on yian's own login, unless it signs in to a subscription of its own.
+    const method =
+      name === OFFICE && conn.method !== "subscription" ? ("api_key" in llm ? "api_key" : "none") : conn.method
     const provider = conn.method === "subscription" ? "chatgpt" : providerLabel(llm)
     return { name, provider, method, model, default: name === defaultName }
   }
@@ -548,6 +566,39 @@ export function isFile(file: string): boolean {
     return false
   }
 }
+
+/** What a run on `provider` sends that text must never show: its key, and the tokens of the subscription's sign-in
+ *  its env names (`YIAN_AUTH_FILE`), read now, since yian refreshes them during runs; none of a sign-in that can't be
+ *  read. */
+export function runSecrets(provider: Pick<Provider, "llm_config" | "env">): string[] {
+  const found: string[] = []
+  const key = provider.llm_config?.api_key
+  if (typeof key === "string" && key !== "") found.push(key)
+  const auth = provider.env[AUTH_FILE_ENV]
+  if (auth) {
+    let seen = SEEN.get(auth)
+    if (seen === undefined) SEEN.set(auth, (seen = new Set()))
+    try {
+      for (const secret of new AuthStore(auth).savedSecrets("openai")) {
+        // Moved to the end, so the oldest go first.
+        seen.delete(secret)
+        seen.add(secret)
+      }
+    } catch (error) {
+      if (!(error instanceof AuthError)) throw error
+    }
+    while (seen.size > MAX_SEEN) seen.delete(seen.values().next().value!)
+    found.push(...seen)
+  }
+  return found
+}
+
+/** Every token `runSecrets` read from each sign-in file in this process: an old access token stays valid, and may be
+ *  quoted, after a refresh replaced it. */
+const SEEN = new Map<string, Set<string>>()
+
+/** The most tokens kept per sign-in file: about ten refreshes' worth, each older one long expired. */
+const MAX_SEEN = 32
 
 /** The sha256 hex of `provider`'s key, as yian identifies keys; null without one. */
 export function keyId(provider: Provider): string | null {

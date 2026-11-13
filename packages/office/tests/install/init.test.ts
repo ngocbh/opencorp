@@ -38,6 +38,7 @@ import {
   redact,
   SET_UP_AGAIN,
   setupConnectionFile,
+  setupProvider,
   TRY_AGAIN,
 } from "../../src/install/onboard.ts"
 import { KeyboardInterrupt, NoTerminal, OnboardError, TtyPrompter } from "../../src/install/prompts.ts"
@@ -46,7 +47,7 @@ import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { git, gitEnv } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
-import { daemonHost, flowReplies, killedAtEnd, makeHost, NO_LISTING, Runner, Script } from "./helpers.ts"
+import { daemonHost, fakeSubscription, flowReplies, killedAtEnd, makeHost, NO_LISTING, Runner, Script } from "./helpers.ts"
 
 // Hashing the password with scrypt and the company's git take a while.
 setDefaultTimeout(30_000)
@@ -196,7 +197,7 @@ test("init makes the company its ceo and seeded teammates in one commit", async 
 
 test("the model is asked first", async () => {
   const dir = tempDir()
-  const ask = new Script(["openai", "", "", PASSWORD, PASSWORD, "1"])
+  const ask = new Script(["openai", "2", "", "", PASSWORD, PASSWORD, "1"])
   await expect(init(path.join(dir, "home"), ask, { ...base(dir), ...interviewed(ACME) })).rejects.toThrow(STOP)
   expect(ask.seen.slice(0, 3)).toEqual([
     "Step 1 of 5: Model",
@@ -208,9 +209,30 @@ test("the model is asked first", async () => {
   expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ llm_config: { provider: "openai" } })
 })
 
+test("init can start on a ChatGPT subscription, and the interview runs on its sign-in", async () => {
+  const dir = tempDir()
+  const office = path.join(dir, "home", "office")
+  const runs: Record<string, string>[] = []
+  const interview: InitOptions["interview"] = async (file, prompter, known) => {
+    runs.push({ ...(await setupProvider(file)).env })
+    return interviewed(ACME).interview!(file, prompter, known)
+  }
+  // openai, the subscription, its first model; then the password and no remote.
+  const ask = new Script(["openai", "", "", PASSWORD, PASSWORD, "1"])
+  const options = { ...base(dir), interview, auth: fakeSubscription().auth }
+  await expect(init(path.join(dir, "home"), ask, options)).rejects.toThrow(STOP)
+  const auth = path.join(office, "connections", "office.auth.json")
+  expect(runs).toEqual([{ YIAN_AUTH_FILE: auth }])
+  expect(JSON.parse(fs.readFileSync(setupConnectionFile(office), "utf8"))).toEqual({
+    method: "subscription",
+    llm_config: { provider: "openai", model: "gpt-5.5-codex" },
+  })
+  expect(fs.statSync(auth).mode & 0o777).toBe(0o600)
+})
+
 test("the provider from the first step is kept by the last", async () => {
   const dir = tempDir()
-  const ask = new Script(["openai", "", "", PASSWORD, PASSWORD, "1"])
+  const ask = new Script(["openai", "2", "", "", PASSWORD, PASSWORD, "1"])
   const host = makeHost(dir, new Runner())
   // The stand-in office never starts.
   const error = await rejection(init(path.join(dir, "home"), ask, { ...base(dir), ...interviewed(ACME), host }))
@@ -281,7 +303,7 @@ test("without a terminal the flags make the company without asking to confirm", 
 test("a failed interview can be tried again with the same model", async () => {
   const dir = tempDir()
   const { interview, calls } = failingInterview(ACME)
-  const ask = new Script(["openai", "", "", "1", PASSWORD, PASSWORD, "1"])
+  const ask = new Script(["openai", "2", "", "", "1", PASSWORD, PASSWORD, "1"])
   await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow(STOP)
   expect(calls).toHaveLength(2)
   expect(ask.seen).toContain("The model couldn't run the interview: Connection error")
@@ -292,7 +314,7 @@ test("a failed interview can be tried again with the same model", async () => {
 test("a failed interview can set up the model again", async () => {
   const dir = tempDir()
   const { interview } = failingInterview(ACME)
-  const ask = new Script(["openai", "", "", "2", "anthropic", KEY, "", PASSWORD, PASSWORD, "1"])
+  const ask = new Script(["openai", "2", "", "", "2", "anthropic", KEY, "", PASSWORD, PASSWORD, "1"])
   await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow(STOP)
   const file = setupConnectionFile(path.join(dir, "home", "office"))
   expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({
@@ -304,7 +326,7 @@ test("a failed interview can set up the model again", async () => {
 test("setting the model up again starts from step ones answers", async () => {
   const dir = tempDir()
   const { interview } = failingInterview(ACME)
-  const ask = new Script(["openai", KEY, "gpt-x", "2", "", "", "", PASSWORD, PASSWORD, "1"])
+  const ask = new Script(["openai", "2", KEY, "gpt-x", "2", "", "", "", "", PASSWORD, PASSWORD, "1"])
   await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow(STOP)
   const file = setupConnectionFile(path.join(dir, "home", "office"))
   expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({
@@ -317,7 +339,7 @@ test("the model is checked before it is saved", async () => {
   const dir = tempDir()
   const problems: (string | null)[] = ["Connection error", null]
   const checkModel = async () => problems.shift() ?? null
-  const ask = new Script(["openai", "", "", "1", PASSWORD, PASSWORD, "1"])
+  const ask = new Script(["openai", "2", "", "", "1", PASSWORD, PASSWORD, "1"])
   await expect(
     init(path.join(dir, "home"), ask, { ...base(dir), ...interviewed(ACME), checkModel }),
   ).rejects.toThrow(STOP)
@@ -815,7 +837,7 @@ test(
     const connection = setupConnectionFile(path.join(dir, "office"))
     const pidfile = path.join(dir, "office", "office.pid")
     const installFile = path.join(dir, "office", "install.json")
-    const first = new Script(["openai", "", "", PASSWORD, PASSWORD, "1"], { interactive: false })
+    const first = new Script(["openai", "", "", "", PASSWORD, PASSWORD, "1"], { interactive: false })
     try {
       await init(dir, first, { ...options, known: CEO })
       expect(await officeAnswers(path.join(dir, "office", "office.sock"))).toBe(true)

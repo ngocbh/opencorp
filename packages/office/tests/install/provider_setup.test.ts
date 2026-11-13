@@ -17,6 +17,7 @@ import { PassThrough, Readable, Writable } from "node:stream"
 import { fileURLToPath } from "node:url"
 import { afterEach, expect, test } from "bun:test"
 import { AuthError, type AuthRequest, AuthStore, HttpResponse, SUPPORTED_LLM_PROVIDERS } from "@ngocbh/yian/llm_clients"
+import { OAuthCredentials } from "@ngocbh/yian/llm_clients"
 import { AUTH_FILE_ENV, Connections } from "../../src/chat/connections.ts"
 import { loadProvider, Provider, ProviderError } from "../../src/chat/provider.ts"
 import {
@@ -773,7 +774,7 @@ test("a symlink where the provider goes is refused", async () => {
   mkdirSync(join(office, "connections"), { mode: 0o700 })
   chmodSync(join(office, "connections"), 0o700)
   symlinkSync(join(office, "elsewhere"), file(office))
-  const error = await rejection(ensure(office, new Script(["openai", "", ""])))
+  const error = await rejection(ensure(office, new Script(["openai", "2", "", ""])))
   expect(error).toBeInstanceOf(OnboardError)
   expect(error.message).toContain("office.json")
   expect(existsSync(join(office, "elsewhere"))).toBe(false)
@@ -942,7 +943,7 @@ function signedInCheck(
   const before = [target, auth].map((file) => (existsSync(file) ? readFileSync(file, "utf8") : null))
   const signedIn: ModelCheck = async (provider) => {
     const pending = pendingSignIn(auth)
-    expect(pending).toBe(join(dirname(auth), "auth.new.json"))
+    expect(pending).toBe(auth.replace(/\.json$/, ".new.json"))
     expect(provider.env[AUTH_FILE_ENV]).toBe(pending)
     expect(mode(pending)).toBe(0o600)
     const store = new AuthStore(pending)
@@ -1182,16 +1183,145 @@ test("a sign-in folder open to others stops the picker before the device sign-in
   expect(readdirSync(dir)).toEqual([])
 })
 
+/** The office's sign-in, beside its setup connection. */
+const signInFile = (office: string): string => join(office, "connections", "office.auth.json")
+
+/** Writes `office`'s setup connection as a subscription on `model`, and its sign-in, expiring in `inSeconds`. */
+async function subscribedOffice(office: string, model = "gpt-5.5", inSeconds = 3600): Promise<void> {
+  new Connections(office).ensureDir()
+  writeFileSync(file(office), JSON.stringify({ method: "subscription", llm_config: { provider: "openai", model } }), {
+    mode: 0o600,
+  })
+  const creds = new OAuthCredentials({
+    accessToken: "saved-access-0123456789",
+    refreshToken: "saved-refresh-0123456789",
+    expiresAt: Date.now() / 1000 + inSeconds,
+    accountId: ACCOUNT,
+  })
+  await new AuthStore(signInFile(office)).save("openai", creds, model)
+}
+
+test("onboard's picker can sign in to a ChatGPT subscription, its sign-in in office.auth.json, checked before office.json is written", async () => {
+  const office = newOffice()
+  const fake = fakeSubscription()
+  const check = signedInCheck(file(office), signInFile(office), null)
+  const ask = new Script(["openai", "", ""])
+  expect(await ensure(office, ask, { checkModel: check, auth: fake.auth })).toBe(true)
+  expect(ask.seen.slice(0, 3)).toEqual(["Model provider", HOW_SIGN_IN, signInLine(DEVICE_URL, DEVICE_CODE)])
+  expect(read(office)).toEqual({ method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5-codex" } })
+  expect(listing(office)).toEqual([".lock", "office.auth.json", "office.json"])
+  expect(mode(signInFile(office))).toBe(0o600)
+  expect(mode(join(office, "connections"))).toBe(0o700)
+  const run = await new Connections(office).resolve(null, null)
+  expect(run.env).toEqual({ YIAN_AUTH_FILE: signInFile(office) })
+  noToken(ask.seen)
+  noToken([readFileSync(file(office), "utf8")])
+})
+
+test("without a terminal, openai's sign-in question takes the key, as before", async () => {
+  const office = newOffice()
+  const { input, output } = pipe("")
+  const ask = new TtyPrompter({ preset: { "Model provider": "openai" }, interactive: false, input, output, env: {} })
+  const error = await rejection(ensure(office, ask, { auth: fakeSubscription().auth }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("--provider-stdin")
+})
+
+test("a subscription office.json whose sign-in works is kept, refreshed first when its token is about to expire", async () => {
+  const office = newOffice()
+  await subscribedOffice(office)
+  const ask = new Script([])
+  expect(await ensure(office, ask, { auth: fakeSubscription().auth })).toBe(false)
+  expect(ask.seen).toEqual([])
+  const expired = newOffice()
+  await subscribedOffice(expired, "gpt-5.5", -60)
+  const fresh = new OAuthCredentials({
+    accessToken: "fresh-access-0123456789",
+    refreshToken: "fresh-refresh-0123456789",
+    expiresAt: Date.now() / 1000 + 3600,
+    accountId: ACCOUNT,
+  })
+  const refreshing = fakeSubscription({ refreshed: fresh })
+  expect(await ensure(expired, new Script([]), { auth: refreshing.auth })).toBe(false)
+  expect(refreshing.refreshes.count).toBe(1)
+  expect(new AuthStore(signInFile(expired)).savedSecrets("openai")[0]).toBe(fresh.accessToken)
+})
+
+test("a subscription office.json whose sign-in is missing, unreadable or refused says so and signs in again", async () => {
+  const refused = new AuthError("OpenAI authentication request failed (HTTP 401, refresh_token_expired); sign in again", {
+    status: 401,
+  })
+  const cases: [string, (office: string) => void, string, number][] = [
+    ["missing", (office) => rmSync(signInFile(office)), "is missing; set up the model again.", 3600],
+    ["open to others", (office) => chmodSync(signInFile(office), 0o644), "must be private to its owner", 3600],
+    ["refused", () => {}, "has expired or was revoked", -60],
+  ]
+  for (const [, damage, said, inSeconds] of cases) {
+    const office = newOffice()
+    await subscribedOffice(office, "gpt-5.5", inSeconds)
+    damage(office)
+    const fake = fakeSubscription({ refreshed: refused })
+    // Enter at each question: openai, the subscription, the model it had.
+    const ask = new Script(["", "", ""])
+    expect(await ensure(office, ask, { checkModel: answers(null), auth: fake.auth })).toBe(true)
+    expect(ask.seen[0]).toStartWith(`${file(office)} signs in to a ChatGPT subscription, but`)
+    expect(ask.seen[0]).toContain(said)
+    expect(ask.seen.slice(1, 3)).toEqual(["Model provider", HOW_SIGN_IN])
+    expect(read(office)).toEqual({ method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } })
+    expect(new AuthStore(signInFile(office)).savedSecrets("openai")[0]).toBe(ACCESS_TOKEN)
+    for (const line of ask.seen) expect(line).not.toContain("yian auth")
+  }
+  // With no one to ask, it says how to sign in again.
+  const office = newOffice()
+  await subscribedOffice(office)
+  rmSync(signInFile(office))
+  const error = await rejection(ensure(office, new Script([], { interactive: false }), { auth: fakeSubscription().auth }))
+  expect(error.message).toBe(
+    `${file(office)} signs in to a ChatGPT subscription, but its sign-in ${signInFile(office)} is missing;` +
+      " run `opencorp onboard` in a terminal to sign in again",
+  )
+})
+
+test("a refresh that may work later warns, keeps the office's sign-in, and onboarding goes on, as offline with a key", async () => {
+  const failures = [
+    new AuthError("OpenAI authentication request failed (could not connect)"),
+    new AuthError("OpenAI authentication request failed (HTTP 429)", { status: 429 }),
+    new AuthError("OpenAI authentication request failed (HTTP 503)", { status: 503 }),
+  ]
+  for (const refreshed of failures) {
+    const office = newOffice()
+    await subscribedOffice(office, "gpt-5.5", -60)
+    const before = readFileSync(signInFile(office), "utf8")
+    // No terminal either: nothing is asked.
+    const ask = new Script([], { interactive: false })
+    expect(await ensure(office, ask, { auth: fakeSubscription({ refreshed }).auth })).toBe(false)
+    expect(ask.seen).toEqual([
+      `Couldn't refresh the ChatGPT sign-in in ${signInFile(office)} now (${refreshed.message}); the office's runs` +
+        " will try again.",
+    ])
+    expect(readFileSync(signInFile(office), "utf8")).toBe(before)
+  }
+})
+
+test("a provider on stdin replaces a subscription and removes its sign-in, and a stray waiting sign-in goes", async () => {
+  const office = newOffice()
+  await subscribedOffice(office)
+  await new AuthStore(pendingSignIn(signInFile(office))).save("openai", fakeSubscription().creds, "gpt-5.5")
+  await ensure(office, new Script(), { stdin: stdin({ llm_config: { provider: "anthropic", api_key: KEY } }) })
+  expect(read(office)).toEqual({ llm_config: { provider: "anthropic", api_key: KEY, model: "claude-sonnet-4-5" } })
+  expect(listing(office).filter((name) => name.includes("auth"))).toEqual(["office.auth.json.lock"])
+})
+
 test("no key and no model name means the model yians login saved", async () => {
   const office = newOffice()
-  await ensure(office, new Script(["openai", "", "  "]))
+  await ensure(office, new Script(["openai", "2", "", "  "]))
   expect(read(office)).toEqual({ llm_config: { provider: "openai" } })
 })
 
 test("picking the default saves its name", async () => {
   // Yian has no default model, so the file names it.
   const office = newOffice()
-  await ensure(office, new Script(["openai", KEY, "1"]))
+  await ensure(office, new Script(["openai", "2", KEY, "1"]))
   expect(read(office)).toEqual({ llm_config: { provider: "openai", api_key: KEY, model: "gpt-5.5" } })
 })
 
@@ -1375,7 +1505,7 @@ test("azure needs a key and a usable endpoint", async () => {
 test("an existing provider that cant be used is asked again on a terminal", async () => {
   const office = newOffice()
   place(office, JSON.stringify({ llm_config: { provider: "azure", api_key: KEY } }))
-  const ask = new Script(["openai", "", ""])
+  const ask = new Script(["openai", "2", "", ""])
   expect(await ensure(office, ask)).toBe(true)
   expect(read(office)).toEqual({ llm_config: { provider: "openai" } })
   expect(ask.seen[0]).toBe(
@@ -1386,7 +1516,7 @@ test("an existing provider that cant be used is asked again on a terminal", asyn
 
 test("no key means composers own login", async () => {
   const office = newOffice()
-  const ask = new Script(["openai", "", ""])
+  const ask = new Script(["openai", "2", "", ""])
   await ensure(office, ask)
   expect(read(office)).toEqual({ llm_config: { provider: "openai" } })
   expect(ask.seen.some((line) => line.includes("yian auth"))).toBe(true)
@@ -1608,7 +1738,7 @@ test("a key asked for without a terminal says to pass the provider on stdin", as
 test("the provider is saved only once the model answers", async () => {
   const office = newOffice()
   const check = answers(null)
-  const ask = new Script(["openai", KEY, ""])
+  const ask = new Script(["openai", "2", KEY, ""])
   expect(await ensure(office, ask, { checkModel: check })).toBe(true)
   expect(check.checked).toEqual([{ provider: "openai", api_key: KEY, model: "gpt-5.5" }])
   expect(ask.seen.at(-1)).toBe("Checking that the model answers...")
@@ -1641,7 +1771,7 @@ test("trying again checks the same answers and nothing is saved until it works",
     expect(existsSync(file(office))).toBe(false)
     return problems(provider)
   }
-  const ask = new Script(["openai", KEY, "", "", "1"])
+  const ask = new Script(["openai", "2", KEY, "", "", "1"])
   await ensure(office, ask, { checkModel: check })
   expect(ask.seen.filter((line) => line === "The model didn't answer: Connection error")).toHaveLength(2)
   expect(ask.offered.slice(-2)).toEqual([
@@ -1669,14 +1799,14 @@ test("setting up again starts from the last answers and keeps the key", async ()
 test("picking the default when setting up again drops the typed model", async () => {
   const office = newOffice()
   // Typed, then the default; the third round's empty answers keep the default.
-  const ask = new Script(["openai", "", "gpt-x", "2", "", "", "1", "2", "", "", ""])
+  const ask = new Script(["openai", "2", "", "gpt-x", "2", "", "", "", "1", "2", "", "", "", ""])
   await ensure(office, ask, { checkModel: answers("Error code: 404", "Error code: 404", null) })
   expect(await saved(office)).toEqual({ provider: "openai" })
 })
 
 test("a model that never answers is never saved", async () => {
   const office = newOffice()
-  const ask = new Script(["openai", KEY, "", "1", "1"])
+  const ask = new Script(["openai", "2", KEY, "", "1", "1"])
   // The script ran out: only the owner can stop asking, with Ctrl-C.
   const error = await rejection(ensure(office, ask, { checkModel: async () => "Connection error" }))
   expect(error.message).toBe("the script ran out of answers")
@@ -1686,7 +1816,7 @@ test("a model that never answers is never saved", async () => {
 test("a key is never kept for another provider", async () => {
   const office = newOffice()
   const check = answers("Error code: 401", null)
-  const ask = new Script(["azure", "acme", KEY, "gpt-5-4", "2", "openai", "", "1"])
+  const ask = new Script(["azure", "acme", KEY, "gpt-5-4", "2", "openai", "2", "", "1"])
   await ensure(office, ask, { checkModel: check })
   expect(await saved(office)).toEqual({ provider: "openai" })
   expect(ask.seen).toContain("openai API key (empty to use `yian auth openai`; not shown)")

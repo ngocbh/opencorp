@@ -402,7 +402,9 @@ async function askProviderData(
     return { llm_config: { provider: "openai", base_url: baseUrl, api_key: last.key, model: last.model } }
   }
   if (name === "openai" && signIn !== undefined) {
-    const method = await prompter.choose(HOW_SIGN_IN, [SUBSCRIPTION, API_KEY], last.method ?? SUBSCRIPTION)
+    // With no one to watch for a device code, the key, as before.
+    const fallback = last.method ?? (prompter.interactive ? SUBSCRIPTION : API_KEY)
+    const method = await prompter.choose(HOW_SIGN_IN, [SUBSCRIPTION, API_KEY], fallback)
     // One way of signing in rarely offers the model picked for the other.
     if (method !== last.method) delete last.model
     last.method = method
@@ -534,6 +536,71 @@ async function subscribe(prompter: Prompter, last: Answers, signIn: SignIn): Pro
   const model = await prompter.choose("Model", listed, fallback)
   last.model = model
   return new Subscribed({ method: "subscription", llm_config: { provider: "openai", model } }, creds)
+}
+
+/**
+ * Whether the subscription sign-in at `file` can be used: null when it can, its tokens refreshed with `auth` first
+ * when they expire soon, as a run's first model call would (a fresh token isn't sent anywhere). Else why not, and the
+ * owner's fix: setting up the model again when it's missing or can't be read, signing in again when OpenAI refuses it
+ * or the refresh moved it to another account. Reads without the lock unless it refreshes. Rejects with `signal`'s
+ * reason once it aborts, and with `OnboardError` when the refresh may work later (a lost connection, a 429 or a
+ * 5xx), the sign-in kept.
+ */
+export async function signInProblem(
+  file: string,
+  auth: SubscriptionAuth = OPENAI_AUTH,
+  signal?: AbortSignal,
+): Promise<{ problem: string; fix: string } | null> {
+  const fix = "set up the model again"
+  if (!lexists(file)) return { problem: `its sign-in ${file} is missing`, fix }
+  const store = new AuthStore(file, { signal })
+  let id: string
+  try {
+    const selection = store.selection("openai")
+    if (selection?.method !== "subscription") return { problem: `its sign-in ${file} holds no ChatGPT sign-in`, fix }
+    id = selection.credentialId
+  } catch (error) {
+    // yian's store says which file and how to fix it, never a value.
+    if (!(error instanceof AuthError)) throw error
+    return { problem: `its sign-in can't be read: ${error.message.replace(/\.$/, "")}`, fix }
+  }
+  const stop = signal ?? new AbortController().signal
+  try {
+    await store.credentials("openai", id, { refresh: (current) => auth({ signal: stop }).refresh(current) })
+    return null
+  } catch (error) {
+    stop.throwIfAborted()
+    if (!(error instanceof AuthError)) throw error
+    // Plain errors name what failed and its status, never a value.
+    const { message } = error
+    if (!plainAuthError(error)) return { problem: `its sign-in can't be read: ${message.replace(/\.$/, "")}`, fix }
+    const why = message.replace(/; sign in again$/, "")
+    const again = "sign in again"
+    if (message.endsWith("changed account identity")) {
+      return { problem: `its sign-in refreshed to another ChatGPT account (${why})`, fix: again }
+    }
+    if (signInRefused(message)) return { problem: `its sign-in has expired or was revoked (${why})`, fix: again }
+    throw new RefreshLater(file, why)
+  }
+}
+
+/** OpenAI didn't refresh the sign-in at `file` now, `why`: a lost connection, a 429 or a 5xx, which may pass. */
+export class RefreshLater extends OnboardError {
+  override name = "RefreshLater"
+
+  constructor(
+    readonly file: string,
+    readonly why: string,
+  ) {
+    super(`OpenAI didn't refresh the ChatGPT sign-in in ${file}: ${why}; try again later`)
+  }
+}
+
+/** The answers that sign in to subscription `provider` again with Enter at each question: openai, the
+ *  subscription, and its model. */
+export function signInAgain(provider: Provider): Answers {
+  const model = provider.llm_config?.model
+  return { provider: "openai", method: SUBSCRIPTION, ...(typeof model === "string" ? { model } : {}) }
 }
 
 /** Whether `provider` signs in to a ChatGPT subscription. */
@@ -718,6 +785,19 @@ export function setupConnectionFile(office: string): string {
   return path.join(office, "connections", "office.json")
 }
 
+/** The sign-in of the office's setup connection on a ChatGPT subscription, as `Connections.authFile("office")` names
+ *  it: `office.auth.json` beside it. */
+export function setupSignInFile(office: string): string {
+  return path.join(office, "connections", "office.auth.json")
+}
+
+/** The office's setup connection at `file` (`connections/office.json`; none is an empty provider) as its runs get
+ *  it: on a subscription, its env names the sign-in beside it. Rejects with `ProviderError` when it can't be used. */
+export async function setupProvider(file: string): Promise<Provider> {
+  const provider = await loadProvider(file, ConnectionFile.parseOffice)
+  return withSignIn(provider, path.join(path.dirname(file), "office.auth.json"))
+}
+
 /** How `ensureProvider` gets a provider. */
 export interface ProviderOptions {
   /** Lists deployments and models to pick from. */
@@ -728,6 +808,8 @@ export interface ProviderOptions {
   checkModel?: ModelCheck
   /** The owner's last answers, which get the new ones. */
   last?: Answers
+  /** Makes yian's `OpenAIAuth` for a ChatGPT sign-in or its refresh (the real one by default). */
+  auth?: SubscriptionAuth
 }
 
 /** `provider`'s fields that differ from their defaults, in file order (Python's `model_dump(exclude_defaults)`); a
@@ -741,8 +823,8 @@ function dump(provider: Provider): Record<string, unknown> {
   return data
 }
 
-/** Writes `provider` as the office's setup connection, readable only by the owner, and checks it loads back. */
-async function saveProvider(office: string, provider: Provider): Promise<void> {
+/** Makes `office`'s connections folder, 0700. Throws `OnboardError` when it can't be. */
+function connectionsDir(office: string): void {
   const connections = new Connections(office)
   try {
     connections.ensureDir()
@@ -753,6 +835,13 @@ async function saveProvider(office: string, provider: Provider): Promise<void> {
     if (code === undefined) throw error
     throw new OnboardError(`can't set up ${connections.dir}: ${code}`)
   }
+}
+
+/** Writes `provider` as the office's setup connection, readable only by the owner, and checks it loads back; a key
+ *  removes the sign-in of one on a subscription first, so a stop between leaves no unmatched pair. */
+async function saveProvider(office: string, provider: Provider): Promise<void> {
+  connectionsDir(office)
+  if (!isSubscription(provider)) await removeSignIn(setupSignInFile(office))
   await writeProvider(setupConnectionFile(office), provider)
 }
 
@@ -780,14 +869,20 @@ export async function writeProvider(file: string, provider: Provider): Promise<v
 }
 
 /** Asks the owner for a provider until its model answers `checkModel`, then saves it as the office's setup
- *  connection. Each question defaults to its answer in `last`, which gets the new answers. Throws `OnboardError`
- *  when there's no one to ask or the file can't be written; the message never holds the key. */
+ *  connection; openai may sign in to a ChatGPT subscription, its sign-in in `setupSignInFile`, saved as
+ *  `askProviderTo` saves one. Each question defaults to its answer in `last`, which gets the new answers. Throws
+ *  `OnboardError` when there's no one to ask or a file can't be written; the message never holds the key. */
 export async function askProvider(
   office: string,
   prompter: Prompter,
   options: Omit<ProviderOptions, "stdin">,
 ): Promise<void> {
-  await saveProvider(office, await workingProvider(prompter, options.checkModel, options.last ?? {}, options.listers))
+  // Before the device sign-in, which needs its folder private.
+  connectionsDir(office)
+  await askProviderTo(setupConnectionFile(office), prompter, {
+    ...options,
+    signIn: { file: setupSignInFile(office), auth: options.auth },
+  })
 }
 
 /**
@@ -853,16 +948,22 @@ export function lexists(file: string): boolean {
  */
 export async function ensureProvider(office: string, prompter: Prompter, options: ProviderOptions): Promise<boolean> {
   const file = setupConnectionFile(office)
+  // Left by a check stopped hard: it was never checked.
+  removePendingSignIn(setupSignInFile(office))
   if (options.stdin === undefined) {
     if (lexists(file)) {
       const again = "fix it or remove it and run `opencorp onboard` again"
+      let subscription: Provider | null = null
       try {
-        const saved = dump(await loadProvider(file, Provider.parse, { missingOk: false }))
-        const checked = withDefaultModel(checkProvider(saved))
-        if (isDeepStrictEqual(dump(checked), saved)) return false
-        // A file from when yian had a default model gets the one it now needs.
-        await saveProvider(office, checked)
-        return true
+        const saved = dump(await loadProvider(file, ConnectionFile.parseOffice, { missingOk: false }))
+        const checked = withDefaultModel(checkProvider(saved, ConnectionFile.parseOffice))
+        if (isSubscription(checked)) subscription = checked
+        else if (isDeepStrictEqual(dump(checked), saved)) return false
+        else {
+          // A file from when yian had a default model gets the one it now needs.
+          await saveProvider(office, checked)
+          return true
+        }
       } catch (error) {
         if (error instanceof FileLockError) throw new OnboardError(`can't read ${file}: ${error.message}`)
         // Its message names the file.
@@ -873,6 +974,8 @@ export async function ensureProvider(office: string, prompter: Prompter, options
         if (!prompter.interactive) throw new OnboardError(`${file}: ${error.message}; ${again}`)
         prompter.say(`${file}: ${error.message}; set up the model again.`)
       }
+      // Outside the catch: a refresh that may work later stops onboarding, and the sign-in stays.
+      if (subscription !== null) return keepSubscription(office, prompter, options, subscription)
     }
     await askProvider(office, prompter, options)
     return true
@@ -895,6 +998,34 @@ export async function ensureProvider(office: string, prompter: Prompter, options
   }
   if (problem !== null) throw new OnboardError(`the model didn't answer: ${problem}`)
   await saveProvider(office, provider)
+  return true
+}
+
+/** Keeps the office's subscription `provider` when its sign-in works, or when OpenAI couldn't refresh it now, which
+ *  is only said, as the office's runs refresh it themselves (false: nothing written); else says why and asks again,
+ *  Enter at each question signing in again (true), or, with no one to ask, throws `OnboardError` saying how. */
+async function keepSubscription(
+  office: string,
+  prompter: Prompter,
+  options: ProviderOptions,
+  provider: Provider,
+): Promise<boolean> {
+  let found: Awaited<ReturnType<typeof signInProblem>>
+  try {
+    found = await signInProblem(setupSignInFile(office), options.auth)
+  } catch (error) {
+    // Onboarding goes on, as an office on a key does offline: the service still gets installed or repaired.
+    if (!(error instanceof RefreshLater)) throw error
+    prompter.say(
+      `Couldn't refresh the ChatGPT sign-in in ${error.file} now (${error.why}); the office's runs will try again.`,
+    )
+    return false
+  }
+  if (found === null) return false
+  const why = `${setupConnectionFile(office)} signs in to a ChatGPT subscription, but ${found.problem}`
+  if (!prompter.interactive) throw new OnboardError(`${why}; run \`opencorp onboard\` in a terminal to sign in again`)
+  prompter.say(`${why}; ${found.fix}.`)
+  await askProvider(office, prompter, { ...options, last: Object.assign(options.last ?? {}, signInAgain(provider)) })
   return true
 }
 
@@ -1211,6 +1342,8 @@ export interface OnboardOptions {
   steps?: boolean
   /** This account's default name and handle (`loginDefaults` by default). */
   loginDefaults?: LoginDefaults
+  /** Makes yian's `OpenAIAuth` for a ChatGPT sign-in or its refresh (the real one by default). */
+  auth?: SubscriptionAuth
 }
 
 /**
@@ -1360,6 +1493,7 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
     listers: options.listers,
     stdin: options.stdin,
     checkModel: options.checkModel,
+    auth: options.auth,
   })
   prompter.say(`Model provider: ${wrote ? "saved to" : "up to date at"} ${setupConnectionFile(one.office)}`)
 

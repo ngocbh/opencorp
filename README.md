@@ -86,8 +86,10 @@ one, quit, `cd` into a project folder and run `opencorp`.
 init takes five steps:
 
 1. Model: pick the provider (anthropic by default) and give its key, or leave it empty to use
-   yian's own login. The model is checked before it's saved, and the key stays in the office,
-   readable only by you.
+   yian's own login. For OpenAI you can sign in to your ChatGPT subscription instead: init shows a
+   link and a code to enter in a browser on any device, and keeps the sign-in in
+   `office/connections/office.auth.json`. The model is checked before it's saved, and the key or
+   sign-in stays in the office, readable only by you.
 2. Company: tell the model about yourself, the company and your first AI teammate, then answer
    "Create this company?".
 3. Password: it logs in your new devices.

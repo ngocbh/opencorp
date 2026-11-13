@@ -465,6 +465,33 @@ test("the cache lists a subscription through its own auth file", async () => {
   expect(seen).toEqual({ chatgpt: conns.authFile("chatgpt"), openai: null })
 })
 
+test("the cache lists an office connection on a subscription through office.auth.json", async () => {
+  const office = path.join(tempDir(), "office")
+  fs.mkdirSync(path.join(office, "connections"), { recursive: true, mode: 0o700 })
+  fs.chmodSync(office, 0o700)
+  await writePrivate(
+    path.join(office, "connections", "office.json"),
+    JSON.stringify({ method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } }),
+  )
+  const conns = new Connections(office)
+  const creds = new OAuthCredentials({
+    accessToken: ACCESS,
+    refreshToken: REFRESH,
+    expiresAt: Date.now() / 1000 + 3600,
+    accountId: "account-test",
+  })
+  await new AuthStore(conns.authFile("office")).save("openai", creds, "gpt-5.5")
+  const seen: Record<string, string | null> = {}
+  const cache = new ModelCache(conns, {
+    lister: (conn, name, { deadlineMs, authFile }) => {
+      seen[name] = authFile
+      return listModels(conn, name, { deadlineMs, request: new FakeRequest(CATALOG).send, authFile })
+    },
+  })
+  expect((await cache.get("office")).models.map((m) => m.id)).toEqual(["gpt-5.5", "gpt-5.5-codex"])
+  expect(seen).toEqual({ office: path.join(office, "connections", "office.auth.json") })
+})
+
 test("listing returns by the deadline", async () => {
   let release = () => {}
   const released = new Promise<void>((resolve) => {
