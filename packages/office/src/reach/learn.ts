@@ -22,6 +22,7 @@ import {
   OPENAI_AUTH,
   removePendingSignIn,
   runSetup,
+  signInRefused,
   signInRemedy,
   SUBSCRIPTION,
   type SubscriptionAuth,
@@ -483,7 +484,10 @@ export async function runLearn(
  *  sign-in in `paths.auth`, by how to sign in again here: that command writes another file. */
 export function learnedMessage(message: string | null, provider: Provider, paths: ReachPaths): string | null {
   if (message === null || provider.env[AUTH_FILE_ENV] !== paths.auth) return message
-  return signInRemedy(message, `delete ${paths.auth} and run \`opencorp hq\` again`)
+  return signInRemedy(message, {
+    refused: `delete ${paths.auth} and run \`opencorp hq\` again`,
+    retry: "run `opencorp hq` again later",
+  })
 }
 
 /**
@@ -530,8 +534,9 @@ export async function learnProvider(
 
 /**
  * Refreshes the sign-in at `file` with `auth` when its tokens expire soon, as a run's first model call would; resolves
- * why it can't be used when OpenAI refuses it, else null (a fresh token isn't sent anywhere). Rejects with `signal`'s
- * reason once it aborts, and with `OnboardError` when OpenAI couldn't be asked.
+ * why it can't be used when OpenAI refuses it or the refresh moves it to another account, else null (a fresh token
+ * isn't sent anywhere). Rejects with `signal`'s reason once it aborts, and with `OnboardError` when the refresh may
+ * work later (a lost connection, a 429 or a 5xx), the sign-in kept.
  */
 async function refreshProblem(file: string, auth: SubscriptionAuth, signal?: AbortSignal): Promise<string | null> {
   const stop = signal ?? new AbortController().signal
@@ -546,13 +551,15 @@ async function refreshProblem(file: string, auth: SubscriptionAuth, signal?: Abo
     if (!(error instanceof AuthError)) throw error
     // yian's store says which file and how to fix it; plain errors name what failed and its status. Neither holds a
     // value.
-    const { message, status } = error
+    const { message } = error
     if (!plainAuthError(error)) return `its sign-in can't be read: ${message.replace(/\.$/, "")}`
     const why = message.replace(/; sign in again$/, "")
-    if (status !== null && status >= 400 && status < 500) {
-      return `its sign-in has expired or was revoked (${why})`
-    }
-    throw new OnboardError(`can't check the ChatGPT sign-in in ${file}: ${why}`)
+    if (message.endsWith("changed account identity")) return `its sign-in refreshed to another ChatGPT account (${why})`
+    if (signInRefused(message)) return `its sign-in has expired or was revoked (${why})`
+    // A lost connection, a 429 or a 5xx may pass, so the sign-in stays.
+    throw new OnboardError(
+      `OpenAI didn't refresh the ChatGPT sign-in in ${file}: ${why}; try \`opencorp hq\` again later`,
+    )
   }
 }
 

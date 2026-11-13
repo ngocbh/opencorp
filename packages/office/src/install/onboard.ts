@@ -454,12 +454,24 @@ export type SubscriptionAuth = (options: {
 /** yian's own `OpenAIAuth`. */
 export const OPENAI_AUTH: SubscriptionAuth = (options) => new OpenAIAuth(options)
 
-/** yian's fix for a refused sign-in: it names the store `yian auth` keeps, never the caller's own. */
+/** yian's fix for a failed sign-in, which names the store `yian auth` keeps, never the caller's own. yian adds it to
+ *  every such failure, a lost connection included. */
 const YIAN_AUTH_HINT = /\. Run 'yian auth openai' and start a new run/g
 
-/** `message` with yian's hint to run `yian auth openai` replaced by `remedy`, the fix for the caller's sign-in. */
-export function signInRemedy(message: string, remedy: string): string {
-  return message.replace(YIAN_AUTH_HINT, `: ${remedy}`)
+/** Whether yian's auth error `text` says OpenAI refused the sign-in (an HTTP 401 or 403, or a code yian reads as an
+ *  unusable grant, such as a 400 `invalid_grant`), or a refresh moved it to another account, so only signing in again
+ *  helps. A timeout, a lost connection, a 429 or a 5xx may pass. */
+export function signInRefused(text: string): boolean {
+  return /(?:; sign in again|\(HTTP 40[13](?:, [a-z_]+)?\)|changed account identity)$/.test(text)
+}
+
+/** `message` with each of yian's hints to run `yian auth openai` replaced by the fix for the caller's sign-in:
+ *  `refused` after a refusal (`signInRefused`), else `retry`. */
+export function signInRemedy(message: string, remedies: { refused: string; retry: string }): string {
+  // A function, so a `$` in a remedy's path stays as written.
+  return message.replace(YIAN_AUTH_HINT, (_hint: string, at: number) => {
+    return `: ${signInRefused(message.slice(0, at)) ? remedies.refused : remedies.retry}`
+  })
 }
 
 /** Where the picker keeps a ChatGPT subscription's sign-in, and how it signs in. */
@@ -591,7 +603,7 @@ async function saveSignIn(file: string, creds: OAuthCredentials, model: string):
   }
 }
 
-/** Moves the sign-in waiting for `file` into place, over any there. Throws `OnboardError`. */
+/** Moves the sign-in waiting for `file` into place. Throws `OnboardError`. */
 function takeSignIn(file: string): void {
   const pending = pendingSignIn(file)
   try {
@@ -618,7 +630,9 @@ async function signedInAnswers(
   // Setting up again is how the owner signs in again here.
   const check = checkModel && (async (p: Provider) => {
     const problem = await checkModel(p)
-    return problem === null ? null : signInRemedy(problem, `choose "${SET_UP_AGAIN}"`)
+    return problem === null
+      ? null
+      : signInRemedy(problem, { refused: `choose "${SET_UP_AGAIN}"`, retry: `choose "${TRY_AGAIN}"` })
   })
   let works: boolean
   try {
@@ -781,10 +795,11 @@ export async function askProvider(
  * private folder of this user) and resolves to it. Throws as `askProvider` does.
  *
  * With `signIn`, openai may sign in to a ChatGPT subscription. Its sign-in waits beside `signIn.file` while the model
- * is checked with it, and is removed when the model doesn't answer or the check is stopped, so a hard stop leaves the
- * old sign-in and provider as they were. Once the model answers, it is moved to `signIn.file` just before `file` is
- * written, and removed again if `file` can't be written. Any other provider removes a sign-in left there. A sign-in
- * left waiting by a stopped check is removed first.
+ * is checked with it, and is removed when the model doesn't answer or the check is stopped. Once the model answers,
+ * the sign-in at `signIn.file` is removed, `file` is written, and only then the new sign-in moves to `signIn.file`. A
+ * stop at any point so leaves `file` beside the sign-in it was checked with, or beside none, which asks again; the
+ * caller removes a sign-in still waiting (`removePendingSignIn`) when it next starts, as this does first. Any other
+ * provider removes a sign-in left at `signIn.file`.
  */
 export async function askProviderTo(
   file: string,
@@ -794,15 +809,21 @@ export async function askProviderTo(
   const { signIn } = options
   if (signIn !== undefined) removePendingSignIn(signIn.file)
   const provider = await workingProvider(prompter, options.checkModel, options.last ?? {}, options.listers, signIn)
-  const subscription = isSubscription(provider)
-  if (signIn !== undefined) {
-    if (subscription) takeSignIn(signIn.file)
-    else await removeSignIn(signIn.file)
-  }
-  try {
+  if (signIn === undefined) {
     await writeProvider(file, provider)
+    return provider
+  }
+  const subscription = isSubscription(provider)
+  try {
+    await removeSignIn(signIn.file)
+    await writeProvider(file, provider)
+    if (subscription) takeSignIn(signIn.file)
   } catch (error) {
-    if (signIn !== undefined && subscription) await removeSignIn(signIn.file).catch(() => {})
+    try {
+      if (subscription) removePendingSignIn(signIn.file)
+    } catch {
+      // The error that stopped the save is the one to throw; the next start removes it.
+    }
     throw error
   }
   return provider

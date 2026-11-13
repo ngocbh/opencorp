@@ -1072,6 +1072,20 @@ test("a subscription's model check that yian tells to run yian auth says to set 
   for (const line of ask.seen) expect(line).not.toContain("yian auth")
 })
 
+test("a subscription's model check that couldn't reach OpenAI says to try again", async () => {
+  const { target, auth } = hqDir()
+  const yian = "OpenAI authentication request failed (could not connect). Run 'yian auth openai' and start a new run"
+  const ask = new Script(["openai", "", "", "1"])
+  await askProviderTo(target, ask, {
+    listers: NO_LISTING,
+    checkModel: signedInCheck(target, auth, yian, null),
+    signIn: { file: auth, auth: fakeSubscription().auth },
+  })
+  expect(ask.seen).toContain(
+    `The model didn't answer: OpenAI authentication request failed (could not connect): choose "${TRY_AGAIN}"`,
+  )
+})
+
 test("a model check stopped by Ctrl-C removes the new sign-in and leaves the old provider and sign-in as they were", async () => {
   const { dir, target, auth } = hqDir()
   const old = '{"method": "subscription", "llm_config": {"provider": "openai", "model": "gpt-4.1"}}'
@@ -1109,7 +1123,8 @@ test("a provider file that can't be written after the model answers removes the 
   expect(existsSync(auth)).toBe(false)
   expect(existsSync(pendingSignIn(auth))).toBe(false)
   noToken([error.message])
-  expect(readdirSync(dir).filter((name) => name.startsWith("auth"))).toEqual(["auth.json.lock"])
+  // The new sign-in moves in only once provider.json is written, so it never took auth.json's place.
+  expect(readdirSync(dir).filter((name) => name.startsWith("auth"))).toEqual([])
 })
 
 test("a sign-in a stopped check left waiting is removed when the picker starts", async () => {
