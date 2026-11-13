@@ -1054,6 +1054,20 @@ test("a subscription whose model doesn't answer keeps its sign-in to try again, 
   noToken(ask.seen)
 })
 
+test("a subscription's model check that yian tells to run yian auth says to set up the model again", async () => {
+  const { target, auth } = hqDir()
+  const yian = "OpenAI authentication request failed (HTTP 401); sign in again. Run 'yian auth openai' and start a new run"
+  const check = signedInCheck(target, auth, yian, null)
+  // The subscription; then try again.
+  const ask = new Script(["openai", "", "", "1"])
+  await askProviderTo(target, ask, { listers: NO_LISTING, checkModel: check, signIn: { file: auth, auth: fakeSubscription().auth } })
+  expect(ask.seen).toContain(
+    "The model didn't answer: OpenAI authentication request failed (HTTP 401); sign in again: choose" +
+      ` "${SET_UP_AGAIN}"`,
+  )
+  for (const line of ask.seen) expect(line).not.toContain("yian auth")
+})
+
 test("a model check stopped by Ctrl-C removes the sign-in", async () => {
   const { dir, target, auth } = hqDir()
   const fake = fakeSubscription()

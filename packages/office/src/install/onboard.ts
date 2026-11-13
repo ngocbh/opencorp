@@ -446,10 +446,21 @@ export const HOW_SIGN_IN = "How do you sign in?"
 export const SUBSCRIPTION = "ChatGPT subscription"
 export const API_KEY = "API key"
 
-/** Makes yian's `OpenAIAuth` for one sign-in, given the signal that stops it. */
+/** Makes yian's `OpenAIAuth` for one sign-in or refresh, given the signal that stops it. */
 export type SubscriptionAuth = (options: {
   signal: AbortSignal
-}) => Pick<OpenAIAuth, "deviceLogin" | "subscriptionModels">
+}) => Pick<OpenAIAuth, "deviceLogin" | "subscriptionModels" | "refresh">
+
+/** yian's own `OpenAIAuth`. */
+export const OPENAI_AUTH: SubscriptionAuth = (options) => new OpenAIAuth(options)
+
+/** yian's fix for a refused sign-in: it names the store `yian auth` keeps, never the caller's own. */
+const YIAN_AUTH_HINT = /\. Run 'yian auth openai' and start a new run/g
+
+/** `message` with yian's hint to run `yian auth openai` replaced by `remedy`, the fix for the caller's sign-in. */
+export function signInRemedy(message: string, remedy: string): string {
+  return message.replace(YIAN_AUTH_HINT, `: ${remedy}`)
+}
 
 /** Where the picker keeps a ChatGPT subscription's sign-in, and how it signs in. */
 export interface SignIn {
@@ -483,7 +494,7 @@ class Subscribed {
  *  aborts, and with `OnboardError` when the sign-in failed and there's no one to tell. */
 async function subscribe(prompter: Prompter, last: Answers, signIn: SignIn): Promise<Subscribed | null> {
   const signal = signIn.signal ?? new AbortController().signal
-  const auth = (signIn.auth ?? ((options) => new OpenAIAuth(options)))({ signal })
+  const auth = (signIn.auth ?? OPENAI_AUTH)({ signal })
   let creds: OAuthCredentials
   let listed: readonly string[]
   try {
@@ -561,9 +572,14 @@ async function signedInAnswers(
   checkModel: ModelCheck | undefined,
 ): Promise<boolean> {
   await saveSignIn(file, creds, String(provider.llm_config?.model))
+  // Setting up again is how the owner signs in again here.
+  const check = checkModel && (async (p: Provider) => {
+    const problem = await checkModel(p)
+    return problem === null ? null : signInRemedy(problem, `choose "${SET_UP_AGAIN}"`)
+  })
   let works: boolean
   try {
-    works = checkModel === undefined || (await answers(prompter, withSignIn(provider, file), checkModel))
+    works = check === undefined || (await answers(prompter, withSignIn(provider, file), check))
   } catch (error) {
     // The error that stopped the check is the one to throw.
     await removeSignIn(file).catch(() => {})

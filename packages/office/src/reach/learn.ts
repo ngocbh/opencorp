@@ -8,17 +8,21 @@ import type { Readable } from "node:stream"
 import { type FunctionTool, loadFlow, ReportedToolError, type ToolContext, tool } from "@ngocbh/yian"
 import { AuthError, AuthStore } from "@ngocbh/yian/llm_clients"
 import { FileLockError } from "@ngocbh/yian/platform"
-import { ConnectionFile } from "../chat/connections.ts"
+import { AUTH_FILE_ENV, ConnectionFile } from "../chat/connections.ts"
 import { loadProvider, type Provider, ProviderError } from "../chat/provider.ts"
 import { Asking, askUser, withOwner } from "../install/interview.ts"
 import {
+  type Answers,
   askProviderTo,
   checkProvider,
   isSubscription,
   type Listers,
   lexists,
   type ModelCheck,
+  OPENAI_AUTH,
   runSetup,
+  signInRemedy,
+  SUBSCRIPTION,
   type SubscriptionAuth,
   withDefaultModel,
   withSignIn,
@@ -27,6 +31,7 @@ import { clean, KeyboardInterrupt, OnboardError, type Prompter } from "../instal
 import { REDACTED, redact, strip } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
 import { writePrivate } from "../secrets.ts"
+import { plainAuthError } from "../worker/rpc.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import { type Connection, connect, describe, ReachFailure } from "./connect.ts"
 import { MAX_SCRIPT_BYTES, runBytes } from "./replay.ts"
@@ -451,9 +456,16 @@ export async function runLearn(
   if (state.asking.stopped) throw state.asking.stopped
   return {
     output: result?.status === "succeeded" ? (result.output as string) : null,
-    message,
+    message: learnedMessage(message, provider, state.ctx.paths),
     capped,
   }
+}
+
+/** Why a learning run on `provider` failed, `message`, with yian's hint to run `yian auth openai` replaced, on the
+ *  sign-in in `paths.auth`, by how to sign in again here: that command writes another file. */
+export function learnedMessage(message: string | null, provider: Provider, paths: ReachPaths): string | null {
+  if (message === null || provider.env[AUTH_FILE_ENV] !== paths.auth) return message
+  return signInRemedy(message, `delete ${paths.auth} and run \`opencorp hq\` again`)
 }
 
 /**
@@ -469,10 +481,10 @@ export async function learnProvider(
   options: { listers: Listers; checkModel: ModelCheck; auth?: SubscriptionAuth; signal?: AbortSignal },
 ): Promise<Provider> {
   const file = paths.provider
-  const { listers, checkModel, auth, signal } = options
-  const ask = async () =>
+  const { listers, checkModel, auth = OPENAI_AUTH, signal } = options
+  const ask = async (last: Answers = {}) =>
     withSignIn(
-      await askProviderTo(file, prompter, { listers, checkModel, signIn: { file: paths.auth, auth, signal } }),
+      await askProviderTo(file, prompter, { listers, checkModel, last, signIn: { file: paths.auth, auth, signal } }),
       paths.auth,
     )
   if (!lexists(file)) {
@@ -481,12 +493,47 @@ export async function learnProvider(
   }
   const provider = await savedProvider(file)
   if (!isSubscription(provider)) return provider
-  const problem = signInProblem(paths.auth)
+  let problem = signInProblem(paths.auth)
+  let fix = "set up the model again"
+  if (problem === null) {
+    problem = await refreshProblem(paths.auth, auth, signal)
+    fix = "sign in again"
+  }
   if (problem === null) return withSignIn(provider, paths.auth)
   const why = `${file} signs in to a ChatGPT subscription, but ${problem}`
   if (!prompter.interactive) throw new OnboardError(`${why}; delete both and run \`opencorp hq\` again`)
-  prompter.say(`${why}; set up the model again.`)
-  return ask()
+  prompter.say(`${why}; ${fix}.`)
+  // Enter at each question signs in to the same subscription again.
+  const model = provider.llm_config?.model
+  return ask({ provider: "openai", method: SUBSCRIPTION, ...(typeof model === "string" ? { model } : {}) })
+}
+
+/**
+ * Refreshes the sign-in at `file` with `auth` when its tokens expire soon, as a run's first model call would; resolves
+ * why it can't be used when OpenAI refuses it, else null (a fresh token isn't sent anywhere). Rejects with `signal`'s
+ * reason once it aborts, and with `OnboardError` when OpenAI couldn't be asked.
+ */
+async function refreshProblem(file: string, auth: SubscriptionAuth, signal?: AbortSignal): Promise<string | null> {
+  const stop = signal ?? new AbortController().signal
+  const store = new AuthStore(file, { signal })
+  try {
+    // signInProblem found the selection.
+    const id = store.selection("openai")?.credentialId ?? ""
+    await store.credentials("openai", id, { refresh: (current) => auth({ signal: stop }).refresh(current) })
+    return null
+  } catch (error) {
+    stop.throwIfAborted()
+    if (!(error instanceof AuthError)) throw error
+    // yian's store says which file and how to fix it; plain errors name what failed and its status. Neither holds a
+    // value.
+    const { message, status } = error
+    if (!plainAuthError(error)) return `its sign-in can't be read: ${message.replace(/\.$/, "")}`
+    const why = message.replace(/; sign in again$/, "")
+    if (status !== null && status >= 400 && status < 500) {
+      return `its sign-in has expired or was revoked (${why})`
+    }
+    throw new OnboardError(`can't check the ChatGPT sign-in in ${file}: ${why}`)
+  }
 }
 
 /** Why the ChatGPT sign-in in yian's store at `file` can't be used, or null when it holds one. Reads without the lock

@@ -175,9 +175,14 @@ export const SUBSCRIPTION_MODELS = ["gpt-5.5-codex", "gpt-5.5"]
  * A stand-in for yian's `OpenAIAuth` that reaches no server: each device sign-in shows `DEVICE_URL` and
  * `DEVICE_CODE`, then throws the next of `failures` if any is left, else resolves the fake credentials once
  * `approved` does (at once without it); it rejects with its signal's reason once that aborts. The subscription lists
- * `SUBSCRIPTION_MODELS`. `signals` holds the signal each sign-in was made with.
+ * `SUBSCRIPTION_MODELS`. A refresh resolves `refreshed`, or throws it when it's an error; without it, a refresh fails
+ * the test. `signals` holds the signal each sign-in was made with, and `refreshes` counts the refreshes.
  */
-export function fakeSubscription({ failures = [], approved }: { failures?: Error[]; approved?: Promise<void> } = {}) {
+export function fakeSubscription({
+  failures = [],
+  approved,
+  refreshed,
+}: { failures?: Error[]; approved?: Promise<void>; refreshed?: OAuthCredentials | Error } = {}) {
   const left = [...failures]
   const signals: AbortSignal[] = []
   const creds = new OAuthCredentials({
@@ -204,9 +209,16 @@ export function fakeSubscription({ failures = [], approved }: { failures?: Error
         expect(given).toBe(creds)
         return SUBSCRIPTION_MODELS
       },
+      refresh: async () => {
+        refreshes.count++
+        if (refreshed === undefined) throw new Error("the fake wasn't meant to refresh")
+        if (refreshed instanceof Error) throw refreshed
+        return refreshed
+      },
     }
   }
-  return { auth, creds, signals }
+  const refreshes = { count: 0 }
+  return { auth, creds, signals, refreshes }
 }
 
 /** A process the test host started: its pid and the start time read right after the spawn. */

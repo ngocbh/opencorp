@@ -10,6 +10,7 @@ import {
   CANCEL,
   DONT_RUN,
   Learning,
+  learnedMessage,
   learnProvider,
   RUN,
   runQuestion,
@@ -38,9 +39,9 @@ import { ReachPaths } from "../../src/reach/paths.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { AuthStore } from "@ngocbh/yian/llm_clients"
-import { OAuthCredentials } from "@ngocbh/yian/llm_clients"
+import { AuthError, OAuthCredentials } from "@ngocbh/yian/llm_clients"
 import { ConnectionFile } from "../../src/chat/connections.ts"
-import { HOW_SIGN_IN, providerSecrets, withSignIn } from "../../src/install/onboard.ts"
+import { HOW_SIGN_IN, providerSecrets, SUBSCRIPTION, withSignIn } from "../../src/install/onboard.ts"
 import { workerEnv } from "../../src/worker/spawn.ts"
 import { ACCESS_TOKEN, ACCOUNT, fakeSubscription, NO_LISTING, REFRESH_TOKEN, Script } from "../install/helpers.ts"
 import { fakeHome, fakeRemote, freePort, reachCtx } from "./helpers.ts"
@@ -658,6 +659,85 @@ test("tokens yian refreshes during the run are scrubbed from command output with
   expect(error.message).toBe(
     "Not saved: notes.md: it holds the model's API key or sign-in token; SSH asks for passwords and Duo itself, so leave them out.",
   )
+})
+
+/** A home whose hq/provider.json is a subscription on `model`, with a sign-in in hq/auth.json that expired. */
+async function expiredHome(model = "gpt-5.5") {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  await writePrivate(ctx.paths.provider, JSON.stringify({ method: "subscription", llm_config: { provider: "openai", model } }))
+  await new AuthStore(ctx.paths.auth).save("openai", tokens("old", -60), model)
+  return { dir, fake, ctx, paths: ctx.paths }
+}
+
+const REFUSED = new AuthError("OpenAI authentication request failed (HTTP 401, refresh_token_expired); sign in again", {
+  status: 401,
+})
+
+test("an expired sign-in that refreshes is used without asking, its new tokens saved", async () => {
+  const { paths } = await expiredHome()
+  const fresh = tokens("new", 3600)
+  const subscription = fakeSubscription({ refreshed: fresh })
+  const ask = new Script([])
+  const got = await learnProvider(paths, ask, { listers: NO_LISTING, checkModel: async () => "unused", auth: subscription.auth })
+  expect(ask.seen).toEqual([])
+  expect(subscription.refreshes.count).toBe(1)
+  expect(got.env).toEqual({ YIAN_AUTH_FILE: paths.auth })
+  expect(new AuthStore(paths.auth).savedSecrets("openai")[0]).toBe(fresh.accessToken)
+})
+
+test("a sign-in OpenAI refuses to refresh says it expired and signs in again, the old answers the defaults", async () => {
+  const { paths } = await expiredHome()
+  const subscription = fakeSubscription({ refreshed: REFUSED })
+  const checked: unknown[] = []
+  // Enter at each question: openai, the subscription, then the model it had.
+  const ask = new Script(["", "", ""])
+  const got = await learnProvider(paths, ask, {
+    listers: NO_LISTING,
+    checkModel: async (p) => {
+      checked.push(p.llm_config)
+      return null
+    },
+    auth: subscription.auth,
+  })
+  expect(ask.seen[0]).toBe(
+    `${paths.provider} signs in to a ChatGPT subscription, but its sign-in has expired or was revoked` +
+      " (OpenAI authentication request failed (HTTP 401, refresh_token_expired)); sign in again.",
+  )
+  expect(ask.seen).toContain(HOW_SIGN_IN)
+  expect(ask.offered.at(-1)).toContain("gpt-5.5")
+  expect(checked).toEqual([{ provider: "openai", model: "gpt-5.5" }])
+  expect([got.llm_config, got.env]).toEqual([{ provider: "openai", model: "gpt-5.5" }, { YIAN_AUTH_FILE: paths.auth }])
+  expect(new AuthStore(paths.auth).savedSecrets("openai")[0]).toBe(ACCESS_TOKEN)
+  for (const line of ask.seen) expect(line).not.toContain("yian auth")
+  expect(SUBSCRIPTION).toBe("ChatGPT subscription")
+})
+
+test("a refresh that can't reach OpenAI stops learning and says so", async () => {
+  const { paths } = await expiredHome()
+  const subscription = fakeSubscription({ refreshed: new AuthError("OpenAI authentication request failed (could not connect)") })
+  const error = await rejection(
+    learnProvider(paths, new Script([]), { listers: NO_LISTING, checkModel: async () => null, auth: subscription.auth }),
+  )
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toBe(
+    `can't check the ChatGPT sign-in in ${paths.auth}: OpenAI authentication request failed (could not connect)`,
+  )
+})
+
+test("a learning run's failure on a refused sign-in says how to sign in again here, not with yian auth", () => {
+  const paths = new ReachPaths("/h")
+  const provider = withSignIn(ConnectionFile.parse({ method: "subscription", llm_config: SUBSCRIBED_LLM }), paths.auth)
+  const yian =
+    "OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in again. Run 'yian auth openai' and start a new run"
+  expect(learnedMessage(yian, provider, paths)).toBe(
+    "OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in again: delete /h/hq/auth.json and" +
+      " run `opencorp hq` again",
+  )
+  // On a key, or yian's own login, yian's hint is the fix.
+  const keyless = Provider.parse({ llm_config: SUBSCRIBED_LLM })
+  expect(learnedMessage(yian, keyless, paths)).toBe(yian)
+  expect(learnedMessage(null, provider, paths)).toBeNull()
 })
 
 /** Look-alike blanks that aren't shell whitespace, and invisible ones. */
