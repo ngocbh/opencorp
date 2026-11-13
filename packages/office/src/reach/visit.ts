@@ -41,7 +41,7 @@ import {
   type Watcher,
   writeSshFiles,
 } from "./ssh.ts"
-import { BEFORE_LEARNING, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "./risks.ts"
+import { beforeLearning, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "./risks.ts"
 import { lineCount, numberedLines, shownCode } from "./show.ts"
 import { safePath, type Spec } from "./spec.ts"
 import {
@@ -302,7 +302,7 @@ function inVisit<T>(ctx: ReachContext, stdin: Readable, ask: () => Promise<T>): 
 /** Shows what learning risks, then asks `question` with `fallback` as the default; resolves whether the owner chose
  *  to learn. */
 async function askToLearn(deps: VisitDeps, question: string, fallback: string): Promise<boolean> {
-  for (const line of BEFORE_LEARNING) deps.prompter.say(clean(line))
+  for (const line of beforeLearning(new ReachPaths(deps.home))) deps.prompter.say(clean(line))
   const answer = await deps.prompter.choose(question, [LEARN, STOP], fallback)
   quietStdin(deps.stdin)
   return answer === LEARN

@@ -1,7 +1,7 @@
 /** The fixed texts the owner reads before learning the path to HQ and before saving it. */
 import { expect, test } from "bun:test"
 import { ReachPaths } from "../../src/reach/paths.ts"
-import { BEFORE_LEARNING, beforeSaving, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../src/reach/risks.ts"
+import { beforeLearning, beforeSaving, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../src/reach/risks.ts"
 
 /** Each line holds every one of its phrases, in the design's order of risks. */
 function expectRisks(lines: readonly string[], phrases: string[][]): void {
@@ -12,10 +12,11 @@ function expectRisks(lines: readonly string[], phrases: string[][]): void {
 }
 
 test("the fixed risks are the design's, and the provider file is named", () => {
-  expectRisks(BEFORE_LEARNING, [
+  expectRisks(beforeLearning(new ReachPaths("/h")), [
     ["model", "each command it runs", "output and errors", "hostnames", "username", "paths", "job lists"],
     ["Approving a command runs it as you", "SSH keys", "only you check it"],
     ["While learning runs", "anything running as you on this machine", "SSH connections without Duo"],
+    ["/h/hq holds the model's key or its ChatGPT sign-in", "don't approve a command that reads it"],
   ])
   const saving = beforeSaving(new ReachPaths("/h"))
   expectRisks(saving, [

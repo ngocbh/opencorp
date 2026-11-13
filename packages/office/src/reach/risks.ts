@@ -4,11 +4,12 @@ import type { ReachPaths } from "./paths.ts"
 import { LEARNING_PERSIST_S, PERSIST_S } from "./ssh.ts"
 
 /** Shown before every learning run, ahead of asking to use the model. */
-export const BEFORE_LEARNING = [
+export const beforeLearning = (paths: ReachPaths): string[] => [
   "Learning uses a model, which sees each command it runs and their output and errors: hostnames, your username, paths and job lists.",
   "Approving a command runs it as you, with your SSH keys, and only you check it.",
   "While learning runs, anything running as you on this machine can reuse its SSH connections without Duo.",
-] as const
+  `${paths.dir} holds the model's key or its ChatGPT sign-in: don't approve a command that reads it.`,
+]
 
 /** Shown by save_access with the two files, before the owner saves; the agent's risks for this setup follow. */
 export const beforeSaving = (paths: ReachPaths): string[] => [

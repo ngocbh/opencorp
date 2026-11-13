@@ -168,6 +168,21 @@ export function withOwnerOrStop<T>(state: Learning, fn: (prompter: Prompter) => 
   })
 }
 
+/** Whether `text` names the hq folder or one of its files that hold the model's key or sign-in: reach.sh runs in
+ *  the folder, so a bare name counts. A hint for the owner, not a guard. */
+export function namesCredentials(text: string, paths: ReachPaths): boolean {
+  const folder = `${path.basename(paths.home)}/hq`
+  return /\b(?:auth|provider)\.json\b/.test(text) || text.includes(paths.dir) || text.includes(folder)
+}
+
+/** Said above the question when a command or reach.sh `namesCredentials`. */
+export function credentialWarning(paths: ReachPaths): string {
+  return (
+    `Careful: this names ${paths.dir}, provider.json or auth.json, which hold the model's key or its ChatGPT sign-in;` +
+    " what reads them reaches the model."
+  )
+}
+
 export const RUN = "Run it"
 export const DONT_RUN = "Don't run it"
 /** The question for a command of `lines` lines: the count shows when the command is longer than it looks. */
@@ -194,6 +209,7 @@ export async function runShell(args: { command: string; why: string }, state: Le
   }
   const refusal = await withOwnerOrStop(state, async (p) => {
     p.say(`The model wants to run a command: ${clean(why)}`)
+    if (namesCredentials(command, ctx.paths)) p.say(clean(credentialWarning(ctx.paths)))
     for (const line of numberedLines(command)) p.say(line)
     const answer = await p.choose(runQuestion(lineCount(command)), [RUN, DONT_RUN], DONT_RUN)
     quietStdin(state.stdin)
@@ -315,6 +331,7 @@ export async function saveAccess(files: ToSave, state: Learning): Promise<string
     for (const line of numberedLines(files.notes, clean)) p.say(line)
     say("Before you save it:")
     for (const risk of [...beforeSaving(paths), ...files.risks]) say(`  - ${risk}`)
+    if (namesCredentials(files.script, paths)) say(credentialWarning(paths))
     const answer = await p.choose(saveQuestion(lineCount(files.script)), [SAVE, CANCEL], CANCEL)
     quietStdin(state.stdin)
     if (answer === SAVE) return null

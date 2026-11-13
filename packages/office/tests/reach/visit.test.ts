@@ -42,7 +42,7 @@ import { writePrivate } from "../../src/secrets.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../src/testing/fake_ssh.ts"
 import { control, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
-import { BEFORE_LEARNING, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../src/reach/risks.ts"
+import { beforeLearning, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../src/reach/risks.ts"
 import { signInLine } from "../../src/install/onboard.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { DEVICE_CODE, DEVICE_URL, fakeSubscription } from "../install/helpers.ts"
@@ -751,7 +751,7 @@ test("with no saved path it shows the risks, asks, then learns and goes on with 
   const done = visit({ signIn: false, port, open: false }, v.deps)
   await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 1, { what: "the visit to connect" })
   expect(v.errors).toEqual([NO_OFFICE_HERE])
-  expect(v.prompter.seen.slice(0, BEFORE_LEARNING.length + 1)).toEqual([...BEFORE_LEARNING, LEARN_QUESTION])
+  expect(v.prompter.seen.slice(0, beforeLearning(paths).length + 1)).toEqual([...beforeLearning(paths), LEARN_QUESTION])
   expect(v.prompter.offered[0]).toEqual([LEARN, STOP])
   expect(fs.readFileSync(paths.script, "utf8")).toBe(script)
   expect(v.printed).toContain(`http://127.0.0.1:${port}/pair#${remote.code}`)
@@ -854,7 +854,7 @@ test("--relearn gives the agent the old notes and script, and keeps the old path
   const done = visit({ signIn: false, open: false, relearn: true }, v.deps)
   await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 0, { what: "the visit to connect" })
   expect(v.errors).toEqual([])
-  expect(v.prompter.seen.slice(0, BEFORE_LEARNING.length + 1)).toEqual([...BEFORE_LEARNING, RELEARN_QUESTION])
+  expect(v.prompter.seen.slice(0, beforeLearning(paths).length + 1)).toEqual([...beforeLearning(paths), RELEARN_QUESTION])
   const [first, , third] = llm.requests().map((r) => JSON.stringify(r))
   expect(first).toContain("# the old way")
   expect(first).toContain("The job used to run on node9.")
@@ -889,7 +889,7 @@ test("a broken path asks to relearn with the failure, defaulting to stop", async
   let v = visitDeps(dir, fake, { answers: [""] })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
   expect(v.errors).toEqual([line])
-  expect(v.prompter.seen.slice(0, BEFORE_LEARNING.length + 1)).toEqual([...BEFORE_LEARNING, RELEARN_QUESTION])
+  expect(v.prompter.seen.slice(0, beforeLearning(paths).length + 1)).toEqual([...beforeLearning(paths), RELEARN_QUESTION])
   expect(llm.requests()).toEqual([])
   llm.script({ content: "The job is gone; start it again." })
   v = visitDeps(dir, fake, { answers: ["1"] })

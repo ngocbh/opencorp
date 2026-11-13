@@ -8,10 +8,12 @@ import { ReportedToolError } from "@ngocbh/yian"
 import {
   ANSWER_GOES_TO_MODEL,
   CANCEL,
+  credentialWarning,
   DONT_RUN,
   Learning,
   learnedMessage,
   learnProvider,
+  namesCredentials,
   RUN,
   runQuestion,
   runLearn,
@@ -26,7 +28,7 @@ import {
   WHAT_SHOULD_CHANGE,
 } from "../../src/reach/learn.ts"
 import { MAX_SCRIPT_BYTES } from "../../src/reach/replay.ts"
-import { BEFORE_LEARNING, beforeSaving } from "../../src/reach/risks.ts"
+import { beforeLearning, beforeSaving } from "../../src/reach/risks.ts"
 import type { Spec } from "../../src/reach/spec.ts"
 import { exitAll, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
 import { type Access, readAccess, sha256, writeAccess } from "../../src/reach/state.ts"
@@ -236,7 +238,7 @@ test("save_access shows both files whole and the fixed risks before the setup's 
   ])
   expect(saveQuestion(3)).toBe("Save this 3-line reach.sh and the notes, after testing the whole connection?")
   expect(prompter.offered).toEqual([[SAVE, CANCEL]])
-  expect(BEFORE_LEARNING.some((line) => prompter.seen.includes(line))).toBe(false)
+  expect(beforeLearning(ctx.paths).some((line) => prompter.seen.includes(line))).toBe(false)
 })
 
 test("declining to save tells the model what should change and saves nothing", async () => {
@@ -738,6 +740,29 @@ test("a learning run's failure on a refused sign-in says how to sign in again he
   const keyless = Provider.parse({ llm_config: SUBSCRIBED_LLM })
   expect(learnedMessage(yian, keyless, paths)).toBe(yian)
   expect(learnedMessage(null, provider, paths)).toBeNull()
+})
+
+test("a command or reach.sh naming hq's credential files or folder gets a warning above the question", async () => {
+  const { prompter, state, ctx } = await learning(["2", "", "2", "", "2", ""])
+  const warning = credentialWarning(ctx.paths)
+  expect(warning).toBe(
+    `Careful: this names ${ctx.paths.dir}, provider.json or auth.json, which hold the model's key or its ChatGPT` +
+      " sign-in; what reads them reaches the model.",
+  )
+  const home = path.basename(ctx.paths.home)
+  for (const command of ["cat auth.json", `ls ${ctx.paths.dir}`, `grep -r x ~/${home}/hq`, "cat $HOME/x/provider.json"]) {
+    expect(namesCredentials(command, ctx.paths)).toBe(true)
+  }
+  expect(namesCredentials("ssh login1 squeue --me", ctx.paths)).toBe(false)
+  await rejection(runShell({ command: "cat provider.json", why: "look" }, state))
+  expect(prompter.seen.slice(0, 3)).toEqual(["The model wants to run a command: look", warning, "  1  cat provider.json"])
+  prompter.seen.length = 0
+  await rejection(runShell({ command: "ssh login1 true", why: "log in" }, state))
+  expect(prompter.seen).not.toContain(warning)
+  prompter.seen.length = 0
+  await rejection(saveAccess({ script: "cat auth.json\n", notes: NOTES, risks: [] }, state))
+  expect(prompter.seen.at(-3)).toBe(warning)
+  expect(prompter.seen.at(-2)).toBe(saveQuestion(1))
 })
 
 /** Look-alike blanks that aren't shell whitespace, and invisible ones. */
