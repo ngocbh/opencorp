@@ -60,7 +60,7 @@ import {
   type WorkerHandlers,
 } from "../worker/rpc.ts"
 import { RegistryClosed, type Worker, workerEnv } from "../worker/spawn.ts"
-import { BadConnectionName, type Connections, configHash, runRecord } from "./connections.ts"
+import { BadConnectionName, type Connections, configHash, runRecord, runSecrets } from "./connections.ts"
 import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "./cost.ts"
 import type { Hooks } from "./hooks.ts"
 import { type Price, type Provider, ProviderError } from "./provider.ts"
@@ -3273,8 +3273,8 @@ function failureOf(frame: Frame): Record<string, unknown> {
 }
 
 /** Why a run failed, by its outcome (a `result` or `error` frame; null when its worker stopped or couldn't start),
- *  without `provider`'s model key and in at most `WHY_CHARS` characters. */
-function whyFailed(outcome: Frame | null, provider: Pick<Provider, "llm_config"> | null): string {
+ *  without `provider`'s model key or sign-in tokens, and in at most `WHY_CHARS` characters. */
+function whyFailed(outcome: Frame | null, provider: Pick<Provider, "llm_config" | "env"> | null): string {
   if (outcome === null) return "its worker stopped or couldn't start; see the office log"
   const failure = failureOf(outcome)
   const cause = failure.cause_type
@@ -3301,10 +3301,11 @@ function endedFrame(runId: string, inspection: RunInspection, provider: Provider
   return redactKey(frame, provider) as Frame
 }
 
-/** `value` with `provider`'s model key replaced by `[redacted]` wherever it appears. */
-function redactKey(value: unknown, provider: Pick<Provider, "llm_config"> | null): unknown {
-  const key = provider?.llm_config?.api_key
-  return typeof key === "string" && key !== "" ? redact(value, [], [key]) : value
+/** `value` with `provider`'s model key, or its subscription's tokens as they are now, replaced by `[redacted]`
+ *  wherever they appear. */
+function redactKey(value: unknown, provider: Pick<Provider, "llm_config" | "env"> | null): unknown {
+  const secrets = provider === null ? [] : runSecrets(provider)
+  return secrets.length > 0 ? redact(value, [], secrets) : value
 }
 
 /** The earliest deadline of an unsettled call in `waits`, or null; record times compare as text. Mirrors yian's

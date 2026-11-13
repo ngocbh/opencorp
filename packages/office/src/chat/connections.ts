@@ -562,6 +562,24 @@ export function isFile(file: string): boolean {
   }
 }
 
+/** What a run on `provider` sends that text must never show: its key, and the tokens of the subscription's sign-in
+ *  its env names (`YIAN_AUTH_FILE`), read now, since yian refreshes them during runs; none of a sign-in that can't be
+ *  read. */
+export function runSecrets(provider: Pick<Provider, "llm_config" | "env">): string[] {
+  const found: string[] = []
+  const key = provider.llm_config?.api_key
+  if (typeof key === "string" && key !== "") found.push(key)
+  const auth = provider.env[AUTH_FILE_ENV]
+  if (auth) {
+    try {
+      found.push(...new AuthStore(auth).savedSecrets("openai"))
+    } catch (error) {
+      if (!(error instanceof AuthError)) throw error
+    }
+  }
+  return found
+}
+
 /** The sha256 hex of `provider`'s key, as yian identifies keys; null without one. */
 export function keyId(provider: Provider): string | null {
   const key = provider.llm_config?.api_key
