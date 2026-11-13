@@ -368,6 +368,18 @@ test("offboard never prints the token or the provider", async () => {
   expect(said).not.toContain("anthropic")
 }, 30_000)
 
+test("offboard removes the office connection's ChatGPT sign-in with the connections", async () => {
+  const dir = tempDir()
+  const paths = await office(path.join(dir, "home"))
+  const auth = path.join(paths.office, "connections", "office.auth.json")
+  fs.writeFileSync(auth, "{}", { mode: 0o600 })
+  const ask = new Script()
+  await offboard(paths.home, ask, { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+  expect(ask.seen.some((line) => line.includes(paths.office) && line.includes("sign-ins"))).toBe(true)
+  expect(fs.existsSync(auth)).toBe(false)
+  expect(fs.existsSync(paths.office)).toBe(false)
+}, 30_000)
+
 test("a device named like another doesnt hide this ones commits", async () => {
   const dir = tempDir()
   const paths = await office(path.join(dir, "home"), { device: false })

@@ -6,6 +6,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
+import { AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
 import { openSqlite } from "@ngocbh/yian/platform"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { Identity, IdentityUnreadable, identityPath, readIdentity, writeIdentity } from "../../src/auth/identity.ts"
@@ -746,6 +747,59 @@ test("a key for an endpoint of your own with no model fails", async () => {
       " run `opencorp onboard`",
   })
   expect(keyShown(got)).toBe(false)
+})
+
+const SUBSCRIBED = { method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } }
+const OFFICE_TOKENS = ["office-access-0123456789", "office-refresh-0123456789", "office-account-0123456789"]
+
+/** Saves the office's ChatGPT sign-in, its token expiring `inSeconds` from now. */
+async function signIn(paths: OfficePaths, inSeconds = 3600): Promise<string> {
+  const auth = path.join(paths.office, "connections", "office.auth.json")
+  const [accessToken, refreshToken, accountId] = OFFICE_TOKENS
+  const creds = new OAuthCredentials({ accessToken, refreshToken, accountId, expiresAt: Date.now() / 1000 + inSeconds })
+  await new AuthStore(auth).save("openai", creds, "gpt-5.5")
+  return auth
+}
+
+test("an office connection on a ChatGPT subscription reports its sign-in, never its tokens", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, SUBSCRIBED)
+  const auth = await signIn(paths)
+  const file = setupConnectionFile(paths.office)
+  const shown = (got: Record<string, Check>) => OFFICE_TOKENS.some((t) => JSON.stringify(got).includes(t))
+  let got = byName(await runChecks(dir, paths))
+  expect(got.provider).toEqual({ name: "provider", status: "ok", detail: "openai, ChatGPT subscription signed in" })
+  expect(got.connections!.status).toBe("ok")
+  expect(shown(got)).toBe(false)
+  // Expired: the next run refreshes it.
+  fs.rmSync(auth)
+  await signIn(paths, -60)
+  got = byName(await runChecks(dir, paths))
+  expect(got.provider).toEqual({
+    name: "provider",
+    status: "warn",
+    detail:
+      "openai, ChatGPT subscription signed in, but its token has expired; the office's next run refreshes it, and" +
+      " `opencorp onboard` signs in again if OpenAI refuses",
+  })
+  // Open to others.
+  fs.chmodSync(auth, 0o644)
+  got = byName(await runChecks(dir, paths))
+  expect(got.provider!.status).toBe("fail")
+  expect(got.provider!.detail).toStartWith(`${file} signs in to a ChatGPT subscription, but its sign-in can't be read: `)
+  expect(got.provider!.detail).toContain("must be private to its owner")
+  expect(got.provider!.detail).toEndWith("; run `opencorp onboard` to sign in again")
+  // Missing.
+  fs.rmSync(auth)
+  got = byName(await runChecks(dir, paths))
+  expect(got.provider).toEqual({
+    name: "provider",
+    status: "fail",
+    detail:
+      `${file} signs in to a ChatGPT subscription, but its sign-in ${auth} is missing;` +
+      " run `opencorp onboard` to sign in again",
+  })
+  expect(shown(got)).toBe(false)
 })
 
 test("an unloaded launch agent fails", async () => {
