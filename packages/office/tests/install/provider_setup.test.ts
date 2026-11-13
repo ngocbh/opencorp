@@ -1282,18 +1282,25 @@ test("a subscription office.json whose sign-in is missing, unreadable or refused
   )
 })
 
-test("a refresh that may work later stops onboard and keeps the office's sign-in", async () => {
-  const office = newOffice()
-  await subscribedOffice(office, "gpt-5.5", -60)
-  const before = readFileSync(signInFile(office), "utf8")
-  const fake = fakeSubscription({ refreshed: new AuthError("OpenAI authentication request failed (HTTP 429)", { status: 429 }) })
-  const error = await rejection(ensure(office, new Script([]), { auth: fake.auth }))
-  expect(error).toBeInstanceOf(OnboardError)
-  expect(error.message).toBe(
-    `OpenAI didn't refresh the ChatGPT sign-in in ${signInFile(office)}: OpenAI authentication request failed` +
-      " (HTTP 429); try again later",
-  )
-  expect(readFileSync(signInFile(office), "utf8")).toBe(before)
+test("a refresh that may work later warns, keeps the office's sign-in, and onboarding goes on, as offline with a key", async () => {
+  const failures = [
+    new AuthError("OpenAI authentication request failed (could not connect)"),
+    new AuthError("OpenAI authentication request failed (HTTP 429)", { status: 429 }),
+    new AuthError("OpenAI authentication request failed (HTTP 503)", { status: 503 }),
+  ]
+  for (const refreshed of failures) {
+    const office = newOffice()
+    await subscribedOffice(office, "gpt-5.5", -60)
+    const before = readFileSync(signInFile(office), "utf8")
+    // No terminal either: nothing is asked.
+    const ask = new Script([], { interactive: false })
+    expect(await ensure(office, ask, { auth: fakeSubscription({ refreshed }).auth })).toBe(false)
+    expect(ask.seen).toEqual([
+      `Couldn't refresh the ChatGPT sign-in in ${signInFile(office)} now (${refreshed.message}); the office's runs` +
+        " will try again.",
+    ])
+    expect(readFileSync(signInFile(office), "utf8")).toBe(before)
+  }
 })
 
 test("a provider on stdin replaces a subscription and removes its sign-in, and a stray waiting sign-in goes", async () => {

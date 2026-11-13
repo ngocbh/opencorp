@@ -580,7 +580,19 @@ export async function signInProblem(
       return { problem: `its sign-in refreshed to another ChatGPT account (${why})`, fix: again }
     }
     if (signInRefused(message)) return { problem: `its sign-in has expired or was revoked (${why})`, fix: again }
-    throw new OnboardError(`OpenAI didn't refresh the ChatGPT sign-in in ${file}: ${why}; try again later`)
+    throw new RefreshLater(file, why)
+  }
+}
+
+/** OpenAI didn't refresh the sign-in at `file` now, `why`: a lost connection, a 429 or a 5xx, which may pass. */
+export class RefreshLater extends OnboardError {
+  override name = "RefreshLater"
+
+  constructor(
+    readonly file: string,
+    readonly why: string,
+  ) {
+    super(`OpenAI didn't refresh the ChatGPT sign-in in ${file}: ${why}; try again later`)
   }
 }
 
@@ -989,15 +1001,26 @@ export async function ensureProvider(office: string, prompter: Prompter, options
   return true
 }
 
-/** Keeps the office's subscription `provider` when its sign-in works (false: nothing written); else says why and asks
- *  again, Enter at each question signing in again (true), or, with no one to ask, throws `OnboardError` saying how. */
+/** Keeps the office's subscription `provider` when its sign-in works, or when OpenAI couldn't refresh it now, which
+ *  is only said, as the office's runs refresh it themselves (false: nothing written); else says why and asks again,
+ *  Enter at each question signing in again (true), or, with no one to ask, throws `OnboardError` saying how. */
 async function keepSubscription(
   office: string,
   prompter: Prompter,
   options: ProviderOptions,
   provider: Provider,
 ): Promise<boolean> {
-  const found = await signInProblem(setupSignInFile(office), options.auth)
+  let found: Awaited<ReturnType<typeof signInProblem>>
+  try {
+    found = await signInProblem(setupSignInFile(office), options.auth)
+  } catch (error) {
+    // Onboarding goes on, as an office on a key does offline: the service still gets installed or repaired.
+    if (!(error instanceof RefreshLater)) throw error
+    prompter.say(
+      `Couldn't refresh the ChatGPT sign-in in ${error.file} now (${error.why}); the office's runs will try again.`,
+    )
+    return false
+  }
   if (found === null) return false
   const why = `${setupConnectionFile(office)} signs in to a ChatGPT subscription, but ${found.problem}`
   if (!prompter.interactive) throw new OnboardError(`${why}; run \`opencorp onboard\` in a terminal to sign in again`)
