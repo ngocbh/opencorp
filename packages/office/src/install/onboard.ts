@@ -45,7 +45,7 @@ import { checkSocketPath, makeOfficeDir, OfficeStartError } from "../daemon/sock
 import { redact as redactSecrets, repr } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
-import { PrivateFileError, writePrivate } from "../secrets.ts"
+import { checkFolder, PrivateFileError, writePrivate } from "../secrets.ts"
 import type { WorkerEnv } from "../worker/main.ts"
 import { plainAuthError } from "../worker/rpc.ts"
 import { workerEnv } from "../worker/spawn.ts"
@@ -491,8 +491,18 @@ class Subscribed {
 
 /** Signs in to a ChatGPT subscription with a device code, then asks for one of its models, the first by default;
  *  resolves null when the sign-in failed and the owner was told why. Rejects with `signIn.signal`'s reason once it
- *  aborts, and with `OnboardError` when the sign-in failed and there's no one to tell. */
+ *  aborts, and with `OnboardError` when the sign-in's folder isn't private to this user (checked first, so the owner
+ *  never signs in for nothing) or the sign-in failed and there's no one to tell. */
 async function subscribe(prompter: Prompter, last: Answers, signIn: SignIn): Promise<Subscribed | null> {
+  const folder = path.dirname(signIn.file)
+  try {
+    checkFolder(folder, "folder")
+  } catch (error) {
+    if (error instanceof PrivateFileError) throw new OnboardError(`can't keep the sign-in: ${error.message}`)
+    const code = errnoCode(error)
+    if (code === undefined) throw error
+    throw new OnboardError(`can't keep the sign-in in ${folder}: ${code}`)
+  }
   const signal = signIn.signal ?? new AbortController().signal
   const auth = (signIn.auth ?? OPENAI_AUTH)({ signal })
   let creds: OAuthCredentials

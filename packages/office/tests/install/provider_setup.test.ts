@@ -1132,17 +1132,19 @@ test("without a sign-in file the picker never asks how openai signs in", async (
   expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ llm_config: { provider: "openai", api_key: KEY, model: "gpt-5.5" } })
 })
 
-test("a sign-in folder open to others stops the picker before anything is saved", async () => {
+test("a sign-in folder open to others stops the picker before the device sign-in starts", async () => {
   const { dir, target, auth } = hqDir()
   chmodSync(dir, 0o755)
-  const ask = new Script(["openai", "", ""])
+  const fake = fakeSubscription()
+  const ask = new Script(["openai", ""])
   const error = await rejection(
-    askProviderTo(target, ask, { listers: NO_LISTING, checkModel: answers(), signIn: { file: auth, auth: fakeSubscription().auth } }),
+    askProviderTo(target, ask, { listers: NO_LISTING, checkModel: answers(), signIn: { file: auth, auth: fake.auth } }),
   )
   expect(error).toBeInstanceOf(OnboardError)
-  expect(error.message).toStartWith(`can't save the sign-in: Credential storage folder ${dir} must be private`)
+  expect(error.message).toBe(`can't keep the sign-in: folder '${dir}' must be mode 0700`)
+  expect(fake.signals).toEqual([])
+  expect(ask.seen).toEqual(["Model provider", HOW_SIGN_IN])
   expect(readdirSync(dir)).toEqual([])
-  noToken([error.message])
 })
 
 test("no key and no model name means the model yians login saved", async () => {
