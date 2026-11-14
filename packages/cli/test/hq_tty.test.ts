@@ -358,6 +358,34 @@ describe.skipIf(!TMUX)("behind the learning screen", () => {
     expect(pidsNaming(c.hq)).toEqual([])
   }, 120_000)
 
+  test("keys typed while ssh holds the terminal are drained, not delivered to the next question", async () => {
+    const llm = await FakeLLM.start()
+    onTestFinished(() => llm.close())
+    const c = await client(null, { behavior: { hosts: { login1: { login: "tty" } } } })
+    onTestFinished(() => removeClient(c))
+    withModel(c, llm)
+    llm.script(
+      { tool_calls: [{ name: "shell", arguments: { command: "ssh login1 true", why: "log in to login1" } }] },
+      { content: "Stopping here." },
+    )
+    const t = terminal(c)
+    await t.see("Learn how to reach HQ from here? This uses the model.")
+    pickFirst(t)
+    await t.see("Run this 1-line command?")
+    pickFirst(t)
+    await t.see("fake password for login1:")
+    t.type("hunter2")
+    // ssh read one line; these keys stay in the kernel buffer until take_back, when the screen drains them.
+    t.keys("Up")
+    t.keys("Enter")
+    t.keys("2")
+    await t.see("nothing was saved: Stopping here.")
+    expect(await t.exit()).toBe("exit=1")
+    // ssh got only the password, and the drained keys answered nothing.
+    expect(c.fake.tty()).toEqual(["hunter2"])
+    expect(pidsNaming(c.hq)).toEqual([])
+  }, 120_000)
+
   test("a command taller than the screen hides its choices until the owner reads to the end", async () => {
     const llm = await FakeLLM.start()
     onTestFinished(() => llm.close())

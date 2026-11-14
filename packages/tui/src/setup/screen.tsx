@@ -32,6 +32,9 @@ function redact(text: string) {
   return text.replace(/(?<=:\/\/)[^/@\s]+@/g, "***@")
 }
 
+/** How long input is drained when the screen comes back, as the visit drains before a reconnect. */
+const DRAIN_MS = 50
+
 /** The heading above a review's risks. */
 const BEFORE_SAVING = "Before you save it:"
 /** Shown while a card is still taller than the pager: the owner reads to the end before the choices appear. */
@@ -150,13 +153,38 @@ export function SetupScreen(props: {
     } else if (prompt.type === "take_back") {
       if (renderer.isDestroyed) return
       renderer.currentRenderBuffer.clear()
-      renderer.resume()
-      // Put the resize handler back and take the new size now, after resume, when a query is safe again.
-      if (resizeDetached) attachResize(renderer)
-      resizeDetached = false
-      renderer.requestRender()
+      const stdin = (renderer as unknown as { stdin: NodeJS.ReadStream }).stdin
+      // On a real terminal, discard what the kernel buffered while the child held it (ssh's menu, a stray Enter)
+      // before the screen listens again, as the visit's `drain` does; stdin has no screen listener and is paused
+      // here. A test renderer's stdin isn't the process's and holds nothing, so it just comes back.
+      if (stdin === process.stdin && stdin.isTTY) void drainThenResume(stdin)
+      else resumeScreen()
     } else setPending(prompt)
   })
+
+  /** Brings the screen back: redraws, and puts the resize handler back, taking the new size now, when a query is
+   *  safe again. */
+  const resumeScreen = () => {
+    if (renderer.isDestroyed) return
+    renderer.resume()
+    if (resizeDetached) attachResize(renderer)
+    resizeDetached = false
+    renderer.requestRender()
+  }
+
+  /** Reads and throws away what `stdin` buffered while the child held the terminal, for `DRAIN_MS`, then brings the
+   *  screen back. */
+  const drainThenResume = async (stdin: NodeJS.ReadStream) => {
+    const discard = () => {}
+    try {
+      stdin.on("data", discard)
+      stdin.resume()
+      await new Promise((r) => setTimeout(r, DRAIN_MS))
+      stdin.off("data", discard)
+      stdin.pause()
+    } catch {}
+    resumeScreen()
+  }
 
   /** Sends `text` as the answer, shows the question answered with `shown`, clears any card, waits for the next. */
   const answer = (question: string, text: string, shown: string) => {

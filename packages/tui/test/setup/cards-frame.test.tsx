@@ -150,6 +150,8 @@ test("handing the terminal over suspends the screen, says why on the terminal an
     app.input.pressCtrlC()
     expect(child.interrupts).toBe(0)
     child.push({ type: "take_back" })
+    // take_back drains input first, so resume comes a moment later.
+    await until(() => calls.length === 2)
     expect(calls).toEqual(["suspend", "resume"])
     const f = await app.until((f) => f.includes(why))
     expect(f).toContain("Working…")
@@ -170,15 +172,16 @@ test("the resize handler is taken off while the terminal is handed over, so no s
   process.on("SIGWINCH", handler)
   try {
     await app.until((f) => f.includes("Working…"))
-    expect(process.listeners("SIGWINCH")).toContain(handler)
+    expect(process.listeners("SIGWINCH").includes(handler)).toBe(true)
     child.push({ type: "hand_over", why: "Running the command." })
     await until(() => child.answers.length === 1)
     // While ssh has the terminal, a window change writes nothing: opentui's resize handler is off.
-    expect(process.listeners("SIGWINCH")).not.toContain(handler)
+    expect(process.listeners("SIGWINCH").includes(handler)).toBe(false)
     child.push({ type: "take_back" })
     await app.until((f) => f.includes("Running the command."))
     // It comes back once the screen does.
-    expect(process.listeners("SIGWINCH")).toContain(handler)
+    await until(() => process.listeners("SIGWINCH").includes(handler))
+    expect(process.listeners("SIGWINCH").includes(handler)).toBe(true)
     child.end(0)
     await app.task
   } finally {
