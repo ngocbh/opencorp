@@ -89,7 +89,8 @@ export function inProcessChild(o: { interrupt: () => void; echo: (text: string) 
     answers,
     echo(text) {
       if (away || ended) return void o.echo(text)
-      for (const line of text.replace(/\n$/, "").split("\n")) if (line !== "") emit({ type: "say", text: printable(line) })
+      for (const line of text.replace(/\n$/, "").split("\n"))
+        if (line !== "") emit({ type: "say", text: printable(line) })
     },
   }
   return {

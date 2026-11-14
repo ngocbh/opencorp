@@ -118,7 +118,15 @@ export async function runSetupWith(
 
 /** The signals that take an in-process screen down, which closes its channel and so stops the run: opentui's list
  *  without SIGINT, which the run handles itself, so one SIGINT from outside isn't also the screen's Ctrl-C. */
-export const IN_PROCESS_SIGNALS: NodeJS.Signals[] = ["SIGTERM", "SIGQUIT", "SIGABRT", "SIGHUP", "SIGBREAK", "SIGPIPE", "SIGBUS"]
+export const IN_PROCESS_SIGNALS: NodeJS.Signals[] = [
+  "SIGTERM",
+  "SIGQUIT",
+  "SIGABRT",
+  "SIGHUP",
+  "SIGBREAK",
+  "SIGPIPE",
+  "SIGBUS",
+]
 
 /**
  * Runs `work` behind the setup screen in this process, the header reading `title` and naming `command`: what it

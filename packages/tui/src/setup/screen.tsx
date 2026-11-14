@@ -63,7 +63,12 @@ export function SetupScreen(props: {
     } else if (prompt.type === "say") add({ kind: "say", text: prompt.text }, prompt.text)
     else if (prompt.type === "command") {
       const warning = prompt.warning ?? ""
-      add({ kind: "command", title: prompt.title, warning, lines: prompt.lines }, prompt.title, ...(warning ? [warning] : []), ...prompt.lines)
+      add(
+        { kind: "command", title: prompt.title, warning, lines: prompt.lines },
+        prompt.title,
+        ...(warning ? [warning] : []),
+        ...prompt.lines,
+      )
     } else if (prompt.type === "result")
       // Its output reached the terminal as it came, so the transcript keeps only how it ended.
       add({ kind: "result", title: prompt.title, ok: prompt.ok, lines: prompt.lines ?? [] }, prompt.title)
