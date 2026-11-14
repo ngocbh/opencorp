@@ -12,7 +12,14 @@ async function boot<T>(work: (io: ScreenIo) => Promise<T>) {
   const setup = await createTestRenderer({ width: 100, height: 40, useThread: false, exitOnCtrlC: false })
   setup.renderer.waitForThemeMode = async () => "dark"
   const core = await import("@opentui/core")
-  mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
+  const configs: { exitSignals?: string[] }[] = []
+  mock.module("@opentui/core", () => ({
+    ...core,
+    createCliRenderer: async (config: { exitSignals?: string[] }) => {
+      configs.push(config)
+      return setup.renderer
+    },
+  }))
   const { runInProcess } = await import("../../src/setup/run")
   const printed: string[] = []
   const echoed: string[] = []
@@ -31,6 +38,7 @@ async function boot<T>(work: (io: ScreenIo) => Promise<T>) {
     task,
     input: setup.mockInput,
     printed: () => printed.join(""),
+    configs,
     echoed,
     interrupts,
     async until(pred: (f: string) => boolean, ms = 3000) {
@@ -114,6 +122,18 @@ test("a learning run's risks, device code, question, command, hand-over and save
     expect(transcript).toContain(`${RISK}\n${DEVICE}\n${TO_MODEL}\nThe agent asks: Which login node do you use?: login1\n`)
     expect(transcript).toContain("Run this 1-line command?: Run it\nExited 0\na banner after\n")
     expect(transcript.endsWith("Save this 1-line reach.sh and the notes?: Test it, then save it\n")).toBe(true)
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a SIGINT from outside is the run's to handle; the other exit signals still take the screen down", async () => {
+  const app = await boot(async () => {})
+  try {
+    await app.task
+    const signals = app.configs[0]!.exitSignals!
+    expect(signals).not.toContain("SIGINT")
+    expect(signals).toEqual(expect.arrayContaining(["SIGTERM", "SIGHUP", "SIGQUIT"]))
   } finally {
     await app.stop()
   }

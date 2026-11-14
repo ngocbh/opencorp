@@ -45,15 +45,17 @@ export async function runSetup(argv: string[], cwd: string, env: Record<string, 
 }
 
 /** The same, for a child already running (tests pass a fake); the header reads `title` and names `command`, such as
- *  `opencorp init`. Why the child takes the terminal goes on `err`. */
+ *  `opencorp init`. Why the child takes the terminal goes on `err`. `exitSignals` are the signals that take the screen
+ *  down (opentui's own list by default). */
 export async function runSetupWith(
   child: SetupChild,
   out: Writer = process.stdout,
   err: Writer = process.stderr,
   command = "",
-  title?: string,
+  { title, exitSignals }: { title?: string; exitSignals?: NodeJS.Signals[] } = {},
 ): Promise<number> {
   const renderer = await createCliRenderer({
+    ...(exitSignals ? { exitSignals } : {}),
     externalOutputMode: "passthrough",
     targetFps: 60,
     gatherStats: false,
@@ -114,6 +116,10 @@ export async function runSetupWith(
   }
 }
 
+/** The signals that take an in-process screen down, which closes its channel and so stops the run: opentui's list
+ *  without SIGINT, which the run handles itself, so one SIGINT from outside isn't also the screen's Ctrl-C. */
+export const IN_PROCESS_SIGNALS: NodeJS.Signals[] = ["SIGTERM", "SIGQUIT", "SIGABRT", "SIGHUP", "SIGBREAK", "SIGPIPE", "SIGBUS"]
+
 /**
  * Runs `work` behind the setup screen in this process, the header reading `title` and naming `command`: what it
  * writes to `io.prompts` (a `JsonPrompter`'s lines) shows there, and the answers come on `io.answers`. Ctrl-C on the
@@ -128,7 +134,7 @@ export async function runInProcess<T>(
 ): Promise<T> {
   const channel = inProcessChild(o)
   const out = o.out ?? process.stderr
-  const screen = runSetupWith(channel.child, out, out, o.command, o.title)
+  const screen = runSetupWith(channel.child, out, out, o.command, { title: o.title, exitSignals: IN_PROCESS_SIGNALS })
   // A screen that fails once `work` runs must not leave it waiting for answers.
   void screen.catch(() => channel.child.close())
   await Promise.race([channel.ready, screen])
