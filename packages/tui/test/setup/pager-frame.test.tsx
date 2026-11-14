@@ -281,3 +281,42 @@ test("a resize that makes a read card longer hides its choices until the new end
     await app.stop()
   }
 })
+
+test("a long prose question with options keeps its options and the 'goes to the model' line on screen", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child)
+  const toModel = "Your answer goes to the model. Type passwords, passphrases and codes only at ssh's own prompts, never here."
+  try {
+    child.push({ type: "say", text: toModel })
+    // About 4000 characters of prose with single spaces, so no marker shortens it.
+    const prose = Array.from({ length: 500 }, (_, i) => `word${i}`).join(" ")
+    child.push({
+      type: "choose",
+      question: `The agent asks: ${prose} TAIL`,
+      options: ["login1", "login2"],
+      default: "",
+      typed: true,
+    })
+    const f = await app.until((f) => f.includes("login2"))
+    expect(f).toContain("The agent asks: word0")
+    expect(f).toContain("login1")
+    expect(f).toContain("answer goes to the model")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a short question's box is only as tall as the question, leaving the transcript its room", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child)
+  try {
+    for (let i = 0; i < 22; i++) child.push({ type: "say", text: `line-${i}` })
+    child.push({ type: "ask", question: "Company", default: "" })
+    const f = await app.until((f) => f.includes("Type your answer here"))
+    // A box a third of the screen tall would leave only the last dozen lines.
+    expect(f).toContain("line-8 ")
+    expect(f).toContain("line-21")
+  } finally {
+    await app.stop()
+  }
+})

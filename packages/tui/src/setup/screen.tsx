@@ -75,6 +75,32 @@ function wrap(line: string, width: number): string[] {
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 
+/** How many rows `text` takes word-wrapped to `width` cells (a word wider than a row breaks across rows). */
+function wordWrapRows(text: string, width: number): number {
+  let total = 0
+  for (const paragraph of text.split("\n")) {
+    let rows = 1
+    let used = 0
+    for (const word of paragraph.split(" ")) {
+      const w = Bun.stringWidth(word)
+      if (used > 0 && used + 1 + w <= width) {
+        used += 1 + w
+        continue
+      }
+      if (used === 0 && w <= width) {
+        used = w
+        continue
+      }
+      if (used > 0) rows++
+      const extra = Math.max(0, Math.ceil(w / width) - 1)
+      rows += extra
+      used = w - extra * width
+    }
+    total += rows
+  }
+  return total
+}
+
 /** The screen's and the pager's side padding: the pager wraps its rows to what is left of the width once both are
  *  taken, the same width it draws them in. */
 const SCREEN_PAD = 2
@@ -393,10 +419,14 @@ export function SetupScreen(props: {
                         // A typed default that isn't an option starts in the box, so Enter alone still takes it.
                         const draft = typed && at < 0 ? fallback : ""
                         const shown = oneLine(choose().question)
+                        // A question too long for its share of the screen is drawn above the options in a bounded,
+                        // scrolling box, so it can't push them off; a short one stays where the card puts it.
+                        const size = questionSize(shown, dimensions())
+                        const long = size.rows > size.cap
                         const pages = [
                           {
                             header: shown,
-                            question: shown,
+                            question: long ? "" : shown,
                             options: options.map((o) => ({ label: o, value: o })),
                             multi: false,
                             typed,
@@ -414,7 +444,13 @@ export function SetupScreen(props: {
                               const text = a.text.trim() || options[a.picked[0]]
                               answer(choose().question, text, redact(text))
                             }}
-                          />
+                          >
+                            <Show when={long}>
+                              <box paddingLeft={1}>
+                                <BoundedQuestion text={shown} />
+                              </box>
+                            </Show>
+                          </QuestionView>
                         )
                       }}
                     </Match>
@@ -673,6 +709,34 @@ export function attachResize(renderer: unknown): void {
   h()
 }
 
+/** The columns a question panel's own chrome takes beside the screen's padding: its bar, its padding, and a column
+ *  for a scrollbar. */
+const QUESTION_INSET = 7
+
+/** How many rows `text` takes in a question panel on a screen of `size`, and the most a question may take there. */
+function questionSize(text: string, size: { width: number; height: number }) {
+  const width = Math.max(1, size.width - 2 * SCREEN_PAD - QUESTION_INSET)
+  return { rows: wordWrapRows(text, width), cap: Math.max(3, Math.floor(size.height / 3)) }
+}
+
+/** A question in a box only as tall as it needs, but at most a third of the screen; a longer one scrolls inside it,
+ *  so the answer box or the choices below it, and the transcript above, stay on screen. */
+function BoundedQuestion(props: { text: string }) {
+  const { theme } = useTheme()
+  const dimensions = useTerminalDimensions()
+  const height = () => {
+    const { rows, cap } = questionSize(props.text, dimensions())
+    return Math.max(1, Math.min(rows, cap))
+  }
+  return (
+    <scrollbox scrollY={true} stickyScroll={true} stickyStart="top" height={height()} flexShrink={0}>
+      <text fg={theme.text} wrapMode="word">
+        {props.text}
+      </text>
+    </scrollbox>
+  )
+}
+
 /** The question card's look: a panel with an accent bar on its left. */
 function Panel(props: ParentProps) {
   const { theme } = useTheme()
@@ -696,7 +760,6 @@ function Panel(props: ParentProps) {
  */
 function Ask(props: { question: string; default: string; onSubmit: (text: string) => void }) {
   const { theme } = useTheme()
-  const dimensions = useTerminalDimensions()
   let input: InputRenderable | undefined
   const tuiConfig = useTuiConfig()
   useBindings(() => ({
@@ -706,15 +769,9 @@ function Ask(props: { question: string; default: string; onSubmit: (text: string
       return true
     }),
   }))
-  // At most a third of the screen for the question, so the input below it never goes off the bottom.
-  const questionHeight = () => Math.max(1, Math.floor(dimensions().height / 3))
   return (
     <Panel>
-      <scrollbox scrollY={true} stickyScroll={true} stickyStart="top" maxHeight={questionHeight()}>
-        <text fg={theme.text} wrapMode="word">
-          {props.question}
-        </text>
-      </scrollbox>
+      <BoundedQuestion text={props.question} />
       <input
         focused
         ref={(r) => (input = r)}
