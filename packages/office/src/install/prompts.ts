@@ -49,11 +49,12 @@ export function stepLines(number: number, total: number, title: string, why: str
 export type Card = SetupCommand | SetupResult | SetupReview
 
 /** `card` as lines on the terminal: a command's title, warning and lines; a review's title, each file under its name,
- *  what to know before saving, and its warning; nothing for a result, whose output the terminal showed as it came. */
+ *  what to know before saving, and its warning; a result's title alone — how it ended, or why a chain test failed —
+ *  since its output already streamed to the terminal as it came. */
 export function cardLines(card: Card): string[] {
   const warning = card.type !== "result" && card.warning ? [card.warning] : []
   if (card.type === "command") return [card.title, ...warning, ...card.lines]
-  if (card.type === "result") return []
+  if (card.type === "result") return [card.title]
   const risks = card.risks ?? []
   return [
     card.title,

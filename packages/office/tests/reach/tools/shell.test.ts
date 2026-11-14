@@ -22,6 +22,8 @@ test("a command runs only once the owner approves it, and the model gets its exi
     "  1  echo out",
     "  2  echo err >&2; exit 4",
     "Run this 2-line command?",
+    // After it runs, the owner is told how it ended (its output already streamed as it came).
+    "Exited 4",
   ])
   expect(runQuestion(2)).toBe("Run this 2-line command?")
   expect(prompter.offered).toEqual([[RUN, DONT_RUN]])
@@ -52,13 +54,16 @@ test("the command shows as a card, runs with the terminal handed over, and then 
   ])
 })
 
-test("a result says when an ssh in the command couldn't connect, and shows only the last lines", async () => {
+test("a result says when an ssh in the command couldn't connect, and shows all the output the model sees", async () => {
   const { prompter, state } = await learning(["1"], { behavior: { hosts: { login1: { login: "refuse" } } } })
   await runShell({ command: "seq 1 30; ssh login1 true; true", why: "look" }, state)
   const result = prompter.cards.at(-1)!
   expect(result).toMatchObject({ type: "result", title: "Exited 0; an ssh in it couldn't connect", ok: false })
   const lines = (result as { lines: string[] }).lines
-  expect(lines.length).toBe(20)
+  // The owner sees all of it, not just a tail: every line of stdout, then ssh's refusal on stderr.
+  expect(lines.filter((l) => /^\d+$/.test(l))).toHaveLength(30)
+  expect(lines).toContain("1")
+  expect(lines).toContain("30")
   expect(lines.at(-1)).toContain("Permission denied")
 })
 

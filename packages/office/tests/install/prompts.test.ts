@@ -20,8 +20,11 @@ test("on the terminal a command shows its title, warning and lines; a review its
   } satisfies Card
   expect(cardLines(command)).toEqual(["The model wants to run a command: look", "Careful", "  1  ls"])
   expect(cardLines({ ...command, warning: "" })).toEqual(["The model wants to run a command: look", "  1  ls"])
-  // The terminal showed its output as it came.
-  expect(cardLines({ type: "result", title: "Exited 0", ok: true, lines: ["a"] })).toEqual([])
+  // The terminal showed the output as it came, so only how it ended (or why a test failed) is printed.
+  expect(cardLines({ type: "result", title: "Exited 0", ok: true, lines: ["a"] })).toEqual(["Exited 0"])
+  expect(cardLines({ type: "result", title: "Not saved: reach.sh failed the test", ok: false })).toEqual([
+    "Not saved: reach.sh failed the test",
+  ])
   const review = {
     type: "review",
     title: "The model wants to save how this machine reaches HQ.",

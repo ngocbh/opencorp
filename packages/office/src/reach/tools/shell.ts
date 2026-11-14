@@ -77,11 +77,9 @@ export async function runShell(args: { command: string; why: string }, state: Le
   return shellResult(scrubbed, statuses)
 }
 
-/** How many of a command's last lines its result shows the owner. */
-export const RESULT_LINES = 20
-
-/** How the command ended, for the owner: its exit (or why it was stopped), whether an ssh in it couldn't connect, and
- *  the last `RESULT_LINES` lines of its stdout, then its stderr. */
+/** How the command ended, for the owner: its exit (or why it was stopped), whether an ssh in it couldn't connect,
+ *  and all of its stdout then stderr that the model is given — kept the same, so the owner can read in the scrollable
+ *  transcript everything the model sees (on the plain terminal it already streamed as it came). */
 export function resultCard(ran: Ran, statuses: readonly number[], stopped: boolean): Card {
   const how = stopped ? "Stopped" : ran.timedOut ? "Stopped: it didn't finish within 5 minutes" : `Exited ${ran.code}`
   const ssh = statuses.includes(255) ? "; an ssh in it couldn't connect" : ""
@@ -92,7 +90,7 @@ export function resultCard(ran: Ran, statuses: readonly number[], stopped: boole
     type: "result",
     title: `${how}${ssh}`,
     ok: !stopped && !ran.timedOut && ran.code === 0 && ssh === "",
-    lines: lines.slice(-RESULT_LINES).map(clean),
+    lines: lines.map(clean),
   }
 }
 
