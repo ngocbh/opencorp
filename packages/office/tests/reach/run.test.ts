@@ -1,5 +1,6 @@
 /** A visit from a machine where no office answers: approving the saved path, connecting, signing in or opening,
- *  another visit beside a running one, the failure table, and waiting with its reconnects. */
+ *  another visit beside a running one, the failure table, and waiting with its reconnects; and the runs of learn_hq
+ *  and reach_hq it starts. */
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
@@ -7,16 +8,22 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { AuthStore } from "@ngocbh/yian/llm_clients"
+import { ConnectionFile } from "../../src/chat/connections.ts"
+import { Provider } from "../../src/chat/provider.ts"
+import { Learning } from "../../src/reach/learning.ts"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import type { Spec } from "../../src/reach/spec.ts"
 import { type Access, DEFAULT_PORT, readAccess, sha256, takeLock, writeAccess } from "../../src/reach/state.ts"
 import {
   AFTER_CAP,
+  ANSWER_GOES_TO_MODEL,
   BUSY,
   ASKED_FOR,
   CAPPED,
   describe as describeFailure,
   lastPath,
+  learnedMessage,
   MAX_OLD_CHARS,
   LOST,
   NO_OFFICE_HERE,
@@ -24,6 +31,8 @@ import {
   NOT_LEARNED,
   RELEARN_BUSY,
   NOT_YET,
+  runLearn,
+  runReach,
   runThis,
   RUNNING,
   SIGN_IN_HINT,
@@ -34,20 +43,37 @@ import {
   type VisitOptions,
   visit,
 } from "../../src/reach/run.ts"
-import { KeyboardInterrupt, TtyPrompter } from "../../src/install/prompts.ts"
+import { learnProvider } from "../../src/reach/provider.ts"
+import { SAVED, saveAccess } from "../../src/reach/tools/save_access.ts"
+import { runShell } from "../../src/reach/tools/shell.ts"
+import { KeyboardInterrupt, OnboardError, TtyPrompter } from "../../src/install/prompts.ts"
 import { ReachFailure } from "../../src/reach/connect.ts"
 import { PassThrough } from "node:stream"
 import { defaultIncludes } from "../../src/reach/ssh.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../src/testing/fake_ssh.ts"
-import { control, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
+import { control, exitAll, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { beforeLearning, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../src/reach/risks.ts"
-import { signInLine } from "../../src/install/onboard.ts"
+import { providerSecrets, signInLine, withSignIn } from "../../src/install/onboard.ts"
+import { workerEnv } from "../../src/worker/spawn.ts"
 import { fakeLlm } from "../chat/helpers.ts"
-import { DEVICE_CODE, DEVICE_URL, fakeSubscription } from "../install/helpers.ts"
+import { DEVICE_CODE, DEVICE_URL, fakeSubscription, Script } from "../install/helpers.ts"
 import { ps, waitFor } from "../helpers.ts"
-import { fakeHome, fakeRemote, freePort, reachCtx, visitDeps } from "./helpers.ts"
+import {
+  approved,
+  chain,
+  fakeHome,
+  fakeRemote,
+  freePort,
+  reachCtx,
+  rejection,
+  SPEC,
+  subscribed,
+  SUBSCRIBED_LLM,
+  tokens,
+  visitDeps,
+} from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -289,6 +315,17 @@ test("a replay reads neither hq/provider.json nor hq/auth.json", async () => {
   expect(v.prompter.seen).toEqual([])
   v.sigint()
   expect(await v.done).toBe(0)
+})
+
+test("a replay makes no model call even with a provider file next to it", async () => {
+  const llm = await fakeLlm()
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  await writePrivate(ctx.paths.provider, JSON.stringify({ llm_config: LLM_CONFIG, env: llm.env() }))
+  const spec = { ...SPEC, port: 2222, env: { OPENCORP_HOME: "/h/o" } }
+  await approved(ctx.paths, `printf '%s\\n' '${JSON.stringify(spec)}'\n`)
+  expect(await runReach(ctx)).toEqual({ outcome: "ok", spec, detail: "" })
+  expect(llm.requests()).toEqual([])
 })
 
 test("a later visit opens HQ's URL and mints nothing", async () => {
@@ -1040,4 +1077,164 @@ test("--relearn with an access.json that isn't valid warns and relearns as if th
     "opencorp hq: nothing was saved: Nothing to learn.",
   ])
   expect(llm.requests()).toHaveLength(1)
+})
+
+/** The fake model, and a provider for it. */
+async function model() {
+  const llm = await fakeLlm()
+  return { llm, provider: Provider.parse({ llm_config: LLM_CONFIG, env: llm.env() }) }
+}
+
+const NO_INPUTS = { notes: "", script: "", failure: "" }
+
+test("a learning run asks, runs approved commands and saves through save_access", async () => {
+  const { llm, provider } = await model()
+  const c = await chain(["login1.example.edu", "1", "1"])
+  const script = scriptFor(c.spec)
+  llm.script(
+    call("ask_user", { question: "Which login node do you use?" }),
+    call("shell", { command: "pwd; ssh login1 true", why: "check that login1 answers" }),
+    call("save_access", { script, notes: NOTES, risks: ["Duo on the node too: two prompts."] }),
+    { content: "HQ is reachable." },
+  )
+  const got = await runLearn(provider, NO_INPUTS, c.state)
+  expect(got).toEqual({ output: "HQ is reachable.", message: null, capped: false })
+  // Marked as the agent's, with where the answer goes.
+  expect(c.prompter.seen.slice(0, 2)).toEqual([ANSWER_GOES_TO_MODEL, "The agent asks: Which login node do you use?"])
+  expect(ANSWER_GOES_TO_MODEL).toBe(
+    "Your answer goes to the model. Type passwords, passphrases and codes only at ssh's own prompts, never here.",
+  )
+  expect(fs.readFileSync(c.ctx.paths.script, "utf8")).toBe(script)
+  expect(fs.readFileSync(c.ctx.paths.notes, "utf8")).toBe(NOTES)
+  expect(c.state.connection).not.toBeNull()
+  expect(c.state.commands).toEqual([{ command: "pwd; ssh login1 true", code: 0 }])
+  // The folder commands ran in is gone once the run ends.
+  const work = /"stdout\\":\\"([^"\\]+)\\\\n/.exec(JSON.stringify(llm.requests()[2]))![1]!
+  expect(path.basename(work)).toStartWith("opencorp-learn-")
+  expect(fs.existsSync(work)).toBe(false)
+  const requests = llm.requests()
+  expect(requests).toHaveLength(4)
+  expect(JSON.stringify(requests[1])).toContain("login1.example.edu")
+  expect(JSON.stringify(requests[2])).toContain('\\"exit\\":0')
+  expect(JSON.stringify(requests[3])).toContain(`${SAVED} Reply with one line for the owner.`)
+  await exitAll(c.ctx)
+  expect(c.fake.masters()).toEqual([])
+})
+
+test("at the turn cap it lists the commands asked for and saves nothing", async () => {
+  const { llm, provider } = await model()
+  const c = await chain(Array(29).fill("1"))
+  // The 30th reply's call never runs: the model reads the cap's error result and answers once more.
+  llm.script(
+    ...Array.from({ length: 30 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" })),
+    { content: "No working path yet." },
+  )
+  const got = await runLearn(provider, NO_INPUTS, c.state)
+  expect(got).toEqual({ output: "No working path yet.", message: null, capped: true })
+  expect(c.state.commands).toEqual(Array.from({ length: 29 }, (_, i) => ({ command: `echo ${i}`, code: 0 })))
+  expect(JSON.stringify(llm.requests().at(-1))).toContain("Tool-call limit reached (30 turns)")
+  expect(fs.existsSync(c.ctx.paths.script)).toBe(false)
+  expect(c.state.connection).toBeNull()
+}, 60_000)
+
+test("a reply after the turn cap that still calls tools runs none of them, and nothing is saved", async () => {
+  const { llm, provider } = await model()
+  const c = await chain(Array(29).fill("1"))
+  llm.script(
+    ...Array.from({ length: 30 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" })),
+    call("save_access", { script: scriptFor(c.spec), notes: NOTES, risks: [] }),
+  )
+  const got = await runLearn(provider, NO_INPUTS, c.state)
+  expect(got).toEqual({ output: "", message: null, capped: true })
+  expect(c.state.commands).toHaveLength(29)
+  expect(llm.requests()).toHaveLength(31)
+  expect(fs.existsSync(c.ctx.paths.script)).toBe(false)
+  expect(c.state.connection).toBeNull()
+}, 60_000)
+
+/** A prompter whose input has ended. */
+class Closed extends Script {
+  static readonly error = new OnboardError("no answer to 'Which node?' (stdin closed)")
+  override async ask(question: string): Promise<string> {
+    this.seen.push(question)
+    throw Closed.error
+  }
+  override async choose(question: string): Promise<string> {
+    this.seen.push(question)
+    throw Closed.error
+  }
+}
+
+test("the owner's input ending stops the run with that error", async () => {
+  const { llm, provider } = await model()
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const state = new Learning(ctx, new Closed(), new PassThrough(), [], 49381)
+  llm.script(call("ask_user", { question: "Which node?" }))
+  expect(await rejection(runLearn(provider, NO_INPUTS, state))).toBe(Closed.error)
+  const shell = new Learning(ctx, new Closed(), new PassThrough(), [], 49381)
+  llm.script(call("shell", { command: "true", why: "x" }))
+  expect(await rejection(runLearn(provider, NO_INPUTS, shell))).toBe(Closed.error)
+  expect(llm.pending()).toEqual([])
+})
+
+test("the learning run reads the sign-in YIAN_AUTH_FILE names", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const provider = await learnProvider(ctx.paths, new Script(["openai", "", ""]), subscribed().options)
+  // Damaged after it was checked, so the run stops reading it, before any request.
+  fs.writeFileSync(ctx.paths.auth, "{nope", { mode: 0o600 })
+  const state = new Learning(ctx, new Script([]), new PassThrough(), [], 49381)
+  const got = await runLearn(provider, NO_INPUTS, state)
+  expect(got.output).toBeNull()
+  expect(got.message).toContain(`Credential storage at ${ctx.paths.auth}`)
+})
+
+test("tokens yian refreshes during the run are scrubbed from command output with the old ones, and kept out of notes.md", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const old = tokens("old", -60)
+  const saved = await new AuthStore(ctx.paths.auth).save("openai", old, "gpt-5.5")
+  const provider = withSignIn(ConnectionFile.parse({ method: "subscription", llm_config: SUBSCRIBED_LLM }), ctx.paths.auth)
+  // As run.ts makes it.
+  const state = new Learning(ctx, new Script(["1"]), new PassThrough(), () => providerSecrets(provider, workerEnv(ctx.env)), 49381)
+  onTestFinished(() => state.close())
+  // The run's first model call refreshes the expired tokens through yian's own store, which writes the new ones.
+  const fresh = tokens("new", 3600)
+  await new AuthStore(ctx.paths.auth).credentials("openai", saved.credentialId, { refresh: async () => fresh })
+  expect(new AuthStore(ctx.paths.auth).savedSecrets("openai")[0]).toBe(fresh.accessToken)
+  const result = JSON.parse(
+    await runShell({ command: `cat '${ctx.paths.auth}'; echo ${old.accessToken}`, why: "look" }, state),
+  ) as { stdout: string }
+  expect(result.stdout).toContain("[redacted]")
+  for (const token of [fresh.accessToken, fresh.refreshToken, old.accessToken]) expect(result.stdout).not.toContain(token)
+  const error = await rejection(saveAccess({ script: "echo {}\n", notes: `${fresh.refreshToken}\n`, risks: [] }, state))
+  expect(error.message).toBe(
+    "Not saved: notes.md: it holds the model's API key or sign-in token; SSH asks for passwords and Duo itself, so leave them out.",
+  )
+})
+
+test("a learning run's failure on a refused sign-in says how to sign in again here, not with yian auth", () => {
+  const paths = new ReachPaths("/h/we$&ird$`")
+  const provider = withSignIn(ConnectionFile.parse({ method: "subscription", llm_config: SUBSCRIBED_LLM }), paths.auth)
+  const hint = ". Run 'yian auth openai' and start a new run"
+  const yian = `OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in again${hint}`
+  expect(learnedMessage(yian, provider, paths)).toBe(
+    "OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in again: delete" +
+      " /h/we$&ird$`/hq/auth.json and run `opencorp hq` again",
+  )
+  // A failure that may pass keeps the sign-in.
+  for (const why of ["(could not connect)", "(HTTP 429)", "(HTTP 502)"]) {
+    expect(learnedMessage(`OpenAI authentication request failed ${why}${hint}`, provider, paths)).toBe(
+      `OpenAI authentication request failed ${why}: run \`opencorp hq\` again later`,
+    )
+  }
+  expect(learnedMessage(`node learn failed: OpenAI authentication request failed (HTTP 403)${hint}`, provider, paths)).toBe(
+    "node learn failed: OpenAI authentication request failed (HTTP 403): delete /h/we$&ird$`/hq/auth.json and run" +
+      " `opencorp hq` again",
+  )
+  // On a key, or yian's own login, yian's hint is the fix.
+  const keyless = Provider.parse({ llm_config: SUBSCRIBED_LLM })
+  expect(learnedMessage(yian, keyless, paths)).toBe(yian)
+  expect(learnedMessage(null, provider, paths)).toBeNull()
 })

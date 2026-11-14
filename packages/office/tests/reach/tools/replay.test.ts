@@ -1,20 +1,15 @@
-/** The replay: what a run of reach.sh means, running it, and `reach_hq`, the flow that runs it on every visit. */
+/** The replay, `reach_hq`'s tool: what a run of reach.sh means, running it, and the checks before a replay runs one. */
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
-import { classify, type Reached, runScript } from "../../src/reach/tools/replay.ts"
-import { runReach } from "../../src/reach/run.ts"
-import type { ReachPaths } from "../../src/reach/paths.ts"
-import type { Ran } from "../../src/reach/ssh.ts"
-import { DEFAULT_PORT, sha256, writeAccess } from "../../src/reach/state.ts"
-import { writePrivate } from "../../src/secrets.ts"
-import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
-import { fakeLlm } from "../chat/helpers.ts"
-import { fakeHome, reachCtx } from "./helpers.ts"
+import { classify, type Reached, runScript } from "../../../src/reach/tools/replay.ts"
+import { runReach } from "../../../src/reach/run.ts"
+import type { Ran } from "../../../src/reach/ssh.ts"
+import { writePrivate } from "../../../src/secrets.ts"
+import { approved, fakeHome, reachCtx, SPEC } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
 
-const SPEC = { host: "node1", jump: ["login1"], opencorp: "/o/opencorp" }
 const ran = (over: Partial<Ran>): Ran => ({ code: 0, stdout: "", stderr: "", timedOut: false, ...over })
 
 const ROWS: [string, Ran, number[], Partial<Reached>][] = [
@@ -75,30 +70,6 @@ test("a 255 inside a pipeline in reach.sh is couldn't connect", async () => {
   const got = await runScript(script, ctx)
   expect(got.outcome).toBe("unreachable")
   expect(got.detail).toContain("Permission denied")
-})
-
-/** Writes `body` as the approved reach.sh: the script and its sha256 in access.json. */
-async function approved(paths: ReachPaths, body: string): Promise<void> {
-  await writePrivate(paths.script, body)
-  await writePrivate(paths.approved, body)
-  await writeAccess(paths, {
-    port: DEFAULT_PORT,
-    sha256: sha256(body),
-    learned_at: "2026-11-11T10:00:00.000Z",
-    last_used_at: null,
-    signed_in_at: null,
-  })
-}
-
-test("a replay makes no model call even with a provider file next to it", async () => {
-  const llm = await fakeLlm()
-  const { dir, fake } = fakeHome()
-  const ctx = await reachCtx(dir, fake)
-  await writePrivate(ctx.paths.provider, JSON.stringify({ llm_config: LLM_CONFIG, env: llm.env() }))
-  const spec = { ...SPEC, port: 2222, env: { OPENCORP_HOME: "/h/o" } }
-  await approved(ctx.paths, `printf '%s\\n' '${JSON.stringify(spec)}'\n`)
-  expect(await runReach(ctx)).toEqual({ outcome: "ok", spec, detail: "" })
-  expect(llm.requests()).toEqual([])
 })
 
 test("a replay runs no reach.sh whose sha256 isn't the approved one", async () => {

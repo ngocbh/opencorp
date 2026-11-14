@@ -7,11 +7,17 @@ import path from "node:path"
 import type { HqStatus } from "@opencorp/protocol"
 import { PassThrough } from "node:stream"
 import { onTestFinished } from "bun:test"
+import { OAuthCredentials } from "@ngocbh/yian/llm_clients"
+import type { Provider } from "../../src/chat/provider.ts"
+import { Learning } from "../../src/reach/learning.ts"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
+import type { Spec } from "../../src/reach/spec.ts"
 import { type ReachContext, writeSshFiles } from "../../src/reach/ssh.ts"
+import { DEFAULT_PORT, sha256, writeAccess } from "../../src/reach/state.ts"
 import type { VisitDeps } from "../../src/reach/run.ts"
+import { writePrivate } from "../../src/secrets.ts"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "../../src/testing/fake_ssh.ts"
-import { NO_LISTING, Script } from "../install/helpers.ts"
+import { ACCOUNT, fakeSubscription, NO_LISTING, Script } from "../install/helpers.ts"
 
 /** Limits short enough that a test which hits one still finishes. */
 export const SHORT_LIMITS = Object.freeze({ promptMs: 5000, stepMs: 5000 })
@@ -252,4 +258,86 @@ export function visitDeps(
     ...more,
   }
   return { deps, prompter, stdin, printed, errors, echoed, opened, sigint: () => handler?.() }
+}
+
+/** A learning run over a fake ssh: its context, the owner's `answers`, and what reached the owner's terminal. */
+export async function learning(
+  answers: string[],
+  { behavior, secrets = [], port = 49381, ...more }: { behavior?: FakeSshBehavior; secrets?: string[]; port?: number } & Partial<ReachContext> = {},
+) {
+  const { dir, fake } = fakeHome(behavior)
+  const echoed: string[] = []
+  const ctx = await reachCtx(dir, fake, { echo: (t) => void echoed.push(t), ...more })
+  const prompter = new Script(answers)
+  const stdin = new PassThrough()
+  const state = new Learning(ctx, prompter, stdin, secrets, port)
+  onTestFinished(() => state.close())
+  return { dir, fake, ctx, prompter, stdin, state, echoed }
+}
+
+/** What `promise` rejects with; fails the test when it resolves. */
+export async function rejection(promise: Promise<unknown>): Promise<Error> {
+  try {
+    await promise
+  } catch (error) {
+    return error as Error
+  }
+  throw new Error("it resolved")
+}
+
+/** The model's API key a learning run is given. */
+export const KEY = "sk-ant-test-0123456789abcdef"
+/** notes.md as the agent would write it. */
+export const NOTES = "Log in to login1, then find the job's node with squeue.\n"
+
+/** A learning run whose owner answers `answers`, HQ's machine reached as node1 through login1, and a free port. */
+export async function chain(answers: string[], behavior: FakeSshBehavior = {}) {
+  const port = await freePort()
+  const run = await learning(answers, { behavior, port })
+  const remote = await fakeRemote(run.dir)
+  const spec: Spec = { host: "node1", jump: ["login1"], opencorp: remote.opencorp }
+  return { ...run, remote, spec, port }
+}
+
+/** learnProvider's options with the fake subscription; `checked` gets each provider the model check is given. */
+export function subscribed() {
+  const checked: Provider[] = []
+  const options = {
+    listers: NO_LISTING,
+    auth: fakeSubscription().auth,
+    checkModel: async (p: Provider) => {
+      checked.push(p)
+      return null
+    },
+  }
+  return { checked, options }
+}
+
+/** The model a ChatGPT subscription's provider.json names. */
+export const SUBSCRIBED_LLM = { provider: "openai", model: "gpt-5.5-codex" }
+
+/** Subscription tokens for `name`, expiring `inSeconds` from now. */
+export function tokens(name: string, inSeconds: number): OAuthCredentials {
+  return new OAuthCredentials({
+    accessToken: `${name}-access-0123456789`,
+    refreshToken: `${name}-refresh-0123456789`,
+    expiresAt: Date.now() / 1000 + inSeconds,
+    accountId: ACCOUNT,
+  })
+}
+
+/** A connection spec reach.sh may print. */
+export const SPEC = { host: "node1", jump: ["login1"], opencorp: "/o/opencorp" }
+
+/** Writes `body` as the approved reach.sh: the script and its sha256 in access.json. */
+export async function approved(paths: ReachPaths, body: string): Promise<void> {
+  await writePrivate(paths.script, body)
+  await writePrivate(paths.approved, body)
+  await writeAccess(paths, {
+    port: DEFAULT_PORT,
+    sha256: sha256(body),
+    learned_at: "2026-11-11T10:00:00.000Z",
+    last_used_at: null,
+    signed_in_at: null,
+  })
 }
