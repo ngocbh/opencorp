@@ -5,7 +5,7 @@ import path from "node:path"
 import { PassThrough } from "node:stream"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { ReportedToolError } from "@ngocbh/yian"
-import { ANSWER_GOES_TO_MODEL, learnedMessage, learnProvider, runLearn } from "../../src/reach/learn.ts"
+import { ANSWER_GOES_TO_MODEL, learnedMessage, learnProvider, runLearn } from "../../src/reach/run.ts"
 import { credentialWarning, Learning, namesCredentials } from "../../src/reach/learning.ts"
 import { MAX_SCRIPT_BYTES } from "../../src/reach/tools/replay.ts"
 import {
@@ -639,7 +639,7 @@ test("tokens yian refreshes during the run are scrubbed from command output with
   const old = tokens("old", -60)
   const saved = await new AuthStore(ctx.paths.auth).save("openai", old, "gpt-5.5")
   const provider = withSignIn(ConnectionFile.parse({ method: "subscription", llm_config: SUBSCRIBED_LLM }), ctx.paths.auth)
-  // As visit.ts makes it.
+  // As run.ts makes it.
   const state = new Learning(ctx, new Script(["1"]), new PassThrough(), () => providerSecrets(provider, workerEnv(ctx.env)), 49381)
   onTestFinished(() => state.close())
   // The run's first model call refreshes the expired tokens through yian's own store, which writes the new ones.

@@ -33,7 +33,7 @@ import {
   realVisitDeps,
   type VisitOptions,
   visit,
-} from "../../src/reach/visit.ts"
+} from "../../src/reach/run.ts"
 import { KeyboardInterrupt, TtyPrompter } from "../../src/install/prompts.ts"
 import { ReachFailure } from "../../src/reach/connect.ts"
 import { PassThrough } from "node:stream"

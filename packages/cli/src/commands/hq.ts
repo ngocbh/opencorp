@@ -1,10 +1,10 @@
 // `opencorp hq`: opens HQ in a browser. Where this machine's office answers, a one-time link signs a browser in to
-// its HQ; anywhere else, the office's visit reaches HQ over SSH (`@opencorp/office/reach/visit`). The code is only
+// its HQ; anywhere else, the office's visit reaches HQ over SSH (`@opencorp/office/reach/run`). The code is only
 // ever printed or put in a 0600 file: never in a process's arguments, where other users could read it.
 import { isMissingRoute, isNotImplemented, OfficeTimeout, OfficeUnavailable } from "@opencorp/client"
 import { defaultSocket, opencorpHome } from "@opencorp/client/node"
 import { otherPort, SETTINGS_IGNORED } from "@opencorp/office/hq/config"
-import type { VisitOptions } from "@opencorp/office/reach/visit"
+import type { VisitOptions } from "@opencorp/office/reach/run"
 import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
 import os from "node:os"
 import path from "node:path"
@@ -190,7 +190,7 @@ export const realHqDeps: HqDeps = {
   error: (line) => console.error(line),
   visit: async (options) => {
     // Loaded only for a visit: it brings in yian and the SSH plumbing.
-    const v = await import("@opencorp/office/reach/visit")
+    const v = await import("@opencorp/office/reach/run")
     return v.visit(options, v.realVisitDeps(opencorpHome()))
   },
 }

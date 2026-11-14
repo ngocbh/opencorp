@@ -9,7 +9,7 @@ import { PassThrough } from "node:stream"
 import { onTestFinished } from "bun:test"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import { type ReachContext, writeSshFiles } from "../../src/reach/ssh.ts"
-import type { VisitDeps } from "../../src/reach/visit.ts"
+import type { VisitDeps } from "../../src/reach/run.ts"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "../../src/testing/fake_ssh.ts"
 import { NO_LISTING, Script } from "../install/helpers.ts"
 
