@@ -62,6 +62,16 @@ function terminal(c: Client, { args = [], term = "xterm" }: { args?: string[]; t
     keys: (...keys: string[]) => void tmux("send-keys", "-t", "hq", ...keys),
     /** Whether the window shows the alternate screen, as the setup screen draws on. */
     alternate: () => tmux("display-message", "-p", "-t", "hq", "#{alternate_on}").trim() === "1",
+    /** The `opencorp hq` process in the pane (the shell's child), or undefined. */
+    pid: () => {
+      const pane = Number(tmux("display-message", "-p", "-t", "hq", "#{pane_pid}").trim())
+      try {
+        const kids = fs.readFileSync(`/proc/${pane}/task/${pane}/children`, "utf8").trim().split(/\s+/).filter(Boolean)
+        return kids.length > 0 ? Number(kids[0]) : undefined
+      } catch {
+        return undefined
+      }
+    },
     /** Changes the pane's window size, which sends SIGWINCH to the program (tmux 2.7 has no resize-window). */
     resize: (cols: number, rows: number) => {
       const tty = tmux("display-message", "-p", "-t", "hq", "#{pane_tty}").trim()
@@ -353,6 +363,31 @@ describe.skipIf(!TMUX)("behind the learning screen", () => {
     expect(await t.exit()).toBe("exit=1")
     // The password reached ssh whole, with no injected size-query reply, and the screen was left sane.
     expect(c.fake.tty()).toEqual(["hunter2"])
+    expect(t.alternate()).toBe(false)
+    expect(c.fake.masters()).toEqual([])
+    expect(pidsNaming(c.hq)).toEqual([])
+  }, 120_000)
+
+  test("SIGTERM while ssh has the terminal still stops it and lists the commands tried", async () => {
+    const llm = await FakeLLM.start()
+    onTestFinished(() => llm.close())
+    const c = await client(null, { behavior: { hosts: { login1: { login: "tty" } } } })
+    onTestFinished(() => removeClient(c))
+    withModel(c, llm)
+    llm.script({ tool_calls: [{ name: "shell", arguments: { command: "ssh login1 true", why: "log in to login1" } }] })
+    const t = terminal(c)
+    await t.see("Learn how to reach HQ from here? This uses the model.")
+    pickFirst(t)
+    await t.see("Run this 1-line command?")
+    pickFirst(t)
+    await t.see("fake password for login1:")
+    // The screen is suspended, so the renderer's own signal handlers are off; the run's handler still catches this.
+    const pid = t.pid()
+    expect(pid).toBeDefined()
+    process.kill(pid!, "SIGTERM")
+    expect(await t.exit()).toBe("exit=130")
+    expect(t.screen()).toContain("The commands the model asked for:")
+    expect(t.screen()).toContain("ssh login1 true")
     expect(t.alternate()).toBe(false)
     expect(c.fake.masters()).toEqual([])
     expect(pidsNaming(c.hq)).toEqual([])

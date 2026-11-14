@@ -164,6 +164,29 @@ test("handing the terminal over suspends the screen, says why on the terminal an
   }
 })
 
+test("an uncaught error gives the terminal back, shows the error, and exits non-zero", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp hq")
+  const realExit = process.exit
+  let exitCode: number | undefined
+  ;(process as unknown as { exit: (c?: number) => void }).exit = (c) => {
+    exitCode = c
+  }
+  try {
+    await app.until((f) => f.includes("Working…"))
+    expect(app.setup.renderer.isDestroyed).toBe(false)
+    // A stray throw anywhere in the visit while the screen is up: opentui would only log it under the screen.
+    process.emit("uncaughtException", new Error("boom in the visit"))
+    // The terminal is given back, the error is shown, and it exits non-zero.
+    expect(exitCode).toBe(1)
+    expect(app.setup.renderer.isDestroyed).toBe(true)
+    expect(app.err()).toContain("boom in the visit")
+  } finally {
+    ;(process as unknown as { exit: typeof realExit }).exit = realExit
+    await app.stop()
+  }
+})
+
 test("the resize handler is taken off while the terminal is handed over, so no size query reaches ssh", async () => {
   const child = new FakeChild()
   const app = await bootSetup(child, "opencorp hq")

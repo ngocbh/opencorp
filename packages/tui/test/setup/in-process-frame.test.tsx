@@ -128,13 +128,38 @@ test("a learning run's risks, device code, question, command, hand-over and save
   }
 })
 
-test("a SIGINT from outside is the run's to handle; the other exit signals still take the screen down", async () => {
-  const app = await boot(async () => {})
+test("the renderer handles no signals; the run owns them, so SIGTERM stops it as Ctrl-C does", async () => {
+  // The renderer is told to handle no signals, so one still reaches the run while the screen is suspended.
+  const probe = await boot(async () => {})
   try {
-    await app.task
-    const signals = app.configs[0]!.exitSignals!
-    expect(signals).not.toContain("SIGINT")
-    expect(signals).toEqual(expect.arrayContaining(["SIGTERM", "SIGHUP", "SIGQUIT"]))
+    await probe.task
+    expect(probe.configs[0]!.exitSignals).toEqual([])
+  } finally {
+    await probe.stop()
+  }
+
+  let release!: () => void
+  const held = new Promise<void>((r) => (release = r))
+  const app = await boot(async (io) => {
+    const p = new JsonPrompter(io.prompts, io.answers)
+    p.say("Working on the path.")
+    try {
+      await p.ask("Which login node?")
+    } finally {
+      await held
+    }
+  })
+  try {
+    await app.until((f) => f.includes("Which login node?"))
+    expect(process.listeners("SIGTERM").length).toBeGreaterThan(0)
+    // A SIGTERM while learning runs stops it like Ctrl-C, rather than killing the process by the default action.
+    process.emit("SIGTERM")
+    await until(() => app.interrupts.length >= 1)
+    release()
+    expect(String(await app.task.catch((e) => e))).toContain("stdin closed")
+    // The transcript was printed, and the run's signal listener is gone.
+    expect(app.printed()).toContain("Working on the path.")
+    expect(process.listeners("SIGTERM").length).toBe(0)
   } finally {
     await app.stop()
   }
