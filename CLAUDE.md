@@ -77,6 +77,27 @@ tests, HQ's Playwright tests), and a contract test checks each against the real 
 `--no-install --no-env-file --config=/dev/null`, so the current folder's `.env` and
 `bunfig.toml` aren't read (see Setup).
 
+### Feature folders
+
+Each feature of the office is Yian flows plus the code that runs them, laid out the same way:
+
+```
+packages/office/src/<feature>/
+  flows/    its Yian flows (.yaml)
+  tools/    the host tools those flows call, one file per tool
+  skills/   the skills its agents grant (<name>/SKILL.md)
+  run.ts    drives its runs: loads the flows, binds the tools and skills, starts the runs, reads the results
+  *.ts      only what can't be a flow, tool or skill: schemas, file layout, platform plumbing
+```
+
+- A prompt stays inline in its flow. It moves to a file that flows `!include` only when several flows share it.
+- Fixed text and data that code shows, such as risk texts, are files the code embeds, as it embeds flows, not `.ts` constants.
+- A tool goes in the shared `src/tools/` only when flows of more than one feature call it under the same trust model: the same sandbox and the same approver. A tool whose safety depends on who runs it stays in its feature, even when another feature has one of the same name. `reach/tools/shell.ts` runs unsandboxed as the owner, after the owner approves each command; `tools/workspace.ts`'s `shell` runs sandboxed in an employee's workspace.
+- yian's built-ins (`ask_user`, `load_skill`, …) aren't host tools. A feature supplies only how a question reaches a person: its ask handler, in `run.ts`.
+- An employee's own SOPs are flows in the company repo (`company_template/`), not in a feature folder.
+- Tests mirror the layout: `tests/<feature>/tools/<tool>.test.ts`, `tests/<feature>/run.test.ts`.
+- Folders older than this move to it when next changed (#881).
+
 ## Layout
 
 ```

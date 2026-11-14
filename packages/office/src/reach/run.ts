@@ -1,29 +1,35 @@
-/** `opencorp hq` from a machine where no office answers: approve the saved path (or learn one with the agent), replay
- *  it, connect to HQ's machine, sign the browser in or open HQ, and hold the connection until Ctrl-C, reconnecting
- *  after a drop. */
+/** `opencorp hq` from a machine where no office answers, and the runs of its flows: approve the saved path (or learn
+ *  one with learn_hq's agent), replay it with reach_hq, connect to HQ's machine, sign the browser in or open HQ, and
+ *  hold the connection until Ctrl-C, reconnecting after a drop. */
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import type { Readable } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createTwoFilesPatch } from "diff"
+import { loadFlow, runFlow } from "@ngocbh/yian"
 import { which } from "../install/launch.ts"
+import { AUTH_FILE_ENV } from "../chat/connections.ts"
 import type { Provider } from "../chat/provider.ts"
+import { askUser } from "../install/interview.ts"
 import {
   LISTERS,
   type Listers,
   type ModelCheck,
   modelProblem,
   providerSecrets,
+  runSetup,
+  signInRemedy,
   type SubscriptionAuth,
 } from "../install/onboard.ts"
 import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter } from "../install/prompts.ts"
+import { embedded } from "../platform.ts"
 import { writePrivate } from "../secrets.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import { classifyCheck, type Connection, connect, describe, ReachFailure, sameHealth, signIn } from "./connect.ts"
-import { type Learned, Learning, learnProvider, runLearn } from "./learn.ts"
+import { Learning, learning, withOwnerOrStop } from "./learning.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
-import { readScript, runReach, ScriptError } from "./replay.ts"
+import { learnProvider } from "./provider.ts"
 import {
   cleanOutput,
   defaultIncludes,
@@ -39,11 +45,12 @@ import {
   control,
   startWatcher,
   type Watcher,
+  wellFormed,
   writeSshFiles,
 } from "./ssh.ts"
 import { beforeLearning, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "./risks.ts"
 import { lineCount, numberedLines, shownCode } from "./show.ts"
-import { safePath, type Spec } from "./spec.ts"
+import { safePath, Spec } from "./spec.ts"
 import {
   type Access,
   AccessError,
@@ -57,8 +64,13 @@ import {
   writeAccess,
   writeRedirect,
 } from "./state.ts"
+import { type Reached, readScript, Replaying, replayTool, ScriptError } from "./tools/replay.ts"
+import { saveAccessTool } from "./tools/save_access.ts"
+import { shellTool } from "./tools/shell.ts"
+import learnYaml from "./flows/learn_hq.yaml" with { type: "file" }
+import reachYaml from "./flows/reach_hq.yaml" with { type: "file" }
 
-export { DEFAULT_PORT, describe }
+export { DEFAULT_PORT, describe, learnYaml, reachYaml }
 
 /** How a visit was asked for: `--sign-in`, `--port N`, whether it may open a browser, and `--relearn`. */
 export interface VisitOptions {
@@ -142,6 +154,35 @@ export async function reach(ctx: ReachContext, port: number): Promise<Connection
   const reached = await runReach(ctx)
   if (reached.outcome !== "ok") throw new ReachFailure(reached.outcome, reached.detail)
   return connect(reached.spec!, port, ctx)
+}
+
+/** Runs reach_hq with no `llmConfig` and no provider: one TOOL node, so yian resolves no model. */
+export async function runReach(ctx: ReachContext): Promise<Reached> {
+  const flow = await loadFlow(embedded(reachYaml).toString("utf8"), { sourceLabel: "reach/flows/reach_hq.yaml" })
+  const vars = workerEnv(ctx.env)
+  const result = await runFlow(
+    flow,
+    {},
+    {
+      tools: { replay_access: replayTool },
+      numWorkers: 0,
+      context: new Replaying(ctx),
+      signal: ctx.signal,
+      env: (name) => (Object.hasOwn(vars, name) ? vars[name] : undefined),
+    },
+  )
+  if (result.status !== "succeeded") return { outcome: "broken", detail: result.failure?.message ?? "the replay failed" }
+  const out = result.output as Reached
+  return out.outcome === "ok" ? { ...out, spec: Spec.parse(numbers(out.spec)) } : out
+}
+
+/** `value` with yian's ints, which a run hands back as bigints, as numbers; `Spec` then checks their range. */
+function numbers(value: unknown): unknown {
+  if (typeof value === "bigint") return Number(value)
+  if (Array.isArray(value)) return value.map(numbers)
+  if (value !== null && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, numbers(v)]))
+  return value
 }
 
 /** A visit from a machine where no office answers; resolves to its exit code: 0 for a normal end (Ctrl-C while
@@ -389,6 +430,78 @@ function listCommands(deps: VisitDeps, state: Learning, header: string): void {
     const more = lines.length > 1 ? ` (and ${lines.length - 1} more line${lines.length > 2 ? "s" : ""})` : ""
     deps.error(`  (${code === null ? "not run" : `exit ${code}`}) ${shownCode(lines[0]!)}${more}`)
   }
+}
+
+/** The error of a tool call yian didn't run because its reply came at the turn cap. */
+const CAPPED_CALL = "tool_limit"
+
+/** Said before each of the agent's questions. */
+export const ANSWER_GOES_TO_MODEL =
+  "Your answer goes to the model. Type passwords, passphrases and codes only at ssh's own prompts, never here."
+
+/** `ask_user`: the agent's question, marked as its own, after a line on where the answer goes. */
+function askOwner(request: { question: string; options?: readonly string[] | null }, state: Learning): Promise<string> {
+  return withOwnerOrStop(state, (p) => {
+    p.say(ANSWER_GOES_TO_MODEL)
+    return askUser({ ...request, question: `The agent asks: ${request.question}` }, state.asking)
+  })
+}
+
+/** What a learning run ended with: the agent's last reply when it finished, why it failed (null when it didn't), and
+ *  whether it reached the turn cap. */
+export interface Learned {
+  output: string | null
+  message: string | null
+  capped: boolean
+}
+
+/** Runs learn_hq with `provider`'s model and the host tools, in this process (no workers), with no run log, then
+ *  removes the folder its commands ran in. At the turn cap yian runs none of the reply's calls, finishing each with
+ *  `tool_limit`, and the model answers once more; that reply is the run's output.
+ *  Rejects with the owner's `KeyboardInterrupt` or `OnboardError` (their input ended), and with the visit's stop. */
+export async function runLearn(
+  provider: Provider,
+  inputs: { notes: string; script: string; failure: string },
+  state: Learning,
+): Promise<Learned> {
+  const flow = await loadFlow(embedded(learnYaml).toString("utf8"), { sourceLabel: "reach/flows/learn_hq.yaml" })
+  const text = { notes: wellFormed(inputs.notes), script: wellFormed(inputs.script), failure: wellFormed(inputs.failure) }
+  let ran: Awaited<ReturnType<typeof runSetup>>
+  let capped = false
+  try {
+    ran = await runSetup(flow, text, provider, {
+      tools: {
+        shell: shellTool,
+        save_access: saveAccessTool,
+        ask: (request, c) => askOwner(request, learning(c)),
+      },
+      context: state,
+      env: workerEnv(state.ctx.env),
+      signal: state.ctx.signal,
+      onEvent: (event) => {
+        if (event.type === "ToolCallFinished" && event.error === CAPPED_CALL) capped = true
+      },
+    })
+  } finally {
+    state.close()
+  }
+  const { result, message } = ran
+  if (state.asking.stopped) throw state.asking.stopped
+  return {
+    output: result?.status === "succeeded" ? (result.output as string) : null,
+    message: learnedMessage(message, provider, state.ctx.paths),
+    capped,
+  }
+}
+
+/** Why a learning run on `provider` failed, `message`, with yian's hint to run `yian auth openai` replaced, on the
+ *  sign-in in `paths.auth`, by how to sign in again here: that command writes another file. */
+export function learnedMessage(message: string | null, provider: Provider, paths: ReachPaths): string | null {
+  if (message === null || provider.env[AUTH_FILE_ENV] !== paths.auth) return message
+  return signInRemedy(message, {
+    refused: `delete ${paths.auth} and run \`opencorp hq\` again`,
+    retry: "run `opencorp hq` again later",
+  })
 }
 
 /** A visit's context, its Ctrl-C (a second one exits 130 at once; the watcher then ends the masters) and the

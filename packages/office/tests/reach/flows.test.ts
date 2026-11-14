@@ -8,8 +8,7 @@ import { loadFlow } from "@ngocbh/yian"
 import { readFlow } from "../../src/company/flow_yaml.ts"
 import { loadConfined } from "../../src/company/flows.ts"
 import { embedded } from "../../src/platform.ts"
-import { learnYaml } from "../../src/reach/learn.ts"
-import { reachYaml } from "../../src/reach/replay.ts"
+import { learnYaml, reachYaml } from "../../src/reach/run.ts"
 
 setDefaultTimeout(30_000)
 

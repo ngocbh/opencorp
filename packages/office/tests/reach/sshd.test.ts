@@ -31,7 +31,7 @@ import {
   writeSshFiles,
 } from "../../src/reach/ssh.ts"
 import { writeAccess } from "../../src/reach/state.ts"
-import { visit } from "../../src/reach/visit.ts"
+import { visit } from "../../src/reach/run.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { startOffice } from "../../src/testing/office.ts"
 import { isGone, shortDir, waitFor } from "../helpers.ts"

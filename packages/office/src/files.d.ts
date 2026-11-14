@@ -10,3 +10,9 @@ declare module "*.gitignore" {
   const path: string
   export default path
 }
+
+/** A Markdown file of fixed text the code shows, such as reach's risks.md, embedded the same way. */
+declare module "*.md" {
+  const path: string
+  export default path
+}

@@ -1,30 +1,51 @@
 /** The fixed texts the owner reads before learning the path to HQ and before saving it, kept out of the flow so the
- *  model can't edit them; the agent's risks specific to the setup follow them. */
+ *  model can't edit them; the agent's risks specific to the setup follow them. The texts are risks.md's. */
+import { embedded } from "../platform.ts"
 import type { ReachPaths } from "./paths.ts"
 import { LEARNING_PERSIST_S, PERSIST_S } from "./ssh.ts"
+import risksMd from "./risks.md" with { type: "file" }
+
+/** risks.md's texts by name. */
+const TEXTS = headed(embedded(risksMd).toString("utf8"))
+
+/** The `- ` lines under each `## ` heading of `markdown`; its other lines are for whoever edits it. */
+function headed(markdown: string): Map<string, string[]> {
+  const texts = new Map<string, string[]>()
+  let lines: string[] = []
+  for (const line of markdown.split("\n")) {
+    if (line.startsWith("## ")) texts.set(line.slice(3), (lines = []))
+    else if (line.startsWith("- ")) lines.push(line.slice(2))
+  }
+  return texts
+}
+
+/** The lines of risks.md's text `name`, each `{key}` in them replaced by `values[key]` in one pass. */
+function text(name: string, values: Record<string, string | number> = {}): string[] {
+  const found = TEXTS.get(name)
+  if (found === undefined) throw new Error(`risks.md has no ${name}`)
+  return found.map((line) =>
+    line.replace(/\{(\w+)\}/g, (_, key: string) => {
+      if (!Object.hasOwn(values, key)) throw new Error(`risks.md's ${name} names {${key}}, which isn't filled in`)
+      return String(values[key])
+    }),
+  )
+}
 
 /** Shown before every learning run, ahead of asking to use the model. */
-export const beforeLearning = (paths: ReachPaths): string[] => [
-  "Learning uses a model, which sees each command it runs and their output and errors: hostnames, your username, paths and job lists.",
-  "Approving a command runs it as you, with your SSH keys, and only you check it.",
-  "While learning runs, anything running as you on this machine can reuse its SSH connections without Duo.",
-  `${paths.dir} holds the model's key or its ChatGPT sign-in: don't approve a command that reads it.`,
-]
+export const beforeLearning = (paths: ReachPaths): string[] => text("beforeLearning", { dir: paths.dir })
 
 /** Shown by save_access with the two files, before the owner saves; the agent's risks for this setup follow. */
-export const beforeSaving = (paths: ReachPaths): string[] => [
-  "The script, and `opencorp hq --check` on HQ's machine, run now and on every visit.",
-  "While `opencorp hq` runs, anything running as you on this machine can reuse its SSH connections without Duo. A crash or `kill -9` closes them within seconds; only if its watcher dies too (`kill -9` of its process group) do they stay while an HQ tab is open, " +
-    `the login node's for ${PERSIST_S} s more (${LEARNING_PERSIST_S / 60} minutes on a visit that learned its path).`,
-  "Anything on this machine that can reach the port reaches HQ, though HQ still asks it to sign in (its cookie is SameSite=Strict, and the Host header is checked). So don't run `opencorp hq` on a machine others share, such as a cluster login node: they share 127.0.0.1.",
-  "Each new node HQ runs on asks you to accept its host key; check it the way your cluster documents.",
-  "The saved files record the cluster's layout, and backups copy them.",
-  `${paths.provider} or ${paths.auth} holds the model's key or its ChatGPT sign-in.`,
-]
+export const beforeSaving = (paths: ReachPaths): string[] =>
+  text("beforeSaving", {
+    persist_s: PERSIST_S,
+    learning_persist_minutes: LEARNING_PERSIST_S / 60,
+    provider: paths.provider,
+    auth: paths.auth,
+  })
 
 /** The answer that starts a learning run. */
-export const LEARN = "Learn it"
+export const LEARN = text("LEARN").join("\n")
 /** Asked before learning a first path. */
-export const LEARN_QUESTION = "Learn how to reach HQ from here? This uses the model."
+export const LEARN_QUESTION = text("LEARN_QUESTION").join("\n")
 /** Asked before learning again in place of a saved path. */
-export const RELEARN_QUESTION = "Relearn? This uses the model."
+export const RELEARN_QUESTION = text("RELEARN_QUESTION").join("\n")
