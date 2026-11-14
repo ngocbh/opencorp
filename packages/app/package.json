@@ -6,7 +6,7 @@
   "license": "MIT",
   "scripts": {
     "dev": "vite --configLoader runner",
-    "build": "vite build --configLoader runner",
+    "build": "bun --bun vite build --configLoader runner",
     "test": "bun test ./test",
     "test:e2e": "playwright test",
     "test:real": "playwright test -c playwright.real.config.ts",
