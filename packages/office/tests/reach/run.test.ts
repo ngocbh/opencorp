@@ -220,6 +220,19 @@ test("a changed reach.sh shows the diff and asks once; no stops the visit", asyn
   expect(fake.calls()).toEqual([])
 })
 
+test("a changed reach.sh's diff shows its indentation as written, and still marks a padded line", async () => {
+  const { dir, fake } = fakeHome()
+  const before = "set -eu\nif true; then\n    exit 3\nfi\n"
+  const paths = await saved(dir, before)
+  fs.writeFileSync(paths.script, `set -eu\nif true; then\n        echo nested\n    exit 3\nfi\necho a;${" ".repeat(300)}touch x\n`)
+  const { deps, prompter } = visitDeps(dir, fake, { answers: ["2"] })
+  expect(await visit({ signIn: false, open: false }, deps)).toBe(1)
+  // The +, - or space a diff starts each line with doesn't make its indentation count as a run inside the line.
+  expect(prompter.seen).toContain("+        echo nested")
+  expect(prompter.seen).toContain("     exit 3")
+  expect(prompter.seen).toContain("+echo a;<300 spaces>touch x")
+})
+
 /** The command lines of this user's processes that mention `text`, but not the `ps` listing them. */
 function processes(text: string): string[] {
   const out = execFileSync(ps(), ["-A", "-o", "pid=,args="], { env: { LC_ALL: "C" }, encoding: "utf8", timeout: 5000 })

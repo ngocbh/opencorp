@@ -6,20 +6,29 @@ const ODD = /[^\x20-\x7e\t]/u
 
 const escape = (c: string) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}>`
 
-/** How many spaces in a row are shown as a marker rather than drawn: fewer are ordinary spacing between words, more
- *  could push the rest of a line out of view. */
+/** How many spaces in a row, inside a line, are shown as a marker rather than drawn: fewer are ordinary spacing
+ *  between words, more could push the rest of a line out of view. */
 export const SPACE_RUN = 4
+/** The deepest indentation shown as is: a script's nesting reads as written, and a run this short can't push a line's
+ *  start off the screen. */
+export const MAX_INDENT = 16
 
-/** `line` with each character outside printable ASCII and tab shown as `<U+XXXX>`, every tab as `<TAB>`, and each run
- *  of `SPACE_RUN` or more spaces as `<N spaces>`. A no-break or ideographic space looks like a blank but isn't shell
- *  whitespace, so `echo jobs<U+00A0># ; touch x` would read as a comment and run `touch`; an invisible or bidi
- *  character can make text read other than it runs; and a long run of tabs or spaces, drawn as is, could push the
- *  dangerous part of a line past the edge of the screen. */
+const spaces = (run: string) => `<${run.length} spaces>`
+
+/** `line` with each character outside printable ASCII and tab shown as `<U+XXXX>`, every tab as `<TAB>`, indentation
+ *  of more than `MAX_INDENT` spaces as `<N spaces>`, and each later run of `SPACE_RUN` or more spaces as `<N spaces>`.
+ *  A no-break or ideographic space looks like a blank but isn't shell whitespace, so `echo jobs<U+00A0># ; touch x`
+ *  would read as a comment and run `touch`; an invisible or bidi character can make text read other than it runs; and
+ *  a long run of tabs or spaces, drawn as is, could push the dangerous part of a line past the edge of the screen. A
+ *  tab is marked even as indentation, since its width differs between the terminal and the pager. */
 export function shownCode(line: string): string {
-  return line
-    .replace(new RegExp(ODD.source, "gu"), escape)
+  const escaped = line.replace(new RegExp(ODD.source, "gu"), escape)
+  const indent = /^ */.exec(escaped)![0]
+  const rest = escaped
+    .slice(indent.length)
     .replace(/\t/g, "<TAB>")
-    .replace(new RegExp(` {${SPACE_RUN},}`, "g"), (run) => `<${run.length} spaces>`)
+    .replace(new RegExp(` {${SPACE_RUN},}`, "g"), spaces)
+  return (indent.length <= MAX_INDENT ? indent : spaces(indent)) + rest
 }
 
 /** The first character of `text` other than printable ASCII, tab and newline, as `U+XXXX at line L, column C`, or

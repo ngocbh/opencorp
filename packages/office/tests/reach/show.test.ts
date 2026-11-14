@@ -1,6 +1,6 @@
 /** How a command or script that will run is shown to the owner, and what the model may send to run. */
 import { expect, test } from "bun:test"
-import { lineCount, numberedLines, oddCharacter, shownCode, SPACE_RUN } from "../../src/reach/show.ts"
+import { lineCount, MAX_INDENT, numberedLines, oddCharacter, shownCode, SPACE_RUN } from "../../src/reach/show.ts"
 
 /** Look-alike blanks that aren't shell whitespace, and invisible ones. */
 const LOOK_ALIKES = [" ", " ", "　", " ", "⠀", "ㅤ"]
@@ -35,6 +35,48 @@ test("a run of spaces or tabs is marked, so it can't push the rest of a line out
   // Tabs are marked one by one, and mixed runs keep both markers.
   expect(shownCode("x\t\ty")).toBe("x<TAB><TAB>y")
   expect(shownCode(`a\t${" ".repeat(5)}b`)).toBe("a<TAB><5 spaces>b")
+})
+
+test("an indented reach.sh reads as written: indentation up to 16 spaces is shown as is", () => {
+  const script = [
+    "set -eu",
+    "node=$(ssh login1 squeue --me -h -o %N)",
+    'if [ -z "$node" ]; then',
+    "    echo 'no job running' >&2",
+    "    exit 3",
+    "fi",
+    "case $node in",
+    "    gpu*)",
+    '        jump="login1"',
+    "        ;;",
+    "esac",
+  ].join("\n")
+  expect(numberedLines(script)).toEqual([
+    "   1  set -eu",
+    "   2  node=$(ssh login1 squeue --me -h -o %N)",
+    '   3  if [ -z "$node" ]; then',
+    "   4      echo 'no job running' >&2",
+    "   5      exit 3",
+    "   6  fi",
+    "   7  case $node in",
+    "   8      gpu*)",
+    '   9          jump="login1"',
+    "  10          ;;",
+    "  11  esac",
+  ])
+  expect(shownCode(" ".repeat(MAX_INDENT) + "x")).toBe(" ".repeat(MAX_INDENT) + "x")
+})
+
+test("deeper indentation, runs inside a line and every tab stay marked, so the attacks don't hide", () => {
+  // A leading run past 16 is marked whole: it could push a line's start across the screen.
+  expect(shownCode(" ".repeat(MAX_INDENT + 1) + "curl evil")).toBe(`<${MAX_INDENT + 1} spaces>curl evil`)
+  expect(shownCode(" ".repeat(3000) + "curl evil")).toBe("<3000 spaces>curl evil")
+  // Inside a line, after indentation, a run of four or more is still marked.
+  expect(shownCode("    echo HEAD;" + " ".repeat(3000) + "ls -la")).toBe("    echo HEAD;<3000 spaces>ls -la")
+  expect(shownCode('  x="a"    # the spec')).toBe('  x="a"<4 spaces># the spec')
+  // A tab is marked wherever it is, leading or not: its width differs between the terminal and the pager.
+  expect(shownCode("\tprintf x")).toBe("<TAB>printf x")
+  expect(shownCode("    \tx")).toBe("    <TAB>x")
 })
 
 test("lines are numbered, and a run of blank lines is one marker that keeps the numbering", () => {

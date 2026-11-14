@@ -32,10 +32,16 @@ function redact(text: string) {
   return text.replace(/(?<=:\/\/)[^/@\s]+@/g, "***@")
 }
 
-/** A model's question as it's shown: a run of four or more spaces, or a tab, becomes a marker, so padding can't
- *  push the answer box or the rest off the screen. */
+/** A model's question as it's shown, by the rule the office's `shownCode` follows for commands: indentation of up to
+ *  16 spaces as is, deeper indentation and any later run of four or more spaces as `<N spaces>`, and every tab as
+ *  `<TAB>`, so padding can't push the answer box or the rest off the screen. */
 function oneLine(text: string) {
-  return text.replace(/\t/g, "<TAB>").replace(/ {4,}/g, (run) => `<${run.length} spaces>`)
+  const indent = /^ */.exec(text)![0]
+  const rest = text
+    .slice(indent.length)
+    .replace(/\t/g, "<TAB>")
+    .replace(/ {4,}/g, (run) => `<${run.length} spaces>`)
+  return (indent.length <= 16 ? indent : `<${indent.length} spaces>`) + rest
 }
 
 /** How long input is drained when the screen comes back, as the visit drains before a reconnect. */

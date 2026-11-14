@@ -320,3 +320,22 @@ test("a short question's box is only as tall as the question, leaving the transc
     await app.stop()
   }
 })
+
+test("a question's indentation up to 16 spaces is drawn as is; deeper indentation and runs inside it are marked", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child)
+  try {
+    child.push({ type: "ask", question: "        indented question", default: "" })
+    let f = await app.until((f) => f.includes("indented question"))
+    expect(f).toContain("        indented question")
+    expect(f).not.toContain("<8 spaces>")
+    child.answers.length = 0
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    child.push({ type: "ask", question: " ".repeat(17) + "deep;" + "\t" + "x", default: "" })
+    f = await app.until((f) => f.includes("deep;"))
+    expect(f).toContain("<17 spaces>deep;<TAB>x")
+  } finally {
+    await app.stop()
+  }
+})

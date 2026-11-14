@@ -617,7 +617,9 @@ async function approve(
   } else {
     say(`${paths.script} changed since you approved it:`)
     const patch = createTwoFilesPatch("reach.approved.sh", "reach.sh", before.toString("utf8"), now.toString("utf8"))
-    for (const line of patch.replace(/\n$/, "").split("\n")) deps.prompter.say(shownCode(line))
+    // A diff line's +, - or space comes first, so the script's own indentation follows it and is shown as written.
+    for (const line of patch.replace(/\n$/, "").split("\n"))
+      deps.prompter.say(/^[ +-]/.test(line) ? line[0] + shownCode(line.slice(1)) : shownCode(line))
     question = useChanged(lineCount(now.toString("utf8")))
   }
   if (!deps.prompter.interactive) {
