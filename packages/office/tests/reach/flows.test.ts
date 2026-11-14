@@ -9,7 +9,7 @@ import { readFlow } from "../../src/company/flow_yaml.ts"
 import { loadConfined } from "../../src/company/flows.ts"
 import { embedded } from "../../src/platform.ts"
 import { learnYaml } from "../../src/reach/learn.ts"
-import { reachYaml } from "../../src/reach/replay.ts"
+import { reachYaml } from "../../src/reach/visit.ts"
 
 setDefaultTimeout(30_000)
 

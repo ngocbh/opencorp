@@ -5,29 +5,20 @@ import path from "node:path"
 import { PassThrough } from "node:stream"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { ReportedToolError } from "@ngocbh/yian"
+import { ANSWER_GOES_TO_MODEL, learnedMessage, learnProvider, runLearn } from "../../src/reach/learn.ts"
+import { credentialWarning, Learning, namesCredentials } from "../../src/reach/learning.ts"
+import { MAX_SCRIPT_BYTES } from "../../src/reach/tools/replay.ts"
 import {
-  ANSWER_GOES_TO_MODEL,
   CANCEL,
-  credentialWarning,
-  DONT_RUN,
-  Learning,
-  learnedMessage,
-  learnProvider,
-  namesCredentials,
-  RUN,
-  runQuestion,
-  runLearn,
-  runShell,
   SAVE,
   saveQuestion,
   SAVED,
   saveAccess,
   saveAccessTool,
   secretIn,
-  shellResult,
   WHAT_SHOULD_CHANGE,
-} from "../../src/reach/learn.ts"
-import { MAX_SCRIPT_BYTES } from "../../src/reach/replay.ts"
+} from "../../src/reach/tools/save_access.ts"
+import { DONT_RUN, RUN, runQuestion, runShell, shellResult } from "../../src/reach/tools/shell.ts"
 import { beforeLearning, beforeSaving } from "../../src/reach/risks.ts"
 import type { Spec } from "../../src/reach/spec.ts"
 import { exitAll, isSocket, type ReachContext } from "../../src/reach/ssh.ts"

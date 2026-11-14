@@ -7,6 +7,7 @@ import os from "node:os"
 import type { Readable } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createTwoFilesPatch } from "diff"
+import { loadFlow, runFlow } from "@ngocbh/yian"
 import { which } from "../install/launch.ts"
 import type { Provider } from "../chat/provider.ts"
 import {
@@ -18,12 +19,13 @@ import {
   type SubscriptionAuth,
 } from "../install/onboard.ts"
 import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter } from "../install/prompts.ts"
+import { embedded } from "../platform.ts"
 import { writePrivate } from "../secrets.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import { classifyCheck, type Connection, connect, describe, ReachFailure, sameHealth, signIn } from "./connect.ts"
-import { type Learned, Learning, learnProvider, runLearn } from "./learn.ts"
+import { type Learned, learnProvider, runLearn } from "./learn.ts"
+import { Learning } from "./learning.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
-import { readScript, runReach, ScriptError } from "./replay.ts"
 import {
   cleanOutput,
   defaultIncludes,
@@ -43,7 +45,7 @@ import {
 } from "./ssh.ts"
 import { beforeLearning, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "./risks.ts"
 import { lineCount, numberedLines, shownCode } from "./show.ts"
-import { safePath, type Spec } from "./spec.ts"
+import { safePath, Spec } from "./spec.ts"
 import {
   type Access,
   AccessError,
@@ -57,8 +59,10 @@ import {
   writeAccess,
   writeRedirect,
 } from "./state.ts"
+import { type Reached, readScript, Replaying, replayTool, ScriptError } from "./tools/replay.ts"
+import reachYaml from "./flows/reach_hq.yaml" with { type: "file" }
 
-export { DEFAULT_PORT, describe }
+export { DEFAULT_PORT, describe, reachYaml }
 
 /** How a visit was asked for: `--sign-in`, `--port N`, whether it may open a browser, and `--relearn`. */
 export interface VisitOptions {
@@ -142,6 +146,35 @@ export async function reach(ctx: ReachContext, port: number): Promise<Connection
   const reached = await runReach(ctx)
   if (reached.outcome !== "ok") throw new ReachFailure(reached.outcome, reached.detail)
   return connect(reached.spec!, port, ctx)
+}
+
+/** Runs reach_hq with no `llmConfig` and no provider: one TOOL node, so yian resolves no model. */
+export async function runReach(ctx: ReachContext): Promise<Reached> {
+  const flow = await loadFlow(embedded(reachYaml).toString("utf8"), { sourceLabel: "reach/flows/reach_hq.yaml" })
+  const vars = workerEnv(ctx.env)
+  const result = await runFlow(
+    flow,
+    {},
+    {
+      tools: { replay_access: replayTool },
+      numWorkers: 0,
+      context: new Replaying(ctx),
+      signal: ctx.signal,
+      env: (name) => (Object.hasOwn(vars, name) ? vars[name] : undefined),
+    },
+  )
+  if (result.status !== "succeeded") return { outcome: "broken", detail: result.failure?.message ?? "the replay failed" }
+  const out = result.output as Reached
+  return out.outcome === "ok" ? { ...out, spec: Spec.parse(numbers(out.spec)) } : out
+}
+
+/** `value` with yian's ints, which a run hands back as bigints, as numbers; `Spec` then checks their range. */
+function numbers(value: unknown): unknown {
+  if (typeof value === "bigint") return Number(value)
+  if (Array.isArray(value)) return value.map(numbers)
+  if (value !== null && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, numbers(v)]))
+  return value
 }
 
 /** A visit from a machine where no office answers; resolves to its exit code: 0 for a normal end (Ctrl-C while
