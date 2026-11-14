@@ -35,6 +35,7 @@ import {
   runReach,
   runThis,
   RUNNING,
+  type LearnScreen,
   SIGN_IN_HINT,
   STOP,
   useChanged,
@@ -54,7 +55,14 @@ import { writePrivate } from "../../src/secrets.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../src/testing/fake_ssh.ts"
 import { control, exitAll, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
-import { beforeLearning, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../src/reach/risks.ts"
+import {
+  beforeLearning,
+  HAND_OVER_COMMAND,
+  HAND_OVER_TEST,
+  LEARN,
+  LEARN_QUESTION,
+  RELEARN_QUESTION,
+} from "../../src/reach/risks.ts"
 import { providerSecrets, signInLine, withSignIn } from "../../src/install/onboard.ts"
 import { workerEnv } from "../../src/worker/spawn.ts"
 import { fakeLlm } from "../chat/helpers.ts"
@@ -1237,4 +1245,133 @@ test("a learning run's failure on a refused sign-in says how to sign in again he
   const keyless = Provider.parse({ llm_config: SUBSCRIBED_LLM })
   expect(learnedMessage(yian, keyless, paths)).toBe(yian)
   expect(learnedMessage(null, provider, paths)).toBeNull()
+})
+
+/** A setup screen for learning, in this process, that answers each question with the next of `answers` (an option
+ *  as written, or "" for the default) and each hand-over at once. `atQuestion(n)` runs at its nth question (from 1)
+ *  before it answers; returning false leaves that question unanswered. */
+function fakeScreen(answers: string[], atQuestion: (n: number, interrupt: () => void) => boolean = () => true) {
+  const prompts: { type: string; [key: string]: unknown }[] = []
+  const events: string[] = []
+  const screen: LearnScreen = async (learn, interrupt) => {
+    events.push("open")
+    const stream = new PassThrough()
+    let questions = 0
+    const answer = (text: string) => stream.write(JSON.stringify({ answer: text }) + "\n")
+    const io = {
+      prompts: {
+        write(text: string) {
+          for (const line of text.split("\n").filter(Boolean)) {
+            const prompt = JSON.parse(line)
+            prompts.push(prompt)
+            if (prompt.type === "hand_over") answer("")
+            else if (["ask", "choose", "secret"].includes(prompt.type) && atQuestion(++questions, interrupt))
+              answer(answers.shift() ?? "")
+          }
+          return true
+        },
+      },
+      answers: stream,
+      echo: (text: string) => void events.push(`echo ${text}`),
+    }
+    try {
+      return await learn(io)
+    } finally {
+      events.push("closed")
+    }
+  }
+  return { screen, prompts, events }
+}
+
+test("with a screen, learning runs behind it, risks first, and the visit goes on plainly once it's gone", async () => {
+  const { dir, fake, llm, spec, paths, port } = await unlearnedHome()
+  const script = scriptFor(spec)
+  llm.script(
+    call("shell", { command: "echo hi", why: "say hi" }),
+    call("save_access", { script, notes: NOTES, risks: [] }),
+    { content: "HQ is reachable from here now." },
+  )
+  const s = fakeScreen(["Run it", "Test it, then save it"])
+  const v = visitDeps(dir, fake, { answers: ["1"], learnScreen: s.screen })
+  const print = v.deps.print
+  v.deps.print = (line) => {
+    s.events.push(`print ${line.split(" ")[0]}`)
+    print(line)
+  }
+  const done = visit({ signIn: false, port, open: false }, v.deps)
+  await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 1, { what: "the visit to connect" })
+  // The offer stays plain; only learning is behind the screen.
+  expect(v.prompter.seen).toEqual([...beforeLearning(paths), LEARN_QUESTION])
+  const said = s.prompts.filter((p) => p.type === "say").map((p) => p.text)
+  expect(said.slice(0, beforeLearning(paths).length)).toEqual(beforeLearning(paths))
+  expect(s.prompts.filter((p) => p.type !== "say").map((p) => p.type)).toEqual([
+    "command", "choose", "hand_over", "take_back", "result", "review", "choose", "hand_over", "take_back",
+  ])
+  expect(s.prompts.filter((p) => p.type === "hand_over").map((p) => p.why)).toEqual([HAND_OVER_COMMAND, HAND_OVER_TEST])
+  expect(s.prompts.find((p) => p.type === "result")).toEqual({ type: "result", title: "Exited 0", ok: true, lines: ["hi"] })
+  expect(said.at(-1)).toBe(SAVED)
+  // While the command ran, its output went to the terminal through the screen's echo; the visit's own lines come
+  // once the screen is gone.
+  expect(s.events).toContain("echo hi\n")
+  expect(v.echoed.join("")).not.toContain("hi")
+  const closed = s.events.indexOf("closed")
+  expect(s.events.slice(0, closed).some((e) => e.startsWith("print"))).toBe(false)
+  expect(s.events.slice(closed + 1)).toContain("print Connected.")
+  expect(fs.readFileSync(paths.script, "utf8")).toBe(script)
+  v.sigint()
+  expect(await done).toBe(0)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test("Ctrl-C on the screen stops learning as the terminal's Ctrl-C does: 130, and the commands listed after it", async () => {
+  const { dir, fake, llm } = await unlearnedHome()
+  llm.script(call("shell", { command: "true", why: "look" }), call("shell", { command: "touch x", why: "try" }))
+  const s = fakeScreen(["Run it"], (n, interrupt) => {
+    if (n < 2) return true
+    interrupt()
+    return false
+  })
+  const v = visitDeps(dir, fake, { answers: ["1"], learnScreen: s.screen })
+  const error = v.deps.error
+  v.deps.error = (line) => {
+    s.events.push(`error ${line}`)
+    error(line)
+  }
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(130)
+  const closed = s.events.indexOf("closed")
+  expect(closed).toBeGreaterThan(0)
+  expect(s.events.slice(closed + 1)).toEqual([`error ${ASKED_FOR}`, "error   (exit 0) true"])
+})
+
+test("a second Ctrl-C on the screen ends the visit at once, as at the terminal", async () => {
+  const { dir, fake, llm } = await unlearnedHome()
+  llm.script(call("shell", { command: "true", why: "look" }))
+  const exits: number[] = []
+  const s = fakeScreen([], (_n, interrupt) => {
+    interrupt()
+    try {
+      interrupt()
+    } catch {}
+    return false
+  })
+  const v = visitDeps(dir, fake, { answers: ["1"], learnScreen: s.screen })
+  v.deps.exit = (code) => {
+    exits.push(code)
+    throw new Error(`exit ${code}`)
+  }
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(130)
+  expect(exits).toEqual([130])
+})
+
+test("when the screen can't start, the visit says why, calls no model and exits 1", async () => {
+  const { dir, fake, llm } = await unlearnedHome()
+  const v = visitDeps(dir, fake, {
+    answers: ["1"],
+    learnScreen: async () => {
+      throw new Error("can't show the learning screen: no terminal")
+    },
+  })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([NO_OFFICE_HERE, "opencorp hq: can't show the learning screen: no terminal"])
+  expect(llm.requests()).toEqual([])
 })

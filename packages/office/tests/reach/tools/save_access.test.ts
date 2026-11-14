@@ -3,7 +3,8 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { ReportedToolError } from "@ngocbh/yian"
-import { beforeLearning, beforeSaving } from "../../../src/reach/risks.ts"
+import { credentialWarning } from "../../../src/reach/learning.ts"
+import { beforeLearning, beforeSaving, HAND_OVER_TEST } from "../../../src/reach/risks.ts"
 import type { Spec } from "../../../src/reach/spec.ts"
 import { exitAll, isSocket, type ReachContext } from "../../../src/reach/ssh.ts"
 import { type Access, readAccess, sha256, writeAccess } from "../../../src/reach/state.ts"
@@ -54,7 +55,8 @@ test("save_access shows both files whole and the fixed risks before the setup's 
   const script = "set -eu\nssh login1 true\nprintf '%s\\n' '{}'\n"
   await rejection(saveAccess({ script, notes: "Line one, café.\n\nLine \u202etwo.\n", risks: ["Duo on the node too: two prompts."] }, state))
   expect(prompter.seen).toEqual([
-    `The model wants to save how this machine reaches HQ. ${ctx.paths.script}, which runs on every visit:`,
+    "The model wants to save how this machine reaches HQ.",
+    `${ctx.paths.script}, which runs on every visit:`,
     "  1  set -eu",
     "  2  ssh login1 true",
     "  3  printf '%s\\n' '{}'",
@@ -71,6 +73,25 @@ test("save_access shows both files whole and the fixed risks before the setup's 
   expect(saveQuestion(3)).toBe("Save this 3-line reach.sh and the notes, after testing the whole connection?")
   expect(prompter.offered).toEqual([[SAVE, CANCEL]])
   expect(beforeLearning(ctx.paths).some((line) => prompter.seen.includes(line))).toBe(false)
+})
+
+test("save_access shows the files, the risks and the warning as one review card", async () => {
+  const { prompter, state, ctx } = await learning(["2", ""])
+  const script = `cat ${ctx.paths.provider}\n`
+  await rejection(saveAccess({ script, notes: "Notes.\n", risks: ["Duo twice."] }, state))
+  expect(prompter.cards).toEqual([
+    {
+      type: "review",
+      title: "The model wants to save how this machine reaches HQ.",
+      files: [
+        { name: `${ctx.paths.script}, which runs on every visit`, lines: [`  1  cat ${ctx.paths.provider}`] },
+        { name: ctx.paths.notes, lines: ["  1  Notes."] },
+      ],
+      risks: [...beforeSaving(ctx.paths), "Duo twice."],
+      warning: credentialWarning(ctx.paths),
+    },
+  ])
+  expect(prompter.terminal).toEqual([])
 })
 
 test("declining to save tells the model what should change and saves nothing", async () => {
@@ -110,6 +131,9 @@ test("save_access writes nothing until the whole chain passes, then keeps the co
   expect(state.connection).toMatchObject({ spec, port })
   expect(isSocket(paths.node)).toBe(true)
   expect(prompter.seen.at(-1)).toBe("Saved, and the whole connection works.")
+  // The whole chain ran with the terminal handed over, ssh's prompts and all; no result for a test that passed.
+  expect(prompter.terminal).toEqual([HAND_OVER_TEST, "take back"])
+  expect(prompter.cards.map((card) => card.type)).toEqual(["review"])
   expect(fs.readdirSync(paths.dir).filter((name) => name.startsWith(".reach-"))).toEqual([])
   expect(saveAccessTool.name).toBe("save_access")
   await exitAll(ctx)
@@ -171,6 +195,9 @@ test.each(BREAKS)("a failed chain test leaves the old path and tells the model w
   const error = await rejection(saveAccess({ script: script(c), notes: NOTES, risks: [] }, state))
   expect(error).toBeInstanceOf(ReportedToolError)
   expect(error.message).toStartWith(told)
+  // The owner sees why too, once the terminal is back.
+  expect(c.prompter.terminal).toEqual([HAND_OVER_TEST, "take back"])
+  expect(c.prompter.cards.at(-1)).toEqual({ type: "result", title: error.message, ok: false })
   for (const [file, text] of Object.entries(before)) expect(fs.readFileSync(file, "utf8")).toBe(text)
   expect(fs.existsSync(ctx.paths.candidate)).toBe(false)
   expect(fs.readdirSync(ctx.paths.dir).filter((name) => name.startsWith(".reach-"))).toEqual([])

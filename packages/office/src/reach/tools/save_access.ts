@@ -14,7 +14,7 @@ import {
   scrubbedEcho,
   withOwnerOrStop,
 } from "../learning.ts"
-import { beforeSaving } from "../risks.ts"
+import { beforeSaving, HAND_OVER_TEST } from "../risks.ts"
 import { lineCount, numberedLines, oddCharacter } from "../show.ts"
 import { quietStdin, wellFormed } from "../ssh.ts"
 import { type Access, AccessError, readAccess, sha256, writeAccess } from "../state.ts"
@@ -69,8 +69,8 @@ function problemIn(files: ToSave, keys: readonly string[]): string | null {
 /** `save_access`: refuses files holding a secret or, in reach.sh, a character that isn't printable ASCII, before
  *  showing anything; then shows both files numbered and the risks,
  *  the fixed ones first, and asks the owner; a cancel tells the model what the owner wants changed. Once approved, the
- *  chain test runs; only when it passes are the files written and the connection kept. Refused once one has been
- *  saved. */
+ *  chain test runs with the terminal handed to it; only when it passes are the files written and the connection kept,
+ *  and when it fails the owner sees why. Refused once one has been saved. */
 export async function saveAccess(files: ToSave, state: Learning): Promise<string> {
   // One path per run: a second would replace what the visit is about to use.
   if (state.connection !== null)
@@ -79,15 +79,17 @@ export async function saveAccess(files: ToSave, state: Learning): Promise<string
   if (problem !== null) throw new ReportedToolError(`Not saved: ${problem}.`)
   const { paths } = state.ctx
   const change = await withOwnerOrStop(state, async (p) => {
-    const say = (line: string) => p.say(clean(line))
-    say(`The model wants to save how this machine reaches HQ. ${paths.script}, which runs on every visit:`)
-    for (const line of numberedLines(files.script)) p.say(line)
-    say(`${paths.notes}:`)
-    // Notes may hold any printable text: they're read, never run.
-    for (const line of numberedLines(files.notes, clean)) p.say(line)
-    say("Before you save it:")
-    for (const risk of [...beforeSaving(paths), ...files.risks]) say(`  - ${risk}`)
-    if (namesCredentials(files.script, paths)) say(credentialWarning(paths))
+    p.show({
+      type: "review",
+      title: "The model wants to save how this machine reaches HQ.",
+      files: [
+        { name: clean(`${paths.script}, which runs on every visit`), lines: numberedLines(files.script) },
+        // Notes may hold any printable text: they're read, never run.
+        { name: clean(paths.notes), lines: numberedLines(files.notes, clean) },
+      ],
+      risks: [...beforeSaving(paths), ...files.risks].map(clean),
+      warning: namesCredentials(files.script, paths) ? clean(credentialWarning(paths)) : "",
+    })
     const answer = await p.choose(saveQuestion(lineCount(files.script)), [SAVE, CANCEL], CANCEL)
     quietStdin(state.stdin)
     if (answer === SAVE) return null
@@ -97,7 +99,14 @@ export async function saveAccess(files: ToSave, state: Learning): Promise<string
   })
   if (change !== null)
     throw new ReportedToolError(change ? `Not saved: the owner wants a change: ${change}` : "Not saved: the owner didn't save it.")
-  const conn = await chainTest(Buffer.from(files.script, "utf8"), state)
+  let conn: Connection
+  try {
+    conn = await chainTest(Buffer.from(files.script, "utf8"), state)
+  } catch (error) {
+    // The model is told why; the owner sees it too, the terminal back.
+    if (error instanceof ReportedToolError) state.asking.prompter.show({ type: "result", title: clean(error.message), ok: false })
+    throw error
+  }
   await save(Buffer.from(files.script, "utf8"), files.notes, conn, state)
   state.connection = conn
   state.asking.prompter.say(SAVED)
@@ -111,20 +120,23 @@ export const SAVED = "Saved, and the whole connection works."
  *  retry rides the login node's without a new Duo. */
 async function chainTest(bytes: Buffer, state: Learning): Promise<Connection> {
   const { ctx, port } = state
-  const shown = scrubbedEcho(ctx.echo, (text) => state.scrub(text))
-  const reached = await runBytes(bytes, { ...ctx, echo: shown.write })
-  shown.flush()
-  ctx.signal?.throwIfAborted()
   // The details quote output from other machines.
   const told = (text: string) => new ReportedToolError(wellFormed(state.scrub(text)))
-  if (reached.outcome !== "ok") throw told(`Not saved: reach.sh failed the test (${reached.outcome}): ${reached.detail}`)
-  try {
-    return await connect(reached.spec!, port, ctx)
-  } catch (error) {
+  // Both steps may prompt: reach.sh's ssh, then the node master's login.
+  return state.handOver(HAND_OVER_TEST, async () => {
+    const shown = scrubbedEcho(ctx.echo, (text) => state.scrub(text))
+    const reached = await runBytes(bytes, { ...ctx, echo: shown.write })
+    shown.flush()
     ctx.signal?.throwIfAborted()
-    if (!(error instanceof ReachFailure)) throw error
-    throw told(`Not saved: reach.sh ran, then ${describe(error, port).line.replace(/^opencorp hq: /, "")}`)
-  }
+    if (reached.outcome !== "ok") throw told(`Not saved: reach.sh failed the test (${reached.outcome}): ${reached.detail}`)
+    try {
+      return await connect(reached.spec!, port, ctx)
+    } catch (error) {
+      ctx.signal?.throwIfAborted()
+      if (!(error instanceof ReachFailure)) throw error
+      throw told(`Not saved: reach.sh ran, then ${describe(error, port).line.replace(/^opencorp hq: /, "")}`)
+    }
+  })
 }
 
 /** Writes reach.sh, its approved copy, notes.md, then access.json, each 0600; the old path stays whole until reach.sh

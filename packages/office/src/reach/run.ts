@@ -12,6 +12,7 @@ import { which } from "../install/launch.ts"
 import { AUTH_FILE_ENV } from "../chat/connections.ts"
 import type { Provider } from "../chat/provider.ts"
 import { askUser } from "../install/interview.ts"
+import { JsonPrompter } from "../install/json_prompts.ts"
 import {
   LISTERS,
   type Listers,
@@ -106,7 +107,22 @@ export interface VisitDeps {
   checkModel(provider: Provider, signal: AbortSignal): Promise<string | null>
   /** Makes yian's `OpenAIAuth` for the picker's ChatGPT sign-in (the real one by default). */
   auth?: SubscriptionAuth
+  /** Where there's a terminal to draw on: runs `learn` behind the setup screen in this process, so the SSH connections
+   *  learning opens stay this visit's, and the screen's Ctrl-C calls `interrupt`; rejects without calling `learn` when
+   *  the screen can't start. Without it, learning asks on `prompter`. */
+  learnScreen?: LearnScreen
 }
+
+/** The setup screen's side of a run behind it in this process: where its `JsonPrompter` writes prompts, where the
+ *  answers come from, and how a child's output reaches the owner (on the plain terminal while a child has it). */
+export interface ScreenIo {
+  readonly prompts: { write(text: string): unknown }
+  readonly answers: Readable
+  echo(text: string): void
+}
+
+/** Runs `learn` behind the setup screen; see `VisitDeps.learnScreen`. */
+export type LearnScreen = <T>(learn: (io: ScreenIo) => Promise<T>, interrupt: () => void) => Promise<T>
 
 export const USE = "Use it"
 export const STOP = "Stop"
@@ -231,14 +247,14 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
   const lock = takeLock(paths)
   if (lock === null) return alreadyRunning(options, deps, paths, ssh)
   using _lock = lock
-  const { ctx, off } = start(paths, ssh, deps)
+  const { ctx, off, interrupt } = start(paths, ssh, deps)
   let watcher: Watcher | undefined
   let port = options.port ?? DEFAULT_PORT
   try {
     await writeSshFiles(paths, ssh, deps.sshIncludes)
     await cleanUp(ctx, deps.now().getTime())
     watcher = startWatcher(ctx)
-    if (learnFirst) return await learnAndHold(ctx, deps, { notes: "", script: "", failure: "" }, port, options)
+    if (learnFirst) return await learnAndHold(ctx, deps, { notes: "", script: "", failure: "" }, port, options, interrupt)
     let saved: Access | null
     try {
       saved = await readAccess(paths)
@@ -254,7 +270,7 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
         deps.error(NOT_LEARNED)
         return 1
       }
-      return await learnAndHold(ctx, deps, { ...lastPath(paths), failure: "" }, port, options)
+      return await learnAndHold(ctx, deps, { ...lastPath(paths), failure: "" }, port, options, interrupt)
     }
     const approved = await approve(ctx, deps, saved, options.port)
     if (typeof approved === "number") return approved
@@ -272,7 +288,7 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
       const { line, code } = describe(error, port)
       deps.error(line)
       if (!(await inVisit(ctx, deps.stdin, () => askToLearn(deps, RELEARN_QUESTION, STOP)))) return code
-      return await learnAndHold(ctx, deps, { ...lastPath(paths), failure: line }, port, options)
+      return await learnAndHold(ctx, deps, { ...lastPath(paths), failure: line }, port, options, interrupt)
     }
     return await hold(ctx, conn, access, options, deps)
   } catch (error) {
@@ -298,15 +314,17 @@ async function hold(ctx: ReachContext, conn: Connection, access: Access, options
   return waitLoop(ctx, conn, deps)
 }
 
-/** Learns a path, then holds the connection that saved it; the exit code when nothing was saved. */
+/** Learns a path, then holds the connection that saved it; the exit code when nothing was saved. `interrupt` is the
+ *  visit's Ctrl-C. */
 async function learnAndHold(
   ctx: ReachContext,
   deps: VisitDeps,
   inputs: { notes: string; script: string; failure: string },
   port: number,
   options: VisitOptions,
+  interrupt: () => void,
 ): Promise<number> {
-  const learned = await learnPath(ctx, deps, inputs, port)
+  const learned = await learnPath(ctx, deps, inputs, port, interrupt)
   return typeof learned === "number" ? learned : hold(ctx, learned.conn, learned.access, options, deps)
 }
 
@@ -366,14 +384,24 @@ async function askBeforeAnything<T>(deps: VisitDeps, ask: () => Promise<T>): Pro
   }
 }
 
-/** A learning run with the owner's consent already given: the model from `hq/provider.json` (asked for the first
- *  time), then learn_hq. Resolves to the saved path's record and the connection that tested it, or to the exit code
- *  once it says why nothing was saved. */
+/** Where a learning run meets the owner: the prompter, the stream it reads answers from (paused after each), and
+ *  where children's output goes. */
+interface Owner {
+  prompter: Prompter
+  stdin: Readable
+  echo(text: string): void
+}
+
+/** A learning run with the owner's consent already given, behind the setup screen when there is one: the model from
+ *  `hq/provider.json` (asked for the first time), then learn_hq. Resolves to the saved path's record and the
+ *  connection that tested it, or to the exit code once it says why nothing was saved; that and anything after goes
+ *  on the plain terminal. `interrupt` is the visit's Ctrl-C. */
 async function learnPath(
   ctx: ReachContext,
   deps: VisitDeps,
   inputs: { notes: string; script: string; failure: string },
   port: number,
+  interrupt: () => void,
 ): Promise<{ access: Access; conn: Connection } | number> {
   const signal = ctx.signal!
   // The first Ctrl-C stops a model check that may take a minute, its request included.
@@ -382,29 +410,44 @@ async function learnPath(
     signal.throwIfAborted()
     return problem as string | null
   }
-  // The first Ctrl-C stops a device sign-in too.
-  const provider = await learnProvider(ctx.paths, deps.prompter, {
-    listers: deps.listers,
-    checkModel,
-    auth: deps.auth,
-    signal,
-  })
-  quietStdin(deps.stdin)
-  // Read again at each use: the run's first model call may refresh a subscription's tokens.
-  const secrets = () => providerSecrets(provider, workerEnv(ctx.env))
-  const state = new Learning(ctx, deps.prompter, deps.stdin, secrets, port, deps.now)
-  // Masters started while learning keep their ControlPersist; a reconnect's start from the visit's config again.
-  await writeSshFiles(ctx.paths, ctx.ssh, deps.sshIncludes, { persist: LEARNING_PERSIST_S })
+  const run: { state?: Learning } = {}
+  const learn = async (owner: Owner): Promise<Learned> => {
+    // The first Ctrl-C stops a device sign-in too.
+    const provider = await learnProvider(ctx.paths, owner.prompter, {
+      listers: deps.listers,
+      checkModel,
+      auth: deps.auth,
+      signal,
+    })
+    quietStdin(owner.stdin)
+    // Read again at each use: the run's first model call may refresh a subscription's tokens.
+    const secrets = () => providerSecrets(provider, workerEnv(ctx.env))
+    // The connection save_access opens is the visit's: its master's output goes where the owner sees it then.
+    run.state = new Learning({ ...ctx, echo: owner.echo }, owner.prompter, owner.stdin, secrets, port, deps.now)
+    // Masters started while learning keep their ControlPersist; a reconnect's start from the visit's config again.
+    await writeSshFiles(ctx.paths, ctx.ssh, deps.sshIncludes, { persist: LEARNING_PERSIST_S })
+    try {
+      return await runLearn(provider, inputs, run.state)
+    } finally {
+      await writeSshFiles(ctx.paths, ctx.ssh, deps.sshIncludes)
+    }
+  }
   let learned: Learned
   try {
-    learned = await runLearn(provider, inputs, state)
+    learned = deps.learnScreen
+      ? await deps.learnScreen((io) => {
+          const prompter = new JsonPrompter(io.prompts, io.answers)
+          // The screen hides what was said before it opened.
+          for (const line of beforeLearning(ctx.paths)) prompter.say(clean(line))
+          return learn({ prompter, stdin: io.answers, echo: io.echo })
+        }, interrupt)
+      : await learn({ prompter: deps.prompter, stdin: deps.stdin, echo: ctx.echo })
   } catch (error) {
     // Ctrl-C, or the owner's input ending: what ran is still worth knowing.
-    if (state.commands.length > 0) listCommands(deps, state, ASKED_FOR)
+    if (run.state !== undefined && run.state.commands.length > 0) listCommands(deps, run.state, ASKED_FOR)
     throw error
-  } finally {
-    await writeSshFiles(ctx.paths, ctx.ssh, deps.sshIncludes)
   }
+  const state = run.state!
   // Saved and connected, whatever the model did after.
   if (state.connection !== null) {
     const access = await readAccess(ctx.paths)
@@ -504,11 +547,12 @@ export function learnedMessage(message: string | null, provider: Provider, paths
   })
 }
 
-/** A visit's context, its Ctrl-C (a second one exits 130 at once; the watcher then ends the masters) and the
- *  function that stops listening for it. */
-function start(paths: ReachPaths, ssh: string, deps: VisitDeps): { ctx: ReachContext; off: () => void } {
+/** A visit's context, its Ctrl-C (a second one exits 130 at once; the watcher then ends the masters), which the
+ *  learning screen calls too, and the function that stops listening for it. */
+function start(paths: ReachPaths, ssh: string, deps: VisitDeps): { ctx: ReachContext; off: () => void; interrupt: () => void } {
   const stop = new AbortController()
-  const off = deps.onSigint(() => (stop.signal.aborted ? deps.exit(130) : stop.abort()))
+  const interrupt = () => (stop.signal.aborted ? deps.exit(130) : stop.abort())
+  const off = deps.onSigint(interrupt)
   const ctx: ReachContext = {
     paths,
     ssh,
@@ -518,7 +562,7 @@ function start(paths: ReachPaths, ssh: string, deps: VisitDeps): { ctx: ReachCon
     signal: stop.signal,
     limits: deps.limits ?? LIMITS,
   }
-  return { ctx, off }
+  return { ctx, off, interrupt }
 }
 
 /** What a visit that threw `error` says, and its exit code: 130 for Ctrl-C (at a question, too), the failure

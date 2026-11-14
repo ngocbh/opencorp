@@ -1,7 +1,7 @@
 # What `opencorp hq` risks
 
-The fixed texts the owner reads before learning the path to HQ and before saving it, kept out of the flow so the
-model can't edit them; the agent's risks specific to the setup follow them. `risks.ts` reads this file: each `##`
+The fixed texts the owner reads before learning the path to HQ and before saving it, and while ssh has the terminal,
+kept out of the flow so the model can't edit them; the agent's risks specific to the setup follow them. `risks.ts` reads this file: each `##`
 heading names a text, each `- ` line is one line of it, and `{name}` is filled in.
 
 ## beforeLearning
@@ -43,3 +43,15 @@ Asked before learning a first path.
 Asked before learning again in place of a saved path.
 
 - Relearn? This uses the model.
+
+## HAND_OVER_COMMAND
+
+Said on the plain terminal when the learning screen steps aside for an approved command.
+
+- The approved command runs now with the terminal: SSH asks here for any password, Duo or host key. The learning screen comes back when it ends.
+
+## HAND_OVER_TEST
+
+Said on the plain terminal when the learning screen steps aside to test the whole connection before saving.
+
+- Testing the whole connection now (reach.sh, then the login to HQ's machine) with the terminal: SSH asks here for any password, Duo or host key. The learning screen comes back when it ends.
