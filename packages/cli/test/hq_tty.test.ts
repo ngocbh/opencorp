@@ -421,6 +421,37 @@ describe.skipIf(!TMUX)("behind the learning screen", () => {
     expect(pidsNaming(c.hq)).toEqual([])
   }, 120_000)
 
+  test("a command one row taller than the pager with its question isn't shown as read", async () => {
+    const llm = await FakeLLM.start()
+    onTestFinished(() => llm.close())
+    const c = await client(null)
+    onTestFinished(() => removeClient(c))
+    withModel(c, llm)
+    // At 120x40 the pager holds 31 rows once the question's footer is drawn: the title and 31 lines are 32.
+    const lines = Array.from({ length: 30 }, (_, i) => `echo row ${i + 1}`)
+    lines.push("echo TAIL-MARKER")
+    llm.script(
+      { tool_calls: [{ name: "shell", arguments: { command: lines.join("\n"), why: "look around" } }] },
+      { content: "Stopping here." },
+    )
+    const t = terminal(c)
+    await t.see("Learn how to reach HQ from here? This uses the model.")
+    pickFirst(t)
+    await t.see("Read to the end")
+    expect(t.screen()).not.toContain("Don't run it")
+    expect(t.screen()).not.toContain("TAIL-MARKER")
+    t.keys("End")
+    await t.see("Don't run it")
+    expect(t.screen()).toContain("TAIL-MARKER")
+    // Enter takes the default, "Don't run it", then the reason is asked.
+    t.keys("Enter")
+    await t.see("Why not?")
+    t.type("")
+    await t.see("nothing was saved: Stopping here.")
+    expect(await t.exit()).toBe("exit=1")
+    expect(pidsNaming(c.hq)).toEqual([])
+  }, 120_000)
+
   test("a command taller than the screen hides its choices until the owner reads to the end", async () => {
     const llm = await FakeLLM.start()
     onTestFinished(() => llm.close())
