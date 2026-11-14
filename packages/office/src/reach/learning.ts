@@ -57,6 +57,19 @@ export class Learning {
     return this.#workDir
   }
 
+  /** `run`, a child that may prompt on the terminal (ssh's password, Duo or host key), with the terminal handed to it;
+   *  `why` says what runs. On the plain terminal it already has it, so this only runs it. */
+  async handOver<T>(why: string, run: () => Promise<T>): Promise<T> {
+    const { prompter } = this.asking
+    try {
+      // Taken back even when the hand-over fails: the screen may have stepped aside before its answers ended.
+      await prompter.handOver(why)
+      return await run()
+    } finally {
+      prompter.takeBack()
+    }
+  }
+
   /** Removes the folder commands ran in. */
   close(): void {
     if (this.#workDir !== null) fs.rmSync(this.#workDir, { recursive: true, force: true })

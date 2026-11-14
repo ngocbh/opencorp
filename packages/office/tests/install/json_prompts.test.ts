@@ -125,6 +125,33 @@ test("say and step need no answer", () => {
   )
 })
 
+test("a command, its result and a review are sent whole, and need no answer", () => {
+  const [p, out] = prompter([])
+  p.show({ type: "command", title: "The model wants to run a command: look", warning: "Careful", lines: ["  1  ls"] })
+  p.show({ type: "result", title: "Exited 0", ok: true, lines: ["a"] })
+  const files = [{ name: "/h/hq/reach.sh, which runs on every visit", lines: ["  1  true"] }]
+  p.show({ type: "review", title: "Save it?", files, risks: ["It runs"], warning: "" })
+  expect(sent(out)).toEqual([
+    { type: "command", title: "The model wants to run a command: look", warning: "Careful", lines: ["  1  ls"] },
+    { type: "result", title: "Exited 0", ok: true, lines: ["a"] },
+    { type: "review", title: "Save it?", files, risks: ["It runs"], warning: "" },
+  ])
+})
+
+test("handing the terminal over waits for the answer that it's free; taking it back needs none", async () => {
+  const [p, out] = prompter([""])
+  await p.handOver("Running the command.")
+  p.takeBack()
+  expect(out.text).toBe('{"type":"hand_over","why":"Running the command."}\n{"type":"take_back"}\n')
+})
+
+test("handing the terminal over with stdin closed is an onboard error", async () => {
+  const [p] = prompter([])
+  const error = await rejection(p.handOver("Running the command."))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toBe("no answer to 'Running the command.' (stdin closed)")
+})
+
 test("a preset answer asks nothing", async () => {
   const [p, out] = prompter([], { "Which human are you?": "ngocbh" })
   expect(await p.ask("Which human are you?")).toBe("ngocbh")

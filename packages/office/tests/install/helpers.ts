@@ -10,7 +10,7 @@ import type { InitOutput } from "../../src/company/draft.ts"
 import { type Completed, type Host, type Launch, launch, officeAnswers } from "../../src/install/launch.ts"
 import type { Listers, SubscriptionAuth } from "../../src/install/onboard.ts"
 import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
-import { type Prompter, stepLines } from "../../src/install/prompts.ts"
+import { type Card, cardLines, type Prompter, stepLines } from "../../src/install/prompts.ts"
 import { repr } from "../../src/perm/redact.ts"
 import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { startGroup } from "../helpers.ts"
@@ -137,6 +137,25 @@ export class Script implements Prompter {
 
   step(number: number, total: number, title: string, why: string): void {
     this.seen.push(...stepLines(number, total, title, why))
+  }
+
+  /** Each card shown, in order; its lines go to `seen` as the terminal's prompter says them. */
+  readonly cards: Card[] = []
+
+  show(card: Card): void {
+    this.cards.push(card)
+    this.seen.push(...cardLines(card))
+  }
+
+  /** What each `handOver` said, and `take back` for each `takeBack`, in order. */
+  readonly terminal: string[] = []
+
+  async handOver(why: string): Promise<void> {
+    this.terminal.push(why)
+  }
+
+  takeBack(): void {
+    this.terminal.push("take back")
   }
 }
 

@@ -1,5 +1,6 @@
-/** The fixed texts the owner reads before learning the path to HQ and before saving it, kept out of the flow so the
- *  model can't edit them; the agent's risks specific to the setup follow them. The texts are risks.md's. */
+/** The fixed texts the owner reads before learning the path to HQ and before saving it, and while ssh has the
+ *  terminal, kept out of the flow so the model can't edit them; the agent's risks specific to the setup follow them.
+ *  The texts are risks.md's. */
 import { embedded } from "../platform.ts"
 import type { ReachPaths } from "./paths.ts"
 import { LEARNING_PERSIST_S, PERSIST_S } from "./ssh.ts"
@@ -49,3 +50,7 @@ export const LEARN = text("LEARN").join("\n")
 export const LEARN_QUESTION = text("LEARN_QUESTION").join("\n")
 /** Asked before learning again in place of a saved path. */
 export const RELEARN_QUESTION = text("RELEARN_QUESTION").join("\n")
+/** Said when an approved command takes the terminal. */
+export const HAND_OVER_COMMAND = text("HAND_OVER_COMMAND").join("\n")
+/** Said when the chain test takes the terminal. */
+export const HAND_OVER_TEST = text("HAND_OVER_TEST").join("\n")

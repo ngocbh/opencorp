@@ -1,6 +1,7 @@
 /** How onboarding talks to the owner: the errors it stops with and the prompter it asks through. */
 import type { Readable, Writable } from "node:stream"
 import { type CANCEL_SYMBOL, type CommonOptions, isCancel, password, select, text } from "@clack/prompts"
+import type { SetupCommand, SetupResult, SetupReview } from "@opencorp/protocol"
 import { repr, strip } from "../perm/redact.ts"
 
 /** Onboarding stopped; the message says why and what to do. It never contains a key. */
@@ -44,6 +45,25 @@ export function stepLines(number: number, total: number, title: string, why: str
   return [`Step ${number} of ${total}: ${title}`, why]
 }
 
+/** Something to look at closely: a command to approve, how it ended, or files to review before saving. */
+export type Card = SetupCommand | SetupResult | SetupReview
+
+/** `card` as lines on the terminal: a command's title, warning and lines; a review's title, each file under its name,
+ *  what to know before saving, and its warning; a result's title alone — how it ended, or why a chain test failed —
+ *  since its output already streamed to the terminal as it came. */
+export function cardLines(card: Card): string[] {
+  const warning = card.type !== "result" && card.warning ? [card.warning] : []
+  if (card.type === "command") return [card.title, ...warning, ...card.lines]
+  if (card.type === "result") return [card.title]
+  const risks = card.risks ?? []
+  return [
+    card.title,
+    ...card.files.flatMap((file) => [`${file.name}:`, ...file.lines]),
+    ...(risks.length > 0 ? ["Before you save it:", ...risks.map((risk) => `  - ${risk}`)] : []),
+    ...warning,
+  ]
+}
+
 /** How onboarding talks to the owner. */
 export interface Prompter {
   /** Whether there's someone at a terminal to ask; without one, questions take their defaults and secrets throw
@@ -60,6 +80,13 @@ export interface Prompter {
   say(text: string): void
   /** Start step `number` of `total`: show `stepLines`. */
   step(number: number, total: number, title: string, why: string): void
+  /** Show `card`. */
+  show(card: Card): void
+  /** Hand the terminal to a child that may prompt on it (ssh's password, Duo or host key), `why` saying what runs;
+   *  resolves once the child can have it. `takeBack` once it ends. */
+  handOver(why: string): Promise<void>
+  /** Take the terminal back after `handOver`. */
+  takeBack(): void
 }
 
 /** One line from `input` without its `\n` (and a trailing `\r`), the rest left unread; the last
@@ -246,6 +273,15 @@ export class TtyPrompter implements Prompter {
     if (this.styled()) [header, line] = [`\x1b[1;36m${header}\x1b[0m`, `\x1b[90m${line}\x1b[0m`]
     this.output.write(`\n${header}\n${line}\n`)
   }
+
+  show(card: Card): void {
+    for (const line of cardLines(card)) this.say(line)
+  }
+
+  /** The terminal is the child's already: questions here are asked only between children. */
+  async handOver(_why: string): Promise<void> {}
+
+  takeBack(): void {}
 
   /** The answer `run` gets from a clack prompt on this terminal. A cancel (Ctrl-C) throws `KeyboardInterrupt`;
    *  input that ends or fails first is closed input. */

@@ -10,7 +10,11 @@ import { Global } from "../core/global"
 import { OpenCorpKeymapProvider, registerOpenCorpBaseKeymap, type OpenTuiKeymap } from "../keymap"
 import { destroyRenderer } from "../util/renderer"
 import { spawnSetup, type SetupChild } from "./child"
-import { SetupScreen } from "./screen"
+import { inProcessChild, type ScreenIo } from "./in_process"
+import { MIN_COLUMNS, MIN_ROWS, SetupScreen } from "./screen"
+
+export type { ScreenIo } from "./in_process"
+export { MIN_COLUMNS, MIN_ROWS } from "./screen"
 
 /** Somewhere to print the transcript and stderr once the screen is gone. */
 export interface Writer {
@@ -41,14 +45,18 @@ export async function runSetup(argv: string[], cwd: string, env: Record<string, 
   }
 }
 
-/** The same, for a child already running (tests pass a fake); the header names `command`, such as `opencorp init`. */
+/** The same, for a child already running (tests pass a fake); the header reads `title` and names `command`, such as
+ *  `opencorp init`. Why the child takes the terminal goes on `err`. `exitSignals` are the signals that take the screen
+ *  down (opentui's own list by default). */
 export async function runSetupWith(
   child: SetupChild,
   out: Writer = process.stdout,
   err: Writer = process.stderr,
   command = "",
+  { title, exitSignals }: { title?: string; exitSignals?: NodeJS.Signals[] } = {},
 ): Promise<number> {
   const renderer = await createCliRenderer({
+    ...(exitSignals ? { exitSignals } : {}),
     externalOutputMode: "passthrough",
     targetFps: 60,
     gatherStats: false,
@@ -67,6 +75,19 @@ export async function runSetupWith(
     // has released.
     if (!renderer.isDestroyed) destroyRenderer(renderer)
   }
+  // A process.exit while the screen is up (a second Ctrl-C ends `opencorp hq` at once) still gives the terminal back.
+  process.once("exit", release)
+  // opentui logs an uncaught error where the screen hides it and then hangs on "Working…"; instead give the terminal
+  // back, show the error and exit non-zero.
+  const onFatal = (error: unknown) => {
+    release()
+    try {
+      err.write(`\n${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`)
+    } catch {}
+    process.exit(1)
+  }
+  process.on("uncaughtException", onFatal)
+  process.on("unhandledRejection", onFatal)
   try {
     const keymap = createDefaultOpenTuiKeymap(renderer)
     unregister = registerOpenCorpBaseKeymap(keymap)
@@ -82,7 +103,13 @@ export async function runSetupWith(
       await render(
         () => (
           <Providers mode={mode} keymap={keymap}>
-            <SetupScreen child={child} lines={lines} command={command} />
+            <SetupScreen
+              child={child}
+              lines={lines}
+              command={command}
+              title={title}
+              notice={(text) => void err.write(text)}
+            />
           </Providers>
         ),
         renderer,
@@ -95,8 +122,82 @@ export async function runSetupWith(
     if (stderr) err.write(stderr)
     return code
   } finally {
+    process.off("exit", release)
+    process.off("uncaughtException", onFatal)
+    process.off("unhandledRejection", onFatal)
     // Gives the terminal back even when something above threw.
     release()
+  }
+}
+
+/** The signals that stop an in-process run: opentui's own list without SIGINT, which the run handles itself. The
+ *  run, not the renderer, listens for them, so one still stops the run (and prints the transcript and the commands
+ *  tried) while the screen is suspended for a hand-over, when the renderer's own listeners are off. */
+export const IN_PROCESS_SIGNALS: NodeJS.Signals[] = [
+  "SIGTERM",
+  "SIGQUIT",
+  "SIGABRT",
+  "SIGHUP",
+  "SIGBREAK",
+  "SIGPIPE",
+  "SIGBUS",
+]
+
+/**
+ * Runs `work` behind the setup screen in this process, the header reading `title` and naming `command`: what it
+ * writes to `io.prompts` (a `JsonPrompter`'s lines) shows there, and the answers come on `io.answers`. Ctrl-C on the
+ * screen calls `interrupt` and ends `io.answers`. Output given to `io.echo` shows on the screen, or goes to `echo`
+ * while a child has the terminal. `work` starts once the screen listens; this resolves or rejects as it does, once
+ * the screen is gone and its transcript is printed on `out`. Rejects without starting `work` when the screen can't
+ * start, the window being smaller than `MIN_COLUMNS` x `MIN_ROWS` included.
+ */
+export async function runInProcess<T>(
+  work: (io: ScreenIo) => Promise<T>,
+  o: {
+    interrupt: () => void
+    echo: (text: string) => void
+    out?: Writer
+    command?: string
+    title?: string
+    /** The terminal's size now (stdout's by default). */
+    size?: () => { columns?: number; rows?: number }
+  },
+): Promise<T> {
+  // Too small for the screen to show a card and its choices: the caller asks on the plain terminal instead.
+  const { columns, rows } = o.size?.() ?? { columns: process.stdout.columns, rows: process.stdout.rows }
+  if ((columns !== undefined && columns < MIN_COLUMNS) || (rows !== undefined && rows < MIN_ROWS))
+    throw new Error(`the window (${columns}x${rows}) is smaller than ${MIN_COLUMNS}x${MIN_ROWS}`)
+  const channel = inProcessChild(o)
+  const out = o.out ?? process.stderr
+  // The renderer handles no signals; the run does, so SIGTERM or SIGHUP still stops it (and prints the transcript
+  // and the commands tried) while the screen is suspended for a hand-over, as Ctrl-C does.
+  const onSignal = () => channel.child.interrupt()
+  for (const sig of IN_PROCESS_SIGNALS) process.on(sig, onSignal)
+  const screen = runSetupWith(channel.child, out, out, o.command, { title: o.title, exitSignals: [] })
+  let started = false
+  // A screen that fails once `work` runs must not leave it waiting for answers; one that never started stops nothing.
+  void screen.catch(() => started && channel.child.close())
+  try {
+    await Promise.race([channel.ready, screen])
+    if (channel.closed) {
+      // Gone (a signal) before it listened.
+      channel.end(130)
+      await screen
+      throw new Error("the screen closed before it showed")
+    }
+    let settled: { value: T } | { error: unknown }
+    started = true
+    try {
+      settled = { value: await work(channel.io) }
+    } catch (error) {
+      settled = { error }
+    }
+    channel.end("value" in settled ? 0 : 1)
+    await screen
+    if ("error" in settled) throw settled.error
+    return settled.value
+  } finally {
+    for (const sig of IN_PROCESS_SIGNALS) process.off(sig, onSignal)
   }
 }
 

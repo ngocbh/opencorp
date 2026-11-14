@@ -5,7 +5,8 @@ import path from "node:path"
 import { PassThrough } from "node:stream"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { ReportedToolError } from "@ngocbh/yian"
-import { Learning } from "../../../src/reach/learning.ts"
+import { credentialWarning, Learning } from "../../../src/reach/learning.ts"
+import { HAND_OVER_COMMAND } from "../../../src/reach/risks.ts"
 import { DONT_RUN, RUN, runQuestion, runShell, shellResult } from "../../../src/reach/tools/shell.ts"
 import { Script } from "../../install/helpers.ts"
 import { KEY, learning, rejection } from "../helpers.ts"
@@ -21,12 +22,49 @@ test("a command runs only once the owner approves it, and the model gets its exi
     "  1  echo out",
     "  2  echo err >&2; exit 4",
     "Run this 2-line command?",
+    // After it runs, the owner is told how it ended (its output already streamed as it came).
+    "Exited 4",
   ])
   expect(runQuestion(2)).toBe("Run this 2-line command?")
   expect(prompter.offered).toEqual([[RUN, DONT_RUN]])
   expect(echoed.join("")).toContain("out\n")
   expect(echoed.join("")).toContain("err\n")
   expect(state.commands).toEqual([{ command: "echo out\necho err >&2; exit 4", code: 4 }])
+})
+
+test("the command shows as a card, runs with the terminal handed over, and then its result shows", async () => {
+  // What the terminal had been told each time the command's output came.
+  const during: string[][] = []
+  let script: Script | undefined
+  const { prompter, state, ctx } = await learning(["1"], { echo: () => void during.push([...script!.terminal]) })
+  script = prompter
+  const command = "echo out; echo err >&2; exit 4"
+  await runShell({ command: `: ${ctx.paths.provider}; ${command}`, why: "look" }, state)
+  expect(during.length).toBeGreaterThan(0)
+  for (const told of during) expect(told).toEqual([HAND_OVER_COMMAND])
+  expect(prompter.terminal).toEqual([HAND_OVER_COMMAND, "take back"])
+  expect(prompter.cards).toEqual([
+    {
+      type: "command",
+      title: "The model wants to run a command: look",
+      warning: credentialWarning(ctx.paths),
+      lines: [`  1  : ${ctx.paths.provider}; ${command}`],
+    },
+    { type: "result", title: "Exited 4", ok: false, lines: ["out", "err"] },
+  ])
+})
+
+test("a result says when an ssh in the command couldn't connect, and shows all the output the model sees", async () => {
+  const { prompter, state } = await learning(["1"], { behavior: { hosts: { login1: { login: "refuse" } } } })
+  await runShell({ command: "seq 1 30; ssh login1 true; true", why: "look" }, state)
+  const result = prompter.cards.at(-1)!
+  expect(result).toMatchObject({ type: "result", title: "Exited 0; an ssh in it couldn't connect", ok: false })
+  const lines = (result as { lines: string[] }).lines
+  // The owner sees all of it, not just a tail: every line of stdout, then ssh's refusal on stderr.
+  expect(lines.filter((l) => /^\d+$/.test(l))).toHaveLength(30)
+  expect(lines).toContain("1")
+  expect(lines).toContain("30")
+  expect(lines.at(-1)).toContain("Permission denied")
 })
 
 test("a refused command doesn't run and the model is told why", async () => {

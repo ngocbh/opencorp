@@ -4,6 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { ReportedToolError } from "@ngocbh/yian"
+import { OnboardError } from "../../src/install/prompts.ts"
 import { credentialWarning, namesCredentials } from "../../src/reach/learning.ts"
 import { saveAccess, saveQuestion } from "../../src/reach/tools/save_access.ts"
 import { runShell } from "../../src/reach/tools/shell.ts"
@@ -50,4 +51,23 @@ test.each(LOOK_ALIKES)("a command or reach.sh holding a look-alike blank is refu
   expect(prompter.seen).toEqual([])
   expect(fs.existsSync(marker)).toBe(false)
   expect(fs.existsSync(ctx.paths.script)).toBe(false)
+})
+
+test("a child runs with the terminal handed over, and the terminal comes back even when the hand-over fails", async () => {
+  const { prompter, state } = await learning([])
+  const during: string[][] = []
+  expect(await state.handOver("Running it.", async () => (during.push([...prompter.terminal]), "ran"))).toBe("ran")
+  expect(during).toEqual([["Running it."]])
+  expect(prompter.terminal).toEqual(["Running it.", "take back"])
+  prompter.terminal.length = 0
+  // The screen's answers ended (its Ctrl-C) after it had already stepped aside.
+  prompter.handOver = async (why) => {
+    prompter.terminal.push(why)
+    throw new OnboardError("no answer")
+  }
+  let ran = false
+  const error = await rejection(state.handOver("Running it.", async () => (ran = true)))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(ran).toBe(false)
+  expect(prompter.terminal).toEqual(["Running it.", "take back"])
 })

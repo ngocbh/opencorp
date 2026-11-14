@@ -4,13 +4,14 @@
 import { isMissingRoute, isNotImplemented, OfficeTimeout, OfficeUnavailable } from "@opencorp/client"
 import { defaultSocket, opencorpHome } from "@opencorp/client/node"
 import { otherPort, SETTINGS_IGNORED } from "@opencorp/office/hq/config"
-import type { VisitOptions } from "@opencorp/office/reach/run"
+import type { LearnScreen, VisitOptions } from "@opencorp/office/reach/run"
 import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
 import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { bareHandle, localIdentity, officeClient, officeDown, officeNotRunning } from "../office"
+import { terminal } from "../setup"
 
 /**
  * The local port the printed SSH forwards use for hq.sock: any free one works there, since hq.sock takes any port. Not
@@ -191,8 +192,36 @@ export const realHqDeps: HqDeps = {
   visit: async (options) => {
     // Loaded only for a visit: it brings in yian and the SSH plumbing.
     const v = await import("@opencorp/office/reach/run")
-    return v.visit(options, v.realVisitDeps(opencorpHome()))
+    const deps = v.realVisitDeps(opencorpHome())
+    // Where the setup screen can draw, learning runs behind it; elsewhere it asks line by line, as before.
+    return v.visit(options, terminal() ? { ...deps, learnScreen: learnScreen(deps.echo) } : deps)
   },
+}
+
+/** The setup screen for learning the way to HQ, in this process, `echo` taking a child's output while it has the
+ *  terminal; loaded only once learning starts. */
+export function learnScreen(echo: (text: string) => void): LearnScreen {
+  return async (learn, interrupt) => {
+    let started = false
+    try {
+      // The screen is Solid JSX, loaded as `opencorp` loads the TUI.
+      const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin")
+      ensureSolidTransformPlugin()
+      const { runInProcess } = await import("@opencorp/tui/setup")
+      // Questions and output go to stderr, as the visit's do, so stdout holds only links and the visit line.
+      return await runInProcess(
+        (io) => {
+          started = true
+          return learn(io)
+        },
+        { interrupt, echo, out: process.stderr, command: "opencorp hq", title: "Learning the way to HQ" },
+      )
+    } catch (e) {
+      if (started) throw e
+      // The visit then asks on the plain terminal.
+      throw new Error(`can't show the learning screen: ${e instanceof Error ? e.message : e}`)
+    }
+  }
 }
 
 /** No office answers on office.sock (`OfficeDropped` is an `OfficeUnavailable`): these exit 3, as `officeNotRunning`
