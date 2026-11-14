@@ -218,9 +218,8 @@ export function learnScreen(echo: (text: string) => void): LearnScreen {
       )
     } catch (e) {
       if (started) throw e
-      throw new Error(
-        `can't show the learning screen: ${e instanceof Error ? e.message : e}; with TERM=dumb it learns on the plain terminal`,
-      )
+      // The visit then asks on the plain terminal.
+      throw new Error(`can't show the learning screen: ${e instanceof Error ? e.message : e}`)
     }
   }
 }

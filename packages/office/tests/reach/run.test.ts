@@ -1376,15 +1376,41 @@ test("a second Ctrl-C on the screen ends the visit at once, as at the terminal",
   expect(exits).toEqual([130])
 })
 
-test("when the screen can't start, the visit says why, calls no model and exits 1", async () => {
+test("when the screen can't start (a window too small, say), learning asks on the plain terminal instead", async () => {
   const { dir, fake, llm } = await unlearnedHome()
+  llm.script(call("shell", { command: "true", why: "look" }), { content: "I can't tell." })
   const v = visitDeps(dir, fake, {
-    answers: ["1"],
+    // Learn it; then, on the plain prompter, run the command.
+    answers: ["1", "1"],
     learnScreen: async () => {
-      throw new Error("can't show the learning screen: no terminal")
+      throw new Error("can't show the learning screen: the window (30x10) is smaller than 40x14")
     },
   })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  expect(v.errors).toEqual([NO_OFFICE_HERE, "opencorp hq: can't show the learning screen: no terminal"])
-  expect(llm.requests()).toEqual([])
+  expect(v.errors.slice(0, 2)).toEqual([
+    NO_OFFICE_HERE,
+    "opencorp hq: can't show the learning screen: the window (30x10) is smaller than 40x14; asking here instead.",
+  ])
+  // The command was asked about, and run, on the plain prompter.
+  expect(v.prompter.seen).toContain("Run this 1-line command?")
+  expect(llm.requests().length).toBe(2)
+  expect(v.errors).toContain("opencorp hq: nothing was saved: I can't tell.")
+})
+
+test("a screen that fails once learning is under way doesn't start it over on the plain terminal", async () => {
+  const { dir, fake, llm } = await unlearnedHome()
+  llm.script({ content: "Stopping." })
+  const answers = new PassThrough()
+  answers.end()
+  const io = { prompts: { write: () => true }, answers, echo: () => {} }
+  const v = visitDeps(dir, fake, {
+    answers: ["1"],
+    learnScreen: async (learn) => {
+      await learn(io).catch(() => {})
+      throw new Error("the renderer broke mid-way")
+    },
+  })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([NO_OFFICE_HERE, "opencorp hq: the renderer broke mid-way"])
+  expect(llm.requests()).toHaveLength(1)
 })

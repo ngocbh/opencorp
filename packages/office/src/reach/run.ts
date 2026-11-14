@@ -109,7 +109,8 @@ export interface VisitDeps {
   auth?: SubscriptionAuth
   /** Where there's a terminal to draw on: runs `learn` behind the setup screen in this process, so the SSH connections
    *  learning opens stay this visit's, and the screen's Ctrl-C calls `interrupt`; rejects without calling `learn` when
-   *  the screen can't start. Without it, learning asks on `prompter`. */
+   *  the screen can't start (a window too small for it, say), and learning then asks on `prompter`. Without it,
+   *  learning asks on `prompter`. */
   learnScreen?: LearnScreen
 }
 
@@ -432,16 +433,28 @@ async function learnPath(
       await writeSshFiles(ctx.paths, ctx.ssh, deps.sshIncludes)
     }
   }
+  const plain = () => learn({ prompter: deps.prompter, stdin: deps.stdin, echo: ctx.echo })
+  /** Learning behind the screen; when the screen can't start (a window too small for it, say), on the plain
+   *  terminal instead, after saying why. A failure once learning started is the run's own. */
+  const behindScreen = async (screen: LearnScreen): Promise<Learned> => {
+    let started = false
+    try {
+      // The owner read the risks on the plain terminal when they chose to learn; the screen doesn't repeat them, so
+      // the save view's files aren't pushed off by them.
+      return await screen((io) => {
+        started = true
+        const prompter = new JsonPrompter(io.prompts, io.answers)
+        return learn({ prompter, stdin: io.answers, echo: io.echo })
+      }, interrupt)
+    } catch (error) {
+      if (started || signal.aborted) throw error
+      deps.error(`opencorp hq: ${messageOf(error)}; asking here instead.`)
+      return plain()
+    }
+  }
   let learned: Learned
   try {
-    learned = deps.learnScreen
-      ? // The owner read the risks on the plain terminal when they chose to learn; the screen doesn't repeat them,
-        // so the save view's files aren't pushed off by them.
-        await deps.learnScreen((io) => {
-          const prompter = new JsonPrompter(io.prompts, io.answers)
-          return learn({ prompter, stdin: io.answers, echo: io.echo })
-        }, interrupt)
-      : await learn({ prompter: deps.prompter, stdin: deps.stdin, echo: ctx.echo })
+    learned = deps.learnScreen ? await behindScreen(deps.learnScreen) : await plain()
   } catch (error) {
     // Ctrl-C, or the owner's input ending: what ran is still worth knowing.
     if (run.state !== undefined && run.state.commands.length > 0) listCommands(deps, run.state, ASKED_FOR)

@@ -18,7 +18,10 @@ const sq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`
 
 /** A tmux server of its own (`-L`), killed and its socket removed when the test finishes, running `opencorp hq --no-open`
  *  (and `args`) for `c` in a 120x40 window with `TERM` `term`; the command's exit status lands in `<root>/exit`. */
-function terminal(c: Client, { args = [], term = "xterm" }: { args?: string[]; term?: string } = {}) {
+function terminal(
+  c: Client,
+  { args = [], term = "xterm", size = [120, 40] }: { args?: string[]; term?: string; size?: [number, number] } = {},
+) {
   const server = `oc-hq-${randomBytes(4).toString("hex")}`
   const tmux = (...args: string[]) =>
     execFileSync(TMUX!, ["-L", server, ...args], {
@@ -31,7 +34,7 @@ function terminal(c: Client, { args = [], term = "xterm" }: { args?: string[]; t
   // tmux 2.7 has no `new-session -e`: the env goes in the command.
   const env = Object.entries({ ...c.env, TERM: term }).map(([k, v]) => sq(`${k}=${v}`))
   const command = `env -i ${env.join(" ")} ${sq(WRAPPER)} hq --no-open ${args.map(sq).join(" ")}; echo exit=$? > ${sq(exitFile)}`
-  tmux("-f", "/dev/null", "new-session", "-d", "-s", "hq", "-x", "120", "-y", "40", command)
+  tmux("-f", "/dev/null", "new-session", "-d", "-s", "hq", "-x", String(size[0]), "-y", String(size[1]), command)
   // The window stays once the command ends, so a test can still read it.
   tmux("set-window-option", "-t", "hq", "remain-on-exit", "on")
   onTestFinished(() => {
@@ -418,6 +421,54 @@ describe.skipIf(!TMUX)("behind the learning screen", () => {
     expect(await t.exit()).toBe("exit=1")
     // ssh got only the password, and the drained keys answered nothing.
     expect(c.fake.tty()).toEqual(["hunter2"])
+    expect(pidsNaming(c.hq)).toEqual([])
+  }, 120_000)
+
+  test("at 80x24 a long agent question is read whole before its options, the warning always in view", async () => {
+    const llm = await FakeLLM.start()
+    onTestFinished(() => llm.close())
+    const c = await client(null)
+    onTestFinished(() => removeClient(c))
+    withModel(c, llm)
+    const question = `${Array.from({ length: 300 }, (_, i) => `word${i}`).join(" ")} QUESTION-END`
+    llm.script(
+      { tool_calls: [{ name: "ask_user", arguments: { question, options: ["login1", "login2"] } }] },
+      { content: "Stopping here." },
+    )
+    const t = terminal(c, { size: [80, 24] })
+    await t.see("Learn how to reach HQ from here? This uses the model.")
+    pickFirst(t)
+    await t.see("Read to the end")
+    const flat = () => t.screen().replace(/\s+/g, " ")
+    expect(flat()).toContain("Your answer goes to the model.")
+    expect(t.screen()).not.toContain("login2")
+    t.keys("End")
+    await t.see("QUESTION-END")
+    await t.see("login2")
+    expect(flat()).toContain("Your answer goes to the model.")
+    t.keys("Down")
+    t.keys("Enter")
+    await t.see("nothing was saved: Stopping here.")
+    expect(await t.exit()).toBe("exit=1")
+    expect(JSON.stringify(llm.requests()[1])).toContain("login2")
+    expect(pidsNaming(c.hq)).toEqual([])
+  }, 120_000)
+
+  test("in a window too small for the screen, learning asks on the plain terminal", async () => {
+    const llm = await FakeLLM.start()
+    onTestFinished(() => llm.close())
+    const c = await client(null)
+    onTestFinished(() => removeClient(c))
+    withModel(c, llm)
+    llm.script({ tool_calls: [{ name: "shell", arguments: { command: "true", why: "look" } }] })
+    const t = terminal(c, { size: [120, 12] })
+    await t.see("Learn how to reach HQ from here? This uses the model.")
+    pickFirst(t)
+    await t.see("Run this 1-line command?")
+    expect(t.alternate()).toBe(false)
+    expect(t.screen()).toContain("asking here instead")
+    t.keys("C-c")
+    expect(await t.exit(10_000)).toBe("exit=130")
     expect(pidsNaming(c.hq)).toEqual([])
   }, 120_000)
 
