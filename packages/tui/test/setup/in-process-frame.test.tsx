@@ -190,14 +190,17 @@ test("a screen that can't start rejects without starting the run", async () => {
   try {
     const { runInProcess } = await import("../../src/setup/run")
     let started = false
+    let interrupts = 0
     const task = runInProcess(
       async () => {
         started = true
       },
-      { interrupt: () => {}, echo: () => {}, out: { write: () => {} } },
+      { interrupt: () => interrupts++, echo: () => {}, out: { write: () => {} } },
     )
     expect(String(await task.catch((e) => e))).toBe("Error: no terminal")
-    expect(started).toBe(false)
+    await Bun.sleep(10)
+    // Nothing ran, so nothing is stopped: the visit says why the screen didn't start.
+    expect([started, interrupts]).toEqual([false, 0])
   } finally {
     mock.restore()
   }

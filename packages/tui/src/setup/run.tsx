@@ -135,8 +135,9 @@ export async function runInProcess<T>(
   const channel = inProcessChild(o)
   const out = o.out ?? process.stderr
   const screen = runSetupWith(channel.child, out, out, o.command, { title: o.title, exitSignals: IN_PROCESS_SIGNALS })
-  // A screen that fails once `work` runs must not leave it waiting for answers.
-  void screen.catch(() => channel.child.close())
+  let started = false
+  // A screen that fails once `work` runs must not leave it waiting for answers; one that never started stops nothing.
+  void screen.catch(() => started && channel.child.close())
   await Promise.race([channel.ready, screen])
   if (channel.closed) {
     // Gone (a signal) before it listened.
@@ -145,6 +146,7 @@ export async function runInProcess<T>(
     throw new Error("the screen closed before it showed")
   }
   let settled: { value: T } | { error: unknown }
+  started = true
   try {
     settled = { value: await work(channel.io) }
   } catch (error) {
