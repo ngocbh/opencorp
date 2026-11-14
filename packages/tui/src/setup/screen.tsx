@@ -1,4 +1,4 @@
-import { TextAttributes, type InputRenderable, type ScrollBoxRenderable } from "@opentui/core"
+import { type ColorInput, TextAttributes, type InputRenderable, type ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, Match, onCleanup, Show, Switch, type ParentProps } from "solid-js"
 import type { SetupAsk, SetupChoose, SetupSecret } from "@opencorp/protocol"
@@ -19,13 +19,22 @@ type Entry =
   | { kind: "result"; title: string; ok: boolean; lines: string[] }
   | { kind: "away"; why: string }
 
-/** A command or the files to save, shown whole in a pager the owner reads before they can approve it. */
+/** A command or the files to save, shown whole in a pager the owner reads before they can approve it; or a question
+ *  too long for its panel, read the same way before it can be answered. */
 type Card =
   | { kind: "command"; title: string; warning: string; lines: string[] }
   | { kind: "review"; title: string; files: File[]; risks: string[]; warning: string }
+  | { kind: "question"; text: string }
 
-/** The approval the pager gates, once its card has been read: the question and the two options. */
-type Gate = { question: string; options: string[]; default: string }
+/** The choice the pager gates, once its card has been read: the question, its options, and whether the owner may type
+ *  an answer of their own instead. */
+type Gate = { question: string; options: string[]; default: string; typed?: boolean }
+
+/** The smallest window the screen draws in: a card's title and a few of its rows, its position line, and a question
+ *  with two options and a hint, beside the header. Below it the screen says to make the window larger, and the
+ *  learning run asks on the plain terminal instead when it starts that small. */
+export const MIN_COLUMNS = 40
+export const MIN_ROWS = 14
 
 /** `text` with the user and password taken out of any URL in it, as the install's `redact` does. */
 function redact(text: string) {
@@ -53,9 +62,17 @@ const BEFORE_SAVING = "Before you save it:"
 const READ_ON = "Read to the end before you choose — PageDown, or End to jump there."
 /** Shown once the whole card has been read, above the choices. */
 const CHOOSE = "↑↓ choose · Enter"
+/** The last choice of a question that takes a typed answer; picking it opens a line to type on. */
+const TYPE_OWN = "Type my own answer"
+/** Under the line a typed answer goes on. */
+const TYPE_HINT = "Enter sends it · PageUp/PageDown scroll the question"
 
 /** A row of a card as the pager draws it, with the colour its source line asks for. */
 type Row = { text: string; tone: "title" | "warn" | "code" | "text" }
+
+/** Says the window is too small, and how large it must be. */
+const tooSmall = (width: number, height: number) =>
+  `Make the window larger to go on: at least ${MIN_COLUMNS} columns and ${MIN_ROWS} rows (it is ${width}x${height}).`
 
 /** `line` broken into pieces no wider than `width`, so a line wider than the screen wraps whole and never clips; an
  *  empty line stays one row. */
@@ -81,30 +98,35 @@ function wrap(line: string, width: number): string[] {
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 
-/** How many rows `text` takes word-wrapped to `width` cells (a word wider than a row breaks across rows). */
-function wordWrapRows(text: string, width: number): number {
-  let total = 0
+/** `text` word-wrapped into rows no wider than `width` cells: a paragraph's indentation kept, and a word wider than a
+ *  row broken across rows. */
+function wordWrap(text: string, width: number): string[] {
+  const rows: string[] = []
   for (const paragraph of text.split("\n")) {
-    let rows = 1
-    let used = 0
-    for (const word of paragraph.split(" ")) {
+    const indent = /^ */.exec(paragraph)![0].slice(0, Math.max(0, width - 1))
+    let row = indent
+    let cells = indent.length
+    let words = 0
+    for (const word of paragraph.trimStart().split(" ")) {
       const w = Bun.stringWidth(word)
-      if (used > 0 && used + 1 + w <= width) {
-        used += 1 + w
-        continue
+      if (words > 0 && cells + 1 + w <= width) {
+        row += " " + word
+        cells += 1 + w
+      } else if (words === 0 && cells + w <= width) {
+        row += word
+        cells += w
+      } else {
+        if (row !== "") rows.push(row)
+        const pieces = wrap(word, width)
+        rows.push(...pieces.slice(0, -1))
+        row = pieces.at(-1)!
+        cells = Bun.stringWidth(row)
       }
-      if (used === 0 && w <= width) {
-        used = w
-        continue
-      }
-      if (used > 0) rows++
-      const extra = Math.max(0, Math.ceil(w / width) - 1)
-      rows += extra
-      used = w - extra * width
+      words++
     }
-    total += rows
+    rows.push(row)
   }
-  return total
+  return rows
 }
 
 /** The screen's and the pager's side padding: the pager wraps its rows to what is left of the width once both are
@@ -115,6 +137,7 @@ const PAGER_PAD = 2
 /** The card as rows: its lines, tagged with a tone and wrapped to `width`, so the pager shows every character. */
 function cardRows(card: Card, width: number): Row[] {
   const w = Math.max(1, width)
+  if (card.kind === "question") return wordWrap(card.text, w).map((text) => ({ text, tone: "text" as const }))
   const out: Row[] = []
   const push = (tone: Row["tone"], text: string) => {
     for (const piece of wrap(text, w)) out.push({ text: piece, tone })
@@ -252,10 +275,45 @@ export function SetupScreen(props: {
     setCard(undefined)
   }
 
+  /** Whether the window is below the size the screen draws in. */
+  const small = () => dimensions().width < MIN_COLUMNS || dimensions().height < MIN_ROWS
+
+  /** What the transcript last said, if it ends with a line said to the owner: kept in view above a long question,
+   *  since it's the warning that the answer goes to the model. */
+  const lastSay = () => {
+    const last = entries().at(-1)
+    return last?.kind === "say" ? last.text : undefined
+  }
+
+  /** A pending question, as shown, that is too long for its panel, or would squeeze the line said before it out of
+   *  view: it is read in the pager instead, its answer under it. */
+  const longQuestion = createMemo(() => {
+    const p = pending()
+    if (!p || p.type === "secret" || card()) return undefined
+    const shown = oneLine(p.question)
+    const { width, height } = dimensions()
+    const textWidth = Math.max(1, width - 2 * SCREEN_PAD - QUESTION_INSET)
+    const rows = wordWrap(shown, textWidth).length
+    if (rows > Math.max(3, Math.floor(height / 4))) return shown
+    // The options it shows: a long list is a window of them (`maxOptions`).
+    const options =
+      p.type === "choose"
+        ? [...p.options, ...(p.typed ? [TYPE_OWN] : [])]
+            .slice(0, maxOptions(height))
+            .reduce((n, o, i) => n + wordWrap(`${i + 1}. ${o}`, textWidth).length, 0)
+        : 0
+    // The panel's padding, gaps and hint around the question and its options, or around the answer line.
+    const panel = p.type === "ask" ? rows + 4 : rows + options + 5
+    const say = lastSay()
+    const needed = say ? wordWrap(say, Math.max(1, width - 2 * SCREEN_PAD - 3)).length : 0
+    // The header and bottom padding take 4 rows, a position line 1, and one more is slack for the layout.
+    return height - 4 - panel - 2 < needed ? shown : undefined
+  })
+
   /** The viewport's height, scroll offset and content height, for the position line; shown only when the transcript
    *  overflows. Read after a render, when the layout is current. */
   const measure = () => {
-    if (!scroll || card()) return setTranscriptPos("")
+    if (!scroll || card() || longQuestion() || small()) return setTranscriptPos("")
     const view = scroll.viewport?.height ?? 0
     const total = scroll.scrollHeight
     if (view <= 0 || total <= view) return setTranscriptPos("")
@@ -272,8 +330,10 @@ export function SetupScreen(props: {
       setStopping(true)
       return
     }
+    // Below the minimum size nothing is drawn but the request to make the window larger.
+    if (small()) return
     // The pager handles its own keys; the transcript is hidden then.
-    if (card() || !scroll) return
+    if (card() || longQuestion() || !scroll) return
     const view = scroll.viewport?.height ?? 10
     const page = Math.max(1, view - 1)
     switch (key.name) {
@@ -322,7 +382,16 @@ export function SetupScreen(props: {
         </text>
       </box>
       <Show
-        when={card()}
+        when={!small()}
+        fallback={
+          <box paddingLeft={2}>
+            <text fg={theme.warning} wrapMode="word">
+              {tooSmall(dimensions().width, dimensions().height)}
+            </text>
+          </box>
+        }
+      >
+      <Switch
         fallback={
           <>
             <scrollbox ref={(r) => (scroll = r)} stickyScroll={true} stickyStart="bottom" flexGrow={1}>
@@ -424,15 +493,12 @@ export function SetupScreen(props: {
                         const at = options.indexOf(fallback)
                         // A typed default that isn't an option starts in the box, so Enter alone still takes it.
                         const draft = typed && at < 0 ? fallback : ""
+                        // A long one is read in the pager instead (`longQuestion`).
                         const shown = oneLine(choose().question)
-                        // A question too long for its share of the screen is drawn above the options in a bounded,
-                        // scrolling box, so it can't push them off; a short one stays where the card puts it.
-                        const size = questionSize(shown, dimensions())
-                        const long = size.rows > size.cap
                         const pages = [
                           {
                             header: shown,
-                            question: long ? "" : shown,
+                            question: shown,
                             options: options.map((o) => ({ label: o, value: o })),
                             multi: false,
                             typed,
@@ -444,19 +510,12 @@ export function SetupScreen(props: {
                             selected={at >= 0 ? at : draft ? options.length : 0}
                             draft={draft}
                             singleLine
-                            // Leaves the transcript about half the screen.
-                            maxOptions={Math.max(3, Math.floor(dimensions().height / 2) - 4)}
+                            maxOptions={maxOptions(dimensions().height)}
                             onSubmit={([a]) => {
                               const text = a.text.trim() || options[a.picked[0]]
                               answer(choose().question, text, redact(text))
                             }}
-                          >
-                            <Show when={long}>
-                              <box paddingLeft={1}>
-                                <BoundedQuestion text={shown} />
-                              </box>
-                            </Show>
-                          </QuestionView>
+                          />
                         )
                       }}
                     </Match>
@@ -480,35 +539,77 @@ export function SetupScreen(props: {
           </>
         }
       >
-        {(c) => {
-          const choose = () => (pending()?.type === "choose" ? (pending() as SetupChoose) : undefined)
-          const gate = (): Gate | undefined => {
-            const q = choose()
-            return q ? { question: q.question, options: q.options, default: q.default ?? "" } : undefined
-          }
-          return (
-            <CardPager
-              card={c()}
-              gate={gate()}
-              stopping={stopping()}
-              onSubmit={(value) => {
-                const q = gate()!
-                answer(q.question, value, redact(value))
-              }}
-            />
-          )
-        }}
+        <Match when={card()}>
+          {(c) => {
+            const choose = () => (pending()?.type === "choose" ? (pending() as SetupChoose) : undefined)
+            const gate = (): Gate | undefined => {
+              const q = choose()
+              return q ? { question: q.question, options: q.options, default: q.default ?? "" } : undefined
+            }
+            return (
+              <CardPager
+                card={c()}
+                gate={gate()}
+                stopping={stopping()}
+                onSubmit={(value) => {
+                  const q = gate()!
+                  answer(q.question, value, redact(value))
+                }}
+              />
+            )
+          }}
+        </Match>
+        <Match when={longQuestion()}>
+          {(text) => {
+            const question = () => pending() as SetupAsk | SetupChoose
+            const gate = (): Gate | undefined => {
+              const q = question()
+              return q.type === "choose"
+                ? { question: q.question, options: q.options, default: q.default ?? "", typed: q.typed === true }
+                : undefined
+            }
+            const input = () => {
+              const q = question()
+              if (q.type !== "ask") return undefined
+              const fallback = q.default ?? ""
+              return {
+                placeholder: fallback ? `Type your answer here (Enter for ${redact(fallback)})` : "Type your answer here",
+                // The install strips the answer and takes the default; the line shown agrees.
+                onSubmit: (t: string) => answer(q.question, t, redact(t.trim() || fallback)),
+              }
+            }
+            return (
+              <CardPager
+                card={{ kind: "question", text: text() }}
+                note={lastSay()}
+                gate={gate()}
+                input={input()}
+                stopping={stopping()}
+                onSubmit={(value) => answer(question().question, value, redact(value))}
+              />
+            )
+          }}
+        </Match>
+      </Switch>
       </Show>
     </box>
   )
 }
 
 /**
- * A card shown whole: its rows in a scrolling viewport, a position line, and, once the owner has read to the last
- * row, the approval's choices (default "Don't …", and a single digit never submits). Until then it says to read on,
- * and PageDown/Space/the arrows/Home/End move through it.
+ * A card shown whole: `note` pinned above it, its rows in a scrolling viewport, a position line, and, once the owner
+ * has read to the last row, the choices (an approval's default is "Don't …"; a question's may end with typing an
+ * answer of one's own; a single digit never submits). Until then it says to read on, and PageDown/Space/the arrows/
+ * Home/End move through it. With `input` instead, an answer line is always under it, and the page keys scroll.
  */
-function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit: (value: string) => void }) {
+function CardPager(props: {
+  card: Card
+  gate?: Gate
+  input?: { placeholder: string; onSubmit: (text: string) => void }
+  note?: string
+  stopping: boolean
+  onSubmit: (value: string) => void
+}) {
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
   const [rawTop, setTop] = createSignal(0)
@@ -516,40 +617,55 @@ function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit
   // before the question came, in a taller viewport, don't count.
   const [readThrough, setReadThrough] = createSignal(0)
   const [sel, setSel] = createSignal(0)
+  // Whether the owner picked typing an answer of their own, so the answer line has the keys.
+  const [typing, setTyping] = createSignal(false)
 
   // The width the rows are wrapped to and drawn in: what the screen's and the pager's padding leave.
   const width = () => Math.max(1, dimensions().width - 2 * SCREEN_PAD - 2 * PAGER_PAD)
   const rows = createMemo(() => cardRows(props.card, width()))
-  // The footer, wrapped to the same width, so its height is known exactly. With a question it holds whichever is
-  // taller of the read-on hint and the choices, so the viewport doesn't change size when the choices appear.
+  const noteRows = createMemo(() => (props.note ? wordWrap(props.note, width()) : []))
+  // The choices: the gate's options, then typing one's own when it takes a typed answer.
+  const options = createMemo(() => {
+    const g = props.gate
+    return g ? [...g.options, ...(g.typed ? [TYPE_OWN] : [])] : []
+  })
+  // The footer, wrapped to the same width, so its height is known exactly. It holds whichever is tallest of the
+  // read-on hint, the choices and the typing line, so the viewport doesn't change size when one replaces another.
   const readOn = createMemo(() => wrap(READ_ON, width()))
   const choices = createMemo(() => {
     const g = props.gate
     if (!g) return undefined
     return {
-      question: wrap(g.question, width()),
-      options: g.options.map((option, i) => ({ i, rows: wrap(`${"  "}${option}`, width()) })),
+      // A question card is its own question.
+      question: props.card.kind === "question" ? [] : wrap(g.question, width()),
+      options: options().map((option, i) => ({ i, rows: wrap(`  ${option}`, width()) })),
       hint: wrap(CHOOSE, width()),
     }
   })
+  const typeHint = createMemo(() => wrap(TYPE_HINT, width()))
   const footerRows = createMemo(() => {
+    if (props.input) return 1 + typeHint().length
     const c = choices()
     if (!c) return 1
     const chosen = c.question.length + c.options.reduce((n, o) => n + o.rows.length, 0) + c.hint.length
-    return Math.max(readOn().length, chosen)
+    return Math.max(readOn().length, chosen, props.gate?.typed ? 1 + typeHint().length : 0)
   })
-  // The header (its padding, title and gap) and the screen's bottom padding take 4 rows; the position line 1.
-  const view = createMemo(() => Math.max(3, dimensions().height - 4 - 1 - footerRows()))
+  // The header (its padding, title and gap) and the screen's bottom padding take 4 rows; the position line 1. No
+  // floor that could exceed what is drawn: the screen's minimum size leaves a few rows here.
+  const view = createMemo(() =>
+    Math.max(1, dimensions().height - 4 - noteRows().length - 1 - footerRows()),
+  )
   const maxTop = createMemo(() => Math.max(0, rows().length - view()))
   const clamp = (t: number) => Math.max(0, Math.min(maxTop(), t))
   const top = () => clamp(rawTop())
 
-  // The default is the question's (the office sends "Don't …" second), so a plain Enter never approves.
+  // An approval's default is the question's (the office sends "Don't …" second), so a plain Enter never approves; a
+  // question's is its default option, or the first.
   createEffect(() => {
     const g = props.gate
     if (!g) return
     const at = g.options.indexOf(g.default)
-    setSel(at >= 0 ? at : g.options.length - 1)
+    setSel(at >= 0 ? at : props.card.kind === "question" ? 0 : g.options.length - 1)
   })
   // Recomputed on every layout change. Before the question there's no final layout, so nothing counts; when the
   // rows are wrapped anew (a resize), only what is on screen now counts, so a card made longer is read again.
@@ -580,8 +696,6 @@ function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit
     if (key.ctrl || key.meta) return // Ctrl-C is the screen's.
     if (props.stopping) return
     const page = Math.max(1, view() - 1)
-    const g = props.gate
-    const choosing = seen() && g !== undefined
     switch (key.name) {
       case "pageup":
         return void setTop(clamp(top() - page))
@@ -592,7 +706,10 @@ function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit
       case "end":
         return void setTop(maxTop())
     }
-    if (!choosing) {
+    // An answer line has every other key.
+    if (props.input || typing()) return
+    const g = props.gate
+    if (!seen() || g === undefined) {
       switch (key.name) {
         case "up":
         case "k":
@@ -612,18 +729,35 @@ function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit
         return void setSel((s) => Math.max(0, s - 1))
       case "down":
       case "j":
-        return void setSel((s) => Math.min(g!.options.length - 1, s + 1))
+        return void setSel((s) => Math.min(options().length - 1, s + 1))
       case "return":
       case "enter":
-        return void props.onSubmit(g!.options[sel()]!)
-      // A digit never submits: approving is a deliberate choice on a selected option.
+        // Opened once this Enter is handled, or the line it opens would take the same Enter and send nothing.
+        if (g.typed && sel() === g.options.length) return void queueMicrotask(() => setTyping(true))
+        return void props.onSubmit(g.options[sel()]!)
+      // A digit never submits: choosing is deliberate, on a selected option.
     }
   })
 
   const tone = (t: Row["tone"]) => (t === "warn" ? theme.warning : theme.text)
+  /** Rows drawn as they are, each no wider than the pager. */
+  const plain = (lines: string[], fg: ColorInput) => (
+    <For each={lines}>
+      {(row) => (
+        <text fg={fg} wrapMode="none">
+          {row === "" ? " " : row}
+        </text>
+      )}
+    </For>
+  )
 
   return (
     <box flexGrow={1} flexDirection="column" paddingLeft={PAGER_PAD} paddingRight={PAGER_PAD}>
+      <Show when={noteRows().length > 0}>
+        <box height={noteRows().length} flexShrink={0} flexDirection="column">
+          {plain(noteRows(), theme.warning)}
+        </box>
+      </Show>
       <box height={view()} flexShrink={0} flexDirection="column">
         <For each={visible()}>
           {(row) => (
@@ -638,54 +772,53 @@ function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit
           {positionLine()}
         </text>
       </box>
-      <box flexShrink={0} height={footerRows()}>
+      <box flexShrink={0} height={footerRows()} flexDirection="column">
         <Show when={!props.stopping} fallback={<Spinner>Stopping…</Spinner>}>
-          <Show when={choices()} fallback={<Spinner>Working…</Spinner>}>
-            {(c) => (
-              <Show
-                when={seen()}
-                fallback={
-                  <For each={readOn()}>
-                    {(row) => (
-                      <text fg={theme.accent} wrapMode="none">
-                        {row}
-                      </text>
+          <Switch fallback={<Spinner>Working…</Spinner>}>
+            <Match when={props.input}>
+              {(input) => (
+                <>
+                  <AnswerInput placeholder={input().placeholder} background={theme.background} onSubmit={input().onSubmit} />
+                  {plain(typeHint(), theme.textMuted)}
+                </>
+              )}
+            </Match>
+            <Match when={typing() && props.gate}>
+              {(g) => (
+                <>
+                  <AnswerInput
+                    placeholder="Type your answer here"
+                    background={theme.background}
+                    onSubmit={(text) => props.onSubmit(text.trim() || g().default)}
+                  />
+                  {plain(typeHint(), theme.textMuted)}
+                </>
+              )}
+            </Match>
+            <Match when={choices()}>
+              {(c) => (
+                <Show when={seen()} fallback={plain(readOn(), theme.accent)}>
+                  {plain(c().question, theme.text)}
+                  <For each={c().options}>
+                    {(option) => (
+                      <For each={option.rows}>
+                        {(row, r) => (
+                          <text
+                            fg={option.i === sel() ? theme.text : theme.textMuted}
+                            attributes={option.i === sel() ? TextAttributes.BOLD : undefined}
+                            wrapMode="none"
+                          >
+                            {r() === 0 && option.i === sel() ? `❯ ${row.slice(2)}` : row}
+                          </text>
+                        )}
+                      </For>
                     )}
                   </For>
-                }
-              >
-                <For each={c().question}>
-                  {(row) => (
-                    <text fg={theme.text} wrapMode="none">
-                      {row}
-                    </text>
-                  )}
-                </For>
-                <For each={c().options}>
-                  {(option) => (
-                    <For each={option.rows}>
-                      {(row, r) => (
-                        <text
-                          fg={option.i === sel() ? theme.text : theme.textMuted}
-                          attributes={option.i === sel() ? TextAttributes.BOLD : undefined}
-                          wrapMode="none"
-                        >
-                          {r() === 0 && option.i === sel() ? `❯ ${row.slice(2)}` : row}
-                        </text>
-                      )}
-                    </For>
-                  )}
-                </For>
-                <For each={c().hint}>
-                  {(row) => (
-                    <text fg={theme.textMuted} wrapMode="none">
-                      {row}
-                    </text>
-                  )}
-                </For>
-              </Show>
-            )}
-          </Show>
+                  {plain(c().hint, theme.textMuted)}
+                </Show>
+              )}
+            </Match>
+          </Switch>
         </Show>
       </box>
     </box>
@@ -715,33 +848,12 @@ export function attachResize(renderer: unknown): void {
   h()
 }
 
-/** The columns a question panel's own chrome takes beside the screen's padding: its bar, its padding, and a column
- *  for a scrollbar. */
-const QUESTION_INSET = 7
+/** The columns a question panel's own chrome takes beside the screen's padding: its bar and its padding. */
+const QUESTION_INSET = 6
 
-/** How many rows `text` takes in a question panel on a screen of `size`, and the most a question may take there. */
-function questionSize(text: string, size: { width: number; height: number }) {
-  const width = Math.max(1, size.width - 2 * SCREEN_PAD - QUESTION_INSET)
-  return { rows: wordWrapRows(text, width), cap: Math.max(3, Math.floor(size.height / 3)) }
-}
-
-/** A question in a box only as tall as it needs, but at most a third of the screen; a longer one scrolls inside it,
- *  so the answer box or the choices below it, and the transcript above, stay on screen. */
-function BoundedQuestion(props: { text: string }) {
-  const { theme } = useTheme()
-  const dimensions = useTerminalDimensions()
-  const height = () => {
-    const { rows, cap } = questionSize(props.text, dimensions())
-    return Math.max(1, Math.min(rows, cap))
-  }
-  return (
-    <scrollbox scrollY={true} stickyScroll={true} stickyStart="top" height={height()} flexShrink={0}>
-      <text fg={theme.text} wrapMode="word">
-        {props.text}
-      </text>
-    </scrollbox>
-  )
-}
+/** How many options a choice shows at once on a screen `height` rows tall: about half the screen's rows, leaving the
+ *  transcript the rest. */
+const maxOptions = (height: number) => Math.max(3, Math.floor(height / 2) - 4)
 
 /** The question card's look: a panel with an accent bar on its left. */
 function Panel(props: ParentProps) {
@@ -762,9 +874,28 @@ function Panel(props: ParentProps) {
 
 /**
  * `question` in a panel above a line to type the answer on; Enter hands the text to `onSubmit`; Ctrl+C or Esc
- * clears it. A long question scrolls inside a bounded box, so the answer line is always on screen.
+ * clears it. A question too long for the panel is read in the pager instead.
  */
 function Ask(props: { question: string; default: string; onSubmit: (text: string) => void }) {
+  const { theme } = useTheme()
+  return (
+    <Panel>
+      <text fg={theme.text} wrapMode="word">
+        {props.question}
+      </text>
+      <AnswerInput
+        placeholder={
+          props.default ? `Type your answer here (Enter for ${redact(props.default)})` : "Type your answer here"
+        }
+        background={theme.backgroundPanel}
+        onSubmit={props.onSubmit}
+      />
+    </Panel>
+  )
+}
+
+/** A line to type an answer on, focused; Enter hands the text to `onSubmit`; Ctrl+C or Esc clears it first. */
+function AnswerInput(props: { placeholder: string; background: ColorInput; onSubmit: (text: string) => void }) {
   const { theme } = useTheme()
   let input: InputRenderable | undefined
   const tuiConfig = useTuiConfig()
@@ -776,22 +907,17 @@ function Ask(props: { question: string; default: string; onSubmit: (text: string
     }),
   }))
   return (
-    <Panel>
-      <BoundedQuestion text={props.question} />
-      <input
-        focused
-        ref={(r) => (input = r)}
-        placeholder={
-          props.default ? `Type your answer here (Enter for ${redact(props.default)})` : "Type your answer here"
-        }
-        placeholderColor={theme.textMuted}
-        textColor={theme.text}
-        focusedTextColor={theme.text}
-        backgroundColor={theme.backgroundPanel}
-        focusedBackgroundColor={theme.backgroundPanel}
-        cursorColor={theme.primary}
-        onSubmit={() => props.onSubmit(input?.value ?? "")}
-      />
-    </Panel>
+    <input
+      focused
+      ref={(r) => (input = r)}
+      placeholder={props.placeholder}
+      placeholderColor={theme.textMuted}
+      textColor={theme.text}
+      focusedTextColor={theme.text}
+      backgroundColor={props.background}
+      focusedBackgroundColor={props.background}
+      cursorColor={theme.primary}
+      onSubmit={() => props.onSubmit(input?.value ?? "")}
+    />
   )
 }

@@ -231,3 +231,16 @@ test("a screen that can't start rejects without starting the run", async () => {
     mock.restore()
   }
 })
+
+test("a window smaller than the screen's minimum rejects without starting the run, so the visit asks plainly", async () => {
+  const { runInProcess, MIN_COLUMNS, MIN_ROWS } = await import("../../src/setup/run")
+  let started = false
+  const task = runInProcess(
+    async () => {
+      started = true
+    },
+    { interrupt: () => {}, echo: () => {}, out: { write: () => {} }, size: () => ({ columns: MIN_COLUMNS, rows: MIN_ROWS - 1 }) },
+  )
+  expect(String(await task.catch((e) => e))).toContain(`smaller than ${MIN_COLUMNS}x${MIN_ROWS}`)
+  expect(started).toBe(false)
+})

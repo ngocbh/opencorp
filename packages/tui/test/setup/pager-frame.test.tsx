@@ -282,25 +282,98 @@ test("a resize that makes a read card longer hides its choices until the new end
   }
 })
 
-test("a long prose question with options keeps its options and the 'goes to the model' line on screen", async () => {
+const TO_MODEL =
+  "Your answer goes to the model. Type passwords, passphrases and codes only at ssh's own prompts, never here."
+/** About 4000 characters of prose with single spaces, so no marker shortens it, ending in `QUESTION-END`. */
+const PROSE = `The agent asks: ${Array.from({ length: 500 }, (_, i) => `word${i}`).join(" ")} QUESTION-END`
+
+test("at 80x24 a long question with options scrolls, keeps 'goes to the model' in view, and gates its options", async () => {
   const child = new FakeChild()
-  const app = await bootSetup(child)
-  const toModel = "Your answer goes to the model. Type passwords, passphrases and codes only at ssh's own prompts, never here."
+  const app = await bootSetup(child, "opencorp hq", { width: 80, height: 24 })
   try {
-    child.push({ type: "say", text: toModel })
-    // About 4000 characters of prose with single spaces, so no marker shortens it.
-    const prose = Array.from({ length: 500 }, (_, i) => `word${i}`).join(" ")
+    child.push({ type: "say", text: TO_MODEL })
+    child.push({ type: "choose", question: PROSE, options: ["login1", "login2"], default: "", typed: true })
+    // Its start, the whole warning, and the read-on hint; not its end, and not its options yet.
+    let f = await app.until((f) => f.includes("Read to the end"))
+    expect(f).toContain("The agent asks: word0")
+    expect(f.replace(/\s+/g, " ")).toContain(TO_MODEL)
+    expect(f).not.toContain("QUESTION-END")
+    expect(f).not.toContain("login1")
+    // The page keys scroll the question; the warning stays put.
+    app.input.pressKey(PAGE_DOWN)
+    f = await app.until((f) => !f.includes("word0 "))
+    expect(f.replace(/\s+/g, " ")).toContain(TO_MODEL)
+    app.input.pressKey(END)
+    f = await app.until((f) => f.includes("QUESTION-END") && f.includes("login2"))
+    expect(f.replace(/\s+/g, " ")).toContain(TO_MODEL)
+    // Down then Enter picks the second option.
+    app.input.pressArrow("down")
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["login2"])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a long question with options takes a typed answer once it is read", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp hq", { width: 80, height: 24 })
+  try {
+    child.push({ type: "say", text: TO_MODEL })
+    child.push({ type: "choose", question: PROSE, options: ["login1", "login2"], default: "", typed: true })
+    await app.until((f) => f.includes("Read to the end"))
+    app.input.pressKey(END)
+    await app.until((f) => f.includes("Type my own answer"))
+    app.input.pressArrow("down")
+    app.input.pressArrow("down")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Type your answer here"))
+    await app.input.typeText("login7")
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["login7"])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a long text question scrolls with the page keys, its answer line and the warning always in view", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp hq", { width: 80, height: 24 })
+  try {
+    child.push({ type: "say", text: TO_MODEL })
+    child.push({ type: "ask", question: PROSE, default: "" })
+    let f = await app.until((f) => f.includes("Type your answer here"))
+    expect(f.replace(/\s+/g, " ")).toContain(TO_MODEL)
+    expect(f).not.toContain("QUESTION-END")
+    app.input.pressKey(END)
+    f = await app.until((f) => f.includes("QUESTION-END"))
+    expect(f).toContain("Type your answer here")
+    expect(f.replace(/\s+/g, " ")).toContain(TO_MODEL)
+    await app.input.typeText("node1")
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["node1"])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("at 80x24 a short question with several options still leaves 'goes to the model' whole", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp hq", { width: 80, height: 24 })
+  try {
+    child.push({ type: "say", text: TO_MODEL })
     child.push({
       type: "choose",
-      question: `The agent asks: ${prose} TAIL`,
-      options: ["login1", "login2"],
+      question: "The agent asks: which login node do you use, and is it the one your cluster's docs name?",
+      options: ["login1", "login2", "login3", "login4", "login5"],
       default: "",
       typed: true,
     })
-    const f = await app.until((f) => f.includes("login2"))
-    expect(f).toContain("The agent asks: word0")
-    expect(f).toContain("login1")
-    expect(f).toContain("answer goes to the model")
+    const f = await app.until((f) => f.includes("login5"))
+    expect(f.replace(/\s+/g, " ")).toContain(TO_MODEL)
   } finally {
     await app.stop()
   }
@@ -335,6 +408,32 @@ test("a question's indentation up to 16 spaces is drawn as is; deeper indentatio
     child.push({ type: "ask", question: " ".repeat(17) + "deep;" + "\t" + "x", default: "" })
     f = await app.until((f) => f.includes("deep;"))
     expect(f).toContain("<17 spaces>deep;<TAB>x")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a window below the minimum hides every choice and says to make it larger; back, the card is gated again", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp hq")
+  try {
+    const lines = Array.from({ length: 31 }, (_, i) => `  ${i + 1}  echo row ${i + 1}`)
+    for (const p of command(lines, "Run this 31-line command?")) child.push(p)
+    await app.until((f) => f.includes("Read to the end"))
+    app.input.pressKey(END)
+    await app.until((f) => f.includes("❯ Don't run it"))
+    app.setup.resize(100, 8)
+    let f = await app.until((f) => f.includes("Make the window larger"))
+    expect(f).not.toContain("Don't run it")
+    // No key reaches a choice meanwhile.
+    app.input.pressEnter()
+    await Bun.sleep(60)
+    expect(child.answers).toEqual([])
+    app.setup.resize(100, 30)
+    f = await app.until((f) => f.includes("Read to the end"))
+    expect(f).not.toContain("Don't run it")
+    app.input.pressKey(END)
+    await app.until((f) => f.includes("❯ Don't run it"))
   } finally {
     await app.stop()
   }

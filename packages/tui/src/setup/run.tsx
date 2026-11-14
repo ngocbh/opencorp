@@ -11,9 +11,10 @@ import { OpenCorpKeymapProvider, registerOpenCorpBaseKeymap, type OpenTuiKeymap 
 import { destroyRenderer } from "../util/renderer"
 import { spawnSetup, type SetupChild } from "./child"
 import { inProcessChild, type ScreenIo } from "./in_process"
-import { SetupScreen } from "./screen"
+import { MIN_COLUMNS, MIN_ROWS, SetupScreen } from "./screen"
 
 export type { ScreenIo } from "./in_process"
+export { MIN_COLUMNS, MIN_ROWS } from "./screen"
 
 /** Somewhere to print the transcript and stderr once the screen is gone. */
 export interface Writer {
@@ -148,12 +149,24 @@ export const IN_PROCESS_SIGNALS: NodeJS.Signals[] = [
  * screen calls `interrupt` and ends `io.answers`. Output given to `io.echo` shows on the screen, or goes to `echo`
  * while a child has the terminal. `work` starts once the screen listens; this resolves or rejects as it does, once
  * the screen is gone and its transcript is printed on `out`. Rejects without starting `work` when the screen can't
- * start.
+ * start, the window being smaller than `MIN_COLUMNS` x `MIN_ROWS` included.
  */
 export async function runInProcess<T>(
   work: (io: ScreenIo) => Promise<T>,
-  o: { interrupt: () => void; echo: (text: string) => void; out?: Writer; command?: string; title?: string },
+  o: {
+    interrupt: () => void
+    echo: (text: string) => void
+    out?: Writer
+    command?: string
+    title?: string
+    /** The terminal's size now (stdout's by default). */
+    size?: () => { columns?: number; rows?: number }
+  },
 ): Promise<T> {
+  // Too small for the screen to show a card and its choices: the caller asks on the plain terminal instead.
+  const { columns, rows } = o.size?.() ?? { columns: process.stdout.columns, rows: process.stdout.rows }
+  if ((columns !== undefined && columns < MIN_COLUMNS) || (rows !== undefined && rows < MIN_ROWS))
+    throw new Error(`the window (${columns}x${rows}) is smaller than ${MIN_COLUMNS}x${MIN_ROWS}`)
   const channel = inProcessChild(o)
   const out = o.out ?? process.stderr
   // The renderer handles no signals; the run does, so SIGTERM or SIGHUP still stops it (and prints the transcript
