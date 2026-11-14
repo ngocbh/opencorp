@@ -61,8 +61,9 @@ export class Learning {
    *  `why` says what runs. On the plain terminal it already has it, so this only runs it. */
   async handOver<T>(why: string, run: () => Promise<T>): Promise<T> {
     const { prompter } = this.asking
-    await prompter.handOver(why)
     try {
+      // Taken back even when the hand-over fails: the screen may have stepped aside before its answers ended.
+      await prompter.handOver(why)
       return await run()
     } finally {
       prompter.takeBack()
