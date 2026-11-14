@@ -6,11 +6,20 @@ const ODD = /[^\x20-\x7e\t]/u
 
 const escape = (c: string) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}>`
 
-/** `line` with each character outside printable ASCII and tab shown as `<U+XXXX>`. A no-break or ideographic space
- *  looks like a blank but isn't shell whitespace, so `echo jobs<U+00A0># ; touch x` would read as a comment and run
- *  `touch`; an invisible or bidi character can make text read other than it runs. */
+/** How many spaces in a row are shown as a marker rather than drawn: fewer are ordinary spacing between words, more
+ *  could push the rest of a line out of view. */
+export const SPACE_RUN = 4
+
+/** `line` with each character outside printable ASCII and tab shown as `<U+XXXX>`, every tab as `<TAB>`, and each run
+ *  of `SPACE_RUN` or more spaces as `<N spaces>`. A no-break or ideographic space looks like a blank but isn't shell
+ *  whitespace, so `echo jobs<U+00A0># ; touch x` would read as a comment and run `touch`; an invisible or bidi
+ *  character can make text read other than it runs; and a long run of tabs or spaces, drawn as is, could push the
+ *  dangerous part of a line past the edge of the screen. */
 export function shownCode(line: string): string {
-  return line.replace(new RegExp(ODD.source, "gu"), escape)
+  return line
+    .replace(new RegExp(ODD.source, "gu"), escape)
+    .replace(/\t/g, "<TAB>")
+    .replace(new RegExp(` {${SPACE_RUN},}`, "g"), (run) => `<${run.length} spaces>`)
 }
 
 /** The first character of `text` other than printable ASCII, tab and newline, as `U+XXXX at line L, column C`, or
