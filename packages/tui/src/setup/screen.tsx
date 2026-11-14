@@ -1,6 +1,6 @@
-import { TextAttributes, type InputRenderable } from "@opentui/core"
+import { TextAttributes, type InputRenderable, type ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { createSignal, For, Match, Show, Switch, type ParentProps } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Match, onCleanup, Show, Switch, type ParentProps } from "solid-js"
 import type { SetupAsk, SetupChoose, SetupSecret } from "@opencorp/protocol"
 import { Spinner } from "../component/spinner"
 import { useTuiConfig } from "../config"
@@ -16,10 +16,16 @@ type Entry =
   | { kind: "step"; counter: string; title: string; why: string }
   | { kind: "say"; text: string }
   | { kind: "answer"; question: string; shown: string }
-  | { kind: "command"; title: string; warning: string; lines: string[] }
   | { kind: "result"; title: string; ok: boolean; lines: string[] }
-  | { kind: "review"; title: string; files: File[]; risks: string[]; warning: string }
   | { kind: "away"; why: string }
+
+/** A command or the files to save, shown whole in a pager the owner reads before they can approve it. */
+type Card =
+  | { kind: "command"; title: string; warning: string; lines: string[] }
+  | { kind: "review"; title: string; files: File[]; risks: string[]; warning: string }
+
+/** The approval the pager gates, once its card has been read: the question and the two options. */
+type Gate = { question: string; options: string[]; default: string }
 
 /** `text` with the user and password taken out of any URL in it, as the install's `redact` does. */
 function redact(text: string) {
@@ -28,13 +34,55 @@ function redact(text: string) {
 
 /** The heading above a review's risks. */
 const BEFORE_SAVING = "Before you save it:"
+/** Shown while a card is still taller than the pager: the owner reads to the end before the choices appear. */
+const READ_ON = "Read to the end before you choose — PageDown, or End to jump there."
+/** Shown once the whole card has been read, above the choices. */
+const CHOOSE = "↑↓ choose · Enter"
+
+/** A row of a card as the pager draws it, with the colour its source line asks for. */
+type Row = { text: string; tone: "title" | "warn" | "code" | "text" }
+
+/** `line` broken into pieces no wider than `width`, so a line wider than the screen wraps whole and never clips; an
+ *  empty line stays one row. */
+function wrap(line: string, width: number): string[] {
+  if (line === "") return [""]
+  const rows: string[] = []
+  for (let i = 0; i < line.length; i += width) rows.push(line.slice(i, i + width))
+  return rows
+}
+
+/** The card as rows: its lines, tagged with a tone and wrapped to `width`, so the pager shows every character. */
+function cardRows(card: Card, width: number): Row[] {
+  const w = Math.max(1, width)
+  const out: Row[] = []
+  const push = (tone: Row["tone"], text: string) => {
+    for (const piece of wrap(text, w)) out.push({ text: piece, tone })
+  }
+  push("title", card.title)
+  if (card.kind === "command") {
+    if (card.warning) push("warn", card.warning)
+    for (const line of card.lines) push("code", line)
+  } else {
+    for (const file of card.files) {
+      push("text", `${file.name}:`)
+      for (const line of file.lines) push("code", line)
+    }
+    if (card.risks.length > 0) {
+      push("text", BEFORE_SAVING)
+      for (const risk of card.risks) push("text", `  - ${risk}`)
+    }
+    if (card.warning) push("warn", card.warning)
+  }
+  return out
+}
 
 /**
- * The install's steps and answers, its pending question in a panel (choices on the question card), and a spinner
- * while it works; Ctrl-C asks it to stop. A command, its result and files to review show as blocks; when the child
- * hands the terminal over, the screen steps aside, `notice` says why on the plain terminal, and the child is told
- * it has it, until it takes the terminal back. The header reads `title` (default "Setting up OpenCorp") and
- * `command`.
+ * The install's steps and answers, its pending question in a panel, and a spinner while it works; Ctrl-C asks it to
+ * stop. A command and the files to save are shown in a pager, whose choices appear only once the owner has read to
+ * the card's last line, so what they approve is what runs. When the child hands the terminal over, the screen steps
+ * aside, `notice` says why on the plain terminal, and the child is told it has it, until it takes the terminal back.
+ * The header reads `title` (default "Setting up OpenCorp") and `command`. The transcript scrolls with
+ * PageUp/PageDown, the arrows and Home/End.
  */
 export function SetupScreen(props: {
   child: SetupChild
@@ -48,13 +96,19 @@ export function SetupScreen(props: {
   const dimensions = useTerminalDimensions()
   const [entries, setEntries] = createSignal<Entry[]>([])
   const [pending, setPending] = createSignal<SetupAsk | SetupChoose | SetupSecret>()
+  const [card, setCard] = createSignal<Card>()
   const [stopping, setStopping] = createSignal(false)
+  const [transcriptPos, setTranscriptPos] = createSignal("")
+  let scroll: ScrollBoxRenderable | undefined
 
   /** Shows `entry` now; `printed` are its lines in the transcript printed once the screen is gone. */
   const add = (entry: Entry, ...printed: string[]) => {
     props.lines.push(...printed)
     setEntries((all) => [...all, entry])
   }
+
+  /** A command or the files to save show in the pager, not the transcript; the printed transcript keeps them. */
+  const printCard = (...printed: string[]) => props.lines.push(...printed)
 
   props.child.onPrompt((prompt) => {
     if (prompt.type === "step") {
@@ -63,20 +117,16 @@ export function SetupScreen(props: {
     } else if (prompt.type === "say") add({ kind: "say", text: prompt.text }, prompt.text)
     else if (prompt.type === "command") {
       const warning = prompt.warning ?? ""
-      add(
-        { kind: "command", title: prompt.title, warning, lines: prompt.lines },
-        prompt.title,
-        ...(warning ? [warning] : []),
-        ...prompt.lines,
-      )
+      setCard({ kind: "command", title: prompt.title, warning, lines: prompt.lines })
+      printCard(prompt.title, ...(warning ? [warning] : []), ...prompt.lines)
     } else if (prompt.type === "result")
       // Its output reached the terminal as it came, so the transcript keeps only how it ended.
       add({ kind: "result", title: prompt.title, ok: prompt.ok, lines: prompt.lines ?? [] }, prompt.title)
     else if (prompt.type === "review") {
       const risks = prompt.risks ?? []
       const warning = prompt.warning ?? ""
-      add(
-        { kind: "review", title: prompt.title, files: prompt.files, risks, warning },
+      setCard({ kind: "review", title: prompt.title, files: prompt.files, risks, warning })
+      printCard(
         prompt.title,
         ...prompt.files.flatMap((f) => [`${f.name}:`, ...f.lines]),
         ...(risks.length > 0 ? [BEFORE_SAVING, ...risks.map((r) => `  - ${r}`)] : []),
@@ -100,17 +150,64 @@ export function SetupScreen(props: {
     } else setPending(prompt)
   })
 
-  /** Sends `text` as the answer, shows the question answered with `shown`, and waits for the next prompt. */
+  /** Sends `text` as the answer, shows the question answered with `shown`, clears any card, waits for the next. */
   const answer = (question: string, text: string, shown: string) => {
     props.child.answer(text)
     add({ kind: "answer", question, shown }, `${question}: ${shown}`)
     setPending(undefined)
+    setCard(undefined)
   }
 
+  /** The viewport's height, scroll offset and content height, for the position line; shown only when the transcript
+   *  overflows. Read after a render, when the layout is current. */
+  const measure = () => {
+    if (!scroll || card()) return setTranscriptPos("")
+    const view = scroll.viewport?.height ?? 0
+    const total = scroll.scrollHeight
+    if (view <= 0 || total <= view) return setTranscriptPos("")
+    const top = Math.round(scroll.scrollTop)
+    setTranscriptPos(`lines ${top + 1}–${Math.min(top + view, total)} of ${total}`)
+  }
+  // After every render the scrollbox's measurements are current; the signal only changes when the position does.
+  renderer.on("frame", measure)
+  onCleanup(() => renderer.off("frame", measure))
+
   useKeyboard((key) => {
-    if (!key.ctrl || key.name !== "c") return
-    props.child.interrupt()
-    setStopping(true)
+    if (key.ctrl && key.name === "c") {
+      props.child.interrupt()
+      setStopping(true)
+      return
+    }
+    // The pager handles its own keys; the transcript is hidden then.
+    if (card() || !scroll) return
+    const view = scroll.viewport?.height ?? 10
+    const page = Math.max(1, view - 1)
+    switch (key.name) {
+      case "pageup":
+        scroll.scrollBy(-page)
+        break
+      case "pagedown":
+        scroll.scrollBy(page)
+        break
+      case "home":
+        scroll.scrollTo(0)
+        break
+      case "end":
+        scroll.scrollTo(scroll.scrollHeight)
+        break
+      // The arrows scroll only when no question is open, so they still move a choice or the cursor.
+      case "up":
+        if (pending()) return
+        scroll.scrollBy(-1)
+        break
+      case "down":
+        if (pending()) return
+        scroll.scrollBy(1)
+        break
+      default:
+        return
+    }
+    measure()
   })
 
   return (
@@ -130,210 +227,294 @@ export function SetupScreen(props: {
           <span style={{ fg: theme.textMuted }}>{props.command ? ` · ${props.command}` : ""}</span>
         </text>
       </box>
-      <scrollbox stickyScroll={true} stickyStart="bottom" flexGrow={1}>
-        <For each={entries()}>
-          {(entry, i) => (
-            <Switch>
-              <Match when={entry.kind === "step" && entry}>
-                {(step) => (
-                  <box marginTop={i() === 0 ? 0 : 1}>
-                    <box flexDirection="row">
-                      <text fg={theme.textMuted}>{`${step().counter} · `}</text>
-                      <text fg={theme.accent} attributes={TextAttributes.BOLD}>
-                        {step().title}
-                      </text>
-                    </box>
-                    <text fg={theme.textMuted} wrapMode="word">
-                      {step().why}
-                    </text>
-                  </box>
-                )}
-              </Match>
-              <Match when={entry.kind === "say" && entry}>
-                {(say) => (
-                  <box paddingLeft={2}>
-                    <text fg={theme.text} wrapMode="word">
-                      {say().text}
-                    </text>
-                  </box>
-                )}
-              </Match>
-              <Match when={entry.kind === "answer" && entry}>
-                {(done) => (
-                  <box paddingLeft={2}>
-                    {/* One text, so a long question and its answer wrap as one paragraph. */}
-                    <text fg={theme.textMuted} wrapMode="word">
-                      {`${done().question} → `}
-                      <span style={{ fg: theme.secondary }}>{done().shown}</span>
-                    </text>
-                  </box>
-                )}
-              </Match>
-              <Match when={entry.kind === "command" && entry}>
-                {(command) => (
-                  <box marginTop={1} paddingLeft={2} gap={0}>
-                    <text fg={theme.text} attributes={TextAttributes.BOLD} wrapMode="word">
-                      {command().title}
-                    </text>
-                    <Show when={command().warning}>
-                      <text fg={theme.warning} wrapMode="word">
-                        {command().warning}
-                      </text>
-                    </Show>
-                    <Code lines={command().lines} />
-                  </box>
-                )}
-              </Match>
-              <Match when={entry.kind === "result" && entry}>
-                {(result) => (
-                  <box paddingLeft={2}>
-                    <text fg={result().ok ? theme.success : theme.error} wrapMode="word">
-                      {result().title}
-                    </text>
-                    <For each={result().lines}>
-                      {(line) => (
-                        <text fg={theme.textMuted} wrapMode="char">
-                          {line}
-                        </text>
-                      )}
-                    </For>
-                  </box>
-                )}
-              </Match>
-              <Match when={entry.kind === "review" && entry}>
-                {(review) => (
-                  <box marginTop={1} paddingLeft={2}>
-                    <text fg={theme.text} attributes={TextAttributes.BOLD} wrapMode="word">
-                      {review().title}
-                    </text>
-                    <For each={review().files}>
-                      {(file) => (
-                        <box marginTop={1}>
-                          <text fg={theme.textMuted} wrapMode="char">
-                            {file.name}
+      <Show
+        when={card()}
+        fallback={
+          <>
+            <scrollbox ref={(r) => (scroll = r)} stickyScroll={true} stickyStart="bottom" flexGrow={1}>
+              <For each={entries()}>
+                {(entry, i) => (
+                  <Switch>
+                    <Match when={entry.kind === "step" && entry}>
+                      {(step) => (
+                        <box marginTop={i() === 0 ? 0 : 1}>
+                          <box flexDirection="row">
+                            <text fg={theme.textMuted}>{`${step().counter} · `}</text>
+                            <text fg={theme.accent} attributes={TextAttributes.BOLD}>
+                              {step().title}
+                            </text>
+                          </box>
+                          <text fg={theme.textMuted} wrapMode="word">
+                            {step().why}
                           </text>
-                          <Code lines={file.lines} />
                         </box>
                       )}
-                    </For>
-                    <Show when={review().risks.length > 0}>
-                      <box marginTop={1}>
-                        <text fg={theme.text}>{BEFORE_SAVING}</text>
-                        <For each={review().risks}>
-                          {(risk) => (
-                            <text fg={theme.text} wrapMode="word">
-                              {`  - ${risk}`}
-                            </text>
-                          )}
-                        </For>
-                      </box>
-                    </Show>
-                    <Show when={review().warning}>
-                      <text fg={theme.warning} wrapMode="word">
-                        {review().warning}
-                      </text>
-                    </Show>
-                  </box>
+                    </Match>
+                    <Match when={entry.kind === "say" && entry}>
+                      {(say) => (
+                        <box paddingLeft={2}>
+                          <text fg={theme.text} wrapMode="word">
+                            {say().text}
+                          </text>
+                        </box>
+                      )}
+                    </Match>
+                    <Match when={entry.kind === "answer" && entry}>
+                      {(done) => (
+                        <box paddingLeft={2}>
+                          {/* One text, so a long question and its answer wrap as one paragraph. */}
+                          <text fg={theme.textMuted} wrapMode="word">
+                            {`${done().question} → `}
+                            <span style={{ fg: theme.secondary }}>{done().shown}</span>
+                          </text>
+                        </box>
+                      )}
+                    </Match>
+                    <Match when={entry.kind === "result" && entry}>
+                      {(result) => (
+                        <box paddingLeft={2}>
+                          <text fg={result().ok ? theme.success : theme.error} wrapMode="word">
+                            {result().title}
+                          </text>
+                          <For each={result().lines}>
+                            {(line) => (
+                              <text fg={theme.textMuted} wrapMode="char">
+                                {line}
+                              </text>
+                            )}
+                          </For>
+                        </box>
+                      )}
+                    </Match>
+                    <Match when={entry.kind === "away" && entry}>
+                      {(away) => (
+                        <box paddingLeft={2}>
+                          <text fg={theme.textMuted} wrapMode="word">
+                            {away().why}
+                          </text>
+                        </box>
+                      )}
+                    </Match>
+                  </Switch>
                 )}
-              </Match>
-              <Match when={entry.kind === "away" && entry}>
-                {(away) => (
-                  <box paddingLeft={2}>
-                    <text fg={theme.textMuted} wrapMode="word">
-                      {away().why}
-                    </text>
-                  </box>
-                )}
-              </Match>
-            </Switch>
-          )}
-        </For>
-      </scrollbox>
-      <box flexShrink={0}>
-        <Show
-          when={!stopping() && pending()}
-          keyed
-          fallback={<Spinner>{stopping() ? "Stopping…" : "Working…"}</Spinner>}
-        >
-          {(question) => (
-            <Switch>
-              <Match when={question.type === "ask" && question}>
-                {(ask) => (
-                  <Ask
-                    question={ask().question}
-                    default={ask().default ?? ""}
-                    // The install strips the answer and takes the default for an empty one; the line shown agrees.
-                    onSubmit={(text) => answer(ask().question, text, redact(text.trim() || (ask().default ?? "")))}
-                  />
-                )}
-              </Match>
-              <Match when={question.type === "choose" && question}>
-                {(choose) => {
-                  const options = choose().options
-                  const fallback = choose().default ?? ""
-                  const typed = choose().typed === true
-                  const at = options.indexOf(fallback)
-                  // A typed default that isn't an option starts in the box, so Enter alone still takes it.
-                  const draft = typed && at < 0 ? fallback : ""
-                  const pages = [
-                    {
-                      header: choose().question,
-                      question: choose().question,
-                      options: options.map((o) => ({ label: o, value: o })),
-                      multi: false,
-                      typed,
-                    },
-                  ]
-                  return (
-                    <QuestionView
-                      pages={pages}
-                      selected={at >= 0 ? at : draft ? options.length : 0}
-                      draft={draft}
-                      singleLine
-                      // Leaves the transcript about half the screen.
-                      maxOptions={Math.max(3, Math.floor(dimensions().height / 2) - 4)}
-                      onSubmit={([a]) => {
-                        const text = a.text.trim() || options[a.picked[0]]
-                        answer(choose().question, text, redact(text))
+              </For>
+            </scrollbox>
+            <Show when={transcriptPos()}>
+              <box flexShrink={0} paddingLeft={2}>
+                <text fg={theme.textMuted}>{transcriptPos()}</text>
+              </box>
+            </Show>
+            <box flexShrink={0}>
+              <Show
+                when={!stopping() && pending()}
+                keyed
+                fallback={<Spinner>{stopping() ? "Stopping…" : "Working…"}</Spinner>}
+              >
+                {(question) => (
+                  <Switch>
+                    <Match when={question.type === "ask" && question}>
+                      {(ask) => (
+                        <Ask
+                          question={ask().question}
+                          default={ask().default ?? ""}
+                          // The install strips the answer and takes the default; the line shown agrees.
+                          onSubmit={(text) => answer(ask().question, text, redact(text.trim() || (ask().default ?? "")))}
+                        />
+                      )}
+                    </Match>
+                    <Match when={question.type === "choose" && question}>
+                      {(choose) => {
+                        const options = choose().options
+                        const fallback = choose().default ?? ""
+                        const typed = choose().typed === true
+                        const at = options.indexOf(fallback)
+                        // A typed default that isn't an option starts in the box, so Enter alone still takes it.
+                        const draft = typed && at < 0 ? fallback : ""
+                        const pages = [
+                          {
+                            header: choose().question,
+                            question: choose().question,
+                            options: options.map((o) => ({ label: o, value: o })),
+                            multi: false,
+                            typed,
+                          },
+                        ]
+                        return (
+                          <QuestionView
+                            pages={pages}
+                            selected={at >= 0 ? at : draft ? options.length : 0}
+                            draft={draft}
+                            singleLine
+                            // Leaves the transcript about half the screen.
+                            maxOptions={Math.max(3, Math.floor(dimensions().height / 2) - 4)}
+                            onSubmit={([a]) => {
+                              const text = a.text.trim() || options[a.picked[0]]
+                              answer(choose().question, text, redact(text))
+                            }}
+                          />
+                        )
                       }}
-                    />
-                  )
-                }}
-              </Match>
-              <Match when={question.type === "secret" && question}>
-                {(secret) => (
-                  <Panel>
-                    <text fg={theme.text}>{secret().question}</text>
-                    <SecretInput
-                      placeholder="Paste or type it here; it isn't shown"
-                      fg={theme.text}
-                      placeholderFg={theme.textMuted}
-                      onSubmit={(text) => answer(secret().question, text, "(hidden)")}
-                    />
-                  </Panel>
+                    </Match>
+                    <Match when={question.type === "secret" && question}>
+                      {(secret) => (
+                        <Panel>
+                          <text fg={theme.text}>{secret().question}</text>
+                          <SecretInput
+                            placeholder="Paste or type it here; it isn't shown"
+                            fg={theme.text}
+                            placeholderFg={theme.textMuted}
+                            onSubmit={(text) => answer(secret().question, text, "(hidden)")}
+                          />
+                        </Panel>
+                      )}
+                    </Match>
+                  </Switch>
                 )}
-              </Match>
-            </Switch>
-          )}
-        </Show>
-      </box>
+              </Show>
+            </box>
+          </>
+        }
+      >
+        {(c) => {
+          const choose = () => (pending()?.type === "choose" ? (pending() as SetupChoose) : undefined)
+          const gate = (): Gate | undefined => {
+            const q = choose()
+            return q ? { question: q.question, options: q.options, default: q.default ?? "" } : undefined
+          }
+          return (
+            <CardPager
+              card={c()}
+              gate={gate()}
+              stopping={stopping()}
+              onSubmit={(value) => {
+                const q = gate()!
+                answer(q.question, value, redact(value))
+              }}
+            />
+          )
+        }}
+      </Show>
     </box>
   )
 }
 
-/** Lines to check closely, such as a command to approve, on the panel's colour; a long line wraps rather than being
- *  cut, so all of what runs shows. */
-function Code(props: { lines: string[] }) {
+/**
+ * A card shown whole: its rows in a scrolling viewport, a position line, and, once the owner has read to the last
+ * row, the approval's choices (default "Don't …", and a single digit never submits). Until then it says to read on,
+ * and PageDown/Space/the arrows/Home/End move through it.
+ */
+function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit: (value: string) => void }) {
   const { theme } = useTheme()
+  const dimensions = useTerminalDimensions()
+  const [top, setTop] = createSignal(0)
+  const [seen, setSeen] = createSignal(false)
+  const [sel, setSel] = createSignal(0)
+
+  const width = () => Math.max(1, dimensions().width - 6)
+  const rows = createMemo(() => cardRows(props.card, width()))
+  // One row is reserved for the position line; the footer's height is held steady so the viewport doesn't jump.
+  const footerRows = createMemo(() => (props.gate ? props.gate.options.length + 2 : 1))
+  const view = createMemo(() => Math.max(3, dimensions().height - 5 - footerRows()))
+  const maxTop = createMemo(() => Math.max(0, rows().length - view()))
+  const clamp = (t: number) => Math.max(0, Math.min(maxTop(), t))
+
+  // The default is the question's (the office sends "Don't …" second), so a plain Enter never approves.
+  createEffect(() => {
+    const g = props.gate
+    if (!g) return
+    const at = g.options.indexOf(g.default)
+    setSel(at >= 0 ? at : g.options.length - 1)
+  })
+  // Read in full once the last row is in view (or the card fits); it stays read if the owner scrolls back up.
+  createEffect(() => {
+    if (top() >= maxTop()) setSeen(true)
+  })
+
+  const visible = createMemo(() => rows().slice(top(), top() + view()))
+  const positionLine = createMemo(() => {
+    const total = rows().length
+    const from = Math.min(top() + 1, total)
+    return `lines ${from}–${Math.min(top() + view(), total)} of ${total}`
+  })
+
+  useKeyboard((key) => {
+    if (key.ctrl || key.meta) return // Ctrl-C is the screen's.
+    if (props.stopping) return
+    const page = Math.max(1, view() - 1)
+    const g = props.gate
+    const choosing = seen() && g !== undefined
+    switch (key.name) {
+      case "pageup":
+        return void setTop((t) => clamp(t - page))
+      case "pagedown":
+        if (!choosing) return void setTop((t) => clamp(t + page))
+        return void setTop((t) => clamp(t + page))
+      case "home":
+        return void setTop(0)
+      case "end":
+        return void setTop(maxTop())
+    }
+    if (!choosing) {
+      switch (key.name) {
+        case "up":
+        case "k":
+          return void setTop((t) => clamp(t - 1))
+        case "down":
+        case "j":
+        case "space":
+        case "return":
+        case "enter":
+          return void setTop((t) => clamp(t + page))
+      }
+      return
+    }
+    switch (key.name) {
+      case "up":
+      case "k":
+        return void setSel((s) => Math.max(0, s - 1))
+      case "down":
+      case "j":
+        return void setSel((s) => Math.min(g!.options.length - 1, s + 1))
+      case "return":
+      case "enter":
+        return void props.onSubmit(g!.options[sel()]!)
+      // A digit never submits: approving is a deliberate choice on a selected option.
+    }
+  })
+
+  const tone = (t: Row["tone"]) => (t === "warn" ? theme.warning : theme.text)
+
   return (
-    <box backgroundColor={theme.backgroundPanel} paddingLeft={1} paddingRight={1}>
-      <For each={props.lines}>
-        {(line) => (
-          <text fg={theme.text} wrapMode="char">
-            {line}
-          </text>
-        )}
-      </For>
+    <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
+      <box flexGrow={1} flexDirection="column">
+        <For each={visible()}>
+          {(row) => (
+            <text fg={tone(row.tone)} attributes={row.tone === "title" ? TextAttributes.BOLD : undefined} wrapMode="none">
+              {row.text === "" ? " " : row.text}
+            </text>
+          )}
+        </For>
+      </box>
+      <box flexShrink={0}>
+        <text fg={theme.textMuted}>{positionLine()}</text>
+      </box>
+      <box flexShrink={0} marginTop={0}>
+        <Show when={!props.stopping} fallback={<Spinner>Stopping…</Spinner>}>
+          <Show when={props.gate} fallback={<Spinner>Working…</Spinner>}>
+            <Show when={seen()} fallback={<text fg={theme.accent}>{READ_ON}</text>}>
+              <text fg={theme.text}>{props.gate!.question}</text>
+              <For each={props.gate!.options}>
+                {(option, i) => (
+                  <text fg={i() === sel() ? theme.text : theme.textMuted} attributes={i() === sel() ? TextAttributes.BOLD : undefined}>
+                    {`${i() === sel() ? "❯ " : "  "}${option}`}
+                  </text>
+                )}
+              </For>
+              <text fg={theme.textMuted}>{CHOOSE}</text>
+            </Show>
+          </Show>
+        </Show>
+      </box>
     </box>
   )
 }

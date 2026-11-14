@@ -1300,10 +1300,10 @@ test("with a screen, learning runs behind it, risks first, and the visit goes on
   }
   const done = visit({ signIn: false, port, open: false }, v.deps)
   await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 1, { what: "the visit to connect" })
-  // The offer stays plain; only learning is behind the screen.
+  // The offer and its risks stay plain; only learning is behind the screen, and it doesn't repeat the risks there.
   expect(v.prompter.seen).toEqual([...beforeLearning(paths), LEARN_QUESTION])
   const said = s.prompts.filter((p) => p.type === "say").map((p) => p.text)
-  expect(said.slice(0, beforeLearning(paths).length)).toEqual(beforeLearning(paths))
+  for (const risk of beforeLearning(paths)) expect(said).not.toContain(risk)
   expect(s.prompts.filter((p) => p.type !== "say").map((p) => p.type)).toEqual([
     "command", "choose", "hand_over", "take_back", "result", "review", "choose", "hand_over", "take_back",
   ])

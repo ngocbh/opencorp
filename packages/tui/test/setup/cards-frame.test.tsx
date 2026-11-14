@@ -18,12 +18,14 @@ test("a command shows its title, the warning and its numbered lines above the qu
       lines: ["  1  cat provider.json", "  2  echo jobs<U+00A0># ; touch x"],
     })
     child.push({ type: "choose", question: "Run this 2-line command?", options: ["Run it", "Don't run it"], default: "Don't run it" })
-    const f = await app.until((f) => f.includes("Run this 2-line command?") && f.includes("2. Don't run it"))
+    // Short enough to fit, so its choices are there at once; the default is "Don't run it".
+    const f = await app.until((f) => f.includes("Run this 2-line command?") && f.includes("Don't run it"))
     expect(f).toContain("The model wants to run a command: read the model's settings")
     expect(f).toContain("Careful: this names /h/hq, provider.json or auth.json")
     expect(f).toContain("1  cat provider.json")
     expect(f).toContain("2  echo jobs<U+00A0># ; touch x")
-    expect(f).toContain("1. Run it")
+    expect(f).toContain("Run it")
+    expect(f).toContain("❯ Don't run it")
     child.end(0)
     await app.task
     expect(app.out()).toBe(
@@ -86,7 +88,7 @@ test("the save view shows each file numbered under its name, the risks and the w
     })
     const question = "Save this 2-line reach.sh and the notes, after testing the whole connection?"
     child.push({ type: "choose", question, options: ["Test it, then save it", "Don't save it"], default: "Don't save it" })
-    const f = await app.until((f) => f.includes("2. Don't save it"))
+    const f = await app.until((f) => f.includes("Don't save it"))
     for (const text of [
       "The model wants to save how this machine reaches HQ.",
       "/h/hq/reach.sh, which runs on every visit",
@@ -97,7 +99,9 @@ test("the save view shows each file numbered under its name, the risks and the w
       "- The script runs now and on every visit.",
       "- The login node may be shared.",
       "Careful: this names /h/hq",
-      "1. Test it, then save it",
+      question,
+      "Test it, then save it",
+      "❯ Don't save it",
     ])
       expect(f).toContain(text)
     child.end(0)

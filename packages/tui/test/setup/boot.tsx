@@ -43,12 +43,17 @@ export class FakeChild implements SetupChild {
 }
 
 /**
- * Runs the setup screen for `child`, its header naming `command`, in a 100x30 test renderer; returns frame helpers
- * and what it printed.
+ * Runs the setup screen for `child`, its header naming `command`, in a test renderer (100x30 by default); returns
+ * frame helpers and what it printed.
  */
-export async function bootSetup(child: FakeChild, command = "") {
+export async function bootSetup(child: FakeChild, command = "", size: { width?: number; height?: number } = {}) {
   // As the real renderer: opentui's default destroys the renderer on the first Ctrl-C.
-  const setup = await createTestRenderer({ width: 100, height: 30, useThread: false, exitOnCtrlC: false })
+  const setup = await createTestRenderer({
+    width: size.width ?? 100,
+    height: size.height ?? 30,
+    useThread: false,
+    exitOnCtrlC: false,
+  })
   // The test renderer never answers the theme query, so the screen would wait out its 1 s timeout.
   setup.renderer.waitForThemeMode = async () => "dark"
   const core = await import("@opentui/core")

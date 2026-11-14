@@ -435,10 +435,10 @@ async function learnPath(
   let learned: Learned
   try {
     learned = deps.learnScreen
-      ? await deps.learnScreen((io) => {
+      ? // The owner read the risks on the plain terminal when they chose to learn; the screen doesn't repeat them,
+        // so the save view's files aren't pushed off by them.
+        await deps.learnScreen((io) => {
           const prompter = new JsonPrompter(io.prompts, io.answers)
-          // The screen hides what was said before it opened.
-          for (const line of beforeLearning(ctx.paths)) prompter.say(clean(line))
           return learn({ prompter, stdin: io.answers, echo: io.echo })
         }, interrupt)
       : await learn({ prompter: deps.prompter, stdin: deps.stdin, echo: ctx.echo })

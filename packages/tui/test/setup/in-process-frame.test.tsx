@@ -100,16 +100,17 @@ test("a learning run's risks, device code, question, command, hand-over and save
     expect(f).toContain("Your answer goes to the model.")
     await app.input.typeText("login1")
     app.input.pressEnter()
-    f = await app.until((f) => f.includes("2. Don't run it"))
+    f = await app.until((f) => f.includes("Don't run it"))
     expect(f).toContain("The model wants to run a command: log in to login1")
     expect(f).toContain("Careful: this names /h/hq")
     expect(f).toContain("1  ssh login1 true")
+    // The default is "Don't run it"; Up moves to "Run it", which Enter then approves.
+    expect(f).toContain("❯ Don't run it")
     app.input.pressArrow("up")
     app.input.pressEnter()
-    f = await app.until((f) => f.includes("2. Don't save it"))
-    // The screen came back: the result, the output after it, and the save view.
-    expect(f).toContain("Exited 0")
-    expect(f).toContain("a banner after")
+    // The screen came back for the result (echoed output included), then the save view's pager opened.
+    f = await app.until((f) => f.includes("Don't save it"))
+    expect(f).toContain("The model wants to save how this machine reaches HQ.")
     expect(f).toContain("Before you save it:")
     expect(app.printed()).toBe(`\n${HANDED}\n`)
     expect(app.echoed).toEqual(["login1 says hi\n"])
@@ -166,7 +167,7 @@ test("Ctrl-C at a question interrupts the run and stops the question, and the sc
     }
   })
   try {
-    await app.until((f) => f.includes("2. Don't run it"))
+    await app.until((f) => f.includes("Don't run it"))
     app.input.pressCtrlC()
     await app.until((f) => f.includes("Stopping…"))
     expect(app.interrupts).toEqual([1])
