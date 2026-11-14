@@ -62,6 +62,12 @@ function terminal(c: Client, { args = [], term = "xterm" }: { args?: string[]; t
     keys: (...keys: string[]) => void tmux("send-keys", "-t", "hq", ...keys),
     /** Whether the window shows the alternate screen, as the setup screen draws on. */
     alternate: () => tmux("display-message", "-p", "-t", "hq", "#{alternate_on}").trim() === "1",
+    /** Changes the pane's window size, which sends SIGWINCH to the program (tmux 2.7 has no resize-window). */
+    resize: (cols: number, rows: number) => {
+      const tty = tmux("display-message", "-p", "-t", "hq", "#{pane_tty}").trim()
+      const stty = ["/bin/stty", "/usr/bin/stty"].find((f) => fs.existsSync(f))
+      if (stty) execFileSync(stty, ["-F", tty, "cols", String(cols), "rows", String(rows)], { env: { PATH: "/usr/bin:/bin" }, timeout: 5000 })
+    },
     /** Types `text` as is, then Enter. */
     type: (text: string) => {
       tmux("send-keys", "-t", "hq", "-l", text)
@@ -318,6 +324,36 @@ describe.skipIf(!TMUX)("behind the learning screen", () => {
     expect(c.fake.tty()).toEqual(["hunter2"])
     t.keys("C-c")
     expect(await t.exit()).toBe("exit=0")
+    expect(c.fake.masters()).toEqual([])
+    expect(pidsNaming(c.hq)).toEqual([])
+  }, 120_000)
+
+  test("a window resize while ssh has the terminal keeps the password clean and the screen comes back", async () => {
+    const llm = await FakeLLM.start()
+    onTestFinished(() => llm.close())
+    const c = await client(null, { behavior: { hosts: { login1: { login: "tty" } } } })
+    onTestFinished(() => removeClient(c))
+    withModel(c, llm)
+    llm.script(
+      { tool_calls: [{ name: "shell", arguments: { command: "ssh login1 true", why: "log in to login1" } }] },
+      { content: "Stopping here." },
+    )
+    const t = terminal(c)
+    await t.see("Learn how to reach HQ from here? This uses the model.")
+    pickFirst(t)
+    await t.see("Run this 1-line command?")
+    pickFirst(t)
+    await t.see("fake password for login1:")
+    expect(t.alternate()).toBe(false)
+    // A window change while ssh reads the password: nothing extra is written into its read.
+    t.resize(90, 28)
+    await Bun.sleep(300)
+    t.type("hunter2")
+    await t.see("nothing was saved: Stopping here.")
+    expect(await t.exit()).toBe("exit=1")
+    // The password reached ssh whole, with no injected size-query reply, and the screen was left sane.
+    expect(c.fake.tty()).toEqual(["hunter2"])
+    expect(t.alternate()).toBe(false)
     expect(c.fake.masters()).toEqual([])
     expect(pidsNaming(c.hq)).toEqual([])
   }, 120_000)

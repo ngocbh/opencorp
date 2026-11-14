@@ -100,6 +100,8 @@ export function SetupScreen(props: {
   const [stopping, setStopping] = createSignal(false)
   const [transcriptPos, setTranscriptPos] = createSignal("")
   let scroll: ScrollBoxRenderable | undefined
+  // Whether opentui's SIGWINCH listener was taken off for a hand-over, so take_back puts it back.
+  let resizeDetached = false
 
   /** Shows `entry` now; `printed` are its lines in the transcript printed once the screen is gone. */
   const add = (entry: Entry, ...printed: string[]) => {
@@ -137,6 +139,9 @@ export function SetupScreen(props: {
       // plain terminal, above ssh's prompts.
       add({ kind: "away", why: prompt.why })
       if (!renderer.isDestroyed) {
+        // Nothing is written to the terminal while ssh may be reading it: opentui's resize handler would answer a
+        // window change with a size query (ESC[14t), which would land in ssh's password read.
+        resizeDetached = detachResize(renderer)
         renderer.suspend()
         renderer.currentRenderBuffer.clear()
       }
@@ -146,6 +151,9 @@ export function SetupScreen(props: {
       if (renderer.isDestroyed) return
       renderer.currentRenderBuffer.clear()
       renderer.resume()
+      // Put the resize handler back and take the new size now, after resume, when a query is safe again.
+      if (resizeDetached) attachResize(renderer)
+      resizeDetached = false
       renderer.requestRender()
     } else setPending(prompt)
   })
@@ -517,6 +525,29 @@ function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit
       </box>
     </box>
   )
+}
+
+/** opentui's own SIGWINCH listener (set in the renderer's constructor when it drives the real stdout). */
+function sigwinch(renderer: unknown): (() => void) | undefined {
+  const h = (renderer as { sigwinchHandler?: () => void }).sigwinchHandler
+  return typeof h === "function" ? h : undefined
+}
+
+/** Takes opentui's SIGWINCH listener off, so a window change while the terminal is handed over writes no size query
+ *  into ssh's read; returns whether one was taken off. */
+export function detachResize(renderer: unknown): boolean {
+  const h = sigwinch(renderer)
+  if (!h || !process.listeners("SIGWINCH").includes(h)) return false
+  process.off("SIGWINCH", h)
+  return true
+}
+
+/** Puts opentui's SIGWINCH listener back after a hand-over and takes the terminal's new size now. */
+export function attachResize(renderer: unknown): void {
+  const h = sigwinch(renderer)
+  if (!h) return
+  process.on("SIGWINCH", h)
+  h()
 }
 
 /** The question card's look: a panel with an accent bar on its left. */
