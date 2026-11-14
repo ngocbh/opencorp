@@ -1,0 +1,1 @@
+{"type": "command", "title": "The model wants to run a command: list the login nodes", "warning": "", "lines": ["  1  ssh login1 hostname"]}

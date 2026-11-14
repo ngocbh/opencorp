@@ -28,6 +28,7 @@ const NAMES = [
   "AddDeviceRequest", "LoginRequest", "SetPasswordRequest", "Connection", "ConnectionList", "ModelOption",
   "ModelList", "SetModelRequest", "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest",
   "ConnectionLogin", "SetupPrompt", "SetupAsk", "SetupChoose", "SetupSecret", "SetupSay", "SetupStep",
+  "SetupCommand", "SetupResult", "SetupReview", "SetupHandOver", "SetupTakeBack",
   "SetupAnswer", "OfficeInfo", "MessageText", "ModelName",
 ]
 
@@ -134,7 +135,10 @@ test("every route body has a fixture", () => {
   expect(stems(FIXTURES)).toEqual(expect.arrayContaining(BODIES))
 })
 
-const SETUP = ["SetupAsk", "SetupChoose", "SetupSecret", "SetupSay", "SetupStep", "SetupAnswer"]
+const SETUP = [
+  "SetupAsk", "SetupChoose", "SetupSecret", "SetupSay", "SetupStep", "SetupCommand", "SetupResult", "SetupReview",
+  "SetupHandOver", "SetupTakeBack", "SetupAnswer",
+]
 
 test("every setup message has a fixture", () => {
   expect(stems(FIXTURES)).toEqual(expect.arrayContaining(SETUP))
@@ -338,6 +342,17 @@ test("setup prompts are a discriminated union", () => {
   const issues = Schemas.SetupPrompt.safeParse({ type: "shout", text: "hi" }).error?.issues ?? []
   expect(issues.map((issue) => issue.code)).toEqual(["invalid_union"])
   expect((issues[0] as { note?: string }).note).toBe("No matching discriminator")
+})
+
+test("a command, its result and a review are shown, and the terminal is handed over and back", () => {
+  const types = ["SetupCommand", "SetupResult", "SetupReview", "SetupHandOver", "SetupTakeBack"]
+  expect(types.map((name) => Schemas.SetupPrompt.parse(load(FIXTURES, name)).type))
+    .toEqual(["command", "result", "review", "hand_over", "take_back"])
+  const command = Schemas.SetupCommand.parse({ type: "command", title: "Run it?", lines: ["  1  true"] })
+  expect(command.warning).toBe("")
+  const review = Schemas.SetupReview.parse({ type: "review", title: "Save", files: [{ name: "a", lines: [] }] })
+  expect([review.risks, review.warning]).toEqual([[], ""])
+  expect(Schemas.SetupResult.parse({ type: "result", title: "Exited 0", ok: true }).lines).toEqual([])
 })
 
 test("a choice takes no typed answer unless it says so", () => {

@@ -41,12 +41,14 @@ export async function runSetup(argv: string[], cwd: string, env: Record<string, 
   }
 }
 
-/** The same, for a child already running (tests pass a fake); the header names `command`, such as `opencorp init`. */
+/** The same, for a child already running (tests pass a fake); the header reads `title` and names `command`, such as
+ *  `opencorp init`. Why the child takes the terminal goes on `err`. */
 export async function runSetupWith(
   child: SetupChild,
   out: Writer = process.stdout,
   err: Writer = process.stderr,
   command = "",
+  title?: string,
 ): Promise<number> {
   const renderer = await createCliRenderer({
     externalOutputMode: "passthrough",
@@ -82,7 +84,13 @@ export async function runSetupWith(
       await render(
         () => (
           <Providers mode={mode} keymap={keymap}>
-            <SetupScreen child={child} lines={lines} command={command} />
+            <SetupScreen
+              child={child}
+              lines={lines}
+              command={command}
+              title={title}
+              notice={(text) => void err.write(text)}
+            />
           </Providers>
         ),
         renderer,

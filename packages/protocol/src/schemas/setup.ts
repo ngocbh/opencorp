@@ -43,18 +43,62 @@ export const SetupStep = z.strictObject({
 })
 export type SetupStep = z.input<typeof SetupStep>
 
+/** A command to approve, as it will run: what it's for, a warning (empty for none), and its lines as shown. */
+export const SetupCommand = z.strictObject({
+  type: z.literal("command"),
+  title: z.string(),
+  warning: z.string().default(""),
+  lines: z.array(z.string()),
+})
+export type SetupCommand = z.input<typeof SetupCommand>
+
+/** How a command ended (`ok` when it exited 0), and the last lines it printed. */
+export const SetupResult = z.strictObject({
+  type: z.literal("result"),
+  title: z.string(),
+  ok: z.boolean(),
+  lines: z.array(z.string()).default([]),
+})
+export type SetupResult = z.input<typeof SetupResult>
+
+/** Files to save, shown before the question that saves them: each file's heading and lines as shown, what to know
+ *  first, and a warning (empty for none). */
+export const SetupReview = z.strictObject({
+  type: z.literal("review"),
+  title: z.string(),
+  files: z.array(z.strictObject({ name: z.string(), lines: z.array(z.string()) })).min(1),
+  risks: z.array(z.string()).default([]),
+  warning: z.string().default(""),
+})
+export type SetupReview = z.input<typeof SetupReview>
+
+/** The terminal goes to a program that may prompt on it, such as ssh asking for a password; `why` says what runs.
+ *  Answered (with an empty answer) once the program can have it. */
+export const SetupHandOver = z.strictObject({
+  type: z.literal("hand_over"),
+  why: z.string(),
+})
+export type SetupHandOver = z.input<typeof SetupHandOver>
+
+/** The terminal comes back after a `hand_over`. */
+export const SetupTakeBack = z.strictObject({
+  type: z.literal("take_back"),
+})
+export type SetupTakeBack = z.input<typeof SetupTakeBack>
+
 /**
  * One line `opencorp init|onboard --json-prompts` writes on stdout: a question for `opencorp`'s setup
  * screen, or something to show.
  */
 export const SetupPrompt = z.discriminatedUnion("type", [
-  SetupAsk, SetupChoose, SetupSecret, SetupSay, SetupStep,
+  SetupAsk, SetupChoose, SetupSecret, SetupSay, SetupStep, SetupCommand, SetupResult, SetupReview, SetupHandOver,
+  SetupTakeBack,
 ])
 export type SetupPrompt = z.input<typeof SetupPrompt>
 
 /**
- * One line `opencorp`'s setup screen writes to the install's stdin: the answer to the last ask, choose or
- * secret.
+ * One line `opencorp`'s setup screen writes to the install's stdin: the answer to the last ask, choose, secret or
+ * hand_over.
  */
 export const SetupAnswer = z.strictObject({
   answer: z.string(),

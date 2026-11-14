@@ -107,6 +107,37 @@ say({ type: "say", text: "\\x1b]0;title\\x07hi" })
   ])
 })
 
+test("a command, a result, a review and the terminal's hand-over arrive whole, without their control characters", async () => {
+  const child = fake(`
+const e = "\\x1b[2J"
+say({ type: "command", title: "Run" + e, lines: ["  1  ls" + e] })
+say({ type: "command", title: "Run", warning: "Careful", lines: [] })
+say({ type: "result", title: "Exited 0", ok: true })
+say({ type: "result", title: "Exited 4", ok: false, lines: ["out" + e] })
+say({ type: "review", title: "Save", files: [{ name: "a" + e, lines: ["  1  x" + e] }], risks: ["r" + e], warning: "w" })
+say({ type: "review", title: "Save", files: [{ name: "a", lines: [] }] })
+say({ type: "hand_over", why: "Running it" + e })
+say({ type: "take_back" })
+say({ type: "review", title: "Save", files: [] })
+say({ type: "result", title: "Exited 0" })
+say({ type: "command", title: "Run", lines: [1] })
+`)
+  await child.done
+  expect(collect(child)).toEqual([
+    { type: "command", title: "Run[2J", warning: "", lines: ["  1  ls[2J"] },
+    { type: "command", title: "Run", warning: "Careful", lines: [] },
+    { type: "result", title: "Exited 0", ok: true, lines: [] },
+    { type: "result", title: "Exited 4", ok: false, lines: ["out[2J"] },
+    { type: "review", title: "Save", files: [{ name: "a[2J", lines: ["  1  x[2J"] }], risks: ["r[2J"], warning: "w" },
+    { type: "review", title: "Save", files: [{ name: "a", lines: [] }], risks: [], warning: "" },
+    { type: "hand_over", why: "Running it[2J" },
+    { type: "take_back" },
+    { type: "say", text: '{"type":"review","title":"Save","files":[]}' },
+    { type: "say", text: '{"type":"result","title":"Exited 0"}' },
+    { type: "say", text: '{"type":"command","title":"Run","lines":[1]}' },
+  ])
+})
+
 test("interrupt sends SIGINT", async () => {
   const child = fake(`
 process.on("SIGINT", () => process.exit(130))
