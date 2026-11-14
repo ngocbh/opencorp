@@ -32,6 +32,12 @@ function redact(text: string) {
   return text.replace(/(?<=:\/\/)[^/@\s]+@/g, "***@")
 }
 
+/** A model's question as it's shown: a run of four or more spaces, or a tab, becomes a marker, so padding can't
+ *  push the answer box or the rest off the screen. */
+function oneLine(text: string) {
+  return text.replace(/\t/g, "<TAB>").replace(/ {4,}/g, (run) => `<${run.length} spaces>`)
+}
+
 /** How long input is drained when the screen comes back, as the visit drains before a reconnect. */
 const DRAIN_MS = 50
 
@@ -351,7 +357,7 @@ export function SetupScreen(props: {
                     <Match when={question.type === "ask" && question}>
                       {(ask) => (
                         <Ask
-                          question={ask().question}
+                          question={oneLine(ask().question)}
                           default={ask().default ?? ""}
                           // The install strips the answer and takes the default; the line shown agrees.
                           onSubmit={(text) => answer(ask().question, text, redact(text.trim() || (ask().default ?? "")))}
@@ -366,10 +372,11 @@ export function SetupScreen(props: {
                         const at = options.indexOf(fallback)
                         // A typed default that isn't an option starts in the box, so Enter alone still takes it.
                         const draft = typed && at < 0 ? fallback : ""
+                        const shown = oneLine(choose().question)
                         const pages = [
                           {
-                            header: choose().question,
-                            question: choose().question,
+                            header: shown,
+                            question: shown,
                             options: options.map((o) => ({ label: o, value: o })),
                             multi: false,
                             typed,
@@ -597,10 +604,11 @@ function Panel(props: ParentProps) {
 
 /**
  * `question` in a panel above a line to type the answer on; Enter hands the text to `onSubmit`; Ctrl+C or Esc
- * clears it.
+ * clears it. A long question scrolls inside a bounded box, so the answer line is always on screen.
  */
 function Ask(props: { question: string; default: string; onSubmit: (text: string) => void }) {
   const { theme } = useTheme()
+  const dimensions = useTerminalDimensions()
   let input: InputRenderable | undefined
   const tuiConfig = useTuiConfig()
   useBindings(() => ({
@@ -610,11 +618,15 @@ function Ask(props: { question: string; default: string; onSubmit: (text: string
       return true
     }),
   }))
+  // At most a third of the screen for the question, so the input below it never goes off the bottom.
+  const questionHeight = () => Math.max(1, Math.floor(dimensions().height / 3))
   return (
     <Panel>
-      <text fg={theme.text} wrapMode="word">
-        {props.question}
-      </text>
+      <scrollbox scrollY={true} stickyScroll={true} stickyStart="top" maxHeight={questionHeight()}>
+        <text fg={theme.text} wrapMode="word">
+          {props.question}
+        </text>
+      </scrollbox>
       <input
         focused
         ref={(r) => (input = r)}

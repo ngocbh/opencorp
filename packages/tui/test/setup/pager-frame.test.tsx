@@ -101,6 +101,40 @@ test("a line wider than the screen wraps and nothing is clipped off its end", as
   }
 })
 
+test("a long agent question keeps the answer box and the 'goes to the model' line on screen", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child)
+  const toModel = "Your answer goes to the model. Type passwords, passphrases and codes only at ssh's own prompts, never here."
+  try {
+    child.push({ type: "say", text: toModel })
+    // A padded question, as a model might send to push the box off; its spaces collapse to a marker.
+    child.push({ type: "ask", question: "The agent asks: ok" + " ".repeat(4000) + "(user@login1) Password:", default: "" })
+    const f = await app.until((f) => f.includes("Type your answer here"))
+    expect(f).toContain("The agent asks: ok")
+    expect(f).toContain("<4000 spaces>")
+    // Both the input and the warning line are visible, not pushed off or cut.
+    expect(f).toContain("Type your answer here")
+    expect(f).toContain("answer goes to the model")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a long prose question scrolls, and the input stays visible below it", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child)
+  try {
+    const long = "The agent asks: " + Array.from({ length: 60 }, (_, i) => `detail-${i}`).join(" ")
+    child.push({ type: "ask", question: long, default: "" })
+    const f = await app.until((f) => f.includes("Type your answer here"))
+    expect(f).toContain("detail-0")
+    // The question is capped, so the input is on screen.
+    expect(f).toContain("Type your answer here")
+  } finally {
+    await app.stop()
+  }
+})
+
 test("the transcript scrolls with Home, End and the page keys, and shows where it is", async () => {
   const child = new FakeChild()
   const app = await bootSetup(child)
