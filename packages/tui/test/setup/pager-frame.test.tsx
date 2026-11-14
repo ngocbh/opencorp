@@ -158,3 +158,126 @@ test("the transcript scrolls with Home, End and the page keys, and shows where i
     await app.stop()
   }
 })
+
+/** `n` letters cycling a–z, so a dropped character shows as a gap in the sequence. */
+const letters = (n: number) => Array.from({ length: n }, (_, i) => String.fromCharCode(97 + (i % 26))).join("")
+
+test.each([80, 100, 61])("every character of a long line is drawn when it wraps, at %i columns", async (width) => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp hq", { width, height: 30 })
+  try {
+    const body = "echo" + letters(260) + "END"
+    for (const p of command([`  1  ${body}`], "Run this 1-line command?")) child.push(p)
+    const f = await app.until((f) => f.includes("Don't run it"))
+    // The rows follow each other in the frame, so with the blanks taken out the whole line reads straight through.
+    expect(f.replace(/\s+/g, "")).toContain(`1${body}`)
+  } finally {
+    await app.stop()
+  }
+})
+
+test("wide characters wrap by the cells they take, and none is clipped", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp hq", { width: 80, height: 30 })
+  try {
+    child.push({ type: "command", title: "审".repeat(100) + "尾", warning: "", lines: ["  1  true"] })
+    child.push({ type: "choose", question: "Run this 1-line command?", options: ["Run it", "Don't run it"], default: "Don't run it" })
+    const f = await app.until((f) => f.includes("Don't run it"))
+    expect(f.split("审").length - 1).toBe(100)
+    expect(f).toContain("尾")
+  } finally {
+    await app.stop()
+  }
+})
+
+/** Pushes `card` and lets the screen draw it, then pushes `choose`, as the office sends them a moment apart. */
+async function cardThenChoice(app: Awaited<ReturnType<typeof bootSetup>>, child: FakeChild, prompts: SetupPrompt[]) {
+  child.push(prompts[0]!)
+  await app.until((f) => f.includes("Working…"))
+  child.push(prompts[1]!)
+}
+
+test.each([21, 22, 23])("a %i-line command pushed before its question still hides the choices until its end is read", async (n) => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp hq")
+  try {
+    const lines = Array.from({ length: n }, (_, i) => `  ${i + 1}  echo row ${i + 1}`)
+    lines[n - 1] = `  ${n}  echo TAIL-MARKER`
+    await cardThenChoice(app, child, command(lines, `Run this ${n}-line command?`))
+    let f = await app.until((f) => f.includes("Read to the end"))
+    expect(f).not.toContain("Don't run it")
+    expect(f).not.toContain("TAIL-MARKER")
+    app.input.pressKey(END)
+    f = await app.until((f) => f.includes("❯ Don't run it"))
+    expect(f).toContain("TAIL-MARKER")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a card that fits with its question shows the choices at once, even pushed apart", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp hq")
+  try {
+    const lines = Array.from({ length: 20 }, (_, i) => `  ${i + 1}  echo row ${i + 1}`)
+    await cardThenChoice(app, child, command(lines, "Run this 20-line command?"))
+    const f = await app.until((f) => f.includes("❯ Don't run it"))
+    expect(f).toContain("20  echo row 20")
+    expect(f).not.toContain("Read to the end")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("the save view pushed before its question waits until its last risk is read", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp hq")
+  try {
+    // 23 rows: two more than the 21-row viewport at 100x30.
+    const reach = Array.from({ length: 16 }, (_, i) => `  ${i + 1}  ssh login${i + 1} true`)
+    const review: SetupPrompt = {
+      type: "review",
+      title: "The model wants to save how this machine reaches HQ.",
+      files: [
+        { name: "/h/hq/reach.sh, which runs on every visit", lines: reach },
+        { name: "/h/hq/notes.md", lines: ["  1  Through the login nodes."] },
+      ],
+      risks: ["The script runs now and on every visit.", "LAST-RISK-MARKER"],
+      warning: "",
+    }
+    const choose: SetupPrompt = {
+      type: "choose",
+      question: "Save this 16-line reach.sh and the notes, after testing the whole connection?",
+      options: ["Test it, then save it", "Don't save it"],
+      default: "Don't save it",
+    }
+    await cardThenChoice(app, child, [review, choose])
+    let f = await app.until((f) => f.includes("Read to the end"))
+    expect(f).not.toContain("Test it, then save it")
+    expect(f).not.toContain("LAST-RISK-MARKER")
+    app.input.pressKey(END)
+    f = await app.until((f) => f.includes("❯ Don't save it"))
+    expect(f).toContain("LAST-RISK-MARKER")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a resize that makes a read card longer hides its choices until the new end is read", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp hq")
+  try {
+    const lines = Array.from({ length: 12 }, (_, i) => `  ${i + 1}  echo ${letters(60)} row ${i + 1}`)
+    for (const p of command(lines, "Run this 12-line command?")) child.push(p)
+    await app.until((f) => f.includes("❯ Don't run it"))
+    // Narrower, each line wraps to two rows: the card no longer fits, and its new end hasn't been read.
+    app.setup.resize(50, 30)
+    let f = await app.until((f) => f.includes("Read to the end"))
+    expect(f).not.toContain("Don't run it")
+    app.input.pressKey(END)
+    f = await app.until((f) => f.includes("Don't run it"))
+    expect(f).toContain("row 12")
+  } finally {
+    await app.stop()
+  }
+})

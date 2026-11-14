@@ -56,9 +56,29 @@ type Row = { text: string; tone: "title" | "warn" | "code" | "text" }
 function wrap(line: string, width: number): string[] {
   if (line === "") return [""]
   const rows: string[] = []
-  for (let i = 0; i < line.length; i += width) rows.push(line.slice(i, i + width))
+  let row = ""
+  let cells = 0
+  // By grapheme and by the cells each takes, so a wide character counts as two and a surrogate pair is never split.
+  for (const { segment } of graphemes.segment(line)) {
+    const w = Bun.stringWidth(segment)
+    if (cells + w > width && row !== "") {
+      rows.push(row)
+      row = ""
+      cells = 0
+    }
+    row += segment
+    cells += w
+  }
+  rows.push(row)
   return rows
 }
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+
+/** The screen's and the pager's side padding: the pager wraps its rows to what is left of the width once both are
+ *  taken, the same width it draws them in. */
+const SCREEN_PAD = 2
+const PAGER_PAD = 2
 
 /** The card as rows: its lines, tagged with a tone and wrapped to `width`, so the pager shows every character. */
 function cardRows(card: Card, width: number): Row[] {
@@ -258,8 +278,8 @@ export function SetupScreen(props: {
       height={dimensions().height}
       flexDirection="column"
       backgroundColor={theme.background}
-      paddingLeft={2}
-      paddingRight={2}
+      paddingLeft={SCREEN_PAD}
+      paddingRight={SCREEN_PAD}
       paddingBottom={1}
       gap={1}
     >
@@ -449,17 +469,38 @@ export function SetupScreen(props: {
 function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit: (value: string) => void }) {
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
-  const [top, setTop] = createSignal(0)
-  const [seen, setSeen] = createSignal(false)
+  const [rawTop, setTop] = createSignal(0)
+  // How many of the card's rows have been on screen in the final layout (the question's footer drawn): rows shown
+  // before the question came, in a taller viewport, don't count.
+  const [readThrough, setReadThrough] = createSignal(0)
   const [sel, setSel] = createSignal(0)
 
-  const width = () => Math.max(1, dimensions().width - 6)
+  // The width the rows are wrapped to and drawn in: what the screen's and the pager's padding leave.
+  const width = () => Math.max(1, dimensions().width - 2 * SCREEN_PAD - 2 * PAGER_PAD)
   const rows = createMemo(() => cardRows(props.card, width()))
-  // One row is reserved for the position line; the footer's height is held steady so the viewport doesn't jump.
-  const footerRows = createMemo(() => (props.gate ? props.gate.options.length + 2 : 1))
-  const view = createMemo(() => Math.max(3, dimensions().height - 5 - footerRows()))
+  // The footer, wrapped to the same width, so its height is known exactly. With a question it holds whichever is
+  // taller of the read-on hint and the choices, so the viewport doesn't change size when the choices appear.
+  const readOn = createMemo(() => wrap(READ_ON, width()))
+  const choices = createMemo(() => {
+    const g = props.gate
+    if (!g) return undefined
+    return {
+      question: wrap(g.question, width()),
+      options: g.options.map((option, i) => ({ i, rows: wrap(`${"  "}${option}`, width()) })),
+      hint: wrap(CHOOSE, width()),
+    }
+  })
+  const footerRows = createMemo(() => {
+    const c = choices()
+    if (!c) return 1
+    const chosen = c.question.length + c.options.reduce((n, o) => n + o.rows.length, 0) + c.hint.length
+    return Math.max(readOn().length, chosen)
+  })
+  // The header (its padding, title and gap) and the screen's bottom padding take 4 rows; the position line 1.
+  const view = createMemo(() => Math.max(3, dimensions().height - 4 - 1 - footerRows()))
   const maxTop = createMemo(() => Math.max(0, rows().length - view()))
   const clamp = (t: number) => Math.max(0, Math.min(maxTop(), t))
+  const top = () => clamp(rawTop())
 
   // The default is the question's (the office sends "Don't …" second), so a plain Enter never approves.
   createEffect(() => {
@@ -468,10 +509,23 @@ function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit
     const at = g.options.indexOf(g.default)
     setSel(at >= 0 ? at : g.options.length - 1)
   })
-  // Read in full once the last row is in view (or the card fits); it stays read if the owner scrolls back up.
+  // Recomputed on every layout change. Before the question there's no final layout, so nothing counts; when the
+  // rows are wrapped anew (a resize), only what is on screen now counts, so a card made longer is read again.
+  let counted: Row[] | undefined
   createEffect(() => {
-    if (top() >= maxTop()) setSeen(true)
+    const r = rows()
+    const now = Math.min(top() + view(), r.length)
+    if (!props.gate) {
+      counted = undefined
+      return void setReadThrough(0)
+    }
+    if (r !== counted) {
+      counted = r
+      return void setReadThrough(now)
+    }
+    setReadThrough((s) => Math.max(s, now))
   })
+  const seen = () => props.gate !== undefined && readThrough() >= rows().length
 
   const visible = createMemo(() => rows().slice(top(), top() + view()))
   const positionLine = createMemo(() => {
@@ -488,10 +542,9 @@ function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit
     const choosing = seen() && g !== undefined
     switch (key.name) {
       case "pageup":
-        return void setTop((t) => clamp(t - page))
+        return void setTop(clamp(top() - page))
       case "pagedown":
-        if (!choosing) return void setTop((t) => clamp(t + page))
-        return void setTop((t) => clamp(t + page))
+        return void setTop(clamp(top() + page))
       case "home":
         return void setTop(0)
       case "end":
@@ -501,13 +554,13 @@ function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit
       switch (key.name) {
         case "up":
         case "k":
-          return void setTop((t) => clamp(t - 1))
+          return void setTop(clamp(top() - 1))
         case "down":
         case "j":
         case "space":
         case "return":
         case "enter":
-          return void setTop((t) => clamp(t + page))
+          return void setTop(clamp(top() + page))
       }
       return
     }
@@ -528,8 +581,8 @@ function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit
   const tone = (t: Row["tone"]) => (t === "warn" ? theme.warning : theme.text)
 
   return (
-    <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
-      <box flexGrow={1} flexDirection="column">
+    <box flexGrow={1} flexDirection="column" paddingLeft={PAGER_PAD} paddingRight={PAGER_PAD}>
+      <box height={view()} flexShrink={0} flexDirection="column">
         <For each={visible()}>
           {(row) => (
             <text fg={tone(row.tone)} attributes={row.tone === "title" ? TextAttributes.BOLD : undefined} wrapMode="none">
@@ -539,22 +592,57 @@ function CardPager(props: { card: Card; gate?: Gate; stopping: boolean; onSubmit
         </For>
       </box>
       <box flexShrink={0}>
-        <text fg={theme.textMuted}>{positionLine()}</text>
+        <text fg={theme.textMuted} wrapMode="none">
+          {positionLine()}
+        </text>
       </box>
-      <box flexShrink={0} marginTop={0}>
+      <box flexShrink={0} height={footerRows()}>
         <Show when={!props.stopping} fallback={<Spinner>Stopping…</Spinner>}>
-          <Show when={props.gate} fallback={<Spinner>Working…</Spinner>}>
-            <Show when={seen()} fallback={<text fg={theme.accent}>{READ_ON}</text>}>
-              <text fg={theme.text}>{props.gate!.question}</text>
-              <For each={props.gate!.options}>
-                {(option, i) => (
-                  <text fg={i() === sel() ? theme.text : theme.textMuted} attributes={i() === sel() ? TextAttributes.BOLD : undefined}>
-                    {`${i() === sel() ? "❯ " : "  "}${option}`}
-                  </text>
-                )}
-              </For>
-              <text fg={theme.textMuted}>{CHOOSE}</text>
-            </Show>
+          <Show when={choices()} fallback={<Spinner>Working…</Spinner>}>
+            {(c) => (
+              <Show
+                when={seen()}
+                fallback={
+                  <For each={readOn()}>
+                    {(row) => (
+                      <text fg={theme.accent} wrapMode="none">
+                        {row}
+                      </text>
+                    )}
+                  </For>
+                }
+              >
+                <For each={c().question}>
+                  {(row) => (
+                    <text fg={theme.text} wrapMode="none">
+                      {row}
+                    </text>
+                  )}
+                </For>
+                <For each={c().options}>
+                  {(option) => (
+                    <For each={option.rows}>
+                      {(row, r) => (
+                        <text
+                          fg={option.i === sel() ? theme.text : theme.textMuted}
+                          attributes={option.i === sel() ? TextAttributes.BOLD : undefined}
+                          wrapMode="none"
+                        >
+                          {r() === 0 && option.i === sel() ? `❯ ${row.slice(2)}` : row}
+                        </text>
+                      )}
+                    </For>
+                  )}
+                </For>
+                <For each={c().hint}>
+                  {(row) => (
+                    <text fg={theme.textMuted} wrapMode="none">
+                      {row}
+                    </text>
+                  )}
+                </For>
+              </Show>
+            )}
           </Show>
         </Show>
       </box>
