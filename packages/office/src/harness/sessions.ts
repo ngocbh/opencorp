@@ -5,13 +5,14 @@ import path from "node:path"
 import { type HarnessPolicy, type Message, OFFICE, Question, Session, WorkItem, now } from "@opencorp/protocol"
 import type { Hooks } from "../chat/hooks.ts"
 import { ProviderError } from "../chat/provider.ts"
-import { HarnessError, LIVE, notAnAgent, notWaiting } from "../chat/state.ts"
+import { HarnessError, notAnAgent, notWaiting } from "../chat/state.ts"
 import { loadRepo, missingPerson } from "../company/loader.ts"
-import type { Office, SessionHarness } from "../daemon/office.ts"
-import type { AnswerKind } from "../questions/cards.ts"
+import type { Office } from "../daemon/office.ts"
+import type { AnswerKind, SessionHarness } from "../runtime/sessions/harness.ts"
 import { UnsafeWorkspace, checkClearOf, checkWorkspace, realPath } from "../sandbox/policy.ts"
 import {
   InvalidTransition,
+  LIVE,
   NotFound,
   type QuestionRecord,
   type SessionRecord,

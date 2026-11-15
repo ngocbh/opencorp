@@ -1,5 +1,5 @@
 /** The office object: what the routes and services share. */
-import { type Message, Session, now } from "@opencorp/protocol"
+import { Session, now } from "@opencorp/protocol"
 import type { ModelCheck } from "../chat/check.ts"
 import { Connections, type ConnectionsOptions } from "../chat/connections.ts"
 import { Hiring } from "../chat/hire.ts"
@@ -12,14 +12,15 @@ import type { CodexSessions } from "../harness/sessions.ts"
 import type { Hq } from "../hq/core.ts"
 import type { Tools } from "../install/tools.ts"
 import { GitProfileStore } from "../profile/store.ts"
-import type { CardActor, Cards } from "../questions/cards.ts"
+import type { Cards } from "../questions/cards.ts"
 import { RunIndexer } from "../runs/indexer.ts"
 import { RunNotifier } from "../runs/notify.ts"
 import { Live } from "../runs/records.ts"
 import { RunLogs } from "../runs/service.ts"
+import type { SessionHarness } from "../runtime/sessions/harness.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { SecretStore } from "../secrets.ts"
-import type { SessionRecord, Store } from "../store/store.ts"
+import type { Store } from "../store/store.ts"
 import type { OfficePaths } from "../util/home.ts"
 import type { WorkerPool } from "../worker/spawn.ts"
 import { DeviceTokens } from "./auth.ts"
@@ -29,44 +30,6 @@ import type { LiveRelay } from "./live.ts"
 
 // Every status but the two a session never leaves, so a status added later keeps its session's pin.
 const NOT_TERMINAL = Session.shape.status.options.filter((status) => status !== "ended" && status !== "failed")
-
-/** The office's harness for the session routes: the card actions, plus what the session routes call. Each call
- *  throws `HarnessError` for an API error (404 not_found, 409 not_live, 422 refused, 501 not_implemented, ...). */
-export interface SessionHarness extends CardActor {
-  /** Starts `handle`'s main chat in `cwd` on `harness`, opened by `openedBy`; `connection` and `model` are their
-   *  pick, which the harness may pass over. */
-  startSession(
-    handle: string,
-    cwd: string,
-    options: {
-      harness: SessionRecord["harness"]
-      openedBy: string | null
-      connection: string | null
-      model: string | null
-    },
-  ): Promise<SessionRecord>
-  /** Opens a profile-manager session over `handle`'s profile, opened by `by`, with `text` as its first message.
-   *  Only the chat harness runs one; Codex sessions don't. */
-  startManager?(handle: string, text: string, options?: { by?: string | null }): Promise<SessionRecord>
-  /** A message from `by` (the opener when null): a turn, a steer, an answer or queued. */
-  prompt(sessionId: string, text: string, options?: { by?: string | null }): Promise<string>
-  /** Steers the running reply as `by`; with no reply running it is a `prompt`. */
-  steer(sessionId: string, text: string, options?: { by?: string | null }): Promise<string>
-  /** Ends the session, interrupting a busy reply first; ending one already ending is a no-op. */
-  end(sessionId: string): Promise<void>
-  /** Continues an ended session as a new one opened by `by`. */
-  continueSession(sessionId: string, options?: { by?: string | null }): Promise<SessionRecord>
-  /** Sets the session's cost cap. */
-  setCostCap(sessionId: string, usd: number): Promise<SessionRecord>
-  /** Switches the session's connection and model for its next turn. */
-  setModel(sessionId: string, connection: string, model: string): Promise<SessionRecord>
-  /** What a client reads of the session before following its live events. */
-  messages(sessionId: string): Message[] | Promise<Message[]>
-  /** What memory says about its runs, for Run Logs; the chat harness implements it. */
-  live?(): Live
-  /** Closes each parked worker whose connection changed; the chat harness implements it. Never rejects. */
-  connectionsChanged?(): Promise<void>
-}
 
 /** What a route sees: the office, who the request acts as and from which device (device tokens fill them),
  *  and the request's abort signal and query. */

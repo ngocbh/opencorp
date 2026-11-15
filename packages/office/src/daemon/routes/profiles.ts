@@ -14,10 +14,11 @@ import { mayEditProfile } from "../../company/access.ts"
 import { type CompanyRepo, loadRepo, missingPerson } from "../../company/loader.ts"
 import { applyProposal, ProposalNotFound, ProposalNotOpen } from "../../profile/manager.ts"
 import { type GitProfileStore, ProfileConflict, ProfileRefused, ProfileUnreadable } from "../../profile/store.ts"
+import type { SessionHarness } from "../../runtime/sessions/harness.ts"
 import { newId } from "../../store/store.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, RawReply, type Route } from "../http.ts"
-import type { RequestContext, SessionHarness } from "../office.ts"
+import type { RequestContext } from "../office.ts"
 import { harnessCall } from "./sessions.ts"
 
 /** The company repo in the working tree; 404 for no person `handle`, or one whose person.yaml doesn't load. */
