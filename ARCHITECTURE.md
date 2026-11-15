@@ -2,8 +2,8 @@
 
 This repo holds OpenCorp's packages: the office daemon, the protocol it shares with its clients, the
 client library, the TUI, the CLI and HQ's web app, with Yian as a submodule. This file maps them,
-lays out the office's layers and lists the rules the code relies on. The office is moving to the
-layout below (#889). While the moves run, this file describes the target.
+lays out the office's layers and lists the rules the code relies on. The office's code follows the
+layout below.
 
 ## The packages
 
@@ -64,14 +64,6 @@ Each category is a top-level folder of `packages/office/src/`. The order, lowest
    (with its subpaths). `platform.ts` may also import `bun:`. util knows nothing of the company, models, flows or the
    office's state.
 
-Until the moves are done, a ratchet list, `UPWARD` in `packages/office/tests/repo/places.ts`, exempts
-each import that still breaks rule 2 or 4, and the change that fixes an import deletes its line.
-
-`places.ts` also maps each file's path today to its final one (`PLACES`, `TEST_PLACES`) and lists the folder
-cycles left in `CYCLES`; `packages/office/script/relayout.ts` makes each move. A new file in an old folder (one that
-still holds a `PLACES` entry) needs its own `PLACES` or `TEST_PLACES` entry, naming its final path in the layers
-above; the layer and layout tests fail until it has one.
-
 **Type-only imports count.**
 - A card's "Depends on" is the design dependency. A type import ties a module to the shape of the code above it:
   a change there breaks its typecheck. Hiding it would make the card false.
@@ -106,37 +98,41 @@ hold one file.
 
 ### Folder cards
 
-Same-category dependencies are named by folder; "runtime" alone means its root files. Users outside
-the office package come after a `;`. These are the folders after the moves (moving there now).
+These are the folders. In "Depends on" and "Used by", a category alone ("runtime") means its root files, or the
+whole category for util, company and models, which have no code folders; "runtime/store" or "runtime/{runs, store}"
+names folders, and "runtime (root, store)" names both. Users outside the office package come after a `;`.
+Each card's "Depends on" and "Used by", up to the `;`, are checked against the imports
+(`packages/office/tests/repo/layer_direction.test.ts`, "each folder card in ARCHITECTURE.md names what its folder
+imports and what imports it").
 
 | Folder | Is | Does | Depends on | Used by |
 |---|---|---|---|---|
 | `company/template/` | The starting company (data) | The files `init` writes into a new repo; `template.ts` reads them | — | `company/template.ts` |
-| `runtime/` root files | Asset secrets and the event bus | `secrets.ts`: asset secrets under `office/secrets`. `bus.ts`: the office's events and live events | util | runtime/permissions, features/{chat, codex}, server |
-| `runtime/store/` | The office's database | Opens and migrates SQLite; rows for sessions, questions, runs, workers, HQ sessions; which statuses are live | util | runtime/{permissions, questions, runs, sessions, worker}, models, tools, tools/codex, features/{chat, codex, doctor, profile, questions}, server |
-| `runtime/sandbox/` | The fence around an agent's commands | bubblewrap and Seatbelt profiles; runs a command in one; `fs_helper.ts`, the file helper that runs inside | util | runtime/service, tools, features/{chat, codex, doctor}, server, `main.ts` |
-| `runtime/auth/` | Who is acting | This device's identity; devices, tokens, passwords; the roster at HEAD | util, company | runtime/service, features/{setup, doctor}, server |
-| `runtime/worker/` | The processes that run flows | Spawns workers, hands them jobs, serves their memories, reaps strays; the worker's entry, its job handlers injected; what a fresh chat run takes from the run it replaces | util, company, runtime/store | runtime/{questions, runs, sessions}, models, tools, every feature, server, `main.ts` |
-| `runtime/service/` | The office as a background service | launchd, systemd, tmux or a plain process; starts, stops and pins the daemon; the programs it may spawn | util, runtime/{auth, sandbox} | features/{codex, setup, doctor}, server, `main.ts` |
-| `runtime/runs/` | The record of runs | Indexes and reads Yian run logs for Run Logs; live runs; outcomes | util, company, runtime/{store, worker} | runtime/sessions, features/{chat, questions}, server |
-| `runtime/sessions/` | What every session harness shares | Status rules and `HarnessError`; the extension hooks; the `SessionHarness` and `CardActor` contracts the routes and cards call | runtime/{store, worker, runs} | features/{chat, codex, questions}, server |
-| `runtime/permissions/` | Who or what may do what | The reference monitor that checks and audits each tool call; the asset kinds it runs; who may manage connections | util, company, runtime, runtime/store | tools, features/chat, server |
+| `runtime/` root files | Asset secrets and the event bus | `secrets.ts`: asset secrets under `office/secrets`. `bus.ts`: the office's events and live events | util | runtime/permissions, features/{chat, codex}, server (root, daemon, hq, routes) |
+| `runtime/store/` | The office's database | Opens and migrates SQLite; rows for sessions, questions, runs, workers, HQ sessions; which statuses are live | util | runtime/{permissions, questions, runs, sessions, worker}, models, tools (root, codex), features/{chat, codex, doctor, profile, questions}, server (root, daemon, hq, routes) |
+| `runtime/sandbox/` | The fence around an agent's commands | bubblewrap and Seatbelt profiles; runs a command in one; `fs_helper.ts`, the file helper that runs inside | util | runtime/service, tools, features/{chat, codex, doctor}, server (root, daemon), main.ts |
+| `runtime/auth/` | Who is acting | This device's identity; devices, tokens, passwords; the roster at HEAD | util, company | runtime/service, features/{doctor, setup}, server (root, commands, hq, routes) |
+| `runtime/worker/` | The processes that run flows | Spawns workers, hands them jobs, serves their memories, reaps strays; the worker's entry, its job handlers injected; what a fresh chat run takes from the run it replaces | util, company, runtime/store | runtime/{questions, runs, sessions}, models, tools, features/{chat, codex, doctor, profile, questions, reach, setup}, server (root, daemon, routes), main.ts |
+| `runtime/service/` | The office as a background service | launchd, systemd, tmux or a plain process; starts, stops and pins the daemon; the programs it may spawn | util, runtime/{auth, sandbox} | features/{codex, doctor, setup}, server (root, commands, daemon, hq), main.ts |
+| `runtime/runs/` | The record of runs | Indexes and reads Yian run logs for Run Logs; live runs; outcomes | util, company, runtime/{store, worker} | runtime/sessions, features/{chat, questions}, server (root, daemon, routes) |
+| `runtime/sessions/` | What every session harness shares | Status rules and `HarnessError`; the extension hooks; the `SessionHarness` and `CardActor` contracts the routes and cards call | runtime/{runs, store, worker} | features/{chat, codex, questions}, server (root, daemon, routes) |
+| `runtime/permissions/` | Who or what may do what | The reference monitor that checks and audits each tool call; the asset kinds it runs; who may manage connections | util, company, runtime (root, store) | tools, features/chat, server/{daemon, routes} |
 | `runtime/questions/` | Questions held for an answer | Holds an `ask_user` or `ask_manager` until answered; checks, normalizes and formats answers | util, company, runtime/{store, worker} | tools, features/{chat, questions} |
-| `models/` | Model connections and policy | As its category card; `flows/check_model.yaml` is the check's flow | util, runtime/{store, worker} | features/{chat, codex, doctor, reach, setup}, server, `main.ts` |
+| `models/` | Model connections and policy | As its category card; `flows/check_model.yaml` is the check's flow | util, runtime/{store, worker} | features/{chat, codex, doctor, reach, setup}, server (root, commands, daemon, routes), main.ts |
 | `tools/` root files | The typed tools | Builds each run's tool groups: company (`ask_manager`, work items), workspace (files and shell in the sandbox), toolbox (asset tools) | util, company, runtime/{permissions, questions, sandbox, store, worker} | features/chat |
 | `tools/codex/` | The Codex instrument's driver | Runs `codex app-server`, speaks its JSON-RPC, translates its events and approvals | util, runtime/store | features/{chat, codex, doctor} |
-| `features/chat/` | Conversations with an employee | Drives a session's runs: run specs, transcripts, the live relay. Its flows are in `company/template/shared/flows/` | util, company, runtime (root, permissions, questions, runs, sandbox, sessions, store, worker), models, tools, tools/codex, features/{codex, profile} | features/questions (types), server |
-| `features/codex/` | The owner's Codex sessions (#144) | A session harness beside the chat harness | util, company, runtime (root, sandbox, service, sessions, store, worker), models, tools/codex | features/chat, server |
-| `features/questions/` | What people do with a question | Card actions and side chats; registers itself as an office extension. `side_chat.yaml` is in the template | util, company, runtime/{questions, runs, sessions, store, worker}, features/chat (types) | server |
-| `features/profile/` | The profile manager | A chat that proposes edits to a person's profile. `profile_manager.yaml` is in the template | company, runtime/{store, worker} | features/chat, server |
-| `features/setup/` | Setting up this machine's office | `init`, `onboard`, `offboard`: `flows/init.yaml`, the interview, `tools/draft.ts`, the model picker (until yian#1714), the prompters | util, company, runtime/{auth, service, worker}, models | features/{doctor, reach}, server |
-| `features/doctor/` | The health check (no flow) | Checks home, company, model, service, sandbox and Codex; HQ's checks are passed in by `server/` | util, company, runtime/{auth, sandbox, service, store, worker}, models, tools/codex, features/setup | server |
+| `features/chat/` | Conversations with an employee | Drives a session's runs: run specs, transcripts, the live relay. Its flows are in `company/template/shared/flows/` | util, company, runtime (root, permissions, questions, runs, sandbox, sessions, store, worker), models, tools (root, codex), features/{codex, profile} | features/questions, server (root, daemon, routes) |
+| `features/codex/` | The owner's Codex sessions (#144) | A session harness beside the chat harness | util, company, runtime (root, sandbox, service, sessions, store, worker), models, tools/codex | features/chat, server (root, daemon) |
+| `features/questions/` | What people do with a question | Card actions and side chats; registers itself as an office extension. `side_chat.yaml` is in the template | util, company, runtime/{questions, runs, sessions, store, worker}, features/chat | server (root, daemon, routes) |
+| `features/profile/` | The profile manager | A chat that proposes edits to a person's profile. `profile_manager.yaml` is in the template | company, runtime/{store, worker} | features/chat, server/routes |
+| `features/setup/` | Setting up this machine's office | `init`, `onboard`, `offboard`: `flows/init.yaml`, the interview, `tools/draft.ts`, the model picker (until yian#1714), the prompters | util, company, runtime/{auth, service, worker}, models | features/{doctor, reach}, server/{commands, routes} |
+| `features/doctor/` | The health check (no flow) | Checks home, company, model, service, sandbox and Codex; HQ's checks are passed in by `server/` | util, company, runtime/{auth, sandbox, service, store, worker}, models, tools/codex, features/setup | server/{commands, hq} |
 | `features/reach/` | Reaching an HQ on another machine | `opencorp hq`: learn the path (`flows/learn_hq.yaml`), replay it, connect | util, runtime/worker, models, features/setup | ; the CLI only |
-| `server/` root files | What every server part takes | `office.ts`: the `Office`, `RequestContext`, and `OfficeHq`, what the socket routes call on HQ. `http.ts`: HTTP plumbing and errors. `auth.ts`: who a request acts as | util, company, runtime (root, auth, runs, sandbox, service, sessions, store, worker), models, features/{chat, codex, questions} | server/{routes, hq, daemon} |
-| `server/routes/` | The office's API | The HTTP routes clients call on the socket, HQ's among them (`hq.ts`) | server, util, company, runtime (root, auth, permissions, runs, sessions, store, worker), models, features/{chat, profile, questions, setup} | server/{hq, daemon} |
-| `server/hq/` | HQ's web server | Serves the web app: guard, login, pairing, browser sessions, its API; the app's build ids (`version.ts`); HQ's checks for doctor (`checks.ts`) | server, server/routes, util, company, runtime (root, auth, service, store), features/doctor | server/{daemon, commands}; the CLI, the app |
-| `server/daemon/` | The office process | Start and stop, the lock, sockets, extensions; builds the `Office` and wires everything | everything below; server, server/{routes, hq} | `main.ts` |
-| `server/commands/` | The setup commands' process | `opencorp install init/onboard/offboard/doctor/start/stop/restart`, in a child; JSON prompts for the TUI | util, company, runtime/{auth, service}, models, features/{setup, doctor}, server/hq | `main.ts` |
+| `server/` root files | What every server part takes | `office.ts`: the `Office`, `RequestContext`, and `OfficeHq`, what the socket routes call on HQ. `http.ts`: HTTP plumbing and errors. `auth.ts`: who a request acts as | util, company, runtime (root, auth, runs, sandbox, service, sessions, store, worker), models, features/{chat, codex, questions} | server/{daemon, hq, routes} |
+| `server/routes/` | The office's API | The HTTP routes clients call on the socket, HQ's among them (`hq.ts`) | util, company, runtime (root, auth, permissions, runs, sessions, store, worker), models, features/{chat, profile, questions, setup}, server | server/{daemon, hq} |
+| `server/hq/` | HQ's web server | Serves the web app: guard, login, pairing, browser sessions, its API; the app's build ids (`version.ts`); HQ's checks for doctor (`checks.ts`) | util, company, runtime (root, auth, service, store), features/doctor, server (root, routes) | server/{commands, daemon}; the CLI, the app |
+| `server/daemon/` | The office process | Start and stop, the lock, sockets, extensions; builds the `Office` and wires everything | util, company, runtime (root, permissions, runs, sandbox, service, sessions, store, worker), models, features/{chat, codex, questions}, server (root, hq, routes) | main.ts |
+| `server/commands/` | The setup commands' process | `opencorp install init/onboard/offboard/doctor/start/stop/restart`, in a child; JSON prompts for the TUI | util, company, runtime/{auth, service}, models, features/{doctor, setup}, server/hq | main.ts |
 
 **Inside each category, folders are ordered:**
 - runtime: root, store, sandbox, auth → worker, service → questions, runs, permissions → sessions;
@@ -170,11 +166,10 @@ packages/office/src/features/<feature>/
 
 - A prompt stays inline in its flow. It moves to a file that flows `!include` only when several flows share it.
 - Fixed text and data that code shows, such as risk texts, are files the code embeds, as it embeds flows, not `.ts` constants.
-- A tool goes in the shared `src/tools/` only when flows of more than one feature call it under the same trust model: the same sandbox and the same approver. A tool whose safety depends on who runs it stays in its feature, even when another feature has one of the same name. `features/reach/tools/shell.ts` (today `reach/tools/shell.ts`) runs unsandboxed as the owner, after the owner approves each command; `tools/workspace.ts`'s `shell` runs sandboxed in an employee's workspace.
+- A tool goes in the shared `src/tools/` only when flows of more than one feature call it under the same trust model: the same sandbox and the same approver. A tool whose safety depends on who runs it stays in its feature, even when another feature has one of the same name. `features/reach/tools/shell.ts` runs unsandboxed as the owner, after the owner approves each command; `tools/workspace.ts`'s `shell` runs sandboxed in an employee's workspace.
 - yian's built-ins (`ask_user`, `load_skill`, …) aren't host tools. A feature supplies only how a question reaches a person: its ask handler, in `run.ts`.
 - An employee's own SOPs are flows in the company repo (`company/template/`), not in a feature folder.
 - Tests mirror the layout: `tests/features/<feature>/tools/<tool>.test.ts`, `tests/features/<feature>/run.test.ts`.
-- The old folders move to this layout only through #889's codemod; don't move them by hand.
 
 ## Rules that must not break
 
@@ -185,9 +180,9 @@ packages/office/src/features/<feature>/
 | src loads modules only with `import`, never `require()`, `module.require`, `import.meta.require` or `createRequire`; a dynamic import names its module in one quoted string | the same ("src loads modules only with import, never require", "every dynamic import in src names its module in one quoted string") |
 | The daemon loads only builtins and the pre-re-exec files before it re-execs; `daemonMain` pins first | the same ("the daemon loads only builtins and the pre-re-exec files before it re-execs", "daemonMain pins the daemon before it loads the daemon") |
 | The sandbox helper imports only `node:` | the same ("the sandbox helper imports only node builtins"), and `packages/cli/test/entry.test.ts` ("the fs helper imports only node builtins") |
-| The cards match the imports | the same, once the moves are done |
-| `tests/` mirrors `src/`; every old test file is placed; feature folders keep their shape | `packages/office/tests/repo/layout.test.ts` |
-| Only the worker hosts yian runs | "no office code outside the worker calls a yian host function" in `packages/office/tests/features/chat/session_actor.test.ts` (today `tests/chat/`) |
+| The cards match the imports | the same ("each folder card in ARCHITECTURE.md names what its folder imports and what imports it") |
+| `tests/` mirrors `src/`; feature folders keep their shape | `packages/office/tests/repo/layout.test.ts` |
+| Only the worker hosts yian runs | "no office code outside the worker calls a yian host function" in `packages/office/tests/features/chat/session_actor.test.ts` |
 | Protocol changes update every package | the TUI's and HQ's contract tests against a real office (existing) |
 | Secrets never in argv, logs or the model | no single test: HQ pairing's, login's and redaction's tests each cover part (existing) |
 | The run log is the source of truth; everything is a flow | no test; held in review |
@@ -199,10 +194,9 @@ take their types from them, and nothing is generated.
 
 A PR may add, rename or remove a protocol field as long as it updates every package that uses it
 (office, client, TUI, CLI, HQ app) in the same PR, and adds the matching store migration in
-`packages/office/src/runtime/store/migrations/` (today `src/store/migrations/`) when a field lands on
-a schema the store persists, since inserts fail until the column exists. The additive-only rule and
-the schema-only-PR rule the port suspended stay off until there are outside clients to keep
-compatible.
+`packages/office/src/runtime/store/migrations/` when a field lands on a schema the store persists,
+since inserts fail until the column exists. The additive-only rule and the schema-only-PR rule the
+port suspended stay off until there are outside clients to keep compatible.
 
 Clients ignore enum values and event types they don't know. Make timestamps with `now()` from
 `@opencorp/protocol`.

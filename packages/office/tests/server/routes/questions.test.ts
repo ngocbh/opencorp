@@ -33,8 +33,8 @@ import {
 setDefaultTimeout(60_000)
 afterAll(noWorkersLeft)
 
-// The same stand-in for the session harness as tests/questions/cards.test.ts, less the knobs these tests leave unused;
-// no test here interrupts a session.
+// The same stand-in for the session harness as tests/features/questions/cards.test.ts, less the knobs these tests
+// leave unused; no test here interrupts a session.
 class StandIn implements CardActor {
   readonly hooks: Hooks
   readonly answered: [string, unknown, AnswerKind, string | null][] = []

@@ -237,7 +237,7 @@ export async function guarded(
   }, limits)
   const sock = path.join(shortDir(), "s")
   onTestFinished(async () => {
-    // As tests/daemon/helpers.ts's `serve`: on Bun, closeAllConnections also stops the listener.
+    // As tests/server/helpers.ts's `serve`: on Bun, closeAllConnections also stops the listener.
     server.closeAllConnections()
     await new Promise<void>((resolve) => server.close(() => resolve()))
     fs.rmSync(sock, { force: true })

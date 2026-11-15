@@ -1,5 +1,5 @@
 /**
- * Reads the office's import graph from source text, for the repo tests and the relayout codemod.
+ * Reads the office's import graph from source text, for the repo tests.
  *
  * `blank` is a small lexer that hides comments and the contents of strings, templates and regex literals, so the
  * import pattern only sees code. It understands TypeScript well enough for that, not fully.
@@ -36,12 +36,6 @@ const IDENTIFIER = /[\p{ID_Continue}$]/u
 
 type State = "code" | "line" | "block" | "string" | "template" | "regex" | "class"
 
-/** A string literal's or template part's text, between its delimiters: `text.slice(start, end)`. */
-export interface Literal {
-  start: number
-  end: number
-}
-
 /**
  * `text` with comments and the contents of strings, templates and regex literals replaced by spaces.
  *
@@ -49,19 +43,7 @@ export interface Literal {
  * and line numbers match the original.
  */
 export function blank(text: string): string {
-  return lex(text).code
-}
-
-/** The string literals and template parts of `text`, in order. */
-export function literals(text: string): Literal[] {
-  return lex(text).literals
-}
-
-/** `blank`'s text, and the spans of every string literal and template part. */
-function lex(text: string): { code: string; literals: Literal[] } {
   const out = text.split("")
-  const found: Literal[] = []
-  let opened = 0
   const hide = (i: number): void => {
     if (i < text.length && text[i] !== "\n" && text[i] !== "\r") out[i] = " "
   }
@@ -91,10 +73,8 @@ function lex(text: string): { code: string; literals: Literal[] } {
         } else if (c === '"' || c === "'") {
           state = "string"
           quote = c
-          opened = i + 1
         } else if (c === "`") {
           state = "template"
-          opened = i + 1
         } else if (IDENTIFIER.test(c)) {
           let j = i
           while (j + 1 < text.length && IDENTIFIER.test(text[j + 1]!)) j++
@@ -110,7 +90,6 @@ function lex(text: string): { code: string; literals: Literal[] } {
         } else if (c === "}" && substitutions.at(-1) === 0) {
           substitutions.pop()
           state = "template"
-          opened = i + 1
         } else {
           if (substitutions.length > 0 && (c === "{" || c === "}")) {
             substitutions.push(substitutions.pop()! + (c === "{" ? 1 : -1))
@@ -140,7 +119,6 @@ function lex(text: string): { code: string; literals: Literal[] } {
           hide(i)
           if (next !== "\n") hide(++i)
         } else if (state === "string" && c === quote) {
-          found.push({ start: opened, end: i })
           state = "code"
           regexOk = false
         } else if (state === "regex" && c === "/") {
@@ -161,11 +139,9 @@ function lex(text: string): { code: string; literals: Literal[] } {
           hide(i)
           hide(++i)
         } else if (c === "`") {
-          found.push({ start: opened, end: i })
           state = "code"
           regexOk = false
         } else if (c === "$" && next === "{") {
-          found.push({ start: opened, end: i })
           substitutions.push(0)
           state = "code"
           regexOk = true
@@ -176,7 +152,7 @@ function lex(text: string): { code: string; literals: Literal[] } {
         break
     }
   }
-  return { code: out.join(""), literals: found }
+  return out.join("")
 }
 
 // `import`/`export … from "x"`, side-effect `import "x"`, and `import("x")`; the keyword guard keeps a
@@ -192,40 +168,20 @@ export interface Import {
   kind: ImportKind
   /** The module specifier, as written. */
   specifier: string
-  /** The offsets of the specifier's text, inside its quotes. */
-  start: number
-  end: number
-  /** The 1-based line of the specifier. */
-  line: number
   /** Whether loading the importer never loads the target: `import type`, `export type`, or only `type` names. */
   typeOnly: boolean
   /** Whether it is a file import (`with { type: "file" }`). */
   data: boolean
-  /** The names it takes: `default`, `*`, the imported (not local) names, or `import()` for a dynamic import. */
-  names: string[]
 }
 
-/** The names a `{ … }`, default or `* as` clause takes, and whether all are types. */
-function clauseNames(clause: string): { names: string[]; typeOnly: boolean } {
-  let rest = clause.trim()
-  const typeAll = /^type\s/.test(rest) && !/^type\s*,/.test(rest) && !/^type\s+from$/.test(rest)
-  if (typeAll) rest = rest.replace(/^type\s+/, "")
-  const names: string[] = []
-  let allTypes = true
-  const braces = rest.match(/\{([^}]*)\}/)
-  const outside = rest.replace(/\{[^}]*\}/, "").trim()
-  for (const part of outside.split(",").map((p) => p.trim()).filter(Boolean)) {
-    names.push(part.startsWith("*") ? "*" : "default")
-    allTypes = false
-  }
-  if (braces) {
-    for (const part of braces[1]!.split(",").map((p) => p.trim()).filter(Boolean)) {
-      const typed = /^type\s+/.test(part)
-      if (!typed) allTypes = false
-      names.push(part.replace(/^type\s+/, "").split(/\s+as\s+/)[0]!.trim())
-    }
-  }
-  return { names, typeOnly: typeAll || (names.length > 0 && allTypes) }
+/** Whether a `{ … }`, default or `* as` clause takes only types: `type` before it all, or before each of at least
+ *  one name in braces, with no default or `* as` beside them. */
+function typeOnlyClause(clause: string): boolean {
+  const rest = clause.trim()
+  if (/^type\s/.test(rest) && !/^type\s*,/.test(rest) && !/^type\s+from$/.test(rest)) return true
+  if (rest.replace(/\{[^}]*\}/, "").split(",").some((part) => part.trim())) return false
+  const names = (rest.match(/\{([^}]*)\}/)?.[1] ?? "").split(",").map((part) => part.trim()).filter(Boolean)
+  return names.length > 0 && names.every((name) => /^type\s+/.test(name))
 }
 
 /** Every import and re-export in `text`. A backtick specifier (`` import(`./x.ts`) ``) isn't recognized. */
@@ -237,25 +193,20 @@ export function importsOf(text: string): Import[] {
     const start = end - match[2]!.length
     const specifier = text.slice(start, end)
     const head = code.slice(match.index, start - 1)
-    const line = text.slice(0, start).split("\n").length
     // The attribute may span lines and end with a comma.
     const data = /^\s*with\s*\{\s*type\s*:\s*["']file["']\s*,?\s*\}/.test(text.slice(end + 1))
     if (/^import\s*\(/.test(head)) {
-      found.push({ kind: "dynamic", specifier, start, end, line, typeOnly: false, data: false, names: ["import()"] })
+      found.push({ kind: "dynamic", specifier, typeOnly: false, data: false })
     } else if (/(?<![\w$])from\s*$/.test(head)) {
       const clause = head.replace(/^(?:import|export)/, "").replace(/(?<![\w$])from\s*$/, "")
-      const { names, typeOnly } = clauseNames(clause)
-      found.push({ kind: "static", specifier, start, end, line, typeOnly, data, names })
+      found.push({ kind: "static", specifier, typeOnly: typeOnlyClause(clause), data })
     } else {
-      found.push({ kind: "side", specifier, start, end, line, typeOnly: false, data, names: [] })
+      found.push({ kind: "side", specifier, typeOnly: false, data })
     }
   }
   // A triple-slash reference lives in a comment, which `blank` hides. Its path may take either quote.
   for (const match of text.matchAll(/^\/\/\/[ \t]*<reference[ \t]+path[ \t]*=[ \t]*(["'])((?:(?!\1)[^\n])+)\1/gm)) {
-    const end = match.index + match[0].length - 1
-    const start = end - match[2]!.length
-    const line = text.slice(0, start).split("\n").length
-    found.push({ kind: "reference", specifier: match[2]!, start, end, line, typeOnly: true, data: false, names: [] })
+    found.push({ kind: "reference", specifier: match[2]!, typeOnly: true, data: false })
   }
   return found
 }

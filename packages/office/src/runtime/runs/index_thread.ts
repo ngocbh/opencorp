@@ -62,7 +62,7 @@ const SKIPPED = /^run index skipped (.+?\/log\.jsonl): /
 // The read names a row it skips by its run id.
 const SKIPPED_ROW = /^run index skipped (.+?): /
 
-// Local, as worker/rpc.ts's errorName would load yian's root, tools, zod and the protocol into this thread.
+// Local, as runtime/worker/rpc.ts's errorName would load yian's root, tools, zod and the protocol into this thread.
 const NAME = /^[A-Za-z_$][\w$]{0,63}$/
 const FS_CODE = /^E[A-Z0-9]{1,15}$/
 

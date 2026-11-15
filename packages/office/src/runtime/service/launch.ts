@@ -1,6 +1,6 @@
 /** How the office daemon is started: its command, environment, folder and log, the host it runs on, and the
- *  check that pins a running daemon to them. Imports only `node:*`, `platform.ts`, `daemon/sockets.ts`, `proc.ts` and
- *  `util/env.ts`: `daemonMain` runs `pinDaemon` before the daemon module loads. */
+ *  check that pins a running daemon to them. Imports only `node:*`, `platform.ts`, `util/sockets.ts`,
+ *  `util/proc.ts` and `util/env.ts`: `daemonMain` runs `pinDaemon` before the daemon module loads. */
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
@@ -322,7 +322,7 @@ export async function officeAnswers(socket: string, timeoutMs = 2000): Promise<b
 }
 
 /** What installing touches on this machine: the platform, the user's home, and how to run things. Tests pass
- *  stand-ins (`tests/install/helpers.ts`). */
+ *  stand-ins (`tests/features/setup/helpers.ts`). */
 export interface Host {
   /** The platform the service is installed for. */
   platform: NodeJS.Platform

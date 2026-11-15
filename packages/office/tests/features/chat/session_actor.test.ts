@@ -3076,7 +3076,7 @@ const SRC = fileURLToPath(new URL("../../../src/", import.meta.url))
 // The yian functions that drive a run: only a worker calls them, on the run it hosts.
 const HOST_CALLS = new Set(["send", "complete", "close", "interrupt", "cancel", "advance"])
 const HOST_MODULES = new Set(["@ngocbh/yian", "@ngocbh/yian/run"])
-// Modules that call host functions and run in the worker: only src/worker/ loads them.
+// Modules that call host functions and run in the worker: only src/runtime/worker/ loads them.
 const WORKER_ONLY = new Set(["runtime/worker/main", "runtime/worker/history"])
 // Strings are matched so that a `//` or `/*` inside one isn't read as a comment.
 const COMMENT = /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g
@@ -3171,7 +3171,7 @@ test("no office code outside the worker calls a yian host function", () => {
   expect(hostImports("main.ts", 'await import("./runtime/worker/main.ts")')).toEqual([])
   const files = fs
     .readdirSync(SRC, { recursive: true, encoding: "utf8" })
-    .filter((file) => file.endsWith(".ts") && !file.startsWith("runtime/worker/") && file !== "runtime/worker/history.ts")
+    .filter((file) => file.endsWith(".ts") && !file.startsWith("runtime/worker/"))
   expect(files).toContain("features/chat/session_actor.ts")
   expect(files.flatMap((file) => hostImports(file, fs.readFileSync(path.join(SRC, file), "utf8")))).toEqual([])
 })
