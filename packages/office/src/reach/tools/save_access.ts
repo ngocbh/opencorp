@@ -3,7 +3,7 @@
 import { type FunctionTool, ReportedToolError, tool } from "@ngocbh/yian"
 import { clean } from "../../install/prompts.ts"
 import { redact, strip } from "../../perm/redact.ts"
-import { writePrivate } from "../../secrets.ts"
+import { writePrivate } from "../../util/private_files.ts"
 import { type Connection, connect, describe, ReachFailure } from "../connect.ts"
 import {
   ASCII_ONLY,

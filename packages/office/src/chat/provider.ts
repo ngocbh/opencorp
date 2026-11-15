@@ -9,7 +9,7 @@ import {
 } from "@ngocbh/yian/llm_clients"
 import { z } from "zod"
 import { unsafeEnvName } from "../platform.ts"
-import { PrivateFileError, readPrivate } from "../secrets.ts"
+import { PrivateFileError, readPrivate } from "../util/private_files.ts"
 
 const CREDENTIAL_NAME = /(_KEY|_APIKEY|_TOKEN|_SECRET|_PASS|_CREDENTIALS)$|PASSWORD/
 const VARIABLE = /^[A-Z_][A-Z0-9_]{0,63}$/

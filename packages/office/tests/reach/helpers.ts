@@ -15,8 +15,8 @@ import type { Spec } from "../../src/reach/spec.ts"
 import { type ReachContext, writeSshFiles } from "../../src/reach/ssh.ts"
 import { DEFAULT_PORT, sha256, writeAccess } from "../../src/reach/state.ts"
 import type { VisitDeps } from "../../src/reach/run.ts"
-import { writePrivate } from "../../src/secrets.ts"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "../../src/testing/fake_ssh.ts"
+import { writePrivate } from "../../src/util/private_files.ts"
 import { ACCOUNT, fakeSubscription, NO_LISTING, Script } from "../install/helpers.ts"
 
 /** Limits short enough that a test which hits one still finishes. */

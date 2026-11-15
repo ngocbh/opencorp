@@ -9,7 +9,7 @@ import { HOW_SIGN_IN, providerSecrets, SUBSCRIPTION } from "../../src/install/on
 import { OnboardError } from "../../src/install/prompts.ts"
 import { ReachPaths } from "../../src/reach/paths.ts"
 import { learnProvider } from "../../src/reach/provider.ts"
-import { writePrivate } from "../../src/secrets.ts"
+import { writePrivate } from "../../src/util/private_files.ts"
 import { ACCESS_TOKEN, ACCOUNT, fakeSubscription, NO_LISTING, REFRESH_TOKEN, Script } from "../install/helpers.ts"
 import { fakeHome, KEY, reachCtx, rejection, subscribed, SUBSCRIBED_LLM, tokens } from "./helpers.ts"
 

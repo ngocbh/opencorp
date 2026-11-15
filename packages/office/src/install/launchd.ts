@@ -1,7 +1,7 @@
 /** The office as a macOS launch agent: a plist in `~/Library/LaunchAgents` loaded with `launchctl`. */
 import fs from "node:fs"
 import path from "node:path"
-import { strerror } from "../sandbox/fs_helper.ts"
+import { strerror } from "../util/errors.ts"
 import { writeIfChanged } from "./files.ts"
 import { type Completed, type Host, type Launch, ServiceError } from "./launch.ts"
 

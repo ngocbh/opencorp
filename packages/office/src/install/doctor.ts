@@ -18,9 +18,7 @@ import { companyState, missingFiles } from "../company_template/index.ts"
 import { CodexMissing, codexCommand } from "../harness/codex.ts"
 import { otherPort } from "../hq/config.ts"
 import { RETRY_MS } from "../hq/servers.ts"
-import { CHECKOUT } from "../hq/version.ts"
 import { selfCommand, tuiAssetRoot } from "../platform.ts"
-import { strerror } from "../sandbox/fs_helper.ts"
 import {
   checkClearOf,
   checkWorkspace,
@@ -32,7 +30,9 @@ import { fsHelper, run } from "../sandbox/run.ts"
 import { latestVersion, newerStore, userVersion } from "../store/migrate.ts"
 import { storeProblem } from "../store/problem.ts"
 import { StoreError } from "../store/store.ts"
+import { CHECKOUT } from "../util/checkout.ts"
 import { type Env, which } from "../util/env.ts"
+import { strerror } from "../util/errors.ts"
 import { OfficePaths } from "../util/home.ts"
 import { plainAuthError } from "../worker/rpc.ts"
 import { workerEnv } from "../worker/spawn.ts"
@@ -1101,7 +1101,7 @@ export interface CheckOptions {
   host?: Host
   /** The argv prefix that runs the office's own code (default `selfCommand()`). */
   command?: readonly [string, ...string[]]
-  /** The OpenCorp checkout the office runs from (default `hq/version.ts`'s `CHECKOUT`). */
+  /** The OpenCorp checkout the office runs from (default `CHECKOUT`). */
   repo?: string
   /** Why a sandboxed command can't run for the office at the given home, or null if one does (default
    *  `sandboxProblem`). */

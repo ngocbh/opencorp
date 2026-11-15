@@ -26,7 +26,7 @@ import {
   providerModels,
   TIMED_OUT,
 } from "../../src/chat/models.ts"
-import { writePrivate } from "../../src/secrets.ts"
+import { writePrivate } from "../../src/util/private_files.ts"
 import { tempDir, waitFor } from "../helpers.ts"
 
 const SENTINEL = "sk-sentinel-3c9e10b7a2f4"

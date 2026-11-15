@@ -17,6 +17,7 @@ import { makeDevice, makeHome } from "../../src/install/onboard.ts"
 import { sameProcess } from "../../src/install/proc.ts"
 import * as service from "../../src/install/service.ts"
 import { selfSpawnEnv } from "../../src/platform.ts"
+import { CHECKOUT } from "../../src/util/checkout.ts"
 import { type Env, which } from "../../src/util/env.ts"
 import { git, gitEnv } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
@@ -355,6 +356,13 @@ test("offboard with no launcher on path says so", async () => {
   const ask = new Script()
   await offboard(path.join(dir, "nowhere"), ask, { host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
   expect(ask.seen.some((line) => line.includes("No `opencorp` launcher from"))).toBe(true)
+})
+
+test("offboard with no repo reports the checkout it runs from", async () => {
+  const dir = tempDir()
+  const ask = new Script()
+  await offboard(path.join(dir, "nowhere"), ask, { host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+  expect(ask.seen).toContain(`The checkout at ${CHECKOUT} stays; delete it yourself once you're done with OpenCorp.`)
 })
 
 test("offboard never prints the token or the provider", async () => {

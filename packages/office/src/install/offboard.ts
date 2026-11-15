@@ -5,8 +5,9 @@ import { DeviceRefused, removeDevice } from "../auth/devices.ts"
 import { type Identity, identityPath } from "../auth/identity.ts"
 import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import { loadRepo } from "../company/loader.ts"
-import { strerror } from "../sandbox/fs_helper.ts"
+import { CHECKOUT } from "../util/checkout.ts"
 import type { Env } from "../util/env.ts"
+import { strerror } from "../util/errors.ts"
 import { defaultHost, type Host, type Launch, launch, ServiceError } from "./launch.ts"
 import * as launchd from "./launchd.ts"
 import { CLONE, knownIdentity, lexists, removePath, userGit } from "./onboard.ts"
@@ -24,9 +25,6 @@ export const LAUNCHERS: readonly string[] = [
   path.join("packages", "cli", "bin", "opencorp"),
   path.join("packages", "cli", "src", "main.ts"),
 ]
-
-/** The checkout this module runs from; `/` in the compiled binary, which holds none of `LAUNCHERS`. */
-export const REPO = path.resolve(import.meta.dirname, "../../../..")
 
 /** Offboarding stopped; the message says why and what was left. */
 export class OffboardError extends Error {
@@ -284,7 +282,7 @@ export async function offboard(
     yes = false,
     deleteCompany = false,
     host = defaultHost(),
-    repo = REPO,
+    repo = CHECKOUT,
     environ = process.env,
   }: { yes?: boolean; deleteCompany?: boolean; host?: Host; repo?: string; environ?: Env } = {},
 ): Promise<void> {

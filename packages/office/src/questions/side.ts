@@ -4,8 +4,8 @@ import path from "node:path"
 import type { DiscussionEntry } from "@opencorp/protocol"
 import { LIVE } from "../chat/state.ts"
 import type { Transcript } from "../chat/transcript.ts"
-import { checkFolder, replaceFile } from "../secrets.ts"
 import type { SessionRecord, Store } from "../store/store.ts"
+import { checkFolder, replaceFile } from "../util/private_files.ts"
 
 export const EXIT_WORDS: ReadonlySet<string> = new Set(["/exit", "/quit", "/end"])
 export const BACK_HINT = "use /back to return to the question"

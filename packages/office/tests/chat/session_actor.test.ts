@@ -26,9 +26,9 @@ import {
   NEW_MODEL,
   WORKER_STOPPED,
 } from "../../src/runs/outcomes.ts"
-import { writePrivate } from "../../src/secrets.ts"
 import { type QuestionRecord, StoreUnwritable } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import { writePrivate } from "../../src/util/private_files.ts"
 import { type Delivery, STOP_REASON } from "../../src/worker/job.ts"
 import { type Worker, WorkerExists } from "../../src/worker/spawn.ts"
 import type { Frame } from "../../src/worker/channel.ts"

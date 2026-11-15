@@ -6,7 +6,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
 import { logLine } from "../daemon/http.ts"
-import { writePrivate } from "../secrets.ts"
+import { writePrivate } from "../util/private_files.ts"
 import { escapeHtml } from "./static.ts"
 
 /** How long a code lives, in ms. */

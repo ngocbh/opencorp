@@ -24,8 +24,8 @@ import {
   writeAccess,
   writeRedirect,
 } from "../../src/reach/state.ts"
-import { PrivateFileError } from "../../src/secrets.ts"
 import { fakeControlName } from "../../src/testing/fake_ssh.ts"
+import { PrivateFileError } from "../../src/util/private_files.ts"
 import { isGone, shortDir, waitFor } from "../helpers.ts"
 import { fakeHome, reachCtx } from "./helpers.ts"
 
