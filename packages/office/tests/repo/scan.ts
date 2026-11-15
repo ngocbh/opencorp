@@ -1,5 +1,5 @@
 /**
- * Reads the office's import graph from source text, for the repo tests and the relayout codemod.
+ * Reads the office's import graph from source text, for the repo tests.
  *
  * `blank` is a small lexer that hides comments and the contents of strings, templates and regex literals, so the
  * import pattern only sees code. It understands TypeScript well enough for that, not fully.

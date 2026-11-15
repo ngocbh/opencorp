@@ -35,7 +35,7 @@ export function tuiAssetRoot(): string | null {
 export type Helper = { binary: string } | { bun: string; entry: string }
 
 /** How to run the `__fs-helper`, and the files its profile exposes: the compiled binary in its helper
- *  mode, or (checkout) this Bun with the no-autoload flags running `sandbox/fs_helper.ts` as its entry. */
+ *  mode, or (checkout) this Bun with the no-autoload flags running `runtime/sandbox/fs_helper.ts` as its entry. */
 export function helperCommand(): { argv: [string, ...string[]]; helper: Helper } {
   // Resolved paths, as the sandbox profile names them.
   const bin = fs.realpathSync(process.execPath)

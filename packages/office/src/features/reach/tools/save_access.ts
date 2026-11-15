@@ -23,7 +23,7 @@ import { MAX_SCRIPT_BYTES, runBytes } from "./replay.ts"
 /** Control characters other than tab and newline: notes holding one could read other than they are. */
 const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/
 
-/** Why `text` can't be saved, or null: it holds the model's key or a sign-in token (any form `perm/redact.ts`'s
+/** Why `text` can't be saved, or null: it holds the model's key or a sign-in token (any form `util/redact.ts`'s
  *  three-argument `redact` finds), a private key, or a password handed to ssh. */
 export function secretIn(text: string, keys: readonly string[]): string | null {
   if (keys.some((key) => key !== "" && redact(text, [], [key]) !== text)) {

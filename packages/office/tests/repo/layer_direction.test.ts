@@ -1,16 +1,14 @@
 /**
- * The office's layers and import rules (ARCHITECTURE.md, "The office's layers"), held on each file's final path.
+ * The office's layers and import rules (ARCHITECTURE.md, "The office's layers").
  *
  * Every file has a layer; imports go down or stay in their layer; inside a category the folders import one way;
- * util stays generic. `places.ts` maps today's paths to final ones, and its `UPWARD` and `CYCLES` list what still
- * breaks a rule, exactly. Also here: the Bun lints, no `require()`, the sandbox helper's imports, and what the
- * daemon loads before it re-execs.
+ * util stays generic. Also here: the Bun lints, no `require()`, the sandbox helper's imports, what the daemon loads
+ * before it re-execs, and the folder cards' columns.
  */
 import { expect, onTestFinished, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { CYCLES, PLACES, UPWARD } from "./places.ts"
 import { blank, CODE, filesUnder, type Import, importsOf, resolveIn, SRC } from "./scan.ts"
 
 /** The categories, lowest first; `main.ts` sits above them all. */
@@ -20,26 +18,18 @@ const ROOT_FILES: Readonly<Record<string, number>> = { "platform.ts": 1, "files.
 /** `testing/`'s layer: outside the order, it may import anything. */
 const TESTING = 9
 
-/** A `src/` file's final path: its `PLACES` entry, or where it is. */
-const final = (file: string): string => PLACES[file] ?? file
-
-/** Where the file whose final path is `place` is today. */
-function current(place: string): string {
-  return Object.entries(PLACES).find(([, to]) => to === place)?.[0] ?? place
-}
-
-/** The layer of a final path: 1 for util up to 7 for server, 8 for `main.ts`, 9 for `testing/`, 0 for none. */
-function layerOf(place: string): number {
-  if (!place.includes("/")) return ROOT_FILES[place] ?? 0
-  const top = place.split("/")[0]!
+/** The layer of a path under `src/`: 1 for util up to 7 for server, 8 for `main.ts`, 9 for `testing/`, 0 for none. */
+function layerOf(file: string): number {
+  if (!file.includes("/")) return ROOT_FILES[file] ?? 0
+  const top = file.split("/")[0]!
   if (top === "testing") return TESTING
   return CATEGORIES.indexOf(top as (typeof CATEGORIES)[number]) + 1
 }
 
-/** A final path's folder inside its category: `features/chat` for `features/chat/x.ts`, and the category itself
+/** A path's folder inside its category: `features/chat` for `features/chat/x.ts`, and the category itself
  *  for its root files (`platform.ts` and `files.d.ts` are util's). */
-function folderOf(place: string): string {
-  const parts = place.split("/")
+function folderOf(file: string): string {
+  const parts = file.split("/")
   if (parts.length === 1) return "util"
   return parts.length === 2 ? parts[0]! : `${parts[0]}/${parts[1]}`
 }
@@ -55,7 +45,7 @@ function sourceFiles(): string[] {
   return FILES.filter((name) => CODE.test(name))
 }
 
-/** One relative import: who imports, what it names (both today's paths under `src/`), and how. */
+/** One relative import: who imports, what it names (both paths under `src/`), and how. */
 interface Edge {
   from: string
   to: string
@@ -70,23 +60,6 @@ function edges(): Edge[] {
       .map((imp) => ({ from, to: resolveIn(from, imp.specifier), imp })),
   )
 }
-
-/** `edge`'s lines in `UPWARD`'s format, one per name. */
-function lines({ from, to, imp }: Edge): string[] {
-  return (imp.names.length ? imp.names : ["import"]).map((name) => `${from} -> ${to} ${name}`)
-}
-
-/** Whether every line of `edge` is in `UPWARD`, which exempts it from the layer and util rules. */
-const exempt = (edge: Edge): boolean => lines(edge).every((line) => UPWARD.includes(line))
-
-/** The folder `file` (a path under `src/`) is in, under `src/`: `""` for `src/` itself. */
-function folderOfFile(file: string): string {
-  const dir = path.posix.dirname(file)
-  return dir === "." ? "" : dir
-}
-
-/** The old folders: each folder under `src/` that directly holds a `PLACES` entry. */
-const OLD = new Set(Object.keys(PLACES).map(folderOfFile).filter((dir) => dir !== ""))
 
 test("importsOf reads every kind of import, and none in comments or strings", () => {
   const text = [
@@ -137,18 +110,7 @@ test("filesUnder skips node_modules, .git and a package's dist, not a dist insid
 })
 
 test("every file has a layer", () => {
-  const problems: string[] = []
-  for (const file of FILES) {
-    if (OLD.has(folderOfFile(file)) && !(file in PLACES)) problems.push(`${file} is in an old folder but not in PLACES`)
-    if (layerOf(final(file)) === 0) problems.push(`${file} (final path ${final(file)}) is in no layer`)
-  }
-  for (const [from, to] of Object.entries(PLACES)) {
-    if (!FILES.includes(from)) problems.push(`PLACES names ${from}, which doesn't exist`)
-    if (FILES.includes(to) && !(to in PLACES)) problems.push(`PLACES moves ${from} onto ${to}, which exists`)
-  }
-  const finals = Object.values(PLACES)
-  for (const to of new Set(finals.filter((to, i) => finals.indexOf(to) !== i))) problems.push(`two files go to ${to}`)
-  expect(problems).toEqual([])
+  expect(FILES.filter((file) => layerOf(file) === 0)).toEqual([])
   expect(layerOf("server/hq/x.ts")).toBe(7)
   expect(layerOf("hq/x.ts")).toBe(0)
   expect(layerOf("x.ts")).toBe(0)
@@ -201,25 +163,24 @@ test("every dynamic import in src names its module in one quoted string", () => 
 
 test("imports go down or stay in their layer", () => {
   const up = edges().filter(({ from, to }) => {
-    const layer = layerOf(final(from))
-    return layer !== TESTING && layerOf(final(to)) > layer
+    const layer = layerOf(from)
+    return layer !== TESTING && layerOf(to) > layer
   })
-  expect([...new Set(up.flatMap(lines))].sort()).toEqual([...UPWARD].sort())
+  expect(up.map(({ from, to }) => `${from} -> ${to}`)).toEqual([])
 })
 
 test("nothing in src imports testing", () => {
-  const into = edges().filter(({ from, to }) => layerOf(final(from)) !== TESTING && layerOf(final(to)) === TESTING)
+  const into = edges().filter(({ from, to }) => layerOf(from) !== TESTING && layerOf(to) === TESTING)
   expect(into.map(({ from, to }) => `${from} -> ${to}`)).toEqual([])
 })
 
-/** The folder cycles inside each category, each as its folders sorted, the cycles sorted. */
+/** The folder cycles inside each category, each as its folders sorted. */
 function cycles(): string[][] {
   const next = new Map<string, Set<string>>()
   for (const { from, to } of edges()) {
-    const [a, b] = [final(from), final(to)]
-    if (layerOf(a) !== layerOf(b) || layerOf(a) > CATEGORIES.length || folderOf(a) === folderOf(b)) continue
-    if (!next.has(folderOf(a))) next.set(folderOf(a), new Set())
-    next.get(folderOf(a))!.add(folderOf(b))
+    if (layerOf(from) !== layerOf(to) || layerOf(from) > CATEGORIES.length || folderOf(from) === folderOf(to)) continue
+    if (!next.has(folderOf(from))) next.set(folderOf(from), new Set())
+    next.get(folderOf(from))!.add(folderOf(to))
   }
   // Tarjan's strongly connected components; a component of two or more folders is a cycle.
   const index = new Map<string, number>()
@@ -248,16 +209,95 @@ function cycles(): string[][] {
     if (component.length > 1) found.push(component.sort())
   }
   for (const node of [...next.keys()].sort()) if (!index.has(node)) visit(node)
-  return sortCycles(found)
-}
-
-/** `cycles` sorted by their folders, so two lists compare equal whatever order they were found in. */
-function sortCycles(cycles: readonly (readonly string[])[]): string[][] {
-  return cycles.map((cycle) => [...cycle].sort()).sort((a, b) => (a.join() < b.join() ? -1 : a.join() > b.join() ? 1 : 0))
+  return found
 }
 
 test("inside a category the folders have no cycles", () => {
-  expect(cycles()).toEqual(sortCycles(CYCLES))
+  expect(cycles()).toEqual([])
+})
+
+/** The folder that holds only data files (no `.ts`) is part of the folder that embeds it, so it has no card. */
+const DATA_ONLY = new Set(
+  [...new Set(FILES.filter((file) => file.split("/").length > 2).map((file) => file.split("/").slice(0, 2).join("/")))]
+    .filter((dir) => !FILES.some((file) => file.startsWith(`${dir}/`) && file.endsWith(".ts"))),
+)
+
+/** The card `file` belongs to: `main.ts`, a category's root (`runtime`, with `platform.ts` in `util`), or one of
+ *  its folders (`runtime/store`); null for `testing/` and `files.d.ts`, which have none. */
+function cardOf(file: string): string | null {
+  const parts = file.split("/")
+  if (parts.length === 1) return file === "main.ts" ? "main.ts" : file === "platform.ts" ? "util" : null
+  if (parts[0] === "testing") return null
+  if (parts.length === 2) return parts[0]!
+  const dir = `${parts[0]}/${parts[1]}`
+  return DATA_ONLY.has(dir) ? parts[0]! : dir
+}
+
+/** `cards` in the cards' format, by category lowest first: `runtime` for its root files, `runtime/store` for one
+ *  folder, `runtime/{a, b}` for several, `runtime (root, a, b)` for the root and folders, `main.ts`; `—` for none. */
+function cell(cards: ReadonlySet<string> | undefined): string {
+  if (!cards?.size) return "—"
+  const out: string[] = []
+  for (const category of [...CATEGORIES, "main.ts"]) {
+    const mine = [...cards].filter((card) => card === category || card.startsWith(`${category}/`))
+    if (!mine.length) continue
+    const folders = mine.filter((card) => card !== category).map((card) => card.slice(category.length + 1)).sort()
+    if (!folders.length) out.push(category)
+    else if (mine.includes(category)) out.push(`${category} (root, ${folders.join(", ")})`)
+    else out.push(folders.length === 1 ? `${category}/${folders[0]}` : `${category}/{${folders.join(", ")}}`)
+  }
+  return out.join(", ")
+}
+
+/** Each card's "Depends on" and "Used by", from the imports. */
+function cardColumns(): Map<string, { depends: string; usedBy: string }> {
+  const deps = new Map<string, Set<string>>()
+  const users = new Map<string, Set<string>>()
+  for (const { from, to } of edges()) {
+    const [a, b] = [cardOf(from), cardOf(to)]
+    if (a === null || b === null || a === b) continue
+    if (!deps.has(a)) deps.set(a, new Set())
+    if (!users.has(b)) users.set(b, new Set())
+    deps.get(a)!.add(b)
+    users.get(b)!.add(a)
+  }
+  const cards = [...new Set([...deps.keys(), ...users.keys()])].sort()
+  return new Map(cards.map((card) => [card, { depends: cell(deps.get(card)), usedBy: cell(users.get(card)) }]))
+}
+
+const ARCHITECTURE = path.resolve(SRC, "../../../ARCHITECTURE.md")
+
+/** The folder cards' rows in ARCHITECTURE.md, by folder (`runtime` for "`runtime/` root files"): their "Depends on"
+ *  and "Used by", each up to a `;`, after which come users outside the office package. */
+function cardRows(): Map<string, { depends: string; usedBy: string }> {
+  const text = fs.readFileSync(ARCHITECTURE, "utf8")
+  const start = text.indexOf("| Folder | Is | Does | Depends on | Used by |")
+  expect(start).toBeGreaterThanOrEqual(0)
+  const rows = new Map<string, { depends: string; usedBy: string }>()
+  for (const line of text.slice(start).split("\n").slice(2)) {
+    if (!line.startsWith("|")) break
+    const cells = line.split("|").slice(1, -1).map((cell) => cell.trim())
+    const folder = cells[0]!.match(/^`([^`]+?)\/?`/)?.[1]
+    const upTo = (cell: string) => cell.split(";")[0]!.trim() || "—"
+    if (folder !== undefined) rows.set(folder, { depends: upTo(cells[3]!), usedBy: upTo(cells[4]!) })
+  }
+  return rows
+}
+
+test("each folder card in ARCHITECTURE.md names what its folder imports and what imports it", () => {
+  const rows = cardRows()
+  const columns = cardColumns()
+  const problems: string[] = []
+  for (const [card, want] of columns) {
+    if (!/^(runtime|models|tools|features|server)(\/|$)/.test(card)) continue
+    const row = rows.get(card)
+    if (row === undefined) problems.push(`${card}: no card | ${want.depends} | ${want.usedBy}`)
+    else if (row.depends !== want.depends || row.usedBy !== want.usedBy)
+      problems.push(`${card}: | ${want.depends} | ${want.usedBy}`)
+  }
+  for (const folder of rows.keys())
+    if (!DATA_ONLY.has(folder) && !columns.has(folder)) problems.push(`${folder}: a card for no folder`)
+  expect(problems).toEqual([])
 })
 
 /** The packages util may import besides `node:` builtins, and the subpaths of protocol. */
@@ -265,15 +305,14 @@ const UTIL_PACKAGES = /^(node:.+|@ngocbh\/yian\/platform|@opencorp\/protocol(\/.
 
 test("util imports only builtins, platform.ts, util, yian's platform and the protocol", () => {
   const problems: string[] = []
-  for (const from of sourceFiles().filter((file) => layerOf(final(file)) === 1)) {
+  for (const from of sourceFiles().filter((file) => layerOf(file) === 1)) {
     for (const imp of importsOf(source(from))) {
       if (!imp.specifier.startsWith(".")) {
-        const bun = final(from) === "platform.ts" && /^bun:/.test(imp.specifier)
+        const bun = from === "platform.ts" && /^bun:/.test(imp.specifier)
         if (!bun && !UTIL_PACKAGES.test(imp.specifier)) problems.push(`${from}: ${imp.specifier}`)
         continue
       }
-      const edge = { from, to: resolveIn(from, imp.specifier), imp }
-      if (layerOf(final(edge.to)) !== 1 && !exempt(edge)) problems.push(`${from}: ${imp.specifier}`)
+      if (layerOf(resolveIn(from, imp.specifier)) !== 1) problems.push(`${from}: ${imp.specifier}`)
     }
   }
   expect(problems).toEqual([])
@@ -369,14 +408,13 @@ test("no spawn of process.execPath outside platform.ts", () => {
 
 test("the sandbox helper imports only node builtins", () => {
   // The sandbox exposes only Bun and the helper's own file to it (`helperFiles` in runtime/sandbox/policy.ts).
-  const helper = current("runtime/sandbox/fs_helper.ts")
-  const specifiers = importsOf(source(helper)).map((imp) => imp.specifier)
+  const specifiers = importsOf(source("runtime/sandbox/fs_helper.ts")).map((imp) => imp.specifier)
   expect(specifiers.length).toBeGreaterThan(0)
   expect(specifiers.filter((specifier) => !specifier.startsWith("node:"))).toEqual([])
 })
 
-/** What each file the daemon loads before it re-execs may import, by final path: `node:` builtins (and `bun:` for
- *  `platform.ts`), and the final paths listed. Type-only imports count, except `platform.ts`'s, which load nothing. */
+/** What each file the daemon loads before it re-execs may import, by path: `node:` builtins (and `bun:` for
+ *  `platform.ts`), and the files listed. Type-only imports count, except `platform.ts`'s, which load nothing. */
 const PRE_REEXEC: Readonly<Record<string, { files: readonly string[]; bun?: true; values?: true }>> = {
   "runtime/service/launch.ts": { files: ["platform.ts", "util/sockets.ts", "util/proc.ts", "util/env.ts"] },
   "util/proc.ts": { files: ["platform.ts"] },
@@ -387,15 +425,14 @@ const PRE_REEXEC: Readonly<Record<string, { files: readonly string[]; bun?: true
 
 test("the daemon loads only builtins and the pre-re-exec files before it re-execs", () => {
   const problems: string[] = []
-  for (const [place, rule] of Object.entries(PRE_REEXEC)) {
-    const file = current(place)
+  for (const [file, rule] of Object.entries(PRE_REEXEC)) {
     for (const imp of importsOf(source(file))) {
       if (rule.values && imp.typeOnly) continue
       if (!imp.specifier.startsWith(".")) {
         if (!/^node:/.test(imp.specifier) && !(rule.bun && /^bun:/.test(imp.specifier)))
-          problems.push(`${place}: ${imp.specifier}`)
-      } else if (!rule.files.includes(final(resolveIn(file, imp.specifier)))) {
-        problems.push(`${place}: ${imp.specifier}`)
+          problems.push(`${file}: ${imp.specifier}`)
+      } else if (!rule.files.includes(resolveIn(file, imp.specifier))) {
+        problems.push(`${file}: ${imp.specifier}`)
       }
     }
   }
@@ -403,13 +440,13 @@ test("the daemon loads only builtins and the pre-re-exec files before it re-exec
   // What loading launch.ts loads: its value imports, followed.
   const reached = new Set<string>()
   const walk = (file: string): void => {
-    if (reached.has(final(file))) return
-    reached.add(final(file))
+    if (reached.has(file)) return
+    reached.add(file)
     for (const imp of importsOf(source(file))) {
       if (!imp.typeOnly && imp.specifier.startsWith(".")) walk(resolveIn(file, imp.specifier))
     }
   }
-  walk(current("runtime/service/launch.ts"))
+  walk("runtime/service/launch.ts")
   expect([...reached].sort()).toEqual(Object.keys(PRE_REEXEC).sort())
 })
 
@@ -418,8 +455,8 @@ test("daemonMain pins the daemon before it loads the daemon", () => {
   expect(importsOf(main).filter((imp) => imp.kind !== "dynamic")).toEqual([])
   const start = main.indexOf("export const daemonMain")
   const body = main.slice(start, main.indexOf("\n}\n", start))
-  const pinAt = body.indexOf(`import("./${current("runtime/service/launch.ts")}")`)
+  const pinAt = body.indexOf('import("./runtime/service/launch.ts")')
   expect(start).toBeGreaterThanOrEqual(0)
   expect(pinAt).toBeGreaterThanOrEqual(0)
-  expect(body.indexOf(`import("./${current("server/daemon/main.ts")}")`)).toBeGreaterThan(pinAt)
+  expect(body.indexOf('import("./server/daemon/main.ts")')).toBeGreaterThan(pinAt)
 })
