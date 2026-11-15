@@ -8,6 +8,7 @@ import type { Readable } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createTwoFilesPatch } from "diff"
 import { loadFlow, runFlow } from "@ngocbh/yian"
+import { type ModelCheck, modelProblem, providerSecrets, runSetup } from "../chat/check.ts"
 import { AUTH_FILE_ENV } from "../chat/connections.ts"
 import type { Provider } from "../chat/provider.ts"
 import { askUser } from "../install/interview.ts"
@@ -15,10 +16,6 @@ import { JsonPrompter } from "../install/json_prompts.ts"
 import {
   LISTERS,
   type Listers,
-  type ModelCheck,
-  modelProblem,
-  providerSecrets,
-  runSetup,
   signInRemedy,
   type SubscriptionAuth,
 } from "../install/onboard.ts"

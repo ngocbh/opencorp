@@ -341,7 +341,11 @@ test("a harmless alias is shown as written", async () => {
  *  `MAIN` and `CHAT` as stand-ins, so there are always cases. */
 function packagedFlows(): [string, string][] {
   const flows: [string, string][] = [["MAIN", MAIN], ["CHAT", CHAT]]
-  for (const folder of ["../../src/company_template/template/shared/flows/", "../../src/install/flows/"]) {
+  for (const folder of [
+    "../../src/company_template/template/shared/flows/",
+    "../../src/install/flows/",
+    "../../src/models/flows/",
+  ]) {
     const dir = new URL(folder, import.meta.url)
     if (!fs.existsSync(dir)) continue
     for (const name of fs.readdirSync(dir).filter((n) => n.endsWith(".yaml")).sort()) {

@@ -1,20 +1,30 @@
-/** The one-reply check of a new connection, run as a worker job. */
+/** The model check, made in this process and, for a new connection, as a worker job. */
 import fs from "node:fs"
 import http from "node:http"
 import type { AddressInfo } from "node:net"
 import os from "node:os"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import { loadFlow, runFlow } from "@ngocbh/yian"
+import { ApiKeyCredentials, AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
 import {
+  CHECK_DEADLINE_MS,
   type CheckWorkers,
   CLOSE_MS,
+  modelProblem,
   NO_RESULT,
   NOT_FINISHED,
   oneReplyProblem,
+  providerSecrets,
+  runSetup,
   TIMEOUT_MS,
 } from "../../src/chat/check.ts"
+import { ConnectionFile } from "../../src/chat/connections.ts"
 import { Provider } from "../../src/chat/provider.ts"
-import { CHECK_DEADLINE_MS, checkProvider } from "../../src/install/onboard.ts"
+import { readFlow } from "../../src/company/flow_yaml.ts"
+import { loadConfined } from "../../src/company/flows.ts"
+import { checkProvider, withSignIn } from "../../src/install/onboard.ts"
 import { args, startTime } from "../../src/install/proc.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
@@ -22,7 +32,7 @@ import { decode } from "../../src/worker/codec.ts"
 import { type Job, STOP_REASON } from "../../src/worker/job.ts"
 import type { WorkerHandlers } from "../../src/worker/rpc.ts"
 import { EXIT_GRACE_MS, RegistryClosed, type SpawnLog, type Worker } from "../../src/worker/spawn.ts"
-import { cwdOf, envText, isGone, ps } from "../helpers.ts"
+import { cwdOf, envText, isGone, ps, tempDir } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
 import { makeRegistry, recordFrames } from "../worker/helpers.ts"
 import { fakeLlm, keyCopies, MIXED_KEY, refusingLlm } from "./helpers.ts"
@@ -31,6 +41,13 @@ setDefaultTimeout(60_000)
 
 const SENTINEL = "sk-ant-sentinel-61f0d2c9a8b3"
 const PROVIDER = checkProvider({ llm_config: { provider: "anthropic", api_key: SENTINEL, model: "claude-x" } })
+const KEY = "sk-test-0000000000000000"
+
+const OFFICE = fileURLToPath(new URL("../..", import.meta.url))
+const CHECK_MODULE = fileURLToPath(new URL("../../src/chat/check.ts", import.meta.url))
+const PROVIDER_MODULE = fileURLToPath(new URL("../../src/chat/provider.ts", import.meta.url))
+const FAKE_LLM = fileURLToPath(new URL("../../src/testing/fake_llm.ts", import.meta.url))
+const CHECK_MODEL = fileURLToPath(new URL("../../src/models/flows/check_model.yaml", import.meta.url))
 
 test("the worker gives up on a silent model before the daemon stops waiting for it", () => {
   // The worker's "timed out" reaches the daemon, rather than the daemon's "didn't finish".
@@ -303,4 +320,252 @@ test("a copy of the key in another case or base64 never reaches the problem", as
     expect(problem).not.toContain(copy)
     expect(lines.filter((line) => line.includes(copy))).toEqual([])
   }
+})
+
+/** What `promise` rejects with. */
+async function rejection(promise: Promise<unknown>): Promise<Error> {
+  try {
+    await promise
+  } catch (error) {
+    return error as Error
+  }
+  throw new Error("it resolved")
+}
+
+test("a model that answers has no problem", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "OK" })
+  expect(await modelProblem(Provider.parse({ llm_config: LLM_CONFIG, env: fake.env() }))).toBeNull()
+  expect(fake.requests()).toHaveLength(1)
+})
+
+test("a model check given an env runs in that env", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "OK" })
+  // The fake listens on a random port that only the given env names, so an answer means that env was used.
+  expect(await modelProblem(Provider.parse({ llm_config: LLM_CONFIG }), { env: fake.env() })).toBeNull()
+  expect(fake.requests()).toHaveLength(1)
+})
+
+test("a model that fails says why without the key", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 401 })
+  const problem = await modelProblem(Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: KEY }, env: fake.env() }))
+  expect(problem).toBeTruthy()
+  expect(problem).not.toContain(KEY)
+})
+
+test("a model that quotes the key in another case or base64 says why without any copy", async () => {
+  const url = await refusingLlm(`bad key: ${keyCopies(MIXED_KEY).join(" and ")}`)
+  const problem = await modelProblem(
+    Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: MIXED_KEY }, env: { VLLM_BASE_URL: `${url}/v1` } }),
+  )
+  expect(problem).toContain("bad key: [redacted] and [redacted] and [redacted]")
+  for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) expect(problem).not.toContain(copy)
+})
+
+test("providerSecrets reads a subscription's tokens as they are now, and the login yian's own store holds", async () => {
+  const dir = tempDir()
+  const auth = path.join(dir, "auth.json")
+  const tokens = (n: number) =>
+    new OAuthCredentials({
+      accessToken: `access-${n}-0123456789`,
+      refreshToken: `refresh-${n}-0123456789`,
+      expiresAt: Date.now() / 1000 + 3600,
+      accountId: "account-0123456789",
+    })
+  await new AuthStore(auth).save("openai", tokens(1), "gpt-5.5")
+  const subscription = withSignIn(
+    ConnectionFile.parse({ method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } }),
+    auth,
+  )
+  const base = { HOME: dir }
+  expect(providerSecrets(subscription, base)).toEqual(["access-1-0123456789", "refresh-1-0123456789", "account-0123456789"])
+  await new AuthStore(auth).save("openai", tokens(2), "gpt-5.5")
+  expect(providerSecrets(subscription, base)).toEqual(["access-2-0123456789", "refresh-2-0123456789", "account-0123456789"])
+  // openai with no key runs on the login in the run's HOME, which yian's own store holds.
+  const keyless = Provider.parse({ llm_config: { provider: "openai", model: "gpt-5.5" } })
+  expect(providerSecrets(keyless, base)).toEqual([])
+  await new AuthStore(path.join(dir, ".config", "yian", "auth.json")).save("openai", new ApiKeyCredentials(KEY), "gpt-5.5")
+  expect(providerSecrets(keyless, base)).toEqual([KEY])
+  expect(providerSecrets(Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: KEY } }), base)).toEqual([KEY])
+})
+
+test("a model check on the sign-in YIAN_AUTH_FILE names says why without any copy of what that sign-in sends", async () => {
+  const dir = tempDir()
+  const auth = path.join(dir, "auth.json")
+  // A key login, not a subscription: yian sends a subscription only to OpenAI's own host, and this test reaches none.
+  await new AuthStore(auth).save("openai", new ApiKeyCredentials(MIXED_KEY), "gpt-5.5")
+  const url = await refusingLlm(`bad key: ${keyCopies(MIXED_KEY).join(" and ")}`)
+  const provider = Provider.parse({
+    llm_config: { provider: "openai", model: "gpt-5.5" },
+    env: { YIAN_AUTH_FILE: auth, OPENAI_BASE_URL: `${url}/v1` },
+  })
+  const problem = await modelProblem(provider, { env: { HOME: dir } })
+  expect(problem).toContain("bad key: [redacted] and [redacted] and [redacted]")
+  for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) expect(problem).not.toContain(copy)
+})
+
+test("a model that never answers times out", async () => {
+  const fake = await fakeLlm()
+  fake.script({ hold: true })
+  const started = performance.now()
+  const problem = await modelProblem(Provider.parse({ llm_config: LLM_CONFIG, env: fake.env() }), { timeoutMs: 300 })
+  expect(problem).toBe("timed out")
+  expect(performance.now() - started).toBeLessThan(5_000)
+})
+
+test("the model checks own retry limit wins over the providers env", async () => {
+  let posts = 0
+  // Not the fake LLM: its errors say not to retry, so yian would never try again against it.
+  const server = http.createServer((req, res) => {
+    if (req.method === "POST") posts++
+    req.resume()
+    req.on("end", () => {
+      res.writeHead(503, { "content-type": "application/json" })
+      res.end(JSON.stringify({ error: { message: "overloaded" } }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()))
+  onTestFinished(() => {
+    server.closeAllConnections()
+    server.close()
+  })
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`
+  const provider = Provider.parse({ llm_config: LLM_CONFIG, env: { VLLM_BASE_URL: url, YIAN_MODEL_RETRIES: "6" } })
+  expect(await modelProblem(provider)).toBeTruthy()
+  expect(posts).toBe(2)
+}, 30_000)
+
+test("a stop during the model check rejects with its reason", async () => {
+  const fake = await fakeLlm()
+  fake.script({ hold: true })
+  const controller = new AbortController()
+  const checking = modelProblem(Provider.parse({ llm_config: LLM_CONFIG, env: fake.env() }), {
+    signal: controller.signal,
+    timeoutMs: 10_000,
+  })
+  await fake.waitForRequests(1)
+  const reason = new Error("stopped")
+  controller.abort(reason)
+  expect(await rejection(checking)).toBe(reason)
+})
+
+test("a setup run failure never shows the key or url credentials", async () => {
+  const flow = await loadFlow(
+    "id: fail\nname: fail\ninput:\n  text: !str\noutput: str\nkind: code\ncode: |\n  throw new Error(inputs.text)\n",
+    { sourceLabel: "fail" },
+  )
+  const text = `bad key ${KEY} for https://user:hunter2@example.com/v1.`
+  const { message } = await runSetup(
+    flow,
+    { text },
+    Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: KEY } }),
+    { tools: {} },
+  )
+  expect(message).toContain("bad key [redacted] for https://***@example.com/v1")
+  expect(message).not.toContain(KEY)
+  expect(message).not.toContain("hunter2")
+  expect(message!.endsWith(".")).toBe(false)
+})
+
+test("a setup run failure never shows the key in another case or base64", async () => {
+  const flow = await loadFlow(
+    "id: fail\nname: fail\ninput:\n  text: !str\noutput: str\nkind: code\ncode: |\n  throw new Error(inputs.text)\n",
+    { sourceLabel: "fail" },
+  )
+  const { message } = await runSetup(
+    flow,
+    { text: `bad keys ${keyCopies(MIXED_KEY).join(", ")}` },
+    Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: MIXED_KEY } }),
+    { tools: {} },
+  )
+  expect(message).toContain("bad keys [redacted], [redacted], [redacted]")
+  for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) expect(message).not.toContain(copy)
+})
+
+test("the unknown model warning stays off the terminal", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "OK" })
+  const seen: string[] = []
+  const listener = (warning: Error) => seen.push(warning.message)
+  process.on("warning", listener)
+  try {
+    const provider = Provider.parse({
+      llm_config: {
+        // A Chat Completions vendor with a model list (openai's key route goes to /v1/responses, which the fake
+        // doesn't serve).
+        provider: "deepseek",
+        base_url: `${fake.baseUrl}/v1`,
+        api_key: KEY,
+        // Unique: yian warns once per text in a process, and test files share one.
+        model: `unlisted-${crypto.randomUUID()}`,
+      },
+    })
+    expect(await modelProblem(provider)).toBeNull()
+    // A warning is emitted on the next tick.
+    await new Promise((resolve) => setImmediate(resolve))
+  } finally {
+    process.off("warning", listener)
+  }
+  expect(seen.filter((message) => message.includes("known model list"))).toEqual([])
+})
+
+// No test changes process.env, so the variable sits in a child's environment.
+test("a setup run sees only the office workers env and the providers", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "OK" })
+  const code = [
+    `import { Provider } from ${JSON.stringify(PROVIDER_MODULE)}`,
+    `import { modelProblem } from ${JSON.stringify(CHECK_MODULE)}`,
+    `import { LLM_CONFIG } from ${JSON.stringify(FAKE_LLM)}`,
+    // The check's own limits allow one retry, so the refused connection fails well within the wait.
+    "const provider = Provider.parse({ llm_config: LLM_CONFIG })",
+    "console.log(JSON.stringify(await modelProblem(provider)))",
+  ].join("\n")
+  const child = Bun.spawn([process.execPath, "--no-install", "--no-env-file", "--config=/dev/null", "-e", code], {
+    cwd: OFFICE,
+    env: { PATH: process.env.PATH, VLLM_BASE_URL: `${fake.baseUrl}/v1` },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  try {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), 20_000)))
+    const status = await Promise.race([child.exited, timeout])
+    clearTimeout(timer)
+    // Killed before the output is read: a child that timed out would keep its pipes open.
+    child.kill("SIGKILL")
+    const stderr = await new Response(child.stderr).text()
+    expect(status, stderr).toBe(0)
+    const problem: unknown = JSON.parse(await new Response(child.stdout).text())
+    expect(typeof problem === "string" && problem.length > 0, stderr).toBe(true)
+    expect(fake.requests()).toEqual([])
+  } finally {
+    child.kill("SIGKILL")
+  }
+}, 30_000)
+
+/** check_model.yaml as the office loads its embedded text. */
+function loadCheckModel() {
+  return loadFlow(fs.readFileSync(CHECK_MODEL, "utf8"), { sourceLabel: "check_model.yaml" })
+}
+
+test("check_model.yaml loads on ts yian and uses only agent nodes", async () => {
+  expect((await loadConfined(path.dirname(CHECK_MODEL), CHECK_MODEL)).name).toBe("check_model")
+  expect((await loadCheckModel()).name).toBe("check_model")
+  const flow = readFlow(fs.readFileSync(CHECK_MODEL, "utf8")) as Record<string, any>
+  // A single-node flow is its own node.
+  const nodes: Record<string, any>[] = flow.nodes ? Object.values(flow.nodes) : [flow]
+  for (const node of nodes) {
+    expect(node.kind).toBe("agent")
+    expect(node).not.toHaveProperty("steerable")
+  }
+})
+
+test("check model asks for one word and returns it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "OK" })
+  const result = await runFlow(await loadCheckModel(), {}, { llmConfig: LLM_CONFIG, env: (n) => fake.env()[n] })
+  expect([result.status, result.output]).toEqual(["succeeded", "OK"])
 })

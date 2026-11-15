@@ -8,20 +8,17 @@ import type { Readable } from "node:stream"
 import { buffer } from "node:stream/consumers"
 import { isDeepStrictEqual } from "node:util"
 import type { Device } from "@opencorp/protocol"
-import { type ComposedFlow, loadFlow, runFlow } from "@ngocbh/yian"
 import {
   AuthError,
   type AuthRequest,
   AuthStore,
-  callCredentials,
   LLMConfig,
   type OAuthCredentials,
   OpenAIAuth,
   SUPPORTED_LLM_PROVIDERS,
   ValidationError,
 } from "@ngocbh/yian/llm_clients"
-import { type FileLock, FileLockError, isLocked, sqliteErrorCode, waitForLock, withWarnings } from "@ngocbh/yian/platform"
-import type { RunFlowOptions, RunResult } from "@ngocbh/yian/run"
+import { type FileLock, FileLockError, isLocked, sqliteErrorCode, waitForLock } from "@ngocbh/yian/platform"
 import { addDevice, DeviceRefused } from "../auth/devices.ts"
 import {
   deviceName,
@@ -34,7 +31,8 @@ import {
 } from "../auth/identity.ts"
 import { checkPassword } from "../auth/passwords.ts"
 import { newToken, tokenSha256 } from "../auth/tokens.ts"
-import { AUTH_FILE_ENV, azureBaseUrl, ConnectionFile, Connections } from "../chat/connections.ts"
+import type { ModelCheck } from "../chat/check.ts"
+import { AUTH_FILE_ENV, azureBaseUrl, ConnectionFile, Connections, isSubscription } from "../chat/connections.ts"
 import * as models from "../chat/models.ts"
 import { checkLlmConfig, loadProvider, Provider, ProviderError } from "../chat/provider.ts"
 import { CompanyGit, CompanyGitError } from "../company/git.ts"
@@ -42,16 +40,12 @@ import { lint } from "../company/lint.ts"
 import { type CompanyRepo, loadRepo } from "../company/loader.ts"
 import { type CompanyState, companyState, missingFiles, type Owner, writeCompany } from "../company_template/index.ts"
 import { checkSocketPath, makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
-import { redact as redactSecrets, repr } from "../perm/redact.ts"
-import { embedded } from "../platform.ts"
+import { redactUrls, repr } from "../perm/redact.ts"
 import type { Env } from "../util/env.ts"
 import { strerror } from "../util/errors.ts"
 import { checkFolder, PrivateFileError, writePrivate } from "../util/private_files.ts"
-import type { WorkerEnv } from "../worker/job.ts"
 import { plainAuthError } from "../worker/rpc.ts"
-import { workerEnv } from "../worker/spawn.ts"
 import { shQuote } from "./fallback.ts"
-import checkModelYaml from "./flows/check_model.yaml" with { type: "file" }
 import {
   type Completed,
   defaultHost,
@@ -603,26 +597,12 @@ export function signInAgain(provider: Provider): Answers {
   return { provider: "openai", method: SUBSCRIPTION, ...(typeof model === "string" ? { model } : {}) }
 }
 
-/** Whether `provider` signs in to a ChatGPT subscription. */
-export function isSubscription(provider: Provider): provider is ConnectionFile {
-  return provider instanceof ConnectionFile && provider.method === "subscription"
-}
-
 /** What a run on `provider` gets: a subscription's env also names its sign-in, `file`, in `YIAN_AUTH_FILE`, as a
  *  run on an added subscription connection gets it; any other provider as it is. */
 export function withSignIn(provider: Provider, file: string): Provider {
   if (!isSubscription(provider)) return provider
   const { llm_config, env, prices } = provider
   return Provider.parse({ llm_config, env: { ...env, [AUTH_FILE_ENV]: file }, prices })
-}
-
-/** The secrets a run on `provider` in `base` (a worker's env from this process's by default) with `provider.env` on
- *  top may send, as yian lists them now: its key, or the login it would use (the sign-in `YIAN_AUTH_FILE` names, or
- *  yian's own store in the run's `HOME`) read again, so tokens refreshed since are in it. */
-export function providerSecrets(provider: Provider, base?: WorkerEnv): string[] {
-  const vars: Record<string, string | undefined> = { ...(base ?? workerEnv(process.env)), ...provider.env }
-  const env = (name: string) => (Object.hasOwn(vars, name) ? vars[name] : undefined)
-  return [...callCredentials(provider.llm_config, { env })]
 }
 
 /** Removes the sign-in at `file` through yian's own store, under its lock; the lock file stays, and nothing there is
@@ -720,9 +700,6 @@ async function signedInAnswers(
 export const TRY_AGAIN = "Try again"
 /** When the model doesn't answer: ask for the provider again, starting from the last answers. */
 export const SET_UP_AGAIN = "Set up the model again"
-
-/** Why a provider's model doesn't answer, or null when it does. */
-export type ModelCheck = (provider: Provider) => Promise<string | null>
 
 /** Tells the owner why the model failed and asks what to do; resolves whether they want to set it up again. */
 export async function modelFailed(prompter: Prompter, problem: string): Promise<boolean> {
@@ -1145,11 +1122,6 @@ export function makeHome(home: string): void {
   }
 }
 
-/** `text` with the user and password taken out of any URL in it, since a remote URL can carry a token. */
-export function redact(text: string): string {
-  return text.replace(/(?<=:\/\/)[^/@\s]+@/g, "***@")
-}
-
 /** Runs git as the user would, in `env` (this process's by default), so their credentials and ssh setup reach a
  *  remote; never throws: git that can't start is exit 127, and one still running after 300 s exit 124. */
 export async function userGit(args: readonly string[], { env = process.env }: { env?: Env } = {}): Promise<Completed> {
@@ -1184,12 +1156,12 @@ async function clone(url: string, dest: string, env: Env): Promise<void> {
   if (done.code !== 0) {
     removePath(dest)
     throw new OnboardError(
-      `can't clone ${redact(url)}: ${redact(done.stderr.trim())}; ${GIT_ACCESS}, then run \`opencorp onboard\` again`,
+      `can't clone ${redactUrls(url)}: ${redactUrls(done.stderr.trim())}; ${GIT_ACCESS}, then run \`opencorp onboard\` again`,
     )
   }
   if ((await companyState(dest)).kind !== "ok") {
     removePath(dest)
-    throw new OnboardError(`${redact(url)} isn't a company repo: it has no company.yaml at its top`)
+    throw new OnboardError(`${redactUrls(url)} isn't a company repo: it has no company.yaml at its top`)
   }
 }
 
@@ -1414,7 +1386,7 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
     if (!url) throw new OnboardError(`there's no company at ${company}; ${SET_UP}`)
     root = path.join(one.home, CLONE)
     await clone(url, root, environ)
-    prompter.say(`Company repo: cloned ${redact(url)}`)
+    prompter.say(`Company repo: cloned ${redactUrls(url)}`)
   }
   let me: Identity | null = null
   // Why this device acts as no one, when that isn't simply a missing identity.
@@ -1526,103 +1498,5 @@ function clientFinds(home: string, environ: Env, userHome: string): boolean {
   } catch {
     // A home that can't be resolved can't be this one.
     return false
-  }
-}
-
-/** How long, in ms, the model check waits for an answer: under the daemon's 90 s wait for its worker, so the
- *  worker's "timed out" reaches the daemon first. */
-export const CHECK_DEADLINE_MS = 80_000
-
-/** The yian settings the model check runs with: one slow request and one retry, then the deadline decides. */
-export const CHECK_LIMITS: Readonly<Record<string, string>> = Object.freeze({
-  YIAN_MODEL_FIRST_RESPONSE_TIMEOUT_SECONDS: "60",
-  YIAN_MODEL_IDLE_TIMEOUT_SECONDS: "60",
-  YIAN_MODEL_RETRIES: "1",
-})
-
-/**
- * Runs `flow` with `provider`'s model as an office run would; resolves its result (null when the run threw), and
- * why it failed (null when it didn't), without the key, the sign-in's tokens or URL credentials. The run's
- * environment is `env` (by default a worker's, from this process's) with `provider.env` on top, then `limits`;
- * `onEvent` sees the run's events as `runFlow`'s does. Rejects with `signal`'s reason once it aborts.
- */
-export async function runSetup(
-  flow: ComposedFlow,
-  inputs: Readonly<Record<string, unknown>>,
-  provider: Provider,
-  {
-    tools,
-    context,
-    env: base,
-    signal,
-    limits,
-    onEvent,
-  }: {
-    tools: NonNullable<RunFlowOptions["tools"]>
-    context?: unknown
-    env?: WorkerEnv
-    signal?: AbortSignal
-    limits?: Readonly<Record<string, string>>
-    onEvent?: RunFlowOptions["onEvent"]
-  },
-): Promise<{ result: RunResult | null; message: string | null }> {
-  // The run gets the environment office runs get, so it authenticates the way they will: a shell variable the
-  // office never sees can't make it work.
-  // The limits go after the provider's env, so it can't lift them.
-  const vars: Record<string, string | undefined> = { ...(base ?? workerEnv(process.env)), ...provider.env, ...limits }
-  const env = (name: string) => (Object.hasOwn(vars, name) ? vars[name] : undefined)
-  // An Azure deployment or a gateway's model is never in yian's list; the owner chose it on purpose.
-  const handler = (message: string, type: string | undefined) => {
-    if (!/^Model .* is not in the known model list/s.test(message)) process.emitWarning(message, type)
-  }
-  let result: RunResult | null = null
-  let message: string | null = null
-  try {
-    // No workers: the code nodes, and so the terminal, stay in this process.
-    result = await withWarnings(handler, () =>
-      runFlow(flow, inputs, { llmConfig: provider.llm_config, tools, numWorkers: 0, context, env, signal, onEvent }),
-    )
-    if (result.status === "failed") message = result.failure?.message ?? "the run failed"
-  } catch (error) {
-    // A stopped run says nothing about the model.
-    signal?.throwIfAborted()
-    message = error instanceof Error ? error.message : String(error)
-  }
-  if (message !== null) {
-    const secrets = providerSecrets(provider, base)
-    // Every form of the key or sign-in tokens, as chat runs scrub theirs: yian scrubs a key only as written and
-    // escaped, and a provider may quote it in another letter case or base64-encoded.
-    if (secrets.length > 0) message = redactSecrets(message, [], secrets)
-    message = redact(message).replace(/\.+$/, "")
-  }
-  return { result, message }
-}
-
-/** Why `provider`'s model doesn't answer a one-word request made as an office run makes it, or null when it
- *  answers; `timed out` once `timeoutMs` passes. The run's environment is as `runSetup`'s, `env` replacing the
- *  default base, with `CHECK_LIMITS` on top. Rejects with `signal`'s reason once it aborts. */
-export async function modelProblem(
-  provider: Provider,
-  { env, signal, timeoutMs = CHECK_DEADLINE_MS }: { env?: WorkerEnv; signal?: AbortSignal; timeoutMs?: number } = {},
-): Promise<string | null> {
-  const flow = await loadFlow(embedded(checkModelYaml).toString("utf8"), {
-    sourceLabel: "install/flows/check_model.yaml",
-  })
-  // Apart from the caller's signal: running out of time is a problem with the model, a caller's stop is not.
-  const deadline = new AbortController()
-  const timer = setTimeout(() => deadline.abort(), timeoutMs)
-  const both = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal
-  try {
-    const { message } = await runSetup(flow, {}, provider, { tools: {}, env, signal: both, limits: CHECK_LIMITS })
-    // The run may end as failed, rather than throw, once its signal aborts.
-    signal?.throwIfAborted()
-    if (message !== null && deadline.signal.aborted) return models.TIMED_OUT
-    return message
-  } catch (error) {
-    signal?.throwIfAborted()
-    if (deadline.signal.aborted) return models.TIMED_OUT
-    throw error
-  } finally {
-    clearTimeout(timer)
   }
 }

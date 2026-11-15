@@ -83,7 +83,6 @@ export const PLACES: Readonly<Record<string, string>> = {
   "install/doctor.ts": "features/doctor/doctor.ts",
   "install/fallback.ts": "runtime/service/fallback.ts",
   "install/files.ts": "util/files.ts",
-  "install/flows/check_model.yaml": "models/flows/check_model.yaml",
   "install/flows/init.yaml": "features/setup/flows/init.yaml",
   "install/init.ts": "features/setup/init.ts",
   "install/interview.ts": "features/setup/interview.ts",
@@ -355,7 +354,6 @@ export const TEST_PLACES: Readonly<Record<string, string>> = {
 /** Each import that still points up, one line per name, as `<importer> -> <imported> <name>` in today's `src/`
  *  paths. A dynamic import's name is `import()`. */
 export const UPWARD: readonly string[] = [
-  "chat/check.ts -> install/onboard.ts modelProblem",
   "chat/harness.ts -> daemon/office.ts Office",
   "chat/harness.ts -> daemon/office.ts SessionHarness",
   "company/watch.ts -> daemon/office.ts Office",

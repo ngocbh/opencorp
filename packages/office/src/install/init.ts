@@ -3,11 +3,12 @@
  *  machine. */
 import path from "node:path"
 import type { Readable } from "node:stream"
+import type { ModelCheck } from "../chat/check.ts"
 import { agentFiles } from "../chat/hire.ts"
 import type { Draft } from "../company/draft.ts"
 import { CompanyGitError } from "../company/git.ts"
 import { companyState, writeCompany } from "../company_template/index.ts"
-import { strip } from "../perm/redact.ts"
+import { redactUrls, strip } from "../perm/redact.ts"
 import type { Env } from "../util/env.ts"
 import { strerror } from "../util/errors.ts"
 import { shQuote } from "./fallback.ts"
@@ -25,11 +26,9 @@ import {
   loginDefaults,
   makeDevice,
   makeHome,
-  type ModelCheck,
   modelFailed,
   officeRunning,
   onboardLocked,
-  redact,
   setupConnectionFile,
   setupLock,
   type SubscriptionAuth,
@@ -49,7 +48,7 @@ export async function push(company: string, url: string, prompter: Prompter, env
   const added = await userGit(["-C", company, "remote", "add", "origin", url], { env: environ })
   if (added.code !== 0) {
     prompter.say(
-      `Warning: couldn't add the remote: ${redact(strip(added.stderr))}. Add it and push with` +
+      `Warning: couldn't add the remote: ${redactUrls(strip(added.stderr))}. Add it and push with` +
         ` \`git -C ${where} remote add origin URL && git -C ${where} push -u origin main\`.`,
     )
     return false
@@ -57,14 +56,14 @@ export async function push(company: string, url: string, prompter: Prompter, env
   const pushed = await userGit(["-C", company, "push", "-u", "origin", "main"], { env: environ })
   if (pushed.code !== 0) {
     prompter.say(
-      `Warning: couldn't push to the remote: ${redact(strip(pushed.stderr))}; ${GIT_ACCESS},` +
+      `Warning: couldn't push to the remote: ${redactUrls(strip(pushed.stderr))}; ${GIT_ACCESS},` +
         ` then retry with \`git -C ${where} push -u origin main\`.`,
     )
     return false
   }
   prompter.say(
-    `Remote: pushed the company to ${redact(url)}; other machines join it with` +
-      ` \`opencorp onboard --from ${shQuote(redact(url))}\`.`,
+    `Remote: pushed the company to ${redactUrls(url)}; other machines join it with` +
+      ` \`opencorp onboard --from ${shQuote(redactUrls(url))}\`.`,
   )
   return true
 }

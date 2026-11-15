@@ -35,13 +35,13 @@ import {
   GIT_ACCESS,
   makeHome,
   onboard,
-  redact,
   SET_UP_AGAIN,
   setupConnectionFile,
   setupProvider,
   TRY_AGAIN,
 } from "../../src/install/onboard.ts"
 import { KeyboardInterrupt, NoTerminal, OnboardError, TtyPrompter } from "../../src/install/prompts.ts"
+import { redactUrls } from "../../src/perm/redact.ts"
 import { selfSpawnEnv } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
@@ -708,7 +708,7 @@ test("a token in the remote url is never shown", async () => {
   await expect(runInit(dir, ask, FLAGS, { environ })).rejects.toThrow(STOP)
   expect(ask.seen.some((line) => line.startsWith("Warning: couldn't push"))).toBe(true)
   expect(ask.seen.filter((line) => line.includes("ghp_sentinel42"))).toEqual([])
-  expect(redact(url)).toBe("http://***@127.0.0.1:9/acme.git")
+  expect(redactUrls(url)).toBe("http://***@127.0.0.1:9/acme.git")
 })
 
 /** The context of a call to the tool `toolName`, outside a run, with the owner's terminal `prompter`. */

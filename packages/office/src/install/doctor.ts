@@ -8,7 +8,7 @@ import { VERSION } from "@opencorp/protocol/version"
 import { FileLockError, isLocked, openSqlite, type Sqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
 import { type Identity, IdentityUnreadable, identityPath, loadIdentity } from "../auth/identity.ts"
 import { AuthError, AuthStore } from "@ngocbh/yian/llm_clients"
-import { ConnectionFile } from "../chat/connections.ts"
+import { ConnectionFile, isSubscription } from "../chat/connections.ts"
 import { loadProvider, type Provider, ProviderError } from "../chat/provider.ts"
 import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import type { RepoIssue } from "../company/issues.ts"
@@ -44,7 +44,6 @@ import {
   checkProvider,
   checkSocket,
   damageMessage,
-  isSubscription,
   lexists,
   SET_UP,
   setupConnectionFile,

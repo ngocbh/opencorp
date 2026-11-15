@@ -15,6 +15,7 @@ import path from "node:path"
 import type { Readable, Writable } from "node:stream"
 import { parseArgs } from "node:util"
 import { identityPath, readIdentity } from "../auth/identity.ts"
+import { type ModelCheck, modelProblem } from "../chat/check.ts"
 import { handleProblem } from "../company/naming.ts"
 import { companyState } from "../company_template/index.ts"
 import { messageOf, OfficeStartError } from "../daemon/sockets.ts"
@@ -33,8 +34,6 @@ import {
   LISTERS,
   lexists,
   type Listers,
-  type ModelCheck,
-  modelProblem,
   OPENAI_AUTH,
   onboard,
   SET_UP,

@@ -112,6 +112,11 @@ export class ConnectionFile extends Provider {
   }
 }
 
+/** Whether `provider` signs in to a ChatGPT subscription. */
+export function isSubscription(provider: Provider): provider is ConnectionFile {
+  return provider instanceof ConnectionFile && provider.method === "subscription"
+}
+
 /** What a run was started on: its connection and model, and a hash of what they gave it; the values
  *  `Store.setRunConfig` keeps in the run's row. */
 export type RunRecord = {

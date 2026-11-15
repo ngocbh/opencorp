@@ -9,6 +9,7 @@ import os from "node:os"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { AuthStore } from "@ngocbh/yian/llm_clients"
+import { providerSecrets } from "../../src/chat/check.ts"
 import { ConnectionFile } from "../../src/chat/connections.ts"
 import { Provider } from "../../src/chat/provider.ts"
 import { Learning } from "../../src/reach/learning.ts"
@@ -62,7 +63,7 @@ import {
   LEARN_QUESTION,
   RELEARN_QUESTION,
 } from "../../src/reach/risks.ts"
-import { providerSecrets, signInLine, withSignIn } from "../../src/install/onboard.ts"
+import { signInLine, withSignIn } from "../../src/install/onboard.ts"
 import { writePrivate } from "../../src/util/private_files.ts"
 import { workerEnv } from "../../src/worker/spawn.ts"
 import { fakeLlm } from "../chat/helpers.ts"
