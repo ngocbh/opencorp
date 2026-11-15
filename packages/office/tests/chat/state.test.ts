@@ -1,7 +1,7 @@
 /** A session's run state, and the status writes that must not race the steps that finish a session. */
 import { expect, test } from "bun:test"
-import { HarnessError, LIVE, SETTLED, notWaiting, runState, writeState } from "../../src/chat/state.ts"
-import type { SessionRecord } from "../../src/store/store.ts"
+import { HarnessError, SETTLED, notWaiting, runState, writeState } from "../../src/chat/state.ts"
+import { LIVE, type SessionRecord } from "../../src/store/store.ts"
 import { openStore, recordEvents, session } from "../store/helpers.ts"
 
 test("the run state is waiting then busy then idle", () => {

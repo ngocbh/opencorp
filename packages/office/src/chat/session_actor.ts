@@ -19,7 +19,6 @@ import type { Bus } from "../daemon/bus.ts"
 import type { LiveRelay } from "../daemon/live.ts"
 import { redact } from "../perm/redact.ts"
 import { type Answers, isAskManagerCall, makeAskUser, type OnQuestion } from "../questions/ask.ts"
-import type { AnswerKind } from "../questions/cards.ts"
 import { formatAnswer, MAX_ANSWER_BYTES } from "../questions/format.ts"
 import type { RunIndexer } from "../runs/indexer.ts"
 import { OpenNodes } from "../runs/nodes.ts"
@@ -36,8 +35,10 @@ import {
   WORKER_STOPPED,
 } from "../runs/outcomes.ts"
 import type { LiveRun } from "../runs/records.ts"
+import type { AnswerKind } from "../runtime/sessions/harness.ts"
 import {
   InvalidTransition,
+  LIVE,
   newId,
   type QuestionRecord,
   type SessionRecord,
@@ -72,7 +73,7 @@ import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "./c
 import type { Hooks } from "./hooks.ts"
 import { type Price, type Provider, ProviderError } from "./provider.ts"
 import { chatJob, type RunSpec } from "./run_spec.ts"
-import { HarnessError, LIVE, notWaiting, runState, SETTLED, writeState } from "./state.ts"
+import { HarnessError, notWaiting, runState, SETTLED, writeState } from "./state.ts"
 import { type LiveCalls, type Transcript, userMessage } from "./transcript.ts"
 import { type ChatFlow, MAIN_CHAT } from "./turns.ts"
 

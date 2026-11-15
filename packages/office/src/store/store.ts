@@ -126,6 +126,9 @@ export interface WorkedFolder {
 /** A stored session, defaults filled. */
 export type SessionRecord = z.output<typeof Session>
 
+/** Session statuses that have (or should have) a live run. */
+export const LIVE: readonly SessionRecord["status"][] = ["starting", "idle", "busy", "waiting", "ending"]
+
 /** A stored question, defaults filled. */
 export type QuestionRecord = z.output<typeof Question>
 

@@ -12,10 +12,11 @@ import {
 import { z } from "zod"
 import { HarnessError } from "../../chat/state.ts"
 import { strip } from "../../perm/redact.ts"
+import type { SessionHarness } from "../../runtime/sessions/harness.ts"
 import type { SessionRecord } from "../../store/store.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, type Params, type Route } from "../http.ts"
-import type { RequestContext, SessionHarness } from "../office.ts"
+import type { RequestContext } from "../office.ts"
 
 const DEFAULT_LIMIT = 50
 const MAX_LIMIT = 500

@@ -2,9 +2,8 @@
 import fs from "node:fs"
 import path from "node:path"
 import type { DiscussionEntry } from "@opencorp/protocol"
-import { LIVE } from "../chat/state.ts"
 import type { Transcript } from "../chat/transcript.ts"
-import type { SessionRecord, Store } from "../store/store.ts"
+import { LIVE, type SessionRecord, type Store } from "../store/store.ts"
 import { checkFolder, replaceFile } from "../util/private_files.ts"
 
 export const EXIT_WORDS: ReadonlySet<string> = new Set(["/exit", "/quit", "/end"])

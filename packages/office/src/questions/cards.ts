@@ -5,42 +5,21 @@ import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import type { Scheduler } from "@ngocbh/yian/platform"
 import { CompanyDefaults, OFFICE, Session, now } from "@opencorp/protocol"
-import type { Hooks } from "../chat/hooks.ts"
 import type { RunSpec } from "../chat/run_spec.ts"
-import { HarnessError, LIVE, SETTLED, notWaiting } from "../chat/state.ts"
+import { HarnessError, SETTLED, notWaiting } from "../chat/state.ts"
 import type { Transcript } from "../chat/transcript.ts"
 import { loadRepo } from "../company/loader.ts"
 import type { Office } from "../daemon/office.ts"
 import { strip } from "../perm/redact.ts"
 import { CARD_CLOSED, OFFICE_STOPPED, SIDE_OPEN_FAILED } from "../runs/outcomes.ts"
-import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store, newId } from "../store/store.ts"
+import type { AnswerKind, CardActor } from "../runtime/sessions/harness.ts"
+import { InvalidTransition, LIVE, type QuestionRecord, type SessionRecord, type Store, newId } from "../store/store.ts"
 import { errorName } from "../worker/rpc.ts"
 import type { Answers } from "./ask.ts"
 import { InvalidAnswer, checkAnswer } from "./checker.ts"
 import { INTERRUPTED } from "./format.ts"
 import { buildSeed, FIRST_MESSAGE } from "./seed.ts"
 import { BACK_HINT, EXIT_WORDS, discussion, isLive, readSeed, writeSeed } from "./side.ts"
-
-/** The four ways a question is answered (`option`, `text`, `sent_back`, `interrupted`): the store's `answer_kind`. */
-export type AnswerKind = NonNullable<QuestionRecord["answer_kind"]>
-
-/** What the cards ask of the session actor: the chat harness or the Codex sessions. */
-export interface CardActor {
-  /** The hooks the questions extension adds the cards' checks and notifications to. */
-  readonly hooks: Hooks
-  /** Answer an open question as `by` after the `answerCheck` hooks and deliver it to its run; throws
-   *  `HarnessError` (404 not_found, 409 not_open, 422 invalid_answer, ...). */
-  answer(
-    questionId: string,
-    value: unknown,
-    kind: AnswerKind,
-    options?: { by?: string | null },
-  ): Promise<QuestionRecord>
-  /** Esc on a live session: its model questions are answered interrupted and the reply stops; throws
-   *  `HarnessError` when the session has no run to stop. A card's stop names its `question`: refused 409
-   *  `not_open` unless it is open with no other interrupt under way, and 409 `ending` while the session ends. */
-  interrupt(sessionId: string, options?: { question?: string | null }): Promise<void>
-}
 
 /** What side chats ask of the session actor besides the card actions: the chat harness has it; a stand-in or the
  *  Codex sessions don't, and their cards have no "Chat about this". */

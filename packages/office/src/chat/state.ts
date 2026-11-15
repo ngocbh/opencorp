@@ -22,9 +22,6 @@ export function notAnAgent(): HarnessError {
   return new HarnessError(422, "not_an_agent", "the person has no main flow to chat with")
 }
 
-/** Session statuses that have (or should have) a live run. */
-export const LIVE: readonly Status[] = ["starting", "idle", "busy", "waiting", "ending"]
-
 /** The statuses the run state replaces; ending, debriefing and finished ones are written only by their own steps. */
 export const SETTLED: readonly Status[] = ["starting", "idle", "busy", "waiting"]
 
