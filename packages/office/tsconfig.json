@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "lib": ["ESNext"], "types": ["bun"], "allowImportingTsExtensions": true },
-  "include": ["src", "tests"],
+  "include": ["src", "tests", "script"],
   "exclude": ["tests/e2e"]
 }

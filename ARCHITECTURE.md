@@ -64,9 +64,14 @@ Each category is a top-level folder of `packages/office/src/`. The order, lowest
    (with its subpaths). `platform.ts` may also import `bun:`. util knows nothing of the company, models, flows or the
    office's state.
 
-Until the moves are done, a ratchet list, `UPWARD` in `packages/office/tests/repo/places.ts` (lands with
-#889), exempts each import that still breaks rule 2 or 4, and the change that fixes an import deletes its line.
+Until the moves are done, a ratchet list, `UPWARD` in `packages/office/tests/repo/places.ts`, exempts
+each import that still breaks rule 2 or 4, and the change that fixes an import deletes its line.
 Two of them, by today's paths, break rule 4: `perm/redact → secrets` and `platform → sandbox/policy`.
+
+`places.ts` also maps each file's path today to its final one (`PLACES`, `TEST_PLACES`) and lists the folder
+cycles left in `CYCLES`; `packages/office/script/relayout.ts` makes each move. A new file in an old folder (one that
+still holds a `PLACES` entry) needs its own `PLACES` or `TEST_PLACES` entry, naming its final path in the layers
+above; the layer and layout tests fail until it has one.
 
 **Type-only imports count.**
 - A card's "Depends on" is the design dependency. A type import ties a module to the shape of the code above it:
@@ -176,12 +181,13 @@ packages/office/src/features/<feature>/
 
 | Rule | Test |
 |---|---|
-| One-way imports; no folder cycles; every file layered; util stays generic | `packages/office/tests/repo/layer_direction.test.ts` (lands with #889) |
-| Bun only in `platform.ts`; no spawn of `process.execPath` elsewhere | the same, moving there from `packages/office/tests/platform.test.ts` ("no Bun or bun: API outside platform.ts", "no spawn of process.execPath outside platform.ts") |
-| The daemon loads only builtins and the pre-re-exec files before it re-execs; `daemonMain` pins first | the same, moving there from `packages/office/tests/install/launch.test.ts` ("the pre re-exec check imports only node builtins platform sockets and proc") |
-| The sandbox helper imports only `node:` | the same (lands with #889), and `packages/cli/test/entry.test.ts` ("the fs helper imports only node builtins") |
+| One-way imports; no folder cycles; every file layered; util stays generic | `packages/office/tests/repo/layer_direction.test.ts` |
+| Bun only in `platform.ts`; no spawn of `process.execPath` elsewhere | `packages/office/tests/repo/layer_direction.test.ts` ("no Bun or bun: API outside platform.ts", "no spawn of process.execPath outside platform.ts") |
+| src loads modules only with `import`, never `require()`, `module.require`, `import.meta.require` or `createRequire`; a dynamic import names its module in one quoted string | the same ("src loads modules only with import, never require", "every dynamic import in src names its module in one quoted string") |
+| The daemon loads only builtins and the pre-re-exec files before it re-execs; `daemonMain` pins first | the same ("the daemon loads only builtins and the pre-re-exec files before it re-execs", "daemonMain pins the daemon before it loads the daemon") |
+| The sandbox helper imports only `node:` | the same ("the sandbox helper imports only node builtins"), and `packages/cli/test/entry.test.ts` ("the fs helper imports only node builtins") |
 | The cards match the imports | the same, once the moves are done |
-| `tests/` mirrors `src/`; every old test file is placed; feature folders keep their shape | `packages/office/tests/repo/layout.test.ts` (lands with #889) |
+| `tests/` mirrors `src/`; every old test file is placed; feature folders keep their shape | `packages/office/tests/repo/layout.test.ts` |
 | Only the worker hosts yian runs | "no office code outside the worker calls a yian host function" in `packages/office/tests/features/chat/session_actor.test.ts` (today `tests/chat/`) |
 | Protocol changes update every package | the TUI's and HQ's contract tests against a real office (existing) |
 | Secrets never in argv, logs or the model | no single test: HQ pairing's, login's and redaction's tests each cover part (existing) |
