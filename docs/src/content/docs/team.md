@@ -1,0 +1,17 @@
+---
+title: "Talk to your team and hire"
+description: "Open the TUI in a project folder to talk to your employees, and hire new ones."
+---
+
+`opencorp` opens the TUI, where you talk to your employees and hire new ones.
+
+## Talk to your team
+
+Run `opencorp` in a project folder. In a folder nobody has worked in yet, it first asks "Who do you
+want to talk to?". `opencorp -c` continues the newest session in that folder.
+
+## Hire
+
+In that picker, or after opening it with `/people` or ctrl+x p, pick "Hire new…". Fill in Name,
+Handle, Title and Manager (you, by default). The first Enter shows the change to the company repo;
+the second hires.

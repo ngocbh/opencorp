@@ -3,7 +3,7 @@ title: "Get started"
 description: "Install OpenCorp with one line or by hand, and remove it."
 ---
 
-This page installs OpenCorp.
+This page installs OpenCorp. Then [create your company](/create-the-company/).
 
 ## Install
 
