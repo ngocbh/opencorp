@@ -3,14 +3,14 @@ import fs from "node:fs"
 import { Ajv } from "ajv"
 import { expect, test } from "bun:test"
 import type { Message, Part } from "@opencorp/protocol"
-import type { HarnessEvent } from "../../src/harness/adapter.ts"
+import type { HarnessEvent } from "../../../src/tools/codex/adapter.ts"
 import { changeCounts, COMMAND, FILE_CHANGE, type Issued, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED, relative,
-  REPLY_SCHEMAS, REQUEST, SERVED, Translator, Unserved, Unshowable } from "../../src/harness/translate.ts"
+  REPLY_SCHEMAS, REQUEST, SERVED, Translator, Unserved, Unshowable } from "../../../src/tools/codex/translate.ts"
 import { agentMessage, agentMessageDelta, command, commandApproval, commandStarted, error, fileChange,
   fileChangeApproval, fill, formElicitation, mcpApproval, mcpApprovalQuestion, networkApproval, permissionsApproval,
-  question, urlElicitation, userInput } from "../../src/testing/fake_codex.ts"
+  question, urlElicitation, userInput } from "../../../src/testing/fake_codex.ts"
 
-const FIXTURES = new URL("../fixtures/codex/", import.meta.url)
+const FIXTURES = new URL("../../fixtures/codex/", import.meta.url)
 /** The recorded sessions' names, without `.jsonl`, sorted. */
 const RECORDED = fs.readdirSync(new URL("sessions/", FIXTURES)).filter((name) => name.endsWith(".jsonl"))
   .map((name) => name.slice(0, -".jsonl".length)).sort()

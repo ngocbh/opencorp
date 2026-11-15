@@ -30,9 +30,9 @@ import {
 } from "../runtime/store/store.ts"
 import type { OfficePaths } from "../util/home.ts"
 import { workerEnv } from "../runtime/worker/spawn.ts"
-import type { HarnessEvent } from "./adapter.ts"
-import { CLOSE_GRACE_MS, CodexProcess, CodexStartError, appServerCommand } from "./codex.ts"
-import { nameOf } from "./rpc.ts"
+import type { HarnessEvent } from "../tools/codex/adapter.ts"
+import { CLOSE_GRACE_MS, CodexProcess, CodexStartError, appServerCommand } from "../tools/codex/codex.ts"
+import { nameOf } from "../tools/codex/rpc.ts"
 import { CodexSession, END_WAIT_MS, REPLY_WAIT_MS, STOP_WAIT_MS } from "./session.ts"
 
 /** What a yian chat's session calls answer, until the chat harness serves them. */

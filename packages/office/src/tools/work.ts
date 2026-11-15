@@ -1,14 +1,14 @@
 /** Company tools every person has, bound to the caller: ask_manager, create_work_item, comment. */
 import { Comment, Question, WorkItem, now, validationMessage } from "@opencorp/protocol"
 import type { z } from "zod"
-import type { CompanyRepo } from "../../company/loader.ts"
-import { repr } from "../../util/redact.ts"
-import { type Carried, type OnQuestion, reply } from "../../runtime/questions/ask.ts"
-import { normalizeOptions } from "../../runtime/questions/normalize.ts"
-import { newId, type SessionRecord, type Store } from "../../runtime/store/store.ts"
-import type { ToolCallOptions } from "../../runtime/worker/rpc.ts"
-import type { ToolContext } from "../context.ts"
-import { workItemVisibility } from "../work_items.ts"
+import type { CompanyRepo } from "../company/loader.ts"
+import { repr } from "../util/redact.ts"
+import { type Carried, type OnQuestion, reply } from "../runtime/questions/ask.ts"
+import { normalizeOptions } from "../runtime/questions/normalize.ts"
+import { newId, type SessionRecord, type Store } from "../runtime/store/store.ts"
+import type { ToolCallOptions } from "../runtime/worker/rpc.ts"
+import type { ToolContext } from "./context.ts"
+import { workItemVisibility } from "./work_items.ts"
 
 /** Code points of the question an `ask_manager` work item keeps as its title. */
 export const TITLE_CHARS = 80

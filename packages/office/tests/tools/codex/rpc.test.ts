@@ -5,13 +5,13 @@ import path from "node:path"
 import { PassThrough } from "node:stream"
 import { fileURLToPath } from "node:url"
 import { expect, onTestFinished, test } from "bun:test"
-import { JsonRpc, MAX_LINE, RpcClosed, RpcError, type RpcHandlers } from "../../src/harness/rpc.ts"
-import * as fc from "../../src/testing/fake_codex.ts"
-import { tempDir, waitFor } from "../helpers.ts"
+import { JsonRpc, MAX_LINE, RpcClosed, RpcError, type RpcHandlers } from "../../../src/tools/codex/rpc.ts"
+import * as fc from "../../../src/testing/fake_codex.ts"
+import { tempDir, waitFor } from "../../helpers.ts"
 
 const TIMEOUT = 30_000
 const BIG_TIMEOUT = 60_000
-const FAKE = fileURLToPath(new URL("../../src/testing/fake_codex.ts", import.meta.url))
+const FAKE = fileURLToPath(new URL("../../../src/testing/fake_codex.ts", import.meta.url))
 const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 const CHUNK = (1 << 20) + 7
 

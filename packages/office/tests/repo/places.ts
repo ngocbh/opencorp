@@ -33,12 +33,8 @@ export const PLACES: Readonly<Record<string, string>> = {
   "daemon/routes/work_items.ts": "server/routes/work_items.ts",
   "extensions/index.ts": "server/daemon/extensions.ts",
   "extensions/questions.ts": "features/questions/extension.ts",
-  "harness/adapter.ts": "tools/codex/adapter.ts",
-  "harness/codex.ts": "tools/codex/codex.ts",
-  "harness/rpc.ts": "tools/codex/rpc.ts",
   "harness/session.ts": "features/codex/session.ts",
   "harness/sessions.ts": "features/codex/sessions.ts",
-  "harness/translate.ts": "tools/codex/translate.ts",
   "hq/api.ts": "server/hq/api.ts",
   "hq/auth.ts": "server/hq/auth.ts",
   "hq/config.ts": "server/hq/config.ts",
@@ -81,7 +77,6 @@ export const PLACES: Readonly<Record<string, string>> = {
   "reach/tools/save_access.ts": "features/reach/tools/save_access.ts",
   "reach/tools/shell.ts": "features/reach/tools/shell.ts",
   "tools/company/draft.ts": "features/setup/tools/draft.ts",
-  "tools/company/work.ts": "tools/work.ts",
 }
 
 /** Each `tests/` file at an old path, by its path under `tests/`: its final path. */
@@ -117,15 +112,12 @@ export const TEST_PLACES: Readonly<Record<string, string>> = {
   "daemon/routes_sessions.test.ts": "server/routes/sessions.test.ts",
   "daemon/routes_work_items.test.ts": "server/routes/work_items.test.ts",
   "harness/approvals.test.ts": "features/codex/approvals.test.ts",
-  "harness/codex.test.ts": "tools/codex/codex.test.ts",
   "harness/continue.test.ts": "features/codex/continue.test.ts",
   "harness/errors.test.ts": "features/codex/errors.test.ts",
   "harness/helpers.ts": "features/codex/helpers.ts",
   "harness/restore.test.ts": "features/codex/restore.test.ts",
-  "harness/rpc.test.ts": "tools/codex/rpc.test.ts",
   "harness/session.test.ts": "features/codex/session.test.ts",
   "harness/sessions.test.ts": "features/codex/sessions.test.ts",
-  "harness/translate.test.ts": "tools/codex/translate.test.ts",
   "harness/waiting.test.ts": "features/codex/waiting.test.ts",
   "hq/api.test.ts": "server/hq/api.test.ts",
   "hq/app_fixture.test.ts": "server/hq/app_fixture.test.ts",
@@ -177,7 +169,6 @@ export const TEST_PLACES: Readonly<Record<string, string>> = {
   "reach/tools/save_access.test.ts": "features/reach/tools/save_access.test.ts",
   "reach/tools/shell.test.ts": "features/reach/tools/shell.test.ts",
   "tools/company/draft.test.ts": "features/setup/tools/draft.test.ts",
-  "tools/company/work.test.ts": "tools/work.test.ts",
 }
 
 /** Each import that still points up, one line per name, as `<importer> -> <imported> <name>` in today's `src/`
