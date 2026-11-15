@@ -1,6 +1,7 @@
 /**
  * The office's folder layout (ARCHITECTURE.md, "Where tests live" and "Feature folders"): `tests/` mirrors `src/`,
- * every test file at an old path is placed in `TEST_PLACES`, and each feature folder keeps its shape.
+ * every test file at an old path (at the root of `tests/`, one that tests no root file of `src/` that stays) is
+ * placed in `TEST_PLACES`, and each feature folder keeps its shape.
  */
 import { expect, test } from "bun:test"
 import fs from "node:fs"
@@ -32,6 +33,17 @@ function inOldFolder(file: string): boolean {
   return false
 }
 
+/** The files at the root of `tests/` that test the office as a whole, and stay there. */
+const WHOLE_OFFICE = new Set(["helpers.ts", "smoke.test.ts"])
+
+/** Whether `file`, at the root of `tests/`, stays there: it tests the whole office, or a file at the root of `src/`
+ *  that stays (`platform.test.ts` tests `platform.ts`). */
+function staysAtRoot(file: string): boolean {
+  const stem = file.replace(/\.test\.[cm]?[jt]sx?$/, "")
+  if (WHOLE_OFFICE.has(file)) return true
+  return stem !== file && SRC_FILES.some((src) => !src.includes("/") && !(src in PLACES) && src.replace(CODE, "") === stem)
+}
+
 test("every test folder that holds a ts file has its src folder", () => {
   const folders = new Set(TEST_FILES.filter((file) => CODE.test(file)).map(folderOf))
   expect([...folders].filter((dir) => dir !== "" && !srcFolder(dir))).toEqual([])
@@ -41,6 +53,8 @@ test("every test file in an old folder is placed, once, at a free path", () => {
   const problems: string[] = []
   for (const file of TEST_FILES) {
     if (inOldFolder(file) && !(file in TEST_PLACES)) problems.push(`${file} is in an old folder but not in TEST_PLACES`)
+    if (folderOf(file) === "" && !staysAtRoot(file) && !(file in TEST_PLACES))
+      problems.push(`${file} is at the root of tests/, tests no root file of src/ that stays, and isn't in TEST_PLACES`)
   }
   for (const [from, to] of Object.entries(TEST_PLACES)) {
     if (!TEST_FILES.includes(from)) problems.push(`TEST_PLACES names ${from}, which doesn't exist`)
