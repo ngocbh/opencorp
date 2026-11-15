@@ -3,13 +3,13 @@ import fs from "node:fs"
 import path from "node:path"
 import { ToolSet } from "@ngocbh/yian/tools"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import type { WorkspaceCall } from "../../src/perm/monitor.ts"
 import { helperCommand } from "../../src/platform.ts"
 import type { Result } from "../../src/sandbox/run.ts"
 import {
   MAX_SHELL_OUTPUT,
   shellOutput,
   TOOL_NAMES,
-  type WorkspaceCall,
   workspaceToolFunctions,
   WorkspaceTools,
   type WorkspaceOptions,

@@ -1,5 +1,6 @@
 /** Workspace tools: read, write, edit, list, search, and shell, each one sandboxed call. */
 import { startTime } from "../install/proc.ts"
+import type { ToolOutcome, WorkspaceCall } from "../perm/monitor.ts"
 import { pyJson, repr, strip } from "../perm/redact.ts"
 import type { SandboxPolicy } from "../sandbox/policy.ts"
 import { fsHelper, type Result, run } from "../sandbox/run.ts"
@@ -32,13 +33,6 @@ const SIGNATURES: Record<ToolName, readonly (readonly [string] | readonly [strin
   search: [["pattern"], ["path", "."], ["glob", null]],
   shell: [["command"], ["timeout", null]],
 }
-
-/** Forwards one workspace call (`WorkspaceTools.call`'s output, or anything shaped like it). */
-export type WorkspaceCall = (
-  name: string,
-  args: Record<string, unknown>,
-  options?: { signal?: AbortSignal },
-) => Promise<string>
 
 /** A model-facing workspace tool: its description and JSON Schema, and a call that forwards. */
 export interface WorkspaceTool {
@@ -190,23 +184,6 @@ function fill(tool: ToolName, args: Record<string, unknown>): Record<string, unk
   for (const [key, value] of Object.entries(args)) if (!known.has(key)) entries.push([key, value])
   // fromEntries makes every key an own property, `__proto__` included, so an extra key is never lost.
   return Object.fromEntries(entries)
-}
-
-/** What one workspace call did, for the audit log.
- *
- *  `exit` is the call's exit status, or `null` when it was killed (timeout or interrupt); `duration` is in
- *  seconds. */
-export interface AuditRecord {
-  tool: string
-  argsSummary: string
-  exit: number | null
-  duration: number
-}
-
-/** A workspace call's model-visible output and its audit record. */
-export interface ToolOutcome {
-  output: string
-  audit: AuditRecord
 }
 
 export interface WorkspaceOptions {
