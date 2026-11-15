@@ -22,6 +22,7 @@ import { Inspections, YianRuns, sweep } from "../runs/records.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { storeProblem } from "../store/problem.ts"
 import { Store } from "../store/store.ts"
+import { OfficePaths } from "../util/home.ts"
 import { reap } from "../worker/reaper.ts"
 import { WorkerRegistry } from "../worker/spawn.ts"
 import { Bus } from "./bus.ts"
@@ -35,7 +36,7 @@ import {
   trackRequests,
 } from "./http.ts"
 import { LiveRelay } from "./live.ts"
-import { Office, OfficePaths } from "./office.ts"
+import { Office } from "./office.ts"
 import { allRoutes } from "./routes/index.ts"
 import {
   OfficeStartError,

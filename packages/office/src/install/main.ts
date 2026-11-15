@@ -20,11 +20,12 @@ import { companyState } from "../company_template/index.ts"
 import { messageOf, OfficeStartError } from "../daemon/sockets.ts"
 import { repr } from "../perm/redact.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
+import type { Env } from "../util/env.ts"
 import { type CheckOptions, checks, exitCode, hqPortChecks, hqStatus, report } from "./doctor.ts"
 import * as fallback from "./fallback.ts"
 import { init } from "./init.ts"
 import { JsonPrompter, type TextOut } from "./json_prompts.ts"
-import { defaultHost, type Env, type Host, type Launch, launch, ServiceError, wantedHome } from "./launch.ts"
+import { defaultHost, type Host, type Launch, launch, ServiceError, wantedHome } from "./launch.ts"
 import { Declined, OffboardError, offboard } from "./offboard.ts"
 import {
   checkSocket,

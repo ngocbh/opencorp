@@ -46,6 +46,7 @@ import { redact as redactSecrets, repr } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
 import { checkFolder, PrivateFileError, writePrivate } from "../secrets.ts"
+import type { Env } from "../util/env.ts"
 import type { WorkerEnv } from "../worker/job.ts"
 import { plainAuthError } from "../worker/rpc.ts"
 import { workerEnv } from "../worker/spawn.ts"
@@ -54,7 +55,6 @@ import checkModelYaml from "./flows/check_model.yaml" with { type: "file" }
 import {
   type Completed,
   defaultHost,
-  type Env,
   type Host,
   type Launch,
   launch,

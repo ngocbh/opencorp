@@ -17,8 +17,6 @@ import type { CompanyGit } from "../company/git.ts"
 import { loadRepo } from "../company/loader.ts"
 import type { Bus } from "../daemon/bus.ts"
 import type { LiveRelay } from "../daemon/live.ts"
-import type { OfficePaths } from "../daemon/office.ts"
-import type { Env } from "../install/launch.ts"
 import { redact } from "../perm/redact.ts"
 import { type Answers, isAskManagerCall, makeAskUser, type OnQuestion } from "../questions/ask.ts"
 import type { AnswerKind } from "../questions/cards.ts"
@@ -47,6 +45,8 @@ import {
   StoreUnwritable,
   type WorkItemRecord,
 } from "../store/store.ts"
+import type { Env } from "../util/env.ts"
+import type { OfficePaths } from "../util/home.ts"
 import { type Frame, FrameTooLarge } from "../worker/channel.ts"
 import { type Delivery, type Job, type Seed, STOP_REASON } from "../worker/job.ts"
 import {

@@ -378,9 +378,10 @@ test("the sandbox helper imports only node builtins", () => {
 /** What each file the daemon loads before it re-execs may import, by final path: `node:` builtins (and `bun:` for
  *  `platform.ts`), and the final paths listed. Type-only imports count, except `platform.ts`'s, which load nothing. */
 const PRE_REEXEC: Readonly<Record<string, { files: readonly string[]; bun?: true; values?: true }>> = {
-  "runtime/service/launch.ts": { files: ["platform.ts", "util/sockets.ts", "util/proc.ts"] },
+  "runtime/service/launch.ts": { files: ["platform.ts", "util/sockets.ts", "util/proc.ts", "util/env.ts"] },
   "util/proc.ts": { files: ["platform.ts"] },
   "util/sockets.ts": { files: [] },
+  "util/env.ts": { files: [] },
   "platform.ts": { files: [], bun: true, values: true },
 }
 

@@ -1,5 +1,4 @@
-/** The office object and its paths: what the routes and services share. */
-import path from "node:path"
+/** The office object: what the routes and services share. */
 import { type Message, Session, now } from "@opencorp/protocol"
 import { Connections, type ConnectionsOptions } from "../chat/connections.ts"
 import { Hiring } from "../chat/hire.ts"
@@ -21,6 +20,7 @@ import { RunLogs } from "../runs/service.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { SecretStore } from "../secrets.ts"
 import type { SessionRecord, Store } from "../store/store.ts"
+import type { OfficePaths } from "../util/home.ts"
 import type { WorkerPool } from "../worker/spawn.ts"
 import { DeviceTokens } from "./auth.ts"
 import type { Bus } from "./bus.ts"
@@ -29,53 +29,6 @@ import type { LiveRelay } from "./live.ts"
 
 // Every status but the two a session never leaves, so a status added later keeps its session's pin.
 const NOT_TERMINAL = Session.shape.status.options.filter((status) => status !== "ended" && status !== "failed")
-
-/** Where the office keeps its files under an OpenCorp home. */
-export class OfficePaths {
-  readonly home: string
-  readonly company: string
-  readonly office: string
-  readonly store: string
-  readonly socket: string
-  readonly pidfile: string
-  /** The single-daemon lock. */
-  readonly lock: string
-  readonly worktrees: string
-  readonly runs: string
-  readonly sessions: string
-  readonly memory: string
-  readonly secrets: string
-
-  constructor(home: string) {
-    this.home = home
-    this.company = path.join(home, "company")
-    this.office = path.join(home, "office")
-    this.store = path.join(this.office, "store.sqlite")
-    this.socket = path.join(this.office, "office.sock")
-    this.pidfile = path.join(this.office, "office.pid")
-    this.lock = path.join(this.office, "office.lock")
-    this.worktrees = path.join(this.office, "worktrees")
-    this.runs = path.join(this.office, "runs")
-    this.sessions = path.join(this.office, "sessions")
-    this.memory = path.join(this.office, "memory")
-    this.secrets = path.join(this.office, "secrets")
-  }
-
-  /** HQ's unix socket, in the office dir. */
-  get hqSocket(): string {
-    return path.join(this.office, "hq.sock")
-  }
-
-  /** The directory a session's worker runs in. */
-  runDir(sessionId: string): string {
-    return path.join(this.runs, sessionId)
-  }
-
-  /** The directory a chat session's workers run in. */
-  sessionDir(sessionId: string): string {
-    return path.join(this.sessions, sessionId)
-  }
-}
 
 /** The office's harness for the session routes: the card actions, plus what the session routes call. Each call
  *  throws `HarnessError` for an API error (404 not_found, 409 not_live, 422 refused, 501 not_implemented, ...). */

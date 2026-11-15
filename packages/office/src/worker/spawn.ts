@@ -5,17 +5,14 @@ import type net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { inspect } from "node:util"
-import { type Env, INHERITED_ENV } from "../install/launch.ts"
 import { killGroup, startTime } from "../install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../platform.ts"
 import type { Store } from "../store/store.ts"
+import { type Env, INHERITED_ENV } from "../util/env.ts"
 import { type Channel, ChannelClosed, type Frame, socketChannel } from "./channel.ts"
 import { Delivery, type Job } from "./job.ts"
 import { reap } from "./reaper.ts"
 import { errorName, isRequest, type JobWorker, replyTo, type WorkerHandlers } from "./rpc.ts"
-
-// Defined in launch.ts so the daemon's pre-re-exec check doesn't load this module's later imports.
-export { INHERITED_ENV } from "../install/launch.ts"
 
 /** The environment a worker starts with: `INHERITED_ENV` and `LC_*` from the office's (`environ`), set values
  *  only. */

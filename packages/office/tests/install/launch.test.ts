@@ -18,7 +18,6 @@ import {
   resolveHome,
   runCommand,
   wantedHome,
-  which,
 } from "../../src/install/launch.ts"
 import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, unsafeEnvName } from "../../src/platform.ts"
@@ -460,29 +459,6 @@ process.exit(1)
   killAtEnd(pid, started)
   await waitFor(() => isGone(pid, started), { timeout: 5000, what: "the grandchild gone" })
 }, 30_000)
-
-test("which finds a runnable program on the absolute path entries only", () => {
-  const dir = tempDir()
-  const [folder, plain, runnable, second, links] = ["folder", "plain", "runnable", "second", "links"].map((name) =>
-    path.join(dir, name),
-  )
-  for (const entry of [folder, plain, runnable, second, links]) fs.mkdirSync(entry!)
-  fs.mkdirSync(path.join(folder!, "prog"))
-  fs.writeFileSync(path.join(plain!, "prog"), "#!/bin/sh\n", { mode: 0o644 })
-  for (const entry of [runnable, second]) fs.writeFileSync(path.join(entry!, "prog"), "#!/bin/sh\n", { mode: 0o755 })
-  fs.symlinkSync(path.join(runnable!, "prog"), path.join(links!, "prog"))
-
-  const searchPath = [path.relative(process.cwd(), runnable!), folder, plain, runnable, second].join(":")
-  expect(which("prog", searchPath)).toBe(path.join(runnable!, "prog"))
-  expect(which("prog", [folder, plain].join(":"))).toBeNull()
-  expect(which("prog", undefined)).toBeNull()
-  expect(which("prog", links)).toBe(path.join(links!, "prog"))
-
-  expect(which(path.join(second!, "prog"), "")).toBe(path.join(second!, "prog"))
-  expect(which(path.join(plain!, "prog"), runnable)).toBeNull()
-  expect(which(path.join(folder!, "prog"), runnable)).toBeNull()
-  expect(which("./prog", runnable)).toBeNull()
-})
 
 test("office answers is false without a server, for a non 200 and for one that never replies", async () => {
   const dir = shortDir()
