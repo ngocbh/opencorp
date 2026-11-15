@@ -92,8 +92,12 @@ test("importsOf reads every kind of import, and none in comments or strings", ()
     'export { h as i } from "./h.ts"',
     'import "./side.ts"',
     'import sql from "./x.sql" with { type: "file" }',
+    'import flow from "./flow.yaml" with {',
+    '  type: "file",',
+    "}",
     'const m = await import("./m.ts")',
     '/// <reference path="../files.d.ts" />',
+    "/// <reference path='./more.d.ts' />",
     '// import { no } from "./comment.ts"',
     'const s = \'import { no } from "./string.ts"\'',
     "export const x = 1",
@@ -108,8 +112,10 @@ test("importsOf reads every kind of import, and none in comments or strings", ()
     { kind: "static", specifier: "./h.ts", typeOnly: false, data: false, names: ["h"] },
     { kind: "side", specifier: "./side.ts", typeOnly: false, data: false, names: [] },
     { kind: "static", specifier: "./x.sql", typeOnly: false, data: true, names: ["default"] },
+    { kind: "static", specifier: "./flow.yaml", typeOnly: false, data: true, names: ["default"] },
     { kind: "dynamic", specifier: "./m.ts", typeOnly: false, data: false, names: ["import()"] },
     { kind: "reference", specifier: "../files.d.ts", typeOnly: true, data: false, names: [] },
+    { kind: "reference", specifier: "./more.d.ts", typeOnly: true, data: false, names: [] },
   ])
 })
 

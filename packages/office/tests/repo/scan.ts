@@ -238,7 +238,8 @@ export function importsOf(text: string): Import[] {
     const specifier = text.slice(start, end)
     const head = code.slice(match.index, start - 1)
     const line = text.slice(0, start).split("\n").length
-    const data = /^\s*with\s*\{\s*type\s*:\s*["']file["']\s*\}/.test(text.slice(end + 1))
+    // The attribute may span lines and end with a comma.
+    const data = /^\s*with\s*\{\s*type\s*:\s*["']file["']\s*,?\s*\}/.test(text.slice(end + 1))
     if (/^import\s*\(/.test(head)) {
       found.push({ kind: "dynamic", specifier, start, end, line, typeOnly: false, data: false, names: ["import()"] })
     } else if (/(?<![\w$])from\s*$/.test(head)) {
@@ -249,12 +250,12 @@ export function importsOf(text: string): Import[] {
       found.push({ kind: "side", specifier, start, end, line, typeOnly: false, data, names: [] })
     }
   }
-  // A triple-slash reference lives in a comment, which `blank` hides.
-  for (const match of text.matchAll(/^\/\/\/[ \t]*<reference[ \t]+path[ \t]*=[ \t]*"([^"\n]+)"/gm)) {
+  // A triple-slash reference lives in a comment, which `blank` hides. Its path may take either quote.
+  for (const match of text.matchAll(/^\/\/\/[ \t]*<reference[ \t]+path[ \t]*=[ \t]*(["'])((?:(?!\1)[^\n])+)\1/gm)) {
     const end = match.index + match[0].length - 1
-    const start = end - match[1]!.length
+    const start = end - match[2]!.length
     const line = text.slice(0, start).split("\n").length
-    found.push({ kind: "reference", specifier: match[1]!, start, end, line, typeOnly: true, data: false, names: [] })
+    found.push({ kind: "reference", specifier: match[2]!, start, end, line, typeOnly: true, data: false, names: [] })
   }
   return found
 }
