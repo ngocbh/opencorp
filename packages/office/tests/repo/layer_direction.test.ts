@@ -6,11 +6,12 @@
  * breaks a rule, exactly. Also here: the Bun lints, no `require()`, the sandbox helper's imports, and what the
  * daemon loads before it re-execs.
  */
-import { expect, test } from "bun:test"
+import { expect, onTestFinished, test } from "bun:test"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { CYCLES, PLACES, UPWARD } from "./places.ts"
-import { blank, filesUnder, type Import, importsOf, resolveIn, SRC } from "./scan.ts"
+import { blank, CODE, filesUnder, type Import, importsOf, resolveIn, SRC } from "./scan.ts"
 
 /** The categories, lowest first; `main.ts` sits above them all. */
 const CATEGORIES = ["util", "company", "runtime", "models", "tools", "features", "server"] as const
@@ -49,6 +50,11 @@ const FILES = filesUnder(SRC)
 /** The text of `file`, a path under `src/`. */
 const source = (file: string): string => fs.readFileSync(path.join(SRC, file), "utf8")
 
+/** Every JS or TS file under the office's src, as paths relative to it. */
+function sourceFiles(): string[] {
+  return FILES.filter((name) => CODE.test(name))
+}
+
 /** One relative import: who imports, what it names (both today's paths under `src/`), and how. */
 interface Edge {
   from: string
@@ -56,9 +62,9 @@ interface Edge {
   imp: Import
 }
 
-/** Every relative import of the `.ts` files under `src/`. */
+/** Every relative import of the JS and TS files under `src/`. */
 function edges(): Edge[] {
-  return FILES.filter((file) => file.endsWith(".ts")).flatMap((from) =>
+  return sourceFiles().flatMap((from) =>
     importsOf(source(from))
       .filter((imp) => imp.specifier.startsWith("."))
       .map((imp) => ({ from, to: resolveIn(from, imp.specifier), imp })),
@@ -119,6 +125,17 @@ test("importsOf reads every kind of import, and none in comments or strings", ()
   ])
 })
 
+test("filesUnder skips node_modules, .git and a package's dist, not a dist inside src", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "office-scan-"))
+  onTestFinished(() => fs.rmSync(root, { recursive: true, force: true }))
+  for (const file of ["package.json", "dist/main.js", "node_modules/x/index.ts", ".git/HEAD", "src/a.ts", "src/dist/b.mts"]) {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true })
+    fs.writeFileSync(path.join(root, file), "")
+  }
+  expect(filesUnder(root)).toEqual(["package.json", "src/a.ts", "src/dist/b.mts"])
+  expect(filesUnder(path.join(root, "src")).filter((file) => CODE.test(file))).toEqual(["a.ts", "dist/b.mts"])
+})
+
 test("every file has a layer", () => {
   const problems: string[] = []
   for (const file of FILES) {
@@ -156,7 +173,7 @@ test("src loads modules only with import, never require", () => {
     expect(blank(sample)).toMatch(REQUIRE)
   for (const sample of ['// require("../daemon/office.ts")', 'const s = \'require("x")\'', "requireAuth(x)", "const required = (x)"])
     expect(blank(sample)).not.toMatch(REQUIRE)
-  const found = FILES.filter((file) => /\.[cm]?[jt]sx?$/.test(file) && REQUIRE.test(blank(source(file))))
+  const found = sourceFiles().filter((file) => REQUIRE.test(blank(source(file))))
   expect(found).toEqual([])
 })
 
@@ -178,7 +195,7 @@ test("every dynamic import in src names its module in one quoted string", () => 
     "// import(name)",
   ])
     expect(blank(sample)).not.toMatch(COMPUTED_IMPORT)
-  const found = FILES.filter((file) => /\.[cm]?[jt]sx?$/.test(file) && COMPUTED_IMPORT.test(blank(source(file))))
+  const found = sourceFiles().filter((file) => COMPUTED_IMPORT.test(blank(source(file))))
   expect(found).toEqual([])
 })
 
@@ -248,7 +265,7 @@ const UTIL_PACKAGES = /^(node:.+|@ngocbh\/yian\/platform|@opencorp\/protocol(\/.
 
 test("util imports only builtins, platform.ts, util, yian's platform and the protocol", () => {
   const problems: string[] = []
-  for (const from of FILES.filter((file) => file.endsWith(".ts") && layerOf(final(file)) === 1)) {
+  for (const from of sourceFiles().filter((file) => layerOf(final(file)) === 1)) {
     for (const imp of importsOf(source(from))) {
       if (!imp.specifier.startsWith(".")) {
         const bun = final(from) === "platform.ts" && /^bun:/.test(imp.specifier)
@@ -261,11 +278,6 @@ test("util imports only builtins, platform.ts, util, yian's platform and the pro
   }
   expect(problems).toEqual([])
 })
-
-/** Every JS or TS file under the office's src, as paths relative to it. */
-function sourceFiles(): string[] {
-  return FILES.filter((name) => /\.[cm]?[jt]sx?$/.test(name))
-}
 
 // The patterns read source text, so they can't see a specifier built at run time,
 // `globalThis["Bu" + "n"]`, or a cast other than `(Bun as T)`; review catches those. They also scan

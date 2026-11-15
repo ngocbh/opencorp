@@ -260,18 +260,26 @@ export function importsOf(text: string): Import[] {
   return found
 }
 
-/** Folders `filesUnder` never enters. */
-const SKIP = new Set(["node_modules", "dist", ".git"])
+/** A JS or TS module's file name: `.ts`, `.tsx`, `.mts`, `.cts`, and their `.js` kin. */
+export const CODE = /\.[cm]?[jt]sx?$/
 
-/** Every file under `root`, as `/`-separated paths relative to it, sorted. It skips `node_modules`, `dist` and
- *  `.git`, and doesn't follow links. */
+/** Folders `filesUnder` never enters. */
+const SKIP = new Set(["node_modules", ".git"])
+
+/** Every file under `root`, as `/`-separated paths relative to it, sorted. It skips `node_modules`, `.git` and a
+ *  package's build (a `dist` beside a `package.json`), and doesn't follow links. */
 export function filesUnder(root: string): string[] {
   const found: string[] = []
   const walk = (rel: string): void => {
-    for (const entry of fs.readdirSync(path.join(root, rel), { withFileTypes: true })) {
+    const dir = path.join(root, rel)
+    const pkg = fs.existsSync(path.join(dir, "package.json"))
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const name = rel ? `${rel}/${entry.name}` : entry.name
-      if (entry.isDirectory() && !SKIP.has(entry.name)) walk(name)
-      else if (entry.isFile()) found.push(name)
+      if (entry.isDirectory()) {
+        if (!SKIP.has(entry.name) && !(pkg && entry.name === "dist")) walk(name)
+      } else if (entry.isFile()) {
+        found.push(name)
+      }
     }
   }
   if (fs.existsSync(root)) walk("")

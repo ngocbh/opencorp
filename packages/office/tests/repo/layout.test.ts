@@ -6,7 +6,7 @@ import { expect, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import { PLACES, TEST_PLACES } from "./places.ts"
-import { filesUnder, importsOf, SRC, TESTS } from "./scan.ts"
+import { CODE, filesUnder, importsOf, SRC, TESTS } from "./scan.ts"
 
 /** Test folders with no `src/` folder of their own. */
 const UNMIRRORED = /^(e2e|fixtures|repo)(\/|$)/
@@ -33,7 +33,7 @@ function inOldFolder(file: string): boolean {
 }
 
 test("every test folder that holds a ts file has its src folder", () => {
-  const folders = new Set(TEST_FILES.filter((file) => /\.tsx?$/.test(file)).map(folderOf))
+  const folders = new Set(TEST_FILES.filter((file) => CODE.test(file)).map(folderOf))
   expect([...folders].filter((dir) => dir !== "" && !srcFolder(dir))).toEqual([])
 })
 
@@ -51,7 +51,7 @@ test("every test file in an old folder is placed, once, at a free path", () => {
   expect(problems).toEqual([])
 })
 
-/** What a feature folder may hold at its top, besides `.ts` modules and the data files they embed. */
+/** What a feature folder may hold at its top, besides JS or TS modules and the data files they embed. */
 const FEATURE_FOLDERS = new Set(["flows", "tools", "skills"])
 
 test("each feature folder holds only flows, tools, skills, modules and the files they embed", () => {
@@ -64,13 +64,13 @@ test("each feature folder holds only flows, tools, skills, modules and the files
       problems.push(`${place}: a feature folder holds only ${[...FEATURE_FOLDERS].join(", ")} as folders`)
       continue
     }
-    if (place.endsWith(".ts")) continue
+    if (CODE.test(place)) continue
     // A data file is embedded by a module of the same feature folder, with `with { type: "file" }`.
     const embedded = places.some(
       (other) =>
         other.place.startsWith(`features/${feature}/`) &&
         other.place.split("/").length === 3 &&
-        other.place.endsWith(".ts") &&
+        CODE.test(other.place) &&
         importsOf(fs.readFileSync(path.join(SRC, other.file), "utf8")).some(
           (imp) => imp.data && path.posix.join(path.posix.dirname(other.file), imp.specifier) === file,
         ),

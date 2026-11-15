@@ -19,7 +19,7 @@ import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { CYCLES, PLACES, TEST_PLACES, UPWARD } from "../tests/repo/places.ts"
-import { filesUnder, importsOf, literals } from "../tests/repo/scan.ts"
+import { CODE, filesUnder, importsOf, literals } from "../tests/repo/scan.ts"
 
 const CATEGORIES = ["util", "company", "runtime", "models", "tools", "features", "server"]
 const OFFICE = path.resolve(import.meta.dirname, "..")
@@ -183,7 +183,7 @@ const ALL_DOTS = /^\.\.(\/\.\.)*\/?$/
  *  each must still resolve. */
 const anchored: { file: string; value: string }[] = []
 
-/** The edits rules 2 to 5 make to `file` (absolute), a `.ts` or `.tsx` file. */
+/** The edits rules 2 to 5 make to `file` (absolute), a JS or TS file. */
 function edits(file: string, text: string): Edit[] {
   const office = file.startsWith(`${OFFICE}${path.sep}`)
   const dir = path.dirname(file)
@@ -242,7 +242,7 @@ for (const [key, value] of Object.entries(pkg.exports)) {
 const changed = new Map<string, string>()
 const sources = PACKAGES.flatMap((name) =>
   filesUnder(path.join(REPO, "packages", name))
-    .filter((rel) => /\.tsx?$/.test(rel) && !/(^|\/)(node_modules|dist)\//.test(rel))
+    .filter((rel) => CODE.test(rel))
     .map((rel) => path.join(REPO, "packages", name, rel)),
 ).filter((file) => !KEEP.some((dir) => file.startsWith(`${dir}${path.sep}`)))
 for (const file of sources) {
@@ -313,7 +313,7 @@ const problems: string[] = []
 for (const { file, value } of anchored)
   if (!exists(path.resolve(path.dirname(file), value))) problems.push(`${path.relative(REPO, file)}: "${value}"`)
 for (const file of [...filesUnder(SRC).map((rel) => path.join(SRC, rel)), ...filesUnder(TESTS).map((rel) => path.join(TESTS, rel))]) {
-  if (!/\.tsx?$/.test(file)) continue
+  if (!CODE.test(file)) continue
   const text = fs.readFileSync(file, "utf8")
   for (const imp of importsOf(text)) {
     if (imp.specifier.startsWith(".") && !exists(path.resolve(path.dirname(file), imp.specifier)))
@@ -321,7 +321,7 @@ for (const file of [...filesUnder(SRC).map((rel) => path.join(SRC, rel)), ...fil
   }
 }
 for (const [, to] of moves) {
-  if (!to.startsWith(`${TESTS}${path.sep}`) || !/\.tsx?$/.test(to)) continue
+  if (!to.startsWith(`${TESTS}${path.sep}`) || !CODE.test(to)) continue
   const dir = path.relative(TESTS, path.dirname(to))
   if (!isDir(path.join(SRC, dir))) problems.push(`tests/${dir} has no src/${dir}`)
 }
