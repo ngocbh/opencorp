@@ -1,9 +1,9 @@
 /** Read-only work item tools: what the asker can see. */
 import fs from "node:fs"
 import { expect, test } from "bun:test"
-import { newId } from "../../src/store/store.ts"
+import { newId } from "../../src/runtime/store/store.ts"
 import { workItemTools, workItemVisibility } from "../../src/tools/work_items.ts"
-import { groupSpecs } from "../../src/worker/job.ts"
+import { groupSpecs } from "../../src/runtime/worker/job.ts"
 import { openStore, question, session, workItem } from "./helpers.ts"
 
 test("work item tools show only what the asker can see", () => {

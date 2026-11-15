@@ -1,5 +1,5 @@
 /** The event stream: stored metadata events and live transcript events, as SSE. */
-import { type Item, PING } from "../bus.ts"
+import { type Item, PING } from "../../runtime/bus.ts"
 import { RawReply, type Route } from "../http.ts"
 import type { RequestContext } from "../office.ts"
 

@@ -6,7 +6,7 @@ import { AuthError, AuthStore } from "@ngocbh/yian/llm_clients"
 import { type Connection, OFFICE } from "@opencorp/protocol"
 import type { z } from "zod"
 import { PrivateFileError, readPrivate, writePrivate } from "../util/private_files.ts"
-import { plainAuthError } from "../worker/rpc.ts"
+import { plainAuthError } from "../runtime/worker/rpc.ts"
 import {
   checked,
   checkLlmConfig,

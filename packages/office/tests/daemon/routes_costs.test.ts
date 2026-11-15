@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test"
 import { HttpError } from "../../src/daemon/http.ts"
 import { utcTimestamp } from "../../src/daemon/routes/costs.ts"
-import { session } from "../store/helpers.ts"
+import { session } from "../runtime/store/helpers.ts"
 import { makeOffice, request, served } from "./helpers.ts"
 
 /** The `GET /costs` target with `since` as its query (none when null). */

@@ -14,7 +14,7 @@ import { type CompanyGit, isCommitId } from "../company/git.ts"
 import { parseFile } from "../company/issues.ts"
 import type { CompanySnapshots } from "../company/snapshot.ts"
 import { errorType, HttpError, logLine } from "../daemon/http.ts"
-import { HqSessionRecord, newId, type Store } from "../store/store.ts"
+import { HqSessionRecord, newId, type Store } from "../runtime/store/store.ts"
 
 type BrowserSession = z.output<typeof BrowserSessionSchema>
 type CompanyView = z.output<typeof CompanyViewSchema>

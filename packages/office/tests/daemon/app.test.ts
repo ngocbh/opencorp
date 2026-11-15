@@ -1,7 +1,7 @@
 /** The office: start and stop. */
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
-import type { WorkerPool } from "../../src/worker/spawn.ts"
+import type { WorkerPool } from "../../src/runtime/worker/spawn.ts"
 import { makeOffice, request, served, ULID } from "./helpers.ts"
 
 setDefaultTimeout(30_000)

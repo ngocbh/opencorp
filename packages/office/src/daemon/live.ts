@@ -11,9 +11,9 @@ import {
 } from "@ngocbh/yian/run"
 import type { LiveEvent, Message, Part } from "@opencorp/protocol"
 import type { LiveCalls, Transcript } from "../chat/transcript.ts"
-import type { Job } from "../worker/job.ts"
-import { errorName } from "../worker/rpc.ts"
-import { type Bus, PING } from "./bus.ts"
+import type { Job } from "../runtime/worker/job.ts"
+import { errorName } from "../runtime/worker/rpc.ts"
+import { type Bus, PING } from "../runtime/bus.ts"
 
 /** What the relay uses of a worker: its job's run, session and log, and a way to ask for a fresh snapshot. `Worker`
  *  fits. */

@@ -2,12 +2,12 @@
 import net from "node:net"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { Event, type LiveEvent, now } from "@opencorp/protocol"
-import { hashPassword } from "../../src/auth/passwords.ts"
+import { hashPassword } from "../../src/runtime/auth/passwords.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { HQ_EVENT_TYPES } from "../../src/hq/api.ts"
 import type { Hq } from "../../src/hq/core.ts"
 import { STREAMS_PER_SESSION, TTL } from "../../src/hq/sessions.ts"
-import { newId } from "../../src/store/store.ts"
+import { newId } from "../../src/runtime/store/store.ts"
 import { waitFor } from "../helpers.ts"
 import {
   CEO,

@@ -3,7 +3,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import { HarnessError } from "../../src/chat/state.ts"
+import { HarnessError } from "../../src/runtime/sessions/state.ts"
 import { loadConfined } from "../../src/company/flows.ts"
 import { CompanyGit } from "../../src/company/git.ts"
 import {
@@ -22,7 +22,7 @@ import { fakeLlm, makeHarness, ROOT, running, status, texts } from "../chat/help
 import { company, git } from "../company/helpers.ts"
 import { CEO, request, served } from "../daemon/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
-import { openStore, recordEvents, session } from "../store/helpers.ts"
+import { openStore, recordEvents, session } from "../runtime/store/helpers.ts"
 
 setDefaultTimeout(30_000)
 

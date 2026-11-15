@@ -10,7 +10,7 @@ import {
 } from "@ngocbh/yian/llm_clients"
 import type { ModelList } from "@opencorp/protocol"
 import type { z } from "zod"
-import { plainAuthError } from "../worker/rpc.ts"
+import { plainAuthError } from "../runtime/worker/rpc.ts"
 import { BadConnectionName, type ConnectionFile, type Connections, configHash, providerLabel } from "./connections.ts"
 import { type LlmConfig, type Provider, ProviderError } from "./provider.ts"
 

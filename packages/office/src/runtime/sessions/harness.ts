@@ -1,9 +1,9 @@
 /** What every session harness offers: the card actions (`CardActor`) and what the session routes call
  *  (`SessionHarness`). The chat harness and the Codex sessions implement it; the routes and the cards call it. */
 import type { Message } from "@opencorp/protocol"
-import type { Hooks } from "../../chat/hooks.ts"
-import type { Live } from "../../runs/records.ts"
-import type { QuestionRecord, SessionRecord } from "../../store/store.ts"
+import type { Hooks } from "./hooks.ts"
+import type { Live } from "../runs/records.ts"
+import type { QuestionRecord, SessionRecord } from "../store/store.ts"
 
 /** The four ways a question is answered (`option`, `text`, `sent_back`, `interrupted`): the store's `answer_kind`. */
 export type AnswerKind = NonNullable<QuestionRecord["answer_kind"]>

@@ -7,19 +7,19 @@ import { iterRunRecords } from "@ngocbh/yian/run"
 import { realScheduler, type Scheduler } from "@ngocbh/yian/platform"
 import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { type Question, stamp } from "@opencorp/protocol"
-import { Hooks } from "../../src/chat/hooks.ts"
-import { HarnessError, notWaiting } from "../../src/chat/state.ts"
+import { Hooks } from "../../src/runtime/sessions/hooks.ts"
+import { HarnessError, notWaiting } from "../../src/runtime/sessions/state.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { register } from "../../src/extensions/questions.ts"
 import { type Cards, SIDE_END_WAIT_MS } from "../../src/questions/cards.ts"
-import { CARRIED_NOTE, INTERRUPTED, SENT_BACK } from "../../src/questions/format.ts"
+import { CARRIED_NOTE, INTERRUPTED, SENT_BACK } from "../../src/runtime/questions/format.ts"
 import { FRAMING, firstMessage } from "../../src/questions/seed.ts"
 import { BACK_HINT, SEED_FILE } from "../../src/questions/side.ts"
-import { CARD_CLOSED, OFFICE_STOPPED, SIDE_OPEN_FAILED } from "../../src/runs/outcomes.ts"
+import { CARD_CLOSED, OFFICE_STOPPED, SIDE_OPEN_FAILED } from "../../src/runtime/runs/outcomes.ts"
 import type { AnswerKind, CardActor } from "../../src/runtime/sessions/harness.ts"
-import { InvalidTransition, type QuestionRecord, type Store, newId } from "../../src/store/store.ts"
+import { InvalidTransition, type QuestionRecord, type Store, newId } from "../../src/runtime/store/store.ts"
 import type { FakeLLM, ScriptedReply } from "../../src/testing/fake_llm.ts"
-import type { Frame } from "../../src/worker/channel.ts"
+import type { Frame } from "../../src/runtime/worker/channel.ts"
 import {
   ASK_MANAGER,
   card as chatCard,
@@ -37,7 +37,7 @@ import {
 } from "../chat/helpers.ts"
 import { CEO, makeOffice, standInHarness } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
-import { question, recordEvents, session } from "../store/helpers.ts"
+import { question, recordEvents, session } from "../runtime/store/helpers.ts"
 
 setDefaultTimeout(60_000)
 afterAll(noWorkersLeft)

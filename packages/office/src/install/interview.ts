@@ -1,7 +1,7 @@
 /** `opencorp init`'s flow (an interview that asks on the terminal, the owner's confirmation, a password and a
  *  remote), and the draft without a terminal. */
 import { type FunctionTool, loadFlow, type ToolContext, tool } from "@ngocbh/yian"
-import { hashPassword, passwordProblem } from "../auth/passwords.ts"
+import { hashPassword, passwordProblem } from "../runtime/auth/passwords.ts"
 import { runSetup } from "../chat/check.ts"
 import type { Provider } from "../chat/provider.ts"
 import { type Draft, type InitOutput, draftFromOutput, draftProblems, fieldProblems } from "../company/draft.ts"

@@ -3,7 +3,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
-import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
+import { newToken, tokenSha256 } from "../../src/runtime/auth/tokens.ts"
 import { git, gitStatus, startMerge, stashPopConflict } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import { alive, asked, folder, openOffice, type RunningOffice } from "./helpers.ts"

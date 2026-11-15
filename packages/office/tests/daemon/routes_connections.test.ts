@@ -5,8 +5,8 @@ import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { type AuthRequest, AuthStore, HttpResponse, OAuthCredentials, OpenAIAuth } from "@ngocbh/yian/llm_clients"
 import { stringify } from "yaml"
-import { Identity, identityPath, writeIdentity } from "../../src/auth/identity.ts"
-import { newToken } from "../../src/auth/tokens.ts"
+import { Identity, identityPath, writeIdentity } from "../../src/runtime/auth/identity.ts"
+import { newToken } from "../../src/runtime/auth/tokens.ts"
 import { type ModelCheck, modelProblem } from "../../src/chat/check.ts"
 import { ConnectionFile, providerLabel } from "../../src/chat/connections.ts"
 import type { LoginsOptions } from "../../src/chat/logins.ts"
@@ -15,7 +15,7 @@ import { type Provider, ProviderError } from "../../src/chat/provider.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { MAX_KEY_CHARS } from "../../src/install/onboard.ts"
 import { writePrivate } from "../../src/util/private_files.ts"
-import { RegistryClosed } from "../../src/worker/spawn.ts"
+import { RegistryClosed } from "../../src/runtime/worker/spawn.ts"
 import {
   APPROVED,
   CATALOG,
@@ -31,7 +31,7 @@ import {
 } from "../chat/helpers.ts"
 import { git } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
-import { recordEvents } from "../store/helpers.ts"
+import { recordEvents } from "../runtime/store/helpers.ts"
 import { addHuman, bearer, giveDevice, makeOffice, type Reply, request, served } from "./helpers.ts"
 
 setDefaultTimeout(30_000)

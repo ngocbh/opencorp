@@ -40,7 +40,7 @@ export function helperCommand(): { argv: [string, ...string[]]; helper: Helper }
   // Resolved paths, as the sandbox profile names them.
   const bin = fs.realpathSync(process.execPath)
   if (Bun.isStandaloneExecutable) return { argv: [bin, "__fs-helper"], helper: { binary: bin } }
-  const entry = fs.realpathSync(fileURLToPath(new URL("./sandbox/fs_helper.ts", import.meta.url)))
+  const entry = fs.realpathSync(fileURLToPath(new URL("./runtime/sandbox/fs_helper.ts", import.meta.url)))
   return { argv: [bin, ...CHECKOUT_FLAGS, entry], helper: { bun: bin, entry } }
 }
 

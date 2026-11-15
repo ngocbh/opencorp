@@ -1,0 +1,365 @@
+/** How the office daemon is started: its command, environment, folder and log, the host it runs on, and the
+ *  check that pins a running daemon to them. Imports only `node:*`, `platform.ts`, `daemon/sockets.ts`, `proc.ts` and
+ *  `util/env.ts`: `daemonMain` runs `pinDaemon` before the daemon module loads. */
+import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process"
+import { createHash } from "node:crypto"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import { parseArgs } from "node:util"
+import { makeOfficeDir, OfficeStartError } from "../../util/sockets.ts"
+import { reexec, selfCommand } from "../../platform.ts"
+import { type Env, INHERITED_ENV, which } from "../../util/env.ts"
+import { killGroup } from "../../util/proc.ts"
+
+/** A service manager refused to install or start the office; the message says why. */
+export class ServiceError extends Error {
+  override name = "ServiceError"
+}
+
+/** One office's daemon: its launch command, environment and folder, and its service name. */
+export class Launch {
+  constructor(
+    readonly argv: readonly [string, ...string[]],
+    readonly env: Readonly<Record<string, string>>,
+    readonly cwd: string,
+    readonly home: string,
+    readonly name: string,
+  ) {}
+
+  /** The office folder, `<home>/office`. */
+  get office(): string {
+    return path.join(this.home, "office")
+  }
+
+  /** Where the daemon's stdout and stderr go (never an unread pipe, which would stall it). */
+  get log(): string {
+    return path.join(this.office, "office.log")
+  }
+
+  /** The daemon's unix socket. */
+  get socket(): string {
+    return path.join(this.office, "office.sock")
+  }
+}
+
+/** Which Codex the office runs, when the caller's shell sets them: its home, and a binary other than `codex`. */
+export const CODEX_ENV = ["CODEX_HOME", "OPENCORP_CODEX_BIN"] as const
+
+/**
+ * The daemon's environment: the worker allowlist, `LC_*` and `CODEX_ENV`, so no key in the caller's shell
+ * reaches it. `PATH` keeps only its absolute entries, and is left out when none is.
+ *
+ * `LC_TERMINAL*` (iTerm's name and version) is left out: it isn't a locale, and it would change the service file
+ * whenever the terminal updates. A relative `PATH` entry would refuse every workspace and let a cwd shadow a
+ * tool; an empty `PATH` searches the cwd.
+ */
+export function daemonEnv(environ: Env): Record<string, string> {
+  const kept: readonly string[] = [...INHERITED_ENV, ...CODEX_ENV]
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(environ)) {
+    if (value === undefined) continue
+    if (kept.includes(key) || (key.startsWith("LC_") && !key.startsWith("LC_TERMINAL"))) env[key] = value
+  }
+  if (env.PATH !== undefined) {
+    const absolute = env.PATH.split(":").filter((entry) => entry.startsWith("/"))
+    if (absolute.length) env.PATH = absolute.join(":")
+    else delete env.PATH
+  }
+  return env
+}
+
+/** `value` as an absolute home path: a leading `~` is the user's home directory, and the nearest existing
+ *  ancestor is resolved through its symlinks, with the rest (not created yet) appended. */
+export function resolveHome(value: string): string {
+  const expanded = value === "~" || value.startsWith("~/") ? path.join(os.homedir(), value.slice(1)) : value
+  let dir = path.resolve(expanded)
+  let rest = ""
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(dir), rest)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      const parent = path.dirname(dir)
+      if ((code !== "ENOENT" && code !== "ENOTDIR") || parent === dir) throw error
+      rest = path.join(path.basename(dir), rest)
+      dir = parent
+    }
+  }
+}
+
+/** The home a command asked for, unresolved: `value` (its `--home`), else `$OPENCORP_HOME`, else `~/.opencorp`
+ *  under `userHome`. An empty `$OPENCORP_HOME` counts as unset. */
+export function wantedHome(value: string | undefined, environ: Env, userHome = os.homedir()): string {
+  return value ?? (environ.OPENCORP_HOME || path.join(userHome, ".opencorp"))
+}
+
+/** Throws `OfficeStartError` unless `home` holds a company clone (`company/.git`). The daemon checks this before
+ *  it makes anything, so a start on a wrong or missing home leaves nothing behind. */
+export function requireCompany(home: string): void {
+  const company = path.join(home, "company")
+  if (!fs.existsSync(path.join(company, ".git"))) throw new OfficeStartError(`no company repo at ${company}`)
+}
+
+/** The daemon's arguments: `--home <path>` and the re-exec's `--reexeced` mark, nothing else; throws on any other
+ *  argument and on an empty home. The daemon's one parser, used before and after the re-exec, so the two can't
+ *  disagree. */
+export function daemonArgs(argv: readonly string[]): { home: string | undefined; reexeced: boolean } {
+  const { values } = parseArgs({
+    args: [...argv],
+    options: { home: { type: "string" }, reexeced: { type: "boolean" } },
+    strict: true,
+    allowPositionals: false,
+  })
+  // An empty home would resolve to the cwd.
+  if (values.home === "") throw new Error("the home can't be empty")
+  return { home: values.home, reexeced: values.reexeced ?? false }
+}
+
+/** What `pinDaemon` reads and runs; tests pass stand-ins. */
+export interface PinOptions {
+  /** The env the daemon was started with (default `process.env`). */
+  environ?: Env
+  /** The daemon's cwd (default `process.cwd`). */
+  cwd?: () => string
+  /** The argv prefix that runs the office's own code (default `selfCommand()`). */
+  command?: readonly [string, ...string[]]
+  /** Replaces this process with `argv` in `cwd` with exactly `env` (default `platform.ts`'s `reexec`). */
+  exec?: (argv: [string, ...string[]], env: Record<string, string>, cwd: string) => never
+  /** Where the refusal goes (default a synchronous write to stderr). */
+  write?: (text: string) => void
+}
+
+/** Writes `text` to stderr synchronously, dropping it if the write fails. */
+function writeStderr(text: string): void {
+  try {
+    fs.writeSync(2, text)
+  } catch {
+    // A broken stderr must not turn a refusal into a crash.
+  }
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Pins a starting daemon on `--home` (default `$OPENCORP_HOME`, else `~/.opencorp`: `wantedHome`) to the office's
+ * env and folder: unless it already runs with `daemonEnv` of its env, in the realpath of `office/` (made first, once
+ * the home is known to hold a company), it re-execs itself there with `--reexeced`, same pid; one started with
+ * `--reexeced` that still differs exits instead. A service's added variables (launchd's `XPC_*`, systemd's
+ * `INVOCATION_ID`) cause one re-exec too.
+ *
+ * Resolves to `undefined` when the daemon may run on, else the exit code: 2 for bad arguments, 1 for a home without
+ * a company or an office dir that can't be used, a check still failing after the re-exec, or a re-exec that failed.
+ * Messages name variables, never their values, and a failed re-exec only by its error's code or type.
+ */
+export function pinDaemon(argv: readonly string[], options: PinOptions = {}): number | undefined {
+  const { environ = process.env, cwd = () => process.cwd(), command = selfCommand(), exec = reexec } = options
+  const write = options.write ?? writeStderr
+  let args: ReturnType<typeof daemonArgs>
+  try {
+    args = daemonArgs(argv)
+  } catch (error) {
+    write(`opencorp office: ${messageOf(error)}\n`)
+    return 2
+  }
+  const wanted = wantedHome(args.home, environ)
+  let home: string
+  try {
+    // Resolved here, against the caller's cwd: the re-exec passes the realpath as `--home`, and `daemonEnv` drops
+    // `OPENCORP_HOME`.
+    home = resolveHome(wanted)
+  } catch (error) {
+    // The caller's argument or `OPENCORP_HOME`, or the default under `$HOME`; a home path isn't a secret.
+    write(`opencorp office: can't resolve the home ${wanted}: ${messageOf(error)}\n`)
+    return 1
+  }
+  const office = path.join(home, "office")
+  let officeReal: string
+  try {
+    requireCompany(home)
+    makeOfficeDir(office)
+    officeReal = fs.realpathSync(office)
+  } catch (error) {
+    write(`opencorp office: ${messageOf(error)}\n`)
+    return 1
+  }
+  const officeEnv = daemonEnv(environ)
+  const names = [...new Set([...Object.keys(environ), ...Object.keys(officeEnv)])]
+    .filter((name) => environ[name] !== officeEnv[name])
+    .sort()
+  let cwdDiffers: boolean
+  try {
+    cwdDiffers = fs.realpathSync(cwd()) !== officeReal
+  } catch {
+    // A cwd that was removed can't be read: it isn't the office.
+    cwdDiffers = true
+  }
+  if (names.length === 0 && !cwdDiffers) return undefined
+  if (args.reexeced) {
+    const differing = cwdDiffers ? [...names, "cwd"] : names
+    write(`opencorp office: still not in the office's env after a re-exec: ${differing.join(", ")}\n`)
+    return 1
+  }
+  const next: [string, ...string[]] = [...command, "daemon", "--home", home, "--reexeced"]
+  let reason = "returned"
+  try {
+    exec(next, officeEnv, officeReal)
+  } catch (error) {
+    // An error's message could quote the env; its code or type can't.
+    const code = (error as { code?: unknown } | null)?.code
+    reason = typeof code === "string" ? code : error instanceof Error ? error.constructor.name : typeof error
+  }
+  write(`opencorp office: can't re-exec into the office's env: ${reason}\n`)
+  return 1
+}
+
+/**
+ * The launch for the office at `home`: `command` (the office's own, by default) with `daemon --home <home>`, run
+ * in the office folder.
+ *
+ * The home is resolved as the daemon resolves `--home`, so both agree on the socket and pidfile. The default
+ * home's service is `office`; any other home gets `office-<8 hex>` from its path, so a test or second office never
+ * replaces the owner's service.
+ */
+export function launch(
+  home: string,
+  {
+    command = selfCommand(),
+    environ = process.env,
+    userHome = os.homedir(),
+  }: { command?: readonly [string, ...string[]]; environ?: Env; userHome?: string } = {},
+): Launch {
+  const real = resolveHome(home)
+  const name =
+    real === resolveHome(path.join(userHome, ".opencorp"))
+      ? "office"
+      : `office-${createHash("sha256").update(real, "utf8").digest("hex").slice(0, 8)}`
+  return new Launch([...command, "daemon", "--home", real], daemonEnv(environ), path.join(real, "office"), real, name)
+}
+
+/** A finished command: its exit code and its output. */
+export interface Completed {
+  code: number
+  stdout: string
+  stderr: string
+}
+
+/**
+ * Runs `argv` with this process's environment, or exactly `env` when given, and captures its output. A program that
+ * can't start is exit 127 and one still running after `timeoutMs` is killed and exit 124, not an exception: the output
+ * it wrote before the kill is kept, and stderr becomes `<argv[0]> timed out`. One killed by a signal is minus the
+ * signal's number.
+ *
+ * With `group`, the command runs in a new session and process group, and the timeout or this process exiting kills
+ * the whole group, so what the command started doesn't outlive it. Leave it off for anything that may prompt on the
+ * terminal (git, ssh): a new session has no controlling terminal, so it can't open /dev/tty.
+ */
+export function runCommand(
+  argv: readonly [string, ...string[]],
+  {
+    timeoutMs = 60_000,
+    env,
+    group = false,
+  }: { timeoutMs?: number; env?: Record<string, string>; group?: boolean } = {},
+): Promise<Completed> {
+  return new Promise((resolve) => {
+    const child = spawn(argv[0], argv.slice(1), {
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: group,
+      ...(env ? { env } : {}),
+    })
+    // In its own session the command gets neither a terminal's Ctrl-C nor the setup screen's SIGINT to this
+    // process's group, so this process's exit kills its group instead. The listener stays until `close`, a little
+    // after the command exits: a kill in between can't hit another process while the group has members (a group id
+    // isn't reused while it has any), only if it empties and its id is reused as a new group's in that window.
+    const onExit = () => killGroup(child.pid!)
+    if (group && child.pid !== undefined) process.on("exit", onExit)
+    let stdout = ""
+    let stderr = ""
+    let failed = false
+    let timedOut = false
+    child.stdout!.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk))
+    child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk))
+    const timer = setTimeout(() => {
+      timedOut = true
+      // The group is killed even once the command has exited: a grandchild holding the pipes is what this catches.
+      if (group) killGroup(child.pid!)
+      else child.kill("SIGKILL")
+      // A grandchild may hold the pipes open; closing our ends lets `close` follow the child's own exit.
+      child.stdout!.destroy()
+      child.stderr!.destroy()
+    }, timeoutMs)
+    child.on("error", (error) => {
+      // A program that never started (ENOENT, EACCES); a failed kill also lands here and is ignored.
+      if (child.pid !== undefined) return
+      failed = true
+      clearTimeout(timer)
+      process.off("exit", onExit)
+      resolve({ code: 127, stdout: "", stderr: error.message })
+    })
+    child.on("close", (code, signal) => {
+      clearTimeout(timer)
+      process.off("exit", onExit)
+      if (failed) return
+      if (timedOut) resolve({ code: 124, stdout, stderr: `${argv[0]} timed out` })
+      else resolve({ code: code ?? (signal ? -os.constants.signals[signal] : 0), stdout, stderr })
+    })
+  })
+}
+
+/** Whether an office is serving on `socket`: its open `GET /health` answers 200 within `timeoutMs`. */
+export async function officeAnswers(socket: string, timeoutMs = 2000): Promise<boolean> {
+  try {
+    // Bun's fetch over a unix socket.
+    const res = await fetch("http://office/health", { unix: socket, signal: AbortSignal.timeout(timeoutMs) })
+    await res.arrayBuffer()
+    return res.status === 200
+  } catch {
+    return false
+  }
+}
+
+/** What installing touches on this machine: the platform, the user's home, and how to run things. Tests pass
+ *  stand-ins (`tests/install/helpers.ts`). */
+export interface Host {
+  /** The platform the service is installed for. */
+  platform: NodeJS.Platform
+  /** The user's home directory, where per-user service files go. */
+  userHome: string
+  /** The user's id, which names launchd's per-user domain (`gui/<uid>`). */
+  uid: number
+  /** Runs a command with this process's env, or exactly `env` when given, and captures its output
+   *  (`runCommand`). */
+  run(argv: readonly [string, ...string[]], options?: { env?: Record<string, string> }): Promise<Completed>
+  /** Starts a process without waiting for it (the fallback daemon). */
+  spawn(argv: readonly [string, ...string[]], options: SpawnOptions): ChildProcess
+  /** The path of the program `name` on the user's `PATH`, or null. */
+  which(name: string): string | null
+  /** Waits `ms` milliseconds. */
+  sleep(ms: number): Promise<void>
+  /** A monotonic clock in milliseconds. */
+  clock(): number
+  /** Whether the office on `socket` answers within `timeoutMs` (`officeAnswers`). */
+  answers(socket: string, timeoutMs?: number): Promise<boolean>
+  /** Whether another process holds the lock file at `lockPath`. Left out, `onboard.ts`'s `officeRunning` uses yian's
+   *  `isLocked`, which this module may not import. Never called inside the daemon: closing another descriptor on the
+   *  lock file would drop the daemon's own lock. */
+  locked?(lockPath: string): boolean
+}
+
+/** This machine as installing sees it: setup runs as the user, on the user's `PATH`. */
+export function defaultHost(): Host {
+  return {
+    platform: process.platform,
+    userHome: os.homedir(),
+    uid: process.getuid?.() ?? -1,
+    run: (argv, options) => runCommand(argv, options),
+    spawn: (argv, options) => spawn(argv[0], argv.slice(1), options),
+    which: (name) => which(name, process.env.PATH),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    clock: () => performance.now(),
+    answers: officeAnswers,
+  }
+}

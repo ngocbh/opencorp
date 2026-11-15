@@ -7,12 +7,12 @@ import { pending } from "@ngocbh/yian/tools"
 import { Message, type ToolPart } from "@opencorp/protocol"
 import { type LiveCalls, tooLargeText, Transcript } from "../../src/chat/transcript.ts"
 import { MAIN_CHAT } from "../../src/company/chat_flow.ts"
-import { newId } from "../../src/store/store.ts"
+import { newId } from "../../src/runtime/store/store.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
-import type { Delivery, Job } from "../../src/worker/job.ts"
+import type { Delivery, Job } from "../../src/runtime/worker/job.ts"
 import { tempDir, waitFor } from "../helpers.ts"
-import { line, RUN, runStarted, started } from "../runs/helpers.ts"
-import { advanceJob, inProcessWorker, run, type TestWorker } from "../worker/helpers.ts"
+import { line, RUN, runStarted, started } from "../runtime/runs/helpers.ts"
+import { advanceJob, inProcessWorker, run, type TestWorker } from "../runtime/worker/helpers.ts"
 import {
   advance,
   fakeLlm,

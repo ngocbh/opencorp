@@ -1,9 +1,9 @@
 /** What a run can offer its host tools. */
 // Types only: this module names the office objects a run hands its tools, and loads none of them.
 import type { CompanyRepo } from "../company/loader.ts"
-import type { AuditedTools, Monitor } from "../perm/monitor.ts"
-import type { Carried, OnQuestion } from "../questions/ask.ts"
-import type { QuestionRecord, SessionRecord, Store } from "../store/store.ts"
+import type { AuditedTools, Monitor } from "../runtime/permissions/monitor.ts"
+import type { Carried, OnQuestion } from "../runtime/questions/ask.ts"
+import type { QuestionRecord, SessionRecord, Store } from "../runtime/store/store.ts"
 
 /**
  * What one run can offer its tools; each group offers only the tools whose needs are set.

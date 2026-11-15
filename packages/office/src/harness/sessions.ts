@@ -4,13 +4,13 @@ import os from "node:os"
 import path from "node:path"
 import { type HarnessPolicy, type Message, OFFICE, Question, Session, WorkItem, now } from "@opencorp/protocol"
 import type { Connections } from "../chat/connections.ts"
-import type { Hooks } from "../chat/hooks.ts"
+import type { Hooks } from "../runtime/sessions/hooks.ts"
 import { ProviderError } from "../chat/provider.ts"
-import { HarnessError, notAnAgent, notWaiting } from "../chat/state.ts"
+import { HarnessError, notAnAgent, notWaiting } from "../runtime/sessions/state.ts"
 import type { CompanyGit } from "../company/git.ts"
 import { loadRepo, missingPerson } from "../company/loader.ts"
-import type { Bus } from "../daemon/bus.ts"
-import type { Tools } from "../install/tools.ts"
+import type { Bus } from "../runtime/bus.ts"
+import type { Tools } from "../runtime/service/programs.ts"
 import type { AnswerKind, SessionHarness } from "../runtime/sessions/harness.ts"
 import {
   type OfficePaths as SandboxOfficePaths,
@@ -18,7 +18,7 @@ import {
   checkClearOf,
   checkWorkspace,
   realPath,
-} from "../sandbox/policy.ts"
+} from "../runtime/sandbox/policy.ts"
 import {
   InvalidTransition,
   LIVE,
@@ -27,9 +27,9 @@ import {
   type SessionRecord,
   type Store,
   newId,
-} from "../store/store.ts"
+} from "../runtime/store/store.ts"
 import type { OfficePaths } from "../util/home.ts"
-import { workerEnv } from "../worker/spawn.ts"
+import { workerEnv } from "../runtime/worker/spawn.ts"
 import type { HarnessEvent } from "./adapter.ts"
 import { CLOSE_GRACE_MS, CodexProcess, CodexStartError, appServerCommand } from "./codex.ts"
 import { nameOf } from "./rpc.ts"

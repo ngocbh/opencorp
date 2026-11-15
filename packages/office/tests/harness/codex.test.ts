@@ -16,11 +16,11 @@ import {
 } from "../../src/harness/codex.ts"
 import { RpcClosed } from "../../src/harness/rpc.ts"
 import { killGroup, sameProcess, startTime } from "../../src/util/proc.ts"
-import type { Store } from "../../src/store/store.ts"
-import { reap } from "../../src/worker/reaper.ts"
-import { workerEnv } from "../../src/worker/spawn.ts"
+import type { Store } from "../../src/runtime/store/store.ts"
+import { reap } from "../../src/runtime/worker/reaper.ts"
+import { workerEnv } from "../../src/runtime/worker/spawn.ts"
 import { NO_GROUP, isGone, tempDir, waitFor } from "../helpers.ts"
-import { openStore } from "../store/helpers.ts"
+import { openStore } from "../runtime/store/helpers.ts"
 
 setDefaultTimeout(30_000)
 

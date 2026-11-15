@@ -1,7 +1,7 @@
 /** Session cost: model-call usage priced per model, and the session's cap. */
 import type { CompanyDefaults } from "@opencorp/protocol"
 import type { z } from "zod"
-import type { SessionRecord } from "../store/store.ts"
+import type { SessionRecord } from "../runtime/store/store.ts"
 import type { Price } from "./provider.ts"
 
 /** The data form of one model call's usage (yian's `TokenUsage.toJSON()`, as it crosses the worker channel). */

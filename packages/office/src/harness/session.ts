@@ -1,8 +1,8 @@
 /** One Codex session the owner drives: its app-server, its thread, its transcript and its turns. */
 import path from "node:path"
 import type { Message } from "@opencorp/protocol"
-import { HarnessError, notWaiting, runState, writeState } from "../chat/state.ts"
-import { type SessionRecord, type Store, newId } from "../store/store.ts"
+import { HarnessError, notWaiting, runState, writeState } from "../runtime/sessions/state.ts"
+import { type SessionRecord, type Store, newId } from "../runtime/store/store.ts"
 import { type CodexProcess, CodexStartError, ownerLoad } from "./codex.ts"
 import { RpcClosed, RpcError, nameOf } from "./rpc.ts"
 import { type Issued, NOT_AN_OPTION, NOT_A_NUMBER, TURNLESS, Translator, Unserved, Unshowable } from "./translate.ts"

@@ -6,10 +6,10 @@ import { fileURLToPath } from "node:url"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { readFlow } from "../../src/company/flow_yaml.ts"
 import { loadConfined } from "../../src/company/flows.ts"
-import { newId } from "../../src/store/store.ts"
+import { newId } from "../../src/runtime/store/store.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
 import { tempDir, waitFor } from "../helpers.ts"
-import { advanceJob, run, type TestWorker } from "../worker/helpers.ts"
+import { advanceJob, run, type TestWorker } from "../runtime/worker/helpers.ts"
 import {
   advance,
   CLOSE,

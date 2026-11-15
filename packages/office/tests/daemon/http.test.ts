@@ -29,7 +29,7 @@ import {
   removeStaleSocket,
 } from "../../src/util/sockets.ts"
 import { CompanyRepoBusy } from "../../src/company/git.ts"
-import { NotFound, StoreUnwritable } from "../../src/store/store.ts"
+import { NotFound, StoreUnwritable } from "../../src/runtime/store/store.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"
 import {
   Conn,

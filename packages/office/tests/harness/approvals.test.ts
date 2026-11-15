@@ -3,15 +3,15 @@ import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { type Part, QuestionPage } from "@opencorp/protocol"
-import { HarnessError } from "../../src/chat/state.ts"
+import { HarnessError } from "../../src/runtime/sessions/state.ts"
 import type { CodexProcess } from "../../src/harness/codex.ts"
 import { masked } from "../../src/harness/sessions.ts"
 import { register } from "../../src/extensions/questions.ts"
 import { killGroup, sameProcess } from "../../src/util/proc.ts"
-import { DuplicateKey, type QuestionRecord, StoreError } from "../../src/store/store.ts"
+import { DuplicateKey, type QuestionRecord, StoreError } from "../../src/runtime/store/store.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { waitFor } from "../helpers.ts"
-import { question } from "../store/helpers.ts"
+import { question } from "../runtime/store/helpers.ts"
 import {
   type Codex,
   allGone,

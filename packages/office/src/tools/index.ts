@@ -1,6 +1,6 @@
 /** Host tools for runs: the office's tool groups, built from what the run can offer. */
 import { repr } from "../util/redact.ts"
-import type { OfficeTool } from "../worker/rpc.ts"
+import type { OfficeTool } from "../runtime/worker/rpc.ts"
 import * as work from "./company/work.ts"
 import type { ToolContext } from "./context.ts"
 import * as toolbox from "./toolbox.ts"

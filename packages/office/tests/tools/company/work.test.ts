@@ -2,12 +2,12 @@
 import { isPending, ToolSet } from "@ngocbh/yian/tools"
 import { expect, test } from "bun:test"
 import { loadRepo } from "../../../src/company/loader.ts"
-import { Answers, type OnQuestion } from "../../../src/questions/ask.ts"
-import { NotFound, type QuestionRecord, type SessionRecord, type Store } from "../../../src/store/store.ts"
+import { Answers, type OnQuestion } from "../../../src/runtime/questions/ask.ts"
+import { NotFound, type QuestionRecord, type SessionRecord, type Store } from "../../../src/runtime/store/store.ts"
 import { companyTools, tools as workTools } from "../../../src/tools/company/work.ts"
-import { groupSpecs, toolSpec } from "../../../src/worker/job.ts"
-import { answerRequest, BaseHandlers, modelFromSchema, remoteTool } from "../../../src/worker/rpc.ts"
-import { officeEnd, workerFor } from "../../worker/helpers.ts"
+import { groupSpecs, toolSpec } from "../../../src/runtime/worker/job.ts"
+import { answerRequest, BaseHandlers, modelFromSchema, remoteTool } from "../../../src/runtime/worker/rpc.ts"
+import { officeEnd, workerFor } from "../../runtime/worker/helpers.ts"
 import { company, openStore, session, workItem } from "../helpers.ts"
 
 /** The yian call of an `ask_manager` call in the tools' run. */

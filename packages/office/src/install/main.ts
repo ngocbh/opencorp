@@ -14,7 +14,7 @@ import fs from "node:fs"
 import path from "node:path"
 import type { Readable, Writable } from "node:stream"
 import { parseArgs } from "node:util"
-import { identityPath, readIdentity } from "../auth/identity.ts"
+import { identityPath, readIdentity } from "../runtime/auth/identity.ts"
 import { type ModelCheck, modelProblem } from "../chat/check.ts"
 import { handleProblem } from "../company/naming.ts"
 import { companyState } from "../company/template.ts"
@@ -24,10 +24,10 @@ import { hqChecks, hqPortChecks, hqStatus } from "../server/hq/checks.ts"
 import type { Env } from "../util/env.ts"
 import { strerror } from "../util/errors.ts"
 import { type CheckOptions, checks, exitCode, report } from "./doctor.ts"
-import * as fallback from "./fallback.ts"
+import * as fallback from "../runtime/service/fallback.ts"
 import { init } from "./init.ts"
 import { JsonPrompter, type TextOut } from "./json_prompts.ts"
-import { defaultHost, type Host, type Launch, launch, ServiceError, wantedHome } from "./launch.ts"
+import { defaultHost, type Host, type Launch, launch, ServiceError, wantedHome } from "../runtime/service/launch.ts"
 import { Declined, OffboardError, offboard } from "./offboard.ts"
 import {
   checkSocket,
@@ -42,7 +42,7 @@ import {
   WHO,
 } from "./onboard.ts"
 import { isTTY, KeyboardInterrupt, OnboardError, type Prompter, TtyPrompter } from "./prompts.ts"
-import * as service from "./service.ts"
+import * as service from "../runtime/service/service.ts"
 
 /** The exit code of `start` and `restart` when there's no company or no office yet. */
 export const NOT_ONBOARDED = 3

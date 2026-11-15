@@ -10,7 +10,7 @@ import {
 } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
 import type { z } from "zod"
-import { DeviceRefused, addDevice, login, mayChangePerson, removeDevice, setPassword } from "../../auth/devices.ts"
+import { DeviceRefused, addDevice, login, mayChangePerson, removeDevice, setPassword } from "../../runtime/auth/devices.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, type Route } from "../http.ts"
 import type { RequestContext } from "../office.ts"

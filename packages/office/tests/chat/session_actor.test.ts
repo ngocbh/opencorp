@@ -14,10 +14,10 @@ import {
   type SessionActor,
   type Wait,
 } from "../../src/chat/session_actor.ts"
-import { HarnessError } from "../../src/chat/state.ts"
-import { PING } from "../../src/daemon/bus.ts"
-import { ASK_MANAGER_CALL } from "../../src/questions/ask.ts"
-import { INTERRUPTED, MAX_ANSWER_BYTES } from "../../src/questions/format.ts"
+import { HarnessError } from "../../src/runtime/sessions/state.ts"
+import { PING } from "../../src/runtime/bus.ts"
+import { ASK_MANAGER_CALL } from "../../src/runtime/questions/ask.ts"
+import { INTERRUPTED, MAX_ANSWER_BYTES } from "../../src/runtime/questions/format.ts"
 import {
   CARD_CLOSED,
   COULDNT_RESUME,
@@ -25,14 +25,14 @@ import {
   ENDED_OVER_CAP,
   NEW_MODEL,
   WORKER_STOPPED,
-} from "../../src/runs/outcomes.ts"
-import { type QuestionRecord, StoreUnwritable } from "../../src/store/store.ts"
+} from "../../src/runtime/runs/outcomes.ts"
+import { type QuestionRecord, StoreUnwritable } from "../../src/runtime/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { writePrivate } from "../../src/util/private_files.ts"
-import { type Delivery, STOP_REASON } from "../../src/worker/job.ts"
-import { type Worker, WorkerExists } from "../../src/worker/spawn.ts"
-import type { Frame } from "../../src/worker/channel.ts"
-import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
+import { type Delivery, STOP_REASON } from "../../src/runtime/worker/job.ts"
+import { type Worker, WorkerExists } from "../../src/runtime/worker/spawn.ts"
+import type { Frame } from "../../src/runtime/worker/channel.ts"
+import type { OfficeTool, WorkerHandlers } from "../../src/runtime/worker/rpc.ts"
 import { CEO } from "../daemon/helpers.ts"
 import { fold } from "../harness/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
@@ -3077,7 +3077,7 @@ const SRC = fileURLToPath(new URL("../../src/", import.meta.url))
 const HOST_CALLS = new Set(["send", "complete", "close", "interrupt", "cancel", "advance"])
 const HOST_MODULES = new Set(["@ngocbh/yian", "@ngocbh/yian/run"])
 // Modules that call host functions and run in the worker: only src/worker/ loads them.
-const WORKER_ONLY = new Set(["worker/main", "chat/history"])
+const WORKER_ONLY = new Set(["runtime/worker/main", "runtime/worker/history"])
 // Strings are matched so that a `//` or `/*` inside one isn't read as a comment.
 const COMMENT = /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g
 // A static import's clause runs from `import` to `from`, across lines; a side-effect import names nothing.
@@ -3108,7 +3108,7 @@ function hostImports(file: string, text: string): string[] {
   for (const [, spec] of code.matchAll(DYNAMIC_IMPORT)) {
     const mod = local(spec!)
     // The office's own entry point loads the worker's main for the `__worker` mode.
-    if (mod && WORKER_ONLY.has(mod) && !(file === "main.ts" && mod === "worker/main")) found.push(`${file}: ${mod}.ts`)
+    if (mod && WORKER_ONLY.has(mod) && !(file === "main.ts" && mod === "runtime/worker/main")) found.push(`${file}: ${mod}.ts`)
     if (HOST_MODULES.has(spec!)) found.push(`${file}: import(${spec})`)
   }
   return found
@@ -3143,29 +3143,35 @@ test("no office code outside the worker calls a yian host function", () => {
   expect(hostImports("a/b.ts", 'export * from "@ngocbh/yian"')).toEqual(["a/b.ts: * from @ngocbh/yian"])
   expect(hostImports("a/b.ts", 'export * as run from "@ngocbh/yian/run"')).toEqual(["a/b.ts: * from @ngocbh/yian/run"])
   // The worker-only modules, in each spelling.
-  for (const spec of ["../worker/main.ts", "../worker/main.js", "../worker/main"])
-    expect(hostImports("a/b.ts", `import { STOP } from "${spec}"`)).toEqual(["a/b.ts: worker/main.ts"])
-  expect(hostImports("a/b.ts", 'await import("../worker/main.ts")')).toEqual(["a/b.ts: worker/main.ts"])
-  expect(hostImports("chat/b.ts", 'import { readSeed } from "./history.js"')).toEqual(["chat/b.ts: chat/history.ts"])
-  expect(hostImports("a/b.ts", 'export { readSeed } from "../chat/history"')).toEqual(["a/b.ts: chat/history.ts"])
-  expect(hostImports("a/b.ts", 'export * from "../chat/history.ts"')).toEqual(["a/b.ts: chat/history.ts"])
+  for (const spec of ["../runtime/worker/main.ts", "../runtime/worker/main.js", "../runtime/worker/main"])
+    expect(hostImports("a/b.ts", `import { STOP } from "${spec}"`)).toEqual(["a/b.ts: runtime/worker/main.ts"])
+  expect(hostImports("a/b.ts", 'await import("../runtime/worker/main.ts")')).toEqual(["a/b.ts: runtime/worker/main.ts"])
+  expect(hostImports("runtime/worker/b.ts", 'import { readSeed } from "./history.js"')).toEqual([
+    "runtime/worker/b.ts: runtime/worker/history.ts",
+  ])
+  expect(hostImports("a/b.ts", 'export { readSeed } from "../runtime/worker/history"')).toEqual([
+    "a/b.ts: runtime/worker/history.ts",
+  ])
+  expect(hostImports("a/b.ts", 'export * from "../runtime/worker/history.ts"')).toEqual([
+    "a/b.ts: runtime/worker/history.ts",
+  ])
   for (const allowed of [
     'import type { send } from "@ngocbh/yian"',
     'import { type cancel, loadFlow } from "@ngocbh/yian"',
     'import { sendMessage } from "@ngocbh/yian"',
     'import { send } from "@ngocbh/yian/tools"',
-    'import type { WorkerEnv } from "../worker/main.ts"',
-    'import type { Seeded } from "../chat/history.ts"',
+    'import type { WorkerEnv } from "../runtime/worker/main.ts"',
+    'import type { Seeded } from "../runtime/worker/history.ts"',
     'export type { FoldedRun } from "@ngocbh/yian/run"',
     'export { loadFlow } from "@ngocbh/yian"',
     '// import { send } from "@ngocbh/yian"',
     '/*\nimport { send } from "@ngocbh/yian"\n*/',
   ])
     expect(hostImports("a/b.ts", allowed)).toEqual([])
-  expect(hostImports("main.ts", 'await import("./worker/main.ts")')).toEqual([])
+  expect(hostImports("main.ts", 'await import("./runtime/worker/main.ts")')).toEqual([])
   const files = fs
     .readdirSync(SRC, { recursive: true, encoding: "utf8" })
-    .filter((file) => file.endsWith(".ts") && !file.startsWith("worker/") && file !== "chat/history.ts")
+    .filter((file) => file.endsWith(".ts") && !file.startsWith("runtime/worker/") && file !== "runtime/worker/history.ts")
   expect(files).toContain("chat/session_actor.ts")
   expect(files.flatMap((file) => hostImports(file, fs.readFileSync(path.join(SRC, file), "utf8")))).toEqual([])
 })

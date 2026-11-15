@@ -4,11 +4,11 @@ import fs from "node:fs"
 import path from "node:path"
 import type { HqStatus } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
-import type { Identity } from "../../auth/identity.ts"
+import type { Identity } from "../../runtime/auth/identity.ts"
 import { otherPort } from "../../hq/config.ts"
 import { RETRY_MS } from "../../hq/servers.ts"
 import type { Check } from "../../install/doctor.ts"
-import * as service from "../../install/service.ts"
+import * as service from "../../runtime/service/service.ts"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)

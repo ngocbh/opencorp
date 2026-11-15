@@ -3,8 +3,8 @@
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { now, Question } from "@opencorp/protocol"
 import { SessionActor } from "../../src/chat/session_actor.ts"
-import { INTERRUPTED } from "../../src/questions/format.ts"
-import { newId, type QuestionRecord } from "../../src/store/store.ts"
+import { INTERRUPTED } from "../../src/runtime/questions/format.ts"
+import { newId, type QuestionRecord } from "../../src/runtime/store/store.ts"
 import { CEO } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import {

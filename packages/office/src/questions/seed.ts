@@ -5,10 +5,10 @@ import type { DiscussionEntry, Message } from "@opencorp/protocol"
 import type { Transcript } from "../chat/transcript.ts"
 import type { CompanyRepo } from "../company/loader.ts"
 import { pyJson, repr } from "../util/redact.ts"
-import type { QuestionRecord, SessionRecord, Store } from "../store/store.ts"
-import { personFlow } from "../worker/job.ts"
-import { ASK_MANAGER_CALL } from "./ask.ts"
-import { cappedJson } from "./format.ts"
+import type { QuestionRecord, SessionRecord, Store } from "../runtime/store/store.ts"
+import { personFlow } from "../runtime/worker/job.ts"
+import { ASK_MANAGER_CALL } from "../runtime/questions/ask.ts"
+import { cappedJson } from "../runtime/questions/format.ts"
 
 export const FRAMING =
   "You are now talking directly with the person you asked the question below, before they answer it. " +

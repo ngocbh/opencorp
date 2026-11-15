@@ -16,7 +16,7 @@ import {
   StartLoginRequest,
 } from "@opencorp/protocol"
 import type { z } from "zod"
-import { identityPath, readIdentity } from "../../auth/identity.ts"
+import { identityPath, readIdentity } from "../../runtime/auth/identity.ts"
 import {
   azureBaseUrl,
   BadConnectionName,
@@ -31,8 +31,8 @@ import { type LlmConfig, Provider, ProviderError } from "../../chat/provider.ts"
 import { loadRepo } from "../../company/loader.ts"
 import { checkProvider } from "../../install/onboard.ts"
 import { OnboardError } from "../../install/prompts.ts"
-import { mayManageConnections } from "../../perm/office.ts"
-import { RegistryClosed } from "../../worker/spawn.ts"
+import { mayManageConnections } from "../../runtime/permissions/office.ts"
+import { RegistryClosed } from "../../runtime/worker/spawn.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, type Params, type Route } from "../http.ts"
 import type { Office, RequestContext } from "../office.ts"

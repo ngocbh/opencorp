@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
 import { waitFor } from "../helpers.ts"
-import { sandboxAvailable } from "../sandbox/helpers.ts"
+import { sandboxAvailable } from "../runtime/sandbox/helpers.ts"
 import { asked, folder, openOffice } from "./helpers.ts"
 
 const TIMEOUT = 180_000

@@ -10,10 +10,10 @@ import {
   SetModelRequest,
 } from "@opencorp/protocol"
 import { z } from "zod"
-import { HarnessError } from "../../chat/state.ts"
+import { HarnessError } from "../../runtime/sessions/state.ts"
 import { strip } from "../../util/redact.ts"
 import type { SessionHarness } from "../../runtime/sessions/harness.ts"
-import type { SessionRecord } from "../../store/store.ts"
+import type { SessionRecord } from "../../runtime/store/store.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, type Params, type Route } from "../http.ts"
 import type { RequestContext } from "../office.ts"

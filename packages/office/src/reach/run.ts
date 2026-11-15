@@ -23,7 +23,7 @@ import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter }
 import { embedded } from "../platform.ts"
 import { which } from "../util/env.ts"
 import { writePrivate } from "../util/private_files.ts"
-import { workerEnv } from "../worker/spawn.ts"
+import { workerEnv } from "../runtime/worker/spawn.ts"
 import { classifyCheck, type Connection, connect, describe, ReachFailure, sameHealth, signIn } from "./connect.ts"
 import { Learning, learning, withOwnerOrStop } from "./learning.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"

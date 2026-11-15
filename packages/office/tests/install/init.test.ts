@@ -8,15 +8,15 @@ import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { ToolContext } from "@ngocbh/yian"
 import { lockFile } from "@ngocbh/yian/platform"
 import { parse } from "yaml"
-import { deviceName, readIdentity } from "../../src/auth/identity.ts"
-import { checkPassword } from "../../src/auth/passwords.ts"
-import { tokenSha256 } from "../../src/auth/tokens.ts"
+import { deviceName, readIdentity } from "../../src/runtime/auth/identity.ts"
+import { checkPassword } from "../../src/runtime/auth/passwords.ts"
+import { tokenSha256 } from "../../src/runtime/auth/tokens.ts"
 import type { Draft, InitOutput } from "../../src/company/draft.ts"
 import { CompanyGit, CompanyGitError } from "../../src/company/git.ts"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { companyState, missingFiles, writeCompany } from "../../src/company/template.ts"
-import * as fallback from "../../src/install/fallback.ts"
+import * as fallback from "../../src/runtime/service/fallback.ts"
 import { type InitOptions, init } from "../../src/install/init.ts"
 import {
   Asking,
@@ -30,7 +30,7 @@ import {
   REMOTE,
   remoteStep,
 } from "../../src/install/interview.ts"
-import { launch, officeAnswers } from "../../src/install/launch.ts"
+import { launch, officeAnswers } from "../../src/runtime/service/launch.ts"
 import {
   GIT_ACCESS,
   makeHome,

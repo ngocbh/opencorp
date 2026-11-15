@@ -1,6 +1,6 @@
 /** Who sent each request: device tokens, and `actingPerson` for routes. */
-import { Roster, loadRoster } from "../auth/roster.ts"
-import { AuthError, authenticate, bearerToken, tokenSha256 } from "../auth/tokens.ts"
+import { Roster, loadRoster } from "../runtime/auth/roster.ts"
+import { AuthError, authenticate, bearerToken, tokenSha256 } from "../runtime/auth/tokens.ts"
 import { HttpError, type RequestInfo, errorType, logLine } from "./http.ts"
 import type { Office, RequestContext } from "./office.ts"
 

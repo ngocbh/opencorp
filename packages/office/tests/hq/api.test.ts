@@ -5,14 +5,14 @@ import { expect, test } from "bun:test"
 import type { RunIndexRow } from "@ngocbh/yian/run"
 import { RunLiveRecord } from "@opencorp/protocol"
 import { parse, stringify } from "yaml"
-import { hashPassword } from "../../src/auth/passwords.ts"
+import { hashPassword } from "../../src/runtime/auth/passwords.ts"
 import { SECRET_KEYS } from "../../src/company/secret_keys.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import type { Hq } from "../../src/hq/core.ts"
 import { TTL } from "../../src/hq/sessions.ts"
-import { readEvents, refresh } from "../../src/runs/reader.ts"
-import { RunLogs } from "../../src/runs/service.ts"
-import { newId } from "../../src/store/store.ts"
+import { readEvents, refresh } from "../../src/runtime/runs/reader.ts"
+import { RunLogs } from "../../src/runtime/runs/service.ts"
+import { newId } from "../../src/runtime/store/store.ts"
 import { git } from "../company/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
 import {
@@ -30,8 +30,8 @@ import {
   take,
   within,
 } from "../daemon/helpers.ts"
-import { chatLog, committed, fifoAt, runStarted, started } from "../runs/helpers.ts"
-import { question, session, workItem } from "../store/helpers.ts"
+import { chatLog, committed, fifoAt, runStarted, started } from "../runtime/runs/helpers.ts"
+import { question, session, workItem } from "../runtime/store/helpers.ts"
 import { HOST, ORIGIN, PORT, dist, makeHq, signedIn, web } from "./helpers.ts"
 
 type Body = Record<string, unknown>
