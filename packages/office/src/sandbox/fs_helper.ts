@@ -69,6 +69,7 @@ function systemError(error: unknown): { errno: number; text: string } | undefine
   return { errno, text: STRERROR[code] ?? libuv.charAt(0).toUpperCase() + libuv.slice(1) }
 }
 
+// Exported so `tests/util/errors.test.ts` can check that this copy and `util/errors.ts`'s agree.
 /** `error`'s text as Python's `OSError.strerror` gives it, or undefined when it isn't an OS error. */
 export function strerror(error: unknown): string | undefined {
   return systemError(error)?.text

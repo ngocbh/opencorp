@@ -1,28 +1,13 @@
 /** Private files: 0700 folders and 0600 files, written atomically, read under their folder's lock. */
-import { execFileSync, spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, spyOn, test } from "bun:test"
 import { lockFile } from "@ngocbh/yian/platform"
 import { PrivateFileError, readPrivate, writePrivate } from "../../src/util/private_files.ts"
-import { tempDir } from "../helpers.ts"
+import { fifo, tempDir } from "../helpers.ts"
 
 function mode(p: string): number {
   return fs.statSync(p).mode & 0o777
-}
-
-/** Makes a 0600 FIFO at `p`, with a bounded writer that frees a blocked open after 3 s and exits by itself. */
-function fifo(p: string): void {
-  execFileSync("mkfifo", [p])
-  fs.chmodSync(p, 0o600)
-  // A read-write open of a FIFO never blocks, yet counts as a writer for a reader blocked in
-  // `open`; so a regression that drops O_NONBLOCK fails the timing check instead of hanging.
-  const child = spawn("sh", ["-c", 'sleep 3; : <> "$0"', p], { detached: true, stdio: "ignore" })
-  onTestFinished(() => {
-    try {
-      process.kill(-child.pid!, "SIGKILL")
-    } catch {}
-  })
 }
 
 /** Checks that nobody holds `<dir>/.lock`: a failed call must not leave it held. */
@@ -165,6 +150,24 @@ test.each(NOT_PRIVATE_FOLDERS)("the private file calls refuse a folder that is n
     expect((error as Error).message).toMatch(kind === "symlink" ? /symlink/ : /0700/)
   }
   expect(fs.readdirSync(real)).toEqual([])
+})
+
+test("the private file calls refuse a folder of another user", async () => {
+  const folder = path.join(tempDir(), "p")
+  fs.mkdirSync(folder, { mode: 0o700 })
+  const real = fs.lstatSync
+  const spy = spyOn(fs, "lstatSync").mockImplementation(((p: fs.PathLike, options?: fs.StatSyncOptions) => {
+    const st = real(p, options)
+    return p === folder && st ? withUid(st, Number(st.uid) + 1) : st
+  }) as typeof fs.lstatSync)
+  onTestFinished(() => spy.mockRestore())
+  const file = path.join(folder, "f")
+  for (const call of [() => writePrivate(file, "x"), () => readPrivate(file)]) {
+    const error = await call().catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(PrivateFileError)
+    expect((error as Error).message).toMatch(/belongs to another user/)
+  }
+  expect(fs.readdirSync(folder)).toEqual([])
 })
 
 test("the private file calls refuse the folders lock file", async () => {

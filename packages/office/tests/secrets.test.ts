@@ -6,7 +6,7 @@ import util from "node:util"
 import { expect, onTestFinished, spyOn, test } from "bun:test"
 import { FileLockError, lockFile } from "@ngocbh/yian/platform"
 import { InvalidSecretError, NAME, SecretNotSetError, SecretStore } from "../src/secrets.ts"
-import { PrivateFileError, readPrivate, writePrivate } from "../src/util/private_files.ts"
+import { PrivateFileError } from "../src/util/private_files.ts"
 import { tempDir } from "./helpers.ts"
 
 const KEY = "-----BEGIN KEY-----\nabc\n"
@@ -270,26 +270,19 @@ test("a lock file open to others is refused", async () => {
 })
 
 test("a folder of another user is refused", async () => {
-  const tmp = tempDir()
-  const root = path.join(tmp, "s")
-  const folder = path.join(tmp, "p")
+  const root = path.join(tempDir(), "s")
   fs.mkdirSync(root, { mode: 0o700 })
-  fs.mkdirSync(folder, { mode: 0o700 })
   const store = new SecretStore(root)
   const real = fs.lstatSync
   const spy = spyOn(fs, "lstatSync").mockImplementation(((p: fs.PathLike, options?: fs.StatSyncOptions) => {
     const st = real(p, options)
-    return (p === root || p === folder) && st ? withUid(st, Number(st.uid) + 1) : st
+    return p === root && st ? withUid(st, Number(st.uid) + 1) : st
   }) as typeof fs.lstatSync)
   onTestFinished(() => spy.mockRestore())
-  const file = path.join(folder, "f")
-  for (const call of [() => store.get("token"), () => writePrivate(file, "x"), () => readPrivate(file)]) {
-    const error = await call().catch((e: unknown) => e)
-    expect(error).toBeInstanceOf(PrivateFileError)
-    expect((error as Error).message).toMatch(/belongs to another user/)
-  }
+  const error = await store.get("token").catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(PrivateFileError)
+  expect((error as Error).message).toMatch(/belongs to another user/)
   expect(fs.readdirSync(root)).toEqual([])
-  expect(fs.readdirSync(folder)).toEqual([])
 })
 
 test("set fsyncs the temp file before renaming it", async () => {
