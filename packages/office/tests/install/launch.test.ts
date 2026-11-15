@@ -23,7 +23,7 @@ import {
 import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, unsafeEnvName } from "../../src/platform.ts"
 import { isGone, ps, shortDir, tempDir, waitFor } from "../helpers.ts"
-import { Runner, makeHost, SRC, specifiers } from "./helpers.ts"
+import { Runner, makeHost, SRC } from "./helpers.ts"
 
 // Resolved as `launch` resolves it: on a machine without /Users the path comes back as given.
 const HOME = resolveHome("/Users/owner/.opencorp")
@@ -332,31 +332,6 @@ test("require company throws for a home without a company clone", () => {
   const home = tempDir()
   expect(() => requireCompany(home)).toThrow(`no company repo at ${path.join(home, "company")}`)
   requireCompany(withCompany(home))
-})
-
-test("the pre re-exec check imports only node builtins platform sockets and proc", () => {
-  const launchImports = specifiers("install/launch.ts")
-  expect(launchImports).toContain("../platform.ts")
-  expect(launchImports).toContain("../daemon/sockets.ts")
-  for (const name of launchImports) {
-    expect(name).toMatch(/^(node:.+|\.\.\/platform\.ts|\.\.\/daemon\/sockets\.ts|\.\/proc\.ts)$/)
-  }
-  const procImports = specifiers("install/proc.ts")
-  expect(procImports).toContain("../platform.ts")
-  for (const name of procImports) expect(name).toMatch(/^(node:.+|\.\.\/platform\.ts)$/)
-  const socketImports = specifiers("daemon/sockets.ts")
-  expect(socketImports.length).toBeGreaterThan(0)
-  for (const name of socketImports) expect(name).toMatch(/^node:/)
-  const platformImports = specifiers("platform.ts", { values: true })
-  expect(platformImports.length).toBeGreaterThan(0)
-  for (const name of platformImports) expect(name).toMatch(/^(node|bun):/)
-  const main = fs.readFileSync(path.join(SRC, "main.ts"), "utf8")
-  const start = main.indexOf("export const daemonMain")
-  const body = main.slice(start, main.indexOf("\n}\n", start))
-  const pinAt = body.indexOf('import("./install/launch.ts")')
-  expect(start).toBeGreaterThanOrEqual(0)
-  expect(pinAt).toBeGreaterThanOrEqual(0)
-  expect(body.indexOf('import("./daemon/main.ts")')).toBeGreaterThan(pinAt)
 })
 
 test("a missing program is exit 127 not an exception", async () => {

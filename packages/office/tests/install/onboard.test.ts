@@ -46,7 +46,7 @@ import { fakeLlm, keyCopies, MIXED_KEY, refusingLlm } from "../chat/helpers.ts"
 import { git, gitEnv } from "../company/helpers.ts"
 import { request } from "../daemon/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
-import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner, Script, specifiers } from "./helpers.ts"
+import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner, Script } from "./helpers.ts"
 
 const KEY = "sk-test-0000000000000000"
 const PROVIDER_JSON = '{"llm_config": {"provider": "openai"}}'
@@ -874,24 +874,6 @@ test(
   },
   120_000,
 )
-
-test("onboard imports no daemon module but sockets", () => {
-  const seen = new Set<string>()
-  const walk = (file: string) => {
-    if (seen.has(file)) return
-    seen.add(file)
-    if (!file.endsWith(".ts")) return
-    // Runtime imports only: a type-only import (worker/spawn.ts names daemon/office.ts's WorkerPool) is erased, so
-    // it can't make a cycle with the connection routes that import onboard.ts.
-    for (const name of specifiers(file, { values: true })) {
-      if (name.startsWith(".")) walk(path.join(path.dirname(file), name))
-    }
-  }
-  walk("install/onboard.ts")
-  expect(seen).toContain("install/service.ts")
-  expect(seen).toContain("daemon/sockets.ts")
-  expect([...seen].filter((file) => file.startsWith("daemon/"))).toEqual(["daemon/sockets.ts"])
-})
 
 test("a repo url with credentials is never shown", async () => {
   const dir = tempDir()

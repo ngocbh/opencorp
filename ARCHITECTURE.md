@@ -68,6 +68,11 @@ Until the moves are done, a ratchet list, `UPWARD` in `packages/office/tests/rep
 #889), exempts each import that still breaks rule 2 or 4, and the change that fixes an import deletes its line.
 Two of them, by today's paths, break rule 4: `perm/redact → secrets` and `platform → sandbox/policy`.
 
+`places.ts` also maps each file's path today to its final one (`PLACES`, `TEST_PLACES`) and lists the folder
+cycles left in `CYCLES`; `packages/office/script/relayout.ts` makes each move. A new file in an old folder (one that
+still holds a `PLACES` entry) needs its own `PLACES` or `TEST_PLACES` entry, naming its final path in the layers
+above; the layer and layout tests fail until it has one.
+
 **Type-only imports count.**
 - A card's "Depends on" is the design dependency. A type import ties a module to the shape of the code above it:
   a change there breaks its typecheck. Hiding it would make the card false.
@@ -178,6 +183,7 @@ packages/office/src/features/<feature>/
 |---|---|
 | One-way imports; no folder cycles; every file layered; util stays generic | `packages/office/tests/repo/layer_direction.test.ts` (lands with #889) |
 | Bun only in `platform.ts`; no spawn of `process.execPath` elsewhere | the same, moving there from `packages/office/tests/platform.test.ts` ("no Bun or bun: API outside platform.ts", "no spawn of process.execPath outside platform.ts") |
+| src loads modules only with `import`, never `require()`, `module.require`, `import.meta.require` or `createRequire` | the same |
 | The daemon loads only builtins and the pre-re-exec files before it re-execs; `daemonMain` pins first | the same, moving there from `packages/office/tests/install/launch.test.ts` ("the pre re-exec check imports only node builtins platform sockets and proc") |
 | The sandbox helper imports only `node:` | the same (lands with #889), and `packages/cli/test/entry.test.ts` ("the fs helper imports only node builtins") |
 | The cards match the imports | the same, once the moves are done |
