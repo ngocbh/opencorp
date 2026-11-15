@@ -5,7 +5,6 @@ import type net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { inspect } from "node:util"
-import type { WorkerPool } from "../daemon/office.ts"
 import { type Env, INHERITED_ENV } from "../install/launch.ts"
 import { killGroup, startTime } from "../install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../platform.ts"
@@ -377,6 +376,12 @@ export class Worker implements JobWorker {
       this.#log("ERROR", `worker ${this.sessionId}: an exit step failed (${errorName(error)})`)
     }
   }
+}
+
+/** The worker registry, as the office sees it. */
+export interface WorkerPool {
+  /** Stop every worker. */
+  closeAll(): void | Promise<void>
 }
 
 /** The office's live workers, at most one per session, each recorded in the store for `reap`. */

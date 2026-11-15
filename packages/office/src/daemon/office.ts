@@ -21,6 +21,7 @@ import { RunLogs } from "../runs/service.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { SecretStore } from "../secrets.ts"
 import type { SessionRecord, Store } from "../store/store.ts"
+import type { WorkerPool } from "../worker/spawn.ts"
 import { DeviceTokens } from "./auth.ts"
 import type { Bus } from "./bus.ts"
 import { errorType } from "./http.ts"
@@ -112,12 +113,6 @@ export interface SessionHarness extends CardActor {
   live?(): Live
   /** Closes each parked worker whose connection changed; the chat harness implements it. Never rejects. */
   connectionsChanged?(): Promise<void>
-}
-
-/** The worker registry, as the office sees it. */
-export interface WorkerPool {
-  /** Stop every worker. */
-  closeAll(): void | Promise<void>
 }
 
 /** What a route sees: the office, who the request acts as and from which device (device tokens fill them),

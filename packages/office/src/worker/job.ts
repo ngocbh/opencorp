@@ -103,6 +103,9 @@ export const Job = z
 export type Job = z.output<typeof Job>
 export type JobInput = z.input<typeof Job>
 
+/** The worker's environment, passed in explicitly. */
+export type WorkerEnv = Readonly<Record<string, string | undefined>>
+
 /** A job failed validation; the message names fields only, never a value. */
 export class JobError extends Error {
   constructor(message: string) {

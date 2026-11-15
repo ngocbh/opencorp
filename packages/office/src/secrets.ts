@@ -3,13 +3,11 @@ import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
 import { type FileLock, waitForLock } from "@ngocbh/yian/platform"
+import { MIN_VALUE_CHARS } from "./perm/redact.ts"
 
 /** Valid secret names: lower-case letters, digits, `_`, `.`, `-`, not starting with `.` or `-`, at most 128
  *  characters; so `.lock` and temp files can never be names. */
 export const NAME = /^[a-z0-9_][a-z0-9_.-]{0,127}$/
-
-/** The shortest value accepted: results are scrubbed of every secret value, so a short one would mangle them. */
-export const MIN_VALUE_CHARS = 8
 
 // An operation holds the lock for microseconds, so a 30 s wait means a stuck holder; yian's
 // sign-in store and DeepSeek Harness wait as long.

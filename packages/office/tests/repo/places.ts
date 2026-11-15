@@ -371,13 +371,10 @@ export const UPWARD: readonly string[] = [
   "perm/monitor.ts -> tools/workspace.ts ToolOutcome",
   "perm/monitor.ts -> tools/workspace.ts WorkspaceCall",
   "perm/monitor.ts -> tools/workspace.ts WorkspaceTools",
-  "perm/redact.ts -> secrets.ts MIN_VALUE_CHARS",
-  "platform.ts -> sandbox/policy.ts Helper",
   "questions/cards.ts -> daemon/office.ts Office",
   "reach/state.ts -> hq/pairing.ts TTL",
   "reach/state.ts -> hq/pairing.ts redirectPage",
   "worker/main.ts -> chat/check.ts import()",
-  "worker/spawn.ts -> daemon/office.ts WorkerPool",
 ]
 
 /** Each folder cycle inside a category, as its folders sorted; a category's root files are the category. */

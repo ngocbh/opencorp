@@ -13,8 +13,8 @@ import { PROFILE_SETTINGS } from "../../src/profile/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
-import { type Delivery, Job, groupSpecs, type JobInput } from "../../src/worker/job.ts"
-import { EXIT_FAILED, serve, type WorkerEnv } from "../../src/worker/main.ts"
+import { type Delivery, Job, groupSpecs, type JobInput, type WorkerEnv } from "../../src/worker/job.ts"
+import { EXIT_FAILED, serve } from "../../src/worker/main.ts"
 import {
   type AskRequest,
   BaseHandlers,
