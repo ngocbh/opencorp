@@ -112,6 +112,15 @@ test("relayout refuses a path from a moved file's folder that it doesn't rewrite
   expect(refused.out).not.toContain("same.ts")
 })
 
+test("relayout refuses a line that passes import.meta with several all-dots strings, naming the file and line", () => {
+  const { run } = checkout(places({ "old/a.ts": "util/deep/a.ts" }), {
+    "src/old/a.ts": 'import path from "node:path"\nexport const ROOT = path.join(import.meta.dirname, "..", "..")\n',
+  })
+  const refused = run("util", "--dry-run")
+  expect(refused.code).toBe(1)
+  expect(refused.out).toContain("packages/office/src/old/a.ts:2")
+})
+
 test("relayout refuses a places entry that spans lines, which it couldn't delete", () => {
   const { run } = checkout(places({}).replace("= {\n}", '= {\n  "old/a.ts":\n    "util/a.ts",\n}'), {
     "src/old/a.ts": "export const a = 1\n",

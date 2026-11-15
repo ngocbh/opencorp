@@ -12,8 +12,8 @@
  * It deletes the moved entries from `tests/repo/places.ts`, stages everything, and fails if any specifier, or any
  * relative string that named a path before the move, no longer resolves, or a moved test's folder lacks its `src/`
  * folder. Before it changes anything it fails on an all-dots path from a moved file's folder that it can't rewrite
- * and that would name another folder, a moved `places.ts` entry that isn't one line, and an export key it can't find
- * to rename. With `--dry-run` it makes every check that needs no move, prints what it would move, rewrite and keep,
+ * and that would name another folder, a moved file's line that passes `import.meta` with more than one all-dots
+ * string, a moved `places.ts` entry that isn't one line, and an export key it can't find to rename. With `--dry-run` it makes every check that needs no move, prints what it would move, rewrite and keep,
  * and changes nothing. It refuses any other argument, and a checkout whose `packages/yian` submodule isn't checked
  * out: a relative string is rewritten only when it names a path that exists, and tests name files in yian.
  */
@@ -203,6 +203,9 @@ const anchored: { file: string; value: string }[] = []
 /** Each all-dots path from a moved file's folder that the move would leave naming another folder, as `file:line`. */
 const unrewritten: string[] = []
 
+/** Each line of a moved file that passes import.meta with more than one all-dots string, as `file:line`. */
+const several = new Set<string>()
+
 /** The brackets around offset `at` in `code` (`blank`'s text): the innermost `(…)`, `[…]` or `{…}`, from its opener
  *  to its closer, or none at the top level. */
 function group(code: string, at: number): { open: number; close: number } | undefined {
@@ -248,17 +251,25 @@ function edits(file: string, text: string): Edit[] {
     }
   }
   const code = office ? blank(text) : ""
-  for (const { start, end } of literals(text)) {
+  const strings = literals(text)
+  for (const { start, end } of strings) {
     if (specifiers.has(start)) continue
     const value = text.slice(start, end)
     let next: string | undefined
     if (office && ALL_DOTS.test(value)) {
       // A package or checkout root: only when passed with import.meta (`.url`, `.dir`, `.dirname`) on its line.
-      const line = text.slice(text.lastIndexOf("\n", start) + 1, text.indexOf("\n", end))
-      if (IMPORT_META.test(line)) {
+      const lineStart = text.lastIndexOf("\n", start) + 1
+      const lineEnd = text.includes("\n", end) ? text.indexOf("\n", end) : text.length
+      const line = text.slice(lineStart, lineEnd)
+      const elsewhere = path.resolve(newDir, value) !== path.resolve(dir, value)
+      // Each string is rewritten alone, so `join(import.meta.dirname, "..", "..")` would end a folder too high.
+      const dots = strings.filter((s) => s.start >= lineStart && s.start < lineEnd && ALL_DOTS.test(text.slice(s.start, s.end)))
+      if (IMPORT_META.test(line) && elsewhere && dots.length > 1) {
+        several.add(`${path.relative(REPO, file)}:${text.slice(0, start).split("\n").length}`)
+      } else if (IMPORT_META.test(line)) {
         next = relative(newDir, path.resolve(dir, value)) + (value.endsWith("/") ? "/" : "")
         anchored.push({ file: where(file), value: next })
-      } else if (path.resolve(newDir, value) !== path.resolve(dir, value) && fromOwnFolder(code, start)) {
+      } else if (elsewhere && fromOwnFolder(code, start)) {
         unrewritten.push(`${path.relative(REPO, file)}:${text.slice(0, start).split("\n").length}: "${value}"`)
       }
     } else if (office && /^\.\.?\//.test(value) && exists(path.resolve(dir, value))) {
@@ -303,6 +314,10 @@ for (const file of sources) {
   for (const [from, to] of keys) next = next.replace(new RegExp(`@opencorp/office/${from}(?![\\w/.-])`, "g"), `@opencorp/office/${to}`)
   if (next !== text) changed.set(file, next)
 }
+if (several.size)
+  fail(
+    `these lines pass import.meta with more than one all-dots string, which the move can't rewrite one at a time; make them one string:\n${[...several].join("\n")}`,
+  )
 if (unrewritten.length)
   fail(
     `these paths from a moved file's folder would name another folder, and only one passed with import.meta.url, .dir or .dirname on its line is rewritten:\n${unrewritten.join("\n")}`,
