@@ -11,9 +11,9 @@ import { companyState, writeCompany } from "../company/template.ts"
 import { redactUrls, strip } from "../util/redact.ts"
 import type { Env } from "../util/env.ts"
 import { strerror } from "../util/errors.ts"
-import { shQuote } from "./fallback.ts"
+import { shQuote } from "../runtime/service/fallback.ts"
 import { fallbackDraft, initFlow, type Known, ModelError, passwordStep, remoteStep, STEPS } from "./interview.ts"
-import { defaultHost, type Host, type Launch, launch } from "./launch.ts"
+import { defaultHost, type Host, type Launch, launch } from "../runtime/service/launch.ts"
 import {
   type Answers,
   askProvider,
@@ -35,7 +35,7 @@ import {
   userGit,
 } from "./onboard.ts"
 import { OnboardError, type Prompter } from "./prompts.ts"
-import type * as service from "./service.ts"
+import type * as service from "../runtime/service/service.ts"
 
 /**
  * Adds `url` as `origin` to the company at `company` and pushes `main` to it, tracking it, with the user's git in

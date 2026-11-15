@@ -6,7 +6,7 @@ import path from "node:path"
 import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
 import { FileLockError, isLocked, openSqlite, type Sqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
-import { type Identity, IdentityUnreadable, identityPath, loadIdentity } from "../auth/identity.ts"
+import { type Identity, IdentityUnreadable, identityPath, loadIdentity } from "../runtime/auth/identity.ts"
 import { AuthError, AuthStore } from "@ngocbh/yian/llm_clients"
 import { ConnectionFile, isSubscription } from "../chat/connections.ts"
 import { loadProvider, type Provider, ProviderError } from "../chat/provider.ts"
@@ -23,21 +23,21 @@ import {
   type OfficePaths as Guards,
   SandboxPolicy,
   UnsafeWorkspace,
-} from "../sandbox/policy.ts"
-import { fsHelper, run } from "../sandbox/run.ts"
-import { latestVersion, newerStore, userVersion } from "../store/migrate.ts"
-import { storeProblem } from "../store/problem.ts"
-import { StoreError } from "../store/store.ts"
+} from "../runtime/sandbox/policy.ts"
+import { fsHelper, run } from "../runtime/sandbox/run.ts"
+import { latestVersion, newerStore, userVersion } from "../runtime/store/migrate.ts"
+import { storeProblem } from "../runtime/store/problem.ts"
+import { StoreError } from "../runtime/store/store.ts"
 import { CHECKOUT } from "../util/checkout.ts"
 import { type Env, which } from "../util/env.ts"
 import { strerror } from "../util/errors.ts"
 import { OfficePaths } from "../util/home.ts"
-import { plainAuthError } from "../worker/rpc.ts"
-import { workerEnv } from "../worker/spawn.ts"
-import * as fallback from "./fallback.ts"
+import { plainAuthError } from "../runtime/worker/rpc.ts"
+import { workerEnv } from "../runtime/worker/spawn.ts"
+import * as fallback from "../runtime/service/fallback.ts"
 import { readRegular } from "../util/files.ts"
-import { defaultHost, type Host, type Launch, launch, runCommand } from "./launch.ts"
-import * as launchd from "./launchd.ts"
+import { defaultHost, type Host, type Launch, launch, runCommand } from "../runtime/service/launch.ts"
+import * as launchd from "../runtime/service/launchd.ts"
 import {
   checkProvider,
   checkSocket,
@@ -50,9 +50,9 @@ import {
   withDefaultModel,
 } from "./onboard.ts"
 import { OnboardError, clean } from "./prompts.ts"
-import * as service from "./service.ts"
-import * as systemd from "./systemd.ts"
-import { installPaths, resolveTools, workspaceGuards } from "./tools.ts"
+import * as service from "../runtime/service/service.ts"
+import * as systemd from "../runtime/service/systemd.ts"
+import { installPaths, resolveTools, workspaceGuards } from "../runtime/service/programs.ts"
 
 /** How `codex login status` starts the line it prints when nobody is signed in, lowercased. */
 const SIGNED_OUT = "not logged in"

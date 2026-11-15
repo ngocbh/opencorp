@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { parse, stringify } from "yaml"
-import { checkPassword, DUMMY_HASH, hashPassword } from "../../src/auth/passwords.ts"
+import { checkPassword, DUMMY_HASH, hashPassword } from "../../src/runtime/auth/passwords.ts"
 import type { Hq } from "../../src/hq/core.ts"
 import {
   BadCredentials,

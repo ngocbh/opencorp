@@ -1,11 +1,11 @@
 /** company.updated each time the clone's HEAD moves. */
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { HeadWatcher } from "../../src/company/watch.ts"
-import type { Subscription } from "../../src/daemon/bus.ts"
+import type { Subscription } from "../../src/runtime/bus.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { makeOffice } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
-import { recordEvents } from "../store/helpers.ts"
+import { recordEvents } from "../runtime/store/helpers.ts"
 import { git } from "./helpers.ts"
 
 setDefaultTimeout(30_000)

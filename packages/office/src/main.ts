@@ -12,7 +12,7 @@ export type ModeMain = (argv: string[]) => Promise<number>
 export const daemonMain: ModeMain = async (argv) => {
   // A shell's or a service manager's env and cwd never reach the daemon: it re-execs once into the office's
   // (same pid), or exits.
-  const pinned = (await import("./install/launch.ts")).pinDaemon(argv)
+  const pinned = (await import("./runtime/service/launch.ts")).pinDaemon(argv)
   if (pinned !== undefined) process.exit(pinned)
   const daemon = await import("./daemon/main.ts")
   daemon.exitOnCrash()
@@ -24,12 +24,12 @@ export const daemonMain: ModeMain = async (argv) => {
 export const workerMain: ModeMain = async (argv) => {
   const env = Object.freeze({ ...process.env })
   // The check's module loads only for a check job, so a chat worker doesn't load it.
-  return (await import("./worker/main.ts")).main(argv, env, {
+  return (await import("./runtime/worker/main.ts")).main(argv, env, {
     check: async (job, jobEnv, signal) => (await import("./chat/check.ts")).runCheck(job, jobEnv, signal),
   })
 }
 /** One file operation inside the sandbox. */
-export const fsHelperMain: ModeMain = async () => (await import("./sandbox/fs_helper.ts")).fsHelperMain()
+export const fsHelperMain: ModeMain = async () => (await import("./runtime/sandbox/fs_helper.ts")).fsHelperMain()
 /** The setup commands (init, onboard, offboard, doctor, start, restart). It exits once stdout and stderr have
  *  drained, with 130 on Ctrl-C and 1 for an unexpected error, its stack on stderr. */
 export const installMain: ModeMain = async (argv) => (await import("./install/main.ts")).run(argv)

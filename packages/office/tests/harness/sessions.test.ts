@@ -2,12 +2,12 @@
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
-import { HarnessError } from "../../src/chat/state.ts"
+import { HarnessError } from "../../src/runtime/sessions/state.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { person } from "../company/helpers.ts"
 import { CEO, ULID } from "../daemon/helpers.ts"
 import { tempDir, unusableFolders, waitFor } from "../helpers.ts"
-import { question, session } from "../store/helpers.ts"
+import { question, session } from "../runtime/store/helpers.ts"
 import { type Codex, allGone, makeCodex, start, startSession, status, texts, turnRunning } from "./helpers.ts"
 
 setDefaultTimeout(30_000)

@@ -5,7 +5,7 @@ import { expect, test } from "bun:test"
 import type { Office } from "../../src/daemon/office.ts"
 import { Hq, attach } from "../../src/hq/core.ts"
 import { officeApi } from "../../src/hq/version.ts"
-import { HqSessionRecord, newId } from "../../src/store/store.ts"
+import { HqSessionRecord, newId } from "../../src/runtime/store/store.ts"
 import { shortDir, tempDir } from "../helpers.ts"
 import { makeOffice } from "../daemon/helpers.ts"
 

@@ -5,7 +5,7 @@ import { expect, test } from "bun:test"
 import {
   auditArgs, casefold, DETAIL_CHARS, jsonDumps, pyJson, quote, quotePlus, redact, redactUrls, repr, splitLines, strip,
 } from "../../src/util/redact.ts"
-import { KINDS, makeMonitor, RuntimeError, TOKEN } from "../perm/helpers.ts"
+import { KINDS, makeMonitor, RuntimeError, TOKEN } from "../runtime/permissions/helpers.ts"
 
 const PEM = "-----BEGIN KEY-----\nAAAABBBBCCCCDDDD\nEEEEFFFFGGGGHHHH\n-----END KEY-----\n"
 const ESCAPED = "pa\\ss\"w\u00f6rd-123"

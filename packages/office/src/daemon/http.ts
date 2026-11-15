@@ -9,7 +9,7 @@ import http, {
 import { type ErrorCode, validationMessage } from "@opencorp/protocol"
 import type { z } from "zod"
 import { repoBusy } from "../company/git.ts"
-import { NotFound, storeWriteFailure } from "../store/store.ts"
+import { NotFound, storeWriteFailure } from "../runtime/store/store.ts"
 
 /** A route's path params, decoded. */
 export type Params = Record<string, string>

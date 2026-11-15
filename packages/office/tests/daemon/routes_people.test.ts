@@ -4,7 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { stringify } from "yaml"
-import { newToken } from "../../src/auth/tokens.ts"
+import { newToken } from "../../src/runtime/auth/tokens.ts"
 import { git, gitStatus, startMerge } from "../company/helpers.ts"
 import { addHuman, bearer, giveDevice, makeOffice, request, served } from "./helpers.ts"
 

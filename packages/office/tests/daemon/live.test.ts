@@ -8,14 +8,14 @@ import type { LiveEvent, Message, Part } from "@opencorp/protocol"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { MAIN_CHAT } from "../../src/company/chat_flow.ts"
-import { PING } from "../../src/daemon/bus.ts"
+import { PING } from "../../src/runtime/bus.ts"
 import { type LiveJoin, LiveRelay, type LiveViewer, type LiveWorker, type ViewerFrame } from "../../src/daemon/live.ts"
 import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
-import type { Frame } from "../../src/worker/channel.ts"
-import type { Job } from "../../src/worker/job.ts"
+import type { Frame } from "../../src/runtime/worker/channel.ts"
+import type { Job } from "../../src/runtime/worker/job.ts"
 import { advance, fakeLlm, logPrefix, send, TemplateOffice, waitingAt, waitingChat } from "../chat/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
-import { advanceJob, inProcessWorker, run, type TestWorker, waitsOf } from "../worker/helpers.ts"
+import { advanceJob, inProcessWorker, run, type TestWorker, waitsOf } from "../runtime/worker/helpers.ts"
 
 setDefaultTimeout(30_000)
 

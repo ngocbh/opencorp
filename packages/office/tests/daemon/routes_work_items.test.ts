@@ -1,6 +1,6 @@
 /** Work-item routes. */
 import { expect, test } from "bun:test"
-import { comment, workItem } from "../store/helpers.ts"
+import { comment, workItem } from "../runtime/store/helpers.ts"
 import { makeOffice, request, served, ULID } from "./helpers.ts"
 
 test("get work item and comments", async () => {

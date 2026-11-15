@@ -3,12 +3,12 @@ import path from "node:path"
 import { expect, test } from "bun:test"
 import type { DiscussionEntry, Message, Part } from "@opencorp/protocol"
 import { loadRepo } from "../../src/company/loader.ts"
-import { DISCUSSION_CAP } from "../../src/questions/format.ts"
+import { DISCUSSION_CAP } from "../../src/runtime/questions/format.ts"
 import { FRAMING, buildSeed, cardText, firstMessage } from "../../src/questions/seed.ts"
-import { type QuestionRecord, type Store, newId } from "../../src/store/store.ts"
+import { type QuestionRecord, type Store, newId } from "../../src/runtime/store/store.ts"
 import { baseFiles, writeRepo } from "../company/helpers.ts"
 import { tempDir } from "../helpers.ts"
-import { comment, openStore, question, session, workItem } from "../store/helpers.ts"
+import { comment, openStore, question, session, workItem } from "../runtime/store/helpers.ts"
 
 function at(n: number): string {
   return `2026-09-30T10:00:${String(n).padStart(2, "0")}.000Z`

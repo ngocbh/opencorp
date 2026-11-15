@@ -1,7 +1,7 @@
 /** C's strerror texts: util's table and the sandbox helper's own copy say the same. */
 import os from "node:os"
 import { expect, test } from "bun:test"
-import { strerror as helperStrerror } from "../../src/sandbox/fs_helper.ts"
+import { strerror as helperStrerror } from "../../src/runtime/sandbox/fs_helper.ts"
 import { strerror } from "../../src/util/errors.ts"
 
 test("util's strerror and the sandbox helper's give the same text for every errno code", () => {

@@ -1,5 +1,5 @@
 /** Signing a browser in with a handle and password, checked against the person's hash at HEAD. */
-import { checkPassword, DUMMY_HASH } from "../auth/passwords.ts"
+import { checkPassword, DUMMY_HASH } from "../runtime/auth/passwords.ts"
 import { type BrowserSessions, passwordFp } from "./sessions.ts"
 
 /** How long a failure counts, the longest wait, and how long a pair is remembered after its last failure, in

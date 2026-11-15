@@ -6,7 +6,7 @@ import { CompanyGit } from "../../src/company/git.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { git } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
-import { session } from "../store/helpers.ts"
+import { session } from "../runtime/store/helpers.ts"
 import { makeOffice } from "./helpers.ts"
 
 setDefaultTimeout(60_000)

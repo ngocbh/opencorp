@@ -1,6 +1,6 @@
 /** Work item tools: read-only lookups of the work items a person can see. */
 import { pyJson } from "../util/redact.ts"
-import type { QuestionRecord, Store, WorkItemRecord } from "../store/store.ts"
+import type { QuestionRecord, Store, WorkItemRecord } from "../runtime/store/store.ts"
 import type { ToolContext } from "./context.ts"
 
 /** A model-facing work item tool: its description and JSON Schema, and a call that returns JSON text. */

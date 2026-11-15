@@ -19,7 +19,7 @@ import {
   ValidationError,
 } from "@ngocbh/yian/llm_clients"
 import { type FileLock, FileLockError, isLocked, sqliteErrorCode, waitForLock } from "@ngocbh/yian/platform"
-import { addDevice, DeviceRefused } from "../auth/devices.ts"
+import { addDevice, DeviceRefused } from "../runtime/auth/devices.ts"
 import {
   deviceName,
   Identity,
@@ -28,9 +28,9 @@ import {
   loadIdentity,
   readIdentity,
   writeIdentity,
-} from "../auth/identity.ts"
-import { checkPassword } from "../auth/passwords.ts"
-import { newToken, tokenSha256 } from "../auth/tokens.ts"
+} from "../runtime/auth/identity.ts"
+import { checkPassword } from "../runtime/auth/passwords.ts"
+import { newToken, tokenSha256 } from "../runtime/auth/tokens.ts"
 import type { ModelCheck } from "../chat/check.ts"
 import { AUTH_FILE_ENV, azureBaseUrl, ConnectionFile, Connections, isSubscription } from "../chat/connections.ts"
 import * as models from "../chat/models.ts"
@@ -44,8 +44,8 @@ import { redactUrls, repr } from "../util/redact.ts"
 import type { Env } from "../util/env.ts"
 import { strerror } from "../util/errors.ts"
 import { checkFolder, PrivateFileError, writePrivate } from "../util/private_files.ts"
-import { plainAuthError } from "../worker/rpc.ts"
-import { shQuote } from "./fallback.ts"
+import { plainAuthError } from "../runtime/worker/rpc.ts"
+import { shQuote } from "../runtime/service/fallback.ts"
 import {
   type Completed,
   defaultHost,
@@ -55,9 +55,9 @@ import {
   resolveHome,
   runCommand,
   ServiceError,
-} from "./launch.ts"
+} from "../runtime/service/launch.ts"
 import { clean, NoTerminal, OnboardError, type Prompter, TRIES } from "./prompts.ts"
-import * as service from "./service.ts"
+import * as service from "../runtime/service/service.ts"
 
 /** What to do when a home has no company. */
 export const SET_UP = "run `opencorp init` to create one, or `opencorp onboard --from URL` to join one"

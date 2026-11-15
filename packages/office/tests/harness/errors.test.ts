@@ -5,10 +5,10 @@ import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { RpcClosed, RpcError } from "../../src/harness/rpc.ts"
 import { usageBase } from "../../src/harness/session.ts"
 import { sameProcess, startTime } from "../../src/util/proc.ts"
-import type { SessionRecord, WorkerRecord } from "../../src/store/store.ts"
+import type { SessionRecord, WorkerRecord } from "../../src/runtime/store/store.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { waitFor } from "../helpers.ts"
-import { session } from "../store/helpers.ts"
+import { session } from "../runtime/store/helpers.ts"
 import {
   allGone,
   type Codex,

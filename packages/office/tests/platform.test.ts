@@ -36,7 +36,7 @@ test("selfCommand in a checkout is this Bun with the no-autoload flags on the CL
 
 test("helperCommand in a checkout runs fs_helper.ts with the no-autoload flags", () => {
   const bun = fs.realpathSync(process.execPath)
-  const entry = path.join(SRC, "sandbox/fs_helper.ts")
+  const entry = path.join(SRC, "runtime/sandbox/fs_helper.ts")
   expect(helperCommand()).toEqual({ argv: [bun, ...BUN_FLAGS, entry], helper: { bun, entry } })
 })
 
@@ -254,7 +254,7 @@ test(
     // the office's files by absolute path, so no checked-in file imports across packages.
     const dir = tempDir()
     fs.mkdirSync(path.join(dir, "probe"))
-    const migration = path.join(SRC, "store/migrations/0001_initial.sql")
+    const migration = path.join(SRC, "runtime/store/migrations/0001_initial.sql")
     const owner = { handle: "casey", name: "Casey" }
     fs.writeFileSync(
       path.join(dir, "probe/main.ts"),

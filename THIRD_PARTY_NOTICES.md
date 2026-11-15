@@ -124,7 +124,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
   `[`, `^` and `-` are escaped inside a class.
 - **Upstream:** https://github.com/python/cpython, `Lib/fnmatch.py` at tag `v3.12.14` (the 3.12 line), commit
   `2abcf904b8dac8c999d2b3aac76681abb333798a`.
-- **Ours:** `packages/office/src/sandbox/fs_helper.ts`.
+- **Ours:** `packages/office/src/runtime/sandbox/fs_helper.ts`.
 - **License:** PSF-2.0 (Python Software Foundation License Version 2):
 
 ```

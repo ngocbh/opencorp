@@ -1,5 +1,5 @@
 /** The toolbox tool group: the asset tools the run's person holds grants for (the grants are perm/monitor's). */
-import type { ToolboxTool } from "../perm/monitor.ts"
+import type { ToolboxTool } from "../runtime/permissions/monitor.ts"
 import type { ToolContext } from "./context.ts"
 
 /** `ctx.monitor`'s asset tools for `ctx.session`'s person in run `ctx.runId`; none without a monitor and session. */

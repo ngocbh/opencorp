@@ -2,8 +2,8 @@
 import { now, Profile } from "@opencorp/protocol"
 import { structuredPatch } from "diff"
 import type { CompanyGit } from "../company/git.ts"
-import { InvalidTransition, newId, type ProfileProposalRecord, type SessionRecord, type Store } from "../store/store.ts"
-import type { OfficeTool } from "../worker/rpc.ts"
+import { InvalidTransition, newId, type ProfileProposalRecord, type SessionRecord, type Store } from "../runtime/store/store.ts"
+import type { OfficeTool } from "../runtime/worker/rpc.ts"
 import { GitProfileStore, ProfileConflict } from "../company/profile.ts"
 
 /** The profile manager's flow, relative to the session's pinned commit. */

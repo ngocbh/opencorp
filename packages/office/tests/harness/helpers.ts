@@ -6,15 +6,15 @@ import { fileURLToPath } from "node:url"
 import type { LiveEvent, Message, Part } from "@opencorp/protocol"
 import { onTestFinished, spyOn } from "bun:test"
 import { Ajv } from "ajv"
-import { Hooks } from "../../src/chat/hooks.ts"
+import { Hooks } from "../../src/runtime/sessions/hooks.ts"
 import { type CodexSessionsOptions, CodexSessions } from "../../src/harness/sessions.ts"
 import { killGroup, sameProcess } from "../../src/util/proc.ts"
-import type { QuestionRecord, SessionRecord, Store } from "../../src/store/store.ts"
+import type { QuestionRecord, SessionRecord, Store } from "../../src/runtime/store/store.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { person } from "../company/helpers.ts"
 import { CEO, makeOffice } from "../daemon/helpers.ts"
 import { isGone, tempDir, waitFor } from "../helpers.ts"
-import { recordEvents, session, workItem } from "../store/helpers.ts"
+import { recordEvents, session, workItem } from "../runtime/store/helpers.ts"
 
 /** minh, allowed the composer and Codex harnesses. */
 export const CODEX_PERSON = { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"] }) }

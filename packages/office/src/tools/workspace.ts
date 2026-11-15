@@ -1,10 +1,10 @@
 /** Workspace tools: read, write, edit, list, search, and shell, each one sandboxed call. */
 import { startTime } from "../util/proc.ts"
-import type { ToolOutcome, WorkspaceCall } from "../perm/monitor.ts"
+import type { ToolOutcome, WorkspaceCall } from "../runtime/permissions/monitor.ts"
 import { pyJson, repr, strip } from "../util/redact.ts"
-import type { SandboxPolicy } from "../sandbox/policy.ts"
-import { fsHelper, type Result, run } from "../sandbox/run.ts"
-import { newId, type Store } from "../store/store.ts"
+import type { SandboxPolicy } from "../runtime/sandbox/policy.ts"
+import { fsHelper, type Result, run } from "../runtime/sandbox/run.ts"
+import { newId, type Store } from "../runtime/store/store.ts"
 import type { ToolContext } from "./context.ts"
 
 export const TOOL_NAMES = ["read_file", "write_file", "edit_file", "list", "search", "shell"] as const

@@ -33,7 +33,7 @@ import {
   logLine,
   requestListener,
 } from "../daemon/http.ts"
-import { PING } from "../daemon/bus.ts"
+import { PING } from "../runtime/bus.ts"
 import type { RequestContext } from "../daemon/office.ts"
 import { costs } from "../daemon/routes/costs.ts"
 import { whoami } from "../daemon/routes/devices.ts"

@@ -15,14 +15,14 @@ import { CompanyDefaults, type Message, now, OFFICE, WorkItem } from "@opencorp/
 import type { z } from "zod"
 import type { CompanyGit } from "../company/git.ts"
 import { loadRepo } from "../company/loader.ts"
-import type { Bus } from "../daemon/bus.ts"
+import type { Bus } from "../runtime/bus.ts"
 import type { LiveRelay } from "../daemon/live.ts"
 import { redact } from "../util/redact.ts"
-import { type Answers, isAskManagerCall, makeAskUser, type OnQuestion } from "../questions/ask.ts"
-import { formatAnswer, MAX_ANSWER_BYTES } from "../questions/format.ts"
-import type { RunIndexer } from "../runs/indexer.ts"
-import { OpenNodes } from "../runs/nodes.ts"
-import { LINE_CAP } from "../runs/reader.ts"
+import { type Answers, isAskManagerCall, makeAskUser, type OnQuestion } from "../runtime/questions/ask.ts"
+import { formatAnswer, MAX_ANSWER_BYTES } from "../runtime/questions/format.ts"
+import type { RunIndexer } from "../runtime/runs/indexer.ts"
+import { OpenNodes } from "../runtime/runs/nodes.ts"
+import { LINE_CAP } from "../runtime/runs/reader.ts"
 import {
   COULDNT_RESUME,
   COULDNT_START,
@@ -33,8 +33,8 @@ import {
   OFFICE_REPLACED,
   WORKER_REPLACED,
   WORKER_STOPPED,
-} from "../runs/outcomes.ts"
-import type { LiveRun } from "../runs/records.ts"
+} from "../runtime/runs/outcomes.ts"
+import type { LiveRun } from "../runtime/runs/records.ts"
 import type { AnswerKind } from "../runtime/sessions/harness.ts"
 import {
   InvalidTransition,
@@ -45,11 +45,11 @@ import {
   type Store,
   StoreUnwritable,
   type WorkItemRecord,
-} from "../store/store.ts"
+} from "../runtime/store/store.ts"
 import type { Env } from "../util/env.ts"
 import type { OfficePaths } from "../util/home.ts"
-import { type Frame, FrameTooLarge } from "../worker/channel.ts"
-import { type Delivery, type Job, type Seed, STOP_REASON } from "../worker/job.ts"
+import { type Frame, FrameTooLarge } from "../runtime/worker/channel.ts"
+import { type Delivery, type Job, type Seed, STOP_REASON } from "../runtime/worker/job.ts"
 import {
   type AskRequest,
   BaseHandlers,
@@ -59,8 +59,8 @@ import {
   type OfficeTool,
   SIGN_IN_UNUSABLE,
   type WorkerHandlers,
-} from "../worker/rpc.ts"
-import { RegistryClosed, type Worker, workerEnv } from "../worker/spawn.ts"
+} from "../runtime/worker/rpc.ts"
+import { RegistryClosed, type Worker, workerEnv } from "../runtime/worker/spawn.ts"
 import {
   AUTH_FILE_ENV,
   BadConnectionName,
@@ -70,10 +70,10 @@ import {
   runSecrets,
 } from "./connections.ts"
 import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "./cost.ts"
-import type { Hooks } from "./hooks.ts"
+import type { Hooks } from "../runtime/sessions/hooks.ts"
 import { type Price, type Provider, ProviderError } from "./provider.ts"
 import { chatJob, type RunSpec } from "./run_spec.ts"
-import { HarnessError, notWaiting, runState, SETTLED, writeState } from "./state.ts"
+import { HarnessError, notWaiting, runState, SETTLED, writeState } from "../runtime/sessions/state.ts"
 import { type LiveCalls, type Transcript, userMessage } from "./transcript.ts"
 import { type ChatFlow, MAIN_CHAT } from "../company/chat_flow.ts"
 

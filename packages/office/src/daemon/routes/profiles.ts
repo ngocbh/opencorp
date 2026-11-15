@@ -15,7 +15,7 @@ import { type CompanyRepo, loadRepo, missingPerson } from "../../company/loader.
 import { applyProposal, ProposalNotFound, ProposalNotOpen } from "../../profile/manager.ts"
 import { type GitProfileStore, ProfileConflict, ProfileRefused, ProfileUnreadable } from "../../company/profile.ts"
 import type { SessionHarness } from "../../runtime/sessions/harness.ts"
-import { newId } from "../../store/store.ts"
+import { newId } from "../../runtime/store/store.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, RawReply, type Route } from "../http.ts"
 import type { RequestContext } from "../office.ts"

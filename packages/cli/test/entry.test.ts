@@ -302,7 +302,7 @@ test("the fs helper imports only node builtins", () => {
   const transpiler = new Bun.Transpiler({ loader: "ts" })
   const imports = (text: string) => transpiler.scanImports(text).map((entry) => entry.path)
   for (const sample of ['import "x"', 'export * from "x"', 'require("x")']) expect(imports(sample)).toEqual(["x"])
-  const helper = fs.readFileSync(path.join(CHECKOUT, "packages/office/src/sandbox/fs_helper.ts"), "utf8")
+  const helper = fs.readFileSync(path.join(CHECKOUT, "packages/office/src/runtime/sandbox/fs_helper.ts"), "utf8")
   const found = imports(helper)
   expect(found.length).toBeGreaterThan(0)
   expect(found.filter((name) => !name.startsWith("node:"))).toEqual([])
@@ -324,10 +324,10 @@ test("the runs indexer shim only imports the run index thread of the office", ()
   expect(fs.existsSync(shim)).toBe(true)
   const transpiler = new Bun.Transpiler({ loader: "ts" })
   expect(transpiler.scanImports(fs.readFileSync(shim, "utf8")).map((entry) => entry.path)).toEqual([
-    "@opencorp/office/runs/index_thread",
+    "@opencorp/office/runtime/runs/index_thread",
   ])
-  const resolved = Bun.resolveSync("@opencorp/office/runs/index_thread", path.join(CHECKOUT, "packages/cli"))
-  expect(fs.realpathSync(resolved)).toBe(path.join(CHECKOUT, "packages/office/src/runs/index_thread.ts"))
+  const resolved = Bun.resolveSync("@opencorp/office/runtime/runs/index_thread", path.join(CHECKOUT, "packages/cli"))
+  expect(fs.realpathSync(resolved)).toBe(path.join(CHECKOUT, "packages/office/src/runtime/runs/index_thread.ts"))
 })
 
 test(

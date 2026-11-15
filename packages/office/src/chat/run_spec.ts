@@ -5,11 +5,11 @@ import { CompanyDefaults, type Person as PersonSchema } from "@opencorp/protocol
 import type { z } from "zod"
 import type { CompanyGit } from "../company/git.ts"
 import type { CompanyRepo } from "../company/loader.ts"
-import type { Monitor } from "../perm/monitor.ts"
+import type { Monitor } from "../runtime/permissions/monitor.ts"
 import { MANAGER_FLOW } from "../profile/manager.ts"
 import { GitProfileStore } from "../company/profile.ts"
-import type { Carried, OnQuestion } from "../questions/ask.ts"
-import type { QuestionRecord, SessionRecord, Store } from "../store/store.ts"
+import type { Carried, OnQuestion } from "../runtime/questions/ask.ts"
+import type { QuestionRecord, SessionRecord, Store } from "../runtime/store/store.ts"
 import { build } from "../tools/index.ts"
 import type { WorkspaceTools } from "../tools/workspace.ts"
 import {
@@ -20,10 +20,10 @@ import {
   parseJob,
   personFlow,
   type Seed,
-} from "../worker/job.ts"
-import type { OfficeTool } from "../worker/rpc.ts"
+} from "../runtime/worker/job.ts"
+import type { OfficeTool } from "../runtime/worker/rpc.ts"
 import { personInputs, talkingTo } from "./identity.ts"
-import { HarnessError, notAnAgent } from "./state.ts"
+import { HarnessError, notAnAgent } from "../runtime/sessions/state.ts"
 import { type ChatFlow, MAIN_CHAT } from "../company/chat_flow.ts"
 
 const SIDE_CHAT_FLOW = "shared/flows/side_chat.yaml"

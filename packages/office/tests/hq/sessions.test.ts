@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto"
 import { inspect } from "node:util"
 import { expect, test } from "bun:test"
-import { hashPassword } from "../../src/auth/passwords.ts"
+import { hashPassword } from "../../src/runtime/auth/passwords.ts"
 import type { CompanyGit } from "../../src/company/git.ts"
 import { CompanySnapshots } from "../../src/company/snapshot.ts"
 import { HttpError } from "../../src/daemon/http.ts"
@@ -17,7 +17,7 @@ import {
   STREAMS_PER_SESSION,
   TTL,
 } from "../../src/hq/sessions.ts"
-import { HqSessionRecord } from "../../src/store/store.ts"
+import { HqSessionRecord } from "../../src/runtime/store/store.ts"
 import { git } from "../company/helpers.ts"
 import { addHuman, makeOffice } from "../daemon/helpers.ts"
 import { handEdit } from "./helpers.ts"

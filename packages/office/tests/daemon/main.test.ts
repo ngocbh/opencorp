@@ -11,12 +11,12 @@ import { isLocked, openSqlite } from "@ngocbh/yian/platform"
 import { readRunIndex, updateRunIndex } from "@ngocbh/yian/run"
 import { Database } from "bun:sqlite"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
-import { Identity, identityPath, writeIdentity } from "../../src/auth/identity.ts"
-import { newToken } from "../../src/auth/tokens.ts"
+import { Identity, identityPath, writeIdentity } from "../../src/runtime/auth/identity.ts"
+import { newToken } from "../../src/runtime/auth/tokens.ts"
 import { ChatHarness } from "../../src/chat/harness.ts"
-import { Hooks } from "../../src/chat/hooks.ts"
+import { Hooks } from "../../src/runtime/sessions/hooks.ts"
 import { Provider } from "../../src/chat/provider.ts"
-import { HarnessError } from "../../src/chat/state.ts"
+import { HarnessError } from "../../src/runtime/sessions/state.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { HANDLER_WAIT_MS, trackRequests } from "../../src/daemon/http.ts"
 import { LiveRelay } from "../../src/daemon/live.ts"
@@ -34,23 +34,23 @@ import { OfficeStartError, listenUnix, makeOfficeDir } from "../../src/util/sock
 import type { Extension } from "../../src/extensions/index.ts"
 import { register } from "../../src/extensions/questions.ts"
 import { CodexSessions } from "../../src/harness/sessions.ts"
-import { daemonEnv, launch as officeLaunch, resolveHome } from "../../src/install/launch.ts"
+import { daemonEnv, launch as officeLaunch, resolveHome } from "../../src/runtime/service/launch.ts"
 import { args, killGroup, sameProcess, startTime } from "../../src/util/proc.ts"
-import { resolveTools } from "../../src/install/tools.ts"
+import { resolveTools } from "../../src/runtime/service/programs.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
-import { OFFICE_STOPPED } from "../../src/runs/outcomes.ts"
-import { latestVersion } from "../../src/store/migrate.ts"
-import { Store, newId } from "../../src/store/store.ts"
+import { OFFICE_STOPPED } from "../../src/runtime/runs/outcomes.ts"
+import { latestVersion } from "../../src/runtime/store/migrate.ts"
+import { Store, newId } from "../../src/runtime/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { OfficePaths } from "../../src/util/home.ts"
-import { EXIT_GRACE_MS, RegistryClosed, WorkerRegistry } from "../../src/worker/spawn.ts"
+import { EXIT_GRACE_MS, RegistryClosed, WorkerRegistry } from "../../src/runtime/worker/spawn.ts"
 import { CHAT_FILES, fakeLlm } from "../chat/helpers.ts"
 import { company, makeCompany, recordingGit } from "../company/helpers.ts"
 import { cwdOf, envNames, isGone, ps, reexecMarks, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { freePort } from "../hq/helpers.ts"
-import { RUN, chatLog, committed, runStarted, started, succeeded } from "../runs/helpers.ts"
-import { question, session } from "../store/helpers.ts"
-import { Recorder, base, makeJob } from "../worker/helpers.ts"
+import { RUN, chatLog, committed, runStarted, started, succeeded } from "../runtime/runs/helpers.ts"
+import { question, session } from "../runtime/store/helpers.ts"
+import { Recorder, base, makeJob } from "../runtime/worker/helpers.ts"
 import { type Frame, frames, makeOffice, request, served, take, within } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -1731,7 +1731,7 @@ process.exit(await main(["--home", process.argv[2]!], {
   120_000,
 )
 
-const SPAWN = fileURLToPath(new URL("../../src/worker/spawn.ts", import.meta.url))
+const SPAWN = fileURLToPath(new URL("../../src/runtime/worker/spawn.ts", import.meta.url))
 
 test(
   "a request in flight at a stop gets 503 stopping, not a dropped connection",

@@ -1,7 +1,7 @@
 /** HQ's session check on /api: the open requests, the cookie named for the port, and the 401 without a session. */
 import type { IncomingMessage } from "node:http"
 import { expect, setDefaultTimeout, test } from "bun:test"
-import { newToken } from "../../src/auth/tokens.ts"
+import { newToken } from "../../src/runtime/auth/tokens.ts"
 import { HttpError } from "../../src/daemon/http.ts"
 import { SIGN_IN, browserAuth } from "../../src/hq/auth.ts"
 import type { Hq } from "../../src/hq/core.ts"

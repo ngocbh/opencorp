@@ -4,7 +4,7 @@ import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import type { ToolPart } from "@opencorp/protocol"
 import { waitFor } from "../helpers.ts"
-import { gone, sandboxAvailable } from "../sandbox/helpers.ts"
+import { gone, sandboxAvailable } from "../runtime/sandbox/helpers.ts"
 import { fakeLlm, makeHarness, noWorkersLeft, status } from "./helpers.ts"
 
 setDefaultTimeout(60_000)

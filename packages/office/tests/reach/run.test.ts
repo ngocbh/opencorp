@@ -65,7 +65,7 @@ import {
 } from "../../src/reach/risks.ts"
 import { signInLine, withSignIn } from "../../src/install/onboard.ts"
 import { writePrivate } from "../../src/util/private_files.ts"
-import { workerEnv } from "../../src/worker/spawn.ts"
+import { workerEnv } from "../../src/runtime/worker/spawn.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { DEVICE_CODE, DEVICE_URL, fakeSubscription, Script } from "../install/helpers.ts"
 import { ps, waitFor } from "../helpers.ts"

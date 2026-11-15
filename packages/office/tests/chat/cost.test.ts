@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test"
 import { CompanyDefaults } from "@opencorp/protocol"
 import { DEFAULT_PRICE, ZERO_PRICE, callUsd, costCap } from "../../src/chat/cost.ts"
-import { session } from "../store/helpers.ts"
+import { session } from "../runtime/store/helpers.ts"
 
 test("a listed model uses its price", () => {
   const usage = { input_tokens: 1_000_000, output_tokens: 2_000_000, total_tokens: 3_000_000 }
