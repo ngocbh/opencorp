@@ -25,8 +25,9 @@ people or offices.
 
 **OpenCorp is the company built on it.** It owns policy and product: the company (people, org
 chart, SOPs as flows in the company repo); the office (daemon, sessions, the people and devices who
-sign in); who may do what (modes, approvals, rules, sandbox profiles); the three instruments; which
-model each person uses and what it costs; the TUI, CLI and HQ.
+sign in); who may do what (modes, approvals, rules, sandbox profiles); the three instruments (the
+terminal, Claude Code and Codex; the first two come with #888); which model each person uses and
+what it costs; the TUI, CLI and HQ.
 
 **Where a new piece goes.** Ask: would another program running Yian flows need it? If so, it is a
 mechanism and goes in Yian, as a yian issue. OpenCorp never re-implements a Yian mechanism or works
@@ -78,7 +79,9 @@ Before designing a feature, during brainstorming:
 - `bun test` has no fixtures: inject dependencies, give children an explicit env, and never change
   `process.env` in a test.
 - Never edit `packages/yian/`. Yian changes go to the yian repo.
-- Keep the rules in `ARCHITECTURE.md` ("Rules that must not break").
+- Keep the rules in `ARCHITECTURE.md` ("Rules that must not break"): imports go one way, down the
+  office's layers; only `platform.ts` uses Bun; only the worker hosts yian runs; secrets never reach
+  argv, logs or what the model sees.
 - OpenCorp is MIT-licensed. When you copy or substantially port code from another project, credit
   it in `THIRD_PARTY_NOTICES.md` (project, license, upstream paths and commit, our paths).
 - Keep the docs up to date: update them when behavior changes. Keep them concise and direct.

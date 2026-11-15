@@ -23,7 +23,7 @@ a model-written project could then shadow `bun` or `opencorp` itself.
 `(cd packages/cli && bun run build)` writes the compiled binary and the npm packages to
 `packages/cli/dist/npm/`, for the current platform. Name targets (for example
 `bun run build linux-x64`) to cross-build; each needs OpenTUI's native package for that target
-(`bun install --os='*' --cpu='*'`). Nothing is published.
+(`bun install --os='*' --cpu='*'`).
 
 ## Tests
 

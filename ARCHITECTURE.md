@@ -64,9 +64,9 @@ Each category is a top-level folder of `packages/office/src/`. The order, lowest
    (with its subpaths). `platform.ts` may also import `bun:`. util knows nothing of the company, models, flows or the
    office's state.
 
-Until the moves are done, a ratchet list, `UPWARD` in `tests/repo/places.ts`, exempts each import that still
-breaks rule 2 or 4, and the change that fixes an import deletes its line. Two of them, by today's paths, break
-rule 4: `perm/redact → secrets` and `platform → sandbox/policy`.
+Until the moves are done, a ratchet list, `UPWARD` in `packages/office/tests/repo/places.ts` (lands with
+#889), exempts each import that still breaks rule 2 or 4, and the change that fixes an import deletes its line.
+Two of them, by today's paths, break rule 4: `perm/redact → secrets` and `platform → sandbox/policy`.
 
 **Type-only imports count.**
 - A card's "Depends on" is the design dependency. A type import ties a module to the shape of the code above it:
@@ -176,13 +176,13 @@ packages/office/src/features/<feature>/
 
 | Rule | Test |
 |---|---|
-| One-way imports; no folder cycles; every file layered; util stays generic | `tests/repo/layer_direction.test.ts` (lands with #889) |
-| Bun only in `platform.ts`; no spawn of `process.execPath` elsewhere | the same, moving there from `platform.test.ts` ("no Bun or bun: API outside platform.ts", "no spawn of process.execPath outside platform.ts") |
-| The daemon loads only builtins and the pre-re-exec files before it re-execs; `daemonMain` pins first | the same, moving there from `launch.test.ts` ("the pre re-exec check imports only node builtins platform sockets and proc") |
-| The sandbox helper imports only `node:` | the same (lands with #889), and `cli/test/entry.test.ts` ("the fs helper imports only node builtins") |
+| One-way imports; no folder cycles; every file layered; util stays generic | `packages/office/tests/repo/layer_direction.test.ts` (lands with #889) |
+| Bun only in `platform.ts`; no spawn of `process.execPath` elsewhere | the same, moving there from `packages/office/tests/platform.test.ts` ("no Bun or bun: API outside platform.ts", "no spawn of process.execPath outside platform.ts") |
+| The daemon loads only builtins and the pre-re-exec files before it re-execs; `daemonMain` pins first | the same, moving there from `packages/office/tests/install/launch.test.ts` ("the pre re-exec check imports only node builtins platform sockets and proc") |
+| The sandbox helper imports only `node:` | the same (lands with #889), and `packages/cli/test/entry.test.ts` ("the fs helper imports only node builtins") |
 | The cards match the imports | the same, once the moves are done |
-| `tests/` mirrors `src/`; every old test file is placed; feature folders keep their shape | `tests/repo/layout.test.ts` (lands with #889) |
-| Only the worker hosts yian runs | the `hostImports` test in `session_actor.test.ts` (existing) |
+| `tests/` mirrors `src/`; every old test file is placed; feature folders keep their shape | `packages/office/tests/repo/layout.test.ts` (lands with #889) |
+| Only the worker hosts yian runs | "no office code outside the worker calls a yian host function" in `packages/office/tests/features/chat/session_actor.test.ts` (today `tests/chat/`) |
 | Protocol changes update every package | the TUI's and HQ's contract tests against a real office (existing) |
 | Secrets never in argv, logs or the model | no single test: HQ pairing's, login's and redaction's tests each cover part (existing) |
 | The run log is the source of truth; everything is a flow | no test; held in review |
@@ -193,10 +193,11 @@ The protocol is the zod schemas in `packages/protocol/src/schemas/`: the office 
 take their types from them, and nothing is generated.
 
 A PR may add, rename or remove a protocol field as long as it updates every package that uses it
-(office, client, TUI, CLI, HQ app) in the same PR, and adds the matching store migration
-(`packages/office/src/runtime/store/migrations/`) when a field lands on a schema the store persists,
-since inserts fail until the column exists. The additive-only rule and the schema-only-PR rule the
-port suspended stay off until there are outside clients to keep compatible.
+(office, client, TUI, CLI, HQ app) in the same PR, and adds the matching store migration in
+`packages/office/src/runtime/store/migrations/` (today `src/store/migrations/`) when a field lands on
+a schema the store persists, since inserts fail until the column exists. The additive-only rule and
+the schema-only-PR rule the port suspended stay off until there are outside clients to keep
+compatible.
 
 Clients ignore enum values and event types they don't know. Make timestamps with `now()` from
 `@opencorp/protocol`.
@@ -208,9 +209,8 @@ The office lives in `packages/office` (`@opencorp/office`): a module is
 `packages/office/tests/<category>/…/<mod>.test.ts`, each test's name in words. Run them with
 `(cd packages/office && bun test <file>)`.
 
-`packages/office/tests/` mirrors `packages/office/src/`, folder by folder. The office's e2e tests
-(`tests/e2e/`) and its sandbox tests run with the rest of its suite; a sandbox test skips where it
-can't sandbox, unless `CI` or `OPENCORP_TEST_SANDBOX` is set.
+The office's e2e tests (`tests/e2e/`) and its sandbox tests run with the rest of its suite; a
+sandbox test skips where it can't sandbox, unless `CI` or `OPENCORP_TEST_SANDBOX` is set.
 
 The clients' tests run against a real office on a temp home (`@opencorp/office/testing/office`).
 Fakes are kept only for scripted tests (the TUI's frame tests, HQ's Playwright tests), and a
