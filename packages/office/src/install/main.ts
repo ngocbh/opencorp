@@ -20,9 +20,10 @@ import { handleProblem } from "../company/naming.ts"
 import { companyState } from "../company_template/index.ts"
 import { messageOf, OfficeStartError } from "../daemon/sockets.ts"
 import { repr } from "../perm/redact.ts"
+import { hqChecks, hqPortChecks, hqStatus } from "../server/hq/checks.ts"
 import type { Env } from "../util/env.ts"
 import { strerror } from "../util/errors.ts"
-import { type CheckOptions, checks, exitCode, hqPortChecks, hqStatus, report } from "./doctor.ts"
+import { type CheckOptions, checks, exitCode, report } from "./doctor.ts"
 import * as fallback from "./fallback.ts"
 import { init } from "./init.ts"
 import { JsonPrompter, type TextOut } from "./json_prompts.ts"
@@ -71,7 +72,7 @@ export interface Setup {
   /** Runs `opencorp offboard`. */
   offboard: typeof offboard
   /** The doctor's checks' own options (none: their defaults). */
-  doctor: Omit<CheckOptions, "host" | "environ">
+  doctor: Partial<Omit<CheckOptions, "host" | "environ">>
   /** How `start`, `restart` and `stop` find the running daemon (none: `service.findDaemon`'s defaults). */
   lookup: service.LookupOptions
   /** JSON mode: points every other stdout writer at stderr; returns the writer for prompts. */
@@ -510,7 +511,7 @@ async function offboardCommand(args: Args, s: Setup): Promise<number> {
 }
 
 async function doctorCommand(args: Args, s: Setup): Promise<number> {
-  const found = await checks(home(args.home, s), { ...s.doctor, host: s.host, environ: s.environ })
+  const found = await checks(home(args.home, s), { hq: hqStatus, hqChecks, ...s.doctor, host: s.host, environ: s.environ })
   s.stdout.write(report(found))
   return exitCode(found)
 }
