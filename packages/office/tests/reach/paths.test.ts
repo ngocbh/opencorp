@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
 import { MAX_HOME_BYTES, makeDirs, pathProblem, ReachPaths } from "../../src/reach/paths.ts"
-import { PrivateFileError } from "../../src/secrets.ts"
+import { PrivateFileError } from "../../src/util/private_files.ts"
 import { shortDir } from "../helpers.ts"
 
 test("the hq folder holds every file the design names", () => {

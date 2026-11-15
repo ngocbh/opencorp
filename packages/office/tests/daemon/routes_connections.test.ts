@@ -13,7 +13,7 @@ import { DEADLINE_MS, type Lister, listModels, ownModels } from "../../src/chat/
 import { type Provider, ProviderError } from "../../src/chat/provider.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { type ModelCheck, MAX_KEY_CHARS, modelProblem } from "../../src/install/onboard.ts"
-import { writePrivate } from "../../src/secrets.ts"
+import { writePrivate } from "../../src/util/private_files.ts"
 import { RegistryClosed } from "../../src/worker/spawn.ts"
 import {
   APPROVED,

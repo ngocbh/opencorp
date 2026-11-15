@@ -20,7 +20,7 @@ import {
   type LoginView,
 } from "../../src/chat/logins.ts"
 import { ProviderError } from "../../src/chat/provider.ts"
-import { writePrivate } from "../../src/secrets.ts"
+import { writePrivate } from "../../src/util/private_files.ts"
 import { tempDir, waitFor } from "../helpers.ts"
 import { ACCESS, APPROVED, CATALOG, PENDING, REFRESH, SIGNATURE, TOKENS, USERCODE, testScheduler } from "./helpers.ts"
 

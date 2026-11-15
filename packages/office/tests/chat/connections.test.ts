@@ -22,7 +22,7 @@ import {
   runRecord,
 } from "../../src/chat/connections.ts"
 import { type Price, Provider, ProviderError } from "../../src/chat/provider.ts"
-import { writePrivate } from "../../src/secrets.ts"
+import { writePrivate } from "../../src/util/private_files.ts"
 import { tempDir } from "../helpers.ts"
 
 const SENTINEL = "sk-ant-sentinel-a7d93c10e5b2"

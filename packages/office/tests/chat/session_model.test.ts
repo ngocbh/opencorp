@@ -10,8 +10,8 @@ import { type SessionActor, WOKEN_NOTE, refusedKey } from "../../src/chat/sessio
 import { HarnessError } from "../../src/chat/state.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { NEW_MODEL } from "../../src/runs/outcomes.ts"
-import { writePrivate } from "../../src/secrets.ts"
 import type { SessionRecord } from "../../src/store/store.ts"
+import { writePrivate } from "../../src/util/private_files.ts"
 import { person } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import {

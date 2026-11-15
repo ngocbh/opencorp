@@ -7,7 +7,7 @@ import { type FileLock, FileLockError, lockFile } from "@ngocbh/yian/platform"
 import { Timestamp } from "@opencorp/protocol"
 import { z } from "zod"
 import { redirectPage, TTL } from "../hq/pairing.ts"
-import { readPrivate, writePrivate } from "../secrets.ts"
+import { readPrivate, writePrivate } from "../util/private_files.ts"
 import type { ReachPaths } from "./paths.ts"
 import { exitAll, type ReachContext } from "./ssh.ts"
 

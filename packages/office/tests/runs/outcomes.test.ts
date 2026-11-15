@@ -12,9 +12,9 @@ import {
   WORKER_REPLACED,
   WORKER_STOPPED,
 } from "../../src/runs/outcomes.ts"
-import { writePrivate } from "../../src/secrets.ts"
 import { newId, type RunRow } from "../../src/store/store.ts"
 import { type FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import { writePrivate } from "../../src/util/private_files.ts"
 import type { Frame } from "../../src/worker/channel.ts"
 import { waitFor } from "../helpers.ts"
 import { session as storedSession } from "../store/helpers.ts"

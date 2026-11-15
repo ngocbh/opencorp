@@ -13,7 +13,7 @@ import { errno } from "../company/flows.ts"
 import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import { parseFile, type RepoIssue } from "../company/issues.ts"
 import { embedded } from "../platform.ts"
-import { strerror } from "../sandbox/fs_helper.ts"
+import { strerror } from "../util/errors.ts"
 import gitignore from "./template/.gitignore" with { type: "file" }
 import companyYaml from "./template/company.yaml" with { type: "file" }
 import ownerYaml from "./template/people/{owner}/person.yaml" with { type: "file" }

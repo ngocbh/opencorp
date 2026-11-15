@@ -4,7 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
 import { CSP, HEADERS } from "../../src/hq/guard.ts"
-import { CHECKOUT } from "../../src/hq/version.ts"
+import { CHECKOUT } from "../../src/util/checkout.ts"
 
 const FIXTURE = path.join(CHECKOUT, "packages/app/e2e/fixture.ts")
 

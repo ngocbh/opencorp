@@ -4,7 +4,8 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, test } from "bun:test"
 import { apiId } from "@opencorp/protocol/version"
-import { BuildInfo, CHECKOUT, officeApi } from "../../src/hq/version.ts"
+import { BuildInfo, officeApi } from "../../src/hq/version.ts"
+import { CHECKOUT } from "../../src/util/checkout.ts"
 import { tempDir } from "../helpers.ts"
 
 test("in a checkout the key is the version and the schema hash", () => {

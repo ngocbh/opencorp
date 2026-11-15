@@ -6,7 +6,7 @@ import os from "node:os"
 import path from "node:path"
 import { inspect } from "node:util"
 import { FileLockError } from "@ngocbh/yian/platform"
-import { makePrivateFolder, readPrivate, writePrivate } from "../secrets.ts"
+import { makePrivateFolder, readPrivate, writePrivate } from "../util/private_files.ts"
 
 /** Where the device identity lives under an OpenCorp home. */
 export function identityPath(home: string): string {

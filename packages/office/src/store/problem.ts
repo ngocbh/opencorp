@@ -1,7 +1,7 @@
 /** Why the office store can't be opened, in words that name the file and SQLite's code but never a value from the
  *  error's message, for the daemon's start error and doctor's store check. */
 import { sqliteErrorCode } from "@ngocbh/yian/platform"
-import { strerror } from "../sandbox/fs_helper.ts"
+import { strerror } from "../util/errors.ts"
 import { MigrationError } from "./migrate.ts"
 import { StoreError } from "./store.ts"
 

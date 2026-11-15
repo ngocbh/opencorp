@@ -9,6 +9,7 @@
  * and `search`'s errors for its top path; a bad pattern's text is the JavaScript engine's, not Python's.
  * Paths are relative to the working directory, the workspace. The sandbox, not this code, decides what may
  * be read or written. It imports only `node:` builtins, because the sandbox exposes nothing else to it.
+ * Its `STRERROR` table and `strerror` are a copy of `util/errors.ts`'s, which a test holds equal.
  */
 import fs from "node:fs"
 import os from "node:os"

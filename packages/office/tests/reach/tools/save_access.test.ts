@@ -19,9 +19,9 @@ import {
   secretIn,
   WHAT_SHOULD_CHANGE,
 } from "../../../src/reach/tools/save_access.ts"
-import { writePrivate } from "../../../src/secrets.ts"
 import { fakeControlName } from "../../../src/testing/fake_ssh.ts"
 import type { FakeSsh } from "../../../src/testing/fake_ssh.ts"
+import { writePrivate } from "../../../src/util/private_files.ts"
 import { chain, KEY, learning, NOTES, rejection } from "../helpers.ts"
 
 setDefaultTimeout(30_000)

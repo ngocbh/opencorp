@@ -11,7 +11,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { logLine } from "../daemon/http.ts"
-import { CHECKOUT } from "./version.ts"
+import { CHECKOUT } from "../util/checkout.ts"
 
 /** A fixed port, so a bookmark and an SSH forward keep working across restarts. */
 export const DEFAULT_PORT = 49380

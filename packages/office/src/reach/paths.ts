@@ -1,6 +1,6 @@
 /** The saved path's folder, `<home>/hq`: where each of its files lives, and the limits SSH puts on the home's path. */
 import path from "node:path"
-import { checkFolder, makePrivateFolder } from "../secrets.ts"
+import { checkFolder, makePrivateFolder } from "../util/private_files.ts"
 import { safePath } from "./spec.ts"
 
 /** The files of `<home>/hq`. */

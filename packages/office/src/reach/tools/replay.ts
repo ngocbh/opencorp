@@ -1,10 +1,10 @@
 /** `reach_hq`'s one tool, `replay_access`: the replay on every visit, which runs the approved reach.sh, then reads
  *  what it printed and how it exited. */
 import { type FunctionTool, type ToolContext, tool } from "@ngocbh/yian"
-import { replaceFile } from "../../secrets.ts"
 import { randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
+import { replaceFile } from "../../util/private_files.ts"
 import { lastStderr, type Ran, type ReachContext, readStatuses, resetStatus, runChild, sshEnv } from "../ssh.ts"
 import { parseSpec, type Spec } from "../spec.ts"
 import { readAccess, sha256 } from "../state.ts"

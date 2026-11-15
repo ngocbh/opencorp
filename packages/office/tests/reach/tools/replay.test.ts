@@ -5,7 +5,7 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { classify, type Reached, runScript } from "../../../src/reach/tools/replay.ts"
 import { runReach } from "../../../src/reach/run.ts"
 import type { Ran } from "../../../src/reach/ssh.ts"
-import { writePrivate } from "../../../src/secrets.ts"
+import { writePrivate } from "../../../src/util/private_files.ts"
 import { approved, fakeHome, reachCtx, SPEC } from "../helpers.ts"
 
 setDefaultTimeout(30_000)

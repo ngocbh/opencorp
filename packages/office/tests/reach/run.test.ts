@@ -51,7 +51,6 @@ import { KeyboardInterrupt, OnboardError, TtyPrompter } from "../../src/install/
 import { ReachFailure } from "../../src/reach/connect.ts"
 import { PassThrough } from "node:stream"
 import { defaultIncludes } from "../../src/reach/ssh.ts"
-import { writePrivate } from "../../src/secrets.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../src/testing/fake_ssh.ts"
 import { control, exitAll, isSocket, type ReachContext } from "../../src/reach/ssh.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
@@ -64,6 +63,7 @@ import {
   RELEARN_QUESTION,
 } from "../../src/reach/risks.ts"
 import { providerSecrets, signInLine, withSignIn } from "../../src/install/onboard.ts"
+import { writePrivate } from "../../src/util/private_files.ts"
 import { workerEnv } from "../../src/worker/spawn.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { DEVICE_CODE, DEVICE_URL, fakeSubscription, Script } from "../install/helpers.ts"

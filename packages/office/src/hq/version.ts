@@ -4,9 +4,6 @@ import path from "node:path"
 import { AppBuild } from "@opencorp/protocol"
 import { apiId } from "@opencorp/protocol/version"
 
-/** The checkout this code runs from (`packages/office/src/hq` up four). */
-export const CHECKOUT = path.resolve(import.meta.dirname, "../../../..")
-
 let api: string | undefined
 
 /** The compatibility key (`apiId()`), computed once and kept: it hashes the protocol's JSON Schema. */

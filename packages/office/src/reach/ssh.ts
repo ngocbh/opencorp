@@ -9,7 +9,7 @@ import path from "node:path"
 import type { Readable, Writable } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
 import { sameProcess, startTime } from "../install/proc.ts"
-import { replaceFile, writePrivate } from "../secrets.ts"
+import { replaceFile, writePrivate } from "../util/private_files.ts"
 import type { ReachPaths } from "./paths.ts"
 import { remoteCommand, type Spec, safePath, word } from "./spec.ts"
 

@@ -5,8 +5,8 @@ import path from "node:path"
 import { pipeline } from "node:stream"
 import { VERSION } from "@opencorp/protocol/version"
 import { sendError } from "../daemon/http.ts"
+import { CHECKOUT } from "../util/checkout.ts"
 import { header, requestPath } from "./guard.ts"
-import { CHECKOUT } from "./version.ts"
 
 /** The cache policy for `assets/`, whose names carry a content hash. */
 export const IMMUTABLE = "public, max-age=31536000, immutable"
