@@ -3,8 +3,7 @@
 This repo holds OpenCorp's packages: the office daemon, the protocol it shares with its clients, the
 client library, the TUI, the CLI and HQ's web app, with Yian as a submodule. This file maps them,
 lays out the office's layers and lists the rules the code relies on. The office is moving to the
-layout below. While the moves run, this file describes the target; the old folders move there in
-M1–M7 (#889).
+layout below (#889). While the moves run, this file describes the target.
 
 ## The packages
 
@@ -65,8 +64,9 @@ Each category is a top-level folder of `packages/office/src/`. The order, lowest
    (with its subpaths). `platform.ts` may also import `bun:`. util knows nothing of the company, models, flows or the
    office's state.
 
-During the transition, a line in `UPWARD` exempts its import from rules 2 and 4 until its B PR deletes the
-line. At step 2 two such lines also break rule 4: `perm/redact → secrets` and `platform → sandbox/policy`.
+Until the moves are done, a ratchet list, `UPWARD` in `tests/repo/places.ts`, exempts each import that still
+breaks rule 2 or 4, and the change that fixes an import deletes its line. Two of them, by today's paths, break
+rule 4: `perm/redact → secrets` and `platform → sandbox/policy`.
 
 **Type-only imports count.**
 - A card's "Depends on" is the design dependency. A type import ties a module to the shape of the code above it:
@@ -166,22 +166,22 @@ packages/office/src/features/<feature>/
 
 - A prompt stays inline in its flow. It moves to a file that flows `!include` only when several flows share it.
 - Fixed text and data that code shows, such as risk texts, are files the code embeds, as it embeds flows, not `.ts` constants.
-- A tool goes in the shared `src/tools/` only when flows of more than one feature call it under the same trust model: the same sandbox and the same approver. A tool whose safety depends on who runs it stays in its feature, even when another feature has one of the same name. `reach/tools/shell.ts` runs unsandboxed as the owner, after the owner approves each command; `tools/workspace.ts`'s `shell` runs sandboxed in an employee's workspace.
+- A tool goes in the shared `src/tools/` only when flows of more than one feature call it under the same trust model: the same sandbox and the same approver. A tool whose safety depends on who runs it stays in its feature, even when another feature has one of the same name. `features/reach/tools/shell.ts` (today `reach/tools/shell.ts`) runs unsandboxed as the owner, after the owner approves each command; `tools/workspace.ts`'s `shell` runs sandboxed in an employee's workspace.
 - yian's built-ins (`ask_user`, `load_skill`, …) aren't host tools. A feature supplies only how a question reaches a person: its ask handler, in `run.ts`.
 - An employee's own SOPs are flows in the company repo (`company/template/`), not in a feature folder.
 - Tests mirror the layout: `tests/features/<feature>/tools/<tool>.test.ts`, `tests/features/<feature>/run.test.ts`.
-- The old folders move only in M1–M7 (#889), by the codemod; don't move them by hand.
+- The old folders move to this layout only through #889's codemod; don't move them by hand.
 
 ## Rules that must not break
 
 | Rule | Test |
 |---|---|
-| One-way imports; no folder cycles; every file layered; util stays generic | `tests/repo/layer_direction.test.ts` (new, step 2) |
-| Bun only in `platform.ts`; no spawn of `process.execPath` elsewhere | the same (moved from `platform.test.ts`, step 2) |
-| The daemon loads only builtins and the pre-re-exec files before it re-execs; `daemonMain` pins first | the same (moved from `launch.test.ts:336`, step 2) |
-| The sandbox helper imports only `node:` | the same (step 2), and `cli/test/entry.test.ts:300` (existing) |
-| The cards match the imports | the same (step F) |
-| `tests/` mirrors `src/`; every old test file is placed; feature folders keep their shape | `tests/repo/layout.test.ts` (new, step 2) |
+| One-way imports; no folder cycles; every file layered; util stays generic | `tests/repo/layer_direction.test.ts` (lands with #889) |
+| Bun only in `platform.ts`; no spawn of `process.execPath` elsewhere | the same, moving there from `platform.test.ts` ("no Bun or bun: API outside platform.ts", "no spawn of process.execPath outside platform.ts") |
+| The daemon loads only builtins and the pre-re-exec files before it re-execs; `daemonMain` pins first | the same, moving there from `launch.test.ts` ("the pre re-exec check imports only node builtins platform sockets and proc") |
+| The sandbox helper imports only `node:` | the same (lands with #889), and `cli/test/entry.test.ts` ("the fs helper imports only node builtins") |
+| The cards match the imports | the same, once the moves are done |
+| `tests/` mirrors `src/`; every old test file is placed; feature folders keep their shape | `tests/repo/layout.test.ts` (lands with #889) |
 | Only the worker hosts yian runs | the `hostImports` test in `session_actor.test.ts` (existing) |
 | Protocol changes update every package | the TUI's and HQ's contract tests against a real office (existing) |
 | Secrets never in argv, logs or the model | no single test: HQ pairing's, login's and redaction's tests each cover part (existing) |

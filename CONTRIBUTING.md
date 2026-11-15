@@ -68,7 +68,7 @@ get a build today.
 
 What ships, where, and how it is trusted is #525. The PyPI package `opencorp` was the Python
 office's and went with it; yian is public but not on npm, so a published build vendors it or waits
-for yian to publish (#525).
+for yian to publish.
 
 ## Code style
 
