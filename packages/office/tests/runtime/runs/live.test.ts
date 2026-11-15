@@ -4,7 +4,7 @@ import type { RunUpdated } from "@opencorp/protocol"
 import type { SessionActor } from "../../../src/features/chat/session_actor.ts"
 import { PING } from "../../../src/runtime/bus.ts"
 import { Live } from "../../../src/runtime/runs/records.ts"
-import { makeOffice, standInHarness } from "../../daemon/helpers.ts"
+import { makeOffice, standInHarness } from "../../server/helpers.ts"
 import { waitFor } from "../../helpers.ts"
 import {
   type ChatOffice,

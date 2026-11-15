@@ -33,7 +33,7 @@ import { type Delivery, STOP_REASON } from "../../../src/runtime/worker/job.ts"
 import { type Worker, WorkerExists } from "../../../src/runtime/worker/spawn.ts"
 import type { Frame } from "../../../src/runtime/worker/channel.ts"
 import type { OfficeTool, WorkerHandlers } from "../../../src/runtime/worker/rpc.ts"
-import { CEO } from "../../daemon/helpers.ts"
+import { CEO } from "../../server/helpers.ts"
 import { fold } from "../codex/helpers.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 import {

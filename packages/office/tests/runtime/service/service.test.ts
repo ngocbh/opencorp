@@ -8,7 +8,7 @@ import net from "node:net"
 import path from "node:path"
 import type { OfficeInfo } from "@opencorp/protocol"
 import { expect, onTestFinished, test } from "bun:test"
-import { logLine } from "../../../src/daemon/http.ts"
+import { logLine } from "../../../src/server/http.ts"
 import * as fallback from "../../../src/runtime/service/fallback.ts"
 import {
   type Completed,

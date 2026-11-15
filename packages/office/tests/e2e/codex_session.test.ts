@@ -10,7 +10,7 @@ import { expect, onTestFinished, test } from "bun:test"
 import { parse, stringify } from "yaml"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { git } from "../company/helpers.ts"
-import { frames } from "../daemon/helpers.ts"
+import { frames } from "../server/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import { type RunningOffice, folder, openOffice } from "./helpers.ts"
 

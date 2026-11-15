@@ -5,7 +5,7 @@ import { now, Question } from "@opencorp/protocol"
 import { SessionActor } from "../../../src/features/chat/session_actor.ts"
 import { INTERRUPTED } from "../../../src/runtime/questions/format.ts"
 import { newId, type QuestionRecord } from "../../../src/runtime/store/store.ts"
-import { CEO } from "../../daemon/helpers.ts"
+import { CEO } from "../../server/helpers.ts"
 import { waitFor } from "../../helpers.ts"
 import {
   ASK_MANAGER,

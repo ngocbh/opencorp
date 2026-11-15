@@ -2,9 +2,9 @@
 import { Ack, BrowserSession, type CompanyView, HqStatus, PairCode, PairCodeRequest } from "@opencorp/protocol"
 import { z } from "zod"
 import { doesntLoad, personFileBroken } from "../../company/loader.ts"
-import { actingPerson } from "../../daemon/auth.ts"
-import { HttpError, type Route } from "../../daemon/http.ts"
-import type { OfficeHq, RequestContext } from "../../daemon/office.ts"
+import { actingPerson } from "../auth.ts"
+import { HttpError, type Route } from "../http.ts"
+import type { OfficeHq, RequestContext } from "../office.ts"
 
 /** The office's HQ, or a 501 naming `what` (the route's method and pattern). */
 function hqOf(ctx: RequestContext, what: string): OfficeHq {

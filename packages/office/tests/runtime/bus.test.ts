@@ -4,7 +4,7 @@ import { now, type Event, type LiveEvent } from "@opencorp/protocol"
 import { Bus, PING, type Item } from "../../src/runtime/bus.ts"
 import { newId } from "../../src/runtime/store/store.ts"
 import { recordEvents, session } from "./store/helpers.ts"
-import { makeOffice } from "../daemon/helpers.ts"
+import { makeOffice } from "../server/helpers.ts"
 
 const S1 = newId()
 const S2 = newId()

@@ -20,7 +20,7 @@ import type { FakeLLM } from "../../../src/testing/fake_llm.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
 import { fakeLlm, makeHarness, ROOT, running, status, texts } from "../chat/helpers.ts"
 import { company, git } from "../../company/helpers.ts"
-import { CEO, request, served } from "../../daemon/helpers.ts"
+import { CEO, request, served } from "../../server/helpers.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 import { openStore, recordEvents, session } from "../../runtime/store/helpers.ts"
 

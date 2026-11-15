@@ -12,7 +12,7 @@ import { killGroup, sameProcess } from "../../../src/util/proc.ts"
 import type { QuestionRecord, SessionRecord, Store } from "../../../src/runtime/store/store.ts"
 import * as fc from "../../../src/testing/fake_codex.ts"
 import { person } from "../../company/helpers.ts"
-import { CEO, makeOffice } from "../../daemon/helpers.ts"
+import { CEO, makeOffice } from "../../server/helpers.ts"
 import { isGone, tempDir, waitFor } from "../../helpers.ts"
 import { recordEvents, session, workItem } from "../../runtime/store/helpers.ts"
 
