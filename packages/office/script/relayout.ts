@@ -114,6 +114,15 @@ const REPLACE: Readonly<Record<string, readonly Replace[]>> = {
     // The reach flows' labels: a folder prefix, which rule 4 doesn't match.
     { file: "tests/reach/flows.test.ts", old: "`reach/flows/${name}.yaml`", new: "`features/reach/flows/${name}.yaml`", count: 1 },
   ],
+  server: [
+    // The app fixture's import of HQ's guard, pinned in a regex literal, which the export keys' rule doesn't rewrite.
+    {
+      file: "tests/hq/app_fixture.test.ts",
+      old: "@opencorp\\/office\\/hq\\/guard",
+      new: "@opencorp\\/office\\/server\\/hq\\/guard",
+      count: 1,
+    },
+  ],
 }
 
 /** Runs git in the checkout; its output, trimmed. */
