@@ -46,6 +46,7 @@ export default defineConfig({
         { label: "Home", slug: "index" },
         { label: "Get started", slug: "get-started" },
         { label: "Use OpenCorp", items: ["create-the-company", "team", "hq", "check-and-run", "hq-settings"] },
+        { label: "Understand", items: ["how-it-fits"] },
       ],
     }),
   ],
