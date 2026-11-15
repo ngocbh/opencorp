@@ -31,7 +31,7 @@ import { launch } from "../../../src/runtime/service/launch.ts"
 import { OnboardError, TRIES, TtyPrompter } from "../../../src/features/setup/prompts.ts"
 import { selfSpawnEnv } from "../../../src/platform.ts"
 import { git, gitEnv } from "../../company/helpers.ts"
-import { request } from "../../daemon/helpers.ts"
+import { request } from "../../server/helpers.ts"
 import { shortDir, tempDir } from "../../helpers.ts"
 import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner, Script } from "./helpers.ts"
 

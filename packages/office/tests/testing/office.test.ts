@@ -4,7 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, test } from "bun:test"
 import { startOffice } from "../../src/testing/office.ts"
-import { request } from "../daemon/helpers.ts"
+import { request } from "../server/helpers.ts"
 
 const TIMEOUT = 60_000
 

@@ -9,7 +9,7 @@ import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { type Question, stamp } from "@opencorp/protocol"
 import { Hooks } from "../../../src/runtime/sessions/hooks.ts"
 import { HarnessError, notWaiting } from "../../../src/runtime/sessions/state.ts"
-import type { Office } from "../../../src/daemon/office.ts"
+import type { Office } from "../../../src/server/office.ts"
 import { register } from "../../../src/features/questions/extension.ts"
 import { type Cards, SIDE_END_WAIT_MS } from "../../../src/features/questions/cards.ts"
 import { CARRIED_NOTE, INTERRUPTED, SENT_BACK } from "../../../src/runtime/questions/format.ts"
@@ -35,7 +35,7 @@ import {
   status,
   texts,
 } from "../chat/helpers.ts"
-import { CEO, makeOffice, standInHarness } from "../../daemon/helpers.ts"
+import { CEO, makeOffice, standInHarness } from "../../server/helpers.ts"
 import { waitFor } from "../../helpers.ts"
 import { question, recordEvents, session } from "../../runtime/store/helpers.ts"
 

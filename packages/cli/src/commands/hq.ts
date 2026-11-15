@@ -3,7 +3,7 @@
 // ever printed or put in a 0600 file: never in a process's arguments, where other users could read it.
 import { isMissingRoute, isNotImplemented, OfficeTimeout, OfficeUnavailable } from "@opencorp/client"
 import { defaultSocket, opencorpHome } from "@opencorp/client/node"
-import { otherPort, SETTINGS_IGNORED } from "@opencorp/office/hq/config"
+import { otherPort, SETTINGS_IGNORED } from "@opencorp/office/server/hq/config"
 import type { LearnScreen, VisitOptions } from "@opencorp/office/features/reach/run"
 import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
 import os from "node:os"

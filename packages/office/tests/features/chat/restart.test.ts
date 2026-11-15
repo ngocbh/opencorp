@@ -16,7 +16,7 @@ import { writePrivate } from "../../../src/util/private_files.ts"
 import type { Frame } from "../../../src/runtime/worker/channel.ts"
 import type { OfficeTool } from "../../../src/runtime/worker/rpc.ts"
 import { sameProcess, startTime } from "../../../src/util/proc.ts"
-import { CEO } from "../../daemon/helpers.ts"
+import { CEO } from "../../server/helpers.ts"
 import { waitFor } from "../../helpers.ts"
 import { makeRegistry } from "../../runtime/worker/helpers.ts"
 import {

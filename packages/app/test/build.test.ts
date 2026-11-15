@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { officeApi } from "@opencorp/office/hq/version"
+import { officeApi } from "@opencorp/office/server/hq/version"
 import { apiId } from "@opencorp/protocol/version"
 import { hqBuild } from "../vite.hq"
 

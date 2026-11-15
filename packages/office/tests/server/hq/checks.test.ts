@@ -7,10 +7,10 @@ import { VERSION } from "@opencorp/protocol/version"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { Identity, identityPath, readIdentity, writeIdentity } from "../../../src/runtime/auth/identity.ts"
 import { newToken } from "../../../src/runtime/auth/tokens.ts"
-import { attach } from "../../../src/hq/core.ts"
+import { attach } from "../../../src/server/hq/core.ts"
 import { type Check, report } from "../../../src/features/doctor/doctor.ts"
 import { hqChecks, hqPortChecks, hqStatus } from "../../../src/server/hq/checks.ts"
-import { CEO, giveDevice, makeOffice, served } from "../../daemon/helpers.ts"
+import { CEO, giveDevice, makeOffice, served } from "../helpers.ts"
 import { shortDir, tempDir } from "../../helpers.ts"
 
 // A status read can wait 10 s for the office, past bun's default test timeout.

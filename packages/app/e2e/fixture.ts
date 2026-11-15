@@ -3,7 +3,7 @@
 // Its security headers, the CSP among them, are the office's own, imported from HQ's guard.
 import { existsSync, readFileSync, statSync } from "node:fs"
 import path from "node:path"
-import { HEADERS } from "@opencorp/office/hq/guard"
+import { HEADERS } from "@opencorp/office/server/hq/guard"
 import type { BrowserSession, RunDetail, RunEvent, RunSummary } from "@opencorp/protocol"
 import { acme, source, type Data, type Source } from "./company"
 import { runLogs, runPages, summaryOf, wholeEvents, type RunPages, type Runs } from "./runs"

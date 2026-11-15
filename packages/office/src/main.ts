@@ -14,7 +14,7 @@ export const daemonMain: ModeMain = async (argv) => {
   // (same pid), or exits.
   const pinned = (await import("./runtime/service/launch.ts")).pinDaemon(argv)
   if (pinned !== undefined) process.exit(pinned)
-  const daemon = await import("./daemon/main.ts")
+  const daemon = await import("./server/daemon/main.ts")
   daemon.exitOnCrash()
   process.exit(await daemon.main(argv))
 }
@@ -32,7 +32,7 @@ export const workerMain: ModeMain = async (argv) => {
 export const fsHelperMain: ModeMain = async () => (await import("./runtime/sandbox/fs_helper.ts")).fsHelperMain()
 /** The setup commands (init, onboard, offboard, doctor, start, restart). It exits once stdout and stderr have
  *  drained, with 130 on Ctrl-C and 1 for an unexpected error, its stack on stderr. */
-export const installMain: ModeMain = async (argv) => (await import("./install/main.ts")).run(argv)
+export const installMain: ModeMain = async (argv) => (await import("./server/commands/main.ts")).run(argv)
 
 const MODES: Record<string, ModeMain> = {
   daemon: daemonMain,
