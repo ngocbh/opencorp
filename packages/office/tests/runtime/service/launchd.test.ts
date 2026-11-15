@@ -7,7 +7,7 @@ import { STOP_TIMEOUT_MS } from "../../../src/runtime/service/fallback.ts"
 import { ServiceError, launch } from "../../../src/runtime/service/launch.ts"
 import * as launchd from "../../../src/runtime/service/launchd.ts"
 import { tempDir } from "../../helpers.ts"
-import { Runner, makeHost, ownerLaunch } from "../../install/helpers.ts"
+import { Runner, makeHost, ownerLaunch } from "../../features/setup/helpers.ts"
 
 const GOLDEN = path.join(import.meta.dirname, "golden")
 const SERVICE = "gui/501/com.opencorp.office"

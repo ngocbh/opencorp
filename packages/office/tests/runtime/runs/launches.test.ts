@@ -4,8 +4,8 @@ import fs from "node:fs"
 import path from "node:path"
 import { iterRunRecords } from "@ngocbh/yian/run"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
-import type { SessionActor } from "../../../src/chat/session_actor.ts"
-import { MANAGER_FLOW } from "../../../src/profile/manager.ts"
+import type { SessionActor } from "../../../src/features/chat/session_actor.ts"
+import { MANAGER_FLOW } from "../../../src/features/profile/manager.ts"
 import type { FakeLLM } from "../../../src/testing/fake_llm.ts"
 import type { Worker } from "../../../src/runtime/worker/spawn.ts"
 import {
@@ -22,7 +22,7 @@ import {
   startActor,
   status,
   texts,
-} from "../../chat/helpers.ts"
+} from "../../features/chat/helpers.ts"
 import { waitFor } from "../../helpers.ts"
 
 setDefaultTimeout(60_000)

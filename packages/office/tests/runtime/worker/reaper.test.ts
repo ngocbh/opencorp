@@ -4,7 +4,7 @@ import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test
 import { killGroup, startTime } from "../../../src/util/proc.ts"
 import type { Store } from "../../../src/runtime/store/store.ts"
 import { type Readings, reap } from "../../../src/runtime/worker/reaper.ts"
-import { fakeLlm } from "../../chat/helpers.ts"
+import { fakeLlm } from "../../features/chat/helpers.ts"
 import { type Group, isGone, NO_GROUP, startGroup, waitFor } from "../../helpers.ts"
 import { openStore } from "../store/helpers.ts"
 import { base, makeJob, makeRegistry, Recorder, runWorker } from "./helpers.ts"

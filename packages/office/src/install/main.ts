@@ -23,12 +23,12 @@ import { repr } from "../util/redact.ts"
 import { hqChecks, hqPortChecks, hqStatus } from "../server/hq/checks.ts"
 import type { Env } from "../util/env.ts"
 import { strerror } from "../util/errors.ts"
-import { type CheckOptions, checks, exitCode, report } from "./doctor.ts"
+import { type CheckOptions, checks, exitCode, report } from "../features/doctor/doctor.ts"
 import * as fallback from "../runtime/service/fallback.ts"
-import { init } from "./init.ts"
-import { JsonPrompter, type TextOut } from "./json_prompts.ts"
+import { init } from "../features/setup/init.ts"
+import { JsonPrompter, type TextOut } from "../features/setup/json_prompts.ts"
 import { defaultHost, type Host, type Launch, launch, ServiceError, wantedHome } from "../runtime/service/launch.ts"
-import { Declined, OffboardError, offboard } from "./offboard.ts"
+import { Declined, OffboardError, offboard } from "../features/setup/offboard.ts"
 import {
   checkSocket,
   damageMessage,
@@ -40,8 +40,8 @@ import {
   SET_UP,
   type SubscriptionAuth,
   WHO,
-} from "./onboard.ts"
-import { isTTY, KeyboardInterrupt, OnboardError, type Prompter, TtyPrompter } from "./prompts.ts"
+} from "../features/setup/onboard.ts"
+import { isTTY, KeyboardInterrupt, OnboardError, type Prompter, TtyPrompter } from "../features/setup/prompts.ts"
 import * as service from "../runtime/service/service.ts"
 
 /** The exit code of `start` and `restart` when there's no company or no office yet. */

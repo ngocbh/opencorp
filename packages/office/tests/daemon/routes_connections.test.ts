@@ -13,7 +13,7 @@ import type { LoginsOptions } from "../../src/models/logins.ts"
 import { DEADLINE_MS, type Lister, listModels, ownModels } from "../../src/models/models.ts"
 import { type Provider, ProviderError } from "../../src/models/provider.ts"
 import type { Office } from "../../src/daemon/office.ts"
-import { MAX_KEY_CHARS } from "../../src/install/onboard.ts"
+import { MAX_KEY_CHARS } from "../../src/features/setup/onboard.ts"
 import { writePrivate } from "../../src/util/private_files.ts"
 import { RegistryClosed } from "../../src/runtime/worker/spawn.ts"
 import {
@@ -28,7 +28,7 @@ import {
   TOKENS,
   USERCODE,
   testScheduler,
-} from "../chat/helpers.ts"
+} from "../features/chat/helpers.ts"
 import { git } from "../company/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import { recordEvents } from "../runtime/store/helpers.ts"

@@ -11,7 +11,7 @@ import { type Completed, type Launch, ServiceError, launch, runCommand } from ".
 import { selfSpawnEnv } from "../../../src/platform.ts"
 import { which } from "../../../src/util/env.ts"
 import { fifo, isGone, ps, shortDir, startGroup, tempDir, waitFor } from "../../helpers.ts"
-import { Runner, daemonHost, killedAtEnd, makeHost, ownerLaunch, standIn } from "../../install/helpers.ts"
+import { Runner, daemonHost, killedAtEnd, makeHost, ownerLaunch, standIn } from "../../features/setup/helpers.ts"
 
 const SESSION = "opencorp-office"
 

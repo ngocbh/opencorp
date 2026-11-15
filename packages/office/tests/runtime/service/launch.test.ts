@@ -22,7 +22,7 @@ import {
 import { sameProcess, startTime } from "../../../src/util/proc.ts"
 import { selfCommand, unsafeEnvName } from "../../../src/platform.ts"
 import { isGone, ps, shortDir, tempDir, waitFor } from "../../helpers.ts"
-import { Runner, makeHost, SRC } from "../../install/helpers.ts"
+import { Runner, makeHost, SRC } from "../../features/setup/helpers.ts"
 
 // Resolved as `launch` resolves it: on a machine without /Users the path comes back as given.
 const HOME = resolveHome("/Users/owner/.opencorp")

@@ -3,7 +3,7 @@
 import { expect, test } from "bun:test"
 import { PassThrough } from "node:stream"
 import type { SetupPrompt } from "@opencorp/protocol"
-import { JsonPrompter } from "@opencorp/office/install/json_prompts"
+import { JsonPrompter } from "@opencorp/office/features/setup/json_prompts"
 import { inProcessChild } from "../../src/setup/in_process"
 import { parsePrompt } from "../../src/setup/child"
 import { until } from "../fixture/until"

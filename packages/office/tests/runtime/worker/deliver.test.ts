@@ -7,7 +7,7 @@ import { type FakeLLM, LLM_CONFIG, type ScriptedReply } from "../../../src/testi
 import { ChannelClosed, type Frame } from "../../../src/runtime/worker/channel.ts"
 import type { Job, JobInput } from "../../../src/runtime/worker/job.ts"
 import { EXIT_FAILED, EXIT_OK } from "../../../src/runtime/worker/main.ts"
-import { fakeLlm } from "../../chat/helpers.ts"
+import { fakeLlm } from "../../features/chat/helpers.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 import {
   advanceJob,

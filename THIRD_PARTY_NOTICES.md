@@ -190,7 +190,7 @@ Agreement.
   (`ts/src/cli/chat.ts`), copied unchanged, and `wakeAt` follows Yian's `wakeAt`
   (`ts/src/runtime/waits.ts`) over the office's own `Wait` list.
 - **Upstream:** https://github.com/ngocbh/yian at commit `0fa15307`.
-- **Ours:** `packages/office/src/chat/session_actor.ts`.
+- **Ours:** `packages/office/src/features/chat/session_actor.ts`.
 - **License:** Apache-2.0, as above.
 - **What:** the source lexer of the office's repo tests: `blank` and the import pattern are Yian's
   `tests/helpers/source_scan.ts`, ported to the office's style; the office adds string spans, import kinds and

@@ -24,7 +24,7 @@ import { ConnectionFile } from "../../src/models/connections.ts"
 import { Provider } from "../../src/models/provider.ts"
 import { readFlow } from "../../src/company/flow_yaml.ts"
 import { loadConfined } from "../../src/company/flows.ts"
-import { checkProvider, withSignIn } from "../../src/install/onboard.ts"
+import { checkProvider, withSignIn } from "../../src/features/setup/onboard.ts"
 import { args, startTime } from "../../src/util/proc.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/runtime/worker/channel.ts"
@@ -35,7 +35,7 @@ import { EXIT_GRACE_MS, RegistryClosed, type SpawnLog, type Worker } from "../..
 import { cwdOf, envText, isGone, ps, tempDir } from "../helpers.ts"
 import { openStore } from "../runtime/store/helpers.ts"
 import { makeRegistry, recordFrames } from "../runtime/worker/helpers.ts"
-import { fakeLlm, keyCopies, MIXED_KEY, refusingLlm } from "../chat/helpers.ts"
+import { fakeLlm, keyCopies, MIXED_KEY, refusingLlm } from "../features/chat/helpers.ts"
 
 setDefaultTimeout(60_000)
 

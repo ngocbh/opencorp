@@ -24,7 +24,7 @@ import * as systemd from "../../../src/runtime/service/systemd.ts"
 import { selfSpawnEnv } from "../../../src/platform.ts"
 import { company } from "../../company/helpers.ts"
 import { NO_GROUP, cwdOf, envNames, fifo, isGone, ps, reexecMarks, shortDir, startGroup, tempDir } from "../../helpers.ts"
-import { Runner, daemonHost, killedAtEnd, makeHost, standIn } from "../../install/helpers.ts"
+import { Runner, daemonHost, killedAtEnd, makeHost, standIn } from "../../features/setup/helpers.ts"
 
 /** A `which` that finds every program in `/usr/bin`. */
 const found = (name: string) => `/usr/bin/${name}`

@@ -32,7 +32,7 @@ import {
   templateJob,
   waitingAt,
   waitingChat,
-} from "../../chat/helpers.ts"
+} from "../../features/chat/helpers.ts"
 
 setDefaultTimeout(30_000)
 

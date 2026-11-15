@@ -11,7 +11,7 @@ import { companyTools } from "../../../src/tools/work.ts"
 import { EXIT_OK } from "../../../src/runtime/worker/main.ts"
 import { ASK_KEYS, AskRefused, type AskRequest, askUserStub, BaseHandlers } from "../../../src/runtime/worker/rpc.ts"
 import { openStore, question, session, workItem } from "../store/helpers.ts"
-import { fakeLlm } from "../../chat/helpers.ts"
+import { fakeLlm } from "../../features/chat/helpers.ts"
 import { company } from "../../tools/helpers.ts"
 import {
   agentFlow,

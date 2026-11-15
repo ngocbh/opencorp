@@ -1,6 +1,6 @@
 /** Office extensions: each has `register(office)`, called once at start-up. */
 import type { Office } from "../daemon/office.ts"
-import * as questions from "./questions.ts"
+import * as questions from "../features/questions/extension.ts"
 
 /** One office extension: `register` hooks it into the office once, at start-up. */
 export interface Extension {

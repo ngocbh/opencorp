@@ -22,7 +22,7 @@ import {
 import { ProviderError } from "../../src/models/provider.ts"
 import { writePrivate } from "../../src/util/private_files.ts"
 import { tempDir, waitFor } from "../helpers.ts"
-import { ACCESS, APPROVED, CATALOG, PENDING, REFRESH, SIGNATURE, TOKENS, USERCODE, testScheduler } from "../chat/helpers.ts"
+import { ACCESS, APPROVED, CATALOG, PENDING, REFRESH, SIGNATURE, TOKENS, USERCODE, testScheduler } from "../features/chat/helpers.ts"
 
 setDefaultTimeout(30_000)
 

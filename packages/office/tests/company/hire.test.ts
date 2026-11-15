@@ -11,7 +11,7 @@ import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { baseFiles, git as runGit, gitEnv, person, writeRepo } from "./helpers.ts"
 import { tempDir } from "../helpers.ts"
-import { CHAT_FILES, CHAT_FLOW } from "../chat/helpers.ts"
+import { CHAT_FILES, CHAT_FLOW } from "../features/chat/helpers.ts"
 
 setDefaultTimeout(30_000)
 

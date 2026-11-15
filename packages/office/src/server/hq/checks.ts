@@ -7,7 +7,7 @@ import { VERSION } from "@opencorp/protocol/version"
 import type { Identity } from "../../runtime/auth/identity.ts"
 import { otherPort } from "../../hq/config.ts"
 import { RETRY_MS } from "../../hq/servers.ts"
-import type { Check } from "../../install/doctor.ts"
+import type { Check } from "../../features/doctor/doctor.ts"
 import * as service from "../../runtime/service/service.ts"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
