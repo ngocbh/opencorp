@@ -6,7 +6,17 @@ import { INHERITED_ENV, which } from "../../src/util/env.ts"
 import { tempDir } from "../helpers.ts"
 
 test("the inherited env names are the ones a worker and the daemon share", () => {
-  expect([...INHERITED_ENV]).toEqual(["PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR"])
+  expect([...INHERITED_ENV]).toEqual([
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "TMPDIR",
+    "TZ",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+  ])
 })
 
 test("which finds a runnable program on the absolute path entries only", () => {

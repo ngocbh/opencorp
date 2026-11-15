@@ -11,7 +11,7 @@ import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test
 import { args, killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
-import { INHERITED_ENV, INHERITED_ENV as LAUNCH_ENV } from "../../src/util/env.ts"
+import { INHERITED_ENV } from "../../src/util/env.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
 import type { Delivery, Job } from "../../src/worker/job.ts"
@@ -213,19 +213,15 @@ test("worker env narrows the environment it is given", () => {
   expect(workerEnv(environ)).toEqual({ PATH: "/bin", LC_ALL: "C", SSL_CERT_FILE: "/ca.pem" })
 })
 
-test("the worker env names are the launch allowlist", () => {
-  expect(INHERITED_ENV).toBe(LAUNCH_ENV)
-  expect([...INHERITED_ENV]).toEqual([
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "LANG",
-    "TMPDIR",
-    "TZ",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-  ])
+test("a worker env keeps the inherited names and LC_*, not the daemon's CODEX_HOME or a key", () => {
+  // CODEX_HOME reaches the daemon (daemonEnv), never a worker.
+  const environ = {
+    ...Object.fromEntries(INHERITED_ENV.map((name) => [name, "x"])),
+    LC_ALL: "x",
+    CODEX_HOME: "x",
+    OPENAI_API_KEY: "x",
+  }
+  expect(Object.keys(workerEnv(environ))).toEqual([...INHERITED_ENV, "LC_ALL"])
 })
 
 test("a worker that exits takes its process group with it", async () => {

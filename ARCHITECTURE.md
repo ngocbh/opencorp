@@ -87,7 +87,7 @@ above; the layer and layout tests fail until it has one.
 
 | Category | Is | Does | Depends on | Used by |
 |---|---|---|---|---|
-| `util/` | Helpers that know nothing of the company, models, flows or the office's state | Files that never follow links, private files, processes, the inherited env, scrubbing, error texts, the office home's paths, sockets, the checkout's path, a redirect page that keeps a link out of an opener's arguments. `platform.ts` holds every Bun call | — | every layer |
+| `util/` | Helpers that know nothing of the company, models, flows or the office's state | Files that never follow links, private files, processes, the inherited env, finding a program on `PATH`, scrubbing, error texts, the office home's paths, sockets, the checkout's path, a redirect page that keeps a link out of an opener's arguments. `platform.ts` holds every Bun call | — | every layer |
 | `company/` | The company | Loads, lints, commits and watches its repo; people, org chart, SOP flows, profiles, hiring; the chat flow's paths; the starting company | util | runtime, tools, features, server |
 | `runtime/` | What runs agents safely | The database, the sandbox, who is acting, worker processes, the record of runs, what sessions share, permissions, held questions, the event bus, asset secrets, the office as a service | util, company | models, tools, features, server, `main.ts` |
 | `models/` | The office's model connections and their policy | Connections, ChatGPT logins, model lists, prices and cost caps, the model check | util, runtime | features, server, `main.ts` |
