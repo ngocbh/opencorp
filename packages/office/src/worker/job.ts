@@ -1,4 +1,4 @@
-/** The job the office hands a worker, and helpers that describe office-side tools. */
+/** The job the office hands a worker, the worker's environment type, and helpers that describe office-side tools. */
 import path from "node:path"
 import { validationMessage } from "@opencorp/protocol"
 import { z } from "zod"
