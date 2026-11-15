@@ -457,3 +457,8 @@ const FOLDS = (() => {
   }
   return folds
 })()
+
+/** `text` with the user and password taken out of any URL in it, since a remote URL can carry a token. */
+export function redactUrls(text: string): string {
+  return text.replace(/(?<=:\/\/)[^/@\s]+@/g, "***@")
+}

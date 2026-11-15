@@ -3,7 +3,7 @@ import { Buffer } from "node:buffer"
 import { createHash } from "node:crypto"
 import { expect, test } from "bun:test"
 import {
-  auditArgs, casefold, DETAIL_CHARS, jsonDumps, pyJson, quote, quotePlus, redact, repr, splitLines, strip,
+  auditArgs, casefold, DETAIL_CHARS, jsonDumps, pyJson, quote, quotePlus, redact, redactUrls, repr, splitLines, strip,
 } from "../../src/perm/redact.ts"
 import { KINDS, makeMonitor, RuntimeError, TOKEN } from "./helpers.ts"
 
@@ -417,3 +417,7 @@ test("repr matches python on every code point", () => {
     .toBe("'tab\\there\\x7f\\x85\\xa0\\u200b\\U000e0001\\u0378'")
   expect(repr("x\u{1f600}")).toBe("'x\u{1f600}'")
 }, 30_000)
+
+test("redact takes the user and password out of urls", () => {
+  expect(redactUrls("https://user:pw@h/x and ssh://t@h")).toBe("https://***@h/x and ssh://***@h")
+})

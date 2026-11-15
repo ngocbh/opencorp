@@ -2,13 +2,14 @@
  *  remote), and the draft without a terminal. */
 import { type FunctionTool, loadFlow, type ToolContext, tool } from "@ngocbh/yian"
 import { hashPassword, passwordProblem } from "../auth/passwords.ts"
+import { runSetup } from "../chat/check.ts"
 import type { Provider } from "../chat/provider.ts"
 import { type Draft, type InitOutput, draftFromOutput, draftProblems, fieldProblems } from "../company/draft.ts"
 import { pyJson, strip } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
 import { checkCompanyTool } from "../tools/company/draft.ts"
 import initYaml from "./flows/init.yaml" with { type: "file" }
-import { type LoginDefaults, loginDefaults, runSetup, setupProvider, slug } from "./onboard.ts"
+import { type LoginDefaults, loginDefaults, setupProvider, slug } from "./onboard.ts"
 import { KeyboardInterrupt, NoTerminal, OnboardError, type Prompter, TRIES, clean } from "./prompts.ts"
 
 /** What the owner is asked after the summary. */

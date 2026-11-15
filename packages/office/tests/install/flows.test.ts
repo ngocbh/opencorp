@@ -58,13 +58,6 @@ test("the model never sees the password or the remote", () => {
   expect([flow.nodes.remote.kind, flow.nodes.remote.tool_id]).toEqual(["tool", "ask_remote"])
 })
 
-test("check model asks for one word and returns it", async () => {
-  const fake = await fakeLlm()
-  fake.script({ content: "OK" })
-  const result = await runFlow(await load("check_model.yaml"), {}, { llmConfig: LLM_CONFIG, env: (n) => fake.env()[n] })
-  expect([result.status, result.output]).toEqual(["succeeded", "OK"])
-})
-
 const OWNER = { name: "Hong Ngoc Bui", handle: "ngocbh", title: "CEO" }
 const ANSWERS = {
   company: "Acme",

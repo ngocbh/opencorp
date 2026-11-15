@@ -1,16 +1,15 @@
 /** The model learning runs on: `hq/provider.json`, else asked for with init's picker, and a ChatGPT subscription's
  *  sign-in in `hq/auth.json`. */
 import { FileLockError } from "@ngocbh/yian/platform"
-import { ConnectionFile } from "../chat/connections.ts"
+import type { ModelCheck } from "../chat/check.ts"
+import { ConnectionFile, isSubscription } from "../chat/connections.ts"
 import { loadProvider, type Provider, ProviderError } from "../chat/provider.ts"
 import {
   type Answers,
   askProviderTo,
   checkProvider,
-  isSubscription,
   type Listers,
   lexists,
-  type ModelCheck,
   OPENAI_AUTH,
   removePendingSignIn,
   signInAgain,
