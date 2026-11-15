@@ -19,7 +19,7 @@ import {
 } from "../harness/sessions.ts"
 import type { Monitor } from "../perm/monitor.ts"
 import { MANAGER_FLOW, profileTools } from "../profile/manager.ts"
-import { GitProfileStore } from "../profile/store.ts"
+import { GitProfileStore } from "../company/profile.ts"
 import { Answers } from "../questions/ask.ts"
 import type { RunIndexer } from "../runs/indexer.ts"
 import { Live, type LiveRun } from "../runs/records.ts"

@@ -6,7 +6,7 @@ import { iterRunRecords, type LiveViewCall, type PoolCommitRecord, type RunLogEn
 import { pending } from "@ngocbh/yian/tools"
 import { Message, type ToolPart } from "@opencorp/protocol"
 import { type LiveCalls, tooLargeText, Transcript } from "../../src/chat/transcript.ts"
-import { MAIN_CHAT } from "../../src/chat/turns.ts"
+import { MAIN_CHAT } from "../../src/company/chat_flow.ts"
 import { newId } from "../../src/store/store.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
 import type { Delivery, Job } from "../../src/worker/job.ts"

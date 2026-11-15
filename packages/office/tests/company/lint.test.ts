@@ -7,7 +7,7 @@ import { MAX_FLOW_FILE } from "../../src/company/flows.ts"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { assetToolName } from "../../src/company/naming.ts"
-import { writeCompany } from "../../src/company_template/index.ts"
+import { writeCompany } from "../../src/company/template.ts"
 import { tempDir } from "../helpers.ts"
 import { baseFiles, CHAT, CHILD, company, MAIN, makeCompany, parentFlow, person } from "./helpers.ts"
 

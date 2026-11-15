@@ -7,7 +7,7 @@ import { checkPassword } from "../../src/auth/passwords.ts"
 import { Provider } from "../../src/chat/provider.ts"
 import { type Draft, type InitOutput, draftFromOutput, draftProblems } from "../../src/company/draft.ts"
 import { readFlow } from "../../src/company/flow_yaml.ts"
-import type { Owner } from "../../src/company_template/index.ts"
+import type { Owner } from "../../src/company/template.ts"
 import initYaml from "../../src/install/flows/init.yaml" with { type: "file" }
 import {
   Asking, CHANGE, CONFIRM, CREATE, type Known, ModelError, REMOTE, WHAT_TO_CHANGE, askUser, confirm, facts,

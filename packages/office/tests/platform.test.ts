@@ -5,7 +5,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import { templateFiles } from "../src/company_template/index.ts"
+import { templateFiles } from "../src/company/template.ts"
 import {
   embedded,
   helperCommand,
@@ -262,7 +262,7 @@ test(
         `import { createHash } from "node:crypto"`,
         `import { Worker } from "node:worker_threads"`,
         `import { embedded, helperCommand, selfCommand, threadEntry } from ${JSON.stringify(path.join(SRC, "platform.ts"))}`,
-        `import { templateFiles } from ${JSON.stringify(path.join(SRC, "company_template/index.ts"))}`,
+        `import { templateFiles } from ${JSON.stringify(path.join(SRC, "company/template.ts"))}`,
         `import file from ${JSON.stringify(migration)} with { type: "file" }`,
         `const sha = (bytes) => createHash("sha256").update(bytes).digest("hex")`,
         `const entry = threadEntry("runs_indexer")`,

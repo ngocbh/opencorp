@@ -1,6 +1,6 @@
 /** A proposed company, as the owner's interview drafts it, and what's wrong with it. */
 import { HireRequest, validationMessage } from "@opencorp/protocol"
-import { type Owner, templateFiles } from "../company_template/index.ts"
+import { type Owner, templateFiles } from "./template.ts"
 import { strip } from "../util/redact.ts"
 import { handleProblem } from "./naming.ts"
 

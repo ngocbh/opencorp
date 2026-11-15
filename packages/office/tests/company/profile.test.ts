@@ -15,8 +15,8 @@ import {
   PROFILE_MAX_CHARS,
   PROFILE_SETTINGS,
   ProfileUnreadable,
-} from "../../src/profile/store.ts"
-import { company, failingGit, git, recordingGit, stashPopConflict } from "../company/helpers.ts"
+} from "../../src/company/profile.ts"
+import { company, failingGit, git, recordingGit, stashPopConflict } from "./helpers.ts"
 import { tempDir } from "../helpers.ts"
 
 setDefaultTimeout(30_000)

@@ -342,7 +342,7 @@ test("a harmless alias is shown as written", async () => {
 function packagedFlows(): [string, string][] {
   const flows: [string, string][] = [["MAIN", MAIN], ["CHAT", CHAT]]
   for (const folder of [
-    "../../src/company_template/template/shared/flows/",
+    "../../src/company/template/shared/flows/",
     "../../src/install/flows/",
     "../../src/models/flows/",
   ]) {

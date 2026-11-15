@@ -16,7 +16,7 @@ import { ChatHarness } from "../../src/chat/harness.ts"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { type Lister, ModelCache, ownModels } from "../../src/chat/models.ts"
 import { mainSpec } from "../../src/chat/run_spec.ts"
-import { MAIN_CHAT } from "../../src/chat/turns.ts"
+import { MAIN_CHAT } from "../../src/company/chat_flow.ts"
 import { type ActorContext, type ActorWorker, SessionActor, type Wait } from "../../src/chat/session_actor.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { loadRepo } from "../../src/company/loader.ts"
@@ -52,13 +52,13 @@ import {
 
 /** The template's chat flow, as a hire's main points at it. */
 export const CHAT_FLOW = fs.readFileSync(
-  new URL("../../src/company_template/template/shared/flows/chat.yaml", import.meta.url),
+  new URL("../../src/company/template/shared/flows/chat.yaml", import.meta.url),
   "utf8",
 )
 
 /** The template's `compact_history.yaml`, which the chat flow uses. */
 export const COMPACT_HISTORY = fs.readFileSync(
-  new URL("../../src/company_template/template/shared/flows/compact_history.yaml", import.meta.url),
+  new URL("../../src/company/template/shared/flows/compact_history.yaml", import.meta.url),
   "utf8",
 )
 
@@ -161,7 +161,7 @@ export function testScheduler(): Scheduler {
 // The template's chat flows, run in an in-process worker.
 
 /** The company template's root. */
-export const ROOT = fileURLToPath(new URL("../../src/company_template/template/", import.meta.url))
+export const ROOT = fileURLToPath(new URL("../../src/company/template/", import.meta.url))
 
 /** The person a template run plays. */
 export const PERSON = { name: "Minh", handle: "minh", title: "Engineer", company: "Acme", reports_to: "" }

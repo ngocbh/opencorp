@@ -25,7 +25,7 @@ import {
 import { AuthError } from "@ngocbh/yian/llm_clients"
 import { loadSkills, type Skill } from "@ngocbh/yian/skills"
 import { cancelReplaced, readSeed } from "../chat/history.ts"
-import { MAIN_CHAT } from "../chat/turns.ts"
+import { MAIN_CHAT } from "../company/chat_flow.ts"
 import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
 import { Delivery, type Job, parseJob, STOP_REASON, type WorkerEnv } from "./job.ts"

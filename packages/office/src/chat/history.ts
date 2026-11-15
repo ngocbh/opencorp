@@ -13,7 +13,7 @@ import {
   TypedValue,
 } from "@ngocbh/yian/run"
 import { errorName } from "../worker/rpc.ts"
-import { MAIN_CHAT } from "./turns.ts"
+import { MAIN_CHAT } from "../company/chat_flow.ts"
 
 /** What a fresh run takes from the run it replaces. */
 export interface Seeded {

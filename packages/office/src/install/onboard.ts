@@ -38,7 +38,7 @@ import { checkLlmConfig, loadProvider, Provider, ProviderError } from "../chat/p
 import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import { lint } from "../company/lint.ts"
 import { type CompanyRepo, loadRepo } from "../company/loader.ts"
-import { type CompanyState, companyState, missingFiles, type Owner, writeCompany } from "../company_template/index.ts"
+import { type CompanyState, companyState, missingFiles, type Owner, writeCompany } from "../company/template.ts"
 import { checkSocketPath, makeOfficeDir, OfficeStartError } from "../util/sockets.ts"
 import { redactUrls, repr } from "../util/redact.ts"
 import type { Env } from "../util/env.ts"

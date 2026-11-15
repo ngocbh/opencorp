@@ -75,7 +75,7 @@ import { type Price, type Provider, ProviderError } from "./provider.ts"
 import { chatJob, type RunSpec } from "./run_spec.ts"
 import { HarnessError, notWaiting, runState, SETTLED, writeState } from "./state.ts"
 import { type LiveCalls, type Transcript, userMessage } from "./transcript.ts"
-import { type ChatFlow, MAIN_CHAT } from "./turns.ts"
+import { type ChatFlow, MAIN_CHAT } from "../company/chat_flow.ts"
 
 /** What every actor of an office shares. */
 export interface ActorContext {

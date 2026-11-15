@@ -1,7 +1,7 @@
 /** A proposed company and its problems. */
 import { expect, test } from "bun:test"
 import { type Draft, draftFromOutput, draftProblems, fieldProblems } from "../../src/company/draft.ts"
-import type { Owner } from "../../src/company_template/index.ts"
+import type { Owner } from "../../src/company/template.ts"
 
 const ME: Owner = { handle: "ngocbh", name: "Hong Ngoc Bui", title: "CEO", passwordHash: null }
 const GOOD: Draft = {

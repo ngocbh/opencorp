@@ -14,7 +14,7 @@ import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import type { RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
-import { companyState, missingFiles } from "../company_template/index.ts"
+import { companyState, missingFiles } from "../company/template.ts"
 import { CodexMissing, codexCommand } from "../harness/codex.ts"
 import { selfCommand, tuiAssetRoot } from "../platform.ts"
 import {

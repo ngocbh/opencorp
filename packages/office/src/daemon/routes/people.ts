@@ -1,7 +1,7 @@
 /** People routes: the roster, who worked in a folder, and hiring. */
 import { HireRequest, HireResponse, Person as PersonSchema } from "@opencorp/protocol"
 import { z } from "zod"
-import { HireRefused } from "../../chat/hire.ts"
+import { HireRefused } from "../../company/hire.ts"
 import { mayHireUnder } from "../../company/access.ts"
 import { loadRepo } from "../../company/loader.ts"
 import { actingPerson } from "../auth.ts"

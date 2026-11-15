@@ -7,7 +7,7 @@ import type { CompanyGit } from "../company/git.ts"
 import type { CompanyRepo } from "../company/loader.ts"
 import type { Monitor } from "../perm/monitor.ts"
 import { MANAGER_FLOW } from "../profile/manager.ts"
-import { GitProfileStore } from "../profile/store.ts"
+import { GitProfileStore } from "../company/profile.ts"
 import type { Carried, OnQuestion } from "../questions/ask.ts"
 import type { QuestionRecord, SessionRecord, Store } from "../store/store.ts"
 import { build } from "../tools/index.ts"
@@ -24,7 +24,7 @@ import {
 import type { OfficeTool } from "../worker/rpc.ts"
 import { personInputs, talkingTo } from "./identity.ts"
 import { HarnessError, notAnAgent } from "./state.ts"
-import { type ChatFlow, MAIN_CHAT } from "./turns.ts"
+import { type ChatFlow, MAIN_CHAT } from "../company/chat_flow.ts"
 
 const SIDE_CHAT_FLOW = "shared/flows/side_chat.yaml"
 // Room in a side chat's history beyond its seed, so compaction doesn't fold the seed.

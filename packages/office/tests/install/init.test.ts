@@ -15,7 +15,7 @@ import type { Draft, InitOutput } from "../../src/company/draft.ts"
 import { CompanyGit, CompanyGitError } from "../../src/company/git.ts"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
-import { companyState, missingFiles, writeCompany } from "../../src/company_template/index.ts"
+import { companyState, missingFiles, writeCompany } from "../../src/company/template.ts"
 import * as fallback from "../../src/install/fallback.ts"
 import { type InitOptions, init } from "../../src/install/init.ts"
 import {
