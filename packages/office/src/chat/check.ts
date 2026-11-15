@@ -8,7 +8,7 @@ import { callCredentials } from "@ngocbh/yian/llm_clients"
 import { withWarnings } from "@ngocbh/yian/platform"
 import type { RunFlowOptions, RunResult } from "@ngocbh/yian/run"
 import checkModelYaml from "../models/flows/check_model.yaml" with { type: "file" }
-import { redact as redactSecrets, redactUrls } from "../perm/redact.ts"
+import { redact as redactSecrets, redactUrls } from "../util/redact.ts"
 import { embedded } from "../platform.ts"
 import type { Frame } from "../worker/channel.ts"
 import { type Job, parseJob, type WorkerEnv } from "../worker/job.ts"

@@ -27,7 +27,7 @@ import {
   probeSocket,
   removeOwnSocket,
   removeStaleSocket,
-} from "../../src/daemon/sockets.ts"
+} from "../../src/util/sockets.ts"
 import { CompanyRepoBusy } from "../../src/company/git.ts"
 import { NotFound, StoreUnwritable } from "../../src/store/store.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"

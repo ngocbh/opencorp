@@ -5,7 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { createInterface } from "node:readline"
 import { onTestFinished, spyOn } from "bun:test"
-import { args, sameProcess, startTime } from "../src/install/proc.ts"
+import { args, sameProcess, startTime } from "../src/util/proc.ts"
 
 /** The lines this process writes to stderr until the test finishes, captured instead of written. */
 export function captureStderr(): string[] {

@@ -6,7 +6,7 @@ import { createInterface } from "node:readline"
 import { fileURLToPath } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { PAIR_CODE_TTL_MS } from "@opencorp/protocol"
-import { startTime } from "../../src/install/proc.ts"
+import { startTime } from "../../src/util/proc.ts"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import { isSocket, runChild, sshEnv, startMaster, waitForSocket } from "../../src/reach/ssh.ts"
 import {

@@ -13,7 +13,7 @@ import {
   tool,
 } from "@ngocbh/yian/tools"
 import { z } from "zod"
-import { repr } from "../perm/redact.ts"
+import { repr } from "../util/redact.ts"
 import { ChannelClosed, type Channel, type Frame } from "./channel.ts"
 import type { DeclaredTool, Job, ToolSpec } from "./job.ts"
 import { MemoryHost, type MemoryRequest, noMemory } from "./memory_host.ts"

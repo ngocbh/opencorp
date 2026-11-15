@@ -11,7 +11,7 @@ import {
 } from "@opencorp/protocol"
 import { z } from "zod"
 import { HarnessError } from "../../chat/state.ts"
-import { strip } from "../../perm/redact.ts"
+import { strip } from "../../util/redact.ts"
 import type { SessionHarness } from "../../runtime/sessions/harness.ts"
 import type { SessionRecord } from "../../store/store.ts"
 import { actingPerson } from "../auth.ts"

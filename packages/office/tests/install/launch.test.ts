@@ -19,7 +19,7 @@ import {
   runCommand,
   wantedHome,
 } from "../../src/install/launch.ts"
-import { sameProcess, startTime } from "../../src/install/proc.ts"
+import { sameProcess, startTime } from "../../src/util/proc.ts"
 import { selfCommand, unsafeEnvName } from "../../src/platform.ts"
 import { isGone, ps, shortDir, tempDir, waitFor } from "../helpers.ts"
 import { Runner, makeHost, SRC } from "./helpers.ts"
@@ -435,7 +435,7 @@ test("a grouped command ends when this process exits", async () => {
     file,
     `import fs from "node:fs"
 import { runCommand } from ${at("install/launch.ts")}
-import { startTime } from ${at("install/proc.ts")}
+import { startTime } from ${at("util/proc.ts")}
 void runCommand(${JSON.stringify(grandchildScript(pidFile, 30))}, { timeoutMs: 60_000, group: true })
 for (let i = 0; i < 250; i++) {
   const text = fs.existsSync(${JSON.stringify(pidFile)}) ? fs.readFileSync(${JSON.stringify(pidFile)}, "utf8") : ""

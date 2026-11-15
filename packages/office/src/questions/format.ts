@@ -1,6 +1,6 @@
 /** The tool result a model gets for an answered question: the choice, then any discussion as JSON. */
 import type { DiscussionEntry } from "@opencorp/protocol"
-import { jsonDumps } from "../perm/redact.ts"
+import { jsonDumps } from "../util/redact.ts"
 import type { QuestionRecord } from "../store/store.ts"
 
 /** Characters (code points) of discussion JSON a result carries; the oldest messages go first. */

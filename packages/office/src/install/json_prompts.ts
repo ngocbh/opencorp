@@ -11,7 +11,7 @@ import {
   type SetupTakeBack,
 } from "@opencorp/protocol"
 import type { z } from "zod"
-import { repr, strip } from "../perm/redact.ts"
+import { repr, strip } from "../util/redact.ts"
 import { type Card, OnboardError, type Prompter, closedInput, readLine } from "./prompts.ts"
 
 type Prompt =

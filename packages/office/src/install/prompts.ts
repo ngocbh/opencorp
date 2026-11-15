@@ -2,7 +2,7 @@
 import type { Readable, Writable } from "node:stream"
 import { type CANCEL_SYMBOL, type CommonOptions, isCancel, password, select, text } from "@clack/prompts"
 import type { SetupCommand, SetupResult, SetupReview } from "@opencorp/protocol"
-import { repr, strip } from "../perm/redact.ts"
+import { repr, strip } from "../util/redact.ts"
 
 /** Onboarding stopped; the message says why and what to do. It never contains a key. */
 export class OnboardError extends Error {

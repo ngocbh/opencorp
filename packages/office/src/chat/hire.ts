@@ -11,7 +11,7 @@ import { type CompanyGit, CompanyGitError, oneLine } from "../company/git.ts"
 import { parseFile, repoIssue, type RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
 import { type CompanyRepo, loadRepo, profilePath } from "../company/loader.ts"
-import { strip } from "../perm/redact.ts"
+import { strip } from "../util/redact.ts"
 
 /** What a hire from the short form gets besides its name, handle, title, and manager. */
 export const NEW_AGENT = {

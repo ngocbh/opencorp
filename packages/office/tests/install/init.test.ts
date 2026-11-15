@@ -41,7 +41,7 @@ import {
   TRY_AGAIN,
 } from "../../src/install/onboard.ts"
 import { KeyboardInterrupt, NoTerminal, OnboardError, TtyPrompter } from "../../src/install/prompts.ts"
-import { redactUrls } from "../../src/perm/redact.ts"
+import { redactUrls } from "../../src/util/redact.ts"
 import { selfSpawnEnv } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"

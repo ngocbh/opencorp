@@ -2,7 +2,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { strerror } from "../util/errors.ts"
-import { writeIfChanged } from "./files.ts"
+import { writeIfChanged } from "../util/files.ts"
 import { type Completed, type Host, type Launch, ServiceError } from "./launch.ts"
 
 /** How many times `launchctl bootstrap` is tried: straight after `bootout` it can fail with EIO while launchd is

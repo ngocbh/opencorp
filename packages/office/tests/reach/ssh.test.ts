@@ -50,7 +50,7 @@ import {
 import { isGone, shortDir, waitFor } from "../helpers.ts"
 import { fakeHome, freePort, holdConnection, holdingServer, reachCtx, staleSocket } from "./helpers.ts"
 import { fakeControlName } from "../../src/testing/fake_ssh.ts"
-import { startTime } from "../../src/install/proc.ts"
+import { startTime } from "../../src/util/proc.ts"
 
 setDefaultTimeout(30_000)
 

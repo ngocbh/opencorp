@@ -1,7 +1,7 @@
 /** Question routes: listing, reading, and answering questions, and question-card actions. */
 import { AnswerRequest, Question, SendBackRequest, Session, SideChatRequest } from "@opencorp/protocol"
 import { z } from "zod"
-import { strip } from "../../perm/redact.ts"
+import { strip } from "../../util/redact.ts"
 import type { Cards } from "../../questions/cards.ts"
 import { InvalidTransition } from "../../store/store.ts"
 import { actingPerson } from "../auth.ts"

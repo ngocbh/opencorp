@@ -1,5 +1,5 @@
 /** Clean the options a model sends with a question. */
-import { casefold } from "../perm/redact.ts"
+import { casefold } from "../util/redact.ts"
 
 export const MAX_OPTIONS = 6
 export const MAX_OPTION_CHARS = 80

@@ -10,7 +10,7 @@ import path from "node:path"
 import { createInterface } from "node:readline"
 import { fileURLToPath } from "node:url"
 import { afterAll, beforeAll, describe, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import { startTime } from "../../src/install/proc.ts"
+import { startTime } from "../../src/util/proc.ts"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import type { Spec } from "../../src/reach/spec.ts"
 import {
