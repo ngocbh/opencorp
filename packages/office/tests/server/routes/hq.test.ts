@@ -2,13 +2,13 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
-import { hashPassword } from "../../src/auth/passwords.ts"
-import { newToken } from "../../src/auth/tokens.ts"
-import type { Office } from "../../src/daemon/office.ts"
-import { allRoutes } from "../../src/daemon/routes/index.ts"
-import { git } from "../company/helpers.ts"
-import { CEO, ULID, addHuman, bearer, giveDevice, makeOffice, request, serve } from "../daemon/helpers.ts"
-import { handEdit, makeHq, web } from "./helpers.ts"
+import { hashPassword } from "../../../src/auth/passwords.ts"
+import { newToken } from "../../../src/auth/tokens.ts"
+import type { Office } from "../../../src/daemon/office.ts"
+import { allRoutes } from "../../../src/daemon/routes/index.ts"
+import { git } from "../../company/helpers.ts"
+import { CEO, ULID, addHuman, bearer, giveDevice, makeOffice, request, serve } from "../../daemon/helpers.ts"
+import { handEdit, makeHq, web } from "../../hq/helpers.ts"
 
 type HeaderMap = Record<string, string>
 

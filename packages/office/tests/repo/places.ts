@@ -76,7 +76,6 @@ export const PLACES: Readonly<Record<string, string>> = {
   "hq/pairing.ts": "server/hq/pairing.ts",
   "hq/servers.ts": "server/hq/servers.ts",
   "hq/sessions.ts": "server/hq/sessions.ts",
-  "hq/socket_routes.ts": "server/routes/hq.ts",
   "hq/static.ts": "server/hq/static.ts",
   "hq/status.ts": "server/hq/status.ts",
   "hq/version.ts": "server/hq/version.ts",
@@ -235,7 +234,6 @@ export const TEST_PLACES: Readonly<Record<string, string>> = {
   "hq/pairing.test.ts": "server/hq/pairing.test.ts",
   "hq/servers.test.ts": "server/hq/servers.test.ts",
   "hq/sessions.test.ts": "server/hq/sessions.test.ts",
-  "hq/socket_routes.test.ts": "server/routes/hq.test.ts",
   "hq/source.test.ts": "server/hq/source.test.ts",
   "hq/static.test.ts": "server/hq/static.test.ts",
   "hq/status.test.ts": "server/hq/status.test.ts",
@@ -356,6 +354,4 @@ export const TEST_PLACES: Readonly<Record<string, string>> = {
 export const UPWARD: readonly string[] = []
 
 /** Each folder cycle inside a category, as its folders sorted; a category's root files are the category. */
-export const CYCLES: readonly (readonly string[])[] = [
-  ["server", "server/hq", "server/routes"],
-]
+export const CYCLES: readonly (readonly string[])[] = []
