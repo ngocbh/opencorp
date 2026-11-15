@@ -1,6 +1,6 @@
 /** How the office daemon is started: its command, environment, folder and log, the host it runs on, and the
- *  check that pins a running daemon to them. Imports only `node:*`, `platform.ts`, `daemon/sockets.ts` and `proc.ts`:
- *  `daemonMain` runs `pinDaemon` before the daemon module loads. */
+ *  check that pins a running daemon to them. Imports only `node:*`, `platform.ts`, `daemon/sockets.ts`, `proc.ts` and
+ *  `util/env.ts`: `daemonMain` runs `pinDaemon` before the daemon module loads. */
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
@@ -9,6 +9,7 @@ import path from "node:path"
 import { parseArgs } from "node:util"
 import { makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
 import { reexec, selfCommand } from "../platform.ts"
+import { type Env, INHERITED_ENV, which } from "../util/env.ts"
 import { killGroup } from "./proc.ts"
 
 /** A service manager refused to install or start the office; the message says why. */
@@ -42,27 +43,8 @@ export class Launch {
   }
 }
 
-/** The office env names both a worker and the daemon inherit (besides `LC_*`; the daemon adds `CODEX_ENV`, see
- *  `daemonEnv`). The provider env and the key arrive with the run, never from here. `SSL_CERT_FILE` and
- *  `SSL_CERT_DIR` say where TLS finds CA certificates: some Linuxes (RHEL) don't fill the folder a bundled TLS
- *  stack looks in, so the owner points them at the system bundle. */
-export const INHERITED_ENV = [
-  "PATH",
-  "HOME",
-  "USER",
-  "LOGNAME",
-  "LANG",
-  "TMPDIR",
-  "TZ",
-  "SSL_CERT_FILE",
-  "SSL_CERT_DIR",
-] as const
-
 /** Which Codex the office runs, when the caller's shell sets them: its home, and a binary other than `codex`. */
 export const CODEX_ENV = ["CODEX_HOME", "OPENCORP_CODEX_BIN"] as const
-
-/** An environment as `process.env` holds it. */
-export type Env = Record<string, string | undefined>
 
 /**
  * The daemon's environment: the worker allowlist, `LC_*` and `CODEX_ENV`, so no key in the caller's shell
@@ -365,30 +347,6 @@ export interface Host {
    *  `isLocked`, which this module may not import. Never called inside the daemon: closing another descriptor on the
    *  lock file would drop the daemon's own lock. */
   locked?(lockPath: string): boolean
-}
-
-/** Whether `file` is a non-directory this process may execute. */
-function runnable(file: string): boolean {
-  try {
-    if (fs.statSync(file).isDirectory()) return false
-    fs.accessSync(file, fs.constants.X_OK)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/**
- * The program `name` as `searchPath` (a `PATH` value) finds it, or null. A name holding `/` is itself when absolute
- * and runnable; otherwise the first absolute entry holding a runnable non-directory `name` answers, as
- * `<entry>/<name>`. Links are not resolved; a caller that needs the realpath resolves it.
- */
-export function which(name: string, searchPath: string | undefined): string | null {
-  if (name.includes("/")) return name.startsWith("/") && runnable(name) ? name : null
-  for (const entry of (searchPath ?? "").split(":")) {
-    if (entry.startsWith("/") && runnable(`${entry}/${name}`)) return `${entry}/${name}`
-  }
-  return null
 }
 
 /** This machine as installing sees it: setup runs as the user, on the user's `PATH`. */

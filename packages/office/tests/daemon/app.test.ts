@@ -1,10 +1,7 @@
-/** The office: its paths, and start and stop. */
-import path from "node:path"
+/** The office: start and stop. */
 import { expect, setDefaultTimeout, test } from "bun:test"
-import { OfficePaths } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
 import type { WorkerPool } from "../../src/worker/spawn.ts"
-import { tempDir } from "../helpers.ts"
 import { makeOffice, request, served, ULID } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -19,18 +16,6 @@ class FakePool implements WorkerPool {
 }
 
 class StopFailed extends Error {}
-
-test("paths layout", () => {
-  const home = tempDir()
-  const p = new OfficePaths(home)
-  expect(p.company).toBe(path.join(home, "company"))
-  expect(p.store).toBe(path.join(home, "office", "store.sqlite"))
-  expect(p.socket).toBe(path.join(home, "office", "office.sock"))
-  expect(p.pidfile).toBe(path.join(home, "office", "office.pid"))
-  expect(p.worktrees).toBe(path.join(home, "office", "worktrees"))
-  expect(p.runDir("S1")).toBe(path.join(home, "office", "runs", "S1"))
-  expect([p.memory, p.secrets]).toEqual([path.join(home, "office", "memory"), path.join(home, "office", "secrets")])
-})
 
 test("start and stop run callbacks and close workers", async () => {
   const office = makeOffice()

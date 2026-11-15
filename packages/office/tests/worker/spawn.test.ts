@@ -8,17 +8,16 @@ import { inspect } from "node:util"
 import type { MemoryBase } from "@ngocbh/yian"
 import { inspectRun } from "@ngocbh/yian/run"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
-import { INHERITED_ENV as LAUNCH_ENV } from "../../src/install/launch.ts"
 import { args, killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import { INHERITED_ENV, INHERITED_ENV as LAUNCH_ENV } from "../../src/util/env.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
 import type { Delivery, Job } from "../../src/worker/job.ts"
 import { EXIT_FAILED, EXIT_ORPHANED, jobTools } from "../../src/worker/main.ts"
 import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
 import {
-  INHERITED_ENV,
   RegistryClosed,
   type SpawnLog,
   spawnProcess,

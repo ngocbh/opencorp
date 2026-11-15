@@ -29,7 +29,7 @@ import {
   main,
   officeLogger,
 } from "../../src/daemon/main.ts"
-import { type Office, OfficePaths } from "../../src/daemon/office.ts"
+import type { Office } from "../../src/daemon/office.ts"
 import { OfficeStartError, listenUnix, makeOfficeDir } from "../../src/daemon/sockets.ts"
 import type { Extension } from "../../src/extensions/index.ts"
 import { register } from "../../src/extensions/questions.ts"
@@ -42,6 +42,7 @@ import { OFFICE_STOPPED } from "../../src/runs/outcomes.ts"
 import { latestVersion } from "../../src/store/migrate.ts"
 import { Store, newId } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import { OfficePaths } from "../../src/util/home.ts"
 import { EXIT_GRACE_MS, RegistryClosed, WorkerRegistry } from "../../src/worker/spawn.ts"
 import { CHAT_FILES, fakeLlm } from "../chat/helpers.ts"
 import { company, makeCompany, recordingGit } from "../company/helpers.ts"

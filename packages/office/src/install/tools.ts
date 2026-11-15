@@ -7,7 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import { selfCommand } from "../platform.ts"
 import { type OfficePaths as SandboxOfficePaths, isInside, realPath } from "../sandbox/policy.ts"
-import { type Env, which } from "./launch.ts"
+import { type Env, which } from "../util/env.ts"
 
 /** The programs the daemon, its workers and Codex run. */
 export const TOOL_NAMES = ["git", "codex", "tmux", "bwrap", "ps", "who"] as const

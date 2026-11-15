@@ -6,10 +6,10 @@ import { execFileSync, spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { OfficePaths } from "../daemon/office.ts"
 import { CHECKOUT } from "../hq/version.ts"
 import { args } from "../install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../platform.ts"
+import { OfficePaths } from "../util/home.ts"
 import { FakeLLM, LLM_CONFIG } from "./fake_llm.ts"
 
 const OPENCORP = path.join(CHECKOUT, "packages/cli/bin/opencorp")

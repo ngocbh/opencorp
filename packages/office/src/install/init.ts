@@ -9,9 +9,10 @@ import { CompanyGitError } from "../company/git.ts"
 import { companyState, writeCompany } from "../company_template/index.ts"
 import { strip } from "../perm/redact.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
+import type { Env } from "../util/env.ts"
 import { shQuote } from "./fallback.ts"
 import { fallbackDraft, initFlow, type Known, ModelError, passwordStep, remoteStep, STEPS } from "./interview.ts"
-import { defaultHost, type Env, type Host, type Launch, launch } from "./launch.ts"
+import { defaultHost, type Host, type Launch, launch } from "./launch.ts"
 import {
   type Answers,
   askProvider,
