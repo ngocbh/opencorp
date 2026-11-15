@@ -23,7 +23,10 @@ export const daemonMain: ModeMain = async (argv) => {
  *  settings. */
 export const workerMain: ModeMain = async (argv) => {
   const env = Object.freeze({ ...process.env })
-  return (await import("./worker/main.ts")).main(argv, env)
+  // The check's module loads only for a check job, so a chat worker doesn't load it.
+  return (await import("./worker/main.ts")).main(argv, env, {
+    check: async (job, jobEnv, signal) => (await import("./chat/check.ts")).runCheck(job, jobEnv, signal),
+  })
 }
 /** One file operation inside the sandbox. */
 export const fsHelperMain: ModeMain = async () => (await import("./sandbox/fs_helper.ts")).fsHelperMain()
