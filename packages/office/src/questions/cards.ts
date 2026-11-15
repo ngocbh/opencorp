@@ -8,12 +8,13 @@ import { CompanyDefaults, OFFICE, Session, now } from "@opencorp/protocol"
 import type { RunSpec } from "../chat/run_spec.ts"
 import { HarnessError, SETTLED, notWaiting } from "../chat/state.ts"
 import type { Transcript } from "../chat/transcript.ts"
+import type { CompanyGit } from "../company/git.ts"
 import { loadRepo } from "../company/loader.ts"
-import type { Office } from "../daemon/office.ts"
 import { strip } from "../perm/redact.ts"
 import { CARD_CLOSED, OFFICE_STOPPED, SIDE_OPEN_FAILED } from "../runs/outcomes.ts"
 import type { AnswerKind, CardActor } from "../runtime/sessions/harness.ts"
 import { InvalidTransition, LIVE, type QuestionRecord, type SessionRecord, type Store, newId } from "../store/store.ts"
+import type { OfficePaths } from "../util/home.ts"
 import { errorName } from "../worker/rpc.ts"
 import type { Answers } from "./ask.ts"
 import { InvalidAnswer, checkAnswer } from "./checker.ts"
@@ -60,6 +61,13 @@ export const SIDE_END_WAIT_MS = 30_000
 
 const HARNESS_ONLY_ANSWER = "a Codex card takes only an answer; press Esc in the chat to interrupt Codex's turn"
 
+/** What the cards use of the office: its paths, the company git and the store. */
+export interface CardOffice {
+  readonly paths: OfficePaths
+  readonly git: CompanyGit
+  readonly store: Store
+}
+
 /**
  * What a question card can do, and the side chats behind "Chat about this". `register` wires its hook methods into
  * the actor's hooks.
@@ -72,7 +80,7 @@ const HARNESS_ONLY_ANSWER = "a Codex card takes only an answer; press Esc in the
  * before it adds its note and isn't copied over. It ends when its question leaves `open`.
  */
 export class Cards {
-  readonly office: Office
+  readonly office: CardOffice
   readonly actor: CardActor
   readonly store: Store
   /** Send-backs and the copies after a side worker exits, one at a time, so a copy can't replace a send-back's note
@@ -97,7 +105,7 @@ export class Cards {
   /** The questions a stop is under way for: a second stop of one is refused. */
   readonly #stopping = new Set<string>()
 
-  constructor(office: Office, actor: CardActor) {
+  constructor(office: CardOffice, actor: CardActor) {
     this.office = office
     this.actor = actor
     this.store = office.store

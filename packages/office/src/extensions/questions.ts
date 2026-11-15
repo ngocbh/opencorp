@@ -1,10 +1,18 @@
 /** Question cards: card actions, answer checks and side chats, wired into the session harness. */
-import type { Office } from "../daemon/office.ts"
-import { Cards } from "../questions/cards.ts"
+import { type CardOffice, Cards } from "../questions/cards.ts"
+import type { SessionHarness } from "../runtime/sessions/harness.ts"
+
+/** What registering the questions extension uses of the office; `Office` has all of it. */
+export interface QuestionsHost extends CardOffice {
+  readonly harness: SessionHarness | undefined
+  cards: Cards | undefined
+  readonly onStart: (() => unknown)[]
+  readonly onStop: (() => unknown)[]
+}
 
 /** Put `Cards` in `office.cards` and hook it into the session harness: its answer checks, the side chats' exit
  *  refusal, seed and discussion copies, and the carried and expired cards; no harness, no cards. */
-export function register(office: Office): void {
+export function register(office: QuestionsHost): void {
   const harness = office.harness
   if (harness === undefined) return
   const cards = new Cards(office, harness)

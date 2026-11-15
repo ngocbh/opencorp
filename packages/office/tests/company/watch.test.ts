@@ -41,7 +41,9 @@ test("a move emits once with the sha and the first read is only a baseline", asy
   const events = recordEvents(office.store)
   const { reads, restore } = countReads(office)
   try {
-    const watcher = new HeadWatcher(office, { intervalMs: 50 })
+    const watcher = new HeadWatcher(office.git, (sha) => office.store.emit("company.updated", sha, { sha }), {
+      intervalMs: 50,
+    })
     office.onStart.push(() => watcher.start())
     office.onStop.push(() => watcher.stop())
     await office.start()
@@ -68,7 +70,7 @@ test("a move emits once with the sha and the first read is only a baseline", asy
 })
 
 test("stop before start is harmless", async () => {
-  await new HeadWatcher(makeOffice()).stop()
+  await new HeadWatcher(makeOffice().git, () => {}).stop()
 })
 
 test("a failed read or emit is logged and polling goes on", async () => {
@@ -96,7 +98,10 @@ test("a failed read or emit is logged and polling goes on", async () => {
   }) as typeof emit
   const logged: string[] = []
   try {
-    const watcher = new HeadWatcher(office, { intervalMs: 50, log: (message) => logged.push(message) })
+    const watcher = new HeadWatcher(office.git, (sha) => office.store.emit("company.updated", sha, { sha }), {
+      intervalMs: 50,
+      log: (message) => logged.push(message),
+    })
     office.onStart.push(() => watcher.start())
     office.onStop.push(() => watcher.stop())
     await office.start()

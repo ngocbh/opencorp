@@ -3,13 +3,22 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { type HarnessPolicy, type Message, OFFICE, Question, Session, WorkItem, now } from "@opencorp/protocol"
+import type { Connections } from "../chat/connections.ts"
 import type { Hooks } from "../chat/hooks.ts"
 import { ProviderError } from "../chat/provider.ts"
 import { HarnessError, notAnAgent, notWaiting } from "../chat/state.ts"
+import type { CompanyGit } from "../company/git.ts"
 import { loadRepo, missingPerson } from "../company/loader.ts"
-import type { Office } from "../daemon/office.ts"
+import type { Bus } from "../daemon/bus.ts"
+import type { Tools } from "../install/tools.ts"
 import type { AnswerKind, SessionHarness } from "../runtime/sessions/harness.ts"
-import { UnsafeWorkspace, checkClearOf, checkWorkspace, realPath } from "../sandbox/policy.ts"
+import {
+  type OfficePaths as SandboxOfficePaths,
+  UnsafeWorkspace,
+  checkClearOf,
+  checkWorkspace,
+  realPath,
+} from "../sandbox/policy.ts"
 import {
   InvalidTransition,
   LIVE,
@@ -19,6 +28,7 @@ import {
   type Store,
   newId,
 } from "../store/store.ts"
+import type { OfficePaths } from "../util/home.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import type { HarnessEvent } from "./adapter.ts"
 import { CLOSE_GRACE_MS, CodexProcess, CodexStartError, appServerCommand } from "./codex.ts"
@@ -27,6 +37,22 @@ import { CodexSession, END_WAIT_MS, REPLY_WAIT_MS, STOP_WAIT_MS } from "./sessio
 
 /** What a yian chat's session calls answer, until the chat harness serves them. */
 const NOT_SERVED = "yian chats are not served yet"
+
+/** What the Codex sessions use of the office; `Office` has all of it. */
+export interface CodexOffice {
+  readonly paths: OfficePaths
+  readonly store: Store
+  readonly git: CompanyGit
+  readonly bus: Bus
+  readonly connections: Connections
+  /** The programs the daemon resolved at start; spawn only these. */
+  readonly tools: Tools
+  /** What every workspace must stay clear of. */
+  readonly guards: SandboxOfficePaths
+}
+
+/** What the session-folder checks use of the office: the guards and the office's own paths. */
+export type FolderOffice = Pick<CodexOffice, "guards" | "paths">
 
 /** What `CodexSessions.launch` needs of a session. */
 export type Launchable = Pick<CodexSession, "sessionId" | "cwd" | "launchingAs" | "notified" | "requested" | "exited">
@@ -53,7 +79,7 @@ export type CodexSessionsOptions = {
  *  `questionStored` when a Codex request becomes a card, and `endStatus` and `sessionEnded` when a session ends (never
  *  the run hooks: Codex turns are not office runs). */
 export class CodexSessions implements SessionHarness {
-  readonly office: Office
+  readonly office: CodexOffice
   readonly store: Store
   readonly hooks: Hooks
   readonly closeGraceMs: number
@@ -69,7 +95,7 @@ export class CodexSessions implements SessionHarness {
   /** The tail of the continuations' serial section. */
   #continuing: Promise<unknown> = Promise.resolve()
 
-  constructor(office: Office, hooks: Hooks, options: CodexSessionsOptions = {}) {
+  constructor(office: CodexOffice, hooks: Hooks, options: CodexSessionsOptions = {}) {
     this.office = office
     this.store = office.store
     this.hooks = hooks
@@ -564,7 +590,7 @@ export class CodexSessions implements SessionHarness {
 /** The realpath of `cwd`, a new session's folder, once it is checked: 422 `invalid_body` when it isn't an absolute path
  *  to a folder, is too long for the system to name, or can't be opened by the office, and 422 `unsafe_workspace`
  *  (`log` gets why) when `checkWorkspace` refuses it or it overlaps the office's own files. */
-export function checkFolder(office: Office, cwd: string, log: (line: string) => void): string {
+export function checkFolder(office: FolderOffice, cwd: string, log: (line: string) => void): string {
   const real = folderOf(cwd)
   try {
     checkWorkspace(real, office.guards)
@@ -588,7 +614,7 @@ export function folderOf(cwd: string): string {
 }
 
 /** 422 `unsafe_workspace` (`log` gets why) when `real`, a resolved folder, overlaps the office's own files. */
-export function checkOverlap(office: Office, real: string, log: (line: string) => void): void {
+export function checkOverlap(office: FolderOffice, real: string, log: (line: string) => void): void {
   try {
     // The workspace check guards ~/.opencorp; this office's home may be elsewhere.
     checkClearOf(real, [office.paths.company, office.paths.office])
@@ -619,7 +645,7 @@ export function notSupported(): HarnessError {
  *  when the names or the default can't be read); `log` gets a line when the default can't be read. Nothing is
  *  probed, so a start never waits on the network. */
 export async function startConnection(
-  office: Office,
+  office: Pick<CodexOffice, "connections">,
   requested: string | null,
   log: (line: string) => void,
 ): Promise<string> {

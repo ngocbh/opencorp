@@ -353,13 +353,7 @@ export const TEST_PLACES: Readonly<Record<string, string>> = {
 
 /** Each import that still points up, one line per name, as `<importer> -> <imported> <name>` in today's `src/`
  *  paths. A dynamic import's name is `import()`. */
-export const UPWARD: readonly string[] = [
-  "chat/harness.ts -> daemon/office.ts Office",
-  "company/watch.ts -> daemon/office.ts Office",
-  "extensions/questions.ts -> daemon/office.ts Office",
-  "harness/sessions.ts -> daemon/office.ts Office",
-  "questions/cards.ts -> daemon/office.ts Office",
-]
+export const UPWARD: readonly string[] = []
 
 /** Each folder cycle inside a category, as its folders sorted; a category's root files are the category. */
 export const CYCLES: readonly (readonly string[])[] = [

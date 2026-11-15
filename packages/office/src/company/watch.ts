@@ -1,11 +1,14 @@
-/** Polls the company clone's HEAD and records `company.updated` when it moves. */
-import type { Office } from "../daemon/office.ts"
+/** Polls the company clone's HEAD and calls back each time it moves. */
+import type { CompanyGit } from "./git.ts"
 
-/** Records `company.updated` (`subject_id` and `data.sha`: the new HEAD) each time the clone's HEAD moves.
+/** Calls `onChange` with the new HEAD each time the clone's HEAD moves (the daemon records `company.updated`).
  *  It polls, as Argo CD and Flux poll git, so the office's own commits and an outside commit both count.
- *  The first read only sets the baseline. `start` and `stop` go in the office's `onStart` and `onStop`. */
+ *  The first read only sets the baseline. `start` and `stop` go in the office's `onStart` and `onStop`.
+ *  `onChange` is called synchronously. If it throws, the watcher logs the error's type and calls it again on the
+ *  next poll, with the HEAD it reads then. */
 export class HeadWatcher {
-  readonly #office: Office
+  readonly #git: Pick<CompanyGit, "readHead">
+  readonly #onChange: (sha: string) => void
   readonly #intervalMs: number
   readonly #log: (message: string) => void
   #timer: ReturnType<typeof setInterval> | undefined
@@ -15,7 +18,8 @@ export class HeadWatcher {
   #last: string | null = null
 
   constructor(
-    office: Office,
+    git: Pick<CompanyGit, "readHead">,
+    onChange: (sha: string) => void,
     {
       intervalMs = 2000,
       log = console.error,
@@ -25,7 +29,8 @@ export class HeadWatcher {
       log?: (message: string) => void
     } = {},
   ) {
-    this.#office = office
+    this.#git = git
+    this.#onChange = onChange
     this.#intervalMs = intervalMs
     this.#log = log
   }
@@ -51,7 +56,7 @@ export class HeadWatcher {
     this.#timer.unref()
   }
 
-  /** Stops polling and waits for a poll in progress; harmless if it never started. Nothing is recorded
+  /** Stops polling and waits for a poll in progress; harmless if it never started. `onChange` isn't called
    *  after it resolves. */
   async stop(): Promise<void> {
     if (!this.#controller) return
@@ -65,17 +70,17 @@ export class HeadWatcher {
   }
 
   async #poll(signal: AbortSignal): Promise<void> {
-    // Any failure (git missing, out of file descriptors, a locked store) is logged and the next poll tries
-    // again: a watcher that died would stop company.updated until the office restarts.
+    // Any failure (git missing, out of file descriptors, `onChange` throwing) is logged and the next poll tries
+    // again: a watcher that died would report no move until the office restarts.
     try {
       let sha: string | null
       try {
-        sha = await this.#office.git.readHead()
+        sha = await this.#git.readHead()
       } catch (error) {
         if (!(error instanceof RangeError)) throw error
         sha = null // no commit yet
       }
-      // Right after the only await, and emit is synchronous: nothing is recorded once stop has begun.
+      // Right after the only await, and onChange is synchronous: it isn't called once stop has begun.
       if (signal.aborted) return
       if (this.#baseline) {
         // A commit made while the office starts can become the baseline and go unannounced; that's fine,
@@ -83,9 +88,8 @@ export class HeadWatcher {
         this.#baseline = false
         this.#last = sha
       } else if (sha !== null && sha !== this.#last) {
-        // As profile.updated does for other metadata kept outside the store.
-        this.#office.store.emit("company.updated", sha, { sha })
-        this.#last = sha // only once recorded, so a failed emit is retried
+        this.#onChange(sha)
+        this.#last = sha // only once onChange returned, so a failed one is retried
       }
     } catch (error) {
       // The type only: a git error can quote paths or output.
