@@ -6,9 +6,9 @@ description: "Run opencorp init to pick a model, describe your company and set u
 `opencorp init` creates your company. The [installer](/get-started/) offers this. Otherwise, run
 `opencorp init` from a project folder, since init opens the TUI there when it's done:
 
-```console
-$ mkdir -p ~/projects/demo && cd ~/projects/demo
-$ opencorp init
+```sh
+mkdir -p ~/projects/demo && cd ~/projects/demo
+opencorp init
 ```
 
 The office won't work in your home folder or a folder that holds it, in the opencorp checkout, or

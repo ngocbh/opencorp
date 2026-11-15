@@ -45,7 +45,7 @@ export default defineConfig({
       sidebar: [
         { label: "Home", slug: "index" },
         { label: "Get started", slug: "get-started" },
-        { label: "Use OpenCorp", items: ["create-the-company", "team", "hq", "check-and-run", "hq-settings"] },
+        { label: "Use OpenCorp", items: ["create-the-company", "team", "hq", "hq-settings", "check-and-run"] },
         { label: "Understand", items: ["how-it-fits"] },
       ],
     }),

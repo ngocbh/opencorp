@@ -9,8 +9,8 @@ This page installs OpenCorp. Then [create your company](/create-the-company/).
 
 OpenCorp runs from a checkout, on macOS or Linux with git and curl. Install it with one line:
 
-```console
-$ curl -fsSL https://raw.githubusercontent.com/ngocbh/opencorp/main/install.sh | bash
+```sh
+curl -fsSL https://raw.githubusercontent.com/ngocbh/opencorp/main/install.sh | bash
 ```
 
 It clones OpenCorp into `~/.local/share/opencorp`, installs [Bun](https://bun.sh) 1.4.2 if there's
@@ -35,11 +35,11 @@ Codex is optional: to use Codex sessions, install it (`npm install -g @openai/co
 
 `./install.sh` in a checkout installs that checkout. Or, without the installer:
 
-```console
-$ git clone --recurse-submodules https://github.com/ngocbh/opencorp.git && cd opencorp
-$ bun install
-$ mkdir -p ~/.local/bin && ln -sf "$PWD/packages/cli/bin/opencorp" ~/.local/bin/opencorp
-$ bun run build    # the HQ web app
+```sh
+git clone --recurse-submodules https://github.com/ngocbh/opencorp.git && cd opencorp
+bun install
+mkdir -p ~/.local/bin && ln -sf "$PWD/packages/cli/bin/opencorp" ~/.local/bin/opencorp
+bun run build    # the HQ web app
 ```
 
 `~/.local/bin` must be on your `PATH`. Always run `opencorp` through this wrapper, never
@@ -51,8 +51,8 @@ folders on `PATH`: a model-written project could then shadow `bun` or `opencorp`
 
 To remove it:
 
-```console
-$ curl -fsSL https://raw.githubusercontent.com/ngocbh/opencorp/main/uninstall.sh | bash
+```sh
+curl -fsSL https://raw.githubusercontent.com/ngocbh/opencorp/main/uninstall.sh | bash
 ```
 
 While an office is set up, it first runs `opencorp offboard`, which asks before it removes anything

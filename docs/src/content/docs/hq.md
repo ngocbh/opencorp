@@ -34,7 +34,7 @@ breaks offers to; the old path stays until a new one works.
 You can also write `reach.sh` yourself: a `sh` script that finds HQ's machine (a Slurm job's node, say) and
 prints, as its last line of output, how to reach it:
 
-```sh
+```sh frame="code"
 set -eu
 ssh me@login.example.edu true
 printf '%s\n' '{"jump": ["me@login.example.edu"], "host": "me@node12", "opencorp": "/home/me/opencorp/packages/cli/bin/opencorp", "env": {"OPENCORP_BUN": "/home/me/.bun/bin/bun"}}'

@@ -31,6 +31,6 @@ OpenCorp isn't affiliated with OpenCode (its TUI is forked from OpenCode's) or w
 | Create your company | [Create the company](/create-the-company/) |
 | Talk to your employees and hire new ones | [Talk to your team and hire](/team/) |
 | Open HQ, here or from another machine | [HQ](/hq/) |
-| Check the office and start or restart it | [Check and run](/check-and-run/) |
 | Change HQ's port and other settings | [HQ settings](/hq-settings/) |
+| Check the office and start or restart it | [Check and run](/check-and-run/) |
 | See how OpenCorp and Yian split the work | [How it fits together](/how-it-fits/) |

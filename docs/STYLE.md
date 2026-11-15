@@ -43,9 +43,12 @@ page in the same PR.
 
 ## Examples
 
-- Show commands in `console` blocks, each line starting with `$ `, followed only by what the
-  command prints on stdout.
-- Tag other code with its language, such as `sh` for a script or `json` for a file.
+- Show commands that you don't show output for in `sh` blocks, with no `$ ` prompt, so the copy
+  button copies commands that run as pasted.
+- Use a `console` block only to show a command with its output: each command line starts with
+  `$ `, followed only by what it prints on stdout.
+- Tag other code with its language, such as `sh` for a script or `json` for a file. Give a script
+  `frame="code"`, so it doesn't render as a terminal.
 
 ## Before you open a PR
 
