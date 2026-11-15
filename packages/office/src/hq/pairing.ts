@@ -5,26 +5,15 @@ import { createHash, randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
+import { PAIR_CODE_TTL_MS } from "@opencorp/protocol"
 import { logLine } from "../daemon/http.ts"
 import { writePrivate } from "../util/private_files.ts"
-import { escapeHtml } from "./static.ts"
+import { redirectPage } from "../util/redirect.ts"
 
-/** How long a code lives, in ms. */
-export const TTL = 5 * 60_000
 /** The most codes waiting at once; minting past it drops the oldest. */
 export const MAX_PENDING = 16
 
 const LEFTOVER = [/^pair-.*\.html$/, /^\.pair-.*\.html\..*\.tmp$/]
-
-/** A page that sends the browser on to `link` at once, its link escaped: what a redirect file holds, so the code never
- *  sits in an opener's arguments. */
-export function redirectPage(link: string): string {
-  const href = escapeHtml(link)
-  return (
-    `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${href}">` +
-    `<title>OpenCorp HQ</title><a href="${href}">Open OpenCorp HQ</a>\n`
-  )
-}
 
 /** Who a code signs a browser in as, who asked for it, the commit they were checked at, and until when. */
 export interface Pending {
@@ -84,9 +73,9 @@ export class PairCodes {
     // After the write, so other mints that ran meanwhile count toward the cap.
     this.sweep()
     while (this.#pending.size >= MAX_PENDING) this.#drop(this.#pending.keys().next().value!)
-    const expiresAt = new Date(this.#clock().getTime() + TTL)
+    const expiresAt = new Date(this.#clock().getTime() + PAIR_CODE_TTL_MS)
     // A second past expiry, so the sweep sees the code as expired.
-    const timer = setTimeout(() => this.sweep(), TTL + 1000)
+    const timer = setTimeout(() => this.sweep(), PAIR_CODE_TTL_MS + 1000)
     timer.unref()
     this.#pending.set(key(code), { pending: { handle, issuer, sha, expiresAt, file }, timer })
     // Never the code.
