@@ -160,6 +160,28 @@ test("src loads modules only with import, never require", () => {
   expect(found).toEqual([])
 })
 
+// The import scan reads a dynamic import's specifier only when it is one quoted string, so src never computes one:
+// not a template, a variable or a sum. An `import(` not followed by a lone quoted string and `,` or `)` fails.
+const COMPUTED_IMPORT = /(?<![\w$.])import\s*\((?!\s*(["'])[^"'\n]*\1\s*[,)])/
+
+test("every dynamic import in src names its module in one quoted string", () => {
+  for (const sample of ["await import(`../daemon/office.ts`)", "import(name)", 'import("../daemon/" + name)', "import(\n  file,\n)"])
+    expect(blank(sample)).toMatch(COMPUTED_IMPORT)
+  for (const sample of [
+    'await import("../daemon/office.ts")',
+    "import('./x.ts')",
+    'import(\n  "./x.ts",\n)',
+    'import("./x.yaml", { with: { type: "file" } })',
+    'type T = typeof import("./x.ts")',
+    "import.meta.url",
+    "loader.import(name)",
+    "// import(name)",
+  ])
+    expect(blank(sample)).not.toMatch(COMPUTED_IMPORT)
+  const found = FILES.filter((file) => /\.[cm]?[jt]sx?$/.test(file) && COMPUTED_IMPORT.test(blank(source(file))))
+  expect(found).toEqual([])
+})
+
 test("imports go down or stay in their layer", () => {
   const up = edges().filter(({ from, to }) => {
     const layer = layerOf(final(from))
