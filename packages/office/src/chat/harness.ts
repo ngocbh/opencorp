@@ -5,8 +5,10 @@ import os from "node:os"
 import path from "node:path"
 import { type Scheduler, realScheduler } from "@ngocbh/yian/platform"
 import { type Message, OFFICE, Session, WorkItem, now } from "@opencorp/protocol"
+import type { CompanyGit } from "../company/git.ts"
 import { loadRepo, missingPerson } from "../company/loader.ts"
-import type { Office } from "../daemon/office.ts"
+import type { Bus } from "../daemon/bus.ts"
+import type { LiveRelay } from "../daemon/live.ts"
 import {
   type CodexSessions,
   checkFolder,
@@ -19,14 +21,16 @@ import type { Monitor } from "../perm/monitor.ts"
 import { MANAGER_FLOW, profileTools } from "../profile/manager.ts"
 import { GitProfileStore } from "../profile/store.ts"
 import { Answers } from "../questions/ask.ts"
+import type { RunIndexer } from "../runs/indexer.ts"
 import { Live, type LiveRun } from "../runs/records.ts"
 import type { AnswerKind, SessionHarness } from "../runtime/sessions/harness.ts"
-import { SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
+import { type OfficePaths as SandboxOfficePaths, SandboxPolicy, UnsafeWorkspace } from "../sandbox/policy.ts"
 import { InvalidTransition, LIVE, type QuestionRecord, type SessionRecord, type Store, newId } from "../store/store.ts"
 import { WorkspaceTools } from "../tools/workspace.ts"
+import type { OfficePaths } from "../util/home.ts"
 import { type JobWorker, type OfficeTool, type WorkerHandlers, errorName } from "../worker/rpc.ts"
 import { RegistryClosed, type Worker, type WorkerRegistry } from "../worker/spawn.ts"
-import { BadConnectionName, ConnectionGone, isFile } from "./connections.ts"
+import { BadConnectionName, ConnectionGone, type Connections, isFile } from "./connections.ts"
 import type { Hooks } from "./hooks.ts"
 import { DEADLINE_MS, ListTimeout, type ModelCache } from "./models.ts"
 import { ProviderError } from "./provider.ts"
@@ -44,6 +48,25 @@ const UNREAD_DEFAULT = "The office's default connection can't be read"
 /** The connection and model a new chat starts on (`model` null: the connection's own), and a note when it isn't what
  *  was asked for. */
 export type Choice = { connection: string; model: string | null; note: string | null }
+
+/** What the chat harness uses of the office; `Office` has all of it. */
+export interface ChatOffice {
+  readonly paths: OfficePaths
+  readonly store: Store
+  readonly git: CompanyGit
+  readonly bus: Bus
+  readonly connections: Connections
+  readonly models: ModelCache
+  readonly runIndex: RunIndexer
+  /** What every workspace must stay clear of. */
+  readonly guards: SandboxOfficePaths
+  /** The office's live Codex sessions, which calls on a Codex session go to. */
+  readonly codex: CodexSessions | undefined
+  readonly transcript: Transcript | undefined
+  readonly live: LiveRelay | undefined
+  /** A run's status, nodes or end may have changed. */
+  runChanged(runId: string): void
+}
 
 /** What the chat harness is built on. `workers` is the registry its runs' workers start in; `hooks` are shared with
  *  the Codex sessions; `log` gets its warnings (default `console.error`). A new chat's choice lists models through
@@ -69,7 +92,7 @@ export type ChatHarnessOptions = {
  * answers 503 `stopping` once `closeAll` has begun.
  */
 export class ChatHarness implements SessionHarness {
-  readonly office: Office
+  readonly office: ChatOffice
   readonly store: Store
   readonly monitor: Monitor
   readonly hooks: Hooks
@@ -94,7 +117,7 @@ export class ChatHarness implements SessionHarness {
   #idle: (() => void) | undefined
 
   constructor(
-    office: Office,
+    office: ChatOffice,
     {
       monitor,
       hooks,

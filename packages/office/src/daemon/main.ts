@@ -357,7 +357,10 @@ export function buildOffice(
     office.onStart.push(() => harness.restore())
     // Not awaited: a slow provider must not hold up the start. warm never rejects.
     office.onStart.push(() => void office.models.warm())
-    const watcher = new HeadWatcher(office, { log: log("ERROR", "opencorp.company.watch") })
+    // The callback records company.updated, as profile.updated does for other metadata kept outside the store.
+    const watcher = new HeadWatcher(office.git, (sha) => office.store.emit("company.updated", sha, { sha }), {
+      log: log("ERROR", "opencorp.company.watch"),
+    })
     office.onStart.push(() => watcher.start())
     office.onStop.push(() => watcher.stop())
     // After the restore, which re-pins the live sessions; watchPins doesn't wait for its first prune.
