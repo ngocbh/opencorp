@@ -4,9 +4,9 @@ import fs from "node:fs"
 import path from "node:path"
 import type { HarnessPolicy } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
-import { killGroup, startTime } from "../util/proc.ts"
-import type { Store } from "../runtime/store/store.ts"
-import { which } from "../util/env.ts"
+import { killGroup, startTime } from "../../util/proc.ts"
+import type { Store } from "../../runtime/store/store.ts"
+import { which } from "../../util/env.ts"
 import { JsonRpc, nameOf } from "./rpc.ts"
 
 export const APP_SERVER_ARGS = ["app-server", "--listen", "stdio://"] as const

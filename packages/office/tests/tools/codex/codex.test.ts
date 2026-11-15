@@ -13,22 +13,22 @@ import {
   appServerCommand,
   codexCommand,
   ownerLoad,
-} from "../../src/harness/codex.ts"
-import { RpcClosed } from "../../src/harness/rpc.ts"
-import { killGroup, sameProcess, startTime } from "../../src/util/proc.ts"
-import type { Store } from "../../src/runtime/store/store.ts"
-import { reap } from "../../src/runtime/worker/reaper.ts"
-import { workerEnv } from "../../src/runtime/worker/spawn.ts"
-import { NO_GROUP, isGone, tempDir, waitFor } from "../helpers.ts"
-import { openStore } from "../runtime/store/helpers.ts"
+} from "../../../src/tools/codex/codex.ts"
+import { RpcClosed } from "../../../src/tools/codex/rpc.ts"
+import { killGroup, sameProcess, startTime } from "../../../src/util/proc.ts"
+import type { Store } from "../../../src/runtime/store/store.ts"
+import { reap } from "../../../src/runtime/worker/reaper.ts"
+import { workerEnv } from "../../../src/runtime/worker/spawn.ts"
+import { NO_GROUP, isGone, tempDir, waitFor } from "../../helpers.ts"
+import { openStore } from "../../runtime/store/helpers.ts"
 
 setDefaultTimeout(30_000)
 
 const ajv = new Ajv({ strict: false, validateFormats: false })
 const CLIENT = ajv.compile(
-  JSON.parse(fs.readFileSync(path.join(import.meta.dir, "../fixtures/codex/schema/ClientRequest.json"), "utf8")),
+  JSON.parse(fs.readFileSync(path.join(import.meta.dir, "../../fixtures/codex/schema/ClientRequest.json"), "utf8")),
 )
-const FAKE = fileURLToPath(new URL("../../src/testing/fake_codex.ts", import.meta.url))
+const FAKE = fileURLToPath(new URL("../../../src/testing/fake_codex.ts", import.meta.url))
 
 /** Writes an empty shell script at `file` with `mode`. */
 function script(file: string, mode = 0o755) {

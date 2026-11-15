@@ -2,7 +2,7 @@
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
-import { RpcClosed, RpcError } from "../../src/harness/rpc.ts"
+import { RpcClosed, RpcError } from "../../src/tools/codex/rpc.ts"
 import { usageBase } from "../../src/harness/session.ts"
 import { sameProcess, startTime } from "../../src/util/proc.ts"
 import type { SessionRecord, WorkerRecord } from "../../src/runtime/store/store.ts"

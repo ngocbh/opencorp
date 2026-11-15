@@ -9,8 +9,8 @@ import path from "node:path"
 import type { z } from "zod"
 import { type AnswerField, type ErrorPart, type Message, now, Question, type QuestionPage, type TextPart,
   type ToolPart } from "@opencorp/protocol"
-import { pyJson, splitLines } from "../util/redact.ts"
-import { newId } from "../runtime/store/store.ts"
+import { pyJson, splitLines } from "../../util/redact.ts"
+import { newId } from "../../runtime/store/store.ts"
 import type { Card, HarnessEvent } from "./adapter.ts"
 
 /** The longest command output a part keeps, in code points. */

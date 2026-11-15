@@ -1,6 +1,6 @@
 /** The run state Codex sessions write, and how a restart finds a waiting one. */
 import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
-import { RpcError } from "../../src/harness/rpc.ts"
+import { RpcError } from "../../src/tools/codex/rpc.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { waitFor } from "../helpers.ts"
 import { type Codex, allGone, approvalTurn, makeCodex, openCard, restarted, start, status, texts } from "./helpers.ts"

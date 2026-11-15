@@ -15,7 +15,7 @@ import type { RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
 import { companyState, missingFiles } from "../company/template.ts"
-import { CodexMissing, codexCommand } from "../harness/codex.ts"
+import { CodexMissing, codexCommand } from "../tools/codex/codex.ts"
 import { selfCommand, tuiAssetRoot } from "../platform.ts"
 import {
   checkClearOf,

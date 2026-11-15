@@ -3,9 +3,9 @@ import path from "node:path"
 import type { Message } from "@opencorp/protocol"
 import { HarnessError, notWaiting, runState, writeState } from "../runtime/sessions/state.ts"
 import { type SessionRecord, type Store, newId } from "../runtime/store/store.ts"
-import { type CodexProcess, CodexStartError, ownerLoad } from "./codex.ts"
-import { RpcClosed, RpcError, nameOf } from "./rpc.ts"
-import { type Issued, NOT_AN_OPTION, NOT_A_NUMBER, TURNLESS, Translator, Unserved, Unshowable } from "./translate.ts"
+import { type CodexProcess, CodexStartError, ownerLoad } from "../tools/codex/codex.ts"
+import { RpcClosed, RpcError, nameOf } from "../tools/codex/rpc.ts"
+import { type Issued, NOT_AN_OPTION, NOT_A_NUMBER, TURNLESS, Translator, Unserved, Unshowable } from "../tools/codex/translate.ts"
 import type { CodexSessions } from "./sessions.ts"
 
 /** Milliseconds office stop waits for the session to finish the job it is in. */

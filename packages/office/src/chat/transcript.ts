@@ -12,7 +12,7 @@ import {
   TypedValue,
 } from "@ngocbh/yian/run"
 import { Handle, type Message, type Part, type ToolPart } from "@opencorp/protocol"
-import { INTERRUPTED_TEXT } from "../harness/translate.ts"
+import { INTERRUPTED_TEXT } from "../tools/codex/translate.ts"
 import { CHUNK, HUGE_LINE } from "../runtime/runs/reader.ts"
 import { errorName } from "../runtime/worker/rpc.ts"
 import { MAIN_CHAT } from "../company/chat_flow.ts"
