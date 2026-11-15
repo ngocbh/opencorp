@@ -360,9 +360,6 @@ export const UPWARD: readonly string[] = [
   "extensions/questions.ts -> daemon/office.ts Office",
   "harness/sessions.ts -> daemon/office.ts Office",
   "harness/sessions.ts -> daemon/office.ts SessionHarness",
-  "perm/monitor.ts -> tools/workspace.ts ToolOutcome",
-  "perm/monitor.ts -> tools/workspace.ts WorkspaceCall",
-  "perm/monitor.ts -> tools/workspace.ts WorkspaceTools",
   "questions/cards.ts -> daemon/office.ts Office",
 ]
 

@@ -1,7 +1,8 @@
 /** Every workspace call goes through the monitor for its audit row. */
 import { expect, setDefaultTimeout, test } from "bun:test"
+import type { ToolOutcome } from "../../src/perm/monitor.ts"
 import { DETAIL_CHARS } from "../../src/perm/redact.ts"
-import { type ToolOutcome, workspaceToolFunctions, WorkspaceTools } from "../../src/tools/workspace.ts"
+import { workspaceToolFunctions, WorkspaceTools } from "../../src/tools/workspace.ts"
 import { tempDir } from "../helpers.ts"
 import { makePolicy, sandboxAvailable } from "../sandbox/helpers.ts"
 import { makeMonitor } from "./helpers.ts"

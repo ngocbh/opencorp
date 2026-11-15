@@ -6,7 +6,6 @@ import { type CompanyRepo, loadRepo } from "../company/loader.ts"
 import { assetToolName, shownAssetToolName, TOOL_NAME } from "../company/naming.ts"
 import { type SecretStore, SecretNotSetError } from "../secrets.ts"
 import type { Store } from "../store/store.ts"
-import type { ToolOutcome, WorkspaceCall, WorkspaceTools } from "../tools/workspace.ts"
 import { auditArgs, DETAIL_CHARS, pyJson, redact, repr, splitLines, strip } from "./redact.ts"
 
 type Asset = z.output<typeof AssetSchema>
@@ -25,6 +24,36 @@ export interface ToolboxTool {
   readonly description: string
   readonly parameters: Record<string, unknown>
   call(args: Record<string, unknown>): Promise<unknown>
+}
+
+/** Forwards one workspace call (`WorkspaceTools.call`'s output, or anything shaped like it). */
+export type WorkspaceCall = (
+  name: string,
+  args: Record<string, unknown>,
+  options?: { signal?: AbortSignal },
+) => Promise<string>
+
+/** What one workspace call did, for the audit log.
+ *
+ *  `exit` is the call's exit status, or `null` when it was killed (timeout or interrupt); `duration` is in
+ *  seconds. */
+export interface AuditRecord {
+  tool: string
+  argsSummary: string
+  exit: number | null
+  duration: number
+}
+
+/** A workspace call's model-visible output and its audit record. */
+export interface ToolOutcome {
+  output: string
+  audit: AuditRecord
+}
+
+/** What `workspace` audits: a workspace tool call by name that resolves to its output and audit record, as
+ *  `WorkspaceTools.call` does. */
+export interface AuditedTools {
+  call(name: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<ToolOutcome>
 }
 
 /**
@@ -162,7 +191,7 @@ export class Monitor {
    * as `error` and its error thrown again.
    */
   workspace(
-    tools: Pick<WorkspaceTools, "call">,
+    tools: AuditedTools,
     person: string,
     runId: string | null,
     { sessionId = null }: { sessionId?: string | null } = {},
