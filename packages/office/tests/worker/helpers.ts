@@ -14,7 +14,7 @@ import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
 import { type Delivery, Job, groupSpecs, type JobInput, type WorkerEnv } from "../../src/worker/job.ts"
-import { EXIT_FAILED, serve } from "../../src/worker/main.ts"
+import { EXIT_FAILED, type JobHandlers, serve } from "../../src/worker/main.ts"
 import {
   type AskRequest,
   BaseHandlers,
@@ -333,12 +333,19 @@ export interface WorkerOut {
   code?: number
 }
 
+/** Job handlers for a worker that never runs a check job in the test. */
+export const NO_CHECKS: JobHandlers = { check: () => Promise.reject(new Error("this test runs no check job")) }
+
 /**
- * Runs the worker's `serve` in process over a connected channel pair; returns the office's channel, a promise that
- * resolves when `serve` returns, and its `out`. At test end the office end closes, and the test fails if `serve`
- * hasn't returned within 10 s.
+ * Runs the worker's `serve` in process over a connected channel pair, with `jobHandlers`; returns the office's channel,
+ * a promise that resolves when `serve` returns, and its `out`. At test end the office end closes, and the test fails if
+ * `serve` hasn't returned within 10 s.
  */
-export async function startWorker({ env = {}, linger }: { env?: WorkerEnv; linger?: number } = {}): Promise<{
+export async function startWorker({
+  env = {},
+  linger,
+  jobHandlers = NO_CHECKS,
+}: { env?: WorkerEnv; linger?: number; jobHandlers?: JobHandlers } = {}): Promise<{
   office: Channel
   done: Promise<void>
   out: WorkerOut
@@ -348,7 +355,7 @@ export async function startWorker({ env = {}, linger }: { env?: WorkerEnv; linge
   const exit = (code: number) => {
     out.exit ??= code
   }
-  const done = serve(worker, { env, linger, exit }).then((code) => {
+  const done = serve(worker, { env, linger, exit, handlers: jobHandlers }).then((code) => {
     out.code = code
   })
   onTestFinished(async () => {
@@ -473,7 +480,8 @@ export interface TestWorker extends JobWorker {
  * rethrows the first such error. Once the office read loop has ended and the worker's code is known, the office end
  * closes and `handlers.exited` runs; a `serve` that rejects is `EXIT_FAILED`. At test end the office end closes and
  * the test fails if `serve` hasn't returned within 10 s. Each of `early` goes as a `deliver` frame sent right after the
- * start frame, before `serve` starts. Both channels cap frames at `maxFrame`.
+ * start frame, before `serve` starts. Both channels cap frames at `maxFrame`. The worker runs a check job with
+ * `jobHandlers`.
  */
 export async function inProcessWorker(
   job: Job,
@@ -483,7 +491,8 @@ export async function inProcessWorker(
     linger,
     early = [],
     maxFrame,
-  }: { env?: WorkerEnv; linger?: number; early?: Delivery[]; maxFrame?: number } = {},
+    jobHandlers = NO_CHECKS,
+  }: { env?: WorkerEnv; linger?: number; early?: Delivery[]; maxFrame?: number; jobHandlers?: JobHandlers } = {},
 ): Promise<TestWorker> {
   const { office, worker: workerSide } = await channelPair({ maxFrame })
   // Not awaited before `serve` starts: a job larger than the socket buffers would wait for a reader. The bytes still
@@ -495,7 +504,7 @@ export async function inProcessWorker(
   let settle!: (code: number) => void
   // Resolving twice does nothing, so the first of `exit` and the return value wins.
   const code = new Promise<number>((resolve) => (settle = resolve))
-  const served = serve(workerSide, { env, linger, exit: settle })
+  const served = serve(workerSide, { env, linger, exit: settle, handlers: jobHandlers })
   served.then(settle, () => settle(EXIT_FAILED))
   await Promise.all(sent)
   let failure: { error: unknown } | undefined

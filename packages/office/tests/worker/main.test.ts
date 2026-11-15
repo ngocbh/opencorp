@@ -35,6 +35,7 @@ import {
   inProcessWorker,
   lastFrame,
   makeJob,
+  NO_CHECKS,
   Recorder,
   run,
   spawnWorker,
@@ -167,7 +168,7 @@ test("a worker returns only once its last reply is written", async () => {
     return send(frame)
   }
   const out: { code?: number } = {}
-  const done = serve(worker, { env: {}, exit: () => {} }).then((code) => {
+  const done = serve(worker, { env: {}, exit: () => {}, handlers: NO_CHECKS }).then((code) => {
     out.code = code
   })
   await office.send(badStart())
@@ -215,6 +216,14 @@ test("a frame other than start is an error", async () => {
   const frame = await office.recv()
   expect(frame.type).toBe("error")
   expect(frame.message).toBe("TypeError: expected a start frame")
+})
+
+test("a check job runs the check the worker was given", async () => {
+  const job = makeJob(base(), "flows/echo.yaml", { kind: "check" })
+  const rec = new Recorder()
+  const worker = await inProcessWorker(job, rec, { jobHandlers: { check: async (j) => "checked " + j.kind } })
+  await worker.wait()
+  expect(rec.outcome).toEqual({ type: "result", problem: "checked check" })
 })
 
 test("a waiting run ends normally with its status", async () => {

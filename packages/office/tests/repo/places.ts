@@ -366,7 +366,6 @@ export const UPWARD: readonly string[] = [
   "perm/monitor.ts -> tools/workspace.ts WorkspaceCall",
   "perm/monitor.ts -> tools/workspace.ts WorkspaceTools",
   "questions/cards.ts -> daemon/office.ts Office",
-  "worker/main.ts -> chat/check.ts import()",
 ]
 
 /** Each folder cycle inside a category, as its folders sorted; a category's root files are the category. */

@@ -422,11 +422,18 @@ function nextOf(previous: Job, job: Job): boolean {
   )
 }
 
+/** The jobs a worker runs outside a yian run, by kind, passed in by the office's entry (`main.ts`) so this module
+ *  loads none of them. Each resolves to the job's problem, or null when there is none. */
+export interface JobHandlers {
+  /** A `check` job: the one-reply model check. */
+  check(job: Job, env: WorkerEnv, signal: AbortSignal): Promise<string | null>
+}
+
 /**
- * Runs the jobs the office sends on `channel`; returns the exit code. A `check` job sends only its result frame,
- * `{type: "result", problem}`, or its `error` frame when a `stop` frame ended it. A seeded chat job whose replaced
- * run's history can't be read sends `{type: "event", name: "history_not_seeded", data: {error_type}}` before its run
- * starts.
+ * Runs the jobs the office sends on `channel`; returns the exit code. A `check` job runs `handlers.check` and sends
+ * only its result frame, `{type: "result", problem}`, or its `error` frame when a `stop` frame ended it. A seeded chat
+ * job whose replaced run's history can't be read sends `{type: "event", name: "history_not_seeded", data:
+ * {error_type}}` before its run starts.
  *
  * Each delivery (the job's `deliver` list first, then each `deliver` frame) is applied to the run with a yian host
  * call once the run has started, in order, and answered by one `deliver_reply`; ones the run can't take because it
@@ -449,7 +456,12 @@ function nextOf(previous: Job, job: Job): boolean {
  */
 export async function serve(
   channel: Channel,
-  { env, linger = LINGER_MS, exit }: { env: WorkerEnv; linger?: number; exit: (code: number) => void },
+  {
+    env,
+    linger = LINGER_MS,
+    exit,
+    handlers,
+  }: { env: WorkerEnv; linger?: number; exit: (code: number) => void; handlers: JobHandlers },
 ): Promise<number> {
   const started = channel.recv()
   try {
@@ -466,7 +478,7 @@ export async function serve(
   let start: Promise<Frame> = started
   let previous: Job | null = null
   for (;;) {
-    const ran = await serveJob(channel, rpc, state.job, start, previous, env)
+    const ran = await serveJob(channel, rpc, state.job, start, previous, env, handlers)
     const code = await report(channel, [ran.last], ran.code)
     if (ran.last.kept !== true || code !== EXIT_OK) {
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -519,6 +531,7 @@ async function serveJob(
   started: Promise<Frame>,
   previous: Job | null,
   env: WorkerEnv,
+  handlers: JobHandlers,
 ): Promise<{ last: Frame; code: number; job: Job | null }> {
   const { deliveries, stopper } = state
   let last: Frame
@@ -536,9 +549,7 @@ async function serveJob(
     if (job.kind === "check") {
       // A check job has no run to deliver to.
       deliveries.refuse()
-      // Loaded only here, so a chat worker doesn't load onboarding.
-      const { runCheck } = await import("../chat/check.ts")
-      last = { type: "result", problem: await runCheck(job, env, stopper.signal) }
+      last = { type: "result", problem: await handlers.check(job, env, stopper.signal) }
     } else {
       last = {
         type: "result",
@@ -856,12 +867,12 @@ export function isOfficeChannel(fd: number): boolean {
  * none, so an open fd 3 alone doesn't mean an office is there. An fstat error other than EBADF is thrown on purpose:
  * it means a broken process, not a missing channel.
  */
-export async function main(_argv: string[], env: WorkerEnv): Promise<never> {
+export async function main(_argv: string[], env: WorkerEnv, handlers: JobHandlers): Promise<never> {
   if (!isOfficeChannel(3)) {
     process.stderr.write("opencorp __worker: no office channel on fd 3\n")
     process.exit(EXIT_ORPHANED)
   }
   // `process.exit`, not a return: a read blocked on fd 3 would keep the event loop alive.
-  const code = await serve(fdChannel(3), { env, exit: (c) => process.exit(c) })
+  const code = await serve(fdChannel(3), { env, exit: (c) => process.exit(c), handlers })
   process.exit(code)
 }
