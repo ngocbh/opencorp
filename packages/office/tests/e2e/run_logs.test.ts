@@ -3,7 +3,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
-import { ConnectionFile, Connections } from "../../src/chat/connections.ts"
+import { ConnectionFile, Connections } from "../../src/models/connections.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { waitFor } from "../helpers.ts"
 import { Browser, folder, openOffice, URL_RE, waitListening } from "./helpers.ts"

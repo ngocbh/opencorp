@@ -2,8 +2,8 @@
  *  remote), and the draft without a terminal. */
 import { type FunctionTool, loadFlow, type ToolContext, tool } from "@ngocbh/yian"
 import { hashPassword, passwordProblem } from "../runtime/auth/passwords.ts"
-import { runSetup } from "../chat/check.ts"
-import type { Provider } from "../chat/provider.ts"
+import { runSetup } from "../models/check.ts"
+import type { Provider } from "../models/provider.ts"
 import { type Draft, type InitOutput, draftFromOutput, draftProblems, fieldProblems } from "../company/draft.ts"
 import { pyJson, strip } from "../util/redact.ts"
 import { embedded } from "../platform.ts"

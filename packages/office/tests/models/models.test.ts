@@ -13,7 +13,7 @@ import {
   OAuthCredentials,
 } from "@ngocbh/yian/llm_clients"
 import { ModelList } from "@opencorp/protocol"
-import { ConnectionFile, ConnectionGone, Connections } from "../../src/chat/connections.ts"
+import { ConnectionFile, ConnectionGone, Connections } from "../../src/models/connections.ts"
 import {
   azureDeployments,
   FRESH_MS,
@@ -25,7 +25,7 @@ import {
   ownModels,
   providerModels,
   TIMED_OUT,
-} from "../../src/chat/models.ts"
+} from "../../src/models/models.ts"
 import { writePrivate } from "../../src/util/private_files.ts"
 import { tempDir, waitFor } from "../helpers.ts"
 

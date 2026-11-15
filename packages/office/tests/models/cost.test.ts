@@ -1,7 +1,7 @@
 /** Session cost: model-call usage priced per model, and the session's cap. */
 import { expect, test } from "bun:test"
 import { CompanyDefaults } from "@opencorp/protocol"
-import { DEFAULT_PRICE, ZERO_PRICE, callUsd, costCap } from "../../src/chat/cost.ts"
+import { DEFAULT_PRICE, ZERO_PRICE, callUsd, costCap } from "../../src/models/cost.ts"
 import { session } from "../runtime/store/helpers.ts"
 
 test("a listed model uses its price", () => {

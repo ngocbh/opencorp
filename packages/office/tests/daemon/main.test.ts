@@ -15,7 +15,7 @@ import { Identity, identityPath, writeIdentity } from "../../src/runtime/auth/id
 import { newToken } from "../../src/runtime/auth/tokens.ts"
 import { ChatHarness } from "../../src/chat/harness.ts"
 import { Hooks } from "../../src/runtime/sessions/hooks.ts"
-import { Provider } from "../../src/chat/provider.ts"
+import { Provider } from "../../src/models/provider.ts"
 import { HarnessError } from "../../src/runtime/sessions/state.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { HANDLER_WAIT_MS, trackRequests } from "../../src/daemon/http.ts"

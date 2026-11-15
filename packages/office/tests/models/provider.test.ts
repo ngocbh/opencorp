@@ -6,7 +6,7 @@ import { inspect } from "node:util"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import type { z } from "zod"
 import type { LiveEvent, Part } from "@opencorp/protocol"
-import { checked, loadProvider, Provider, ProviderError, providerSchema } from "../../src/chat/provider.ts"
+import { checked, loadProvider, Provider, ProviderError, providerSchema } from "../../src/models/provider.ts"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { LiveRelay } from "../../src/daemon/live.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
@@ -18,7 +18,7 @@ import type { SpawnLog, Worker } from "../../src/runtime/worker/spawn.ts"
 import { envText, tempDir } from "../helpers.ts"
 import { openStore } from "../runtime/store/helpers.ts"
 import { base, makeJob, makeRegistry, Recorder, recordFrames, runWorker } from "../runtime/worker/helpers.ts"
-import { fakeLlm, send, TemplateOffice, templateJob } from "./helpers.ts"
+import { fakeLlm, send, TemplateOffice, templateJob } from "../chat/helpers.ts"
 
 setDefaultTimeout(60_000)
 

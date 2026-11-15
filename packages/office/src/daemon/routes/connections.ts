@@ -24,10 +24,10 @@ import {
   ConnectionFile,
   ConnectionGone,
   providerLabel,
-} from "../../chat/connections.ts"
-import { LoginNotFound, LoginsClosed } from "../../chat/logins.ts"
-import { DEADLINE_MS, DEFAULT_MODELS, type Listing } from "../../chat/models.ts"
-import { type LlmConfig, Provider, ProviderError } from "../../chat/provider.ts"
+} from "../../models/connections.ts"
+import { LoginNotFound, LoginsClosed } from "../../models/logins.ts"
+import { DEADLINE_MS, DEFAULT_MODELS, type Listing } from "../../models/models.ts"
+import { type LlmConfig, Provider, ProviderError } from "../../models/provider.ts"
 import { loadRepo } from "../../company/loader.ts"
 import { checkProvider } from "../../install/onboard.ts"
 import { OnboardError } from "../../install/prompts.ts"
