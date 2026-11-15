@@ -9,8 +9,8 @@ git clone --recurse-submodules https://github.com/ngocbh/opencorp.git && cd open
 bun install
 ```
 
-To create a company and use it (init, the TUI, hiring, HQ, doctor), follow the
-[Quickstart](README.md#quickstart).
+To create a company and use it (init, the TUI, hiring, HQ, doctor), follow the docs, starting with
+[Get started](https://opencorp.readthedocs.io/get-started/).
 
 Run `opencorp` from a checkout through `packages/cli/bin/opencorp`. Never run
 `bun packages/cli/src/main.ts`, which reads the folder's `.env` and `bunfig.toml`. Put the wrapper
@@ -33,6 +33,9 @@ a model-written project could then shadow `bun` or `opencorp` itself.
 - CI runs a package's `bun test` only once it has a `*.test.ts(x)` file.
 - A new office test goes where `packages/office/tests/` mirrors `packages/office/src/`; see "Where
   tests live" in `ARCHITECTURE.md`.
+- When you change the docs site (`docs/`), also run
+  `(cd docs && bun install --frozen-lockfile && bun run build)`, with Node 22.23.4 or later.
+  [`docs/STYLE.md`](docs/STYLE.md) says how to write a page.
 
 ## GitHub workflow
 

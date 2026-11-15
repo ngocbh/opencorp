@@ -134,8 +134,8 @@ export const NO_OFFICE_HERE =
 /** No office answers here, there's no saved path and no terminal to learn one on. */
 export const NO_PATH = (paths: ReachPaths) =>
   `${NO_OFFICE_HERE}\nTo reach HQ on another machine, run \`opencorp hq\` in a terminal to learn the way there with an ` +
-  `agent, or write ${paths.script}, a sh script whose last line of output is the connection spec (see the README), ` +
-  "then run `opencorp hq` again."
+  `agent, or write ${paths.script}, a sh script whose last line of output is the connection spec ` +
+  "(see https://opencorp.readthedocs.io/hq/#hq-from-another-machine), then run `opencorp hq` again."
 export const NOT_LEARNED = "opencorp hq: stopped; nothing was learned."
 export const LEARN_NEEDS_TERMINAL = "opencorp hq: learning needs a terminal; run `opencorp hq --relearn` in one."
 export const RELEARN_BUSY =

@@ -182,7 +182,7 @@ is_wrapper() {
 }
 
 # The OpenCorp checkout the launcher $1 runs: the one install.sh's wrapper names on its third line, or the one a
-# link to a checkout's packages/cli/bin/opencorp (the README's manual step) points into.
+# link to a checkout's packages/cli/bin/opencorp (the docs' manual install step) points into.
 launcher_checkout() {
   if is_wrapper "$1"; then
     lc_to=$(LC_ALL=C sed -n '3{p;q;}' "$1")

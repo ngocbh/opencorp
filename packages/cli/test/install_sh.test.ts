@@ -420,7 +420,7 @@ describe("install.sh", () => {
     expect(calls(h)).toEqual([])
   })
 
-  test("replaces a link to an OpenCorp checkout's wrapper, which the README's manual steps made, and says where it pointed", async () => {
+  test("replaces a link to an OpenCorp checkout's wrapper, which the docs' manual install steps made, and says where it pointed", async () => {
     const h = makeHome()
     const theirs = path.join(checkout(h, "mine"), "packages/cli/bin/opencorp")
     const before = fs.readFileSync(theirs, "utf8")
@@ -447,7 +447,7 @@ describe("install.sh", () => {
   })
 
   test("with an office set up, it won't point opencorp at another checkout, since the office's service runs the old one", async () => {
-    // The README's manual link, to a checkout the office was set up from.
+    // The docs' manual install link, to a checkout the office was set up from.
     const h = makeHome()
     const old = checkout(h, "old")
     fs.mkdirSync(h.bin, { recursive: true })

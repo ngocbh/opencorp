@@ -27,6 +27,7 @@ packages/client/                      # the TS client the TUI, CLI and HQ app re
 packages/tui/                         # the TUI (forked from OpenCode)
 packages/cli/                         # the `opencorp` CLI (npm package "opencorp")
 packages/app/                         # OpenCorp HQ, the web app (#184)
+docs/                                 # the docs site (Starlight), published at opencorp.readthedocs.io
 docs/plans/                           # design docs and plans (local only, gitignored)
 ```
 
