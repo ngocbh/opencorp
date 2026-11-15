@@ -68,10 +68,10 @@ import {
   configHash,
   runRecord,
   runSecrets,
-} from "./connections.ts"
-import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "./cost.ts"
+} from "../models/connections.ts"
+import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "../models/cost.ts"
 import type { Hooks } from "../runtime/sessions/hooks.ts"
-import { type Price, type Provider, ProviderError } from "./provider.ts"
+import { type Price, type Provider, ProviderError } from "../models/provider.ts"
 import { chatJob, type RunSpec } from "./run_spec.ts"
 import { HarnessError, notWaiting, runState, SETTLED, writeState } from "../runtime/sessions/state.ts"
 import { type LiveCalls, type Transcript, userMessage } from "./transcript.ts"

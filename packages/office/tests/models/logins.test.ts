@@ -10,7 +10,7 @@ import {
   HttpResponse,
   OpenAIAuth,
 } from "@ngocbh/yian/llm_clients"
-import { AUTH_FILE_ENV, ConnectionFile, Connections } from "../../src/chat/connections.ts"
+import { AUTH_FILE_ENV, ConnectionFile, Connections } from "../../src/models/connections.ts"
 import {
   FORGET_MS,
   LoginNotFound,
@@ -18,11 +18,11 @@ import {
   LoginsClosed,
   type LoginsOptions,
   type LoginView,
-} from "../../src/chat/logins.ts"
-import { ProviderError } from "../../src/chat/provider.ts"
+} from "../../src/models/logins.ts"
+import { ProviderError } from "../../src/models/provider.ts"
 import { writePrivate } from "../../src/util/private_files.ts"
 import { tempDir, waitFor } from "../helpers.ts"
-import { ACCESS, APPROVED, CATALOG, PENDING, REFRESH, SIGNATURE, TOKENS, USERCODE, testScheduler } from "./helpers.ts"
+import { ACCESS, APPROVED, CATALOG, PENDING, REFRESH, SIGNATURE, TOKENS, USERCODE, testScheduler } from "../chat/helpers.ts"
 
 setDefaultTimeout(30_000)
 

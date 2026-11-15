@@ -18,9 +18,9 @@ import { fileURLToPath } from "node:url"
 import { afterEach, expect, test } from "bun:test"
 import { AuthError, type AuthRequest, AuthStore, HttpResponse, SUPPORTED_LLM_PROVIDERS } from "@ngocbh/yian/llm_clients"
 import { OAuthCredentials } from "@ngocbh/yian/llm_clients"
-import type { ModelCheck } from "../../src/chat/check.ts"
-import { AUTH_FILE_ENV, Connections } from "../../src/chat/connections.ts"
-import { loadProvider, Provider, ProviderError } from "../../src/chat/provider.ts"
+import type { ModelCheck } from "../../src/models/check.ts"
+import { AUTH_FILE_ENV, Connections } from "../../src/models/connections.ts"
+import { loadProvider, Provider, ProviderError } from "../../src/models/provider.ts"
 import {
   API_KEY,
   askDeployment,

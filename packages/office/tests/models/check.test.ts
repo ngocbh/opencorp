@@ -19,9 +19,9 @@ import {
   providerSecrets,
   runSetup,
   TIMEOUT_MS,
-} from "../../src/chat/check.ts"
-import { ConnectionFile } from "../../src/chat/connections.ts"
-import { Provider } from "../../src/chat/provider.ts"
+} from "../../src/models/check.ts"
+import { ConnectionFile } from "../../src/models/connections.ts"
+import { Provider } from "../../src/models/provider.ts"
 import { readFlow } from "../../src/company/flow_yaml.ts"
 import { loadConfined } from "../../src/company/flows.ts"
 import { checkProvider, withSignIn } from "../../src/install/onboard.ts"
@@ -35,7 +35,7 @@ import { EXIT_GRACE_MS, RegistryClosed, type SpawnLog, type Worker } from "../..
 import { cwdOf, envText, isGone, ps, tempDir } from "../helpers.ts"
 import { openStore } from "../runtime/store/helpers.ts"
 import { makeRegistry, recordFrames } from "../runtime/worker/helpers.ts"
-import { fakeLlm, keyCopies, MIXED_KEY, refusingLlm } from "./helpers.ts"
+import { fakeLlm, keyCopies, MIXED_KEY, refusingLlm } from "../chat/helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -44,8 +44,8 @@ const PROVIDER = checkProvider({ llm_config: { provider: "anthropic", api_key: S
 const KEY = "sk-test-0000000000000000"
 
 const OFFICE = fileURLToPath(new URL("../..", import.meta.url))
-const CHECK_MODULE = fileURLToPath(new URL("../../src/chat/check.ts", import.meta.url))
-const PROVIDER_MODULE = fileURLToPath(new URL("../../src/chat/provider.ts", import.meta.url))
+const CHECK_MODULE = fileURLToPath(new URL("../../src/models/check.ts", import.meta.url))
+const PROVIDER_MODULE = fileURLToPath(new URL("../../src/models/provider.ts", import.meta.url))
 const FAKE_LLM = fileURLToPath(new URL("../../src/testing/fake_llm.ts", import.meta.url))
 const CHECK_MODEL = fileURLToPath(new URL("../../src/models/flows/check_model.yaml", import.meta.url))
 

@@ -20,8 +20,8 @@ import {
   RunMoved,
   type RunRecord,
   runRecord,
-} from "../../src/chat/connections.ts"
-import { type Price, Provider, ProviderError } from "../../src/chat/provider.ts"
+} from "../../src/models/connections.ts"
+import { type Price, Provider, ProviderError } from "../../src/models/provider.ts"
 import { writePrivate } from "../../src/util/private_files.ts"
 import { tempDir } from "../helpers.ts"
 

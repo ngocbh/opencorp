@@ -10,14 +10,8 @@
 
 /** Each `src/` file at an old path, by its path under `src/`: its final path. */
 export const PLACES: Readonly<Record<string, string>> = {
-  "chat/check.ts": "models/check.ts",
-  "chat/connections.ts": "models/connections.ts",
-  "chat/cost.ts": "models/cost.ts",
   "chat/harness.ts": "features/chat/harness.ts",
   "chat/identity.ts": "features/chat/identity.ts",
-  "chat/logins.ts": "models/logins.ts",
-  "chat/models.ts": "models/models.ts",
-  "chat/provider.ts": "models/provider.ts",
   "chat/run_spec.ts": "features/chat/run_spec.ts",
   "chat/session_actor.ts": "features/chat/session_actor.ts",
   "chat/transcript.ts": "features/chat/transcript.ts",
@@ -92,15 +86,9 @@ export const PLACES: Readonly<Record<string, string>> = {
 
 /** Each `tests/` file at an old path, by its path under `tests/`: its final path. */
 export const TEST_PLACES: Readonly<Record<string, string>> = {
-  "chat/check.test.ts": "models/check.test.ts",
-  "chat/connections.test.ts": "models/connections.test.ts",
-  "chat/cost.test.ts": "models/cost.test.ts",
   "chat/harness.test.ts": "features/chat/harness.test.ts",
   "chat/helpers.ts": "features/chat/helpers.ts",
   "chat/identity.test.ts": "features/chat/identity.test.ts",
-  "chat/logins.test.ts": "models/logins.test.ts",
-  "chat/models.test.ts": "models/models.test.ts",
-  "chat/provider.test.ts": "models/provider.test.ts",
   "chat/restart.test.ts": "features/chat/restart.test.ts",
   "chat/run_records.test.ts": "features/chat/run_records.test.ts",
   "chat/run_spec.test.ts": "features/chat/run_spec.test.ts",

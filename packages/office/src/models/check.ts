@@ -7,7 +7,7 @@ import { type ComposedFlow, loadFlow, runFlow } from "@ngocbh/yian"
 import { callCredentials } from "@ngocbh/yian/llm_clients"
 import { withWarnings } from "@ngocbh/yian/platform"
 import type { RunFlowOptions, RunResult } from "@ngocbh/yian/run"
-import checkModelYaml from "../models/flows/check_model.yaml" with { type: "file" }
+import checkModelYaml from "./flows/check_model.yaml" with { type: "file" }
 import { redact as redactSecrets, redactUrls } from "../util/redact.ts"
 import { embedded } from "../platform.ts"
 import type { Frame } from "../runtime/worker/channel.ts"

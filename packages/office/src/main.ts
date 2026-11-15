@@ -25,7 +25,7 @@ export const workerMain: ModeMain = async (argv) => {
   const env = Object.freeze({ ...process.env })
   // The check's module loads only for a check job, so a chat worker doesn't load it.
   return (await import("./runtime/worker/main.ts")).main(argv, env, {
-    check: async (job, jobEnv, signal) => (await import("./chat/check.ts")).runCheck(job, jobEnv, signal),
+    check: async (job, jobEnv, signal) => (await import("./models/check.ts")).runCheck(job, jobEnv, signal),
   })
 }
 /** One file operation inside the sandbox. */

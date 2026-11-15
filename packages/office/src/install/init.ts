@@ -3,7 +3,7 @@
  *  machine. */
 import path from "node:path"
 import type { Readable } from "node:stream"
-import type { ModelCheck } from "../chat/check.ts"
+import type { ModelCheck } from "../models/check.ts"
 import { agentFiles } from "../company/hire.ts"
 import type { Draft } from "../company/draft.ts"
 import { CompanyGitError } from "../company/git.ts"
