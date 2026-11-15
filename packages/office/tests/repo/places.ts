@@ -368,8 +368,6 @@ export const UPWARD: readonly string[] = [
   "perm/monitor.ts -> tools/workspace.ts WorkspaceCall",
   "perm/monitor.ts -> tools/workspace.ts WorkspaceTools",
   "questions/cards.ts -> daemon/office.ts Office",
-  "reach/state.ts -> hq/pairing.ts TTL",
-  "reach/state.ts -> hq/pairing.ts redirectPage",
   "worker/main.ts -> chat/check.ts import()",
 ]
 

@@ -4,10 +4,10 @@ import { createHash, randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { type FileLock, FileLockError, lockFile } from "@ngocbh/yian/platform"
-import { Timestamp } from "@opencorp/protocol"
+import { PAIR_CODE_TTL_MS, Timestamp } from "@opencorp/protocol"
 import { z } from "zod"
-import { redirectPage, TTL } from "../hq/pairing.ts"
 import { readPrivate, writePrivate } from "../util/private_files.ts"
+import { redirectPage } from "../util/redirect.ts"
 import type { ReachPaths } from "./paths.ts"
 import { exitAll, type ReachContext } from "./ssh.ts"
 
@@ -99,15 +99,15 @@ export async function writeRedirect(paths: ReachPaths, port: number, code: strin
 
 /** Deletes `file` once its code expired, never sooner: the browser reads it after `open` returns. A process that ends
  *  first leaves the 0600 file, holding only an expired code by then, to the next visit's sweep. */
-export function removeAtExpiry(file: string, ms: number = TTL): void {
+export function removeAtExpiry(file: string, ms: number = PAIR_CODE_TTL_MS): void {
   setTimeout(() => fs.rmSync(file, { force: true }), ms).unref()
 }
 
 const REDIRECTS = [/^pair-.*\.html$/, /^\.pair-.*\.html\..*\.tmp$/]
 
-/** Deletes `pair-*.html` and `.pair-*.html.*.tmp` in `hq/` older than `TTL`. */
+/** Deletes `pair-*.html` and `.pair-*.html.*.tmp` in `hq/` older than `PAIR_CODE_TTL_MS`. */
 export function sweepRedirects(paths: ReachPaths, now: number): void {
-  removeOlder(paths.dir, (name) => REDIRECTS.some((re) => re.test(name)), now - TTL)
+  removeOlder(paths.dir, (name) => REDIRECTS.some((re) => re.test(name)), now - PAIR_CODE_TTL_MS)
 }
 
 /** How old a status file or a learning run's candidate must be before a new visit deletes it. */

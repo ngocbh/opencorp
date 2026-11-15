@@ -5,7 +5,7 @@ import path from "node:path"
 import { createInterface } from "node:readline"
 import { fileURLToPath } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import { redirectPage, TTL } from "../../src/hq/pairing.ts"
+import { PAIR_CODE_TTL_MS } from "@opencorp/protocol"
 import { startTime } from "../../src/install/proc.ts"
 import { makeDirs, ReachPaths } from "../../src/reach/paths.ts"
 import { isSocket, runChild, sshEnv, startMaster, waitForSocket } from "../../src/reach/ssh.ts"
@@ -26,6 +26,7 @@ import {
 } from "../../src/reach/state.ts"
 import { fakeControlName } from "../../src/testing/fake_ssh.ts"
 import { PrivateFileError } from "../../src/util/private_files.ts"
+import { redirectPage } from "../../src/util/redirect.ts"
 import { isGone, shortDir, waitFor } from "../helpers.ts"
 import { fakeHome, reachCtx } from "./helpers.ts"
 
@@ -168,7 +169,7 @@ test("redirect files stay until their code expires, and a sweep removes only exp
   for (const f of [old, tmp, other]) fs.utimesSync(f, sixMinutesAgo, sixMinutesAgo)
   sweepRedirects(paths, now)
   expect([fs.existsSync(old), fs.existsSync(tmp), fs.existsSync(fresh), fs.existsSync(other)]).toEqual([false, false, true, true])
-  expect(TTL).toBe(5 * 60_000)
+  expect(PAIR_CODE_TTL_MS).toBe(5 * 60_000)
   removeAtExpiry(fresh, 50)
   expect(fs.existsSync(fresh)).toBe(true)
   await waitFor(() => !fs.existsSync(fresh), { timeout: 2000, what: "the file to go at its expiry" })

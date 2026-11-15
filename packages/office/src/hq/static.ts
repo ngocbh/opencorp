@@ -6,23 +6,11 @@ import { pipeline } from "node:stream"
 import { VERSION } from "@opencorp/protocol/version"
 import { sendError } from "../daemon/http.ts"
 import { CHECKOUT } from "../util/checkout.ts"
+import { escapeHtml } from "../util/redirect.ts"
 import { header, requestPath } from "./guard.ts"
 
 /** The cache policy for `assets/`, whose names carry a content hash. */
 export const IMMUTABLE = "public, max-age=31536000, immutable"
-
-const ESCAPES: Readonly<Record<string, string>> = {
-  "&": "&amp;",
-  "<": "&lt;",
-  ">": "&gt;",
-  '"': "&quot;",
-  "'": "&#x27;",
-}
-
-/** `text` with `& < > " '` escaped for HTML (Python's `html.escape`). */
-export function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/g, (ch) => ESCAPES[ch]!)
-}
 
 /**
  * The page sent while there's no built app in `appDir`: with no `appDir` (an install with no checkout and no app_dir),

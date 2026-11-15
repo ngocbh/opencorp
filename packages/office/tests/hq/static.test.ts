@@ -7,8 +7,9 @@ import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { createServer } from "../../src/daemon/http.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
 import { HEADERS, hqGuard } from "../../src/hq/guard.ts"
-import { escapeHtml, resolve, serveApp } from "../../src/hq/static.ts"
+import { resolve, serveApp } from "../../src/hq/static.ts"
 import { CHECKOUT } from "../../src/util/checkout.ts"
+import { escapeHtml } from "../../src/util/redirect.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"
 import { parse, raw } from "../daemon/helpers.ts"
 import { dist, values } from "./helpers.ts"
@@ -150,7 +151,6 @@ test("head works and a post to a page is refused", async () => {
 })
 
 test("the not built page escapes the checkout path", async () => {
-  expect(escapeHtml(`&<>"'`)).toBe("&amp;&lt;&gt;&quot;&#x27;")
   const sock = await served(path.join("/tmp/<b>x</b>", "packages", "app", "dist"), "/tmp/<b>x</b>")
   const r = await fetchRaw(sock, "GET", "/", DOC)
   expect(r.status).toBe(503)

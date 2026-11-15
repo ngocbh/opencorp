@@ -4,7 +4,9 @@ import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
 import { expect, onTestFinished, test } from "bun:test"
-import { MAX_PENDING, PairCodes, redirectPage, TTL } from "../../src/hq/pairing.ts"
+import { PAIR_CODE_TTL_MS } from "@opencorp/protocol"
+import { MAX_PENDING, PairCodes } from "../../src/hq/pairing.ts"
+import { redirectPage } from "../../src/util/redirect.ts"
 import { tempDir } from "../helpers.ts"
 
 const T0 = new Date("2026-10-19T10:00:00Z")
@@ -33,7 +35,7 @@ test("a code is 128 bits and works once", async () => {
   expect(minted.code).toHaveLength(22)
   expect(Buffer.from(minted.code, "base64url")).toHaveLength(16)
   expect(minted.file).toBeNull()
-  expect(minted.expiresAt).toEqual(new Date(T0.getTime() + TTL))
+  expect(minted.expiresAt).toEqual(new Date(T0.getTime() + PAIR_CODE_TTL_MS))
   const pending = codes.redeem(minted.code)
   expect([pending?.handle, pending?.issuer, pending?.sha]).toEqual(["ngocbh", "ngocbh", SHA])
   expect(codes.redeem(minted.code)).toBeNull()
@@ -48,7 +50,7 @@ test("a code expires after five minutes and its file goes", async () => {
   expect(path.dirname(file)).toBe(dir)
   expect(fs.statSync(file).mode & 0o777).toBe(0o600)
   expect(fs.readFileSync(file, "utf8")).toContain(pairUrl(minted.code))
-  clock.now = new Date(T0.getTime() + TTL)
+  clock.now = new Date(T0.getTime() + PAIR_CODE_TTL_MS)
   codes.sweep()
   expect(fs.existsSync(file)).toBe(false)
   expect(codes.redeem(minted.code)).toBeNull()
@@ -133,11 +135,7 @@ test("its inspect and json show no key or code", async () => {
   expect(JSON.parse(JSON.stringify(codes))).toEqual({ officeDir: dir, pending: 1 })
 })
 
-test("the redirect page is a meta refresh to the escaped link", async () => {
-  const page = redirectPage("http://x/pair#a&b")
-  expect(page).toContain('content="0;url=http://x/pair#a&amp;b"')
-  expect(page).toContain('<a href="http://x/pair#a&amp;b">')
-  expect(redirectPage('http://x/pair#"><script>')).not.toContain("<script>")
+test("a minted code's redirect file holds its redirect page", async () => {
   const codes = pairCodes(tempDir())
   const minted = await codes.mint("ngocbh", { ...MINT, openFile: true })
   expect(fs.readFileSync(minted.file!, "utf8")).toBe(redirectPage(pairUrl(minted.code)))
