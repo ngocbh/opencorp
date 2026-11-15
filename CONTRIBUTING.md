@@ -33,6 +33,9 @@ a model-written project could then shadow `bun` or `opencorp` itself.
 - CI runs a package's `bun test` only once it has a `*.test.ts(x)` file.
 - A new office test goes where `packages/office/tests/` mirrors `packages/office/src/`; see "Where
   tests live" in `ARCHITECTURE.md`.
+- When you change the docs site (`docs/`), also run
+  `(cd docs && bun install --frozen-lockfile && bun run build)`, with Node 22.23.4 or later.
+  [`docs/STYLE.md`](docs/STYLE.md) says how to write a page.
 
 ## GitHub workflow
 

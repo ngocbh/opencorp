@@ -14,6 +14,7 @@ Read before you change code:
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): setup, the tests and the pull-request workflow.
 - [`ARCHITECTURE.md`](ARCHITECTURE.md): the packages, the office's layers, and the rules that must
   not break.
+- [`docs/STYLE.md`](docs/STYLE.md): how to write a page on the docs site.
 
 ## Yian and OpenCorp
 
