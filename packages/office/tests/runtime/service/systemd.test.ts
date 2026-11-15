@@ -5,7 +5,7 @@ import { expect, test } from "bun:test"
 import { type Completed, ServiceError, launch } from "../../../src/runtime/service/launch.ts"
 import * as systemd from "../../../src/runtime/service/systemd.ts"
 import { tempDir } from "../../helpers.ts"
-import { Runner, makeHost, ownerLaunch } from "../../install/helpers.ts"
+import { Runner, makeHost, ownerLaunch } from "../../features/setup/helpers.ts"
 
 const GOLDEN = path.join(import.meta.dirname, "golden")
 const UNIT = "opencorp-office.service"

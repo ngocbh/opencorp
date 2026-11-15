@@ -12,19 +12,19 @@ import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { loadRepo } from "../../src/company/loader.ts"
 import { writeCompany } from "../../src/company/template.ts"
 import * as fallback from "../../src/runtime/service/fallback.ts"
-import type { InitOptions } from "../../src/install/init.ts"
+import type { InitOptions } from "../../src/features/setup/init.ts"
 import { launch, officeAnswers } from "../../src/runtime/service/launch.ts"
 import { afterStop, main, type Setup } from "../../src/install/main.ts"
-import { type OnboardOptions, SET_UP, setupConnectionFile, WHO } from "../../src/install/onboard.ts"
-import { KeyboardInterrupt, type Prompter, TtyPrompter } from "../../src/install/prompts.ts"
+import { type OnboardOptions, SET_UP, setupConnectionFile, WHO } from "../../src/features/setup/onboard.ts"
+import { KeyboardInterrupt, type Prompter, TtyPrompter } from "../../src/features/setup/prompts.ts"
 import type { Unread } from "../../src/runtime/service/service.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { OfficePaths } from "../../src/util/home.ts"
-import { fakeLlm } from "../chat/helpers.ts"
+import { fakeLlm } from "../features/chat/helpers.ts"
 import { git, gitEnv } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
-import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner, SRC, standIn } from "./helpers.ts"
+import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner, SRC, standIn } from "../features/setup/helpers.ts"
 
 // onTestFinished hooks inherit it, and a daemon's stop can take 25 s plus a SIGKILL.
 setDefaultTimeout(30_000)
@@ -1112,7 +1112,7 @@ test("sigterm, sighup and sigquit end setup at once and run its exit listeners",
 
 test("an input error after a prompt failed is not a crash", async () => {
   const dir = tempDir()
-  const prompts = JSON.stringify(path.join(SRC, "install/prompts.ts"))
+  const prompts = JSON.stringify(path.join(SRC, "features/setup/prompts.ts"))
   // The queued EIO comes in exit's one-macrotask yield, before the streams end: where it could count as a crash.
   const script = driver(
     dir,

@@ -12,7 +12,7 @@ import {
 import { z } from "zod"
 import { mayEditProfile } from "../../company/access.ts"
 import { type CompanyRepo, loadRepo, missingPerson } from "../../company/loader.ts"
-import { applyProposal, ProposalNotFound, ProposalNotOpen } from "../../profile/manager.ts"
+import { applyProposal, ProposalNotFound, ProposalNotOpen } from "../../features/profile/manager.ts"
 import { type GitProfileStore, ProfileConflict, ProfileRefused, ProfileUnreadable } from "../../company/profile.ts"
 import type { SessionHarness } from "../../runtime/sessions/harness.ts"
 import { newId } from "../../runtime/store/store.ts"

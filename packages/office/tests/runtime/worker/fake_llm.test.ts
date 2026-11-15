@@ -7,7 +7,7 @@ import { ConnectionFile } from "../../../src/models/connections.ts"
 import { listModels } from "../../../src/models/models.ts"
 import { loadConfined } from "../../../src/company/flows.ts"
 import { type FakeLLM, LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
-import { fakeLlm } from "../../chat/helpers.ts"
+import { fakeLlm } from "../../features/chat/helpers.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 
 setDefaultTimeout(30_000)

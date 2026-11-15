@@ -30,7 +30,7 @@ import {
   status,
   texts,
   unreadAtRestart,
-} from "../../chat/helpers.ts"
+} from "../../features/chat/helpers.ts"
 
 setDefaultTimeout(60_000)
 afterAll(noWorkersLeft)

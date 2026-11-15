@@ -343,7 +343,7 @@ function packagedFlows(): [string, string][] {
   const flows: [string, string][] = [["MAIN", MAIN], ["CHAT", CHAT]]
   for (const folder of [
     "../../src/company/template/shared/flows/",
-    "../../src/install/flows/",
+    "../../src/features/setup/flows/",
     "../../src/models/flows/",
   ]) {
     const dir = new URL(folder, import.meta.url)

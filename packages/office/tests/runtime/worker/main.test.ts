@@ -26,7 +26,7 @@ import {
   serve,
 } from "../../../src/runtime/worker/main.ts"
 import { type AskRequest, type OfficeTool, SIGN_IN_UNUSABLE } from "../../../src/runtime/worker/rpc.ts"
-import { fakeLlm, logPrefix, send, TemplateOffice, waitingChat } from "../../chat/helpers.ts"
+import { fakeLlm, logPrefix, send, TemplateOffice, waitingChat } from "../../features/chat/helpers.ts"
 import { captureStderr, shortDir, tempDir, waitFor } from "../../helpers.ts"
 import {
   advanceJob,
@@ -601,7 +601,7 @@ test("an event with no value field gets only the minimal stub", () => {
 test("the minimal stub keeps every event field the office reads", () => {
   // `SessionActor.#event` and `OpenNodes.apply` read an event frame's fields as `data.<field>`.
   const read = new Set<string>()
-  for (const file of ["chat/session_actor.ts", "runtime/runs/nodes.ts"]) {
+  for (const file of ["features/chat/session_actor.ts", "runtime/runs/nodes.ts"]) {
     const text = fs.readFileSync(path.join(import.meta.dir, "../../../src", file), "utf8")
     for (const [, field] of text.matchAll(/\bdata\.([a-z_]+)/g)) read.add(field!)
   }

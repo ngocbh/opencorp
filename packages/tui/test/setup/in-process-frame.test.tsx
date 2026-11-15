@@ -2,7 +2,7 @@
 // device code, the agent's question, a command to approve, the terminal handed to ssh and back, and the save view.
 import { expect, mock, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
-import { JsonPrompter } from "@opencorp/office/install/json_prompts"
+import { JsonPrompter } from "@opencorp/office/features/setup/json_prompts"
 import type { ScreenIo } from "../../src/setup/run"
 import { until } from "../fixture/until"
 

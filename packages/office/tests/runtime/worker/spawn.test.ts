@@ -25,7 +25,7 @@ import {
   WorkerExists,
   workerEnv,
 } from "../../../src/runtime/worker/spawn.ts"
-import { fakeLlm } from "../../chat/helpers.ts"
+import { fakeLlm } from "../../features/chat/helpers.ts"
 import { cwdOf, envEntries, envNames, isGone, ps, startGroup, tempDir, waitFor } from "../../helpers.ts"
 import { openStore } from "../store/helpers.ts"
 import {

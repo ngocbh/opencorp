@@ -2,7 +2,7 @@
 import { AnswerRequest, Question, SendBackRequest, Session, SideChatRequest } from "@opencorp/protocol"
 import { z } from "zod"
 import { strip } from "../../util/redact.ts"
-import type { Cards } from "../../questions/cards.ts"
+import type { Cards } from "../../features/questions/cards.ts"
 import { InvalidTransition } from "../../runtime/store/store.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, type Params, type Route } from "../http.ts"

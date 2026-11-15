@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
-import { type Check, report } from "../../src/install/doctor.ts"
+import { type Check, report } from "../../src/features/doctor/doctor.ts"
 import { ps } from "../helpers.ts"
 import { Browser, openOffice, type RunningOffice, URL_RE, waitListening } from "./helpers.ts"
 

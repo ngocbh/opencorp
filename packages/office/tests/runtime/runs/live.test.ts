@@ -1,7 +1,7 @@
 /** What memory says about runs: each session actor's open nodes, its live run, and run.updated sent from them. */
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import type { RunUpdated } from "@opencorp/protocol"
-import type { SessionActor } from "../../../src/chat/session_actor.ts"
+import type { SessionActor } from "../../../src/features/chat/session_actor.ts"
 import { PING } from "../../../src/runtime/bus.ts"
 import { Live } from "../../../src/runtime/runs/records.ts"
 import { makeOffice, standInHarness } from "../../daemon/helpers.ts"
@@ -17,7 +17,7 @@ import {
   status,
   TAKE,
   waitingResult,
-} from "../../chat/helpers.ts"
+} from "../../features/chat/helpers.ts"
 
 setDefaultTimeout(60_000)
 afterAll(noWorkersLeft)

@@ -19,7 +19,7 @@ import { isPermanentToolError, isReportedToolError } from "@ngocbh/yian/tools"
 import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
 import { RemoteMemory } from "../../../src/runtime/worker/remote_memory.ts"
 import { BaseHandlers } from "../../../src/runtime/worker/rpc.ts"
-import { fakeLlm } from "../../chat/helpers.ts"
+import { fakeLlm } from "../../features/chat/helpers.ts"
 import { tempDir } from "../../helpers.ts"
 import { officeEnd, PROFILED, profileMemory } from "./helpers.ts"
 
