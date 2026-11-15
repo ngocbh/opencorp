@@ -1,7 +1,7 @@
 /** Which node of a conversation flow is the turn. */
 import { expect, test } from "bun:test"
 import { staticPathOf } from "@ngocbh/yian/run"
-import { ChatFlow, MAIN_CHAT } from "../../src/chat/turns.ts"
+import { ChatFlow, MAIN_CHAT } from "../../src/company/chat_flow.ts"
 
 const CASES = [
   ["chat#3/ask", "chat/ask"],

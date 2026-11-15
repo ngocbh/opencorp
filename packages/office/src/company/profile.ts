@@ -16,9 +16,9 @@ import {
 } from "@ngocbh/yian"
 import type { JsonObject } from "@ngocbh/yian/run"
 import { Handle } from "@opencorp/protocol"
-import { errno } from "../company/flows.ts"
-import { type CompanyGit, oneLine } from "../company/git.ts"
-import { profilePath } from "../company/loader.ts"
+import { errno } from "./flows.ts"
+import { type CompanyGit, oneLine } from "./git.ts"
+import { profilePath } from "./loader.ts"
 
 /** The profile's file in its memory folder: the FileMemory's index, whose text is a chat's recall. */
 export const PROFILE_INDEX = "profile.md"

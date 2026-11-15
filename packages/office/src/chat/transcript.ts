@@ -15,7 +15,7 @@ import { Handle, type Message, type Part, type ToolPart } from "@opencorp/protoc
 import { INTERRUPTED_TEXT } from "../harness/translate.ts"
 import { CHUNK, HUGE_LINE } from "../runs/reader.ts"
 import { errorName } from "../worker/rpc.ts"
-import { MAIN_CHAT } from "./turns.ts"
+import { MAIN_CHAT } from "../company/chat_flow.ts"
 
 export { INTERRUPTED_TEXT }
 

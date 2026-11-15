@@ -4,14 +4,14 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { HireRequest, Person } from "@opencorp/protocol"
-import { agentFiles, HireRefused, Hiring } from "../../src/chat/hire.ts"
+import { agentFiles, HireRefused, Hiring } from "../../src/company/hire.ts"
 import { CompanyGit, type LockedGit } from "../../src/company/git.ts"
 import { readYaml } from "../../src/company/flow_yaml.ts"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
-import { baseFiles, git as runGit, gitEnv, person, writeRepo } from "../company/helpers.ts"
+import { baseFiles, git as runGit, gitEnv, person, writeRepo } from "./helpers.ts"
 import { tempDir } from "../helpers.ts"
-import { CHAT_FILES, CHAT_FLOW } from "./helpers.ts"
+import { CHAT_FILES, CHAT_FLOW } from "../chat/helpers.ts"
 
 setDefaultTimeout(30_000)
 

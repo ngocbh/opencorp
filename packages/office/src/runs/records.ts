@@ -12,7 +12,7 @@ import {
   type RunStatus,
   type WaitInfo,
 } from "@ngocbh/yian/run"
-import { MAIN_CHAT } from "../chat/turns.ts"
+import { MAIN_CHAT } from "../company/chat_flow.ts"
 import {
   LIVE,
   REASON_CHARS,

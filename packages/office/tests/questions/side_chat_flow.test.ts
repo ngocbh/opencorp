@@ -8,7 +8,7 @@ import { loadConfined } from "../../src/company/flows.ts"
 
 setDefaultTimeout(30_000)
 
-const ROOT = fileURLToPath(new URL("../../src/company_template/template/", import.meta.url))
+const ROOT = fileURLToPath(new URL("../../src/company/template/", import.meta.url))
 const SIDE_CHAT = path.join(ROOT, "shared", "flows", "side_chat.yaml")
 
 function read(): Record<string, any> {

@@ -15,7 +15,7 @@ import {
   propose,
   STALE_EDIT,
 } from "../../src/profile/manager.ts"
-import { GitProfileStore, ProfileConflict } from "../../src/profile/store.ts"
+import { GitProfileStore, ProfileConflict } from "../../src/company/profile.ts"
 import type { FakeLLM } from "../../src/testing/fake_llm.ts"
 import { writePrivate } from "../../src/util/private_files.ts"
 import { fakeLlm, makeHarness, ROOT, running, status, texts } from "../chat/helpers.ts"

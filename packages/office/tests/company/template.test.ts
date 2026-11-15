@@ -4,7 +4,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { HireRequest } from "@opencorp/protocol"
-import { Hiring } from "../../src/chat/hire.ts"
+import { Hiring } from "../../src/company/hire.ts"
 import { readYaml, writeYaml } from "../../src/company/flow_yaml.ts"
 import { loadConfined } from "../../src/company/flows.ts"
 import { CompanyGit } from "../../src/company/git.ts"
@@ -18,13 +18,13 @@ import {
   type Owner,
   templateFiles,
   writeCompany,
-} from "../../src/company_template/index.ts"
-import { git } from "../company/helpers.ts"
+} from "../../src/company/template.ts"
+import { git } from "./helpers.ts"
 import { tempDir } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
 
-const TEMPLATE = fileURLToPath(new URL("../../src/company_template/template/", import.meta.url))
+const TEMPLATE = fileURLToPath(new URL("../../src/company/template/", import.meta.url))
 const OWNER: Owner = { handle: "ngocbh", name: "Hong Ngoc Bui" }
 const PACKAGED_FLOWS = fs
   .readdirSync(path.join(TEMPLATE, "shared", "flows"))

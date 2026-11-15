@@ -14,7 +14,7 @@ import { deviceName, Identity, readIdentity, writeIdentity } from "../../src/aut
 import { hashPassword } from "../../src/auth/passwords.ts"
 import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
 import { loadRepo } from "../../src/company/loader.ts"
-import { writeCompany } from "../../src/company_template/index.ts"
+import { writeCompany } from "../../src/company/template.ts"
 import { makeOfficeDir } from "../../src/util/sockets.ts"
 import {
   makeHome,
