@@ -28,7 +28,7 @@ import { cancelReplaced, readSeed } from "../chat/history.ts"
 import { MAIN_CHAT } from "../chat/turns.ts"
 import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
-import { Delivery, type Job, parseJob, STOP_REASON } from "./job.ts"
+import { Delivery, type Job, parseJob, STOP_REASON, type WorkerEnv } from "./job.ts"
 import { RemoteMemory } from "./remote_memory.ts"
 import {
   askUserStub,
@@ -47,9 +47,6 @@ export const EXIT_FAILED = 1
 export const EXIT_ORPHANED = 3
 /** How long, in ms, a worker keeps answering deliveries after its last frame, waiting for the office to close. */
 export const LINGER_MS = 5000
-
-/** The worker's environment, passed in explicitly. */
-export type WorkerEnv = Readonly<Record<string, string | undefined>>
 
 /** How yian reads an environment variable (yian doesn't export its own `Env` type). */
 type Env = (name: string) => string | undefined

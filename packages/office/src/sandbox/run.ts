@@ -6,8 +6,16 @@ import type { Readable } from "node:stream"
 import * as bwrap from "./bwrap.ts"
 import { Canary, killEscaped } from "./escapees.ts"
 import { killGroup } from "../install/proc.ts"
-import { endPipe, helperCommand, pipe, pipeReadable, processLimits, type ProcessLimits } from "../platform.ts"
-import { type Helper, helperFiles, isInside, type SandboxPolicy } from "./policy.ts"
+import {
+  endPipe,
+  type Helper,
+  helperCommand,
+  pipe,
+  pipeReadable,
+  processLimits,
+  type ProcessLimits,
+} from "../platform.ts"
+import { helperFiles, isInside, type SandboxPolicy } from "./policy.ts"
 import { profile } from "./seatbelt.ts"
 
 export const SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"

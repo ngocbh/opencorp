@@ -66,7 +66,6 @@ Each category is a top-level folder of `packages/office/src/`. The order, lowest
 
 Until the moves are done, a ratchet list, `UPWARD` in `packages/office/tests/repo/places.ts`, exempts
 each import that still breaks rule 2 or 4, and the change that fixes an import deletes its line.
-Two of them, by today's paths, break rule 4: `perm/redact → secrets` and `platform → sandbox/policy`.
 
 `places.ts` also maps each file's path today to its final one (`PLACES`, `TEST_PLACES`) and lists the folder
 cycles left in `CYCLES`; `packages/office/script/relayout.ts` makes each move. A new file in an old folder (one that

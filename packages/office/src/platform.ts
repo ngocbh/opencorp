@@ -11,7 +11,6 @@ import path from "node:path"
 import { Readable } from "node:stream"
 import type { ReadableStream } from "node:stream/web"
 import { fileURLToPath } from "node:url"
-import type { Helper } from "./sandbox/policy.ts"
 
 /** The Bun flags that stop a checkout's Bun from reading the cwd's `.env` and `bunfig.toml`
  *  (and its preloads) or installing a missing package; `packages/cli/bin/opencorp` passes the
@@ -31,6 +30,9 @@ export function selfCommand(): [string, ...string[]] {
 export function tuiAssetRoot(): string | null {
   return Bun.isStandaloneExecutable ? path.join(path.dirname(process.execPath), "..", "assets") : null
 }
+
+/** The `__fs-helper` program: the compiled binary, or Bun running the helper's source file. */
+export type Helper = { binary: string } | { bun: string; entry: string }
 
 /** How to run the `__fs-helper`, and the files its profile exposes: the compiled binary in its helper
  *  mode, or (checkout) this Bun with the no-autoload flags running `sandbox/fs_helper.ts` as its entry. */

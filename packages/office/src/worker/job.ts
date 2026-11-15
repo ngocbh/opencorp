@@ -1,4 +1,4 @@
-/** The job the office hands a worker, and helpers that describe office-side tools. */
+/** The job the office hands a worker, the worker's environment type, and helpers that describe office-side tools. */
 import path from "node:path"
 import { validationMessage } from "@opencorp/protocol"
 import { z } from "zod"
@@ -102,6 +102,9 @@ export const Job = z
   .refine((job) => !job.keep || job.kind !== "check", { message: "a check job never keeps", path: ["keep"] })
 export type Job = z.output<typeof Job>
 export type JobInput = z.input<typeof Job>
+
+/** The worker's environment, passed in explicitly. */
+export type WorkerEnv = Readonly<Record<string, string | undefined>>
 
 /** A job failed validation; the message names fields only, never a value. */
 export class JobError extends Error {

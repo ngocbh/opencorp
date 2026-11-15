@@ -6,8 +6,8 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import type { Helper, SandboxPolicy } from "../../src/sandbox/policy.ts"
-import { helperCommand, processLimits } from "../../src/platform.ts"
+import type { SandboxPolicy } from "../../src/sandbox/policy.ts"
+import { type Helper, helperCommand, processLimits } from "../../src/platform.ts"
 import * as bwrap from "../../src/sandbox/bwrap.ts"
 import {
   capture,

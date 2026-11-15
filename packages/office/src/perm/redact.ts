@@ -2,12 +2,14 @@
  *  knows, as the Python office's monitor scrubbed them, with the Python string functions it relied on. */
 
 import { Buffer } from "node:buffer"
-import { MIN_VALUE_CHARS } from "../secrets.ts"
 
 /** What replaces a secret. */
 export const REDACTED = "[redacted]"
 /** Characters of a result kept in its audit row. */
 export const DETAIL_CHARS = 2000
+/** The shortest value the secret store accepts: results are scrubbed of every secret value, so a short one would
+ *  mangle them. */
+export const MIN_VALUE_CHARS = 8
 /** Lines of a multi-line secret this long or longer are scrubbed on their own: the secret store's minimum value
  *  length. */
 export const SECRET_LINE_CHARS = MIN_VALUE_CHARS

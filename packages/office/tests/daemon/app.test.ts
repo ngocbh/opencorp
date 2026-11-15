@@ -1,8 +1,9 @@
 /** The office: its paths, and start and stop. */
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
-import { OfficePaths, type WorkerPool } from "../../src/daemon/office.ts"
+import { OfficePaths } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
+import type { WorkerPool } from "../../src/worker/spawn.ts"
 import { tempDir } from "../helpers.ts"
 import { makeOffice, request, served, ULID } from "./helpers.ts"
 

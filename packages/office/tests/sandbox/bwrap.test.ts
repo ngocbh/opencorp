@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
 import { command, SYSTEM_DIRS } from "../../src/sandbox/bwrap.ts"
-import type { Helper } from "../../src/sandbox/policy.ts"
+import type { Helper } from "../../src/platform.ts"
 import { goldenPolicy, makePolicy } from "./helpers.ts"
 
 /** `makePolicy()` with its root as a read-only path (Python's `make` fixture). */

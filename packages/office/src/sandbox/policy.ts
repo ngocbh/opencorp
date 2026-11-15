@@ -2,6 +2,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import type { Helper } from "../platform.ts"
 
 /** Home paths holding credentials or office state; a workspace may not be one of them or
  *  lie inside one, since the workspace is readable (and maybe writable) by model code. */
@@ -46,9 +47,6 @@ export interface OfficePaths {
    *  path walks through. */
   path?: readonly string[]
 }
-
-/** The `__fs-helper` program: the compiled binary, or Bun running the helper's source file. */
-export type Helper = { binary: string } | { bun: string; entry: string }
 
 /** The files the helper runs from: `[binary]`, or `[bun, entry]`. */
 export function helperFiles(helper: Helper): string[] {
