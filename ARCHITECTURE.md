@@ -98,8 +98,9 @@ hold one file.
 
 ### Folder cards
 
-These are the folders. Same-category dependencies are named by folder; "runtime" alone means its root
-files, and "runtime (root, store)" its root files and a folder. Users outside the office package come after a `;`.
+These are the folders. In "Depends on" and "Used by", a category alone ("runtime") means its root files, or the
+whole category for util, company and models, which have no code folders; "runtime/store" or "runtime/{runs, store}"
+names folders, and "runtime (root, store)" names both. Users outside the office package come after a `;`.
 Each card's "Depends on" and "Used by", up to the `;`, are checked against the imports
 (`packages/office/tests/repo/layer_direction.test.ts`, "each folder card in ARCHITECTURE.md names what its folder
 imports and what imports it").

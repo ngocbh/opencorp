@@ -1,6 +1,6 @@
 /**
  * The office's folder layout (ARCHITECTURE.md, "Where tests live" and "Feature folders"): `tests/` mirrors `src/`,
- * and each feature folder keeps its shape.
+ * at its root too, and each feature folder keeps its shape.
  */
 import { expect, test } from "bun:test"
 import fs from "node:fs"
@@ -25,6 +25,15 @@ const srcFolder = (dir: string): boolean => fs.statSync(path.join(SRC, dir), { t
 test("every test folder that holds a ts file has its src folder", () => {
   const folders = new Set(TEST_FILES.filter((file) => CODE.test(file)).map(folderOf))
   expect([...folders].filter((dir) => dir !== "" && !srcFolder(dir))).toEqual([])
+})
+
+/** The files at the root of `tests/` that test the office as a whole. */
+const WHOLE_OFFICE = new Set(["helpers.ts", "smoke.test.ts"])
+
+test("every file at the root of tests/ tests the whole office or a file at the root of src/", () => {
+  const roots = SRC_FILES.filter((file) => !file.includes("/")).map((file) => file.replace(/\.ts$/, ".test.ts"))
+  const stray = TEST_FILES.filter((file) => !file.includes("/") && !WHOLE_OFFICE.has(file) && !roots.includes(file))
+  expect(stray).toEqual([])
 })
 
 /** What a feature folder may hold at its top, besides JS or TS modules and the data files they embed. */

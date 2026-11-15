@@ -81,20 +81,19 @@ test("importsOf reads every kind of import, and none in comments or strings", ()
     'const s = \'import { no } from "./string.ts"\'',
     "export const x = 1",
   ].join("\n")
-  const got = importsOf(text).map(({ kind, specifier, typeOnly, data, names }) => ({ kind, specifier, typeOnly, data, names }))
-  expect(got).toEqual([
-    { kind: "static", specifier: "node:fs", typeOnly: false, data: false, names: ["default"] },
-    { kind: "static", specifier: "./a.ts", typeOnly: true, data: false, names: ["A"] },
-    { kind: "static", specifier: "./b.ts", typeOnly: true, data: false, names: ["B", "C"] },
-    { kind: "static", specifier: "./e.ts", typeOnly: false, data: false, names: ["e", "F"] },
-    { kind: "static", specifier: "./g.ts", typeOnly: false, data: false, names: ["*"] },
-    { kind: "static", specifier: "./h.ts", typeOnly: false, data: false, names: ["h"] },
-    { kind: "side", specifier: "./side.ts", typeOnly: false, data: false, names: [] },
-    { kind: "static", specifier: "./x.sql", typeOnly: false, data: true, names: ["default"] },
-    { kind: "static", specifier: "./flow.yaml", typeOnly: false, data: true, names: ["default"] },
-    { kind: "dynamic", specifier: "./m.ts", typeOnly: false, data: false, names: ["import()"] },
-    { kind: "reference", specifier: "../files.d.ts", typeOnly: true, data: false, names: [] },
-    { kind: "reference", specifier: "./more.d.ts", typeOnly: true, data: false, names: [] },
+  expect(importsOf(text)).toEqual([
+    { kind: "static", specifier: "node:fs", typeOnly: false, data: false },
+    { kind: "static", specifier: "./a.ts", typeOnly: true, data: false },
+    { kind: "static", specifier: "./b.ts", typeOnly: true, data: false },
+    { kind: "static", specifier: "./e.ts", typeOnly: false, data: false },
+    { kind: "static", specifier: "./g.ts", typeOnly: false, data: false },
+    { kind: "static", specifier: "./h.ts", typeOnly: false, data: false },
+    { kind: "side", specifier: "./side.ts", typeOnly: false, data: false },
+    { kind: "static", specifier: "./x.sql", typeOnly: false, data: true },
+    { kind: "static", specifier: "./flow.yaml", typeOnly: false, data: true },
+    { kind: "dynamic", specifier: "./m.ts", typeOnly: false, data: false },
+    { kind: "reference", specifier: "../files.d.ts", typeOnly: true, data: false },
+    { kind: "reference", specifier: "./more.d.ts", typeOnly: true, data: false },
   ])
 })
 
