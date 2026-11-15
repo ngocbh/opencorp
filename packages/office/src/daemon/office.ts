@@ -1,5 +1,5 @@
 /** The office object: what the routes and services share. */
-import { Session, now } from "@opencorp/protocol"
+import { type CompanyView, type HqStatus, type PairCode, Session, now } from "@opencorp/protocol"
 import type { ModelCheck } from "../chat/check.ts"
 import { Connections, type ConnectionsOptions } from "../chat/connections.ts"
 import { Hiring } from "../chat/hire.ts"
@@ -9,7 +9,6 @@ import type { Transcript } from "../chat/transcript.ts"
 import { type CompanyGit, PIN_GRACE_MS } from "../company/git.ts"
 import { CompanySnapshots } from "../company/snapshot.ts"
 import type { CodexSessions } from "../harness/sessions.ts"
-import type { Hq } from "../hq/core.ts"
 import type { Tools } from "../install/tools.ts"
 import { GitProfileStore } from "../profile/store.ts"
 import type { Cards } from "../questions/cards.ts"
@@ -20,7 +19,7 @@ import { RunLogs } from "../runs/service.ts"
 import type { SessionHarness } from "../runtime/sessions/harness.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { SecretStore } from "../secrets.ts"
-import type { Store } from "../store/store.ts"
+import type { HqSessionRecord, Store } from "../store/store.ts"
 import type { OfficePaths } from "../util/home.ts"
 import type { WorkerPool } from "../worker/spawn.ts"
 import { DeviceTokens } from "./auth.ts"
@@ -44,6 +43,18 @@ export interface RequestContext {
   tokenSha256?: string
   signal: AbortSignal
   query: URLSearchParams
+}
+
+/** What HQ's routes on the office socket (`server/routes/hq.ts`) call on HQ: its status, one-time links, the company at
+ *  HEAD, and the browser sessions. `Hq` has all of it; `attach` sets `office.hq`. */
+export interface OfficeHq {
+  status(): Promise<HqStatus>
+  mint(handle: string, options: { issuer: string; openFile: boolean; sha: string }): Promise<PairCode>
+  readonly snapshots: { head(): Promise<CompanyView | null> }
+  readonly sessions: {
+    listLive(person: string): Promise<HqSessionRecord[]>
+    revoke(sid: string): Promise<boolean>
+  }
 }
 
 /** Everything the routes and services share: store, company git, bus, hiring, connections, models and sign-ins,
@@ -79,7 +90,7 @@ export class Office {
   readonly runNotifier: RunNotifier
   workers: WorkerPool | undefined
   /** HQ, once `attach` put it here. */
-  hq: Hq | undefined
+  hq: OfficeHq | undefined
   /** The session harness that card actions and the session routes go through; set before the extensions load. */
   harness: SessionHarness | undefined
   /** The question cards, once the questions extension built them. */

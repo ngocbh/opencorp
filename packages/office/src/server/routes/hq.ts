@@ -1,14 +1,13 @@
 /** HQ's routes on the office socket, which HQ's listeners never serve: status, one-time links, browser sessions. */
 import { Ack, BrowserSession, type CompanyView, HqStatus, PairCode, PairCodeRequest } from "@opencorp/protocol"
 import { z } from "zod"
-import { doesntLoad, personFileBroken } from "../company/loader.ts"
-import { actingPerson } from "../daemon/auth.ts"
-import { HttpError, type Route } from "../daemon/http.ts"
-import type { RequestContext } from "../daemon/office.ts"
-import type { Hq } from "./core.ts"
+import { doesntLoad, personFileBroken } from "../../company/loader.ts"
+import { actingPerson } from "../../daemon/auth.ts"
+import { HttpError, type Route } from "../../daemon/http.ts"
+import type { OfficeHq, RequestContext } from "../../daemon/office.ts"
 
 /** The office's HQ, or a 501 naming `what` (the route's method and pattern). */
-function hqOf(ctx: RequestContext, what: string): Hq {
+function hqOf(ctx: RequestContext, what: string): OfficeHq {
   const hq = ctx.office.hq
   if (hq === undefined) throw new HttpError(501, "not_implemented", `${what} is not implemented yet`)
   return hq
