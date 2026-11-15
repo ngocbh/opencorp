@@ -1,4 +1,5 @@
-/docs/
+/docs/plans/
+.astro/
 node_modules/
 dist/
 *.tsbuildinfo
