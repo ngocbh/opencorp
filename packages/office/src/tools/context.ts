@@ -1,10 +1,9 @@
 /** What a run can offer its host tools. */
-// Types only: perm/monitor.ts, tools/workspace.ts and this module import each other, and every edge is type-only.
+// Types only: this module names the office objects a run hands its tools, and loads none of them.
 import type { CompanyRepo } from "../company/loader.ts"
-import type { Monitor } from "../perm/monitor.ts"
+import type { AuditedTools, Monitor } from "../perm/monitor.ts"
 import type { Carried, OnQuestion } from "../questions/ask.ts"
 import type { QuestionRecord, SessionRecord, Store } from "../store/store.ts"
-import type { WorkspaceTools } from "./workspace.ts"
 
 /**
  * What one run can offer its tools; each group offers only the tools whose needs are set.
@@ -22,7 +21,7 @@ export interface ToolContext {
   readonly carried?: Carried
   readonly monitor?: Monitor
   /** What `Monitor.workspace` takes, so a stand-in fits. */
-  readonly workspace?: Pick<WorkspaceTools, "call">
+  readonly workspace?: AuditedTools
   readonly readOnly?: boolean
   readonly question?: QuestionRecord
 }
