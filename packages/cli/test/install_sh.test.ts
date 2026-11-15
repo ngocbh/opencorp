@@ -1234,7 +1234,7 @@ describe("uninstall.sh", () => {
       ],
       [
         "ignored plans in docs/plans",
-        files("docs/"),
+        files("docs/plans/"),
         (h) => {
           fs.mkdirSync(path.join(h.clone, "docs/plans"), { recursive: true })
           fs.writeFileSync(path.join(h.clone, "docs/plans/design.md"), "plan\n")

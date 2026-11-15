@@ -173,7 +173,7 @@ Each visit runs `opencorp hq --check` on HQ's machine, so that checkout needs th
 app, and says how to fix what it finds. `opencorp start` starts the office if it isn't running;
 `opencorp restart` restarts it.
 
-Layout, tests and workflow for contributors: [CLAUDE.md](CLAUDE.md).
+Layout, tests and workflow for contributors: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 OpenCorp isn't affiliated with OpenCode (its TUI is forked from OpenCode's) or with OpenCorporates.
 
