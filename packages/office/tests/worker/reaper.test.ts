@@ -1,7 +1,7 @@
 /** The reaper: leftover process groups are killed by pid and start time, and every record looked at is removed. */
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
-import { killGroup, startTime } from "../../src/install/proc.ts"
+import { killGroup, startTime } from "../../src/util/proc.ts"
 import type { Store } from "../../src/store/store.ts"
 import { type Readings, reap } from "../../src/worker/reaper.ts"
 import { fakeLlm } from "../chat/helpers.ts"

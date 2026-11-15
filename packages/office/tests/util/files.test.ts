@@ -2,7 +2,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
-import { readRegular, tailRegular, writeIfChanged } from "../../src/install/files.ts"
+import { readRegular, tailRegular, writeIfChanged } from "../../src/util/files.ts"
 import { fifo, tempDir } from "../helpers.ts"
 
 /** The `.tmp` names in `dir`. */

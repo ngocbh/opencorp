@@ -1,5 +1,5 @@
 /** Kills processes left over from an earlier office (or an earlier spawn in this one). */
-import { bootTime, inOfficeGroup, killGroup, noSuchProcess, startTime } from "../install/proc.ts"
+import { bootTime, inOfficeGroup, killGroup, noSuchProcess, startTime } from "../util/proc.ts"
 import type { Store, WorkerRecord } from "../store/store.ts"
 
 /** What the reaper reads about processes before it signals a group; tests pass stand-ins. */

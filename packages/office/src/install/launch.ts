@@ -7,10 +7,10 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
-import { makeOfficeDir, OfficeStartError } from "../daemon/sockets.ts"
+import { makeOfficeDir, OfficeStartError } from "../util/sockets.ts"
 import { reexec, selfCommand } from "../platform.ts"
 import { type Env, INHERITED_ENV, which } from "../util/env.ts"
-import { killGroup } from "./proc.ts"
+import { killGroup } from "../util/proc.ts"
 
 /** A service manager refused to install or start the office; the message says why. */
 export class ServiceError extends Error {

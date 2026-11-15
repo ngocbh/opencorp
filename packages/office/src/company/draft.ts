@@ -1,7 +1,7 @@
 /** A proposed company, as the owner's interview drafts it, and what's wrong with it. */
 import { HireRequest, validationMessage } from "@opencorp/protocol"
 import { type Owner, templateFiles } from "../company_template/index.ts"
-import { strip } from "../perm/redact.ts"
+import { strip } from "../util/redact.ts"
 import { handleProblem } from "./naming.ts"
 
 /** A first teammate: an agent reporting to the CEO, with a sentence that seeds their profile. */

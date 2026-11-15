@@ -3,11 +3,11 @@ import type { ChildProcess } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
-import { makeOfficeDir } from "../daemon/sockets.ts"
+import { makeOfficeDir } from "../util/sockets.ts"
 import { which } from "../util/env.ts"
 import { strerror } from "../util/errors.ts"
 import { type Completed, type Host, type Launch, ServiceError, daemonEnv } from "./launch.ts"
-import { args, isDaemonLine, startTime, stopProcess as stopPid } from "./proc.ts"
+import { args, isDaemonLine, startTime, stopProcess as stopPid } from "../util/proc.ts"
 import { resolveTools } from "./tools.ts"
 
 /** The office's tmux session, `opencorp-<name>`. */

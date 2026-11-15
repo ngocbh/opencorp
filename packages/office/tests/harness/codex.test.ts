@@ -15,7 +15,7 @@ import {
   ownerLoad,
 } from "../../src/harness/codex.ts"
 import { RpcClosed } from "../../src/harness/rpc.ts"
-import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
+import { killGroup, sameProcess, startTime } from "../../src/util/proc.ts"
 import type { Store } from "../../src/store/store.ts"
 import { reap } from "../../src/worker/reaper.ts"
 import { workerEnv } from "../../src/worker/spawn.ts"

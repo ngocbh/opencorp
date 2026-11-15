@@ -14,7 +14,7 @@ import { EXTENSIONS, type Extension, ExtensionError, loadExtensions } from "../e
 import { CodexSessions } from "../harness/sessions.ts"
 import { attach } from "../hq/core.ts"
 import { daemonArgs, daemonEnv, requireCompany, resolveHome, wantedHome } from "../install/launch.ts"
-import { args, isDaemonLine, startTime } from "../install/proc.ts"
+import { args, isDaemonLine, startTime } from "../util/proc.ts"
 import { type Tools, resolveTools, workspaceGuards } from "../install/tools.ts"
 import { Monitor } from "../perm/monitor.ts"
 import { selfCommand } from "../platform.ts"
@@ -48,7 +48,7 @@ import {
   probeSocket,
   removeOwnSocket,
   removeStaleSocket,
-} from "./sockets.ts"
+} from "../util/sockets.ts"
 
 /** How long a start waits for the home's lock before it reports the office already running: a busy
  *  result can be momentary (a probe or a racing start). */

@@ -5,7 +5,7 @@ import { hashPassword, passwordProblem } from "../auth/passwords.ts"
 import { runSetup } from "../chat/check.ts"
 import type { Provider } from "../chat/provider.ts"
 import { type Draft, type InitOutput, draftFromOutput, draftProblems, fieldProblems } from "../company/draft.ts"
-import { pyJson, strip } from "../perm/redact.ts"
+import { pyJson, strip } from "../util/redact.ts"
 import { embedded } from "../platform.ts"
 import { checkCompanyTool } from "../tools/company/draft.ts"
 import initYaml from "./flows/init.yaml" with { type: "file" }

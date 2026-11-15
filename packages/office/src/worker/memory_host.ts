@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto"
 import type { MemoryBase, MemorySession } from "@ngocbh/yian"
 import type { JsonObject } from "@ngocbh/yian/run"
-import { repr } from "../perm/redact.ts"
+import { repr } from "../util/redact.ts"
 import type { Frame } from "./channel.ts"
 
 /** A worker's memory request, by its frame type `memory_<op>`: `open` names a memory of the job; the others name the

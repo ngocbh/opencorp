@@ -11,7 +11,7 @@ import { type CodexProcess, CodexStartError, ownerLoad } from "../../src/harness
 import { JsonRpc, RpcClosed, RpcError } from "../../src/harness/rpc.ts"
 import type { CodexSession } from "../../src/harness/session.ts"
 import { CodexSessions } from "../../src/harness/sessions.ts"
-import { killGroup, startTime } from "../../src/install/proc.ts"
+import { killGroup, startTime } from "../../src/util/proc.ts"
 import { realPath } from "../../src/sandbox/policy.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
 import { workerEnv } from "../../src/worker/spawn.ts"

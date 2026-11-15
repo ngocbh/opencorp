@@ -1,7 +1,7 @@
 /** Workspace tools: read, write, edit, list, search, and shell, each one sandboxed call. */
-import { startTime } from "../install/proc.ts"
+import { startTime } from "../util/proc.ts"
 import type { ToolOutcome, WorkspaceCall } from "../perm/monitor.ts"
-import { pyJson, repr, strip } from "../perm/redact.ts"
+import { pyJson, repr, strip } from "../util/redact.ts"
 import type { SandboxPolicy } from "../sandbox/policy.ts"
 import { fsHelper, type Result, run } from "../sandbox/run.ts"
 import { newId, type Store } from "../store/store.ts"

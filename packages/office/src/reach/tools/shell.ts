@@ -1,7 +1,7 @@
 /** `learn_hq`'s `shell` tool, which runs a command once the owner approves it. */
 import { type FunctionTool, ReportedToolError, tool } from "@ngocbh/yian"
 import { type Card, clean } from "../../install/prompts.ts"
-import { strip } from "../../perm/redact.ts"
+import { strip } from "../../util/redact.ts"
 import {
   ASCII_ONLY,
   credentialWarning,

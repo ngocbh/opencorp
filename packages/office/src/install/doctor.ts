@@ -35,7 +35,7 @@ import { OfficePaths } from "../util/home.ts"
 import { plainAuthError } from "../worker/rpc.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import * as fallback from "./fallback.ts"
-import { readRegular } from "./files.ts"
+import { readRegular } from "../util/files.ts"
 import { defaultHost, type Host, type Launch, launch, runCommand } from "./launch.ts"
 import * as launchd from "./launchd.ts"
 import {

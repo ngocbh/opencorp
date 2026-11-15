@@ -18,7 +18,7 @@ import {
   selfSpawnEnv,
   threadEntry,
 } from "../src/platform.ts"
-import { args } from "../src/install/proc.ts"
+import { args } from "../src/util/proc.ts"
 import { NO_GROUP, ps, psStat, startGroup, tempDir, waitFor } from "./helpers.ts"
 
 setDefaultTimeout(30_000)

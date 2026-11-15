@@ -19,7 +19,7 @@ import {
   messageOf,
   removeOwnSocket,
   removeStaleSocket,
-} from "../daemon/sockets.ts"
+} from "../util/sockets.ts"
 import { createHqApp } from "./api.ts"
 import type { Hq } from "./core.ts"
 import { BODY_TIMEOUT } from "./guard.ts"

@@ -14,7 +14,7 @@ import {
   sameProcess,
   startTime,
   stopProcess,
-} from "../../src/install/proc.ts"
+} from "../../src/util/proc.ts"
 import { isGone, NO_GROUP, ps, psStat, startGroup, tempDir, waitFor } from "../helpers.ts"
 
 setDefaultTimeout(30_000)

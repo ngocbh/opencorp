@@ -15,7 +15,7 @@ import {
 } from "../../src/install/interview.ts"
 import type { LoginDefaults } from "../../src/install/onboard.ts"
 import { KeyboardInterrupt, OnboardError, type Prompter, TRIES, clean } from "../../src/install/prompts.ts"
-import { pyJson } from "../../src/perm/redact.ts"
+import { pyJson } from "../../src/util/redact.ts"
 import { embedded } from "../../src/platform.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { writePrivate } from "../../src/util/private_files.ts"

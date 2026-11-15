@@ -2,7 +2,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
-import { MIN_VALUE_CHARS } from "./perm/redact.ts"
+import { MIN_VALUE_CHARS } from "./util/redact.ts"
 import { checkFolder, lockFolder, makePrivateFolder, PrivateFileError, replaceFile } from "./util/private_files.ts"
 
 /** Valid secret names: lower-case letters, digits, `_`, `.`, `-`, not starting with `.` or `-`, at most 128

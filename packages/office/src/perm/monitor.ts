@@ -6,7 +6,7 @@ import { type CompanyRepo, loadRepo } from "../company/loader.ts"
 import { assetToolName, shownAssetToolName, TOOL_NAME } from "../company/naming.ts"
 import { type SecretStore, SecretNotSetError } from "../secrets.ts"
 import type { Store } from "../store/store.ts"
-import { auditArgs, DETAIL_CHARS, pyJson, redact, repr, splitLines, strip } from "./redact.ts"
+import { auditArgs, DETAIL_CHARS, pyJson, redact, repr, splitLines, strip } from "../util/redact.ts"
 
 type Asset = z.output<typeof AssetSchema>
 type Grant = z.output<typeof GrantSchema>

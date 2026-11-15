@@ -5,7 +5,7 @@ import os from "node:os"
 import type { Readable } from "node:stream"
 import * as bwrap from "./bwrap.ts"
 import { Canary, killEscaped } from "./escapees.ts"
-import { killGroup } from "../install/proc.ts"
+import { killGroup } from "../util/proc.ts"
 import {
   endPipe,
   type Helper,

@@ -2,7 +2,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { strerror } from "../util/errors.ts"
-import { writeIfChanged } from "./files.ts"
+import { writeIfChanged } from "../util/files.ts"
 import { type Host, type Launch, ServiceError } from "./launch.ts"
 
 /** The unit's name, `opencorp-<name>.service`. */

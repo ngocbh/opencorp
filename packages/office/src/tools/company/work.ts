@@ -2,7 +2,7 @@
 import { Comment, Question, WorkItem, now, validationMessage } from "@opencorp/protocol"
 import type { z } from "zod"
 import type { CompanyRepo } from "../../company/loader.ts"
-import { repr } from "../../perm/redact.ts"
+import { repr } from "../../util/redact.ts"
 import { type Carried, type OnQuestion, reply } from "../../questions/ask.ts"
 import { normalizeOptions } from "../../questions/normalize.ts"
 import { newId, type SessionRecord, type Store } from "../../store/store.ts"

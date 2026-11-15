@@ -18,7 +18,7 @@ import { type Limits, type RequestInfo, type Route, createServer, requestListene
 import { LiveRelay, type LiveWorker } from "../../src/daemon/live.ts"
 import { Office, type RequestContext } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
-import { listenUnix } from "../../src/daemon/sockets.ts"
+import { listenUnix } from "../../src/util/sockets.ts"
 import type { Tools } from "../../src/install/tools.ts"
 import type { SessionHarness } from "../../src/runtime/sessions/harness.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../../src/sandbox/policy.ts"

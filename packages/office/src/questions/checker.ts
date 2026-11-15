@@ -1,5 +1,5 @@
 /** Check an answer against its question, and convert typed text to the value an `ask` node takes. */
-import { casefold, repr, splitLines, strip } from "../perm/redact.ts"
+import { casefold, repr, splitLines, strip } from "../util/redact.ts"
 import type { QuestionRecord } from "../store/store.ts"
 
 type Field = QuestionRecord["answer_schema"][number]
