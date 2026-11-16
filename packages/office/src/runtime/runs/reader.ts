@@ -73,6 +73,9 @@ export const FLOW_BYTES = 4 << 20
 export const LRU_BYTES = 128 << 20
 /** The most indexes the reader keeps. */
 export const LRU_LOGS = 128
+/** The error of a node an agent's flow call took with it as the call ended: another of its nodes failed, or the agent
+ *  was interrupted. */
+export const SCOPE_ENDED = "its flow call ended"
 /** How much of a node's error is shown. */
 export const ERROR_CHARS = 200
 /** How much of a node's error and route handle the index keeps, to bound a log with many nodes; a longer one is cut
@@ -418,6 +421,15 @@ function apply(index: Index, entry: RunLogEntry, nodeCap: number): void {
     started(index, seq, nodeId!, nodeCap)
   } else if (kind === "node_expanded" && (record as { callId: string | null }).callId !== null) {
     // An agent's flow call grows the called flow beside the agent, which stays in flight.
+  } else if (kind === "node_failed" && (record as { scope: string | null }).scope !== null) {
+    // A failure inside an agent's flow call fails the call, not the run: its scope's unfinished nodes end with it. One
+    // that names the agent (its scope couldn't grow) leaves the agent in flight.
+    const scope = (record as { scope: string }).scope
+    if (nodeId!.startsWith(`${scope}/`)) ended(index, seq, kind, nodeId!, record)
+    endScope(index, seq, scope)
+  } else if (kind === "interrupted") {
+    // An interrupt ends the interrupted agents' running flow calls, each a scope under the agent's id.
+    for (const agent of (record as { nodes: readonly string[] }).nodes) endScope(index, seq, agent)
   } else if (OUTCOMES.has(kind)) {
     ended(index, seq, kind, nodeId!, record)
   } else if (kind === "node_waiting" || kind === "node_woken") {
@@ -466,6 +478,18 @@ function started(index: Index, seq: number, id: string, nodeCap: number): void {
     const gone = index.nodes.splice(0, index.nodes.length - nodeCap)
     for (const old of gone) index.held -= old.nodeId.length + (old.handle?.length ?? 0) + (old.error?.length ?? 0)
     index.dropped = true
+  }
+}
+
+/** Ends, at seq `seq`, each open attempt of a node under `scope` (`<scope>/…`): a flow call's scope that ended. */
+function endScope(index: Index, seq: number, scope: string): void {
+  for (const [id, attempt] of index.open) {
+    if (!id.startsWith(`${scope}/`)) continue
+    index.open.delete(id)
+    attempt.endSeq = seq
+    attempt.status = "failed"
+    attempt.error = SCOPE_ENDED
+    index.held += SCOPE_ENDED.length
   }
 }
 

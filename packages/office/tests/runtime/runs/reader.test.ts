@@ -30,6 +30,7 @@ import {
   refresh,
   RunLogReader,
   SCHEMA,
+  SCOPE_ENDED,
   SPARSE_BYTES,
   SPARSE_EVERY,
   UnreadableLog,
@@ -174,15 +175,20 @@ test("the node table has every attempt with its outcome", async () => {
   expect([...index.open.keys()]).toEqual(["m#1/a"])
 })
 
-test("an agent's flow call grows its scope while the agent stays open, and the agent's own outcome ends it", async () => {
-  const call = line(2, "node_expanded", {
-    call_id: "helper/call-1",
+/** The growth of agent `helper`'s flow call `CALL.callId`, whose scope is `CALL.scope`. */
+const CALL = { callId: "helper/call-1", scope: "helper/shout#0" }
+function flowCall(seq: number): Buffer {
+  return line(seq, "node_expanded", {
+    call_id: CALL.callId,
     spawner_id: "helper",
     prune_ids: [],
     topology_digest: "0".repeat(64),
   })
+}
+
+test("an agent's flow call grows its scope while the agent stays open, and the agent's own outcome ends it", async () => {
   const index = await refresh(logOf(
-    runStarted(0), started(1, "helper"), call, started(3, "helper/shout#0/loud"),
+    runStarted(0), started(1, "helper"), flowCall(2), started(3, "helper/shout#0/loud"),
     committed(4, "helper/shout#0/loud", {}), succeeded(5, "helper/shout#0/loud", 4),
     committed(6, "helper", {}), succeeded(7, "helper", 6),
   ), null)
@@ -191,6 +197,41 @@ test("an agent's flow call grows its scope while the agent stays open, and the a
     ["helper/shout#0/loud", "succeeded", 5],
   ])
   expect([...index.open.keys()]).toEqual([])
+})
+
+test("a node failing inside a flow call ends its scope's open nodes, and the agent and the run go on", async () => {
+  const index = await refresh(logOf(
+    runStarted(0), started(1, "helper"), flowCall(2), started(3, "helper/shout#0/loud"),
+    started(4, "helper/shout#0/quiet"), started(5, "other"), failed(6, "helper/shout#0/loud", "boom", CALL),
+    committed(7, "helper", {}), succeeded(8, "helper", 7),
+  ), null)
+  expect(index.nodes.map((a) => [a.nodeId, a.status, a.endSeq, a.error])).toEqual([
+    ["helper", "succeeded", 8, null],
+    ["helper/shout#0/loud", "failed", 6, "boom"],
+    ["helper/shout#0/quiet", "failed", 6, SCOPE_ENDED],
+    ["other", "open", null, null],
+  ])
+  expect([...index.open.keys()]).toEqual(["other"])
+})
+
+test("a flow call that fails naming its agent, as a scope that couldn't grow does, leaves the agent open", async () => {
+  const index = await refresh(logOf(
+    runStarted(0), started(1, "helper"), failed(2, "helper", "no scope", CALL),
+    committed(3, "helper", {}), succeeded(4, "helper", 3),
+  ), null)
+  expect(index.nodes.map((a) => [a.nodeId, a.status, a.endSeq, a.error])).toEqual([["helper", "succeeded", 4, null]])
+})
+
+test("an interrupt ends the interrupted agent's flow call nodes, and the agent goes on", async () => {
+  const index = await refresh(logOf(
+    runStarted(0), started(1, "helper"), started(2, "helperx"), flowCall(3), started(4, "helper/shout#0/loud"),
+    line(5, "interrupted", { inbox: "steers", nodes: ["helper"] }), committed(6, "helper", {}), succeeded(7, "helper", 6),
+  ), null)
+  expect(index.nodes.map((a) => [a.nodeId, a.status, a.endSeq, a.error])).toEqual([
+    ["helper", "succeeded", 7, null],
+    ["helperx", "open", null, null],
+    ["helper/shout#0/loud", "failed", 5, SCOPE_ENDED],
+  ])
 })
 
 test("a node error is kept up to error kept its cut marked", async () => {

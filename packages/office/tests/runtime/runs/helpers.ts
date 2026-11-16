@@ -71,10 +71,16 @@ export function expanded(seq: number, nodeId: string): Buffer {
   })
 }
 
-export function failed(seq: number, nodeId: string, message: string): Buffer {
+/** A failure of `nodeId`; with `call`, inside that agent flow call's `scope`, which takes it instead of the run. */
+export function failed(
+  seq: number,
+  nodeId: string,
+  message: string,
+  call: { callId: string; scope: string } | null = null,
+): Buffer {
   return line(seq, "node_failed", {
-    call_id: null,
-    scope: null,
+    call_id: call?.callId ?? null,
+    scope: call?.scope ?? null,
     failure: {
       code: "node.execute",
       message,
