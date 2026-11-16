@@ -309,8 +309,9 @@ test("an index file that isn't a database is rebuilt from the logs", async () =>
   const { indexer, lines } = real(runs)
   expect(await indexer.update()).toBe(true)
   expect(readRunIndex(runs).map((row) => row.runId)).toEqual([RUN])
-  expect(lines).toEqual(["run index unusable (SQLITE_NOTADB), rebuilding it"])
-  for (const suffix of ["-journal", "-wal", "-shm"]) expect(fs.existsSync(index + suffix)).toBe(false)
+  // yian rebuilds a damaged index itself; the office logs that it did, never SQLite's message.
+  expect(lines).toEqual(["run index unusable (damaged), rebuilding it"])
+  expect(fs.existsSync(index + "-journal")).toBe(false)
 })
 
 test("a damaged index is rebuilt from the logs", async () => {
@@ -325,7 +326,7 @@ test("a damaged index is rebuilt from the logs", async () => {
   fs.closeSync(fd)
   expect(await indexer.update()).toBe(true)
   expect(readRunIndex(runs).map((row) => row.runId)).toEqual([RUN])
-  expect(lines).toEqual(["run index unusable (SQLITE_CORRUPT), rebuilding it"])
+  expect(lines).toEqual(["run index unusable (damaged), rebuilding it"])
 })
 
 test("an index that can't be opened is left as it is", async () => {
@@ -336,7 +337,7 @@ test("an index that can't be opened is left as it is", async () => {
   expect(await indexer.update()).toBe(false)
   expect(fs.statSync(path.join(runs, "index.sqlite")).isDirectory()).toBe(true)
   // The read after the update can't open it either.
-  expect(lines).toEqual(["run index update failed (SQLITE_CANTOPEN)", "run index read failed (SQLITE_CANTOPEN)"])
+  expect(lines).toEqual(["run index update failed (SQLITE_CANTOPEN)", "run index read failed (SQLITE_IOERR)"])
   expect(indexer.rows().size).toBe(0)
 })
 
@@ -368,6 +369,8 @@ test("a busy index is never rebuilt", async () => {
   const { runs } = oneRun()
   const { indexer, lines } = real(runs, { timeoutMs: 100 })
   expect(await indexer.update()).toBe(true)
+  // An update with nothing to write takes no lock, so this one has a run to write.
+  secondRun(runs)
   const db = new Database(path.join(runs, "index.sqlite"))
   try {
     db.exec("BEGIN IMMEDIATE")
@@ -385,12 +388,12 @@ test("an index whose runs table is gone is rebuilt", async () => {
   const { runs } = oneRun()
   const { indexer, lines } = real(runs)
   expect(await indexer.update()).toBe(true)
-  // The layout version stays, so yian trusts the table that isn't there.
   const db = new Database(path.join(runs, "index.sqlite"))
   db.exec("DROP TABLE runs")
   db.close()
   expect(await indexer.update()).toBe(true)
-  expect(lines).toEqual(["run index unusable (SQLITE_ERROR), rebuilding it"])
+  // yian checks the table against its layout and builds it again, as after a layout change: nothing to log.
+  expect(lines).toEqual([])
   expect(readRunIndex(runs).map((row) => row.runId)).toEqual([RUN])
   expect(indexer.rows().has(RUN)).toBe(true)
 })

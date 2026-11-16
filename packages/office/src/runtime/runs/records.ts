@@ -202,8 +202,8 @@ export class YianRuns {
   }
 }
 
-/** yian's run index under `runsDir` by run id; empty when it can't be read. A row yian skips is logged by its log's
- *  path, never with yian's message (which may quote the log). */
+/** yian's run index under `runsDir` by run id; empty when it can't be read or is damaged. A row yian skips is logged
+ *  by its log's path, and a damaged index as a failed read, never with yian's message (which may quote the log). */
 export function readIndex(runsDir: string, log: (line: string) => void = () => {}): Map<string, RunIndexRow> {
   try {
     const rows = withWarnings(
@@ -211,6 +211,10 @@ export function readIndex(runsDir: string, log: (line: string) => void = () => {
         // yian names a row it skips by run id.
         const match = /^run index skipped (.+?): /.exec(warning)
         if (match) log(`run index skipped ${path.join(runsDir, match[1]!, "log.jsonl")}`)
+        // yian reads a damaged index as empty, and its next update rebuilds it.
+        else if (/^run index .+ is damaged \(.*\); the next update rebuilds it$/s.test(warning)) {
+          log("run index read failed (damaged)")
+        }
       },
       () => readRunIndex(runsDir, { timeoutMs: READ_TIMEOUT_MS }),
     )
