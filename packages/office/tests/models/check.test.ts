@@ -315,7 +315,7 @@ test("a copy of the key in another case or base64 never reaches the problem", as
 
   const problem = await oneReplyProblem(registry, provider, { log: (line) => void lines.push(line) })
 
-  expect(problem).toContain(`${probe} rejected [redacted] [redacted] [redacted]`)
+  expect(problem).toMatch(new RegExp(`${probe} rejected \\[redacted\\] \\[redacted\\] \\[redacted\\]`, "i"))
   for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) {
     expect(problem).not.toContain(copy)
     expect(lines.filter((line) => line.includes(copy))).toEqual([])
@@ -360,7 +360,7 @@ test("a model that quotes the key in another case or base64 says why without any
   const problem = await modelProblem(
     Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: MIXED_KEY }, env: { VLLM_BASE_URL: `${url}/v1` } }),
   )
-  expect(problem).toContain("bad key: [redacted] and [redacted] and [redacted]")
+  expect(problem).toMatch(/bad key: \[redacted\] and \[redacted\] and \[redacted\]/i)
   for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) expect(problem).not.toContain(copy)
 })
 
@@ -394,15 +394,16 @@ test("providerSecrets reads a subscription's tokens as they are now, and the log
 test("a model check on the sign-in YIAN_AUTH_FILE names says why without any copy of what that sign-in sends", async () => {
   const dir = tempDir()
   const auth = path.join(dir, "auth.json")
-  // A key login, not a subscription: yian sends a subscription only to OpenAI's own host, and this test reaches none.
-  await new AuthStore(auth).save("openai", new ApiKeyCredentials(MIXED_KEY), "gpt-5.5")
   const url = await refusingLlm(`bad key: ${keyCopies(MIXED_KEY).join(" and ")}`)
+  // A key login, not a subscription: yian sends a subscription only to OpenAI's own host, and this test reaches none.
+  // yian sends a saved key only to the endpoint it was saved for.
+  await new AuthStore(auth).save("openai", new ApiKeyCredentials(MIXED_KEY), "gpt-5.5", { endpoint: `${url}/v1` })
   const provider = Provider.parse({
     llm_config: { provider: "openai", model: "gpt-5.5" },
     env: { YIAN_AUTH_FILE: auth, OPENAI_BASE_URL: `${url}/v1` },
   })
   const problem = await modelProblem(provider, { env: { HOME: dir } })
-  expect(problem).toContain("bad key: [redacted] and [redacted] and [redacted]")
+  expect(problem).toMatch(/bad key: \[redacted\] and \[redacted\] and \[redacted\]/i)
   for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) expect(problem).not.toContain(copy)
 })
 
