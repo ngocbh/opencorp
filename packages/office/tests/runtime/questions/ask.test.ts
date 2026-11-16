@@ -516,6 +516,7 @@ function pendingCall(over: Partial<PendingCall>): PendingCall {
     arguments: null,
     pendingSeq: 1,
     deadline: null,
+    ask: null,
     ...over,
   }
 }
@@ -590,6 +591,41 @@ test("reconcile rebuilds an ask node call from its recorded inputs", async () =>
   const page = store.getQuestionByCall("run-1/sop#0/ask")!
   expect([page.source, page.node_id, page.question]).toEqual(["ask", "sop#0/ask", "Setup"])
   expect(page.questions).toEqual([{ question: "Why?", header: "Why", options: [], multi_select: false, secret: false }])
+  expect(lines).toEqual([])
+})
+
+test("reconcile rebuilds an ask node's question as its handler got it: title, pages and answer schema", async () => {
+  const b = base()
+  writeFiles(b.pin, {
+    "flows/pick.yaml":
+      "id: pick\nname: pick\nnodes:\n  pick:\n    kind: tool\n    tool_id: ask\n    node_name: Pick a plan\n" +
+      "    input:\n      questions:\n        - question: Which plan?\n          header: plan\n" +
+      "          options: [{label: basic}, {label: pro, description: more seats}]\n" +
+      "        - question: Why?\n          header: why\n    output: {plan: !str, why: !str}\noutput: ${pick.output}\n",
+  })
+  const handlers = new Pending()
+  const job = makeJob(b, "flows/pick.yaml", { inputs: {} }, handlers)
+  const worker = await inProcessWorker(job, handlers)
+  expect(await worker.wait()).toBe(EXIT_OK)
+  expect(handlers.outcome?.status, String(handlers.outcome?.message)).toBe("waiting")
+  const shown = (q: QuestionRecord) => [q.source, q.node_id, q.call_id, q.title, q.question, q.questions, q.answer_schema]
+
+  // The card the live call showed, and the one a restarted office rebuilds from the log alone.
+  const live = setup()
+  await makeAskUser(live.store.getSession(live.sid)!, job.run_id, (q, o) => live.answers.ask(q, o))(
+    handlers.asked[0]!,
+    `${job.run_id}/pick`,
+  )
+  const [asked] = live.store.listQuestions({ sessionId: live.sid })
+  expect([asked!.title, asked!.answer_schema.map((field) => field.name), asked!.questions.length]).toEqual([
+    "Pick a plan",
+    ["plan", "why"],
+    2,
+  ])
+  const { store, sid, answers, lines } = setup()
+  const askUser = makeAskUser(store.getSession(sid)!, job.run_id, (q, o) => answers.ask(q, o))
+  await answers.reconcile(job.run_id, pendingCalls(job.log), { askUser })
+  expect(store.listQuestions({ sessionId: sid }).map(shown)).toEqual([shown(asked!)])
   expect(lines).toEqual([])
 })
 

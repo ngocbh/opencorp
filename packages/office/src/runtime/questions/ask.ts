@@ -217,8 +217,9 @@ export class Answers {
    * (`ask`, `ask_user`, and `ask_manager` by either name, `isAskManagerCall`) are rebuilt: a pending step names a
    * tool, and re-running any other tool from it would skip the job's grant check.
    *
-   * A TOOL `ask` call's recorded arguments are the node's inputs only, so its rebuilt question has no title and no
-   * answer schema. A handler that throws is logged by the call id and the error's name, and the rest go on.
+   * A TOOL `ask` call's question is rebuilt as its handler got it (`PendingCall.ask`: its title, pages and answer
+   * schema), or from the node's inputs, with no title and no answer schema, when yian recorded none. A handler that
+   * throws is logged by the call id and the error's name, and the rest go on.
    */
   async reconcile(
     runId: string,
@@ -256,12 +257,14 @@ export class Answers {
             call.callId,
           )
         } else if (call.tool === "ask") {
+          // yian gives the question its handler got; a call it recorded none for has only the node's inputs.
+          const ask = call.ask
           await handlers.askUser(
             {
-              question: args.prompt ?? "",
-              questions: args.questions ?? args.__questions ?? null,
-              answer_schema: null,
-              title: null,
+              question: ask ? ask.question : (args.prompt ?? ""),
+              questions: ask ? ask.questions : (args.questions ?? args.__questions ?? null),
+              answer_schema: ask ? ask.answerSchema : null,
+              title: ask ? ask.title : null,
               node_id: call.node,
               options: null,
             },
