@@ -159,7 +159,7 @@ const PROBE = `
 // and the channel's identity.
 const PROBE_FLOW =
   "id: probe\nname: probe\ninput:\n  dir: !str\nnodes:\n  probe:\n    kind: code\n" +
-  '    input: {dir: "${input.dir}"}\n    output: Any\n    code: ./probe.ts:run\noutput: ${probe.output}\n'
+  '    input: {dir: "${input.dir}"}\n    output: !Any\n    code: ./probe.ts:run\noutput: ${probe.output}\n'
 const PROBE_CODE = `import { spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"

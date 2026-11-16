@@ -73,7 +73,7 @@ defs:
           summary: ${context.output.summary}
           history: ${context.output.messages}
           said: ${heard.output.events}
-        output: Optional(str)  # null only after an interrupt
+        output: !Optional(str)  # null only after an interrupt
         system_prompt: |-
           You help the company's owner edit one person's profile (their memory/profile.md), the
           document that person's agent reads in every run. Call `profile_read` for the current

@@ -810,9 +810,9 @@ describe("the built binary", () => {
     const files = {
       "flows/flow.yaml":
         "id: compiled\nname: compiled\ninput:\n  n: !int\nnodes:\n  double:\n    kind: code\n" +
-        '    input: {n: "${input.n}"}\n    output: int\n    code: |\n      const two: number = 2\n' +
+        '    input: {n: "${input.n}"}\n    output: !int\n    code: |\n      const two: number = 2\n' +
         "      return inputs.n * two\n  triple:\n    kind: code\n" +
-        '    input: {n: "${double.output}"}\n    output: int\n    code: ./helpers.ts:triple\n' +
+        '    input: {n: "${double.output}"}\n    output: !int\n    code: ./helpers.ts:triple\n' +
         "output: ${triple.output}\n",
       "flows/helpers.ts":
         'import { three } from "./lib.ts"\n' +

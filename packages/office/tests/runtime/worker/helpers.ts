@@ -62,7 +62,7 @@ export function recordFrames(): string[] {
 
 /** A one-agent flow: input `message`, output the agent's reply. `node` adds lines to the agent node, `top` to the
  *  flow, `inputs` to its inputs; `output` is the agent's output type. */
-export function agentFlow(name: string, { node = "", top = "", inputs = "", output = "str" } = {}): string {
+export function agentFlow(name: string, { node = "", top = "", inputs = "", output = "!str" } = {}): string {
   return (
     `id: ${name}\nname: ${name}\n${top}input:\n${inputs}  message: !str\nnodes:\n  reply:\n    kind: agent\n` +
     `${node}    input:\n      message: \${input.message}\n    output: ${output}\n` +
@@ -82,7 +82,7 @@ export const STEERABLE = agentFlow("steerable", {
 export const CUTTABLE = agentFlow("cuttable", {
   inputs: "  steers: !Inbox(str)\n",
   node: "    tools: [toolbox]\n    steer_inbox: \${input.steers}\n",
-  output: "Optional(str)",
+  output: "!Optional(str)",
 })
 // One take that waits for a message on the `messages` inbox, so the run quiesces as waiting.
 export const INBOX =
@@ -92,18 +92,18 @@ export const INBOX =
 export const HEARD =
   "id: heard\nname: heard\ninput:\n  messages: !Inbox(str)\nnodes:\n  heard:\n    kind: tool\n    tool_id: take\n" +
   "    input:\n      from: ${input.messages}\n      take: all\n  reply:\n    kind: agent\n    input:\n" +
-  '      said: ${heard.output.events}\n    output: str\n    prompt: "${said}"\noutput: ${reply.output}\n'
+  '      said: ${heard.output.events}\n    output: !str\n    prompt: "${said}"\noutput: ${reply.output}\n'
 // An agent that answers the message, then the inbox flow's take, so the run waits after the reply.
 export const REPLIED =
   "id: replied\nname: replied\ninput:\n  message: !str\n  messages: !Inbox(str)\nnodes:\n  reply:\n    kind: agent\n" +
-  '    input:\n      message: ${input.message}\n    output: str\n    prompt: "${message}"\n  heard:\n    kind: tool\n' +
+  '    input:\n      message: ${input.message}\n    output: !str\n    prompt: "${message}"\n  heard:\n    kind: tool\n' +
   "    tool_id: take\n    depends_on: [reply]\n    input:\n      from: ${input.messages}\n      take: all\n" +
   "output: ${heard.output}\n"
 // A CODE node whose function is in a file beside the flow, then the inbox flow's take, so the run waits with a CODE
 // reference recorded.
 export const CODED =
   "id: coded\nname: coded\ninput:\n  messages: !Inbox(str)\nnodes:\n  prep:\n    kind: code\n" +
-  "    code: ./helpers.ts:fn\n    output: str\n  heard:\n    kind: tool\n    tool_id: take\n" +
+  "    code: ./helpers.ts:fn\n    output: !str\n  heard:\n    kind: tool\n    tool_id: take\n" +
   "    depends_on: [prep]\n    input:\n      from: ${input.messages}\n      take: all\noutput: ${heard.output}\n"
 export const CODED_HELPERS = 'export function fn(): string {\n  return "ready"\n}\n'
 // One turn: a TOOL ask and a take on the `messages` inbox, both waiting, then an agent that uses both outputs.
@@ -111,25 +111,25 @@ export const TURN =
   "id: turn\nname: turn\ninput:\n  messages: !Inbox(str)\nnodes:\n  asked:\n    kind: tool\n    tool_id: ask\n" +
   '    input:\n      prompt: "Where to?"\n  heard:\n    kind: tool\n    tool_id: take\n    input:\n' +
   "      from: ${input.messages}\n      take: all\n  reply:\n    kind: agent\n    input:\n" +
-  '      where: ${asked.output}\n      said: ${heard.output.events}\n    output: str\n    prompt: "${said} ${where}"\n' +
+  '      where: ${asked.output}\n      said: ${heard.output.events}\n    output: !str\n    prompt: "${said} ${where}"\n' +
   "output: ${reply.output}\n"
 // An agent that may ask the user and can be interrupted; a cut reply's null output still succeeds.
 export const ASK_CUT = agentFlow("ask_cut", {
   inputs: "  steers: !Inbox(str)\n",
   node: "    tools: [ask_user]\n    steer_inbox: \${input.steers}\n",
-  output: "Optional(str)",
+  output: "!Optional(str)",
 })
 // An agent whose system prompt holds the `profile` memory's recall.
 export const PROFILED =
   "id: profiled\nname: profiled\ninput:\n  profile: !FileMemory\n  message: !str\nnodes:\n  reply:\n    kind: agent\n" +
-  "    input:\n      profile: ${input.profile}\n      message: ${input.message}\n    output: str\n" +
+  "    input:\n      profile: ${input.profile}\n      message: ${input.message}\n    output: !str\n" +
   '    system_prompt: "<memory name=\\"profile\\">${profile}</memory>"\n    prompt: "${message}"\noutput: ${reply.output}\n'
 // The profiled agent answering what the inbox flow's take heard, so the run waits with its memory bound.
 export const PROFILED_INBOX =
   "id: profiled_inbox\nname: profiled_inbox\ninput:\n  profile: !FileMemory\n  messages: !Inbox(str)\nnodes:\n" +
   "  heard:\n    kind: tool\n    tool_id: take\n    input:\n      from: ${input.messages}\n      take: all\n" +
   "  reply:\n    kind: agent\n    input:\n      profile: ${input.profile}\n      said: ${heard.output.events}\n" +
-  '    output: str\n    system_prompt: "<memory name=\\"profile\\">${profile}</memory>"\n    prompt: "${said}"\n' +
+  '    output: !str\n    system_prompt: "<memory name=\\"profile\\">${profile}</memory>"\n    prompt: "${said}"\n' +
   "output: ${reply.output}\n"
 export const SKILLED = agentFlow("skilled", { node: "    skills: all\n" })
 // A run whose one node sleeps an hour, so it quiesces as waiting.

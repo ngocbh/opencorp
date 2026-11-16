@@ -257,7 +257,7 @@ function chatShapeProblems(ref: string, flow: ComposedFlow): string[] {
   }
   if (reply.outputContract?.type?.nullable !== true) {
     problems.push(`${ref}'s ${MAIN_CHAT.reply} output isn't optional; an interrupt cuts the reply and fails a strict`
-      + ` output, so declare it as Optional(...), such as \`output: Optional(str)\`, ${like}`)
+      + ` output, so declare it as !Optional(...), such as \`output: !Optional(str)\`, ${like}`)
   }
   return problems
 }

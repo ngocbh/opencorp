@@ -88,7 +88,7 @@ defs:
         kind: agent
         input:
           n: \${input.n}
-        output: str
+        output: !str
         prompt: "\${n}"
     output:
       n: \${input.n + 1}

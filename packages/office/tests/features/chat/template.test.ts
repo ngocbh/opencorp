@@ -80,7 +80,7 @@ test("every chat template takes its turns and steers from its messages inbox", (
     expect(turn.nodes.heard).toEqual({ kind: "tool", tool_id: "take", input: { from: "${input.messages}", take: "all" } })
     expect([reply.steer_inbox, reply.output, reply.prompt]).toEqual([
       "${input.messages}",
-      "Optional(str)",
+      "!Optional(str)",
       ["${history}", "${said}"],
     ])
     expect(flow.nodes.chat.while).toBe("not closed and turns < max_turns")

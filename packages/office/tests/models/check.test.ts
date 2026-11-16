@@ -453,7 +453,7 @@ test("a stop during the model check rejects with its reason", async () => {
 
 test("a setup run failure never shows the key or url credentials", async () => {
   const flow = await loadFlow(
-    "id: fail\nname: fail\ninput:\n  text: !str\noutput: str\nkind: code\ncode: |\n  throw new Error(inputs.text)\n",
+    "id: fail\nname: fail\ninput:\n  text: !str\noutput: !str\nkind: code\ncode: |\n  throw new Error(inputs.text)\n",
     { sourceLabel: "fail" },
   )
   const text = `bad key ${KEY} for https://user:hunter2@example.com/v1.`
@@ -471,7 +471,7 @@ test("a setup run failure never shows the key or url credentials", async () => {
 
 test("a setup run failure never shows the key in another case or base64", async () => {
   const flow = await loadFlow(
-    "id: fail\nname: fail\ninput:\n  text: !str\noutput: str\nkind: code\ncode: |\n  throw new Error(inputs.text)\n",
+    "id: fail\nname: fail\ninput:\n  text: !str\noutput: !str\nkind: code\ncode: |\n  throw new Error(inputs.text)\n",
     { sourceLabel: "fail" },
   )
   const { message } = await runSetup(
