@@ -44,7 +44,8 @@ export const NOT_STARTED = "no run log: the run didn't start"
 export const NOT_STARTED_YET = "not started yet"
 export const LOG_GONE = "the run log is gone"
 
-const ENDED: ReadonlySet<RunStatus> = new Set(["succeeded", "failed", "cancelled"])
+/** yian's statuses of a run nothing moves on: its ends, and a log cut inside its run start. */
+const FINAL: ReadonlySet<RunStatus> = new Set(["succeeded", "failed", "cancelled", "unstarted"])
 /** The office ends of a run that never wrote its log. */
 const NEVER_STARTED: ReadonlySet<string> = new Set([COULDNT_START, COULDNT_RESUME, WORKER_STOPPED])
 
@@ -365,7 +366,7 @@ export class RunLogs {
     const ended: string[] = []
     for (const row of yian.rows()) {
       if (row.parentRunId !== null) links.set(row.runId, row.parentRunId)
-      if (ENDED.has(row.status)) ended.push(row.runId)
+      if (FINAL.has(row.status)) ended.push(row.runId)
     }
     if (parent !== null && this.#store.getRun(parent) === undefined) throw new NotFound(`no run ${parent}`)
     const summaries = new Summaries(this.#store, live, yian, { fresh: this.#live, log: this.#log })

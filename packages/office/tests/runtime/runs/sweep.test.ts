@@ -3,7 +3,7 @@
 import { expect, test } from "bun:test"
 import path from "node:path"
 import type { RunIndexRow, RunInspection, RunStatus } from "@ngocbh/yian/run"
-import { Inspections, Live, YianRuns, statusOf, sweep } from "../../../src/runtime/runs/records.ts"
+import { Inspections, Live, UNSTARTED, YianRuns, statusOf, sweep } from "../../../src/runtime/runs/records.ts"
 import { DEBRIEF, OFFICE, OFFICE_STOPPED } from "../../../src/runtime/runs/outcomes.ts"
 import { SCHEMA } from "../../../src/runtime/runs/reader.ts"
 import { newId, type RunRow, type SessionRecord, type Store } from "../../../src/runtime/store/store.ts"
@@ -139,4 +139,19 @@ test("the start sweep leaves a run yian ended to its outcome", () => {
   }
   for (const runId of [held, writing]) expect(store.getRun(runId)!.endReason).toBeNull()
   expect(store.getRun(lost)!.endReason).toBe(OFFICE_STOPPED)
+})
+
+test("the start sweep leaves a run whose log ends inside its run start to show it never started", () => {
+  const store = openStore()
+  const [indexed, logged] = [newId(), newId()]
+  const s = store.createSession(session({ status: "ended", run_ids: [indexed, logged] }))
+  addRuns(store, s)
+  const yian = yianOf([indexRow(indexed, "unstarted")], () => inspection("unstarted"))
+
+  expect(sweep(store, yian)).toEqual([])
+  for (const runId of [indexed, logged]) {
+    const got = store.getRun(runId)!
+    expect(got.endReason).toBeNull()
+    expect(statusOf(got, s, new Live(), yian)).toMatchObject({ status: "failed", reason: UNSTARTED })
+  }
 })

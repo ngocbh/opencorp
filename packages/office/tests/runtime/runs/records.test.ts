@@ -12,6 +12,7 @@ import {
   NO_OUTCOME,
   STOPPED,
   Summaries,
+  UNSTARTED,
   YianRuns,
   currentNodes,
   participants,
@@ -270,6 +271,23 @@ test("a cancelled run shows interrupted with the office reason", () => {
   })
 })
 
+test("a run whose log ends inside its run start shows failed, never started, from its row or its log", () => {
+  const s = session({ status: "ended", run_ids: ["R"] })
+  const shown = { status: "failed", reason: UNSTARTED, failedNode: null }
+  // A fresh row's log isn't read again: nothing can move the run on.
+  const fresh = yianOf([indexRow("R", { status: "unstarted" })], () => inspection({ status: "succeeded" }))
+  expect(statusOf(row(s, "R"), s, new Live(), fresh)).toMatchObject(shown)
+  expect(fresh.endedOrRunning("R")).toBe(true)
+  const logged = yianOf([], () => inspection({ status: "unstarted" }))
+  expect(statusOf(row(s, "R"), s, new Live(), logged)).toMatchObject(shown)
+  expect(logged.endedOrRunning("R")).toBe(true)
+  // The office's end reason still wins.
+  expect(statusOf(row(s, "R", { endReason: WORKER_STOPPED }), s, new Live(), fresh)).toMatchObject({
+    status: "failed",
+    reason: WORKER_STOPPED,
+  })
+})
+
 test("a crashed running or missing index row asks the log and else has no outcome", () => {
   const s = session({ status: "ended", run_ids: ["R"] })
   const rows = [[indexRow("R", { status: "crashed" })], [indexRow("R", { status: "running" })], []]
@@ -285,9 +303,9 @@ test("a crashed running or missing index row asks the log and else has no outcom
   }
 })
 
-test("an ended runs inspection is read once", () => {
+test("an ended or unstarted runs inspection is read once", () => {
   const runsDir = tempDir()
-  for (const [status, reads] of [["failed", 1], ["crashed", 2]] as const) {
+  for (const [status, reads] of [["failed", 1], ["unstarted", 1], ["crashed", 2]] as const) {
     const logs: string[] = []
     const inspections = new Inspections(runsDir, (log) => {
       logs.push(log)
@@ -333,12 +351,19 @@ test("an index row marked unreadable counts as no row", () => {
 test("a log yian can read only up to a bad line shows no outcome, not the status before it", () => {
   const runsDir = tempDir()
   fs.mkdirSync(path.join(runsDir, RUN))
-  const records = [runStarted(0), started(1, "a"), waiting(2, "a"), line(3, "run_waiting", { node_ids: ["a"] })]
+  const records = [
+    runStarted(0),
+    // The START inputs' commit: before it, the run hasn't started.
+    committed(1, "__start__", {}),
+    started(2, "a"),
+    waiting(3, "a"),
+    line(4, "run_waiting", { node_ids: ["a"] }),
+  ]
   fs.writeFileSync(path.join(runsDir, RUN, "log.jsonl"), Buffer.concat([...records, Buffer.from("garbage\n")]))
   withWarnings(() => {}, () => updateRunIndex(runsDir))
   const index = readIndex(runsDir)
   // yian keeps a row of the records before the bad line, marked unreadable at it.
-  expect(index.get(RUN)).toMatchObject({ status: "waiting", unreadable: { seq: 4 } })
+  expect(index.get(RUN)).toMatchObject({ status: "waiting", unreadable: { seq: 5 } })
   const s = session({ status: "ended", run_ids: [RUN] })
   const yian = new YianRuns(index, new Inspections(runsDir))
   expect(statusOf(row(s, RUN), s, new Live(), yian)).toMatchObject({ status: "interrupted", reason: NO_OUTCOME })
