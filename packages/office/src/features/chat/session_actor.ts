@@ -2473,8 +2473,7 @@ export class SessionActor implements LiveCalls {
       await this.#waited(run, readvance)
     } else if (status === "succeeded") {
       this.#finish("ended", outcome, null, run)
-    } else if (status === "not_resumed" || status === "unstarted") {
-      // Never with the stopped ones above: their cap-stop arm advances the same run again.
+    } else if (status === "not_resumed") {
       await this.#notResumed(run)
     } else if (status === "failed" && this.#recovers(run, outcome!)) {
       await this.#replyFailed(run, outcome!)
@@ -2662,12 +2661,10 @@ export class SessionActor implements LiveCalls {
 
   /** `run`'s advance was refused before it appended anything (`not_resumed`): a fresh run replaces the run
    *  (`COULDNT_RESUME`) at once, carrying what `#carryFresh` keeps; when its log is gone or can't be read
-   *  (`unreadable`), or the result says the run never started (`unstarted`), the run is lost (`#lost`). */
+   *  (`unreadable`), the run is lost (`#lost`). */
   async #notResumed(run: WorkerRun): Promise<void> {
-    const outcome = run.outcome!
-    const unstarted = outcome.status === "unstarted"
-    const type = typeName(unstarted ? "unstarted" : outcome.error_type)
-    if (unstarted || outcome.unreadable === true) {
+    const type = typeName(run.outcome!.error_type)
+    if (run.outcome!.unreadable === true) {
       this.#log(`session ${this.sessionId}: its run's log can't be read (${type}); a fresh run replaces it`)
       await this.#lost(run, { now: true })
       return

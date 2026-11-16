@@ -2165,28 +2165,6 @@ test("an advance whose log cant be read starts an unseeded fresh run, with a not
   expect(workers.length).toBe(3)
 })
 
-test("a worker result that its run never started takes the lost-run path, never a respawn of the same run", async () => {
-  const o = await chatOffice(await fakeLlm())
-  const { actor, sid, workers } = await startedScripted(o)
-  const old = actor.runId!
-  const first = workers[0]!
-  first.handlers.result(first.worker, waitingResult(old))
-  first.handlers.exited(first.worker, 0)
-  await waitFor(() => status(o, sid) === "idle", { what: "the run to rest" })
-  void outcome(actor.prompt("b"))
-  await waitFor(() => workers.length === 2, { what: "the advance" })
-  const second = workers[1]!
-  const send = second.given()[0]!
-  second.handlers.deliverReply(second.worker, { type: "deliver_reply", id: send.id, refused: "not_started" })
-  second.handlers.result(second.worker, { type: "result", status: "unstarted", run_id: old, output: null, waits: [] })
-  second.handlers.exited(second.worker, 0)
-  await waitFor(() => workers.length === 3, { what: "the fresh run" })
-  expect(workers[2]!.job).toMatchObject({ kind: "chat", seed: null })
-  expect(workers[2]!.given().map((d) => d.op)).toEqual(["send"])
-  expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
-  expect(errors(o, sid)).toEqual([NO_HISTORY])
-})
-
 /** A `not_resumed` result frame of run `runId`. */
 function notResumed(runId: string): Record<string, unknown> {
   return { type: "result", status: "not_resumed", run_id: runId, error_type: "ResumeError" }
