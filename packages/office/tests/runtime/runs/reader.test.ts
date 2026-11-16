@@ -174,6 +174,25 @@ test("the node table has every attempt with its outcome", async () => {
   expect([...index.open.keys()]).toEqual(["m#1/a"])
 })
 
+test("an agent's flow call grows its scope while the agent stays open, and the agent's own outcome ends it", async () => {
+  const call = line(2, "node_expanded", {
+    call_id: "helper/call-1",
+    spawner_id: "helper",
+    prune_ids: [],
+    topology_digest: "0".repeat(64),
+  })
+  const index = await refresh(logOf(
+    runStarted(0), started(1, "helper"), call, started(3, "helper/shout#0/loud"),
+    committed(4, "helper/shout#0/loud", {}), succeeded(5, "helper/shout#0/loud", 4),
+    committed(6, "helper", {}), succeeded(7, "helper", 6),
+  ), null)
+  expect(index.nodes.map((a) => [a.nodeId, a.status, a.endSeq])).toEqual([
+    ["helper", "succeeded", 7],
+    ["helper/shout#0/loud", "succeeded", 5],
+  ])
+  expect([...index.open.keys()]).toEqual([])
+})
+
 test("a node error is kept up to error kept its cut marked", async () => {
   const index = await refresh(logOf(runStarted(0), started(1, "a"), failed(2, "a", "x".repeat(5000))), null)
   const error = index.nodes[0]!.error!

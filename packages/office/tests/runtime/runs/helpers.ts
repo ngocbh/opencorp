@@ -64,6 +64,7 @@ export function routed(seq: number, nodeId: string, handle: string): Buffer {
 
 export function expanded(seq: number, nodeId: string): Buffer {
   return line(seq, "node_expanded", {
+    call_id: null,
     spawner_id: nodeId,
     prune_ids: [],
     topology_digest: "0".repeat(64),
@@ -72,6 +73,8 @@ export function expanded(seq: number, nodeId: string): Buffer {
 
 export function failed(seq: number, nodeId: string, message: string): Buffer {
   return line(seq, "node_failed", {
+    call_id: null,
+    scope: null,
     failure: {
       code: "node.execute",
       message,
@@ -151,7 +154,7 @@ defs:
       prep:
         kind: code
         code: ./helpers.ts:fn
-        output: str
+        output: !str
     output:
       n: \${input.n + 1}
 nodes:

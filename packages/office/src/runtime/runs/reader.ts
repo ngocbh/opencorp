@@ -28,7 +28,7 @@ import { cutReason } from "../store/store.ts"
 import { recordedKinds } from "./nodes.ts"
 
 /** The run-log schema this office reads: yian's SCHEMA_VERSION at the submodule pin. */
-export const SCHEMA = 29
+export const SCHEMA = 33
 /** Every this-many records, the index keeps the record's byte offset, so a page seeks near its first record. */
 export const SPARSE_EVERY = 64
 /** The index also keeps the offset of a record that starts this many bytes or more past its last kept one, so a seek
@@ -416,6 +416,8 @@ function apply(index: Index, entry: RunLogEntry, nodeCap: number): void {
     index.held += modelChars(index.models)
   } else if (kind === "node_started") {
     started(index, seq, nodeId!, nodeCap)
+  } else if (kind === "node_expanded" && (record as { callId: string | null }).callId !== null) {
+    // An agent's flow call grows the called flow beside the agent, which stays in flight.
   } else if (OUTCOMES.has(kind)) {
     ended(index, seq, kind, nodeId!, record)
   } else if (kind === "node_waiting" || kind === "node_woken") {
