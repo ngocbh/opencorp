@@ -380,6 +380,35 @@ test("an unreadable run log sleeps and its next message starts a fresh run", asy
   expect(session(o, sid).run_ids).toEqual([old, actor.runId!])
 })
 
+test("a run log cut inside its run start sleeps, ended couldnt resume, and its next message starts an unseeded run", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const { actor: first, sid } = await startActor(o)
+  expect(await say(o, first, sid, "a")).toBe("one")
+  const old = first.runId!
+  const actor = await reopen(o, first)
+  // Only its run_started record: yian reads it unstarted, and nothing can move it on.
+  const log = path.join(o.office.paths.runs, old, "log.jsonl")
+  fs.writeFileSync(log, `${fs.readFileSync(log, "utf8").split("\n")[0]!}\n`)
+  expect(inspectRun(log).status).toBe("unstarted")
+  const before = o.kinds.length
+  await actor.restore()
+  expect(o.kinds.length).toBe(before)
+  expect(status(o, sid)).toBe("idle")
+  expect(o.logs).toContainEqual(`session ${sid}: its run's log ends inside its run start`)
+  expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
+  expect(o.office.runs.page().runs.find((r) => r.run_id === old)).toMatchObject({
+    status: "failed",
+    reason: COULDNT_RESUME,
+  })
+  expect(await say(o, actor, sid, "b")).toBe("two")
+  expect(o.kinds.slice(before)).toEqual(["chat"])
+  // Its inputs were never recorded, so the fresh run has no history to take.
+  expect(o.jobs.at(-1)!.seed).toBeNull()
+  expect(session(o, sid).run_ids).toEqual([old, actor.runId!])
+})
+
 test("a run log that was never written sleeps and its next message starts a fresh run", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "one" })

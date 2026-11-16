@@ -443,7 +443,7 @@ export interface JobHandlers {
  * (or `linger` ms pass). A run's result is `{type: "result", status, run_id, output, failure, waits}`, or, for an
  * advance yian refused before it appended anything, `{type: "result", status: "not_resumed", run_id, error_type}`; an
  * advance or delivery job whose log is gone or can't be read sends that result with `unreadable: true`, and refuses its
- * deliveries.
+ * deliveries, as does one whose log ends inside its run start (`error_type: "unstarted"`).
  * If the office closes the channel before the job finished, `exit` is called with `EXIT_ORPHANED`: nobody can answer
  * a question or read the result.
  *
@@ -594,7 +594,8 @@ async function serveJob(
  *  job applies the deliveries the run can take now, then moves the run on from its log with yian's `advance` (or,
  *  with `advance: false`, only delivers); when yian refuses the advance before appending anything, the fields are
  *  `{status: "not_resumed", run_id, error_type}` and the deliveries still held are refused `not_started`; so are they
- *  when the run's log is gone or can't be read, with `unreadable: true`. */
+ *  when the run's log is gone or can't be read, with `unreadable: true`, and when it ends inside its run start, with
+ *  `error_type: "unstarted"` and `unreadable: true`. */
 async function runJob(
   job: Job,
   channel: Channel,
@@ -686,6 +687,11 @@ async function runJob(
       return { status: "not_resumed", run_id: job.run_id, error_type: why, unreadable: true }
     }
     const status = inspection.status
+    if (status === "unstarted") {
+      // Cut inside its run start: its inputs were never recorded, so nothing can move it on or deliver to it.
+      deliveries.refuse()
+      return { status: "not_resumed", run_id: job.run_id, error_type: "unstarted", unreadable: true }
+    }
     if (!job.advance) {
       // This job only delivers to a run at rest; a running one is someone else's to move.
       if (status === "running") throw new RunBusyError(log)

@@ -293,6 +293,35 @@ test("a delivery-only job on an unreadable log is not resumed", async () => {
   })
 })
 
+/** Cuts `job`'s log to its first record, `run_started`: the log of a run cut inside its run start. */
+function cutInsideRunStart(job: Job): string {
+  const first = fs.readFileSync(job.log, "utf8").split("\n")[0]!
+  fs.writeFileSync(job.log, `${first}\n`)
+  expect(inspectRun(job.log).status).toBe("unstarted")
+  return fs.readFileSync(job.log, "utf8")
+}
+
+const UNSTARTED = { type: "result", status: "not_resumed", run_id: "r1", error_type: "unstarted", unreadable: true }
+
+test("an advance whose log ends inside its run start is not resumed, refuses its deliveries and leaves the log", async () => {
+  const waiting = await waitingInbox()
+  const before = cutInsideRunStart(waiting)
+  const rec = await run(advanceJob(waiting, { deliver: [HI] }), new Recorder())
+  expect(rec.order).toEqual(["deliver_reply", "result"])
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", refused: "not_started" }])
+  expect(rec.outcome).toEqual(UNSTARTED)
+  expect(fs.readFileSync(waiting.log, "utf8")).toBe(before)
+})
+
+test("a delivery-only job on a log that ends inside its run start is not resumed", async () => {
+  const waiting = await waitingInbox()
+  const before = cutInsideRunStart(waiting)
+  const rec = await run(advanceJob(waiting, { advance: false, deliver: [HI] }), new Recorder())
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", refused: "not_started" }])
+  expect(rec.outcome).toEqual(UNSTARTED)
+  expect(fs.readFileSync(waiting.log, "utf8")).toBe(before)
+})
+
 test("a chat job whose runs folder is a file sends an error frame with its code and syscall", async () => {
   const where = base()
   fs.writeFileSync(where.runs, "")
