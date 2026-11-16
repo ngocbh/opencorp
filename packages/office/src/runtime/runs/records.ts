@@ -40,10 +40,11 @@ export const WARNED_CAP = 10_000
 /** How long reading the index waits while an update commits, in milliseconds. */
 const READ_TIMEOUT_MS = 500
 const HANDLE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/
-const FAILED_ENDS = new Set([COULDNT_START, COULDNT_RESUME, WORKER_STOPPED])
+/** The office end reasons a run shows as failed; a run with one of them and no log never wrote one. */
+export const FAILED_ENDS: ReadonlySet<string> = new Set([COULDNT_START, COULDNT_RESUME, WORKER_STOPPED])
 /** The statuses nothing moves a run on from: yian's ends, and `unstarted`, a log cut inside its run start, which
  *  `advance`, deliveries and `cancel` all refuse. */
-const FINAL: ReadonlySet<RunStatus> = new Set(["succeeded", "failed", "cancelled", "unstarted"])
+export const FINAL: ReadonlySet<RunStatus> = new Set(["succeeded", "failed", "cancelled", "unstarted"])
 const warned = new Set<string>() // runs already warned about
 
 /** A run's status as the protocol shows it. */

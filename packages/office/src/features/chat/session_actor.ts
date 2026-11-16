@@ -952,11 +952,12 @@ export class SessionActor implements LiveCalls {
   /**
    * At office start: picks the session up from where yian's log says its run stands. A run yian ended
    * keeps that end: an ending session ends as the run did; any other sleeps, its questions stale, until a fresh run.
-   * An unreadable log (a line over `LINE_CAP` among them) fails an ending session (`COULDNT_RESUME`); a run that
-   * never started has an ending session
-   * ended again; a run that started and whose log is gone or unreadable is lost (`#markLost`), and an ending session
-   * with a missing log is ended again; any other sleeps until a fresh run, one that never started recorded
-   * `COULDNT_START` at once. A waiting run's questions are reconciled and it sleeps, its timer armed, unless it can
+   * An unreadable log (a line over `LINE_CAP` among them), or one that ends inside its run start (`unstarted`: its
+   * inputs were never recorded, so nothing can resume it), fails an ending session (`COULDNT_RESUME`); a run that
+   * never started has an ending session ended again; a run that started and whose log is gone, unreadable or
+   * `unstarted` is lost (`#markLost`), so it ends `COULDNT_RESUME` and the next message starts a fresh run without
+   * its history, and an ending session with a missing log is ended again; any other sleeps until a fresh run, one
+   * that never started recorded `COULDNT_START` at once. A waiting run's questions are reconciled and it sleeps, its timer armed, unless it can
    * wake now. Over the cost cap any run sleeps. Any other run is advanced, and an ending session ended again. Until
    * the actor's first worker, a run the record check finds moved ends `OFFICE_REPLACED`. A spec refused for its folder
    * (missing or unsafe) leaves a session that isn't ending asleep, a waiting run's timer armed and its questions
