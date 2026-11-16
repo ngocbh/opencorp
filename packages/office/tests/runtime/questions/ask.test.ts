@@ -617,7 +617,7 @@ test("reconcile rebuilds an ask node's question as its handler got it: title, pa
     `${job.run_id}/pick`,
   )
   const [asked] = live.store.listQuestions({ sessionId: live.sid })
-  expect([asked!.title, asked!.answer_schema.map((field) => field.name), asked!.questions.length]).toEqual([
+  expect([asked!.title, asked!.answer_schema.map((field) => field.name), asked!.questions?.length]).toEqual([
     "Pick a plan",
     ["plan", "why"],
     2,
