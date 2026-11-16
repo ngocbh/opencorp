@@ -309,8 +309,9 @@ test("an index file that isn't a database is rebuilt from the logs", async () =>
   const { indexer, lines } = real(runs)
   expect(await indexer.update()).toBe(true)
   expect(readRunIndex(runs).map((row) => row.runId)).toEqual([RUN])
-  // yian rebuilds a damaged index itself; the office logs that it did, never SQLite's message.
-  expect(lines).toEqual(["run index unusable (damaged), rebuilding it"])
+  // yian rebuilds a damaged index itself; the office logs that it did by the code SQLite's message names, never the
+  // message.
+  expect(lines).toEqual(["run index unusable (SQLITE_NOTADB), rebuilding it"])
   expect(fs.existsSync(index + "-journal")).toBe(false)
 })
 
@@ -326,7 +327,7 @@ test("a damaged index is rebuilt from the logs", async () => {
   fs.closeSync(fd)
   expect(await indexer.update()).toBe(true)
   expect(readRunIndex(runs).map((row) => row.runId)).toEqual([RUN])
-  expect(lines).toEqual(["run index unusable (damaged), rebuilding it"])
+  expect(lines).toEqual(["run index unusable (SQLITE_CORRUPT), rebuilding it"])
 })
 
 test("an index that can't be opened is left as it is", async () => {

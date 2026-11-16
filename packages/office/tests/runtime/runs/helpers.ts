@@ -44,6 +44,11 @@ export function runStarted(
   })
 }
 
+/** The commit of the run's START inputs: until it, the run hasn't started, and yian reads its log `unstarted`. */
+export function startCommitted(seq: number): Buffer {
+  return committed(seq, "__start__", {})
+}
+
 export function started(seq: number, nodeId: string): Buffer {
   return line(seq, "node_started", { node_id: nodeId })
 }

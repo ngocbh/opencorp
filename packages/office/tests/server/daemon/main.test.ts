@@ -48,7 +48,7 @@ import { CHAT_FILES, fakeLlm } from "../../features/chat/helpers.ts"
 import { company, makeCompany, recordingGit } from "../../company/helpers.ts"
 import { cwdOf, envNames, isGone, ps, reexecMarks, shortDir, startGroup, tempDir, waitFor } from "../../helpers.ts"
 import { freePort } from "../hq/helpers.ts"
-import { RUN, chatLog, committed, runStarted, started, succeeded } from "../../runtime/runs/helpers.ts"
+import { RUN, chatLog, committed, runStarted, startCommitted, started, succeeded } from "../../runtime/runs/helpers.ts"
 import { question, session } from "../../runtime/store/helpers.ts"
 import { Recorder, base, makeJob } from "../../runtime/worker/helpers.ts"
 import { type Frame, frames, makeOffice, request, served, take, within } from "../helpers.ts"
@@ -663,7 +663,7 @@ test("a bad provider file fails sessions resumed at start but the office starts"
   office.store.addSessionRun(made.busy!, RUN)
   const log = path.join(office.paths.runs, RUN, "log.jsonl")
   fs.mkdirSync(path.dirname(log), { recursive: true })
-  fs.writeFileSync(log, Buffer.concat([runStarted(0), started(1, "chat#0/reply")]))
+  fs.writeFileSync(log, Buffer.concat([runStarted(0), startCommitted(1), started(2, "chat#0/reply")]))
   // Its run never started: it sleeps until its next message.
   office.store.addSessionRun(made.idle!, newId())
   await office.start()
@@ -1137,7 +1137,6 @@ test("an index whose table doesn't fit yian's layout is rebuilt at the start, an
   const paths = new OfficePaths(home())
   fs.mkdirSync(paths.runs, { recursive: true })
   updateRunIndex(paths.runs)
-  // The layout version stays, so yian trusts a table that isn't there.
   const db = new Database(path.join(paths.runs, "index.sqlite"))
   db.exec("DROP TABLE runs")
   db.close()
@@ -1145,7 +1144,8 @@ test("an index whose table doesn't fit yian's layout is rebuilt at the start, an
   const built = officeWithOpenRun(paths, out.write)
   office = built.office
   await office.start()
-  expect(out.text()).toContain("run index unusable (SQLITE_ERROR), rebuilding it")
+  // yian checks the table against its layout and builds the index again, as after a layout change: no failure.
+  expect(out.text()).not.toMatch(/run index (unusable|update failed)/)
   expect(out.text()).not.toContain("the start sweep was skipped")
   expect(out.text()).not.toMatch(/no such table/)
   expect(office.store.getRun(built.open)!.endReason).not.toBeNull()

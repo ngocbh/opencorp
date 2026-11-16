@@ -23,6 +23,7 @@ import {
   type Store,
 } from "../store/store.ts"
 import { errorName } from "../worker/rpc.ts"
+import { damageName } from "./index_thread.ts"
 import { COULDNT_RESUME, COULDNT_START, DEBRIEF, FLOWS, OFFICE_STOPPED, WORKER_STOPPED } from "./outcomes.ts"
 
 export const NO_OUTCOME = "ended without a recorded outcome"
@@ -215,11 +216,13 @@ export function readIndex(runsDir: string, log: (line: string) => void = () => {
       (warning) => {
         // yian names a row it skips by run id.
         const match = /^run index skipped (.+?): /.exec(warning)
-        if (match) log(`run index skipped ${path.join(runsDir, match[1]!, "log.jsonl")}`)
-        // yian reads a damaged index as empty, and its next update rebuilds it.
-        else if (/^run index .+ is damaged \(.*\); the next update rebuilds it$/s.test(warning)) {
-          log("run index read failed (damaged)")
+        if (match) {
+          log(`run index skipped ${path.join(runsDir, match[1]!, "log.jsonl")}`)
+          return
         }
+        // yian reads a damaged index as empty, and its next update rebuilds it.
+        const damaged = /^run index .+ is damaged \((.*)\); the next update rebuilds it$/s.exec(warning)
+        if (damaged) log(`run index read failed (${damageName(damaged[1]!)})`)
       },
       () => readRunIndex(runsDir, { timeoutMs: READ_TIMEOUT_MS }),
     )

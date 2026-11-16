@@ -24,7 +24,7 @@ import { SCHEMA } from "../../../src/runtime/runs/reader.ts"
 import { newId, type RunRow, type SessionRecord } from "../../../src/runtime/store/store.ts"
 import { tempDir } from "../../helpers.ts"
 import { openStore, question, session } from "../store/helpers.ts"
-import { committed, line, RUN, runStarted, started, succeeded, waiting } from "./helpers.ts"
+import { committed, line, RUN, runStarted, startCommitted, started, succeeded, waiting } from "./helpers.ts"
 
 const T = "2026-10-20T10:00:00.000Z"
 
@@ -353,8 +353,7 @@ test("a log yian can read only up to a bad line shows no outcome, not the status
   fs.mkdirSync(path.join(runsDir, RUN))
   const records = [
     runStarted(0),
-    // The START inputs' commit: before it, the run hasn't started.
-    committed(1, "__start__", {}),
+    startCommitted(1),
     started(2, "a"),
     waiting(3, "a"),
     line(4, "run_waiting", { node_ids: ["a"] }),
@@ -399,8 +398,8 @@ test("reading the index logs its warnings by path and an unreadable index is emp
   fs.writeFileSync(path.join(garbage, "index.sqlite"), "not a database, just some text that is long enough")
   lines.length = 0
   expect(readIndex(garbage, (line) => lines.push(line)).size).toBe(0)
-  expect(lines).toHaveLength(1)
-  expect(lines[0]).toMatch(/^run index read failed \([A-Za-z]+\)$/)
+  // yian reads a damaged index as empty; its SQLite message is logged as the code it names.
+  expect(lines).toEqual(["run index read failed (SQLITE_NOTADB)"])
 })
 
 test("participants come from answers and side chat openers", () => {
