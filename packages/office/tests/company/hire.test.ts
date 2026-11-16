@@ -263,7 +263,7 @@ test("a preview leaves hand edits alone", async () => {
 
 test("issue messages name the flow as written and never the scratch copy", async () => {
   const check =
-    "  check:\n    kind: code\n    code: ./nope.ts:fn\n    input:\n      x: ${chat.output.summary}\n    output: str\n"
+    "  check:\n    kind: code\n    code: ./nope.ts:fn\n    input:\n      x: ${chat.output.summary}\n    output: !str\n"
   const end = "output:\n  summary: ${chat.output.summary}\n"
   const flow = CHAT_FLOW.replace(end, check + end)
   const git = makeGit({ ...baseFiles(), ...CHAT_FILES, "shared/flows/chat.yaml": flow })

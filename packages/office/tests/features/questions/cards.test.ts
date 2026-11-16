@@ -568,7 +568,7 @@ const TYPED_GATE = GATE.replace(
         - question: Ship it?
           header: ship
           options: [{label: "yes"}, {label: "no"}]
-    output: {count: int, ship: bool}
+    output: {count: !int, ship: !bool}
 `,
 )
 

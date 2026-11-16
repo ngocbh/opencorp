@@ -46,8 +46,8 @@ const CODES = [
 
 // The codes of an index a rebuild from the logs cures: ERROR is a table yian's fixed SQL doesn't fit (an index whose
 // layout version is right but whose table isn't), PERM and READONLY a file this process can't write, CORRUPT and
-// NOTADB a damaged file. BUSY (another builder holds the lock), FULL, IOERR, NOMEM and INTERRUPT aren't cured by
-// dropping the index: its rows still work, and the rebuild would fail the same way.
+// NOTADB a damaged file that yian's own rebuild left damaged. BUSY (another builder holds the lock), FULL, IOERR,
+// NOMEM and INTERRUPT aren't cured by dropping the index: its rows still work, and the rebuild would fail the same way.
 const CURABLE = new Set([1, 3, 8, 11, 26])
 const SQLITE_CANTOPEN = 14
 
@@ -57,6 +57,8 @@ export const REBUILD_RETRY_MS = 10 * 60_000
 /** The index's files under the runs folder: the database and what SQLite keeps beside it. */
 const INDEX_FILES = ["index.sqlite", "index.sqlite-journal", "index.sqlite-wal", "index.sqlite-shm"]
 
+// yian's warning when it rebuilt a damaged index (CORRUPT or NOTADB) itself; it holds SQLite's message, never logged.
+const YIAN_REBUILT = /^run index .+ was damaged \((.*)\); rebuilt it from the logs$/s
 // Lazy, so a message that itself holds "/log.jsonl: " can't stretch the path into it.
 const SKIPPED = /^run index skipped (.+?\/log\.jsonl): /
 // The read names a row it skips by its run id.
@@ -87,6 +89,14 @@ function failureName(error: unknown): string {
     if (typeof fsCode === "string" && FS_CODE.test(fsCode)) return fsCode
   } catch {}
   return errorName(error)
+}
+
+/** The code SQLite's message `message` for a damaged index names (`SQLITE_NOTADB`, `SQLITE_CORRUPT`), else
+ *  `damaged`: yian's warnings about the index hold the message, which the office never logs. */
+export function damageName(message: string): string {
+  if (/\bnot a database\b/.test(message)) return "SQLITE_NOTADB"
+  if (/\bmalformed\b/.test(message)) return "SQLITE_CORRUPT"
+  return "damaged"
 }
 
 /** The code name of an index failure a rebuild from the logs cures, else null. CANTOPEN is cured only for a regular
@@ -122,7 +132,7 @@ export interface Reply {
   error?: string
   /** The logs yian couldn't read, by path. */
   skipped: string[]
-  /** The code name of the failure the index was dropped and built again for. */
+  /** The code name of the failure the index was dropped and built again for, here or by yian (`damageName`). */
   rebuilt?: string
   /** The index's rows as the read after the update found them; `null` when the read failed. */
   rows: RunIndexRow[] | null
@@ -134,8 +144,8 @@ export interface Reply {
  *  index) and read: `ok` says whether the update worked (`error` names why not), `rows` holds the rows the read
  *  after it found, whether or not it worked (`null`, with `readError`, when the read failed), and `skipped` lists
  *  the logs and rows yian couldn't read. An index whose failure a rebuild cures (`curable`) is removed and built
- *  again once from the logs, and the reply's `rebuilt` names the failure; after a rebuild that failed, none is tried
- *  for `REBUILD_RETRY_MS`. */
+ *  again once from the logs, and the reply's `rebuilt` names the failure (as `damageName` does when yian rebuilt it);
+ *  after a rebuild that failed, none is tried for `REBUILD_RETRY_MS`. */
 export function serve(
   port: Port,
   runsDir: string,
@@ -147,9 +157,15 @@ export function serve(
   port.on("message", (message) => {
     if (message !== "update") return
     const skipped: string[] = []
+    let yianRebuilt: string | null = null
     const collect = (warning: string) => {
       const match = SKIPPED.exec(warning)
-      if (match) skipped.push(match[1]!)
+      if (match) {
+        skipped.push(match[1]!)
+        return
+      }
+      const damaged = YIAN_REBUILT.exec(warning)
+      if (damaged) yianRebuilt = damageName(damaged[1]!)
     }
     const update = () => withWarnings(collect, () => updateRunIndex(runsDir, { timeoutMs }))
     let rebuilt: string | null = null
@@ -180,6 +196,7 @@ export function serve(
       reply = { ok: false, error: failureName(error), skipped, rows: null }
     }
     if (rebuilt !== null) reply.rebuilt = rebuilt
+    else if (yianRebuilt !== null) reply.rebuilt = yianRebuilt
     try {
       reply.rows = withWarnings(
         (warning) => {

@@ -315,7 +315,8 @@ test("a copy of the key in another case or base64 never reaches the problem", as
 
   const problem = await oneReplyProblem(registry, provider, { log: (line) => void lines.push(line) })
 
-  expect(problem).toContain(`${probe} rejected [redacted] [redacted] [redacted]`)
+  // yian scrubs the copies before the office sees them.
+  expect(problem).toContain(`${probe} rejected [REDACTED] [REDACTED] [REDACTED]`)
   for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) {
     expect(problem).not.toContain(copy)
     expect(lines.filter((line) => line.includes(copy))).toEqual([])
@@ -360,7 +361,7 @@ test("a model that quotes the key in another case or base64 says why without any
   const problem = await modelProblem(
     Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: MIXED_KEY }, env: { VLLM_BASE_URL: `${url}/v1` } }),
   )
-  expect(problem).toContain("bad key: [redacted] and [redacted] and [redacted]")
+  expect(problem).toContain("bad key: [REDACTED] and [REDACTED] and [REDACTED]")
   for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) expect(problem).not.toContain(copy)
 })
 
@@ -394,15 +395,16 @@ test("providerSecrets reads a subscription's tokens as they are now, and the log
 test("a model check on the sign-in YIAN_AUTH_FILE names says why without any copy of what that sign-in sends", async () => {
   const dir = tempDir()
   const auth = path.join(dir, "auth.json")
-  // A key login, not a subscription: yian sends a subscription only to OpenAI's own host, and this test reaches none.
-  await new AuthStore(auth).save("openai", new ApiKeyCredentials(MIXED_KEY), "gpt-5.5")
   const url = await refusingLlm(`bad key: ${keyCopies(MIXED_KEY).join(" and ")}`)
+  // A key login, not a subscription: yian sends a subscription only to OpenAI's own host, and this test reaches none.
+  // yian sends a saved key only to the endpoint it was saved for.
+  await new AuthStore(auth).save("openai", new ApiKeyCredentials(MIXED_KEY), "gpt-5.5", { endpoint: `${url}/v1` })
   const provider = Provider.parse({
     llm_config: { provider: "openai", model: "gpt-5.5" },
     env: { YIAN_AUTH_FILE: auth, OPENAI_BASE_URL: `${url}/v1` },
   })
   const problem = await modelProblem(provider, { env: { HOME: dir } })
-  expect(problem).toContain("bad key: [redacted] and [redacted] and [redacted]")
+  expect(problem).toContain("bad key: [REDACTED] and [REDACTED] and [REDACTED]")
   for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) expect(problem).not.toContain(copy)
 })
 
@@ -453,7 +455,7 @@ test("a stop during the model check rejects with its reason", async () => {
 
 test("a setup run failure never shows the key or url credentials", async () => {
   const flow = await loadFlow(
-    "id: fail\nname: fail\ninput:\n  text: !str\noutput: str\nkind: code\ncode: |\n  throw new Error(inputs.text)\n",
+    "id: fail\nname: fail\ninput:\n  text: !str\noutput: !str\nkind: code\ncode: |\n  throw new Error(inputs.text)\n",
     { sourceLabel: "fail" },
   )
   const text = `bad key ${KEY} for https://user:hunter2@example.com/v1.`
@@ -471,7 +473,7 @@ test("a setup run failure never shows the key or url credentials", async () => {
 
 test("a setup run failure never shows the key in another case or base64", async () => {
   const flow = await loadFlow(
-    "id: fail\nname: fail\ninput:\n  text: !str\noutput: str\nkind: code\ncode: |\n  throw new Error(inputs.text)\n",
+    "id: fail\nname: fail\ninput:\n  text: !str\noutput: !str\nkind: code\ncode: |\n  throw new Error(inputs.text)\n",
     { sourceLabel: "fail" },
   )
   const { message } = await runSetup(

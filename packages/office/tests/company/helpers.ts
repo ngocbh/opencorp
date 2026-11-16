@@ -33,12 +33,12 @@ nodes:
     tool_id: ask
     input:
       prompt: "you> "
-    output: str
+    output: !str
   reply:
     kind: agent
     input:
       message: \${ask.output}
-    output: str
+    output: !str
     prompt: "\${message}"
 output: \${reply.output}
 `
@@ -65,7 +65,7 @@ ${MAIN_INPUTS}defs:
         steer_inbox: \${input.messages}
         input:
           said: \${heard.output.events}
-        output: Optional(str)
+        output: !Optional(str)
         prompt:
           - \${said}
     output:
@@ -257,13 +257,13 @@ export function failingGit(dir: string, match: string, failure: string): string 
 }
 
 /** A child flow `echo` that a parent calls through `uses:`. */
-export const CHILD = "id: echo\nname: echo\ninput:\n  text: !str\noutput: str\nkind: agent\nprompt: \"${text}\"\n"
+export const CHILD = "id: echo\nname: echo\ninput:\n  text: !str\noutput: !str\nkind: agent\nprompt: \"${text}\"\n"
 
 /** A flow `chat` that imports `ref` as `echo` and calls it. */
 export function parentFlow(ref: string): string {
   return (
     "id: chat\nname: chat\nuses:\n  echo: " + ref + "\nnodes:\n  ask:\n    kind: tool\n    tool_id: ask\n" +
-    "    input:\n      prompt: \"you> \"\n    output: str\n  reply:\n    kind: call\n    call: echo\n" +
+    "    input:\n      prompt: \"you> \"\n    output: !str\n  reply:\n    kind: call\n    call: echo\n" +
     "    input:\n      text: ${ask.output}\noutput: ${reply.output}\n"
   )
 }

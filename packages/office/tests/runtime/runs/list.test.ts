@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test"
 import type { RunPage } from "@opencorp/protocol"
 import type { RunIndexRow, RunInspection } from "@ngocbh/yian/run"
-import { Inspections, Live, type LiveRun, NO_OUTCOME } from "../../../src/runtime/runs/records.ts"
+import { Inspections, Live, type LiveRun, NO_OUTCOME, UNSTARTED } from "../../../src/runtime/runs/records.ts"
 import { OFFICE_STOPPED, WORKER_STOPPED } from "../../../src/runtime/runs/outcomes.ts"
 import { SCHEMA } from "../../../src/runtime/runs/reader.ts"
 import { RunLogs } from "../../../src/runtime/runs/service.ts"
@@ -182,6 +182,16 @@ test("a run whose index row is unreadable takes neither its parent link nor its 
   // Nor as ended: an open-or-recent page still reads it, and finds it open when its log says so.
   const inspections = new Inspections(o.runsDir, () => inspection({ status: "waiting" }))
   expect(ids(runsFor(o, { inspections }).page({ recent: "2026-11-01T00:00:00.000Z" }))).toEqual([kid])
+})
+
+test("an old run whose log ends inside its run start is failed, not open", () => {
+  const o = office()
+  const cut = chatWith(o, { at: OLD })
+  o.index.set(cut, indexRow(cut, { status: "unstarted" }))
+  const recent = chatWith(o)
+  const runs = runsFor(o, { inspections: new Inspections(o.runsDir, () => inspection({ status: "unstarted" })) })
+  expect(ids(runs.page({ recent: "2026-10-13T10:00:00.000Z" }))).toEqual([recent])
+  expect(runs.page().runs.find((r) => r.run_id === cut)).toMatchObject({ status: "failed", reason: UNSTARTED })
 })
 
 test("paging by top level run", () => {

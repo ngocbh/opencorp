@@ -18,14 +18,14 @@ const SKILLS = {
   "shared/skills/deploy/SKILL.md": "---\nname: deploy\ndescription: Ship it.\n---\nShip.\n",
 }
 
-const CHILD = 'id: echo\nname: echo\ninput:\n  text: !str\noutput: str\nkind: agent\nprompt: "${text}"\n'
+const CHILD = 'id: echo\nname: echo\ninput:\n  text: !str\noutput: !str\nkind: agent\nprompt: "${text}"\n'
 const ESCAPE =
   "id: escape\nname: escape\nuses:\n  echo: ../../echo\nnodes:\n  reply:\n    kind: call\n    call: echo\n" +
   "    input:\n      text: hi\noutput: ${reply.output}\n"
 
 // A flow whose one CODE node returns PLANTED from the worker's live environment, which the node shares.
 const PLANTED =
-  "id: planted\nname: planted\nnodes:\n  peek:\n    kind: code\n    output: Optional(str)\n" +
+  "id: planted\nname: planted\nnodes:\n  peek:\n    kind: code\n    output: !Optional(str)\n" +
   '    code: "return process.env.PLANTED ?? null"\noutput: ${peek.output}\n'
 
 /** The parts of a chat request these tests read. */

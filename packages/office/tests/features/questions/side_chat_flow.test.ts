@@ -25,7 +25,7 @@ test("side chat template loads and has the chat shape", async () => {
   const reply = turn.reply
   expect([reply.steer_inbox, reply.output, reply.input.profile]).toEqual([
     "${input.messages}",
-    "Optional(str)",
+    "!Optional(str)",
     "${input.profile}",
   ])
   // The profile is a memory input the office binds, carried into each turn, and shown in the system prompt.

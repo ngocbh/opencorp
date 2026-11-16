@@ -19,5 +19,5 @@ nodes:
     kind: tool
     tool_id: replay_access
     input: {}
-    output: Reached
+    output: !Reached
 output: ${replay.output}

@@ -31,7 +31,7 @@ nodes:
           known: ${input.known}
           draft: ${input.draft}
           changes: ${input.changes}
-        output: Answers
+        output: !Answers
         prompt: |-
           You are setting up a new OpenCorp company with its owner, the human you are talking to. The owner is
           the company's CEO. The teammates are AI agents who report to the owner.
@@ -75,7 +75,7 @@ nodes:
         tool_id: confirm_company
         input:
           answers: ${interview.output}
-        output: {draft: str, changes: str, accepted: bool}
+        output: {draft: !str, changes: !str, accepted: !bool}
     output:
       known: ${input.known}
       draft: ${confirm.output.draft}
@@ -85,7 +85,7 @@ nodes:
     kind: code
     input:
       draft: ${rounds.output.draft}
-    output: Answers
+    output: !Answers
     code: |
       return JSON.parse(inputs.draft)
   password:
@@ -93,14 +93,14 @@ nodes:
     tool_id: ask_password
     depends_on: [answers]  # without it, the password is asked before the interview
     input: {}
-    output: Optional(str)
+    output: !Optional(str)
   remote:
     kind: tool
     tool_id: ask_remote
     depends_on: [password]
     input:
       given: ${input.remote}
-    output: str
+    output: !str
 output:
   company: ${answers.output.company}
   owner: ${answers.output.owner}

@@ -46,7 +46,7 @@ test("a uses: child loads under the repo root, so its CODE outside the repo is r
   fs.writeFileSync(outside, 'export function fn(): string {\n  return "out"\n}\n')
   const root = makeCompany({ "shared/flows/main.yaml": usesFlow("main", ["coded"]) })
   const code = path.relative(path.join(root, "shared/flows"), outside)
-  const coded = `id: coded\nname: coded\nnodes:\n  prep:\n    kind: code\n    code: ${code}:fn\n    output: str\n`
+  const coded = `id: coded\nname: coded\nnodes:\n  prep:\n    kind: code\n    code: ${code}:fn\n    output: !str\n`
   fs.writeFileSync(path.join(root, "shared/flows/coded.yaml"), `${coded}output: \${prep.output}\n`)
   const load = loadConfined(root, path.join(root, "shared/flows/main.yaml"))
   await expect(load).rejects.toBeInstanceOf(LoadError)

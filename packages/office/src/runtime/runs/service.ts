@@ -13,12 +13,11 @@ import type {
   RunPage,
   RunSummary,
 } from "@opencorp/protocol"
-import type { RunIndexRow, RunStatus } from "@ngocbh/yian/run"
+import type { RunIndexRow } from "@ngocbh/yian/run"
 import { NotFound, cutReason, type RunRow, type SessionRecord, type Store } from "../store/store.ts"
 import { errorName } from "../worker/rpc.ts"
 import { kindOf } from "./nodes.ts"
 import { runUpdated } from "./notify.ts"
-import { COULDNT_RESUME, COULDNT_START, WORKER_STOPPED } from "./outcomes.ts"
 import {
   ERROR_CHARS,
   type FoldOptions,
@@ -30,7 +29,7 @@ import {
   RunLogReader,
   UnreadableLog,
 } from "./reader.ts"
-import { Inspections, Live, readIndex, Summaries, YianRuns } from "./records.ts"
+import { FAILED_ENDS, FINAL, Inspections, Live, readIndex, Summaries, YianRuns } from "./records.ts"
 
 export const PAGE = 50
 /** How many rows a filtered list reads at a time. */
@@ -43,10 +42,6 @@ export const OPEN_STATUSES: ReadonlySet<string> = new Set(["running", "waiting",
 export const NOT_STARTED = "no run log: the run didn't start"
 export const NOT_STARTED_YET = "not started yet"
 export const LOG_GONE = "the run log is gone"
-
-const ENDED: ReadonlySet<RunStatus> = new Set(["succeeded", "failed", "cancelled"])
-/** The office ends of a run that never wrote its log. */
-const NEVER_STARTED: ReadonlySet<string> = new Set([COULDNT_START, COULDNT_RESUME, WORKER_STOPPED])
 
 /** The run has no log to read: it didn't start, or the file is gone. */
 export class NoLog extends Error {
@@ -224,7 +219,8 @@ export class RunLogs {
       if (row.endReason === null && indexRow === undefined) {
         return { log_state: "not_started", log_message: NOT_STARTED_YET }
       }
-      if (row.endReason !== null && NEVER_STARTED.has(row.endReason)) {
+      // A failed office end with no log: the run never wrote one.
+      if (row.endReason !== null && FAILED_ENDS.has(row.endReason)) {
         return { log_state: "not_started", log_message: NOT_STARTED }
       }
       return gone
@@ -365,7 +361,7 @@ export class RunLogs {
     const ended: string[] = []
     for (const row of yian.rows()) {
       if (row.parentRunId !== null) links.set(row.runId, row.parentRunId)
-      if (ENDED.has(row.status)) ended.push(row.runId)
+      if (FINAL.has(row.status)) ended.push(row.runId)
     }
     if (parent !== null && this.#store.getRun(parent) === undefined) throw new NotFound(`no run ${parent}`)
     const summaries = new Summaries(this.#store, live, yian, { fresh: this.#live, log: this.#log })

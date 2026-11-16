@@ -124,6 +124,7 @@ function unreadSends(entries: readonly RunLogEntry[]): Message[] {
 export async function cancelReplaced(log: string, { env, codeRoot }: SeedOptions): Promise<void> {
   try {
     const { status } = inspectRun(log)
+    // Not an `unstarted` run: yian refuses to cancel a log cut inside its run start, and nothing can move it on.
     if (status === "running" || status === "waiting" || status === "stopped" || status === "crashed") {
       await cancel(log, { env, codeRoot })
     }

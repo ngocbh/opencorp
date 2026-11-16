@@ -16,7 +16,7 @@ setDefaultTimeout(30_000)
 function agentFlow(name: string, node = ""): string {
   return (
     `id: ${name}\nname: ${name}\ninput:\n  message: !str\nnodes:\n  reply:\n    kind: agent\n` +
-    `${node}    input:\n      message: \${input.message}\n    output: str\n` +
+    `${node}    input:\n      message: \${input.message}\n    output: !str\n` +
     `    prompt: "\${message}"\noutput: \${reply.output}\n`
   )
 }

@@ -397,7 +397,7 @@ test("a multi-line lint message stays on the company row", async () => {
     path.join(paths.company, "shared", "flows", "spin.yaml"),
     "id: spin\nname: spin\ninput:\n  messages: !Inbox(Message)\n  person: !str\n  talking_to: !str\n  summary: !str\n" +
       "  history: !list(list(Message))\n  turns: !int\n  max_turns: !int\nnodes:\n  reply:\n    kind: agent\n" +
-      "    input:\n      who: ${input.talking_to}\n    output: str\n    prompt: |-\n      Say hi to ${who}.\n" +
+      "    input:\n      who: ${input.talking_to}\n    output: !str\n    prompt: |-\n      Say hi to ${who}.\n" +
       "output: ${reply.output}\n",
   )
   git(paths.company, "add", "-A")

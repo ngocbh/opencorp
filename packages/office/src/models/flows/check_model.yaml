@@ -2,6 +2,6 @@
 id: check_model
 name: check_model
 description: Ask the model for a one-word reply.
-output: str
+output: !str
 kind: agent
 prompt: Reply with the single word OK.

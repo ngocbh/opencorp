@@ -429,9 +429,9 @@ test("a reply input named __steer_inbox is refused at load, so it can't pass for
 })
 
 test("a main flow whose reply output is not optional is a lint error", async () => {
-  const message = (await chatShapeIssue(MAIN.replace("output: Optional(str)", "output: str"))).message
+  const message = (await chatShapeIssue(MAIN.replace("output: !Optional(str)", "output: !str"))).message
   expect(message).toContain("interrupt")
-  expect(message).toContain("Optional(")
+  expect(message).toContain("output: !Optional(str)")
 })
 
 /** A flow `id` whose one CODE node calls `fn` in the file `file` with its `text` input. */

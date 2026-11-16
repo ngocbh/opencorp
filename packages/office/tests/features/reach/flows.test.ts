@@ -37,7 +37,7 @@ test("learn_hq's agent sees only the old notes, script and failure, with shell, 
   expect(learn.tools).toEqual(["shell", "ask_user", "save_access"])
   expect(learn.env).toEqual({ max_tool_iterations: 30 })
   expect(learn.input).toEqual({ notes: "${input.notes}", script: "${input.script}", failure: "${input.failure}" })
-  expect(learn.output).toBe("str")
+  expect(learn.output).toBe("!str")
   // Every placeholder in the prompt is one of its inputs: nothing else reaches the model.
   const placeholders = [...(learn.prompt as string).matchAll(/\$\{([^}]*)\}/g)].map((m) => m[1])
   expect(placeholders).toEqual(["notes", "script", "failure"])

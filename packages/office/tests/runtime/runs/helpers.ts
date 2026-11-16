@@ -44,6 +44,11 @@ export function runStarted(
   })
 }
 
+/** The commit of the run's START inputs: until it, the run hasn't started, and yian reads its log `unstarted`. */
+export function startCommitted(seq: number): Buffer {
+  return committed(seq, "__start__", {})
+}
+
 export function started(seq: number, nodeId: string): Buffer {
   return line(seq, "node_started", { node_id: nodeId })
 }
@@ -64,14 +69,23 @@ export function routed(seq: number, nodeId: string, handle: string): Buffer {
 
 export function expanded(seq: number, nodeId: string): Buffer {
   return line(seq, "node_expanded", {
+    call_id: null,
     spawner_id: nodeId,
     prune_ids: [],
     topology_digest: "0".repeat(64),
   })
 }
 
-export function failed(seq: number, nodeId: string, message: string): Buffer {
+/** A failure of `nodeId`; with `call`, inside that agent flow call's `scope`, which takes it instead of the run. */
+export function failed(
+  seq: number,
+  nodeId: string,
+  message: string,
+  call: { callId: string; scope: string } | null = null,
+): Buffer {
   return line(seq, "node_failed", {
+    call_id: call?.callId ?? null,
+    scope: call?.scope ?? null,
     failure: {
       code: "node.execute",
       message,
@@ -151,7 +165,7 @@ defs:
       prep:
         kind: code
         code: ./helpers.ts:fn
-        output: str
+        output: !str
     output:
       n: \${input.n + 1}
 nodes:

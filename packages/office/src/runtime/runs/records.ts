@@ -23,6 +23,7 @@ import {
   type Store,
 } from "../store/store.ts"
 import { errorName } from "../worker/rpc.ts"
+import { damageName } from "./index_thread.ts"
 import { COULDNT_RESUME, COULDNT_START, DEBRIEF, FLOWS, OFFICE_STOPPED, WORKER_STOPPED } from "./outcomes.ts"
 
 export const NO_OUTCOME = "ended without a recorded outcome"
@@ -32,14 +33,19 @@ export const CHILDREN_SHOWN = 200
 export const STOPPED = "stopped"
 /** The reason of a run yian cancelled without an end the office wrote. */
 export const CANCELLED = "cancelled"
+/** The reason of a run whose log ends inside its run start, before its inputs were recorded, with no office end. */
+export const UNSTARTED = "never started"
 /** The size at which the warned-about runs and the cached inspections are cleared, so they stay small. */
 export const WARNED_CAP = 10_000
 
 /** How long reading the index waits while an update commits, in milliseconds. */
 const READ_TIMEOUT_MS = 500
 const HANDLE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/
-const FAILED_ENDS = new Set([COULDNT_START, COULDNT_RESUME, WORKER_STOPPED])
-const ENDED: ReadonlySet<RunStatus> = new Set(["succeeded", "failed", "cancelled"])
+/** The office end reasons a run shows as failed; a run with one of them and no log never wrote one. */
+export const FAILED_ENDS: ReadonlySet<string> = new Set([COULDNT_START, COULDNT_RESUME, WORKER_STOPPED])
+/** The statuses nothing moves a run on from: yian's ends, and `unstarted`, a log cut inside its run start, which
+ *  `advance`, deliveries and `cancel` all refuse. */
+export const FINAL: ReadonlySet<RunStatus> = new Set(["succeeded", "failed", "cancelled", "unstarted"])
 const warned = new Set<string>() // runs already warned about
 
 /** A run's status as the protocol shows it. */
@@ -80,7 +86,7 @@ export interface YianRun {
   endedAt: string | null
 }
 
-/** `inspectRun` answers by run id; an ended run's answer is read once, since an ended log doesn't change. */
+/** `inspectRun` answers by run id; a final run's answer (`FINAL`) is read once, since its log doesn't change. */
 export class Inspections {
   readonly runsDir: string
   readonly #inspect: (log: string) => RunInspection
@@ -109,7 +115,7 @@ export class Inspections {
       parentRunId: null,
       endedAt: seen.endedAt,
     }
-    if (ENDED.has(seen.status)) {
+    if (FINAL.has(seen.status)) {
       if (this.#ended.size >= WARNED_CAP) this.#ended.clear()
       this.#ended.set(runId, run)
     }
@@ -165,14 +171,14 @@ export class YianRuns {
     return out
   }
 
-  /** Whether yian ended the run (succeeded, failed or cancelled) or a writer holds its log now (running): its index
-   *  row says so, else its log does. */
+  /** Whether yian ended the run (succeeded, failed or cancelled), its log ends inside its run start (unstarted), or a
+   *  writer holds its log now (running): its index row says so, else its log does. */
   endedOrRunning(runId: string): boolean {
     const status = this.#index.get(runId)?.status
-    if (status === "running" || (status && ENDED.has(status))) return true
+    if (status === "running" || (status && FINAL.has(status))) return true
     // A row from before the run ended (an update that failed) must not hide its end, so the log is asked too.
     const seen = this.#inspections.get(runId)?.status
-    return seen === "running" || (!!seen && ENDED.has(seen))
+    return seen === "running" || (!!seen && FINAL.has(seen))
   }
 
   /** What yian says about the run: its index row, with a failed run's failure from its log; the log's answer for a
@@ -189,10 +195,10 @@ export class YianRuns {
     return row ? rowFacts(row) : null
   }
 
-  /** The row's status needs no log: the run ended, or it waits or stopped and the row was built from the whole log
-   *  (the size check yian's own update makes; a missing log counts as stale). */
+  /** The row's status needs no log: the run's status is final, or it waits or stopped and the row was built from the
+   *  whole log (the size check yian's own update makes; a missing log counts as stale). */
   #settled(row: RunIndexRow): boolean {
-    if (ENDED.has(row.status)) return true
+    if (FINAL.has(row.status)) return true
     if (row.status !== "waiting" && row.status !== "stopped") return false
     try {
       return fs.statSync(path.join(this.#inspections.runsDir, row.runId, "log.jsonl")).size === row.offset
@@ -202,15 +208,21 @@ export class YianRuns {
   }
 }
 
-/** yian's run index under `runsDir` by run id; empty when it can't be read. A row yian skips is logged by its log's
- *  path, never with yian's message (which may quote the log). */
+/** yian's run index under `runsDir` by run id; empty when it can't be read or is damaged. A row yian skips is logged
+ *  by its log's path, and a damaged index as a failed read, never with yian's message (which may quote the log). */
 export function readIndex(runsDir: string, log: (line: string) => void = () => {}): Map<string, RunIndexRow> {
   try {
     const rows = withWarnings(
       (warning) => {
         // yian names a row it skips by run id.
         const match = /^run index skipped (.+?): /.exec(warning)
-        if (match) log(`run index skipped ${path.join(runsDir, match[1]!, "log.jsonl")}`)
+        if (match) {
+          log(`run index skipped ${path.join(runsDir, match[1]!, "log.jsonl")}`)
+          return
+        }
+        // yian reads a damaged index as empty, and its next update rebuilds it.
+        const damaged = /^run index .+ is damaged \((.*)\); the next update rebuilds it$/s.exec(warning)
+        if (damaged) log(`run index read failed (${damageName(damaged[1]!)})`)
       },
       () => readRunIndex(runsDir, { timeoutMs: READ_TIMEOUT_MS }),
     )
@@ -223,7 +235,8 @@ export function readIndex(runsDir: string, log: (line: string) => void = () => {
 
 /** Ends, as the office stopped and with no end time, each run an earlier office left open: the office rows with no
  *  end reason, but each live composer session's current run (restore resumes, replaces or fails it, or it sleeps),
- *  the runs yian ended and the runs whose log a writer holds now. Returns the run ids it wrote, in run-id order.
+ *  the runs yian ended, the runs whose log ends inside its run start (they show never started) and the runs whose log
+ *  a writer holds now. Returns the run ids it wrote, in run-id order.
  *
  *  The office end goes only on runs yian didn't end and can't still end: in the run status rule an office end
  *  reason wins over yian's status, so it would hide yian's outcome. */
@@ -273,6 +286,8 @@ export function statusOf(
     }
     case "cancelled":
       return { status: "interrupted", reason: CANCELLED, failedNode: null, yian: run }
+    case "unstarted":
+      return { status: "failed", reason: UNSTARTED, failedNode: null, yian: run }
   }
   if (!warned.has(row.runId)) {
     // A missing end path: say so once per run.
@@ -437,7 +452,7 @@ export class Summaries {
     const answerers = questions.map((q) => q.answered_by)
     let endedAt: string | null = null
     if (row.endReason !== null) endedAt = row.endedAt
-    else if (run?.status && ENDED.has(run.status)) endedAt = run.endedAt
+    else if (run?.status && FINAL.has(run.status)) endedAt = run.endedAt
     return RunSummary.parse({
       run_id: row.runId,
       session_id: row.sessionId,

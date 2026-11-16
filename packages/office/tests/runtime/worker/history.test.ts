@@ -351,17 +351,16 @@ test("a refused cancel leaves the fresh run unharmed", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "ok" })
   const where = codedPin()
-  // r1 runs in a worker process, as the office runs it, so this process has no compiled flow of r1's to reuse: the
-  // cancel recompiles the recorded flow and finds its helper file gone.
+  // r1 runs in a worker process, as the office runs it, so this process has no live run of r1's to reuse.
   const r1 = makeJob(where, "flows/coded.yaml", { inputs: {} })
   const sessionDir = path.join(tempDir(), "sessions", "s1")
   const first = await runWorker(makeRegistry(), r1, new Recorder(), sessionDir, { env: fake.env() })
   expect(first.outcome?.status).toBe("waiting")
-  fs.rmSync(path.join(where.pin, "flows", "helpers.ts"))
   const lines = captureStderr()
   const office = new TemplateOffice()
+  // r2 runs on another pin: yian refuses a cancel under a code root that isn't the one r1 recorded.
   const r2 = templateJob("chat", office, {}, {
-    base: where,
+    base: { pin: codedPin().pin, runs: where.runs },
     run_id: "r2",
     seed: seedOf(r1, fake),
     deliver: [send("n1", "hello")],
@@ -370,7 +369,7 @@ test("a refused cancel leaves the fresh run unharmed", async () => {
   expect(userTexts(fake, 0)).toEqual(["hello"])
   expect(inspectRun(r1.log).status).toBe("waiting")
   expect(lines.filter((line) => line.includes("the replaced run was not cancelled"))).toEqual([
-    "opencorp __worker: the replaced run was not cancelled (LoadError)",
+    "opencorp __worker: the replaced run was not cancelled (RangeError)",
   ])
   expect(lines.filter((line) => line.includes(where.pin) || line.includes(r1.log))).toEqual([])
 })

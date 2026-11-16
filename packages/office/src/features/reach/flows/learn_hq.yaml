@@ -17,7 +17,7 @@ nodes:
       notes: ${input.notes}
       script: ${input.script}
       failure: ${input.failure}
-    output: str
+    output: !str
     prompt: |-
       You are helping the owner open their OpenCorp HQ in a browser on this machine. HQ runs with their office on
       another machine they reach over SSH, often a cluster: a login node, then a compute node where a job runs the

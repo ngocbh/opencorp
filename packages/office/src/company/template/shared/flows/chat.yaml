@@ -92,7 +92,7 @@ defs:
           person: ${input.person}
           talking_to: ${input.talking_to}
           profile: ${input.profile}
-        output: Optional(str)  # null only after an interrupt
+        output: !Optional(str)  # null only after an interrupt
         system_prompt: |-
           You are ${person.name} (@${person.handle}), ${person.title} at ${person.company}. ${person.reports_to} ${talking_to}
           You work in the office alongside the people you talk with. Speak as yourself, in the first person;
