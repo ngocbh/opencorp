@@ -902,7 +902,9 @@ test("a refusal quoting the key in another case or base64 never echoes a copy", 
   const owner = await asOwner(office)
   const r = await post(sock, "/connections", owner, { provider: "anthropic", api_key: MIXED_KEY, model: "claude-x" })
   expect([r.status, errorOf(r)]).toEqual([422, "model_refused"])
-  expect(json(r).message).toContain("bad key: [redacted] and [redacted] and [redacted]")
+  // yian scrubs the copies before the office sees them. A base64 copy keeps its last character and padding ("o="),
+  // which hold 4 of the key's bits, as the office's own redaction keeps them.
+  expect(json(r).message).toContain("bad key: [REDACTED] and [REDACTED] and [REDACTED]")
   for (const copy of [MIXED_KEY, ...keyCopies(MIXED_KEY)]) {
     expect(r.text).not.toContain(copy)
     expect(lines.filter((line) => line.includes(copy))).toEqual([])
