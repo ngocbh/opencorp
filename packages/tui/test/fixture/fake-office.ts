@@ -3,7 +3,9 @@
 // check office behaviour use the real office; `test/office/contract.test.ts` checks this fake
 // against the real office.
 import {
+  APPROVAL_YES,
   Approval as ApprovalSchema,
+  approvalSessionOption,
   Person as PersonSchema,
   Session as SessionSchema,
   SessionMode,
@@ -585,7 +587,7 @@ export function createFakeOffice(
       asker,
       title: `@${asker} wants to ${what}`,
       question: shownAction(held.action),
-      options: rules.length ? ["Yes", `Yes, and don't ask again this session for: ${rules.join(", ")}`] : ["Yes"],
+      options: rules.length ? [APPROVAL_YES, approvalSessionOption(rules)] : [APPROVAL_YES],
       approval: held,
       ...fields,
     })

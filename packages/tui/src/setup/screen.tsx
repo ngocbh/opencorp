@@ -8,6 +8,7 @@ import { useTheme } from "../context/theme"
 import { clearFirst, useBindings } from "../keymap"
 import { QuestionView } from "../routes/chat/question-view"
 import { SplitBorder } from "../ui/border"
+import { createReadThrough, wrap } from "../ui/read-through"
 import type { SetupChild } from "./child"
 import { SecretInput } from "./secret"
 
@@ -73,30 +74,6 @@ type Row = { text: string; tone: "title" | "warn" | "code" | "text" }
 /** Says the window is too small, and how large it must be. */
 const tooSmall = (width: number, height: number) =>
   `Make the window larger to go on: at least ${MIN_COLUMNS} columns and ${MIN_ROWS} rows (it is ${width}x${height}).`
-
-/** `line` broken into pieces no wider than `width`, so a line wider than the screen wraps whole and never clips; an
- *  empty line stays one row. */
-function wrap(line: string, width: number): string[] {
-  if (line === "") return [""]
-  const rows: string[] = []
-  let row = ""
-  let cells = 0
-  // By grapheme and by the cells each takes, so a wide character counts as two and a surrogate pair is never split.
-  for (const { segment } of graphemes.segment(line)) {
-    const w = Bun.stringWidth(segment)
-    if (cells + w > width && row !== "") {
-      rows.push(row)
-      row = ""
-      cells = 0
-    }
-    row += segment
-    cells += w
-  }
-  rows.push(row)
-  return rows
-}
-
-const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 
 /** `text` word-wrapped into rows no wider than `width` cells: a paragraph's indentation kept, and a word wider than a
  *  row broken across rows. */
@@ -613,9 +590,6 @@ function CardPager(props: {
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
   const [rawTop, setTop] = createSignal(0)
-  // How many of the card's rows have been on screen in the final layout (the question's footer drawn): rows shown
-  // before the question came, in a taller viewport, don't count.
-  const [readThrough, setReadThrough] = createSignal(0)
   const [sel, setSel] = createSignal(0)
   // Whether the owner picked typing an answer of their own, so the answer line has the keys.
   const [typing, setTyping] = createSignal(false)
@@ -667,23 +641,9 @@ function CardPager(props: {
     const at = g.options.indexOf(g.default)
     setSel(at >= 0 ? at : props.card.kind === "question" ? 0 : g.options.length - 1)
   })
-  // Recomputed on every layout change. Before the question there's no final layout, so nothing counts; when the
-  // rows are wrapped anew (a resize), only what is on screen now counts, so a card made longer is read again.
-  let counted: Row[] | undefined
-  createEffect(() => {
-    const r = rows()
-    const now = Math.min(top() + view(), r.length)
-    if (!props.gate) {
-      counted = undefined
-      return void setReadThrough(0)
-    }
-    if (r !== counted) {
-      counted = r
-      return void setReadThrough(now)
-    }
-    setReadThrough((s) => Math.max(s, now))
-  })
-  const seen = () => props.gate !== undefined && readThrough() >= rows().length
+  // Before the question there's no final layout, so nothing counts; when the rows are wrapped anew (a resize), only
+  // what is on screen now counts, so a card made longer is read again.
+  const seen = createReadThrough({ rows, top, view, ready: () => props.gate !== undefined })
 
   const visible = createMemo(() => rows().slice(top(), top() + view()))
   const positionLine = createMemo(() => {

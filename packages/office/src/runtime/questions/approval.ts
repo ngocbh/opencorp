@@ -2,17 +2,19 @@
  *  don't ask again, or types what to do instead. Nothing here waits: yian holds the call, and the office
  *  answers it by `complete`. */
 import { pending } from "@ngocbh/yian/tools"
-import { type Approval, Question, now, validationMessage } from "@opencorp/protocol"
+import {
+  APPROVAL_YES, type Approval, approvalAlwaysOption, approvalSessionOption, Question, now, validationMessage,
+} from "@opencorp/protocol"
 import { newId, type QuestionRecord, type SessionRecord } from "../store/store.ts"
 import { strip } from "../../util/redact.ts"
 import { shownAction } from "../../util/show.ts"
 import type { OnQuestion } from "./ask.ts"
 import { INTERRUPTED } from "./format.ts"
 
-export const YES = "Yes"
-export const sessionOption = (rules: readonly string[]) =>
-  `Yes, and don't ask again this session for: ${rules.join(", ")}`
-export const alwaysOption = (rules: readonly string[]) => `Yes, and always allow: ${rules.join(", ")}`
+// The protocol's labels, which the office's clients pick by.
+export const YES = APPROVAL_YES
+export const sessionOption = approvalSessionOption
+export const alwaysOption = approvalAlwaysOption
 /** The typed row's label: a typed answer is No, and its text reaches the agent. */
 export const NO_TYPED = "No, and tell the agent what to do instead"
 
