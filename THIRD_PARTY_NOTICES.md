@@ -20,6 +20,10 @@ license, the upstream paths and commit, and our paths.
   reader itself is our own.
 - **Upstream:** `packages/core/test/shell-parse-syntax.test.ts`, read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/office/tests/runtime/permissions/commands.test.ts`.
+- **What:** the escape-sequence cases in the test of a shell's model view (colors, cursor moves, erases, C1 CSI, and
+  OSC with each terminator), copied from `packages/session-ui/src/tools/ansi.test.ts`. The parser they test is ours.
+- **Upstream:** https://github.com/anomalyco/opencode, read at commit `df46f69` (2026-11-16).
+- **Ours:** `packages/office/tests/tools/terminal/output.test.ts`.
 
 ## Paperclip
 
