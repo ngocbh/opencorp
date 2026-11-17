@@ -1,4 +1,4 @@
-import { EmbeddedTerminalRenderable, type KeyEvent, type RGBA } from "@opentui/core"
+import { EmbeddedTerminalRenderable, type RGBA } from "@opentui/core"
 import { extend, useRenderer } from "@opentui/solid"
 import type { Instrument, InstrumentOutput } from "@opencorp/protocol"
 import { asInstrument, OfficeError } from "@opencorp/client"
@@ -9,7 +9,7 @@ import { useTheme } from "../../context/theme"
 import { leaderKey, useOpenCorpKeymap } from "../../keymap"
 import { useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
-import { keyBatch, routeShellKeys } from "./keys"
+import { keyBatch, lineEffect, routeShellKeys } from "./keys"
 
 declare module "@opentui/solid" {
   interface OpenTUIComponents {
@@ -153,7 +153,7 @@ export function followOutput(opts: {
  * While `focused`, the terminal has the keys: every key but the leader goes to the live shell, encoded as a terminal
  * sends it, gathered a frame at a time and sent as typed. They are kept no longer than that, never logged and never
  * drawn: the screen shows what the program echoes. `onFocusRequest` gets what gives the terminal the keys again;
- * `onLine` hears whether the owner has typed into the shell since their last Enter, Ctrl-C or Ctrl-D.
+ * `onLine` hears whether the owner has typed text into the shell since their last Enter, Ctrl-C or Ctrl-D.
  */
 export function TerminalPane(props: {
   sessionID: string
@@ -313,7 +313,8 @@ export function TerminalPane(props: {
       press: (event) => {
         // The key goes first: a line's end may put the view away, and its last keys go out as it does.
         terminal?.handleKeyPress(event)
-        props.onLine?.(!endsLine(event))
+        const effect = lineEffect(event)
+        if (effect) props.onLine?.(effect === "types")
       },
     }),
   )
@@ -383,12 +384,6 @@ export function TerminalPane(props: {
       </Show>
     </box>
   )
-}
-
-/** Whether `event` ends the owner's line: Enter, or Ctrl-C or Ctrl-D, which give it up. */
-function endsLine(event: KeyEvent) {
-  if (["return", "enter", "linefeed"].includes(event.name)) return true
-  return event.ctrl && (event.name === "c" || event.name === "d")
 }
 
 function sameSize(first: TerminalSize | undefined, second: TerminalSize | undefined) {

@@ -58,7 +58,7 @@ import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
-import { OPENCORP_BASE_MODE, useBindings } from "../../keymap"
+import { OPENCORP_BASE_MODE, useBindings, useOpenCorpKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
 import { usePermission } from "../../context/permission"
@@ -75,6 +75,7 @@ import { PaneResizeHandle } from "../../ui/pane-resize-handle"
 import { DialogInstruments, DialogInstrumentView } from "./dialog-instruments"
 import { waitingInstrument } from "./instrument-line"
 import { InstrumentView, nextPlacement, PLACEMENTS, type InstrumentPlacement } from "./instrument-view"
+import { endsLine } from "./keys"
 import { LIVE } from "./terminal-pane"
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
@@ -343,11 +344,15 @@ export function Session() {
     if (id && !instruments().some((i) => i.id === id)) closeInstrument()
   })
   // The session's approver, the one person whose keys its shells take: who opened it, else the CEO, the company's
-  // human at the top of the org chart. Whether that is who this TUI acts as.
-  const approver = () =>
-    session()?.opened_by ?? office.state.people.find((p) => p.kind === "human" && !p.manager)?.handle
+  // human at the top of the org chart; with more than one there, it isn't known. Whether that is who this TUI acts as.
+  const approver = () => {
+    const opener = session()?.opened_by
+    if (opener) return opener
+    const top = office.state.people.filter((p) => p.kind === "human" && !p.manager)
+    return top.length === 1 ? top[0]!.handle : undefined
+  }
   const approving = () => !!office.person && office.person === approver()
-  // Whether the owner has typed into the open shell since their last Enter, Ctrl-C or Ctrl-D.
+  // Whether the owner has typed text into the open shell since their last Enter, Ctrl-C or Ctrl-D.
   const [midLine, setMidLine] = createSignal(false)
   // A PTY shell waiting for the approver's password opens itself when none is open: with the keys, in the default view,
   // or, while the prompt holds a draft, beside it with the draft keeping them. It goes back to the list once the wait
@@ -452,9 +457,35 @@ export function Session() {
     const current = renderer.currentFocusedRenderable
     if (current && within(current, viewNode)) current.blur()
     setInstrumentFocused(false)
+    if (!dropping()) giveChatFocus()
+  }
+  /** Gives back what had the keys in the chat when the open instrument took them. */
+  function giveChatFocus() {
     const saved = chatFocus
     chatFocus = null
     if (saved && !saved.isDestroyed && within(saved, chatNode)) saved.focus()
+  }
+  // A view that goes while the owner is mid-line in its shell, however it goes, leaves the rest of that line (a
+  // password's, perhaps) going nowhere: the keys are dropped until its Enter, Ctrl-C or Ctrl-D, and only then does
+  // the chat get them.
+  const [dropping, setDropping] = createSignal(false)
+  const keymap = useOpenCorpKeymap()
+  onCleanup(
+    keymap.intercept(
+      "key",
+      ({ event, consume }) => {
+        if (!dropping()) return
+        consume()
+        if (!endsLine(event)) return
+        setDropping(false)
+        giveChatFocus()
+      },
+      { priority: 200 },
+    ),
+  )
+  /** Starts dropping the owner's keys when the open view goes while they are mid-line in its shell. */
+  function leaving() {
+    if (untrack(midLine)) setDropping(true)
   }
   // Focus that lands in the open instrument gives it the keys. While it has them, focus that lands in the chat (a
   // dialog handing it back to the prompt) goes back to the instrument.
@@ -472,13 +503,16 @@ export function Session() {
 
   /** Opens instrument `id` in `view`, the setting's unless given, with the keys unless `keys` is false. */
   function showInstrument(id: string, view = defaultPlacement(), keys = true) {
+    if (opened() && opened()!.id !== id) leaving()
     setOpened({ id, view })
     if (keys) focusInstrument()
     else focusChat()
   }
-  /** Puts the open instrument back in the list; the chat gets the keys. */
+  /** Puts the open instrument back in the list; the chat gets the keys, once the owner has ended a line they were
+   *  typing into it. */
   function closeInstrument() {
     if (!opened()) return
+    leaving()
     setOpened(null)
     focusChat()
   }
@@ -1001,6 +1035,11 @@ export function Session() {
                       )}
                     </For>
                   </scrollbox>
+                  <Show when={dropping()}>
+                    <text fg={theme.warning} flexShrink={0} wrapMode="word">
+                      The shell closed: keys are dropped until Enter
+                    </text>
+                  </Show>
                   {/* An approval card may shrink to what the chat leaves it: its body scrolls in what remains. */}
                   <box flexShrink={approval() ? 1 : 0}>
                     <Show

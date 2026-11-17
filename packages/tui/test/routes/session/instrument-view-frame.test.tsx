@@ -6,7 +6,7 @@
 // shell waiting for a password opens itself. The split's pane, its handle and the muted chat beside it, and the key
 // routing, are the upstream TUI's.
 import type { Instrument, Message } from "@opencorp/protocol"
-import { beforeEach, expect, test } from "bun:test"
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test"
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { Global } from "../../../src/core/global"
@@ -16,6 +16,9 @@ import { bootFrame } from "../../fixture/frame"
 import { until } from "../../fixture/until"
 
 type App = Awaited<ReturnType<typeof bootFrame>>
+
+// A test here waits on several frames in turn, each up to 3 s.
+setDefaultTimeout(15_000)
 
 const theme = resolveTheme(DEFAULT_THEMES[DEFAULT_THEME]!, "dark")
 const AT = "2026-11-17T10:00:00.000Z"
@@ -997,6 +1000,72 @@ test("a shell's view sends nothing once it is put away, its terminal's focus rep
     await app.until((f) => !f.includes("editing"))
     await Bun.sleep(100)
     expect(typed(office, shell.id).join("")).toBe("i")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+/** Opens shell `id`'s password wait, types part of a password into it, then lets `close` take the view away while the
+ *  owner is mid-line; types the rest and Enter. Nothing of it may reach the chat, which gets the keys only after that
+ *  Enter. */
+async function closedMidPassword(close: (office: FakeOffice, sid: string, id: string) => void) {
+  const { office, sid, app } = await boot()
+  try {
+    office.updateSession(sid, { status: "busy" })
+    const ssh = add(office, sid, { name: "shell 2", profile: "ssh", command: "sudo make install" })
+    await listed(app, 1)
+    update(office, sid, ssh.id, { status: "waiting", waiting: "secret" })
+    await app.until((f) => f.includes("╭") && title(f).includes("type your password here") && f.includes("left: chat"))
+    await app.input.typeText("hunt")
+    await until(() => typed(office, ssh.id).join("") === "hunt")
+    close(office, sid, ssh.id)
+    const frames = [await app.until((f) => !f.includes("╭") && f.includes("keys are dropped until Enter"))]
+    await app.input.typeText("er2-zz")
+    frames.push(await app.until(() => true))
+    app.input.pressEnter()
+    frames.push(await app.until((f) => !f.includes("keys are dropped")))
+    expect(frames.some((f) => f.includes("er2-zz") || f.includes("hunt"))).toBe(false)
+    expect(typed(office, ssh.id).join("")).toBe("hunt")
+    expect(office.requests.some((r) => r.path.endsWith("/prompt"))).toBe(false)
+    expect(leaked(office, "er2-zz")).toBe(false)
+    // A fresh line goes to the prompt as ever, which held nothing of the password.
+    await app.input.typeText("a fresh line")
+    const f = await app.until((f) => f.includes("a fresh line"))
+    expect(rows(f).find((r) => r.includes("a fresh line"))!.trim()).toMatch(/^┃\s*a fresh line$/)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+}
+
+test("a shell that ends mid-password, then leaves the list as the turn ends, drops the rest of the owner's line", async () => {
+  await closedMidPassword((office, sid, id) => {
+    update(office, sid, id, { status: "ended", waiting: null })
+    office.updateSession(sid, { status: "idle" })
+  })
+})
+
+test("a shell the office removes mid-password drops the rest of the owner's line", async () => {
+  await closedMidPassword((office, sid, id) => office.removeInstrument(sid, id))
+})
+
+test("with no opener and two humans at the top of the org chart, a waiting shell doesn't open itself", async () => {
+  const office = createFakeOffice()
+  office.state.people.push({ handle: "lan", name: "Lan", kind: "human", title: "Founder", manager: null })
+  const sid = office.state.sessions[0].id
+  const app = await bootFrame(createStub(office), { sessionID: sid }, { width: 120, height: 30 })
+  try {
+    await app.until((f) => f.includes("@minh auto ·"))
+    const ssh = add(office, sid, { name: "shell 2", profile: "ssh", command: "ssh h" })
+    await listed(app, 1)
+    update(office, sid, ssh.id, { status: "waiting", waiting: "secret" })
+    await app.until((f) => line(f)?.includes("is waiting for you") ?? false)
+    await Bun.sleep(200)
+    expect(app.frame()).not.toContain("╭")
+    // Once its opener is known to be this viewer, it does.
+    office.updateSession(sid, { opened_by: "ngocbh" })
+    await app.until((f) => f.includes("╭") && title(f).includes("type your password here"))
   } finally {
     await app.stop()
     office.stop()

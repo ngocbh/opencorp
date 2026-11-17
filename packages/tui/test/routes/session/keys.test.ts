@@ -1,12 +1,12 @@
 // A focused shell's keys: every key but the leader goes to the shell, encoded by OpenTUI's embedded terminal; the
 // leader and the key after it stay with the TUI's keymap, and the leader twice is the leader key itself. Keys go out
 // gathered, as typed.
-import { EmbeddedTerminalRenderable } from "@opentui/core"
+import { EmbeddedTerminalRenderable, type KeyEvent } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { expect, test } from "bun:test"
 import { leaderKey, registerOpenCorpKeymap } from "../../../src/keymap"
-import { keyBatch, routeShellKeys } from "../../../src/routes/session/keys"
+import { keyBatch, lineEffect, routeShellKeys } from "../../../src/routes/session/keys"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 
 /** A keymap as the app registers it, with the TUI's own bindings on Esc, Ctrl-C, ctrl+o and `<leader>o`; a terminal
@@ -143,4 +143,36 @@ test("keys go out gathered once a frame, in the order typed, a batch longer than
   // Nothing is kept once sent.
   batch.flush()
   expect(out).toHaveLength(2)
+})
+
+test("a key types into the owner's line, ends it, or neither", async () => {
+  const setup = await createTestRenderer({ width: 40, height: 10 })
+  await setup.renderer.setupTerminal()
+  const seen: string[] = []
+  const listener = (event: KeyEvent) => void seen.push(String(lineEffect(event)))
+  setup.renderer.keyInput.on("keypress", listener)
+  try {
+    const keys = setup.mockInput
+    await keys.typeText("a-2 Zé")
+    keys.pressKey("\x7f")
+    keys.pressArrow("up")
+    keys.pressKey("\x1b[5~")
+    keys.pressTab({ shift: true })
+    keys.pressEnter()
+    keys.pressKey("c", { ctrl: true })
+    keys.pressKey("d", { ctrl: true })
+    keys.pressKey("u", { ctrl: true })
+    await Bun.sleep(50)
+    expect(seen).toEqual([
+      ...Array(6).fill("types"),
+      ...Array(4).fill("undefined"),
+      "ends",
+      "ends",
+      "ends",
+      "undefined",
+    ])
+  } finally {
+    setup.renderer.keyInput.off("keypress", listener)
+    setup.renderer.destroy()
+  }
 })

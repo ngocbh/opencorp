@@ -43,6 +43,21 @@ export function routeShellKeys(
   }
 }
 
+/** Whether `event` ends the owner's line: Enter, or Ctrl-C or Ctrl-D, which give it up. */
+export function endsLine(event: KeyEvent) {
+  if (["return", "enter", "linefeed"].includes(event.name)) return true
+  return event.ctrl && (event.name === "c" || event.name === "d")
+}
+
+/** What `event` does to the owner's line: ends it, types text into it, or neither (a cursor, editing or function
+ *  key), so moving about a full-screen program leaves no line under way. */
+export function lineEffect(event: KeyEvent): "ends" | "types" | undefined {
+  if (endsLine(event)) return "ends"
+  if (event.ctrl || event.meta || event.super) return undefined
+  if (event.name === "space" || [...event.name].length === 1) return "types"
+  return undefined
+}
+
 /**
  * Gathers the bytes a shell's keys encode to and hands them to `send` together once every `ms`, as text, in the
  * order typed: a batch longer than one request takes goes in pieces, never splitting a character. Nothing is kept
