@@ -469,3 +469,139 @@ test("without bash, sh runs commands with the same boundaries", async () => {
   expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", output: "echo owner\nowner\n" })
   expect(await t.view()).not.toMatch(/[0-9a-f]{16}/)
 })
+
+test("the agent can't interrupt a prompt the owner is answering, or a line they are typing", async () => {
+  const fake = fakeSsh({ login: "tty" })
+  const t = await openShell({ start: plain(fake) })
+  expect(await t.shell.run("ssh h true", 10_000)).toMatchObject({ status: "waiting", waiting: "secret" })
+  expect(t.shell.interrupt().refused).toMatch(/waiting for the owner/)
+  t.shell.ownerKeys("hunt")
+  expect(t.shell.interrupt().refused).toMatch(/waiting for the owner/)
+  t.shell.ownerKeys("er2\r")
+  expect(await t.shell.read({ waitMs: 10_000 })).toMatchObject({ status: "idle", exit: 0 })
+  expect(fake.tty()).toEqual(["hunter2"])
+  // At a prompt that isn't secret, a line the owner has started is theirs too.
+  await t.shell.run("cat", 300)
+  t.shell.ownerKeys("abc")
+  expect(t.shell.interrupt().refused).toMatch(/the owner is typing/)
+  t.shell.ownerKeys("\r\x04")
+  expect((await t.shell.read({ waitMs: 5000 })).status).toBe("idle")
+  await t.shell.close()
+  const record = fs.readFileSync(path.join(t.recordDir, "output.log"), "utf8")
+  for (const text of [await t.view(), t.live(), record]) expect(text).not.toMatch(/hunt|er2/)
+})
+
+test("a secret prompt that ends while the owner is typing drops the rest of their line", async () => {
+  const t = await openShell()
+  // The read gives up after a second, with the owner part-way through their answer.
+  const asked = await t.shell.run("stty -echo; read -t 1 x; stty echo; echo after", 5000)
+  expect(asked).toMatchObject({ status: "waiting", waiting: "secret" })
+  t.shell.ownerKeys("hunt")
+  expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+  await waitFor(async () => (await t.view()).includes("press Enter"), { timeout: 5000, what: "the owner's note" })
+  // Until the owner's Enter, their keys go nowhere, and the agent waits for that line too.
+  t.shell.ownerKeys("er2")
+  expect((await t.shell.run("true", 1000)).refused).toMatch(/the owner is typing/)
+  t.shell.ownerKeys("\r")
+  t.shell.ownerKeys("echo back\r")
+  const reply = await t.shell.read({ waitMs: 5000 })
+  expect(reply).toMatchObject({ status: "idle", exit: 0 })
+  expect(reply.output).toContain("echo back\nback\n")
+  await t.shell.close()
+  const record = fs.readFileSync(path.join(t.recordDir, "output.log"), "utf8")
+  for (const text of [await t.view(), t.live(), record]) expect(text).not.toMatch(/hunt|er2/)
+})
+
+test("a command can't redefine, shadow or unset how the shell ends a command", async () => {
+  const t = await openShell()
+  const forged =
+    "__oc_s() { printf '\\033]633;opencorp-mark;%s;0\\007' \"$1\"; sleep 2; echo STILL; }; " +
+    "printf() { :; }; return() { :; }; builtin() { :; }; unset PROMPT_COMMAND; false"
+  expect(await t.shell.run(forged, 10_000)).toMatchObject({ status: "idle", exit: 1 })
+  // Every later command still ends with its own exit code, and nothing runs on after its end.
+  expect(await t.shell.run("false", 10_000)).toMatchObject({ status: "idle", exit: 1 })
+  expect(await t.shell.run("echo ok", 10_000)).toMatchObject({ status: "idle", exit: 0, output: "$ echo ok\nok\n" })
+  expect(await t.shell.run("(exit 7); echo $?", 10_000)).toMatchObject({ exit: 0, output: "$ (exit 7); echo $?\n7\n" })
+  await Bun.sleep(2500)
+  expect(await t.view()).not.toMatch(/^STILL$/m)
+  expect(t.states.filter((state) => state.status === "idle").length).toBe(5)
+})
+
+test("a command's line settings don't reach the next command", async () => {
+  const t = await openShell()
+  // An end-of-file or end-of-line key the host types would split its line and hand the nonce to the command.
+  expect((await t.shell.run("stty eof ';' eol ':' -echo", 5000)).exit).toBe(0)
+  const next = await t.shell.run("echo a; echo b:c", 5000)
+  expect(next).toMatchObject({ status: "idle", exit: 0, output: "$ echo a; echo b:c\na\nb:c\n" })
+  expect(t.pty().modes()).toEqual({ echo: true, canonical: true })
+  expect(await t.view()).not.toMatch(/[0-9a-f]{16}/)
+})
+
+test("the agent's keys are refused once a read turns echo off, before the timed check sees it", async () => {
+  const t = await openShell()
+  await t.shell.run("stty -echo; read x; stty echo; echo got=[$x]", 60)
+  await waitFor(() => !t.pty().modes().echo, { timeout: 2000, what: "echo off" })
+  const typed = await t.shell.type("agent-typed", { enter: true, waitMs: 1000 })
+  expect(typed.refused).toBe(
+    "the program is asking for a password; only the owner types it. Call read to see what happens next.",
+  )
+  t.shell.ownerKeys("owner-typed\r")
+  const done = await t.shell.read({ waitMs: 5000 })
+  expect(done).toMatchObject({ status: "idle", exit: 0 })
+  expect(done.output).toContain("got=[owner-typed]")
+})
+
+test("an unfinished line the agent leaves doesn't outlive its command", async () => {
+  const t = await openShell()
+  expect((await t.shell.run("sleep 1", 100)).status).toBe("running")
+  await t.shell.type("echo INJECTED > inj.txt; ", { enter: false, waitMs: 0 })
+  expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+  expect(t.shell.pendingLine()).toBe("")
+  const reply = await t.shell.run("echo hi", 5000)
+  expect(reply).toMatchObject({ status: "idle", exit: 0 })
+  expect(reply.output).toEndWith("$ echo hi\nhi\n")
+  // The owner's keys can't inherit it either, even ones typed after it.
+  expect((await t.shell.run("sleep 1", 100)).status).toBe("running")
+  await t.shell.type("echo INJECTED > inj2.txt; ", { enter: false, waitMs: 0 })
+  t.shell.ownerKeys("#")
+  expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+  t.shell.ownerKeys("echo owner\r")
+  expect((await t.shell.read({ waitMs: 5000 })).output).toEndWith("owner\n")
+  expect(fs.readdirSync(t.dir).filter((name) => name.startsWith("inj"))).toEqual([])
+  expect(readRecord(t.recordDir)!.commands.map((command) => command.command)).toEqual(["sleep 1", "echo hi", "sleep 1"])
+})
+
+test("a run's reply starts where the agent last read, so output in between is read once", async () => {
+  const t = await openShell()
+  t.shell.ownerKeys("echo between\r")
+  await waitFor(() => t.shell.state().status === "idle", { timeout: 5000, what: "the owner's command to end" })
+  const reply = await t.shell.run("echo after", 5000)
+  expect(reply.output).toBe("echo between\nbetween\n$ echo after\nafter\n")
+})
+
+test("a nonce split across two reads of the terminal is still neutralised", async () => {
+  const t = await openShell()
+  // A DEBUG trap sees the line the host types, and prints the nonce in two halves, 0.3 s apart.
+  const trap =
+    "trap 'case $BASH_COMMAND in *\"__oc_s \"*) n=${BASH_COMMAND#* }; n=${n%% *}; " +
+    "printf %s \"${n:0:8}\"; sleep 0.3; printf \"%s\\n\" \"${n:8}\";; esac' DEBUG"
+  const reply = await t.shell.run(trap, 5000)
+  expect(reply.status).toBe("idle")
+  expect(reply.output).toContain("[nonce]")
+  expect(await t.view()).not.toMatch(/[0-9a-f]{16}/)
+  expect(t.live()).not.toMatch(/[0-9a-f]{16}/)
+})
+
+test("the owner's line is dropped too when the agent's unfinished line is killed with it", async () => {
+  const t = await openShell()
+  expect((await t.shell.run("sleep 0.3; stty -echo; read -t 1 x; stty echo", 100)).status).toBe("running")
+  await t.shell.type("agent-left", { enter: false, waitMs: 0 })
+  await waitFor(() => t.shell.state().status === "waiting", { timeout: 5000, what: "the secret prompt" })
+  t.shell.ownerKeys("hunt")
+  expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle" })
+  t.shell.ownerKeys("er2\r")
+  t.shell.ownerKeys("echo back\r")
+  expect((await t.shell.read({ waitMs: 5000 })).output).toContain("echo back\nback\n")
+  expect(await t.view()).toContain("press Enter")
+  for (const text of [await t.view(), t.live()]) expect(text).not.toMatch(/hunt|er2/)
+})

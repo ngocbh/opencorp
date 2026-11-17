@@ -7,29 +7,45 @@
  *  copy of the owner's keys and logs nothing. Only the echo of the line the host types for the agent is cut, with
  *  `$ <command>` in its place.
  *
- *  **Where a command ends.** The host types the agent's command as `eval '<command>'; __oc_s <nonce> $?`, with a
- *  fresh nonce for each command. `__oc_s` sets `__oc_n` to the nonce and returns the command's exit code; the
- *  `PROMPT_COMMAND` the shell's set-up line installs then prints a marker, an OSC holding `__oc_n` and `$?`, and
- *  clears `__oc_n`. Only a marker with the command's nonce ends it. The nonce comes after the command, so the command
- *  never holds it: no variable, `PS1` or environment holds it while the command runs, or between commands. The shell
- *  reads the whole line before running any of it, so nothing of it is left for the command to read as input. `eval`
- *  takes a command whatever its syntax: one that doesn't parse fails with exit 2 and still ends. Should a command
- *  print the nonce anyway (a shell can always read its own memory), it is neutralised in the command's output.
- *  Without `PROMPT_COMMAND` (another sh), the typed line prints the marker itself, and `PS1` is a marker with no nonce.
- *  A marker with no nonce is the shell back at its prompt: the end of the owner's command, and of the agent's once a
- *  Ctrl-C has reached it (a Ctrl-C stops the rest of the line).
+ *  **Where a command ends.** The host types the agent's command as `eval '<command>'; \__oc_s <nonce> $?`, with a
+ *  fresh nonce for each command. `__oc_s` sets `__oc_n` to the nonce and keeps the command's exit code; the
+ *  `PROMPT_COMMAND` the shell's set-up line installs then puts the terminal's line settings back as they were at the
+ *  start, prints a marker (an OSC holding `__oc_n` and the exit code) and clears `__oc_n`. Only a marker with the
+ *  command's nonce ends it.
+ *  - The nonce is in no variable, `PS1` or environment while the command runs, or between commands: it reaches the
+ *    shell in the typed line's last call, which runs once the command has. The shell reads the whole line before it
+ *    runs any of it, so nothing of it is left for the command to read as input.
+ *  - `__oc_s`, the prompt's function and `PROMPT_COMMAND` are read-only, and they run `stty`, `printf` and `sh` by
+ *    path and no builtin, so a command can't redefine, unset or shadow them.
+ *  - The line settings come back before each marker, so a command's `stty eof ';'` can't split the next typed line.
+ *  - `eval` takes a command whatever its syntax: one that doesn't parse fails and still ends.
+ *  - A nonce the shell prints (with `set -x`, say) is neutralised in the views, even split across reads.
  *
- *  The marker keeps the record's boundaries and exit codes honest; it isn't a wall. The sandbox is the security
- *  boundary. The owner's own command can end early by printing a marker with no nonce.
+ *  Without `PROMPT_COMMAND` (another sh), the typed line puts the settings back and prints the marker itself, and `PS1`
+ *  is a marker with no nonce. A marker with no nonce is the shell back at its prompt: the end of the owner's command,
+ *  and of the agent's once a Ctrl-C has reached it (a Ctrl-C stops the rest of the line).
+ *
+ *  The marker keeps the record's boundaries and exit codes honest; it isn't a wall. The shell holds the typed line,
+ *  nonce and all, while it runs it, so a command that changes how the shell runs it can still forge its end (a DEBUG
+ *  trap sees the line) or hide it (a command that hides it leaves the shell running until it is closed). The sandbox
+ *  is the security boundary. The owner's own command can end early by printing a marker with no nonce.
+ *
+ *  **An unfinished line** the agent leaves when its command ends is killed (Ctrl-U), so neither the next command nor
+ *  the owner's next line takes it on; a line the owner typed after it on the same line goes with it.
  *
  *  **Secret prompts.** While a command runs, the shell checks `ownerPrompt` after each output chunk and every 200 ms.
- *  At a secret prompt (a password, passphrase or code) it waits for the owner and refuses the agent's keys, in every
- *  mode. Every other prompt, ssh's host-key question and Duo's menu among them, is the mode's to decide.
+ *  At a secret prompt (a password, passphrase or code) it waits for the owner and refuses the agent's keys and its
+ *  interrupt, in every mode; so does a line the owner is part-way through. Should the prompt end while the owner is
+ *  part-way through their answer (the program timed out, or turned echo back on), the shell kills that line and drops
+ *  the owner's keys until their Enter, saying so in the view, so a partial password never reaches a shell prompt or
+ *  the record. Every other prompt, ssh's host-key question and Duo's menu among them, is the mode's to decide.
  *
  *  **What isn't guarded yet.** A password the owner types at a secret prompt can be read by other processes the agent
  *  started in the same terminal: a background process left over from an earlier command that reads the terminal, a
- *  process that traces the shell or ssh (ptrace), or a fake prompt the agent's command prints itself. Approvals are
- *  the guard for now: the owner approves the commands that could do so. */
+ *  process that traces the shell or ssh (ptrace), or a fake prompt the agent's command prints itself. Nothing in the
+ *  shell stops that yet: only the commands the session lets run stand in the way. In ask mode the owner approves each
+ *  command; in default mode, each one past the rules and the known read-only forms; in auto and dontAsk, the rules
+ *  and Auto's check decide, and no one reads a command for this. */
 import { randomBytes } from "node:crypto"
 import fs from "node:fs"
 import type { Instrument } from "@opencorp/protocol"
@@ -90,6 +106,12 @@ const LONG_LINE =
   "write a script with the file tools and run it"
 const SECRET = "the program is asking for a password; only the owner types it. Call read to see what happens next."
 const OWNER_TYPING = "the owner is typing a line in this shell; call read, and try again once they've finished it"
+const OWNER_SECRET = "the shell is waiting for the owner at a prompt for a secret; only they can answer or stop it"
+/** What the owner's live view and the model's say when a secret prompt ends under the owner's answer. */
+const DROPPED_NOTE =
+  "\r\n[the prompt ended while you were typing: the rest of that line is dropped until you press Enter]\r\n"
+/** What a kill (Ctrl-U) echoes, whatever the line settings: erasures, or `^U` and a line end. */
+const KILL_ECHO = "\b ^U\r\n"
 
 /** A marker: the OSC the shell prints at its prompt, with the nonce (empty at a plain prompt) and the exit code. */
 const MARK = "\x1b]633;opencorp-mark;"
@@ -103,14 +125,21 @@ const NONCE_SHOWN = "[nonce]"
 
 /** The set-up line each shell types first, its echo cut with everything else before the first marker. */
 const SETUP = {
+  // The prompt's work runs in read-only functions that call programs by path and no builtin (a command can shadow
+  // `return`, `builtin` or `printf` with a function); the start's line settings are saved for each prompt to restore.
   bash:
     "set +B +m +o history; shopt -u expand_aliases; unalias -a; set +o emacs +o vi; PS1=; PS2=; " +
-    `__oc_s() { __oc_n=$1; return "$2"; }; ` +
-    `PROMPT_COMMAND='printf "\\033]633;opencorp-mark;%s;%d\\007" "$__oc_n" "$?"; __oc_n='\n`,
+    `__oc_y=$(type -P stty); __oc_f=$(type -P printf); __oc_t=$("$__oc_y" -g </dev/tty); ` +
+    "readonly __oc_y __oc_f __oc_t; " +
+    `__oc_s() { __oc_n=$1; /bin/sh -c 'exit "$1"' sh "$2"; }; ` +
+    `__oc_p() { "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; ` +
+    `"$__oc_f" "\\033]633;opencorp-mark;%s;%d\\007" "$__oc_n" "$1" >/dev/tty; __oc_n=; }; ` +
+    `readonly -f __oc_s __oc_p; PROMPT_COMMAND='__oc_p "$?"'; readonly PROMPT_COMMAND\n`,
   // sh's set may not know some of these options, and a special builtin's error would end the line, so each goes
   // last, alone and through `command`. A sh that is bash edits lines unless told not to.
   sh:
     `PS1="$(printf '\\033]633;opencorp-mark;;')\\$?$(printf '\\007')"; PS2=; set +m; unalias -a; ` +
+    `__oc_y=$(command -v stty); __oc_t=$("$__oc_y" -g </dev/tty); readonly __oc_y __oc_t; ` +
     "for o in '+o emacs' '+o vi' +B '+o history'; do command set $o 2>/dev/null; done; " +
     "command shopt -u expand_aliases 2>/dev/null\n",
 }
@@ -166,10 +195,21 @@ export class PtyShell {
   /** A possible marker's start, held back for the next chunk, and how many guard checks it has waited. */
   private held = ""
   private heldChecks = 0
-  /** The owner has typed keys since their last Enter, Ctrl-C or Ctrl-D: all the shell keeps of their keys. */
+  /** The owner has typed keys since their last Enter, Ctrl-C or Ctrl-D: all the shell keeps of their keys, with the
+   *  next two. */
   private ownerMidLine = false
+  /** Those keys went to a secret prompt. */
+  private ownerAtSecret = false
+  /** A secret prompt ended under the owner's answer: their keys are dropped until their Enter. */
+  private dropping = false
   /** What the agent typed without Enter since its last Enter, Ctrl-C or an owner key. */
   private agentLine = ""
+  /** The terminal's line may hold what the agent typed without Enter, owner keys after it or not. */
+  private agentDirty = false
+  /** A kill (Ctrl-U) was sent since the last typed line: its echo may come before that line's. */
+  private killSent = false
+  /** sh's prompt marker is still to come after the agent's line printed its own. */
+  private promptAfter = false
   /** Where the agent reads on from: the last reply's `next`. */
   private cursor = 0
   /** What came before the shell was ready, as bytes. */
@@ -221,8 +261,9 @@ export class PtyShell {
     const quoted = `'${command.replaceAll("'", "'\\''")}'`
     const typed =
       this.kind === "bash"
-        ? `eval ${quoted}; __oc_s ${nonce} $?\n`
-        : `eval ${quoted}; printf '\\033]633;opencorp-mark;%s;%d\\007' ${nonce} "$?"\n`
+        ? `eval ${quoted}; \\__oc_s ${nonce} $?\n`
+        : `eval ${quoted}; __oc_r=$?; "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; ` +
+          `printf '\\033]633;opencorp-mark;%s;%d\\007' ${nonce} "$__oc_r" >/dev/tty\n`
     if (typed.split("\n").some((line) => Buffer.byteLength(line) > LINE_MAX)) return this.refused(LONG_LINE)
     try {
       this.host.record.command(command, this.host.driver)
@@ -232,7 +273,8 @@ export class PtyShell {
     // A marker's start held back at the prompt was output after all; the echo must come first.
     this.emit(this.held)
     this.held = ""
-    const start = this.view.length
+    // From where the agent last read, so what came in between (the owner's command, say) is read once.
+    const start = this.cursor
     this.nonce = nonce
     this.interrupted = false
     this.echo = bytesOf(typed).replaceAll("\n", "\r\n")
@@ -248,6 +290,8 @@ export class PtyShell {
    *  and waits as `run` does. Refused at a secret prompt, while the owner is part-way through a line, and when
    *  nothing runs. */
   async type(text: string, opts: { enter: boolean; waitMs: number; signal?: AbortSignal }): Promise<Reply> {
+    // The screen as it is now, not at the last check: a read may have turned echo off since.
+    this.guard()
     const { status } = this.current
     if (status === "waiting") return this.refused(SECRET)
     if (status !== "running") return this.refused("nothing is running in this shell to type into; run a command")
@@ -260,6 +304,7 @@ export class PtyShell {
     }
     const from = this.cursor
     this.agentLine = opts.enter ? "" : this.agentLine + text
+    this.agentDirty = !opts.enter && (this.agentDirty || text !== "")
     this.write(opts.enter ? `${text}\r` : text)
     await this.wait(opts.waitMs, opts.signal)
     return this.reply(from)
@@ -275,35 +320,47 @@ export class PtyShell {
 
   /** Sends Ctrl-C to the agent's own running command. Refused when nothing runs, or the command is the owner's. */
   interrupt(): Reply {
+    if (this.current.status === "waiting") return this.refused(OWNER_SECRET)
+    if (this.ownerMidLine) return this.refused(OWNER_TYPING)
     if (this.nonce === null) {
       const why = this.ownerRunning ? "the running command is the owner's; only they can stop it" : "nothing is running"
       return this.refused(why)
     }
     this.interrupted = true
     this.agentLine = ""
+    this.agentDirty = false
     this.write("\x03")
     return this.reply(this.cursor)
   }
 
   /** Writes the owner's keys to the PTY, straight to the running command. The shell keeps only whether the owner is
-   *  part-way through a line; an Enter at the prompt starts the owner's command. */
+   *  part-way through a line, and whether at a secret prompt; an Enter at the prompt starts the owner's command. While
+   *  a secret prompt that ended under their answer is being dropped, their keys up to their Enter go nowhere. */
   ownerKeys(data: string): void {
     const { status } = this.current
     if (status === "starting" || status === "ended" || status === "failed") return
     this.agentLine = ""
+    let keys = ""
     for (const key of data) {
-      if (key === "\r" || key === "\n") {
-        if (this.current.status === "idle") {
-          this.ownerRunning = true
-          this.set({ status: "running", waiting: null, command: null, exit: null })
-        }
-        this.ownerMidLine = false
-      } else if (key === "\x03" || key === "\x04") {
-        if (key === "\x03" && this.nonce !== null) this.interrupted = true
-        this.ownerMidLine = false
-      } else this.ownerMidLine = true
+      const ends = key === "\r" || key === "\n" || key === "\x03" || key === "\x04"
+      if (this.dropping) {
+        if (ends) this.dropping = this.ownerMidLine = false
+        continue
+      }
+      keys += key
+      if (!ends) {
+        this.ownerMidLine = true
+        if (this.current.status === "waiting") this.ownerAtSecret = true
+        continue
+      }
+      this.ownerMidLine = this.ownerAtSecret = false
+      if (key === "\x03" && this.nonce !== null) this.interrupted = true
+      if ((key === "\r" || key === "\n") && this.current.status === "idle") {
+        this.ownerRunning = true
+        this.set({ status: "running", waiting: null, command: null, exit: null })
+      }
     }
-    this.write(data)
+    if (keys !== "") this.write(keys)
   }
 
   resize(cols: number, rows: number): void {
@@ -362,19 +419,31 @@ export class PtyShell {
     }
     if (this.current.status === "failed") return
     text = this.cutEcho(text)
-    const hold = heldFrom(text)
-    if (hold >= 0) {
-      this.held = text.slice(hold)
-      text = text.slice(0, hold)
-    }
     let at = 0
     for (const match of text.matchAll(MARKER)) {
       this.emit(this.neutral(text.slice(at, match.index)))
       at = match.index + match[0].length
       this.marker(match[1]!, match[2]!)
     }
-    this.emit(this.neutral(text.slice(at)))
+    let rest = text.slice(at)
+    const hold = this.holdFrom(rest)
+    if (hold >= 0) {
+      this.held = rest.slice(hold)
+      rest = rest.slice(0, hold)
+    }
+    this.emit(this.neutral(rest))
     this.guard()
+  }
+
+  /** Where the end of `text` may be cut short, to hold back for the next chunk: a marker's start, or the start of the
+   *  running command's nonce; -1 when it isn't. */
+  private holdFrom(text: string): number {
+    const marker = heldFrom(text)
+    if (marker >= 0 || this.nonce === null) return marker
+    for (let n = Math.min(this.nonce.length - 1, text.length); n > 0; n--) {
+      if (this.nonce.startsWith(text.slice(-n))) return text.length - n
+    }
+    return -1
   }
 
   /** Takes start-up output until the first marker: then the shell is ready, if its line editing is off (echo and
@@ -396,16 +465,20 @@ export class PtyShell {
   }
 
   /** Cuts the echo of the line the host typed from the front of `text`: exact, since the shell has no line editing.
-   *  Other output first stops the cut, and the rest of the echo shows, as on screen, its nonce neutralised. */
+   *  A kill's echo may come first, and stays. Other output first stops the cut, and the rest of the echo shows, as on
+   *  screen, its nonce neutralised. */
   private cutEcho(text: string): string {
     if (this.echo === null) return text
-    let at = 0
+    let start = 0
+    if (this.echoAt === 0 && this.killSent) while (start < text.length && KILL_ECHO.includes(text[start]!)) start += 1
+    let at = start
     while (at < text.length && this.echoAt < this.echo.length && text[at] === this.echo[this.echoAt]) {
       at += 1
       this.echoAt += 1
     }
+    if (this.echoAt > 0) this.killSent = false
     if (this.echoAt === this.echo.length || at < text.length) this.echo = null
-    return text.slice(at)
+    return text.slice(0, start) + text.slice(at)
   }
 
   /** `text` with the agent's command's nonce neutralised. */
@@ -417,8 +490,14 @@ export class PtyShell {
    *  Ctrl-C), or of the owner's when it holds none. Any other is ignored. */
   private marker(nonce: string, exitText: string): void {
     const exit = /^-?\d+$/.test(exitText) ? Number(exitText) : null
+    if (nonce === "" && this.promptAfter) {
+      // sh's prompt after the agent's line, which already ended it: never the end of a command started since.
+      this.promptAfter = false
+      return
+    }
     if (this.nonce !== null) {
       if (nonce !== this.nonce && !(nonce === "" && this.interrupted)) return
+      this.promptAfter = this.kind === "sh" && nonce !== ""
       try {
         this.host.record.exit(exit)
       } catch {
@@ -429,13 +508,24 @@ export class PtyShell {
     this.set({ status: "idle", waiting: null, command: null, exit })
   }
 
-  /** Clears what a command held: its nonce, its echo, and the agent's unfinished line. */
+  /** Clears what a command held: its nonce, its echo, and the agent's unfinished line, which a kill (Ctrl-U) takes off
+   *  the terminal's line too, with any owner keys after it. */
   private settle(): void {
     this.nonce = null
     this.ownerRunning = false
     this.interrupted = false
     this.echo = null
     this.agentLine = ""
+    if (this.agentDirty) this.kill()
+    this.agentDirty = false
+  }
+
+  /** Kills the terminal's unfinished line (Ctrl-U), which the prompt's line settings make the kill key. The owner's
+   *  keys on it go too; whether they went to a secret prompt still counts, for `drop`. */
+  private kill(): void {
+    this.write("\x15")
+    this.killSent = true
+    this.ownerMidLine = false
   }
 
   /** Holds the shell for the owner while the screen asks a secret, and lets it go once it doesn't. */
@@ -474,8 +564,10 @@ export class PtyShell {
     const next = { ...this.current, ...change }
     const same = (Object.keys(next) as (keyof ShellState)[]).every((key) => next[key] === this.current[key])
     if (next.status === "waiting" && this.current.status !== "waiting") this.holds += 1
+    const dropping = this.current.status === "waiting" && next.status !== "waiting" && this.ownerAtSecret
     this.current = next
     if (same) return
+    if (dropping && next.status !== "ended" && next.status !== "failed") this.drop()
     const busy = next.status === "running" || next.status === "waiting"
     if (busy && this.guardTimer === null) this.guardTimer = setInterval(() => this.check(), GUARD_MS)
     if (!busy && this.guardTimer !== null) {
@@ -484,6 +576,15 @@ export class PtyShell {
     }
     this.host.changed(this.state())
     for (const waiter of [...this.waiters]) waiter()
+  }
+
+  /** A secret prompt ended under the owner's answer: kills the line they were typing and drops their keys up to their
+   *  Enter, telling them so. */
+  private drop(): void {
+    this.emit(bytesOf(DROPPED_NOTE))
+    this.kill()
+    this.ownerAtSecret = false
+    this.dropping = this.ownerMidLine = true
   }
 
   /** The guard's timed check; a possible marker's start held through a whole check is plain output after all. */
