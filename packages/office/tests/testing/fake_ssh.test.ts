@@ -5,6 +5,7 @@ import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { spawnPty } from "../../src/platform.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName, installFakeSsh } from "../../src/testing/fake_ssh.ts"
 import { shortDir, waitFor } from "../helpers.ts"
 
@@ -104,6 +105,60 @@ test("BatchMode in the -F file uses the host's batch mode and never prompts", ()
   expect(run(fake, ["-F", batch, "node", "echo hi"]).stdout).toBe("hi\n")
   expect(run(fake, ["-F", batch, "other", "echo hi"]).code).toBe(255)
   expect(fake.tty()).toEqual([])
+})
+
+/** Runs the fake with `args` on a terminal of its own, as a person would at a shell; `answer` is typed once `asks`
+ *  shows. Resolves to its exit code and what the terminal showed. */
+async function onTerminal(fake: FakeSsh, args: string[], asks: string, answer: string) {
+  let shown = ""
+  const decoder = new TextDecoder()
+  const pty = spawnPty([fake.ssh, ...args], {
+    cwd: path.dirname(fake.state),
+    env: { ...ENV, TERM: "xterm-256color" },
+    cols: 120,
+    rows: 24,
+    onData: (chunk) => (shown += decoder.decode(chunk, { stream: true })),
+  })
+  onTestFinished(() => {
+    pty.kill("SIGKILL")
+    pty.close()
+  })
+  await waitFor(() => shown.includes(asks), { timeout: 10_000, what: JSON.stringify(asks) })
+  pty.write(answer)
+  const code = await pty.exited
+  return { code, shown }
+}
+
+test("a host_key login asks ssh's host key question and logs in on yes", async () => {
+  const fake = fakeSsh({ login: "host_key" })
+  const question =
+    "The authenticity of host 'h' can't be established.\r\nED25519 key fingerprint is SHA256:fake.\r\n" +
+    "Are you sure you want to continue connecting (yes/no/[fingerprint])? "
+  const yes = await onTerminal(fake, ["h", "echo in"], question, "yes\r")
+  expect(yes.code).toBe(0)
+  // The answer shows as typed: the question reads it with echo on.
+  expect(yes.shown).toBe(`${question}yes\r\nin\r\n`)
+  const no = await onTerminal(fake, ["h", "echo in"], question, "no\r")
+  expect(no.code).toBe(255)
+  expect(no.shown).toContain("no\r\nHost key verification failed.")
+  expect(no.shown).not.toContain("in\r\n")
+  expect(fake.tty()).toEqual(["yes", "no"])
+  expect(fake.logins()).toEqual(["h"])
+  // ssh asks nothing under BatchMode: an unknown host key fails.
+  expect(run(fake, ["-o", "BatchMode=yes", "h", "echo in"]).code).toBe(255)
+})
+
+test("a duo login takes 1", async () => {
+  const fake = fakeSsh({ hosts: { h: { login: "duo" } } })
+  const menu = "Duo two-factor login for h\r\n\r\nPasscode or option (1-3): "
+  const one = await onTerminal(fake, ["u@h", "echo in"], menu, "1\r")
+  expect([one.code, one.shown]).toEqual([0, `${menu}1\r\nin\r\n`])
+  const two = await onTerminal(fake, ["h", "echo in"], menu, "2\r")
+  expect(two.code).toBe(255)
+  expect(two.shown).not.toContain("in\r\n")
+  expect(fake.tty()).toEqual(["1", "2"])
+  expect(fake.logins()).toEqual(["h"])
+  expect(run(fake, ["-o", "BatchMode=yes", "h", "echo in"]).code).toBe(255)
 })
 
 test("a hanging login runs until it is killed", async () => {
