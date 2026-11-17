@@ -31,7 +31,8 @@ const NAMES = [
   "ConnectionLogin", "SetupPrompt", "SetupAsk", "SetupChoose", "SetupSecret", "SetupSay", "SetupStep",
   "SetupCommand", "SetupResult", "SetupReview", "SetupHandOver", "SetupTakeBack",
   "SetupAnswer", "OfficeInfo", "MessageText", "ModelName", "Rule", "RuleFileError", "RuleList", "RemoveRuleRequest",
-  "RulePattern",
+  "RulePattern", "Instrument", "InstrumentOutput", "InstrumentRemoved", "InstrumentKeysRequest", "InstrumentSizeRequest",
+  "InstrumentScreen",
 ]
 
 /** The zod schema exported under `name`. */
@@ -115,7 +116,7 @@ test("objects are closed and have no format", () => {
 
 const ENTITIES = [
   "Company", "Person", "Group", "Asset", "WorkItem", "Comment", "Session", "Message", "Permission", "Question",
-  "Profile", "ProfileProposal", "Event", "LiveEvent",
+  "Profile", "ProfileProposal", "Event", "LiveEvent", "Instrument",
 ]
 
 test("every entity has a fixture", () => {
@@ -130,7 +131,8 @@ const BODIES = [
   "SetModeRequest", "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin",
   "CompanyView", "CostReport", "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
   "HqLoginRequest", "CompanyTree", "CompanyFile", "RunPage", "RunDetail", "RunNodePage", "RunEventPage",
-  "RunEvent", "OfficeInfo", "RuleList", "RemoveRuleRequest",
+  "RunEvent", "OfficeInfo", "RuleList", "RemoveRuleRequest", "InstrumentKeysRequest", "InstrumentSizeRequest",
+  "InstrumentScreen",
 ]
 
 test("every route body has a fixture", () => {
@@ -234,6 +236,96 @@ test("a tool part keeps the model's call id, and yian's once the call waited on 
   expect(Schemas.ToolPart.parse(part).yian_call_id).toBeNull()
   const held = Schemas.ToolPart.parse({ ...part, yian_call_id: "run-1/chat#0/reply/1/0" })
   expect([held.call_id, held.yian_call_id]).toEqual(["call_1", "run-1/chat#0/reply/1/0"])
+})
+
+const INSTRUMENTS = [
+  "Instrument", "InstrumentOutput", "InstrumentRemoved", "InstrumentKeysRequest", "InstrumentSizeRequest",
+  "InstrumentScreen",
+]
+
+test("instrument defs have fixtures", () => {
+  expect(stems(FIXTURES)).toEqual(expect.arrayContaining(INSTRUMENTS))
+  expect(invalidDefs()).toEqual(expect.arrayContaining(INSTRUMENTS))
+})
+
+test("an instrument and its output are live events, the output with the byte offset of its first byte", () => {
+  const session_id = "01JA1S0000000000000000000A"
+  expect(Schemas.LiveEvent.shape.type.options).toEqual(
+    ["message.updated", "part.updated", "part.delta", "instrument.updated", "instrument.output", "instrument.removed"])
+  const instrument = load(FIXTURES, "Instrument") as Record<string, unknown>
+  expect(Schemas.LiveEvent.parse({ type: "instrument.updated", session_id, data: instrument }).data).toEqual(instrument)
+  const output = load(FIXTURES, "InstrumentOutput") as Record<string, unknown>
+  expect(Schemas.LiveEvent.parse({ type: "instrument.output", session_id, data: output }).data).toEqual(output)
+  // The offset orders the bytes, so a client applies only those past what it has; there is no seq.
+  expect(Object.keys(Schemas.InstrumentOutput.shape)).toEqual(["instrument_id", "offset", "data"])
+  expect(Schemas.InstrumentOutput.parse({ ...output, offset: 0 }).offset).toBe(0)
+  for (const offset of [-1, 1.5, "4096", null])
+    expect(Schemas.InstrumentOutput.safeParse({ ...output, offset }).success).toBe(false)
+  expect(Schemas.InstrumentOutput.safeParse({ ...output, seq: 1 }).success).toBe(false)
+})
+
+test("an instrument is a terminal, a Codex or a Claude Code session, and while waiting says on what", () => {
+  const instrument = load(FIXTURES, "Instrument") as Record<string, unknown>
+  expect(Schemas.Instrument.shape.kind.options).toEqual(["terminal", "codex", "claude"])
+  expect(Schemas.Instrument.shape.profile.options).toEqual(["workspace", "ssh", "harness", "none"])
+  // Instruments live in the office's memory, so none is listed after a restart: there is no interrupted one.
+  expect(Schemas.Instrument.shape.status.options).toEqual(["starting", "idle", "running", "waiting", "ended", "failed"])
+  const { waiting: _, command: __, error: ___, ...bare } = instrument
+  expect(Schemas.Instrument.parse(bare)).toMatchObject({ waiting: null, command: null, error: null })
+  for (const waiting of ["secret", "approval"] as const)
+    expect(Schemas.Instrument.parse({ ...instrument, status: "waiting", waiting }).waiting).toBe(waiting)
+  expect(Schemas.Instrument.safeParse({ ...instrument, status: "waiting", waiting: "model" }).success).toBe(false)
+})
+
+test("an instrument is driven by a handle, the built-in agent's included", () => {
+  const instrument = load(FIXTURES, "Instrument") as Record<string, unknown>
+  for (const driver of ["minh", "opencorp"])
+    expect(Schemas.Instrument.parse({ ...instrument, driver }).driver).toBe(driver)
+  for (const driver of ["Minh", "a_b", "", "@minh"])
+    expect(Schemas.Instrument.safeParse({ ...instrument, driver }).success).toBe(false)
+})
+
+test("a removed instrument is a live event naming it and its session", () => {
+  const removed = load(FIXTURES, "InstrumentRemoved") as Record<string, unknown>
+  const event = { type: "instrument.removed", session_id: removed.session_id, data: removed }
+  expect(Schemas.LiveEvent.parse(event).data).toEqual(removed)
+  expect(required(Schemas.InstrumentRemoved)).toEqual(["id", "session_id"])
+  expect(Schemas.InstrumentRemoved.safeParse({ ...removed, status: "ended" }).success).toBe(false)
+})
+
+test("an instrument carries its PTY's size, null for pipes", () => {
+  const { size: _, ...pipes } = load(FIXTURES, "Instrument") as Record<string, unknown>
+  expect(Schemas.Instrument.parse({ ...pipes, interactive: false }).size).toBeNull()
+  expect(Schemas.Instrument.parse({ ...pipes, size: { cols: 80, rows: 24 } }).size).toEqual({ cols: 80, rows: 24 })
+  for (const size of [{ cols: 0, rows: 24 }, { cols: 80, rows: 0 }, { cols: 80 }, { cols: 80, rows: 24.5 },
+    { cols: 80, rows: 24, raw: true }])
+    expect(Schemas.Instrument.safeParse({ ...pipes, size }).success).toBe(false)
+})
+
+test("a screen says which bytes it holds", () => {
+  const screen = Schemas.InstrumentScreen.parse(load(FIXTURES, "InstrumentScreen"))
+  expect(required(Schemas.InstrumentScreen)).toEqual(["offset", "end", "data"])
+  // The fixture's bytes, base64, are those from `offset` to `end`.
+  expect(atob(screen.data).length).toBe(screen.end - screen.offset)
+  expect(Schemas.InstrumentScreen.parse({ offset: 0, end: 0, data: "" })).toEqual({ offset: 0, end: 0, data: "" })
+  for (const change of [{ offset: -1 }, { end: -1 }, { end: 1.5 }, { data: null }])
+    expect(Schemas.InstrumentScreen.safeParse({ ...screen, ...change }).success).toBe(false)
+})
+
+test("keys are at most 4096 characters", () => {
+  // As typed: Ctrl-C, Enter and escape sequences included.
+  for (const data of ["\u0003", "\r", "\u001b[A", "x".repeat(4096)])
+    expect(Schemas.InstrumentKeysRequest.parse({ data })).toEqual({ data })
+  for (const data of ["", "x".repeat(4097)])
+    expect(Schemas.InstrumentKeysRequest.safeParse({ data }).success).toBe(false)
+})
+
+test("a size is within a terminal's range", () => {
+  for (const size of [{ cols: 10, rows: 4 }, { cols: 80, rows: 24 }, { cols: 1000, rows: 500 }])
+    expect(Schemas.InstrumentSizeRequest.parse(size)).toEqual(size)
+  for (const size of [{ cols: 9, rows: 24 }, { cols: 1001, rows: 24 }, { cols: 80, rows: 3 }, { cols: 80, rows: 501 },
+    { cols: 80.5, rows: 24 }, { cols: 80 }])
+    expect(Schemas.InstrumentSizeRequest.safeParse(size).success).toBe(false)
 })
 
 const HQ = [

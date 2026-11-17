@@ -43,6 +43,15 @@ license, the upstream paths and commit, and our paths.
   commit `df46f69` (2026-11-16).
 - **Ours:** `packages/office/src/company/rules.ts`, `packages/office/src/server/routes/rules.ts`,
   `packages/tui/src/routes/session/dialog-rules.tsx`.
+- **What:** its terminals' output and size, as a design: output carries an absolute offset from the terminal's
+  start, so a client joining late takes the kept output up to an end offset and then only the live bytes past it,
+  with nothing lost or applied twice; and a terminal's size is part of what is listed, so every viewer draws at it.
+  An instrument's events and its screen follow both, over the event stream and plain requests rather than a
+  WebSocket; the code is our own.
+- **Upstream:** `packages/core/src/pty.ts` (`attach`), `packages/core/src/pty/protocol.ts` and
+  `packages/schema/src/persistent-pty.ts` (`Info.size`, `Info.output`), read at commit `df46f69` (2026-11-16).
+- **Ours:** `packages/protocol/src/schemas/instruments.ts`, `packages/client/src/client.ts`
+  (`sessions.instrumentScreen`).
 
 ## Paperclip
 

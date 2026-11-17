@@ -2,9 +2,10 @@
 // (re)connect re-reads state over GET: open the stream, wait for `: connected` (the office
 // subscribes before sending it), fetch while buffering stream events, apply the snapshot,
 // then replay the buffer on top.
-import type { Event, LiveEvent, Message, Person, Question } from "@opencorp/protocol"
+import type { Event, Instrument, LiveEvent, Message, Person, Question } from "@opencorp/protocol"
 import type { OfficeClient } from "./client"
 import { BadToken, failureKind, OfficeError, OfficeUnavailable, UnknownDevice } from "./errors"
+import { asInstrument } from "./live"
 import { runEach } from "./queue"
 import type { StreamEvent, SubscribeOptions, Subscription } from "./sse"
 import { applyLive, applyMeta, replay, upsertQuestion, upsertSession, type OfficeState } from "./store"
@@ -31,6 +32,10 @@ const FOLDER_LIMIT = 500
 const MAX_BUFFERED = 10_000
 
 const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x)
+
+/** Whether `e` says the office doesn't serve a route yet, rather than that what it names is missing. */
+const unserved = (e: unknown) =>
+  e instanceof OfficeError && [404, 405, 501].includes(e.status) && e.code !== "not_found"
 
 /** `value` with `clean` applied to every string in it, at any depth. */
 function cleanLeaves(value: unknown, clean: (text: string) => string): unknown {
@@ -63,12 +68,24 @@ function cleanMessage<M>(message: M, clean: (text: string) => string): M {
   return { ...message, parts: message.parts.map((p) => cleanPart(p, clean)) } as M
 }
 
-/** A live event with `clean` applied to the text it carries. */
+/** An instrument with `clean` applied to the text it shows (name, command, error); ids and states stay as sent. */
+function cleanInstrument<I>(instrument: I, clean: (text: string) => string): I {
+  if (!isRecord(instrument)) return instrument
+  const str = (x: unknown) => (typeof x === "string" ? clean(x) : x)
+  const { name, command, error } = instrument
+  return { ...instrument, name: str(name), command: str(command), error: str(error) } as I
+}
+
+/**
+ * A live event with `clean` applied to the text it carries. An instrument's output is the screen as it is, so it
+ * goes on untouched: its viewer draws the program's own escapes.
+ */
 function cleanLive(e: LiveEvent, clean: (text: string) => string): LiveEvent {
   const d = e.data
   if (e.type === "message.updated") return { ...e, data: cleanMessage(d, clean) }
   if (e.type === "part.updated") return { ...e, data: { ...d, part: cleanPart(d.part, clean) } }
   if (e.type === "part.delta" && typeof d.text === "string") return { ...e, data: { ...d, text: clean(d.text) } }
+  if (e.type === "instrument.updated") return { ...e, data: cleanInstrument(d, clean) }
   return e
 }
 
@@ -100,6 +117,7 @@ export function createOfficeSync(opts: {
   const cleanPeople = (people: Person[]) =>
     clean ? people.map((p) => ({ ...p, name: clean(p.name), title: clean(p.title) })) : people
   const cleanMessages = (messages: Message[]) => (clean ? messages.map((m) => cleanMessage(m, clean)) : messages)
+  const cleanInstruments = (list: Instrument[]) => (clean ? list.map((i) => cleanInstrument(i, clean)) : list)
   // After stop(), loads still in flight must not touch the state.
   let stopped = false
   const mutate = (fn: (s: OfficeState) => void) => {
@@ -190,7 +208,17 @@ export function createOfficeSync(opts: {
     try {
       return await client.questions.list({ session, status: "open" })
     } catch (e) {
-      if (e instanceof OfficeError && [404, 405, 501].includes(e.status) && e.code !== "not_found") return []
+      if (unserved(e)) return []
+      throw e
+    }
+  }
+
+  /** A session's instruments of the kinds the client knows; an office that serves none yet has none to report. */
+  async function instrumentsOf(session: string): Promise<Instrument[]> {
+    try {
+      return (await client.sessions.instruments(session)).filter((i) => asInstrument(i))
+    } catch (e) {
+      if (unserved(e)) return []
       throw e
     }
   }
@@ -226,10 +254,13 @@ export function createOfficeSync(opts: {
   }
   const snapshot = opts.snapshot ?? defaultSnapshot
 
-  /** Stops keeping a session live and drops its messages, which would only go stale. */
+  /** Stops keeping a session live and drops its messages and instruments, which would only go stale. */
   function unsync(id: string) {
     synced.delete(id)
-    mutate((s) => void delete s.messages[id])
+    mutate((s) => {
+      delete s.messages[id]
+      delete s.instruments[id]
+    })
   }
 
   /** A question re-read by id, or undefined if the office no longer has it. */
@@ -243,12 +274,13 @@ export function createOfficeSync(opts: {
   }
 
   async function loadSession(id: string) {
-    const [session, messages, questions] = await Promise.all([
+    const [session, messages, questions, instruments] = await Promise.all([
       client.sessions.get(id),
       client.sessions.messages(id),
       openQuestionsOf(id),
+      instrumentsOf(id),
     ])
-    return { id, session, messages: cleanMessages(messages), questions }
+    return { id, session, messages: cleanMessages(messages), questions, instruments: cleanInstruments(instruments) }
   }
 
   /**
@@ -291,6 +323,7 @@ export function createOfficeSync(opts: {
       pending.delete(id)
       mutate((s) => {
         s.messages[id] = l.messages
+        s.instruments[id] = l.instruments
         upsertSession(s, l.session)
         for (const q of l.questions) s.questions[q.id] = q
         replay(s, window)
@@ -333,6 +366,7 @@ export function createOfficeSync(opts: {
         for (const l of loaded) {
           if (!l) continue
           s.messages[l.id] = l.messages
+          s.instruments[l.id] = l.instruments
           upsertSession(s, l.session)
           for (const q of l.questions) s.questions[q.id] = q
         }
@@ -352,7 +386,7 @@ export function createOfficeSync(opts: {
     }
   }
 
-  /** Loads a session's messages and open questions, and keeps them live from then on. */
+  /** Loads a session's messages, open questions and instruments, and keeps them live from then on. */
   function syncSession(id: string) {
     synced.add(id)
     let load = loads.get(id)
