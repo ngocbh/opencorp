@@ -155,6 +155,22 @@ const WAIT_MAX_MS = 10 * 60_000
 
 /** A control character a command can't hold: all but newline and tab. */
 const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/
+/** The bytes of a command's nonce, 16 hex digits. */
+const NONCE_BYTES = 8
+
+/** Which shell a PTY shell runs: `choice`, or bash where `/bin/bash` exists, else sh. */
+export function shellKind(choice?: "bash" | "sh"): "bash" | "sh" {
+  return choice ?? (fs.existsSync("/bin/bash") ? "bash" : "sh")
+}
+
+/** The line the host types for the agent's `command` in a `kind` shell, with `nonce`. */
+function typedLine(command: string, nonce: string, kind: "bash" | "sh"): string {
+  const quoted = `'${command.replaceAll("'", "'\\''")}'`
+  return kind === "bash"
+    ? `eval ${quoted}; \\__oc_s ${nonce} $?\n`
+    : `eval ${quoted}; __oc_r=$?; "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; ` +
+        `printf '\\033]633;opencorp-mark;%s;%d\\007' ${nonce} "$__oc_r" >/dev/tty\n`
+}
 
 /** `env` for the shell: its prompts empty, no history file, and nothing that runs code or sets options at its start. */
 function shellEnv(env: Record<string, string>): Record<string, string> {
@@ -237,7 +253,7 @@ export class PtyShell {
     host: ShellHost,
     size: { cols: number; rows: number } = { cols: 80, rows: 24 },
   ): Promise<PtyShell> {
-    const shell = new PtyShell(id, name, host, host.shell ?? (fs.existsSync("/bin/bash") ? "bash" : "sh"))
+    const shell = new PtyShell(id, name, host, shellKind(host.shell))
     await shell.start(size)
     return shell
   }
@@ -255,20 +271,14 @@ export class PtyShell {
    *  typed, when the shell isn't idle, the owner is part-way through a line, the command is empty or holds a control
    *  character other than newline and tab, or a line of it would be over 1000 bytes. */
   async run(command: string, waitMs: number, signal?: AbortSignal): Promise<Reply> {
-    const why = this.refuseRun(command)
-    if (why !== null) return this.refused(why)
-    const nonce = randomBytes(8).toString("hex")
-    const quoted = `'${command.replaceAll("'", "'\\''")}'`
-    const typed =
-      this.kind === "bash"
-        ? `eval ${quoted}; \\__oc_s ${nonce} $?\n`
-        : `eval ${quoted}; __oc_r=$?; "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; ` +
-          `printf '\\033]633;opencorp-mark;%s;%d\\007' ${nonce} "$__oc_r" >/dev/tty\n`
-    if (typed.split("\n").some((line) => Buffer.byteLength(line) > LINE_MAX)) return this.refused(LONG_LINE)
+    const why = this.runProblem(command)
+    if (why !== null) return this.refusal(why)
+    const nonce = randomBytes(NONCE_BYTES).toString("hex")
+    const typed = typedLine(command, nonce, this.kind)
     try {
       this.host.record.command(command, this.host.driver)
     } catch (error) {
-      return this.refused(`the shell's record can't be written: ${(error as Error).message}`)
+      return this.refusal(`the shell's record can't be written: ${(error as Error).message}`)
     }
     // A marker's start held back at the prompt was output after all; the echo must come first.
     this.emit(this.held)
@@ -290,18 +300,8 @@ export class PtyShell {
    *  and waits as `run` does. Refused at a secret prompt, while the owner is part-way through a line, and when
    *  nothing runs. */
   async type(text: string, opts: { enter: boolean; waitMs: number; signal?: AbortSignal }): Promise<Reply> {
-    // The screen as it is now, not at the last check: a read may have turned echo off since.
-    this.guard()
-    const { status } = this.current
-    if (status === "waiting") return this.refused(SECRET)
-    if (status !== "running") return this.refused("nothing is running in this shell to type into; run a command")
-    if (this.ownerMidLine) return this.refused(OWNER_TYPING)
-    if (!/^[\x20-\x7e]*$/.test(text)) {
-      return this.refused("type takes printable ASCII only; interrupt sends Ctrl-C")
-    }
-    if (this.agentLine.length + text.length > LINE_MAX) {
-      return this.refused("a typed line would be over 1000 bytes, and a terminal cuts longer lines")
-    }
+    const why = this.typeProblem(text)
+    if (why !== null) return this.refusal(why)
     const from = this.cursor
     this.agentLine = opts.enter ? "" : this.agentLine + text
     this.agentDirty = !opts.enter && (this.agentDirty || text !== "")
@@ -320,11 +320,11 @@ export class PtyShell {
 
   /** Sends Ctrl-C to the agent's own running command. Refused when nothing runs, or the command is the owner's. */
   interrupt(): Reply {
-    if (this.current.status === "waiting") return this.refused(OWNER_SECRET)
-    if (this.ownerMidLine) return this.refused(OWNER_TYPING)
+    if (this.current.status === "waiting") return this.refusal(OWNER_SECRET)
+    if (this.ownerMidLine) return this.refusal(OWNER_TYPING)
     if (this.nonce === null) {
       const why = this.ownerRunning ? "the running command is the owner's; only they can stop it" : "nothing is running"
-      return this.refused(why)
+      return this.refusal(why)
     }
     this.interrupted = true
     this.agentLine = ""
@@ -620,8 +620,19 @@ export class PtyShell {
     })
   }
 
-  /** Why the agent can't run a command now, or null when it can. */
-  private refuseRun(command: string): string | null {
+  /** Why the agent's `command` can't be typed into a `kind` shell whatever its state, or null: it is empty, holds a
+   *  control character other than newline and tab, or a line of it, as the host types it, would be over 1000 bytes. */
+  static commandProblem(command: string, kind: "bash" | "sh"): string | null {
+    if (command.trim() === "") return "the command is empty"
+    if (CONTROL.test(command)) return "a command can't hold a control character other than newline and tab"
+    const typed = typedLine(command, "0".repeat(2 * NONCE_BYTES), kind)
+    if (typed.split("\n").some((line) => Buffer.byteLength(line) > LINE_MAX)) return LONG_LINE
+    return null
+  }
+
+  /** Why `run` would refuse `command` now, with nothing typed, or null: the shell isn't idle, the owner is part-way
+   *  through a line, or the command can't be typed (`commandProblem`). */
+  runProblem(command: string): string | null {
     const { status, error } = this.current
     if (status === "failed") return `the shell failed to start: ${error}`
     if (status === "ended") return "the shell has ended; start a new one"
@@ -632,9 +643,21 @@ export class PtyShell {
       return "a command is still running in this shell; call read to follow it, type to answer it, or interrupt it"
     }
     if (this.ownerMidLine) return OWNER_TYPING
-    if (command.trim() === "") return "the command is empty"
-    if (CONTROL.test(command)) {
-      return "a command can't hold a control character other than newline and tab"
+    return PtyShell.commandProblem(command, this.kind)
+  }
+
+  /** Why `type` would refuse `text` now, with nothing typed, or null: a secret prompt holds the shell, nothing runs,
+   *  the owner is part-way through a line, or the text isn't printable ASCII or would make the line over 1000 bytes.
+   *  It reads the screen as it is now, not at the last check: a read may have turned echo off since. */
+  typeProblem(text: string): string | null {
+    this.guard()
+    const { status } = this.current
+    if (status === "waiting") return SECRET
+    if (status !== "running") return "nothing is running in this shell to type into; run a command"
+    if (this.ownerMidLine) return OWNER_TYPING
+    if (!/^[\x20-\x7e]*$/.test(text)) return "type takes printable ASCII only; interrupt sends Ctrl-C"
+    if (this.agentLine.length + text.length > LINE_MAX) {
+      return "a typed line would be over 1000 bytes, and a terminal cuts longer lines"
     }
     return null
   }
@@ -650,7 +673,8 @@ export class PtyShell {
     return reply
   }
 
-  private refused(why: string): Reply {
+  /** A reply saying why nothing was done, with the shell's state, from where the agent last read. */
+  refusal(why: string): Reply {
     const { status, exit, waiting } = this.current
     return { shell: this.id, status, exit, waiting, output: "", next: this.cursor, more: false, refused: why }
   }

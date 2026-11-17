@@ -222,6 +222,8 @@ const FIXED_RISKS: ReadonlyMap<string, string> = new Map([
   ["sftp", COPIES] as const,
 ])
 const SSH_VALUE_LETTERS = "BbcDEeFIiJLlmOoPpQRSWw"
+/** mosh's options that take a value as the next word when not joined with `=`. */
+const MOSH_VALUES = set("-p --port --ssh --client --server --predict --family --bind-server --experimental-remote-ip")
 const SSH_SAFE_FLAGS = "46CqtTvx"
 const SSH_SAFE_VALUES = "lpiJ"
 const SSH_SAFE_KEYS = set(
@@ -394,12 +396,18 @@ export function fileOp(part: SimpleCommand, where: Where): boolean {
   return paths.every((p) => roots.some((root) => inside(p, root, op.strict)))
 }
 
-/** The destinations of a line's `ssh` parts, in order. */
+/** The destinations of a line's `ssh` and `mosh` parts, in order (mosh logs in through ssh). */
 export function sshHosts(read: ReadCommand): readonly string[] {
   return read.parts.flatMap((part) => {
-    const host = sshOf(part)?.host
+    const host = sshOf(part)?.host ?? moshHost(part)
     return host ? [host] : []
   })
+}
+
+/** Whether a line logs in to another machine: it has an `ssh` or `mosh` part, whether or not its destination
+ *  reads. A line typed into it runs there. */
+export function logsIn(read: ReadCommand): boolean {
+  return read.parts.some((part) => sshOf(part) !== null || moshHost(part) !== null)
 }
 
 /** An `ssh` part's destination ("" when it names none) and the words of the command it runs there, which ssh
@@ -498,7 +506,7 @@ export function pushOf(part: SimpleCommand): { readonly asks: string | null } | 
 /** Why `part` names a credential path (`CREDENTIALS`, or one of `marked`, the host's), or null: a literal anywhere
  *  in it (a word of its program's other than ssh's identity file, an assignment, a redirect, a here-string or
  *  here-document), a folder it reads recursively, or, over ssh, any of these in the remote command, named with its
- *  host. When `strict` (the SSH-only profile, where credentials are reachable), a content read whose path comes
+ *  host. When `strict` (where credentials are reachable: see `decide`), a content read whose path comes
  *  through an expansion counts too; an ssh remote command is always strict. `cwd` is the folder relative paths start
  *  from, when known; an ssh remote command starts at the remote home. */
 export function credentialOf(
@@ -1346,6 +1354,20 @@ function gitArgs(args: readonly string[]) {
 /** An ssh `-o` value's key, lowercased: up to `=` or a blank. */
 function optionKey(value: string | null): string {
   return (value ?? "").trim().split(/[=\s]/)[0]!.toLowerCase()
+}
+
+/** A `mosh` part's destination: its first word past its options ("" when it names none); null when the part isn't
+ *  `mosh`. */
+function moshHost(part: SimpleCommand): string | null {
+  const [prog = "", ...args] = programOf(part)
+  if (base(prog) !== "mosh") return null
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k]!
+    if (w === "--") return args[k + 1] ?? ""
+    if (!w.startsWith("-") || w === "-") return w
+    if (MOSH_VALUES.has(w)) k++
+  }
+  return ""
 }
 
 /** ssh's options as its own getopt reads them (options may follow the destination too), the destination and

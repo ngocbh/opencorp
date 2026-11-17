@@ -444,6 +444,27 @@ test("a path the host marks as a credential asks in every mode, like one under ~
   table("auto", [[cmd("cat ~/keys/id"), [], S, READ_ONLY], [cmd("cat ~/keys/id.pub"), [], marked, READ_ONLY]])
 })
 
+test("a content read through an expansion asks wherever the host marks credentials, and in a line typed into ssh or mosh", () => {
+  const through = (word: string): Decision => ({ verdict: "ask", reason: `it reads a path named by an expansion: ${word}`, rules: [] })
+  const marked: Where = { ...W, credentials: ["/w/keys/id"] }
+  table("auto", [
+    [cmd("cat $F"), [], marked, through("$F")],
+    [cmd("cat $F"), [], W, READ_ONLY],
+    [{ kind: "input", text: "cat $F", into: "mosh u@n" }, [], W, through("$F")],
+    [{ kind: "input", text: "cat $F", into: "mosh --ssh='ssh -p 2222' -p 60001 u@n -- bash" }, [], W, through("$F")],
+    [{ kind: "input", text: "cat $F", into: "cd x && timeout 9 mosh" }, [], W, through("$F")],
+    [{ kind: "input", text: "cat $F", into: "cat" }, [], W, READ_ONLY],
+  ])
+  table("dontAsk", [[cmd("cat $F"), [], marked, { verdict: "deny", reason: DONT + "it reads a path named by an expansion: $F" }]])
+})
+
+test("the check is told the host of a mosh session a line is typed into, as of an ssh one", async () => {
+  const { perms, checked } = holding("auto", { check: async () => ({ verdict: "run", reason: "ok" }) })
+  await gate(perms, { kind: "input", text: "scancel 42", into: "mosh --ssh 'ssh -J login' u@node" }, call())
+  await gate(perms, cmd("mosh -p 60001 u@b -- top"), call())
+  expect(checked.map((input) => input.host)).toEqual(["u@node", "u@b"])
+})
+
 test("the card offers no rule for what it holds for the owner", () => {
   table("ask", [[cmd("ls && git push origin main"), [], W,
     { verdict: "ask", reason: "it pushes to the default branch", rules: [] }]])

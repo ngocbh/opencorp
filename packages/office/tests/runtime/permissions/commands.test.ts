@@ -154,6 +154,8 @@ test("sshHosts lists a line's ssh destinations", () => {
   expect(sshHosts(readCommand("ssh -J login u@node scancel 42"))).toEqual(["u@node"])
   expect(sshHosts(readCommand("ls"))).toEqual([])
   expect(sshHosts(readCommand("ssh a ls; timeout 5 ssh -p 22 u@b -t"))).toEqual(["a", "u@b"])
+  // mosh logs in through ssh: its destination comes past its options, a value joined or not.
+  expect(sshHosts(readCommand("mosh --ssh='ssh -p 2222' -p 60001 u@c -- top; mosh --predict never d"))).toEqual(["u@c", "d"])
 })
 
 test("a program word that the shell expands makes it unreadable", () => {
