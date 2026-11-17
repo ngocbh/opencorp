@@ -1,4 +1,4 @@
-import type { Approval } from "@opencorp/protocol"
+import { APPROVAL_YES, approvalAlwaysOption, approvalSessionOption, type Approval } from "@opencorp/protocol"
 
 /** How an approval card shows what it asks to allow: an icon and a title naming what would act, and the body's
  *  lines, each shown whole. */
@@ -58,14 +58,15 @@ export function permissionAlwaysLines(kind: "session" | "always", rules: readonl
   return [intro, ...rules.map((rule) => `- ${shownText(rule)}`)]
 }
 
-const SESSION_PREFIX = "Yes, and don't ask again this session for: "
-const ALWAYS_PREFIX = "Yes, and always allow: "
-
-/** A card's Yes choices, read from its own options and sent exactly as the office wrote them: Yes, and "don't ask
- *  again" and "always" when it offers them. A label the TUI doesn't know is never offered. */
-export function permissionOptions(options: readonly string[]): { yes?: string; session?: string; always?: string } {
-  const yes = options.find((o) => o === "Yes")
-  const session = options.find((o) => o.startsWith(SESSION_PREFIX))
-  const always = options.find((o) => o.startsWith(ALWAYS_PREFIX))
-  return { ...(yes && { yes }), ...(session && { session }), ...(always && { always }) }
+/** A card's Yes choices among its own `options`, by the protocol's labels for its `rules`: Yes, and "don't ask
+ *  again" and "always" when the card offers them for those rules. Any other label is never offered. */
+export function permissionOptions(
+  options: readonly string[],
+  rules: readonly string[],
+): { yes?: string; session?: string; always?: string } {
+  const offered = (label: string) => (options.includes(label) ? label : undefined)
+  const yes = offered(APPROVAL_YES)
+  const session = rules.length > 0 ? offered(approvalSessionOption(rules)) : undefined
+  const always = rules.length > 0 ? offered(approvalAlwaysOption(rules)) : undefined
+  return { ...(yes ? { yes } : {}), ...(session ? { session } : {}), ...(always ? { always } : {}) }
 }

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { APPROVAL_YES, approvalAlwaysOption, approvalSessionOption } from "@opencorp/protocol"
 import { shownAction } from "@opencorp/office/util/show"
 import { permissionAlwaysLines, permissionOptions, permissionPresentation } from "../../src/util/permission"
 
@@ -45,11 +46,15 @@ test("the always pages name what they save, and each rule whole, its odd charact
   ])
 })
 
-test("a card's choices are read from its own options, each sent as the office wrote it", () => {
-  const session = "Yes, and don't ask again this session for: rm -rf build"
-  const always = "Yes, and always allow: rm -rf build"
-  expect(permissionOptions(["Yes", session, always])).toEqual({ yes: "Yes", session, always })
-  expect(permissionOptions(["Yes"])).toEqual({ yes: "Yes" })
-  // A label the TUI doesn't know is never offered.
-  expect(permissionOptions(["Yes", "Yes, and something else"])).toEqual({ yes: "Yes" })
+test("a card's choices are its own options, matched against the protocol's labels for its rules", () => {
+  const rules = ["rm -rf build"]
+  const session = approvalSessionOption(rules)
+  const always = approvalAlwaysOption(rules)
+  expect(session).toBe("Yes, and don't ask again this session for: rm -rf build")
+  expect(always).toBe("Yes, and always allow: rm -rf build")
+  expect(permissionOptions([APPROVAL_YES, session, always], rules)).toEqual({ yes: "Yes", session, always })
+  expect(permissionOptions([APPROVAL_YES], [])).toEqual({ yes: "Yes" })
+  // A label for other rules, or one the protocol doesn't name, is never offered.
+  expect(permissionOptions([APPROVAL_YES, approvalSessionOption(["make"])], rules)).toEqual({ yes: "Yes" })
+  expect(permissionOptions(["Yes", "Yes, and something else"], rules)).toEqual({ yes: "Yes" })
 })

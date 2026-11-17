@@ -1,15 +1,13 @@
 import { createStore } from "solid-js/store"
 import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js"
-import { Portal, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import type { TextareaRenderable } from "@opentui/core"
+import { Portal, useTerminalDimensions } from "@opentui/solid"
+import type { BoxRenderable, TextareaRenderable } from "@opentui/core"
 import type { AnswerRequest, Question } from "@opencorp/protocol"
 import { OfficeError, isNotImplemented } from "@opencorp/client"
 import { useTheme, selectedForeground } from "../../context/theme"
 import { SplitBorder } from "../../ui/border"
 import { useOffice } from "../../context/office"
 import { usePermission } from "../../context/permission"
-import { filetype } from "../../util/filetype"
-import { getScrollAcceleration } from "../../util/scroll"
 import { useTuiConfig } from "../../config"
 import { useBindings, useCommandShortcut, useOpenCorpModeStack } from "../../keymap"
 import { useDialog } from "../../ui/dialog"
@@ -33,15 +31,6 @@ type Row = Line
 
 /** Shown in place of the choices until the card's last row has been on screen. */
 const READ_ON = "Read to the end (PageDown, Space, arrows) to see the choices"
-/** The columns the bar and the padding take on each row, beside the box's own width. */
-const TEXT_INSET = 6
-/** The rows the prompt itself takes beside its header, body and footer: the box's padding, the gap under the
- *  header, and the footer's padding. */
-const CHROME = 5
-/** The rows of the chat the prompt leaves: its header, gaps and padding, and a few rows of transcript. */
-const CHAT_RESERVE = 8
-/** The rows full screen leaves above and below the box. */
-const FULL_MARGIN = 2
 
 /** `lines` wrapped to `width`, one row each as the screen draws it: a line break starts a row, and a line wider than
  *  the box wraps whole, never cut. */
@@ -57,74 +46,15 @@ function wrapLines(lines: readonly Line[], width: number): Row[] {
   )
 }
 
-/** A file change's diff in a scroll box, split above 120 columns. No approval card edits a file yet. */
-export function EditBody(props: { file: string; diff: string }) {
-  const themeState = useTheme()
-  const theme = themeState.theme
-  const syntax = themeState.syntax
-  const config = useTuiConfig()
-  const dimensions = useTerminalDimensions()
-
-  const view = createMemo(() => {
-    const diffStyle = config.diff_style
-    if (diffStyle === "stacked") return "unified"
-    return dimensions().width > 120 ? "split" : "unified"
-  })
-
-  const ft = createMemo(() => filetype(props.file))
-  const scrollAcceleration = createMemo(() => getScrollAcceleration(config))
-
-  return (
-    <box flexDirection="column" gap={1}>
-      <Show when={props.diff}>
-        <scrollbox
-          height="100%"
-          scrollAcceleration={scrollAcceleration()}
-          verticalScrollbarOptions={{
-            trackOptions: {
-              backgroundColor: theme.background,
-              foregroundColor: theme.borderActive,
-            },
-          }}
-        >
-          <diff
-            diff={props.diff}
-            view={view()}
-            filetype={ft()}
-            syntaxStyle={syntax()}
-            showLineNumbers={true}
-            width="100%"
-            wrapMode="word"
-            fg={theme.text}
-            addedBg={theme.diffAddedBg}
-            removedBg={theme.diffRemovedBg}
-            contextBg={theme.diffContextBg}
-            addedSignColor={theme.diffHighlightAdded}
-            removedSignColor={theme.diffHighlightRemoved}
-            lineNumberFg={theme.diffLineNumber}
-            lineNumberBg={theme.diffContextBg}
-            addedLineNumberBg={theme.diffAddedLineNumberBg}
-            removedLineNumberBg={theme.diffRemovedLineNumberBg}
-          />
-        </scrollbox>
-      </Show>
-      <Show when={!props.diff}>
-        <box paddingLeft={1}>
-          <text fg={theme.textMuted}>No diff provided</text>
-        </box>
-      </Show>
-    </box>
-  )
-}
-
 /**
  * The open approval card `question`: what the agent wants to run, why, and why policy asks, then Yes, "don't ask
  * again this session" and "always" when the card offers them, and No with what to do instead. Its choices appear only
  * once the card's last row has been on screen; the selection starts on No, a digit only selects, and Enter confirms.
  * "Don't ask again" and "always" show the exact rules on a page of their own first. Esc asks to stop the agent, and
- * Ctrl+C leaves as on any card. `width` is the chat's width, which the prompt draws in.
+ * Ctrl+C leaves as on any card. The options page stays mounted, hidden, while those pages show, so the owner comes
+ * back to it as they left it: read, scrolled, and full screen or not.
  */
-export function PermissionPrompt(props: { question: Question | undefined; width: number }) {
+export function PermissionPrompt(props: { question: Question | undefined }) {
   const office = useOffice()
   const permission = usePermission()
   const toast = useToast()
@@ -141,7 +71,7 @@ export function PermissionPrompt(props: { question: Question | undefined; width:
   // copy for the moment the question goes before the prompt does.
   const question = createMemo<Question>((prev) => props.question ?? prev, props.question!)
   const asker = createMemo(() => personLabel(office.state.people, question().asker))
-  const choices = createMemo(() => permissionOptions(question().options ?? []))
+  const choices = createMemo(() => permissionOptions(question().options ?? [], question().approval?.rules ?? []))
   const presentation = createMemo(() =>
     permissionPresentation(question().approval ?? { tool: "?" }, display(question().question)),
   )
@@ -271,56 +201,55 @@ export function PermissionPrompt(props: { question: Question | undefined; width:
   }))
 
   return (
-    <Switch>
-      <Match when={store.stage === "always"}>
-        <Prompt
-          header={alwaysHeader()}
-          body={alwaysBody()}
-          options={{ confirm: "Confirm", cancel: "Cancel" }}
-          start="cancel"
-          width={props.width}
-          fullscreen
-          hints={[{ key: "esc", label: "back" }]}
-          enabled={true}
-          onEscape={() => setStore("stage", "permission")}
-          onSelect={(option) => {
-            if (option === "cancel") return setStore("stage", "permission")
-            const answer = store.always === "session" ? choices().session : choices().always
-            if (answer) send({ answer, answer_kind: "option" })
-          }}
-        />
-      </Match>
-      <Match when={store.stage === "reject"}>
-        <RejectPrompt
-          asker={asker()}
-          onConfirm={(message) => {
-            // A blank No isn't an answer the office takes; the box stays open.
-            const text = message.trim()
-            if (text) send({ answer: text, answer_kind: "text" })
-          }}
-          onCancel={() => setStore("stage", "permission")}
-        />
-      </Match>
-      <Match when={store.stage === "permission"}>
-        <Prompt
-          header={header()}
-          body={body()}
-          options={options()}
-          start="no"
-          width={props.width}
-          fullscreen
-          hints={[{ key: "esc", label: `stop ${asker()}` }]}
-          notice={confirming() ? `Stop ${asker()}? y/N` : undefined}
-          enabled={!confirming()}
-          onEscape={() => setConfirming(true)}
-          onSelect={(option) => {
-            if (option === "yes") return send({ answer: choices().yes!, answer_kind: "option" })
-            if (option === "session" || option === "always") return setStore({ stage: "always", always: option })
-            setStore("stage", "reject")
-          }}
-        />
-      </Match>
-    </Switch>
+    <>
+      <Prompt
+        header={header()}
+        body={body()}
+        options={options()}
+        start="no"
+        fullscreen
+        hints={[{ key: "esc", label: `stop ${asker()}` }]}
+        notice={confirming() ? `Stop ${asker()}? y/N` : undefined}
+        enabled={!confirming()}
+        hidden={store.stage !== "permission"}
+        onEscape={() => setConfirming(true)}
+        onSelect={(option) => {
+          if (option === "yes") return send({ answer: choices().yes!, answer_kind: "option" })
+          if (option === "session" || option === "always") return setStore({ stage: "always", always: option })
+          setStore("stage", "reject")
+        }}
+      />
+      <Switch>
+        <Match when={store.stage === "always"}>
+          <Prompt
+            header={alwaysHeader()}
+            body={alwaysBody()}
+            options={{ confirm: "Confirm", cancel: "Cancel" }}
+            start="cancel"
+            fullscreen
+            hints={[{ key: "esc", label: "back" }]}
+            enabled={true}
+            onEscape={() => setStore("stage", "permission")}
+            onSelect={(option) => {
+              if (option === "cancel") return setStore("stage", "permission")
+              const answer = store.always === "session" ? choices().session : choices().always
+              if (answer) send({ answer, answer_kind: "option" })
+            }}
+          />
+        </Match>
+        <Match when={store.stage === "reject"}>
+          <RejectPrompt
+            asker={asker()}
+            onConfirm={(message) => {
+              // A blank No isn't an answer the office takes; the box stays open.
+              const text = message.trim()
+              if (text) send({ answer: text, answer_kind: "text" })
+            }}
+            onCancel={() => setStore("stage", "permission")}
+          />
+        </Match>
+      </Switch>
+    </>
   )
 }
 
@@ -413,23 +342,25 @@ function RejectPrompt(props: { asker: string; onConfirm: (message: string) => vo
 
 /**
  * A page of the prompt: a header, a body read in a viewport the prompt scrolls, and a row of options under it. The
- * body's lines are wrapped to the box's width and each row is drawn unwrapped, so the rows counted are the rows on
+ * body's lines are wrapped to the viewport's width as measured on screen and each row is drawn unwrapped, and the
+ * viewport is as tall as the rows or as what the screen leaves it, measured too, so the rows counted are the rows on
  * screen. The options, their keys, clicks and Enter wait until the body's last row has been on screen; until then the
- * footer says to read on. A resize or full screen re-wraps the body and starts it again at the top. The selection
- * starts on `start`; left/right and h/l move it, a digit only selects, and Enter confirms.
+ * footer says to read on. A new width or full screen re-wraps the body and starts it again at the top. The selection
+ * starts on `start`; left/right and h/l move it, a digit only selects, and Enter confirms. While `hidden` it keeps its
+ * scroll, its count and full screen, and its keys are off.
  */
 function Prompt<const T extends Record<string, string>>(props: {
   header: Line[]
   body: Line[]
   options: T
   start: keyof T
-  width: number
   fullscreen?: boolean
   hints?: { key: string; label: string }[]
   /** Replaces the footer, such as a confirmation. */
   notice?: string
   /** Whether its keys work; off while a caller's confirmation has them. */
   enabled: boolean
+  hidden?: boolean
   onEscape: () => void
   onSelect: (option: keyof T) => void
 }) {
@@ -444,15 +375,22 @@ function Prompt<const T extends Record<string, string>>(props: {
   })
   const fullscreenHint = useCommandShortcut("permission.prompt.fullscreen")
 
-  // The box is the chat's width, or full screen the screen's less its margins; text gets what the bar and padding
-  // leave.
-  const width = createMemo(() => Math.max(1, (store.expanded ? dimensions().width - 4 : props.width) - TEXT_INSET))
+  // The viewport's size on screen, measured for each wrapping of the body: rows count only against the viewport they
+  // are drawn in. A hidden page keeps its last size.
+  const [size, setSize] = createSignal<{ rows: Row[]; width: number; height: number }>()
+  // The width the text wraps to: the viewport's, which the header and the footer share; the screen's until it is
+  // measured, while nothing counts.
+  const width = createMemo(() => Math.max(1, size()?.width ?? dimensions().width))
   const headerRows = createMemo(() => wrapLines(props.header, width()))
   // Wrapped anew when the width changes or full screen toggles; either starts the count again.
   const rows = createMemo(() => {
     void store.expanded
     return wrapLines(props.body, width())
   })
+  const measured = () => {
+    const s = size()
+    return s?.rows === rows() ? s : undefined
+  }
 
   const hints = createMemo(() => [
     ...(props.fullscreen ? [{ key: fullscreenHint(), label: store.expanded ? "minimize" : "fullscreen" }] : []),
@@ -484,17 +422,9 @@ function Prompt<const T extends Record<string, string>>(props: {
     return Math.max(readOn().length, choices, noticeRows().length)
   })
 
-  // The body's viewport: every row when they fit in what the screen leaves, else that less the position line.
-  const room = createMemo(
-    () =>
-      dimensions().height -
-      (store.expanded ? FULL_MARGIN : CHAT_RESERVE) -
-      CHROME -
-      headerRows().length -
-      footerRows(),
-  )
-  const fits = createMemo(() => rows().length <= room())
-  const view = createMemo(() => (fits() ? rows().length : Math.max(1, room() - 1)))
+  // The rows on screen: the viewport is as tall as the rows unless the screen leaves it less.
+  const view = createMemo(() => Math.min(measured()?.height ?? 0, rows().length))
+  const scrolls = createMemo(() => measured() !== undefined && view() < rows().length)
   const maxTop = createMemo(() => Math.max(0, rows().length - view()))
   // The scroll position, for the rows it was set on: rows wrapped anew start at the top.
   const [scroll, setScroll] = createSignal<{ rows?: Row[]; top: number }>({ top: 0 })
@@ -503,8 +433,9 @@ function Prompt<const T extends Record<string, string>>(props: {
     return s.rows === rows() ? Math.min(s.top, maxTop()) : 0
   }
   const scrollTo = (t: number) => setScroll({ rows: rows(), top: Math.max(0, Math.min(maxTop(), t)) })
-  const read = createReadThrough({ rows, top, view, ready: () => true })
-  const visible = createMemo(() => rows().slice(top(), top() + view()))
+  const read = createReadThrough({ rows, top, view, ready: () => measured() !== undefined })
+  // Until it is measured the viewport clips what it draws, and nothing counts.
+  const visible = createMemo(() => rows().slice(top(), top() + (measured() ? view() : rows().length)))
   const position = createMemo(() => {
     const total = rows().length
     return `lines ${Math.min(top() + 1, total)}–${Math.min(top() + view(), total)} of ${total}`
@@ -519,7 +450,7 @@ function Prompt<const T extends Record<string, string>>(props: {
 
   useBindings(() => ({
     mode: QUESTION_MODE,
-    enabled: props.enabled && dialog.stack.length === 0,
+    enabled: props.enabled && !props.hidden && dialog.stack.length === 0,
     commands: [
       {
         name: "permission.prompt.fullscreen",
@@ -581,8 +512,6 @@ function Prompt<const T extends Record<string, string>>(props: {
     ],
   }))
 
-  useRenderer()
-
   const color = (tone: Tone) => (tone === "muted" ? theme.textMuted : tone === "warning" ? theme.warning : theme.text)
   /** Rows drawn as they are, each no wider than the box: a row's mark in its own colour. */
   const plain = (list: readonly Row[]) => (
@@ -610,6 +539,8 @@ function Prompt<const T extends Record<string, string>>(props: {
 
   const content = () => (
     <box
+      visible={!props.hidden}
+      flexShrink={1}
       backgroundColor={theme.backgroundPanel}
       border={["left"]}
       borderColor={theme.warning}
@@ -618,20 +549,37 @@ function Prompt<const T extends Record<string, string>>(props: {
         ? { top: dimensions().height * -1 + 1, bottom: 1, left: 2, right: 2, position: "absolute" }
         : { position: "relative" })}
     >
-      <box paddingLeft={1} paddingRight={3} paddingTop={1} paddingBottom={1} flexShrink={0}>
+      <box paddingLeft={1} paddingRight={3} paddingTop={1} paddingBottom={1} flexShrink={1}>
         <box paddingLeft={1} flexShrink={0}>
           {plain(headerRows())}
         </box>
-        <box paddingLeft={1} marginTop={1} height={view()} flexShrink={0}>
-          {plain(visible())}
+        {/* As tall as the rows, shrunk to what the screen leaves: a basis, since a set height stops it shrinking. */}
+        <box paddingLeft={1} marginTop={1} flexBasis={rows().length} minHeight={1} flexShrink={1}>
+          <Show when={rows()} keyed>
+            {(wrapped) => {
+              let el: BoxRenderable | undefined
+              // Only the live viewport of the current rows counts (a box mid-layout reports no size), and only its
+              // rows inside the screen.
+              const measure = () => {
+                if (!el || el.isDestroyed || props.hidden || wrapped !== rows()) return
+                if (!Number.isFinite(el.width) || !Number.isFinite(el.height)) return
+                const height = Math.max(0, Math.min(el.height, dimensions().height - el.y))
+                setSize({ rows: wrapped, width: el.width, height })
+              }
+              return (
+                <box ref={(r: BoxRenderable) => (el = r)} flexGrow={1} overflow="hidden" onSizeChange={measure}>
+                  {plain(visible())}
+                </box>
+              )
+            }}
+          </Show>
         </box>
-        <Show when={!fits()}>
-          <box paddingLeft={1} flexShrink={0}>
-            <text fg={theme.textMuted} wrapMode="none">
-              {position()}
-            </text>
-          </box>
-        </Show>
+        {/* Always a row, so the viewport's height doesn't change when the body turns out not to fit. */}
+        <box paddingLeft={1} flexShrink={0}>
+          <text fg={theme.textMuted} wrapMode="none">
+            {scrolls() ? position() : " "}
+          </text>
+        </box>
       </box>
       <box
         flexShrink={0}

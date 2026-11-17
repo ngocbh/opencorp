@@ -145,6 +145,8 @@ export function Session() {
   const question = createMemo(() => cards()[0])
   // A Codex session shows every open card above a prompt that stays; the first card or the prompt has the keys.
   const codex = createMemo(() => session()?.harness === "codex")
+  // The open card is an approval card, which shows as the permission prompt.
+  const approval = createMemo(() => !codex() && question()?.source === "approval")
   const permission = usePermission()
   // Whether the chat's mode can be switched here. Never while a card is open: the card hides the prompt and its mode
   // label, and a switch to dontAsk would answer an approval card.
@@ -676,6 +678,9 @@ export function Session() {
                   stickyScroll={true}
                   stickyStart="bottom"
                   flexGrow={1}
+                  // Under an approval card the transcript takes what the card leaves, and keeps a few rows.
+                  flexBasis={approval() ? 0 : "auto"}
+                  minHeight={approval() ? 3 : 0}
                   scrollAcceleration={scrollAcceleration()}
                 >
                   <For each={shown()}>
@@ -698,7 +703,8 @@ export function Session() {
                     )}
                   </For>
                 </scrollbox>
-                <box flexShrink={0}>
+                {/* An approval card may shrink to what the chat leaves it: its body scrolls in what remains. */}
+                <box flexShrink={approval() ? 1 : 0}>
                   <Show
                     when={codex()}
                     fallback={
@@ -719,7 +725,7 @@ export function Session() {
                         {/* Keyed and untracked: a card's source never changes, so the choice is made once. */}
                         {(_id) =>
                           question()?.source === "approval" ? (
-                            <PermissionPrompt question={question()} width={contentWidth()} />
+                            <PermissionPrompt question={question()} />
                           ) : (
                             <>
                               <QuestionCard
