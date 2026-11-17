@@ -230,7 +230,7 @@ test("an ask node call keeps its node pages and schema", async () => {
 })
 
 const PAGED =
-  "id: paged\nname: paged\nnodes:\n  asked:\n    kind: tool\n    tool_id: ask\n    input:\n" +
+  "id: paged\nname: paged\nnodes:\n  asked:\n    kind: call\n    call: ask\n    input:\n" +
   '      prompt: "Setup"\n      questions:\n        - question: "Which db?"\n          header: DB\n' +
   "          options:\n            - label: sqlite\n          multi_select: true\n" +
   '        - question: "Why?"\n          header: Why\noutput: ${asked.output}\n'
@@ -630,7 +630,7 @@ test("reconcile rebuilds an ask node's question as its handler got it: title, pa
   const b = base()
   writeFiles(b.pin, {
     "flows/pick.yaml":
-      "id: pick\nname: pick\nnodes:\n  pick:\n    kind: tool\n    tool_id: ask\n    node_name: Pick a plan\n" +
+      "id: pick\nname: pick\nnodes:\n  pick:\n    kind: call\n    call: ask\n    node_name: Pick a plan\n" +
       "    input:\n      questions:\n        - question: Which plan?\n          header: plan\n" +
       "          options: [{label: basic}, {label: pro, description: more seats}]\n" +
       "        - question: Why?\n          header: why\n    output: {plan: !str, why: !str}\noutput: ${pick.output}\n",

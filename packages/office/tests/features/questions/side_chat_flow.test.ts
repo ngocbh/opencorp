@@ -20,7 +20,7 @@ test("side chat template loads and has the chat shape", async () => {
   const flow = read()
   const turn = flow.defs.turn.nodes
   expect(flow.nodes.chat.kind).toBe("loop")
-  expect([turn.heard.kind, turn.heard.tool_id, turn.heard.input.from]).toEqual(["tool", "take", "${input.messages}"])
+  expect([turn.heard.kind, turn.heard.call, turn.heard.input.from]).toEqual(["call", "take", "${input.messages}"])
   expect(turn.route.cases).toEqual([{ when: "${heard.output.events != [] and not heard.output.closed}", then: "context" }])
   const reply = turn.reply
   expect([reply.steer_inbox, reply.output, reply.input.profile]).toEqual([

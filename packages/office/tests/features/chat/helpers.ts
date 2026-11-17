@@ -407,8 +407,8 @@ input:
   profile: !FileMemory
 nodes:
   setup:
-    kind: tool
-    tool_id: ask
+    kind: call
+    call: ask
     input:
       questions:
         - question: Which database?

@@ -1,5 +1,5 @@
 # `opencorp init`'s flow: interview the owner until they accept a company, then ask for a password and a remote.
-# Only TOOL nodes, which the office serves, read the password and the remote, so the model never sees them.
+# Only calls of tools the office serves read the password and the remote, so the model never sees them.
 id: init
 name: init
 description: Make a new company with its owner, then ask for the CEO's password and a git remote.
@@ -71,8 +71,8 @@ nodes:
           What to change:
           ${changes}
       confirm:
-        kind: tool
-        tool_id: confirm_company
+        kind: call
+        call: confirm_company
         input:
           answers: ${interview.output}
         output: {draft: !str, changes: !str, accepted: !bool}
@@ -89,14 +89,14 @@ nodes:
     code: |
       return JSON.parse(inputs.draft)
   password:
-    kind: tool
-    tool_id: ask_password
+    kind: call
+    call: ask_password
     depends_on: [answers]  # without it, the password is asked before the interview
     input: {}
     output: !Optional(str)
   remote:
-    kind: tool
-    tool_id: ask_remote
+    kind: call
+    call: ask_remote
     depends_on: [password]
     input:
       given: ${input.remote}
