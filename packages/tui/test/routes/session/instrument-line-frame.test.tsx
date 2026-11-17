@@ -140,8 +140,9 @@ test("a waiting shell shows what waits for you on the right, in place of the sho
     expect(fgOf(app, "⚠")?.equals(theme.warning)).toBe(true)
     expect(fgOf(app, "is waiting for you")?.equals(theme.warning)).toBe(true)
 
-    // Once it no longer waits, the shortcuts come back.
-    add(office, sid, { ...ssh, status: "running", waiting: null })
+    // Once it no longer waits, the shortcuts come back. It opened itself and took the view's size, so the change
+    // comes after that.
+    add(office, sid, { ...ssh, status: "running", waiting: null, updated_at: new Date(Date.now() + 1).toISOString() })
     f = await app.until((f) => line(f).includes(SHORTCUTS))
     expect(line(f)).not.toContain("⚠")
 
@@ -150,7 +151,13 @@ test("a waiting shell shows what waits for you on the right, in place of the sho
     f = await app.until((f) => line(f).includes("is waiting for you"))
     expect(line(f)).toMatch(/· 2 shells +⚠ shell \d+ is waiting for you$/)
     // The oldest waiting one shows first.
-    add(office, sid, { ...ssh, status: "waiting", waiting: "secret", command: "sudo apt update" })
+    add(office, sid, {
+      ...ssh,
+      status: "waiting",
+      waiting: "secret",
+      command: "sudo apt update",
+      updated_at: new Date(Date.now() + 1).toISOString(),
+    })
     f = await app.until((f) => line(f).includes("⚠ sudo apt update is waiting for you"))
     expect(line(f)).toMatch(/· 2 shells +⚠ sudo apt update is waiting for you$/)
   } finally {

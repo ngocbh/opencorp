@@ -108,15 +108,22 @@ license, the upstream paths and commit, and our paths.
     as its `createLayer` does, and the prompt honours too;
   - the shell-output dialog's layout, for a pipes shell: the command, a note when earlier output is gone, and the
     output following its end with its escapes stripped;
-  - `TextBoundary.tail`, which keeps a pipes shell's newest output without half a character, and its test's cases.
+  - `TextBoundary.tail`, which keeps a pipes shell's newest output without half a character, and its test's cases;
+  - the terminal pane's key routing: a `key` intercept at priority 100 that hands every key but the leader, and the
+    key after it, to the focused terminal's `handleKeyPress`, whose `onData` input bytes go to the shell;
+  - the session frame's `pane.focus.left` and `pane.focus.right`, on `<leader>left` and `<leader>right`, which move
+    the keys between the chat and the pane, the left one off in full screen.
 
-  The floating view is our own.
+  The floating view is our own, as are the leader twice sending the leader key, the keys gathered a frame at a time
+  for the office's keys route, and a waiting shell opening itself.
 - **Upstream:** `packages/tui/src/component/terminal-pane.tsx`, `packages/tui/src/component/session-frame.tsx`,
+  `packages/tui/src/config/keybind.ts` (`pane.focus.left`, `pane.focus.right`),
   `packages/tui/src/context/interactivity.tsx`, `packages/tui/src/context/keymap.tsx` (`createLayer`),
   `packages/tui/src/ui/pane-resize.ts`, `packages/tui/src/ui/pane-resize-handle.tsx`, `packages/tui/src/ui/layout.ts`
   (`clampSessionPaneWidth`), `packages/tui/src/component/dialog-shell-output.tsx`, `packages/util/src/text-boundary.ts`
   and `packages/util/src/text-boundary.test.ts`, read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/tui/src/routes/session/terminal-pane.tsx`, `packages/tui/src/routes/session/instrument-view.tsx`,
+  `packages/tui/src/routes/session/keys.ts`, `packages/tui/src/config/keybind.ts`,
   `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/context/interactivity.tsx`,
   `packages/tui/src/keymap.tsx` (`useBindings`), `packages/tui/src/ui/pane-resize.ts`,
   `packages/tui/src/ui/pane-resize-handle.tsx`, `packages/tui/src/util/text-boundary.ts`,

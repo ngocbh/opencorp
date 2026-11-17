@@ -1,103 +1,21 @@
 // `opencorp hq` from another machine on a real terminal, in tmux: the approval and learning questions and ssh's
 // password prompts share it, and every key meant for ssh reaches ssh.
 import { afterAll, beforeAll, describe, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import { execFileSync } from "node:child_process"
-import { randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { FakeLLM, LLM_CONFIG } from "@opencorp/office/testing/fake_llm"
 import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
-import { builtApp, type Client, client, pidsNaming, reachScript, removeClient, WRAPPER } from "./remote"
+import { builtApp, type Client, client, pidsNaming, reachScript, removeClient } from "./remote"
+import { type Terminal, TMUX, terminal as tmuxTerminal } from "./tmux"
 
 setDefaultTimeout(30_000)
 
-const TMUX = Bun.which("tmux", { PATH: "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" })
-
-/** `s` as one sh word. */
-const sq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`
-
-/** A tmux server of its own (`-L`), killed and its socket removed when the test finishes, running `opencorp hq --no-open`
- *  (and `args`) for `c` in a 120x40 window with `TERM` `term`; the command's exit status lands in `<root>/exit`. */
+/** `opencorp hq --no-open` (and `args`) for `c` in a terminal of its own. */
 function terminal(
   c: Client,
-  { args = [], term = "xterm", size = [120, 40] }: { args?: string[]; term?: string; size?: [number, number] } = {},
-) {
-  const server = `oc-hq-${randomBytes(4).toString("hex")}`
-  const tmux = (...args: string[]) =>
-    execFileSync(TMUX!, ["-L", server, ...args], {
-      env: { PATH: "/usr/bin:/bin" },
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 10_000,
-    })
-  const exitFile = path.join(c.root, "exit")
-  // tmux 2.7 has no `new-session -e`: the env goes in the command.
-  const env = Object.entries({ ...c.env, TERM: term }).map(([k, v]) => sq(`${k}=${v}`))
-  const command = `env -i ${env.join(" ")} ${sq(WRAPPER)} hq --no-open ${args.map(sq).join(" ")}; echo exit=$? > ${sq(exitFile)}`
-  tmux("-f", "/dev/null", "new-session", "-d", "-s", "hq", "-x", String(size[0]), "-y", String(size[1]), command)
-  // The window stays once the command ends, so a test can still read it.
-  tmux("set-window-option", "-t", "hq", "remain-on-exit", "on")
-  onTestFinished(() => {
-    try {
-      tmux("kill-server")
-    } catch {}
-    // With no TMUX_TMPDIR in its env, the server's socket is here; tmux 2.7 leaves it once the server has gone.
-    fs.rmSync(path.join("/tmp", `tmux-${process.getuid!()}`, server), { force: true })
-  })
-  const screen = () => {
-    try {
-      return tmux("capture-pane", "-p", "-t", "hq")
-    } catch {
-      return ""
-    }
-  }
-  return {
-    screen,
-    /** Waits until the window shows `text`. */
-    async see(text: string, ms = 60_000) {
-      const deadline = performance.now() + ms
-      while (!screen().includes(text)) {
-        if (fs.existsSync(exitFile)) throw new Error(`opencorp hq ended before showing ${text}: ${fs.readFileSync(exitFile, "utf8")}`)
-        if (performance.now() > deadline) throw new Error(`no ${text} within ${ms} ms:\n${screen()}`)
-        await Bun.sleep(100)
-      }
-    },
-    keys: (...keys: string[]) => void tmux("send-keys", "-t", "hq", ...keys),
-    /** Whether the window shows the alternate screen, as the setup screen draws on. */
-    alternate: () => tmux("display-message", "-p", "-t", "hq", "#{alternate_on}").trim() === "1",
-    /** The `opencorp hq` process in the pane (the shell's child), or undefined. */
-    pid: () => {
-      const pane = Number(tmux("display-message", "-p", "-t", "hq", "#{pane_pid}").trim())
-      try {
-        const kids = fs.readFileSync(`/proc/${pane}/task/${pane}/children`, "utf8").trim().split(/\s+/).filter(Boolean)
-        return kids.length > 0 ? Number(kids[0]) : undefined
-      } catch {
-        return undefined
-      }
-    },
-    /** Changes the pane's window size, which sends SIGWINCH to the program (tmux 2.7 has no resize-window). */
-    resize: (cols: number, rows: number) => {
-      const tty = tmux("display-message", "-p", "-t", "hq", "#{pane_tty}").trim()
-      const stty = ["/bin/stty", "/usr/bin/stty"].find((f) => fs.existsSync(f))
-      if (stty) execFileSync(stty, ["-F", tty, "cols", String(cols), "rows", String(rows)], { env: { PATH: "/usr/bin:/bin" }, timeout: 5000 })
-    },
-    /** Types `text` as is, then Enter. */
-    type: (text: string) => {
-      tmux("send-keys", "-t", "hq", "-l", text)
-      tmux("send-keys", "-t", "hq", "Enter")
-    },
-    /** Whether the command has ended. */
-    ended: () => fs.existsSync(exitFile) && fs.readFileSync(exitFile, "utf8").includes("\n"),
-    /** The `exit=N` line, once the command ended. */
-    async exit(ms = 30_000) {
-      const deadline = performance.now() + ms
-      while (!fs.existsSync(exitFile) || !fs.readFileSync(exitFile, "utf8").includes("\n")) {
-        if (performance.now() > deadline) throw new Error(`opencorp hq didn't end within ${ms} ms:\n${screen()}`)
-        await Bun.sleep(100)
-      }
-      return fs.readFileSync(exitFile, "utf8").trim()
-    },
-  }
+  { args = [], ...opts }: { args?: string[]; term?: string; size?: [number, number] } = {},
+): Terminal {
+  return tmuxTerminal(c, ["hq", "--no-open", ...args], opts)
 }
 
 describe.skipIf(!TMUX)("on a real terminal", () => {

@@ -1,10 +1,13 @@
 import type { Instrument } from "@opencorp/protocol"
-import { createMemo, createSignal, Show } from "solid-js"
+import { createMemo, createSignal, onCleanup, Show } from "solid-js"
+import { useOffice } from "../../context/office"
 import { useTheme } from "../../context/theme"
-import { useCommandShortcut } from "../../keymap"
+import { useCommandShortcut, useOpenCorpKeymap } from "../../keymap"
+import { useToast } from "../../ui/toast"
+import { errorMessage } from "../../util/error"
 import { display } from "../../util/printable"
 import { lineTail } from "../../util/text-boundary"
-import { followOutput, TerminalPane } from "./terminal-pane"
+import { followOutput, LIVE, TerminalPane } from "./terminal-pane"
 
 /** How an open instrument shows: floating over the chat, in a split beside it, or full screen in its place. */
 export type InstrumentPlacement = "floating" | "split" | "full"
@@ -32,33 +35,80 @@ const STATUS_LABEL: Record<Instrument["status"], string> = {
   failed: "failed",
 }
 
+/** What the title says of a shell waiting on a password, which only the owner may type. */
+const SECRET_LABEL = "waiting for you: type your password here"
+
 /** The most of a pipes shell's output a view keeps, its newest part. */
 const OUTPUT_CHARS = 64 * 1024
 
 /**
  * An open instrument: a frame whose title names it, says how it is doing and what it runs, and gives the keys that
  * move it on and put it back; inside, a PTY shell's screen, or a pipes shell's output lines. A click in it gives it
- * the keys.
+ * the keys. While `focused`, a live PTY shell takes every key but the leader, so the leader's keys put it back and
+ * move the keys to the chat; any other view takes Ctrl-C, a pipes shell's interrupt, and Esc puts it back. A shell
+ * waiting on a password asks the session's approver, and only them, to type it.
  */
 export function InstrumentView(props: {
   sessionID: string
   instrument: Instrument
   view: InstrumentPlacement
   focused: boolean
+  /** Whether the viewer is the session's approver, the one person whose keys its shells take. */
+  approver: boolean
   onFocus: () => void
+  onFocusRequest?: (focus: (() => void) | undefined) => void
+  onLine?: (typing: boolean) => void
 }) {
   const { theme } = useTheme()
+  const office = useOffice()
+  const keymap = useOpenCorpKeymap()
+  const toast = useToast()
   const cycleKey = useCommandShortcut("session.instrument.cycle")
   const closeKey = useCommandShortcut("session.instrument.close")
+  const chatKey = useCommandShortcut("session.instrument.focus.chat")
+  const shellKey = useCommandShortcut("session.instrument.focus")
   const command = createMemo(() => display(props.instrument.command ?? "").replace(/\s+/g, " ").trim())
+  const live = () => LIVE.includes(props.instrument.status)
+  // A live terminal takes Esc itself.
+  const takesEsc = () => props.instrument.interactive && live()
+  // Only while the view has the keys: with them in the chat, a password typed would go there.
+  const status = () =>
+    props.approver && props.focused && props.instrument.status === "waiting" && props.instrument.waiting === "secret"
+      ? SECRET_LABEL
+      : STATUS_LABEL[props.instrument.status]
   const hints = createMemo(() => {
-    const close = closeKey().replace(/\bescape\b/, "esc")
     const next = nextPlacement(props.view)
     const cycle = cycleKey()
+    if (takesEsc()) {
+      const go = cycle && `${cycle}: ${next ? PLACEMENT_LABEL[next] : "back to the list"}`
+      // Without the keys, how to give them to the shell comes first, so a narrow title keeps it. Full screen leaves no
+      // chat to move them to.
+      if (!props.focused) return [shellKey() && `${shellKey()}: shell`, go].filter(Boolean).join(" · ")
+      return [go, props.view !== "full" && chatKey() && `${chatKey()}: chat`].filter(Boolean).join(" · ")
+    }
+    const close = closeKey().replace(/\bescape\b/, "esc")
     if (!cycle) return `${close}: back to the list`
     if (!next) return `${cycle}, ${close}: back to the list`
     return `${cycle}: ${PLACEMENT_LABEL[next]} · ${close}: back to the list`
   })
+
+  // Ctrl-C interrupts a live pipes shell's command; in a view that doesn't take keys it does nothing, rather than
+  // what it does in the chat.
+  const isCtrlC = keymap.createKeyMatcher("ctrl+c")
+  onCleanup(
+    keymap.intercept(
+      "key",
+      ({ event, consume }) => {
+        if (!props.focused || takesEsc() || !isCtrlC(event)) return
+        consume()
+        if (props.instrument.interactive || !live()) return
+        office.client.sessions
+          .keys(props.sessionID, props.instrument.id, { data: "\x03" })
+          .catch((error) => toast.show({ message: errorMessage(error), variant: "error" }))
+      },
+      { priority: 100 },
+    ),
+  )
 
   return (
     <box
@@ -75,7 +125,7 @@ export function InstrumentView(props: {
           first, then the keys. */}
       <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1} overflow="hidden">
         <text fg={theme.text} wrapMode="none" flexShrink={0}>
-          <b>{display(props.instrument.name)}</b> · {STATUS_LABEL[props.instrument.status]}
+          <b>{display(props.instrument.name)}</b> · {status()}
         </text>
         <Show when={command()}>
           <text fg={theme.text} wrapMode="none" flexShrink={1000} minWidth={0}>
@@ -92,7 +142,13 @@ export function InstrumentView(props: {
         when={props.instrument.interactive}
         fallback={<ShellOutput sessionID={props.sessionID} instrument={props.instrument} />}
       >
-        <TerminalPane sessionID={props.sessionID} instrument={props.instrument} />
+        <TerminalPane
+          sessionID={props.sessionID}
+          instrument={props.instrument}
+          focused={props.focused}
+          onFocusRequest={props.onFocusRequest}
+          onLine={props.onLine}
+        />
       </Show>
     </box>
   )

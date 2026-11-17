@@ -10,6 +10,7 @@ import {
   onCleanup,
   Show,
   Switch,
+  untrack,
   useContext,
 } from "solid-js"
 import path from "node:path"
@@ -57,7 +58,7 @@ import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
-import { OPENCORP_BASE_MODE, useBindings } from "../../keymap"
+import { OPENCORP_BASE_MODE, useBindings, useOpenCorpKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
 import { usePermission } from "../../context/permission"
@@ -74,6 +75,8 @@ import { PaneResizeHandle } from "../../ui/pane-resize-handle"
 import { DialogInstruments, DialogInstrumentView } from "./dialog-instruments"
 import { waitingInstrument } from "./instrument-line"
 import { InstrumentView, nextPlacement, PLACEMENTS, type InstrumentPlacement } from "./instrument-view"
+import { endsLine } from "./keys"
+import { LIVE } from "./terminal-pane"
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
@@ -270,10 +273,11 @@ export function Session() {
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
 
-  // This device's choice of how an instrument opens; the open one and how it shows; and whether it has the keys.
+  // This device's choice of how an instrument opens; the open one, how it shows and whether it opened itself; and
+  // whether it has the keys.
   const [instrumentView, setInstrumentView] = kv.signal<InstrumentPlacement>("instrument_view", "floating")
   const defaultPlacement = () => (PLACEMENTS.includes(instrumentView()) ? instrumentView() : "floating")
-  const [opened, setOpened] = createSignal<{ id: string; view: InstrumentPlacement } | null>(null)
+  const [opened, setOpened] = createSignal<{ id: string; view: InstrumentPlacement; itself?: true } | null>(null)
   const [instrumentFocused, setInstrumentFocused] = createSignal(false)
   const split = () => opened()?.view === "split"
   // The chat's own keys, which the open instrument mutes while it has the keys, as the provider mutes the chat's view.
@@ -339,6 +343,40 @@ export function Session() {
     const id = opened()?.id
     if (id && !instruments().some((i) => i.id === id)) closeInstrument()
   })
+  // The session's approver, the one person whose keys its shells take: who opened it, else the CEO, the company's
+  // human at the top of the org chart; with more than one there, it isn't known. Whether that is who this TUI acts as.
+  const approver = () => {
+    const opener = session()?.opened_by
+    if (opener) return opener
+    const top = office.state.people.filter((p) => p.kind === "human" && !p.manager)
+    return top.length === 1 ? top[0]!.handle : undefined
+  }
+  const approving = () => !!office.person && office.person === approver()
+  // Whether the owner has typed text into the open shell since their last Enter, Ctrl-C or Ctrl-D.
+  const [midLine, setMidLine] = createSignal(false)
+  // A PTY shell waiting for the approver's password opens itself when none is open: with the keys, in the default view,
+  // or, while the prompt holds a draft, beside it with the draft keeping them. It goes back to the list once the wait
+  // ends and the owner has finished the line they were typing into it, a password's rest that must not reach the
+  // chat, unless the owner has since moved it on.
+  const secretWait = (i: Instrument) => i.interactive && i.status === "waiting" && i.waiting === "secret"
+  createEffect(
+    on(
+      () => (approving() ? instruments().find(secretWait)?.id : undefined),
+      (id) => {
+        if (!id || untrack(opened)) return
+        if (untrack(() => promptRef.current?.current.input)) return setOpened({ id, view: "split", itself: true })
+        setOpened({ id, view: defaultPlacement(), itself: true })
+        focusInstrument()
+      },
+    ),
+  )
+  createEffect(() => {
+    const current = opened()
+    if (!current?.itself) return
+    const shell = instruments().find((i) => i.id === current.id)
+    if (shell && (secretWait(shell) || midLine())) return
+    untrack(closeInstrument)
+  })
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
@@ -401,6 +439,8 @@ export function Session() {
 
   let chatNode: BoxRenderable | undefined
   let viewNode: BoxRenderable | undefined
+  // What gives the open shell's terminal the keys again, while it has one.
+  let focusView: (() => void) | undefined
   // What had the keys in the chat when the open instrument took them, given back after.
   let chatFocus: Renderable | null = null
   function focusInstrument() {
@@ -417,37 +457,80 @@ export function Session() {
     const current = renderer.currentFocusedRenderable
     if (current && within(current, viewNode)) current.blur()
     setInstrumentFocused(false)
+    if (!dropping()) giveChatFocus()
+  }
+  /** Gives back what had the keys in the chat when the open instrument took them. */
+  function giveChatFocus() {
     const saved = chatFocus
     chatFocus = null
     if (saved && !saved.isDestroyed && within(saved, chatNode)) saved.focus()
   }
+  // A view that goes while the owner is mid-line in its shell, however it goes, leaves the rest of that line (a
+  // password's, perhaps) going nowhere: the keys are dropped until its Enter, Ctrl-C or Ctrl-D, and only then does
+  // the chat get them.
+  const [dropping, setDropping] = createSignal(false)
+  const keymap = useOpenCorpKeymap()
+  onCleanup(
+    keymap.intercept(
+      "key",
+      ({ event, consume }) => {
+        if (!dropping()) return
+        consume()
+        if (!endsLine(event)) return
+        setDropping(false)
+        giveChatFocus()
+      },
+      { priority: 200 },
+    ),
+  )
+  /** Starts dropping the owner's keys when the open view goes while they are mid-line in its shell. */
+  function leaving() {
+    if (untrack(midLine)) setDropping(true)
+  }
   // Focus that lands in the open instrument gives it the keys. While it has them, focus that lands in the chat (a
-  // dialog handing it back to the prompt) is dropped.
+  // dialog handing it back to the prompt) goes back to the instrument.
   const onFocused = () => {
     const current = renderer.currentFocusedRenderable
     if (!current || !opened()) return
     if (within(current, viewNode)) focusInstrument()
-    else if (instrumentFocused() && within(current, chatNode)) current.blur()
+    else if (instrumentFocused() && within(current, chatNode)) {
+      current.blur()
+      if (dialog.stack.length === 0) focusView?.()
+    }
   }
   renderer.on(CliRenderEvents.FOCUSED_RENDERABLE, onFocused)
   onCleanup(() => renderer.off(CliRenderEvents.FOCUSED_RENDERABLE, onFocused))
 
-  /** Opens instrument `id` in `view`, the setting's unless given, with the keys. */
-  function showInstrument(id: string, view = defaultPlacement()) {
+  /** Opens instrument `id` in `view`, the setting's unless given, with the keys unless `keys` is false. */
+  function showInstrument(id: string, view = defaultPlacement(), keys = true) {
+    if (opened() && opened()!.id !== id) leaving()
     setOpened({ id, view })
-    focusInstrument()
+    if (keys) focusInstrument()
+    else focusChat()
   }
-  /** Puts the open instrument back in the list; the chat gets the keys. */
+  /** Puts the open instrument back in the list; the chat gets the keys, once the owner has ended a line they were
+   *  typing into it. */
   function closeInstrument() {
     if (!opened()) return
+    leaving()
     setOpened(null)
     focusChat()
   }
-  /** Opens the shell waiting on the owner, else the one that changed last; with one open, moves it to its next view,
-   *  and after full screen back to the list. */
+  /** The live shell the open approval card's terminal command would run in, if it names one. */
+  const cardShell = createMemo(() => {
+    const held = approval() ? question()?.approval : undefined
+    if (!held || (held.tool !== "terminal_run" && held.tool !== "terminal_type")) return undefined
+    const name = held.args?.shell
+    return instruments().find((i) => i.name === name && LIVE.includes(i.status))
+  })
+  /** Opens the shell an open approval card would run in, beside the card, which keeps the keys; else the shell
+   *  waiting on the owner, else the one that changed last. With one open, moves it to its next view, and after full
+   *  screen back to the list. */
   function cycleInstrument() {
     const current = opened()
     if (!current) {
+      const beside = cardShell()
+      if (beside) return showInstrument(beside.id, "split", false)
       const list = instruments()
       const next =
         waitingInstrument(list) ??
@@ -457,8 +540,9 @@ export function Session() {
     }
     const view = nextPlacement(current.view)
     if (!view) return closeInstrument()
-    setOpened({ ...current, view })
-    focusInstrument()
+    setOpened({ id: current.id, view })
+    // Full screen leaves no chat to keep the keys.
+    if (view === "full" || instrumentFocused()) focusInstrument()
   }
 
   /** The id of the next or previous message with text, relative to the scroll position. */
@@ -801,8 +885,30 @@ export function Session() {
         enabled: opened() !== null && instrumentFocused() && dialog.stack.length === 0,
         run: closeInstrument,
       },
+      {
+        name: "session.instrument.focus.chat",
+        title: "Give the chat the keys, the open instrument staying open",
+        category: "Session",
+        hidden: true,
+        // Full screen leaves no chat to type in.
+        enabled: opened() !== null && opened()?.view !== "full" && instrumentFocused() && dialog.stack.length === 0,
+        run: focusChat,
+      },
+      {
+        name: "session.instrument.focus",
+        title: "Give the open instrument the keys",
+        category: "Session",
+        hidden: true,
+        enabled: opened() !== null && !instrumentFocused() && dialog.stack.length === 0,
+        run: focusInstrument,
+      },
     ],
-    bindings: tuiConfig.keybinds.gather("session.instrument", ["session.instrument.cycle", "session.instrument.close"]),
+    bindings: tuiConfig.keybinds.gather("session.instrument", [
+      "session.instrument.cycle",
+      "session.instrument.close",
+      "session.instrument.focus.chat",
+      "session.instrument.focus",
+    ]),
   }))
 
   useBindings(() => ({
@@ -929,6 +1035,11 @@ export function Session() {
                       )}
                     </For>
                   </scrollbox>
+                  <Show when={dropping()}>
+                    <text fg={theme.warning} flexShrink={0} wrapMode="word">
+                      The shell closed: keys are dropped until Enter
+                    </text>
+                  </Show>
                   {/* An approval card may shrink to what the chat leaves it: its body scrolls in what remains. */}
                   <box flexShrink={approval() ? 1 : 0}>
                     <Show
@@ -1010,7 +1121,6 @@ export function Session() {
               )}
             </Show>
           </InteractivityProvider>
-          <Toast />
           {/* A click in the chat beside a split gives it the keys; over a floating view it does nothing. */}
           <Show when={opened() && instrumentFocused()}>
             <box
@@ -1056,8 +1166,12 @@ export function Session() {
                     sessionID={route.sessionID}
                     instrument={instrument()}
                     view={opened()?.view ?? "floating"}
-                    focused={instrumentFocused()}
+                    // A dialog over it has the keys while it shows.
+                    focused={instrumentFocused() && dialog.stack.length === 0}
+                    approver={approving()}
                     onFocus={focusInstrument}
+                    onFocusRequest={(focus) => (focusView = focus)}
+                    onLine={setMidLine}
                   />
                 )}
               </Show>
@@ -1087,6 +1201,11 @@ export function Session() {
             </Match>
           </Switch>
         </Show>
+        {/* Beside the open instrument, not in the chat under it, so it shows over a floating view; in a column the
+            width of the screen, as the chat is, so it lays out as it did there. It has no height: clicks pass by. */}
+        <box position="absolute" left={0} top={0} width="100%" zIndex={2500}>
+          <Toast />
+        </box>
       </box>
     </context.Provider>
   )
