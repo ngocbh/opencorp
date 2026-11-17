@@ -9,7 +9,7 @@ import { EmptyBorder } from "../../ui/border"
 import { useToast } from "../../ui/toast"
 import { OfficeError, OfficeUnavailable, isNotImplemented, statusLabel } from "@opencorp/client"
 import { errorMessage } from "../../util/error"
-import { interruptible } from "../../util/status"
+import { interruptible, LIVE } from "../../util/status"
 import { costCapArgument, dollars, useCostCap } from "../../component/cost-cap"
 import { personLabel } from "../../util/transcript"
 import { leaveBindings } from "./leave"
@@ -19,9 +19,6 @@ const SIDE_MODE = "side"
 
 /** What the side chat refuses, in any case: only the office ends a side session, when its question closes. */
 const SIDE_EXIT = new Set(["/end", "/exit", "/quit"])
-
-/** The statuses of a session with a live run. */
-const LIVE: Session["status"][] = ["starting", "idle", "busy", "waiting", "ending"]
 
 /** The statuses a side session takes prompts in; any other goes through the side route, which waits for an ending
  *  one's end and starts it again. */

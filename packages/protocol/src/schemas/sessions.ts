@@ -86,6 +86,8 @@ export const Session = z.strictObject({
   parent_session_id: Ulid.nullable().default(null),
   /** Finished replies: the next fresh run's `turns` input; `0` means no reply has finished yet. */
   turns: z.int().min(0).default(0),
+  /** What the agent may do without its approver; new and older sessions are in auto. Only the approver (the
+   *  opener, else the CEO) switches it, and a Codex session's stays auto until Codex follows it. */
   mode: SessionMode.default("auto"),
   created_at: Timestamp,
   updated_at: Timestamp,

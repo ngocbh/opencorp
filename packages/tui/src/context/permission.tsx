@@ -1,6 +1,7 @@
 import { SessionMode, type Session } from "@opencorp/protocol"
 import { createStore } from "solid-js/store"
 import { useOffice } from "./office"
+import { LIVE } from "../util/status"
 import { createSimpleContext } from "./helper"
 
 /** The next of `SessionMode.options`: auto → default → ask → dontAsk → auto. */
@@ -27,13 +28,16 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
       return reply && (!event || reply.updated_at > event.updated_at) ? reply : event
     }
 
-    /** The session's mode, or null for a Codex session (its mode isn't switchable until it follows one). */
+    /** The session's mode while it can be switched, else null: a Codex session (until Codex follows the mode) or one
+     *  with no live run. */
     function mode(sessionID: string): SessionMode | null {
       const session = latest(sessionID)
-      if (!session || session.harness === "codex") return null
+      if (!session || session.harness === "codex" || !LIVE.includes(session.status)) return null
       return session.mode ?? "auto"
     }
 
+    /** Asks the office to switch the session to `next`; resolves with the session it answers, or rejects with its
+     *  refusal (403 for anyone but the approver, 409 once the run has ended). */
     async function set(sessionID: string, next: SessionMode): Promise<Session> {
       const session = await office.client.sessions.setMode(sessionID, { mode: next })
       setReplies(sessionID, session)

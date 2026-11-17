@@ -89,9 +89,6 @@ const sessionGlobalBindingCommands = [
 
 const sessionGlobalUnfocusedBindingCommands = ["session.first", "session.last"] as const
 
-/** The statuses whose chat the office switches the mode of: those with a live run. */
-const LIVE = new Set<string>(["starting", "idle", "busy", "waiting", "ending"])
-
 const context = createContext<{
   width: number
   sessionID: string
@@ -147,9 +144,10 @@ export function Session() {
   const question = createMemo(() => cards()[0])
   // A Codex session shows every open card above a prompt that stays; the first card or the prompt has the keys.
   const codex = createMemo(() => session()?.harness === "codex")
+  const permission = usePermission()
   // Whether the chat's mode can be switched here. Never while a card is open: the card hides the prompt and its mode
   // label, and a switch to dontAsk would answer an approval card.
-  const switchable = () => !!session() && !codex() && LIVE.has(session()!.status) && !question()
+  const switchable = () => permission.mode(route.sessionID) !== null && !question()
   const [focus, setFocus] = createSignal<"card" | "prompt">("card")
   const cardFocused = createMemo(() => codex() && cards().length > 0 && focus() === "card")
   // Cards opening when none were open take the keys, unless the prompt holds a draft: keys typed for the prompt must
@@ -266,7 +264,6 @@ export function Session() {
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
   const toast = useToast()
   const costCap = useCostCap()
-  const permission = usePermission()
 
   createEffect(
     on(
@@ -373,7 +370,6 @@ export function Session() {
       run: () => costCap.ask(route.sessionID),
     },
     {
-      // Upstream's `permission.mode` palette command, now the office's four modes.
       title: "Switch the chat's mode…",
       value: "session.mode",
       category: "Session",

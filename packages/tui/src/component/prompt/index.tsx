@@ -133,7 +133,7 @@ export function Prompt(props: PromptProps) {
   const peopleShortcut = useCommandShortcut("person.list")
   const modeShortcut = useCommandShortcut("session.mode.cycle")
   const permission = usePermission()
-  // Null on home and for a Codex session, which shows no mode.
+  // Null on home, for a Codex session and once the run has ended: no label or hint where Shift+Tab can't switch.
   const mode = createMemo(() => (props.sessionID ? permission.mode(props.sessionID) : null))
   const paletteShortcut = useCommandShortcut("command.palette.show")
   const renderer = useRenderer()

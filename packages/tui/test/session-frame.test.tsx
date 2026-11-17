@@ -102,6 +102,25 @@ test("a Codex session shows no mode and no mode hint, Shift+Tab doesn't switch i
   }
 })
 
+test("an ended chat shows no mode and no mode hint, and Shift+Tab doesn't switch it", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  office.updateSession(s.id, { status: "ended" })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    let f = await app.until((f) => f.includes("@minh · ended") && f.includes("@minh · Software engineer"))
+    expect(f).not.toContain("shift+tab mode")
+    expect(f).not.toContain("@minh auto")
+    app.input.pressTab({ shift: true })
+    await Bun.sleep(100)
+    f = await app.until((f) => f.includes("@minh · Software engineer"))
+    expect(switched(office, s.id)).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("with a question card open, Shift+Tab changes nothing", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]

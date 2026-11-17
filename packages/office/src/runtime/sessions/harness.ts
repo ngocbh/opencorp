@@ -57,8 +57,9 @@ export interface SessionHarness extends CardActor {
   setCostCap(sessionId: string, usd: number): Promise<SessionRecord>
   /** Switches the session's connection and model for its next turn. */
   setModel(sessionId: string, connection: string, model: string): Promise<SessionRecord>
-  /** Switches the session's mode as `by`, who must be its approver; throws `HarnessError` 403 forbidden, 404, 409
-   *  not_live. */
+  /** Switches the session's mode as `by`, who must be its approver (`approverOf`); throws `HarnessError` 404
+   *  not_found, 409 not_live for a session whose run has ended, 403 forbidden for anyone but the approver, and 422
+   *  not_supported for a Codex session, which doesn't follow the mode yet. */
   setMode(sessionId: string, mode: SessionRecord["mode"], options?: { by?: string | null }): Promise<SessionRecord>
   /** What a client reads of the session before following its live events. */
   messages(sessionId: string): Message[] | Promise<Message[]>
