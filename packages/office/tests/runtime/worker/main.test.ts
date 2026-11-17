@@ -221,9 +221,38 @@ test("a frame other than start is an error", async () => {
 test("a check job runs the check the worker was given", async () => {
   const job = makeJob(base(), "flows/echo.yaml", { kind: "check" })
   const rec = new Recorder()
-  const worker = await inProcessWorker(job, rec, { jobHandlers: { check: async (j) => "checked " + j.kind } })
+  const worker = await inProcessWorker(job, rec, {
+    jobHandlers: { ...NO_CHECKS, check: async (j) => "checked " + j.kind },
+  })
   await worker.wait()
   expect(rec.outcome).toEqual({ type: "result", problem: "checked check" })
+})
+
+test("a classify job runs its handler and sends only its result frame", async () => {
+  const job = makeJob(base(), "classify_command.yaml", { kind: "classify", inputs: { command: "make" } })
+  const rec = new Recorder()
+  const seen: [string, unknown, boolean][] = []
+  const worker = await inProcessWorker(job, rec, {
+    jobHandlers: {
+      ...NO_CHECKS,
+      classify: async (j, _env, signal) => {
+        seen.push([j.kind, j.inputs.command, signal.aborted])
+        const usage = { input_tokens: 3, output_tokens: 4 }
+        return { output: { verdict: "run", reason: "builds" }, model: "m", usage }
+      },
+    },
+  })
+  expect(await worker.wait()).toBe(EXIT_OK)
+  expect(seen).toEqual([["classify", "make", false]])
+  expect(rec.order).toEqual(["result"])
+  expect(rec.frames).toEqual([])
+  expect(rec.streams).toEqual([])
+  expect(rec.outcome).toEqual({
+    type: "result",
+    output: { verdict: "run", reason: "builds" },
+    model: "m",
+    usage: { input_tokens: 3, output_tokens: 4 },
+  })
 })
 
 test("a waiting run ends normally with its status", async () => {

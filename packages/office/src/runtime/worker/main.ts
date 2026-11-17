@@ -422,16 +422,24 @@ function nextOf(previous: Job, job: Job): boolean {
   )
 }
 
-/** The jobs a worker runs outside a yian run, by kind, passed in by the office's entry (`main.ts`) so this module
- *  loads none of them. Each resolves to the job's problem, or null when there is none. */
+/** The jobs a worker runs outside a yian run of its own, by kind, passed in by the office's entry (`main.ts`) so this
+ *  module loads none of them. */
 export interface JobHandlers {
-  /** A `check` job: the one-reply model check. */
+  /** A `check` job: the one-reply model check; the job's problem, or null when there is none. */
   check(job: Job, env: WorkerEnv, signal: AbortSignal): Promise<string | null>
+  /** A `classify` job: Auto's check on one command; the flow's raw output, the model that answered and the calls'
+   *  token usage. Rejects when the check couldn't judge. */
+  classify(
+    job: Job,
+    env: WorkerEnv,
+    signal: AbortSignal,
+  ): Promise<{ output: unknown; model: string | null; usage: { input_tokens: number; output_tokens: number } | null }>
 }
 
 /**
  * Runs the jobs the office sends on `channel`; returns the exit code. A `check` job runs `handlers.check` and sends
- * only its result frame, `{type: "result", problem}`, or its `error` frame when a `stop` frame ended it. A seeded chat
+ * only its result frame, `{type: "result", problem}`, or its `error` frame when a `stop` frame ended it; a `classify`
+ * job runs `handlers.classify` the same way, its result frame `{type: "result", output, model, usage}`. A seeded chat
  * job whose replaced run's history can't be read sends `{type: "event", name: "history_not_seeded", data:
  * {error_type}}` before its run starts.
  *
@@ -546,10 +554,13 @@ async function serveJob(
       throw new TypeError("a kept worker runs only its run's next advance")
     }
     deliveries.pushFront(job.deliver)
-    if (job.kind === "check") {
-      // A check job has no run to deliver to.
+    if (job.kind === "check" || job.kind === "classify") {
+      // A check or classify job has no run to deliver to.
       deliveries.refuse()
-      last = { type: "result", problem: await handlers.check(job, env, stopper.signal) }
+      last =
+        job.kind === "check"
+          ? { type: "result", problem: await handlers.check(job, env, stopper.signal) }
+          : { type: "result", ...(await handlers.classify(job, env, stopper.signal)) }
     } else {
       last = {
         type: "result",
@@ -792,8 +803,8 @@ async function readFrames(
         if (!job.finished) job.stopper.abort(new Error(STOP_REASON))
         else state.mail.put(frame)
       } else if (frame.type === "follow") {
-        // A no-op before the run's first frame and for a check job; after the run call it sends one last snapshot and
-        // nothing after it.
+        // A no-op before the run's first frame and for a check or classify job; after the run call it sends one last
+        // snapshot and nothing after it.
         if (!state.parked) job.follow.again()
       } else if (frame.type === "done" || frame.type === "start") {
         state.mail.put(frame)
