@@ -118,9 +118,10 @@ function declaresSystemPaths(doc: unknown): boolean {
   return isRecord(system) && Object.hasOwn(system, "paths")
 }
 
-// A tool module ref as yian reads one (its `moduleRefParts`): a path with no whitespace or colon ending in `.ts`,
-// `.js` or `.mjs`, then an optional `:<export>`, once an `@<version>` in the last path segment is set aside.
-const MODULE_REF = /^[^\s:]+\.(?:ts|js|mjs)(?::.*)?$/
+// A tool module ref as yian reads one: a path with no whitespace or colon ending in `.ts`, `.js` or `.mjs`, then an
+// optional `:<export>`, once an `@<version>` in the last path segment is set aside. It mirrors yian's
+// `moduleRefParts` (`src/compose/helpers/uses.ts`), which yian doesn't export, so check it on each yian bump.
+const MODULE_REF = /^([^\s:]+\.(?:ts|js|mjs))(?::.*)?$/
 
 // The tag of a value `readFlow` read as `!include <path>` or `!include(T) <path>`, as yian's `isIncludeTag` takes it.
 const INCLUDE_TAG = /^!include(?:\(.*\))?$/
@@ -130,7 +131,7 @@ const INCLUDE_TAG = /^!include(?:\(.*\))?$/
  * (`quote: ./tools.ts:quote`), or whose ref an `!include` reads from a file the office doesn't look at.
  *
  * A tool module's tools run in the worker with no permission check, so a session's mode couldn't cover their
- * calls. Company flows use none until yian lets a host hold any tool call before it runs (ngocbh/yian#1757).
+ * calls. Company flows use none until yian lets a host gate a tool call before it runs.
  *
  * @throws {RangeError} Naming the flow, as `shown`, and the alias.
  */
@@ -141,16 +142,18 @@ function refuseToolModules(doc: unknown, shown: string): void {
     if (typeof ref !== "string") continue // yian refuses a ref that isn't text
     if (INCLUDE_TAG.test(ref.split(/\s/, 1)[0]!)) {
       throw new RangeError(
-        `${shown}: uses: ${alias} is read with !include, so the office can't tell whether it is a tool module;`
-          + " write its ref in the flow",
+        `${shown} reads the uses: ref of \`${alias}\` with !include, so the office can't check that it isn't a tool`
+          + " module; write the ref in the flow",
       )
     }
     const text = ref.trim()
     const at = text.lastIndexOf("@")
-    if (MODULE_REF.test(at > text.lastIndexOf("/") ? text.slice(0, at) : text)) {
+    const module = MODULE_REF.exec(at > text.lastIndexOf("/") ? text.slice(0, at) : text)
+    if (module !== null) {
       throw new RangeError(
-        `${shown}: uses: ${alias} is a tool module; company flows can't use tool modules until the office can ask`
-          + " before their calls",
+        `${shown} uses tool module \`${alias}\` (${module[1]}); company flows can't grant tool modules yet, because`
+          + " their calls would run without the office's permission check; use a YAML def library or a host tool"
+          + " group instead",
       )
     }
   }
@@ -248,7 +251,10 @@ async function load(
     // error is never taken as "no system.paths" or "no tool module". yian reports a real syntax error with its
     // location.
     await loadFlow(text, options)
-    throw new RangeError(`${shown}: system.paths can't be checked in this flow; simplify its YAML`)
+    throw new RangeError(
+      `${shown}: the office can't read this flow's YAML to check it for system.paths and tool modules;`
+        + " simplify its YAML",
+    )
   }
   const flow = await loadFlow(text, options)
   loaded.set(resolved, flow)

@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
-import { LoadError } from "@ngocbh/yian"
+import { LoadError, loadFlow } from "@ngocbh/yian"
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { loadConfined, MAX_FLOW_FILE } from "../../src/company/flows.ts"
 import { MAX_FILE } from "../../src/company/source.ts"
@@ -59,7 +59,7 @@ test("a flow named with two leading dots inside the repo loads", async () => {
 })
 
 test("a flow whose yaml the office cant read is refused even if yian loads it", async () => {
-  // The office's reader refuses merge cycles that yian accepts, so system.paths can't be checked.
+  // The office's reader refuses merge cycles that yian accepts, so system.paths and tool modules can't be checked.
   const flows = [
     CHAT + "system:\n  paths: [lib]\nx-m: &m {<<: *m}\n",
     CHAT + "system: &s {<<: *s, paths: [lib]}\n",
@@ -68,7 +68,10 @@ test("a flow whose yaml the office cant read is refused even if yian loads it", 
     const root = makeCompany({ "shared/flows/chat.yaml": flow })
     const load = loadConfined(root, path.join(root, "shared/flows/chat.yaml"))
     await expect(load).rejects.toBeInstanceOf(RangeError)
-    await expect(load).rejects.toThrow(/system.paths can't be checked/)
+    await expect(load).rejects.toThrow(
+      "shared/flows/chat.yaml: the office can't read this flow's YAML to check it for system.paths and tool modules;"
+        + " simplify its YAML",
+    )
   }
 })
 
@@ -78,27 +81,58 @@ function grantingFlow(id: string, alias: string, ref: string): string {
     + `    tools: [${alias}]\n    output: !str\n    prompt: hi\noutput: \${reply.output}\n`
 }
 
-/** Tool modules a flow beside them could use; loading never imports them. */
-const MODULES = {
-  "shared/flows/crm.ts": "export function lookup(input: { name: string }): string {\n  return input.name\n}\n",
-  "shared/flows/tools.mjs": "export function quote() {\n  return \"q\"\n}\n",
-}
+/** A tool module's text; loading never imports it. */
+const MODULE = "export function quote() {\n  return \"q\"\n}\n"
 
-/** The refusal of a company flow `flow` whose `uses:` alias `alias` names a tool module. */
-function moduleRefused(flow: string, alias: string): string {
-  return `${flow}: uses: ${alias} is a tool module; company flows can't use tool modules until the office can ask`
-    + " before their calls"
+/** Tool modules a flow beside them could use. */
+const MODULES = { "shared/flows/crm.ts": MODULE, "shared/flows/tools.mjs": MODULE }
+
+/** The refusal of a company flow `flow` whose `uses:` alias `alias` names the tool module `file`. */
+function moduleRefused(flow: string, alias: string, file: string): string {
+  return `${flow} uses tool module \`${alias}\` (${file}); company flows can't grant tool modules yet, because their`
+    + " calls would run without the office's permission check; use a YAML def library or a host tool group instead"
 }
 
 test("a company flow that uses a tool module is refused, whole or one export", async () => {
-  for (const [alias, ref] of [["crm", "./crm.ts"], ["quote", "./tools.mjs:quote"]] as const) {
-    const root = makeCompany({ "shared/flows/chat.yaml": grantingFlow("chat", alias, ref), ...MODULES })
+  for (const [alias, ref, file] of [["crm", "./crm.ts", "./crm.ts"], ["quote", "./tools.mjs:quote", "./tools.mjs"]]) {
+    const root = makeCompany({ "shared/flows/chat.yaml": grantingFlow("chat", alias!, ref!), ...MODULES })
     const load = loadConfined(root, path.join(root, "shared/flows/chat.yaml"))
     await expect(load).rejects.toBeInstanceOf(RangeError)
-    await expect(load).rejects.toThrow(moduleRefused("shared/flows/chat.yaml", alias))
+    await expect(load).rejects.toThrow(moduleRefused("shared/flows/chat.yaml", alias!, file!))
   }
   const root = makeCompany({ "shared/flows/chat.yaml": parentFlow("echo"), "shared/flows/echo.yaml": CHILD })
   expect((await loadConfined(root, path.join(root, "shared/flows/chat.yaml"))).name).toBe("chat")
+})
+
+test("a company flow that grants a yaml def library still loads", async () => {
+  const billing = "id: billing\nname: billing\ndefs:\n  quote:\n    description: Price an order.\n    input:\n"
+    + "      qty: !int\n    kind: code\n    code: 'return inputs.qty * 2.5'\n    output: !float\n"
+  const root = makeCompany({
+    "shared/flows/chat.yaml": grantingFlow("chat", "billing", "billing"),
+    "shared/flows/billing.yaml": billing,
+  })
+  expect((await loadConfined(root, path.join(root, "shared/flows/chat.yaml"))).name).toBe("chat")
+})
+
+test("each extension yian reads as a tool module is refused, and yian reads no other as one", async () => {
+  // yian's own loader says which refs are tool modules. An extension it starts to read as one fails the first
+  // check; added to `modules`, it must then be refused too.
+  const modules = ["ts", "js", "mjs"]
+  for (const ext of [...modules, "mts", "cts", "cjs", "tsx", "jsx", "json"]) {
+    const flow = grantingFlow("chat", "tool", `./tool.${ext}`)
+    const dir = tempDir()
+    fs.writeFileSync(path.join(dir, `tool.${ext}`), MODULE)
+    // With no child resolver, yian loads a tool module from disk but can't resolve a flow.
+    const error = await loadFlow(flow, { baseDir: dir }).then(() => null, (e: Error) => e)
+    expect([ext, error === null]).toEqual([ext, modules.includes(ext)])
+    if (error !== null) {
+      expect(error.message).toMatch(/needs a search path or child_resolver/)
+      continue
+    }
+    const root = makeCompany({ "shared/flows/chat.yaml": flow, [`shared/flows/tool.${ext}`]: MODULE })
+    await expect(loadConfined(root, path.join(root, "shared/flows/chat.yaml")))
+      .rejects.toThrow(moduleRefused("shared/flows/chat.yaml", "tool", `./tool.${ext}`))
+  }
 })
 
 test("a child flow that uses a tool module is refused, named repo relative", async () => {
@@ -108,7 +142,7 @@ test("a child flow that uses a tool module is refused, named repo relative", asy
     ...MODULES,
   })
   const error = await loadConfined(root, path.join(root, "shared/flows/chat.yaml")).catch((e: Error) => e)
-  expect((error as Error).message).toContain(moduleRefused("shared/flows/echo.yaml", "crm"))
+  expect((error as Error).message).toContain(moduleRefused("shared/flows/echo.yaml", "crm", "./crm.ts"))
   expect((error as Error).message).not.toContain(fs.realpathSync(root))
 })
 
@@ -121,8 +155,8 @@ test("a uses: ref read with include is refused, since the file could name a tool
   const load = loadConfined(root, path.join(root, "shared/flows/chat.yaml"))
   await expect(load).rejects.toBeInstanceOf(RangeError)
   await expect(load).rejects.toThrow(
-    "shared/flows/chat.yaml: uses: crm is read with !include, so the office can't tell whether it is a tool module;"
-      + " write its ref in the flow",
+    "shared/flows/chat.yaml reads the uses: ref of `crm` with !include, so the office can't check that it isn't a"
+      + " tool module; write the ref in the flow",
   )
 })
 

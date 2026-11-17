@@ -524,8 +524,9 @@ test("a company flow that uses a tool module is a lint error naming it", async (
   expect(rest).toEqual([])
   expect(issue!.path).toBe("people/minh/person.yaml")
   expect(issue!.message).toBe(
-    "../../shared/flows/chat.yaml: RangeError: shared/flows/chat.yaml: uses: crm is a tool module; company flows"
-      + " can't use tool modules until the office can ask before their calls",
+    "../../shared/flows/chat.yaml: RangeError: shared/flows/chat.yaml uses tool module `crm` (./crm.ts); company"
+      + " flows can't grant tool modules yet, because their calls would run without the office's permission check;"
+      + " use a YAML def library or a host tool group instead",
   )
 })
 
