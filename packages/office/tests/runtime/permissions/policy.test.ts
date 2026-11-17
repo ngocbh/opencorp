@@ -243,6 +243,26 @@ test("sudo and the like ask in every mode, whatever allows them, and never go to
   }
 })
 
+test("a local command for ssh asks in every mode, whatever allows it, and never goes to Auto's check", () => {
+  const local = "it runs a local command for ssh"
+  for (const mode of MODES) {
+    const held = (reason: string): Decision =>
+      mode === "dontAsk" ? { verdict: "deny", reason: DONT + reason } : { verdict: "ask", reason, rules: [] }
+    for (const line of [
+      "ssh -o ProxyCommand=x h", "ssh -o LocalCommand=x -o PermitLocalCommand=yes h", "ssh -o KnownHostsCommand=x h",
+      "ssh -F cfg h", "scp -S x a h:b", "rsync -e 'ssh -i k' a h:b", "rsync --rsh=x a h:b", "GIT_SSH_COMMAND=x git fetch",
+      "GIT_SSH=x git fetch", "env GIT_SSH=x git fetch", "git -c core.sshCommand=x fetch",
+    ])
+      table(mode, [[cmd(line), [allow(line), allow("ssh *"), allow("git *")], S, held(local)]])
+    table(mode, [[cmd("ssh h ssh -o ProxyCommand=x g"), [], S, held(`on h: ${local}`)]])
+  }
+  table("auto", [
+    [cmd("ssh -J login u@n squeue -u u"), [], S, READ_ONLY],
+    [cmd("ssh -o ProxyJump=j h ls"), [], S, { verdict: "check", rules: ["ssh -o ProxyJump=j h ls *"] }],
+  ])
+  table("default", [[cmd("ssh -o ProxyJump=j h ls"), [allow("ssh *")], S, BY_RULE]])
+})
+
 test("decide refuses a line over 1000 bytes before reading it", () => {
   for (const mode of MODES)
     table(mode, [
@@ -340,8 +360,6 @@ test("a wildcard allow rule never covers a risky part; an exact one does", () =>
     [cmd("ls > out"), [allow("ls >out")], W, BY_RULE],
     [cmd("ls > other"), [allow("ls >out")], W,
       { verdict: "ask", reason: "Default mode asks: it writes or overwrites files", rules: ["ls >other"] }],
-    [cmd("GIT_SSH_COMMAND=x git fetch"), [allow("git fetch")], W,
-      { verdict: "ask", reason: "Default mode asks: it runs a local command for ssh", rules: ["GIT_SSH_COMMAND=x git fetch"] }],
   ])
 })
 
@@ -359,8 +377,6 @@ test("a host-key option is decided by the mode and rules like any other", () => 
   table("default", [
     [cmd(line), [], S, { verdict: "ask", reason: "Default mode asks before what it doesn't know: ssh", rules: [line] }],
     [cmd(line), [allow("ssh *")], S, BY_RULE],
-    [cmd("ssh -F cfg h"), [allow("ssh *")], S,
-      { verdict: "ask", reason: "Default mode asks: it runs a local command for ssh", rules: ["ssh -F cfg h"] }],
   ])
   table("auto", [[cmd(line), [], S, { verdict: "check", rules: [line] }]])
   for (const mode of ["auto", "default", "dontAsk"] as const) table(mode, [[input("yes"), [], S, ANSWER], [input("no"), [], S, ANSWER]])

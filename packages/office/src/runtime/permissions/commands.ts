@@ -8,7 +8,8 @@
  * feature branch (`auto`, `dontAsk`); or, inside the workspace sandbox, by a file operation on paths inside the
  * workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it: inside
  * substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. The reader asks before a
- * command that names a credential path it can see, and Auto's check never judges a push or `sudo`.
+ * command that names a credential path it can see, and Auto's check never judges a push, `sudo` or a local command
+ * for ssh.
  *
  * It can't know what a program does with its files, its config or its input: `git` runs hooks and programs its
  * config names (`core.fsmonitor`, `core.pager`, `diff.external`); a script does what it contains; a remote host has
@@ -474,12 +475,14 @@ export function innerParts(part: SimpleCommand): readonly SimpleCommand[] {
 }
 
 /** Why Auto's check must never judge `part`, so every mode asks the owner and dontAsk refuses it: a push the
- *  reader can't call plain (any push, in a line it can't read), or a program that runs as another user, here, under
- *  `find -exec` or over ssh. Null otherwise. */
+ *  reader can't call plain (any push, in a line it can't read), a program that runs as another user, or a local
+ *  command for ssh (`ProxyCommand`, `-F`, `scp -S`, `rsync -e`, `GIT_SSH_COMMAND`, `core.sshCommand`), which on
+ *  the SSH-only profile could send a key off the machine; here, under `find -exec` or over ssh. Null otherwise. */
 export function ownerOnly(part: SimpleCommand, readable: boolean): string | null {
   const push = pushOf(part)
   if (push) return push.asks ?? (readable ? null : PUSHES)
   if (OTHER_USERS.has(base(programOf(part)[0] ?? ""))) return OTHER_USER
+  if (classify(part).risk === LOCAL_SSH) return LOCAL_SSH
   const host = sshOf(part)?.host
   for (const inner of innerParts(part)) {
     const found = ownerOnly(inner, readable)
@@ -1141,7 +1144,7 @@ function base(prog: string): string {
 
 function riskOf(part: SimpleCommand, prog: string, args: readonly string[], sets: readonly string[]): string | null {
   if (connects(part)) return NETWORK
-  if (sets.some((s) => s.startsWith("GIT_SSH_COMMAND="))) return LOCAL_SSH
+  if (sets.some((s) => s.startsWith("GIT_SSH_COMMAND=") || s.startsWith("GIT_SSH="))) return LOCAL_SSH
   const name = base(prog)
   const own = programRisk(name, args, part) ?? FIXED_RISKS.get(name) ?? null
   if (own !== null) return own

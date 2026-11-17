@@ -344,7 +344,7 @@ test("risky forms name their reason, a path reduced to its name", () => {
       "ssh -o KnownHostsCommand=x h", "ssh -o 'ProxyCommand x' h", "ssh -oProxyCommand=x h", "ssh h -o ProxyCommand=x",
       "ssh -F /tmp/cfg h", "ssh -Fcfg h", "scp -S x a h:b", "rsync -e 'x' a h:b", "rsync -avze x a h:b",
       "rsync --rsh=x a h:b", "git -c core.sshCommand=x fetch", "git -c core.sshcommand=x fetch",
-      "GIT_SSH_COMMAND=x git fetch", "env GIT_SSH_COMMAND=x git fetch",
+      "GIT_SSH_COMMAND=x git fetch", "env GIT_SSH_COMMAND=x git fetch", "GIT_SSH=x git fetch",
     ],
   }
   for (const [reason, lines] of Object.entries(reasons)) each(lines, risk, reason)

@@ -8,7 +8,8 @@
  * plain push of a feature branch (`auto`, `dontAsk`); or, inside the workspace sandbox, by a file operation on
  * paths inside the workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it:
  * inside substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. The reader asks before
- * a command that names a credential path it can see, and Auto's check never judges a push or `sudo`.
+ * a command that names a credential path it can see, and Auto's check never judges a push, `sudo` or a local
+ * command for ssh.
  *
  * The reader can't know what a program does with its files, its config or its input: `git` runs hooks and programs
  * its config names (`core.fsmonitor`, `core.pager`, `diff.external`); a script does what it contains; a remote host
