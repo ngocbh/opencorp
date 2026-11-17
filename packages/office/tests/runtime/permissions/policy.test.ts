@@ -273,18 +273,24 @@ test("decide refuses a typed line over 1000 bytes before reading it", () => {
     ])
 })
 
-test("a command over 1000 bytes is unreadable: no rule or form covers it, auto checks it, default and ask ask, dontAsk refuses", () => {
+test("a command over 1000 bytes asks in every mode, too long to check, and dontAsk refuses it; no rule covers it", async () => {
   const heredoc = cmd(`cat > notes.txt <<'EOF'\n${"a line of notes\n".repeat(200)}EOF`)
   expect(new TextEncoder().encode(heredoc.text).length).toBeGreaterThan(3000)
-  const covering = [allow("cat *"), allow("cat >notes.txt")]
-  const why = "it is too long to read (over 1000 bytes)"
-  table("auto", [[heredoc, covering, W, { verdict: "check", rules: [] }]])
-  table("default", [[heredoc, covering, W, { verdict: "ask", reason: `Default mode asks: ${why}`, rules: [] }]])
-  table("ask", [[heredoc, covering, W, askMode([])]])
-  table("dontAsk", [[heredoc, covering, W, { verdict: "deny", reason: DONT + why }]])
-  table("auto", [[cmd("echo " + "é".repeat(498)), [allow("echo *")], W, { verdict: "check", rules: [] }]])
-  const saved = cmd(heredoc.text, "it saves what runs later")
-  table("auto", [[saved, covering, W, { verdict: "ask", reason: "it saves what runs later", rules: [] }]])
+  // Padding a denied command past the cap must not get it past its deny rule to Auto's check, or to a rule's allow.
+  const padded = cmd(`rm -rf build; : ${"x".repeat(1000)}`)
+  const rules = [allow("cat *"), allow("cat >notes.txt"), allow("rm -rf build"), allow("*"), deny("rm *")]
+  const why = "it is too long to check (over 1000 bytes): read all of it before you say Yes"
+  for (const action of [heredoc, padded, cmd(heredoc.text, "it saves what runs later")]) {
+    for (const mode of ["auto", "default", "ask"] as const) {
+      table(mode, [[action, rules, W, { verdict: "ask", reason: why, rules: [] }]])
+    }
+    table("dontAsk", [[action, rules, W, { verdict: "deny", reason: DONT + why }]])
+    const { perms, held, checked } = holding("auto", { check: async () => ({ verdict: "run", reason: "fine" }) })
+    const gated = await gate(perms, action, call())
+    expect(!gated.run && isPending(gated.result)).toBe(true)
+    expect(checked).toEqual([])
+    expect(held.map((h) => [h.card.reason, h.card.rules])).toEqual([[why, []]])
+  }
 })
 
 test("a deny rule refuses what sudo, doas, find -exec, trap, case and a program named by its path run", () => {

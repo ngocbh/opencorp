@@ -8,8 +8,8 @@
  * plain push of a feature branch (`auto`, `dontAsk`); or, inside the workspace sandbox, by a file operation on
  * paths inside the workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it:
  * inside substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. The reader reads no line
- * over 1000 bytes: a typed one is refused, and a command is unreadable, so no rule covers it; it goes to Auto's check
- * in `auto`, asks in `default` and `ask`, and is refused in `dontAsk`.
+ * over 1000 bytes: a typed one is refused, and a command asks in every mode (`dontAsk` refuses it), as too long to
+ * check; no rule covers it and Auto's check never judges it, since no deny rule could see into it.
  * The reader asks, in every mode, before a command that names a credential path anywhere in the line (an operand,
  * an option's value, an assignment, a `for` list, a here-string or a redirect), one the host marks
  * (`Where.credentials`), or a folder that holds them. On the SSH-only profile and over ssh, where credentials are
@@ -95,10 +95,10 @@ const ANSWER = "a prompt's answer"
 /** What `allow` names when parts are covered in different ways: the widest. */
 const WIDEST = [BY_RULE, FILE_OP, PUSH, READ_ONLY]
 const DONT_ASK = "this session doesn't ask (dontAsk mode): "
-/** The longest line the reader reads: a typed line past it is refused, and a command past it is unreadable. */
+/** The longest line the reader reads: a typed line past it is refused, and a command past it asks. */
 const MAX_LINE_BYTES = 1000
-/** Why a command past `MAX_LINE_BYTES` asks. */
-const TOO_LONG = `it is too long to read (over ${MAX_LINE_BYTES} bytes)`
+/** Why a command past `MAX_LINE_BYTES` asks: nothing checked it, so the owner must read it whole. */
+const TOO_LONG = `it is too long to check (over ${MAX_LINE_BYTES} bytes): read all of it before you say Yes`
 /** A prompt's short answer: a menu choice, yes or no, quit, or Enter alone. */
 const PROMPT_ANSWER = /^(\d{1,6}|y|n|yes|no|q|)$/
 /** Programs whose second word names what they do; a suggested rule keeps it. */
@@ -144,10 +144,9 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
     mode === "dontAsk" ? { verdict: "deny", reason: DONT_ASK + reason } : { verdict: "ask", reason, rules: offers }
   if (new TextEncoder().encode(action.text).length > MAX_LINE_BYTES) {
     if (action.kind === "input") return { verdict: "deny", reason: `it is longer than ${MAX_LINE_BYTES} bytes` }
-    // A command too long to read is unreadable: no rule or read-only form covers it, and no rule sees into it.
-    if (action.never !== undefined) return held(action.never)
-    if (mode === "auto") return { verdict: "check", rules: [] }
-    return held(mode === "default" ? `Default mode asks: ${TOO_LONG}` : mode === "ask" ? "Ask mode" : TOO_LONG)
+    // Unread, no deny or ask rule could see into it: no rule covers it and no check judges it, so it asks in every
+    // mode.
+    return held(TOO_LONG)
   }
   const read = readCommand(action.text)
   const parts = read.parts.length > 0 ? read.parts : [EMPTY]
