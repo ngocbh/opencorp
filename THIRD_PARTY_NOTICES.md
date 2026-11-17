@@ -12,6 +12,11 @@ license, the upstream paths and commit, and our paths.
 - **What:** the terminal UI in `packages/tui` is forked from OpenCode's TUI.
 - **Upstream:** https://github.com/anomalyco/opencode (formerly `sst/opencode`).
 - **License:** MIT, "Copyright (c) 2025 opencode". The full notice is in `packages/tui/LICENSE`.
+- **What:** the bash command lines that the shell scanner's tests read (here-documents, `$'…'`, parameter and
+  arithmetic expansions, compound commands, functions), copied as test fixtures for the permission reader. The
+  reader itself is our own.
+- **Upstream:** `packages/core/test/shell-parse-syntax.test.ts`, read at commit `df46f69` (2026-11-16).
+- **Ours:** `packages/office/tests/runtime/permissions/commands.test.ts`.
 
 ## Paperclip
 
