@@ -23,6 +23,8 @@ export function Toast() {
       {(current) => (
         <box
           position="absolute"
+          // Over an open instrument (2000), under a dialog (3000).
+          zIndex={2500}
           justifyContent="center"
           alignItems="flex-start"
           top={2}

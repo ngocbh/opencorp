@@ -53,7 +53,14 @@ import { createTuiResolvedConfig } from "./tui-runtime"
 
 /** Returns `run()` input (minus `args`) wired to `office`, or to a socket nothing listens on. */
 export function createStub(office?: FakeOffice): Omit<TuiInput, "args"> {
-  return { socket: office?.socket ?? "/tmp/act-none/o.sock", cwd: "/tmp/proj", config: createTuiResolvedConfig() }
+  // Without a token the fake office takes requests as its CEO, as `/whoami` says.
+  const person = office?.state.people.find((p) => p.kind === "human" && !p.manager)?.handle
+  return {
+    socket: office?.socket ?? "/tmp/act-none/o.sock",
+    cwd: "/tmp/proj",
+    config: createTuiResolvedConfig(),
+    ...(person && { person }),
+  }
 }
 
 /** Serves `fetch` on a new unix socket under /tmp (macOS caps socket paths at 104 bytes). */

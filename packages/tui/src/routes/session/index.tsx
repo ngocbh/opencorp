@@ -342,14 +342,24 @@ export function Session() {
     const id = opened()?.id
     if (id && !instruments().some((i) => i.id === id)) closeInstrument()
   })
-  // A PTY shell waiting for the owner's password opens itself, with the keys, when none is open; it goes back to the
-  // list once the wait ends, unless the owner has since moved it on.
+  // The session's approver, the one person whose keys its shells take: who opened it, else the CEO, the company's
+  // human at the top of the org chart. Whether that is who this TUI acts as.
+  const approver = () =>
+    session()?.opened_by ?? office.state.people.find((p) => p.kind === "human" && !p.manager)?.handle
+  const approving = () => !!office.person && office.person === approver()
+  // Whether the owner has typed into the open shell since their last Enter, Ctrl-C or Ctrl-D.
+  const [midLine, setMidLine] = createSignal(false)
+  // A PTY shell waiting for the approver's password opens itself when none is open: with the keys, in the default view,
+  // or, while the prompt holds a draft, beside it with the draft keeping them. It goes back to the list once the wait
+  // ends and the owner has finished the line they were typing into it, a password's rest that must not reach the
+  // chat, unless the owner has since moved it on.
   const secretWait = (i: Instrument) => i.interactive && i.status === "waiting" && i.waiting === "secret"
   createEffect(
     on(
-      () => instruments().find(secretWait)?.id,
+      () => (approving() ? instruments().find(secretWait)?.id : undefined),
       (id) => {
         if (!id || untrack(opened)) return
+        if (untrack(() => promptRef.current?.current.input)) return setOpened({ id, view: "split", itself: true })
         setOpened({ id, view: defaultPlacement(), itself: true })
         focusInstrument()
       },
@@ -359,7 +369,8 @@ export function Session() {
     const current = opened()
     if (!current?.itself) return
     const shell = instruments().find((i) => i.id === current.id)
-    if (!shell || !secretWait(shell)) untrack(closeInstrument)
+    if (shell && (secretWait(shell) || midLine())) return
+    untrack(closeInstrument)
   })
 
   const wide = createMemo(() => dimensions().width > 120)
@@ -1071,7 +1082,6 @@ export function Session() {
               )}
             </Show>
           </InteractivityProvider>
-          <Toast />
           {/* A click in the chat beside a split gives it the keys; over a floating view it does nothing. */}
           <Show when={opened() && instrumentFocused()}>
             <box
@@ -1119,8 +1129,10 @@ export function Session() {
                     view={opened()?.view ?? "floating"}
                     // A dialog over it has the keys while it shows.
                     focused={instrumentFocused() && dialog.stack.length === 0}
+                    approver={approving()}
                     onFocus={focusInstrument}
                     onFocusRequest={(focus) => (focusView = focus)}
+                    onLine={setMidLine}
                   />
                 )}
               </Show>
@@ -1150,6 +1162,11 @@ export function Session() {
             </Match>
           </Switch>
         </Show>
+        {/* Beside the open instrument, not in the chat under it, so it shows over a floating view; in a column the
+            width of the screen, as the chat is, so it lays out as it did there. It has no height: clicks pass by. */}
+        <box position="absolute" left={0} top={0} width="100%" zIndex={2500}>
+          <Toast />
+        </box>
       </box>
     </context.Provider>
   )

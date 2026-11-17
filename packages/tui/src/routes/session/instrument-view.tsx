@@ -45,15 +45,19 @@ const OUTPUT_CHARS = 64 * 1024
  * An open instrument: a frame whose title names it, says how it is doing and what it runs, and gives the keys that
  * move it on and put it back; inside, a PTY shell's screen, or a pipes shell's output lines. A click in it gives it
  * the keys. While `focused`, a live PTY shell takes every key but the leader, so the leader's keys put it back and
- * move the keys to the chat; any other view takes Ctrl-C, a pipes shell's interrupt, and Esc puts it back.
+ * move the keys to the chat; any other view takes Ctrl-C, a pipes shell's interrupt, and Esc puts it back. A shell
+ * waiting on a password asks the session's approver, and only them, to type it.
  */
 export function InstrumentView(props: {
   sessionID: string
   instrument: Instrument
   view: InstrumentPlacement
   focused: boolean
+  /** Whether the viewer is the session's approver, the one person whose keys its shells take. */
+  approver: boolean
   onFocus: () => void
   onFocusRequest?: (focus: (() => void) | undefined) => void
+  onLine?: (typing: boolean) => void
 }) {
   const { theme } = useTheme()
   const office = useOffice()
@@ -67,8 +71,9 @@ export function InstrumentView(props: {
   const live = () => LIVE.includes(props.instrument.status)
   // A live terminal takes Esc itself.
   const takesEsc = () => props.instrument.interactive && live()
+  // Only while the view has the keys: with them in the chat, a password typed would go there.
   const status = () =>
-    props.instrument.status === "waiting" && props.instrument.waiting === "secret"
+    props.approver && props.focused && props.instrument.status === "waiting" && props.instrument.waiting === "secret"
       ? SECRET_LABEL
       : STATUS_LABEL[props.instrument.status]
   const hints = createMemo(() => {
@@ -76,11 +81,10 @@ export function InstrumentView(props: {
     const cycle = cycleKey()
     if (takesEsc()) {
       const go = cycle && `${cycle}: ${next ? PLACEMENT_LABEL[next] : "back to the list"}`
-      // Full screen leaves no chat to move the keys to.
-      const move = !props.focused
-        ? shellKey() && `${shellKey()}: shell`
-        : props.view !== "full" && chatKey() && `${chatKey()}: chat`
-      return [go, move].filter(Boolean).join(" · ")
+      // Without the keys, how to give them to the shell comes first, so a narrow title keeps it. Full screen leaves no
+      // chat to move them to.
+      if (!props.focused) return [shellKey() && `${shellKey()}: shell`, go].filter(Boolean).join(" · ")
+      return [go, props.view !== "full" && chatKey() && `${chatKey()}: chat`].filter(Boolean).join(" · ")
     }
     const close = closeKey().replace(/\bescape\b/, "esc")
     if (!cycle) return `${close}: back to the list`
@@ -143,6 +147,7 @@ export function InstrumentView(props: {
           instrument={props.instrument}
           focused={props.focused}
           onFocusRequest={props.onFocusRequest}
+          onLine={props.onLine}
         />
       </Show>
     </box>

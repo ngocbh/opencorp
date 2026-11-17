@@ -99,9 +99,11 @@ export async function tui(argv: string[], deps: TuiDeps = realTuiDeps): Promise<
   const down = await officeDown(socket)
   if (down) return officeNotRunning(down)
   const token = localIdentity()?.token
-  // Likewise a device the office refuses: one line, not a TUI that can't load anything.
+  // Likewise a device the office refuses: one line, not a TUI that can't load anything. Who the office takes this
+  // TUI as goes to it: only a session's approver is asked to type a shell's password.
+  let person: string | undefined
   try {
-    await createOfficeClient({ socket, token }).whoami()
+    person = (await createOfficeClient({ socket, token }).whoami()).person
   } catch (e) {
     // Any other failure, the TUI shows as it would have without this check.
     if (e instanceof UnknownDevice) {
@@ -118,7 +120,7 @@ export async function tui(argv: string[], deps: TuiDeps = realTuiDeps): Promise<
     import("@opencorp/tui"),
   ])
   await Effect.runPromise(
-    runTui({ socket, token, cwd: process.cwd(), args }).pipe(Effect.provide(Global.layer)),
+    runTui({ socket, token, person, cwd: process.cwd(), args }).pipe(Effect.provide(Global.layer)),
   )
   return typeof process.exitCode === "number" ? process.exitCode : 0
 }

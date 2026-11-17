@@ -753,8 +753,7 @@ test("<leader>left moves focus to the chat with the view still open, and <leader
   try {
     const shell = add(office, sid)
     await listed(app, 1)
-    await runCommand(app, "Open instruments in a split")
-    await until(() => kv()[KEY] === "split")
+    await setView(app, "In a split", "split")
     await leader(app, "o")
     // A split's title has room for the keys' names, not what they do.
     let f = await app.until((f) => f.includes("ctrl+x left"))
@@ -830,7 +829,7 @@ test("<leader>o on an approval card for a terminal command opens its shell besid
     // Another shell changed later, which <leader>o would open with no card.
     add(office, sid, { name: "shell 2", command: "htop", updated_at: LATER })
     await listed(app, 2)
-    office.addApproval(sid, {
+    const card = office.addApproval(sid, {
       kind: "command",
       tool: "terminal_run",
       action: "make deploy",
@@ -846,9 +845,158 @@ test("<leader>o on an approval card for a terminal command opens its shell besid
     expect(title(f)).toStartWith("shell 1 · running")
     f = await app.until((f) => f.includes("ctrl+x right"))
     expect(rows(f).some((r) => r.slice(0, 60).includes("make deploy"))).toBe(true)
-    app.input.pressKey("2")
+    // The card takes a digit, which selects Yes, and Enter, which sends it; the shell gets neither.
+    app.input.pressKey("1")
     await Bun.sleep(100)
+    app.input.pressEnter()
+    await until(() => office.requests.some((r) => r.path === `/questions/${card.id}/answer`))
+    expect(office.requests.find((r) => r.path === `/questions/${card.id}/answer`)?.body).toEqual({
+      answer: "Yes",
+      answer_kind: "option",
+    })
     expect(typed(office, shell.id)).toEqual([])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("the rest of a password typed after its wait ends goes to the shell, never to the chat", async () => {
+  const { office, sid, app } = await boot()
+  try {
+    const ssh = add(office, sid, { name: "shell 2", profile: "ssh", command: "sudo make install" })
+    await listed(app, 1)
+    office.instrumentOutput(sid, ssh.id, "[sudo] password for nhb25: ")
+    update(office, sid, ssh.id, { status: "waiting", waiting: "secret" })
+    await app.until((f) => f.includes("╭") && title(f).includes("type your password here") && f.includes("left: chat"))
+    await app.input.typeText("hunt")
+    await until(() => typed(office, ssh.id).join("") === "hunt")
+    // sudo's pwfeedback echoes stars; the office sees the wait end as the program draws them.
+    office.instrumentOutput(sid, ssh.id, "****")
+    update(office, sid, ssh.id, { status: "running", waiting: null })
+    const frames: string[] = []
+    // The view stays, with the keys, until the line is done.
+    frames.push(await app.until((f) => title(f).startsWith("shell 2 · running")))
+    await app.input.typeText("er2-zz")
+    frames.push(await app.until(() => true))
+    app.input.pressEnter()
+    await until(() => typed(office, ssh.id).join("") === "hunter2-zz\r")
+    // Then it goes back to the list, and the prompt is as it was: empty.
+    frames.push(await app.until((f) => !f.includes("╭")))
+    expect(frames.some((f) => f.includes("er2-zz") || f.includes("hunt"))).toBe(false)
+    expect(leaked(office, "er2-zz")).toBe(false)
+    expect(office.requests.some((r) => r.path.endsWith("/prompt"))).toBe(false)
+    app.input.typeText("hello")
+    const f = await app.until((f) => f.includes("hello"))
+    expect(f).not.toContain("er2-zz")
+    expect(rows(f).find((r) => r.includes("hello"))!.trim()).toMatch(/^┃\s*hello$/)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a shell waiting for a password opens itself only for the session's approver", async () => {
+  const { office, sid, app } = await boot()
+  try {
+    // Someone else opened the chat, so only they may type into its shells.
+    office.updateSession(sid, { opened_by: "lan" })
+    const ssh = add(office, sid, { name: "shell 2", profile: "ssh", command: "ssh h" })
+    await listed(app, 1)
+    update(office, sid, ssh.id, { status: "waiting", waiting: "secret" })
+    await app.until((f) => line(f)?.includes("is waiting for you") ?? false)
+    await Bun.sleep(200)
+    expect(app.frame()).not.toContain("╭")
+    // Opened by hand, it waits for its approver, not for this viewer.
+    await leader(app, "o")
+    let f = await app.until((f) => f.includes("╭"))
+    expect(title(f)).toStartWith("shell 2 · waiting for you · ssh h")
+    expect(f).not.toContain("type your password here")
+    await leader(app, "o")
+    await app.until((f) => f.includes("ctrl+x o: full screen"))
+    await leader(app, "o")
+    await app.until((f) => f.includes("ctrl+x o: back to the list"))
+    await leader(app, "o")
+    await app.until((f) => !f.includes("╭"))
+
+    // The chat is this viewer's again: the waiting shell opens itself for them.
+    office.updateSession(sid, { opened_by: "ngocbh" })
+    f = await app.until((f) => f.includes("╭") && title(f).includes("type your password here"))
+    expect(title(f)).toStartWith("shell 2 · waiting for you: type your password here")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a shell that waits for a password while the owner has a draft opens beside it, the draft keeping the keys", async () => {
+  const { office, sid, app } = await boot()
+  try {
+    const ssh = add(office, sid, { name: "shell 2", profile: "ssh", command: "ssh h" })
+    await listed(app, 1)
+    await app.input.typeText("a draft")
+    await app.until((f) => f.includes("a draft"))
+    update(office, sid, ssh.id, { status: "waiting", waiting: "secret" })
+    // Its title says how to give it the keys, not to type the password, which would go to the draft.
+    let f = await app.until((f) => f.includes("╭") && f.includes("ctrl+x right: shell"))
+    expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
+    expect(title(f)).toStartWith("shell 2 · waiting for you · ")
+    expect(f).not.toContain("type your password here")
+    // What comes next goes on with the draft.
+    await app.input.typeText("-ft-more")
+    f = await app.until((f) => f.includes("a draft-ft-more"))
+    expect(typed(office, ssh.id)).toEqual([])
+    // <leader>right gives the shell the keys.
+    await leaderArrow(app, "right")
+    await app.until((f) => f.includes("╭") && title(f).includes("type your password here"))
+    await app.input.typeText("pw")
+    await until(() => typed(office, ssh.id).join("") === "pw")
+    f = await app.until(() => true)
+    expect(f).toContain("a draft-ft-more")
+    expect(f).not.toContain("a draft-ft-morepw")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("an office's refusal of the keys shows over a floating view", async () => {
+  const { office, sid, app } = await boot()
+  try {
+    office.updateSession(sid, { opened_by: "lan" })
+    const shell = add(office, sid, { command: "vim" })
+    office.instrumentOutput(sid, shell.id, "editing")
+    await listed(app, 1)
+    await leader(app, "o")
+    await app.until((f) => f.includes("editing") && f.includes("ctrl+x o: split"))
+    app.input.typeText("i")
+    await app.until((f) => f.includes("only @lan may type"))
+    // Refused once, the view sends no more.
+    app.input.typeText("x")
+    await Bun.sleep(100)
+    expect(typed(office, shell.id)).toEqual(["i"])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a shell's view sends nothing once it is put away, its terminal's focus report as it goes included", async () => {
+  const { office, sid, app } = await boot()
+  try {
+    const shell = add(office, sid, { command: "vim" })
+    // The program asks for focus reports, which the terminal sends as it gains and loses focus.
+    office.instrumentOutput(sid, shell.id, "\x1b[?1004hediting")
+    await listed(app, 1)
+    await setView(app, "Full screen", "full")
+    await leader(app, "o")
+    await app.until((f) => f.includes("editing") && f.includes("ctrl+x o: back to the list"))
+    app.input.typeText("i")
+    await until(() => typed(office, shell.id).join("") === "i")
+    await leader(app, "o")
+    await app.until((f) => !f.includes("editing"))
+    await Bun.sleep(100)
+    expect(typed(office, shell.id).join("")).toBe("i")
   } finally {
     await app.stop()
     office.stop()

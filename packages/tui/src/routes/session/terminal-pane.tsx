@@ -1,4 +1,4 @@
-import { EmbeddedTerminalRenderable, type RGBA } from "@opentui/core"
+import { EmbeddedTerminalRenderable, type KeyEvent, type RGBA } from "@opentui/core"
 import { extend, useRenderer } from "@opentui/solid"
 import type { Instrument, InstrumentOutput } from "@opencorp/protocol"
 import { asInstrument, OfficeError } from "@opencorp/client"
@@ -152,13 +152,15 @@ export function followOutput(opts: {
  *
  * While `focused`, the terminal has the keys: every key but the leader goes to the live shell, encoded as a terminal
  * sends it, gathered a frame at a time and sent as typed. They are kept no longer than that, never logged and never
- * drawn: the screen shows what the program echoes. `onFocusRequest` gets what gives the terminal the keys again.
+ * drawn: the screen shows what the program echoes. `onFocusRequest` gets what gives the terminal the keys again;
+ * `onLine` hears whether the owner has typed into the shell since their last Enter, Ctrl-C or Ctrl-D.
  */
 export function TerminalPane(props: {
   sessionID: string
   instrument: Instrument
   focused: boolean
   onFocusRequest?: (focus: (() => void) | undefined) => void
+  onLine?: (typing: boolean) => void
 }) {
   const office = useOffice()
   const { theme } = useTheme()
@@ -295,8 +297,11 @@ export function TerminalPane(props: {
   // Whether the office takes this view's keys: it refuses anyone but the session's approver, and then this view
   // stops sending them.
   let typing = true
+  // Read once: the last keys go out as the view closes, when its props are no longer there to read.
+  const sessionID = props.sessionID
+  const instrumentID = props.instrument.id
   const keys = keyBatch((data) => {
-    office.client.sessions.keys(props.sessionID, props.instrument.id, { data }).catch((error) => {
+    office.client.sessions.keys(sessionID, instrumentID, { data }).catch((error) => {
       if (!typing) return
       if (error instanceof OfficeError && error.status === 403) typing = false
       toast.show({ message: errorMessage(error), variant: "error" })
@@ -305,7 +310,11 @@ export function TerminalPane(props: {
   onCleanup(
     routeShellKeys(keymap, leaderKey(tuiConfig), {
       focused: () => !!terminal?.focused && live(),
-      press: (event) => terminal?.handleKeyPress(event),
+      press: (event) => {
+        // The key goes first: a line's end may put the view away, and its last keys go out as it does.
+        terminal?.handleKeyPress(event)
+        props.onLine?.(!endsLine(event))
+      },
     }),
   )
   createEffect(() => {
@@ -316,10 +325,11 @@ export function TerminalPane(props: {
   props.onFocusRequest?.(() => terminal?.focus())
 
   onCleanup(() => {
-    // Keys typed in the last frame go before the view does.
+    // Keys typed in the last frame go before the view does; what its terminal sends as it goes (a focus report) stays.
     keys.flush()
-    props.onFocusRequest?.(undefined)
     disposed = true
+    props.onFocusRequest?.(undefined)
+    props.onLine?.(false)
   })
 
   const start = drawn()
@@ -356,7 +366,12 @@ export function TerminalPane(props: {
         }}
         onData={(data, source) => {
           // The terminal's own answers to the program's queries aren't the owner's.
-          if (source === "input" && typing && live()) keys.push(data)
+          if (source === "input" && !disposed && typing && live()) keys.push(data)
+        }}
+        onPaste={(event) => {
+          if (!terminal?.focused || !live()) return
+          const text = new TextDecoder().decode(event.bytes)
+          if (text) props.onLine?.(!/[\r\n]$/.test(text))
         }}
       />
       <Show when={failure()}>
@@ -368,6 +383,12 @@ export function TerminalPane(props: {
       </Show>
     </box>
   )
+}
+
+/** Whether `event` ends the owner's line: Enter, or Ctrl-C or Ctrl-D, which give it up. */
+function endsLine(event: KeyEvent) {
+  if (["return", "enter", "linefeed"].includes(event.name)) return true
+  return event.ctrl && (event.name === "c" || event.name === "d")
 }
 
 function sameSize(first: TerminalSize | undefined, second: TerminalSize | undefined) {
