@@ -3,6 +3,7 @@
 import fs from "node:fs"
 import type { Server } from "node:http"
 import os from "node:os"
+import path from "node:path"
 import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform"
 import { oneReplyProblem } from "../../models/check.ts"
 import { ChatHarness } from "../../features/chat/harness.ts"
@@ -24,6 +25,7 @@ import { storeProblem } from "../../runtime/store/problem.ts"
 import { Store } from "../../runtime/store/store.ts"
 import { OfficePaths } from "../../util/home.ts"
 import { reap } from "../../runtime/worker/reaper.ts"
+import { recoverRecords } from "../../tools/terminal/record.ts"
 import { WorkerRegistry } from "../../runtime/worker/spawn.ts"
 import { Bus } from "../../runtime/bus.ts"
 import {
@@ -273,6 +275,32 @@ async function sweepOnStart(office: Office, log: ReturnType<typeof officeLogger>
   }
 }
 
+/** Marks each terminal record an earlier office left running as interrupted, in every session's folder: a shell an
+ *  office stop cut off is never run again. A folder whose meta.json isn't a record's is logged and left as it is; a
+ *  failure is logged by its type, and never stops the start. */
+function recoverTerminals(paths: OfficePaths, log: ReturnType<typeof officeLogger>): void {
+  let folders: fs.Dirent[]
+  try {
+    folders = fs.readdirSync(paths.sessions, { withFileTypes: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      log("ERROR", "opencorp.daemon.main")(`the terminal records weren't recovered: ${errorType(error)}`)
+    }
+    return
+  }
+  for (const folder of folders) {
+    if (!folder.isDirectory()) continue
+    try {
+      for (const problem of recoverRecords(path.join(paths.sessions, folder.name))) {
+        log("WARNING", "opencorp.daemon.main")(`a terminal record was left as it is: ${problem}`)
+      }
+    } catch (error) {
+      const why = `session ${folder.name}'s terminal records weren't recovered: ${errorType(error)}`
+      log("ERROR", "opencorp.daemon.main")(why)
+    }
+  }
+}
+
 /** `step`'s result; a store trouble it throws (`storeProblem`) becomes an `OfficeStartError` that names it, so the
  *  start says why instead of logging a crash with only the error's type. */
 function openStore<T>(file: string, step: () => T): T {
@@ -290,9 +318,10 @@ function openStore<T>(file: string, step: () => T): T {
  *  run index; the one-reply model check runs over it), its run transcript and live relay (for the session actors;
  *  the relay's viewers end on stop), its Codex sessions on the chat hooks, and the chat harness over the registry
  *  with a `Monitor`: the harness is the office's workers and its session harness, so the office's stop closes it
- *  first (the Codex sessions, then the workers). On start: the run index brought up to date and the start sweep,
- *  then the harness's restore (before the extensions' start callbacks), then a model warm-up (not awaited), the
- *  HEAD watcher and pin pruning (now, after each session ends or fails, and after each worker exit); on stop, the
+ *  first (the Codex sessions, then the workers). On start: the terminal records an earlier office left running marked
+ *  interrupted (`recoverTerminals`), the run index brought up to date and the start sweep, then the harness's
+ *  restore (before the extensions' start callbacks), then a model warm-up (not awaited), the HEAD watcher and pin
+ *  pruning (now, after each session ends or fails, and after each worker exit); on stop, the
  *  sign-ins still waiting are cancelled and the watcher stops. `OfficeStartError` when `tools` has no git, or the
  *  store can't be opened or read (`storeProblem`). */
 export function buildOffice(
@@ -351,6 +380,8 @@ export function buildOffice(
     // Office.stop closes its workers first: the harness's stop closes the Codex sessions, then the registry.
     office.workers = harness
     office.harness = harness
+    // First, before any shell starts: a restored session may open new ones beside the records it cut off.
+    office.onStart.push(() => recoverTerminals(paths, log))
     // Before the restore, as Python's restore swept first: the sweep must never end a run a restore resumes or starts.
     office.onStart.push(() => sweepOnStart(office, log))
     // Before loadExtensions adds the cards' sweep, so the sweep sees the statuses restore settled.

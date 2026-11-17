@@ -8,6 +8,7 @@ import {
   ConnectionList,
   HireResponse,
   HqStatus,
+  Instrument,
   Message,
   ModelList,
   Person,
@@ -46,6 +47,8 @@ type Answer = { status: number; error?: string; keys?: string[]; picked?: unknow
 
 /** A well-formed session id that neither office has. */
 const NO_SESSION = "01JZZZZZZZZZZZZZZZZZZZZZZZ"
+/** A well-formed instrument id that neither office has. */
+const NO_INSTRUMENT = "01JZZZZZZZZZZZZZZZZZZZZZZY"
 const lan = { name: "Lan", handle: "lan", title: "QA", manager: "ngocbh" }
 /** The chat's one prompt, and the assistant's reply to it on both offices. */
 const PROMPT = "Hi, who are you?"
@@ -154,6 +157,19 @@ const STEPS: Step[] = [
     method: "POST",
     path: (c) => `/sessions/${c.id}/rules/remove`,
     body: () => ({ effect: "allow", kind: "command", pattern: "nothing *", source: "session" }),
+  },
+  {
+    name: "list the chat's instruments",
+    method: "GET",
+    path: (c) => `/sessions/${c.id}/instruments`,
+    schema: Instrument.array(),
+    pick: (r) => r,
+  },
+  {
+    name: "keys to an instrument neither office has",
+    method: "POST",
+    path: (c) => `/sessions/${c.id}/instruments/${NO_INSTRUMENT}/keys`,
+    body: () => ({ data: "ls\r" }),
   },
   {
     name: "open questions",
