@@ -72,15 +72,23 @@ license, the upstream paths and commit, and our paths.
 - **Ours:** `packages/tui/src/routes/session/instrument-line.tsx`, `packages/tui/src/component/prompt/index.tsx`.
 - **What:** the TUI's move to OpenTUI 0.8.4, the version current upstream runs: the spinner renderable, which replaces
   the `opentui-spinner` package; and, as upstream does, a text area's size invalidated with
-  `invalidateIntrinsicSize`, syntax styles given the renderer's scene, awaited suspends and resumes, no terminal title
-  set while the renderer is suspended, nothing printed before the renderer has closed, and test renderers whose
-  terminal is set up. The test of OpenTUI's embedded terminal registers it as upstream's terminal pane does.
-- **Upstream:** `packages/tui/src/component/spinner-renderable.ts`, `packages/tui/src/util/renderer.ts`
-  (`setTerminalTitle`), `packages/tui/src/component/prompt/index.tsx`, `packages/theme/src/tui/syntax.ts`,
-  `packages/tui/src/editor.ts`, `packages/tui/src/app.tsx`, `packages/tui/test/app-lifecycle.test.tsx` and
-  `packages/tui/src/component/terminal-pane.tsx`, read at commit `df46f69` (2026-11-16).
+  `invalidateIntrinsicSize`, syntax styles given the renderer's scene, awaited suspends and resumes, nothing printed
+  before the renderer has closed, and test renderers whose terminal is set up. The test of OpenTUI's embedded
+  terminal registers it as upstream's terminal pane does.
+- **Upstream:** `packages/tui/src/component/spinner-renderable.ts`, `packages/tui/src/component/prompt/index.tsx`,
+  `packages/theme/src/tui/syntax.ts`, `packages/tui/src/editor.ts`, `packages/tui/src/app.tsx`,
+  `packages/tui/test/app-lifecycle.test.tsx` and `packages/tui/src/component/terminal-pane.tsx`, read at commit
+  `df46f69` (2026-11-16).
 - **Ours:** `packages/tui/src/component/spinner-renderable.ts`, `packages/tui/src/component/register-spinner.ts`,
-  `packages/tui/src/util/renderer.ts`, `packages/tui/test/ui/embedded-terminal.test.tsx`.
+  `packages/tui/test/ui/embedded-terminal.test.tsx`.
+- **What:** the terminal title and renderer teardown, ported whole: a title is never set on a destroyed or suspended
+  renderer and has its control characters replaced with spaces, and a destroyed renderer is left alone. Its tests
+  come with it, and the SIGHUP test reads the cleared title from what the renderer writes, as upstream's does.
+- **Upstream:** `packages/tui/src/util/renderer.ts`, `packages/tui/test/util/renderer.test.ts` and
+  `packages/tui/test/app-lifecycle.test.tsx` ("SIGHUP clears title and disposes scoped resources once"), read at
+  commit `df46f69` (2026-11-16).
+- **Ours:** `packages/tui/src/util/renderer.ts`, `packages/tui/test/util/renderer.test.ts`,
+  `packages/tui/test/app-lifecycle.test.tsx`.
 
 ## Paperclip
 
@@ -273,3 +281,7 @@ Agreement.
 Yian (`packages/yian`, Apache-2.0) and the packages in `uv.lock` and `bun.lock` are dependencies
 installed alongside OpenCorp, under their own licenses. Apart from the Yian code listed above, none
 of their code is copied here.
+
+OpenTUI's native library (`@opentui/core-<os>-<cpu>`) bundles FFmpeg (LGPL-2.1-or-later), Ghostty, Little CMS, libwebp,
+stb, Wuffs and zlib. The built packages (`packages/cli/script/build.ts`) ship every license and notice file it ships
+(`LICENSE*`, `AUTHORS*`, `PATENTS*`, `FFMPEG-SOURCE.md`) beside the library, under `assets/<package>/`.

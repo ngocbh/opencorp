@@ -90,17 +90,22 @@ function assetsFor(name: string, platform: string, arch: string) {
     throw e
   }
 }
-// Every target's assets, and the LICENSE of each package they come from, are found before anything is written.
+/** A package's license and notice files: its LICENSE and any others, such as those of the libraries OpenTUI's native
+ *  library links (FFmpeg's LGPL among them). */
+const NOTICE = /^(LICENSE|AUTHORS|PATENTS)|^FFMPEG-SOURCE\.md$/
+// Every target's assets, and the license and notice files of each package they come from, are found before anything
+// is written.
 const assetsOf = new Map(
   builds.map(({ name, os, cpu }) => {
     const assets = assetsFor(name, os, cpu)
-    const licenses = new Map<string, string>()
+    const licenses = new Map<string, string[]>()
     for (const { key, source } of assets) {
       const { owner, inner } = splitKey(key)
       if (!source.endsWith(path.sep + inner)) fail(`${source} is not ${inner} in a package`, 1)
-      const file = path.join(source.slice(0, -inner.length), "LICENSE")
-      if (!fs.existsSync(file)) fail(`${owner} has no LICENSE (${file})`, 1)
-      licenses.set(owner, file)
+      const root = source.slice(0, -inner.length)
+      if (!fs.existsSync(path.join(root, "LICENSE"))) fail(`${owner} has no LICENSE (${path.join(root, "LICENSE")})`, 1)
+      const files = fs.readdirSync(root).map((file) => path.join(root, file))
+      licenses.set(owner, files.filter((file) => NOTICE.test(path.basename(file)) && fs.statSync(file).isFile()))
     }
     return [name, { assets, licenses }] as const
   }),
@@ -144,7 +149,8 @@ for (const { name, os, cpu, target } of builds) {
   // The binary sets OTUI_ASSET_ROOT to `../assets`, so OpenTUI loads these instead of extracting copies to $TMPDIR.
   const { assets, licenses } = assetsOf.get(name)!
   for (const { key, source } of assets) copy(source, path.join(dir, "assets", key))
-  for (const [owner, file] of licenses) copy(file, path.join(dir, "assets", owner, "LICENSE"))
+  for (const [owner, files] of licenses)
+    for (const file of files) copy(file, path.join(dir, "assets", owner, path.basename(file)))
   fs.copyFileSync(LICENSE, path.join(dir, "LICENSE"))
   writePackage(dir, {
     name: `opencorp-${name}`,

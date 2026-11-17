@@ -1,6 +1,7 @@
 import { expect, mock, test } from "bun:test"
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { Effect } from "effect"
+import { Writable } from "node:stream"
 import { Global } from "../src/core/global"
 import { createFakeOffice, createStub } from "./fixture/fake-office"
 
@@ -15,16 +16,19 @@ async function renderUntil(setup: TestRendererSetup, text: string) {
 }
 
 test("SIGHUP destroys the renderer, clears the title and removes its listener", async () => {
-  const setup = await createTestRenderer({ width: 80, height: 24 })
+  // What the renderer writes to the terminal: the title is cleared there, by whichever of the renderer's own SIGHUP
+  // listener and the app's runs first.
+  const output: string[] = []
+  const stdout = new Writable({
+    write(chunk, _encoding, callback) {
+      output.push(chunk.toString())
+      callback()
+    },
+  }) as NodeJS.WriteStream
+  const setup = await createTestRenderer({ width: 80, height: 24, bufferedOutput: "stdout", stdout })
   await setup.renderer.setupTerminal()
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
-  const titles: string[] = []
-  const setTitle = setup.renderer.setTerminalTitle.bind(setup.renderer)
-  setup.renderer.setTerminalTitle = (title) => {
-    titles.push(title)
-    setTitle(title)
-  }
   const listeners = new Set(process.listeners("SIGHUP"))
   const office = createFakeOffice()
 
@@ -39,7 +43,7 @@ test("SIGHUP destroys the renderer, clears the title and removes its listener", 
     await task
 
     expect(setup.renderer.isDestroyed).toBe(true)
-    expect(titles.at(-1)).toBe("")
+    expect(output.join("")).toContain("\x1b]0;\x07")
     expect(process.listeners("SIGHUP").every((listener) => listeners.has(listener))).toBe(true)
   } finally {
     if (!setup.renderer.isDestroyed) setup.renderer.destroy()
