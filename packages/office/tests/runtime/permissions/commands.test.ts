@@ -605,7 +605,7 @@ test("arithmetic and parameter expansions that can run commands make it unreadab
 })
 
 test("the scanner fixtures read as unreadable or with their commands, so deny rules see them", () => {
-  // Bash forms from OpenCode's shell scanner tests (MIT), see THIRD_PARTY_NOTICES.md.
+  // Bash forms from the upstream TUI's shell scanner tests (MIT); THIRD_PARTY_NOTICES.md names the source.
   for (const line of [
     "cat <<'EOF'\n$(not_a_command)\nEOF",
     "cat <<EOF\n$(printf hello)\nEOF",
