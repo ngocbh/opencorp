@@ -27,15 +27,13 @@ export async function openEditor(input: { value: string; renderer: CliRenderer; 
   const dir = await mkdtemp(path.join(os.tmpdir(), "opencorp-prompt-"))
   const file = path.join(dir, "prompt.md")
   await writeFile(file, input.value)
-  input.renderer.suspend()
-  input.renderer.currentRenderBuffer.clear()
+  await input.renderer.suspend()
   try {
     await launchEditor(editor, file, input)
     return (await readFile(file, "utf8")) || undefined
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {})
-    input.renderer.currentRenderBuffer.clear()
-    input.renderer.resume()
+    await input.renderer.resume()
     input.renderer.requestRender()
   }
 }

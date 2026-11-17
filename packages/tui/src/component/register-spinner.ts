@@ -1,6 +1,6 @@
-import { getComponentCatalogue } from "@opentui/solid/components"
-import { registerSpinner } from "opentui-spinner/solid"
+import { extend, getComponentCatalogue } from "@opentui/solid/components"
+import { SpinnerRenderable } from "./spinner-renderable"
 
 export function registerOpenCorpSpinner() {
-  if (!getComponentCatalogue().spinner) registerSpinner()
+  if (!getComponentCatalogue().spinner) extend({ spinner: SpinnerRenderable })
 }

@@ -70,6 +70,17 @@ license, the upstream paths and commit, and our paths.
 - **Upstream:** `packages/tui/src/component/prompt/index.tsx` and `packages/tui/src/routes/session/footer.tsx` at
   commit `b471c2b`.
 - **Ours:** `packages/tui/src/routes/session/instrument-line.tsx`, `packages/tui/src/component/prompt/index.tsx`.
+- **What:** the TUI's move to OpenTUI 0.8.4, the version current upstream runs: the spinner renderable, which replaces
+  the `opentui-spinner` package; and, as upstream does, a text area's size invalidated with
+  `invalidateIntrinsicSize`, syntax styles given the renderer's scene, awaited suspends and resumes, no terminal title
+  set while the renderer is suspended, nothing printed before the renderer has closed, and test renderers whose
+  terminal is set up. The test of OpenTUI's embedded terminal registers it as upstream's terminal pane does.
+- **Upstream:** `packages/tui/src/component/spinner-renderable.ts`, `packages/tui/src/util/renderer.ts`
+  (`setTerminalTitle`), `packages/tui/src/component/prompt/index.tsx`, `packages/theme/src/tui/syntax.ts`,
+  `packages/tui/src/editor.ts`, `packages/tui/src/app.tsx`, `packages/tui/test/app-lifecycle.test.tsx` and
+  `packages/tui/src/component/terminal-pane.tsx`, read at commit `df46f69` (2026-11-16).
+- **Ours:** `packages/tui/src/component/spinner-renderable.ts`, `packages/tui/src/component/register-spinner.ts`,
+  `packages/tui/src/util/renderer.ts`, `packages/tui/test/ui/embedded-terminal.test.tsx`.
 
 ## Paperclip
 

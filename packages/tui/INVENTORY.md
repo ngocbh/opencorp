@@ -85,6 +85,7 @@ change that rewires a kept file.
 | Prompt | `component/prompt/{index,autocomplete,frecency,history,stash,local-attachment}.ts(x)`, `prompt/**` | keep | The chat screen (Enter to steer, Esc to interrupt). |
 | Instrument line | `routes/session/instrument-line.tsx` (new) | restored, adapted | Under the prompt: after the folder, or the spinner and `esc interrupt`, a count per kind of the chat's instruments that haven't ended and how many failed; what waits for the owner takes the shortcuts' place, in the warning colour of the session footer's permission count (`routes/session/footer.tsx`, deleted). |
 | Dialog and UI kit | `ui/**`, `component/{command-palette,dialog-session-list,dialog-stash,dialog-theme-list,dialog-debug,error-component,spinner,register-spinner}.ts(x)` | keep | Used by every later screen. The session list reads office sessions. |
+| Spinner | `component/spinner-renderable.ts` | ported | Current upstream's spinner renderable (`df46f69`), on OpenTUI 0.8's animation clock; it replaces the `opentui-spinner` package, which doesn't run on OpenTUI 0.8. |
 | Theme | `theme/**`, `context/theme.tsx` | keep | |
 | Keymap and config | `keymap.tsx`, `config/**` | keep | Plugin, attention, model, provider, MCP, share and workspace entries go with their features. |
 | Local state | `context/{kv,local}.tsx`, `util/persistence.ts` | keep | `local.tsx` holds the person to talk to and session pins. |

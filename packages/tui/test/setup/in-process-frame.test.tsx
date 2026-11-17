@@ -4,12 +4,14 @@ import { expect, mock, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import { JsonPrompter } from "@opencorp/office/features/setup/json_prompts"
 import type { ScreenIo } from "../../src/setup/run"
+import { frameReader } from "../fixture/frame"
 import { until } from "../fixture/until"
 
 /** Runs `work` behind the screen in a 100x40 test renderer; frame helpers, what it printed, and how often it was
  *  interrupted. */
 async function boot<T>(work: (io: ScreenIo) => Promise<T>) {
-  const setup = await createTestRenderer({ width: 100, height: 40, useThread: false, exitOnCtrlC: false })
+  const setup = await createTestRenderer({ width: 100, height: 40, exitOnCtrlC: false })
+  await setup.renderer.setupTerminal()
   setup.renderer.waitForThemeMode = async () => "dark"
   const core = await import("@opentui/core")
   const configs: { exitSignals?: string[] }[] = []
@@ -33,6 +35,7 @@ async function boot<T>(work: (io: ScreenIo) => Promise<T>) {
   })
   // The task's rejection is the test's to check.
   task.catch(() => {})
+  const frame = frameReader(setup)
   return {
     setup,
     task,
@@ -44,7 +47,7 @@ async function boot<T>(work: (io: ScreenIo) => Promise<T>) {
     async until(pred: (f: string) => boolean, ms = 3000) {
       for (const end = Date.now() + ms; ; await Bun.sleep(20)) {
         if (!setup.renderer.isDestroyed) await setup.renderOnce()
-        const f = setup.captureCharFrame()
+        const f = frame()
         if (pred(f)) return f
         if (Date.now() > end) throw new Error("frame never matched:\n" + f)
       }

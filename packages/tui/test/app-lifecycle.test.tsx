@@ -15,7 +15,8 @@ async function renderUntil(setup: TestRendererSetup, text: string) {
 }
 
 test("SIGHUP destroys the renderer, clears the title and removes its listener", async () => {
-  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const setup = await createTestRenderer({ width: 80, height: 24 })
+  await setup.renderer.setupTerminal()
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
   const titles: string[] = []
@@ -48,7 +49,8 @@ test("SIGHUP destroys the renderer, clears the title and removes its listener", 
 })
 
 test("app.exit prints the session epilogue after scoped cleanup", async () => {
-  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const setup = await createTestRenderer({ width: 80, height: 24 })
+  await setup.renderer.setupTerminal()
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
   const office = createFakeOffice()

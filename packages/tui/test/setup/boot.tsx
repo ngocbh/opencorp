@@ -2,6 +2,7 @@ import { mock } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { SetupPrompt } from "@opencorp/protocol"
 import type { SetupChild } from "../../src/setup/child"
+import { frameReader } from "../fixture/frame"
 
 /** A setup child the test drives: it pushes prompts, ends with a code, and records what the screen did. */
 export class FakeChild implements SetupChild {
@@ -51,9 +52,9 @@ export async function bootSetup(child: FakeChild, command = "", size: { width?: 
   const setup = await createTestRenderer({
     width: size.width ?? 100,
     height: size.height ?? 30,
-    useThread: false,
     exitOnCtrlC: false,
   })
+  await setup.renderer.setupTerminal()
   // The test renderer never answers the theme query, so the screen would wait out its 1 s timeout.
   setup.renderer.waitForThemeMode = async () => "dark"
   const core = await import("@opentui/core")
@@ -68,7 +69,7 @@ export async function bootSetup(child: FakeChild, command = "", size: { width?: 
     command,
   )
   const frames: string[] = []
-  const frame = () => setup.captureCharFrame()
+  const frame = frameReader(setup)
   return {
     setup,
     frame,

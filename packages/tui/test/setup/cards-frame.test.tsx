@@ -135,7 +135,7 @@ test("handing the terminal over suspends the screen, says why on the terminal an
     const original = renderer[name].bind(renderer)
     renderer[name] = () => {
       calls.push(name)
-      original()
+      return original()
     }
   }
   try {

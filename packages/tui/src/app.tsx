@@ -62,7 +62,7 @@ import {
 } from "./keymap"
 
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
-import { destroyRenderer } from "./util/renderer"
+import { destroyRenderer, setTerminalTitle } from "./util/renderer"
 import { errorFormat } from "./util/error"
 
 registerOpenCorpSpinner()
@@ -147,8 +147,10 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
           catch: (error) => (error instanceof Error ? error : new Error(String(error))),
         }),
         (renderer) =>
-          Effect.sync(() => {
+          Effect.promise(async () => {
             destroyRenderer(renderer)
+            // The terminal is restored only once closed settles; it rejects when the terminal is already gone.
+            await renderer.closed.catch(() => {})
           }),
       )
       win32DisableProcessedInput()
@@ -320,9 +322,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     if (route.data.type === "session") {
       const sessionID = route.data.sessionID
       const session = office.state.sessions.find((s) => s.id === sessionID)
-      if (session) return renderer.setTerminalTitle(`opencorp | ${personLabel(office.state.people, session.person)}`)
+      if (session) return setTerminalTitle(renderer, `opencorp | ${personLabel(office.state.people, session.person)}`)
     }
-    renderer.setTerminalTitle("opencorp")
+    setTerminalTitle(renderer, "opencorp")
   })
 
   const args = useArgs()
@@ -558,8 +560,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         category: "System",
         hidden: true,
         enabled: process.platform !== "win32",
-        run: () => {
-          renderer.suspend()
+        run: async () => {
+          await renderer.suspend()
           process.once("SIGCONT", () => renderer.resume())
           process.kill(0, "SIGTSTP")
         },
@@ -572,7 +574,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           setTerminalTitleEnabled((prev) => {
             const next = !prev
             kv.set("terminal_title_enabled", next)
-            if (!next) renderer.setTerminalTitle("")
+            if (!next) setTerminalTitle(renderer, "")
             return next
           })
           dialog.clear()
