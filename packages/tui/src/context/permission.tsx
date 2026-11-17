@@ -1,4 +1,5 @@
-import { SessionMode, type Session } from "@opencorp/protocol"
+import { SessionMode, type Question, type Session } from "@opencorp/protocol"
+import { openQuestions } from "@opencorp/client"
 import { createStore } from "solid-js/store"
 import { useOffice } from "./office"
 import { LIVE } from "../util/status"
@@ -10,8 +11,8 @@ export function nextMode(mode: SessionMode): SessionMode {
   return modes[(modes.indexOf(mode) + 1) % modes.length]!
 }
 
-/** A chat's mode as the office holds it. The TUI shows it and asks the office to switch it; it never answers
- *  an approval card itself. */
+/** A chat's mode and its open approval cards, as the office holds them. The TUI shows the mode and asks the office to
+ *  switch it; it answers an approval card only as the owner chooses on it. */
 export const { use: usePermission, provider: PermissionProvider } = createSimpleContext({
   name: "Permission",
   init: () => {
@@ -44,9 +45,19 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
       return session
     }
 
+    /** The session's open approval cards, oldest first. */
+    function cards(sessionID: string): Question[] {
+      return openQuestions(office.state, sessionID).filter((q) => q.source === "approval")
+    }
+
     return {
       mode,
       set,
+      cards,
+      /** Whether the session's call `callId` (a yian call id) waits on an open approval card. */
+      waiting(sessionID: string, callId: string): boolean {
+        return cards(sessionID).some((q) => q.call_id === callId)
+      },
       /** Switches to `nextMode` of the current one. */
       cycle(sessionID: string): Promise<Session> {
         const run = (pending.get(sessionID) ?? Promise.resolve())

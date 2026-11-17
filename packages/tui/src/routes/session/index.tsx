@@ -29,6 +29,7 @@ import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
 import { DialogMessage } from "./dialog-message"
 import { DialogMode } from "./dialog-mode"
+import { PermissionPrompt } from "./permission"
 import { costLabel, Sidebar } from "./sidebar"
 import { filetype } from "../../util/filetype"
 import { errorMessage } from "../../util/error"
@@ -715,30 +716,35 @@ export function Session() {
                           />
                         }
                       >
-                        {(_id) => (
-                          <>
-                            <QuestionCard
-                              question={question()}
-                              hidden={!!sideOf()}
-                              onChat={() => setSideOf(question()?.id)}
-                            />
-                            <Show when={sideQuestion()}>
-                              {(q) => (
-                                <SideChat
-                                  question={q()}
-                                  session={sideSession()}
-                                  onBack={() => setSideOf(undefined)}
-                                  onSend={() => {
-                                    const undo = lift()
-                                    toBottom()
-                                    return undo
-                                  }}
-                                  onInterrupt={interrupt}
-                                />
-                              )}
-                            </Show>
-                          </>
-                        )}
+                        {/* Keyed and untracked: a card's source never changes, so the choice is made once. */}
+                        {(_id) =>
+                          question()?.source === "approval" ? (
+                            <PermissionPrompt question={question()} width={contentWidth()} />
+                          ) : (
+                            <>
+                              <QuestionCard
+                                question={question()}
+                                hidden={!!sideOf()}
+                                onChat={() => setSideOf(question()?.id)}
+                              />
+                              <Show when={sideQuestion()}>
+                                {(q) => (
+                                  <SideChat
+                                    question={q()}
+                                    session={sideSession()}
+                                    onBack={() => setSideOf(undefined)}
+                                    onSend={() => {
+                                      const undo = lift()
+                                      toBottom()
+                                      return undo
+                                    }}
+                                    onInterrupt={interrupt}
+                                  />
+                                )}
+                              </Show>
+                            </>
+                          )
+                        }
                       </Show>
                     }
                   >
@@ -1143,10 +1149,14 @@ function InlineTool(props: {
   onClick?: () => void
 }) {
   const { theme } = useTheme()
+  const ctx = use()
+  const permission = usePermission()
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
   const [errorExpanded, setErrorExpanded] = createSignal(false)
 
+  // A call held on an open approval card shows in the warning colour until the card is answered.
+  const waiting = createMemo(() => permission.waiting(ctx.sessionID, props.part.call_id))
   const error = createMemo(() => (props.part.state === "error" ? (props.part.error ?? "failed") : undefined))
   const note = createMemo(() => approvalNote(props.part.input ?? {}))
   const interrupted = createMemo(() => props.part.state === "interrupted")
@@ -1154,6 +1164,7 @@ function InlineTool(props: {
   const clickable = createMemo(() => Boolean(props.onClick || failed()))
   const fg = createMemo(() => {
     if (props.color) return props.color
+    if (waiting()) return theme.warning
     if (failed()) return theme.error
     if (hover() && props.onClick) return theme.text
     if (props.complete) return theme.textMuted

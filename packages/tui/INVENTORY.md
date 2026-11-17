@@ -34,7 +34,7 @@ Classification:
 | `createOpencodeClient` | `context/sdk.tsx` | replace | The protocol client (HTTP+SSE over the office socket) takes its place. |
 | `GlobalEvent`, `Event` | `context/sdk.tsx`, `context/event.ts`, `feature-plugins/system/notifications.ts`; tests `fixture/tui-sdk.ts`, `cli/tui/{data,use-event}.test.tsx`, `cli/cmd/tui/{sync,sync-live-hydration,notifications}.test.tsx` | replace | Protocol event `$defs`. |
 | `Session`, `SessionStatus`, `Message`, `UserMessage`, `AssistantMessage`, `Part`, `TextPart`, `ToolPart`, `ReasoningPart`, `FilePart`, `AgentPart` | `context/sync.tsx`, `routes/session/{index,subagent-footer,dialog-timeline,dialog-fork-from-timeline}.tsx`, `component/prompt/index.tsx`, `prompt/history.tsx`, `util/transcript.ts`, `feature-plugins/sidebar/context.tsx`; test `util/transcript.test.ts` | replace | Protocol session, message and part types. |
-| `PermissionRequest` | `context/sync.tsx`, `routes/session/permission.tsx` | replace | Protocol permission request. |
+| `PermissionRequest` | `context/sync.tsx`, `routes/session/permission.tsx` | replace (done) | Protocol `PendingQuestion` with `source: "approval"`. |
 | `QuestionRequest`, `QuestionAnswer` | `context/sync.tsx`, `routes/session/question.tsx` | replace | Protocol `PendingQuestion` and `AnswerRequest`; question cards build on this view. |
 | `Agent`, `Command`, `Config`, `Todo` | `context/sync.tsx` | replace | Employees replace agents; commands, config and todos follow the protocol or go. |
 | `Provider`, `ProviderListResponse`, `ProviderAuthMethod`, `ProviderAuthAuthorization`, `ConsoleState`, `ExperimentalConsoleListOrgsResponse` | `context/sync.tsx`, `util/{model,transcript}.ts`, `routes/session/index.tsx`, `component/dialog-{provider,console-org}.tsx`; test `util/transcript.test.ts` | drop | The office owns models and credentials; no provider pickers or auth in the TUI. The model picker (`component/dialog-model.tsx`) is rewritten on the office's connections API instead. |
@@ -88,7 +88,7 @@ change that rewires a kept file.
 | Keymap and config | `keymap.tsx`, `config/**` | keep | Plugin, attention, model, provider, MCP, share and workspace entries go with their features. |
 | Local state | `context/{kv,local}.tsx`, `util/persistence.ts` | keep | `local.tsx` holds the person to talk to and session pins. |
 | Data layer | `context/{sdk,sync,data,location,project,event,directory}.ts(x)` | replace (done) | `@opencorp/client` (`packages/client`: client, SSE, store, sync) and `context/office.tsx`. |
-| Session mode | `context/permission.tsx`, the `permission.mode` command (as `session.mode`) | restored, adapted | The office holds each session's mode; the TUI shows it after the agent's name and switches it, and never answers a card itself. |
+| Session mode and permission prompt | `context/permission.tsx`, `routes/session/permission.tsx`, the `permission.mode` command (as `session.mode`) | restored, adapted | The office holds the mode and the approval cards; the prompt answers a card, must be read whole first, and starts on No. |
 | Editor | `editor.ts`, `editor-zed.ts`, `context/editor.ts` | keep | External `$EDITOR` for the prompt. Editor selection context is no longer sent with prompts. |
 | Clipboard, terminal | `clipboard.ts`, `terminal-win32.ts` | keep | |
 | Plugin runtime | `plugin/**`, `component/plugin-route-missing.tsx`, `component/startup-loading.tsx`, the `plugin` route | drop | No TUI plugins. The startup screen only covered plugin loading. |
@@ -113,7 +113,6 @@ Removed rather than ported, because the office has no counterpart:
 | Files | Reason |
 | --- | --- |
 | `context/{sdk,sync,data,location,project,event,directory}.ts(x)`; tests `fixture/tui-sdk.ts`, `cli/tui/{data,use-event}.test.tsx`, `cli/cmd/tui/*` | The office client and store replace them. |
-| `routes/session/permission.tsx` | Tool permissions are the office's (per person); no permission prompts in the TUI. |
 | `routes/session/{footer,subagent-footer,dialog-timeline}.tsx` | Status and cost show in the header and sidebar; no subagents or timeline revert. |
 | `component/{dialog-session-rename,dialog-retry-action,todo-item}.tsx` | No rename or delete, retry status, or todos in the protocol. |
 | `context/thinking.ts`, `util/{model,revert-diff,session,tool-display}.ts` and their tests | No models, reasoning parts, reverts or OpenCode tool metadata in the protocol. |
