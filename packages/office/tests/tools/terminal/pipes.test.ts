@@ -1,6 +1,6 @@
 /** The terminal's pipes shell: each command its own sandboxed call, streamed, with stdout and stderr as one stream,
  *  the PTY shell's states, replies and record, and no typed input. The sandboxed tests skip where no sandbox runs; the
- *  last two give the shell a call of their own. */
+ *  rest give the shell a stand-in for its call. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -163,14 +163,22 @@ describe.skipIf(!sandboxAvailable())("in the sandbox", () => {
 
   test("the owner's interrupt stops a pipes command", async () => {
     const t = openShell()
-    expect(t.shell.interrupt().refused).toBe("nothing is running")
-    const command = "sleep 3737 & sleep 3838"
-    expect((await t.shell.run(command, 300)).status).toBe("running")
+    // With nothing running, the owner's Ctrl-C does nothing.
+    t.shell.ownerKeys("\x03")
+    expect(t.states.map((state) => state.status)).toEqual(["idle"])
+    const command = "echo before; sleep 3737 & sleep 3838"
+    const started = await t.shell.run(command, 100)
+    expect(started.status).toBe("running")
+    await waitFor(() => t.live().endsWith("before\n"), { timeout: 10_000, what: "the first line" })
+    // Keys other than Ctrl-C go nowhere: the shell takes no input.
+    t.shell.ownerKeys("yes\r")
+    expect(t.shell.state().status).toBe("running")
     const at = performance.now()
-    const interrupted = t.shell.interrupt()
-    expect(interrupted.refused).toBeUndefined()
-    expect(interrupted.status).toBe("running")
-    expect(await t.shell.read({ waitMs: 10_000 })).toMatchObject({ status: "idle", exit: null })
+    t.shell.ownerKeys("\x03")
+    // The owner's interrupt leaves the agent's place: its next read has what it hasn't read.
+    const done = await t.shell.read({ waitMs: 10_000 })
+    expect(done).toMatchObject({ status: "idle", exit: null })
+    expect(started.output + done.output).toBe(`$ ${command}\nbefore\n`)
     expect(performance.now() - at).toBeLessThan(5_000)
     // The command and what it left in the background are gone.
     expect(await gone("3737")).toBe(true)
@@ -181,20 +189,45 @@ describe.skipIf(!sandboxAvailable())("in the sandbox", () => {
       ["running", null],
       ["idle", null],
     ])
-    // The shell runs on.
-    const again = await t.shell.run("echo again", 10_000)
-    expect(again).toMatchObject({ status: "idle", exit: 0, output: "$ echo again\nagain\n" })
-    // Closing it stops a running command too, and ends its record.
-    expect((await t.shell.run("sleep 3939", 300)).status).toBe("running")
+
+    // The agent's own interrupt stops its command too, and returns a page from where it read.
+    expect(t.shell.interrupt().refused).toBe("nothing is running")
+    const slow = "echo again; sleep 3939"
+    const again = await t.shell.run(slow, 100)
+    await waitFor(() => t.live().endsWith("again\n"), { timeout: 10_000, what: "the first line" })
+    const interrupted = t.shell.interrupt()
+    expect(interrupted).toMatchObject({ status: "running" })
+    expect(interrupted.refused).toBeUndefined()
+    expect(again.output + interrupted.output).toBe(`$ ${slow}\nagain\n`)
+    expect(await t.shell.read({ waitMs: 10_000 })).toMatchObject({ status: "idle", exit: null, output: "" })
+    expect(await gone("3939")).toBe(true)
+
+    // Closing the shell stops a running command too, and ends its record.
+    expect((await t.shell.run("sleep 4040", 300)).status).toBe("running")
     await t.shell.close()
     expect(t.shell.state()).toEqual({ status: "ended", waiting: null, command: null, exit: null, error: null })
-    expect(await gone("3939")).toBe(true)
+    expect(await gone("4040")).toBe(true)
     expect(readRecord(t.recordDir)).toMatchObject({
       state: "ended",
-      commands: [{ exit: null }, { command: "echo again", exit: 0 }, { command: "sleep 3939", exit: null }],
+      commands: [{ exit: null }, { command: slow, exit: null }, { command: "sleep 4040", exit: null }],
     })
     expect((await t.shell.run("true", 1000)).refused).toBe("the shell has ended; start a new one")
     expect(t.shell.interrupt().refused).toBe("nothing is running")
+  })
+
+  test("output the agent hasn't read comes first in its next run's reply, as in a PTY shell", async () => {
+    const t = openShell()
+    const slow = "echo early; sleep 1; echo late"
+    const started = await t.shell.run(slow, 100)
+    expect(started.status).toBe("running")
+    // The command ends with no read: its last line is still to read.
+    await waitFor(() => t.shell.state().status === "idle", { timeout: 10_000, what: "the end" })
+    const next = await t.shell.run("echo next", 10_000)
+    expect(next).toMatchObject({ status: "idle", exit: 0, more: false })
+    expect(started.output + next.output).toBe(`$ ${slow}\nearly\nlate\n$ echo next\nnext\n`)
+    // An unfinished last line is read again as it is, the next command's head after it.
+    expect((await t.shell.run("printf part", 10_000)).output).toBe("$ printf part\npart")
+    expect((await t.shell.run("echo on", 10_000)).output).toBe("part$ echo on\non\n")
   })
 
   test("a pipes command's record holds its exit, and its output is paged like a PTY shell's", async () => {
@@ -263,18 +296,37 @@ test("a command the pipes shell can't take is refused with nothing run", async (
   expect(calls).toBe(1)
 })
 
-test("a pipes shell whose call can't run fails, saying why", async () => {
+test("a pipes call that fails ends its command, saying why, and the shell runs on", async () => {
+  let calls = 0
+  const t = openShell(async (_argv, options) => {
+    calls += 1
+    if (calls > 1) return result(0)
+    options.onOutput?.("stdout", Buffer.from("partial"))
+    throw new Error("spawn EAGAIN")
+  })
+  const reply = await t.shell.run("echo hi", 5_000)
+  const output = "$ echo hi\npartial\n[this command couldn't run: spawn EAGAIN]\n"
+  const next = output.length
+  expect(reply).toEqual({ shell: "sh_1", status: "idle", exit: null, waiting: null, output, next, more: false })
+  expect(t.shell.state()).toEqual({ status: "idle", waiting: null, command: null, exit: null, error: null })
+  expect(t.live()).toBe(output)
+  expect(readRecord(t.recordDir)).toMatchObject({ state: "running", commands: [{ command: "echo hi", exit: null }] })
+  expect(await t.shell.run("true", 5_000)).toMatchObject({ status: "idle", exit: 0, output: "$ true\n" })
+})
+
+test("a pipes shell where the sandbox can't run fails, saying why", async () => {
   const calls: (readonly string[])[] = []
   const t = openShell(async (argv) => {
     calls.push(argv)
     throw new SandboxUnavailable('no sandbox for platform "plan9"')
   })
   const reply = await t.shell.run("echo hi", 5_000)
-  expect(reply).toMatchObject({ status: "failed", exit: null, output: "$ echo hi\n" })
+  const error = `the sandbox can't run commands here: no sandbox for platform "plan9"`
+  expect(reply).toMatchObject({ status: "failed", exit: null, output: `$ echo hi\n[${error}]\n` })
   // The command went as one `/bin/sh -c` whose stderr is its stdout.
   expect(calls).toEqual([["/bin/sh", "-c", "exec 2>&1; echo hi"]])
-  const error = `the sandbox couldn't run a command: no sandbox for platform "plan9"`
   expect(t.shell.state()).toEqual({ status: "failed", waiting: null, command: null, exit: null, error })
   expect((await t.shell.run("true", 1_000)).refused).toBe(`the shell failed: ${error}`)
   expect(readRecord(t.recordDir)).toMatchObject({ state: "failed", error, commands: [{ command: "echo hi" }] })
+  expect(t.log()).toBe(`$ echo hi\n[${error}]\n`)
 })

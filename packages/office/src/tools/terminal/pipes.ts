@@ -7,13 +7,23 @@
  *  refused.
  *
  *  **The PTY shell's contract.** It has `PtyShell`'s states, replies and record, so the terminal's tools treat both
- *  alike: `$ <command>` heads each command's output, the model reads the output as a terminal shows it (`ModelView`),
- *  and the record keeps that view and each command's exit, as a shell's `$?` gives it. OpenCorp scrubs nothing here.
+ *  alike.
+ *  - `$ <command>` heads each command's output. It follows the last command's output where that ended, on the same
+ *    line when the output ended inside one, as a prompt does on a terminal.
+ *  - The model reads the output as a terminal shows it (`ModelView`). A reply starts where the agent last read, so
+ *    output that came after a reply is read once, in the next read or run.
+ *  - The record keeps that view and each command's exit, as a shell's `$?` gives it; an interrupted command's exit is
+ *    null, as is one whose call couldn't run.
+ *  - OpenCorp scrubs nothing here.
  *
  *  **Each command is its own call.** It starts in the workspace, with the sandbox's environment: no folder or
  *  variable carries over. It runs until it ends, is interrupted, or the shell closes; then its call's process group
- *  is killed, so nothing it left in the background outlives it (`run`). */
-import type { Result, RunOptions } from "../../runtime/sandbox/run.ts"
+ *  is killed, so nothing it left in the background outlives it (`run`). A call that couldn't run ends its command with
+ *  a note in brackets saying why, and the shell runs on; where the sandbox can't run at all, the shell fails.
+ *
+ *  **Two interrupts.** The agent's `interrupt` returns a page from where it last read; the owner's Ctrl-C
+ *  (`ownerKeys`) only stops the command, and leaves the agent's place as it was. */
+import { type Result, type RunOptions, SandboxUnavailable } from "../../runtime/sandbox/run.ts"
 import { ModelView } from "./output.ts"
 import type { Reply, ShellHost, ShellState } from "./shell.ts"
 
@@ -83,12 +93,11 @@ export class PipeShell {
     } catch (error) {
       return this.refused(`the shell's record can't be written: ${(error as Error).message}`)
     }
-    const start = this.view.length
+    // From where the agent last read, so what came in between (the end of a command it left running) is read once.
+    const start = this.cursor
     const call = new AbortController()
     this.call = call
-    const head = `$ ${command}\n`
-    this.host.output(Buffer.from(head))
-    this.view.append(head)
+    this.show(`$ ${command}\n`)
     this.set({ status: "running", command, exit: null })
     this.settled = this.runCall(command, call.signal)
     await this.wait(waitMs, signal)
@@ -108,12 +117,19 @@ export class PipeShell {
     return this.reply(from)
   }
 
-  /** Stops the running command, the agent's or at the owner's word: its call's process group is killed. Refused when
-   *  nothing runs. */
+  /** The agent's interrupt: stops the running command, killing its call's process group, and returns the view from
+   *  where the agent last read. Refused when nothing runs. */
   interrupt(): Reply {
     if (this.call === null) return this.refused("nothing is running")
     this.call.abort()
     return this.reply(this.cursor)
+  }
+
+  /** The owner's keys. A Ctrl-C among them stops the running command, as the agent's interrupt does, and leaves the
+   *  agent's place in the view where it was. Every other key goes nowhere: the shell takes no input, and its host
+   *  refuses them. */
+  ownerKeys(data: string): void {
+    if (data.includes("\x03")) this.call?.abort()
   }
 
   /** Ends the shell, stopping a running command; resolves once its call has ended. */
@@ -132,12 +148,15 @@ export class PipeShell {
     }
   }
 
-  /** Runs `command`'s call, streaming its output to both views; then the command ends with its exit, or the shell
-   *  fails when the call couldn't run. */
+  /** Runs `command`'s call, streaming its output to both views; then the command ends with its exit. A call that
+   *  couldn't run ends it with a note saying why, and fails the shell when the sandbox can't run at all. */
   private async runCall(command: string, signal: AbortSignal): Promise<void> {
     // One decoder per stream, so a character split across one stream's chunks never takes the other's bytes.
     const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() }
-    let result: Result
+    // The call's output so far ends inside a line: a note goes on a line of its own.
+    let open = false
+    let result: Result | undefined
+    let failure: unknown
     try {
       result = await this.host.run(["/bin/sh", "-c", `exec 2>&1; ${command}`], {
         signal,
@@ -145,25 +164,41 @@ export class PipeShell {
         // The view and the record keep the output; the call's result keeps none of it.
         maxOutput: 0,
         onOutput: (stream, chunk) => {
+          if (chunk.length > 0) open = chunk[chunk.length - 1] !== 0x0a
           this.host.output(chunk)
           this.view.append(decoders[stream].decode(chunk, { stream: true }))
         },
       })
     } catch (error) {
-      this.call = null
-      this.fail(`the sandbox couldn't run a command: ${(error as Error).message}`)
-      return
+      failure = error
     }
     this.view.append(decoders.stdout.decode() + decoders.stderr.decode())
     // `run` gives a signal's end as minus the signal; a shell's `$?` gives it as 128 plus the signal.
-    const exit = result.exit !== null && result.exit < 0 ? 128 - result.exit : result.exit
+    let exit: number | null = null
+    if (result !== undefined) exit = result.exit !== null && result.exit < 0 ? 128 - result.exit : result.exit
     try {
       this.host.record.exit(exit)
     } catch {
       // meta.json can't be written now; the record keeps the exit for its next write.
     }
     this.call = null
+    if (result === undefined) {
+      const message = (failure as Error).message
+      // Only a sandbox that can't run here fails the shell; a spawn or tracking error fails this call alone.
+      const why =
+        failure instanceof SandboxUnavailable
+          ? `the sandbox can't run commands here: ${message}`
+          : `this command couldn't run: ${message}`
+      this.show(`${open ? "\n" : ""}[${why}]\n`)
+      if (failure instanceof SandboxUnavailable) return this.fail(why)
+    }
     this.set({ status: this.closing ? "ended" : "idle", command: null, exit })
+  }
+
+  /** Puts the shell's own text (a command's head, a note) in the owner's live view and the model's. */
+  private show(text: string): void {
+    this.host.output(Buffer.from(text))
+    this.view.append(text)
   }
 
   /** Updates the state, tells the host, and wakes waiting replies. */
@@ -228,7 +263,7 @@ export class PipeShell {
     return { shell: this.id, status, exit, waiting, output: "", next: this.cursor, more: false, refused: why }
   }
 
-  /** A command's call couldn't run: the shell fails with `error`, and its record ends failed. */
+  /** The sandbox can't run here: the shell fails with `error`, and its record ends failed. */
   private fail(error: string): void {
     this.set({ status: "failed", command: null, exit: null, error })
     try {
