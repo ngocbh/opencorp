@@ -345,13 +345,18 @@ test("output that comes while the screen loads is drawn once, each byte", async 
     await leader(app, "o")
     await until(() => screens(office, shell.id) === 1)
     // While the screen is on its way: bytes it holds, bytes that straddle its end, and bytes past it, twice over.
-    office.live({ type: "instrument.output", session_id: sid, data: output(shell.id, 0, screen) })
-    office.live({ type: "instrument.output", session_id: sid, data: output(shell.id, 90, "tail-bytes one") })
+    // Those it holds come in capitals here, so a byte drawn from them instead of from the screen shows.
+    office.live({ type: "instrument.output", session_id: sid, data: output(shell.id, 0, screen.toUpperCase()) })
+    office.live({ type: "instrument.output", session_id: sid, data: output(shell.id, 90, "TAIL-BYTES one") })
     office.live({ type: "instrument.output", session_id: sid, data: output(shell.id, 100, " one two") })
     office.live({ type: "instrument.output", session_id: sid, data: output(shell.id, 108, " three") })
+    // Let the events reach the view while the screen is still held back.
     await Bun.sleep(200)
     release()
-    const f = await app.until((f) => f.includes("tail-bytes one two three"))
+    // The screen's own text shows once its reply is drawn; the output past it follows.
+    const f = await app.until((f) => f.includes("row 1") && f.includes("tail-bytes one two three"))
+    expect(f).not.toContain("ROW 1")
+    expect(f).not.toContain("TAIL-BYTES")
     expect(count(f, "row 1")).toBe(1)
     expect(count(f, "tail-bytes")).toBe(1)
     expect(count(f, " one")).toBe(1)
