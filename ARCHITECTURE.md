@@ -185,7 +185,7 @@ packages/office/src/features/<feature>/
 | `tests/` mirrors `src/`; feature folders keep their shape | `packages/office/tests/repo/layout.test.ts` |
 | Only the worker hosts yian runs | "no office code outside the worker calls a yian host function" in `packages/office/tests/features/chat/session_actor.test.ts` |
 | Protocol changes update every package | the TUI's and HQ's contract tests against a real office (existing) |
-| Secrets never in argv, logs or the model | no single test: HQ pairing's, login's and redaction's tests each cover part (existing) |
+| Secrets never in argv or logs; no scrubbing of an instrument's view or record, but the sandbox and the command reader's credential check keep the model's key and other credentials out of a shell's reach (the monitor's and the session actor's redactions stay) | no single test: HQ pairing's, login's and redaction's tests each cover part (existing); the reader's credential check: `packages/office/tests/runtime/permissions/commands.test.ts` and `policy.test.ts` |
 | The run log is the source of truth; everything is a flow | no test; held in review |
 
 ### Protocol schema
