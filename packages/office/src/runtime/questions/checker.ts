@@ -16,9 +16,10 @@ export class InvalidAnswer extends Error {
 /**
  * Return the value to store for `answer` to `question`, or throw `InvalidAnswer`.
  *
- * A harness card takes one of its options, or a record for its pages, and never the office's own answers.
- * Otherwise `sent_back` and `interrupted` answers are the office's own and pass unchanged. A model question
- * (`ask_user`, `ask_manager`) takes text, and an `option` answer must be one of its options. An `ask` node
+ * A harness card takes one of its options, or a record for its pages, and never the office's own answers. An
+ * approval card takes one of its options or text (No, and what to do instead), and an `interrupted` stop, never a
+ * `sent_back`. Otherwise `sent_back` and `interrupted` answers are the office's own and pass unchanged. A model
+ * question (`ask_user`, `ask_manager`) takes text, and an `option` answer must be one of its options. An `ask` node
  * question with pages takes a record keyed by each page's `header`. A page with an `answer_schema` entry takes
  * what that entry takes, and one without takes a label, or a list of labels for a multi-select page. No refusal quotes
  * a key or value from the answer, and a secret page's names only the page. One without pages takes what its
@@ -49,6 +50,7 @@ function wellFormed(value: unknown): void {
 
 function convert(question: QuestionRecord, answer: unknown, kind: Kind): unknown {
   if (question.source === "harness") return harness(question, answer, kind)
+  if (question.source === "approval") return approval(question, answer, kind)
   if (kind === "sent_back" || kind === "interrupted") return answer
   if (question.source !== "ask") {
     if (typeof answer !== "string" || strip(answer) === "") throw new InvalidAnswer("the answer must be text")
@@ -73,6 +75,17 @@ function harness(question: QuestionRecord, answer: unknown, kind: string): unkno
   if (question.questions !== null) return pages(question, answer)
   if (kind !== "option" || typeof answer !== "string" || !question.options.includes(answer)) {
     throw new InvalidAnswer("pick one of the options")
+  }
+  return answer
+}
+
+function approval(question: QuestionRecord, answer: unknown, kind: Kind): unknown {
+  // No side chat on an approval card, so nothing to send back; a stop interrupts the agent.
+  if (kind === "sent_back") throw new InvalidAnswer("an approval card takes Yes or what to do instead")
+  if (kind === "interrupted") return answer
+  if (typeof answer !== "string" || strip(answer) === "") throw new InvalidAnswer("the answer must be text")
+  if (kind === "option" && !question.options.includes(answer)) {
+    throw new InvalidAnswer("the answer is not one of the options")
   }
   return answer
 }

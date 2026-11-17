@@ -16,7 +16,7 @@ const NAMES = [
   "Timestamp", "CompanyDefaults", "Company", "HarnessPolicy", "Sop", "Routine", "Person", "Group",
   "AssetTool", "Grant", "Asset", "WorkItem", "Comment", "Session", "SessionMode", "HarnessUsage", "Message",
   "Part", "TextPart", "FilePart", "ToolPart", "ErrorPart", "Permission", "QuestionOption", "QuestionPage",
-  "AnswerField", "DiscussionEntry", "Question", "Profile", "ProfileProposal", "Event", "LiveEvent",
+  "AnswerField", "DiscussionEntry", "Approval", "Question", "Profile", "ProfileProposal", "Event", "LiveEvent",
   "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "SetModeRequest",
   "RepoIssue", "CompanyView", "CommitInfo", "CompanyTreeEntry", "CompanyTree", "CompanyFile", "RunSummary",
   "RunPage", "RunUsage", "RunDetail", "RunNode", "RunDivider", "RunNodePage", "RunEvent", "RunEventPage",
@@ -167,6 +167,27 @@ test("a session has a mode, auto by default, and a mode request takes only auto,
     expect(Schemas.SetModeRequest.safeParse({ mode }).success).toBe(true)
   expect(Schemas.SetModeRequest.safeParse({ mode: "yolo" }).success).toBe(false)
   expect(Schemas.SetModeRequest.safeParse({ mode: "dontask" }).success).toBe(false)
+})
+
+test("a question may be an approval card, holding what it would allow", () => {
+  const base = {
+    id: "01JA1Q0000000000000000000A", session_id: "01JA1S0000000000000000000A", run_id: "run-1", node_id: null,
+    asker: "minh", question: "ls", status: "open", created_at: "2026-11-17T00:00:00.000Z",
+    updated_at: "2026-11-17T00:00:00.000Z",
+  }
+  const card = Schemas.Question.parse({
+    ...base,
+    source: "approval",
+    approval: { kind: "command", tool: "shell", action: "ls", reason: "Ask mode" },
+  })
+  expect(card.approval).toEqual({
+    kind: "command", tool: "shell", action: "ls", args: {}, why: "", reason: "Ask mode", rules: [], partial: false,
+    into: null,
+  })
+  expect(Schemas.Question.parse({ ...base, source: "ask_user" }).approval).toBeNull()
+  expect(Schemas.Approval.safeParse({ kind: "command", tool: "shell", action: "ls", reason: "", extra: 1 }).success)
+    .toBe(false)
+  expect(Schemas.Approval.safeParse({ kind: "file", tool: "shell", action: "ls", reason: "" }).success).toBe(false)
 })
 
 const HQ = [

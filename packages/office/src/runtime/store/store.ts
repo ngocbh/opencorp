@@ -233,7 +233,7 @@ const QUESTIONS: Table<typeof Question> = {
   label: "Question",
   key: "id",
   schema: Question,
-  json: new Set(["options", "questions", "answer_schema", "discussion", "answer"]),
+  json: new Set(["options", "questions", "answer_schema", "approval", "discussion", "answer"]),
   bools: new Set(["gate"]),
   derived: new Set(),
 }

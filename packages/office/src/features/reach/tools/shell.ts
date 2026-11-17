@@ -12,7 +12,7 @@ import {
   withOwnerOrStop,
 } from "../learning.ts"
 import { HAND_OVER_COMMAND } from "../risks.ts"
-import { lineCount, numberedLines, oddCharacter } from "../show.ts"
+import { lineCount, numberedLines, oddCharacter } from "../../../util/show.ts"
 import { cleanOutput, quietStdin, type Ran, readStatuses, resetStatus, runChild, sshEnv, wellFormed } from "../ssh.ts"
 
 export const RUN = "Run it"

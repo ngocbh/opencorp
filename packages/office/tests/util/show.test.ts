@@ -1,6 +1,6 @@
 /** How a command or script that will run is shown to the owner, and what the model may send to run. */
 import { expect, test } from "bun:test"
-import { lineCount, MAX_INDENT, numberedLines, oddCharacter, shownCode, SPACE_RUN } from "../../../src/features/reach/show.ts"
+import { lineCount, MAX_INDENT, numberedLines, oddCharacter, shownCode, SPACE_RUN } from "../../src/util/show.ts"
 
 /** Look-alike blanks that aren't shell whitespace, and invisible ones. */
 const LOOK_ALIKES = [" ", " ", "　", " ", "⠀", "ㅤ"]

@@ -17,6 +17,10 @@ export type OnQuestion = (question: QuestionRecord, options?: { workItem?: WorkI
 /** The discussion an answered question carries over from an earlier, expired one. */
 export type Carried = (question: QuestionRecord) => Iterable<DiscussionEntry>
 
+/** The questions an interrupted call answers `INTERRUPTED`, as Esc on their chat does: the model's, and approval
+ *  cards. */
+const INTERRUPTIBLE: ReadonlySet<QuestionRecord["source"]> = new Set(["ask_user", "ask_manager", "approval"])
+
 /** The name a model calls, and yian records, the company group's `ask_manager` by when a flow grants the group. */
 export const ASK_MANAGER_CALL = groupToolName("company", "ask_manager")
 
@@ -189,10 +193,10 @@ export class Answers {
    * Close the question of yian call `callId` of run `runId`, which closed with `reason` (`crashed`, `interrupted`,
    * `timed_out`, `cancelled` or `failed`) before it was answered; return the question.
    *
-   * An `interrupted` `ask_user` or `ask_manager` question is answered `INTERRUPTED` (kind `interrupted`, by no one)
-   * and marked `consumed`, since no call will take the answer. Any other reason, or an interrupted flow `ask`, makes
-   * it `stale`: a `timed_out` call closes its card too. A question no longer open is returned unchanged. Undefined
-   * unless `callId` is of `runId` and a question of `runId` is stored for it.
+   * An `interrupted` `ask_user`, `ask_manager` or approval question is answered `INTERRUPTED` (kind `interrupted`, by
+   * no one) and marked `consumed`, since no call will take the answer. Any other reason, or an interrupted flow
+   * `ask`, makes it `stale`: a `timed_out` call closes its card too. A question no longer open is returned
+   * unchanged. Undefined unless `callId` is of `runId` and a question of `runId` is stored for it.
    */
   closedCall(runId: string, callId: string, reason: string): QuestionRecord | undefined {
     if (!callId.startsWith(`${runId}/`)) return undefined
@@ -200,7 +204,7 @@ export class Answers {
       const question = this.store.getQuestionByCall(callId)
       if (!question || question.run_id !== runId) return undefined
       if (question.status !== "open") return question
-      if (reason === "interrupted" && (question.source === "ask_user" || question.source === "ask_manager")) {
+      if (reason === "interrupted" && INTERRUPTIBLE.has(question.source)) {
         this.store.answerQuestion(question.id, INTERRUPTED, "interrupted", null)
         return this.store.setQuestionStatus(question.id, "consumed")
       }

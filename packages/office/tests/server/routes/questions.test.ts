@@ -308,6 +308,46 @@ test("stop is credited to the verified person", async () => {
   expect(actor.answered).toEqual([[q.id, INTERRUPTED, "interrupted", "ava"]])
 })
 
+test("only the session's approver may answer or stop its approval card", async () => {
+  const office = makeOffice()
+  wire(office)
+  const { sock } = await served(office, { tokens: true })
+  const ava = avaHeaders(office)
+  const token = newToken()
+  giveDevice(office.paths.company, CEO, "mac", token)
+  const ceo = bearer(token)
+  const approval = (sessionId: string, n: number) =>
+    office.store.addQuestion(
+      question(sessionId, {
+        source: "approval",
+        call_id: `run-1/n/${n}/0`,
+        question: "rm -rf build",
+        options: ["Yes"],
+        approval: { kind: "command", tool: "shell", action: "rm -rf build", reason: "Ask mode" },
+      }),
+    )
+  // The CEO opened this chat; a chat nobody opened falls to the CEO at its pinned commit.
+  const opened = office.store.createSession(session({ opened_by: CEO, status: "ended" }))
+  const unopened = office.store.createSession(session({ status: "ended", repo_commit: await office.git.head() }))
+  for (const [s, n] of [[opened, 1], [unopened, 3]] as const) {
+    const answered = approval(s.id, n)
+    const stopped = approval(s.id, n + 1)
+    let r = await post(sock, `/questions/${answered.id}/answer`, { answer: "Yes", answer_kind: "option" }, ava)
+    expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
+    r = await post(sock, `/questions/${stopped.id}/stop`, null, ava)
+    expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
+    expect(office.store.listQuestions({ sessionId: s.id, status: "open" })).toHaveLength(2)
+    r = await post(sock, `/questions/${answered.id}/answer`, { answer: "Yes", answer_kind: "option" }, ceo)
+    expect([r.status, (r.json() as Question).answered_by]).toEqual([200, CEO])
+    r = await post(sock, `/questions/${stopped.id}/stop`, null, ceo)
+    expect([r.status, (r.json() as Question).answer_kind]).toEqual([200, "interrupted"])
+  }
+  // Other cards are answered as before: by anyone who may act.
+  const q = openQuestion(office)
+  const r = await post(sock, `/questions/${q.id}/answer`, { answer: "pg", answer_kind: "text" }, ava)
+  expect(r.status).toBe(200)
+})
+
 test("a secret pages refused answer is not echoed", async () => {
   const SECRET = "sk-PLANTED-0123456789"
   const lines: string[] = []

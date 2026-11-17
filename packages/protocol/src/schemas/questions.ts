@@ -38,6 +38,26 @@ export const DiscussionEntry = z.strictObject({
 })
 export type DiscussionEntry = z.input<typeof DiscussionEntry>
 
+/** What an approval card asks its approver to allow: the action exactly as it would run, the tool and arguments
+ *  that run it, the agent's own reason (untrusted), why policy asks, and the allow rules "don't ask again" adds
+ *  (empty: it may add none). The card's `call_id` is the yian call it holds. */
+export const Approval = z.strictObject({
+  /** `command`: a command to run; `input`: a line to type into a running command. */
+  kind: z.enum(["command", "input"]),
+  /** The tool that would act: `shell`, `terminal_run`, `terminal_type`. */
+  tool: z.string(),
+  action: z.string(),
+  args: z.record(z.string(), z.unknown()).default(() => ({})),
+  why: z.string().default(""),
+  reason: z.string(),
+  rules: z.array(z.string()).default(() => []),
+  /** Typed text without Enter (`input` only). */
+  partial: z.boolean().default(false),
+  /** For typed text: the command it is typed into, whose ssh destination is its host. */
+  into: z.string().nullable().default(null),
+})
+export type Approval = z.input<typeof Approval>
+
 export const Question = z.strictObject({
   id: Ulid,
   session_id: Ulid,
@@ -52,9 +72,11 @@ export const Question = z.strictObject({
   /**
    * Where the question comes from. `ask`: a flow's TOOL `ask` node. `harness`: a request from the session's
    * harness (a Codex approval or question). It takes only an `option` or `text` answer; no side chat, send back
-   * or stop. It goes `stale` when the harness stops waiting.
+   * or stop. It goes `stale` when the harness stops waiting. `approval`: an agent's call held for the session's
+   * approver: one of its options, or text, which is No and what to do instead; its stop interrupts the agent; no
+   * side chat or send back.
    */
-  source: z.enum(["ask_user", "ask", "ask_manager", "harness"]),
+  source: z.enum(["ask_user", "ask", "ask_manager", "harness", "approval"]),
   asker: Handle,
   work_item_id: Ulid.nullable().default(null),
   title: z.string().nullable().default(null),
@@ -62,6 +84,7 @@ export const Question = z.strictObject({
   options: z.array(z.string()).default(() => []),
   questions: z.array(QuestionPage).min(1).max(4).nullable().default(null),
   answer_schema: z.array(AnswerField).default(() => []),
+  approval: Approval.nullable().default(null),
   discussion: z.array(DiscussionEntry).default(() => []),
   gate: z.boolean().default(false),
   status: z.enum(["open", "answered", "consumed", "stale"]),
