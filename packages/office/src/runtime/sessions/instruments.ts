@@ -7,12 +7,13 @@
  *  offset, with nothing in between. A client follows the session's live events, reads the screen (the bytes from
  *  `offset` to `end`), then applies only the bytes of each `instrument.output` past `end`. The registry counts the
  *  offsets of both, so they meet whatever the events' coalescing. A screen starts just after a line feed, so it never
- *  begins inside an escape sequence.
+ *  begins inside an escape sequence: with no line feed in what is kept, it starts at the first escape's ESC.
  *
  *  **Output events are coalesced**: at most one per instrument every `everyMs`, each of at most 64 KiB, so a busy
  *  shell can't fill a client's queue on the bus (which drops a subscriber 1000 items behind). The first output after a
- *  quiet spell goes at once, so an echo isn't held back. A client that falls further behind than the screen keeps gets
- *  an event past its end, and reads the screen again. A change goes at once, after the output still waiting, so it
+ *  quiet spell goes at once, so an echo isn't held back. When output comes faster than that and bytes are dropped
+ *  before they went, the events skip ahead to the newest 64 KiB: a client gets one event past its end, and reads the
+ *  screen again, rather than trailing ever further behind. A change goes at once, after the output still waiting, so it
  *  never comes before the output that preceded it.
  *
  *  **Lifetime.** The registry lives in memory, so its instruments outlive the clients that watch them, and none
@@ -49,6 +50,7 @@ const EVERY_MS = 50
 /** The most bytes one output event carries. */
 const EVENT_BYTES = 64 * 1024
 const LINE_FEED = 0x0a
+const ESC = 0x1b
 /** The most chunks held before they are joined: a shell's echo comes a byte at a time. */
 const CHUNKS_MAX = 1024
 
@@ -165,16 +167,17 @@ export class Instruments {
     return this.entry(sessionId, id)?.instrument
   }
 
-  /** What is held of instrument `id`'s output, starting just after a line feed (with none in it, from its start); all
-   *  of it from offset 0 while nothing has been dropped. */
+  /** What is held of instrument `id`'s output, starting just after a line feed (with none in it, at the first ESC; with
+   *  neither, from its start, since no escape begins in it); all of it from offset 0 while nothing has been dropped. */
   screen(sessionId: string, id: string): Screen | undefined {
     const entry = this.entry(sessionId, id)
     if (entry === undefined) return undefined
     const { kept } = entry
     const data = kept.bytes(kept.start, kept.end)
-    const cut = kept.start === 0 ? -1 : data.indexOf(LINE_FEED)
-    if (cut < 0) return { offset: kept.start, end: kept.end, data }
-    return { offset: kept.start + cut + 1, end: kept.end, data: data.subarray(cut + 1) }
+    if (kept.start === 0) return { offset: 0, end: kept.end, data }
+    const line = data.indexOf(LINE_FEED)
+    const at = line >= 0 ? line + 1 : Math.max(0, data.indexOf(ESC))
+    return { offset: kept.start + at, end: kept.end, data: data.subarray(at) }
   }
 
   /** Takes instrument `id` out of the list, once the output it printed goes out, and publishes its removal. */
@@ -218,11 +221,11 @@ export class Instruments {
     while (this.send(entry));
   }
 
-  /** Sends one output event of what hasn't gone, from where the last ended (or the oldest byte held, if that was
-   *  dropped meanwhile); whether more is left. */
+  /** Sends one output event of what hasn't gone, from where the last ended; or, when bytes were dropped before they
+   *  went, of the newest bytes, past the gap. Whether more is left. */
   private send(entry: Entry): boolean {
     const { kept } = entry
-    const from = Math.max(entry.sent, kept.start)
+    const from = entry.sent >= kept.start ? entry.sent : Math.max(kept.start, kept.end - EVENT_BYTES)
     if (from >= kept.end) return false
     const to = Math.min(kept.end, from + EVENT_BYTES)
     entry.sent = to

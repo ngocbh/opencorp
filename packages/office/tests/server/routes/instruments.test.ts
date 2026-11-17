@@ -288,6 +288,22 @@ test("keys to an ended shell are 409", async () => {
   expect(errorOf(r)).toEqual([404, "not_found"])
 })
 
+test("keys and a size to a shell still starting are 409, never dropped", async () => {
+  const t = await office()
+  const s = t.office.store.createSession(session({ opened_by: CEO }))
+  // A shell its host has listed but that hasn't opened yet.
+  const id = newId()
+  const got: string[] = []
+  const starting = hosted(s.id, id, () => undefined, { cols: 80, rows: 24 })
+  t.office.instruments.add(s.id, { ...starting, keys: (data) => got.push(data), resize: () => got.push("resize") })
+  expect(t.office.instruments.list(s.id)[0]!.status).toBe("starting")
+  let r = await post(t.sock, `/sessions/${s.id}/instruments/${id}/keys`, { data: "ls\r" }, t.ceo)
+  expect(errorOf(r)).toEqual([409, "not_live"])
+  r = await post(t.sock, `/sessions/${s.id}/instruments/${id}/size`, { cols: 100, rows: 30 }, t.ceo)
+  expect(errorOf(r)).toEqual([409, "not_live"])
+  expect(got).toEqual([])
+})
+
 test("a pipes shell takes the owner's Ctrl-C as an interrupt, and refuses other keys", async () => {
   const t = await office()
   const s = t.office.store.createSession(session({ opened_by: CEO }))

@@ -35,7 +35,9 @@ export const Instrument = z.strictObject({
 export type Instrument = z.input<typeof Instrument>
 
 /** `instrument.output` data: raw terminal bytes, base64; `offset` is the byte offset of the first byte, counted from
- *  the instrument's start. A client applies only the bytes past what it has, however events were coalesced. */
+ *  the instrument's start. A client applies only the bytes past what it has, however events were coalesced. An event
+ *  whose `offset` is past what it has is a gap: the office dropped output it couldn't send in time, so the client reads
+ *  the screen again (`InstrumentScreen`). */
 export const InstrumentOutput = z.strictObject({ instrument_id: Ulid, offset: z.int().min(0), data: z.string() })
 export type InstrumentOutput = z.input<typeof InstrumentOutput>
 

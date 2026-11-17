@@ -52,10 +52,11 @@ async function onlyApprover(ctx: RequestContext, params: Params): Promise<void> 
   live(ctx, params)
 }
 
-/** 409 `not_live` once the instrument has ended or failed: it stays listed, with its scrollback, for its host to
- *  remove. */
+/** 409 `not_live` while the instrument is still starting, and once it has ended or failed (it stays listed, with its
+ *  scrollback, for its host to remove): it would drop the keys. */
 function running(instrument: LiveInstrument): void {
   const { status } = instrument.info()
+  if (status === "starting") throw new HttpError(409, "not_live", "this shell is still starting; try once it is ready")
   if (status === "ended" || status === "failed") throw new HttpError(409, "not_live", `this shell has ${status}`)
 }
 
@@ -73,7 +74,8 @@ export function screen(ctx: RequestContext, params: Params) {
 }
 
 /** The approver's keys, straight to the shell's running program. A pipes shell takes only Ctrl-C, which interrupts
- *  its command (409 `not_interactive` for other keys); a shell that ended takes none (409 `not_live`). */
+ *  its command (409 `not_interactive` for other keys); a shell still starting, or one that ended, takes none (409
+ *  `not_live`). */
 export function keys(ctx: RequestContext, params: Params, body: unknown) {
   const { data } = body as z.output<typeof InstrumentKeysRequest>
   const instrument = live(ctx, params)

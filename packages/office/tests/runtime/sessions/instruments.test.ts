@@ -128,6 +128,32 @@ test("output is coalesced into one event per interval, in order, with offsets th
   expect(outputs(events).map(([, text]) => text).join("")).toBe("done\r\n$ ")
 })
 
+test("output dropped before it went skips the events ahead to the newest bytes, so a viewer sees one gap", () => {
+  const { instruments, events } = registry({ everyMs: 1000 })
+  const { instrument } = shell("01JA1H00000000000000000K01")
+  instruments.add(SESSION, instrument)
+  events.length = 0
+  instruments.output(SESSION, instrument.id, bytes("$ cat big\r\n"))
+  // 3 MiB within one interval: the screen keeps the last 1 MiB, so the first 2 MiB are dropped before they went.
+  const chunk = bytes("y".repeat(64 * 1024))
+  for (let i = 0; i < 48; i++) instruments.output(SESSION, instrument.id, chunk)
+  instruments.output(SESSION, instrument.id, bytes("tail\r\n"))
+  instruments.updated(SESSION, instrument.id)
+  const end = 11 + 48 * 64 * 1024 + 6
+  // One event of the newest 64 KiB, past a gap, rather than the 1 MiB kept, which a viewer would trail behind.
+  const sent = outputs(events)
+  expect(sent.map(([offset, text]) => [offset, text.length])).toEqual([
+    [0, 11],
+    [end - 64 * 1024, 64 * 1024],
+  ])
+  expect(sent[1]![1]).toEndWith("tail\r\n")
+  expect(instruments.screen(SESSION, instrument.id)!.end).toBe(end)
+  // Later output goes on from there.
+  instruments.output(SESSION, instrument.id, bytes("$ "))
+  instruments.updated(SESSION, instrument.id)
+  expect(outputs(events).at(-1)).toEqual([end, "$ "])
+})
+
 test("the screen keeps the last bytes, starting after a line feed, and its offset and end say which bytes they are", () => {
   const { instruments } = registry({ keepBytes: 16 })
   const { instrument } = shell("01JA1H00000000000000000K01")
@@ -149,9 +175,13 @@ test("the screen keeps the last bytes, starting after a line feed, and its offse
   // The cap cuts this chunk's first byte, its escape's ESC.
   instruments.output(SESSION, instrument.id, bytes("\x1b[1mbold\x1b[0m\nok!\n"))
   expect(screen()).toEqual({ offset: 32, end: 36, text: "ok!\n" })
-  // With no line feed in the kept bytes, the screen is all of them.
+  // With no line feed or escape in the kept bytes, the screen is all of them.
   instruments.output(SESSION, instrument.id, bytes("abcdefghijklmnopqrstuvwxyz"))
   expect(screen()).toEqual({ offset: 46, end: 62, text: "klmnopqrstuvwxyz" })
+  // With no line feed, it starts at the first escape's ESC: the cap cut `\x1b[1` off the first escape, and the rest of
+  // it is never shown as text.
+  instruments.output(SESSION, instrument.id, bytes("\x1b[1mxyzw\x1b[31mredred"))
+  expect(screen()).toEqual({ offset: 70, end: 81, text: "\x1b[31mredred" })
   expect(instruments.screen(OTHER, instrument.id)).toBeUndefined()
 
   // An echo comes a byte at a time; however many bytes, the screen holds them in order.

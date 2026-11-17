@@ -152,6 +152,12 @@ test("an added instrument is listed, prints by byte offset, takes the approver's
   expect(await call("POST", `${pipes1}/keys`, { data: "\x03" })).toEqual([200, { ok: true }])
   expect(await call("POST", `${pty1}/size`, { cols: 100, rows: 30 })).toEqual([200, { ok: true }])
   expect(office.state.instruments[sid]![0]!.size).toEqual({ cols: 100, rows: 30 })
+  // A shell still starting takes none, as the office's would drop them.
+  const starting = office.addInstrument(sid, { ...pty, id: "01JA1H00000000000000000K03", status: "starting" })
+  expect((await call("POST", `/sessions/${sid}/instruments/${starting.id}/keys`, { data: "x" }))[1]).toMatchObject({
+    error: "not_live",
+  })
+  office.removeInstrument(sid, starting.id)
   // A chat someone else opened takes only their keys.
   office.updateSession(sid, { opened_by: "lan" })
   expect((await call("POST", `${pty1}/keys`, { data: "x" }))[1]).toMatchObject({ error: "forbidden" })

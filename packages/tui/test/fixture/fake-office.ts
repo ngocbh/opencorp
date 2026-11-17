@@ -856,8 +856,9 @@ export function createFakeOffice(
     if (actor !== approver) throw fail(403, "forbidden", `only @${approver} may type into or resize this session's shells`)
     return instrument(sessionId, id)
   }
-  /** The office's 409 for a shell that ended or failed: it takes no keys or size. */
+  /** The office's 409 for a shell still starting, or one that ended or failed: it takes no keys or size. */
   function running(found: Instrument) {
+    if (found.status === "starting") throw fail(409, "not_live", "this shell is still starting; try once it is ready")
     if (found.status === "ended" || found.status === "failed") throw fail(409, "not_live", `this shell has ${found.status}`)
   }
   /** The office's keys: straight to the shell; a pipes shell takes only Ctrl-C. */
