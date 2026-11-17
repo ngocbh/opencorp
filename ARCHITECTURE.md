@@ -81,7 +81,7 @@ Each category is a top-level folder of `packages/office/src/`. The order, lowest
 | Category | Is | Does | Depends on | Used by |
 |---|---|---|---|---|
 | `util/` | Helpers that know nothing of the company, models, flows or the office's state | Files that never follow links, private files, processes, the inherited env, finding a program on `PATH`, scrubbing, error texts, the office home's paths, sockets, the checkout's path, a redirect page that keeps a link out of an opener's arguments, how a command is shown to the owner. `platform.ts` holds every Bun call | — | every layer |
-| `company/` | The company | Loads, lints, commits and watches its repo; people, org chart, SOP flows, profiles, hiring; the chat flow's paths; the starting company | util | runtime, tools, features, server |
+| `company/` | The company | Loads, lints, commits and watches its repo; people, org chart, SOP flows, profiles, hiring; the agents' and the company's command rules (`rules.yaml`, read at HEAD); the chat flow's paths; the starting company | util | runtime, tools, features, server |
 | `runtime/` | What runs agents safely | The database, the sandbox, who is acting, worker processes, the record of runs, what sessions share, permissions, held questions, the event bus, asset secrets, the office as a service | util, company | models, tools, features, server, `main.ts` |
 | `models/` | The office's model connections and their policy | Connections, ChatGPT logins, model lists, prices and cost caps, the model check | util, runtime | features, server, `main.ts` |
 | `tools/` | What agents use | Typed tool groups (company, work items, workspace, toolbox) and the instruments (`codex/` now; `terminal/` and `claude/` in #888) | util, company, runtime | features |

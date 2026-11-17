@@ -1,0 +1,1 @@
+{ "effect": "allow", "kind": "command", "pattern": "git status *", "source": "agent" }

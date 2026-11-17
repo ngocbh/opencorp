@@ -7,6 +7,8 @@ import {
   Approval as ApprovalSchema,
   approvalSessionOption,
   Person as PersonSchema,
+  RemoveRuleRequest,
+  RuleList as RuleListSchema,
   Session as SessionSchema,
   SessionMode,
 } from "@opencorp/protocol"
@@ -32,6 +34,7 @@ import type {
   PromptRequest,
   RepoIssue,
   Question,
+  RuleList,
   Session,
   WorkItem,
 } from "@opencorp/protocol"
@@ -85,6 +88,8 @@ export type FakeState = {
   models: Record<string, ModelList>
   /** Who may add, remove or set the default connection. */
   managers: string[]
+  /** Each chat's rules, with their sources, and the rules files that don't load, by session id; none when absent. */
+  rules: Record<string, RuleList>
 }
 
 const now = () => new Date().toISOString()
@@ -163,6 +168,7 @@ export function seed(nextId = counter()): FakeState {
       "azure-2": { connection: "azure-2", models: [{ id: "gpt-4o-mini" }, { id: "o3-mini" }], listed: true, error: null },
     },
     managers: ["ngocbh"],
+    rules: {},
   }
 }
 
@@ -777,6 +783,20 @@ export function createFakeOffice(
     const model = body.model === c.model ? null : body.model
     return upsertSession({ ...s, connection: c.name, model, model_note: null, updated_at: now() })
   }
+  /** The office's removal of a session or agent rule, with no approver rule: the scripts run as the CEO, who opened
+   *  the chat. As the office, a company rule changes only by editing rules.yaml. */
+  function removeRule(id: string, body: unknown) {
+    const parsed = RemoveRuleRequest.safeParse(body)
+    check(parsed.success, "the body isn't a rule")
+    const rule = parsed.data!
+    const list = state.rules[session(id).id]
+    if (rule.source === "company")
+      throw fail(409, "company_rule", "company rules change only by editing rules.yaml in the company repo")
+    const same = (r: RuleList["rules"][number]) =>
+      r.effect === rule.effect && r.kind === rule.kind && r.pattern === rule.pattern && r.source === rule.source
+    if (!list?.rules.some(same)) throw fail(404, "not_found", "this chat has no such rule")
+    state.rules[id] = { ...list, rules: list.rules.filter((r) => !same(r)) }
+  }
   /** The office's mode switch, with no approver rule: the scripts run as the CEO, who opened the chat. */
   function setMode(id: string, body: any) {
     check(SessionMode.safeParse(body?.mode).success, "mode: isn't an allowed value")
@@ -1065,6 +1085,20 @@ export function createFakeOffice(
     ],
     ["POST", "/sessions/:id/model", ({ params, body }) => Response.json(servedSession(setModel(params.id, body)))],
     ["POST", "/sessions/:id/mode", ({ params, body }) => Response.json(servedSession(setMode(params.id, body)))],
+    [
+      "GET",
+      "/sessions/:id/rules",
+      // As the office serves it: every field, defaults filled.
+      ({ params }) => Response.json(RuleListSchema.parse(state.rules[session(params.id).id] ?? { rules: [] })),
+    ],
+    [
+      "POST",
+      "/sessions/:id/rules/remove",
+      ({ params, body }) => {
+        removeRule(params.id, body)
+        return Response.json({ ok: true })
+      },
+    ],
     ["GET", "/connections", ({ actor }) => Response.json(connectionList(actor))],
     [
       "GET",

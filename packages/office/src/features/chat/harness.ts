@@ -4,9 +4,10 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { type Scheduler, realScheduler } from "@ngocbh/yian/platform"
-import { type Message, OFFICE, Session, WorkItem, now } from "@opencorp/protocol"
+import { type Message, OFFICE, type RemoveRuleRequest, type RuleList, Session, WorkItem, now } from "@opencorp/protocol"
 import type { CompanyGit } from "../../company/git.ts"
 import { loadRepo, missingPerson } from "../../company/loader.ts"
+import { readRules, removeRule as removeAgentRule, RulesRefused } from "../../company/rules.ts"
 import type { Bus } from "../../runtime/bus.ts"
 import type { LiveRelay } from "./live.ts"
 import {
@@ -493,9 +494,7 @@ export class ChatHarness implements SessionHarness {
       return session
     }
     const session = live()
-    // The pinned company is read only when it names the approver: for a session nobody opened.
-    const pinned = session.opened_by === null ? loadRepo(await this.office.git.pin(session.repo_commit)) : undefined
-    const approver = approverOf(session, pinned?.company?.ceo ?? null)
+    const approver = await this.#approverOf(session)
     if (approver === null) throw new HarnessError(403, "forbidden", "nobody may change this chat's mode")
     if (by !== approver) throw new HarnessError(403, "forbidden", `only @${approver} may change this chat's mode`)
     // Read again: the session may have ended while the pinned company was read.
@@ -505,6 +504,54 @@ export class ChatHarness implements SessionHarness {
     if (actor === undefined || !LIVE.includes(switched.status)) return switched
     await actor.modeChanged(mode, { by })
     return this.store.getSession(sessionId) ?? switched
+  }
+
+  /**
+   * Session `sessionId`'s rules, each with its source, and the rules files that exist but don't load: a chat with an
+   * actor lists them as its commands are decided by now; any other lists its agent's and the company's at HEAD. A
+   * Codex session lists none, as Codex doesn't follow the rules yet. 404 for no session.
+   */
+  async rules(sessionId: string): Promise<RuleList> {
+    this.#running()
+    const session = this.store.getSession(sessionId)
+    if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
+    if (session.harness === "codex") return { rules: [], errors: [] }
+    const actor = this.#actors.get(sessionId)
+    return actor !== undefined ? actor.rules() : readRules(this.office.git, session.person)
+  }
+
+  /**
+   * Removes `rule` from session `sessionId` as `by`, who must be its approver (its opener, else the CEO at its pinned
+   * commit): a session rule from its actor's, an agent rule from the agent's file, committed naming `by`. 404 for no
+   * session or no such rule (a Codex session has none), 403 `forbidden` for anyone but the approver, 409 `company_rule`
+   * for a company rule, and 409 `refused` for an agent's file that doesn't load or has changes nobody committed.
+   */
+  async removeRule(sessionId: string, rule: RemoveRuleRequest, { by }: { by: string }): Promise<void> {
+    this.#running()
+    const session = this.store.getSession(sessionId)
+    if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
+    const approver = await this.#approverOf(session)
+    if (approver === null) throw new HarnessError(403, "forbidden", "nobody may change this chat's rules")
+    if (by !== approver) throw new HarnessError(403, "forbidden", `only @${approver} may change this chat's rules`)
+    const actor = this.#actors.get(sessionId)
+    let removed = false
+    try {
+      if (session.harness !== "codex" && actor !== undefined) removed = await actor.removeRule(rule, by)
+      // With no actor the session's own rules are gone; the agent's file is still the repo's.
+      else if (session.harness !== "codex" && rule.source !== "session") {
+        removed = await removeAgentRule(this.office.git, session.person, { ...rule, source: rule.source }, by)
+      }
+    } catch (error) {
+      if (error instanceof RulesRefused) throw new HarnessError(409, error.code, error.message)
+      throw error
+    }
+    if (!removed) throw new HarnessError(404, "not_found", "this chat has no such rule")
+  }
+
+  /** Who answers for `session`: its opener, else the CEO at its pinned commit, which is read only then. */
+  async #approverOf(session: SessionRecord): Promise<string | null> {
+    const pinned = session.opened_by === null ? loadRepo(await this.office.git.pin(session.repo_commit)) : undefined
+    return approverOf(session, pinned?.company?.ceo ?? null)
   }
 
   /** The session's messages: a yian chat's from its runs' logs, with its live actor's calls in flight. The logs are

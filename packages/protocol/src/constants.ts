@@ -1,3 +1,5 @@
+import { RulePattern } from "./schemas/rules"
+
 /** The office's own name: its own connection, set up at onboarding, and the driver of the runs the office starts itself. */
 export const OFFICE = "office"
 
@@ -11,3 +13,10 @@ export const APPROVAL_YES = "Yes"
 export const approvalSessionOption = (rules: readonly string[]) =>
   `Yes, and don't ask again this session for: ${rules.join(", ")}`
 export const approvalAlwaysOption = (rules: readonly string[]) => `Yes, and always allow: ${rules.join(", ")}`
+
+/** `pattern`'s words, or null when it isn't a `RulePattern` (the empty pattern has no words). Rules match by these
+ *  words alone, so a pattern no rules file could hold matches nothing. */
+export function ruleWords(pattern: string): string[] | null {
+  if (pattern === "") return []
+  return RulePattern.safeParse(pattern).success ? pattern.split(" ") : null
+}

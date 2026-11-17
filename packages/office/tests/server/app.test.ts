@@ -110,6 +110,13 @@ const TABLE: [string, string, string, unknown][] = [
   ["POST", "/sessions/:id/cost-cap", `/sessions/${ULID}/cost-cap`, { cost_cap_usd: 10 }],
   ["POST", "/sessions/:id/model", `/sessions/${ULID}/model`, { connection: "office", model: "stub" }],
   ["POST", "/sessions/:id/mode", `/sessions/${ULID}/mode`, { mode: "ask" }],
+  ["GET", "/sessions/:id/rules", `/sessions/${ULID}/rules`, null],
+  [
+    "POST",
+    "/sessions/:id/rules/remove",
+    `/sessions/${ULID}/rules/remove`,
+    { effect: "allow", kind: "command", pattern: "ls *", source: "session" },
+  ],
   ["GET", "/work-items/:id", `/work-items/${ULID}`, null],
   ["GET", "/work-items/:id/comments", `/work-items/${ULID}/comments`, null],
   ["GET", "/questions", "/questions", null],

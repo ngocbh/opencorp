@@ -680,3 +680,34 @@ test("an agent with a password", async () => {
   expect(found.map((issue) => [issue.code, issue.path]))
     .toEqual([["person.agent_password", "people/minh/person.yaml"]])
 })
+
+test("a rules file whose rules aren't allow, ask or deny on command or input is a lint issue, the agent's or the company's", async () => {
+  const rule = (effect: string, kind: string) => ({ rules: [{ effect: "deny", kind: "command", pattern: "rm *" }, { effect, kind, pattern: "ls *" }] })
+  const root = makeCompany({
+    "rules.yaml": rule("maybe", "command"),
+    "people/minh/rules.yaml": rule("allow", "file"),
+    "people/ngocbh/rules.yaml": "rules: [\n",
+  })
+  const found = (await lint(loadRepo(root))).map((issue) => [issue.code, issue.path, issue.message, issue.severity])
+  expect(found).toEqual([
+    ["repo.schema", "rules.yaml", "rule 2: effect: isn't an allowed value", "error"],
+    ["repo.schema", "people/minh/rules.yaml", "rule 2: kind: isn't an allowed value", "error"],
+    ["repo.unreadable", "people/ngocbh/rules.yaml", "isn't valid YAML (line 2)", "error"],
+  ])
+  const fine = makeCompany({
+    "rules.yaml": { rules: [{ effect: "deny", kind: "command", pattern: "git push --force *" }] },
+    "people/minh/rules.yaml": { rules: [{ effect: "ask", kind: "input", pattern: "y", by: "ngocbh", at: "2026-11-20T10:00:00Z" }] },
+  })
+  expect(await lint(loadRepo(fine))).toEqual([])
+})
+
+test("a * that isn't a rule pattern's last word on its own is a lint warning", async () => {
+  const rules = ["git push --force*", "git * main", "rm *", "*"].map((pattern) => ({ effect: "deny", kind: "command", pattern }))
+  const root = makeCompany({ "rules.yaml": { rules } })
+  const found = (await lint(loadRepo(root))).map((issue) => [issue.code, issue.path, issue.message, issue.severity])
+  const why = "pattern: a * matches further words only as the last word on its own; this one matches a literal *"
+  expect(found).toEqual([
+    ["rules.literal_star", "rules.yaml", `rule 1: ${why}`, "warning"],
+    ["rules.literal_star", "rules.yaml", `rule 2: ${why}`, "warning"],
+  ])
+})

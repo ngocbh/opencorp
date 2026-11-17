@@ -1,0 +1,1 @@
+{ "rules": [{ "effect": "deny", "kind": "command", "pattern": "rm -rf *\n", "source": "company" }] }

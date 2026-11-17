@@ -29,6 +29,7 @@ import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
 import { DialogMessage } from "./dialog-message"
 import { DialogMode } from "./dialog-mode"
+import { DialogRules } from "./dialog-rules"
 import { PermissionPrompt } from "./permission"
 import { costLabel, Sidebar } from "./sidebar"
 import { filetype } from "../../util/filetype"
@@ -378,6 +379,13 @@ export function Session() {
       category: "Session",
       enabled: switchable(),
       run: () => dialog.replace(() => <DialogMode sessionID={route.sessionID} />),
+    },
+    {
+      title: "List the chat's rules",
+      value: "session.rules",
+      category: "Session",
+      slash: { name: "rules" },
+      run: () => dialog.replace(() => <DialogRules sessionID={route.sessionID} />),
     },
     {
       title: sidebarVisible() ? "Hide sidebar" : "Show sidebar",

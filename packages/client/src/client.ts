@@ -32,6 +32,8 @@ import type {
   ProfileWriteRequest,
   PromptRequest,
   Question,
+  RemoveRuleRequest,
+  RuleList,
   RunDetail,
   RunEvent,
   RunEventPage,
@@ -246,6 +248,11 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
       setModel: async (id: string, req: SetModelRequest) => post<Session>(`${s(id)}/model`, req),
       /** Switches a session's mode (auto, default, ask or dontAsk); only its approver may. */
       setMode: async (id: string, req: SetModeRequest) => post<Session>(`${s(id)}/mode`, req),
+      /** The chat's rules, each with its source (the session's, its agent's or the company's), and the rules files that
+       *  don't load, while which every command asks. */
+      rules: async (id: string) => get<RuleList>(`${s(id)}/rules`),
+      /** Removes a session or agent rule; only the chat's approver may, and a company rule only by editing rules.yaml. */
+      removeRule: async (id: string, req: RemoveRuleRequest) => post<Ack>(`${s(id)}/rules/remove`, req),
     },
     connections: {
       list: () => get<ConnectionList>("/connections"),

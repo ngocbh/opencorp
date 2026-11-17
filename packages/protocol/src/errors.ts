@@ -20,6 +20,7 @@ export const ERROR_CODES = [
   "cap_too_low",
   "codex_refused",
   "company_repo_busy",
+  "company_rule",
   "connection_unusable",
   "cross_site",
   "device_exists",

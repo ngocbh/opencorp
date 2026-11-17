@@ -13,6 +13,7 @@ import {
   Person,
   Profile,
   Question,
+  RuleList,
   Session,
 } from "@opencorp/protocol"
 import fs from "node:fs"
@@ -140,6 +141,19 @@ const STEPS: Step[] = [
     method: "POST",
     path: (c) => `/sessions/${c.id}/model`,
     body: () => ({ connection: "nowhere", model: "other-model" }),
+  },
+  {
+    name: "list the chat's rules",
+    method: "GET",
+    path: (c) => `/sessions/${c.id}/rules`,
+    schema: RuleList,
+    pick: (r) => [r.rules, r.errors],
+  },
+  {
+    name: "remove a rule neither office has",
+    method: "POST",
+    path: (c) => `/sessions/${c.id}/rules/remove`,
+    body: () => ({ effect: "allow", kind: "command", pattern: "nothing *", source: "session" }),
   },
   {
     name: "open questions",

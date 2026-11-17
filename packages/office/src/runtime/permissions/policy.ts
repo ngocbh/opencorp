@@ -16,6 +16,8 @@
  * reachable, it also asks before a program that reads file contents is given a path through an expansion, whose
  * value it can't see; in the workspace sandbox, which keeps the home out, such a read follows the usual rules and
  * the sandbox is the guard. Auto's check never judges a push, `sudo` or a local command for ssh.
+ * While the host says the session is blocked (`Permissions.blocked`, a rules file that doesn't load), every action
+ * asks as a never-automated one does, and `dontAsk` refuses it; deny rules still refuse first.
  *
  * The reader can't know what a program does with its files, its config or its input: `git` runs hooks and programs
  * its config names (`core.fsmonitor`, `core.pager`, `diff.external`); a script does what it contains; a remote host
@@ -36,6 +38,7 @@
  * `auto` and `dontAsk` the check is the only check there, as in Claude Code; `default` and `ask` are the
  * conservative modes for remote work.
  */
+import { ruleWords } from "@opencorp/protocol"
 import {
   assignmentsOf, classify, credentialOf, EMPTY, fileOp, innerParts, ownerOnly, programOf, pushOf, readCommand,
   remoteOf, type SimpleCommand, sshHosts, sshOf, type Where,
@@ -108,10 +111,12 @@ const SUBCOMMANDS = new Set(
 const MOVES = new Set(["cd", "pushd", "popd"])
 const REASON_CHARS = 200
 
-/** Whether `pattern` matches `words`: words separated by single spaces, where only a final `*` is a wildcard,
- *  matching any further words (none included). */
+/** Whether `pattern` matches `words`: the protocol's `RulePattern` (words with no whitespace, one space between each),
+ *  where only a final `*` is a wildcard, matching any further words (none included). A pattern of another form, which
+ *  no rules file could hold, matches nothing, so no card offers it. */
 export function matches(pattern: string, words: readonly string[]): boolean {
-  const want = pattern === "" ? [] : pattern.split(" ")
+  const want = ruleWords(pattern)
+  if (want === null) return false
   const wild = want.at(-1) === "*"
   const fixed = wild ? want.slice(0, -1) : want
   if (wild ? words.length < fixed.length : words.length !== fixed.length) return false
@@ -233,6 +238,8 @@ export interface Permissions {
   /** Auto's check, as the host binds it; absent, what it would judge asks. Rejects when `signal` aborts, or when the
    *  check can't record its verdict; the gate then asks. */
   check?(input: CheckInput, signal: AbortSignal): Promise<Verdict>
+  /** Why every action asks now, as a never-automated one does (a rules file that doesn't load), or null. */
+  blocked?(): string | null
 }
 
 /** What a gated tool does before it acts: run now, saying `by` what (for its record), or return `result` as the
@@ -259,7 +266,8 @@ export async function gate(
 ): Promise<Gate> {
   const mode = perms.mode()
   const where = perms.where()
-  const decision = decide(action, mode, perms.rules(), where)
+  const never = action.never ?? perms.blocked?.() ?? undefined
+  const decision = decide(never === undefined ? action : { ...action, never }, mode, perms.rules(), where)
   if (decision.verdict === "allow") return { run: true, by: decision.by }
   if (decision.verdict === "deny") return { run: false, result: `Not run: ${decision.reason}.` }
   let asked: { reason: string; rules: readonly string[] } =

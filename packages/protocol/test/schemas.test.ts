@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
 import { z } from "zod"
+import { ruleWords } from "@opencorp/protocol"
 import * as Schemas from "@opencorp/protocol/schemas"
 
 const FIXTURES = new URL("./fixtures/", import.meta.url)
@@ -29,7 +30,8 @@ const NAMES = [
   "ModelList", "SetModelRequest", "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest",
   "ConnectionLogin", "SetupPrompt", "SetupAsk", "SetupChoose", "SetupSecret", "SetupSay", "SetupStep",
   "SetupCommand", "SetupResult", "SetupReview", "SetupHandOver", "SetupTakeBack",
-  "SetupAnswer", "OfficeInfo", "MessageText", "ModelName",
+  "SetupAnswer", "OfficeInfo", "MessageText", "ModelName", "Rule", "RuleFileError", "RuleList", "RemoveRuleRequest",
+  "RulePattern",
 ]
 
 /** The zod schema exported under `name`. */
@@ -128,7 +130,7 @@ const BODIES = [
   "SetModeRequest", "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin",
   "CompanyView", "CostReport", "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
   "HqLoginRequest", "CompanyTree", "CompanyFile", "RunPage", "RunDetail", "RunNodePage", "RunEventPage",
-  "RunEvent", "OfficeInfo",
+  "RunEvent", "OfficeInfo", "RuleList", "RemoveRuleRequest",
 ]
 
 test("every route body has a fixture", () => {
@@ -188,6 +190,40 @@ test("a question may be an approval card, holding what it would allow", () => {
   expect(Schemas.Approval.safeParse({ kind: "command", tool: "shell", action: "ls", reason: "", extra: 1 }).success)
     .toBe(false)
   expect(Schemas.Approval.safeParse({ kind: "file", tool: "shell", action: "ls", reason: "" }).success).toBe(false)
+})
+
+test("a rule has a source, and a rules list names the files that don't load", () => {
+  const rule = { effect: "allow", kind: "command", pattern: "git status *" } as const
+  for (const source of ["session", "agent", "company"] as const)
+    expect(Schemas.Rule.parse({ ...rule, source })).toEqual({ ...rule, source, by: null, at: null, note: null })
+  expect(Schemas.Rule.safeParse({ ...rule, source: "everywhere" }).success).toBe(false)
+  expect(Schemas.Rule.safeParse({ ...rule, source: "agent", pattern: "" }).success).toBe(false)
+  expect(Schemas.Rule.safeParse({ ...rule, source: "agent", effect: "maybe" }).success).toBe(false)
+  expect(Schemas.Rule.parse({ ...rule, source: "session", note: "fix it first" }).note).toBe("fix it first")
+  expect(Schemas.RuleList.parse({ rules: [] })).toEqual({ rules: [], errors: [] })
+  const error = { source: "company", path: "rules.yaml", message: "isn't valid YAML (line 2)" } as const
+  expect(Schemas.RuleList.parse({ rules: [], errors: [error] }).errors).toEqual([error])
+  expect(Schemas.RuleFileError.safeParse({ ...error, source: "session" }).success).toBe(false)
+  // A removal names the rule and its source, and nothing else.
+  expect(Schemas.RemoveRuleRequest.parse({ ...rule, source: "agent" })).toEqual({ ...rule, source: "agent" })
+  expect(Schemas.RemoveRuleRequest.safeParse({ ...rule, source: "agent", by: "ngocbh" }).success).toBe(false)
+})
+
+test.each(["rm  -rf *", " rm *", "rm * ", "rm\t*", "rm *\n", "rm\u00a0*"])(
+  "a rule's pattern is words with one space between each [%j]",
+  (pattern) => {
+    expect(Schemas.RulePattern.safeParse(pattern).success).toBe(false)
+    expect(Schemas.Rule.safeParse({ effect: "deny", kind: "command", pattern, source: "agent" }).success).toBe(false)
+    expect(ruleWords(pattern)).toBeNull()
+  },
+)
+
+test("a well-formed pattern's words are what it holds between its spaces", () => {
+  expect(ruleWords("git push --force *")).toEqual(["git", "push", "--force", "*"])
+  expect(ruleWords("*")).toEqual(["*"])
+  // The empty pattern has no words; a rule's pattern can't be empty.
+  expect(ruleWords("")).toEqual([])
+  expect(Schemas.RulePattern.safeParse("").success).toBe(false)
 })
 
 test("a tool part keeps the model's call id, and yian's once the call waited on the office", () => {
@@ -475,12 +511,16 @@ const PATTERNS: {
     invalid: ["HireRequest.newline-name", "HireRequest.nul-title", "HireRequest.ansi-name",
       "HireRequest.line-separator-title"],
   },
+  {
+    site: "RulePattern", def: "RemoveRuleRequest", path: ["pattern"], bad: "rm  -rf *",
+    invalid: ["RemoveRuleRequest.doubled-space", "RuleList.trailing-newline-pattern"],
+  },
 ]
 
 test("every pattern carries the u flag", () => {
   const text = sources().map(([, source]) => source).join("\n")
   const literals = [...text.matchAll(/\.regex\(\/((?:\\.|[^\/\\\n])+)\/([a-z]*)\)/g)]
-  expect(PATTERNS.length).toBe(17)
+  expect(PATTERNS.length).toBe(18)
   // Each `.regex(` site needs its own PATTERNS row.
   expect(text.split(".regex(").length - 1).toBe(PATTERNS.length)
   expect(literals.length).toBe(PATTERNS.length)

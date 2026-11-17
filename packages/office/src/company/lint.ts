@@ -8,6 +8,7 @@ import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "
 import { type RepoIssue, repoIssue } from "./issues.ts"
 import { type CompanyRepo, profilePath } from "./loader.ts"
 import { shownAssetToolName, TOOL_NAME } from "./naming.ts"
+import { COMPANY_RULES, inTree, loadRules, rulesPath } from "./rules.ts"
 
 /** One lint check: the issues it finds in a repo. */
 type Check = (repo: CompanyRepo) => Iterable<RepoIssue> | AsyncIterable<RepoIssue>
@@ -465,5 +466,18 @@ function* checkDevices(repo: CompanyRepo): Iterable<RepoIssue> {
   }
 }
 
+/** The company's `rules.yaml` and each person's `people/<handle>/rules.yaml` load, read as the office reads them at a
+ *  commit (`inTree`): while one doesn't, every command of the sessions it covers asks. A `*` that isn't a pattern's
+ *  last word on its own is a warning: it matches only a literal `*`. */
+function* checkRules(repo: CompanyRepo): Iterable<RepoIssue> {
+  const files: [string, "agent" | "company"][] = [[COMPANY_RULES, "company"]]
+  for (const [handle] of sorted(repo.people)) files.push([rulesPath(handle), "agent"])
+  for (const [rel, source] of files) {
+    const read = loadRules(rel, inTree(repo.root, rel), source)
+    if ("issue" in read) yield read.issue
+    else yield* read.warnings
+  }
+}
+
 const CHECKS: Check[] = [checkIdCase, checkManagers, checkCeo, checkGroups, checkPersonGroups, checkAssets,
-  checkFlows, checkSkills, checkProfiles, checkDevices]
+  checkFlows, checkSkills, checkProfiles, checkDevices, checkRules]

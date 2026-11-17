@@ -9,6 +9,7 @@ import { eventRoutes } from "./events.ts"
 import { ROUTES as peopleRoutes } from "./people.ts"
 import { ROUTES as profileRoutes } from "./profiles.ts"
 import { ROUTES as questionRoutes } from "./questions.ts"
+import { ROUTES as ruleRoutes } from "./rules.ts"
 import { runRoutes } from "./runs.ts"
 import { ROUTES as sessionRoutes } from "./sessions.ts"
 import { ROUTES as workItemRoutes } from "./work_items.ts"
@@ -21,6 +22,7 @@ export function allRoutes({ pingMs }: { pingMs?: number } = {}): Route<RequestCo
     ...deviceRoutes,
     ...peopleRoutes,
     ...sessionRoutes,
+    ...ruleRoutes,
     ...workItemRoutes,
     ...questionRoutes,
     ...profileRoutes,

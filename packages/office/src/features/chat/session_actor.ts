@@ -11,9 +11,12 @@ import {
   type Message as RunMessage,
   staticPathOf,
 } from "@ngocbh/yian/run"
-import { CompanyDefaults, type Message, now, OFFICE, WorkItem } from "@opencorp/protocol"
+import {
+  CompanyDefaults, type Message, now, OFFICE, type RemoveRuleRequest, type RuleFileError, WorkItem,
+} from "@opencorp/protocol"
 import type { z } from "zod"
 import type { CompanyGit } from "../../company/git.ts"
+import type { Rule } from "../../company/rules.ts"
 import { loadRepo } from "../../company/loader.ts"
 import type { Bus } from "../../runtime/bus.ts"
 import type { LiveRelay } from "./live.ts"
@@ -479,6 +482,9 @@ export class SessionActor implements LiveCalls {
       session: () => this.#session(),
       where: () => this.#where(),
       charge: (runId, model, usd) => this.#chargeCheck(runId, model, usd),
+      git: ctx.git,
+      handle: session.person,
+      log: (line) => this.#log(line),
       host: {
         liveRun: () => (this.#finished ? null : this.#runId),
         completeWithAnswer: (card) => this.#deliver(this.#complete(card, undefined)),
@@ -487,6 +493,7 @@ export class SessionActor implements LiveCalls {
           return this.#deliver(new Pending(delivery, undefined, { questionId: card.id }))
         },
         loseAnswer: (card) => this.#loseAnswer(card.id),
+        notice: (text) => this.#notice(text),
         post: (label, job) => this.#post(label, job),
         settle: (when) => this.#trySettle(when),
         runner: async () => (await this.#specOf(this.#session())).runApproved,
@@ -864,6 +871,19 @@ export class SessionActor implements LiveCalls {
     })
   }
 
+  /** The session's rules, the agent's and the company's, each with its source, and the rules files that don't load,
+   *  as its commands are decided by now. */
+  rules(): Promise<{ rules: Rule[]; errors: RuleFileError[] }> {
+    return this.#approvals.list()
+  }
+
+  /** Removes `rule` as `by`, after the commands before it: a session rule from the session's own, an agent rule from
+   *  the agent's file, committed; it applies to the next command. Whether it was there. A company rule is refused
+   *  (`RulesRefused` `company_rule`), and `503 stopping` after `close`. */
+  removeRule(rule: RemoveRuleRequest, by: string): Promise<boolean> {
+    return this.#command(() => this.#approvals.remove(rule, by))
+  }
+
   /**
    * Esc: interrupts the workspace, answers the office tool calls in flight `INTERRUPTED_CALL`, and interrupts the
    * run: through its worker while one runs it (over the cost cap, unless ending, only while a reply node runs), else,
@@ -1142,7 +1162,7 @@ export class SessionActor implements LiveCalls {
    *  `spec`; a failure, a log line over `LINE_CAP` among them, is logged by its type. */
   async #reconcile(session: SessionRecord, spec: RunSpec, runId: string): Promise<void> {
     try {
-      const permissions = this.#approvals.permissions(runId, this.#onQuestion)
+      const permissions = await this.#approvals.permissions(runId, this.#onQuestion)
       const tools = spec.groups({ session, runId, onQuestion: this.#onQuestion, permissions })
       const manager = tools.company?.ask_manager
       await this.#ctx.answers.reconcile(runId, pendingCalls(this.#logOf(runId), { maxLineBytes: LINE_CAP }), {
@@ -1598,7 +1618,7 @@ export class SessionActor implements LiveCalls {
       const runId = run.runId
       // Read now, so every settle while the worker runs has the owner.
       await this.#pinsOf(session)
-      const permissions = this.#approvals.permissions(runId, this.#onQuestion)
+      const permissions = await this.#approvals.permissions(runId, this.#onQuestion)
       const tools = spec.groups({ session, runId, onQuestion: this.#onQuestion, permissions })
       const ask = this.#askUser(session, runId, spec)
       const job = chatJob(spec, tools, {
