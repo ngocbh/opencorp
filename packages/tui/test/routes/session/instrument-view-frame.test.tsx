@@ -81,6 +81,17 @@ async function runCommand(app: App, title: string) {
   app.input.pressEnter()
 }
 
+/** Picks how instruments open, `view` titling the choice, and waits until kv.json keeps it as `value`. */
+async function setView(app: App, view: string, value: string) {
+  await runCommand(app, "Choose how instruments open")
+  await app.until((f) => f.includes("Open instruments") && f.includes("Full screen"))
+  await Bun.sleep(50)
+  app.input.typeText(view)
+  await app.until((f) => f.split(view).length > 2)
+  app.input.pressEnter()
+  await until(() => kv()[KEY] === value)
+}
+
 const rows = (f: string) => f.split("\n")
 /** The row and column of the open view's top-left corner, or undefined when none is open. */
 function corner(f: string) {
@@ -204,8 +215,7 @@ test("the view setting picks how a shell opens", async () => {
     add(office, sid, { name: "shell 2", command: "tail -f log", updated_at: LATER })
     await app.until((f) => line(f)?.includes("2 shells") ?? false)
 
-    await runCommand(app, "Open instruments in a split")
-    await until(() => kv()[KEY] === "split")
+    await setView(app, "In a split", "split")
     // The shell that changed last opens, in a split; then the cycle goes on to full screen and back.
     await leader(app, "o")
     let f = await app.until((f) => f.includes("ctrl+x o: full screen"))
@@ -216,8 +226,7 @@ test("the view setting picks how a shell opens", async () => {
     await leader(app, "o")
     await app.until((f) => !f.includes("╭"))
 
-    await runCommand(app, "Open instruments full screen")
-    await until(() => kv()[KEY] === "full")
+    await setView(app, "Full screen", "full")
     // The palette lists the chat's shells; the one picked opens in the setting's view.
     await runCommand(app, "Open an instrument")
     f = await app.until((f) => f.includes("shell 1") && f.includes("shell 2") && f.includes("htop"))
@@ -230,8 +239,7 @@ test("the view setting picks how a shell opens", async () => {
     app.input.pressEscape()
     await app.until((f) => !f.includes("╭"))
 
-    await runCommand(app, "Open instruments floating")
-    await until(() => kv()[KEY] === "floating")
+    await setView(app, "Floating", "floating")
     await leader(app, "o")
     f = await app.until((f) => f.includes("ctrl+x o: split"))
     expect(corner(f)).toEqual({ x: 12, y: 3, right: 107 })
@@ -462,8 +470,7 @@ test("the chat's own keys do nothing while a shell has the keys, and work again 
     await app.until((f) => f.includes("message 30") && f.includes("@minh auto ·"))
     add(office, sid)
     await listed(app, 1)
-    await runCommand(app, "Open instruments in a split")
-    await until(() => kv()[KEY] === "split")
+    await setView(app, "In a split", "split")
     await leader(app, "o")
     let f = await app.until((f) => f.includes("ctrl+x o: full screen"))
     const chat = (f: string) => rows(f).map((r) => r.slice(0, 60))
@@ -547,8 +554,7 @@ test("the split's width follows its handle", async () => {
   try {
     const shell = add(office, sid)
     await listed(app, 1)
-    await runCommand(app, "Open instruments in a split")
-    await until(() => kv()[KEY] === "split")
+    await setView(app, "In a split", "split")
     await leader(app, "o")
     let f = await app.until((f) => f.includes("ctrl+x o: full screen"))
     expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })

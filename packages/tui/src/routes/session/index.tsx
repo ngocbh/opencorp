@@ -71,7 +71,7 @@ import { display } from "../../util/printable"
 import { InteractivityProvider } from "../../context/interactivity"
 import { clampPaneWidth, createPaneResize } from "../../ui/pane-resize"
 import { PaneResizeHandle } from "../../ui/pane-resize-handle"
-import { DialogInstruments } from "./dialog-instruments"
+import { DialogInstruments, DialogInstrumentView } from "./dialog-instruments"
 import { waitingInstrument } from "./instrument-line"
 import { InstrumentView, nextPlacement, PLACEMENTS, type InstrumentPlacement } from "./instrument-view"
 
@@ -544,21 +544,6 @@ export function Session() {
           />
         )),
     },
-    ...(
-      [
-        ["floating", "Open instruments floating"],
-        ["split", "Open instruments in a split"],
-        ["full", "Open instruments full screen"],
-      ] as const
-    ).map(([view, title]) => ({
-      title,
-      value: `session.instrument.view.${view}`,
-      category: "Session",
-      run: () => {
-        setInstrumentView(() => view)
-        dialog.clear()
-      },
-    })),
     {
       title: "List the chat's rules",
       value: "session.rules",
@@ -624,6 +609,15 @@ export function Session() {
         setShowGenericToolOutput((prev) => !prev)
         dialog.clear()
       },
+    },
+    {
+      title: "Choose how instruments open…",
+      value: "session.instrument.view",
+      category: "Session",
+      run: () =>
+        dialog.replace(() => (
+          <DialogInstrumentView current={defaultPlacement()} onPick={(view) => setInstrumentView(() => view)} />
+        )),
     },
     ...(
       [
