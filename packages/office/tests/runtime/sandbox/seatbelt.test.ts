@@ -3,8 +3,8 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
 import { SandboxPolicy } from "../../../src/runtime/sandbox/policy.ts"
-import { MACH_SERVICES, NETWORK_MACH_SERVICES, profile } from "../../../src/runtime/sandbox/seatbelt.ts"
-import { goldenPolicy, makePolicy } from "./helpers.ts"
+import { MACH_SERVICES, NETWORK_MACH_SERVICES, profile, sshProfile } from "../../../src/runtime/sandbox/seatbelt.ts"
+import { goldenPolicy, goldenSshPolicy, makePolicy } from "./helpers.ts"
 
 /** `makePolicy()` with the read-only path `<root>/py` (Python's `make` fixture). */
 function setup() {
@@ -326,4 +326,82 @@ test("a terminal profile lets the call use its own terminal and nothing else's",
   expect(text).not.toContain("/dev/ttys")
   expect(profile(policy, { ...SHELL_OPTIONS, tty: false })).toBe(G1)
   expect(profile(policy, SHELL_OPTIONS)).toBe(G1)
+})
+
+/** The SSH-only profile for `SSH_LAYOUT` on a terminal, with a developer dir and a canary. */
+const SSH_G1 = `(version 1)
+(deny default)
+;; Processes: children inherit this profile; no reach into other processes.
+(allow process-exec process-fork)
+(allow signal (target same-sandbox))
+(allow process-info* (target same-sandbox))
+;; Setuid programs: Seatbelt can't see a setuid bit, so the ones macOS ships are refused by name.
+(deny process-exec* (literal "/usr/bin/sudo") (literal "/usr/bin/su") (literal "/usr/bin/login") (literal "/usr/bin/newgrp") (literal "/usr/bin/passwd") (literal "/usr/libexec/ssh-keysign"))
+(allow sysctl-read (sysctl-name-prefix "hw.") (sysctl-name-prefix "machdep.cpu.") (sysctl-name "kern.argmax") (sysctl-name "kern.boottime") (sysctl-name "kern.hostname") (sysctl-name "kern.maxfilesperproc") (sysctl-name "kern.maxproc") (sysctl-name "kern.ngroups") (sysctl-name "kern.osproductversion") (sysctl-name "kern.osrelease") (sysctl-name "kern.ostype") (sysctl-name "kern.osvariant_status") (sysctl-name "kern.osversion") (sysctl-name "kern.secure_kernel") (sysctl-name "kern.usrstack64") (sysctl-name "kern.version") (sysctl-name "sysctl.proc_cputype") (sysctl-name "vm.loadavg"))
+(allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo") (global-name "com.apple.system.notification_center"))
+(allow ipc-posix-shm-read-data (ipc-posix-name "apple.shm.notification_center"))
+;; System and toolchain, read-only.
+(allow file-read* (literal "/") (subpath "/usr") (subpath "/bin") (subpath "/System") (subpath "/Library") (subpath "/opt/homebrew") (subpath "/private/etc/ssl") (subpath "/private/var/db/timezone") (subpath "/Library/Developer/CommandLineTools") (literal "/private/etc/hosts") (literal "/private/etc/resolv.conf") (literal "/private/etc/services") (literal "/private/etc/protocols") (literal "/private/etc/localtime") (literal "/private/etc/passwd") (literal "/private/etc/group") (literal "/private/etc/shells") (literal "/private/var/select/sh") (literal "/private/var/select/developer_dir") (literal "/private/var/db/xcode_select_link") (literal "/dev/null") (literal "/dev/zero") (literal "/dev/random") (literal "/dev/urandom"))
+;; ssh's and Kerberos's system configuration, read-only.
+(allow file-read* (subpath "/private/etc/ssh") (subpath "/private/etc/krb5.conf.d") (literal "/private/etc/krb5.conf"))
+(allow file-write-data (literal "/dev/null"))
+;; The call's own descriptors by path, so \`echo x > /dev/stderr\` works.
+(allow file-read* file-write-data (subpath "/dev/fd") (literal "/dev/stdout") (literal "/dev/stderr"))
+(allow file-read* file-write* file-ioctl (literal "/dev/tty") (literal (param "TTY")))
+;; Ancestors of allowed paths: metadata only, so lookups and realpath work.
+(allow file-read-metadata (literal "/etc") (literal "/tmp") (literal "/var") (literal "/Users/me") (literal "/Users") (literal "/") (literal "/Users/me/keys") (literal "/Users/me/.opencorp/hq") (literal "/Users/me/.opencorp") (literal "/Users/me/.ssh") (literal "/Users/me/.opencorp/hq/ssh") (literal "/private/tmp") (literal "/private") (literal "/private/tmp/com.apple.launchd.abc") (literal "/Library/Developer") (literal "/Library"))
+;; ~/.ssh, the files ssh -G names, hq/ssh and any extra paths, read-only.
+(allow file-read* (subpath "/Users/me/.ssh") (subpath "/Users/me/keys/id") (subpath "/Users/me/.opencorp/hq/ssh"))
+;; known_hosts, this call's status file and a ticket file: their data only, so none is removed, renamed or replaced.
+(allow file-read* file-write-data (literal "/Users/me/.ssh/known_hosts") (literal "/Users/me/.opencorp/hq/ssh/status.4242") (literal "/private/tmp/krb5cc_501"))
+;; The private temp directory, which holds the shell's own control sockets.
+(allow file-read* file-write* (subpath "/private/tmp/oc-ssh-1"))
+;; ssh's control sockets: the shell's masters bind theirs in its own folder, and its calls connect there.
+(allow network-bind network-inbound network-outbound (subpath "/private/tmp/oc-ssh-1/cm"))
+;; The agent's socket and a KCM's: connected to, nothing more.
+(allow file-read-metadata (literal "/private/tmp/com.apple.launchd.abc/Listeners"))
+(allow network-outbound (remote unix-socket (path-literal "/private/tmp/com.apple.launchd.abc/Listeners")))
+;; Marks this call's processes; see sandbox.escapees.
+(allow file-write-data (literal "/private/tmp/oc-canary-1/allowed"))
+;; The network: IP, and the DNS responder.
+(allow network-outbound (remote ip))
+(allow network-inbound (local ip))
+(allow network-bind (local ip))
+(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))
+(allow mach-lookup (global-name "com.apple.dnssd.service") (global-name "com.apple.SystemConfiguration.configd") (global-name "com.apple.trustd.agent"))
+`
+
+const SSH_LAYOUT = {
+  home: "/Users/me",
+  hq: "/Users/me/.opencorp/hq",
+  tmpdir: "/private/tmp/oc-ssh-1",
+  statusFile: "/Users/me/.opencorp/hq/ssh/status.4242",
+  bound: ["/Users/me/keys/id"],
+  agentSocket: "/private/tmp/com.apple.launchd.abc/Listeners",
+  ticket: "/private/tmp/krb5cc_501",
+}
+
+test("the SSH-only profile allows exactly those paths and the network", () => {
+  // Unverified on macOS: only the profile's text is checked here.
+  const policy = goldenSshPolicy(SSH_LAYOUT)
+  expect(sshProfile(policy, { ...SHELL_OPTIONS, tty: true })).toBe(SSH_G1)
+  // Off a terminal, the terminal rule goes and nothing else changes.
+  expect(sshProfile(policy, SHELL_OPTIONS)).toBe(SSH_G1.replace(TTY, ""))
+  // No hq file but ssh/, nothing writable there or in ~/.ssh but known_hosts and the status file's data, and no
+  // unix socket but the shell's own, the agent's and the DNS responder's.
+  const text = sshProfile(policy, SHELL_OPTIONS)
+  expect(text).not.toContain("provider.json")
+  expect(text).not.toContain("auth.json")
+  expect(text).not.toContain('(subpath "/Users/me")')
+  expect(text).not.toContain('(subpath "/Users/me/.opencorp/hq")')
+  expect(text).not.toContain("/Users/me/.opencorp/hq/cm")
+  const lines = text.split("\n")
+  const writes = lines.filter((l) => l.includes("file-write") && l.includes("/Users/me"))
+  expect(writes).toEqual([
+    '(allow file-read* file-write-data (literal "/Users/me/.ssh/known_hosts") (literal "/Users/me/.opencorp/hq/ssh/status.4242") (literal "/private/tmp/krb5cc_501"))',
+  ])
+  // Seatbelt applies the last matching rule, so the setuid deny follows the exec allow.
+  expect(lines.findIndex((l) => l.startsWith("(deny process-exec*"))).toBeGreaterThan(
+    lines.indexOf("(allow process-exec process-fork)"),
+  )
 })

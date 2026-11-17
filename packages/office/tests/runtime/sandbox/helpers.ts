@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { type Helper, helperCommand } from "../../../src/platform.ts"
 import { type OfficePaths, SandboxPolicy } from "../../../src/runtime/sandbox/policy.ts"
 import { command, fsHelper, run, scrubbedEnv } from "../../../src/runtime/sandbox/run.ts"
+import { SshPolicy } from "../../../src/runtime/sandbox/ssh_policy.ts"
 import { tempDir } from "../../helpers.ts"
 
 const SRC = fileURLToPath(new URL("../../../src/runtime/sandbox/", import.meta.url))
@@ -56,6 +57,38 @@ export function goldenPolicy(fields: {
     readOnly: fields.readOnly ?? [],
     helper: fields.helper,
     office: { home: "/Users/me", install: fields.install ?? [], tools: [], path: [] },
+  })
+}
+
+/** An SSH-only policy over exactly these (already real) paths, in the order its constructor lays them out, with no
+ *  disk checks, for golden argv and profiles: `bound` are the files `ssh -G` named that it binds, `ticket` a ticket
+ *  file and `kcm` a KCM socket. */
+export function goldenSshPolicy(fields: {
+  home: string
+  hq: string
+  tmpdir: string
+  statusFile: string
+  bound?: readonly string[]
+  readOnly?: readonly string[]
+  agentSocket?: string
+  ticket?: string
+  kcm?: string
+  systemConfig?: readonly (readonly [string, string])[]
+}): SshPolicy {
+  const ssh = path.join(fields.home, ".ssh")
+  return Object.assign(Object.create(SshPolicy.prototype), {
+    kind: "ssh",
+    home: fields.home,
+    tmpdir: fields.tmpdir,
+    controlDir: path.join(fields.tmpdir, "cm"),
+    readOnly: [ssh, ...(fields.bound ?? []), path.join(fields.hq, "ssh"), ...(fields.readOnly ?? [])],
+    writable: [path.join(ssh, "known_hosts"), fields.statusFile, ...(fields.ticket === undefined ? [] : [fields.ticket])],
+    sockets: [fields.agentSocket, fields.kcm].filter((p) => p !== undefined),
+    agentSocket: fields.agentSocket ?? null,
+    ccache: fields.ticket === undefined ? null : `FILE:${fields.ticket}`,
+    systemConfig: fields.systemConfig ?? [],
+    credentials: fields.ticket === undefined ? [] : [fields.ticket],
+    notes: [],
   })
 }
 

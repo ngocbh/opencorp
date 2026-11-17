@@ -22,9 +22,9 @@ import {
   scrubbedEnv,
   terminalCommand,
 } from "../../../src/runtime/sandbox/run.ts"
-import { profile } from "../../../src/runtime/sandbox/seatbelt.ts"
+import { profile, sshProfile } from "../../../src/runtime/sandbox/seatbelt.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
-import { envInChild, gone, goldenPolicy, helperTool, makePolicy, sandboxAvailable } from "./helpers.ts"
+import { envInChild, gone, goldenPolicy, goldenSshPolicy, helperTool, makePolicy, sandboxAvailable } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -515,6 +515,22 @@ test("a terminal call's argv keeps its terminal under bubblewrap and names it to
   expect(darwin.slice(3)).toEqual(["sh", profile(policy, { canary: "/c", tty: true }), "x"])
   expect(terminalCommand(policy, ["x"], "/c", "darwin", 7000)).toEqual([...wrapper, ...darwin])
   expect(() => terminalCommand(policy, ["x"], undefined, "win32", null)).toThrow(SandboxUnavailable)
+})
+
+test("an SSH-only call runs under its own profile, with the owner's HOME, its agent and its ticket", () => {
+  const fields = { home: "/home/me", hq: "/home/me/.opencorp/hq", tmpdir: "/tmp/oc-ssh-1", statusFile: "/home/me/.opencorp/hq/ssh/status.1" }
+  const policy = goldenSshPolicy({ ...fields, agentSocket: "/tmp/ssh-abc/agent.7", ticket: "/tmp/krb5cc_1000" })
+  expect(command(policy, ["x"], undefined, "linux", null)).toEqual(bwrap.sshCommand(policy, ["x"]))
+  expect(terminalCommand(policy, ["x"], undefined, "linux", null)).toEqual(bwrap.sshCommand(policy, ["x"], { tty: true }))
+  expect(command(policy, ["x"], "/c", "darwin", null)).toEqual(["/usr/bin/sandbox-exec", "-p", sshProfile(policy, { canary: "/c" }), "x"])
+  expect(terminalCommand(policy, ["x"], "/c", "darwin", null).slice(3)).toEqual([
+    "sh",
+    sshProfile(policy, { canary: "/c", tty: true }),
+    "x",
+  ])
+  const fixed = { PATH: SAFE_PATH, HOME: "/home/me", TMPDIR: "/tmp/oc-ssh-1", LANG: "en_US.UTF-8", TERM: "dumb", GIT_CONFIG_NOSYSTEM: "1" }
+  expect(scrubbedEnv(policy)).toEqual({ ...fixed, SSH_AUTH_SOCK: "/tmp/ssh-abc/agent.7", KRB5CCNAME: "FILE:/tmp/krb5cc_1000" })
+  expect(scrubbedEnv(goldenSshPolicy(fields))).toEqual(fixed)
 })
 
 test("on macOS a terminal call passes its own terminal's path to sandbox-exec, and nothing runs without one", async () => {

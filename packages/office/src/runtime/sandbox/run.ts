@@ -18,12 +18,22 @@ import {
   spawnPty,
 } from "../../platform.ts"
 import { helperFiles, isInside, type SandboxPolicy } from "./policy.ts"
-import { profile } from "./seatbelt.ts"
+import { profile, sshProfile } from "./seatbelt.ts"
+import type { SshPolicy } from "./ssh_policy.ts"
 
 export const SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
 const READER_GRACE_MS = 2_000
 // Timers hold a signed 32-bit millisecond count; anything longer fires at once.
 const MAX_TIMEOUT_S = 2_147_483
+
+/** What a call runs under: a workspace's policy, or the SSH-only one. */
+export type CallPolicy = SandboxPolicy | SshPolicy
+
+/** Whether `policy` is the SSH-only one; by its `kind`, so this module needs the SSH-only one's type only, and
+ *  `ssh_policy.ts` can run `ssh -G` here. */
+function isSsh(policy: CallPolicy): policy is SshPolicy {
+  return "kind" in policy && policy.kind === "ssh"
+}
 
 /** This platform has no supported sandbox. */
 export class SandboxUnavailable extends Error {
@@ -68,20 +78,39 @@ export interface Result {
 }
 
 /** Returns the whole environment of a sandboxed call; nothing is inherited; the checkout helper also turns
- *  off Bun's transpiler cache. */
-export function scrubbedEnv(policy: SandboxPolicy): Record<string, string> {
+ *  off Bun's transpiler cache. An SSH-only call's HOME is the owner's home, as ssh's `~` is, and it gets the agent's
+ *  socket and a ticket file where the policy binds them. */
+export function scrubbedEnv(policy: CallPolicy): Record<string, string> {
+  const ssh = isSsh(policy)
   const env: Record<string, string> = {
     PATH: SAFE_PATH,
-    HOME: policy.tmpdir,
+    HOME: ssh ? policy.home : policy.tmpdir,
     TMPDIR: policy.tmpdir,
     LANG: "en_US.UTF-8",
     TERM: "dumb",
     // The host's /etc/gitconfig is unreadable in the sandbox, and git treats that as fatal.
     GIT_CONFIG_NOSYSTEM: "1",
   }
+  if (ssh) {
+    if (policy.agentSocket !== null) env.SSH_AUTH_SOCK = policy.agentSocket
+    if (policy.ccache !== null) env.KRB5CCNAME = policy.ccache
+    return env
+  }
   // Bun would cache the helper's transpiled code under HOME, which sandboxed calls can write.
   if (policy.helper !== undefined && "entry" in policy.helper) env.BUN_RUNTIME_TRANSPILER_CACHE_PATH = "0"
   return env
+}
+
+/** The folder a call starts in: the workspace, or an SSH-only call's temp folder. */
+function workDir(policy: CallPolicy): string {
+  return isSsh(policy) ? policy.tmpdir : policy.workspace
+}
+
+/** The folders a call may write, which its macOS canary must stay out of: an SSH-only call writes only its temp
+ *  folder's, the rest of what it writes being files. */
+function writableDirs(policy: CallPolicy): string[] {
+  if (isSsh(policy)) return [policy.tmpdir]
+  return [policy.tmpdir, ...(policy.writable ? [policy.workspace] : [])]
 }
 
 // Sets RLIMIT_NPROC to $1, then execs the rest of its argv. The cap comes in as $1, never in the script text.
@@ -134,7 +163,7 @@ function callCap(): number | null {
  *  `SandboxUnavailable` when the platform is neither macOS nor Linux, and a `RangeError` when `nproc` is not a
  *  positive safe integer. */
 export function command(
-  policy: SandboxPolicy,
+  policy: CallPolicy,
   argv: readonly string[],
   canary?: string,
   platform: string = process.platform,
@@ -151,7 +180,7 @@ const TTY_SCRIPT = 't=$(/usr/bin/tty) || exit 1; p=$1; shift; exec /usr/bin/sand
 /** `command` for a call that keeps the terminal it is started on (see bwrap's and Seatbelt's `tty`): bubblewrap
  *  starts no new session, and on macOS a shell passes the terminal's path to the profile. */
 export function terminalCommand(
-  policy: SandboxPolicy,
+  policy: CallPolicy,
   argv: readonly string[],
   canary?: string,
   platform: string = process.platform,
@@ -160,9 +189,9 @@ export function terminalCommand(
   return runner(policy, argv, canary, platform, true, nproc)
 }
 
-/** `command`'s argv, or `terminalCommand`'s with `tty`. */
+/** `command`'s argv, or `terminalCommand`'s with `tty`, each from the SSH-only builders for an `SshPolicy`. */
 function runner(
-  policy: SandboxPolicy,
+  policy: CallPolicy,
   argv: readonly string[],
   canary: string | undefined,
   platform: string,
@@ -170,11 +199,13 @@ function runner(
   nproc?: number | null,
 ): string[] {
   let sandboxed: string[]
+  const ssh = isSsh(policy)
   if (platform === "darwin") {
-    const text = profile(policy, { canary, tty })
+    const text = ssh ? sshProfile(policy, { canary, tty }) : profile(policy, { canary, tty })
     sandboxed = tty ? ["/bin/sh", "-c", TTY_SCRIPT, "sh", text, ...argv] : ["/usr/bin/sandbox-exec", "-p", text, ...argv]
-  } else if (platform.startsWith("linux")) sandboxed = bwrap.command(policy, argv, { tty })
-  else throw new SandboxUnavailable(`no sandbox for platform ${JSON.stringify(platform)}`)
+  } else if (platform.startsWith("linux")) {
+    sandboxed = ssh ? bwrap.sshCommand(policy, argv, { tty }) : bwrap.command(policy, argv, { tty })
+  } else throw new SandboxUnavailable(`no sandbox for platform ${JSON.stringify(platform)}`)
   const n = nproc === undefined ? callCap() : nproc
   if (n === null) return sandboxed
   if (!(Number.isSafeInteger(n) && n >= 1)) throw new RangeError(`nproc must be a positive integer, got ${n}`)
@@ -211,7 +242,7 @@ export interface RunOptions {
 }
 
 /**
- * Runs `argv` in the sandbox, in the workspace, with a scrubbed environment.
+ * Runs `argv` in the sandbox, in the workspace (an SSH-only call: its temp folder), with a scrubbed environment.
  *
  * The call runs in a new process group. The group is killed when the call's first
  * process exits (so nothing it started in the background survives), when `timeout`
@@ -225,7 +256,7 @@ export interface RunOptions {
  * (before anything starts), and the error of a `track` that throws, after the call is
  * killed and swept.
  */
-export async function run(policy: SandboxPolicy, argv: readonly string[], options: RunOptions = {}): Promise<Result> {
+export async function run(policy: CallPolicy, argv: readonly string[], options: RunOptions = {}): Promise<Result> {
   const { stdin, timeout = 120, signal, maxOutput = 1 << 20, tailOutput = 0, track, onOutput } = options
   if (!(timeout > 0 && timeout <= MAX_TIMEOUT_S)) {
     throw new RangeError(`timeout must be more than 0 and at most ${MAX_TIMEOUT_S} seconds, got ${timeout}`)
@@ -236,9 +267,7 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
   const start = performance.now()
   let canary: Canary | undefined
   try {
-    if (process.platform === "darwin") {
-      canary = new Canary([policy.tmpdir, ...(policy.writable ? [policy.workspace] : [])])
-    }
+    if (process.platform === "darwin") canary = new Canary(writableDirs(policy))
     const [file, ...args] = command(policy, argv, canary?.allowed)
     let exited: { code: number | null; signal: NodeJS.Signals | null } | undefined
     let reason: "exit" | "timeout" | "abort" | undefined
@@ -258,7 +287,7 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
     let child: ReturnType<typeof spawn>
     try {
       child = spawn(file!, args, {
-        cwd: policy.workspace,
+        cwd: workDir(policy),
         env: scrubbedEnv(policy),
         detached: true,
         stdio: own?.stdio ?? [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
@@ -392,15 +421,15 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
   }
 }
 
-/** Starts `argv` under `policy` on a new PTY, keeping that terminal (see `terminalCommand`), in the workspace,
- *  with `scrubbedEnv` plus `TERM` (`xterm-256color`) and `env`. `track` records it for the start-up reaper, as
- *  `run` does. The caller ends it with `kill`; the terminal closes by itself once the call ends (see
- *  `PtyProcess.exited`), or earlier with `close`. Once the leader exits, its group is killed and, on macOS, the
- *  canary's sweep runs, as `run`'s do; then `track`'s cleanup runs, and only then does `exited` resolve (or
- *  reject, with the error of a cleanup that throws). Throws `SandboxUnavailable` on an unsupported platform, the
+/** Starts `argv` under `policy` on a new PTY, keeping that terminal (see `terminalCommand`), in the workspace (an
+ *  SSH-only call: its temp folder), with `scrubbedEnv` plus `TERM` (`xterm-256color`) and `env`. `track` records it
+ *  for the start-up reaper, as `run` does. The caller ends it with `kill`; the terminal closes by itself once the
+ *  call ends (see `PtyProcess.exited`), or earlier with `close`. Once the leader exits, its group is killed and, on
+ *  macOS, the canary's sweep runs, as `run`'s do; then `track`'s cleanup runs, and only then does `exited` resolve
+ *  (or reject, with the error of a cleanup that throws). Throws `SandboxUnavailable` on an unsupported platform, the
  *  spawn's error when the call can't start, and the error of a `track` that throws, once the call is killed. */
 export function startOnTerminal(
-  policy: SandboxPolicy,
+  policy: CallPolicy,
   argv: readonly string[],
   options: {
     cols: number
@@ -411,14 +440,11 @@ export function startOnTerminal(
   },
 ): PtyProcess {
   const { cols, rows, onData, env = {}, track } = options
-  const canary =
-    process.platform === "darwin"
-      ? new Canary([policy.tmpdir, ...(policy.writable ? [policy.workspace] : [])])
-      : undefined
+  const canary = process.platform === "darwin" ? new Canary(writableDirs(policy)) : undefined
   let pty: PtyProcess
   try {
     pty = spawnPty(terminalCommand(policy, argv, canary?.allowed), {
-      cwd: policy.workspace,
+      cwd: workDir(policy),
       env: { ...scrubbedEnv(policy), TERM: "xterm-256color", ...env },
       cols,
       rows,
