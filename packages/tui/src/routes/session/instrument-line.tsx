@@ -4,6 +4,7 @@ import { useOffice } from "../../context/office"
 import { useTheme } from "../../context/theme"
 import { wrap } from "../../ui/read-through"
 import { Locale } from "../../util/locale"
+import { display } from "../../util/printable"
 
 /** Each kind's count, in the line's order. */
 const KINDS: { kind: Instrument["kind"]; one: string; many: string }[] = [
@@ -14,12 +15,14 @@ const KINDS: { kind: Instrument["kind"]; one: string; many: string }[] = [
 
 /** The most columns a waiting command takes on the line, its ellipsis included. */
 const COMMAND_COLUMNS = 30
+/** The ellipsis OpenTUI cuts the counts with, so a line shows one kind. */
+const ELLIPSIS = "..."
 
-/** `command` on one row, cut to `columns` with an ellipsis when it is wider. */
+/** `command` drawn on one row, cut to `columns` with an ellipsis when it is wider. */
 function cut(command: string, columns: number) {
-  const row = command.replace(/\s+/g, " ").trim()
+  const row = display(command).replace(/\s+/g, " ").trim()
   if (Bun.stringWidth(row) <= columns) return row
-  return wrap(row, columns - 1)[0] + "…"
+  return wrap(row, columns - ELLIPSIS.length)[0] + ELLIPSIS
 }
 
 /** The oldest of `instruments` waiting on the owner. */
@@ -56,18 +59,14 @@ export function InstrumentLine(props: { sessionID: string }) {
   )
 }
 
-/** In place of the prompt line's shortcuts: which instrument waits on the owner, by its command or else its name. */
-export function InstrumentWarning(props: { sessionID: string }) {
-  const office = useOffice()
+/** In place of the prompt line's shortcuts: `instrument` waits on the owner, named by its command, or by its name
+ *  when it has none to show. */
+export function InstrumentWarning(props: { instrument: Instrument }) {
   const { theme } = useTheme()
-  const waiting = createMemo(() => waitingInstrument(office.state.instruments[props.sessionID]))
+  const label = createMemo(() => cut(props.instrument.command ?? "", COMMAND_COLUMNS) || display(props.instrument.name))
   return (
-    <Show when={waiting()}>
-      {(i) => (
-        <text fg={theme.warning} wrapMode="none">
-          ⚠ {i().command ? cut(i().command!, COMMAND_COLUMNS) : i().name} is waiting for you
-        </text>
-      )}
-    </Show>
+    <text fg={theme.warning} wrapMode="none">
+      ⚠ {label()} is waiting for you
+    </text>
   )
 }

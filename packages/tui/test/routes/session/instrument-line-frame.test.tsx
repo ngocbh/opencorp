@@ -17,6 +17,8 @@ const IDLE = "   /tmp/proj                                      shift+tab mode  
 const SHORTCUTS = "shift+tab mode  ctrl+x p people  ctrl+p commands"
 /** The shortcuts, closing a line pattern. */
 const ENDS_WITH_SHORTCUTS = ` +${SHORTCUTS.replaceAll("+", "\\+")}$`
+/** The ssh shell's warning, its command cut to 30 columns, the last three the ellipsis the counts are cut with. */
+const SSH_WAITS = "⚠ ssh nhb25@misha\\.ycrc\\.yale\\.e\\.\\.\\. is waiting for you$"
 
 /** Boots session 0 of a fresh office; `width` widens the screen for a long line. */
 async function boot(width = 100) {
@@ -110,7 +112,8 @@ test("a failed instrument is counted as failed", async () => {
     expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · 2 shells · 1 failed${ENDS_WITH_SHORTCUTS}`))
     expect(fgOf(app, "1 failed")?.equals(theme.error)).toBe(true)
     expect(fgOf(app, "2 shells")?.equals(theme.textMuted)).toBe(true)
-    add(office, sid, { kind: "codex", name: "codex 1", profile: "harness", status: "failed", error: "codex is missing" })
+    const codex = { kind: "codex", name: "codex 1", profile: "harness" } as const
+    add(office, sid, { ...codex, status: "failed", error: "codex is missing" })
     f = await app.until((f) => line(f).includes("2 failed"))
     expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · 2 shells · 1 Codex session · 2 failed${ENDS_WITH_SHORTCUTS}`))
   } finally {
@@ -130,9 +133,8 @@ test("a waiting shell shows what waits for you on the right, in place of the sho
       waiting: "secret",
       command: "ssh nhb25@misha.ycrc.yale.edu -t tmux attach",
     })
-    // The command cut to 30 columns, the last one the ellipsis.
     let f = await app.until((f) => line(f).includes("is waiting for you"))
-    expect(line(f)).toMatch(/^ {3}\/tmp\/proj · 1 shell +⚠ ssh nhb25@misha\.ycrc\.yale\.edu… is waiting for you$/)
+    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · 1 shell +${SSH_WAITS}`))
     expect(line(f)).not.toContain("shift+tab mode")
     expect(line(f)).not.toContain("commands")
     expect(fgOf(app, "⚠")?.equals(theme.warning)).toBe(true)
@@ -151,6 +153,27 @@ test("a waiting shell shows what waits for you on the right, in place of the sho
     add(office, sid, { ...ssh, status: "waiting", waiting: "secret", command: "sudo apt update" })
     f = await app.until((f) => line(f).includes("⚠ sudo apt update is waiting for you"))
     expect(line(f)).toMatch(/· 2 shells +⚠ sudo apt update is waiting for you$/)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("what waits draws a command's escapes and control characters harmlessly, and a blank one by name", async () => {
+  const { office, sid, app } = await boot()
+  try {
+    const shell = add(office, sid, {
+      status: "waiting",
+      waiting: "approval",
+      command: "printf '\x1b[31mred\x1b[0m\x07' && ssh h",
+    })
+    let f = await app.until((f) => line(f).includes("is waiting for you"))
+    expect(line(f)).toMatch(/· 1 shell +⚠ printf 'red' && ssh h is waiting for you$/)
+    expect(f).not.toContain("\x1b")
+    expect(f).not.toContain("[31m")
+    add(office, sid, { ...shell, name: "shell\x1b[2J\x07 9", command: " \n\t " })
+    f = await app.until((f) => line(f).includes("⚠ shell 9 is waiting for you"))
+    expect(line(f)).toMatch(/· 1 shell +⚠ shell 9 is waiting for you$/)
   } finally {
     await app.stop()
     office.stop()
@@ -185,6 +208,25 @@ test("on a narrow screen the counts give way, cut in the middle, and the rest of
     add(office, sid, { kind: "claude", name: "claude 1", profile: "harness" })
     const f = await app.until((f) => line(f).includes("failed"))
     expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · 3 s.*\\.\\.\\..* failed${ENDS_WITH_SHORTCUTS}`))
+    expect(f.split("\n").filter((r) => r.includes("/tmp/proj"))).toHaveLength(1)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+
+test("on a narrow screen what waits for you stays whole, and the counts give way", async () => {
+  const { office, sid, app } = await boot(80)
+  try {
+    add(office, sid)
+    add(office, sid)
+    add(office, sid, { kind: "codex", name: "codex 1", profile: "harness" })
+    add(office, sid, { status: "failed", error: "No sandbox here: install bubblewrap" })
+    add(office, sid, { status: "waiting", waiting: "secret", command: "ssh nhb25@misha.ycrc.yale.edu -t tmux attach" })
+    // The counts are cut to what fits beside the warning, here to their first and last letters.
+    const f = await app.until((f) => line(f).includes("is waiting for you") && line(f).includes("4 ..."))
+    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · 4 \\.\\.\\.\\S+  ${SSH_WAITS}`))
     expect(f.split("\n").filter((r) => r.includes("/tmp/proj"))).toHaveLength(1)
   } finally {
     await app.stop()

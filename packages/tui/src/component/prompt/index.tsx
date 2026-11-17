@@ -123,10 +123,9 @@ export function Prompt(props: PromptProps) {
   const session = createMemo(() => office.state.sessions.find((s) => s.id === props.sessionID))
   const canInterrupt = createMemo(() => interruptible(session()?.status))
   const busy = createMemo(() => working(session()?.status))
-  // The session's id while one of its instruments waits on the owner: the line then says which, in place of the
-  // shortcuts.
+  // The instrument waiting on the owner, which the line names in place of the shortcuts.
   const waiting = createMemo(() =>
-    props.sessionID && waitingInstrument(office.state.instruments[props.sessionID]) ? props.sessionID : undefined,
+    props.sessionID ? waitingInstrument(office.state.instruments[props.sessionID]) : undefined,
   )
   /** An ended Codex session, which a message continues in a new session on the same thread. */
   const continues = createMemo(() => {
@@ -1146,7 +1145,7 @@ export function Prompt(props: PromptProps) {
               </box>
             }
           >
-            {(id) => <InstrumentWarning sessionID={id()} />}
+            {(instrument) => <InstrumentWarning instrument={instrument()} />}
           </Show>
         </box>
       </box>
