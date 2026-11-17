@@ -148,7 +148,7 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
   if (action.never !== undefined) return held(action.never)
   // A typed line goes to a program that may be a shell anywhere, a remote one at its home most likely.
   const cwd = action.kind === "input" ? "~" : where.cwd
-  const credential = parts.map((p) => credentialOf(p, cwd)).find((found) => found !== null)
+  const credential = parts.map((p) => credentialOf(p, cwd, where.credentials)).find((found) => found !== null)
   if (credential) return held(credential)
   const owner = parts.map((p) => ownerOnly(p, read.unreadable === null)).find((found) => found !== null)
   if (owner) return held(owner)

@@ -36,7 +36,8 @@ test("quotes and backslashes keep a word whole and are removed", () => {
 test("leading assignments are kept apart from the words", () => {
   const [part] = readCommand("FOO=1 BAR='x y' ls A=b").parts
   expect(part).toEqual({
-    assignments: ["FOO=1", "BAR=x y"], words: ["ls", "A=b"], expands: [false, false], writes: [], reads: [], fed: false,
+    assignments: ["FOO=1", "BAR=x y"], words: ["ls", "A=b"], expands: [false, false], substituted: [false, false],
+    writes: [], reads: [], fed: false,
   })
   expect(readCommand("'FOO'=1 ls").parts[0]!.assignments).toEqual([])
 })
@@ -227,7 +228,9 @@ test("read-only programs read as read-only, with any arguments", () => {
     "nproc", "free", "uptime", "ps", "column", "nl", "fold", "od", "md5sum", "sha1sum", "sha256sum", "seq", "printenv",
     "squeue", "sinfo", "sacct", "sshare", "sprio", "sstat", "qstat", "bjobs", "bqueues",
   ]
-  each(any.flatMap((p) => [p, `${p} -a b`, `${p} -a b*.md {x,y} $X`]), readOnly, true)
+  each(any.flatMap((p) => [p, `${p} -a b`, `${p} -a b*.md {x,y}`]), readOnly, true)
+  each(["echo $X", "pwd $X", "which $X", "printenv $X"], readOnly, true)
+  each(["cat $X", "head -n 1 $X", "grep x $X"], readOnly, false)
   each(["htop", "cd x", "curl u"], readOnly, false)
 })
 
@@ -313,7 +316,10 @@ test("a redirect to a file is a write; to /dev/null or a descriptor it isn't", (
   each(["ls 2>err", "ls &>out", "ls &>>out", "ls >|out", "ls >&out", "ls <>f"], risk, "it writes or overwrites files")
   each(["ls >&2", "ls 2>&-", "cat < in", "ls 2>/dev/null"], risk, null)
   expect(readCommand("cat < in > out <> both").parts).toEqual([
-    { assignments: [], words: ["cat"], expands: [false], writes: ["out", "both"], reads: ["in", "both"], fed: true },
+    {
+      assignments: [], words: ["cat"], expands: [false], substituted: [false], writes: ["out", "both"], reads: ["in", "both"],
+      fed: true,
+    },
   ])
 })
 
@@ -734,7 +740,7 @@ test("an expansion in a path is a wildcard for credentials, and the exemptions h
   each(
     [
       "cat ~/.ssh/id_rsa.pub", "cat ~/.ssh/known_hosts", "cat ~/.ssh/known_hosts.old", "cat ~/.ssh/config",
-      "cat ~/.ssh/authorized_keys", "cat ~/.ssh/*.pub", "grep x *", "cat src/*", "wc -l *.ts", "cat $FILE",
+      "cat ~/.ssh/authorized_keys", "cat ~/.ssh/*.pub", "grep x *", "cat src/*", "wc -l *.ts", "wc -l $FILE",
       "find . -name x -exec cat {} +", "cat **/*", "head *", "echo $X",
     ],
     cred,
@@ -762,7 +768,6 @@ test("a program that reads folders recursively names credentials when a path is 
     ["diff -rN ~ /tmp/x", "~"],
     ["git diff --no-index ~ /dev/null", "~"],
     ["grep -R x /", "/"],
-    ["grep --recursive x $HOME", "$HOME"],
     ["grep -d recurse x /home", "/home"],
     ["grep --directories=recurse x /Users", "/Users"],
     ["grep -r x /home/*", "/home/*"],
@@ -796,4 +801,52 @@ test("a program that reads folders recursively names credentials when a path is 
     ["cat /var/log/*.log"], ["grep -r x /w/s", "/w"], ["find . -type f"],
   ])
     expect([line, cred(line!, cwd)]).toEqual([line, null])
+})
+
+test("a content reader given a path through an expansion may read a credential; a names-only program may not", () => {
+  const cred = (line: string) => readCommand(line).parts.map((p) => credentialOf(p)).find((r) => r !== null) ?? null
+  const through = (word: string) => `it reads a path named by an expansion: ${word}`
+  for (const [line, word] of [
+    ["f=~/.ss; cat ${f}h/id_test", "${f}h/id_test"],
+    ['cat "$K"', "$K"],
+    ["base64 $(cat p)", "$(cat p)"],
+    ["head -c 9 `cat p`", "`cat p`"],
+    ["timeout 5 grep x $F", "$F"],
+    ["cp $A /tmp/b", "$A"],
+    ["less ${K:-x}", "${K:-x}"],
+    ["for f in ~/.ssh/*; do cat $f; done", "$f"],
+    ["cat < $F", "$F"],
+    ["sort \"$(echo k)\"", "$(echo k)"],
+  ])
+    expect([line, cred(line!)]).toEqual([line, through(word!)])
+  expect(cred("ssh h 'cat $F'")).toBe(`on h: ${through("$F")}`)
+  expect(cred("cat $HOME/.ssh/id_rsa")).toBe("it names a credential path: $HOME/.ssh/id_rsa")
+  expect(cred("d=.ssh; cat ~/$d/id_rsa")).toBe("it names a credential path: ~/$d/id_rsa")
+  expect(cred("grep --recursive x $HOME")).toBe(through("$HOME"))
+  expect(cred("git diff --no-index $A /dev/null")).toBe("it reads a folder that holds credentials: $A")
+  each(["ls $HOME", "stat $F", "du -sh $D", "echo $HOME", "cat '$K'", "cat $'x'", "cat x", "printf %s $X", "cat *.md"],
+    cred, null)
+  expect(readOnly('cat "$K"')).toBe(false)
+  each(["ls $HOME", "echo $HOME", "cat *.md"], readOnly, true)
+  expect(readCommand(`cat $A "$B" '$C' $'d' \`e\` $(f) \${g} h* $"i" $`).parts.at(-1)!.substituted).toEqual([
+    false, true, true, false, false, true, true, true, false, false, false,
+  ])
+})
+
+test("a path the host marks as a credential counts like one under ~/.ssh", () => {
+  const extra = ["/home/u/keys/id", "~/work/*.token"]
+  const cred = (line: string, more: readonly string[] = extra) =>
+    readCommand(line).parts.map((p) => credentialOf(p, "/home/u", more)).find((r) => r !== null) ?? null
+  for (const [line, path] of [
+    ["cat ~/keys/id", "~/keys/id"],
+    ["cat /home/u/keys/id", "/home/u/keys/id"],
+    ["cat keys/id", "keys/id"],
+    ["cat ~/keys/*", "~/keys/*"],
+    ["cat ~/work/a.token", "~/work/a.token"],
+  ])
+    expect([line, cred(line!)]).toEqual([line, `it names a credential path: ${path}`])
+  expect(cred("grep -r x ~/keys")).toBe("it reads a folder that holds credentials: ~/keys")
+  expect(cred("ssh h cat keys/id")).toBe("on h: it names a credential path: keys/id")
+  each(["cat ~/keys/id.pub", "cat ~/keys/other", "cat ~/work/a.txt", "ls ~/keys/id"], cred, null)
+  expect(cred("cat ~/keys/id", [])).toBeNull()
 })

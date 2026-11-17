@@ -298,7 +298,7 @@ test("a glob counts as a credential read only when a literal part names a creden
     [cmd("grep x *"), [], W, READ_ONLY],
     [cmd("cat src/*"), [], W, READ_ONLY],
     [cmd("wc -l *.ts"), [], W, READ_ONLY],
-    [cmd("cat $FILE"), [], W, READ_ONLY],
+    [cmd("cat $FILE"), [], W, { verdict: "ask", reason: "it reads a path named by an expansion: $FILE", rules: [] }],
     [cmd("find . -name x -exec cat {} +"), [], W, { verdict: "check", rules: ["find . -name x -exec cat {} +"] }],
     [cmd("cat ~/.ssh/*"), [], S, { verdict: "ask", reason: "it names a credential path: ~/.ssh/*", rules: [] }],
     [cmd("cat */.aws/*"), [], S, { verdict: "ask", reason: "it names a credential path: */.aws/*", rules: [] }],
@@ -327,6 +327,33 @@ test("a recursive read of a folder that holds credentials asks in every mode, an
     [cmd("grep -r x .."), [], { ...W, cwd: "/w/s" }, READ_ONLY],
     [cmd("ls -R ~ && du -sh ~ && find ~ -name x"), [], S, READ_ONLY],
   ])
+})
+
+test("a content read through an expansion asks in every mode, and dontAsk refuses it", () => {
+  for (const mode of MODES) {
+    const held = (why: string): Decision =>
+      mode === "dontAsk" ? { verdict: "deny", reason: DONT + why } : { verdict: "ask", reason: why, rules: [] }
+    const through = (word: string) => held(`it reads a path named by an expansion: ${word}`)
+    table(mode, [
+      [cmd("f=~/.ss; cat ${f}h/id_test"), [allow("cat *")], S, through("${f}h/id_test")],
+      [cmd("cat $HOME/.ssh/id_rsa"), [], S, held("it names a credential path: $HOME/.ssh/id_rsa")],
+      [cmd('cat "$K"'), [allow('cat $K')], W, through("$K")],
+      [cmd("d=.ssh; cat ~/$d/id_rsa"), [], S, held("it names a credential path: ~/$d/id_rsa")],
+      [cmd("d=keys; cat $d/k"), [], S, through("$d/k")],
+    ])
+  }
+  table("auto", [[cmd("ls $HOME"), [], S, READ_ONLY], [cmd("echo $HOME && ls -la $D"), [], S, READ_ONLY]])
+  table("default", [[cmd("ls $HOME"), [], S, READ_ONLY]])
+})
+
+test("a path the host marks as a credential asks in every mode, like one under ~/.ssh", () => {
+  const marked: Where = { ...S, credentials: ["/home/u/keys/id"] }
+  for (const mode of MODES) {
+    const reason = "it names a credential path: ~/keys/id"
+    table(mode, [[cmd("cat ~/keys/id"), [allow("cat *")], marked,
+      mode === "dontAsk" ? { verdict: "deny", reason: DONT + reason } : { verdict: "ask", reason, rules: [] }]])
+  }
+  table("auto", [[cmd("cat ~/keys/id"), [], S, READ_ONLY], [cmd("cat ~/keys/id.pub"), [], marked, READ_ONLY]])
 })
 
 test("the card offers no rule for what it holds for the owner", () => {
