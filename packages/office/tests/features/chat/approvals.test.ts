@@ -244,6 +244,17 @@ test("in ask mode the employee's shell holds on an approval card, and the run wa
   expect(session(h, id).waiting_on).toEqual([CEO])
 })
 
+test("a held call's transcript row names the yian call id its card holds, beside the model's own", async () => {
+  const fake = await fakeLlm()
+  fake.script({ ...shell("ls"), tool_calls: [{ id: "call_ls", name: "workspace_shell", arguments: { command: "ls" } }] })
+  const h = await makeHarness(fake)
+  const id = await chat(h, "ask")
+  const [q] = await held(h, id, "list it")
+  expect(await tools(h, id)).toMatchObject([
+    { tool: "workspace_shell", call_id: "call_ls", yian_call_id: q!.call_id, state: "running" },
+  ])
+})
+
 sandboxed("Yes runs the command once, and the agent reads its output", async () => {
   const fake = await fakeLlm()
   fake.script(shell("ls"), says("Listed.", "a.txt\\n[exit 0]"))

@@ -115,12 +115,16 @@ export type FilePart = z.input<typeof FilePart>
 export const ToolPart = z.strictObject({
   id: ItemId,
   type: z.literal("tool"),
+  /** The model's id for the call. */
   call_id: z.string(),
   tool: z.string(),
   state: z.enum(["pending", "running", "completed", "error", "interrupted"]),
   input: z.record(z.string(), z.unknown()),
   output: z.unknown().default(() => ({})),
   error: z.string().nullable().default(null),
+  /** Yian's id for the call (`<run>/<node>/<n>/<index>`) once it waited on the office: the `call_id` of the card
+   *  it waits on, if any. Null for a call that never waited. */
+  yian_call_id: z.string().nullable().default(null),
 })
 export type ToolPart = z.input<typeof ToolPart>
 
