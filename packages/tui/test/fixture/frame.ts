@@ -35,13 +35,18 @@ export async function bootFrame(input: Omit<TuiInput, "args">, args: Args = {}, 
   }
 }
 
-/** Reads `setup`'s screen. OpenTUI gives no frame while the renderer is suspended or destroyed: the screen is then the
- *  last frame it drew. */
+/** Reads `setup`'s screen: empty while the renderer is suspended, since it shows nothing then; once destroyed, the
+ *  last frame read, when OpenTUI gives no frame any more. */
 export function frameReader(setup: TestRendererSetup) {
   let last = ""
   return () => {
     const { renderer } = setup
-    if (renderer.isDestroyed || renderer.controlState === RendererControlState.EXPLICIT_SUSPENDED) return last
-    return (last = setup.captureCharFrame())
+    if (renderer.controlState === RendererControlState.EXPLICIT_SUSPENDED) return ""
+    try {
+      return (last = setup.captureCharFrame())
+    } catch (error) {
+      if (renderer.isDestroyed) return last
+      throw error
+    }
   }
 }

@@ -9,6 +9,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { parseArgs } from "node:util"
+import { noticeFiles } from "./notices"
 
 const TARGETS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"] as const
 type Target = (typeof TARGETS)[number]
@@ -90,9 +91,6 @@ function assetsFor(name: string, platform: string, arch: string) {
     throw e
   }
 }
-/** A package's license and notice files: its LICENSE and any others, such as those of the libraries OpenTUI's native
- *  library links (FFmpeg's LGPL among them). */
-const NOTICE = /^(LICENSE|AUTHORS|PATENTS)|^FFMPEG-SOURCE\.md$/
 // Every target's assets, and the license and notice files of each package they come from, are found before anything
 // is written.
 const assetsOf = new Map(
@@ -102,10 +100,9 @@ const assetsOf = new Map(
     for (const { key, source } of assets) {
       const { owner, inner } = splitKey(key)
       if (!source.endsWith(path.sep + inner)) fail(`${source} is not ${inner} in a package`, 1)
-      const root = source.slice(0, -inner.length)
-      if (!fs.existsSync(path.join(root, "LICENSE"))) fail(`${owner} has no LICENSE (${path.join(root, "LICENSE")})`, 1)
-      const files = fs.readdirSync(root).map((file) => path.join(root, file))
-      licenses.set(owner, files.filter((file) => NOTICE.test(path.basename(file)) && fs.statSync(file).isFile()))
+      const notices = noticeFiles(source.slice(0, -inner.length))
+      if ("error" in notices) fail(`${owner} ${notices.error}`, 1)
+      licenses.set(owner, notices.files)
     }
     return [name, { assets, licenses }] as const
   }),

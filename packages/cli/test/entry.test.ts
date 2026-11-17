@@ -7,6 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import type { Readable } from "node:stream"
 import { fileURLToPath } from "node:url"
+import { noticeFiles } from "../script/notices"
 
 setDefaultTimeout(30_000)
 
@@ -423,6 +424,28 @@ test("the build refuses to replace a folder it did not write", () => {
   expect(fs.readFileSync(path.join(checkout, "package.json"), "utf8")).toBe('{"name":"opencorp-workspace"}')
   expect(fs.existsSync(path.join(out, PLATFORM))).toBe(false)
 }, 90_000)
+
+test("the build ships each asset package's license and notice files, and an LGPL package only with its own", () => {
+  const root = fs.mkdtempSync(path.join(tmp, "notices-"))
+  /** A package folder named `name` under `license`, holding `files`. */
+  const pkg = (name: string, license: string, files: string[]) => {
+    const dir = path.join(root, name)
+    fs.mkdirSync(path.join(dir, "LICENSE-dir"), { recursive: true })
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name, license }))
+    for (const file of [...files, "index.js"]) fs.writeFileSync(path.join(dir, file), "")
+    return dir
+  }
+  const names = (r: ReturnType<typeof noticeFiles>) => ("files" in r ? r.files.map((f) => path.basename(f)).sort() : r)
+  const mit = pkg("mit", "MIT", ["LICENSE", "LICENSE-ZLIB", "AUTHORS-LIBWEBP", "PATENTS-LIBWEBP", "README.md"])
+  expect(names(noticeFiles(mit))).toEqual(["AUTHORS-LIBWEBP", "LICENSE", "LICENSE-ZLIB", "PATENTS-LIBWEBP"])
+  expect(noticeFiles(pkg("bare", "MIT", ["README.md"]))).toEqual({ error: expect.stringContaining("has no LICENSE") })
+  const lgpl = ["LICENSE", "LICENSE-FFMPEG", "FFMPEG-SOURCE.md"]
+  expect(names(noticeFiles(pkg("native", "MIT AND LGPL-2.1-or-later", lgpl)))).toEqual(lgpl.sort())
+  for (const left of ["LICENSE-FFMPEG", "FFMPEG-SOURCE.md"])
+    expect(noticeFiles(pkg(`no-${left}`, "MIT AND LGPL-2.1-or-later", lgpl.filter((f) => f !== left)))).toEqual({
+      error: expect.stringContaining(left),
+    })
+})
 
 /** Kills the process group `pid` leads; a group already gone is fine. */
 function killGroup(pid: number) {

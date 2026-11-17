@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { normalizePromptContent, openEditor } from "../src/editor"
@@ -76,6 +76,71 @@ test.skipIf(process.platform === "win32")(
     }
   },
 )
+
+/** The prompt folders openEditor has left in the temp folder. */
+const promptDirs = () => readdirSync(os.tmpdir()).filter((name) => name.startsWith("opencorp-prompt-"))
+
+test.skipIf(process.platform === "win32")(
+  "a renderer destroyed while the editor runs (SIGHUP) isn't resumed, and the edit still comes back",
+  async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "act-ed-"))
+    try {
+      const script = path.join(dir, "ed.sh")
+      writeFileSync(script, `printf ' edited' >> "$1"\n`)
+      delete process.env.VISUAL
+      process.env.EDITOR = `sh '${script}'`
+      const calls: string[] = []
+      let destroyed = false
+      const renderer = {
+        get isDestroyed() {
+          return destroyed
+        },
+        async suspend() {
+          calls.push("suspend")
+          destroyed = true
+        },
+        async resume() {
+          calls.push("resume")
+          // As OpenTUI 0.8 does once the renderer is gone.
+          throw new Error("Native scene resume requires completed suspension")
+        },
+        requestRender() {
+          calls.push("requestRender")
+        },
+      }
+      expect(await openEditor({ value: "original", renderer: renderer as never, stdin: "ignore" })).toBe(
+        "original edited",
+      )
+      expect(calls).toEqual(["suspend"])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  },
+)
+
+test("a suspend that fails rejects with its error and still removes the prompt's temp folder", async () => {
+  delete process.env.VISUAL
+  process.env.EDITOR = "true"
+  const before = promptDirs()
+  const calls: string[] = []
+  const renderer = {
+    isDestroyed: false,
+    async suspend() {
+      throw new Error("the terminal can't be suspended")
+    },
+    async resume() {
+      calls.push("resume")
+    },
+    requestRender() {
+      calls.push("requestRender")
+    },
+  }
+  await expect(openEditor({ value: "original", renderer: renderer as never })).rejects.toThrow(
+    "the terminal can't be suspended",
+  )
+  expect(promptDirs().filter((name) => !before.includes(name))).toEqual([])
+  expect(calls).toEqual([])
+})
 
 test("normalizes a single trailing editor newline for one-line prompts", () => {
   expect(normalizePromptContent("hello\n")).toBe("hello")

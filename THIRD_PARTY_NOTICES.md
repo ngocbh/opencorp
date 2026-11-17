@@ -80,7 +80,11 @@ license, the upstream paths and commit, and our paths.
   `packages/tui/test/app-lifecycle.test.tsx` and `packages/tui/src/component/terminal-pane.tsx`, read at commit
   `df46f69` (2026-11-16).
 - **Ours:** `packages/tui/src/component/spinner-renderable.ts`, `packages/tui/src/component/register-spinner.ts`,
-  `packages/tui/test/ui/embedded-terminal.test.tsx`.
+  `packages/tui/src/component/prompt/index.tsx`, `packages/tui/src/theme/index.ts`,
+  `packages/tui/src/context/theme.tsx`, `packages/tui/src/editor.ts`, `packages/tui/src/app.tsx`,
+  `packages/tui/src/setup/screen.tsx`, `packages/tui/src/setup/run.tsx`, `packages/tui/test/fixture/frame.ts`,
+  `packages/tui/test/setup/boot.tsx`, `packages/tui/test/setup/in-process-frame.test.tsx`,
+  `packages/tui/test/app-lifecycle.test.tsx` and `packages/tui/test/ui/embedded-terminal.test.tsx`.
 - **What:** the terminal title and renderer teardown, ported whole: a title is never set on a destroyed or suspended
   renderer and has its control characters replaced with spaces, and a destroyed renderer is left alone. Its tests
   come with it, and the SIGHUP test reads the cleared title from what the renderer writes, as upstream's does.
@@ -284,4 +288,6 @@ of their code is copied here.
 
 OpenTUI's native library (`@opentui/core-<os>-<cpu>`) bundles FFmpeg (LGPL-2.1-or-later), Ghostty, Little CMS, libwebp,
 stb, Wuffs and zlib. The built packages (`packages/cli/script/build.ts`) ship every license and notice file it ships
-(`LICENSE*`, `AUTHORS*`, `PATENTS*`, `FFMPEG-SOURCE.md`) beside the library, under `assets/<package>/`.
+(`LICENSE*`, `AUTHORS*`, `PATENTS*`, `FFMPEG-SOURCE.md`) beside the library, under `assets/<package>/`, and refuse a
+package whose license names the LGPL but that lacks `LICENSE-FFMPEG` or `FFMPEG-SOURCE.md`
+(`packages/cli/script/notices.ts`).
