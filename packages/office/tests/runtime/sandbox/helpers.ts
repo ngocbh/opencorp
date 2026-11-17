@@ -71,6 +71,7 @@ export function goldenSshPolicy(fields: {
   readOnly?: readonly string[]
   agentSocket?: string
   kerberos?: string
+  systemConfig?: readonly (readonly [string, string])[]
 }): SshPolicy {
   const ssh = path.join(fields.home, ".ssh")
   const cm = path.join(fields.hq, "cm")
@@ -84,6 +85,7 @@ export function goldenSshPolicy(fields: {
     sockets: [fields.agentSocket, fields.kerberos].filter((p) => p !== undefined),
     agentSocket: fields.agentSocket ?? null,
     ccache: fields.kerberos === undefined ? null : `FILE:${fields.kerberos}`,
+    systemConfig: fields.systemConfig ?? [],
   })
 }
 

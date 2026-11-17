@@ -7,7 +7,13 @@ import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { realPath } from "../../../src/runtime/sandbox/policy.ts"
 import { run, startOnTerminal } from "../../../src/runtime/sandbox/run.ts"
 import { SETUID_PROGRAMS } from "../../../src/runtime/sandbox/seatbelt.ts"
-import { SshPolicy, type SshPolicyInit, sshFiles, UnsafeProfile } from "../../../src/runtime/sandbox/ssh_policy.ts"
+import {
+  includedConfigs,
+  SshPolicy,
+  type SshPolicyInit,
+  sshFiles,
+  UnsafeProfile,
+} from "../../../src/runtime/sandbox/ssh_policy.ts"
 import { installFakeSsh } from "../../../src/testing/fake_ssh.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 import { sandboxAvailable } from "./helpers.ts"
@@ -175,6 +181,59 @@ test("ssh -G's files outside ~/.ssh are bound read-only, and the rest of its lin
   expect(sshFiles(stub, config, h.home)).toEqual([])
 })
 
+test("the config files ssh reads are found through its Include lines: globs, quotes, relative paths and nesting", () => {
+  const root = tempDir()
+  const etc = path.join(root, "etc")
+  const home = path.join(root, "home")
+  const file = (p: string, text = "") => {
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, text)
+    return p
+  }
+  const main = file(path.join(etc, "ssh_config"), `Host *\n  Include conf.d/*.conf\nInclude "${root}/a dir/q.conf" ${root}/plain.conf\n`)
+  const a = file(path.join(etc, "conf.d/a.conf"), `include=${root}/crypto.config\n`)
+  const b = file(path.join(etc, "conf.d/b.conf"))
+  file(path.join(etc, "conf.d/.hidden.conf"))
+  file(path.join(etc, "conf.d/c.txt"))
+  const q = file(path.join(root, "a dir/q.conf"))
+  // A loop back to the start is read once.
+  const plain = file(path.join(root, "plain.conf"), `Include ${main}\n`)
+  const crypto = file(path.join(root, "policies/openssh.txt"))
+  fs.symlinkSync(crypto, path.join(root, "crypto.config"))
+  const user = file(path.join(home, ".ssh/config"), "Include ~/.ssh/more.conf\nInclude extra.conf\n# Include /never\n")
+  const more = file(path.join(home, ".ssh/more.conf"), `Include ${b}\n`)
+  const extra = file(path.join(home, ".ssh/extra.conf"))
+  const starts = [
+    { file: main, base: etc },
+    { file: user, base: path.join(home, ".ssh") },
+  ]
+  // A uid no file has: every file counts as someone else's. Links are named by where they lead.
+  expect(new Set(includedConfigs(starts, home, -1))).toEqual(new Set([main, a, b, q, plain, crypto, user, more, extra]))
+  // The user's own files pass ssh's owner check, so none is copied.
+  expect(includedConfigs(starts, home, process.getuid!())).toEqual([])
+})
+
+test.skipIf(process.platform !== "linux" || !fs.existsSync("/etc/ssh/ssh_config"))(
+  "on Linux the system's ssh config is copied for the sandbox, the user's own and private, over the original",
+  () => {
+    const h = layout()
+    const policy = h.make()
+    const targets = policy.systemConfig.map(([, target]) => target)
+    if (fs.statSync("/etc/ssh/ssh_config").uid !== process.getuid!()) expect(targets).toContain("/etc/ssh/ssh_config")
+    for (const [copy, target] of policy.systemConfig) {
+      expect(path.dirname(copy)).toBe(path.join(h.hq, "ssh", "system"))
+      expect(fs.readFileSync(copy)).toEqual(fs.readFileSync(target))
+      expect(fs.statSync(copy).uid).toBe(process.getuid!())
+      expect(mode(copy)).toBe(0o600)
+    }
+    // Built again, each copy is written afresh in the same place.
+    fs.writeFileSync(policy.systemConfig[0]![0], "stale\n")
+    expect(h.make().systemConfig).toEqual(policy.systemConfig)
+    expect(fs.readFileSync(policy.systemConfig[0]![0])).toEqual(fs.readFileSync(policy.systemConfig[0]![1]))
+    expect(fs.readdirSync(path.join(h.hq, "ssh", "system"))).toHaveLength(policy.systemConfig.length)
+  },
+)
+
 /** Runs `script` under `policy` with `/bin/sh -c`, `args` as $0 and on, and returns its exit and output. */
 async function sh(policy: SshPolicy, script: string, ...args: string[]) {
   const r = await run(policy, ["/bin/sh", "-c", script, ...args], { timeout: 20 })
@@ -239,6 +298,23 @@ test.skipIf(!sandboxAvailable())(
     expect(fs.existsSync(path.join(h.hq, "ssh", "new"))).toBe(false)
     expect(fs.existsSync(path.join(h.home, "new"))).toBe(false)
     expect(fs.readFileSync(h.provider, "utf8")).toBe('{"key":"decoy-provider"}\n')
+  },
+)
+
+const SSH = "/usr/bin/ssh"
+
+// -G resolves the config and connects nowhere. Without ssh here, a strict sandbox run fails rather than skips.
+test.skipIf(!sandboxAvailable() || (!fs.existsSync(SSH) && !process.env.OPENCORP_TEST_SANDBOX))(
+  "the real ssh reads the system's config in the profile",
+  async () => {
+    const h = layout()
+    const config = path.join(h.hq, "ssh", "config")
+    fs.writeFileSync(config, `Include "${path.join(h.ssh, "config")}"\nInclude "/etc/ssh/ssh_config"\n`)
+    const r = await run(h.make(), [SSH, "-G", "-F", config, "localhost"], { timeout: 20 })
+    const err = r.stderr.toString()
+    expect(r.exit, err).toBe(0)
+    expect(err).not.toContain("Bad owner")
+    expect(r.stdout.toString()).toContain("\nhostname localhost\n")
   },
 )
 

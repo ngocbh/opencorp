@@ -278,6 +278,7 @@ const SSH = {
   sshFiles: ["/home/me/keys/id"],
   agentSocket: "/tmp/ssh-abc/agent.7",
   kerberos: "/tmp/krb5cc_1000",
+  systemConfig: [["/home/me/.opencorp/hq/ssh/system/%2Fetc%2Fssh%2Fssh_config", "/etc/ssh/ssh_config"] as const],
 }
 
 /** The SSH-only argv for `SSH` on a terminal. */
@@ -307,6 +308,7 @@ function s1(): string[] {
     "--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve",
     "--proc", "/proc",
     "--dev", "/dev",
+    "--ro-bind", "/home/me/.opencorp/hq/ssh/system/%2Fetc%2Fssh%2Fssh_config", "/etc/ssh/ssh_config",
     "--ro-bind-try", "/home/me/.ssh", "/home/me/.ssh",
     "--ro-bind-try", "/home/me/keys/id", "/home/me/keys/id",
     "--ro-bind-try", "/home/me/.opencorp/hq/ssh", "/home/me/.opencorp/hq/ssh",
