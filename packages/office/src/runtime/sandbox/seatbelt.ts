@@ -62,8 +62,8 @@ export const SYSCTL_NAMES: readonly string[] = [
   "vm.loadavg",
 ]
 export const DNS_SOCKET = "/private/var/run/mDNSResponder"
-// A terminal call's own terminal; see `profile`'s `tty`.
-const TTY_RULE = '(allow file-read* file-write* file-ioctl (literal "/dev/tty") (regex #"^/dev/ttys[0-9]+$"))'
+// A terminal call's own terminal, and no other; see `profile`'s `tty`.
+const TTY_RULE = '(allow file-read* file-write* file-ioctl (literal "/dev/tty") (literal (param "TTY")))'
 
 /**
  * Returns a default-deny SBPL profile that allows exactly what `policy` grants.
@@ -79,11 +79,11 @@ const TTY_RULE = '(allow file-read* file-write* file-ioctl (literal "/dev/tty") 
  * marks processes running under this profile; see `escapees.ts`. `developerDir`
  * is the toolchain folder to allow: left out, `developerDir()` finds it; `null` means none.
  *
- * With `tty` the call may use the terminal it runs on: its controlling one, `/dev/tty` (ssh's prompts), and the
- * PTY slave its descriptors name, for reads, writes and terminal ioctls (`stty -echo`). The slave's name isn't
- * known when the profile is written, so the rule names every PTY slave, `/dev/ttysN`: the owner's other
- * terminals are then closed to the call only by their file modes, which let the owner's own processes in.
- * Unverified on macOS.
+ * With `tty` the call may use the terminal it runs on, and only that one: its controlling terminal, `/dev/tty`
+ * (ssh's prompts), and the PTY slave its descriptors name, for reads, writes and terminal ioctls (`stty -echo`).
+ * The slave's path isn't known when the profile is written, so the profile takes it as the `TTY` parameter, which
+ * sandbox-exec's `-D` sets (see `terminalCommand` in `run.ts`). Any other terminal, the owner's included, stays
+ * denied. Unverified on macOS: a rule that is wrong there keeps the terminal from opening, which fails safe.
  */
 export function profile(
   policy: SandboxPolicy,

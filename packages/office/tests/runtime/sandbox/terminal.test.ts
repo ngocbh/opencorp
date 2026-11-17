@@ -11,7 +11,7 @@ import { gone, makePolicy, sandboxAvailable } from "./helpers.ts"
 setDefaultTimeout(30_000)
 
 /** Starts `argv` under `policy` on a new 80 × 24 terminal, collecting what it prints. The test's end kills the
- *  terminal's group if its leader still runs, closes it and waits for its exit. */
+ *  terminal's group (a no-op once its leader exited), closes it and waits for its exit. */
 function onTerminal(policy: SandboxPolicy, argv: string[], track?: (pid: number) => () => void) {
   let output = ""
   const decoder = new TextDecoder()
@@ -23,11 +23,8 @@ function onTerminal(policy: SandboxPolicy, argv: string[], track?: (pid: number)
     },
     track,
   })
-  // Once the leader is reaped its pid may be reused, so the cleanup signals only a group whose leader still runs.
-  let ended = false
-  void pty.exited.then(() => (ended = true))
   onTestFinished(async () => {
-    if (!ended) pty.kill("SIGKILL")
+    pty.kill("SIGKILL")
     pty.close()
     await pty.exited
   })

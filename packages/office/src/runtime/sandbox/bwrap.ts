@@ -34,11 +34,12 @@ export const NETWORK_PATHS: readonly string[] = ["/run/systemd/resolve"]
  * With `tty` the call keeps the terminal it was started on: no new session, so a program can read `/dev/tty`
  * (ssh's prompts). That terminal is the instrument's own PTY, never the owner's: `--new-session` stops a call
  * writing into its parent's terminal (TIOCSTI, CVE-2017-5226), and here the parent's terminal is the call's own.
- * Known limit: unless the kernel turns TIOCSTI off (Linux 6.2's `dev.tty.legacy_tiocsti`; before 6.2 nothing
- * can), a program in the call can still push input into that same PTY with it. That is the call's own input, so it
- * reaches no further than the approved command already does; the command could type at a prompt itself that way,
- * a secret one included, but the guard at a secret prompt is there to stop the agent's keys, and the command was
- * approved.
+ * Known limit: a program in the call can still push input into that same PTY with TIOCSTI, unless the kernel
+ * turns it off (Linux 6.2's `dev.tty.legacy_tiocsti`) or a seccomp filter refuses it, as one could before 6.2. The
+ * office passes no seccomp filter today, and that is acceptable because the PTY is the call's own: the input it
+ * pushes is the call's own input, which reaches no further than the approved command already does. The command
+ * could type at a prompt itself that way, a secret one included, but the guard at a secret prompt is there to stop
+ * the agent's keys, and the command was approved.
  */
 export function command(policy: SandboxPolicy, argv: readonly string[], { tty = false } = {}): string[] {
   const args = ["bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try"]

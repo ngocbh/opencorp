@@ -308,16 +308,22 @@ test("a shell profile has no helper rule", () => {
   }
 })
 
-/** The rule a terminal profile adds: the call's controlling terminal, and the PTY slaves its descriptors name. */
-const TTY = '(allow file-read* file-write* file-ioctl (literal "/dev/tty") (regex #"^/dev/ttys[0-9]+$"))\n'
+/** The rule a terminal profile adds: the call's controlling terminal, and the one PTY slave sandbox-exec names as
+ *  the `TTY` parameter. */
+const TTY = '(allow file-read* file-write* file-ioctl (literal "/dev/tty") (literal (param "TTY")))\n'
 /** The line it follows. */
 const DEV_FD = '(allow file-read* file-write-data (subpath "/dev/fd") (literal "/dev/stdout") (literal "/dev/stderr"))\n'
 
-test("a terminal profile lets the call use a terminal and adds nothing else", () => {
+test("a terminal profile lets the call use its own terminal and nothing else's", () => {
   // Unverified on macOS: only the profile's text is checked here.
   const policy = goldenPolicy(SHELL)
   expect(G1.split(DEV_FD)).toHaveLength(2)
-  expect(profile(policy, { ...SHELL_OPTIONS, tty: true })).toBe(G1.replace(DEV_FD, DEV_FD + TTY))
+  const text = profile(policy, { ...SHELL_OPTIONS, tty: true })
+  expect(text).toBe(G1.replace(DEV_FD, DEV_FD + TTY))
+  // One device by its exact path, never a pattern that could name another terminal.
+  expect(text.match(/\(param "TTY"\)/g)).toHaveLength(1)
+  expect(text).not.toContain("regex")
+  expect(text).not.toContain("/dev/ttys")
   expect(profile(policy, { ...SHELL_OPTIONS, tty: false })).toBe(G1)
   expect(profile(policy, SHELL_OPTIONS)).toBe(G1)
 })

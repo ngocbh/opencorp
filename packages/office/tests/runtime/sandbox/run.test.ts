@@ -7,7 +7,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import type { SandboxPolicy } from "../../../src/runtime/sandbox/policy.ts"
-import { type Helper, helperCommand, processLimits } from "../../../src/platform.ts"
+import { type Helper, helperCommand, processLimits, spawnPty } from "../../../src/platform.ts"
 import * as bwrap from "../../../src/runtime/sandbox/bwrap.ts"
 import {
   capture,
@@ -20,6 +20,7 @@ import {
   SAFE_PATH,
   SandboxUnavailable,
   scrubbedEnv,
+  terminalCommand,
 } from "../../../src/runtime/sandbox/run.ts"
 import { profile } from "../../../src/runtime/sandbox/seatbelt.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
@@ -430,17 +431,22 @@ test.skipIf(!sandboxAvailable())("a call's output reaches onOutput as it comes, 
   expect({ ...result, duration: 0 }).toEqual({ ...plain, duration: 0 })
 })
 
-test.skipIf(!sandboxAvailable())("an onOutput that throws lets the call end, and run then rejects with its error", async () => {
+test.skipIf(!sandboxAvailable())("an onOutput that throws kills the call, and run then rejects with its error", async () => {
+  onTestFinished(() => gone("4545"))
   let calls = 0
-  const call = sh(makePolicy().make(), "echo a; sleep 0.2; echo b", {
+  const start = performance.now()
+  const call = sh(makePolicy().make(), "echo a; sleep 4545; echo b", {
+    timeout: 20,
     onOutput: () => {
       calls++
       throw new Error("view failed")
     },
   })
   await expect(call).rejects.toThrow("view failed")
-  // Called once: after its first error the call's output no longer reaches it.
+  // Killed at once, not left running unwatched until its timeout.
+  expect(performance.now() - start).toBeLessThan(10_000)
   expect(calls).toBe(1)
+  expect(await gone("4545")).toBe(true)
 })
 
 test("a tailOutput that isn't a byte count is refused before anything starts", async () => {
@@ -495,6 +501,54 @@ test("the call argv is pinned with a process cap and without one", () => {
   for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
     expect(() => command(policy, ["x"], undefined, "darwin", bad), String(bad)).toThrow(RangeError)
   }
+})
+
+test("a terminal call's argv keeps its terminal under bubblewrap and names it to the Seatbelt profile", () => {
+  const policy = goldenPolicy({ workspace: "/w", writable: true, network: false, tmpdir: "/private/tmp/call" })
+  const wrapper = ["/bin/sh", "-c", NPROC_SCRIPT, "sh", "7000"]
+  const linux = bwrap.command(policy, ["x"], { tty: true })
+  expect(terminalCommand(policy, ["x"], undefined, "linux", null)).toEqual(linux)
+  expect(terminalCommand(policy, ["x"], undefined, "linux", 7000)).toEqual([...wrapper, ...linux])
+  const darwin = terminalCommand(policy, ["x"], "/c", "darwin", null)
+  // A shell reads the terminal's path, then execs sandbox-exec with it as the profile's TTY parameter.
+  expect(darwin.slice(0, 2)).toEqual(["/bin/sh", "-c"])
+  expect(darwin.slice(3)).toEqual(["sh", profile(policy, { canary: "/c", tty: true }), "x"])
+  expect(terminalCommand(policy, ["x"], "/c", "darwin", 7000)).toEqual([...wrapper, ...darwin])
+  expect(() => terminalCommand(policy, ["x"], undefined, "win32", null)).toThrow(SandboxUnavailable)
+})
+
+test("on macOS a terminal call passes its own terminal's path to sandbox-exec, and nothing runs without one", async () => {
+  const policy = goldenPolicy({ workspace: "/w", writable: true, network: false, tmpdir: "/private/tmp/call" })
+  const script = terminalCommand(policy, ["x"], "/c", "darwin", null)[2]!
+  expect(script.split("/usr/bin/sandbox-exec")).toHaveLength(2)
+  // echo stands in for sandbox-exec, so the script runs here; `tty` first prints the terminal's own path.
+  const echoed = `tty; ${script.replace("/usr/bin/sandbox-exec", "/bin/echo")}`
+  let output = ""
+  const pty = spawnPty(["/bin/sh", "-c", echoed, "sh", "PROFILE", "x", "y"], {
+    cwd: tempDir(),
+    env: { PATH: "/usr/bin:/bin", TERM: "xterm-256color" },
+    cols: 80,
+    rows: 24,
+    onData: (chunk) => {
+      output += Buffer.from(chunk).toString()
+    },
+  })
+  onTestFinished(() => {
+    pty.kill("SIGKILL")
+    pty.close()
+  })
+  expect(await pty.exited).toBe(0)
+  const [own, args] = output.split("\r\n")
+  expect(own).toStartWith("/dev/")
+  expect(args).toBe(`-D TTY=${own} -p PROFILE x y`)
+  // With no terminal on its input, the script stops before sandbox-exec.
+  const piped = spawnSync("/bin/sh", ["-c", script.replace("/usr/bin/sandbox-exec", "/bin/echo"), "sh", "PROFILE", "x"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+    timeout: 10_000,
+  })
+  expect(piped.status).not.toBe(0)
+  expect(piped.stdout).toBe("")
 })
 
 // null when the limits can't be read (say, no libc.so.6 on a musl Linux), so the test skips instead of the file failing.

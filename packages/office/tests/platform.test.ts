@@ -5,7 +5,7 @@ import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
-import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { templateFiles } from "../src/company/template.ts"
 import {
   embedded,
@@ -412,7 +412,7 @@ test.skipIf(process.platform !== "darwin")("sandboxCheck answers for this proces
 })
 
 /** Runs `argv` on a new 80 × 24 terminal in a temp folder, with `PATH` and `TERM` only, collecting what it prints.
- *  The test's end kills the terminal's group if its leader still runs, and closes it. */
+ *  The test's end kills the terminal's group (a no-op once its leader exited) and closes it. */
 function onTerminal(argv: string[]) {
   let output = ""
   const decoder = new TextDecoder()
@@ -425,11 +425,8 @@ function onTerminal(argv: string[]) {
       output += decoder.decode(chunk, { stream: true })
     },
   })
-  // Once the leader is reaped its pid may be reused, so the cleanup signals only a group whose leader still runs.
-  let ended = false
-  void pty.exited.then(() => (ended = true))
   onTestFinished(() => {
-    if (!ended) pty.kill("SIGKILL")
+    pty.kill("SIGKILL")
     pty.close()
   })
   return {
@@ -500,6 +497,71 @@ test("keys written at once, 4096 bytes of them, all reach the program", async ()
   expect(await t.pty.exited).toBe(0)
   expect(fs.readFileSync(file, "utf8")).toBe(keys)
 })
+
+test("killing a terminal's process after it exited signals nothing", async () => {
+  const t = onTerminal(["/bin/sh", "-c", "exit 0"])
+  expect(await t.pty.exited).toBe(0)
+  // Its group id may be another process's by now.
+  const kill = spyOn(process, "kill")
+  try {
+    t.pty.kill("SIGKILL")
+    expect(kill).not.toHaveBeenCalled()
+  } finally {
+    kill.mockRestore()
+  }
+})
+
+/** This process's descriptors open on a PTY's master or slave side. Linux only. */
+function ptyFds(): string[] {
+  return fs.readdirSync("/proc/self/fd").filter((fd) => {
+    try {
+      return /^\/dev\/(ptmx|pts\/)/.test(fs.readlinkSync(`/proc/self/fd/${fd}`))
+    } catch {
+      // Closed since the listing.
+      return false
+    }
+  })
+}
+
+/** Starts `argv` on a terminal, as `onTerminal` does, and returns it with the descriptors it opened here. */
+function trackedTerminal(argv: string[]) {
+  const open = new Set(ptyFds())
+  const t = onTerminal(argv)
+  const own = ptyFds().filter((fd) => !open.has(fd))
+  expect(own.length).toBeGreaterThan(0)
+  return { ...t, released: () => !ptyFds().some((fd) => own.includes(fd)) }
+}
+
+test.skipIf(process.platform !== "linux")(
+  "a terminal's descriptors are released once its process has exited and its output has drained",
+  async () => {
+    for (let i = 0; i < 5; i++) {
+      const t = trackedTerminal(["/bin/sh", "-c", `echo done${i}`])
+      expect(await t.pty.exited).toBe(0)
+      // `exited` comes after the output.
+      expect(t.output()).toBe(`done${i}\r\n`)
+      await waitFor(t.released, { timeout: 5_000, what: "the terminal's descriptors to close" })
+      // Closed, with no call to close.
+      expect(() => t.pty.write("x")).toThrow()
+    }
+  },
+)
+
+test.skipIf(process.platform !== "linux")(
+  "a terminal a background process still holds is released soon after its leader exits",
+  async () => {
+    const t = trackedTerminal(["/bin/sh", "-c", "(trap '' HUP; exec sleep 300) & echo bg=$!"])
+    const bg = Number((await waitFor(() => t.output().match(/bg=(\d+)\r\n/), { timeout: 5_000, what: "bg=" }))[1])
+    onTestFinished(() => {
+      if (!noSuchProcess(bg)) process.kill(bg, "SIGKILL")
+    })
+    const start = performance.now()
+    expect(await t.pty.exited).toBe(0)
+    expect(performance.now() - start).toBeLessThan(5_000)
+    await waitFor(t.released, { timeout: 5_000, what: "the terminal's descriptors to close" })
+    expect(() => t.pty.write("x")).toThrow()
+  },
+)
 
 test("a terminal in a folder that isn't there fails to start rather than starting elsewhere", () => {
   const cwd = path.join(tempDir(), "gone")

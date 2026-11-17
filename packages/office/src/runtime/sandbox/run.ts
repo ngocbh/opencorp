@@ -143,7 +143,24 @@ export function command(
   return runner(policy, argv, canary, platform, false, nproc)
 }
 
-/** `command`'s argv; with `tty` the call keeps the terminal it is started on (see bwrap's and Seatbelt's `tty`). */
+// Runs on a terminal call's terminal: reads that terminal's path (the PTY slave on its input) and execs sandbox-exec
+// with it as the profile's TTY parameter, so the profile names that one device; with no terminal it stops there.
+// The profile comes in as $1, then the call's argv.
+const TTY_SCRIPT = 't=$(/usr/bin/tty) || exit 1; p=$1; shift; exec /usr/bin/sandbox-exec -D "TTY=$t" -p "$p" "$@"'
+
+/** `command` for a call that keeps the terminal it is started on (see bwrap's and Seatbelt's `tty`): bubblewrap
+ *  starts no new session, and on macOS a shell passes the terminal's path to the profile. */
+export function terminalCommand(
+  policy: SandboxPolicy,
+  argv: readonly string[],
+  canary?: string,
+  platform: string = process.platform,
+  nproc?: number | null,
+): string[] {
+  return runner(policy, argv, canary, platform, true, nproc)
+}
+
+/** `command`'s argv, or `terminalCommand`'s with `tty`. */
 function runner(
   policy: SandboxPolicy,
   argv: readonly string[],
@@ -153,8 +170,10 @@ function runner(
   nproc?: number | null,
 ): string[] {
   let sandboxed: string[]
-  if (platform === "darwin") sandboxed = ["/usr/bin/sandbox-exec", "-p", profile(policy, { canary, tty }), ...argv]
-  else if (platform.startsWith("linux")) sandboxed = bwrap.command(policy, argv, { tty })
+  if (platform === "darwin") {
+    const text = profile(policy, { canary, tty })
+    sandboxed = tty ? ["/bin/sh", "-c", TTY_SCRIPT, "sh", text, ...argv] : ["/usr/bin/sandbox-exec", "-p", text, ...argv]
+  } else if (platform.startsWith("linux")) sandboxed = bwrap.command(policy, argv, { tty })
   else throw new SandboxUnavailable(`no sandbox for platform ${JSON.stringify(platform)}`)
   const n = nproc === undefined ? callCap() : nproc
   if (n === null) return sandboxed
@@ -186,8 +205,8 @@ export interface RunOptions {
    *  swept, and `run` then rejects with its error. */
   track?: (pid: number) => () => void
   /** Called with each chunk of the call's output as it comes, before the call's `Result` keeps (or drops) its
-   *  bytes. Once it throws, the call's output no longer reaches it, and `run` rejects with that error after the
-   *  call ends. */
+   *  bytes; every chunk is passed on, so the caller caps what it keeps. One that throws has the call killed and
+   *  swept, as a `track` that throws does, and `run` then rejects with its error. */
   onOutput?: (stream: "stdout" | "stderr", chunk: Buffer) => void
 }
 
@@ -284,6 +303,7 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
         } catch (error) {
           // Thrown from a stream's data handler, it would crash the office.
           outputFailed = { error }
+          settle("abort")
         }
       }
       outPipe.on("data", tap("stdout"))
@@ -372,10 +392,11 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
   }
 }
 
-/** Starts `argv` under `policy` on a new PTY, keeping that terminal (see bwrap's `tty`), in the workspace,
+/** Starts `argv` under `policy` on a new PTY, keeping that terminal (see `terminalCommand`), in the workspace,
  *  with `scrubbedEnv` plus `TERM` (`xterm-256color`) and `env`. `track` records it for the start-up reaper, as
- *  `run` does. The caller ends it: `kill`, then `close`. Once the leader exits, its group is killed and, on macOS,
- *  the canary's sweep runs, as `run`'s do; then `track`'s cleanup runs, and only then does `exited` resolve (or
+ *  `run` does. The caller ends it with `kill`; the terminal closes by itself once the call ends (see
+ *  `PtyProcess.exited`), or earlier with `close`. Once the leader exits, its group is killed and, on macOS, the
+ *  canary's sweep runs, as `run`'s do; then `track`'s cleanup runs, and only then does `exited` resolve (or
  *  reject, with the error of a cleanup that throws). Throws `SandboxUnavailable` on an unsupported platform, the
  *  spawn's error when the call can't start, and the error of a `track` that throws, once the call is killed. */
 export function startOnTerminal(
@@ -396,7 +417,7 @@ export function startOnTerminal(
       : undefined
   let pty: PtyProcess
   try {
-    pty = spawnPty(runner(policy, argv, canary?.allowed, process.platform, true), {
+    pty = spawnPty(terminalCommand(policy, argv, canary?.allowed), {
       cwd: policy.workspace,
       env: { ...scrubbedEnv(policy), TERM: "xterm-256color", ...env },
       cols,
@@ -418,7 +439,8 @@ export function startOnTerminal(
   }
   const exited = pty.exited.then((code) => {
     try {
-      // The leader is reaped by now, the same window as `run`'s kill after a natural exit.
+      // The leader is reaped by now, so as after `run`'s natural exit its id could in theory be reused. This comes
+      // up to a second later only while a descendant holds the terminal, a member that usually keeps the id taken.
       killGroup(pty.pid, { stopFirst: true })
       if (canary) killEscaped(canary)
     } finally {
