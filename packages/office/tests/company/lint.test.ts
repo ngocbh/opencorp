@@ -533,6 +533,7 @@ test("a company flow that uses a tool module is a lint error naming it", async (
 test.each([
   ["main", { main: "../../shared/flows/billing.yaml" }],
   ["SOP", { sops: [{ flow: "../../shared/flows/billing.yaml" }] }],
+  ["routine", { routines: [{ name: "nightly", flow: "../../shared/flows/billing.yaml" }] }],
 ])("a library named as a person's %s flow is a lint error, since it can't run", async (_, changes) => {
   const billing = "id: billing\nname: billing\ndefs:\n  quote:\n    input:\n      qty: !int\n    kind: code\n"
     + "    code: 'return inputs.qty * 2.5'\n    output: !float\n"
