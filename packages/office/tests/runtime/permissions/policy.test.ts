@@ -497,6 +497,21 @@ test("a cd earlier in the line moves the folder later relative reads start from,
   ])
 })
 
+test("a line of many relative cds decides at once, its folder lost, and asks where credentials are reachable", () => {
+  const T: Where = { profile: "ssh", cwd: "/tmp/t", writable: [] }
+  // Each cd to a new name from each folder so far would double the folders a later part may run in.
+  const line = `${Array.from({ length: 100 }, (_, i) => `cd d${i}; `).join("")}grep -r PRIVATE .`
+  expect(line.length).toBeLessThan(1000)
+  const started = performance.now()
+  const decided = decide(cmd(line), "auto", [], T)
+  expect(performance.now() - started).toBeLessThan(50)
+  expect(decided).toEqual({ verdict: "ask", reason: "it reads a relative path where the folder isn't known: .", rules: [] })
+  // A few moves are still followed.
+  expect(decide(cmd("cd /; cd home; cd u && grep -r PRIVATE ."), "auto", [], T)).toEqual({
+    verdict: "ask", reason: "it reads a folder that holds credentials: .", rules: [],
+  })
+})
+
 test("the check is told an unknown folder as empty", async () => {
   const where: Where = { profile: "ssh", cwd: null, writable: [] }
   const { perms, checked } = holding("auto", { where, check: async () => ({ verdict: "run", reason: "ok" }) })

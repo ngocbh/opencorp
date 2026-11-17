@@ -505,9 +505,14 @@ export function pushOf(part: SimpleCommand): { readonly asks: string | null } | 
   return { asks: asks() }
 }
 
+/** The most folders a line's parts are judged from; past it, the folder is unknown. Each cd to a new name from each
+ *  folder so far doubles them. */
+const FOLDERS_MAX = 8
+
 /** Why a line's `parts` name a credential path, as `credentialOf` says of each, or null. A `cd`, `pushd` or `popd`
  *  moves the folder the later parts' relative paths start from (`folderAfter`); since a cd can fail and the line go
- *  on, each later part is judged from every folder it may run in, `cwd` among them. */
+ *  on, each later part is judged from every folder it may run in, `cwd` among them. Past `FOLDERS_MAX` folders the
+ *  folder is unknown (null), as after a cd the reader can't follow. */
 export function lineCredential(
   parts: readonly SimpleCommand[],
   cwd?: string | null,
@@ -522,6 +527,7 @@ export function lineCredential(
     }
     const moved = folders.map((folder) => folderAfter(part, folder)).filter((folder) => folder !== false)
     if (moved.length > 0) folders = [...new Set([...folders, ...moved])]
+    if (folders.length > FOLDERS_MAX) folders = [null]
   }
   return null
 }
