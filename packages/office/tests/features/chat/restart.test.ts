@@ -8,6 +8,7 @@ import { now, Question } from "@opencorp/protocol"
 import type { SessionActor } from "../../../src/features/chat/session_actor.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
 import type { LiveCalls } from "../../../src/features/chat/transcript.ts"
+import { YES } from "../../../src/runtime/questions/approval.ts"
 import { formatAnswer } from "../../../src/runtime/questions/format.ts"
 import { COULDNT_RESUME, COULDNT_START, OFFICE_REPLACED } from "../../../src/runtime/runs/outcomes.ts"
 import { newId } from "../../../src/runtime/store/store.ts"
@@ -131,6 +132,58 @@ test("restore advances a run with an answer that never reached it", async () => 
   expect(o.kinds.slice(before)).toEqual(["advance"])
   expect(o.jobs.at(-1)!.deliver).toMatchObject([{ op: "complete", call_id: q.call_id }])
   await waitFor(() => texts(o, sid).includes("A it is.") && status(o, sid) === "idle", { what: "the reply" })
+  expect(o.office.store.getQuestion(q.id)!.status).toBe("consumed")
+})
+
+/** A model turn that runs `command` in the workspace's shell. */
+function shellCall(command: string): ScriptedReply {
+  return { tool_calls: [{ name: "workspace_shell", arguments: { command } }] }
+}
+
+test("an approval card survives an office restart, and Yes after it runs the command once", async () => {
+  const fake = await fakeLlm()
+  fake.script(shellCall("ls"), { content: "Listed." })
+  const o = await chatOffice(fake)
+  const { actor: first, sid } = await startActor(o)
+  o.office.store.updateSession(sid, { mode: "ask" })
+  o.workspace.run = async () => "a.txt\n[exit 0]"
+  await first.prompt("list it")
+  const q = await card(o, sid, "approval")
+  await waitFor(() => status(o, sid) === "waiting" && !first.hasWorker, { what: "asleep on the card" })
+  const actor = await reopen(o, first)
+  const before = o.kinds.length
+  await actor.restore()
+  // Asleep, its card still open and held by yian: nothing ran, nothing asked again.
+  expect(o.kinds.length).toBe(before)
+  expect(o.office.store.getQuestion(q.id)!.status).toBe("open")
+  expect(state(o, sid)).toMatchObject({ status: "waiting", waiting_on: [CEO] })
+  await actor.answer(q.id, YES, "option", { by: CEO })
+  await waitFor(() => texts(o, sid).includes("Listed.") && status(o, sid) === "idle", { what: "the reply" })
+  expect(o.workspace.calls).toEqual([{ tool: "shell", args: { command: "ls", timeout: null } }])
+  expect(lastAsked(fake, "a.txt\\n[exit 0]")).toBe(true)
+  expect(o.office.store.getQuestion(q.id)!.status).toBe("consumed")
+  expect(o.office.store.listAudit({ sessionId: sid }).map((r) => r.outcome)).toEqual(["held", "ok"])
+})
+
+test("a restart while an approved command runs never runs it again: the agent reads that its outcome is unknown", async () => {
+  const fake = await fakeLlm()
+  fake.script(shellCall("make deploy"), { content: "I'll check first." })
+  const o = await chatOffice(fake)
+  const { actor: first, sid } = await startActor(o)
+  o.office.store.updateSession(sid, { mode: "ask" })
+  // The command runs until it is stopped.
+  o.workspace.run = (_tool, _args, signal) =>
+    new Promise((resolve) => signal.addEventListener("abort", () => resolve("[interrupted]"), { once: true }))
+  await first.prompt("deploy it")
+  const q = await card(o, sid, "approval")
+  await waitFor(() => status(o, sid) === "waiting" && !first.hasWorker, { what: "asleep on the card" })
+  await first.answer(q.id, YES, "option", { by: CEO })
+  await waitFor(() => o.workspace.calls.length === 1, { what: "the command to run" })
+  const actor = await reopen(o, first)
+  await actor.restore()
+  await waitFor(() => texts(o, sid).includes("I'll check first.") && status(o, sid) === "idle", { what: "the reply" })
+  expect(o.workspace.calls).toHaveLength(1)
+  expect(lastAsked(fake, "Not run again: the user approved this")).toBe(true)
   expect(o.office.store.getQuestion(q.id)!.status).toBe("consumed")
 })
 

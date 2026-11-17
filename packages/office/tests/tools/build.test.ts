@@ -38,6 +38,9 @@ const NO_WORKSPACE = {
   call: (): never => {
     throw new Error("the workspace is never called")
   },
+  track: (): never => {
+    throw new Error("the workspace never tracks a call")
+  },
 }
 
 /** A run of minh on a work item they requested, with a recording monitor. */

@@ -45,6 +45,12 @@ const NO_WORKSPACE = {
   interrupt: (): never => {
     throw new Error("the workspace is never interrupted")
   },
+  track: (): never => {
+    throw new Error("the workspace never tracks a call")
+  },
+  where: (): never => {
+    throw new Error("the workspace's shell never runs")
+  },
 }
 
 /** A template company (a git repo) with agent minh, his profile and a granted skill; a store with a session of

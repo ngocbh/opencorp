@@ -18,6 +18,7 @@ import { groupSpecs, toolSpec } from "../../../src/runtime/worker/job.ts"
 import { BaseHandlers, remoteTool } from "../../../src/runtime/worker/rpc.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 import { openStore } from "../store/helpers.ts"
+import { makeMonitor } from "../permissions/helpers.ts"
 import { officeEnd } from "../worker/helpers.ts"
 import { makePolicy, sandboxAvailable } from "./helpers.ts"
 
@@ -353,6 +354,31 @@ test.skipIf(!sandboxAvailable())("a running call is recorded in workers until it
   }
   expect(out.output.endsWith("[interrupted]")).toBe(true)
   expect(store.listWorkers()).toEqual([])
+})
+
+test.skipIf(!sandboxAvailable())("an approved shell call still runs sandboxed", async () => {
+  const { root, ws, make } = makePolicy()
+  const { monitor, store } = await makeMonitor()
+  const tools = new WorkspaceTools(make(), { officeHome: tempDir(), store })
+  const permissions = {
+    mode: () => "ask" as const,
+    rules: () => [],
+    where: () => tools.where(),
+    hold: (): never => {
+      throw new Error("an approved call is never held")
+    },
+  }
+  const call = monitor.workspace(tools, "minh", "r1", { permissions })
+  const outside = path.join(root, "escaped.txt")
+  const out = await call(
+    "shell",
+    { command: `echo in > inside.txt; echo out > ${outside}; echo done`, timeout: null },
+    { approvedBy: "ngocbh", detached: true },
+  )
+  expect(out).toContain("done")
+  expect(fs.readFileSync(path.join(ws, "inside.txt"), "utf8")).toBe("in\n")
+  expect(fs.existsSync(outside)).toBe(false)
+  expect(store.listAudit().map((r) => r.detail?.endsWith(" approved by @ngocbh"))).toEqual([true])
 })
 
 test("shell arguments of the wrong type come back as text", async () => {

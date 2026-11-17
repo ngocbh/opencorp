@@ -6,6 +6,7 @@ import type { z } from "zod"
 import type { CompanyGit } from "../../company/git.ts"
 import type { CompanyRepo } from "../../company/loader.ts"
 import type { Monitor } from "../../runtime/permissions/monitor.ts"
+import type { Permissions } from "../../runtime/permissions/policy.ts"
 import { MANAGER_FLOW } from "../profile/manager.ts"
 import { GitProfileStore } from "../../company/profile.ts"
 import type { Carried, OnQuestion } from "../../runtime/questions/ask.ts"
@@ -31,13 +32,15 @@ const SIDE_CHAT_FLOW = "shared/flows/side_chat.yaml"
 const SIDE_HISTORY_CHARS = 32000
 
 type Person = z.output<typeof PersonSchema>
-type Workspace = Pick<WorkspaceTools, "call" | "interrupt">
+type Workspace = Pick<WorkspaceTools, "call" | "interrupt" | "track" | "where">
 
-/** What a run's tool groups are built for: the session, the run, and how its tools ask questions. */
+/** What a run's tool groups are built for: the session, the run, how its tools ask questions, and the permissions
+ *  its shell runs under. */
 export interface GroupContext {
   readonly session: SessionRecord
   readonly runId: string
   readonly onQuestion?: OnQuestion
+  readonly permissions?: Permissions
 }
 
 /**
@@ -48,8 +51,8 @@ export interface GroupContext {
  * the worker binds to the flow's memory inputs of the same names, on every run call; history lives in the flow's
  * `summary` and `history` inputs, not in a memory. `names` are what the person answers to (handle, then name).
  * `workspace` is the workspace the run's workspace tools call, if it has one. `parent` is the run (and node) the
- * session's fresh runs nest under in yian's run index, if any. Python's `learnable` is dropped: learning is
- * deferred.
+ * session's fresh runs nest under in yian's run index, if any. `runApproved` runs a held call its approver said Yes
+ * to, if the spec's tools can be held. Python's `learnable` is dropped: learning is deferred.
  */
 export interface RunSpec {
   readonly flow: string
@@ -61,6 +64,14 @@ export interface RunSpec {
   readonly names: readonly string[]
   readonly workspace?: Workspace
   readonly parent?: Parent | null
+  /** Runs `tool` with `args` for run `runId` of `session`, as approved by `by`: no gate, audited as approved, and
+   *  detached from the workspace's interrupt, so only `signal` stops it; its output. Throws `RangeError` for a
+   *  tool it can't run. */
+  runApproved?(
+    tool: string,
+    args: Record<string, unknown>,
+    o: { session: SessionRecord; runId: string; signal: AbortSignal; by: string },
+  ): Promise<string>
 }
 
 /** The company defaults of `repo`; the schema's defaults without any. */
@@ -119,14 +130,19 @@ export function mainSpec({
       talking_to: talkingTo(repo, person, session.opened_by),
       max_turns: defaults.max_turns,
     },
-    groups: ({ session, runId, onQuestion }) => {
-      const ctx = { store, repo, session, runId, onQuestion, carried, monitor, workspace }
+    groups: ({ session, runId, onQuestion, permissions }) => {
+      const ctx = { store, repo, session, runId, onQuestion, carried, monitor, workspace, permissions }
       return build(["toolbox", "workspace", "company"], ctx)
     },
     memories: profileMemory(git, person.handle),
     skills: [...person.skills],
     names: [person.handle, person.name],
     workspace,
+    runApproved: async (tool, args, { session, runId, signal, by }) => {
+      if (tool !== "shell") throw new RangeError("only a shell call can run once approved")
+      const call = monitor.workspace(workspace, session.person, runId, { sessionId: session.id })
+      return String(await call(tool, args, { signal, approvedBy: by, detached: true }))
+    },
   }
 }
 

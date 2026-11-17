@@ -1,7 +1,9 @@
-/** The reference monitor: asset tools checked against the company repo, run with office secrets, audited. */
+/** The reference monitor: asset tools checked against the company repo, run with office secrets, audited; and each
+ *  workspace call audited, the shell's gated by the session's permissions. */
 import type { Asset as AssetSchema, Grant as GrantSchema } from "@opencorp/protocol"
 import type { z } from "zod"
 import { builtinKinds, type KindTool, type Kinds } from "./assets.ts"
+import { type ApprovalCard, type Gate, gate, type Permissions } from "./policy.ts"
 import { type CompanyRepo, loadRepo } from "../../company/loader.ts"
 import { assetToolName, shownAssetToolName, TOOL_NAME } from "../../company/naming.ts"
 import { type SecretStore, SecretNotSetError } from "../secrets.ts"
@@ -13,6 +15,10 @@ type Grant = z.output<typeof GrantSchema>
 
 /** Characters of a killed workspace call's reason kept in its audit row. */
 export const REASON_CHARS = 200
+
+/** What a gated shell call returns when Esc, End or the office stop came after its gate let it run, before it
+ *  started. */
+export const STOPPED_BEFORE_RUN = "Not run: stopped before it started."
 
 /** A failure the monitor words itself, shown to the model as `error: <message>`. */
 class MonitorError extends Error {
@@ -26,12 +32,23 @@ export interface ToolboxTool {
   call(args: Record<string, unknown>): Promise<unknown>
 }
 
-/** Forwards one workspace call (`WorkspaceTools.call`'s output, or anything shaped like it). */
+/** How one workspace call runs: `signal` stops it; `callId` is the yian call's, which a held call's card names;
+ *  `approvedBy` runs a call its approver said Yes to, with no gate; `detached` leaves it out of the workspace's
+ *  interrupt, so only `signal` stops it. */
+export interface WorkspaceCallOptions {
+  readonly signal?: AbortSignal
+  readonly callId?: string
+  readonly approvedBy?: string
+  readonly detached?: boolean
+}
+
+/** Forwards one workspace call (`WorkspaceTools.call`'s output, or anything shaped like it); a held one returns
+ *  yian's `pending()`. */
 export type WorkspaceCall = (
   name: string,
   args: Record<string, unknown>,
-  options?: { signal?: AbortSignal },
-) => Promise<string>
+  options?: WorkspaceCallOptions,
+) => Promise<unknown>
 
 /** What one workspace call did, for the audit log.
  *
@@ -51,9 +68,15 @@ export interface ToolOutcome {
 }
 
 /** What `workspace` audits: a workspace tool call by name that resolves to its output and audit record, as
- *  `WorkspaceTools.call` does. */
+ *  `WorkspaceTools.call` does, and the workspace's interrupt, which a gate's controller joins while it decides. */
 export interface AuditedTools {
-  call(name: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<ToolOutcome>
+  call(
+    name: string,
+    args: Record<string, unknown>,
+    options?: { signal?: AbortSignal; detached?: boolean },
+  ): Promise<ToolOutcome>
+  /** Adds `controller` to the calls the workspace's interrupt aborts; returns its removal. */
+  track(controller: AbortController): () => void
 }
 
 /**
@@ -189,44 +212,86 @@ export class Monitor {
    * The row's outcome is `ok` for exit 0 and `error` otherwise. A call with no exit status (timed out,
    * interrupted, or bad arguments) has the reason from its output in the detail. A call that rejects is recorded
    * as `error` and its error thrown again.
+   *
+   * With `permissions`, a `shell` call is gated first (`gate`): its controller joins the workspace's interrupt
+   * before the gate decides, so Esc, End and the office stop end Auto's check, and a call stopped then never runs
+   * and writes no row. A call the gate lets run says why in its row's detail (`by …`); a refused one returns the
+   * refusal, audited `denied`; a held one returns what the card's hold returns, audited `held` with why it asks.
+   * A call with `approvedBy` runs with no gate, its row naming who approved it. The file tools are never gated.
    */
   workspace(
     tools: AuditedTools,
     person: string,
     runId: string | null,
-    { sessionId = null }: { sessionId?: string | null } = {},
+    { sessionId = null, permissions }: { sessionId?: string | null; permissions?: Permissions } = {},
   ): WorkspaceCall {
-    return async (name, args, options) => {
+    const record = (tool: string, args: Record<string, unknown>, outcome: string, detail: string) =>
+      this.store.recordAudit({ person, kind: "workspace", tool, args, outcome, sessionId, runId, detail })
+    const run = async (
+      name: string,
+      args: Record<string, unknown>,
+      options: { signal?: AbortSignal; detached?: boolean },
+      why: string,
+    ): Promise<string> => {
       let outcome: ToolOutcome
       try {
         outcome = await tools.call(name, args, options)
       } catch (error) {
-        this.store.recordAudit({
-          person,
-          kind: "workspace",
-          tool: name,
-          args: {},
-          outcome: "error",
-          sessionId,
-          runId,
-          detail: reasonOf(error).slice(0, DETAIL_CHARS),
-        })
+        record(name, {}, "error", reasonOf(error).slice(0, DETAIL_CHARS))
         throw error
       }
       const audit = outcome.audit
-      let detail = `exit=${audit.exit ?? "None"} duration=${audit.duration.toFixed(3)}s`
+      let detail = `exit=${audit.exit ?? "None"} duration=${audit.duration.toFixed(3)}s${why}`
       if (audit.exit === null) detail += `: ${[...lastLine(outcome.output)].slice(0, REASON_CHARS).join("")}`
-      this.store.recordAudit({
-        person,
-        kind: "workspace",
-        tool: audit.tool,
-        args: { summary: audit.argsSummary },
-        outcome: audit.exit === 0 ? "ok" : "error",
-        sessionId,
-        runId,
-        detail,
-      })
+      const ended = audit.exit === 0 ? "ok" : "error"
+      record(audit.tool, { summary: audit.argsSummary }, ended, detail.slice(0, DETAIL_CHARS))
       return outcome.output
+    }
+    return async (name, args, options = {}) => {
+      const { signal: given, callId, approvedBy, detached } = options
+      if (approvedBy !== undefined) {
+        return run(name, args, { signal: given, detached }, approvedBy ? ` approved by @${approvedBy}` : " approved")
+      }
+      const command = args.command
+      // A shell call whose command isn't text never runs: the tools refuse it as they do now.
+      if (name !== "shell" || permissions === undefined || typeof command !== "string") {
+        return run(name, args, { signal: given, detached }, "")
+      }
+      const own = new AbortController()
+      const untrack = tools.track(own)
+      const signal = given ? AbortSignal.any([own.signal, given]) : own.signal
+      try {
+        const seen: { card?: ApprovalCard } = {}
+        const watched: Permissions = {
+          mode: () => permissions.mode(),
+          rules: () => permissions.rules(),
+          where: () => permissions.where(),
+          hold: (card, id) => {
+            seen.card = card
+            return permissions.hold(card, id)
+          },
+          ...(permissions.check ? { check: (input, checking) => permissions.check!(input, checking) } : {}),
+        }
+        const summary = { summary: `command=${repr(command)}` }
+        let decided: Gate
+        try {
+          const call = { tool: "shell", why: "", args, callId, signal }
+          decided = await gate(watched, { kind: "command", text: command }, call)
+        } catch (error) {
+          record(name, summary, "error", reasonOf(error).slice(0, DETAIL_CHARS))
+          throw error
+        }
+        if (!decided.run) {
+          if (seen.card !== undefined) record(name, summary, "held", seen.card.reason.slice(0, DETAIL_CHARS))
+          // Stopped while Auto's check ran: nothing was decided, and its check's own row says so.
+          else if (!signal.aborted) record(name, summary, "denied", String(decided.result).slice(0, DETAIL_CHARS))
+          return decided.result
+        }
+        if (signal.aborted) return STOPPED_BEFORE_RUN
+        return await run(name, args, { signal }, ` by ${decided.by}`)
+      } finally {
+        untrack()
+      }
     }
   }
 

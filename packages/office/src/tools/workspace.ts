@@ -1,10 +1,13 @@
-/** Workspace tools: read, write, edit, list, search, and shell, each one sandboxed call. */
+/** Workspace tools: read, write, edit, list, search, and shell, each one sandboxed call; the shell's gated by the
+ *  session's permissions. */
 import { startTime } from "../util/proc.ts"
 import type { ToolOutcome, WorkspaceCall } from "../runtime/permissions/monitor.ts"
+import type { Where } from "../runtime/permissions/policy.ts"
 import { pyJson, repr, strip } from "../util/redact.ts"
 import type { SandboxPolicy } from "../runtime/sandbox/policy.ts"
 import { fsHelper, type Result, run } from "../runtime/sandbox/run.ts"
 import { newId, type Store } from "../runtime/store/store.ts"
+import type { ToolCallOptions } from "../runtime/worker/rpc.ts"
 import type { ToolContext } from "./context.ts"
 
 export const TOOL_NAMES = ["read_file", "write_file", "edit_file", "list", "search", "shell"] as const
@@ -34,11 +37,12 @@ const SIGNATURES: Record<ToolName, readonly (readonly [string] | readonly [strin
   shell: [["command"], ["timeout", null]],
 }
 
-/** A model-facing workspace tool: its description and JSON Schema, and a call that forwards. */
+/** A model-facing workspace tool: its description and JSON Schema, and a call that forwards; a held call returns
+ *  yian's `pending()`. */
 export interface WorkspaceTool {
   readonly description: string
   readonly parameters: Record<string, unknown>
-  call(args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<string>
+  call(args: Record<string, unknown>, options?: ToolCallOptions): Promise<unknown>
 }
 
 const READ_FILE =
@@ -161,13 +165,17 @@ export function workspaceToolFunctions(call: WorkspaceCall): Record<string, Work
   )
 }
 
-/** The `workspace` group, each call audited by `ctx.monitor`: every tool, or `READ_TOOLS` when `ctx.readOnly`.
+/** The `workspace` group, each call audited by `ctx.monitor`: every tool, its shell gated by `ctx.permissions`, or
+ *  `READ_TOOLS` when `ctx.readOnly`.
  *
  *  No tools (`{}`) without a monitor, workspace and session. */
 export function tools(ctx: ToolContext): Record<string, WorkspaceTool> {
   if (!ctx.monitor || !ctx.workspace || !ctx.session) return {}
   const calls = workspaceToolFunctions(
-    ctx.monitor.workspace(ctx.workspace, ctx.session.person, ctx.runId ?? null, { sessionId: ctx.session.id }),
+    ctx.monitor.workspace(ctx.workspace, ctx.session.person, ctx.runId ?? null, {
+      sessionId: ctx.session.id,
+      permissions: ctx.readOnly ? undefined : ctx.permissions,
+    }),
   )
   return ctx.readOnly ? Object.fromEntries(READ_TOOLS.map((name) => [name, calls[name]!])) : calls
 }
@@ -225,14 +233,14 @@ export class WorkspaceTools {
   }
 
   /** Runs the tool `name` with `args` (the office side of a `tool_call`); `signal` stops the call as an
-   *  interrupt does.
+   *  interrupt does. A `detached` call is left out of `interrupt`: only `signal` stops it.
    *
    *  Missing, unexpected or (for `shell`) mistyped arguments come back as an `error:` outcome that never
    *  ran. Rejects with a `RangeError` when `name` is not a workspace tool. */
   async call(
     name: string,
     args: Record<string, unknown>,
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; detached?: boolean } = {},
   ): Promise<ToolOutcome> {
     if (!Object.hasOwn(SIGNATURES, name)) throw new RangeError(`unknown workspace tool ${repr(name)}`)
     const tool = name as ToolName
@@ -260,7 +268,7 @@ export class WorkspaceTools {
       this.#store.recordWorker(key, { pid, pgid: pid, startTime: startTime(pid) ?? 0 })
       return () => this.#store.removeWorker(key, pid)
     }
-    this.#active.add(own)
+    if (!options.detached) this.#active.add(own)
     try {
       let output: string
       let result: Result
@@ -295,9 +303,24 @@ export class WorkspaceTools {
     }
   }
 
-  /** Kills every call running now; they return `[interrupted]`. */
+  /** Kills every call running now; they return `[interrupted]`. A tracked controller is aborted too. */
   interrupt(): void {
     for (const controller of this.#active) controller.abort()
+  }
+
+  /** Adds `controller` to the calls `interrupt()` aborts, before the call reaches `call` (a gate's check runs
+   *  first); returns its removal. */
+  track(controller: AbortController): () => void {
+    this.#active.add(controller)
+    return () => void this.#active.delete(controller)
+  }
+
+  /** Where its shell calls run, for the gate: the workspace profile, the workspace folder, and the folders its
+   *  sandbox lets them write (the workspace when it is writable, and the private temp folder). */
+  where(): Where {
+    const policy = this.#shellPolicy
+    const writable = policy.writable ? [policy.workspace, policy.tmpdir] : [policy.tmpdir]
+    return { profile: "workspace", cwd: policy.workspace, writable }
   }
 }
 

@@ -24,6 +24,11 @@ license, the upstream paths and commit, and our paths.
   OSC with each terminator), copied from `packages/session-ui/src/tools/ansi.test.ts`. The parser they test is ours.
 - **Upstream:** https://github.com/anomalyco/opencode, read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/office/tests/tools/terminal/output.test.ts`.
+- **What:** the reply rules of its permission requests, as a design: a reject answers the session's other pending
+  requests with the same feedback, and an "always" re-checks them and lets through those the new rule allows. The
+  chat's approval cards follow both; the code is our own.
+- **Upstream:** `packages/core/src/permission.ts` (`reply`), read at commit `df46f69` (2026-11-16).
+- **Ours:** `packages/office/src/features/chat/session_actor.ts` (`#cardAnswered`, `#recheck`).
 
 ## Paperclip
 

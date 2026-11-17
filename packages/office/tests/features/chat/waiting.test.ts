@@ -3,6 +3,7 @@
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { now, Question } from "@opencorp/protocol"
 import { SessionActor } from "../../../src/features/chat/session_actor.ts"
+import { YES } from "../../../src/runtime/questions/approval.ts"
 import { INTERRUPTED } from "../../../src/runtime/questions/format.ts"
 import { newId, type QuestionRecord } from "../../../src/runtime/store/store.ts"
 import { CEO } from "../../server/helpers.ts"
@@ -380,6 +381,26 @@ test("esc answers an ask manager card interrupted and closes its item", async ()
   // Answered, not stale, so the cards carry none of its discussion into a later card.
   await waitFor(() => o.office.store.getWorkItem(q.work_item_id!)!.status === "done", { what: "the item closed" })
   await waitFor(() => status(o, sid) !== "waiting", { what: "no longer waiting" })
+})
+
+test("while an approval card is open the session waits on its approver, and while its approved command runs it is busy", async () => {
+  const fake = await fakeLlm()
+  fake.script({ tool_calls: [{ name: "workspace_shell", arguments: { command: "ls" } }] }, { content: "Listed." })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  o.office.store.updateSession(sid, { mode: "ask" })
+  let finish!: (output: string) => void
+  o.workspace.run = () => new Promise((resolve) => (finish = resolve))
+  await actor.prompt("list it")
+  const q = await card(o, sid, "approval")
+  await waitFor(() => JSON.stringify(waits(o, sid)) === JSON.stringify(["waiting", [CEO]]) && !actor.hasWorker, {
+    what: "waiting on the approver",
+  })
+  await actor.answer(q.id, YES, "option")
+  await waitFor(() => o.workspace.calls.length === 1, { what: "the approved command" })
+  expect(waits(o, sid)).toEqual(["busy", []])
+  finish("a.txt\n[exit 0]")
+  await waitFor(() => texts(o, sid).includes("Listed.") && status(o, sid) === "idle", { what: "the reply" })
 })
 
 test("ending a waiting session clears waiting on", async () => {
