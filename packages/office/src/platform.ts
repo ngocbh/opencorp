@@ -2,7 +2,8 @@
  * Every Bun-specific call of the office, in one file: moving to Node rewrites this file, plus the few
  * Bun-only behaviours elsewhere that no lint can see (unix-socket fetch, file imports). The office
  * spawns its own code only through `selfCommand()`, with `selfSpawnEnv()` and an office-controlled cwd,
- * and through `helperCommand()`, which runs the `__fs-helper` in the sandbox.
+ * and through `helperCommand()`, which runs the `__fs-helper` in the sandbox. A program on a terminal of its
+ * own starts through `spawnPty()`.
  */
 import { dlopen, FFIType, read, type Pointer } from "bun:ffi"
 import fs from "node:fs"
@@ -128,6 +129,63 @@ export async function endPipe(fd: number, data: string | Buffer): Promise<void> 
   } finally {
     // The runtime's sink never closes the fd itself.
     fs.closeSync(fd)
+  }
+}
+
+/** A process on a new pseudo-terminal it controls (its session leader, the terminal its controlling one). */
+export interface PtyProcess {
+  readonly pid: number
+  /** Writes to the terminal, as keys typed; Bun buffers what the PTY can't take yet, so nothing is re-sent. */
+  write(data: string | Uint8Array): void
+  resize(cols: number, rows: number): void
+  /** The terminal's echo and whole-line flags now: a password read turns echo off and keeps whole lines; a
+   *  full-screen program turns both off. Read from the terminal's side; never set from it (that doesn't reach the
+   *  program's line discipline). Both read false once the terminal is closed. */
+  modes(): { echo: boolean; canonical: boolean }
+  /** Signals the process group the terminal's session leader leads. A shell with job control puts each job in
+   *  a group of its own, which this misses: the terminal's shell turns job control off, and under
+   *  bubblewrap the PID namespace ends everything anyway. */
+  kill(signal: NodeJS.Signals): void
+  /** The exit code, or null when a signal ended it. */
+  readonly exited: Promise<number | null>
+  /** Closes the terminal; its process gets SIGHUP. */
+  close(): void
+}
+
+// termios c_lflag bits: Linux's from <asm-generic/termbits.h>; macOS's from <sys/termios.h> (unverified here).
+const ECHO = process.platform === "darwin" ? 0x8 : 0o10
+const ICANON = process.platform === "darwin" ? 0x100 : 0o2
+
+/** Runs `argv` on a new PTY of `cols` × `rows`; `onData` gets what it prints, as it comes, each chunk a buffer of
+ *  its own. `env` is the whole environment and must hold `TERM` (the terminal's name doesn't set it). Throws when
+ *  the program can't start, a missing `cwd` included (it never starts elsewhere). */
+export function spawnPty(
+  argv: readonly string[],
+  options: { cwd: string; env: Record<string, string>; cols: number; rows: number; onData(chunk: Uint8Array): void },
+): PtyProcess {
+  const proc = Bun.spawn([...argv], {
+    cwd: options.cwd,
+    env: options.env,
+    terminal: { cols: options.cols, rows: options.rows, data: (_terminal, chunk) => options.onData(chunk) },
+  })
+  const terminal = proc.terminal!
+  return {
+    pid: proc.pid,
+    write: (data) => void terminal.write(data),
+    resize: (cols, rows) => terminal.resize(cols, rows),
+    modes: () => {
+      const flags = terminal.localFlags
+      return { echo: (flags & ECHO) !== 0, canonical: (flags & ICANON) !== 0 }
+    },
+    kill: (signal) => {
+      try {
+        process.kill(-proc.pid, signal)
+      } catch {
+        // The group is gone.
+      }
+    },
+    exited: proc.exited.then((code) => (proc.signalCode ? null : code)),
+    close: () => terminal.close(),
   }
 }
 

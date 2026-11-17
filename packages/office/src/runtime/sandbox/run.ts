@@ -1,4 +1,4 @@
-/** Run one command in the sandbox, in its own process group. */
+/** Run one command in the sandbox, in its own process group, or start one on a terminal of its own. */
 import { spawn, type StdioOptions } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
@@ -14,6 +14,8 @@ import {
   pipeReadable,
   processLimits,
   type ProcessLimits,
+  type PtyProcess,
+  spawnPty,
 } from "../../platform.ts"
 import { helperFiles, isInside, type SandboxPolicy } from "./policy.ts"
 import { profile } from "./seatbelt.ts"
@@ -138,14 +140,26 @@ export function command(
   platform: string = process.platform,
   nproc?: number | null,
 ): string[] {
-  let runner: string[]
-  if (platform === "darwin") runner = ["/usr/bin/sandbox-exec", "-p", profile(policy, { canary }), ...argv]
-  else if (platform.startsWith("linux")) runner = bwrap.command(policy, argv)
+  return runner(policy, argv, canary, platform, false, nproc)
+}
+
+/** `command`'s argv; with `tty` the call keeps the terminal it is started on (see bwrap's and Seatbelt's `tty`). */
+function runner(
+  policy: SandboxPolicy,
+  argv: readonly string[],
+  canary: string | undefined,
+  platform: string,
+  tty: boolean,
+  nproc?: number | null,
+): string[] {
+  let sandboxed: string[]
+  if (platform === "darwin") sandboxed = ["/usr/bin/sandbox-exec", "-p", profile(policy, { canary, tty }), ...argv]
+  else if (platform.startsWith("linux")) sandboxed = bwrap.command(policy, argv, { tty })
   else throw new SandboxUnavailable(`no sandbox for platform ${JSON.stringify(platform)}`)
   const n = nproc === undefined ? callCap() : nproc
-  if (n === null) return runner
+  if (n === null) return sandboxed
   if (!(Number.isSafeInteger(n) && n >= 1)) throw new RangeError(`nproc must be a positive integer, got ${n}`)
-  return ["/bin/sh", "-c", NPROC_SCRIPT, "sh", String(n), ...runner]
+  return ["/bin/sh", "-c", NPROC_SCRIPT, "sh", String(n), ...sandboxed]
 }
 
 /** Whether the sandbox runner refused the call: it exited non-zero and a stderr line holds the
@@ -171,6 +185,10 @@ export interface RunOptions {
    *  the group kill and the sweep, on every path. A `track` that throws still has the call killed and
    *  swept, and `run` then rejects with its error. */
   track?: (pid: number) => () => void
+  /** Called with each chunk of the call's output as it comes, before the call's `Result` keeps (or drops) its
+   *  bytes. Once it throws, the call's output no longer reaches it, and `run` rejects with that error after the
+   *  call ends. */
+  onOutput?: (stream: "stdout" | "stderr", chunk: Buffer) => void
 }
 
 /**
@@ -189,7 +207,7 @@ export interface RunOptions {
  * killed and swept.
  */
 export async function run(policy: SandboxPolicy, argv: readonly string[], options: RunOptions = {}): Promise<Result> {
-  const { stdin, timeout = 120, signal, maxOutput = 1 << 20, tailOutput = 0, track } = options
+  const { stdin, timeout = 120, signal, maxOutput = 1 << 20, tailOutput = 0, track, onOutput } = options
   if (!(timeout > 0 && timeout <= MAX_TIMEOUT_S)) {
     throw new RangeError(`timeout must be more than 0 and at most ${MAX_TIMEOUT_S} seconds, got ${timeout}`)
   }
@@ -256,6 +274,21 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
       own?.closeChildEnds()
       throw await failed
     }
+    let outputFailed: { error: unknown } | undefined
+    if (onOutput) {
+      // Added before capture's own handlers, so it sees each chunk first.
+      const tap = (stream: "stdout" | "stderr") => (chunk: Buffer) => {
+        if (outputFailed) return
+        try {
+          onOutput(stream, chunk)
+        } catch (error) {
+          // Thrown from a stream's data handler, it would crash the office.
+          outputFailed = { error }
+        }
+      }
+      outPipe.on("data", tap("stdout"))
+      errPipe.on("data", tap("stderr"))
+    }
     const out = capture(outPipe, maxOutput, tailOutput)
     const err = capture(errPipe, maxOutput, tailOutput)
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -315,6 +348,7 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
     outPipe.destroy()
     errPipe.destroy()
     input?.destroy()
+    if (outputFailed) throw outputFailed.error
     const stopped = reason === "timeout" || reason === "abort"
     const status = stopped ? null : (exited!.code ?? -os.constants.signals[exited!.signal!])
     const stdout = out.kept()
@@ -336,6 +370,69 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
   } finally {
     canary?.close()
   }
+}
+
+/** Starts `argv` under `policy` on a new PTY, keeping that terminal (see bwrap's `tty`), in the workspace,
+ *  with `scrubbedEnv` plus `TERM` (`xterm-256color`) and `env`. `track` records it for the start-up reaper, as
+ *  `run` does. The caller ends it: `kill`, then `close`. Once the leader exits, its group is killed and, on macOS,
+ *  the canary's sweep runs, as `run`'s do; then `track`'s cleanup runs, and only then does `exited` resolve (or
+ *  reject, with the error of a cleanup that throws). Throws `SandboxUnavailable` on an unsupported platform, the
+ *  spawn's error when the call can't start, and the error of a `track` that throws, once the call is killed. */
+export function startOnTerminal(
+  policy: SandboxPolicy,
+  argv: readonly string[],
+  options: {
+    cols: number
+    rows: number
+    onData(chunk: Uint8Array): void
+    env?: Record<string, string>
+    track?: (pid: number) => () => void
+  },
+): PtyProcess {
+  const { cols, rows, onData, env = {}, track } = options
+  const canary =
+    process.platform === "darwin"
+      ? new Canary([policy.tmpdir, ...(policy.writable ? [policy.workspace] : [])])
+      : undefined
+  let pty: PtyProcess
+  try {
+    pty = spawnPty(runner(policy, argv, canary?.allowed, process.platform, true), {
+      cwd: policy.workspace,
+      env: { ...scrubbedEnv(policy), TERM: "xterm-256color", ...env },
+      cols,
+      rows,
+      onData,
+    })
+  } catch (error) {
+    canary?.close()
+    throw error
+  }
+  let untrack: (() => void) | undefined
+  let trackFailed: { error: unknown } | undefined
+  try {
+    untrack = track?.(pty.pid)
+  } catch (error) {
+    trackFailed = { error }
+    pty.kill("SIGKILL")
+    pty.close()
+  }
+  const exited = pty.exited.then((code) => {
+    try {
+      // The leader is reaped by now, the same window as `run`'s kill after a natural exit.
+      killGroup(pty.pid, { stopFirst: true })
+      if (canary) killEscaped(canary)
+    } finally {
+      canary?.close()
+      untrack?.()
+    }
+    return code
+  })
+  if (trackFailed) {
+    // The sweep still runs on the exit; nothing waits on it.
+    exited.catch(() => {})
+    throw trackFailed.error
+  }
+  return { ...pty, exited }
 }
 
 /** Real pipes for a call's stdio, for Linux, where the runtime's "pipe" is a socketpair and opening /dev/stdout,

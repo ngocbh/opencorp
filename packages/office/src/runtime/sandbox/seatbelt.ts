@@ -62,6 +62,8 @@ export const SYSCTL_NAMES: readonly string[] = [
   "vm.loadavg",
 ]
 export const DNS_SOCKET = "/private/var/run/mDNSResponder"
+// A terminal call's own terminal; see `profile`'s `tty`.
+const TTY_RULE = '(allow file-read* file-write* file-ioctl (literal "/dev/tty") (regex #"^/dev/ttys[0-9]+$"))'
 
 /**
  * Returns a default-deny SBPL profile that allows exactly what `policy` grants.
@@ -76,10 +78,16 @@ export const DNS_SOCKET = "/private/var/run/mDNSResponder"
  * `canary`, a directory, gets a `file-write-data` rule (a no-op on a directory) that
  * marks processes running under this profile; see `escapees.ts`. `developerDir`
  * is the toolchain folder to allow: left out, `developerDir()` finds it; `null` means none.
+ *
+ * With `tty` the call may use the terminal it runs on: its controlling one, `/dev/tty` (ssh's prompts), and the
+ * PTY slave its descriptors name, for reads, writes and terminal ioctls (`stty -echo`). The slave's name isn't
+ * known when the profile is written, so the rule names every PTY slave, `/dev/ttysN`: the owner's other
+ * terminals are then closed to the call only by their file modes, which let the owner's own processes in.
+ * Unverified on macOS.
  */
 export function profile(
   policy: SandboxPolicy,
-  options: { canary?: string; developerDir?: string | null } = {},
+  options: { canary?: string; developerDir?: string | null; tty?: boolean } = {},
 ): string {
   const developer = options.developerDir === undefined ? developerDir() : options.developerDir
   const readable = [policy.workspace, policy.tmpdir, ...policy.readOnly]
@@ -108,10 +116,13 @@ export function profile(
     '(allow file-write-data (literal "/dev/null"))',
     ";; The call's own descriptors by path, so `echo x > /dev/stderr` works.",
     '(allow file-read* file-write-data (subpath "/dev/fd") (literal "/dev/stdout") (literal "/dev/stderr"))',
+  ]
+  if (options.tty) lines.push(TTY_RULE)
+  lines.push(
     ";; Ancestors of allowed paths: metadata only, so lookups and realpath work.",
     allow("file-read-metadata", [...ROOT_LINKS, ...ancestors(readable)].map((p) => `(literal ${quote(p)})`)),
     ";; The workspace.",
-  ]
+  )
   if (policy.writable) {
     const [git, hooks, config] = policy.protectedPaths
     lines.push(

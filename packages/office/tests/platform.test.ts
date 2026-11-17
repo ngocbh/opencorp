@@ -1,4 +1,5 @@
-/** The office's one Bun-specific module: how it runs its own code, the helper and threads, and its process calls. */
+/** The office's one Bun-specific module: how it runs its own code, the helper and threads, its process calls and
+ *  its terminals. */
 import { spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
@@ -16,9 +17,10 @@ import {
   sandboxCheck,
   selfCommand,
   selfSpawnEnv,
+  spawnPty,
   threadEntry,
 } from "../src/platform.ts"
-import { args } from "../src/util/proc.ts"
+import { args, noSuchProcess } from "../src/util/proc.ts"
 import { NO_GROUP, ps, psStat, startGroup, tempDir, waitFor } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -407,4 +409,101 @@ test.skipIf(process.platform !== "darwin")("procStartTime reads a running child 
 test.skipIf(process.platform !== "darwin")("sandboxCheck answers for this process", () => {
   // 1 under a sandboxed parent (Claude Code's), 0 elsewhere; -1 would mean the call failed (library or symbol not loaded).
   expect([0, 1]).toContain(sandboxCheck(process.pid, null))
+})
+
+/** Runs `argv` on a new 80 × 24 terminal in a temp folder, with `PATH` and `TERM` only, collecting what it prints.
+ *  The test's end kills the terminal's group if its leader still runs, and closes it. */
+function onTerminal(argv: string[]) {
+  let output = ""
+  const decoder = new TextDecoder()
+  const pty = spawnPty(argv, {
+    cwd: tempDir(),
+    env: { PATH: "/usr/bin:/bin", TERM: "xterm-256color" },
+    cols: 80,
+    rows: 24,
+    onData: (chunk) => {
+      output += decoder.decode(chunk, { stream: true })
+    },
+  })
+  // Once the leader is reaped its pid may be reused, so the cleanup signals only a group whose leader still runs.
+  let ended = false
+  void pty.exited.then(() => (ended = true))
+  onTestFinished(() => {
+    if (!ended) pty.kill("SIGKILL")
+    pty.close()
+  })
+  return {
+    pty,
+    output: () => output,
+    shows: (text: string) => waitFor(() => output.includes(text), { timeout: 5_000, what: JSON.stringify(text) }),
+  }
+}
+
+test("a process on a terminal sees a terminal, and its echo goes off at a password prompt", async () => {
+  const t = onTerminal(["/bin/sh", "-c", "tty; printf 'Password: '; stty -echo; read x; stty echo; echo got=$x"])
+  await t.shows("Password: ")
+  await waitFor(() => !t.pty.modes().echo, { timeout: 2_000, what: "echo off" })
+  expect(t.pty.modes()).toEqual({ echo: false, canonical: true })
+  if (process.platform === "linux") {
+    // It leads a session of its own, so its controlling terminal is the new one, never the office's. Field 6 of
+    // /proc/<pid>/stat, counted after the comm's last ")".
+    const stat = fs.readFileSync(`/proc/${t.pty.pid}/stat`, "utf8")
+    expect(Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[3])).toBe(t.pty.pid)
+  }
+  t.pty.write("typed\n")
+  expect(await t.pty.exited).toBe(0)
+  await t.shows("got=typed")
+  expect(t.output().split("\r\n")[0]).toStartWith("/dev/")
+  // With echo off, the typed line shows only where the program printed it.
+  expect(t.output().replace("got=typed", "")).not.toContain("typed")
+})
+
+test("a terminal's size reaches its program, and a resize too", async () => {
+  const t = onTerminal(["/bin/sh", "-c", "stty size; read x; stty size"])
+  await t.shows("24 80\r\n")
+  t.pty.resize(100, 40)
+  t.pty.write("\n")
+  await t.shows("40 100\r\n")
+  expect(await t.pty.exited).toBe(0)
+})
+
+test("killing a terminal's process signals its whole group", async () => {
+  // The background sleep ignores SIGHUP, so only the group's SIGTERM can end it: the hangup the kernel sends the
+  // terminal's foreground group when its session leader dies doesn't.
+  const t = onTerminal(["/bin/sh", "-c", "(trap '' HUP; exec sleep 300) & echo bg=$!; wait"])
+  const bg = Number((await waitFor(() => t.output().match(/bg=(\d+)\r\n/), { timeout: 5_000, what: "bg=" }))[1])
+  onTestFinished(() => {
+    if (!noSuchProcess(bg)) process.kill(bg, "SIGKILL")
+  })
+  t.pty.kill("SIGTERM")
+  expect(await t.pty.exited).toBeNull()
+  await waitFor(() => noSuchProcess(bg), { timeout: 5_000, what: "the background sleep to go" })
+})
+
+test("a signal-ended terminal process exits with null", async () => {
+  const t = onTerminal(["/bin/sh", "-c", "echo ready; exec sleep 300"])
+  await t.shows("ready")
+  t.pty.kill("SIGTERM")
+  expect(await t.pty.exited).toBeNull()
+})
+
+test("keys written at once, 4096 bytes of them, all reach the program", async () => {
+  const file = path.join(tempDir(), "keys")
+  // Printable lines, so no byte is a control key and no line outgrows the terminal's line buffer.
+  const keys = Array.from({ length: 64 }, (_, i) => `${String(i).padStart(2, "0")}${"x".repeat(61)}\n`).join("")
+  expect(keys.length).toBe(4096)
+  const t = onTerminal(["/bin/sh", "-c", 'echo ready; exec cat > "$0"', file])
+  await t.shows("ready")
+  t.pty.write(keys)
+  // Ctrl-D at the start of a line: end of input.
+  t.pty.write("\x04")
+  expect(await t.pty.exited).toBe(0)
+  expect(fs.readFileSync(file, "utf8")).toBe(keys)
+})
+
+test("a terminal in a folder that isn't there fails to start rather than starting elsewhere", () => {
+  const cwd = path.join(tempDir(), "gone")
+  const start = () =>
+    spawnPty(["/bin/pwd"], { cwd, env: { PATH: "/usr/bin:/bin" }, cols: 80, rows: 24, onData: () => {} })
+  expect(start).toThrow(/ENOENT/)
 })

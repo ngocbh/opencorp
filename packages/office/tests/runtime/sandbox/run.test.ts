@@ -409,6 +409,40 @@ test.skipIf(!sandboxAvailable())("output keeps its end and counts every byte", a
   ])
 })
 
+test.skipIf(!sandboxAvailable())("a call's output reaches onOutput as it comes, and is kept as before", async () => {
+  const policy = makePolicy().make()
+  // The call prints b only once the test has seen a through onOutput, so it ends only if its output streamed.
+  const script = 'echo a; echo e >&2; while [ ! -e "$TMPDIR/go" ]; do sleep 0.05; done; echo b'
+  const seen = { stdout: "", stderr: "" }
+  const options: RunOptions = { timeout: 20, maxOutput: 2, tailOutput: 1 }
+  const result = await sh(policy, script, {
+    ...options,
+    onOutput: (stream, chunk) => {
+      seen[stream] += chunk.toString()
+      if (seen.stdout.includes("a\n")) fs.writeFileSync(path.join(policy.tmpdir, "go"), "")
+    },
+  })
+  expect(result.timedOut).toBe(false)
+  // Every byte, the ones the result doesn't keep too.
+  expect(seen).toEqual({ stdout: "a\nb\n", stderr: "e\n" })
+  expect([result.stdout.toString(), result.stdoutTail.toString(), result.stdoutBytes]).toEqual(["a\n", "\n", 4])
+  const plain = await sh(policy, script, options)
+  expect({ ...result, duration: 0 }).toEqual({ ...plain, duration: 0 })
+})
+
+test.skipIf(!sandboxAvailable())("an onOutput that throws lets the call end, and run then rejects with its error", async () => {
+  let calls = 0
+  const call = sh(makePolicy().make(), "echo a; sleep 0.2; echo b", {
+    onOutput: () => {
+      calls++
+      throw new Error("view failed")
+    },
+  })
+  await expect(call).rejects.toThrow("view failed")
+  // Called once: after its first error the call's output no longer reaches it.
+  expect(calls).toBe(1)
+})
+
 test("a tailOutput that isn't a byte count is refused before anything starts", async () => {
   for (const tailOutput of [-1, 1.5, NaN]) {
     await expect(sh(makePolicy().make(), "exit 0", { tailOutput })).rejects.toThrow(RangeError)
