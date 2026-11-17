@@ -20,15 +20,19 @@
  *  - The line settings come back before each marker, so a command's `stty eof ';'` can't split the next typed line.
  *  - `eval` takes a command whatever its syntax: one that doesn't parse fails and still ends.
  *  - A nonce the shell prints (with `set -x`, say) is neutralised in the views, even split across reads.
+ *  - Each marker carries the shell's folder as the kernel has it (`pwd -P`, by path), not as `$PWD` says, for the
+ *    gate (`cwd`). Only a marker with the agent's nonce sets it: after any other end, the owner's command or one a
+ *    Ctrl-C stopped, the folder is unknown until the agent's next command ends. A command that can forge its end
+ *    (below) can forge that marker's folder too.
  *
  *  Without `PROMPT_COMMAND` (another sh), the typed line puts the settings back and prints the marker itself, and `PS1`
  *  is a marker with no nonce. A marker with no nonce is the shell back at its prompt: the end of the owner's command,
  *  and of the agent's once a Ctrl-C has reached it (a Ctrl-C stops the rest of the line).
  *
- *  The marker keeps the record's boundaries and exit codes honest; it isn't a wall. The shell holds the typed line,
- *  nonce and all, while it runs it, so a command that changes how the shell runs it can still forge its end (a DEBUG
- *  trap sees the line) or hide it (a command that hides it leaves the shell running until it is closed). The sandbox
- *  is the security boundary. The owner's own command can end early by printing a marker with no nonce.
+ *  The marker keeps the record's boundaries and exit codes, and the gate's folder, honest; it isn't a wall. The shell
+ *  holds the typed line, nonce and all, while it runs it, so a command that changes how the shell runs it can still
+ *  forge its end and its folder (a DEBUG trap sees the line, in `BASH_COMMAND`) or hide it (a command that hides it
+ *  leaves the shell running until it is closed). The sandbox is the security boundary. The owner's own command can end early by printing a marker with no nonce.
  *
  *  **An unfinished line** the agent leaves when its command ends is killed (Ctrl-U), so neither the next command nor
  *  the owner's next line takes it on; a line the owner typed after it on the same line goes with it.
@@ -113,13 +117,16 @@ const DROPPED_NOTE =
 /** What a kill (Ctrl-U) echoes, whatever the line settings: erasures, or `^U` and a line end. */
 const KILL_ECHO = "\b ^U\r\n"
 
-/** A marker: the OSC the shell prints at its prompt, with the nonce (empty at a plain prompt) and the exit code. */
+/** A marker: the OSC the shell prints at its prompt, with the nonce (empty at a plain prompt), the exit code and,
+ *  but for sh's prompt, the folder. */
 const MARK = "\x1b]633;opencorp-mark;"
-const MARKER = /\x1b\]633;opencorp-mark;([^;\x07\x1b]*);([^\x07\x1b]*)\x07/g
+const MARKER = /\x1b\]633;opencorp-mark;([^;\x07\x1b]*);([^;\x07\x1b]*)(?:;([^\x07\x1b]*))?\x07/g
 /** The first marker, which says the shell is ready. */
 const READY = new RegExp(MARKER.source)
-/** How far past `MARK` a marker runs: a 16-hex nonce, a `;` and an exit code. */
-const MARK_TAIL = 32
+/** The longest folder a marker reports, in bytes: Linux's `PATH_MAX`. A longer one is unknown. */
+const FOLDER_MAX = 4096
+/** How far past `MARK` a marker runs: a 16-hex nonce, a `;`, an exit code, a `;` and the folder. */
+const MARK_TAIL = 32 + FOLDER_MAX
 /** What a command's output shows in place of the nonce. */
 const NONCE_SHOWN = "[nonce]"
 
@@ -129,17 +136,22 @@ const SETUP = {
   // `return`, `builtin` or `printf` with a function); the start's line settings are saved for each prompt to restore.
   bash:
     "set +B +m +o history; shopt -u expand_aliases; unalias -a; set +o emacs +o vi; PS1=; PS2=; " +
-    `__oc_y=$(type -P stty); __oc_f=$(type -P printf); __oc_t=$("$__oc_y" -g </dev/tty); ` +
-    "readonly __oc_y __oc_f __oc_t; " +
+    `__oc_y=$(type -P stty); __oc_f=$(type -P printf); __oc_w=$(type -P pwd); __oc_t=$("$__oc_y" -g </dev/tty); ` +
+    "readonly __oc_y __oc_f __oc_w __oc_t; " +
     `__oc_s() { __oc_n=$1; /bin/sh -c 'exit "$1"' sh "$2"; }; ` +
     `__oc_p() { "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; ` +
-    `"$__oc_f" "\\033]633;opencorp-mark;%s;%d\\007" "$__oc_n" "$1" >/dev/tty; __oc_n=; }; ` +
+    `"$__oc_f" "\\033]633;opencorp-mark;%s;%d;%s\\007" "$__oc_n" "$1" "$("$__oc_w" -P 2>/dev/null)" >/dev/tty; ` +
+    "__oc_n=; }; " +
     `readonly -f __oc_s __oc_p; PROMPT_COMMAND='__oc_p "$?"'; readonly PROMPT_COMMAND\n`,
   // sh's set may not know some of these options, and a special builtin's error would end the line, so each goes
-  // last, alone and through `command`. A sh that is bash edits lines unless told not to.
+  // last, alone and through `command`. A sh that is bash edits lines unless told not to. The marker's printf and pwd
+  // run by path where they are found, so a command's function can't stand in for them.
   sh:
     `PS1="$(printf '\\033]633;opencorp-mark;;')\\$?$(printf '\\007')"; PS2=; set +m; unalias -a; ` +
-    `__oc_y=$(command -v stty); __oc_t=$("$__oc_y" -g </dev/tty); readonly __oc_y __oc_t; ` +
+    `__oc_y=$(command -v stty); __oc_t=$("$__oc_y" -g </dev/tty); ` +
+    "__oc_f=/usr/bin/printf; [ -x $__oc_f ] || __oc_f=printf; " +
+    "__oc_w=/bin/pwd; [ -x $__oc_w ] || __oc_w=/usr/bin/pwd; " +
+    "readonly __oc_y __oc_t __oc_f __oc_w; " +
     "for o in '+o emacs' '+o vi' +B '+o history'; do command set $o 2>/dev/null; done; " +
     "command shopt -u expand_aliases 2>/dev/null\n",
 }
@@ -155,6 +167,22 @@ const WAIT_MAX_MS = 10 * 60_000
 
 /** A control character a command can't hold: all but newline and tab. */
 const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/
+/** The bytes of a command's nonce, 16 hex digits. */
+const NONCE_BYTES = 8
+
+/** Which shell a PTY shell runs: `choice`, or bash where `/bin/bash` exists, else sh. */
+export function shellKind(choice?: "bash" | "sh"): "bash" | "sh" {
+  return choice ?? (fs.existsSync("/bin/bash") ? "bash" : "sh")
+}
+
+/** The line the host types for the agent's `command` in a `kind` shell, with `nonce`. */
+function typedLine(command: string, nonce: string, kind: "bash" | "sh"): string {
+  const quoted = `'${command.replaceAll("'", "'\\''")}'`
+  return kind === "bash"
+    ? `eval ${quoted}; \\__oc_s ${nonce} $?\n`
+    : `eval ${quoted}; __oc_r=$?; "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; "$__oc_f" ` +
+        `'\\033]633;opencorp-mark;%s;%d;%s\\007' ${nonce} "$__oc_r" "$("$__oc_w" -P 2>/dev/null)" >/dev/tty\n`
+}
 
 /** `env` for the shell: its prompts empty, no history file, and nothing that runs code or sets options at its start. */
 function shellEnv(env: Record<string, string>): Record<string, string> {
@@ -172,6 +200,14 @@ function heldFrom(text: string): number {
   const tail = text.slice(at)
   if (tail.length <= MARK.length) return MARK.startsWith(tail) ? at : -1
   return tail.startsWith(MARK) && !/[\x07\x1b]/.test(tail.slice(1)) ? at : -1
+}
+
+/** A marker's folder (its bytes, one char each) as text; null when it isn't an absolute path the gate can read: over
+ *  `FOLDER_MAX` bytes, not UTF-8, or holding a control character. */
+function folderOf(raw: string | undefined): string | null {
+  if (raw === undefined || raw.length > FOLDER_MAX) return null
+  const folder = Buffer.from(raw, "latin1").toString("utf8")
+  return folder.startsWith("/") && !/[\x00-\x1f\x7f-\x9f\ufffd]/.test(folder) ? folder : null
 }
 
 /** `text`'s UTF-8 bytes as a string of one char per byte, as the shell's output is parsed. */
@@ -219,6 +255,8 @@ export class PtyShell {
   private readonly waiters = new Set<() => void>()
   /** How many secret prompts have held the shell: a reply's wait ends when one begins. */
   private holds = 0
+  /** The folder the agent's last command ended in, as its marker said; null when unknown. */
+  private folder: string | null = null
   /** Settles once the shell's process has ended and the shell has taken its exit (or it never started). */
   private ended: Promise<void> = Promise.resolve()
 
@@ -237,7 +275,7 @@ export class PtyShell {
     host: ShellHost,
     size: { cols: number; rows: number } = { cols: 80, rows: 24 },
   ): Promise<PtyShell> {
-    const shell = new PtyShell(id, name, host, host.shell ?? (fs.existsSync("/bin/bash") ? "bash" : "sh"))
+    const shell = new PtyShell(id, name, host, shellKind(host.shell))
     await shell.start(size)
     return shell
   }
@@ -251,24 +289,27 @@ export class PtyShell {
     return this.agentLine
   }
 
+  /** The folder the shell is in: where its first prompt (bash's) or the agent's last command said it was, as the
+   *  kernel has it. Null when that can't be known: sh's first prompt says nothing; a folder whose name holds a control
+   *  character, isn't UTF-8 or is over 4096 bytes isn't reported; and a command that ended without the agent's nonce
+   *  (the owner's, or one a Ctrl-C stopped) may have moved it, and its marker may be forged. A command that changes
+   *  how the shell runs it (a DEBUG trap reads the nonce in `BASH_COMMAND`) can forge the folder as it can its end. */
+  cwd(): string | null {
+    return this.folder
+  }
+
   /** Runs the agent's `command` and waits for its end, a secret prompt, `waitMs` or `signal`. Refused, with nothing
    *  typed, when the shell isn't idle, the owner is part-way through a line, the command is empty or holds a control
    *  character other than newline and tab, or a line of it would be over 1000 bytes. */
   async run(command: string, waitMs: number, signal?: AbortSignal): Promise<Reply> {
-    const why = this.refuseRun(command)
-    if (why !== null) return this.refused(why)
-    const nonce = randomBytes(8).toString("hex")
-    const quoted = `'${command.replaceAll("'", "'\\''")}'`
-    const typed =
-      this.kind === "bash"
-        ? `eval ${quoted}; \\__oc_s ${nonce} $?\n`
-        : `eval ${quoted}; __oc_r=$?; "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; ` +
-          `printf '\\033]633;opencorp-mark;%s;%d\\007' ${nonce} "$__oc_r" >/dev/tty\n`
-    if (typed.split("\n").some((line) => Buffer.byteLength(line) > LINE_MAX)) return this.refused(LONG_LINE)
+    const why = this.runProblem(command)
+    if (why !== null) return this.refusal(why)
+    const nonce = randomBytes(NONCE_BYTES).toString("hex")
+    const typed = typedLine(command, nonce, this.kind)
     try {
       this.host.record.command(command, this.host.driver)
     } catch (error) {
-      return this.refused(`the shell's record can't be written: ${(error as Error).message}`)
+      return this.refusal(`the shell's record can't be written: ${(error as Error).message}`)
     }
     // A marker's start held back at the prompt was output after all; the echo must come first.
     this.emit(this.held)
@@ -290,18 +331,8 @@ export class PtyShell {
    *  and waits as `run` does. Refused at a secret prompt, while the owner is part-way through a line, and when
    *  nothing runs. */
   async type(text: string, opts: { enter: boolean; waitMs: number; signal?: AbortSignal }): Promise<Reply> {
-    // The screen as it is now, not at the last check: a read may have turned echo off since.
-    this.guard()
-    const { status } = this.current
-    if (status === "waiting") return this.refused(SECRET)
-    if (status !== "running") return this.refused("nothing is running in this shell to type into; run a command")
-    if (this.ownerMidLine) return this.refused(OWNER_TYPING)
-    if (!/^[\x20-\x7e]*$/.test(text)) {
-      return this.refused("type takes printable ASCII only; interrupt sends Ctrl-C")
-    }
-    if (this.agentLine.length + text.length > LINE_MAX) {
-      return this.refused("a typed line would be over 1000 bytes, and a terminal cuts longer lines")
-    }
+    const why = this.typeProblem(text)
+    if (why !== null) return this.refusal(why)
     const from = this.cursor
     this.agentLine = opts.enter ? "" : this.agentLine + text
     this.agentDirty = !opts.enter && (this.agentDirty || text !== "")
@@ -320,11 +351,11 @@ export class PtyShell {
 
   /** Sends Ctrl-C to the agent's own running command. Refused when nothing runs, or the command is the owner's. */
   interrupt(): Reply {
-    if (this.current.status === "waiting") return this.refused(OWNER_SECRET)
-    if (this.ownerMidLine) return this.refused(OWNER_TYPING)
+    if (this.current.status === "waiting") return this.refusal(OWNER_SECRET)
+    if (this.ownerMidLine) return this.refusal(OWNER_TYPING)
     if (this.nonce === null) {
       const why = this.ownerRunning ? "the running command is the owner's; only they can stop it" : "nothing is running"
-      return this.refused(why)
+      return this.refusal(why)
     }
     this.interrupted = true
     this.agentLine = ""
@@ -423,7 +454,7 @@ export class PtyShell {
     for (const match of text.matchAll(MARKER)) {
       this.emit(this.neutral(text.slice(at, match.index)))
       at = match.index + match[0].length
-      this.marker(match[1]!, match[2]!)
+      this.marker(match[1]!, match[2]!, match[3])
     }
     let rest = text.slice(at)
     const hold = this.holdFrom(rest)
@@ -453,6 +484,7 @@ export class PtyShell {
     const found = READY.exec(this.startup)
     if (found === null) return null
     const rest = this.startup.slice(found.index + found[0].length)
+    this.folder = folderOf(found[3])
     this.startup = ""
     const modes = this.pty!.modes()
     if (!modes.echo || !modes.canonical) {
@@ -486,9 +518,10 @@ export class PtyShell {
     return this.nonce !== null && text.includes(this.nonce) ? text.replaceAll(this.nonce, NONCE_SHOWN) : text
   }
 
-  /** A marker with `nonce` and `exitText`: the end of the agent's command when it holds its nonce (or none, after a
-   *  Ctrl-C), or of the owner's when it holds none. Any other is ignored. */
-  private marker(nonce: string, exitText: string): void {
+  /** A marker with `nonce`, `exitText` and the folder: the end of the agent's command when it holds its nonce (or
+   *  none, after a Ctrl-C), or of the owner's when it holds none. Any other is ignored. Only a marker with the nonce
+   *  sets the folder. */
+  private marker(nonce: string, exitText: string, folder: string | undefined): void {
     const exit = /^-?\d+$/.test(exitText) ? Number(exitText) : null
     if (nonce === "" && this.promptAfter) {
       // sh's prompt after the agent's line, which already ended it: never the end of a command started since.
@@ -504,6 +537,7 @@ export class PtyShell {
         // meta.json can't be written now; the record keeps the exit for its next write.
       }
     } else if (!(nonce === "" && this.ownerRunning)) return
+    this.folder = nonce === "" ? null : folderOf(folder)
     this.settle()
     this.set({ status: "idle", waiting: null, command: null, exit })
   }
@@ -620,8 +654,19 @@ export class PtyShell {
     })
   }
 
-  /** Why the agent can't run a command now, or null when it can. */
-  private refuseRun(command: string): string | null {
+  /** Why the agent's `command` can't be typed into a `kind` shell whatever its state, or null: it is empty, holds a
+   *  control character other than newline and tab, or a line of it, as the host types it, would be over 1000 bytes. */
+  static commandProblem(command: string, kind: "bash" | "sh"): string | null {
+    if (command.trim() === "") return "the command is empty"
+    if (CONTROL.test(command)) return "a command can't hold a control character other than newline and tab"
+    const typed = typedLine(command, "0".repeat(2 * NONCE_BYTES), kind)
+    if (typed.split("\n").some((line) => Buffer.byteLength(line) > LINE_MAX)) return LONG_LINE
+    return null
+  }
+
+  /** Why `run` would refuse `command` now, with nothing typed, or null: the shell isn't idle, the owner is part-way
+   *  through a line, or the command can't be typed (`commandProblem`). */
+  runProblem(command: string): string | null {
     const { status, error } = this.current
     if (status === "failed") return `the shell failed to start: ${error}`
     if (status === "ended") return "the shell has ended; start a new one"
@@ -632,9 +677,21 @@ export class PtyShell {
       return "a command is still running in this shell; call read to follow it, type to answer it, or interrupt it"
     }
     if (this.ownerMidLine) return OWNER_TYPING
-    if (command.trim() === "") return "the command is empty"
-    if (CONTROL.test(command)) {
-      return "a command can't hold a control character other than newline and tab"
+    return PtyShell.commandProblem(command, this.kind)
+  }
+
+  /** Why `type` would refuse `text` now, with nothing typed, or null: a secret prompt holds the shell, nothing runs,
+   *  the owner is part-way through a line, or the text isn't printable ASCII or would make the line over 1000 bytes.
+   *  It reads the screen as it is now, not at the last check: a read may have turned echo off since. */
+  typeProblem(text: string): string | null {
+    this.guard()
+    const { status } = this.current
+    if (status === "waiting") return SECRET
+    if (status !== "running") return "nothing is running in this shell to type into; run a command"
+    if (this.ownerMidLine) return OWNER_TYPING
+    if (!/^[\x20-\x7e]*$/.test(text)) return "type takes printable ASCII only; interrupt sends Ctrl-C"
+    if (this.agentLine.length + text.length > LINE_MAX) {
+      return "a typed line would be over 1000 bytes, and a terminal cuts longer lines"
     }
     return null
   }
@@ -650,7 +707,8 @@ export class PtyShell {
     return reply
   }
 
-  private refused(why: string): Reply {
+  /** A reply saying why nothing was done, with the shell's state, from where the agent last read. */
+  refusal(why: string): Reply {
     const { status, exit, waiting } = this.current
     return { shell: this.id, status, exit, waiting, output: "", next: this.cursor, more: false, refused: why }
   }

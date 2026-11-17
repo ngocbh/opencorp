@@ -17,9 +17,11 @@
  *  - OpenCorp scrubs nothing here.
  *
  *  **Each command is its own call.** It starts in the workspace, with the sandbox's environment: no folder or
- *  variable carries over. It runs until it ends, is interrupted, or the shell closes; then its call's process group
- *  is killed, so nothing it left in the background outlives it (`run`). A call that couldn't run ends its command with
- *  a note in brackets saying why, and the shell runs on; where the sandbox can't run at all, the shell fails.
+ *  variable carries over, so the folder the gate reads for a command is always the workspace, whatever the last one
+ *  `cd`ed to; only a `cd` earlier in the same command moves it. It runs until it ends, is interrupted, or the shell
+ *  closes; then its call's process group is killed, so nothing it left in the background outlives it (`run`). A call
+ *  that couldn't run ends its command with a note in brackets saying why, and the shell runs on; where the sandbox
+ *  can't run at all, the shell fails.
  *
  *  **Two interrupts.** The agent's `interrupt` returns a page from where it last read; the owner's Ctrl-C
  *  (`ownerKeys`) only stops the command, and leaves the agent's place as it was. */
@@ -86,12 +88,12 @@ export class PipeShell {
    *  nothing run, when the shell isn't idle, the command is empty, holds a control character other than newline and
    *  tab, or is over 64 KiB. */
   async run(command: string, waitMs: number, signal?: AbortSignal): Promise<Reply> {
-    const why = this.refuseRun(command)
-    if (why !== null) return this.refused(why)
+    const why = this.runProblem(command)
+    if (why !== null) return this.refusal(why)
     try {
       this.host.record.command(command, this.host.driver)
     } catch (error) {
-      return this.refused(`the shell's record can't be written: ${(error as Error).message}`)
+      return this.refusal(`the shell's record can't be written: ${(error as Error).message}`)
     }
     // From where the agent last read, so what came in between (the end of a command it left running) is read once.
     const start = this.cursor
@@ -105,8 +107,8 @@ export class PipeShell {
   }
 
   /** Refused: the shell has no input to type into. */
-  type(_text: string, _opts: { enter: boolean; waitMs: number; signal?: AbortSignal }): Promise<Reply> {
-    return Promise.resolve(this.refused(NO_INPUT))
+  type(text: string, _opts: { enter: boolean; waitMs: number; signal?: AbortSignal }): Promise<Reply> {
+    return Promise.resolve(this.refusal(this.typeProblem(text)))
   }
 
   /** The model's view from `from` (the last reply's `next` by default), once the running command ends, `waitMs`
@@ -120,7 +122,7 @@ export class PipeShell {
   /** The agent's interrupt: stops the running command, killing its call's process group, and returns the view from
    *  where the agent last read. Refused when nothing runs. */
   interrupt(): Reply {
-    if (this.call === null) return this.refused("nothing is running")
+    if (this.call === null) return this.refusal("nothing is running")
     this.call.abort()
     return this.reply(this.cursor)
   }
@@ -233,18 +235,30 @@ export class PipeShell {
     })
   }
 
-  /** Why the agent can't run a command now, or null when it can. */
-  private refuseRun(command: string): string | null {
-    const { status, error } = this.current
-    if (status === "failed") return `the shell failed: ${error}`
-    if (status === "ended" || this.closing) return "the shell has ended; start a new one"
-    if (status === "running") return "a command is still running in this shell; call read to follow it, or interrupt it"
+  /** Why the agent's `command` can't run in a pipes shell whatever its state, or null: it is empty, holds a control
+   *  character other than newline and tab, or is over 64 KiB. */
+  static commandProblem(command: string): string | null {
     if (command.trim() === "") return "the command is empty"
     if (CONTROL.test(command)) return "a command can't hold a control character other than newline and tab"
     if (Buffer.byteLength(command) > COMMAND_MAX) {
       return "this command is over 64 KiB: write a script with the file tools and run it"
     }
     return null
+  }
+
+  /** Why `run` would refuse `command` now, with nothing run, or null: the shell isn't idle, or the command can't run
+   *  (`commandProblem`). */
+  runProblem(command: string): string | null {
+    const { status, error } = this.current
+    if (status === "failed") return `the shell failed: ${error}`
+    if (status === "ended" || this.closing) return "the shell has ended; start a new one"
+    if (status === "running") return "a command is still running in this shell; call read to follow it, or interrupt it"
+    return PipeShell.commandProblem(command)
+  }
+
+  /** Why `type` refuses `text`: always, since this shell takes no input. */
+  typeProblem(_text: string): string {
+    return NO_INPUT
   }
 
   /** The state and the view from `from`; the agent reads on from its `next`. */
@@ -258,7 +272,8 @@ export class PipeShell {
     return reply
   }
 
-  private refused(why: string): Reply {
+  /** A reply saying why nothing was done, with the shell's state, from where the agent last read. */
+  refusal(why: string): Reply {
     const { status, exit, waiting } = this.current
     return { shell: this.id, status, exit, waiting, output: "", next: this.cursor, more: false, refused: why }
   }

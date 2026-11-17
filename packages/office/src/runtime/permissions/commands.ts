@@ -62,10 +62,11 @@ export interface Kind {
   readonly risk: string | null
 }
 /** Where a command runs, as the host binds it: the shell's sandbox profile, its folder, and the folders the
- *  workspace profile may write (none on the SSH-only profile). The model sets none of it. */
+ *  workspace profile may write (none on the SSH-only profile). The model sets none of it. `cwd` is null when the host
+ *  can't know the folder, as when a persistent shell's last command didn't report it. */
 export interface Where {
   readonly profile: "workspace" | "ssh"
-  readonly cwd: string
+  readonly cwd: string | null
   readonly writable: readonly string[]
   /** Paths the host marks as credentials beside `CREDENTIALS`, absolute or from `~`, globs allowed: the identity
    *  files a profile binds outside `~/.ssh`. A read of one asks as a read under `~/.ssh` does. */
@@ -222,6 +223,8 @@ const FIXED_RISKS: ReadonlyMap<string, string> = new Map([
   ["sftp", COPIES] as const,
 ])
 const SSH_VALUE_LETTERS = "BbcDEeFIiJLlmOoPpQRSWw"
+/** mosh's options that take a value as the next word when not joined with `=`. */
+const MOSH_VALUES = set("-p --port --ssh --client --server --predict --family --bind-server --experimental-remote-ip")
 const SSH_SAFE_FLAGS = "46CqtTvx"
 const SSH_SAFE_VALUES = "lpiJ"
 const SSH_SAFE_KEYS = set(
@@ -368,7 +371,8 @@ export function classify(part: SimpleCommand): Kind {
 /** Whether `part` is `mkdir`, `touch`, `cp`, `mv` or `rm` of literal paths inside `where`'s writable paths, on
  *  the workspace profile. Lexical: the sandbox, not this test, keeps a path behind a link from being written. */
 export function fileOp(part: SimpleCommand, where: Where): boolean {
-  if (where.profile !== "workspace") return false
+  if (where.profile !== "workspace" || where.cwd === null) return false
+  const cwd = where.cwd
   const { start, sets } = unwrap(part)
   if (sets.length > 0 || part.writes.some((w) => w !== "/dev/null") || connects(part)) return false
   const [prog = "", ...args] = part.words.slice(start)
@@ -387,19 +391,25 @@ export function fileOp(part: SimpleCommand, where: Where): boolean {
       continue
     }
     if (part.expands[start + 1 + k] || /[$*?[{]/.test(arg) || arg.startsWith("~")) return false
-    paths.push(resolve(where.cwd, arg))
+    paths.push(resolve(cwd, arg))
   }
   if (paths.length < op.min) return false
   const roots = where.writable.map((root) => resolve("/", root))
   return paths.every((p) => roots.some((root) => inside(p, root, op.strict)))
 }
 
-/** The destinations of a line's `ssh` parts, in order. */
+/** The destinations of a line's `ssh` and `mosh` parts, in order (mosh logs in through ssh). */
 export function sshHosts(read: ReadCommand): readonly string[] {
   return read.parts.flatMap((part) => {
-    const host = sshOf(part)?.host
+    const host = sshOf(part)?.host ?? moshHost(part)
     return host ? [host] : []
   })
+}
+
+/** Whether a line logs in to another machine: it has an `ssh` or `mosh` part, whether or not its destination
+ *  reads. A line typed into it runs there. */
+export function logsIn(read: ReadCommand): boolean {
+  return read.parts.some((part) => sshOf(part) !== null || moshHost(part) !== null)
 }
 
 /** An `ssh` part's destination ("" when it names none) and the words of the command it runs there, which ssh
@@ -495,15 +505,62 @@ export function pushOf(part: SimpleCommand): { readonly asks: string | null } | 
   return { asks: asks() }
 }
 
+/** The most folders a line's parts are judged from; past it, the folder is unknown. Each cd to a new name from each
+ *  folder so far doubles them. */
+const FOLDERS_MAX = 8
+
+/** Why a line's `parts` name a credential path, as `credentialOf` says of each, or null. A `cd`, `pushd` or `popd`
+ *  moves the folder the later parts' relative paths start from (`folderAfter`); since a cd can fail and the line go
+ *  on, each later part is judged from every folder it may run in, `cwd` among them. Past `FOLDERS_MAX` folders the
+ *  folder is unknown (null), as after a cd the reader can't follow. */
+export function lineCredential(
+  parts: readonly SimpleCommand[],
+  cwd?: string | null,
+  marked: readonly string[] = [],
+  strict = true,
+): string | null {
+  let folders: (string | null | undefined)[] = [cwd]
+  for (const part of parts) {
+    for (const folder of folders) {
+      const found = credentialOf(part, folder, marked, strict)
+      if (found !== null) return found
+    }
+    const moved = folders.map((folder) => folderAfter(part, folder)).filter((folder) => folder !== false)
+    if (moved.length > 0) folders = [...new Set([...folders, ...moved])]
+    if (folders.length > FOLDERS_MAX) folders = [null]
+  }
+  return null
+}
+
+/** The folder `part` moves the shell to from `cwd`: a `cd` (`chdir`) or `pushd` to a literal path, `~` for a bare
+ *  `cd`; null when the reader can't know it (an expansion, `cd -`, `popd`, a `pushd` that rotates the stack, or a
+ *  relative path from an unknown folder); false when `part` doesn't move. `CDPATH` isn't followed. */
+function folderAfter(part: SimpleCommand, cwd: string | null | undefined): string | null | undefined | false {
+  let { start } = unwrap(part)
+  if (part.words[start] === "builtin") start += 1
+  const name = part.words[start]
+  if (name === "popd") return null
+  if (name !== "cd" && name !== "chdir" && name !== "pushd") return false
+  let k = start + 1
+  while (k < part.words.length && /^-[LPe@]+$/.test(part.words[k]!)) k += 1
+  if (part.words[k] === "--") k += 1
+  const target = part.words[k]
+  if (target === undefined) return name === "pushd" ? null : "~"
+  if (target === "-" || /^[-+]/.test(target) || part.expands[k] || part.substituted[k]) return null
+  if (/^[/~]/.test(target)) return target
+  return cwd === null ? null : cwd === undefined ? target : `${cwd}/${target}`
+}
+
 /** Why `part` names a credential path (`CREDENTIALS`, or one of `marked`, the host's), or null: a literal anywhere
  *  in it (a word of its program's other than ssh's identity file, an assignment, a redirect, a here-string or
  *  here-document), a folder it reads recursively, or, over ssh, any of these in the remote command, named with its
- *  host. When `strict` (the SSH-only profile, where credentials are reachable), a content read whose path comes
- *  through an expansion counts too; an ssh remote command is always strict. `cwd` is the folder relative paths start
- *  from, when known; an ssh remote command starts at the remote home. */
+ *  host. When `strict` (where credentials are reachable: see `decide`), a content read whose path comes
+ *  through an expansion counts too, and, when `cwd` is null (the folder can't be known), a content or recursive read
+ *  of a relative path; an ssh remote command is always strict. `cwd` is the folder relative paths start from: when
+ *  undefined, a relative path is judged as written. An ssh remote command starts at the remote home. */
 export function credentialOf(
   part: SimpleCommand,
-  cwd?: string,
+  cwd?: string | null,
   marked: readonly string[] = [],
   strict = true,
 ): string | null {
@@ -518,18 +575,19 @@ export function credentialOf(
       : words
   const values = assignmentsOf(part).map((a) => a.slice(a.indexOf("=") + 1))
   const literals = [...own, ...values, ...part.reads, ...part.writes, ...part.data.map((d) => d.text)]
-  const named = literals.find((word) => isCredential(word, cwd, marked))
+  const from = cwd ?? undefined
+  const named = literals.find((word) => isCredential(word, from, marked))
   if (named !== undefined) return `it names a credential path: ${named}`
   const hidden = strict ? throughExpansion(part) : null
   if (hidden !== null) return `it reads a path named by an expansion: ${hidden}`
-  const climbs = recursivePaths(part).find(({ path, expanded }) => holdsCredentials(path, cwd, marked, strict && expanded))
+  const climbs = recursivePaths(part).find(({ path, expanded }) =>
+    holdsCredentials(path, from, marked, strict && expanded))
   if (climbs !== undefined) return `it reads a folder that holds credentials: ${climbs.path}`
+  const lost = strict && cwd === null ? relativeRead(part) : null
+  if (lost !== null) return `it reads a relative path where the folder isn't known: ${lost}`
   const remote = ssh ? remoteOf(part) : null
-  for (const inner of remote?.read.parts ?? []) {
-    const found = credentialOf(inner, "~", marked, true)
-    if (found) return `on ${remote!.host}: ${found}`
-  }
-  return null
+  const found = remote ? lineCredential(remote.read.parts, "~", marked, true) : null
+  return found === null ? null : `on ${remote!.host}: ${found}`
 }
 
 /** The commands a part runs that the reader doesn't list as parts of their own, for deny and ask rules: what
@@ -1348,6 +1406,20 @@ function optionKey(value: string | null): string {
   return (value ?? "").trim().split(/[=\s]/)[0]!.toLowerCase()
 }
 
+/** A `mosh` part's destination: its first word past its options ("" when it names none); null when the part isn't
+ *  `mosh`. */
+function moshHost(part: SimpleCommand): string | null {
+  const [prog = "", ...args] = programOf(part)
+  if (base(prog) !== "mosh") return null
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k]!
+    if (w === "--") return args[k + 1] ?? ""
+    if (!w.startsWith("-") || w === "-") return w
+    if (MOSH_VALUES.has(w)) k++
+  }
+  return ""
+}
+
 /** ssh's options as its own getopt reads them (options may follow the destination too), the destination and
  *  the remote command's words. */
 function sshParse(args: readonly string[]) {
@@ -1451,15 +1523,33 @@ function withoutIdentity(words: readonly string[]): string[] {
  *  path option (`READER_OPTIONS`) given by a parameter, command or arithmetic expansion; a `<` file so named or a
  *  process substitution; an expanded here-string or here-document; or what `source` or `.` runs. */
 function throughExpansion(part: SimpleCommand): string | null {
-  const { start } = unwrap(part)
-  const [prog = "", ...args] = part.words.slice(start)
-  const name = base(prog)
   const fed = part.reads.find((file) => file.includes("$") || file.startsWith("<(")) ??
     part.data.find((d) => d.substituted)?.text
   if (fed !== undefined) return fed
-  const sub = (k: number) => part.substituted[start + 1 + k] === true
+  return readOperand(part, (_, at) => part.substituted[at] === true)
+}
+
+/** The first relative path a part reads the contents of, as a file (a `<` file, a content reader's operand or path
+ *  option, what `source` runs) or as a folder it reads recursively, or null. A path given by an expansion is
+ *  `throughExpansion`'s. */
+function relativeRead(part: SimpleCommand): string | null {
+  const relative = (path: string) => path !== "" && path !== "-" && !/^[/~<]/.test(path) && !path.includes("$")
+  const file = part.reads.find(relative)
+  if (file !== undefined) return file
+  const tree = recursivePaths(part).find(({ path, expanded }) => !expanded && relative(path))
+  if (tree !== undefined) return tree.path
+  return readOperand(part, (path) => relative(path))
+}
+
+/** The first word through which a content reader (`READER_OPTIONS`, `CONTENT_READERS`, `source`, `dd`) reads a
+ *  file whose path `counts`: an operand or a path option's value, given with the index of the word that holds it. */
+function readOperand(part: SimpleCommand, counts: (path: string, at: number) => boolean): string | null {
+  const { start } = unwrap(part)
+  const [prog = "", ...args] = part.words.slice(start)
+  const name = base(prog)
+  const sub = (k: number, path = args[k] ?? "") => counts(path, start + 1 + k)
   if (name === "source" || name === ".") return args.find((_, k) => sub(k)) ?? null
-  if (name === "dd") return args.find((w, k) => w.startsWith("if=") && sub(k)) ?? null
+  if (name === "dd") return args.find((w, k) => w.startsWith("if=") && sub(k, w.slice(3))) ?? null
   const options = READER_OPTIONS[name] ?? (CONTENT_READERS.has(name) ? NO_OPTIONS : null)
   if (!options) return null
   const { value, longs, paths, pathLongs, given, givenLongs = [], onlyPaths } = options
@@ -1472,7 +1562,7 @@ function throughExpansion(part: SimpleCommand): string | null {
       const key = w.split("=")[0]!
       const reads = pathLongs.includes(key)
       if (w.includes("=")) {
-        if (reads && sub(k)) return w
+        if (reads && sub(k, w.slice(key.length + 1))) return w
       } else if (longs.includes(key) || reads) {
         if (reads && sub(k + 1)) return args[k + 1] ?? null
         k++
@@ -1482,7 +1572,7 @@ function throughExpansion(part: SimpleCommand): string | null {
       if (at < 0) continue
       const reads = paths.includes(w[at + 1]!)
       if (at < w.length - 2) {
-        if (reads && sub(k)) return w // the value is the rest of the word
+        if (reads && sub(k, w.slice(at + 2))) return w // the value is the rest of the word
       } else {
         if (reads && sub(k + 1)) return args[k + 1] ?? null
         k++

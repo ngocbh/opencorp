@@ -52,6 +52,13 @@ license, the upstream paths and commit, and our paths.
   `packages/schema/src/persistent-pty.ts` (`Info.size`, `Info.output`), read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/protocol/src/schemas/instruments.ts`, `packages/client/src/client.ts`
   (`sessions.instrumentScreen`).
+- **What:** its shell tool, as the model sees it, as a design: one permission request per call, covering all of the
+  call's commands; a reply within two minutes by default, the command still running past it rather than killed; and
+  its prompt's "DO NOT poll", with its advice to quote paths that hold spaces or special characters and to prefer a
+  dedicated tool over a shell command. The terminal tools' gate and descriptions follow these; the code is our own.
+- **Upstream:** `packages/core/src/tool/plugin/shell.ts` (`description`, `DEFAULT_TIMEOUT_MS`,
+  `BACKGROUND_INSTRUCTION`, and `prepare`'s `permission.assert`), read at commit `df46f69` (2026-11-16).
+- **Ours:** `packages/office/src/tools/terminal/tools.ts`, `packages/office/src/tools/terminal/terminal.ts`.
 
 ## Paperclip
 

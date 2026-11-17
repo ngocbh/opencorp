@@ -206,6 +206,31 @@ test("the shell keeps its folder between commands", async () => {
   expect((await t.shell.run("pwd", 5000)).output).toBe(`$ pwd\n${folder}\n`)
 })
 
+for (const kind of ["bash", "sh"] as const) {
+  test(`${kind}: the shell reports the folder each of the agent's commands ends in, and none it can't trust`, async () => {
+    const t = await openShell({ shell: kind })
+    const folder = path.join(t.dir, "a folder")
+    fs.mkdirSync(folder)
+    // bash's first prompt says where it starts; sh's says nothing.
+    expect(t.shell.cwd()).toBe(kind === "bash" ? t.dir : null)
+    await t.shell.run(`cd '${folder}'`, 5000)
+    expect(t.shell.cwd()).toBe(folder)
+    // The kernel's folder, not what $PWD says, and never a marker the command prints itself.
+    await t.shell.run("cd /; PWD=/srv; printf '\\033]633;opencorp-mark;;0;/srv\\007'", 5000)
+    expect(t.shell.cwd()).toBe("/")
+    // A folder whose name holds a control character can't be reported.
+    await t.shell.run(`cd '${t.dir}' && mkdir "$(printf 'a\\001b')" && cd "$(printf 'a\\001b')"`, 5000)
+    expect(t.shell.cwd()).toBeNull()
+    await t.shell.run(`cd '${folder}'`, 5000)
+    // The owner's command may have moved it, and its end can't be told from a forged one.
+    t.shell.ownerKeys("cd /\r")
+    expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle" })
+    expect(t.shell.cwd()).toBeNull()
+    await t.shell.run("true", 5000)
+    expect(t.shell.cwd()).toBe("/")
+  })
+}
+
 test("a line over 1000 bytes is refused before anything is typed", async () => {
   const t = await openShell()
   for (const command of [`echo ${"x".repeat(1000)}`, `echo ok\necho ${"x".repeat(1000)}`]) {

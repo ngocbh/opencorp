@@ -12,17 +12,23 @@
  * check; no rule covers it and Auto's check never judges it, since no deny rule could see into it.
  * The reader asks, in every mode, before a command that names a credential path anywhere in the line (an operand,
  * an option's value, an assignment, a `for` list, a here-string or a redirect), one the host marks
- * (`Where.credentials`), or a folder that holds them. On the SSH-only profile and over ssh, where credentials are
- * reachable, it also asks before a program that reads file contents is given a path through an expansion, whose
- * value it can't see; in the workspace sandbox, which keeps the home out, such a read follows the usual rules and
- * the sandbox is the guard. Auto's check never judges a push, `sudo` or a local command for ssh.
+ * (`Where.credentials`), or a folder that holds them. Where credentials are reachable (the SSH-only profile, a
+ * profile the host marks credentials on, an ssh remote command, and a line typed into ssh or mosh), it also asks
+ * before a program that reads file contents is given a path through an expansion, whose value it can't see; in the
+ * workspace sandbox, which keeps the home out, such a read follows the usual rules and the sandbox is the guard.
+ * Auto's check never judges a push, `sudo` or a local command for ssh.
  * While the host says the session is blocked (`Permissions.blocked`, a rules file that doesn't load), every action
  * asks as a never-automated one does, and `dontAsk` refuses it; deny rules still refuse first.
+ *
+ * Relative paths start from the shell's folder, which the host gives (`Where.cwd`, null when it can't know it), and
+ * from each folder an earlier `cd`, `pushd` or `popd` in the line may have moved to. Where credentials are reachable,
+ * a content or recursive read of a relative path asks while that folder can't be known (`cd "$d"`, `cd -`).
  *
  * The reader can't know what a program does with its files, its config or its input: `git` runs hooks and programs
  * its config names (`core.fsmonitor`, `core.pager`, `diff.external`); a script does what it contains; a remote host
  * has its own rc files and `PATH`; `~/.ssh/config` can name a `ProxyCommand` for a host. In a persistent shell,
- * earlier lines can define functions, aliases or a `PATH` that change what a read-only line runs. No rule sees into
+ * earlier lines can define functions, aliases, a `PATH` or a `CDPATH` that change what a read-only line runs or
+ * where it runs. No rule sees into
  * a variable's value or a script file, readable line or not. It can't stop a read-only program from reading what
  * the sandbox lets it read; the model then sees it.
  *
@@ -40,8 +46,8 @@
  */
 import { ruleWords } from "@opencorp/protocol"
 import {
-  assignmentsOf, classify, credentialOf, EMPTY, fileOp, innerParts, ownerOnly, programOf, pushOf, readCommand,
-  remoteOf, type SimpleCommand, sshHosts, sshOf, type Where,
+  assignmentsOf, classify, EMPTY, fileOp, innerParts, lineCredential, logsIn, ownerOnly, programOf, pushOf,
+  readCommand, remoteOf, type SimpleCommand, sshHosts, sshOf, type Where,
 } from "./commands.ts"
 export type { Where } from "./commands.ts"
 
@@ -74,8 +80,8 @@ export type Decision =
   | { readonly verdict: "ask"; readonly reason: string; readonly rules: readonly string[] }
   | { readonly verdict: "check"; readonly rules: readonly string[] }
 
-/** What Auto's check is told: the command or typed line, the shell's profile, its folder, and the ssh host it
- *  runs on ("" for this machine). Never the agent's own reason. */
+/** What Auto's check is told: the command or typed line, the shell's profile, its folder ("" when unknown), and the
+ *  ssh host it runs on ("" for this machine). Never the agent's own reason. */
 export interface CheckInput {
   readonly kind: Action["kind"]
   readonly command: string
@@ -165,11 +171,12 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
   if (action.never !== undefined) return held(action.never)
   // A typed line goes to a program that may be a shell anywhere, a remote one at its home most likely.
   const cwd = action.kind === "input" ? "~" : where.cwd
-  // Outside the workspace sandbox, or over ssh, credentials are reachable, so a content read through an expansion
-  // asks; inside it the sandbox keeps them out, and only a literal credential path asks.
-  const remote = action.kind === "input" && sshHosts(readCommand(action.into ?? "")).length > 0
-  const strict = where.profile === "ssh" || remote
-  const credential = parts.map((p) => credentialOf(p, cwd, where.credentials, strict)).find((found) => found !== null)
+  // Outside the workspace sandbox, over ssh or mosh, or where the host marks credentials, they are reachable, so a
+  // content read through an expansion asks; otherwise the sandbox keeps them out, and only a literal credential path
+  // asks.
+  const remote = action.kind === "input" && logsIn(readCommand(action.into ?? ""))
+  const strict = where.profile === "ssh" || remote || (where.credentials ?? []).length > 0
+  const credential = lineCredential(parts, cwd, where.credentials, strict)
   if (credential) return held(credential)
   const owner = parts.map((p) => ownerOnly(p, read.unreadable === null)).find((found) => found !== null)
   if (owner) return held(owner)
@@ -357,7 +364,7 @@ function withInner(part: SimpleCommand): SimpleCommand[] {
 function checkInput(action: Action, where: Where): CheckInput {
   const on = action.kind === "input" ? (action.into ?? "") : action.text
   return {
-    kind: action.kind, command: action.text, profile: where.profile, cwd: where.cwd,
+    kind: action.kind, command: action.text, profile: where.profile, cwd: where.cwd ?? "",
     host: sshHosts(readCommand(on)).join(", "),
   }
 }
