@@ -614,6 +614,21 @@ export class CompanyGit {
     return (await this.#run(log)).stdout.toString().trim() !== ""
   }
 
+  /** The entry at `relpath` in `commit` (a sha, branch, or `HEAD`), read literally; null when the commit has none
+   *  there, as for a path under a linked folder, whose link git keeps rather than its files. `size` is a file's bytes.
+   *  `CompanyGitError` if git fails. */
+  async entry(relpath: string, commit = "HEAD"): Promise<TreeEntry | null> {
+    checkPaths([relpath])
+    const out = await this.#run(["ls-tree", "-z", "-l", "--full-tree", commit, "--", `:(literal)${relpath}`])
+    for (const entry of lsTreeEntries(out.stdout)) {
+      const [mode, , blob, size] = entry.info
+      const type = KINDS[mode!]
+      if (entry.path !== relpath || type === undefined) continue
+      return { path: entry.path, type, blob: blob!, size: /^\d+$/.test(size!) ? Number(size) : null }
+    }
+    return null
+  }
+
   /** The blob id of every file under `folder` at `commit`, by repo path. */
   async files(folder: string, commit = "HEAD"): Promise<Map<string, string>> {
     const out = await this.#run(["ls-tree", "-r", "-z", "--full-tree", commit, "--", `:(literal)${folder}`])

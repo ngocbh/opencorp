@@ -84,9 +84,9 @@ test("a chat lists its session, agent and company rules, each with its source", 
   await sessionRule(h, id)
   expect(await listed(sock, id)).toEqual({
     rules: [
-      { ...SESSION_ALLOW, source: "session", by: null, at: null },
-      { ...AGENT_ALLOW, source: "agent", by: CEO, at: AT },
-      { ...COMPANY_DENY, source: "company", by: null, at: null },
+      { ...SESSION_ALLOW, source: "session", by: null, at: null, note: null },
+      { ...AGENT_ALLOW, source: "agent", by: CEO, at: AT, note: null },
+      { ...COMPANY_DENY, source: "company", by: null, at: null, note: null },
     ],
     errors: [],
   })
@@ -101,7 +101,7 @@ test("a rules file that doesn't load is listed as an error, with the file and li
   const id = await chat(h, sock)
   const linted = (await lint(loadRepo(h.office.paths.company))).find((issue) => issue.path === "rules.yaml")!
   expect(await listed(sock, id)).toEqual({
-    rules: [{ ...AGENT_ALLOW, source: "agent", by: CEO, at: AT }],
+    rules: [{ ...AGENT_ALLOW, source: "agent", by: CEO, at: AT, note: null }],
     errors: [{ source: "company", path: "rules.yaml", message: linted.message }],
   })
   expect(linted.message).toBe("isn't valid YAML (line 2)")

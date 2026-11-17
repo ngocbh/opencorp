@@ -66,7 +66,9 @@ export interface SessionHarness extends CardActor {
   rules?(sessionId: string): Promise<RuleList>
   /** Removes a session or agent rule of the session as `by`, who must be its approver (`approverOf`): 404 not_found for
    *  no such session or rule, 403 forbidden for anyone but the approver, 409 company_rule for a company rule (only an
-   *  edit of the company repo's rules.yaml changes one); the chat harness implements it. */
+   *  edit of the company repo's rules.yaml changes one), 409 refused for an agent's file that doesn't load or has
+   *  changes nobody committed, and company_repo_busy (409, or 503 for a stuck lock) while git can't commit; the chat
+   *  harness implements it. */
   removeRule?(sessionId: string, rule: RemoveRuleRequest, options: { by: string }): Promise<void>
   /** What a client reads of the session before following its live events. */
   messages(sessionId: string): Message[] | Promise<Message[]>

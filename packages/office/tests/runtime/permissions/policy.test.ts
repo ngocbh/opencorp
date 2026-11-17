@@ -211,6 +211,19 @@ test("a blocked permissions makes every action ask in every mode and offers no r
   expect(await gate({ ...perms, blocked: () => null }, cmd("ls"), call())).toEqual({ run: true, by: "read-only" })
 })
 
+test("a pattern that isn't words with one space between each matches nothing, and no card offers one", () => {
+  const odd: [string, string[]][] = [
+    ["rm  -rf *", ["rm", "", "-rf", "x"]],
+    [" rm *", ["", "rm", "x"]],
+    ["rm * ", ["rm", "*", ""]],
+    ["rm\t*", ["rm\t*"]],
+    ["rm *\n", ["rm", "*\n"]],
+  ]
+  for (const [pattern, words] of odd) expect([pattern, matches(pattern, words)]).toEqual([pattern, false])
+  // A typed line's exact rule would hold a tab, which no rule file could keep.
+  table("ask", [[input("x='a\tb'"), [], W, askMode([])]])
+})
+
 test("in every mode a credential path asks and no allow rule skips it, and dontAsk refuses it", () => {
   const reason = "it names a credential path: ~/.ssh/id_rsa"
   for (const mode of MODES) {

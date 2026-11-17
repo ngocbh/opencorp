@@ -1842,3 +1842,21 @@ test.each([
   expect(fs.readFileSync(path.join(outside, "sentinel"), "utf8")).toBe("keep\n")
   expect(fs.lstatSync(path.join(dir, "people", committed)).isSymbolicLink()).toBe(true)
 })
+
+test("an entry names what a commit holds at a path, and nothing under a linked folder", async () => {
+  const { company: root, g } = setup()
+  const first = git(root, "rev-parse", "HEAD")
+  fs.mkdirSync(path.join(root, "x"))
+  fs.writeFileSync(path.join(root, "x/a.txt"), "abc")
+  fs.symlinkSync("x", path.join(root, "y"))
+  git(root, "add", "-A")
+  git(root, "commit", "-qm", "entries")
+  expect(await g.entry("x/a.txt")).toMatchObject({ path: "x/a.txt", type: "file", size: 3 })
+  expect(await g.entry("x")).toMatchObject({ path: "x", type: "folder", size: null })
+  expect(await g.entry("y")).toMatchObject({ path: "y", type: "symlink" })
+  // git keeps the link, not the files through it; and a path is read literally, never as a glob.
+  expect(await g.entry("y/a.txt")).toBeNull()
+  expect(await g.entry("x/*.txt")).toBeNull()
+  expect(await g.entry("nope.txt")).toBeNull()
+  expect(await g.entry("x/a.txt", first)).toBeNull()
+})

@@ -493,6 +493,7 @@ export class SessionActor implements LiveCalls {
           return this.#deliver(new Pending(delivery, undefined, { questionId: card.id }))
         },
         loseAnswer: (card) => this.#loseAnswer(card.id),
+        notice: (text) => this.#notice(text),
         post: (label, job) => this.#post(label, job),
         settle: (when) => this.#trySettle(when),
         runner: async () => (await this.#specOf(this.#session())).runApproved,

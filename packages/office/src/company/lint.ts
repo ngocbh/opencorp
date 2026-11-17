@@ -8,7 +8,7 @@ import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "
 import { type RepoIssue, repoIssue } from "./issues.ts"
 import { type CompanyRepo, profilePath } from "./loader.ts"
 import { shownAssetToolName, TOOL_NAME } from "./naming.ts"
-import { COMPANY_RULES, parseRules, rulesPath, unreadableRules } from "./rules.ts"
+import { COMPANY_RULES, inTree, loadRules, rulesPath } from "./rules.ts"
 
 /** One lint check: the issues it finds in a repo. */
 type Check = (repo: CompanyRepo) => Iterable<RepoIssue> | AsyncIterable<RepoIssue>
@@ -466,29 +466,16 @@ function* checkDevices(repo: CompanyRepo): Iterable<RepoIssue> {
   }
 }
 
-/** The company's `rules.yaml` and each person's `people/<handle>/rules.yaml` load, where they exist: while one doesn't,
- *  every command of the sessions it covers asks. */
+/** The company's `rules.yaml` and each person's `people/<handle>/rules.yaml` load, read as the office reads them at a
+ *  commit (`inTree`): while one doesn't, every command of the sessions it covers asks. A `*` that isn't a pattern's
+ *  last word on its own is a warning: it matches only a literal `*`. */
 function* checkRules(repo: CompanyRepo): Iterable<RepoIssue> {
   const files: [string, "agent" | "company"][] = [[COMPANY_RULES, "company"]]
   for (const [handle] of sorted(repo.people)) files.push([rulesPath(handle), "agent"])
   for (const [rel, source] of files) {
-    const file = path.join(repo.root, rel)
-    let data: Buffer
-    try {
-      const stat = fs.lstatSync(file, { throwIfNoEntry: false })
-      if (stat === undefined) continue
-      if (!stat.isFile()) {
-        yield unreadableRules(rel)
-        continue
-      }
-      data = fs.readFileSync(file)
-    } catch (error) {
-      if (errno(error) === undefined) throw error
-      yield unreadableRules(rel)
-      continue
-    }
-    const read = parseRules(rel, data, source)
+    const read = loadRules(rel, inTree(repo.root, rel), source)
     if ("issue" in read) yield read.issue
+    else yield* read.warnings
   }
 }
 

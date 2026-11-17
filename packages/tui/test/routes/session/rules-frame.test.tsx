@@ -30,6 +30,9 @@ async function openRules(app: App) {
   await app.until((f) => f.includes("Rules"))
 }
 
+/** The frame with each line's border and padding gone, so a wrapped message reads whole. */
+const flat = (f: string) => f.replace(/\s*┃\s*/g, " ").replace(/\s+/g, " ")
+
 const removals = (office: FakeOffice, id: string) =>
   office.requests.filter((r) => r.method === "POST" && r.path === `/sessions/${id}/rules/remove`).map((r) => r.body)
 
@@ -65,7 +68,6 @@ test("d on a company rule says to edit rules.yaml", async () => {
     await app.until((f) => f.includes("rm -rf *"))
     app.input.pressKey("d")
     // The toast wraps its line inside its border.
-    const flat = (f: string) => f.replace(/\s*┃\s*/g, " ").replace(/\s+/g, " ")
     await app.until((f) => flat(f).includes("Edit rules.yaml in the company repo to change company rules"))
     expect(removals(office, s.id)).toEqual([])
     expect(office.state.rules[s.id]!.rules).toEqual([COMPANY])
@@ -87,6 +89,43 @@ test("/rules shows a file that doesn't load, and that every command asks until i
     )
     expect(error).toBeGreaterThanOrEqual(0)
     expect(error).toBeLessThan(lines.findIndex((line) => line.includes("git status *")))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("d on a deny rule asks first: n keeps it, y removes it", async () => {
+  const deny: Rule = { effect: "deny", kind: "command", pattern: "git push --force *", source: "agent", by: "ngocbh", at: AT }
+  const { office, s, app } = await boot({ rules: [deny], errors: [] })
+  const asked = "Remove the deny rule git push --force *? What it refuses would no longer be refused. y removes it, n keeps it."
+  try {
+    await openRules(app)
+    await app.until((f) => f.includes("git push --force *"))
+    app.input.pressKey("d")
+    await app.until((f) => flat(f).includes(asked))
+    app.input.pressKey("n")
+    await app.until((f) => !flat(f).includes(asked) && f.includes("git push --force *"))
+    expect(removals(office, s.id)).toEqual([])
+    app.input.pressKey("d")
+    await app.until((f) => flat(f).includes(asked))
+    app.input.pressKey("y")
+    await app.until((f) => !f.includes("git push --force *"))
+    expect(removals(office, s.id)).toEqual([
+      { effect: "deny", kind: "command", pattern: "git push --force *", source: "agent" },
+    ])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a session rule an always couldn't save says why above the list", async () => {
+  const why = "people/minh/rules.yaml has changes nobody committed; commit or discard them first"
+  const { office, app } = await boot({ rules: [{ ...SESSION, note: why }], errors: [] })
+  try {
+    await openRules(app)
+    await app.until((f) => flat(f).includes(`allow ls * applies to this session only: ${why}`))
   } finally {
     await app.stop()
     office.stop()

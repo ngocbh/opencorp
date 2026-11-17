@@ -5,7 +5,7 @@ import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { parse, stringify } from "yaml"
 import { inspectRun } from "@ngocbh/yian/run"
-import type { ToolPart } from "@opencorp/protocol"
+import type { Message, ToolPart } from "@opencorp/protocol"
 import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import { ChatApprovals } from "../../../src/features/chat/approvals.ts"
 import { alwaysOption, sessionOption, YES } from "../../../src/runtime/questions/approval.ts"
@@ -13,8 +13,9 @@ import { DETAIL_CHARS } from "../../../src/util/redact.ts"
 import { INTERRUPTED } from "../../../src/runtime/questions/format.ts"
 import type { QuestionRecord } from "../../../src/runtime/store/store.ts"
 import { CEO } from "../../server/helpers.ts"
-import { git, person } from "../../company/helpers.ts"
-import { waitFor } from "../../helpers.ts"
+import { git, person, recordingGit } from "../../company/helpers.ts"
+import { CompanyGit } from "../../../src/company/git.ts"
+import { tempDir, waitFor } from "../../helpers.ts"
 import { gone, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import {
   fakeLlm,
@@ -277,6 +278,7 @@ test("a session's hold refuses rather than hold a card once the session doesn't 
       completeWithOutput: never,
       loseAnswer: never,
       post: never,
+      notice: never,
       settle: never,
       runner: never,
     },
@@ -727,4 +729,64 @@ sandboxed("a malformed agent rules file blocks only that agent's sessions", asyn
   await h.harness.prompt(ava, "list it")
   await replied(h, ava, "Listed, ava.")
   expect(outcomes(h, ava)).toEqual([["ok", "by read-only"]])
+})
+
+test("an always the agent's file can't take stays in the session, and the approver is told why", async () => {
+  const fake = await fakeLlm()
+  fake.script(shell("ls"), says("Done."))
+  const h = await makeHarness(fake, { files: { "people/minh/rules.yaml": rulesFile(["allow", "make"]) } })
+  const company = h.office.paths.company
+  const head = git(company, "rev-parse", "HEAD")
+  // A hand edit nobody committed, which a write would lose.
+  fs.writeFileSync(path.join(company, "people/minh/rules.yaml"), rulesFile(["allow", "make"], ["allow", "*"]))
+  const id = await chat(h, "ask")
+  const [q] = await held(h, id, "list it")
+  await h.harness.answer(q!.id, alwaysOption(["ls *"]), "option", { by: CEO })
+  await replied(h, id, "Done.")
+  expect(git(company, "rev-parse", "HEAD")).toBe(head)
+  const why = "people/minh/rules.yaml has changes nobody committed; commit or discard them first"
+  expect((await h.harness.rules(id)).rules[0]).toEqual({
+    effect: "allow", kind: "command", pattern: "ls *", source: "session", by: null, at: null, note: why,
+  })
+  const notices = h.lives
+    .flatMap((e) => (e.type === "message.updated" && e.session_id === id ? (e.data as Message).parts : []))
+    .flatMap((part) => (part.type === "error" ? [part.message] : []))
+  expect(notices).toEqual([`"ls *" applies to this session only; it isn't saved for @minh's later sessions: ${why}`])
+})
+
+test("a session's rules files are read again only once HEAD moves", async () => {
+  const h = await makeHarness(await fakeLlm(), { files: { "rules.yaml": rulesFile(["deny", "rm *"]) } })
+  const id = await chat(h)
+  const recorder = recordingGit(tempDir())
+  const company = h.office.paths.company
+  const never = (): never => {
+    throw new Error("the actor is never asked")
+  }
+  const approvals = new ChatApprovals({
+    store: h.store,
+    workers: h.registry,
+    connections: h.office.connections,
+    paths: h.office.paths,
+    session: () => session(h, id),
+    where: () => ({ profile: "workspace", cwd: h.folder, writable: [h.folder] }),
+    charge: never,
+    git: new CompanyGit(company, path.join(tempDir(), "worktrees"), { git: recorder.git }),
+    handle: "minh",
+    log: never,
+    host: {
+      liveRun: never, completeWithAnswer: never, completeWithOutput: never, loseAnswer: never, post: never,
+      notice: never, settle: never, runner: never,
+    },
+  })
+  await approvals.reload()
+  const first = recorder.calls().length
+  expect(first).toBeGreaterThan(0)
+  await approvals.reload()
+  await approvals.list()
+  expect(recorder.calls()).toHaveLength(first)
+  fs.writeFileSync(path.join(company, "rules.yaml"), rulesFile(["deny", "rm -rf *"]))
+  git(company, "commit", "-qam", "a narrower deny")
+  await approvals.reload()
+  expect(recorder.calls().length).toBeGreaterThan(first)
+  expect((await approvals.list()).rules.map((r) => r.pattern)).toEqual(["rm -rf *"])
 })

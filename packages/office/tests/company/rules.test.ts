@@ -8,10 +8,10 @@ import { CompanyGit } from "../../src/company/git.ts"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import {
-  addRules, COMPANY_RULES, readRules, removeRule, RulesRefused, rulesPath,
+  addRules, COMPANY_RULES, MAX_RULES_BYTES, readRules, removeRule, RulesRefused, rulesPath,
 } from "../../src/company/rules.ts"
 import { tempDir } from "../helpers.ts"
-import { git, makeCompany } from "./helpers.ts"
+import { git, makeCompany, person } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -45,15 +45,15 @@ test("a person's rules file and the company's read as rules with their source, a
   })
   expect(await readRules(g, "minh")).toEqual({
     rules: [
-      { effect: "allow", kind: "command", pattern: "git status *", source: "agent", by: "ngocbh", at: AT },
-      { effect: "ask", kind: "input", pattern: "y", source: "agent", by: null, at: AT },
-      { effect: "deny", kind: "command", pattern: "rm -rf *", source: "company", by: null, at: null },
+      { effect: "allow", kind: "command", pattern: "git status *", source: "agent", by: "ngocbh", at: AT, note: null },
+      { effect: "ask", kind: "input", pattern: "y", source: "agent", by: null, at: AT, note: null },
+      { effect: "deny", kind: "command", pattern: "rm -rf *", source: "company", by: null, at: null, note: null },
     ],
     errors: [],
   })
   // The CEO has no rules file: only the company's rules apply.
   expect(await readRules(g, "ngocbh")).toEqual({
-    rules: [{ effect: "deny", kind: "command", pattern: "rm -rf *", source: "company", by: null, at: null }],
+    rules: [{ effect: "deny", kind: "command", pattern: "rm -rf *", source: "company", by: null, at: null, note: null }],
     errors: [],
   })
 })
@@ -96,7 +96,7 @@ test("removing a rule commits the agent's file without it", async () => {
   expect(subject(root)).toBe('Rules: remove allow "git status *" for @minh (by @ngocbh)')
   expect(body(root)).toBe("Actor: @ngocbh")
   expect((await readRules(g, "minh")).rules).toEqual([
-    { effect: "deny", kind: "command", pattern: "rm *", source: "agent", by: null, at: null },
+    { effect: "deny", kind: "command", pattern: "rm *", source: "agent", by: null, at: null, note: null },
   ])
   // A rule the file doesn't hold, with another effect or kind too, removes nothing and commits nothing.
   expect(await removeRule(g, "minh", { ...allow("git status *"), source: "agent" }, "ngocbh")).toBe(false)
@@ -130,12 +130,12 @@ test("a malformed rules file reads as an error naming the file and lint's messag
     [MINH]: file({ effect: "allow", kind: "command", pattern: "ls *" }),
     "people/ngocbh/rules.yaml": file({ effect: "maybe", kind: "command", pattern: "ls *" }),
   })
-  const linted = new Map((await lint(loadRepo(root))).map((issue) => [issue.path, issue.message]))
+  const lintSays = new Map((await lint(loadRepo(root))).map((issue) => [issue.path, issue.message]))
   expect(await readRules(g, "minh")).toEqual({
-    rules: [{ effect: "allow", kind: "command", pattern: "ls *", source: "agent", by: null, at: null }],
-    errors: [{ source: "company", path: COMPANY_RULES, message: linted.get(COMPANY_RULES)! }],
+    rules: [{ effect: "allow", kind: "command", pattern: "ls *", source: "agent", by: null, at: null, note: null }],
+    errors: [{ source: "company", path: COMPANY_RULES, message: lintSays.get(COMPANY_RULES)! }],
   })
-  expect(linted.get(COMPANY_RULES)).toBe("isn't valid YAML (line 2)")
+  expect(lintSays.get(COMPANY_RULES)).toBe("isn't valid YAML (line 2)")
   expect(await readRules(g, "ngocbh")).toEqual({
     rules: [],
     errors: [
@@ -143,16 +143,77 @@ test("a malformed rules file reads as an error naming the file and lint's messag
       { source: "company", path: COMPANY_RULES, message: "isn't valid YAML (line 2)" },
     ],
   })
-  expect(linted.get("people/ngocbh/rules.yaml")).toBe("rule 1: effect: isn't an allowed value")
+  expect(lintSays.get("people/ngocbh/rules.yaml")).toBe("rule 1: effect: isn't an allowed value")
   // A folder where a file should be can't be read as one.
   fs.rmSync(path.join(root, COMPANY_RULES))
   fs.mkdirSync(path.join(root, COMPANY_RULES))
   fs.writeFileSync(path.join(root, COMPANY_RULES, "x"), "")
   git(root, "add", "-A")
   git(root, "commit", "-qm", "a folder")
-  expect((await readRules(g, "minh")).errors).toEqual([
-    { source: "company", path: COMPANY_RULES, message: "can't be read as a file" },
+  const folder = "is a folder; a rules file must be a regular file"
+  expect((await readRules(g, "minh")).errors).toEqual([{ source: "company", path: COMPANY_RULES, message: folder }])
+  expect(await linted(root, COMPANY_RULES)).toEqual([folder])
+})
+
+/** Lint's messages on `rel` in the repo at `root`. */
+async function linted(root: string, rel: string): Promise<string[]> {
+  return (await lint(loadRepo(root))).filter((issue) => issue.path === rel).map((issue) => issue.message)
+}
+
+test.each(["rm  -rf *", " rm *", "rm * ", "rm\t*", "rm *\n"])(
+  "a pattern that isn't words with one space between each doesn't load, as lint says [%j]",
+  async (pattern) => {
+    const { root, g } = setup({ [COMPANY_RULES]: file({ effect: "deny", kind: "command", pattern }) })
+    const why = "rule 1: pattern: must be words with one space between each"
+    expect(await readRules(g, "minh")).toEqual({ rules: [], errors: [{ source: "company", path: COMPANY_RULES, message: why }] })
+    expect(await linted(root, COMPANY_RULES)).toEqual([why])
+  },
+)
+
+test("a block scalar's newline in a pattern doesn't load", async () => {
+  const { g } = setup({ [COMPANY_RULES]: "rules:\n  - effect: deny\n    kind: command\n    pattern: |\n      rm -rf *\n" })
+  expect((await readRules(g, "minh")).errors.map((e) => e.message)).toEqual([
+    "rule 1: pattern: must be words with one space between each",
   ])
+})
+
+test("a rules file over the size cap doesn't load, as lint says", async () => {
+  const padded = `# ${"x".repeat(MAX_RULES_BYTES)}\n${file({ effect: "deny", kind: "command", pattern: "rm *" })}`
+  const { root, g } = setup({ [COMPANY_RULES]: padded, [MINH]: file(allow("ls *")) })
+  const why = `is over ${MAX_RULES_BYTES} bytes, the most a rules file may hold`
+  expect(await readRules(g, "minh")).toEqual({
+    rules: [{ ...allow("ls *"), source: "agent", by: null, at: null, note: null }],
+    errors: [{ source: "company", path: COMPANY_RULES, message: why }],
+  })
+  expect(await linted(root, COMPANY_RULES)).toEqual([why])
+})
+
+test("a rules file that is a link doesn't load, and one under a linked folder isn't read, as lint says", async () => {
+  // ava's folder is a link to one outside people/: the loader follows it, but git keeps only the link, so HEAD has no
+  // people/ava/rules.yaml.
+  const { root, g } = setup({
+    [MINH]: "rules: [\n",
+    "elsewhere/ava/person.yaml": person("minh", { handle: "ava", name: "Ava" }),
+    "elsewhere/ava/rules.yaml": "rules: [\n",
+  })
+  fs.symlinkSync("people/minh/rules.yaml", path.join(root, COMPANY_RULES))
+  fs.symlinkSync("../elsewhere/ava", path.join(root, "people/ava"))
+  git(root, "add", "-A")
+  git(root, "commit", "-qm", "links")
+  expect(loadRepo(root).people.has("ava")).toBe(true)
+  const why = "is a symbolic link; a rules file must be a regular file"
+  expect(await readRules(g, "ava")).toEqual({ rules: [], errors: [{ source: "company", path: COMPANY_RULES, message: why }] })
+  expect(await linted(root, COMPANY_RULES)).toEqual([why])
+  expect(await linted(root, rulesPath("ava"))).toEqual([])
+  expect(await linted(root, MINH)).toEqual(["isn't valid YAML (line 2)"])
+})
+
+test("adding a rule whose pattern isn't words with one space between each is refused", async () => {
+  const { root, g } = setup()
+  const refused = await addRules(g, "minh", [allow("ls  *")], "ngocbh").catch((error: unknown) => error)
+  expect(refused).toBeInstanceOf(RulesRefused)
+  expect((refused as RulesRefused).message).toBe("a rule's pattern must be words with one space between each")
+  expect(subject(root)).toBe("init")
 })
 
 test("adding a rule to an agent's file that doesn't load is refused", async () => {

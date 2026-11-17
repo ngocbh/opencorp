@@ -35,6 +35,8 @@ export interface ApprovalHost {
   completeWithOutput(card: QuestionRecord, output: string): Promise<void>
   /** Marks answered `card` stale: its answer can never reach its call. */
   loseAnswer(card: QuestionRecord): void
+  /** Shows `text` in the chat as the office's notice to the people watching it. */
+  notice(text: string): void
   /** Runs `job` on the actor's serial queue after the jobs before it; skipped once the actor closed. */
   post(label: string, job: () => unknown): void
   /** Writes the session's run state again; `when` names the step for the log. */
@@ -79,10 +81,14 @@ export class ChatApprovals {
   readonly #log: (line: string) => void
   /** The agent's and the company's rules as last read at HEAD, and the files that didn't load; null until read. */
   #files: { rules: SavedRule[]; errors: RuleFileError[] } | null = null
+  /** The commit `#files` were read at, so a run's build reads them again only once HEAD moved. */
+  #readAt: string | null = null
   /** How many reads of the files have started, and which one `#files` holds: an older read that ends late never
    *  replaces a newer one. */
   #reads = 0
   #applied = 0
+  /** Why each session rule an "always" couldn't save to the agent's file stays in the session, by `ruleKey`. */
+  readonly #unsaved = new Map<string, string>()
   /** The office connection the last check resolved, whose prices its usage is charged at. */
   #provider: Provider | null = null
   /** The approved actions the office runs now, by card id, each stopped by its controller. */
@@ -149,13 +155,20 @@ export class ChatApprovals {
     }
   }
 
-  /** Reads the agent's and the company's rules files at HEAD again; the session's permissions decide by them from
-   *  now. */
+  /** Reads the agent's and the company's rules files at HEAD again, unless they were read at that commit; the
+   *  session's permissions decide by them from now. */
   async reload(): Promise<void> {
     const n = ++this.#reads
-    const read = await readRules(this.#git, this.#handle)
+    const head = await this.#git.readHead().catch(() => null)
+    if (head !== null && head === this.#readAt && this.#files !== null) {
+      // What a read started before this one would read is no newer.
+      this.#applied = Math.max(this.#applied, n)
+      return
+    }
+    const read = await readRules(this.#git, this.#handle, head ?? "HEAD")
     if (n < this.#applied) return
     this.#files = read
+    this.#readAt = head
     this.#applied = n
   }
 
@@ -163,7 +176,9 @@ export class ChatApprovals {
    *  as the session decides by them now (read first if they weren't yet). */
   async list(): Promise<{ rules: SavedRule[]; errors: RuleFileError[] }> {
     if (this.#files === null) await this.reload()
-    const own = this.book.list().map((r): SavedRule => ({ ...r, source: "session", by: null, at: null }))
+    const own = this.book.list().map((r): SavedRule => ({
+      ...r, source: "session", by: null, at: null, note: this.#unsaved.get(ruleKey(r)) ?? null,
+    }))
     return { rules: [...own, ...this.#files!.rules], errors: [...this.#files!.errors] }
   }
 
@@ -171,7 +186,10 @@ export class ChatApprovals {
    *  the files read again. Whether it was there. A company rule is refused (`RulesRefused` `company_rule`), and so is
    *  an agent's file that doesn't load or has changes nobody committed. */
   async remove(rule: RemoveRuleRequest, by: string): Promise<boolean> {
-    if (rule.source === "session") return this.book.remove(rule)
+    if (rule.source === "session") {
+      this.#unsaved.delete(ruleKey(rule))
+      return this.book.remove(rule)
+    }
     const removed = await removeRule(this.#git, this.#handle, { ...rule, source: rule.source }, by)
     if (removed) await this.reload()
     return removed
@@ -307,8 +325,8 @@ export class ChatApprovals {
 
   /** Adds the rules an answered card's "don't ask again" chose to the session's own, and an "always" answer's to the
    *  agent's file, committed as its approver's, then reads the files again. An "always" the file can't take (it doesn't
-   *  load, has changes nobody committed, or the repo is busy) keeps its rules for the session, and the log says why.
-   *  Whether it added any. */
+   *  load, has changes nobody committed, or the repo is busy) keeps its rules for the session, and says why: in a
+   *  notice in the chat, on the rules in `/rules`, and in the log. Whether it added any. */
   async remember(question: QuestionRecord): Promise<boolean> {
     const card = question.approval
     const read = readAnswer(question)
@@ -322,7 +340,12 @@ export class ChatApprovals {
         return true
       } catch (error) {
         // Their messages are fixed text, naming no absolute path; any other error's could quote git's output.
-        const why = error instanceof RulesRefused || error instanceof CompanyRepoBusy ? error.message : errorName(error)
+        const known = error instanceof RulesRefused || error instanceof CompanyRepoBusy
+        const why = known ? error.message : `the company repo couldn't take the commit (${errorName(error)})`
+        for (const rule of rules) this.#unsaved.set(ruleKey(rule), why)
+        const shown = rules.map((rule) => JSON.stringify(rule.pattern)).join(", ")
+        const later = `it isn't saved for @${this.#handle}'s later sessions`
+        this.#host.notice(`${shown} applies to this session only; ${later}: ${why}`)
         this.#log(`session ${this.#session().id}: an "always" rule stays in this session only: ${why}`)
       }
     }
@@ -365,4 +388,9 @@ export class ChatApprovals {
     const usd = callUsd(provider?.prices ?? {}, entry.model, entry.usage, { default: price })
     this.#charge(entry.runId, entry.model, usd)
   }
+}
+
+/** What tells a rule from another: its effect, kind and pattern. */
+function ruleKey(rule: Pick<Rule, "effect" | "kind" | "pattern">): string {
+  return `${rule.effect}\0${rule.kind}\0${rule.pattern}`
 }

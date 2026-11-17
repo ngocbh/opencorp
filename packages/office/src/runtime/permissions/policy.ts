@@ -38,6 +38,7 @@
  * `auto` and `dontAsk` the check is the only check there, as in Claude Code; `default` and `ask` are the
  * conservative modes for remote work.
  */
+import { ruleWords } from "@opencorp/protocol"
 import {
   assignmentsOf, classify, credentialOf, EMPTY, fileOp, innerParts, ownerOnly, programOf, pushOf, readCommand,
   remoteOf, type SimpleCommand, sshHosts, sshOf, type Where,
@@ -110,10 +111,12 @@ const SUBCOMMANDS = new Set(
 const MOVES = new Set(["cd", "pushd", "popd"])
 const REASON_CHARS = 200
 
-/** Whether `pattern` matches `words`: words separated by single spaces, where only a final `*` is a wildcard,
- *  matching any further words (none included). */
+/** Whether `pattern` matches `words`: the protocol's `RulePattern` (words with no whitespace, one space between each),
+ *  where only a final `*` is a wildcard, matching any further words (none included). A pattern of another form, which
+ *  no rules file could hold, matches nothing, so no card offers it. */
 export function matches(pattern: string, words: readonly string[]): boolean {
-  const want = pattern === "" ? [] : pattern.split(" ")
+  const want = ruleWords(pattern)
+  if (want === null) return false
   const wild = want.at(-1) === "*"
   const fixed = wild ? want.slice(0, -1) : want
   if (wild ? words.length < fixed.length : words.length !== fixed.length) return false

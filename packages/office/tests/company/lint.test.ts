@@ -700,3 +700,14 @@ test("a rules file whose rules aren't allow, ask or deny on command or input is 
   })
   expect(await lint(loadRepo(fine))).toEqual([])
 })
+
+test("a * that isn't a rule pattern's last word on its own is a lint warning", async () => {
+  const rules = ["git push --force*", "git * main", "rm *", "*"].map((pattern) => ({ effect: "deny", kind: "command", pattern }))
+  const root = makeCompany({ "rules.yaml": { rules } })
+  const found = (await lint(loadRepo(root))).map((issue) => [issue.code, issue.path, issue.message, issue.severity])
+  const why = "pattern: a * matches further words only as the last word on its own; this one matches a literal *"
+  expect(found).toEqual([
+    ["rules.literal_star", "rules.yaml", `rule 1: ${why}`, "warning"],
+    ["rules.literal_star", "rules.yaml", `rule 2: ${why}`, "warning"],
+  ])
+})
