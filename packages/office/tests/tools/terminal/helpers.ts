@@ -14,6 +14,7 @@ import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "../../../src
 import { InstrumentRecord, readRecord, type RecordFile } from "../../../src/tools/terminal/record.ts"
 import type { ShellState } from "../../../src/tools/terminal/shell.ts"
 import { Terminal, type TerminalHost, type TerminalShells } from "../../../src/tools/terminal/terminal.ts"
+import { goldenSshPolicy } from "../../runtime/sandbox/helpers.ts"
 
 /** What the host's own `where()` says: the workspace profile, writable everywhere. A terminal whose shells don't run
  *  in a workspace's sandbox must never take it. */
@@ -21,12 +22,14 @@ export const HOST_WHERE: Where = { profile: "workspace", cwd: "/w", writable: ["
 
 export const rule = (effect: Rule["effect"], kind: Action["kind"], pattern: string): Rule => ({ effect, kind, pattern })
 
-/** Permissions whose mode and rules a test changes as it goes (`state`), which record each card they hold and each
- *  check they make; `check`, when given, answers as the test says. */
+/** Permissions whose mode, rules and block a test changes as it goes (`state`), which record each card they hold and
+ *  each check they make; `check`, when given, answers as the test says. */
 export function permissions(
   o: { mode?: Mode; rules?: Rule[]; where?: Where; check?: (input: CheckInput, signal: AbortSignal) => Promise<Verdict> } = {},
 ) {
-  const state = { mode: o.mode ?? "auto", rules: o.rules ?? [] }
+  const state: { mode: Mode; rules: Rule[]; blocked: string | null } = {
+    mode: o.mode ?? "auto", rules: o.rules ?? [], blocked: null,
+  }
   const held: { card: ApprovalCard; callId: string }[] = []
   const checked: CheckInput[] = []
   const perms: Permissions = {
@@ -34,6 +37,7 @@ export function permissions(
     rules: () => state.rules,
     where: () => o.where ?? HOST_WHERE,
     hold: (card, callId) => (held.push({ card, callId }), pending()),
+    blocked: () => state.blocked,
     ...(o.check ? { check: (input: CheckInput, signal: AbortSignal) => (checked.push(input), o.check!(input, signal)) } : {}),
   }
   return { perms, state, held, checked }
@@ -44,6 +48,17 @@ export function fakeSsh(behavior: FakeSshBehavior): FakeSsh {
   const dir = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
   onTestFinished(() => fs.rmSync(dir, { recursive: true, force: true }))
   return installFakeSsh(dir, behavior)
+}
+
+/** PTY shells as the SSH-only profile runs them, but plain: started in `<dir>/work`, its temp folder, with `dir` as
+ *  the owner's home. */
+export function sshShells(dir: string, fake?: FakeSsh): Extract<TerminalShells, { kind: "pty" }> {
+  const work = path.join(dir, "work")
+  fs.mkdirSync(work, { recursive: true })
+  const hq = path.join(dir, ".opencorp", "hq")
+  const shells = plainShells(dir, fake, work)
+  const sandbox = goldenSshPolicy({ home: dir, hq, tmpdir: work, statusFile: "/s" })
+  return { ...shells, env: { ...shells.env, TMPDIR: work }, sandbox }
 }
 
 /** Plain PTY shells (no sandbox) started in `cwd` (default `dir`), with only PATH (the fake ssh's folder first, when

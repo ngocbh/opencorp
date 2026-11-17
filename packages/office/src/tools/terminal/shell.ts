@@ -21,17 +21,18 @@
  *  - `eval` takes a command whatever its syntax: one that doesn't parse fails and still ends.
  *  - A nonce the shell prints (with `set -x`, say) is neutralised in the views, even split across reads.
  *  - Each marker carries the shell's folder as the kernel has it (`pwd -P`, by path), not as `$PWD` says, for the
- *    gate (`cwd`). Only the agent's command's marker, with its nonce, is believed: after any other end, the owner's
- *    command or one a Ctrl-C stopped, the folder is unknown until the agent's next command ends.
+ *    gate (`cwd`). Only a marker with the agent's nonce sets it: after any other end, the owner's command or one a
+ *    Ctrl-C stopped, the folder is unknown until the agent's next command ends. A command that can forge its end
+ *    (below) can forge that marker's folder too.
  *
  *  Without `PROMPT_COMMAND` (another sh), the typed line puts the settings back and prints the marker itself, and `PS1`
  *  is a marker with no nonce. A marker with no nonce is the shell back at its prompt: the end of the owner's command,
  *  and of the agent's once a Ctrl-C has reached it (a Ctrl-C stops the rest of the line).
  *
- *  The marker keeps the record's boundaries and exit codes honest; it isn't a wall. The shell holds the typed line,
- *  nonce and all, while it runs it, so a command that changes how the shell runs it can still forge its end (a DEBUG
- *  trap sees the line) or hide it (a command that hides it leaves the shell running until it is closed). The sandbox
- *  is the security boundary. The owner's own command can end early by printing a marker with no nonce.
+ *  The marker keeps the record's boundaries and exit codes, and the gate's folder, honest; it isn't a wall. The shell
+ *  holds the typed line, nonce and all, while it runs it, so a command that changes how the shell runs it can still
+ *  forge its end and its folder (a DEBUG trap sees the line, in `BASH_COMMAND`) or hide it (a command that hides it
+ *  leaves the shell running until it is closed). The sandbox is the security boundary. The owner's own command can end early by printing a marker with no nonce.
  *
  *  **An unfinished line** the agent leaves when its command ends is killed (Ctrl-U), so neither the next command nor
  *  the owner's next line takes it on; a line the owner typed after it on the same line goes with it.
@@ -291,7 +292,8 @@ export class PtyShell {
   /** The folder the shell is in: where its first prompt (bash's) or the agent's last command said it was, as the
    *  kernel has it. Null when that can't be known: sh's first prompt says nothing; a folder whose name holds a control
    *  character, isn't UTF-8 or is over 4096 bytes isn't reported; and a command that ended without the agent's nonce
-   *  (the owner's, or one a Ctrl-C stopped) may have moved it, and its marker may be forged. */
+   *  (the owner's, or one a Ctrl-C stopped) may have moved it, and its marker may be forged. A command that changes
+   *  how the shell runs it (a DEBUG trap reads the nonce in `BASH_COMMAND`) can forge the folder as it can its end. */
   cwd(): string | null {
     return this.folder
   }
@@ -517,8 +519,8 @@ export class PtyShell {
   }
 
   /** A marker with `nonce`, `exitText` and the folder: the end of the agent's command when it holds its nonce (or
-   *  none, after a Ctrl-C), or of the owner's when it holds none. Any other is ignored. Only the nonce's end says
-   *  where the shell is. */
+   *  none, after a Ctrl-C), or of the owner's when it holds none. Any other is ignored. Only a marker with the nonce
+   *  sets the folder. */
   private marker(nonce: string, exitText: string, folder: string | undefined): void {
     const exit = /^-?\d+$/.test(exitText) ? Number(exitText) : null
     if (nonce === "" && this.promptAfter) {

@@ -34,8 +34,11 @@ import { PtyShell, type Reply, type ShellHost, shellKind, type ShellState } from
 import { cardArgs, type Parsed, parseArgs, refusalText, replyText, type ToolName, TOOLS, toolSpecs } from "./tools.ts"
 
 /** How a terminal's shells run: on PTYs, in `sandbox` (null: none, which only the owner allows); or as the
- *  workspace's pipes, each command its own call in the workspace's sandbox. The sandbox is the one the host starts
- *  them in, and it decides the profile the gate reads. */
+ *  workspace's pipes, each command its own call in the workspace's sandbox.
+ *
+ *  Invariant: `start` (or `run`) starts every shell in `sandbox`, and `env` is that sandbox's (`scrubbedEnv` and
+ *  `TERM`). The gate trusts `sandbox` for the profile, the folder and the credentials, so a host builds both from the
+ *  one policy. The terminal checks what it cheaply can: a PTY's `HOME` and `TMPDIR` are its sandbox's. */
 export type TerminalShells =
   | {
       readonly kind: "pty"
@@ -72,6 +75,7 @@ export interface TerminalHost {
   shellHost(name: string, profile: TerminalProfile): ShellBinding
 }
 
+/** One of a terminal's shells: a PTY shell, or the workspace's pipes shell. */
 export type TerminalShell = PtyShell | PipeShell
 
 /** A tool as the model calls it: an `OfficeTool`, declared here by its shape. `callId` is the yian call's, which a
@@ -95,6 +99,10 @@ const MOVED =
 const MOVED_SINCE =
   "the shell has moved on since this line was approved: its unfinished line or its running command changed; read " +
   "it, then type again"
+/** What an approved command is refused with when its shell is in another folder than its card was decided in. */
+const MOVED_FOLDER = (was: string | null, now: string | null) =>
+  `the shell is in another folder than when this command was approved (${was ?? "unknown"}, now ` +
+  `${now ?? "unknown"}); run it again to have it checked there`
 /** What a start failure for want of a sandbox adds, so the agent can tell the owner what to fix. */
 const SANDBOX_FIX =
   "the shell needs a sandbox: on Linux, install bubblewrap (bwrap) and allow unprivileged user namespaces; on " +
@@ -111,11 +119,13 @@ interface Entry {
   queue: Promise<unknown>
 }
 
-/** How one call runs: the yian call's id, its signal, and whether the owner approved it (no gate). */
+/** How one call runs: the yian call's id, its signal, and whether the owner approved it (no gate). An approved
+ *  command carries the folder its card was decided in (`folder`). */
 interface Call {
   readonly callId: string | undefined
   readonly signal: AbortSignal
   readonly approved: boolean
+  readonly folder?: string | null
 }
 
 /** The profile of the sandbox `shells` run in. */
@@ -137,9 +147,17 @@ export class Terminal {
   private made = 0
   private closed = false
 
+  /** Throws a `RangeError` when a PTY's `HOME` or `TMPDIR` isn't its sandbox's (see `TerminalShells`). */
   constructor(private readonly host: TerminalHost) {
     this.profile = profileOf(host.shells)
     const { shells } = host
+    if (shells.kind === "pty" && shells.sandbox !== null) {
+      const { sandbox, env } = shells
+      const home = sandbox instanceof SshPolicy ? sandbox.home : sandbox.tmpdir
+      if (env.HOME !== home || env.TMPDIR !== sandbox.tmpdir) {
+        throw new RangeError(`the shells' environment isn't their sandbox's: HOME ${env.HOME}, TMPDIR ${env.TMPDIR}`)
+      }
+    }
     this.home = shells.sandbox instanceof SshPolicy
       ? shells.sandbox.home
       : shells.kind === "pty" && shells.sandbox === null && shells.env.HOME
@@ -157,14 +175,14 @@ export class Terminal {
     return Object.fromEntries(TOOLS.map((name) => [name, tool(name)])) as Record<ToolName, TerminalTool>
   }
 
-  /** Where shell `id` runs, as the gate reads it (a new shell when `id` names none): from the shells' sandbox, the
-   *  host's `where()` giving only the start folder of shells with none and the credentials it marks, and from a PTY
-   *  shell the folder it reports. A host deciding a held card again reads it here. */
-  where(id?: string): Where {
+  /** Where `shell` (by id, or by name, as a card names it) runs, as the gate reads it, or a new shell when it names
+   *  none: from the shells' sandbox, the host's `where()` giving only the start folder of shells with none and the
+   *  credentials it marks, and from a PTY shell the folder it reports, a home as `~`. A host deciding a held card
+   *  again reads it here. */
+  where(shell?: string): Where {
     const start = this.startWhere()
-    const shell = id === undefined ? undefined : this.shell(id)
-    if (!(shell instanceof PtyShell)) return start
-    const folder = shell.cwd()
+    const found = shell === undefined ? undefined : this.entries.find((e) => e.id === shell || e.name === shell)?.shell
+    const folder = found instanceof PtyShell ? found.cwd() : start.cwd
     const home = this.home
     const homed = folder !== null && home !== null && (folder === home || folder.startsWith(`${home}/`))
     return { ...start, cwd: homed ? `~${folder!.slice(home!.length)}` : folder }
@@ -191,10 +209,16 @@ export class Terminal {
     if (tool !== "run" && tool !== "type") {
       return refusalText(`${tool} never waits for the owner's approval; only run and type do`)
     }
-    const parsed = parseArgs(tool, args, tool === "type" ? ["line", "into"] : [])
+    const parsed = parseArgs(tool, args, tool === "type" ? ["line", "into"] : ["cwd"])
     if (typeof parsed === "string") return refusalText(parsed)
+    if (parsed.tool === "run") {
+      const { cwd } = args
+      if (cwd !== null && typeof cwd !== "string") {
+        return refusalText("this approval doesn't say which folder it was decided in")
+      }
+      return (await this.run(parsed, { callId: undefined, signal, approved: true, folder: cwd })) as string
+    }
     const call: Call = { callId: undefined, signal, approved: true }
-    if (parsed.tool === "run") return (await this.run(parsed, call)) as string
     const { line, into } = args
     if (typeof line !== "string" || (into !== null && typeof into !== "string")) {
       return refusalText("this approval doesn't say which line it approved")
@@ -205,6 +229,8 @@ export class Terminal {
     return (await this.queue(entry, (shell) => this.type(entry, shell, typed, call, { line, into }))) as string
   }
 
+  /** The terminal's shells, in the order they were made, each with its state: an ended or failed one stays listed;
+   *  one still starting shows `starting`. */
   shells(): readonly { id: string; name: string; state: ShellState }[] {
     return this.entries.map(({ id, name, shell }) => ({ id, name, state: shell?.state() ?? { ...STARTING } }))
   }
@@ -283,7 +309,12 @@ export class Terminal {
       return await this.queue(entry, async (shell) => {
         const problem = shell.runProblem(command)
         if (problem !== null) return this.text(entry, shell, shell.refusal(problem))
-        const gated = await this.gated(action, "run", why, cardArgs(parsed), call, entry.id)
+        // The folder the gate reads relative paths from, kept on the card: an approval holds only there.
+        const folder = this.where(entry.id).cwd
+        if (call.approved && call.folder !== folder) {
+          return this.text(entry, shell, shell.refusal(MOVED_FOLDER(call.folder ?? null, folder)))
+        }
+        const gated = await this.gated(action, "run", why, { ...cardArgs(parsed), cwd: folder }, call, entry.id)
         if (!gated.run) return gated.result
         return this.text(entry, shell, await shell.run(command, waitMs, call.signal))
       })
@@ -293,7 +324,9 @@ export class Terminal {
       ? PtyShell.commandProblem(command, shellKind(shells.shell))
       : PipeShell.commandProblem(command)
     if (problem !== null) return refusalText(problem)
-    const gated = await this.gated(action, "run", why, cardArgs(parsed), call)
+    const folder = this.where().cwd
+    if (call.approved && call.folder !== folder) return refusalText(MOVED_FOLDER(call.folder ?? null, folder))
+    const gated = await this.gated(action, "run", why, { ...cardArgs(parsed), cwd: folder }, call)
     if (!gated.run) return gated.result
     const entry = this.create()
     if (typeof entry === "string") return refusalText(entry)

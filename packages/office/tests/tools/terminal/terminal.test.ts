@@ -6,9 +6,10 @@ import path from "node:path"
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { isPending } from "@ngocbh/yian/tools"
 import { type Result, run, SandboxUnavailable } from "../../../src/runtime/sandbox/run.ts"
+import { Terminal } from "../../../src/tools/terminal/terminal.ts"
 import { waitFor } from "../../helpers.ts"
 import { goldenPolicy, goldenSshPolicy, makePolicy, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
-import { HOST_WHERE, json, openTerminal, permissions, plainShells } from "./helpers.ts"
+import { HOST_WHERE, json, openTerminal, permissions, plainShells, rule, sshShells } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -127,7 +128,10 @@ test("the gate reads the profile from the shells' sandbox: workspace only for a 
   const tmp = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
   const ticket = path.join(tmp, "krb-ticket")
   const sshPolicy = goldenSshPolicy({ home: "/home/u", hq: "/home/u/.opencorp/hq", tmpdir: tmp, statusFile: "/s", ticket })
-  const remote = openTerminal({ perms: ssh.perms, shells: (dir) => ({ ...plainShells(dir), sandbox: sshPolicy }) })
+  const remote = openTerminal({
+    perms: ssh.perms,
+    shells: (dir) => ({ ...plainShells(dir), env: { HOME: "/home/u", TMPDIR: tmp }, sandbox: sshPolicy }),
+  })
   expect(remote.terminal.profile).toBe("ssh")
   expect(remote.terminal.where()).toEqual({ profile: "ssh", cwd: tmp, writable: [], credentials: [ticket] })
   await remote.call("run", { command: `cat ${ticket}`, why: "x" })
@@ -148,7 +152,7 @@ test("the gate reads the profile from the shells' sandbox: workspace only for a 
         const sandbox = goldenPolicy({ workspace: dir, writable: true, network: false, tmpdir: "/tmp" })
         return kind === "pipes"
           ? { kind, sandbox, run: async () => result(0) }
-          : { ...plainShells(dir), sandbox }
+          : { ...plainShells(dir), env: { ...plainShells(dir).env, HOME: "/tmp", TMPDIR: "/tmp" }, sandbox }
       },
     })
     expect(t.terminal.profile).toBe("workspace")
@@ -165,22 +169,14 @@ test("the gate reads the profile from the shells' sandbox: workspace only for a 
 test("on the SSH-only profile the gate reads a PTY shell's folder as its last command left it", async () => {
   for (const mode of ["auto", "dontAsk"] as const) {
     const { perms, held } = permissions({ mode, check: async () => ({ verdict: "run", reason: "fine" }) })
-    const t = openTerminal({
-      perms,
-      shells: (dir) => {
-        const work = path.join(dir, "work")
-        fs.mkdirSync(work)
-        const hq = path.join(dir, ".opencorp", "hq")
-        return { ...plainShells(dir, undefined, work), sandbox: goldenSshPolicy({ home: dir, hq, tmpdir: work, statusFile: "/s" }) }
-      },
-    })
+    const t = openTerminal({ perms, shells: (dir) => sshShells(dir) })
     const answer = (reason: string) => (result: unknown) =>
       mode === "dontAsk"
         ? expect(result).toBe(`Not run: this session doesn't ask (dontAsk mode): ${reason}.`)
         : expect(isPending(result)).toBe(true)
     const holds = "it reads a folder that holds credentials: ."
-    // A new shell starts in the profile's temp folder.
-    expect(t.terminal.where().cwd).toBe(path.join(t.dir, "work"))
+    // A new shell starts in the profile's temp folder, here in the home.
+    expect(t.terminal.where().cwd).toBe("~/work")
     expect(json(await t.call("run", { command: "cd ~", why: "go home" }))).toMatchObject({ shell: "shell 1", exit: 0 })
     expect(t.terminal.where("sh_1").cwd).toBe("~")
     answer(holds)(await t.call("run", { command: "grep -r PRIVATE .", why: "x", shell: "shell 1" }))
@@ -197,6 +193,54 @@ test("on the SSH-only profile the gate reads a PTY shell's folder as its last co
     expect(held.map((h) => h.card.reason)).toEqual(mode === "dontAsk" ? [] : [holds, holds, lost])
     expect(t.terminal.shells().map((shell) => shell.name)).toEqual(["shell 1"])
   }
+})
+
+test("PTY shells whose environment isn't their sandbox's are refused", () => {
+  const dir = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
+  try {
+    const shells = sshShells(dir)
+    const host = (env: Record<string, string>) => ({
+      shells: { ...shells, env }, driver: "@minh", permissions: permissions().perms,
+      shellHost: () => { throw new Error("unused") },
+    })
+    expect(() => new Terminal(host({ ...shells.env, HOME: "/elsewhere" }))).toThrow(RangeError)
+    expect(() => new Terminal(host({ ...shells.env, TMPDIR: "/tmp" }))).toThrow(RangeError)
+    expect(new Terminal(host(shells.env)).profile).toBe("ssh")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("an approved command runs only in the folder its card was decided in", async () => {
+  const allowed = ["true", "cd *", "echo here"].map((pattern) => rule("allow", "command", pattern))
+  const { perms, held } = permissions({ mode: "ask", rules: allowed })
+  const t = openTerminal({ perms, shells: (dir) => sshShells(dir) })
+  expect(json(await t.call("run", { command: "true", why: "x" }))).toMatchObject({ shell: "shell 1", exit: 0 })
+  const tar = "tar cf - . | ssh h 'cat > x'"
+  expect(isPending(await t.call("run", { command: tar, why: "x", shell: "shell 1" }))).toBe(true)
+  expect(held[0]!.card.args).toEqual({ command: tar, why: "x", wait: 30, shell: "shell 1", cwd: "~/work" })
+  // The agent moves the shell while the card waits.
+  expect(json(await t.call("run", { command: "cd ~", why: "x", shell: "shell 1" }))).toMatchObject({ exit: 0 })
+  expect(json(await t.terminal.runApproved("run", held[0]!.card.args, new AbortController().signal))).toMatchObject({
+    shell: "shell 1",
+    refused:
+      "the shell is in another folder than when this command was approved (~/work, now ~); run it again to have " +
+      "it checked there",
+  })
+  expect(t.record("sh_1").commands.map((c) => c.command)).toEqual(["true", "cd ~"])
+  // In the same folder, it runs; a held command for a new shell runs in the folder new shells start in.
+  expect(isPending(await t.call("run", { command: "echo there", why: "x", shell: "shell 1" }))).toBe(true)
+  expect(json(await t.terminal.runApproved("run", held[1]!.card.args, new AbortController().signal))).toMatchObject({
+    exit: 0, output: "$ echo there\nthere\n",
+  })
+  expect(isPending(await t.call("run", { command: "echo new", why: "x" }))).toBe(true)
+  expect(held[2]!.card.args.cwd).toBe("~/work")
+  expect(json(await t.terminal.runApproved("run", held[2]!.card.args, new AbortController().signal))).toMatchObject({
+    shell: "shell 2", exit: 0,
+  })
+  // A card names its shell by name, and the host reads the shell's folder by it.
+  expect(t.terminal.where("shell 1")).toEqual(t.terminal.where("sh_1"))
+  expect(t.terminal.where("shell 1").cwd).toBe("~")
 })
 
 describe.skipIf(!sandboxAvailable())("in the sandbox", () => {

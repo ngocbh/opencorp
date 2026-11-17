@@ -44,8 +44,8 @@ const REPLY =
   "The reply is one JSON object: `shell`; `status` (idle, running, waiting, ended or failed); `exit`; `waiting` " +
   '("secret" while a prompt waits for a password, passphrase or code, which only the owner types); `output`, the ' +
   "screen as it showed from where you last read; `next`, where to read on from; `more`, whether more output is " +
-  "ready past this page; `note`, when the owner must act; `error`, why a shell failed; and `refused`, why nothing " +
-  "was done."
+  "ready past this page; `skipped`, when the start of what you asked to read is no longer kept; `note`, when the " +
+  "owner must act; `error`, why a shell failed; and `refused`, why nothing was done."
 const SHELLS_PTY =
   "A shell keeps its state between commands, as a terminal does: its folder (`cd`), its variables and what " +
   "earlier commands defined. Programs run on a real terminal: answer a program's question with type."

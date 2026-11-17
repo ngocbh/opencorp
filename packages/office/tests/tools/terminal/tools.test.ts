@@ -16,8 +16,8 @@ const REPLY =
   "The reply is one JSON object: `shell`; `status` (idle, running, waiting, ended or failed); `exit`; `waiting` " +
   '("secret" while a prompt waits for a password, passphrase or code, which only the owner types); `output`, the ' +
   "screen as it showed from where you last read; `next`, where to read on from; `more`, whether more output is " +
-  "ready past this page; `note`, when the owner must act; `error`, why a shell failed; and `refused`, why nothing " +
-  "was done."
+  "ready past this page; `skipped`, when the start of what you asked to read is no longer kept; `note`, when the " +
+  "owner must act; `error`, why a shell failed; and `refused`, why nothing was done."
 const WAIT = { type: "number", minimum: 0, maximum: 120, description: "Seconds to wait for the command to end before replying: default 30, at most 120." }
 const WHY = { type: "string", description: "One line for the owner: what this finds out or does." }
 const SHELL = { type: "string", description: 'The shell, by name: "shell 1".' }
@@ -164,7 +164,7 @@ test("run holds on a card before it types, and a refusal returns why with nothin
   expect(isPending(result)).toBe(true)
   expect(held).toEqual([{
     card: {
-      kind: "command", tool: "run", action: "echo two", args: { command: "echo two", why: "say two", wait: 30 },
+      kind: "command", tool: "run", action: "echo two", args: { command: "echo two", why: "say two", wait: 30, cwd: "/w" },
       why: "say two", reason: "Ask mode", rules: ["echo *"], partial: false, into: null,
     },
     callId: "r/n/9/0",
@@ -172,7 +172,8 @@ test("run holds on a card before it types, and a refusal returns why with nothin
   // Held for a new shell: no shell starts until the owner says Yes.
   expect(t.terminal.shells().map((shell) => shell.name)).toEqual(["shell 1"])
   expect(isPending(await t.call("run", { command: "echo three", why: "x", shell: "shell 1" }))).toBe(true)
-  expect(held[1]!.card.args).toEqual({ command: "echo three", why: "x", wait: 30, shell: "shell 1" })
+  // Each card keeps the folder it was decided in: a new shell's start folder, or the shell's own.
+  expect(held[1]!.card.args).toEqual({ command: "echo three", why: "x", wait: 30, shell: "shell 1", cwd: "~" })
   state.mode = "auto"
   state.rules = [rule("deny", "command", "echo *")]
   expect(await t.call("run", { command: "echo four", why: "x", shell: "shell 1" })).toBe("Not run: a deny rule: echo *.")
@@ -328,6 +329,42 @@ test("an approved line is refused once the shell's unfinished line has changed",
       "it, then type again",
   )
   t.terminal.shell("sh_1")!.ownerKeys("\x04")
+})
+
+test("a line the shell moved on from while Auto's check ran types nothing", async () => {
+  let answer: ((verdict: Verdict) => void) | undefined
+  const check = () => new Promise<Verdict>((resolve) => (answer = resolve))
+  const { perms, held, checked } = permissions({ rules: [rule("allow", "input", "ma")], check })
+  const t = openTerminal({ perms })
+  await t.call("run", { command: "cat", why: "x", wait: 0 })
+  expect(json(await t.call("type", { shell: "shell 1", text: "ma", enter: false, why: "x", wait: 0 })).refused).toBeUndefined()
+  const typing = t.call("type", { shell: "shell 1", text: "ke", why: "x", wait: 0 })
+  await waitFor(() => checked.length === 1, { what: "the check" })
+  expect(checked[0]!.command).toBe("make")
+  // The owner's Enter sends the unfinished line while the check runs.
+  t.terminal.shell("sh_1")!.ownerKeys("\r")
+  answer!({ verdict: "run", reason: "fine" })
+  expect(json(await typing).refused).toBe(
+    "the shell moved on while this line was checked: its unfinished line or its running command changed; read it, " +
+      "then type again",
+  )
+  expect(held).toEqual([])
+  expect(t.live("sh_1")).not.toContain("ke")
+  t.terminal.shell("sh_1")!.ownerKeys("\x04")
+})
+
+test("a session whose rules don't load asks before every command, and dontAsk refuses it", async () => {
+  const { perms, state, held, checked } = permissions({ check: async () => ({ verdict: "run", reason: "fine" }) })
+  const t = openTerminal({ perms })
+  state.blocked = "rules.yaml doesn't load: bad YAML"
+  expect(isPending(await t.call("run", { command: "ls", why: "x" }))).toBe(true)
+  expect(held.map((h) => [h.card.reason, h.card.rules])).toEqual([["rules.yaml doesn't load: bad YAML", []]])
+  state.mode = "dontAsk"
+  expect(await t.call("run", { command: "ls", why: "x" })).toBe(
+    "Not run: this session doesn't ask (dontAsk mode): rules.yaml doesn't load: bad YAML.",
+  )
+  expect(checked).toEqual([])
+  expect(t.terminal.shells()).toEqual([])
 })
 
 for (const [prompt, login, answer, view] of [
