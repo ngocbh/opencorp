@@ -326,6 +326,9 @@ class WorkerRun {
   readonly inFlight = new Set<string>()
   /** The nodes that wait, with the calls each waits on. */
   readonly waiting = new Map<string, string[]>()
+  /** The agent of each flow call whose flow still runs, by call id: from the agent's `NodeExpanded` naming the call
+   *  until a failure inside the call, an interrupt of the agent or the agent's own end ends it. */
+  readonly flowCalls = new Map<string, string>()
   /** Whether a message was given to it since a turn node last started waiting: the take will read it. */
   turnPending: boolean
   /** The deadline the wake-at timer spawned it for, if it did. */
@@ -347,10 +350,26 @@ class WorkerRun {
     this.turnPending = sent || given.some((p) => p.delivery.op === "send")
   }
 
-  /** Forgets the nodes in flight or waiting inside the flow call scopes `scopes`, which left the run with them. */
+  /** The nodes at work: those in flight, and each agent that waits only on flow calls of its own whose flows still
+   *  run (yian has an agent wait on its flow call while the called flow's nodes run). */
+  working(): string[] {
+    const calling = [...this.waiting]
+      .filter(([node, calls]) => calls.length > 0 && calls.every((call) => this.flowCalls.get(call) === node))
+      .map(([node]) => node)
+    return [...this.inFlight, ...calling]
+  }
+
+  /** Forgets the nodes in flight or waiting inside the flow call scopes `scopes`, which left the run with them, and
+   *  the flow calls their agents made. */
   endScopes(scopes: readonly string[]): void {
     for (const node of [...this.inFlight]) if (inScopes(node, scopes)) this.inFlight.delete(node)
     for (const node of [...this.waiting.keys()]) if (inScopes(node, scopes)) this.waiting.delete(node)
+    for (const [call, agent] of this.flowCalls) if (inScopes(agent, scopes)) this.flowCalls.delete(call)
+  }
+
+  /** Forgets the flow calls `agents` made: an agent that ended, or one an interrupt stopped with its calls. */
+  endFlowCalls(agents: readonly string[]): void {
+    for (const [call, agent] of this.flowCalls) if (agents.includes(agent)) this.flowCalls.delete(call)
   }
 }
 
@@ -1470,16 +1489,16 @@ export class SessionActor implements LiveCalls {
     return this.#atTurn(session) ? "turn" : "queued"
   }
 
-  /** Whether a reply node runs in the current worker. */
+  /** Whether a reply node runs in the current worker, a reply waiting on its own flow call included. */
   #replying(): boolean {
     const run = this.#run
-    return run !== null && run.outcome === null && [...run.inFlight].some((node) => this.#chat.isReply(node))
+    return run !== null && run.outcome === null && run.working().some((node) => this.#chat.isReply(node))
   }
 
   /** Whether a reply or the turn's fold runs in the current worker: a person's turn is being worked. */
   #turnWorks(): boolean {
     const run = this.#run
-    return run !== null && run.outcome === null && this.#chat.turnWorks(run.inFlight)
+    return run !== null && run.outcome === null && this.#chat.turnWorks(run.working())
   }
 
   /** Whether the run waits only at its turn: a worker's run with no reply in flight, no message pending for the
@@ -1499,7 +1518,7 @@ export class SessionActor implements LiveCalls {
   #runAtTurn(run: WorkerRun): boolean {
     const waiting = [...run.waiting.keys()]
     return (
-      ![...run.inFlight].some((node) => this.#chat.isReply(node)) &&
+      !run.working().some((node) => this.#chat.isReply(node)) &&
       !run.turnPending &&
       waiting.length > 0 &&
       waiting.every((node) => this.#chat.isTurn(node))
@@ -2185,6 +2204,7 @@ export class SessionActor implements LiveCalls {
       case "NodeSucceeded":
         if (node !== null) {
           run.inFlight.delete(node)
+          run.endFlowCalls([node])
           if (this.#chat.isReply(node)) this.#countTurn()
           if (this.#chat.isTurn(node)) {
             const iteration = this.#chat.iterationOf(node)
@@ -2192,17 +2212,25 @@ export class SessionActor implements LiveCalls {
           }
         }
         break
-      // A container expands and never succeeds; an agent that calls a flow goes on beside it.
+      // A container expands and never succeeds; an agent that calls a flow goes on, waiting on the call while the
+      // called flow's nodes run.
       case "NodeSkipped":
       case "NodeExpanded":
-        if (node !== null && !growsFlowCall(String(frame.name), data)) run.inFlight.delete(node)
+        if (node === null) break
+        if (!growsFlowCall(String(frame.name), data)) run.inFlight.delete(node)
+        else run.flowCalls.set(data.call_id as string, node)
         break
       case "NodeFailed": {
         // A failure inside an agent's flow call ends only that call's scope: its nodes, the failing one if it is one.
         const scopes = endedScopes("NodeFailed", data)
         const failure = data.failure as { node_id?: unknown } | null | undefined
-        if (scopes.length > 0) run.endScopes(scopes)
-        else if (typeof failure?.node_id === "string") run.inFlight.delete(failure.node_id)
+        if (scopes.length > 0) {
+          run.endScopes(scopes)
+          if (typeof data.call_id === "string") run.flowCalls.delete(data.call_id)
+        } else if (typeof failure?.node_id === "string") {
+          run.inFlight.delete(failure.node_id)
+          run.endFlowCalls([failure.node_id])
+        }
         break
       }
       // The interrupted agents end with their own frames; the nodes of their open flow calls end with none.
@@ -2210,6 +2238,7 @@ export class SessionActor implements LiveCalls {
         const scopes = endedScopes("Interrupted", data)
         if (scopes.length === 0) return
         run.endScopes(scopes)
+        run.endFlowCalls(Array.isArray(data.nodes) ? data.nodes.map(String) : [])
         break
       }
       case "NodeWaiting":

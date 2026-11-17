@@ -178,7 +178,11 @@ test("history compaction beside the waiting take leaves the session idle", async
 })
 
 test.each([
-  ["a failure inside it", "NodeFailed", { failure: { node_id: "chat#0/reply/helper#0/a" }, call_id: "t1", scope: "chat#0/reply/helper#0" }],
+  [
+    "a failure inside it",
+    "NodeFailed",
+    { failure: { node_id: "chat#0/reply/helper#0/a" }, call_id: "t1", scope: "chat#0/reply/helper#0" },
+  ],
   ["an interrupt", "Interrupted", { inbox: "messages", nodes: ["chat#0/reply"], scopes: ["chat#0/reply/helper#0"] }],
 ])("a reply's flow call that %s ends leaves no wait of its nodes, and the next turn is idle", async (_, name, data) => {
   const fake = await fakeLlm()
@@ -193,12 +197,17 @@ test.each([
   frame(w, "NodeWoken", "chat#0/heard")
   frame(w, "NodeSucceeded", "chat#0/heard")
   frame(w, "NodeStarted", "chat#0/reply")
+  // As yian sends a flow call: the reply grows the call's scope, then waits on the call.
   frame(w, "NodeExpanded", "chat#0/reply", { grow: { seed: null, prune: [] }, call_id: "t1" })
+  frame(w, "NodeWaiting", "chat#0/reply", { call_ids: ["t1"] })
   frame(w, "NodeStarted", "chat#0/reply/helper#0/a")
   frame(w, "NodeStarted", "chat#0/reply/helper#0/b")
   frame(w, "NodeWaiting", "chat#0/reply/helper#0/b", { call_ids: ["c9"] })
-  // The scope's nodes leave the run with no event of their own.
+  await waitFor(() => status(o, sid) === "busy", { what: "busy while the reply's flow runs" })
+  // The scope's nodes leave the run with no event of their own; yian wakes the reply to read the call's end.
   w.handlers.event(w.worker, { type: "event", name, data })
+  w.handlers.event(w.worker, { type: "event", name: "CallClosed", data: { call_id: "c9", reason: "failed" } })
+  frame(w, "NodeWoken", "chat#0/reply", { timed_out: [] })
   frame(w, "NodeSucceeded", "chat#0/reply")
   nextTurn(w, 1)
   await waitFor(() => session(o, sid).turns === 1 && status(o, sid) === "idle", { what: "idle at the next turn" })

@@ -287,9 +287,10 @@ export function advanceAppended(log: string, before: number | null): boolean {
 const VALUE_KEYS = ["output", "arguments", "result"]
 
 /** The fields of an event's data the office reads (`SessionActor.#event`, `OpenNodes.apply`), besides `failure`'s
- *  `node_id`; `scope` and `scopes` name the flow call scopes a failure or an interrupt ends. */
+ *  `node_id`; `scope` and `scopes` name the flow call scopes a failure or an interrupt ends, and `nodes` the agents
+ *  an interrupt stops. */
 export const READ_KEYS = [
-  "node_id", "call_id", "call_ids", "reason", "usage", "model", "error_type", "scope", "scopes",
+  "node_id", "call_id", "call_ids", "reason", "usage", "model", "error_type", "scope", "scopes", "nodes",
 ]
 
 /** The smaller forms of an event's `data` to send when its frame is over the limit, largest first: when it has a
