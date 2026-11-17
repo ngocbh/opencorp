@@ -3,6 +3,7 @@ import { createMemo, createSignal, Show } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { useCommandShortcut } from "../../keymap"
 import { display } from "../../util/printable"
+import { lineTail } from "../../util/text-boundary"
 import { followOutput, TerminalPane } from "./terminal-pane"
 
 /** How an open instrument shows: floating over the chat, in a split beside it, or full screen in its place. */
@@ -113,7 +114,7 @@ function ShellOutput(props: { sessionID: string; instrument: Instrument }) {
   /** Shows `next`, its newest part when it is longer than a view keeps. */
   const show = (next: string) => {
     if (next.length > OUTPUT_CHARS) setOmitted(true)
-    setOutput(next.slice(-OUTPUT_CHARS))
+    setOutput(lineTail(next, OUTPUT_CHARS))
   }
   followOutput({
     sessionID: props.sessionID,

@@ -276,6 +276,8 @@ export function Session() {
   const [opened, setOpened] = createSignal<{ id: string; view: InstrumentPlacement } | null>(null)
   const [instrumentFocused, setInstrumentFocused] = createSignal(false)
   const split = () => opened()?.view === "split"
+  // The chat's own keys, which the open instrument mutes while it has the keys, as the provider mutes the chat's view.
+  const chatKeys = () => !instrumentFocused()
   // A split starts at half the screen; its handle drags it.
   const [paneWidth, setPaneWidth] = createSignal<number>()
   const defaultPaneWidth = () => Math.max(1, Math.floor(dimensions().width / 2))
@@ -309,7 +311,7 @@ export function Session() {
     const h = Math.floor(height * 0.8)
     return { width: w, height: h, left: Math.floor((width - w) / 2), top: Math.floor((height - h) / 2) }
   })
-  // An ended shell stays in the list, with its scrollback, until the session next goes idle.
+  // An ended or failed shell stays in the list, with its scrollback, until the session next goes idle.
   const [retired, setRetired] = createSignal<ReadonlySet<string>>(new Set())
   const instruments = createMemo(() =>
     (office.state.instruments[route.sessionID] ?? []).filter((i) => i.kind === "terminal" && !retired().has(i.id)),
@@ -319,7 +321,9 @@ export function Session() {
       () => session()?.status,
       (status, prev) => {
         if (status !== "idle" || prev === undefined || prev === "idle") return
-        const ended = (office.state.instruments[route.sessionID] ?? []).filter((i) => i.status === "ended")
+        const ended = (office.state.instruments[route.sessionID] ?? []).filter(
+          (i) => i.status === "ended" || i.status === "failed",
+        )
         if (ended.length) setRetired((r) => new Set([...r, ...ended.map((i) => i.id)]))
       },
     ),
@@ -756,7 +760,7 @@ export function Session() {
         title: "Move between the open card and the prompt",
         category: "Session",
         hidden: true,
-        enabled: codex() && cards().length > 0 && dialog.stack.length === 0,
+        enabled: chatKeys() && codex() && cards().length > 0 && dialog.stack.length === 0,
         run: () => setFocus((f) => (f === "card" ? "prompt" : "card")),
       },
     ],
@@ -773,7 +777,7 @@ export function Session() {
         title: "Cycle the chat's mode",
         category: "Session",
         hidden: true,
-        enabled: switchable() && dialog.stack.length === 0,
+        enabled: chatKeys() && switchable() && dialog.stack.length === 0,
         run: () =>
           void permission
             .cycle(route.sessionID)
@@ -808,16 +812,18 @@ export function Session() {
   }))
 
   useBindings(() => ({
+    enabled: chatKeys(),
     bindings: tuiConfig.keybinds.gather("session.global", sessionGlobalBindingCommands),
   }))
 
   useBindings(() => ({
-    enabled: () => renderer.currentFocusedEditor === null,
+    enabled: () => chatKeys() && renderer.currentFocusedEditor === null,
     bindings: tuiConfig.keybinds.gather("session.global.unfocused", sessionGlobalUnfocusedBindingCommands),
   }))
 
   useBindings(() => ({
     mode: OPENCORP_BASE_MODE,
+    enabled: chatKeys(),
     bindings: tuiConfig.keybinds.gather("session", sessionBindingCommands),
   }))
 

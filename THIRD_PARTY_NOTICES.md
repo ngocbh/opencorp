@@ -107,18 +107,20 @@ license, the upstream paths and commit, and our paths.
   - the interactivity provider that mutes the session while the pane has the keys, which the keymap's layers honour,
     as its `createLayer` does, and the prompt honours too;
   - the shell-output dialog's layout, for a pipes shell: the command, a note when earlier output is gone, and the
-    output following its end with its escapes stripped.
+    output following its end with its escapes stripped;
+  - `TextBoundary.tail`, which keeps a pipes shell's newest output without half a character, and its test's cases.
 
   The floating view is our own.
 - **Upstream:** `packages/tui/src/component/terminal-pane.tsx`, `packages/tui/src/component/session-frame.tsx`,
   `packages/tui/src/context/interactivity.tsx`, `packages/tui/src/context/keymap.tsx` (`createLayer`),
   `packages/tui/src/ui/pane-resize.ts`, `packages/tui/src/ui/pane-resize-handle.tsx`, `packages/tui/src/ui/layout.ts`
-  (`clampSessionPaneWidth`) and `packages/tui/src/component/dialog-shell-output.tsx`, read at commit `df46f69`
-  (2026-11-16).
+  (`clampSessionPaneWidth`), `packages/tui/src/component/dialog-shell-output.tsx`, `packages/util/src/text-boundary.ts`
+  and `packages/util/src/text-boundary.test.ts`, read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/tui/src/routes/session/terminal-pane.tsx`, `packages/tui/src/routes/session/instrument-view.tsx`,
   `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/context/interactivity.tsx`,
   `packages/tui/src/keymap.tsx` (`useBindings`), `packages/tui/src/ui/pane-resize.ts`,
-  `packages/tui/src/ui/pane-resize-handle.tsx`.
+  `packages/tui/src/ui/pane-resize-handle.tsx`, `packages/tui/src/util/text-boundary.ts`,
+  `packages/tui/test/util/text-boundary.test.ts`.
 
 ## Paperclip
 

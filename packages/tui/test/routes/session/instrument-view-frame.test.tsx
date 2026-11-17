@@ -2,7 +2,7 @@
 // <leader>o opens one and cycles its views, Esc puts it back, and a setting in kv.json picks the view it opens in. A
 // terminal's view draws the office's screen, then only the output past it, at the instrument's size; the approver's
 // view sends its own size. The split's pane, its handle and the muted chat beside it are the upstream TUI's.
-import type { Instrument } from "@opencorp/protocol"
+import type { Instrument, Message } from "@opencorp/protocol"
 import { beforeEach, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
@@ -16,6 +16,7 @@ type App = Awaited<ReturnType<typeof bootFrame>>
 
 const theme = resolveTheme(DEFAULT_THEMES[DEFAULT_THEME]!, "dark")
 const AT = "2026-11-17T10:00:00.000Z"
+const MIDWAY = "2026-11-17T10:02:00.000Z"
 const LATER = "2026-11-17T10:05:00.000Z"
 const KEY = "instrument_view"
 // The app keeps kv.json under the preload's OPENCORP_HOME, which every test file shares.
@@ -103,6 +104,15 @@ const sizes = (office: FakeOffice, id: string) =>
   office.requests.filter((r) => r.method === "POST" && r.path.endsWith(`/instruments/${id}/size`)).map((r) => r.body)
 const screens = (office: FakeOffice, id: string) =>
   office.requests.filter((r) => r.path.endsWith(`/instruments/${id}/screen`)).length
+const SCREEN = "GET /sessions/:id/instruments/:iid/screen"
+/** How many times `needle` shows in `f`. */
+const count = (f: string, needle: string) => f.split(needle).length - 1
+/** `text`'s bytes as an `instrument.output` event of instrument `id` publishes them, from `offset`. */
+const output = (id: string, offset: number, text: string) => ({
+  instrument_id: id,
+  offset,
+  data: Buffer.from(text).toString("base64"),
+})
 
 test("<leader>o opens the waiting shell floating over the chat, then cycles it to a split, to full screen and back to the list", async () => {
   const { office, sid, app } = await boot()
@@ -304,6 +314,8 @@ test("an ended shell can still be opened until the agent's turn ends, then leave
     const done = add(office, sid, { name: "shell 2", command: "make" })
     office.instrumentOutput(sid, done.id, "built it")
     add(office, sid, { ...done, status: "ended", updated_at: LATER })
+    // A failed one leaves with it.
+    add(office, sid, { name: "shell 3", command: "ssh h", status: "failed", error: "no sandbox", updated_at: MIDWAY })
     await app.until((f) => f.includes("esc interrupt"))
     // It changed last, so <leader>o opens it, with its scrollback.
     await leader(app, "o")
@@ -316,6 +328,155 @@ test("an ended shell can still be opened until the agent's turn ends, then leave
     await leader(app, "o")
     f = await app.until((f) => f.includes("sleep 100") && f.includes("╭"))
     expect(title(f)).toStartWith("shell 1 · running · sleep 100")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("output that comes while the screen loads is drawn once, each byte", async () => {
+  const { office, sid, app } = await boot()
+  try {
+    const shell = add(office, sid)
+    const screen = "row 1\r\nrow 2\r\n" + "z".repeat(74) + "\r\n" + "tail-bytes"
+    office.instrumentOutput(sid, shell.id, screen)
+    await listed(app, 1)
+    const release = office.hold(SCREEN, "reply")
+    await leader(app, "o")
+    await until(() => screens(office, shell.id) === 1)
+    // While the screen is on its way: bytes it holds, bytes that straddle its end, and bytes past it, twice over.
+    office.live({ type: "instrument.output", session_id: sid, data: output(shell.id, 0, screen) })
+    office.live({ type: "instrument.output", session_id: sid, data: output(shell.id, 90, "tail-bytes one") })
+    office.live({ type: "instrument.output", session_id: sid, data: output(shell.id, 100, " one two") })
+    office.live({ type: "instrument.output", session_id: sid, data: output(shell.id, 108, " three") })
+    await Bun.sleep(200)
+    release()
+    const f = await app.until((f) => f.includes("tail-bytes one two three"))
+    expect(count(f, "row 1")).toBe(1)
+    expect(count(f, "tail-bytes")).toBe(1)
+    expect(count(f, " one")).toBe(1)
+    expect(count(f, "z".repeat(74))).toBe(1)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a resize that comes while the screen loads draws after the output before it", async () => {
+  const { office, sid, app } = await boot()
+  try {
+    // Someone else sizes the shell, so only the office's sizes apply.
+    office.updateSession(sid, { opened_by: "lan" })
+    const shell = add(office, sid, { size: { cols: 80, rows: 10 } })
+    await listed(app, 1)
+    const release = office.hold(SCREEN, "reply")
+    await leader(app, "o")
+    await until(() => screens(office, shell.id) === 1)
+    // Drawn at 80 columns, "edge" sits at column 75; narrowed to 40 after, the line wraps it whole. Drawn at 40, it
+    // would be cut at the edge.
+    office.instrumentOutput(sid, shell.id, "\x1b[1;75Hedge")
+    add(office, sid, { ...shell, size: { cols: 40, rows: 10 }, updated_at: LATER })
+    await Bun.sleep(200)
+    release()
+    await app.until((f) => f.includes("edge"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("while the screen can't be read the view tries again, slower each time, and keeps what comes until it can", async () => {
+  const { office, sid, app } = await boot()
+  try {
+    const shell = add(office, sid, { interactive: false, size: null, command: "make" })
+    await listed(app, 1)
+    office.broken.add(SCREEN)
+    await leader(app, "o")
+    // The office's error names the route it failed on.
+    await app.until((f) => f.includes(`/instruments/${shell.id}/screen`))
+    // More output than a view holds back.
+    for (let i = 1; i <= 1100; i++) office.instrumentOutput(sid, shell.id, `line ${i}\n`)
+    await Bun.sleep(400)
+    expect(screens(office, shell.id)).toBeLessThanOrEqual(3)
+    office.broken.delete(SCREEN)
+    const f = await app.until((f) => f.includes("line 1100"), 8000)
+    expect(f).not.toContain(`/instruments/${shell.id}/screen`)
+    expect(count(f, "line 1100")).toBe(1)
+    expect(count(f, "line 1099")).toBe(1)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("size requests go one at a time, and the newest size follows the one in flight", async () => {
+  const { office, sid, app } = await boot()
+  try {
+    const shell = add(office, sid)
+    await listed(app, 1)
+    const release = office.hold("POST /sessions/:id/instruments/:iid/size")
+    await leader(app, "o")
+    await until(() => sizes(office, shell.id).length === 1)
+    // The window narrows twice while the office is slow to answer.
+    app.setup.resize(110, 30)
+    await app.until((f) => corner(f)?.x === 11)
+    app.setup.resize(100, 30)
+    await app.until((f) => corner(f)?.x === 10)
+    await Bun.sleep(200)
+    expect(sizes(office, shell.id)).toEqual([{ cols: 92, rows: 21 }])
+    release()
+    // Floating at 100 columns is 80 wide: 76 inside.
+    await until(() => sizes(office, shell.id).length === 2)
+    await Bun.sleep(200)
+    expect(sizes(office, shell.id)).toEqual([
+      { cols: 92, rows: 21 },
+      { cols: 76, rows: 21 },
+    ])
+    expect(office.state.instruments[sid]![0]!.size).toEqual({ cols: 76, rows: 21 })
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("the chat's own keys do nothing while a shell has the keys, and work again after Esc", async () => {
+  const office = createFakeOffice()
+  const sid = office.state.sessions[0].id
+  office.state.messages[sid] = Array.from(
+    { length: 30 },
+    (_, i): Message => ({
+      id: `01JA1K0000000000000000${String(i).padStart(4, "0")}`,
+      session_id: sid,
+      role: "user",
+      created_at: AT,
+      parts: [{ id: `01JA1M0000000000000000${String(i).padStart(4, "0")}`, type: "text", text: `message ${i + 1}` }],
+    }),
+  )
+  const app = await bootFrame(createStub(office), { sessionID: sid }, { width: 120, height: 30 })
+  try {
+    await app.until((f) => f.includes("message 30") && f.includes("@minh auto ·"))
+    add(office, sid)
+    await listed(app, 1)
+    await runCommand(app, "Open instruments in a split")
+    await until(() => kv()[KEY] === "split")
+    await leader(app, "o")
+    let f = await app.until((f) => f.includes("ctrl+x o: full screen"))
+    const chat = (f: string) => rows(f).map((r) => r.slice(0, 60))
+    const before = chat(f)
+    // PageUp doesn't scroll the chat, Shift+Tab doesn't switch its mode.
+    app.input.pressKey("\x1b[5~")
+    app.input.pressTab({ shift: true })
+    await Bun.sleep(200)
+    f = await app.until(() => true)
+    expect(chat(f)).toEqual(before)
+    expect(office.requests.some((r) => r.path.endsWith("/mode"))).toBe(false)
+    // Back in the list, both work.
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("╭"))
+    app.input.pressKey("\x1b[5~")
+    await app.until((f) => !f.includes("message 30"))
+    app.input.pressTab({ shift: true })
+    await app.until((f) => f.includes("@minh default ·"))
   } finally {
     await app.stop()
     office.stop()

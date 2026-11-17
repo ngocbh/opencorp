@@ -28,30 +28,48 @@ const SIZABLE: readonly Instrument["status"][] = ["idle", "running", "waiting"]
 /** Starts a terminal over (RIS), before it draws a screen read again. */
 const RESET = Buffer.from("\x1bc")
 
+/** The most events a view holds back while its screen loads; past it, it drops them and reads the screen again. */
+const HELD_LIMIT = 1000
+/** How long a view waits before it reads a screen the office failed to serve again: doubling, up to the most. */
+const RETRY_MS = 250
+const RETRY_MAX_MS = 5000
+
+/** What comes while a screen loads, kept in order: an `instrument.output` event, or the instrument's new size. */
+type Held = { type: "output"; event: InstrumentOutput } | { type: "resize"; size: TerminalSize }
+
 /**
  * Follows instrument `instrumentID`'s raw output as the office serves it: `screen` gets the bytes it still holds,
  * with the offset they start at, on open and again after a gap; then `output` gets each `instrument.output` event's
- * bytes past what was had, so each byte arrives once however events were coalesced. `failed` says why a screen
- * couldn't be read; the next output past what was had tries again.
+ * bytes past what was had, so each byte arrives once however events were coalesced. With `resize`, each new size
+ * comes in order with the output, so the bytes after it are drawn at it. `failed` says why a screen couldn't be read;
+ * it is read again, one read at a time, waiting longer after each failure.
  */
 export function followOutput(opts: {
   sessionID: string
   instrumentID: string
   screen: (data: Uint8Array, offset: number) => void
   output: (data: Uint8Array) => void
+  resize?: (size: TerminalSize) => void
   failed: (message: string | undefined) => void
 }) {
   const office = useOffice()
   // The offset of the first byte this view doesn't have.
   let have = 0
+  // While a screen read is wanted, events wait in `held`; a read is in flight, or waits out a failure.
   let loading = true
+  let reading = false
+  let retry: ReturnType<typeof setTimeout> | undefined
+  let failures = 0
+  // Whether `held` overflowed while a read was in flight, which may not hold what was dropped.
+  let dropped = false
   let disposed = false
-  // Events that came while a screen read was in flight, applied after it.
-  const held: InstrumentOutput[] = []
+  const held: Held[] = []
 
-  const apply = (event: InstrumentOutput) => {
+  const apply = (item: Held) => {
+    if (item.type === "resize") return opts.resize?.(item.size)
+    const event = item.event
     // An event past what this view has is a gap: the office dropped output it couldn't send in time.
-    if (event.offset > have) return void load()
+    if (event.offset > have) return load()
     const data = Buffer.from(event.data, "base64")
     const start = have - event.offset
     if (start >= data.length) return
@@ -59,33 +77,67 @@ export function followOutput(opts: {
     opts.output(data.subarray(start))
   }
 
-  async function load() {
-    loading = true
-    try {
-      const screen = await office.client.sessions.instrumentScreen(opts.sessionID, opts.instrumentID)
-      if (disposed) return
-      have = screen.end
-      opts.screen(Buffer.from(screen.data, "base64"), screen.offset)
-      opts.failed(undefined)
-    } catch (error) {
-      if (!disposed) opts.failed(errorMessage(error))
-    } finally {
-      loading = false
+  const take = (item: Held) => {
+    if (!loading) return apply(item)
+    if (held.length >= HELD_LIMIT) {
+      // The screen read holds the output dropped here; only the newest size is kept.
+      const size = held.findLast((h) => h.type === "resize")
+      held.length = 0
+      if (size) held.push(size)
+      dropped = true
     }
-    while (!disposed && !loading && held.length > 0) apply(held.shift()!)
+    held.push(item)
   }
 
-  const off = office.on("instrument.output", (e) => {
+  function load() {
+    loading = true
+    if (reading || retry) return
+    reading = true
+    dropped = false
+    office.client.sessions.instrumentScreen(opts.sessionID, opts.instrumentID).then(
+      (screen) => {
+        reading = false
+        if (disposed) return
+        failures = 0
+        // Output dropped after the read went out may be missing from it.
+        if (dropped) return load()
+        have = screen.end
+        opts.screen(Buffer.from(screen.data, "base64"), screen.offset)
+        opts.failed(undefined)
+        loading = false
+        while (!disposed && !loading && held.length > 0) apply(held.shift()!)
+      },
+      (error) => {
+        reading = false
+        if (disposed) return
+        opts.failed(errorMessage(error))
+        retry = setTimeout(
+          () => {
+            retry = undefined
+            load()
+          },
+          Math.min(RETRY_MAX_MS, RETRY_MS * 2 ** failures++),
+        )
+      },
+    )
+  }
+
+  const offOutput = office.on("instrument.output", (e) => {
     const event = e.data as Partial<InstrumentOutput>
     if (e.session_id !== opts.sessionID || event.instrument_id !== opts.instrumentID) return
     if (typeof event.offset !== "number" || typeof event.data !== "string") return
-    if (loading) held.push(event as InstrumentOutput)
-    else apply(event as InstrumentOutput)
+    take({ type: "output", event: event as InstrumentOutput })
   })
-  onMount(() => void load())
+  const offSize = office.on("instrument.updated", (e) => {
+    const next = asInstrument(e.data)
+    if (opts.resize && next?.id === opts.instrumentID && next.size) take({ type: "resize", size: next.size })
+  })
+  onMount(load)
   onCleanup(() => {
     disposed = true
-    off()
+    clearTimeout(retry)
+    offOutput()
+    offSize()
   })
 }
 
@@ -102,10 +154,13 @@ export function TerminalPane(props: { sessionID: string; instrument: Instrument 
   const stream: StreamItem[] = []
   let terminal: EmbeddedTerminalRenderable | undefined
   let disposed = false
-  // The room this view has, the size the office was last asked for, and whether it may ask: the office refuses
-  // anyone but the session's approver, and then this view only follows.
+  // The room this view has; the size the office last took, and one it refused, not asked again until the shell's
+  // status changes; whether a request is in flight; and whether this view may ask at all: the office refuses anyone
+  // but the session's approver, and then this view only follows.
   let size: TerminalSize | undefined
-  let sent: TerminalSize | undefined
+  let given: TerminalSize | undefined
+  let refused: TerminalSize | undefined
+  let asking = false
   let sizing = true
   // The instrument's size, which the terminal draws at, and the size the terminal is at now.
   let canonicalSize: TerminalSize = props.instrument.size ?? DEFAULT_SIZE
@@ -114,11 +169,11 @@ export function TerminalPane(props: { sessionID: string; instrument: Instrument 
   let lastIntermediateRender = 0
   let colors = terminalColors(theme.text, theme.backgroundPanel)
 
+  // The size the terminal is laid out at, which follows the instrument's.
+  const [drawn, setDrawn] = createSignal(canonicalSize)
   const setCanonicalSize = (value: TerminalSize) => {
     canonicalSize = value
-    if (!terminal) return
-    terminal.width = value.cols
-    terminal.height = value.rows
+    setDrawn(value)
   }
 
   // Bytes are written only once the terminal is at the size they were meant for.
@@ -167,31 +222,53 @@ export function TerminalPane(props: { sessionID: string; instrument: Instrument 
         renderer.intermediateRender()
       }
     },
+    resize: (next) => {
+      if (sameSize(next, queuedSize)) return
+      queuedSize = next
+      enqueue({ type: "resize", size: next })
+    },
     failed: setFailure,
   })
 
-  // A new size comes in order with the output, so the bytes after it are drawn at it.
-  const offSize = office.on("instrument.updated", (e) => {
-    const next = asInstrument(e.data)
-    if (next?.id !== props.instrument.id || !next.size || sameSize(next.size, queuedSize)) return
-    queuedSize = next.size
-    enqueue({ type: "resize", size: next.size })
-  })
-
-  /** Asks the office to give the shell this view's size, unless it has it, or the office has refused this view. */
+  /**
+   * Asks the office to give the shell this view's size, unless it has it or refused it, or the office has refused
+   * this view. One request goes at a time, so the office takes sizes in order; when it answers, the newest size goes.
+   */
   const sendSize = () => {
-    if (!sizing || !size || sameSize(size, sent) || !SIZABLE.includes(props.instrument.status)) return
+    if (!sizing || asking || !size || !SIZABLE.includes(props.instrument.status)) return
     // The office takes 10 by 4 at least.
     if (size.cols < 10 || size.rows < 4) return
     const asked = { cols: Math.min(size.cols, 1000), rows: Math.min(size.rows, 500) }
-    sent = asked
-    office.client.sessions.resize(props.sessionID, props.instrument.id, asked).catch((error) => {
-      if (error instanceof OfficeError && error.status === 403) sizing = false
-      else if (sameSize(sent, asked)) sent = undefined
-    })
+    if (sameSize(asked, given) || sameSize(asked, refused)) return
+    asking = true
+    office.client.sessions
+      .resize(props.sessionID, props.instrument.id, asked)
+      .then(
+        () => {
+          given = asked
+          refused = undefined
+        },
+        (error) => {
+          if (error instanceof OfficeError && error.status === 403) sizing = false
+          else refused = asked
+        },
+      )
+      .finally(() => {
+        asking = false
+        if (!disposed) sendSize()
+      })
   }
   // A shell still starting takes its size once it opens.
-  createEffect(on(() => props.instrument.status, sendSize, { defer: true }))
+  createEffect(
+    on(
+      () => props.instrument.status,
+      () => {
+        refused = undefined
+        sendSize()
+      },
+      { defer: true },
+    ),
+  )
 
   createEffect(() => {
     colors = terminalColors(theme.text, theme.backgroundPanel)
@@ -200,9 +277,9 @@ export function TerminalPane(props: { sessionID: string; instrument: Instrument 
 
   onCleanup(() => {
     disposed = true
-    offSize()
   })
 
+  const start = drawn()
   return (
     <box
       flexGrow={1}
@@ -220,14 +297,16 @@ export function TerminalPane(props: { sessionID: string; instrument: Instrument 
         transparentBackground={theme.backgroundPanel.a === 0}
         ref={(value) => {
           terminal = value
-          terminalSize = { cols: 80, rows: 24 }
-          setCanonicalSize(canonicalSize)
+          // It starts at the size it is made with; each later size comes with onTerminalResize.
+          terminalSize = start
         }}
+        cols={start.cols}
+        rows={start.rows}
         position="absolute"
         left={1}
         top={0}
-        width={80}
-        height={24}
+        width={drawn().cols}
+        height={drawn().rows}
         onTerminalResize={(cols, rows) => {
           terminalSize = { cols, rows }
           processStream()
