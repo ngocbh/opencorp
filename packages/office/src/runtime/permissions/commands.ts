@@ -7,16 +7,21 @@
  * covered: by an allow rule; by a form it knows to be read-only (`auto`, `default`, `dontAsk`); by a plain push of a
  * feature branch (`auto`, `dontAsk`); or, inside the workspace sandbox, by a file operation on paths inside the
  * workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it: inside
- * substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. The reader asks before a
- * command that names a credential path it can see, and Auto's check never judges a push, `sudo` or a local command
- * for ssh.
+ * substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too.
+ * The reader asks, in every mode, before a command that names a credential path anywhere in the line (an operand,
+ * an option's value, an assignment, a `for` list, a here-string or a redirect), one the host marks
+ * (`Where.credentials`), or a folder that holds them. On the SSH-only profile and over ssh, where credentials are
+ * reachable, it also asks before a program that reads file contents is given a path through an expansion, whose
+ * value it can't see; in the workspace sandbox, which keeps the home out, such a read follows the usual rules and
+ * the sandbox is the guard. Auto's check never judges a push, `sudo` or a local command for ssh.
  *
  * It can't know what a program does with its files, its config or its input: `git` runs hooks and programs its
  * config names (`core.fsmonitor`, `core.pager`, `diff.external`); a script does what it contains; a remote host has
  * its own rc files and `PATH`; `~/.ssh/config` can name a `ProxyCommand` for a host. In a persistent shell, earlier
  * lines can define functions, aliases or a `PATH` that change what a read-only line runs. No rule sees into a
  * variable's value or a script file, readable line or not, and the credential check doesn't see a path reached
- * through `cd`, a variable alone, a link or a recursive read of a folder above it.
+ * through `cd` or a link, given through a variable to a program that isn't a content reader, or, in the workspace
+ * sandbox, given through a variable at all.
  *
  * It can't stop a read-only program from reading what the sandbox lets it read. The model then sees it.
  *
@@ -32,8 +37,14 @@ export interface SimpleCommand {
   /** For each word, whether the shell may turn it into something else: a glob or brace character, or `$`,
    *  outside single quotes. */
   readonly expands: readonly boolean[]
+  /** For each word, whether a parameter, command or arithmetic expansion outside single quotes gives part of it,
+   *  so the reader can't know its value. */
+  readonly substituted: readonly boolean[]
   readonly writes: readonly string[]
   readonly reads: readonly string[]
+  /** The words its here-strings and here-documents feed it: data, not commands, and whether the shell expands
+   *  each (a here-document whose delimiter is quoted expands nothing). */
+  readonly data: readonly { readonly text: string; readonly substituted: boolean }[]
   readonly fed: boolean
 }
 /** A command line read: its simple commands in order, those inside substitutions, groups, compound commands,
@@ -56,6 +67,9 @@ export interface Where {
   readonly profile: "workspace" | "ssh"
   readonly cwd: string
   readonly writable: readonly string[]
+  /** Paths the host marks as credentials beside `CREDENTIALS`, absolute or from `~`, globs allowed: the identity
+   *  files a profile binds outside `~/.ssh`. A read of one asks as a read under `~/.ssh` does. */
+  readonly credentials?: readonly string[]
 }
 
 /** Paths whose contents are credentials, as globs over a path's folders: `**` is any folders, none included, and
@@ -218,6 +232,69 @@ const SSH_LOCAL_KEYS = set("proxycommand localcommand permitlocalcommand knownho
 const SSH_IDENTITY_KEYS = set("identityfile certificatefile")
 /** Programs that read only names and metadata, so a credential path given to them reads no secret. */
 const NAMES_ONLY = set("ls stat du test [ realpath readlink basename dirname")
+/** Programs that print, copy or send what files hold; given a path through an expansion, they may read a
+ *  credential the reader can't see. */
+const CONTENT_READERS = set(
+  "cat tac head tail less more grep egrep fgrep rg ag ack cut sort uniq diff cmp comm paste join od xxd hexdump " +
+    "strings base64 base32 nl fold column rev expand unexpand fmt pr shuf split csplit iconv look jq yq sed awk " +
+    "gawk mawk nawk cp scp rsync tar zip unzip gzip gunzip zcat bzip2 bunzip2 bzcat xz unxz xzcat dd tee openssl " +
+    "gpg vi vim nvim view nano emacs ed sqlite3",
+)
+const GREP_VALUES = [
+  "--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context", "--directories", "--devices",
+  "--include", "--exclude", "--exclude-dir", "--exclude-from", "--label", "--binary-files", "--glob", "--type",
+]
+const DIFF_VALUES = "CUIxXSLFDW"
+/** How a content reader takes options, for the expansion rule, which counts its operands and the values of options
+ *  that name a file it reads, never counts, patterns, keys or scripts. `value`: short letters that take a value;
+ *  `longs`: long options that take the next word; `paths` and `pathLongs`: those whose value is a file it reads;
+ *  `given`, `givenLongs`: the options that give its pattern or script, which is otherwise its first operand;
+ *  `onlyPaths`: its operands don't count (wc and du print no contents), only its path options. A reader missing
+ *  here takes no option values, so every operand counts. */
+interface ReaderOptions {
+  readonly value: string
+  readonly longs: readonly string[]
+  readonly paths: string
+  readonly pathLongs: readonly string[]
+  readonly given?: string
+  readonly givenLongs?: readonly string[]
+  readonly onlyPaths?: boolean
+}
+const GREP_LIKE: ReaderOptions = {
+  value: "efmABCdD", longs: GREP_VALUES, paths: "f", pathLongs: ["--file", "--exclude-from"], given: "ef",
+  givenLongs: ["--regexp", "--file"],
+}
+const SEARCH_LIKE: ReaderOptions = {
+  value: "efgtTmABC", longs: GREP_VALUES, paths: "f", pathLongs: ["--file", "--ignore-file"], given: "ef",
+  givenLongs: ["--regexp", "--file"],
+}
+const AWK_LIKE: ReaderOptions = {
+  value: "fvF", longs: ["--file", "--assign", "--field-separator"], paths: "f", pathLongs: ["--file"], given: "f",
+  givenLongs: ["--file"],
+}
+const READER_OPTIONS: Readonly<Record<string, ReaderOptions>> = {
+  grep: GREP_LIKE, egrep: GREP_LIKE, fgrep: GREP_LIKE, rg: SEARCH_LIKE, ag: SEARCH_LIKE, ack: SEARCH_LIKE,
+  awk: AWK_LIKE, gawk: AWK_LIKE, mawk: AWK_LIKE, nawk: AWK_LIKE,
+  sed: {
+    value: "efl", longs: ["--expression", "--file", "--line-length"], paths: "f", pathLongs: ["--file"], given: "ef",
+    givenLongs: ["--expression", "--file"],
+  },
+  head: { value: "nc", longs: ["--lines", "--bytes"], paths: "", pathLongs: [] },
+  tail: { value: "ncs", longs: ["--lines", "--bytes", "--sleep-interval", "--pid"], paths: "", pathLongs: [] },
+  cut: { value: "bcdf", longs: ["--bytes", "--characters", "--delimiter", "--fields"], paths: "", pathLongs: [] },
+  sort: {
+    value: "kotST", longs: ["--key", "--field-separator", "--output", "--temporary-directory", "--buffer-size"],
+    paths: "", pathLongs: ["--files0-from", "--random-source"],
+  },
+  uniq: { value: "fsw", longs: ["--skip-fields", "--skip-chars", "--check-chars"], paths: "", pathLongs: [] },
+  diff: { value: DIFF_VALUES, longs: [], paths: "X", pathLongs: ["--from-file", "--to-file", "--exclude-from"] },
+  tar: { value: "fCTbHX", longs: ["--file", "--directory", "--files-from"], paths: "fTX", pathLongs: ["--file", "--files-from"] },
+  wc: { value: "", longs: [], paths: "", pathLongs: ["--files0-from"], onlyPaths: true },
+  du: {
+    value: "BdtX", longs: ["--block-size", "--max-depth", "--threshold", "--exclude"], paths: "X",
+    pathLongs: ["--files0-from", "--exclude-from"], onlyPaths: true,
+  },
+}
 const FILE_OPS: Readonly<Record<string, { short: string; long: Set<string>; min: number; strict: boolean }>> = {
   mkdir: { short: "pv", long: set("--parents --verbose"), min: 1, strict: false },
   touch: { short: "acm", long: set("--no-create"), min: 1, strict: false },
@@ -233,11 +310,7 @@ const SUDO_LONG_VALUES = [
   "--other-user", "--login-class", "--auth-type",
 ]
 const FIND_RUNS = set("-exec -execdir -ok -okdir")
-const DIFF_VALUES = "CUIxXSLFDW"
-const GREP_VALUES = [
-  "--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context", "--directories", "--devices",
-  "--include", "--exclude", "--exclude-dir", "--exclude-from", "--label", "--binary-files", "--glob", "--type",
-]
+const NO_OPTIONS: ReaderOptions = { value: "", longs: [], paths: "", pathLongs: [] }
 const PUSH_SAFE = set("--set-upstream --verbose --quiet --dry-run --progress --no-progress --porcelain")
 const PUSH_MANY = set("--mirror --all --branches --tags --prune")
 const XARGS_VALUES = ["--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars", "--process-slot-var"]
@@ -247,7 +320,9 @@ const GIT_VALUES = ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--co
 const REMOTES = new WeakMap<SimpleCommand, ReadCommand>()
 
 /** The part an empty line reads as, so rules and modes can still decide it. */
-export const EMPTY: SimpleCommand = { assignments: [], words: [], expands: [], writes: [], reads: [], fed: false }
+export const EMPTY: SimpleCommand = {
+  assignments: [], words: [], expands: [], substituted: [], writes: [], reads: [], data: [], fed: false,
+}
 
 // ---- What the reader exports ----
 
@@ -420,27 +495,38 @@ export function pushOf(part: SimpleCommand): { readonly asks: string | null } | 
   return { asks: asks() }
 }
 
-/** Why `part` names a credential path (`CREDENTIALS`), or null: a word of its program's, other than ssh's
- *  identity file, a file it redirects, a folder it reads recursively, or, over ssh, any of these in the remote
- *  command, named with its host. `cwd` is the folder relative paths start from, when known; an ssh remote command
- *  starts at the remote home. */
-export function credentialOf(part: SimpleCommand, cwd?: string): string | null {
+/** Why `part` names a credential path (`CREDENTIALS`, or one of `marked`, the host's), or null: a literal anywhere
+ *  in it (a word of its program's other than ssh's identity file, an assignment, a redirect, a here-string or
+ *  here-document), a folder it reads recursively, or, over ssh, any of these in the remote command, named with its
+ *  host. When `strict` (the SSH-only profile, where credentials are reachable), a content read whose path comes
+ *  through an expansion counts too; an ssh remote command is always strict. `cwd` is the folder relative paths start
+ *  from, when known; an ssh remote command starts at the remote home. */
+export function credentialOf(
+  part: SimpleCommand,
+  cwd?: string,
+  marked: readonly string[] = [],
+  strict = true,
+): string | null {
   const words = programOf(part)
-  const [prog = ""] = words
+  const [prog = "", ...args] = words
   const name = base(prog)
   const ssh = name === "ssh" ? sshOf(part) : null
-  const own = NAMES_ONLY.has(prog)
+  const own = NAMES_ONLY.has(prog) && !args.some((w) => long(w, "--files0-from"))
     ? []
     : ["ssh", "scp", "sftp"].includes(name)
       ? withoutIdentity(words.slice(0, words.length - (ssh?.command?.length ?? 0)))
       : words
-  const named = [...own, ...part.reads, ...part.writes].find((word) => isCredential(word, cwd))
+  const values = assignmentsOf(part).map((a) => a.slice(a.indexOf("=") + 1))
+  const literals = [...own, ...values, ...part.reads, ...part.writes, ...part.data.map((d) => d.text)]
+  const named = literals.find((word) => isCredential(word, cwd, marked))
   if (named !== undefined) return `it names a credential path: ${named}`
-  const climbs = recursivePaths(part).find((path) => holdsCredentials(path, cwd))
-  if (climbs !== undefined) return `it reads a folder that holds credentials: ${climbs}`
+  const hidden = strict ? throughExpansion(part) : null
+  if (hidden !== null) return `it reads a path named by an expansion: ${hidden}`
+  const climbs = recursivePaths(part).find(({ path, expanded }) => holdsCredentials(path, cwd, marked, strict && expanded))
+  if (climbs !== undefined) return `it reads a folder that holds credentials: ${climbs.path}`
   const remote = ssh ? remoteOf(part) : null
   for (const inner of remote?.read.parts ?? []) {
-    const found = credentialOf(inner, "~")
+    const found = credentialOf(inner, "~", marked, true)
     if (found) return `on ${remote!.host}: ${found}`
   }
   return null
@@ -454,7 +540,8 @@ export function innerParts(part: SimpleCommand): readonly SimpleCommand[] {
   const name = base(prog)
   const runs = (from: number, to = args.length): SimpleCommand => ({
     assignments: [], words: args.slice(from, to), expands: part.expands.slice(start + 1 + from, start + 1 + to),
-    writes: [], reads: [], fed: false,
+    substituted: part.substituted.slice(start + 1 + from, start + 1 + to),
+    writes: [], reads: [], data: [], fed: false,
   })
   if (name === "sudo" || name === "doas") {
     const at = optionsEnd(args, name === "sudo" ? SUDO_VALUES : "aCu", SUDO_LONG_VALUES)
@@ -512,6 +599,7 @@ class TooDeep extends Error {}
 interface Word {
   text: string
   expands: boolean
+  substituted: boolean
   quoted: boolean
   firstQuoted: number
 }
@@ -522,18 +610,23 @@ interface Building {
   assignments: string[]
   words: string[]
   expands: boolean[]
+  substituted: boolean[]
   writes: string[]
   reads: string[]
+  data: { text: string; substituted: boolean }[]
+  /** After `for`, `select` or `case`: the keyword and the words that follow it, which are no command. */
+  listed: string[]
   fed: boolean
   redirect: Redirect | null
   skip: boolean
   skipName: boolean
 }
 const building = (fed = false): Building => ({
-  assignments: [], words: [], expands: [], writes: [], reads: [], fed, redirect: null, skip: false, skipName: false,
+  assignments: [], words: [], expands: [], substituted: [], writes: [], reads: [], data: [], listed: [], fed,
+  redirect: null, skip: false, skipName: false,
 })
 const INPUTS: ReadonlySet<Redirect> = new Set(["read", "readwrite", "dup-in", "heredoc", "heredoc-tabs", "herestring"])
-const newWord = (): Word => ({ text: "", expands: false, quoted: false, firstQuoted: Infinity })
+const newWord = (): Word => ({ text: "", expands: false, substituted: false, quoted: false, firstQuoted: Infinity })
 function add(word: Word, text: string, quoted: boolean): void {
   if (quoted) {
     if (word.firstQuoted === Infinity) word.firstQuoted = word.text.length
@@ -552,7 +645,7 @@ class Reader {
   readonly parts: SimpleCommand[] = []
   unreadable: string | null = null
   private pos = 0
-  private heredocs: { delim: string; tabs: boolean; quoted: boolean }[] = []
+  private heredocs: { delim: string; tabs: boolean; quoted: boolean; data: Building["data"] }[] = []
 
   constructor(
     private readonly text: string,
@@ -672,7 +765,8 @@ class Reader {
       if (redirect === "dup-out" && /^\d+$/.test(text) && Number(text) >= 3) cmd.writes.push(`&${text}`)
       if (redirect === "dup-out" && !/^(\d+|-)$/.test(text)) cmd.writes.push(text)
       if (redirect === "heredoc" || redirect === "heredoc-tabs")
-        this.heredocs.push({ delim: text, tabs: redirect === "heredoc-tabs", quoted: w.quoted })
+        this.heredocs.push({ delim: text, tabs: redirect === "heredoc-tabs", quoted: w.quoted, data: cmd.data })
+      if (redirect === "herestring") cmd.data.push({ text, substituted: w.substituted })
       return false
     }
     if (!w.quoted && (text === "{" || text === "}")) {
@@ -683,7 +777,10 @@ class Reader {
       cmd.skipName = false
       return false
     }
-    if (cmd.skip) return false
+    if (cmd.skip) {
+      cmd.listed.push(text)
+      return false
+    }
     if (cmd.words.length === 0 && cmd.assignments.length === 0 && !w.quoted && RESERVED.has(text)) {
       if (text === "function") {
         this.mark(`${CHANGES}: function`)
@@ -691,6 +788,7 @@ class Reader {
       } else {
         this.mark(`${KEYWORD}: ${text}`)
         cmd.skip = text === "for" || text === "select" || text === "case"
+        if (cmd.skip) cmd.listed.push(text)
       }
       return false
     }
@@ -699,6 +797,7 @@ class Reader {
     else {
       cmd.words.push(text)
       cmd.expands.push(w.expands)
+      cmd.substituted.push(w.substituted)
     }
     return false
   }
@@ -706,9 +805,14 @@ class Reader {
   /** Ends a simple command: marks what makes it unreadable, reads the commands its words run (inner ones first),
    *  then adds it. */
   private finish(cmd: Building): void {
-    if (cmd.words.length + cmd.assignments.length + cmd.writes.length + cmd.reads.length === 0) return
-    const { assignments, words, expands, writes, reads, fed } = cmd
-    this.complete({ assignments, words, expands, writes, reads, fed })
+    // A `for` list or a `case` word reads as a part of its own, so its literals are checked as any command's.
+    if (cmd.listed.length > 1) {
+      const flags = cmd.listed.map(() => false)
+      this.complete({ ...EMPTY, words: cmd.listed, expands: flags, substituted: flags })
+    }
+    if (cmd.words.length + cmd.assignments.length + cmd.writes.length + cmd.reads.length + cmd.data.length === 0) return
+    const { assignments, words, expands, substituted, writes, reads, data, fed } = cmd
+    this.complete({ assignments, words, expands, substituted, writes, reads, data, fed })
   }
 
   private complete(part: SimpleCommand): void {
@@ -739,8 +843,8 @@ class Reader {
     const runs = (from: number) =>
       from < args.length &&
       this.complete({
-        assignments: [], words: args.slice(from), expands: part.expands.slice(start + 1 + from), writes: [], reads: [],
-        fed: false,
+        assignments: [], words: args.slice(from), expands: part.expands.slice(start + 1 + from),
+        substituted: part.substituted.slice(start + 1 + from), writes: [], reads: [], data: [], fed: false,
       })
     if (name === "eval") this.sub(args.join(" "))
     else if (SHELLS.has(name)) {
@@ -780,7 +884,7 @@ class Reader {
    *  except the substitutions in a body whose delimiter isn't quoted, which the shell runs. */
   private bodies(): void {
     const t = this.text
-    for (const { delim, tabs, quoted } of this.heredocs) {
+    for (const { delim, tabs, quoted, data } of this.heredocs) {
       let body = ""
       while (this.pos < t.length) {
         const end = t.indexOf("\n", this.pos)
@@ -790,6 +894,7 @@ class Reader {
         body += `${line}\n`
       }
       if (!quoted) this.expand(body)
+      for (const text of body.split(/\s+/)) if (text) data.push({ text, substituted: !quoted && text.includes("$") })
     }
     this.heredocs = []
   }
@@ -854,6 +959,8 @@ class Reader {
       return this.double(w)
     }
     w.expands = true
+    // `$` alone, or before a character that starts no expansion, is a plain `$`.
+    if (n !== undefined && /[A-Za-z0-9_@*#?$!({[-]/.test(n)) w.substituted = true
     if (n === "(" && t[this.pos + 2] === "(" && this.arithmetic(3)) this.mark(ARITHMETIC)
     else if (n === "(") {
       this.mark(COMMAND_SUB)
@@ -926,6 +1033,7 @@ class Reader {
     this.sub(inner)
     add(w, t.slice(start, this.pos), false)
     w.expands = true
+    w.substituted = true
   }
 
   /** Reads an arithmetic expression from `skip` characters on (past `((` or `$((`) to its `))`, reading the
@@ -1339,11 +1447,72 @@ function withoutIdentity(words: readonly string[]): string[] {
   return out
 }
 
-function isCredential(word: string, cwd?: string): boolean {
+/** The first word through which a program may read a file the reader can't see: a content reader's operand or
+ *  path option (`READER_OPTIONS`) given by a parameter, command or arithmetic expansion; a `<` file so named or a
+ *  process substitution; an expanded here-string or here-document; or what `source` or `.` runs. */
+function throughExpansion(part: SimpleCommand): string | null {
+  const { start } = unwrap(part)
+  const [prog = "", ...args] = part.words.slice(start)
+  const name = base(prog)
+  const fed = part.reads.find((file) => file.includes("$") || file.startsWith("<(")) ??
+    part.data.find((d) => d.substituted)?.text
+  if (fed !== undefined) return fed
+  const sub = (k: number) => part.substituted[start + 1 + k] === true
+  if (name === "source" || name === ".") return args.find((_, k) => sub(k)) ?? null
+  if (name === "dd") return args.find((w, k) => w.startsWith("if=") && sub(k)) ?? null
+  const options = READER_OPTIONS[name] ?? (CONTENT_READERS.has(name) ? NO_OPTIONS : null)
+  if (!options) return null
+  const { value, longs, paths, pathLongs, given, givenLongs = [], onlyPaths } = options
+  let pattern = given !== undefined && !args.some((w) => short(w, given, value) || long(w, ...givenLongs))
+  let ended = false
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k]!
+    if (!ended && w === "--") ended = true
+    else if (!ended && w.startsWith("--") && w.length > 2) {
+      const key = w.split("=")[0]!
+      const reads = pathLongs.includes(key)
+      if (w.includes("=")) {
+        if (reads && sub(k)) return w
+      } else if (longs.includes(key) || reads) {
+        if (reads && sub(k + 1)) return args[k + 1] ?? null
+        k++
+      }
+    } else if (!ended && w.startsWith("-") && w.length > 1) {
+      const at = [...w.slice(1)].findIndex((c) => value.includes(c))
+      if (at < 0) continue
+      const reads = paths.includes(w[at + 1]!)
+      if (at < w.length - 2) {
+        if (reads && sub(k)) return w // the value is the rest of the word
+      } else {
+        if (reads && sub(k + 1)) return args[k + 1] ?? null
+        k++
+      }
+    } else if (pattern) pattern = false
+    else if (!onlyPaths && sub(k)) return w
+  }
+  return null
+}
+function isCredential(word: string, cwd?: string, marked: readonly string[] = []): boolean {
+  return [word, ...joinedValues(word)].some((path) => credentialPath(path, cwd, marked))
+}
+
+/** The paths a word may carry joined to an option or a key: `--opt=PATH`, `-oPATH`, `key=PATH`, `@PATH`. */
+function joinedValues(word: string): string[] {
+  const values: string[] = []
+  const keyed = /^(--?[A-Za-z0-9][\w-]*|[A-Za-z_][A-Za-z0-9_]*)=(.+)$/.exec(word)
+  if (keyed) values.push(keyed[2]!)
+  if (/^-[A-Za-z]./.test(word) && !word.startsWith("--")) values.push(word.slice(2))
+  if (word.startsWith("@")) values.push(word.slice(1))
+  return values
+}
+
+/** Whether a path names a credential, in any case: macOS's default filesystem ignores case, and on Linux matching
+ *  regardless of case only asks more. */
+function credentialPath(word: string, cwd?: string, marked: readonly string[] = []): boolean {
   const literal = !word.includes("$")
-  const name = word.slice(word.lastIndexOf("/") + 1)
+  const name = word.slice(word.lastIndexOf("/") + 1).toLowerCase()
   if (literal && name.endsWith(".pub")) return false
-  const path = segments(word, cwd)
+  const path = lower(segments(word, cwd))
   // A glob, or an expansion written from `/` or a home, that starts at `/` or a home may reach any credential
   // folder; a relative `$X` alone, an argument like any other, doesn't.
   const open = path.findIndex((segment) => /[*?]/.test(segment))
@@ -1351,29 +1520,44 @@ function isCredential(word: string, cwd?: string): boolean {
   const written = /^([/~]|\$HOME\b|\$\{HOME\})/.test(word)
   const start = path.slice(0, open)
   const top = start.length === 1 ? start[0] === "" || start[0] === "~" : start.length === 2 && start[0] === "" &&
-    (start[1] === "home" || start[1] === "Users")
+    (start[1] === "home" || start[1] === "users")
   const rooted = open >= 0 && (globs || written) && top
-  if (rooted && CREDENTIALS.some(({ at }) => at && couldMatch(path, [...at.split("/"), "**"], false))) return true
+  const mine = marked.map((m) => lower(segments(m)))
+  const known = CREDENTIALS.flatMap(({ at }) => (at ? [at.toLowerCase().split("/")] : []))
+  if (rooted && [...known, ...mine].some((folder) => couldMatch(path, [...folder, "**"], false))) return true
+  if (mine.some((m) => couldMatch(path, [...m, "**"], true))) return true
   return CREDENTIALS.some(({ path: pattern, except }) => {
     if (pattern.startsWith("$")) return word.includes(pattern) || word.includes(`\${${pattern.slice(1)}`)
-    if (literal && !/[*?[{]/.test(name) && except?.some((e) => overlap(name, e))) return false
-    return couldMatch(path, pattern.split("/"), true)
+    if (literal && !/[*?[{]/.test(name) && except?.some((e) => overlap(name, e.toLowerCase()))) return false
+    return couldMatch(path, pattern.toLowerCase().split("/"), true)
   })
 }
 
-/** Whether a folder a program reads recursively is a credential folder (`at`), is under one, or holds one: `~`,
- *  `/`, `/home`, or a `..` path that climbs to them. A relative path with no `cwd` counts only when it climbs. */
-function holdsCredentials(word: string, cwd?: string): boolean {
-  const path = segments(word, cwd)
+function lower(segments: readonly string[]): string[] {
+  return segments.map((s) => s.toLowerCase())
+}
+/** Whether a folder a program reads recursively is a credential folder (`at`, or one the host marks), is under
+ *  one, or holds one: `~`, `/`, `/home` or a `..` path that climbs to them; or, when `expanded` (strict and given
+ *  by an expansion), any. A relative path with no `cwd` counts only when it climbs. */
+function holdsCredentials(word: string, cwd?: string, marked: readonly string[] = [], expanded = false): boolean {
+  if (expanded) return true // its value can't be seen
+  const path = lower(segments(word, cwd, false))
   if (path[0] !== "" && path[0] !== "~" && cwd === undefined) return path[0] === ".."
   const below = [...path, "**"]
-  const folders = [...CREDENTIALS.flatMap(({ at }) => (at ? [at] : [])), ...HOMES]
-  return folders.some((folder) => couldMatch(below, [...folder.split("/"), "**"], false))
+  const folders = [...CREDENTIALS.flatMap(({ at }) => (at ? [at] : [])), ...HOMES].map((f) => f.toLowerCase().split("/"))
+  return [...folders, ...marked.map((m) => lower(segments(m)))].some((f) => couldMatch(below, [...f, "**"], false))
+}
+/** The paths a part reads recursively, file contents and all, with whether an expansion gives each, or none: `grep -r`, `rg`, `diff -r`,
+ *  `git diff --no-index`, `tar`, `zip`, `rsync`, `cp -r`, `scp -r`, and `find` running a command with `-exec`. */
+function recursivePaths(part: SimpleCommand): readonly { path: string; expanded: boolean }[] {
+  const { start } = unwrap(part)
+  const given = part.words.filter((w, i) => i > start && part.substituted[i])
+  return recursiveWords(part).map((path) => ({
+    path, expanded: given.some((w) => path === w || path.startsWith(`${w}/`) || path.endsWith(`/${w}`)),
+  }))
 }
 
-/** The paths a part reads recursively, file contents and all, or none: `grep -r`, `rg`, `diff -r`,
- *  `git diff --no-index`, `tar`, `zip`, `rsync`, `cp -r`, `scp -r`, and `find` running a command with `-exec`. */
-function recursivePaths(part: SimpleCommand): readonly string[] {
+function recursiveWords(part: SimpleCommand): readonly string[] {
   const [prog = "", ...args] = programOf(part)
   const name = base(prog)
   // A search's first operand is its pattern, unless -e or -f gives it; with no path it reads the folder it is in.
@@ -1431,15 +1615,16 @@ function recursivePaths(part: SimpleCommand): readonly string[] {
 }
 
 /** A path's folders and name, from `cwd` when it is relative and `cwd` is known, with `.` and empty names dropped,
- *  `..` collapsed where it can be, an expansion or a brace read as `*`, and a home (`~`, `$HOME`, `/home/u`) as `~`;
- *  a leading "" marks an absolute path. */
-function segments(word: string, cwd?: string): string[] {
+ *  `..` collapsed where it can be, a brace and (when `expand`) an expansion read as `*`, and a home (`~`, `$HOME`,
+ *  `/home/u`) as `~`; a leading "" marks an absolute path. */
+function segments(word: string, cwd?: string, expand = true): string[] {
   const homed = word.replace(/^(\$HOME|\$\{HOME\}|~[A-Za-z0-9._-]*)(?=\/|$)/, "~")
   const full = cwd !== undefined && !/^[/~]/.test(homed) ? `${cwd}/${homed}` : homed
   const out: string[] = full.startsWith("/") ? [""] : []
-  const globbed = full
-    .replace(/\$\{[^}]*\}|\$\([^)]*\)|`[^`]*`|\$([A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g, "*")
-    .replace(/\{[^}]*\}/g, "*")
+  const unexpanded = expand
+    ? full.replace(/\$\{[^}]*\}|\$\([^)]*\)|`[^`]*`|\$([A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g, "*")
+    : full
+  const globbed = unexpanded.replace(/\{[^}]*\}/g, "*")
   for (const part of globbed.split("/")) {
     if (part === "" || part === ".") continue
     const last = out.at(-1)
@@ -1450,8 +1635,9 @@ function segments(word: string, cwd?: string): string[] {
     else out.push(part)
   }
   // Every user's home reads as `~`.
-  if (out[0] === "" && (out[1] === "home" || out[1] === "Users") && out.length > 2) out.splice(0, 3, "~")
-  else if (out[0] === "" && out[1] === "root") out.splice(0, 2, "~")
+  const top = out[1]?.toLowerCase()
+  if (out[0] === "" && (top === "home" || top === "users") && out.length > 2) out.splice(0, 3, "~")
+  else if (out[0] === "" && top === "root") out.splice(0, 2, "~")
   return out
 }
 

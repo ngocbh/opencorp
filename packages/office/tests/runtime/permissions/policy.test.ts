@@ -329,6 +329,56 @@ test("a recursive read of a folder that holds credentials asks in every mode, an
   ])
 })
 
+test("a content read through an expansion asks in every mode, and dontAsk refuses it", () => {
+  for (const mode of MODES) {
+    const held = (why: string): Decision =>
+      mode === "dontAsk" ? { verdict: "deny", reason: DONT + why } : { verdict: "ask", reason: why, rules: [] }
+    const through = (word: string) => held(`it reads a path named by an expansion: ${word}`)
+    table(mode, [
+      [cmd("f=~/.ss; cat ${f}h/id_test"), [allow("cat *")], S, through("${f}h/id_test")],
+      [cmd("cat $HOME/.ssh/id_rsa"), [], S, held("it names a credential path: $HOME/.ssh/id_rsa")],
+      [cmd('cat "$K"'), [allow('cat $K')], S, through("$K")],
+      [cmd("d=.ssh; cat ~/$d/id_rsa"), [], S, held("it names a credential path: .ssh")],
+      [cmd("d=keys; cat $d/k"), [], S, through("$d/k")],
+    ])
+  }
+  table("auto", [[cmd("ls $HOME"), [], S, READ_ONLY], [cmd("echo $HOME && ls -la $D"), [], S, READ_ONLY]])
+  table("default", [[cmd("ls $HOME"), [], S, READ_ONLY]])
+})
+
+test("in the workspace sandbox a content read through an expansion follows the usual rules; elsewhere it asks", () => {
+  const through = (word: string): Decision => ({ verdict: "ask", reason: `it reads a path named by an expansion: ${word}`, rules: [] })
+  table("auto", [
+    [cmd('for f in *.md; do head -3 "$f"; done'), [], W, { verdict: "check", rules: [] }],
+    [cmd("cat $PWD/x"), [], W, READ_ONLY],
+    [cmd('cat "$(git rev-parse --show-toplevel)/x"'), [], W, { verdict: "check", rules: [] }],
+    [cmd("grep foo $(git ls-files)"), [], W, { verdict: "check", rules: [] }],
+    [cmd("cat $PWD/x"), [], S, through("$PWD/x")],
+    [cmd('for f in *.md; do head -3 "$f"; done'), [], S, through("$f")],
+    [cmd("ssh h cat $F"), [allow("ssh *")], W,
+      { verdict: "ask", reason: "on h: it reads a path named by an expansion: $F", rules: [] }],
+    [{ kind: "input", text: "cat $F", into: "ssh u@n" }, [], W, through("$F")],
+    [input("cat $F"), [], W, READ_ONLY],
+    [cmd('f=~/.ssh/id_rsa; cat "$f"'), [], W, { verdict: "ask", reason: "it names a credential path: ~/.ssh/id_rsa", rules: [] }],
+  ])
+  table("default", [
+    [cmd("cat $PWD/x"), [], W, READ_ONLY],
+    [cmd('for f in *.md; do head -3 "$f"; done'), [], W,
+      { verdict: "ask", reason: "Default mode asks: it uses a shell keyword: for", rules: [] }],
+  ])
+  table("dontAsk", [[cmd("cat $PWD/x"), [], S, { verdict: "deny", reason: DONT + "it reads a path named by an expansion: $PWD/x" }]])
+})
+
+test("a path the host marks as a credential asks in every mode, like one under ~/.ssh", () => {
+  const marked: Where = { ...S, credentials: ["/home/u/keys/id"] }
+  for (const mode of MODES) {
+    const reason = "it names a credential path: ~/keys/id"
+    table(mode, [[cmd("cat ~/keys/id"), [allow("cat *")], marked,
+      mode === "dontAsk" ? { verdict: "deny", reason: DONT + reason } : { verdict: "ask", reason, rules: [] }]])
+  }
+  table("auto", [[cmd("cat ~/keys/id"), [], S, READ_ONLY], [cmd("cat ~/keys/id.pub"), [], marked, READ_ONLY]])
+})
+
 test("the card offers no rule for what it holds for the owner", () => {
   table("ask", [[cmd("ls && git push origin main"), [], W,
     { verdict: "ask", reason: "it pushes to the default branch", rules: [] }]])

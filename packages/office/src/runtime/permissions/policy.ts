@@ -7,9 +7,13 @@
  * part of it is covered: by an allow rule; by a form it knows to be read-only (`auto`, `default`, `dontAsk`); by a
  * plain push of a feature branch (`auto`, `dontAsk`); or, inside the workspace sandbox, by a file operation on
  * paths inside the workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it:
- * inside substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. The reader asks before
- * a command that names a credential path it can see, and Auto's check never judges a push, `sudo` or a local
- * command for ssh.
+ * inside substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too.
+ * The reader asks, in every mode, before a command that names a credential path anywhere in the line (an operand,
+ * an option's value, an assignment, a `for` list, a here-string or a redirect), one the host marks
+ * (`Where.credentials`), or a folder that holds them. On the SSH-only profile and over ssh, where credentials are
+ * reachable, it also asks before a program that reads file contents is given a path through an expansion, whose
+ * value it can't see; in the workspace sandbox, which keeps the home out, such a read follows the usual rules and
+ * the sandbox is the guard. Auto's check never judges a push, `sudo` or a local command for ssh.
  *
  * The reader can't know what a program does with its files, its config or its input: `git` runs hooks and programs
  * its config names (`core.fsmonitor`, `core.pager`, `diff.external`); a script does what it contains; a remote host
@@ -148,7 +152,11 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
   if (action.never !== undefined) return held(action.never)
   // A typed line goes to a program that may be a shell anywhere, a remote one at its home most likely.
   const cwd = action.kind === "input" ? "~" : where.cwd
-  const credential = parts.map((p) => credentialOf(p, cwd)).find((found) => found !== null)
+  // Outside the workspace sandbox, or over ssh, credentials are reachable, so a content read through an expansion
+  // asks; inside it the sandbox keeps them out, and only a literal credential path asks.
+  const remote = action.kind === "input" && sshHosts(readCommand(action.into ?? "")).length > 0
+  const strict = where.profile === "ssh" || remote
+  const credential = parts.map((p) => credentialOf(p, cwd, where.credentials, strict)).find((found) => found !== null)
   if (credential) return held(credential)
   const owner = parts.map((p) => ownerOnly(p, read.unreadable === null)).find((found) => found !== null)
   if (owner) return held(owner)
