@@ -2,7 +2,7 @@
 // socket that speaks the office's HTTP routes and SSE framing. `bun run dev` and the tests that
 // check office behaviour use the real office; `test/office/contract.test.ts` checks this fake
 // against the real office.
-import { Person as PersonSchema, Session as SessionSchema } from "@opencorp/protocol"
+import { Person as PersonSchema, Session as SessionSchema, SessionMode } from "@opencorp/protocol"
 import type {
   BrowserSession,
   Comment,
@@ -738,6 +738,15 @@ export function createFakeOffice(
     const model = body.model === c.model ? null : body.model
     return upsertSession({ ...s, connection: c.name, model, model_note: null, updated_at: now() })
   }
+  /** The office's mode switch, with no approver rule: the scripts run as the CEO, who opened the chat. */
+  function setMode(id: string, body: any) {
+    check(SessionMode.safeParse(body?.mode).success, "mode: isn't an allowed value")
+    // As the office: Codex doesn't follow the mode yet.
+    if (session(id).harness === "codex")
+      throw fail(422, "not_supported", "a Codex session runs on Codex's own model and login")
+    const s = liveSession(id)
+    return upsertSession({ ...s, mode: body.mode, updated_at: now() })
+  }
 
   /**
    * The office's choice for a new chat: the pick when its connection is here (its own model stored as null), else
@@ -1016,6 +1025,7 @@ export function createFakeOffice(
       },
     ],
     ["POST", "/sessions/:id/model", ({ params, body }) => Response.json(servedSession(setModel(params.id, body)))],
+    ["POST", "/sessions/:id/mode", ({ params, body }) => Response.json(servedSession(setMode(params.id, body)))],
     ["GET", "/connections", ({ actor }) => Response.json(connectionList(actor))],
     [
       "GET",

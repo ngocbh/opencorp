@@ -20,7 +20,7 @@ test("an open question shows its options; picking one answers it", async () => {
       answer: "Fail fast",
       answer_kind: "option",
     })
-    await app.until((f) => !f.includes("Retry the flaky test?") && f.includes("@minh · Software engineer"))
+    await app.until((f) => !f.includes("Retry the flaky test?") && f.includes("@minh auto · Software engineer"))
   } finally {
     await app.stop()
     office.stop()
@@ -261,7 +261,7 @@ test("an ask node question in the chat is a card", async () => {
   const s = office.state.sessions[0]
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
-    await app.until((f) => f.includes("@minh · idle") && f.includes("@minh · Software engineer"))
+    await app.until((f) => f.includes("@minh · idle") && f.includes("@minh auto · Software engineer"))
     office.addQuestion({ session_id: s.id, source: "ask", node_id: "chat#1/review", question: "Ship it?" })
     await app.until((f) => f.includes("Ship it?") && f.includes("Type your answer here"))
   } finally {

@@ -14,10 +14,10 @@ const PASSWORD_HASH = "$scrypt$ln=15,r=8,p=1$c2FsdHNhbHRzYWx0c2FsdA$Z2lHqGqVnSkf
 const NAMES = [
   "Id", "Handle", "Ulid", "GitId", "DeviceName", "TokenHash", "Device", "PasswordHash", "ConnectionName",
   "Timestamp", "CompanyDefaults", "Company", "HarnessPolicy", "Sop", "Routine", "Person", "Group",
-  "AssetTool", "Grant", "Asset", "WorkItem", "Comment", "Session", "HarnessUsage", "Message", "Part",
-  "TextPart", "FilePart", "ToolPart", "ErrorPart", "Permission", "QuestionOption", "QuestionPage",
+  "AssetTool", "Grant", "Asset", "WorkItem", "Comment", "Session", "SessionMode", "HarnessUsage", "Message",
+  "Part", "TextPart", "FilePart", "ToolPart", "ErrorPart", "Permission", "QuestionOption", "QuestionPage",
   "AnswerField", "DiscussionEntry", "Question", "Profile", "ProfileProposal", "Event", "LiveEvent",
-  "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest",
+  "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "SetModeRequest",
   "RepoIssue", "CompanyView", "CommitInfo", "CompanyTreeEntry", "CompanyTree", "CompanyFile", "RunSummary",
   "RunPage", "RunUsage", "RunDetail", "RunNode", "RunDivider", "RunNodePage", "RunEvent", "RunEventPage",
   "RunLiveRecord", "RunLiveCall", "RunLiveStart", "RunLiveChunk", "RunLiveEnd", "RunUpdated", "PersonCost",
@@ -125,8 +125,8 @@ const BODIES = [
   "ApiError", "AnswerRequest", "SideChatRequest", "SendBackRequest", "ProfileWriteRequest", "VersionConflict",
   "ProfileManagerRequest", "AddDeviceRequest", "LoginRequest",
   "SetPasswordRequest", "Connection", "ConnectionList", "ModelOption", "ModelList", "SetModelRequest",
-  "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin", "CompanyView",
-  "CostReport", "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
+  "SetModeRequest", "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin",
+  "CompanyView", "CostReport", "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
   "HqLoginRequest", "CompanyTree", "CompanyFile", "RunPage", "RunDetail", "RunNodePage", "RunEventPage",
   "RunEvent", "OfficeInfo",
 ]
@@ -159,6 +159,14 @@ test("harness session fields exist", () => {
     expect.arrayContaining(["harness_model", "harness_turn_id", "harness_usage", "parent_session_id"]))
   expect(Object.keys(Schemas.Message.shape)).toContain("author")
   expect(Object.keys(Schemas.QuestionPage.shape)).toContain("secret")
+})
+
+test("a session has a mode, auto by default, and a mode request takes only auto, default, ask or dontAsk", () => {
+  expect(Schemas.Session.shape.mode.parse(undefined)).toBe("auto")
+  for (const mode of ["auto", "default", "ask", "dontAsk"])
+    expect(Schemas.SetModeRequest.safeParse({ mode }).success).toBe(true)
+  expect(Schemas.SetModeRequest.safeParse({ mode: "yolo" }).success).toBe(false)
+  expect(Schemas.SetModeRequest.safeParse({ mode: "dontask" }).success).toBe(false)
 })
 
 const HQ = [

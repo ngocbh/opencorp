@@ -28,6 +28,7 @@ import { Dynamic, useRenderer, useTerminalDimensions, type JSX } from "@opentui/
 import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
 import { DialogMessage } from "./dialog-message"
+import { DialogMode } from "./dialog-mode"
 import { costLabel, Sidebar } from "./sidebar"
 import { filetype } from "../../util/filetype"
 import { errorMessage } from "../../util/error"
@@ -49,6 +50,7 @@ import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { OPENCORP_BASE_MODE, useBindings } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
+import { usePermission } from "../../context/permission"
 import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented, openQuestions, statusLabel } from "@opencorp/client"
 import { answerShown } from "../chat/answer"
 import { QuestionCard } from "../chat/card"
@@ -142,6 +144,10 @@ export function Session() {
   const question = createMemo(() => cards()[0])
   // A Codex session shows every open card above a prompt that stays; the first card or the prompt has the keys.
   const codex = createMemo(() => session()?.harness === "codex")
+  const permission = usePermission()
+  // Whether the chat's mode can be switched here. Never while a card is open: the card hides the prompt and its mode
+  // label, and a switch to dontAsk would answer an approval card.
+  const switchable = () => permission.mode(route.sessionID) !== null && !question()
   const [focus, setFocus] = createSignal<"card" | "prompt">("card")
   const cardFocused = createMemo(() => codex() && cards().length > 0 && focus() === "card")
   // Cards opening when none were open take the keys, unless the prompt holds a draft: keys typed for the prompt must
@@ -364,6 +370,13 @@ export function Session() {
       run: () => costCap.ask(route.sessionID),
     },
     {
+      title: "Switch the chat's mode…",
+      value: "session.mode",
+      category: "Session",
+      enabled: switchable(),
+      run: () => dialog.replace(() => <DialogMode sessionID={route.sessionID} />),
+    },
+    {
       title: sidebarVisible() ? "Hide sidebar" : "Show sidebar",
       value: "session.sidebar.toggle",
       category: "Session",
@@ -562,6 +575,26 @@ export function Session() {
       },
     ],
     bindings: tuiConfig.keybinds.gather("session.card", ["session.card.focus"]),
+  }))
+
+  // Above the app's Shift+Tab (previous person): in a chat it switches the mode.
+  useBindings(() => ({
+    mode: OPENCORP_BASE_MODE,
+    priority: 1,
+    commands: [
+      {
+        name: "session.mode.cycle",
+        title: "Cycle the chat's mode",
+        category: "Session",
+        hidden: true,
+        enabled: switchable() && dialog.stack.length === 0,
+        run: () =>
+          void permission
+            .cycle(route.sessionID)
+            .catch((e) => toast.show({ message: errorMessage(e), variant: "error" })),
+      },
+    ],
+    bindings: tuiConfig.keybinds.gather("session.mode", ["session.mode.cycle"]),
   }))
 
   useBindings(() => ({

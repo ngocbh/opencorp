@@ -115,6 +115,7 @@ export function standInHarness(over: Partial<SessionHarness> = {}): SessionHarne
     continueSession: unused("continueSession"),
     setCostCap: unused("setCostCap"),
     setModel: unused("setModel"),
+    setMode: unused("setMode"),
     messages: unused("messages"),
     ...over,
   }

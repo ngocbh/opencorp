@@ -59,6 +59,23 @@ test("Tab cycles through agents, skipping humans; --person picks one at start", 
   }
 })
 
+test("on the home screen Shift+Tab still picks the previous person", async () => {
+  const s = seed()
+  s.people.push({ handle: "lan", name: "Lan", kind: "agent", title: "QA engineer", manager: "ngocbh" })
+  const office = createFakeOffice({ seed: s })
+  const app = await bootFrame(createStub(office))
+  try {
+    await app.until((f) => f.includes("@minh") && f.includes("Software engineer"))
+    app.input.pressTab({ shift: true })
+    const f = await app.until((f) => f.includes("@lan") && f.includes("QA engineer"))
+    expect(f).not.toContain("shift+tab mode")
+    expect(office.requests.some((r) => r.path.endsWith("/mode"))).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("the person stays put when a newer session in the folder belongs to someone else", async () => {
   const office = createFakeOffice()
   const app = await bootFrame(createStub(office))

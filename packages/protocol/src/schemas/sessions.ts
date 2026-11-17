@@ -13,6 +13,13 @@ export const HarnessUsage = z.strictObject({
 })
 export type HarnessUsage = z.input<typeof HarnessUsage>
 
+/** What a session's agent may do without its approver, in Shift+Tab's order. `auto` (the start mode): rules,
+ *  read-only forms, file operations inside the workspace sandbox, then Auto's check; the rest asks. `default`:
+ *  rules and read-only forms; the rest asks. `ask`: only what a rule allows; the rest asks. `dontAsk`: as `auto`,
+ *  but what would ask is refused. The sandbox applies in every mode. */
+export const SessionMode = z.enum(["auto", "default", "ask", "dontAsk"])
+export type SessionMode = z.input<typeof SessionMode>
+
 export const Session = z.strictObject({
   id: Ulid,
   person: Handle,
@@ -79,6 +86,9 @@ export const Session = z.strictObject({
   parent_session_id: Ulid.nullable().default(null),
   /** Finished replies: the next fresh run's `turns` input; `0` means no reply has finished yet. */
   turns: z.int().min(0).default(0),
+  /** What the agent may do without its approver; new and older sessions are in auto. Only the approver (the
+   *  opener, else the CEO) switches it, and a Codex session's stays auto until Codex follows it. */
+  mode: SessionMode.default("auto"),
   created_at: Timestamp,
   updated_at: Timestamp,
 })
@@ -171,6 +181,11 @@ export const PromptRequest = z.strictObject({
   text: MessageText,
 })
 export type PromptRequest = z.input<typeof PromptRequest>
+
+export const SetModeRequest = z.strictObject({
+  mode: SessionMode,
+})
+export type SetModeRequest = z.input<typeof SetModeRequest>
 
 export const CostCapRequest = z.strictObject({
   cost_cap_usd: z.number().min(0),

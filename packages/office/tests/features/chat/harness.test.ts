@@ -430,6 +430,25 @@ test("an answer off a live run is credited to the opener else the ceo", async ()
   }
 })
 
+test("a chat nobody opened takes its mode from the ceo of the pinned company, and from nobody else", async () => {
+  const h = await makeHarness(await fakeLlm(), { files: LAN })
+  const s = await stored(h, { opened_by: null })
+  for (const by of ["lan", null]) {
+    const refused = await rejection(h.harness.setMode(s.id, "ask", { by }))
+    expect([refused.status, refused.code, refused.message]).toEqual([
+      403,
+      "forbidden",
+      "only @ngocbh may change this chat's mode",
+    ])
+  }
+  expect(h.store.getSession(s.id)!.mode).toBe("auto")
+  expect((await h.harness.setMode(s.id, "ask", { by: CEO })).mode).toBe("ask")
+  // With an opener, the CEO is anyone else.
+  const opened = await stored(h, { opened_by: "lan" })
+  expect((await rejection(h.harness.setMode(opened.id, "ask", { by: CEO }))).status).toBe(403)
+  expect((await h.harness.setMode(opened.id, "dontAsk", { by: "lan" })).mode).toBe("dontAsk")
+})
+
 test("messages and answers are credited to who sent them", async () => {
   const fake = await fakeLlm()
   fake.script(

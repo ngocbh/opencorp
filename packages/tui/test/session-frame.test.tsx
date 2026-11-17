@@ -21,6 +21,125 @@ test("a waiting session's header names who it waits on, and a capped one says so
   }
 })
 
+/** Opens the palette and picks the command titled `title`. */
+async function runCommand(app: Awaited<ReturnType<typeof bootFrame>>, title: string) {
+  app.input.pressKey("p", { ctrl: true })
+  await app.until((f) => f.includes("Commands"))
+  // The search box takes focus a moment after it renders.
+  await Bun.sleep(50)
+  app.input.typeText(title)
+  await app.until((f) => f.split(title).length > 2)
+  app.input.pressEnter()
+}
+
+/** Whether the TUI asked the office to switch session `id`'s mode. */
+const switched = (office: ReturnType<typeof createFakeOffice>, id: string) =>
+  office.requests.some((r) => r.path === `/sessions/${id}/mode`)
+
+test("Shift+Tab cycles the chat through auto, default, ask and dontAsk, and the prompt shows the mode after the agent's name", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    const f = await app.until((f) => f.includes("@minh · idle") && f.includes("@minh auto ·"))
+    expect(f).toContain("shift+tab mode")
+    for (const mode of ["default", "ask", "dontAsk", "auto"] as const) {
+      app.input.pressTab({ shift: true })
+      await app.until((f) => f.includes(`@minh ${mode} ·`))
+      expect(office.state.sessions.find((x) => x.id === s.id)!.mode).toBe(mode)
+    }
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("the palette's mode command lists the four modes, marks the current one, and switches to the one picked", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh auto ·"))
+    await runCommand(app, "Switch the chat's mode")
+    const f = await app.until((f) => f.includes("Refuses whatever would ask"))
+    expect(f).toContain("● auto Runs read-only commands and workspace file changes; Auto's check judges the rest")
+    expect(f).toContain(" default Runs read-only commands; asks before anything else")
+    expect(f).toContain(" ask Asks before every command no rule allows")
+    expect(f).toContain(" dontAsk Refuses whatever would ask: for runs with nobody to answer")
+    expect(f.split("●")).toHaveLength(2)
+    for (let i = 0; i < 2; i++) app.input.pressArrow("down")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("@minh ask ·") && !f.includes("Refuses whatever would ask"))
+    expect(office.state.sessions.find((x) => x.id === s.id)!.mode).toBe("ask")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a Codex session shows no mode and no mode hint, Shift+Tab doesn't switch it, and the palette has no mode command", async () => {
+  const office = createFakeOffice()
+  const s = office.newSession({ person: "minh", cwd: "/tmp/proj", harness: "codex" })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    let f = await app.until((f) => f.includes("@minh · idle") && f.includes("@minh · Software engineer"))
+    expect(f).not.toContain("shift+tab mode")
+    expect(f).not.toContain("@minh auto")
+    app.input.pressTab({ shift: true })
+    await Bun.sleep(100)
+    f = await app.until((f) => f.includes("@minh · Software engineer"))
+    expect(f).not.toContain("@minh default")
+    expect(switched(office, s.id)).toBe(false)
+    app.input.pressKey("p", { ctrl: true })
+    await app.until((f) => f.includes("Commands"))
+    await Bun.sleep(50)
+    app.input.typeText("Switch the chat's mode")
+    f = await app.until((f) => f.includes("No results found"))
+    expect(f.split("Switch the chat's mode").length).toBe(2)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("an ended chat shows no mode and no mode hint, and Shift+Tab doesn't switch it", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  office.updateSession(s.id, { status: "ended" })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    let f = await app.until((f) => f.includes("@minh · ended") && f.includes("@minh · Software engineer"))
+    expect(f).not.toContain("shift+tab mode")
+    expect(f).not.toContain("@minh auto")
+    app.input.pressTab({ shift: true })
+    await Bun.sleep(100)
+    f = await app.until((f) => f.includes("@minh · Software engineer"))
+    expect(switched(office, s.id)).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("with a question card open, Shift+Tab changes nothing", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh auto ·"))
+    office.addQuestion({ session_id: s.id, question: "Retry the flaky test?", options: ["Back off", "Fail fast"] })
+    await app.until((f) => f.includes("Retry the flaky test?") && f.includes("Fail fast"))
+    app.input.pressTab({ shift: true })
+    await Bun.sleep(100)
+    await app.until((f) => f.includes("Retry the flaky test?"))
+    expect(switched(office, s.id)).toBe(false)
+    expect(office.state.sessions.find((x) => x.id === s.id)!.mode ?? "auto").toBe("auto")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a session shows text and tool parts, and streams deltas", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]

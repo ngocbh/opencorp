@@ -293,6 +293,11 @@ export class CodexSessions implements SessionHarness {
     return this.#notSupported(sessionId)
   }
 
+  /** Not supported on a Codex session until Codex follows the mode (see `#notSupported`). */
+  setMode(sessionId: string, _mode: SessionRecord["mode"], _options?: { by?: string | null }): Promise<SessionRecord> {
+    return this.#notSupported(sessionId)
+  }
+
   /** The Codex session's current turn, what a client reads before following its live events: empty when it isn't
    *  live. */
   messages(sessionId: string): Message[] {
@@ -636,7 +641,7 @@ export function unsafeWorkspace(refused: UnsafeWorkspace, log: (line: string) =>
   )
 }
 
-/** The 422 `not_supported` a Codex session's cost cap or model call answers. */
+/** The 422 `not_supported` a Codex session's cost cap, model or mode call answers. */
 export function notSupported(): HarnessError {
   return new HarnessError(422, "not_supported", "a Codex session runs on Codex's own model and login")
 }

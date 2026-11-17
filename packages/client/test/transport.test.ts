@@ -257,6 +257,7 @@ const GUARDED: [string, (c: Client, bad: string) => Promise<unknown>, (bad: stri
   ["sessions.continue", (c, b) => c.sessions.continue(b), (b) => `no session ${b}`],
   ["sessions.costCap", (c, b) => c.sessions.costCap(b, body), (b) => `no session ${b}`],
   ["sessions.setModel", (c, b) => c.sessions.setModel(b, body), (b) => `no session ${b}`],
+  ["sessions.setMode", (c, b) => c.sessions.setMode(b, body), (b) => `no session ${b}`],
   ["questions.get", (c, b) => c.questions.get(b), (b) => `no question ${b}`],
   ["questions.answer", (c, b) => c.questions.answer(b, body), (b) => `no question ${b}`],
   ["questions.side", (c, b) => c.questions.side(b, body), (b) => `no question ${b}`],

@@ -23,7 +23,7 @@ import { GitProfileStore } from "../../company/profile.ts"
 import { Answers } from "../../runtime/questions/ask.ts"
 import type { RunIndexer } from "../../runtime/runs/indexer.ts"
 import { Live, type LiveRun } from "../../runtime/runs/records.ts"
-import type { AnswerKind, SessionHarness } from "../../runtime/sessions/harness.ts"
+import { type AnswerKind, type SessionHarness, approverOf } from "../../runtime/sessions/harness.ts"
 import { type OfficePaths as SandboxOfficePaths, SandboxPolicy, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
 import { InvalidTransition, LIVE, type QuestionRecord, type SessionRecord, type Store, newId } from "../../runtime/store/store.ts"
 import { WorkspaceTools } from "../../tools/workspace.ts"
@@ -465,6 +465,36 @@ export class ChatHarness implements SessionHarness {
       return this.store.updateSession(sessionId, { connection, model: picked, model_note: null })
     }
     return this.#actor(sessionId).setModel(connection, picked)
+  }
+
+  /**
+   * Switches the session's mode as `by`, who must be its approver (its opener, else the CEO at its pinned commit).
+   * A Codex session's mode is refused 422 `not_supported`, as Codex doesn't follow it yet. 404 for no session, 409
+   * `not_live` for one that isn't live, 403 `forbidden` for anyone but the approver.
+   */
+  async setMode(
+    sessionId: string,
+    mode: SessionRecord["mode"],
+    { by = null }: { by?: string | null } = {},
+  ): Promise<SessionRecord> {
+    const codex = this.#codexFor(sessionId, notSupported)
+    if (codex !== undefined) return codex.setMode(sessionId, mode, { by })
+    const live = () => {
+      const session = this.store.getSession(sessionId)
+      if (session === undefined || !LIVE.includes(session.status)) {
+        throw new HarnessError(409, "not_live", `session ${sessionId} has ended`)
+      }
+      return session
+    }
+    const session = live()
+    // The pinned company is read only when it names the approver: for a session nobody opened.
+    const pinned = session.opened_by === null ? loadRepo(await this.office.git.pin(session.repo_commit)) : undefined
+    const approver = approverOf(session, pinned?.company?.ceo ?? null)
+    if (approver === null) throw new HarnessError(403, "forbidden", "nobody may change this chat's mode")
+    if (by !== approver) throw new HarnessError(403, "forbidden", `only @${approver} may change this chat's mode`)
+    // Read again: the session may have ended while the pinned company was read.
+    live()
+    return this.store.updateSession(sessionId, { mode })
   }
 
   /** The session's messages: a yian chat's from its runs' logs, with its live actor's calls in flight. The logs are

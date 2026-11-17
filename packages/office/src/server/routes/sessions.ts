@@ -7,6 +7,7 @@ import {
   Message,
   PromptRequest,
   Session,
+  SetModeRequest,
   SetModelRequest,
 } from "@opencorp/protocol"
 import { z } from "zod"
@@ -153,6 +154,13 @@ export function setModel(ctx: RequestContext, params: Params, body: unknown) {
   return harnessCall(() => actor.setModel(params.id!, connection, model))
 }
 
+/** Switch the session's mode; only its approver may. */
+export function setMode(ctx: RequestContext, params: Params, body: unknown) {
+  const { mode } = body as z.output<typeof SetModeRequest>
+  const actor = harness(ctx, "POST /sessions/:id/mode")
+  return harnessCall(() => actor.setMode(params.id!, mode, { by: actingPerson(ctx) }))
+}
+
 /** The session routes. */
 export const ROUTES: readonly Route<RequestContext>[] = [
   { method: "GET", path: "/sessions", reply: z.array(Session), handler: listSessions },
@@ -166,4 +174,5 @@ export const ROUTES: readonly Route<RequestContext>[] = [
   { method: "POST", path: "/sessions/:id/continue", reply: Session, handler: continueSession },
   { method: "POST", path: "/sessions/:id/cost-cap", body: CostCapRequest, reply: Session, handler: costCap },
   { method: "POST", path: "/sessions/:id/model", body: SetModelRequest, reply: Session, handler: setModel },
+  { method: "POST", path: "/sessions/:id/mode", body: SetModeRequest, reply: Session, handler: setMode },
 ]
