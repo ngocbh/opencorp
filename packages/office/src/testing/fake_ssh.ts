@@ -255,10 +255,10 @@ class Run {
     return false
   }
 
-  /** Asks `mode`'s question on /dev/tty, as ssh does, records the line typed, and says whether it logs in: any
-   *  password, `yes` to the host key, `1` from Duo's menu; false without a terminal. A password is read with echo off,
-   *  turned off before its prompt shows, as ssh's readpassphrase does; the others with echo on. Its line ends are
-   *  `\n`, which the terminal shows as `\r\n`. */
+  /** Asks `mode`'s question on /dev/tty, as ssh's readpassphrase does, records the line typed, and says whether it
+   *  logs in: any password, `yes` to the host key, `1` from Duo's menu; false without a terminal. Before the question
+   *  it throws away keys typed so far (readpassphrase's TCSAFLUSH), and turns echo off for a password; after a
+   *  password it ends the line, then turns echo back on. Its line ends are `\n`, which the terminal shows as `\r\n`. */
   ask(host: string, mode: FakeLogin): boolean {
     let fd: number
     try {
@@ -267,8 +267,13 @@ class Run {
       return false
     }
     const secret = mode === "tty"
+    const stty = (...args: string[]) => spawnSync("stty", args, { stdio: [fd, "ignore", "ignore"] })
     try {
-      if (secret) spawnSync("stty", ["-echo"], { stdio: [fd, "ignore", "ignore"] })
+      // Whole lines off, with reads that return at once, so what is typed, finished line or not, can be read away.
+      stty("-icanon", "min", "0", "time", "0", ...(secret ? ["-echo"] : []))
+      const scratch = Buffer.alloc(4096)
+      while (fs.readSync(fd, scratch, 0, scratch.length, null) > 0);
+      stty("icanon")
       if (mode === "host_key") {
         fs.writeSync(
           fd,
@@ -281,8 +286,8 @@ class Run {
       const one = Buffer.alloc(1)
       while (fs.readSync(fd, one, 0, 1, null) === 1 && one[0] !== 0x0a) if (one[0] !== 0x0d) bytes.push(one[0]!)
       if (secret) {
-        spawnSync("stty", ["echo"], { stdio: [fd, "ignore", "ignore"] })
         fs.writeSync(fd, "\n")
+        stty("echo")
       }
       const line = Buffer.from(bytes).toString("utf8")
       fs.appendFileSync(path.join(this.state, "tty.txt"), line + "\n")

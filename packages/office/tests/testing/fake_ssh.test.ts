@@ -107,9 +107,9 @@ test("BatchMode in the -F file uses the host's batch mode and never prompts", ()
   expect(fake.tty()).toEqual([])
 })
 
-/** Runs the fake with `args` on a terminal of its own, as a person would at a shell; `answer` is typed once `asks`
- *  shows. Resolves to its exit code and what the terminal showed. */
-async function onTerminal(fake: FakeSsh, args: string[], asks: string, answer: string) {
+/** Runs the fake with `args` on a terminal of its own, as a person would at a shell; `early` is typed at once, and
+ *  `answer` once `asks` shows. Resolves to its exit code and what the terminal showed. */
+async function onTerminal(fake: FakeSsh, args: string[], asks: string, answer: string, early = "") {
   let shown = ""
   const decoder = new TextDecoder()
   const pty = spawnPty([fake.ssh, ...args], {
@@ -123,6 +123,7 @@ async function onTerminal(fake: FakeSsh, args: string[], asks: string, answer: s
     pty.kill("SIGKILL")
     pty.close()
   })
+  if (early !== "") pty.write(early)
   await waitFor(() => shown.includes(asks), { timeout: 10_000, what: JSON.stringify(asks) })
   pty.write(answer)
   const code = await pty.exited
@@ -146,6 +147,18 @@ test("a host_key login asks ssh's host key question and logs in on yes", async (
   expect(fake.logins()).toEqual(["h"])
   // ssh asks nothing under BatchMode: an unknown host key fails.
   expect(run(fake, ["-o", "BatchMode=yes", "h", "echo in"]).code).toBe(255)
+})
+
+test("keys typed before a question are thrown away, as ssh flushes them", async () => {
+  const fake = fakeSsh({ login: "host_key" })
+  const yes = await onTerminal(fake, ["h", "echo in"], "(yes/no/[fingerprint])? ", "yes\r", "no\r")
+  expect(yes.code).toBe(0)
+  fake.set({ login: "tty" })
+  const pw = await onTerminal(fake, ["h", "echo in"], "fake password for h: ", "typed-after\r", "typed-before")
+  expect(pw.code).toBe(0)
+  expect(fake.tty()).toEqual(["yes", "typed-after"])
+  // ssh ends the password's line before it turns echo back on.
+  expect(pw.shown).toEndWith("fake password for h: \r\nin\r\n")
 })
 
 test("a duo login takes 1", async () => {
