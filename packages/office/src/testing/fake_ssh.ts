@@ -15,10 +15,17 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { selfCommand } from "../platform.ts"
 
-/** ok; refuse (255, "Permission denied"); hang; tty ("fake password for <host>: " on /dev/tty, the line read appended
- *  to tty.txt). `batch` applies when the -F file holds `BatchMode yes`. */
+/** How a host logs in: ok; refuse (255, "Permission denied"); hang; or one of the questions it asks on /dev/tty, each
+ *  line read appended to tty.txt:
+ *  - tty: "fake password for <host>: ", read with echo off; any line logs in;
+ *  - host_key: OpenSSH's question for an unknown host key, read with echo on; `yes` logs in, anything else is 255
+ *    with "Host key verification failed.";
+ *  - duo: Duo's menu, read with echo on; `1` logs in, anything else is 255.
+ *
+ *  `batch` applies when the -F file (or `-o`) holds `BatchMode yes`; a host that would ask is then refused. */
+export type FakeLogin = "ok" | "refuse" | "hang" | "tty" | "host_key" | "duo"
 export interface FakeHost {
-  login?: "ok" | "refuse" | "hang" | "tty"
+  login?: FakeLogin
   batch?: "ok" | "refuse"
 }
 export interface FakeSshBehavior extends FakeHost {
@@ -41,7 +48,7 @@ export interface FakeSsh {
   set(b: FakeSshBehavior): void
   /** Each argv the fake was run with, in order. */
   calls(): string[][]
-  /** The lines typed at its password prompts. */
+  /** The lines typed at its questions: passwords, host keys and Duo's menu. */
   tty(): string[]
   /** The host names that logged in, in order (riding a master isn't a login). */
   logins(): string[]
@@ -157,6 +164,9 @@ function options(p: Parsed): { controlMaster: string; controlPath: string | null
 
 /** `[user@]host[:port]` as ssh names it in messages: without the port. */
 const shown = (target: string) => target.replace(/:[0-9]+$/, "")
+/** The modes that ask on /dev/tty. */
+const ASKS: readonly FakeLogin[] = ["tty", "host_key", "duo"]
+
 /** The host name alone, which modes and `%C` go by. */
 const hostName = (target: string) => shown(target).replace(/^.*@/, "")
 
@@ -224,44 +234,64 @@ class Run {
   }
 
   /** How `target` logs in now. */
-  mode(target: string, batch: boolean): "ok" | "refuse" | "hang" | "tty" {
+  mode(target: string, batch: boolean): FakeLogin {
     const host = this.behavior.hosts?.[hostName(target)] ?? {}
     const login = host.login ?? this.behavior.login ?? "ok"
     if (!batch) return login
-    return host.batch ?? this.behavior.batch ?? (login === "tty" ? "refuse" : login)
+    return host.batch ?? this.behavior.batch ?? (ASKS.includes(login) ? "refuse" : login)
   }
 
   /** Logs in to `target`: false (after ssh's words on stderr) when it's refused. */
   async login(target: string, batch: boolean): Promise<boolean> {
     const mode = this.mode(target, batch)
     if (mode === "hang") return await new Promise<never>(() => setTimeout(() => process.exit(255), FAKE_MASTER_MAX_MS))
-    if (mode === "ok" || (mode === "tty" && this.prompt(hostName(target)))) {
+    if (mode === "ok" || (ASKS.includes(mode) && this.ask(hostName(target), mode))) {
       fs.appendFileSync(path.join(this.state, "logins.txt"), hostName(target) + "\n")
       if (this.behavior.banner !== undefined) process.stderr.write(this.behavior.banner)
       return true
     }
-    process.stderr.write(`${shown(target)}: Permission denied (publickey,password).\r\n`)
+    if (mode === "host_key") process.stderr.write("Host key verification failed.\r\n")
+    else process.stderr.write(`${shown(target)}: Permission denied (publickey,password).\r\n`)
     return false
   }
 
-  /** Asks for a password on /dev/tty, as ssh does, and records the line typed; false without a terminal. */
-  prompt(host: string): boolean {
+  /** Asks `mode`'s question on /dev/tty, as ssh's readpassphrase does, records the line typed, and says whether it
+   *  logs in: any password, `yes` to the host key, `1` from Duo's menu; false without a terminal. Before the question
+   *  it throws away keys typed so far (readpassphrase's TCSAFLUSH), and turns echo off for a password; after a
+   *  password it ends the line, then turns echo back on. Its line ends are `\n`, which the terminal shows as `\r\n`. */
+  ask(host: string, mode: FakeLogin): boolean {
     let fd: number
     try {
       fd = fs.openSync("/dev/tty", "r+")
     } catch {
       return false
     }
+    const secret = mode === "tty"
+    const stty = (...args: string[]) => spawnSync("stty", args, { stdio: [fd, "ignore", "ignore"] })
     try {
-      fs.writeSync(fd, `fake password for ${host}: `)
-      spawnSync("stty", ["-echo"], { stdio: [fd, "ignore", "ignore"] })
+      // Whole lines off, with reads that return at once, so what is typed, finished line or not, can be read away.
+      stty("-icanon", "min", "0", "time", "0", ...(secret ? ["-echo"] : []))
+      const scratch = Buffer.alloc(4096)
+      while (fs.readSync(fd, scratch, 0, scratch.length, null) > 0);
+      stty("icanon")
+      if (mode === "host_key") {
+        fs.writeSync(
+          fd,
+          `The authenticity of host '${host}' can't be established.\nED25519 key fingerprint is SHA256:fake.\n` +
+            "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+        )
+      } else if (mode === "duo") fs.writeSync(fd, `Duo two-factor login for ${host}\n\nPasscode or option (1-3): `)
+      else fs.writeSync(fd, `fake password for ${host}: `)
       const bytes: number[] = []
       const one = Buffer.alloc(1)
       while (fs.readSync(fd, one, 0, 1, null) === 1 && one[0] !== 0x0a) if (one[0] !== 0x0d) bytes.push(one[0]!)
-      spawnSync("stty", ["echo"], { stdio: [fd, "ignore", "ignore"] })
-      fs.writeSync(fd, "\n")
-      fs.appendFileSync(path.join(this.state, "tty.txt"), Buffer.from(bytes).toString("utf8") + "\n")
-      return true
+      if (secret) {
+        fs.writeSync(fd, "\n")
+        stty("echo")
+      }
+      const line = Buffer.from(bytes).toString("utf8")
+      fs.appendFileSync(path.join(this.state, "tty.txt"), line + "\n")
+      return secret || line === (mode === "host_key" ? "yes" : "1")
     } finally {
       fs.closeSync(fd)
     }
