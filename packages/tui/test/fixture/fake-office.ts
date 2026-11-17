@@ -6,6 +6,9 @@ import {
   APPROVAL_YES,
   Approval as ApprovalSchema,
   approvalSessionOption,
+  Instrument as InstrumentSchema,
+  InstrumentKeysRequest,
+  InstrumentSizeRequest,
   Person as PersonSchema,
   RemoveRuleRequest,
   RuleList as RuleListSchema,
@@ -23,6 +26,7 @@ import type {
   HireRequest,
   HireResponse,
   HqStatus,
+  Instrument,
   LiveEvent,
   Message,
   ModelList,
@@ -90,6 +94,8 @@ export type FakeState = {
   managers: string[]
   /** Each chat's rules, with their sources, and the rules files that don't load, by session id; none when absent. */
   rules: Record<string, RuleList>
+  /** Each chat's live instruments, oldest first, by session id; their output is kept beside them. */
+  instruments: Record<string, Instrument[]>
 }
 
 const now = () => new Date().toISOString()
@@ -169,6 +175,7 @@ export function seed(nextId = counter()): FakeState {
     },
     managers: ["ngocbh"],
     rules: {},
+    instruments: {},
   }
 }
 
@@ -807,6 +814,73 @@ export function createFakeOffice(
     return upsertSession({ ...s, mode: body.mode, updated_at: now() })
   }
 
+  // Each instrument's output so far, by id: the fake keeps all of it, so its screen starts at offset 0.
+  const outputs = new Map<string, Buffer>()
+  /** Session `sessionId`'s instrument `id`, or the office's 404. */
+  function instrument(sessionId: string, id: string) {
+    return need(
+      state.instruments[session(sessionId).id]?.find((i) => i.id === id),
+      `instrument ${id} in session ${sessionId}`,
+    )
+  }
+  /** Adds or replaces an instrument of `sessionId`, as its host does, and publishes it. */
+  function addInstrument(sessionId: string, fields: Instrument) {
+    const added = InstrumentSchema.parse({ ...fields, session_id: sessionId })
+    const list = (state.instruments[sessionId] ??= [])
+    const i = list.findIndex((x) => x.id === added.id)
+    if (i >= 0) list[i] = added
+    else list.push(added)
+    live({ type: "instrument.updated", session_id: sessionId, data: structuredClone(added) as LiveEvent["data"] })
+    return added
+  }
+  /** Prints `text` in instrument `id`, published with its byte offset as the office's coalesced output is. */
+  function instrumentOutput(sessionId: string, id: string, text: string) {
+    instrument(sessionId, id)
+    const before = outputs.get(id) ?? Buffer.alloc(0)
+    const chunk = Buffer.from(text)
+    outputs.set(id, Buffer.concat([before, chunk]))
+    const data = { instrument_id: id, offset: before.length, data: chunk.toString("base64") }
+    live({ type: "instrument.output", session_id: sessionId, data })
+  }
+  /** Takes an instrument out of its session's list, as its host does, and publishes its removal. */
+  function removeInstrument(sessionId: string, id: string) {
+    instrument(sessionId, id)
+    state.instruments[sessionId] = state.instruments[sessionId]!.filter((i) => i.id !== id)
+    outputs.delete(id)
+    live({ type: "instrument.removed", session_id: sessionId, data: { id, session_id: sessionId } })
+  }
+  /** As the office's guard: only the session's approver (its opener, else the CEO) may type or resize, then the
+   *  instrument must be listed; the body is checked after. */
+  function approverOnly(sessionId: string, id: string, actor: string) {
+    const approver = session(sessionId).opened_by ?? ceo()
+    if (actor !== approver) throw fail(403, "forbidden", `only @${approver} may type into or resize this session's shells`)
+    return instrument(sessionId, id)
+  }
+  /** The office's 409 for a shell still starting, or one that ended or failed: it takes no keys or size. */
+  function running(found: Instrument) {
+    if (found.status === "starting") throw fail(409, "not_live", "this shell is still starting; try once it is ready")
+    if (found.status === "ended" || found.status === "failed") throw fail(409, "not_live", `this shell has ${found.status}`)
+  }
+  /** The office's keys: straight to the shell; a pipes shell takes only Ctrl-C. */
+  function instrumentKeys(sessionId: string, id: string, body: unknown, actor: string) {
+    const found = approverOnly(sessionId, id, actor)
+    const parsed = InstrumentKeysRequest.safeParse(body)
+    check(parsed.success, "data: isn't valid")
+    running(found)
+    if (!found.interactive && parsed.data!.data !== "\x03")
+      throw fail(409, "not_interactive", "this shell takes no keys but Ctrl-C, which interrupts its command")
+  }
+  /** The office's resize: the PTY takes it, and the instrument says so. */
+  function instrumentSize(sessionId: string, id: string, body: unknown, actor: string) {
+    const found = approverOnly(sessionId, id, actor)
+    const parsed = InstrumentSizeRequest.safeParse(body)
+    check(parsed.success, "cols or rows: isn't valid")
+    running(found)
+    if (!found.interactive) throw fail(409, "not_interactive", "this shell has no terminal to resize")
+    const { cols, rows } = parsed.data!
+    addInstrument(sessionId, { ...found, size: { cols, rows }, updated_at: now() })
+  }
+
   /**
    * The office's choice for a new chat: the pick when its connection is here (its own model stored as null), else
    * the default on its own model with a note saying why. Unlike the office, it skips the agent's model: the fake
@@ -1096,6 +1170,37 @@ export function createFakeOffice(
       "/sessions/:id/rules/remove",
       ({ params, body }) => {
         removeRule(params.id, body)
+        return Response.json({ ok: true })
+      },
+    ],
+    [
+      "GET",
+      "/sessions/:id/instruments",
+      // As the office serves them: every field, defaults filled.
+      ({ params }) => Response.json(InstrumentSchema.array().parse(state.instruments[session(params.id).id] ?? [])),
+    ],
+    [
+      "GET",
+      "/sessions/:id/instruments/:iid/screen",
+      ({ params }) => {
+        instrument(params.id, params.iid)
+        const held = outputs.get(params.iid) ?? Buffer.alloc(0)
+        return Response.json({ offset: 0, end: held.length, data: held.toString("base64") })
+      },
+    ],
+    [
+      "POST",
+      "/sessions/:id/instruments/:iid/keys",
+      ({ params, body, actor }) => {
+        instrumentKeys(params.id, params.iid, body, actor)
+        return Response.json({ ok: true })
+      },
+    ],
+    [
+      "POST",
+      "/sessions/:id/instruments/:iid/size",
+      ({ params, body, actor }) => {
+        instrumentSize(params.id, params.iid, body, actor)
         return Response.json({ ok: true })
       },
     ],
@@ -1472,6 +1577,9 @@ export function createFakeOffice(
     addQuestion,
     addApproval,
     newSession,
+    addInstrument,
+    instrumentOutput,
+    removeInstrument,
     replyEnded,
     expire,
     setStatus,

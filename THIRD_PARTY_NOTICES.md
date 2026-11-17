@@ -45,13 +45,17 @@ license, the upstream paths and commit, and our paths.
   `packages/tui/src/routes/session/dialog-rules.tsx`.
 - **What:** its terminals' output and size, as a design: output carries an absolute offset from the terminal's
   start, so a client joining late takes the kept output up to an end offset and then only the live bytes past it,
-  with nothing lost or applied twice; and a terminal's size is part of what is listed, so every viewer draws at it.
-  An instrument's events and its screen follow both, over the event stream and plain requests rather than a
-  WebSocket; the code is our own.
-- **Upstream:** `packages/core/src/pty.ts` (`attach`), `packages/core/src/pty/protocol.ts` and
-  `packages/schema/src/persistent-pty.ts` (`Info.size`, `Info.output`), read at commit `df46f69` (2026-11-16).
+  with nothing lost or applied twice; the server keeps each terminal's last output in memory (`BUFFER_LIMIT`) for
+  that; a terminal's size is part of what is listed, so every viewer draws at it; and one client controls a
+  terminal's size. An instrument's events and its screen follow these, over the event stream and plain requests
+  rather than a WebSocket, with the kept output starting at a line and only the session's approver typing or
+  resizing; the code is our own.
+- **Upstream:** `packages/core/src/pty.ts` (`attach`, `BUFFER_LIMIT`), `packages/core/src/pty/protocol.ts`,
+  `packages/schema/src/persistent-pty.ts` (`Info.size`, `Info.output`) and `packages/process-daemon/SPEC.md` (one
+  controller per terminal), read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/protocol/src/schemas/instruments.ts`, `packages/client/src/client.ts`
-  (`sessions.instrumentScreen`).
+  (`sessions.instrumentScreen`), `packages/office/src/runtime/sessions/instruments.ts`,
+  `packages/office/src/server/routes/instruments.ts`.
 - **What:** its shell tool, as the model sees it, as a design: one permission request per call, covering all of the
   call's commands; a reply within two minutes by default, the command still running past it rather than killed; and
   its prompt's "DO NOT poll", with its advice to quote paths that hold spaces or special characters and to prefer a

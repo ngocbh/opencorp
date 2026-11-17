@@ -17,6 +17,7 @@ import { RunNotifier } from "../runtime/runs/notify.ts"
 import { Live } from "../runtime/runs/records.ts"
 import { RunLogs } from "../runtime/runs/service.ts"
 import type { SessionHarness } from "../runtime/sessions/harness.ts"
+import { Instruments } from "../runtime/sessions/instruments.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../runtime/sandbox/policy.ts"
 import { SecretStore } from "../runtime/secrets.ts"
 import type { HqSessionRecord, Store } from "../runtime/store/store.ts"
@@ -95,6 +96,9 @@ export class Office {
   harness: SessionHarness | undefined
   /** The question cards, once the questions extension built them. */
   cards: Cards | undefined
+  /** Each session's live instruments, published as live events: in memory, so they outlive the clients that watch
+   *  them and end with the office. */
+  readonly instruments: Instruments
   /** The office's live Codex sessions; set by buildOffice. */
   codex: CodexSessions | undefined
   /** The office's one transcript of the run logs, set by `buildOffice`; the session actors' context takes it. */
@@ -179,6 +183,7 @@ export class Office {
       log,
     })
     this.runNotifier = new RunNotifier((event) => this.bus.publishMeta(event), { log })
+    this.instruments = new Instruments((event) => this.bus.publishLive(event))
     this.workers = workers
     this.profileStore = profileStore === undefined ? (handle) => new GitProfileStore(git, handle) : profileStore
     this.tools = tools

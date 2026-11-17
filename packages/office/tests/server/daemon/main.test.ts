@@ -9,6 +9,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { isLocked, openSqlite } from "@ngocbh/yian/platform"
 import { readRunIndex, updateRunIndex } from "@ngocbh/yian/run"
+import { now } from "@opencorp/protocol"
 import { Database } from "bun:sqlite"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { Identity, identityPath, writeIdentity } from "../../../src/runtime/auth/identity.ts"
@@ -43,6 +44,7 @@ import { latestVersion } from "../../../src/runtime/store/migrate.ts"
 import { Store, newId } from "../../../src/runtime/store/store.ts"
 import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
 import { OfficePaths } from "../../../src/util/home.ts"
+import { InstrumentRecord, readRecord } from "../../../src/tools/terminal/record.ts"
 import { EXIT_GRACE_MS, RegistryClosed, WorkerRegistry } from "../../../src/runtime/worker/spawn.ts"
 import { CHAT_FILES, fakeLlm } from "../../features/chat/helpers.ts"
 import { company, makeCompany, recordingGit } from "../../company/helpers.ts"
@@ -824,6 +826,44 @@ test("build office restores codex sessions on start before the cards sweep", asy
   expect(turn.flatMap((m) => m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])))).toEqual(["[interrupted]"])
   expect(office.store.getQuestion(asked.id)!.status).toBe("stale")
   expect(office.store.listWorkers()).toEqual([])
+})
+
+test("a start marks the terminal records an earlier office left running as interrupted, before the restore", async () => {
+  let office: Office | undefined
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const paths = new OfficePaths(home())
+  const meta = { name: "shell 1", kind: "terminal" as const, profile: "ssh", driver: "opencorp", started: now() }
+  const left = new InstrumentRecord(path.join(paths.sessionDir("S1"), "sh_1"), { ...meta, id: "sh_1" })
+  left.command("make", "opencorp")
+  const ended = new InstrumentRecord(path.join(paths.sessionDir("S2"), "sh_1"), { ...meta, id: "sh_1" })
+  ended.end("ended")
+  // A file among the session folders, and a folder whose meta.json isn't a record's, are left as they are.
+  fs.writeFileSync(path.join(paths.sessions, "stray"), "x")
+  fs.mkdirSync(path.join(paths.sessionDir("S3"), "odd"), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(path.join(paths.sessionDir("S3"), "odd", "meta.json"), "{not json")
+  const out = collect()
+  const rec = recordingGit(tempDir())
+  office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write: out.write })
+  spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
+  const states: (string | undefined)[] = []
+  const harness = office.harness as ChatHarness
+  const restore = harness.restore.bind(harness)
+  spyOn(harness, "restore").mockImplementation(async () => {
+    states.push(readRecord(path.join(paths.sessionDir("S1"), "sh_1"))?.state)
+    await restore()
+  })
+  expect(readRecord(path.join(paths.sessionDir("S1"), "sh_1"))!.state).toBe("running")
+  await office.start()
+  expect(states).toEqual(["interrupted"])
+  expect(readRecord(path.join(paths.sessionDir("S2"), "sh_1"))!.state).toBe("ended")
+  expect(fs.readFileSync(path.join(paths.sessionDir("S3"), "odd", "meta.json"), "utf8")).toBe("{not json")
+  expect(out.text()).toContain(`${path.join(paths.sessionDir("S3"), "odd")}: its meta.json isn't JSON`)
 })
 
 test("office stop waits for the send backs queued on the office harness and returns", async () => {

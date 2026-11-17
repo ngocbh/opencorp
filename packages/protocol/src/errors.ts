@@ -52,6 +52,7 @@ export const ERROR_CODES = [
   "not_continuable",
   "not_found",
   "not_implemented",
+  "not_interactive",
   "not_live",
   "not_open",
   "not_supported",
