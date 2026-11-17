@@ -211,7 +211,8 @@ export interface Permissions {
    *  now: yian's `pending()` while the card is open. The host runs the action itself once the approver says Yes
    *  and completes the call with its result; No completes it with the approver's words. */
   hold(card: ApprovalCard, callId: string): unknown
-  /** Auto's check, as the host binds it; absent, what it would judge asks. Rejects only when `signal` aborts. */
+  /** Auto's check, as the host binds it; absent, what it would judge asks. Rejects when `signal` aborts, or when the
+   *  check can't record its verdict; the gate then asks. */
   check?(input: CheckInput, signal: AbortSignal): Promise<Verdict>
 }
 

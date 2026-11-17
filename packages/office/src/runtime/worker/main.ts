@@ -428,18 +428,35 @@ export interface JobHandlers {
   /** A `check` job: the one-reply model check; the job's problem, or null when there is none. */
   check(job: Job, env: WorkerEnv, signal: AbortSignal): Promise<string | null>
   /** A `classify` job: Auto's check on one command; the flow's raw output, the model that answered and the calls'
-   *  token usage. Rejects when the check couldn't judge. */
-  classify(
-    job: Job,
-    env: WorkerEnv,
-    signal: AbortSignal,
-  ): Promise<{ output: unknown; model: string | null; usage: { input_tokens: number; output_tokens: number } | null }>
+   *  token usage. Rejects when the check couldn't judge, with an error whose `model` and `usage` say what it spent. */
+  classify(job: Job, env: WorkerEnv, signal: AbortSignal): Promise<{ output: unknown } & Spent>
+}
+
+/** What a `classify` job spent: the model that answered and its calls' token usage. */
+interface Spent {
+  model: string | null
+  usage: { input_tokens: number; output_tokens: number } | null
+}
+
+/** The `model` and `usage` of a failed `classify` job's `error`, each only when it reads as one, so the office can
+ *  charge what the job spent. */
+function spentFields(error: unknown): Partial<Spent> {
+  const { model, usage } = (typeof error === "object" && error !== null ? error : {}) as Record<string, unknown>
+  const fields: Partial<Spent> = {}
+  if (model === null || typeof model === "string") fields.model = model
+  const counts = (typeof usage === "object" && usage !== null ? usage : {}) as Record<string, unknown>
+  if (usage === null) fields.usage = null
+  else if (Number.isFinite(counts.input_tokens) && Number.isFinite(counts.output_tokens)) {
+    fields.usage = { input_tokens: counts.input_tokens as number, output_tokens: counts.output_tokens as number }
+  }
+  return fields
 }
 
 /**
  * Runs the jobs the office sends on `channel`; returns the exit code. A `check` job runs `handlers.check` and sends
  * only its result frame, `{type: "result", problem}`, or its `error` frame when a `stop` frame ended it; a `classify`
- * job runs `handlers.classify` the same way, its result frame `{type: "result", output, model, usage}`. A seeded chat
+ * job runs `handlers.classify` the same way, its result frame `{type: "result", output, model, usage}`, and its error
+ * frame carrying what it spent (`model`, `usage`). A seeded chat
  * job whose replaced run's history can't be read sends `{type: "event", name: "history_not_seeded", data:
  * {error_type}}` before its run starts.
  *
@@ -577,6 +594,7 @@ async function serveJob(
       message: `${errorName(error)}: ${shownMessage(error)}`,
       traceback: stackFrames(error),
       ...errnoFields(error),
+      ...(job?.kind === "classify" ? spentFields(error) : {}),
     }
     code = EXIT_FAILED
   }

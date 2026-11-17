@@ -255,6 +255,30 @@ test("a classify job runs its handler and sends only its result frame", async ()
   })
 })
 
+test("a classify job that fails sends what it spent in its error frame, and only a classify job does", async () => {
+  const spent = (message: string) =>
+    Object.assign(new Error(message), { model: "m", usage: { input_tokens: 5, output_tokens: 6, extra: 1 } })
+  const jobHandlers = {
+    ...NO_CHECKS,
+    check: () => Promise.reject(spent("no check")),
+    classify: () => Promise.reject(spent("no verdict")),
+  }
+  const classify = new Recorder()
+  await (await inProcessWorker(makeJob(base(), "c.yaml", { kind: "classify" }), classify, { jobHandlers })).wait()
+  expect(classify.outcome).toMatchObject({
+    type: "error",
+    message: "Error: no verdict",
+    model: "m",
+    usage: { input_tokens: 5, output_tokens: 6 },
+  })
+  expect(Object.keys(classify.outcome!.usage as object).sort()).toEqual(["input_tokens", "output_tokens"])
+  const check = new Recorder()
+  await (await inProcessWorker(makeJob(base(), "c.yaml", { kind: "check" }), check, { jobHandlers })).wait()
+  expect(check.outcome).toMatchObject({ type: "error", message: "Error: no check" })
+  expect(Object.hasOwn(check.outcome!, "usage")).toBe(false)
+  expect(Object.hasOwn(check.outcome!, "model")).toBe(false)
+})
+
 test("a waiting run ends normally with its status", async () => {
   const fake = await fakeLlm()
   const where = base()
