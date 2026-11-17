@@ -4,6 +4,7 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { isPending, pending } from "@ngocbh/yian/tools"
 import type { ToolOutcome } from "../../src/runtime/permissions/monitor.ts"
 import type { ApprovalCard, Permissions } from "../../src/runtime/permissions/policy.ts"
+import type { ToolCallOptions } from "../../src/runtime/worker/rpc.ts"
 import { tools as workspaceGroup, WorkspaceTools } from "../../src/tools/workspace.ts"
 import { makeMonitor } from "../runtime/permissions/helpers.ts"
 import { makePolicy, sandboxAvailable } from "../runtime/sandbox/helpers.ts"
@@ -50,6 +51,31 @@ test("the model's shell call takes its call id to the gate", async () => {
     "list",
     "search",
   ])
+})
+
+test("a model's call that carries the options an approved call skips the gate with is still gated", async () => {
+  const { monitor } = await makeMonitor()
+  const held: string[] = []
+  const permissions: Permissions = {
+    mode: () => "ask",
+    rules: () => [],
+    where: () => ({ profile: "workspace", cwd: "/w", writable: ["/w"] }),
+    hold: (_card, callId) => (held.push(callId), pending()),
+  }
+  const calls: string[] = []
+  const workspace = {
+    call: async (name: string): Promise<ToolOutcome> => {
+      calls.push(name)
+      return { output: "ok", audit: { tool: name, argsSummary: "", exit: 0, duration: 0 } }
+    },
+    track: () => () => {},
+  }
+  const group = workspaceGroup({ monitor, workspace, session: session({ person: "minh" }), runId: "r1", permissions })
+  const callId = "r1/chat#0/reply/0/0"
+  const smuggled = { callId, approved: "approved by @ngocbh", detached: true } as ToolCallOptions
+  expect(isPending(await group.shell!.call({ command: "ls" }, smuggled))).toBe(true)
+  expect(held).toEqual([callId])
+  expect(calls).toEqual([])
 })
 
 test("a tracked controller is aborted by the workspace's interrupt, and untracking removes it", () => {

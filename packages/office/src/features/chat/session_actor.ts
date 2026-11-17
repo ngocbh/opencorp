@@ -19,7 +19,7 @@ import type { Bus } from "../../runtime/bus.ts"
 import type { LiveRelay } from "./live.ts"
 import { redact } from "../../util/redact.ts"
 import { type Answers, isAskManagerCall, makeAskUser, type OnQuestion } from "../../runtime/questions/ask.ts"
-import { approvalResult, readAnswer, YES } from "../../runtime/questions/approval.ts"
+import { approvalResult } from "../../runtime/questions/approval.ts"
 import { formatAnswer, MAX_ANSWER_BYTES } from "../../runtime/questions/format.ts"
 import type { RunIndexer } from "../../runtime/runs/indexer.ts"
 import { OpenNodes } from "../../runtime/runs/nodes.ts"
@@ -462,8 +462,6 @@ export class SessionActor implements LiveCalls {
   readonly #nodes = new OpenNodes()
   /** The session's mode, rules, Auto's check and approval cards, as its runs' tools get them. */
   readonly #approvals: ChatApprovals
-  /** The approved calls the office runs now, by card id, each stopped by its controller. */
-  readonly #approving = new Map<string, AbortController>()
 
   /** The actor of stored session `sessionId`, over its current run. Throws `HarnessError` (`404`) for no such
    *  session. */
@@ -481,6 +479,18 @@ export class SessionActor implements LiveCalls {
       session: () => this.#session(),
       where: () => this.#where(),
       charge: (runId, model, usd) => this.#chargeCheck(runId, model, usd),
+      host: {
+        liveRun: () => (this.#finished ? null : this.#runId),
+        completeWithAnswer: (card) => this.#deliver(this.#complete(card, undefined)),
+        completeWithOutput: (card, output) => {
+          const delivery: Delivery = { id: newId(), op: "complete", call_id: card.call_id!, result: { output } }
+          return this.#deliver(new Pending(delivery, undefined, { questionId: card.id }))
+        },
+        loseAnswer: (card) => this.#loseAnswer(card.id),
+        post: (label, job) => this.#post(label, job),
+        settle: (when) => this.#trySettle(when),
+        runner: async () => (await this.#specOf(this.#session())).runApproved,
+      },
       ...(ctx.checkTimeoutMs === undefined ? {} : { checkTimeoutMs: ctx.checkTimeoutMs }),
     })
   }
@@ -677,7 +687,7 @@ export class SessionActor implements LiveCalls {
   /** The `complete` of the answered `question`'s call, answering its caller with `acked`; a message's falls back on
    *  the `send` `fallback`. */
   #complete(question: QuestionRecord, acked: unknown, fallback: Delivery | null = null): Pending {
-    // An approval card's call gets its action's own output only from `#approve`: anything else is what it says.
+    // An approval card's call gets its action's own output only from its approvals: anything else is what it says.
     const carried = () => this.#ctx.answers.carried(question)
     const output = question.source === "approval" ? approvalResult(question) : formatAnswer(question, carried())
     const delivery: Delivery = { id: newId(), op: "complete", call_id: question.call_id!, result: { output } }
@@ -772,8 +782,8 @@ export class SessionActor implements LiveCalls {
    * (`ask_user`, `ask_manager`) and approval cards of the current run, with `409 ending` (End will interrupt the call)
    * or `409 not_open` while Esc's interrupt, which may close the call, is unanswered; and for a question whose run a
    * fresh run replaces (`#answerDropped`), with `409 not_open`, as stale, since no run would take its answer, or `503
-   * cant_wake` when that fresh run can't start. An approval card's answer goes to `#cardAnswered`, which completes the
-   * call once: a Yes after its action runs.
+   * cant_wake` when that fresh run can't start. An approval card's answer goes to its approvals
+   * (`ChatApprovals.answered`), which complete the call once: a Yes after its action runs.
    */
   answer(
     questionId: string,
@@ -821,7 +831,7 @@ export class SessionActor implements LiveCalls {
       stored = store.getQuestion(questionId) ?? stored
       // Settled once the answer is on its way: before, nothing open and nothing spawning would read idle.
       if (stored.call_id !== null && stored.run_id === this.#runId && !this.#finished) {
-        if (stored.source === "approval") await this.#cardAnswered(stored)
+        if (stored.source === "approval") await this.#approvals.answered(stored)
         else await this.#deliver(this.#complete(stored, undefined))
       }
       this.#trySettle("after an answer")
@@ -840,107 +850,6 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * Acts on approval card `card`'s answer, stored on a call of the current run. A Yes (or don't ask again, or
-   * always) runs the held action (`#approve`), which completes the call once it ends. Any other answer completes the
-   * call now with what it says (`approvalResult`); a No answers every other open card of the run the same way, by
-   * the same approver, as one No settles the reply's held calls.
-   */
-  async #cardAnswered(card: QuestionRecord): Promise<void> {
-    const read = readAnswer(card)
-    if (read.answer === "yes" || read.answer === "session" || read.answer === "always") {
-      await this.#approve(card)
-      return
-    }
-    await this.#deliver(this.#complete(card, undefined))
-    if (read.answer === "no") {
-      await this.#answerOpenCards(() => card.answer, card.answer_kind ?? "text", card.answered_by)
-    }
-  }
-
-  /**
-   * Runs approval card `card`'s held action, which its approver said Yes to. Its "don't ask again" rules are added
-   * first, and then each other open card of the run those rules now allow is answered Yes by the same approver and
-   * run too (`#recheck`). The action runs with no gate, audited as approved, detached from the workspace's interrupt
-   * (no worker waits on it), while the session reads busy; Esc, End and the office stop end it. Once it ends, its
-   * output (or `error: <its type>`) completes the held call, unless the session finished, the actor closed or the
-   * call is no longer of the current run (its answer is then lost). A refusal goes stale through `#lostAnswer`.
-   */
-  async #approve(card: QuestionRecord): Promise<void> {
-    const added = await this.#approvals.remember(card)
-    const approval = card.approval!
-    const session = this.#session()
-    const spec = await this.#specOf(session)
-    const stop = new AbortController()
-    this.#approving.set(card.id, stop)
-    const runApproved = spec.runApproved
-    const ran = runApproved
-      ? runApproved(approval.tool, approval.args, {
-          session,
-          runId: card.run_id,
-          signal: stop.signal,
-          by: card.answered_by ?? "",
-        })
-      : Promise.reject(new RangeError("this chat runs no approved calls"))
-    void ran
-      .then(
-        (output) => output,
-        (error: unknown) => `error: ${errorName(error)}`,
-      )
-      .then((output) =>
-        this.#post("an approved call", async () => {
-          this.#approving.delete(card.id)
-          if (this.#finished || card.run_id !== this.#runId) {
-            this.#loseAnswer(card.id)
-          } else {
-            const delivery: Delivery = { id: newId(), op: "complete", call_id: card.call_id!, result: { output } }
-            await this.#deliver(new Pending(delivery, undefined, { questionId: card.id }))
-          }
-          this.#trySettle("after an approved call")
-        }),
-      )
-    if (added) await this.#recheck(card.answered_by)
-  }
-
-  /** After a "don't ask again" added rules: each open approval card of the current run that the session's mode and
-   *  rules now allow is answered Yes by `by` and its action run (`#approve`); the others stay open. */
-  async #recheck(by: string | null): Promise<void> {
-    const { store } = this.#ctx
-    for (const open of store.listQuestions({ runId: this.#runId!, status: "open", source: "approval" })) {
-      if (open.call_id === null || !this.#approvals.allows(open)) continue
-      let answered: QuestionRecord
-      try {
-        answered = store.answerQuestion(open.id, YES, "option", by)
-      } catch (error) {
-        // Answered or closed meanwhile.
-        if (error instanceof InvalidTransition) continue
-        throw error
-      }
-      await this.#approve(store.getQuestion(open.id) ?? answered)
-    }
-  }
-
-  /** Answers every open approval card of the current run with `value(card)` (of `kind`) as `by`, and completes each
-   *  call with what it says. */
-  async #answerOpenCards(
-    value: (card: QuestionRecord) => unknown,
-    kind: AnswerKind,
-    by: string | null,
-  ): Promise<void> {
-    const { store } = this.#ctx
-    for (const open of store.listQuestions({ runId: this.#runId!, status: "open", source: "approval" })) {
-      if (open.call_id === null) continue
-      let answered: QuestionRecord
-      try {
-        answered = store.answerQuestion(open.id, value(open), kind, by)
-      } catch (error) {
-        if (error instanceof InvalidTransition) continue
-        throw error
-      }
-      await this.#deliver(this.#complete(store.getQuestion(open.id) ?? answered, undefined))
-    }
-  }
-
-  /**
    * The session's mode was switched to `mode` by `by` (the owner when null). A switch to `dontAsk`, which never
    * asks, answers each open approval card of the current run No, with "this session is now in dontAsk mode, which
    * doesn't ask: <the card's reason>", and completes each call, so the run goes on rather than wait all night.
@@ -950,10 +859,7 @@ export class SessionActor implements LiveCalls {
   modeChanged(mode: Mode, { by = null }: { by?: string | null } = {}): Promise<void> {
     return this.#command(async () => {
       if (mode !== "dontAsk" || this.#finished || this.#ending || this.#runId === null || this.#interrupting()) return
-      const who = by ?? (await this.#owner(this.#session()))
-      const refusal = (card: QuestionRecord) =>
-        `this session is now in dontAsk mode, which doesn't ask: ${card.approval?.reason ?? ""}`
-      await this.#answerOpenCards(refusal, "text", who)
+      await this.#approvals.refuseOpen(by ?? (await this.#owner(this.#session())))
       this.#trySettle("after a mode switch")
     })
   }
@@ -979,7 +885,7 @@ export class SessionActor implements LiveCalls {
         if (this.#interrupting()) throw new HarnessError(409, "not_open", `question ${question} is being interrupted`)
       }
       this.#interruptWorkspace()
-      this.#stopApproved()
+      this.#approvals.stop()
       this.#answerCalls()
       const run = this.#run
       const live = run !== null && run.worker !== null && run.outcome === null
@@ -1053,7 +959,7 @@ export class SessionActor implements LiveCalls {
     // A reply blocked on a sandboxed shell or an office tool call can't read the interrupt until the call returns;
     // and nobody will read what it returns, even when the end below fails.
     this.#interruptWorkspace()
-    this.#stopApproved()
+    this.#approvals.stop()
     this.#answerCalls()
     let inbox: string
     try {
@@ -1372,7 +1278,7 @@ export class SessionActor implements LiveCalls {
       const spawning =
         this.#starting !== null ||
         this.#readvance ||
-        this.#approving.size > 0 ||
+        this.#approvals.busy ||
         this.#next.some((p) => p.delivery.op === "send" || p.delivery.op === "complete")
       const running = spawning || (run !== null && run.outcome === null && !this.#runAtTurn(run))
       const fromStarting = this.#replying() ? (["idle", "busy", "waiting"] as const) : undefined
@@ -1408,7 +1314,7 @@ export class SessionActor implements LiveCalls {
     this.#stopSettleRetry()
     void this.#releaseParked()
     this.#interruptWorkspace()
-    this.#stopApproved()
+    this.#approvals.stop()
     this.#answerCalls()
     const given = [...(this.#starting?.given ?? []), ...(this.#run?.given ?? []), ...this.#next.splice(0)]
     this.#answerRest(given, stopping())
@@ -2075,7 +1981,7 @@ export class SessionActor implements LiveCalls {
     const delivered = new Set(next.flatMap((p) => (p.delivery.op === "complete" ? [p.delivery.call_id] : [])))
     return this.#ctx.store
       .listQuestions({ runId: this.#runId!, status: "answered" })
-      .filter((q) => q.call_id !== null && !delivered.has(q.call_id) && !this.#approving.has(q.id))
+      .filter((q) => q.call_id !== null && !delivered.has(q.call_id) && !this.#approvals.running(q.id))
   }
 
   /** Stores a question of the run's calls through `Answers.ask`; a newly stored one fires `questionStored` and
@@ -3282,12 +3188,6 @@ export class SessionActor implements LiveCalls {
     } catch (error) {
       this.#log(`session ${this.sessionId}: the workspace can't be interrupted (${errorName(error)})`)
     }
-  }
-
-  /** Stops the approved calls the office runs now: Esc, End and the office stop end them, as they end the
-   *  workspace's own calls. */
-  #stopApproved(): void {
-    for (const stop of this.#approving.values()) stop.abort()
   }
 
   /** Where the session's workspace shell runs, as its sandbox says. Without a workspace no shell is offered, so the

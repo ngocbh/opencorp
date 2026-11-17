@@ -373,7 +373,7 @@ test.skipIf(!sandboxAvailable())("an approved shell call still runs sandboxed", 
   const out = await call(
     "shell",
     { command: `echo in > inside.txt; echo out > ${outside}; echo done`, timeout: null },
-    { approvedBy: "ngocbh", detached: true },
+    { approved: "approved by @ngocbh", detached: true },
   )
   expect(out).toContain("done")
   expect(fs.readFileSync(path.join(ws, "inside.txt"), "utf8")).toBe("in\n")

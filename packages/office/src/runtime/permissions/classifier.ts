@@ -53,7 +53,7 @@ export const CACHE_SIZE = 500
 
 /** The fixed reasons of an `ask` the check couldn't judge: no text from a failure, which could quote the request. */
 export const COULD_NOT_RUN = "it couldn't run"
-export const TIMED_OUT = `it didn't finish in ${CHECK_TIMEOUT_MS / 1000} s`
+export const TIMED_OUT = timedOut(CHECK_TIMEOUT_MS)
 export const NO_VERDICT = "it gave no verdict"
 /** The reason a stopped check is recorded with. */
 export const STOPPED = "it was stopped"
@@ -85,6 +85,11 @@ const ESCAPES: Readonly<Record<string, string>> = {
   "＞": "&gt;",
   "﹤": "&lt;",
   "﹥": "&gt;",
+}
+
+/** Why a check that ran past `ms` asks. */
+export function timedOut(ms: number): string {
+  return `it didn't finish in ${ms / 1000} s`
 }
 
 /** The check couldn't judge; its message is one of the fixed reasons, and `model` and `usage` say what it spent. */
@@ -293,7 +298,7 @@ export class Check {
     }
     const reason =
       late || outcome === null
-        ? TIMED_OUT
+        ? timedOut(this.#timeoutMs)
         : "ok" in outcome
           ? NO_VERDICT
           : outcome.error instanceof CheckFailed

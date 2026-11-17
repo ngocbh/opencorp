@@ -24,6 +24,7 @@ import {
   runClassify,
   STOPPED,
   TIMED_OUT,
+  timedOut,
 } from "../../../src/runtime/permissions/classifier.ts"
 import type { CheckInput } from "../../../src/runtime/permissions/policy.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../../src/testing/fake_llm.ts"
@@ -129,6 +130,7 @@ const never = () => new Promise<CheckModel>(() => {})
 test("the worker gives up on a slow model before the check stops waiting for it", () => {
   expect(CLASSIFY_DEADLINE_MS + 5_000).toBeLessThanOrEqual(CHECK_TIMEOUT_MS)
   expect(TIMED_OUT).toBe("it didn't finish in 30 s")
+  expect(timedOut(1500)).toBe("it didn't finish in 1.5 s")
   expect(CACHE_SIZE).toBe(500)
 })
 
@@ -369,8 +371,8 @@ test("a check past its time asks, saying it didn't finish, and its worker is clo
   const fake = await fakeLlm()
   fake.script({ hold: true })
   const { check, records, registry, spawning, store } = checkInWorker(fake, { timeoutMs: 200 })
-  expect(await check.judge(MAKE, live())).toEqual({ verdict: "ask", reason: TIMED_OUT, failed: true })
-  expect(records.map((r) => [r.reason, r.failed])).toEqual([[TIMED_OUT, true]])
+  expect(await check.judge(MAKE, live())).toEqual({ verdict: "ask", reason: timedOut(200), failed: true })
+  expect(records.map((r) => [r.reason, r.failed])).toEqual([[timedOut(200), true]])
   const worker = (await spawning.mock.results[0]!.value) as Worker
   expect(worker.returncode).not.toBeNull()
   expect(registry.get(worker.sessionId)).toBeUndefined()
@@ -456,7 +458,7 @@ test("a connection that never resolves holds the check no longer than its time o
     const records: CheckRecord[] = []
     const check = new Check({ run, record: async (entry) => void records.push(entry), timeoutMs: 200 })
     let started = performance.now()
-    expect(await check.judge(MAKE, live())).toEqual({ verdict: "ask", reason: TIMED_OUT, failed: true })
+    expect(await check.judge(MAKE, live())).toEqual({ verdict: "ask", reason: timedOut(200), failed: true })
     expect(performance.now() - started).toBeLessThan(1_500)
     const stop = new AbortController()
     const reason = new Error("stopped")
@@ -465,14 +467,14 @@ test("a connection that never resolves holds the check no longer than its time o
     started = performance.now()
     expect(await rejection(judging)).toBe(reason)
     expect(performance.now() - started).toBeLessThan(1_000)
-    expect(records.map((r) => r.reason)).toEqual([TIMED_OUT, STOPPED])
+    expect(records.map((r) => r.reason)).toEqual([timedOut(200), STOPPED])
   }
 })
 
 test("a runner that ignores its signal is let go soon after the time is up or the stop", async () => {
   const check = new Check({ run: () => new Promise(() => {}), record: async () => {}, timeoutMs: 200 })
   let started = performance.now()
-  expect(await check.judge(MAKE, live())).toEqual({ verdict: "ask", reason: TIMED_OUT, failed: true })
+  expect(await check.judge(MAKE, live())).toEqual({ verdict: "ask", reason: timedOut(200), failed: true })
   expect(performance.now() - started).toBeLessThan(5_000)
   const stop = new AbortController()
   const reason = new Error("stopped")

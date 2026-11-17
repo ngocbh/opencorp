@@ -263,14 +263,28 @@ test("a local command for ssh asks in every mode, whatever allows it, and never 
   table("default", [[cmd("ssh -o ProxyJump=j h ls"), [allow("ssh *")], S, BY_RULE]])
 })
 
-test("decide refuses a line over 1000 bytes before reading it", () => {
+test("decide refuses a typed line over 1000 bytes before reading it", () => {
   for (const mode of MODES)
     table(mode, [
       [cmd("echo " + "a".repeat(995)), [allow("echo *")], W, BY_RULE],
-      [cmd("echo " + "a".repeat(996)), [allow("echo *")], W, { verdict: "deny", reason: "it is longer than 1000 bytes" }],
-      [cmd("echo " + "é".repeat(498)), [allow("echo *")], W, { verdict: "deny", reason: "it is longer than 1000 bytes" }],
-      [input("x".repeat(1001)), [], S, { verdict: "deny", reason: "it is longer than 1000 bytes" }],
+      [input("x".repeat(1000)), [allow("x".repeat(1000), "input")], S, BY_RULE],
+      [input("x".repeat(1001)), [allow("*", "input")], S, { verdict: "deny", reason: "it is longer than 1000 bytes" }],
+      [input("é".repeat(501)), [], S, { verdict: "deny", reason: "it is longer than 1000 bytes" }],
     ])
+})
+
+test("a command over 1000 bytes is unreadable: no rule or form covers it, auto checks it, default and ask ask, dontAsk refuses", () => {
+  const heredoc = cmd(`cat > notes.txt <<'EOF'\n${"a line of notes\n".repeat(200)}EOF`)
+  expect(new TextEncoder().encode(heredoc.text).length).toBeGreaterThan(3000)
+  const covering = [allow("cat *"), allow("cat >notes.txt")]
+  const why = "it is too long to read (over 1000 bytes)"
+  table("auto", [[heredoc, covering, W, { verdict: "check", rules: [] }]])
+  table("default", [[heredoc, covering, W, { verdict: "ask", reason: `Default mode asks: ${why}`, rules: [] }]])
+  table("ask", [[heredoc, covering, W, askMode([])]])
+  table("dontAsk", [[heredoc, covering, W, { verdict: "deny", reason: DONT + why }]])
+  table("auto", [[cmd("echo " + "é".repeat(498)), [allow("echo *")], W, { verdict: "check", rules: [] }]])
+  const saved = cmd(heredoc.text, "it saves what runs later")
+  table("auto", [[saved, covering, W, { verdict: "ask", reason: "it saves what runs later", rules: [] }]])
 })
 
 test("a deny rule refuses what sudo, doas, find -exec, trap, case and a program named by its path run", () => {
@@ -622,6 +636,25 @@ test("a call stopped while its check runs runs nothing and holds nothing", async
     run: false, result: "Not run: stopped before Auto's check finished.",
   })
   expect([...held, ...late.held]).toEqual([])
+})
+
+test("a switch to dontAsk while Auto's check runs refuses the call rather than hold a card nobody answers", async () => {
+  let mode: Mode = "auto"
+  const held: ApprovalCard[] = []
+  const perms: Permissions = {
+    mode: () => mode,
+    rules: () => [],
+    where: () => W,
+    hold: (card) => (held.push(card), pending()),
+    check: async () => {
+      mode = "dontAsk"
+      return { verdict: "ask", reason: "it cancels a job" }
+    },
+  }
+  expect(await gate(perms, cmd("scancel 42"), call())).toEqual({
+    run: false, result: "Not run: this session doesn't ask (dontAsk mode): Auto's check: it cancels a job.",
+  })
+  expect(held).toEqual([])
 })
 
 test("a call with no call id can't wait for the owner", async () => {

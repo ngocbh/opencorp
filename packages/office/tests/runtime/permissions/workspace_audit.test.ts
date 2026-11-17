@@ -1,7 +1,7 @@
 /** Every workspace call goes through the monitor for its audit row. */
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { isPending, pending } from "@ngocbh/yian/tools"
-import type { ToolOutcome } from "../../../src/runtime/permissions/monitor.ts"
+import { NO_PERMISSIONS, type ToolOutcome } from "../../../src/runtime/permissions/monitor.ts"
 import type { ApprovalCard, Mode, Permissions, Rule, Verdict } from "../../../src/runtime/permissions/policy.ts"
 import { DETAIL_CHARS } from "../../../src/util/redact.ts"
 import { workspaceToolFunctions, WorkspaceTools } from "../../../src/tools/workspace.ts"
@@ -75,7 +75,8 @@ test("failed and killed calls are errors and killed ones say why", async () => {
     ["error: shell: missing a required argument: 'command'", null, 0],
   ]
   for (const [output, exit, duration] of cases) {
-    await monitor.workspace(stubReturning(output, "shell", "command=x", exit, duration), "minh", "r1")("shell", {})
+    const tools = stubReturning(output, "shell", "command=x", exit, duration)
+    await monitor.workspace(tools, "minh", "r1", { permissions: bound() })("shell", {})
   }
   expect(store.listAudit().map((r) => [r.outcome, r.detail])).toEqual([
     ["error", "exit=1 duration=0.100s"],
@@ -88,7 +89,7 @@ test("failed and killed calls are errors and killed ones say why", async () => {
 test("a call that raises is audited then raised", async () => {
   const { monitor, store } = await makeMonitor()
   const error = new OSError("sandbox-exec missing")
-  const call = monitor.workspace(new StubTools(null, error), "minh", "r1")
+  const call = monitor.workspace(new StubTools(null, error), "minh", "r1", { permissions: bound() })
   await expect(call("shell", { command: "ls" })).rejects.toBe(error)
   const rows = store.listAudit()
   expect(rows).toHaveLength(1)
@@ -99,7 +100,7 @@ test.skipIf(!sandboxAvailable())("real sandboxed calls are audited", async () =>
   const { monitor, store } = await makeMonitor()
   const { make } = makePolicy()
   const tools = new WorkspaceTools(make(), { officeHome: tempDir(), store })
-  const fns = workspaceToolFunctions(monitor.workspace(tools, "minh", "r1"))
+  const fns = workspaceToolFunctions(monitor.workspace(tools, "minh", "r1", { permissions: bound() }))
   expect(await fns.write_file!.call({ path: "a.txt", content: "hi\n" })).toBe("wrote 3 bytes to a.txt")
   expect(await fns.shell!.call({ command: "cat a.txt" })).toContain("hi")
   expect(store.listAudit().map((r) => [r.tool, r.outcome])).toEqual([
@@ -111,9 +112,10 @@ test.skipIf(!sandboxAvailable())("real sandboxed calls are audited", async () =>
 test("killed reasons and raised details are capped", async () => {
   const { monitor, store } = await makeMonitor()
   const line = "😀" + "x".repeat(499)
-  await monitor.workspace(stubReturning(`partial\n${line}`, "shell", "command=x", null, 1), "minh", "r1")("shell", {})
+  const cut = stubReturning(`partial\n${line}`, "shell", "command=x", null, 1)
+  await monitor.workspace(cut, "minh", "r1", { permissions: bound() })("shell", {})
   const huge = new Error("e".repeat(5000))
-  const raising = monitor.workspace(new StubTools(null, huge), "minh", "r1")
+  const raising = monitor.workspace(new StubTools(null, huge), "minh", "r1", { permissions: bound() })
   await expect(raising("shell", {})).rejects.toBe(huge)
   const [killed, raised] = store.listAudit()
   const reason = killed!.detail!.slice(killed!.detail!.indexOf(": ") + 2)
@@ -137,6 +139,11 @@ function permissions({ mode = "default", rules = [], check }: { mode?: Mode; rul
     ...(check === undefined ? {} : { check }),
   }
   return { perms, held }
+}
+
+/** Permissions in auto that hold nothing and check nothing: a shell call with no command never reaches them. */
+function bound(): Permissions {
+  return permissions({ mode: "auto" }).perms
 }
 
 /** Permissions that ask for everything and must never hold or check. */
@@ -226,7 +233,7 @@ test("an approved run skips the gate, and its audit row names who approved it", 
   const { monitor, store } = await makeMonitor()
   const tools = stubReturning("a.py\n[exit 0]", "shell", "command='ls'", 0, 0.012)
   const call = monitor.workspace(tools, "minh", "r1", { sessionId: "s1", permissions: neverAsked() })
-  const out = await call("shell", { command: "ls", timeout: null }, { approvedBy: "ngocbh", detached: true })
+  const out = await call("shell", { command: "ls", timeout: null }, { approved: "approved by @ngocbh", detached: true })
   expect(out).toBe("a.py\n[exit 0]")
   expect(tools.calls).toHaveLength(1)
   expect(store.listAudit().map((r) => [r.outcome, r.detail])).toEqual([
@@ -260,6 +267,21 @@ test("the gate's signal is the workspace's: an interrupt while Auto's check runs
   expect(held).toEqual([])
   expect(store.listAudit()).toEqual([])
   expect(tools.tracked.size).toBe(0)
+})
+
+test("a shell call with no permissions bound is refused, never run ungated", async () => {
+  const { monitor, store } = await makeMonitor()
+  const tools = stubReturning("ok", "read_file", "path='a.py'", 0, 0)
+  const call = monitor.workspace(tools, "minh", "r1", { sessionId: "s1" })
+  expect(await call("shell", { command: "ls", timeout: null }, { callId: CALL })).toBe(NO_PERMISSIONS)
+  expect(await call("shell", {}, { callId: CALL })).toBe(NO_PERMISSIONS)
+  expect(tools.calls).toEqual([])
+  expect(store.listAudit().map((r) => [r.tool, r.outcome, r.detail])).toEqual([
+    ["shell", "denied", NO_PERMISSIONS],
+    ["shell", "denied", NO_PERMISSIONS],
+  ])
+  // The file tools need none.
+  expect(await call("read_file", { path: "a.py" })).toBe("ok")
 })
 
 test("the file tools never ask", async () => {

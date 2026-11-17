@@ -7,7 +7,9 @@
  * part of it is covered: by an allow rule; by a form it knows to be read-only (`auto`, `default`, `dontAsk`); by a
  * plain push of a feature branch (`auto`, `dontAsk`); or, inside the workspace sandbox, by a file operation on
  * paths inside the workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it:
- * inside substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too.
+ * inside substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. The reader reads no line
+ * over 1000 bytes: a typed one is refused, and a command is unreadable, so no rule covers it; it goes to Auto's check
+ * in `auto`, asks in `default` and `ask`, and is refused in `dontAsk`.
  * The reader asks, in every mode, before a command that names a credential path anywhere in the line (an operand,
  * an option's value, an assignment, a `for` list, a here-string or a redirect), one the host marks
  * (`Where.credentials`), or a folder that holds them. On the SSH-only profile and over ssh, where credentials are
@@ -93,8 +95,10 @@ const ANSWER = "a prompt's answer"
 /** What `allow` names when parts are covered in different ways: the widest. */
 const WIDEST = [BY_RULE, FILE_OP, PUSH, READ_ONLY]
 const DONT_ASK = "this session doesn't ask (dontAsk mode): "
-/** The longest line decided; the tools refuse a longer one first. */
+/** The longest line the reader reads: a typed line past it is refused, and a command past it is unreadable. */
 const MAX_LINE_BYTES = 1000
+/** Why a command past `MAX_LINE_BYTES` asks. */
+const TOO_LONG = `it is too long to read (over ${MAX_LINE_BYTES} bytes)`
 /** A prompt's short answer: a menu choice, yes or no, quit, or Enter alone. */
 const PROMPT_ANSWER = /^(\d{1,6}|y|n|yes|no|q|)$/
 /** Programs whose second word names what they do; a suggested rule keeps it. */
@@ -136,16 +140,21 @@ export function suggest(part: SimpleCommand, kind: Action["kind"]): string {
 }
 
 export function decide(action: Action, mode: Mode, rules: readonly Rule[], where: Where): Decision {
-  if (new TextEncoder().encode(action.text).length > MAX_LINE_BYTES)
-    return { verdict: "deny", reason: `it is longer than ${MAX_LINE_BYTES} bytes` }
+  const held = (reason: string, offers: readonly string[] = []): Decision =>
+    mode === "dontAsk" ? { verdict: "deny", reason: DONT_ASK + reason } : { verdict: "ask", reason, rules: offers }
+  if (new TextEncoder().encode(action.text).length > MAX_LINE_BYTES) {
+    if (action.kind === "input") return { verdict: "deny", reason: `it is longer than ${MAX_LINE_BYTES} bytes` }
+    // A command too long to read is unreadable: no rule or read-only form covers it, and no rule sees into it.
+    if (action.never !== undefined) return held(action.never)
+    if (mode === "auto") return { verdict: "check", rules: [] }
+    return held(mode === "default" ? `Default mode asks: ${TOO_LONG}` : mode === "ask" ? "Ask mode" : TOO_LONG)
+  }
   const read = readCommand(action.text)
   const parts = read.parts.length > 0 ? read.parts : [EMPTY]
   const own = rules.filter((r) => r.kind === action.kind)
   const everything = parts.flatMap(withInner)
   const first = (effect: Effect) =>
     own.find((r) => r.effect === effect && everything.some((p) => fits(r.pattern, p, false)))
-  const held = (reason: string, offers: readonly string[] = []): Decision =>
-    mode === "dontAsk" ? { verdict: "deny", reason: DONT_ASK + reason } : { verdict: "ask", reason, rules: offers }
 
   const denied = first("deny")
   if (denied) return { verdict: "deny", reason: `a deny rule: ${denied.pattern}` }
@@ -228,8 +237,15 @@ export interface Permissions {
 }
 
 /** What a gated tool does before it acts: run now, saying `by` what (for its record), or return `result` as the
- *  call's result (a refusal, or the held card's `pending()`). */
-export type Gate = { readonly run: true; readonly by: string } | { readonly run: false; readonly result: unknown }
+ *  call's result (a refusal, or what the card `held` on returns: its `pending()`). */
+export type Gate =
+  | { readonly run: true; readonly by: string }
+  | { readonly run: false; readonly result: unknown; readonly held?: ApprovalCard }
+
+/** What a call returns when it would ask in a session that doesn't (`dontAsk`), for `reason`. */
+export function dontAskRefusal(reason: string): string {
+  return `Not run: ${DONT_ASK}${reason}.`
+}
 
 export async function gate(
   perms: Permissions,
@@ -258,14 +274,15 @@ export async function gate(
       : `Auto's check: ${verdict.reason}`
     asked = { reason, rules: decision.rules }
   }
-  if (mode === "dontAsk") return { run: false, result: `Not run: ${DONT_ASK}${asked.reason}.` }
+  // Read again: the session may have switched to dontAsk while the check ran, and nobody would answer its card.
+  if (perms.mode() === "dontAsk") return { run: false, result: dontAskRefusal(asked.reason) }
   if (call.callId === undefined)
     return { run: false, result: "Not run: this call can't wait for the owner's approval." }
   const card: ApprovalCard = {
     kind: action.kind, tool: call.tool, action: action.text, args: call.args, why: call.why, reason: asked.reason,
     rules: asked.rules, partial: action.partial ?? false, into: action.into ?? null,
   }
-  return { run: false, result: perms.hold(card, call.callId) }
+  return { run: false, result: perms.hold(card, call.callId), held: card }
 }
 
 /** A session's own rules, kept in memory for as long as the session's host runs. */

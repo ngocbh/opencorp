@@ -64,13 +64,13 @@ export interface RunSpec {
   readonly names: readonly string[]
   readonly workspace?: Workspace
   readonly parent?: Parent | null
-  /** Runs `tool` with `args` for run `runId` of `session`, as approved by `by`: no gate, audited as approved, and
-   *  detached from the workspace's interrupt, so only `signal` stops it; its output. Throws `RangeError` for a
-   *  tool it can't run. */
+  /** Runs `tool` with `args` for run `runId` of `session`, approved as `credit` says (`approved by @<who>`, or what
+   *  rule allows it): no gate, its audit row ending with `credit`, and detached from the workspace's interrupt, so
+   *  only `signal` stops it; its output. Throws `RangeError` for a tool it can't run. */
   runApproved?(
     tool: string,
     args: Record<string, unknown>,
-    o: { session: SessionRecord; runId: string; signal: AbortSignal; by: string },
+    o: { session: SessionRecord; runId: string; signal: AbortSignal; credit: string },
   ): Promise<string>
 }
 
@@ -138,10 +138,10 @@ export function mainSpec({
     skills: [...person.skills],
     names: [person.handle, person.name],
     workspace,
-    runApproved: async (tool, args, { session, runId, signal, by }) => {
+    runApproved: async (tool, args, { session, runId, signal, credit }) => {
       if (tool !== "shell") throw new RangeError("only a shell call can run once approved")
       const call = monitor.workspace(workspace, session.person, runId, { sessionId: session.id })
-      return String(await call(tool, args, { signal, approvedBy: by, detached: true }))
+      return String(await call(tool, args, { signal, approved: credit, detached: true }))
     },
   }
 }

@@ -6,7 +6,9 @@ import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { inspectRun } from "@ngocbh/yian/run"
 import type { ToolPart } from "@opencorp/protocol"
 import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
+import { ChatApprovals } from "../../../src/features/chat/approvals.ts"
 import { sessionOption, YES } from "../../../src/runtime/questions/approval.ts"
+import { DETAIL_CHARS } from "../../../src/util/redact.ts"
 import { INTERRUPTED } from "../../../src/runtime/questions/format.ts"
 import type { QuestionRecord } from "../../../src/runtime/store/store.ts"
 import { CEO } from "../../server/helpers.ts"
@@ -199,7 +201,7 @@ test("a check that fails or doesn't finish asks, and the card says the check cou
   const h = await makeHarness(slow, { checkTimeoutMs: 1500 })
   const late = await chat(h)
   const [timed] = await held(h, late, "build it")
-  expect(timed!.approval!.reason).toBe("Auto asks: its check couldn't judge this: it didn't finish in 30 s")
+  expect(timed!.approval!.reason).toBe("Auto asks: its check couldn't judge this: it didn't finish in 1.5 s")
   expect(rows(h, late, "check").map((r) => r.outcome)).toEqual(["failed"])
 })
 
@@ -212,6 +214,71 @@ sandboxed("in default a build command asks with no check, and a read-only one ru
   expect(q!.approval!.reason).toBe("Default mode asks before what it doesn't know: make")
   expect(checks(fake)).toEqual([])
   expect(rows(h, id).map((r) => r.outcome)).toEqual(["ok", "held"])
+})
+
+test("a switch to dontAsk while Auto's check runs refuses the call, with no card", async () => {
+  const fake = await fakeLlm()
+  const why = "Not run: this session doesn't ask (dontAsk mode): Auto's check: cancels a cluster job."
+  fake.script(
+    shell("scancel 42"),
+    verdict("scancel 42", "ask", "cancels a cluster job", { hold: true }),
+    says("I won't.", why),
+  )
+  const h = await makeHarness(fake)
+  const id = await chat(h)
+  await h.harness.prompt(id, "cancel it")
+  await waitFor(() => checks(fake).length === 1, { what: "the check's request" })
+  await h.harness.setMode(id, "dontAsk", { by: CEO })
+  fake.release()
+  await replied(h, id, "I won't.")
+  expect(h.store.listQuestions({ sessionId: id })).toEqual([])
+  expect(rows(h, id).map((r) => [r.outcome, r.detail])).toEqual([["denied", why]])
+})
+
+test("a session's hold refuses rather than hold a card once the session doesn't ask", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const id = await chat(h, "dontAsk")
+  const never = (): never => {
+    throw new Error("the actor is never asked")
+  }
+  const approvals = new ChatApprovals({
+    store: h.store,
+    workers: h.registry,
+    connections: h.office.connections,
+    paths: h.office.paths,
+    session: () => session(h, id),
+    where: () => ({ profile: "workspace", cwd: h.folder, writable: [h.folder] }),
+    charge: never,
+    host: {
+      liveRun: never,
+      completeWithAnswer: never,
+      completeWithOutput: never,
+      loseAnswer: never,
+      post: never,
+      settle: never,
+      runner: never,
+    },
+  })
+  const asked: unknown[] = []
+  const card = {
+    kind: "command" as const, tool: "shell", action: "make", args: { command: "make" }, why: "", reason: "Ask mode",
+    rules: ["make"], partial: false, into: null,
+  }
+  const runId = session(h, id).run_ids.at(-1)!
+  const refused = approvals.permissions(runId, (q) => (asked.push(q), q)).hold(card, `${runId}/chat#0/reply/1/0`)
+  expect(refused).toBe("Not run: this session doesn't ask (dontAsk mode): Ask mode.")
+  expect(asked).toEqual([])
+})
+
+test("a check's audit row keeps at most DETAIL_CHARS of its reason", async () => {
+  const fake = await fakeLlm()
+  fake.script(shell("scancel 42"), verdict("scancel 42", "ask", "x".repeat(5000)))
+  const h = await makeHarness(fake)
+  const id = await chat(h)
+  await held(h, id, "cancel it")
+  const [judged] = rows(h, id, "check")
+  expect(judged!.detail).toBe("x".repeat(DETAIL_CHARS))
 })
 
 test("in dontAsk a command the check says ask is refused with no card, and the agent reads why", async () => {
@@ -385,10 +452,10 @@ sandboxed("a new rule runs the other open cards it now allows, and leaves the re
   await h.harness.answer(byAction("ls -l").id, sessionOption(["ls *"]), "option", { by: CEO })
   const approved = () => rows(h, id).filter((r) => r.outcome === "ok")
   await waitFor(() => approved().length === 2, { what: "both listings" })
-  expect(approved().map((r) => r.detail?.replace(/^exit=0 duration=[\d.]+s /, ""))).toEqual([
-    "approved by @ngocbh",
-    "approved by @ngocbh",
-  ])
+  // The approver let `ls -l` run; the rule they added let `ls -a` run, and its row says so.
+  const credit = (summary: string) =>
+    approved().find((r) => (r.args as { summary: string }).summary === summary)!.detail!.replace(/^exit=0 duration=[\d.]+s /, "")
+  expect([credit("command='ls -l'"), credit("command='ls -a'")]).toEqual(["approved by @ngocbh", "by an allow rule"])
   expect(h.store.getQuestion(byAction("ls -a").id)).toMatchObject({ answer: YES, answered_by: CEO })
   const rm = byAction("rm x")
   expect(h.store.getQuestion(rm.id)!.status).toBe("open")

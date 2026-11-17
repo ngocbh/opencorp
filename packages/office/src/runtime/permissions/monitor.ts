@@ -1,9 +1,10 @@
 /** The reference monitor: asset tools checked against the company repo, run with office secrets, audited; and each
  *  workspace call audited, the shell's gated by the session's permissions. */
+import { isPending } from "@ngocbh/yian/tools"
 import type { Asset as AssetSchema, Grant as GrantSchema } from "@opencorp/protocol"
 import type { z } from "zod"
 import { builtinKinds, type KindTool, type Kinds } from "./assets.ts"
-import { type ApprovalCard, type Gate, gate, type Permissions } from "./policy.ts"
+import { type Gate, gate, type Permissions } from "./policy.ts"
 import { type CompanyRepo, loadRepo } from "../../company/loader.ts"
 import { assetToolName, shownAssetToolName, TOOL_NAME } from "../../company/naming.ts"
 import { type SecretStore, SecretNotSetError } from "../secrets.ts"
@@ -20,6 +21,9 @@ export const REASON_CHARS = 200
  *  started. */
 export const STOPPED_BEFORE_RUN = "Not run: stopped before it started."
 
+/** What a shell call returns, and its audit row says, when no permissions are bound to gate it. */
+export const NO_PERMISSIONS = "Not run: no permissions are bound to this shell, so it runs nothing."
+
 /** A failure the monitor words itself, shown to the model as `error: <message>`. */
 class MonitorError extends Error {
   override name = "MonitorError"
@@ -32,13 +36,14 @@ export interface ToolboxTool {
   call(args: Record<string, unknown>): Promise<unknown>
 }
 
-/** How one workspace call runs: `signal` stops it; `callId` is the yian call's, which a held call's card names;
- *  `approvedBy` runs a call its approver said Yes to, with no gate; `detached` leaves it out of the workspace's
- *  interrupt, so only `signal` stops it. */
+/** How one workspace call runs: `signal` stops it; `callId` is the yian call's, which a held call's card names.
+ *  `approved` runs a held call that was approved, with no gate, and says what approved it for its audit row
+ *  (`approved by @<who>`, or `by an allow rule`); `detached` leaves it out of the workspace's interrupt, so only
+ *  `signal` stops it. Only the office sets these two, never a model's call. */
 export interface WorkspaceCallOptions {
   readonly signal?: AbortSignal
   readonly callId?: string
-  readonly approvedBy?: string
+  readonly approved?: string
   readonly detached?: boolean
 }
 
@@ -213,11 +218,12 @@ export class Monitor {
    * interrupted, or bad arguments) has the reason from its output in the detail. A call that rejects is recorded
    * as `error` and its error thrown again.
    *
-   * With `permissions`, a `shell` call is gated first (`gate`): its controller joins the workspace's interrupt
-   * before the gate decides, so Esc, End and the office stop end Auto's check, and a call stopped then never runs
-   * and writes no row. A call the gate lets run says why in its row's detail (`by …`); a refused one returns the
-   * refusal, audited `denied`; a held one returns what the card's hold returns, audited `held` with why it asks.
-   * A call with `approvedBy` runs with no gate, its row naming who approved it. The file tools are never gated.
+   * A `shell` call is gated first (`gate`) by `permissions`, and refused (`NO_PERMISSIONS`) without them: its
+   * controller joins the workspace's interrupt before the gate decides, so Esc, End and the office stop end Auto's
+   * check, and a call stopped then never runs and writes no row. A call the gate lets run says why in its row's
+   * detail (`by …`); a refused one returns the refusal, audited `denied`; a held one returns its card's `pending()`,
+   * audited `held` with why it asks. An `approved` call runs with no gate, its row saying what approved it. The file
+   * tools are never gated.
    */
   workspace(
     tools: AuditedTools,
@@ -248,41 +254,34 @@ export class Monitor {
       return outcome.output
     }
     return async (name, args, options = {}) => {
-      const { signal: given, callId, approvedBy, detached } = options
-      if (approvedBy !== undefined) {
-        return run(name, args, { signal: given, detached }, approvedBy ? ` approved by @${approvedBy}` : " approved")
-      }
+      const { signal: given, callId, approved, detached } = options
+      if (approved !== undefined) return run(name, args, { signal: given, detached }, ` ${approved}`)
+      if (name !== "shell") return run(name, args, { signal: given, detached }, "")
       const command = args.command
-      // A shell call whose command isn't text never runs: the tools refuse it as they do now.
-      if (name !== "shell" || permissions === undefined || typeof command !== "string") {
-        return run(name, args, { signal: given, detached }, "")
+      if (permissions === undefined) {
+        const summary = typeof command === "string" ? { summary: `command=${repr(command)}` } : {}
+        record(name, summary, "denied", NO_PERMISSIONS)
+        return NO_PERMISSIONS
       }
+      // A shell call whose command isn't text never runs: the tools refuse it.
+      if (typeof command !== "string") return run(name, args, { signal: given, detached }, "")
       const own = new AbortController()
       const untrack = tools.track(own)
       const signal = given ? AbortSignal.any([own.signal, given]) : own.signal
       try {
-        const seen: { card?: ApprovalCard } = {}
-        const watched: Permissions = {
-          mode: () => permissions.mode(),
-          rules: () => permissions.rules(),
-          where: () => permissions.where(),
-          hold: (card, id) => {
-            seen.card = card
-            return permissions.hold(card, id)
-          },
-          ...(permissions.check ? { check: (input, checking) => permissions.check!(input, checking) } : {}),
-        }
         const summary = { summary: `command=${repr(command)}` }
         let decided: Gate
         try {
           const call = { tool: "shell", why: "", args, callId, signal }
-          decided = await gate(watched, { kind: "command", text: command }, call)
+          decided = await gate(permissions, { kind: "command", text: command }, call)
         } catch (error) {
           record(name, summary, "error", reasonOf(error).slice(0, DETAIL_CHARS))
           throw error
         }
         if (!decided.run) {
-          if (seen.card !== undefined) record(name, summary, "held", seen.card.reason.slice(0, DETAIL_CHARS))
+          // A card the host's hold refused is a refusal like any other.
+          const held = decided.held !== undefined && isPending(decided.result)
+          if (held) record(name, summary, "held", decided.held!.reason.slice(0, DETAIL_CHARS))
           // Stopped while Auto's check ran: nothing was decided, and its check's own row says so.
           else if (!signal.aborted) record(name, summary, "denied", String(decided.result).slice(0, DETAIL_CHARS))
           return decided.result

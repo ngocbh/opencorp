@@ -153,14 +153,19 @@ const SPECS: Record<ToolName, { description: string; parameters: Record<string, 
 
 /** The model-facing workspace tools, keyed by tool name in `TOOL_NAMES` order, for a run's `workspace` group.
  *
- *  Each tool's `call(args, options)` forwards `call(name, filled, options)` and returns its result: `filled` holds
- *  every parameter in signature order (the given value, else its default; a missing required one stays missing),
- *  then any other keys of `args`, which `WorkspaceTools` reports. */
+ *  Each tool's `call(args, options)` forwards `call(name, filled, { callId, signal })` and returns its result:
+ *  `filled` holds every parameter in signature order (the given value, else its default; a missing required one
+ *  stays missing), then any other keys of `args`, which `WorkspaceTools` reports. Only the call id and the signal go
+ *  on: a model's call never skips the gate. */
 export function workspaceToolFunctions(call: WorkspaceCall): Record<string, WorkspaceTool> {
+  const forwarded = (options: ToolCallOptions | undefined): ToolCallOptions => ({
+    ...(options?.callId === undefined ? {} : { callId: options.callId }),
+    ...(options?.signal === undefined ? {} : { signal: options.signal }),
+  })
   return Object.fromEntries(
     TOOL_NAMES.map((name) => [
       name,
-      { ...SPECS[name], call: (args, options) => call(name, fill(name, args), options) },
+      { ...SPECS[name], call: (args, options) => call(name, fill(name, args), forwarded(options)) },
     ]),
   )
 }
