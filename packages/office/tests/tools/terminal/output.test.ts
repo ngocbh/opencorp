@@ -14,7 +14,8 @@ function viewOf(...chunks: string[]): ModelView {
 
 test("escape sequences and the shell's markers never reach the model's view", () => {
   const pairs: [string, string][] = [
-    // Colors, cursor moves and erases (the cases of OpenCode's `ansi.test.ts`, df46f69).
+    // Colors, cursor moves and erases (the upstream TUI's `ansi.test.ts` cases; THIRD_PARTY_NOTICES.md names the
+    // source).
     ["\x1b[31mred\x1b[0m \x1b[1;32;40mbold\x1b[m", "red bold"],
     ["a\x1b[2K\x1b[1Gb\x1b[10;20Hc", "abc"],
     ["\x1b[38:2:255:0:0mtruecolor\x1b[0m", "truecolor"],

@@ -155,7 +155,7 @@ function dropLast(line: string): string {
  *  session would otherwise grow without limit; the shell's record keeps all of it. */
 export const VIEW_KEEP = 4 * 1024 * 1024
 
-/** A page's size when its caller gives none, in UTF-16 code units: 64 Ki, as OpenCode's shell output pages. */
+/** The default page size, when a caller gives none, in UTF-16 code units: 64 Ki. */
 export const PAGE_SIZE = 64 * 1024
 
 /** How far past `VIEW_KEEP` a view grows before it trims back to it, so a busy shell copies its tail once a
