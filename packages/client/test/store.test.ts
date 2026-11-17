@@ -201,6 +201,29 @@ test("instrument.updated adds or replaces a session's instrument", () => {
   expect(s.messages[S]).toEqual([])
 })
 
+test("instrument.removed drops a session's instrument", () => {
+  const s = synced()
+  applyLive(s, live("instrument.updated", instrument("I1")))
+  applyLive(s, live("instrument.updated", instrument("I2", { name: "shell 2" })))
+  applyLive(s, live("instrument.removed", { id: "I1", session_id: S }))
+  expect(s.instruments[S].map((i) => i.id)).toEqual(["I2"])
+  // One it doesn't have, one named for another session, and malformed data change nothing.
+  applyLive(s, live("instrument.removed", { id: "I9", session_id: S }))
+  applyLive(s, live("instrument.removed", { id: "I2", session_id: "OTHER" }))
+  applyLive(s, live("instrument.removed", { id: 2, session_id: S }))
+  applyLive(s, { ...live("instrument.removed", { id: "I2", session_id: "OTHER" }), session_id: "OTHER" })
+  expect(s.instruments[S].map((i) => i.id)).toEqual(["I2"])
+  expect(s.instruments.OTHER).toBeUndefined()
+})
+
+test("an instrument of a kind the client doesn't know isn't kept", () => {
+  const s = synced()
+  applyLive(s, live("instrument.updated", instrument("I1", { kind: "browser" as Instrument["kind"] })))
+  expect(s.instruments[S]).toBeUndefined()
+  applyLive(s, live("instrument.updated", instrument("I2", { kind: "claude" })))
+  expect(s.instruments[S].map((i) => [i.id, i.kind])).toEqual([["I2", "claude"]])
+})
+
 /**
  * A sync on a client that answers only what `routes` holds, keyed `<method> <path>`, and whose event stream the test
  * drives with `send`; `clean` upper-cases, so what it touched shows.
@@ -270,7 +293,10 @@ test("instrument.output is handed to listeners, not kept in the store", async ()
 })
 
 test("a synced session's instruments are read with its messages, and an office that serves none has none", async () => {
-  const listed = [instrument("I1", { command: "make", error: "no tty" })]
+  const listed = [
+    instrument("I1", { command: "make", error: "no tty" }),
+    instrument("I3", { kind: "browser" as Instrument["kind"] }),
+  ]
   const routes: Record<string, () => unknown> = {
     [`GET /sessions/${S}`]: () => session(),
     [`GET /sessions/${S}/messages`]: () => [],
@@ -283,7 +309,8 @@ test("a synced session's instruments are read with its messages, and an office t
   const { state, sync, send, online } = stubSync(routes)
   await online()
   await sync.syncSession(S)
-  // What it shows is cleaned as names and messages are; ids, states and the driver stay as sent.
+  // What it shows is cleaned as names and messages are; ids, states and the driver stay as sent. A kind the client
+  // doesn't know is left out.
   expect(state.instruments[S]).toEqual([{ ...listed[0], name: "SHELL 1", command: "MAKE", error: "NO TTY" }])
   send({ type: "live", event: live("instrument.updated", instrument("I2", { command: "ls -la", updated_at: "t2" })) })
   expect(state.instruments[S].map((i) => [i.id, i.command])).toEqual([["I1", "MAKE"], ["I2", "LS -LA"]])

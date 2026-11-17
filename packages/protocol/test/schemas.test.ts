@@ -31,7 +31,8 @@ const NAMES = [
   "ConnectionLogin", "SetupPrompt", "SetupAsk", "SetupChoose", "SetupSecret", "SetupSay", "SetupStep",
   "SetupCommand", "SetupResult", "SetupReview", "SetupHandOver", "SetupTakeBack",
   "SetupAnswer", "OfficeInfo", "MessageText", "ModelName", "Rule", "RuleFileError", "RuleList", "RemoveRuleRequest",
-  "RulePattern", "Instrument", "InstrumentOutput", "InstrumentKeysRequest", "InstrumentSizeRequest", "InstrumentScreen",
+  "RulePattern", "Instrument", "InstrumentOutput", "InstrumentRemoved", "InstrumentKeysRequest", "InstrumentSizeRequest",
+  "InstrumentScreen",
 ]
 
 /** The zod schema exported under `name`. */
@@ -238,7 +239,8 @@ test("a tool part keeps the model's call id, and yian's once the call waited on 
 })
 
 const INSTRUMENTS = [
-  "Instrument", "InstrumentOutput", "InstrumentKeysRequest", "InstrumentSizeRequest", "InstrumentScreen",
+  "Instrument", "InstrumentOutput", "InstrumentRemoved", "InstrumentKeysRequest", "InstrumentSizeRequest",
+  "InstrumentScreen",
 ]
 
 test("instrument defs have fixtures", () => {
@@ -249,7 +251,7 @@ test("instrument defs have fixtures", () => {
 test("an instrument and its output are live events, the output with the byte offset of its first byte", () => {
   const session_id = "01JA1S0000000000000000000A"
   expect(Schemas.LiveEvent.shape.type.options).toEqual(
-    ["message.updated", "part.updated", "part.delta", "instrument.updated", "instrument.output"])
+    ["message.updated", "part.updated", "part.delta", "instrument.updated", "instrument.output", "instrument.removed"])
   const instrument = load(FIXTURES, "Instrument") as Record<string, unknown>
   expect(Schemas.LiveEvent.parse({ type: "instrument.updated", session_id, data: instrument }).data).toEqual(instrument)
   const output = load(FIXTURES, "InstrumentOutput") as Record<string, unknown>
@@ -265,14 +267,30 @@ test("an instrument and its output are live events, the output with the byte off
 test("an instrument is a terminal, a Codex or a Claude Code session, and while waiting says on what", () => {
   const instrument = load(FIXTURES, "Instrument") as Record<string, unknown>
   expect(Schemas.Instrument.shape.kind.options).toEqual(["terminal", "codex", "claude"])
-  expect(Schemas.Instrument.shape.profile.options).toEqual(["workspace", "ssh", "none"])
-  expect(Schemas.Instrument.shape.status.options).toEqual(
-    ["starting", "idle", "running", "waiting", "ended", "failed", "interrupted"])
+  expect(Schemas.Instrument.shape.profile.options).toEqual(["workspace", "ssh", "harness", "none"])
+  // Instruments live in the office's memory, so none is listed after a restart: there is no interrupted one.
+  expect(Schemas.Instrument.shape.status.options).toEqual(["starting", "idle", "running", "waiting", "ended", "failed"])
   const { waiting: _, command: __, error: ___, ...bare } = instrument
   expect(Schemas.Instrument.parse(bare)).toMatchObject({ waiting: null, command: null, error: null })
   for (const waiting of ["secret", "approval"] as const)
     expect(Schemas.Instrument.parse({ ...instrument, status: "waiting", waiting }).waiting).toBe(waiting)
   expect(Schemas.Instrument.safeParse({ ...instrument, status: "waiting", waiting: "model" }).success).toBe(false)
+})
+
+test("an instrument is driven by a handle, the built-in agent's included", () => {
+  const instrument = load(FIXTURES, "Instrument") as Record<string, unknown>
+  for (const driver of ["minh", "opencorp"])
+    expect(Schemas.Instrument.parse({ ...instrument, driver }).driver).toBe(driver)
+  for (const driver of ["Minh", "a_b", "", "@minh"])
+    expect(Schemas.Instrument.safeParse({ ...instrument, driver }).success).toBe(false)
+})
+
+test("a removed instrument is a live event naming it and its session", () => {
+  const removed = load(FIXTURES, "InstrumentRemoved") as Record<string, unknown>
+  const event = { type: "instrument.removed", session_id: removed.session_id, data: removed }
+  expect(Schemas.LiveEvent.parse(event).data).toEqual(removed)
+  expect(required(Schemas.InstrumentRemoved)).toEqual(["id", "session_id"])
+  expect(Schemas.InstrumentRemoved.safeParse({ ...removed, status: "ended" }).success).toBe(false)
 })
 
 test("an instrument carries its PTY's size, null for pipes", () => {

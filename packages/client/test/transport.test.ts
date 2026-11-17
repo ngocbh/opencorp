@@ -380,6 +380,38 @@ test("a session's instruments, an instrument's screen, and the owner's keys and 
   ])
 })
 
+test("keys to one shell go one request at a time, in the order typed; a refused batch doesn't stop the next", async () => {
+  const dir = mkdtempSync("/tmp/oct-")
+  onStop(() => rmSync(dir, { recursive: true, force: true }))
+  const socket = path.join(dir, "o.sock")
+  let release = () => {}
+  const held = new Promise<void>((resolve) => (release = resolve))
+  const { seen } = serve({
+    unix: socket,
+    // The recorder notes each request just before it asks for the answer.
+    answer: async () => {
+      if (seen.at(-1)!.body.includes('"a"')) {
+        await held
+        return Response.json({ error: "not_live", message: "the shell ended" }, { status: 409 })
+      }
+      return Response.json({ ok: true })
+    },
+  })
+  const client = createOfficeClient({ socket })
+  const typed = (iid: string) => seen.filter((r) => r.path.includes(`/${iid}/`)).map((r) => JSON.parse(r.body).data)
+  const first = failure(client.sessions.keys("S1", "I1", { data: "a" }))
+  const second = client.sessions.keys("S1", "I1", { data: "b" })
+  // Another shell's keys don't wait for this one's.
+  await client.sessions.keys("S1", "I2", { data: "c" })
+  while (typed("I1").length < 1) await Bun.sleep(5)
+  await Bun.sleep(50)
+  expect([typed("I1"), typed("I2")]).toEqual([["a"], ["c"]])
+  release()
+  expect([(await first).status, (await first).code]).toEqual([409, "not_live"])
+  expect(await second).toEqual({ ok: true })
+  expect(typed("I1")).toEqual(["a", "b"])
+})
+
 test("people.inFolder answers [] for a folder no request can name, and sends a folder path whole", async () => {
   const { client, seen } = socketClient()
   for (const cwd of ["", ".", "..", "/a/../b", "../x"]) expect(await client.people.inFolder(cwd)).toEqual([])

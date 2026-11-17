@@ -5,6 +5,7 @@
 import type { Event, Instrument, LiveEvent, Message, Person, Question } from "@opencorp/protocol"
 import type { OfficeClient } from "./client"
 import { BadToken, failureKind, OfficeError, OfficeUnavailable, UnknownDevice } from "./errors"
+import { asInstrument } from "./live"
 import { runEach } from "./queue"
 import type { StreamEvent, SubscribeOptions, Subscription } from "./sse"
 import { applyLive, applyMeta, replay, upsertQuestion, upsertSession, type OfficeState } from "./store"
@@ -212,10 +213,10 @@ export function createOfficeSync(opts: {
     }
   }
 
-  /** A session's instruments; an office that serves none yet has none to report. */
+  /** A session's instruments of the kinds the client knows; an office that serves none yet has none to report. */
   async function instrumentsOf(session: string): Promise<Instrument[]> {
     try {
-      return await client.sessions.instruments(session)
+      return (await client.sessions.instruments(session)).filter((i) => asInstrument(i))
     } catch (e) {
       if (unserved(e)) return []
       throw e

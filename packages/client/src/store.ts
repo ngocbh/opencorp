@@ -21,7 +21,7 @@ import type {
   WorkItem,
 } from "@opencorp/protocol"
 import { now } from "@opencorp/protocol"
-import { asInstrument, asMessage, asPartDelta, asPartUpdated, isMetaData } from "./live"
+import { asInstrument, asInstrumentRemoved, asMessage, asPartDelta, asPartUpdated, isMetaData } from "./live"
 import type { StreamEvent } from "./sse"
 
 export type OfficeState = {
@@ -217,6 +217,14 @@ export function applyLive(s: OfficeState, e: LiveEvent): string[] {
     case "instrument.updated": {
       const instrument = asInstrument(e.data)
       if (instrument?.session_id === e.session_id) putInstrument((s.instruments[e.session_id] ??= []), instrument)
+      return []
+    }
+    case "instrument.removed": {
+      const removed = asInstrumentRemoved(e.data)
+      const instruments = s.instruments[e.session_id]
+      if (!removed || removed.session_id !== e.session_id || !instruments) return []
+      const i = instruments.findIndex((x) => x.id === removed.id)
+      if (i >= 0) instruments.splice(i, 1)
       return []
     }
     // A shell's bytes are its viewer's to keep: they go only to the sync's listeners.

@@ -99,6 +99,19 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
   // comes back as a rejected promise.
   const s = (id: string) => `/sessions/${part(id, `no session ${id}`)}`
   const instrument = (id: string, iid: string) => `${s(id)}/instruments/${part(iid, `no instrument ${iid}`)}`
+  // Each shell's keys requests still in flight, by path: one goes at a time, so the office gets them in the order
+  // they were typed.
+  const typing = new Map<string, Promise<Ack>>()
+  /** Sends keys to `path` once the requests before it to the same path have been answered, either way. */
+  const typeAt = (path: string, req: InstrumentKeysRequest) => {
+    const prior = typing.get(path)
+    const send = () => post<Ack>(path, req)
+    const sent = prior ? prior.then(send, send) : send()
+    typing.set(path, sent)
+    const done = () => void (typing.get(path) === sent && typing.delete(path))
+    sent.then(done, done)
+    return sent
+  }
   const q = (id: string) => `/questions/${part(id, `no question ${id}`)}`
   const r = (id: string) => `/runs/${part(id, `no run ${id}`)}`
   const person = (handle: string) => `/people/${part(handle, `no person @${handle}`)}`
@@ -265,9 +278,11 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
        * `instrument.output` bytes past the screen's `end`.
        */
       instrumentScreen: async (id: string, iid: string) => get<InstrumentScreen>(`${instrument(id, iid)}/screen`),
-      /** The approver's keys to a shell, as typed; the office never logs or records them. */
-      keys: async (id: string, iid: string, req: InstrumentKeysRequest) =>
-        post<Ack>(`${instrument(id, iid)}/keys`, req),
+      /**
+       * The approver's keys to a shell, as typed; the office never logs or records them. Calls to one shell go one at
+       * a time, in call order, and a refused one doesn't hold back the next.
+       */
+      keys: async (id: string, iid: string, req: InstrumentKeysRequest) => typeAt(`${instrument(id, iid)}/keys`, req),
       /** The size the approver's view draws a shell at, which its PTY takes and every other view then draws at. */
       resize: async (id: string, iid: string, req: InstrumentSizeRequest) =>
         post<Ack>(`${instrument(id, iid)}/size`, req),
