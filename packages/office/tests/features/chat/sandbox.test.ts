@@ -54,7 +54,14 @@ test.if(sandboxAvailable())("esc kills a running shell call", async () => {
 
 test.if(sandboxAvailable())("end kills a running shell call", async () => {
   const fake = await fakeLlm()
-  fake.script(shell("sleep 60.3; echo done > after_end.txt"), { content: "Next." })
+  // The redirect isn't read-only: a new chat's auto mode hands the line to Auto's check, whose request takes the
+  // verdict queued for it (it alone holds a `<command>` block), ahead of the reply after the call.
+  const verdict = { verdict: "run", reason: "waits, then writes a file in the workspace" }
+  fake.script(
+    shell("sleep 60.3; echo done > after_end.txt"),
+    { match: "<command>", tool_calls: [{ name: "Record", arguments: verdict }] },
+    { content: "Next." },
+  )
   const h = await makeHarness(fake)
   const id = await shellRunning(h)
   const began = performance.now()

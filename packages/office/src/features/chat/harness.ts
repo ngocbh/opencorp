@@ -71,7 +71,8 @@ export interface ChatOffice {
 /** What the chat harness is built on. `workers` is the registry its runs' workers start in; `hooks` are shared with
  *  the Codex sessions; `log` gets its warnings (default `console.error`). A new chat's choice lists models through
  *  `models` (default `office.models`) within `chooseDeadlineMs`. A chat's worker stays parked `keepMs` between run
- *  calls (default `KEEP_MS`; 0 keeps none). */
+ *  calls (default `KEEP_MS`; 0 keeps none). Auto's check asks once it runs past `checkTimeoutMs` (default
+ *  `CHECK_TIMEOUT_MS`). */
 export type ChatHarnessOptions = {
   monitor: Monitor
   hooks: Hooks
@@ -81,6 +82,7 @@ export type ChatHarnessOptions = {
   models?: ModelCache
   chooseDeadlineMs?: number
   keepMs?: number
+  checkTimeoutMs?: number
 }
 
 /**
@@ -127,6 +129,7 @@ export class ChatHarness implements SessionHarness {
       models = office.models,
       chooseDeadlineMs = DEADLINE_MS,
       keepMs = KEEP_MS,
+      checkTimeoutMs,
     }: ChatHarnessOptions,
   ) {
     this.office = office
@@ -161,8 +164,10 @@ export class ChatHarness implements SessionHarness {
             : this.registry.next(worker as Worker, job, this.#guard(handlers)),
         park: (worker, release) => this.registry.park(worker as Worker, release),
         unpark: (worker) => this.registry.unpark(worker as Worker),
+        close: (sessionId, ms) => this.registry.close(sessionId, ms),
       },
       keepMs,
+      ...(checkTimeoutMs === undefined ? {} : { checkTimeoutMs }),
       hooks,
       answers: this.answers,
       transcript: this.transcript,
@@ -468,9 +473,10 @@ export class ChatHarness implements SessionHarness {
   }
 
   /**
-   * Switches the session's mode as `by`, who must be its approver (its opener, else the CEO at its pinned commit).
-   * A Codex session's mode is refused 422 `not_supported`, as Codex doesn't follow it yet. 404 for no session, 409
-   * `not_live` for one that isn't live, 403 `forbidden` for anyone but the approver.
+   * Switches the session's mode as `by`, who must be its approver (its opener, else the CEO at its pinned commit),
+   * and tells its live actor (`SessionActor.modeChanged`): a switch to `dontAsk` answers its open approval cards with
+   * that mode's refusal. A Codex session's mode is refused 422 `not_supported`, as Codex doesn't follow it yet. 404
+   * for no session, 409 `not_live` for one that isn't live, 403 `forbidden` for anyone but the approver.
    */
   async setMode(
     sessionId: string,
@@ -494,7 +500,11 @@ export class ChatHarness implements SessionHarness {
     if (by !== approver) throw new HarnessError(403, "forbidden", `only @${approver} may change this chat's mode`)
     // Read again: the session may have ended while the pinned company was read.
     live()
-    return this.store.updateSession(sessionId, { mode })
+    const switched = this.store.updateSession(sessionId, { mode })
+    const actor = this.#actors.get(sessionId)
+    if (actor === undefined || !LIVE.includes(switched.status)) return switched
+    await actor.modeChanged(mode, { by })
+    return this.store.getSession(sessionId) ?? switched
   }
 
   /** The session's messages: a yian chat's from its runs' logs, with its live actor's calls in flight. The logs are

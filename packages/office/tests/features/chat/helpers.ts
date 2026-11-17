@@ -531,8 +531,13 @@ export interface ChatOffice {
   readonly logs: string[]
   /** Each live event published on the office's bus, in order. */
   readonly lives: LiveEvent[]
-  /** How often the workspace stand-in was interrupted. */
-  readonly workspace: { interrupts: number }
+  /** The workspace stand-in: how often it was interrupted, each call it ran, and what a call does (`run`: answers
+   *  "ok" at once by default; its signal aborts on the call's stop, an interrupt included unless it is detached). */
+  readonly workspace: {
+    interrupts: number
+    readonly calls: { tool: string; args: Record<string, unknown> }[]
+    run: (tool: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<string>
+  }
   /** The actors made through these helpers; each is closed when the test finishes. */
   readonly actors: SessionActor[]
   /** Holds the next spawn, or job sent to a parked worker, before it starts; `entered` resolves once it is held. */
@@ -662,10 +667,35 @@ export async function chatOffice(
   const transcript = new Transcript(office.paths.runs)
   const live = new LiveRelay({ bus: office.bus, transcript, log })
   const monitor = new Monitor(office.paths.company, office.store, new SecretStore(office.paths.secrets))
-  const workspace = { interrupts: 0 }
+  const workspace: ChatOffice["workspace"] = { interrupts: 0, calls: [], run: async () => "ok" }
+  // The calls an interrupt stops: each running call not detached, and each tracked controller.
+  const active = new Set<AbortController>()
   const standIn = {
-    call: async (tool: string) => ({ output: "ok", audit: { tool, argsSummary: "", exit: 0, duration: 0 } }),
-    interrupt: () => void (workspace.interrupts += 1),
+    call: async (
+      tool: string,
+      args: Record<string, unknown>,
+      options: { signal?: AbortSignal; detached?: boolean } = {},
+    ) => {
+      workspace.calls.push({ tool, args })
+      const own = new AbortController()
+      if (!options.detached) active.add(own)
+      try {
+        const output = await workspace.run(tool, args, options.signal ? AbortSignal.any([own.signal, options.signal]) : own.signal)
+        return { output, audit: { tool, argsSummary: "", exit: 0, duration: 0 } }
+      } finally {
+        active.delete(own)
+      }
+    },
+    track: (controller: AbortController) => {
+      active.add(controller)
+      return () => void active.delete(controller)
+    },
+    interrupt: () => {
+      workspace.interrupts += 1
+      for (const controller of active) controller.abort()
+    },
+    // It plays the sandboxed shell, which may write nothing here.
+    where: () => ({ profile: "workspace" as const, cwd: "/", writable: [] }),
   }
   const { store, git } = office
   const ctx: ActorContext = {
@@ -980,7 +1010,7 @@ export function listed(listings: Record<string, string[]>): Lister {
  * harness's hooks (minh may then use Codex unless `files` replace him); `codex` is what `makeCodex` returned. With
  * `questions`, the questions extension is registered on each harness (`office.cards`).
  * The harness's start choice lists models through `lister`, else `listed(listings)`, never the network, and
- * waits `chooseDeadlineMs` if given.
+ * waits `chooseDeadlineMs` if given. Auto's check asks once it runs past `checkTimeoutMs`, if given.
  * `reopen()` closes the harness and the cards, the store left open, and puts a second harness over the same office
  * in `harness`, on a new registry: the office stopped and started again. Call inside a test: when it finishes the
  * harness closes before the store does.
@@ -994,6 +1024,7 @@ export async function makeHarness(
     listings = {},
     lister = listed(listings),
     chooseDeadlineMs,
+    checkTimeoutMs,
     ...options
   }: Omit<NonNullable<Parameters<typeof chatOffice>[1]>, "office"> & {
     codex?: boolean
@@ -1002,6 +1033,7 @@ export async function makeHarness(
     listings?: Record<string, string[]>
     lister?: Lister
     chooseDeadlineMs?: number
+    checkTimeoutMs?: number
   } = {},
 ) {
   let harness: ChatHarness | undefined
@@ -1029,6 +1061,7 @@ export async function makeHarness(
       log: (line) => void o.logs.push(line),
       models,
       ...(chooseDeadlineMs === undefined ? {} : { chooseDeadlineMs }),
+      ...(checkTimeoutMs === undefined ? {} : { checkTimeoutMs }),
     })
     const { groups } = options
     if (groups !== undefined) {

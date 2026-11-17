@@ -2,6 +2,7 @@
 // Types only: this module names the office objects a run hands its tools, and loads none of them.
 import type { CompanyRepo } from "../company/loader.ts"
 import type { AuditedTools, Monitor } from "../runtime/permissions/monitor.ts"
+import type { Permissions } from "../runtime/permissions/policy.ts"
 import type { Carried, OnQuestion } from "../runtime/questions/ask.ts"
 import type { QuestionRecord, SessionRecord, Store } from "../runtime/store/store.ts"
 
@@ -24,4 +25,6 @@ export interface ToolContext {
   readonly workspace?: AuditedTools
   readonly readOnly?: boolean
   readonly question?: QuestionRecord
+  /** The session's mode, rules and approval cards: the shell runs only what they let through. */
+  readonly permissions?: Permissions
 }

@@ -190,6 +190,16 @@ test("a question may be an approval card, holding what it would allow", () => {
   expect(Schemas.Approval.safeParse({ kind: "file", tool: "shell", action: "ls", reason: "" }).success).toBe(false)
 })
 
+test("a tool part keeps the model's call id, and yian's once the call waited on the office", () => {
+  const part = {
+    id: "01JA1P0000000000000000000B", type: "tool", call_id: "call_1", tool: "workspace_shell", state: "running",
+    input: { command: "ls" },
+  }
+  expect(Schemas.ToolPart.parse(part).yian_call_id).toBeNull()
+  const held = Schemas.ToolPart.parse({ ...part, yian_call_id: "run-1/chat#0/reply/1/0" })
+  expect([held.call_id, held.yian_call_id]).toEqual(["call_1", "run-1/chat#0/reply/1/0"])
+})
+
 const HQ = [
   "CompanyView", "PersonCost", "CostReport", "ApiVersion", "AppBuild", "Health", "HqTcp", "HqStatus",
   "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession", "HqLoginRequest",

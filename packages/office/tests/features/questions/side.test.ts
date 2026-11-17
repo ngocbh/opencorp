@@ -194,6 +194,12 @@ const NO_WORKSPACE = {
   interrupt: (): never => {
     throw new Error("the workspace is never interrupted")
   },
+  track: (): never => {
+    throw new Error("the workspace never tracks a call")
+  },
+  where: (): never => {
+    throw new Error("the workspace's shell never runs")
+  },
 }
 
 /** The base company with human lan (no side chat flow in it), its git, a store, a monitor, and `side`: a side

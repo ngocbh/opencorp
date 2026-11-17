@@ -468,7 +468,7 @@ function slim(step: Step): Step | null {
         output: plain(step.output),
       }
     case "pending":
-      return { kind: "pending", tool_call_id: step.tool_call_id }
+      return { kind: "pending", tool_call_id: step.tool_call_id, call_id: step.call_id }
     case "steer":
       return { kind: "steer", from: Array.isArray(step.from) ? step.from.map(Number) : [] }
     case "interrupted":
@@ -591,6 +591,7 @@ function render(
               input: plain(call.arguments) as Record<string, unknown>,
               output: {},
               error: null,
+              yian_call_id: null,
             }
             current.set(part.call_id, part)
             unresolved.set(part, node)
@@ -607,7 +608,10 @@ function render(
         else Object.assign(part, { state: "completed", output: text })
       } else if (step.kind === "pending") {
         const part = calls.get(node)?.get(step.tool_call_id as string)
-        if (part !== undefined) waiting.add(part)
+        if (part === undefined) continue
+        waiting.add(part)
+        // Yian's id for the call, which a card holding it names.
+        if (typeof step.call_id === "string") part.yian_call_id = step.call_id
       } else if (step.kind === "steer") {
         // What the model says after reading a steer follows it, in a message of its own.
         for (const event of step.from as readonly number[]) {

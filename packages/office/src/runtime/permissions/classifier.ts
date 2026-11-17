@@ -13,8 +13,8 @@ import { embedded } from "../../platform.ts"
 import { makePrivateFolder } from "../../util/private_files.ts"
 import type { Frame } from "../worker/channel.ts"
 import { type Job, parseJob, type WorkerEnv } from "../worker/job.ts"
-import { BaseHandlers } from "../worker/rpc.ts"
-import { type WorkerRegistry, workerEnv } from "../worker/spawn.ts"
+import { BaseHandlers, type WorkerHandlers } from "../worker/rpc.ts"
+import { type Worker, workerEnv } from "../worker/spawn.ts"
 import type { CheckInput, Verdict } from "./policy.ts"
 
 /** The model connection the host chose (the office's), as `llm_config` and its env; the key stays in these. */
@@ -53,7 +53,7 @@ export const CACHE_SIZE = 500
 
 /** The fixed reasons of an `ask` the check couldn't judge: no text from a failure, which could quote the request. */
 export const COULD_NOT_RUN = "it couldn't run"
-export const TIMED_OUT = `it didn't finish in ${CHECK_TIMEOUT_MS / 1000} s`
+export const TIMED_OUT = timedOut(CHECK_TIMEOUT_MS)
 export const NO_VERDICT = "it gave no verdict"
 /** The reason a stopped check is recorded with. */
 export const STOPPED = "it was stopped"
@@ -87,6 +87,11 @@ const ESCAPES: Readonly<Record<string, string>> = {
   "﹥": "&gt;",
 }
 
+/** Why a check that ran past `ms` asks. */
+export function timedOut(ms: number): string {
+  return `it didn't finish in ${ms / 1000} s`
+}
+
 /** The check couldn't judge; its message is one of the fixed reasons, and `model` and `usage` say what it spent. */
 export class CheckFailed extends Error {
   override name = "CheckFailed"
@@ -113,8 +118,17 @@ export type CheckRunner = (
   o: { runId: string; signal: AbortSignal; spend(spent: Spent): void },
 ) => Promise<{ output: unknown }>
 
-/** What a check needs of the worker registry. */
-export type CheckWorkers = Pick<WorkerRegistry, "spawn" | "close" | "closed">
+/** What a check needs of the worker registry (a session actor's view of it fits too): a worker started for its job,
+ *  which it waits for, and a close by the job's session id. */
+export interface CheckWorkers {
+  spawn(
+    job: Job,
+    sessionDir: string,
+    handlers: WorkerHandlers,
+    options: { env: Record<string, string> },
+  ): Promise<Pick<Worker, "wait">>
+  close(sessionId: string, ms?: number): Promise<number | null>
+}
 
 /** Handlers that keep the worker's last `result` or `error` frame, and refuse every request as `BaseHandlers` does
  *  (a classify job has no groups or stores, and nobody answers its questions). */
@@ -284,7 +298,7 @@ export class Check {
     }
     const reason =
       late || outcome === null
-        ? TIMED_OUT
+        ? timedOut(this.#timeoutMs)
         : "ok" in outcome
           ? NO_VERDICT
           : outcome.error instanceof CheckFailed
