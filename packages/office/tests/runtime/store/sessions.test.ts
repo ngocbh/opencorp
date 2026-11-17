@@ -231,3 +231,15 @@ test("a session counts its turns from zero", () => {
   store.updateSession(s.id, { turns: 3 })
   expect(store.getSession(s.id)!.turns).toBe(3)
 })
+
+test("a new session is in auto mode, and a mode change is stored and emitted", () => {
+  const store = openStore()
+  const events = recordEvents(store)
+  const s = store.createSession(session())
+  expect(s.mode).toBe("auto")
+  const got = store.updateSession(s.id, { mode: "ask" })
+  expect(got.mode).toBe("ask")
+  expect(store.getSession(s.id)!.mode).toBe("ask")
+  const event = events.at(-1)!
+  expect([event.type, event.data.mode]).toEqual(["session.updated", "ask"])
+})

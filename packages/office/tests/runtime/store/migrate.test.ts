@@ -107,9 +107,9 @@ test("every migration file is in the ladder", () => {
   for (const m of MIGRATIONS) expect(m.sql).toBe(fs.readFileSync(new URL(m.name, dir), "utf8"))
 })
 
-test("the office migrations bring a fresh database to version 7", () => {
+test("the office migrations bring a fresh database to version 8", () => {
   const db = open()
-  expect(migrate(db)).toBe(7)
+  expect(migrate(db)).toBe(8)
   const questions = db.prepare("PRAGMA table_info(questions)").all()
   expect(questions.map((c) => c.name)).toContain("call_id")
   const turns = db.prepare("PRAGMA table_info(sessions)").all().find((c) => c.name === "turns")
@@ -124,14 +124,29 @@ test("the office migrations bring a fresh database to version 7", () => {
   expect(sessions).toContain("harness_turn_id")
   const started = db.prepare("PRAGMA table_info(runs)").all().find((c) => c.name === "started_at")
   expect([started?.type, started?.dflt_value]).toEqual(["TEXT", null])
+  expect(db.prepare("PRAGMA table_info(sessions)").all().find((c) => c.name === "mode")?.dflt_value).toBe("'auto'")
 })
 
 test("a store already at version 6 gets only the runs started_at migration", () => {
   const db = open()
   expect(migrate(db, MIGRATIONS.slice(0, 6))).toBe(6)
-  expect(migrate(db)).toBe(7)
+  expect(migrate(db)).toBe(8)
   const runs = db.prepare("PRAGMA table_info(runs)").all().map((c) => c.name)
   expect(runs).toContain("started_at")
   const sessions = db.prepare("PRAGMA table_info(hq_sessions)").all().map((c) => c.name)
   expect(sessions).toContain("issued_sha")
+})
+
+test("a store already at version 7 gets only the session mode migration, and its sessions are in auto", () => {
+  const db = open()
+  expect(migrate(db, MIGRATIONS.slice(0, 7))).toBe(7)
+  const at = "2026-11-16T00:00:00.000Z"
+  db.prepare(
+    "INSERT INTO sessions (id, person, harness, office, cwd, repo_commit, status, kind, created_at, updated_at) " +
+      "VALUES ('s1', 'minh', 'composer', 'mac', '/w', 'c0ffee', 'idle', 'main', ?, ?)",
+  ).run(at, at)
+  expect(migrate(db)).toBe(8)
+  expect(db.prepare("SELECT id, mode FROM sessions").all()).toEqual([{ id: "s1", mode: "auto" }])
+  const runs = db.prepare("PRAGMA table_info(runs)").all().map((c) => c.name)
+  expect(runs).toContain("started_at")
 })

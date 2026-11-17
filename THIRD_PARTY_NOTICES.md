@@ -10,7 +10,10 @@ license, the upstream paths and commit, and our paths.
 ## OpenCode
 
 - **What:** the terminal UI in `packages/tui` is forked from OpenCode's TUI.
-- **Upstream:** https://github.com/anomalyco/opencode (formerly `sst/opencode`).
+- **Upstream:** https://github.com/anomalyco/opencode (formerly `sst/opencode`). The fork's base is commit `b471c2b`
+  (`packages/tui`, `@opencode-ai/tui` 1.18.32).
+- **Restored from the fork's base:** `packages/tui/src/context/permission.tsx` (upstream
+  `packages/tui/src/context/permission.tsx` at `b471c2b`), adapted to hold each session's mode as the office holds it.
 - **License:** MIT, "Copyright (c) 2025 opencode". The full notice is in `packages/tui/LICENSE`.
 - **What:** the bash command lines that the shell scanner's tests read (here-documents, `$'…'`, parameter and
   arithmetic expansions, compound commands, functions), copied as test fixtures for the permission reader. The

@@ -20,6 +20,7 @@ import { useTuiTerminalEnvironment } from "../../context/runtime"
 import { useClipboard } from "../../context/clipboard"
 import { useRoute } from "../../context/route"
 import { useOffice } from "../../context/office"
+import { usePermission } from "../../context/permission"
 import { sessionModel } from "@opencorp/client"
 import { MessageText } from "@opencorp/protocol"
 import { usePromptRef } from "../../context/prompt"
@@ -130,6 +131,10 @@ export function Prompt(props: PromptProps) {
   const stash = usePromptStash()
   const keymap = useOpenCorpKeymap()
   const peopleShortcut = useCommandShortcut("person.list")
+  const modeShortcut = useCommandShortcut("session.mode.cycle")
+  const permission = usePermission()
+  // Null on home and for a Codex session, which shows no mode.
+  const mode = createMemo(() => (props.sessionID ? permission.mode(props.sessionID) : null))
   const paletteShortcut = useCommandShortcut("command.palette.show")
   const renderer = useRenderer()
   const exit = useExit()
@@ -1025,6 +1030,16 @@ export function Prompt(props: PromptProps) {
                   {(person) => (
                     <>
                       <text fg={fadeColor(highlight(), agentMetaAlpha())}>@{person().handle}</text>
+                      <Show when={mode()}>
+                        {(m) => (
+                          // dontAsk refuses what would ask, so it stands out.
+                          <text
+                            fg={fadeColor(m() === "dontAsk" ? theme.warning : theme.textMuted, agentMetaAlpha())}
+                          >
+                            {m()}
+                          </text>
+                        )}
+                      </Show>
                       <Show when={person().title}>
                         <text fg={fadeColor(theme.textMuted, titleMetaAlpha())}>·</text>
                         <text fg={fadeColor(leader() ? theme.textMuted : theme.text, titleMetaAlpha())}>
@@ -1105,6 +1120,11 @@ export function Prompt(props: PromptProps) {
             </box>
           </Show>
           <box gap={2} flexDirection="row">
+            <Show when={mode() && modeShortcut()}>
+              <text fg={theme.text}>
+                {modeShortcut()} <span style={{ fg: theme.textMuted }}>mode</span>
+              </text>
+            </Show>
             <Show when={peopleShortcut()}>
               <text fg={theme.text}>
                 {peopleShortcut()} <span style={{ fg: theme.textMuted }}>people</span>

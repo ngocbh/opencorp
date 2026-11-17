@@ -41,6 +41,7 @@ import type {
   SendBackRequest,
   Session,
   SetDefaultConnectionRequest,
+  SetModeRequest,
   SetModelRequest,
   SetPasswordRequest,
   SideChatRequest,
@@ -243,6 +244,8 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
       costCap: async (id: string, req: CostCapRequest) => post<Session>(`${s(id)}/cost-cap`, req),
       /** Switches a live chat's connection and model; its next reply runs on them. */
       setModel: async (id: string, req: SetModelRequest) => post<Session>(`${s(id)}/model`, req),
+      /** Switches a session's mode (auto, default, ask or dontAsk); only its approver may. */
+      setMode: async (id: string, req: SetModeRequest) => post<Session>(`${s(id)}/mode`, req),
     },
     connections: {
       list: () => get<ConnectionList>("/connections"),

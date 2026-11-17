@@ -10,6 +10,7 @@ import launched from "./migrations/0004_runs_launched.sql" with { type: "file" }
 import harnessTurn from "./migrations/0005_session_harness_turn.sql" with { type: "file" }
 import issuedSha from "./migrations/0006_hq_session_issued_sha.sql" with { type: "file" }
 import started from "./migrations/0007_runs_started.sql" with { type: "file" }
+import mode from "./migrations/0008_session_mode.sql" with { type: "file" }
 
 const NAME = /^(\d{4})_[a-z0-9_]+\.sql$/
 
@@ -33,6 +34,7 @@ export const MIGRATIONS: MigrationFile[] = [
   { name: "0005_session_harness_turn.sql", sql: embedded(harnessTurn).toString("utf8") },
   { name: "0006_hq_session_issued_sha.sql", sql: embedded(issuedSha).toString("utf8") },
   { name: "0007_runs_started.sql", sql: embedded(started).toString("utf8") },
+  { name: "0008_session_mode.sql", sql: embedded(mode).toString("utf8") },
 ]
 
 /** The database's `PRAGMA user_version`: the last migration applied. */

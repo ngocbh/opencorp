@@ -305,6 +305,19 @@ test("a cost cap or a model on a codex session is 422 not supported", async () =
   }
 })
 
+test("a codex session's mode can't be switched until Codex follows it", async () => {
+  const h = makeCodex()
+  h.office.harness = h.sessions
+  const { sock } = await served(h.office)
+  h.fake.script([])
+  const sid = await start(h, h.workspace)
+  const r = await post(sock, `/sessions/${sid}/mode`, { mode: "ask" })
+  expect([r.status, errorOf(r)]).toEqual([422, "not_supported"])
+  expect(h.store.getSession(sid)!.mode).toBe("auto")
+  const missing = await post(sock, `/sessions/${ULID}/mode`, { mode: "ask" })
+  expect([missing.status, errorOf(missing)]).toEqual([404, "not_found"])
+})
+
 /** [label, target, raw JSON body, the 422's message]. */
 const REFUSED_BODIES: [string, string, string, string][] = [
   [
@@ -394,6 +407,40 @@ test("anyone who may chat may switch its model", async () => {
   expect([stored.connection, stored.model]).toEqual(["second", "stub-5"])
   expect((await post(sock, `/sessions/${sid}/end`, null, bearer(ceo))).json()).toEqual({ ok: true })
   await waitFor(() => h.store.getSession(sid)!.status === "ended", { what: "the end" })
+})
+
+test("the opener switches a chat's mode, and anyone else is refused", async () => {
+  const h = await makeHarness(await fakeLlm())
+  const company = h.office.paths.company
+  addHuman(company, "ava")
+  const ava = newToken()
+  const ceo = newToken()
+  giveDevice(company, "ava", "pc", ava)
+  giveDevice(company, CEO, "mac", ceo)
+  const { sock } = await served(h.office, { tokens: true })
+  const started = await post(sock, "/sessions", { person: "minh", cwd: h.folder }, bearer(ceo))
+  expect(started.status).toBe(200)
+  const opened = started.json() as { id: string; mode: string; opened_by: string | null }
+  const sid = opened.id
+  expect([opened.mode, opened.opened_by]).toEqual(["auto", CEO])
+  await waitFor(() => h.store.getSession(sid)!.status === "idle", { what: "the first turn" })
+  let r = await post(sock, `/sessions/${sid}/mode`, { mode: "ask" }, bearer(ava))
+  expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
+  expect(h.store.getSession(sid)!.mode).toBe("auto")
+  for (const mode of ["default", "ask", "dontAsk"] as const) {
+    r = await post(sock, `/sessions/${sid}/mode`, { mode }, bearer(ceo))
+    expect([r.status, (r.json() as { mode: string }).mode]).toEqual([200, mode])
+    expect(h.store.getSession(sid)!.mode).toBe(mode)
+  }
+  r = await post(sock, `/sessions/${sid}/mode`, { mode: "yolo" }, bearer(ceo))
+  expect([r.status, errorOf(r)]).toEqual([422, "invalid_body"])
+  r = await post(sock, `/sessions/${ULID}/mode`, { mode: "ask" }, bearer(ceo))
+  expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
+  expect((await post(sock, `/sessions/${sid}/end`, null, bearer(ceo))).json()).toEqual({ ok: true })
+  await waitFor(() => h.store.getSession(sid)!.status === "ended", { what: "the end" })
+  r = await post(sock, `/sessions/${sid}/mode`, { mode: "auto" }, bearer(ceo))
+  expect([r.status, errorOf(r)]).toEqual([409, "not_live"])
+  expect(h.store.getSession(sid)!.mode).toBe("dontAsk")
 })
 
 test("session writes are refused before their body is read", async () => {

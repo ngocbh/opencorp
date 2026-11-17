@@ -28,6 +28,7 @@ import { DialogProvider, useDialog } from "./ui/dialog"
 import { ErrorComponent } from "./component/error-component"
 import { EditorContextProvider } from "./context/editor"
 import { OfficeProvider, useOffice } from "./context/office"
+import { PermissionProvider } from "./context/permission"
 import { sessionsIn } from "@opencorp/client"
 import { personLabel } from "./util/transcript"
 import { LocalProvider, useLocal } from "./context/local"
@@ -214,23 +215,25 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
                                   <RouteProvider>
                                     <TuiConfigProvider config={input.config}>
                                       <OfficeProvider socket={input.socket} token={input.token} cwd={input.cwd}>
-                                        <ThemeProvider mode={mode}>
-                                          <LocalProvider>
-                                            <PromptStashProvider>
-                                              <DialogProvider>
-                                                <FrecencyProvider>
-                                                  <PromptHistoryProvider>
-                                                    <PromptRefProvider>
-                                                      <EditorContextProvider>
-                                                        <App onSnapshot={input.onSnapshot} />
-                                                      </EditorContextProvider>
-                                                    </PromptRefProvider>
-                                                  </PromptHistoryProvider>
-                                                </FrecencyProvider>
-                                              </DialogProvider>
-                                            </PromptStashProvider>
-                                          </LocalProvider>
-                                        </ThemeProvider>
+                                        <PermissionProvider>
+                                          <ThemeProvider mode={mode}>
+                                            <LocalProvider>
+                                              <PromptStashProvider>
+                                                <DialogProvider>
+                                                  <FrecencyProvider>
+                                                    <PromptHistoryProvider>
+                                                      <PromptRefProvider>
+                                                        <EditorContextProvider>
+                                                          <App onSnapshot={input.onSnapshot} />
+                                                        </EditorContextProvider>
+                                                      </PromptRefProvider>
+                                                    </PromptHistoryProvider>
+                                                  </FrecencyProvider>
+                                                </DialogProvider>
+                                              </PromptStashProvider>
+                                            </LocalProvider>
+                                          </ThemeProvider>
+                                        </PermissionProvider>
                                       </OfficeProvider>
                                     </TuiConfigProvider>
                                   </RouteProvider>

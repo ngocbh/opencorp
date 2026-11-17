@@ -122,6 +122,20 @@ const STEPS: Step[] = [
     pick: (s) => [s.connection, s.model, s.model_note],
   },
   {
+    name: "switch the chat to dontAsk",
+    method: "POST",
+    path: (c) => `/sessions/${c.id}/mode`,
+    body: () => ({ mode: "dontAsk" }),
+    schema: Session,
+    pick: (s) => [s.mode],
+  },
+  {
+    name: "switch the chat to a mode neither office knows",
+    method: "POST",
+    path: (c) => `/sessions/${c.id}/mode`,
+    body: () => ({ mode: "yolo" }),
+  },
+  {
     name: "switch the chat to a connection neither office has",
     method: "POST",
     path: (c) => `/sessions/${c.id}/model`,

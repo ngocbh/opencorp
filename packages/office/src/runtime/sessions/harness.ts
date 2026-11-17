@@ -1,5 +1,6 @@
 /** What every session harness offers: the card actions (`CardActor`) and what the session routes call
- *  (`SessionHarness`). The chat harness and the Codex sessions implement it; the routes and the cards call it. */
+ *  (`SessionHarness`). The chat harness and the Codex sessions implement it; the routes and the cards call it.
+ *  `approverOf` names who answers for a session. */
 import type { Message } from "@opencorp/protocol"
 import type { Hooks } from "./hooks.ts"
 import type { Live } from "../runs/records.ts"
@@ -56,10 +57,18 @@ export interface SessionHarness extends CardActor {
   setCostCap(sessionId: string, usd: number): Promise<SessionRecord>
   /** Switches the session's connection and model for its next turn. */
   setModel(sessionId: string, connection: string, model: string): Promise<SessionRecord>
+  /** Switches the session's mode as `by`, who must be its approver; throws `HarnessError` 403 forbidden, 404, 409
+   *  not_live. */
+  setMode(sessionId: string, mode: SessionRecord["mode"], options?: { by?: string | null }): Promise<SessionRecord>
   /** What a client reads of the session before following its live events. */
   messages(sessionId: string): Message[] | Promise<Message[]>
   /** What memory says about its runs, for Run Logs; the chat harness implements it. */
   live?(): Live
   /** Closes each parked worker whose connection changed; the chat harness implements it. Never rejects. */
   connectionsChanged?(): Promise<void>
+}
+
+/** Who answers for `session`: approval cards, its mode and its rules. Its opener, else the company's CEO. */
+export function approverOf(session: SessionRecord, ceo: string | null): string | null {
+  return session.opened_by ?? ceo
 }
