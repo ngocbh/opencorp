@@ -117,7 +117,7 @@ imports and what imports it").
 | `runtime/service/` | The office as a background service | launchd, systemd, tmux or a plain process; starts, stops and pins the daemon; the programs it may spawn | util, runtime/{auth, sandbox} | features/{codex, doctor, setup}, server (root, commands, daemon, hq), main.ts |
 | `runtime/runs/` | The record of runs | Indexes and reads Yian run logs for Run Logs; live runs; outcomes | util, company, runtime/{store, worker} | runtime/sessions, features/{chat, questions}, server (root, daemon, routes) |
 | `runtime/sessions/` | What every session harness shares | Status rules and `HarnessError`; the extension hooks; the `SessionHarness` and `CardActor` contracts the routes and cards call | runtime/{runs, store, worker} | features/{chat, codex, questions}, server (root, daemon, routes) |
-| `runtime/permissions/` | Who or what may do what | The reference monitor that checks and audits each tool call; the asset kinds it runs; who may manage connections | util, company, runtime (root, store) | tools, features/chat, server/{daemon, routes} |
+| `runtime/permissions/` | Who or what may do what | The reference monitor that checks and audits each tool call; the asset kinds it runs; who may manage connections; the modes and rules that decide which commands and typed input run, ask the owner, are refused or go to Auto's check (`policy.ts`, `commands.ts`, which need no office) | util, company, runtime (root, store) | tools, features/chat, server/{daemon, routes} |
 | `runtime/questions/` | Questions held for an answer | Holds an `ask_user` or `ask_manager` until answered; checks, normalizes and formats answers | util, company, runtime/{store, worker} | tools, features/{chat, questions} |
 | `models/` | Model connections and policy | As its category card; `flows/check_model.yaml` is the check's flow | util, runtime/{store, worker} | features/{chat, codex, doctor, reach, setup}, server (root, commands, daemon, routes), main.ts |
 | `tools/` root files | The typed tools | Builds each run's tool groups: company (`ask_manager`, work items), workspace (files and shell in the sandbox), toolbox (asset tools) | util, company, runtime/{permissions, questions, sandbox, store, worker} | features/chat |
@@ -185,7 +185,7 @@ packages/office/src/features/<feature>/
 | `tests/` mirrors `src/`; feature folders keep their shape | `packages/office/tests/repo/layout.test.ts` |
 | Only the worker hosts yian runs | "no office code outside the worker calls a yian host function" in `packages/office/tests/features/chat/session_actor.test.ts` |
 | Protocol changes update every package | the TUI's and HQ's contract tests against a real office (existing) |
-| Secrets never in argv, logs or the model | no single test: HQ pairing's, login's and redaction's tests each cover part (existing) |
+| Secrets never in argv or logs; no scrubbing of an instrument's view or record, but the sandbox and the command reader's credential check keep the model's key and other credentials out of a shell's reach (the monitor's and the session actor's redactions stay) | no single test: HQ pairing's, login's and redaction's tests each cover part (existing); the reader's credential check: `packages/office/tests/runtime/permissions/commands.test.ts` and `policy.test.ts` |
 | The run log is the source of truth; everything is a flow | no test; held in review |
 
 ### Protocol schema

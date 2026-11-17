@@ -1,0 +1,600 @@
+/** Modes and rules: what runs, what asks the owner, what goes to Auto's check, what is refused, and what a gated
+ *  tool returns. */
+import { expect, test } from "bun:test"
+import { isPending, pending } from "@ngocbh/yian/tools"
+import {
+  type Action, type ApprovalCard, type CheckInput, decide, type Decision, gate, matches, type Mode, MODES,
+  type Permissions, type Rule, RuleBook, suggest, type Verdict, type Where,
+} from "../../../src/runtime/permissions/policy.ts"
+import { readCommand } from "../../../src/runtime/permissions/commands.ts"
+
+const cmd = (text: string, never?: string): Action => ({ kind: "command", text, ...(never ? { never } : {}) })
+const input = (text: string, partial = false): Action => ({ kind: "input", text, ...(partial ? { partial } : {}) })
+const rule = (effect: Rule["effect"]) => (pattern: string, kind: Action["kind"] = "command"): Rule =>
+  ({ effect, kind, pattern })
+const [allow, ask, deny] = [rule("allow"), rule("ask"), rule("deny")]
+const W: Where = { profile: "workspace", cwd: "/w", writable: ["/w"] }
+const S: Where = { profile: "ssh", cwd: "/home/u", writable: [] }
+const DONT = "this session doesn't ask (dontAsk mode): "
+
+/** One row of a mode's table: the action, its rules and where it runs, and the decision. */
+type Row = [Action, Rule[], Where, Decision]
+/** Checks each row in `mode`; the action's text goes in the comparison so a failure names its row. */
+const table = (mode: Mode, rows: Row[]) => {
+  for (const [action, rules, where, decision] of rows)
+    expect([action.text, decide(action, mode, rules, where)]).toEqual([action.text, decision])
+}
+
+/** Permissions that record each card they hold and each check they make; `check` answers as the test says. */
+function holding(mode: Mode, o: { book?: RuleBook; where?: Where; check?: (i: CheckInput) => Promise<Verdict> } = {}) {
+  const book = o.book ?? new RuleBook()
+  const held: { card: ApprovalCard; callId: string }[] = []
+  const checked: CheckInput[] = []
+  const perms: Permissions = {
+    mode: () => mode,
+    rules: () => book.list(),
+    where: () => o.where ?? W,
+    hold: (card, callId) => (held.push({ card, callId }), pending()),
+    ...(o.check ? { check: (i: CheckInput) => (checked.push(i), o.check!(i)) } : {}),
+  }
+  return { perms, held, checked, book }
+}
+const call = (o: { why?: string; callId?: string; signal?: AbortSignal } = {}) =>
+  ({ tool: "shell", why: o.why ?? "", args: {}, callId: "callId" in o ? o.callId : "r/n/1/0",
+    signal: o.signal ?? new AbortController().signal })
+
+const READ_ONLY = { verdict: "allow", by: "read-only" } as const
+const FILE_OP = { verdict: "allow", by: "a file operation in the workspace" } as const
+const BY_RULE = { verdict: "allow", by: "an allow rule" } as const
+const ANSWER = { verdict: "allow", by: "a prompt's answer" } as const
+const PUSH = { verdict: "allow", by: "a push to a feature branch" } as const
+const askMode = (rules: string[]): Decision => ({ verdict: "ask", reason: "Ask mode", rules })
+
+test("the modes are auto, default, ask and dontAsk, in Shift+Tab's order", () => {
+  expect(MODES).toEqual(["auto", "default", "ask", "dontAsk"])
+})
+
+test("in auto: the rules, then read-only forms, then file operations in the workspace, then Auto's check", () => {
+  table("auto", [
+    [cmd("squeue -u me | wc -l"), [], S, READ_ONLY],
+    [cmd("mkdir -p build && touch build/x"), [], W, FILE_OP],
+    [cmd("rm -rf build"), [], W, FILE_OP],
+    [cmd("ls && rm -rf build"), [], W, FILE_OP],
+    [cmd("rm -rf build"), [], S, { verdict: "check", rules: ["rm -rf build"] }],
+    [cmd("rm -rf /tmp/x"), [], W, { verdict: "check", rules: ["rm -rf /tmp/x"] }],
+    [cmd("ssh u@n rm x"), [], W, { verdict: "check", rules: ["ssh u@n rm x"] }],
+    [cmd("cd /tmp && rm -rf build"), [], W, { verdict: "check", rules: ["cd *", "rm -rf build"] }],
+    [cmd("make"), [], W, { verdict: "check", rules: ["make"] }],
+    [cmd("htop"), [], W, { verdict: "check", rules: ["htop *"] }],
+    [cmd("echo $(id)"), [], W, { verdict: "check", rules: [] }],
+    [cmd("make"), [allow("make")], W, BY_RULE],
+    [cmd("make && ls"), [allow("make")], W, BY_RULE],
+    [input("1"), [], S, ANSWER],
+    [input("yes"), [], S, ANSWER],
+    [input(""), [], S, ANSWER],
+    [input("reboot"), [], S, { verdict: "check", rules: ["reboot"] }],
+    [input("ls -l"), [], S, READ_ONLY],
+    [input("mkdir x"), [], W, { verdict: "check", rules: ["mkdir x"] }],
+    [input("sca", true), [], S, { verdict: "ask", reason: "Auto asks: the line isn't finished", rules: ["sca"] }],
+  ])
+})
+
+test("in default: the rules, then read-only forms; everything else asks, with no check", () => {
+  const rows: Row[] = [
+    [cmd("ls -la"), [], W, READ_ONLY],
+    [input("1"), [], S, ANSWER],
+    [input(""), [], S, ANSWER],
+    [cmd("mkdir build"), [], W,
+      { verdict: "ask", reason: "Default mode asks before what it doesn't know: mkdir", rules: ["mkdir *"] }],
+    [cmd("rm -rf build"), [], W,
+      { verdict: "ask", reason: "Default mode asks: it deletes or moves files", rules: ["rm -rf build"] }],
+    [cmd("python3 x.py"), [], W,
+      { verdict: "ask", reason: "Default mode asks before what it doesn't know: python3", rules: ["python3 x.py"] }],
+    [cmd("echo $(id)"), [], W, { verdict: "ask", reason: "Default mode asks: it has a command substitution", rules: [] }],
+    [cmd("htop; rm x"), [], W, { verdict: "ask", reason: "Default mode asks: it deletes or moves files", rules: ["htop *", "rm x"] }],
+    [cmd("ssh u@n scancel 1"), [], S,
+      { verdict: "ask", reason: "Default mode asks: on u@n: it kills or cancels processes or jobs", rules: ["ssh u@n scancel 1"] }],
+    [cmd("make"), [], W, { verdict: "ask", reason: "Default mode asks before what it doesn't know: make", rules: ["make"] }],
+    [input("sca", true), [], S,
+      { verdict: "ask", reason: "Default mode asks before what it doesn't know: sca", rules: ["sca"] }],
+    [cmd("ls; ls"), [allow("htop *")], W, READ_ONLY],
+  ]
+  table("default", rows)
+  for (const [, , , decision] of rows) expect(decision.verdict).not.toBe("check")
+})
+
+test("in ask: only allow rules; everything else asks, read-only forms included", () => {
+  table("ask", [
+    [cmd("git status -s"), [], W, askMode(["git status *"])],
+    [cmd("git status -s"), [allow("git status *")], W, BY_RULE],
+    [cmd("ls"), [], W, askMode(["ls *"])],
+    [cmd("ls x; ls y"), [], W, askMode(["ls *"])],
+    [cmd("mkdir build"), [], W, askMode(["mkdir *"])],
+    [input("1"), [], S, askMode(["1"])],
+    [input(""), [], S, askMode([""])],
+    [input(""), [allow("", "input")], S, BY_RULE],
+    [cmd("echo $(id)"), [], W, askMode([])],
+    [input("sca", true), [], S, askMode(["sca"])],
+  ])
+})
+
+test("in dontAsk: auto's checks, and whatever would ask is refused", () => {
+  table("dontAsk", [
+    [cmd("ls"), [], W, READ_ONLY],
+    [cmd("rm -rf build"), [], W, FILE_OP],
+    [input("1"), [], S, ANSWER],
+    [cmd("make"), [], W, { verdict: "check", rules: ["make"] }],
+    [cmd("echo $(id)"), [], W, { verdict: "check", rules: [] }],
+    [input("sca", true), [], S, { verdict: "deny", reason: DONT + "Auto asks: the line isn't finished" }],
+    [cmd("git push origin x"), [ask("git push *")], W, { verdict: "deny", reason: DONT + "an ask rule: git push *" }],
+    [cmd("cp r reach.sh", "it saves what runs later"), [], W, { verdict: "deny", reason: DONT + "it saves what runs later" }],
+  ])
+})
+
+test("in every mode a deny rule refuses, nested commands included, and wins over any allow rule", () => {
+  const denied: Decision = { verdict: "deny", reason: "a deny rule: rm *" }
+  for (const mode of MODES)
+    table(mode, [
+      [cmd("rm x"), [deny("rm *"), allow("rm x")], W, denied],
+      [cmd("echo $(rm x)"), [deny("rm *")], W, denied],
+      [cmd("bash -c 'rm x'"), [deny("rm *")], W, denied],
+      [cmd("ls; timeout 5 rm x"), [deny("rm *")], W, denied],
+      [cmd("FOO=1 rm x"), [deny("rm *")], W, denied],
+      [cmd("exec rm x"), [deny("rm *")], W, denied],
+      [cmd("ssh h rm x"), [deny("rm *")], W, denied],
+      [cmd("ssh a ssh b 'ls; rm x'"), [deny("rm *")], W, denied],
+      [cmd("rm x", "it saves what runs later"), [deny("rm *")], W, denied],
+      [cmd("rm x > log"), [deny("rm x")], W, { verdict: "deny", reason: "a deny rule: rm x" }],
+      [cmd("ls"), [allow("ls *"), deny("ls *")], W, { verdict: "deny", reason: "a deny rule: ls *" }],
+    ])
+})
+
+test("in every mode an ask rule asks and offers no rule, and dontAsk refuses it", () => {
+  for (const mode of MODES) {
+    const asked = (pattern: string): Decision => mode === "dontAsk"
+      ? { verdict: "deny", reason: `${DONT}an ask rule: ${pattern}` }
+      : { verdict: "ask", reason: `an ask rule: ${pattern}`, rules: [] }
+    table(mode, [
+      [cmd("git push origin feature"), [ask("git push *"), allow("git push origin feature")], W, asked("git push *")],
+      [cmd("ls && git push origin x"), [ask("git push *")], W, asked("git push *")],
+      [cmd("ls"), [ask("ls *"), allow("ls *")], W, asked("ls *")],
+      [cmd("echo $(ls)"), [ask("ls")], W, asked("ls")],
+      [cmd("git push"), [ask("git push *"), deny("git *")], W, { verdict: "deny", reason: "a deny rule: git *" }],
+    ])
+  }
+})
+
+test("in every mode a never-automated action asks and no allow rule skips it, and dontAsk refuses it", () => {
+  const never = "it saves what runs later"
+  for (const mode of MODES) {
+    const held: Decision = mode === "dontAsk"
+      ? { verdict: "deny", reason: DONT + never }
+      : { verdict: "ask", reason: never, rules: [] }
+    table(mode, [
+      [cmd("cp r reach.sh", never), [], W, held],
+      [cmd("cp r reach.sh", never), [allow("cp r reach.sh"), allow("cp *")], W, held],
+      [cmd("ls", never), [], W, held],
+      [cmd("cp r reach.sh", never), [deny("cp *")], W, { verdict: "deny", reason: "a deny rule: cp *" }],
+    ])
+  }
+})
+
+test("in every mode a credential path asks and no allow rule skips it, and dontAsk refuses it", () => {
+  const reason = "it names a credential path: ~/.ssh/id_rsa"
+  for (const mode of MODES) {
+    const held = (why: string): Decision => mode === "dontAsk"
+      ? { verdict: "deny", reason: DONT + why }
+      : { verdict: "ask", reason: why, rules: [] }
+    table(mode, [
+      [cmd("cat ~/.ssh/id_rsa"), [], S, held(reason)],
+      [cmd("cat ~/.ssh/id_rsa"), [allow("cat *"), allow("cat ~/.ssh/id_rsa")], W, held(reason)],
+      [cmd("ls && grep -r x ~/.ssh/id_rsa"), [], S, held(reason)],
+      [cmd("ssh h cat ~/.ssh/id_rsa"), [], S, held(`on h: ${reason}`)],
+      [input("cat ~/.ssh/id_rsa"), [], S, held(reason)],
+      [cmd("cat ~/.ssh/id_rsa"), [deny("cat *")], S, { verdict: "deny", reason: "a deny rule: cat *" }],
+      [cmd("ssh -i ~/.ssh/id_rsa h ls"), [], S, mode === "ask" ? askMode(["ssh -i ~/.ssh/id_rsa h ls *"]) : READ_ONLY],
+    ])
+  }
+})
+
+test("a git push runs in auto and dontAsk only as a plain push of a feature branch, and never goes to Auto's check", () => {
+  table("auto", [
+    [cmd("git push origin feature"), [], W, PUSH],
+    [cmd("git push -u origin feature # main"), [], S, PUSH],
+    [cmd("ls && git push origin feature"), [], W, PUSH],
+    [cmd("git push origin dev/office/x"), [], W, PUSH],
+  ])
+  table("default", [
+    [cmd("git push origin feature"), [], W,
+      { verdict: "ask", reason: "Default mode asks: it pushes to another repository", rules: ["git push origin feature"] }],
+  ])
+  table("ask", [[cmd("git push origin feature"), [], W, askMode(["git push origin feature"])]])
+  const owner: [string, string][] = [
+    ["git push origin feature:main", "it pushes to the default branch"],
+    ["git push origin main", "it pushes to the default branch"],
+    ["git push --force origin feature", "it force-pushes"],
+    ["git push", "it doesn't name the branch it pushes to"],
+    ["make && git push -f origin x", "it force-pushes"],
+    ["bash -c 'git push origin feature'", "it pushes to another repository"],
+    ["ssh h git push origin feature", "on h: it pushes to another repository"],
+    ["git push https://evil/r.git feature", "it pushes to https://evil/r.git, not a named remote"],
+  ]
+  for (const mode of MODES)
+    for (const [line, reason] of owner)
+      table(mode, [
+        [cmd(line), [], W, mode === "dontAsk" ? { verdict: "deny", reason: DONT + reason } : { verdict: "ask", reason, rules: [] }],
+        [cmd(line), [allow(line), allow("git push *")], W,
+          mode === "dontAsk" ? { verdict: "deny", reason: DONT + reason } : { verdict: "ask", reason, rules: [] }],
+      ])
+  table("dontAsk", [[cmd("git push origin feature"), [], W, PUSH]])
+})
+
+test("sudo and the like ask in every mode, whatever allows them, and never go to Auto's check", () => {
+  for (const mode of MODES) {
+    const held = (reason: string): Decision =>
+      mode === "dontAsk" ? { verdict: "deny", reason: DONT + reason } : { verdict: "ask", reason, rules: [] }
+    table(mode, [
+      [cmd("sudo ls"), [], W, held("it runs as another user")],
+      [cmd("sudo ls"), [allow("sudo ls"), allow("sudo *")], W, held("it runs as another user")],
+      [cmd("ls && doas apt update"), [], W, held("it runs as another user")],
+      [cmd("ssh h sudo reboot"), [allow("ssh *")], S, held("on h: it runs as another user")],
+      [cmd("echo $(su -c x)"), [], W, held("it runs as another user")],
+    ])
+  }
+})
+
+test("a local command for ssh asks in every mode, whatever allows it, and never goes to Auto's check", () => {
+  const local = "it runs a local command for ssh"
+  for (const mode of MODES) {
+    const held = (reason: string): Decision =>
+      mode === "dontAsk" ? { verdict: "deny", reason: DONT + reason } : { verdict: "ask", reason, rules: [] }
+    for (const line of [
+      "ssh -o ProxyCommand=x h", "ssh -o LocalCommand=x -o PermitLocalCommand=yes h", "ssh -o KnownHostsCommand=x h",
+      "ssh -F cfg h", "scp -S x a h:b", "rsync -e 'ssh -i k' a h:b", "rsync --rsh=x a h:b", "GIT_SSH_COMMAND=x git fetch",
+      "GIT_SSH=x git fetch", "env GIT_SSH=x git fetch", "git -c core.sshCommand=x fetch",
+    ])
+      table(mode, [[cmd(line), [allow(line), allow("ssh *"), allow("git *")], S, held(local)]])
+    table(mode, [[cmd("ssh h ssh -o ProxyCommand=x g"), [], S, held(`on h: ${local}`)]])
+  }
+  table("auto", [
+    [cmd("ssh -J login u@n squeue -u u"), [], S, READ_ONLY],
+    [cmd("ssh -o ProxyJump=j h ls"), [], S, { verdict: "check", rules: ["ssh -o ProxyJump=j h ls *"] }],
+  ])
+  table("default", [[cmd("ssh -o ProxyJump=j h ls"), [allow("ssh *")], S, BY_RULE]])
+})
+
+test("decide refuses a line over 1000 bytes before reading it", () => {
+  for (const mode of MODES)
+    table(mode, [
+      [cmd("echo " + "a".repeat(995)), [allow("echo *")], W, BY_RULE],
+      [cmd("echo " + "a".repeat(996)), [allow("echo *")], W, { verdict: "deny", reason: "it is longer than 1000 bytes" }],
+      [cmd("echo " + "é".repeat(498)), [allow("echo *")], W, { verdict: "deny", reason: "it is longer than 1000 bytes" }],
+      [input("x".repeat(1001)), [], S, { verdict: "deny", reason: "it is longer than 1000 bytes" }],
+    ])
+})
+
+test("a deny rule refuses what sudo, doas, find -exec, trap, case and a program named by its path run", () => {
+  const denied: Decision = { verdict: "deny", reason: "a deny rule: rm *" }
+  for (const mode of MODES)
+    table(mode, [
+      [cmd("/bin/rm x"), [deny("rm *")], W, denied],
+      [cmd("sudo rm x"), [deny("rm *")], W, denied],
+      [cmd("sudo -u root -E rm x"), [deny("rm *")], W, denied],
+      [cmd("doas -u u /bin/rm x"), [deny("rm *")], W, denied],
+      [cmd("find . -exec rm {} \\;"), [deny("rm *")], W, denied],
+      [cmd("find . -name x -execdir rm {} +"), [deny("rm *")], W, denied],
+      [cmd("find . -ok rm {} ; -print"), [deny("rm *")], W, denied],
+      [cmd("echo $(( 1 << 2 ))\nrm x"), [deny("rm *")], W, denied],
+      [cmd("(( x << 2 ))\nrm x"), [deny("rm *")], W, denied],
+      [cmd("case x in (x) rm y;; esac"), [deny("rm *")], W, denied],
+      [cmd("trap -- 'rm x' EXIT"), [deny("rm *")], W, denied],
+      [cmd("ssh h sudo rm x"), [deny("rm *")], W, denied],
+    ])
+  table("auto", [[cmd("/tmp/ls -l"), [allow("ls *")], W, { verdict: "check", rules: ["/tmp/ls -l"] }]])
+})
+
+test("a glob counts as a credential read only when a literal part names a credential folder or file", () => {
+  table("auto", [
+    [cmd("grep x *"), [], W, READ_ONLY],
+    [cmd("cat src/*"), [], W, READ_ONLY],
+    [cmd("wc -l *.ts"), [], W, READ_ONLY],
+    [cmd("cat $FILE"), [], W, READ_ONLY],
+    [cmd("find . -name x -exec cat {} +"), [], W, { verdict: "check", rules: ["find . -name x -exec cat {} +"] }],
+    [cmd("cat ~/.ssh/*"), [], S, { verdict: "ask", reason: "it names a credential path: ~/.ssh/*", rules: [] }],
+    [cmd("cat */.aws/*"), [], S, { verdict: "ask", reason: "it names a credential path: */.aws/*", rules: [] }],
+  ])
+})
+
+test("a recursive read of a folder that holds credentials asks in every mode, and dontAsk refuses it", () => {
+  const home: Where = { profile: "ssh", cwd: "/home/u", writable: [] }
+  for (const mode of MODES) {
+    const held = (why: string): Decision =>
+      mode === "dontAsk" ? { verdict: "deny", reason: DONT + why } : { verdict: "ask", reason: why, rules: [] }
+    const reads = (path: string) => held(`it reads a folder that holds credentials: ${path}`)
+    table(mode, [
+      [cmd("grep -r PRIVATE ~"), [], S, reads("~")],
+      [cmd("diff -rN ~ /tmp/x"), [], S, reads("~")],
+      [cmd("git diff --no-index ~ /dev/null"), [allow("git diff *")], S, reads("~")],
+      [cmd("ssh h grep -r PRIVATE ~"), [allow("ssh *")], S, held("on h: it reads a folder that holds credentials: ~")],
+      [cmd("ssh h grep -r PRIVATE ."), [], W, held("on h: it reads a folder that holds credentials: .")],
+      [cmd("grep -rn x"), [], home, reads(".")],
+      [cmd("grep -rn x ../../.."), [], W, reads("../../..")],
+      [input("grep -r x ."), [], W, reads(".")],
+    ])
+  }
+  table("auto", [
+    [cmd("grep -r x src"), [], W, READ_ONLY],
+    [cmd("grep -r x .."), [], { ...W, cwd: "/w/s" }, READ_ONLY],
+    [cmd("ls -R ~ && du -sh ~ && find ~ -name x"), [], S, READ_ONLY],
+  ])
+})
+
+test("the card offers no rule for what it holds for the owner", () => {
+  table("ask", [[cmd("ls && git push origin main"), [], W,
+    { verdict: "ask", reason: "it pushes to the default branch", rules: [] }]])
+})
+
+test("allow rules let a command run only when they cover every part", () => {
+  table("ask", [
+    [cmd("htop && top"), [allow("htop *")], W, askMode(["top *"])],
+    [cmd("htop && top"), [allow("htop *"), allow("top *")], W, BY_RULE],
+    [cmd("htop x"), [allow("htop")], W, askMode(["htop *"])],
+    [cmd("timeout 5 htop"), [allow("htop *")], W, BY_RULE],
+    [cmd("FOO=1 htop"), [allow("htop *")], W, askMode(["FOO=1 htop"])],
+    [cmd("FOO=1 htop"), [allow("FOO=1 htop")], W, BY_RULE],
+  ])
+})
+
+test("a wildcard allow rule never covers a risky part; an exact one does", () => {
+  table("default", [
+    [cmd("find / -delete"), [allow("find *")], W,
+      { verdict: "ask", reason: "Default mode asks: it deletes or moves files", rules: ["find / -delete"] }],
+    [cmd("rm -rf build"), [allow("rm -rf build")], W, BY_RULE],
+    [cmd("rm -rf build"), [allow("rm *"), allow("rm -rf build")], W, BY_RULE],
+    [cmd("rm -rf src"), [allow("rm -rf build")], W,
+      { verdict: "ask", reason: "Default mode asks: it deletes or moves files", rules: ["rm -rf src"] }],
+    [cmd("sed -i s/a/b/ f"), [allow("sed *")], W,
+      { verdict: "ask", reason: "Default mode asks: it edits files", rules: ["sed -i s/a/b/ f"] }],
+    [cmd("ls > out"), [allow("ls *")], W,
+      { verdict: "ask", reason: "Default mode asks: it writes or overwrites files", rules: ["ls >out"] }],
+    [cmd("ls > out"), [allow("ls >out")], W, BY_RULE],
+    [cmd("ls > other"), [allow("ls >out")], W,
+      { verdict: "ask", reason: "Default mode asks: it writes or overwrites files", rules: ["ls >other"] }],
+  ])
+})
+
+test("a hand-written wildcard covers a program that runs code", () => {
+  table("default", [
+    [cmd("bun test x.test.ts"), [allow("bun test *")], W, BY_RULE],
+    [cmd("bun test x.test.ts"), [], W,
+      { verdict: "ask", reason: "Default mode asks before what it doesn't know: bun", rules: ["bun test x.test.ts"] }],
+  ])
+})
+
+test("a host-key option is decided by the mode and rules like any other", () => {
+  const line = "ssh -o StrictHostKeyChecking=accept-new h"
+  table("ask", [[cmd(line), [], S, askMode([line])]])
+  table("default", [
+    [cmd(line), [], S, { verdict: "ask", reason: "Default mode asks before what it doesn't know: ssh", rules: [line] }],
+    [cmd(line), [allow("ssh *")], S, BY_RULE],
+  ])
+  table("auto", [[cmd(line), [], S, { verdict: "check", rules: [line] }]])
+  for (const mode of ["auto", "default", "dontAsk"] as const) table(mode, [[input("yes"), [], S, ANSWER], [input("no"), [], S, ANSWER]])
+  table("ask", [[input("yes"), [], S, askMode(["yes"])]])
+})
+
+test("an unreadable line is never covered by an allow rule or a read-only form, and offers no rule", () => {
+  table("default", [[cmd("echo $(id)"), [allow("echo *")], W,
+    { verdict: "ask", reason: "Default mode asks: it has a command substitution", rules: [] }]])
+  table("ask", [[cmd("echo $(id)"), [allow("echo *")], W, askMode([])]])
+  table("auto", [
+    [cmd("echo $(id)"), [allow("echo *")], W, { verdict: "check", rules: [] }],
+    [cmd("ssh u@n 'echo $(id)'"), [allow("ssh *")], W, { verdict: "check", rules: [] }],
+  ])
+})
+
+test("a suggested rule keeps the program and its subcommand; a risky one or one that runs code is exact", () => {
+  const s = (text: string, kind: Action["kind"] = "command") => readCommand(text).parts.map((p) => suggest(p, kind))
+  expect(s("git status -s")).toEqual(["git status *"])
+  expect(s("ls -la")).toEqual(["ls *"])
+  expect(s("ssh u@n squeue -u u")).toEqual(["ssh u@n squeue *"])
+  expect(s("ssh -p 22 u@n git log -1")).toEqual(["ssh -p 22 u@n git log *"])
+  expect(s("ssh u@n")).toEqual(["ssh u@n"])
+  expect(s("ssh -t u@n")).toEqual(["ssh -t u@n"])
+  expect(s("ssh u@n 'htop -d 1'")).toEqual(["ssh u@n htop -d 1"])
+  expect(s("rm -rf build")).toEqual(["rm -rf build"])
+  expect(s("python3 x.py")).toEqual(["python3 x.py"])
+  expect(s("make all")).toEqual(["make all"])
+  expect(s("timeout 5 htop -d 1")).toEqual(["htop *"])
+  expect(s("FOO=1 htop")).toEqual(["FOO=1 htop"])
+  expect(s("git -C a status")).toEqual(["git -C a status"])
+  expect(s("git")).toEqual(["git"])
+  expect(s("htop", "input")).toEqual(["htop"])
+  for (const p of ["git", "docker", "kubectl", "systemctl", "module", "conda", "pip", "uv", "opencorp", "scontrol"])
+    expect(s(`${p} x -y z`)).toEqual([`${p} x *`])
+  for (const p of ["npm", "bun", "cargo"]) expect(s(`${p} x -y z`)).toEqual([`${p} x -y z`])
+})
+
+test("a suggested rule that can't match its command is not offered", () => {
+  table("default", [
+    [cmd("ssh u@n 'htop -d 1'"), [], S, { verdict: "ask", reason: "Default mode asks before what it doesn't know: ssh", rules: [] }],
+    [cmd("python3 -c 'print(1); print(2)'"), [], W,
+      { verdict: "ask", reason: "Default mode asks before what it doesn't know: python3", rules: [] }],
+  ])
+})
+
+test("input rules match typed input and command rules don't", () => {
+  table("ask", [
+    [input("ls"), [allow("ls *")], S, askMode(["ls"])],
+    [input("ls"), [allow("ls *", "input")], S, BY_RULE],
+    [cmd("ls"), [allow("ls *", "input")], W, askMode(["ls *"])],
+  ])
+  table("auto", [
+    [input("rm x"), [deny("rm *")], S, { verdict: "check", rules: ["rm x"] }],
+    [input("rm x"), [deny("rm *", "input")], S, { verdict: "deny", reason: "a deny rule: rm *" }],
+    [cmd("rm x"), [deny("rm *", "input")], S, { verdict: "check", rules: ["rm x"] }],
+  ])
+})
+
+test("a pattern's last * matches any further words, and nothing else is a wildcard", () => {
+  expect(matches("ls *", ["ls"])).toBe(true)
+  expect(matches("ls *", ["ls", "-l", "x"])).toBe(true)
+  expect(matches("ls", ["ls"])).toBe(true)
+  expect(matches("ls", ["ls", "-l"])).toBe(false)
+  expect(matches("ls *", ["lsx"])).toBe(false)
+  expect(matches("l*", ["ls"])).toBe(false)
+  expect(matches("ls * x", ["ls", "a", "x"])).toBe(false)
+  expect(matches("ls * x", ["ls", "*", "x"])).toBe(true)
+  expect(matches("*", ["anything", "at all"])).toBe(true)
+  expect(matches("*", [])).toBe(true)
+  expect(matches("", [])).toBe(true)
+  expect(matches("", ["x"])).toBe(false)
+  expect(matches("git status *", ["git"])).toBe(false)
+  expect(matches("echo a b", ["echo", "a b"])).toBe(false)
+})
+
+test("the gate runs an allowed action, refuses a denied one, and holds one that asks", async () => {
+  expect(await gate(holding("auto").perms, cmd("ls"), call())).toEqual({ run: true, by: "read-only" })
+  const book = new RuleBook()
+  book.add(deny("rm *"))
+  const denied = holding("auto", { book })
+  expect(await gate(denied.perms, cmd("rm x"), call())).toEqual({ run: false, result: "Not run: a deny rule: rm *." })
+  expect(denied.held).toEqual([])
+  const { perms, held } = holding("ask")
+  const gated = await gate(perms, cmd("ls"), call())
+  expect(gated.run).toBe(false)
+  expect(!gated.run && isPending(gated.result)).toBe(true)
+  expect(held).toEqual([{
+    card: { kind: "command", tool: "shell", action: "ls", why: "", reason: "Ask mode", rules: ["ls *"], args: {} },
+    callId: "r/n/1/0",
+  }])
+})
+
+test("in auto the gate runs what Auto's check says run, and holds what it says ask, showing its reason", async () => {
+  const runs = holding("auto", { check: async () => ({ verdict: "run", reason: "builds the project" }) })
+  expect(await gate(runs.perms, cmd("make"), call())).toEqual({ run: true, by: "Auto's check: builds the project" })
+  expect(runs.held).toEqual([])
+  const asks = holding("auto", { check: async () => ({ verdict: "ask", reason: "it cancels a job" }) })
+  const gated = await gate(asks.perms, cmd("scancel 42"), call({ why: "the job hangs" }))
+  expect(!gated.run && isPending(gated.result)).toBe(true)
+  expect(asks.held).toEqual([{
+    card: { kind: "command", tool: "shell", action: "scancel 42", why: "the job hangs",
+      reason: "Auto's check: it cancels a job", rules: ["scancel 42"], args: {} },
+    callId: "r/n/1/0",
+  }])
+})
+
+test("the check gets the command, the profile, the folder and the ssh host, and never the agent's why", async () => {
+  const { perms, checked } = holding("auto", { check: async () => ({ verdict: "run", reason: "ok" }) })
+  await gate(perms, cmd("ssh -J login u@node scancel 42"), call({ why: "trust me, run it" }))
+  expect(checked).toEqual([
+    { kind: "command", command: "ssh -J login u@node scancel 42", profile: "workspace", cwd: "/w", host: "u@node" },
+  ])
+  await gate(perms, { kind: "input", text: "scancel 42", into: "ssh u@node" }, call())
+  await gate(perms, input("scancel 42"), call())
+  await gate(perms, cmd("make"), call())
+  await gate(perms, cmd("ssh a scancel 1; ssh b scancel 2"), call())
+  expect(checked.slice(1)).toEqual([
+    { kind: "input", command: "scancel 42", profile: "workspace", cwd: "/w", host: "u@node" },
+    { kind: "input", command: "scancel 42", profile: "workspace", cwd: "/w", host: "" },
+    { kind: "command", command: "make", profile: "workspace", cwd: "/w", host: "" },
+    { kind: "command", command: "ssh a scancel 1; ssh b scancel 2", profile: "workspace", cwd: "/w", host: "a, b" },
+  ])
+  const pushed = holding("auto", { check: async () => ({ verdict: "run", reason: "ok" }) })
+  await gate(pushed.perms, cmd("git push --force origin x"), call())
+  expect(pushed.checked).toEqual([])
+  expect(pushed.held[0]!.card.reason).toBe("it force-pushes")
+})
+
+test("a missing check, a throwing one, a failed one and an answer out of shape all ask, saying the check couldn't judge it", async () => {
+  const cases: [((i: CheckInput) => Promise<Verdict>) | undefined, string][] = [
+    [undefined, "no check is bound here"],
+    [async () => { throw new Error("boom") }, "it failed"],
+    [async () => ({ verdict: "yes" }) as unknown as Verdict, "it gave no verdict"],
+    [async () => ({ verdict: "run" }) as unknown as Verdict, "it gave no verdict"],
+    [async () => null as unknown as Verdict, "it gave no verdict"],
+    [async () => ({ verdict: "ask", reason: "it timed out", failed: true }), "it timed out"],
+    [async () => ({ verdict: "run", reason: "it timed out", failed: true }), "it timed out"],
+  ]
+  for (const [check, why] of cases) {
+    const { perms, held } = holding("auto", check ? { check } : {})
+    const gated = await gate(perms, cmd("make"), call())
+    expect(gated.run).toBe(false)
+    expect(held.map((h) => h.card.reason)).toEqual([`Auto asks: its check couldn't judge this: ${why}`])
+  }
+})
+
+test("the check's reason shows as one line of at most 200 characters", async () => {
+  const { perms, held } = holding("auto", {
+    check: async () => ({ verdict: "ask", reason: "a\nb\x1b[2Jc" + "x".repeat(300) }),
+  })
+  await gate(perms, cmd("make"), call())
+  const shown = held[0]!.card.reason.slice("Auto's check: ".length)
+  expect(shown).toBe("a b [2Jc" + "x".repeat(191) + "…")
+  expect(shown.length).toBe(200)
+  const spaced = holding("auto", { check: async () => ({ verdict: "run", reason: "  a \t\r\n  b \u2028 " }) })
+  expect(await gate(spaced.perms, cmd("make"), call())).toEqual({ run: true, by: "Auto's check: a b" })
+})
+
+test("in dontAsk what would ask is refused, and no card is held", async () => {
+  const asks = holding("dontAsk", { check: async () => ({ verdict: "ask", reason: "it cancels a job" }) })
+  expect(await gate(asks.perms, cmd("scancel 42"), call())).toEqual({
+    run: false, result: "Not run: this session doesn't ask (dontAsk mode): Auto's check: it cancels a job.",
+  })
+  const failed = holding("dontAsk", { check: async () => ({ verdict: "ask", reason: "it timed out", failed: true }) })
+  expect(await gate(failed.perms, cmd("scancel 42"), call())).toEqual({
+    run: false,
+    result: "Not run: this session doesn't ask (dontAsk mode): Auto asks: its check couldn't judge this: it timed out.",
+  })
+  const runs = holding("dontAsk", { check: async () => ({ verdict: "run", reason: "builds" }) })
+  expect(await gate(runs.perms, cmd("make"), call())).toEqual({ run: true, by: "Auto's check: builds" })
+  const pushed = holding("dontAsk")
+  expect(await gate(pushed.perms, cmd("git push origin main"), call())).toEqual({
+    run: false, result: "Not run: this session doesn't ask (dontAsk mode): it pushes to the default branch.",
+  })
+  expect([...asks.held, ...failed.held, ...runs.held, ...pushed.held]).toEqual([])
+})
+
+test("a call stopped while its check runs runs nothing and holds nothing", async () => {
+  const stop = new AbortController()
+  const { perms, held } = holding("auto", {
+    check: () => new Promise((_, reject) => stop.signal.addEventListener("abort", () => reject(new Error("aborted")))),
+  })
+  const gated = gate(perms, cmd("make"), call({ signal: stop.signal }))
+  stop.abort()
+  expect(await gated).toEqual({ run: false, result: "Not run: stopped before Auto's check finished." })
+  const late = holding("auto", { check: async () => (stop.signal.aborted, { verdict: "run", reason: "ok" }) })
+  expect(await gate(late.perms, cmd("make"), call({ signal: stop.signal }))).toEqual({
+    run: false, result: "Not run: stopped before Auto's check finished.",
+  })
+  expect([...held, ...late.held]).toEqual([])
+})
+
+test("a call with no call id can't wait for the owner", async () => {
+  const { perms, held } = holding("ask")
+  expect(await gate(perms, cmd("ls"), call({ callId: undefined }))).toEqual({
+    run: false, result: "Not run: this call can't wait for the owner's approval.",
+  })
+  expect(held).toEqual([])
+  expect(await gate(holding("ask").perms, cmd("rm x"), call({ callId: undefined }))).toEqual({
+    run: false, result: "Not run: this call can't wait for the owner's approval.",
+  })
+})
+
+test("the session's rule book adds a rule once and removes it", async () => {
+  const book = new RuleBook()
+  book.add(allow("ls *"))
+  book.add({ ...allow("ls *") })
+  book.add(allow("ls *", "input"))
+  expect(book.list()).toEqual([allow("ls *"), allow("ls *", "input")])
+  expect(book.remove(allow("ls *", "input"))).toBe(true)
+  expect(book.remove(allow("ls *", "input"))).toBe(false)
+  expect(book.list()).toEqual([allow("ls *")])
+  const listed = book.list() as Rule[]
+  listed.push(deny("ls *"))
+  expect(book.list()).toEqual([allow("ls *")])
+  const { perms } = holding("ask", { book })
+  expect(await gate(perms, cmd("ls -l"), call())).toEqual({ run: true, by: "an allow rule" })
+  book.remove(allow("ls *"))
+  expect((await gate(perms, cmd("ls -l"), call())).run).toBe(false)
+})
