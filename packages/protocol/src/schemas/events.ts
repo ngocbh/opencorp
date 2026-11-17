@@ -24,10 +24,11 @@ export type Event = z.input<typeof Event>
 
 /**
  * Streamed content that is never stored as metadata. For part.delta, data is {message_id, part_id, text} and
- * the text is appended.
+ * the text is appended. For instrument.updated, data is the whole `Instrument`; for instrument.output, an
+ * `InstrumentOutput`.
  */
 export const LiveEvent = z.strictObject({
-  type: z.enum(["message.updated", "part.updated", "part.delta"]),
+  type: z.enum(["message.updated", "part.updated", "part.delta", "instrument.updated", "instrument.output"]),
   session_id: Ulid,
   data: z.record(z.string(), z.unknown()),
 })

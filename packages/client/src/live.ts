@@ -1,7 +1,7 @@
 // Runtime guards for event `data`. The protocol types it as a plain object; these check the
 // fields the client keys on or reads, so a malformed event is skipped rather than corrupting
 // state.
-import type { Event, Message, Part } from "@opencorp/protocol"
+import type { Event, Instrument, Message, Part } from "@opencorp/protocol"
 
 /** `part.updated` data: the whole part. */
 export type PartUpdated = { message_id: string; part: Part }
@@ -30,6 +30,12 @@ export function asPartDelta(data: unknown): PartDelta | undefined {
 }
 
 const hasStrings = (v: unknown, keys: string[]) => isObject(v) && keys.every((k) => isString(v[k]))
+
+/** `instrument.updated` data as an `Instrument`, or undefined if it isn't one. */
+export function asInstrument(data: unknown): Instrument | undefined {
+  if (!hasStrings(data, ["id", "session_id", "kind", "status", "updated_at"])) return
+  return data as Instrument
+}
 
 // The fields each metadata event's reducer keys on, sorts by, or filters by.
 const META_FIELDS: Record<string, string[]> = {

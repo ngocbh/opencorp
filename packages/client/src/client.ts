@@ -19,6 +19,10 @@ import type {
   HireResponse,
   HqLoginRequest,
   HqStatus,
+  Instrument,
+  InstrumentKeysRequest,
+  InstrumentScreen,
+  InstrumentSizeRequest,
   LoginRequest,
   Message,
   ModelList,
@@ -94,6 +98,7 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
   // Each throws not_found, in the office's words, for an id no request can carry; the methods are async, so that
   // comes back as a rejected promise.
   const s = (id: string) => `/sessions/${part(id, `no session ${id}`)}`
+  const instrument = (id: string, iid: string) => `${s(id)}/instruments/${part(iid, `no instrument ${iid}`)}`
   const q = (id: string) => `/questions/${part(id, `no question ${id}`)}`
   const r = (id: string) => `/runs/${part(id, `no run ${id}`)}`
   const person = (handle: string) => `/people/${part(handle, `no person @${handle}`)}`
@@ -253,6 +258,19 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
       rules: async (id: string) => get<RuleList>(`${s(id)}/rules`),
       /** Removes a session or agent rule; only the chat's approver may, and a company rule only by editing rules.yaml. */
       removeRule: async (id: string, req: RemoveRuleRequest) => post<Ack>(`${s(id)}/rules/remove`, req),
+      /** The session's shells and harness sessions, oldest first; their output comes as `instrument.output` events. */
+      instruments: async (id: string) => get<Instrument[]>(`${s(id)}/instruments`),
+      /**
+       * What the office still holds of a shell's raw output, for a view joining late; the view then applies the
+       * `instrument.output` bytes past the screen's `end`.
+       */
+      instrumentScreen: async (id: string, iid: string) => get<InstrumentScreen>(`${instrument(id, iid)}/screen`),
+      /** The approver's keys to a shell, as typed; the office never logs or records them. */
+      keys: async (id: string, iid: string, req: InstrumentKeysRequest) =>
+        post<Ack>(`${instrument(id, iid)}/keys`, req),
+      /** The size the approver's view draws a shell at, which its PTY takes and every other view then draws at. */
+      resize: async (id: string, iid: string, req: InstrumentSizeRequest) =>
+        post<Ack>(`${instrument(id, iid)}/size`, req),
     },
     connections: {
       list: () => get<ConnectionList>("/connections"),

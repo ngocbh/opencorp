@@ -8,6 +8,7 @@ import type {
   CostReport,
   Event,
   Group,
+  Instrument,
   LiveEvent,
   Message,
   Part,
@@ -20,7 +21,7 @@ import type {
   WorkItem,
 } from "@opencorp/protocol"
 import { now } from "@opencorp/protocol"
-import { asMessage, asPartDelta, asPartUpdated, isMetaData } from "./live"
+import { asInstrument, asMessage, asPartDelta, asPartUpdated, isMetaData } from "./live"
 import type { StreamEvent } from "./sse"
 
 export type OfficeState = {
@@ -31,6 +32,9 @@ export type OfficeState = {
   sessions: Session[]
   /** Only for sessions the client synced; oldest first. */
   messages: Record<string, Message[]>
+  /** Only for sessions the client synced: their shells and harness sessions, oldest first. Their output isn't
+   *  kept here; the sync hands it to `on("instrument.output")` listeners. */
+  instruments: Record<string, Instrument[]>
   questions: Record<string, Question>
   workItems: Record<string, WorkItem>
   proposals: Record<string, ProfileProposal>
@@ -55,6 +59,7 @@ export function emptyState(): OfficeState {
     folderPeople: [],
     sessions: [],
     messages: {},
+    instruments: {},
     questions: {},
     workItems: {},
     proposals: {},
@@ -153,6 +158,17 @@ function putPart(msg: Message, part: Part) {
   else msg.parts.push(part)
 }
 
+/** Replaces or inserts an instrument by id unless the local copy is newer; keeps them in id order, oldest first. */
+function putInstrument(list: Instrument[], instrument: Instrument) {
+  const i = list.findIndex((x) => x.id === instrument.id)
+  if (i >= 0) {
+    if (!newer(list[i], instrument)) list[i] = instrument
+    return
+  }
+  const at = list.findIndex((x) => x.id > instrument.id)
+  list.splice(at < 0 ? list.length : at, 0, instrument)
+}
+
 /**
  * Applies one live event to a synced session; events for other sessions are dropped.
  * Returns the ids of the parts it replaced in full.
@@ -198,6 +214,14 @@ export function applyLive(s: OfficeState, e: LiveEvent): string[] {
       if (part?.type === "text") part.text += d!.text
       return []
     }
+    case "instrument.updated": {
+      const instrument = asInstrument(e.data)
+      if (instrument?.session_id === e.session_id) putInstrument((s.instruments[e.session_id] ??= []), instrument)
+      return []
+    }
+    // A shell's bytes are its viewer's to keep: they go only to the sync's listeners.
+    case "instrument.output":
+      return []
   }
   return []
 }
