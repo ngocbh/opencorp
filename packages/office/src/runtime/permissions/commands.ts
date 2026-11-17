@@ -6,14 +6,16 @@
  * The reader can promise that a command line runs without Auto's check or a card only when every part of it is
  * covered: by an allow rule; by a form it knows to be read-only (`auto`, `default`, `dontAsk`); by a plain push of a
  * feature branch (`auto`, `dontAsk`); or, inside the workspace sandbox, by a file operation on paths inside the
- * workspace (`auto`, `dontAsk`). A deny rule always refuses what it matches, inside substitutions and `sh -c`
- * strings too. A command that names a credential path always asks, and Auto's check never judges a push.
+ * workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it: inside
+ * substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. The reader asks before a
+ * command that names a credential path it can see, and Auto's check never judges a push or `sudo`.
  *
  * It can't know what a program does with its files, its config or its input: `git` runs hooks and programs its
  * config names (`core.fsmonitor`, `core.pager`, `diff.external`); a script does what it contains; a remote host has
- * its own rc files and `PATH`; `~/.ssh/config` can name a `ProxyCommand` for a host. No rule sees into a variable's
- * value or a script file, readable line or not, and the credential check doesn't see a path reached through `cd`,
- * a variable, a link or a recursive read of a folder above it.
+ * its own rc files and `PATH`; `~/.ssh/config` can name a `ProxyCommand` for a host. In a persistent shell, earlier
+ * lines can define functions, aliases or a `PATH` that change what a read-only line runs. No rule sees into a
+ * variable's value or a script file, readable line or not, and the credential check doesn't see a path reached
+ * through `cd`, a variable alone, a link or a recursive read of a folder above it.
  *
  * It can't stop a read-only program from reading what the sandbox lets it read. The model then sees it.
  *
@@ -21,7 +23,8 @@
  */
 
 /** One simple command: its words with quotes removed and leading `NAME=value` assignments kept apart, whether the
- *  shell may change each word, the files its `>` and `>>` redirects write and the files its `<` redirects read. */
+ *  shell may change each word, the files its `>` and `>>` redirects write, the files its `<` redirects read, and
+ *  whether its standard input is fed by a pipe, a redirect, a here-document or a here-string. */
 export interface SimpleCommand {
   readonly assignments: readonly string[]
   readonly words: readonly string[]
@@ -30,6 +33,7 @@ export interface SimpleCommand {
   readonly expands: readonly boolean[]
   readonly writes: readonly string[]
   readonly reads: readonly string[]
+  readonly fed: boolean
 }
 /** A command line read: its simple commands in order, those inside substitutions, groups, compound commands,
  *  `sh -c` strings and `eval` included (before the command that holds them), and why the line can't be read
@@ -54,36 +58,55 @@ export interface Where {
 }
 
 /** Paths whose contents are credentials, as globs over a path's folders: `**` is any folders, none included, and
- *  `*` stays inside one name. `$NAME` is a variable that names one. A command that names one, even a read-only
- *  one, asks the owner in every mode and dontAsk refuses it: nothing scrubs what the model sees, and the SSH-only
- *  profile lets ssh read `~/.ssh`. A word with `*`, `?`, `[` or `{` counts when it could expand to one; a name
- *  ending `.pub` never counts. The folders that hold them count too, except to `ls`, `stat`, `du` and the like. */
-export const CREDENTIALS: readonly string[] = [
-  "**/.ssh",
-  "**/.ssh/id_*",
-  "**/.ssh/*_key",
-  "/etc/ssh/*_key",
-  "**/id_rsa",
-  "**/id_dsa",
-  "**/id_ecdsa*",
-  "**/id_ed25519*",
-  "**/*.pem",
-  "**/*.key",
-  "**/*.p12",
-  "**/.netrc",
-  "**/.pgpass",
-  "**/.aws",
-  "**/.aws/credentials",
-  "**/.config/gcloud/**",
-  "**/krb5cc*",
-  "$KRB5CCNAME",
-  "**/.opencorp",
-  "**/.opencorp/**/auth.json",
-  "**/.opencorp/**/provider.json",
-  "**/.opencorp/**/connections/**",
+ *  `*` stays inside one name; `except` names files a literal path may name without counting, and `at` is where the
+ *  file or folder usually lives, for a read of a folder above it. `$NAME` is a variable that names one. A command
+ *  that names one, even a read-only one, asks the owner in every mode and dontAsk refuses it: nothing scrubs what
+ *  the model sees, and the SSH-only profile lets ssh read `~/.ssh`.
+ *  - A literal name ending `.pub` never counts.
+ *  - In a path, `$…` reads as `*`, and the exemptions hold only when nothing in the path is expanded.
+ *  - A glob or expansion counts when a literal part names a credential folder or file (`~/.ssh/*`,
+ *    `~/.s${X}sh/id_rsa`), or when it starts at `/` or a home and could reach an `at` (`cat ~/*`); a bare `*`
+ *    elsewhere doesn't (`cat src/*`).
+ *  - A recursive read (`grep -r`, `diff -r`, `git diff --no-index`, `tar`, `zip`, `rsync`, `cp -r`, `find -exec`)
+ *    counts when a path it reads is an `at`, holds one (`~`, `/`, `/home`), or is under one.
+ *  - The folders count too, except to `ls`, `stat`, `du` and the like, which read only names. */
+export const CREDENTIALS: readonly {
+  readonly path: string
+  readonly except?: readonly string[]
+  readonly at?: string
+}[] = [
+  { path: "**/.ssh/**", except: ["known_hosts*", "config", "authorized_keys"], at: "~/.ssh" },
+  { path: "/etc/ssh/*_key", at: "/etc/ssh" },
+  { path: "**/id_rsa" },
+  { path: "**/id_dsa" },
+  { path: "**/id_ecdsa*" },
+  { path: "**/id_ed25519*" },
+  { path: "**/*.pem" },
+  { path: "**/*.key" },
+  { path: "**/*.p12" },
+  { path: "**/.netrc", at: "~/.netrc" },
+  { path: "**/.pgpass", at: "~/.pgpass" },
+  { path: "**/.npmrc", at: "~/.npmrc" },
+  { path: "**/.git-credentials", at: "~/.git-credentials" },
+  { path: "**/.aws/**", at: "~/.aws" },
+  { path: "**/.config/gcloud/**", at: "~/.config/gcloud" },
+  { path: "**/.config/gh/**", at: "~/.config/gh" },
+  { path: "**/.docker/**", at: "~/.docker" },
+  { path: "**/.kube/**", at: "~/.kube" },
+  { path: "**/krb5cc*", at: "/tmp/krb5cc*" },
+  { path: "$KRB5CCNAME" },
+  { path: "**/.opencorp", at: "~/.opencorp" },
+  { path: "**/.opencorp/**/auth.json" },
+  { path: "**/.opencorp/**/provider.json" },
+  { path: "**/.opencorp/**/connections/**" },
+  { path: "$OPENCORP_HOME" },
 ]
+/** The folders that hold every home: a read of one reads them all. */
+const HOMES = ["/home/*", "/Users/*", "/root"]
 
 const set = (names: string) => new Set(names.split(" "))
+
+// ---- Reasons and tables ----
 
 const COMMAND_SUB = "it has a command substitution"
 const PROCESS_SUB = "it has a process substitution"
@@ -111,11 +134,14 @@ const PERMISSIONS = "it changes who may use files"
 const PUSHES = "it pushes to another repository"
 const COPIES = "it copies files to or from another machine"
 const LOCAL_SSH = "it runs a local command for ssh"
+const NETWORK = "it connects to another machine"
+const FEEDS_SHELL = "it feeds a remote shell from its input"
 
 const DEFAULT_BRANCH = "it pushes to the default branch"
 const FORCE = "it force-pushes"
 const DELETE_BRANCH = "it deletes a remote branch"
 const UNNAMED = "it doesn't name the branch it pushes to"
+const PUSH_HEAD = "it pushes HEAD, not a named branch"
 
 /** Words that start a compound command or negate one; `for`, `select` and `case` are followed by words that aren't
  *  a command, and `function` by a name. */
@@ -144,18 +170,19 @@ const GIT_READS = set("status log show rev-parse ls-files blame describe shortlo
 const GIT_LISTING = set("-a -r -v --list")
 const MODULE_READS = set("list avail spider show whatis")
 /** Read-only only with their arguments checked; any argument the shell may change (a glob, a brace or `$`) makes
- *  them not read-only, since it could become an option the check refuses. */
+ *  them not read-only, since it could become an option the check refuses. Each entry's checks must follow that
+ *  program's own option parsing, not getopt's: tree, for one, takes each option's value from the next word. */
 const CHECKED: Readonly<Record<string, (args: readonly string[]) => boolean>> = {
   env: (a) => a.length === 0,
   find: (a) => !a.some((w) => FIND_UNSAFE.has(w)),
   sort: (a) => !a.some((w) => short(w, "o", "kotST") || long(w, "--output", "--compress-program")),
-  uniq: (a) => operands(a, "fsw", ["--skip-fields", "--skip-chars", "--check-chars"]) <= 1,
+  uniq: (a) => operands(a, "fsw", ["--skip-fields", "--skip-chars", "--check-chars"]).length <= 1,
   diff: (a) => !a.some((w) => long(w, "--output", "--ext-diff")),
   git: gitReadOnly,
   scontrol: (a) => a[0] === "show",
   module: (a) => MODULE_READS.has(a[0] ?? ""),
   printf: (a) => !(a[0] ?? "").startsWith("-v"),
-  tree: (a) => !a.some((w) => short(w, "oR", "LPIHTo") || long(w, "--output")),
+  tree: (a) => !a.some((w) => (/^-[^-]/.test(w) && /[oR]/.test(w)) || long(w, "--output")),
   file: (a) => !a.some((w) => short(w, "C", "eFfmP") || long(w, "--compile")),
   date: (a) => !a.some((w) => short(w, "s", "dfIrs") || long(w, "--set")),
   hostname: (a) => a.every((w) => w.startsWith("-") && !short(w, "Fb", "F") && !long(w, "--file", "--boot")),
@@ -197,6 +224,19 @@ const FILE_OPS: Readonly<Record<string, { short: string; long: Set<string>; min:
   mv: { short: "fnvT", long: set("--force --no-clobber --verbose"), min: 2, strict: true },
   rm: { short: "rRfdv", long: set("--recursive --force --dir --verbose"), min: 1, strict: true },
 }
+/** Programs that run what follows them as another user; Auto's check never judges them. */
+const OTHER_USERS = set("sudo su doas pkexec")
+const SUDO_VALUES = "aCcDgpRrtTUu"
+const SUDO_LONG_VALUES = [
+  "--user", "--group", "--prompt", "--chdir", "--chroot", "--close-from", "--role", "--type", "--command-timeout",
+  "--other-user", "--login-class", "--auth-type",
+]
+const FIND_RUNS = set("-exec -execdir -ok -okdir")
+const DIFF_VALUES = "CUIxXSLFDW"
+const GREP_VALUES = [
+  "--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context", "--directories", "--devices",
+  "--include", "--exclude", "--exclude-dir", "--exclude-from", "--label", "--binary-files", "--glob", "--type",
+]
 const PUSH_SAFE = set("--set-upstream --verbose --quiet --dry-run --progress --no-progress --porcelain")
 const PUSH_MANY = set("--mirror --all --branches --tags --prune")
 const XARGS_VALUES = ["--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars", "--process-slot-var"]
@@ -206,7 +246,9 @@ const GIT_VALUES = ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--co
 const REMOTES = new WeakMap<SimpleCommand, ReadCommand>()
 
 /** The part an empty line reads as, so rules and modes can still decide it. */
-export const EMPTY: SimpleCommand = { assignments: [], words: [], expands: [], writes: [], reads: [] }
+export const EMPTY: SimpleCommand = { assignments: [], words: [], expands: [], writes: [], reads: [], fed: false }
+
+// ---- What the reader exports ----
 
 export function readCommand(text: string): ReadCommand {
   return read(text, 0)
@@ -235,12 +277,14 @@ export function classify(part: SimpleCommand): Kind {
     prog === "" ||
     READ_ANY.has(prog) ||
     (check !== undefined && !changes && check(args)) ||
-    (prog === "ssh" && !changes && sshReadOnly(args) && (remote === null || remote.readOnly))
+    (prog === "ssh" && !changes && sshReadOnly(args) && (remote === null ? !part.fed : remote.readOnly))
   return {
     readOnly:
       risk === null && sets.length === 0 && !prog.includes("/") &&
       !wrappers.some((w) => NOT_READ_ONLY_WRAPPERS.has(w)) && form,
-    runsCode: prog.includes("/") || RUNS_CODE.has(name) || remote?.runsCode === true,
+    runsCode:
+      prog.includes("/") || RUNS_CODE.has(name) || remote?.runsCode === true ||
+      (name === "find" && innerParts(part).length > 0),
     risk,
   }
 }
@@ -250,7 +294,7 @@ export function classify(part: SimpleCommand): Kind {
 export function fileOp(part: SimpleCommand, where: Where): boolean {
   if (where.profile !== "workspace") return false
   const { start, sets } = unwrap(part)
-  if (sets.length > 0 || part.writes.some((w) => w !== "/dev/null")) return false
+  if (sets.length > 0 || part.writes.some((w) => w !== "/dev/null") || connects(part)) return false
   const [prog = "", ...args] = part.words.slice(start)
   const op = FILE_OPS[prog]
   if (!op) return false
@@ -328,6 +372,7 @@ export function pushOf(part: SimpleCommand): { readonly asks: string | null } | 
     if (sets.length > 0) return `it pushes with ${sets[0]}`
     const global = git.globals.find((g) => g !== "-C" && g !== "--no-pager")
     if (global) return `it pushes with ${global}`
+    if (connects(part)) return NETWORK
     if (part.writes.some((w) => w !== "/dev/null")) return WRITES
     let remote: string | null = null
     const refspecs: string[] = []
@@ -352,7 +397,10 @@ export function pushOf(part: SimpleCommand): { readonly asks: string | null } | 
         continue
       }
       if (remote === null) {
-        if (part.expands[start + 1 + git.restAt + k] || /[$*?[{~]/.test(w)) return `it pushes with ${w}`
+        // A remote by name only: a URL, a path, `ext::` or `host:path` could push anywhere.
+        const named =
+          /^[A-Za-z0-9._-]+$/.test(w) && w !== "." && w !== ".." && !part.expands[start + 1 + git.restAt + k]
+        if (!named) return `it pushes to ${w}, not a named remote`
         remote = w
       } else refspecs.push(w)
     }
@@ -361,9 +409,10 @@ export function pushOf(part: SimpleCommand): { readonly asks: string | null } | 
       if (spec.startsWith("+")) return FORCE
       if (spec.startsWith(":")) return DELETE_BRANCH
       const [src = "", dst = src, ...more] = spec.split(":")
-      const branch = dst.replace(/^refs\/heads\//, "")
-      if (["main", "master"].includes(branch.toLowerCase())) return DEFAULT_BRANCH
-      if (more.length > 0 || !plainBranch(branch) || !/^[A-Za-z0-9._/@^-][A-Za-z0-9._/@^~-]*$/.test(src)) return UNNAMED
+      if (more.length > 0) return UNNAMED
+      if (defaultBranch(dst)) return DEFAULT_BRANCH
+      if (src.toUpperCase() === "HEAD" || src === "@") return PUSH_HEAD
+      if (!plainBranch(src) || !plainBranch(dst)) return UNNAMED
     }
     return null
   }
@@ -371,8 +420,10 @@ export function pushOf(part: SimpleCommand): { readonly asks: string | null } | 
 }
 
 /** Why `part` names a credential path (`CREDENTIALS`), or null: a word of its program's, other than ssh's
- *  identity file, or a file it redirects, or, over ssh, a word of the remote command, named with its host. */
-export function credentialOf(part: SimpleCommand): string | null {
+ *  identity file, a file it redirects, a folder it reads recursively, or, over ssh, any of these in the remote
+ *  command, named with its host. `cwd` is the folder relative paths start from, when known; an ssh remote command
+ *  starts at the remote home. */
+export function credentialOf(part: SimpleCommand, cwd?: string): string | null {
   const words = programOf(part)
   const [prog = ""] = words
   const name = base(prog)
@@ -382,15 +433,62 @@ export function credentialOf(part: SimpleCommand): string | null {
     : ["ssh", "scp", "sftp"].includes(name)
       ? withoutIdentity(words.slice(0, words.length - (ssh?.command?.length ?? 0)))
       : words
-  const named = [...own, ...part.reads, ...part.writes].find(isCredential)
+  const named = [...own, ...part.reads, ...part.writes].find((word) => isCredential(word, cwd))
   if (named !== undefined) return `it names a credential path: ${named}`
+  const climbs = recursivePaths(part).find((path) => holdsCredentials(path, cwd))
+  if (climbs !== undefined) return `it reads a folder that holds credentials: ${climbs}`
   const remote = ssh ? remoteOf(part) : null
   for (const inner of remote?.read.parts ?? []) {
-    const found = credentialOf(inner)
+    const found = credentialOf(inner, "~")
     if (found) return `on ${remote!.host}: ${found}`
   }
   return null
 }
+
+/** The commands a part runs that the reader doesn't list as parts of their own, for deny and ask rules: what
+ *  `sudo` and `doas` run, `find`'s `-exec` commands, and an ssh remote command's parts. */
+export function innerParts(part: SimpleCommand): readonly SimpleCommand[] {
+  const { start } = unwrap(part)
+  const [prog = "", ...args] = part.words.slice(start)
+  const name = base(prog)
+  const runs = (from: number, to = args.length): SimpleCommand => ({
+    assignments: [], words: args.slice(from, to), expands: part.expands.slice(start + 1 + from, start + 1 + to),
+    writes: [], reads: [], fed: false,
+  })
+  if (name === "sudo" || name === "doas") {
+    const at = optionsEnd(args, name === "sudo" ? SUDO_VALUES : "aCu", SUDO_LONG_VALUES)
+    return at < args.length ? [runs(at)] : []
+  }
+  if (name === "find") {
+    const found: SimpleCommand[] = []
+    for (let k = 0; k < args.length; k++) {
+      if (!FIND_RUNS.has(args[k]!)) continue
+      const end = args.findIndex((w, i) => i > k && (w === ";" || w === "+"))
+      const to = end < 0 ? args.length : end
+      if (to > k + 1) found.push(runs(k + 1, to))
+      k = to
+    }
+    return found
+  }
+  return remoteOf(part)?.read.parts ?? []
+}
+
+/** Why Auto's check must never judge `part`, so every mode asks the owner and dontAsk refuses it: a push the
+ *  reader can't call plain (any push, in a line it can't read), or a program that runs as another user, here, under
+ *  `find -exec` or over ssh. Null otherwise. */
+export function ownerOnly(part: SimpleCommand, readable: boolean): string | null {
+  const push = pushOf(part)
+  if (push) return push.asks ?? (readable ? null : PUSHES)
+  if (OTHER_USERS.has(base(programOf(part)[0] ?? ""))) return OTHER_USER
+  const host = sshOf(part)?.host
+  for (const inner of innerParts(part)) {
+    const found = ownerOnly(inner, readable)
+    if (found) return host ? `on ${host}: ${found}` : found
+  }
+  return null
+}
+
+// ---- Reading a line ----
 
 function read(text: string, depth: number): ReadCommand {
   const reader = new Reader(text, depth)
@@ -423,13 +521,15 @@ interface Building {
   expands: boolean[]
   writes: string[]
   reads: string[]
+  fed: boolean
   redirect: Redirect | null
   skip: boolean
   skipName: boolean
 }
-const building = (): Building => ({
-  assignments: [], words: [], expands: [], writes: [], reads: [], redirect: null, skip: false, skipName: false,
+const building = (fed = false): Building => ({
+  assignments: [], words: [], expands: [], writes: [], reads: [], fed, redirect: null, skip: false, skipName: false,
 })
+const INPUTS: ReadonlySet<Redirect> = new Set(["read", "readwrite", "dup-in", "heredoc", "heredoc-tabs", "herestring"])
 const newWord = (): Word => ({ text: "", expands: false, quoted: false, firstQuoted: Infinity })
 function add(word: Word, text: string, quoted: boolean): void {
   if (quoted) {
@@ -506,6 +606,7 @@ class Reader {
         this.pos += t[this.pos + 2] === ">" ? 3 : 2
       } else if (c === ";" || c === "&" || c === "|") {
         endCommand()
+        if (c === "|" && n !== "|") cmd.fed = true
         this.pos += (c === "&" && n === "&") || (c === "|" && (n === "|" || n === "&")) ? 2 : 1
       } else if ((c === "<" || c === ">") && n === "(") {
         endWord()
@@ -518,19 +619,28 @@ class Reader {
         sub.expands = true
       } else if (c === "<" || c === ">") {
         // A word of digits right before the operator names the descriptor it redirects.
-        const fd = w as Word | null
-        if (fd !== null && !fd.quoted && /^\d+$/.test(fd.text)) w = null
+        const pending = w as Word | null
+        const fd = pending !== null && !pending.quoted && /^\d+$/.test(pending.text) ? Number(pending.text) : null
+        if (fd !== null) w = null
         else endWord()
         const [op, kind] = REDIRECTS.find(([op]) => t.startsWith(op, this.pos))!
         this.pos += op.length
         cmd.redirect = kind
+        if (INPUTS.has(kind) && (fd === null || fd === 0)) cmd.fed = true
         if (kind === "herestring") this.mark(HERE_STRING)
         if (kind === "heredoc" || kind === "heredoc-tabs") this.mark(HERE_DOC)
+      } else if (c === "(" && n === "(" && w === null && cmd.words.length === 0 && this.arithmetic(2)) {
+        this.mark(ARITHMETIC)
+      } else if (c === "(" && cmd.skip) {
+        this.pos++ // a case pattern's optional `(`
       } else if (c === "(") {
         endWord()
         this.mark(SUBSHELL)
         this.pos++
         this.nested()
+      } else if (c === ")" && cmd.skip) {
+        endCommand() // a case pattern ends; its commands follow
+        this.pos++
       } else if (c === ")") {
         endCommand()
         this.pos++
@@ -555,6 +665,8 @@ class Reader {
       cmd.redirect = null
       if (redirect === "write" || redirect === "readwrite") cmd.writes.push(text)
       if (redirect === "read" || redirect === "readwrite") cmd.reads.push(text)
+      // `>&N` writes to descriptor N: 0 to 2 are the terminal's, a higher one may be any file or socket.
+      if (redirect === "dup-out" && /^\d+$/.test(text) && Number(text) >= 3) cmd.writes.push(`&${text}`)
       if (redirect === "dup-out" && !/^(\d+|-)$/.test(text)) cmd.writes.push(text)
       if (redirect === "heredoc" || redirect === "heredoc-tabs")
         this.heredocs.push({ delim: text, tabs: redirect === "heredoc-tabs", quoted: w.quoted })
@@ -592,8 +704,8 @@ class Reader {
    *  then adds it. */
   private finish(cmd: Building): void {
     if (cmd.words.length + cmd.assignments.length + cmd.writes.length + cmd.reads.length === 0) return
-    const { assignments, words, expands, writes, reads } = cmd
-    this.complete({ assignments, words, expands, writes, reads })
+    const { assignments, words, expands, writes, reads, fed } = cmd
+    this.complete({ assignments, words, expands, writes, reads, fed })
   }
 
   private complete(part: SimpleCommand): void {
@@ -611,6 +723,7 @@ class Reader {
         const remote = command ? read(command.join(" "), this.depth + 1) : null
         if (remote) REMOTES.set(part, remote)
         if (remote?.unreadable) this.mark(`on ${host}: ${remote.unreadable}`)
+        if (!command && host && part.fed) this.mark(`on ${host}: ${FEEDS_SHELL}`)
       }
       this.inner(part, start, name, args)
     }
@@ -624,6 +737,7 @@ class Reader {
       from < args.length &&
       this.complete({
         assignments: [], words: args.slice(from), expands: part.expands.slice(start + 1 + from), writes: [], reads: [],
+        fed: false,
       })
     if (name === "eval") this.sub(args.join(" "))
     else if (SHELLS.has(name)) {
@@ -633,7 +747,11 @@ class Reader {
       const at = splitString(args)
       if (at !== null) this.sub(args.slice(at).join(" ").replace(/^(-S|--split-string=?)/, ""))
     } else if (name === "watch") this.sub(args.slice(optionsEnd(args, "n", ["--interval"])).join(" "))
-    else if (name === "trap" && args[0] !== undefined && !args[0].startsWith("-")) this.sub(args[0])
+    else if (name === "trap") {
+      const at = args[0] === "--" ? 1 : 0
+      const action = args[at]
+      if (action !== undefined && (at === 1 || !action.startsWith("-"))) this.sub(action)
+    }
     else if (name === "exec") runs(optionsEnd(args, "a", []))
     else if (name === "xargs") runs(optionsEnd(args, "adEILnPs", XARGS_VALUES))
   }
@@ -733,8 +851,9 @@ class Reader {
       return this.double(w)
     }
     w.expands = true
-    if (n === "(") {
-      this.mark(t[this.pos + 2] === "(" ? ARITHMETIC : COMMAND_SUB)
+    if (n === "(" && t[this.pos + 2] === "(" && this.arithmetic(3)) this.mark(ARITHMETIC)
+    else if (n === "(") {
+      this.mark(COMMAND_SUB)
       this.pos += 2
       this.nested()
     } else if (n === "{" || n === "[") {
@@ -806,6 +925,35 @@ class Reader {
     w.expands = true
   }
 
+  /** Reads an arithmetic expression from `skip` characters on (past `((` or `$((`) to its `))`, reading the
+   *  substitutions inside; arithmetic has no redirects, so `<<` there is a shift. When no `))` closes it at its
+   *  own depth, it is no arithmetic: `pos` is left where it was and false returned. */
+  private arithmetic(skip: number): boolean {
+    const t = this.text
+    const start = this.pos
+    const scratch = newWord()
+    let depth = 0
+    this.pos += skip
+    while (this.pos < t.length) {
+      const c = t[this.pos]!
+      if (c === ")" && depth === 0) {
+        if (t[this.pos + 1] !== ")") break
+        this.pos += 2
+        return true
+      }
+      if (c === "(") depth++
+      if (c === ")") depth--
+      if (c === "\\") this.pos += 2
+      else if (c === "'") this.single(scratch)
+      else if (c === '"') this.double(scratch)
+      else if (c === "$") this.dollar(scratch, false)
+      else if (c === "`") this.backtick(scratch)
+      else this.pos++
+    }
+    this.pos = start
+    return false
+  }
+
   /** Reads to the `close` that ends a `${…}` or `$[…]`, reading the substitutions inside; returns the body. */
   private balanced(close: "}" | "]"): string {
     const t = this.text
@@ -842,6 +990,8 @@ function readableParameter(body: string): boolean {
   if (rest === "") return true
   return count === "" && /^(:?[-+]|%%?|##?|\/\/?|\^\^?|,,?)/.test(rest!)
 }
+
+// ---- Wrappers and options ----
 
 /** Where the program starts past wrappers, the variables they and the part set, and the wrappers. */
 function unwrap(part: SimpleCommand): { start: number; sets: string[]; wrappers: string[] } {
@@ -949,9 +1099,10 @@ function optionsEnd(args: readonly string[], value: string, valueLongs: readonly
   return k
 }
 
-/** How many operands `args` has, past options; `value` letters and `valueLongs` take the next word. */
-function operands(args: readonly string[], value: string, valueLongs: readonly string[]): number {
-  let count = 0
+/** A program's operands, past its options, as getopt reads them: a `value` letter takes the rest of its word, or
+ *  the next word when it ends the word, and `valueLongs` without `=` take the next word. */
+function operands(args: readonly string[], value: string, valueLongs: readonly string[]): string[] {
+  const found: string[] = []
   let options = true
   for (let k = 0; k < args.length; k++) {
     const w = args[k]!
@@ -959,10 +1110,10 @@ function operands(args: readonly string[], value: string, valueLongs: readonly s
     else if (options && w.startsWith("--") && w.length > 2) {
       if (!w.includes("=") && valueLongs.includes(w)) k++
     } else if (options && w.startsWith("-") && w.length > 1) {
-      if (value.includes(w[1]!) && w.length === 2) k++
-    } else count++
+      if ([...w.slice(1)].findIndex((c) => value.includes(c)) === w.length - 2) k++
+    } else found.push(w)
   }
-  return count
+  return found
 }
 
 /** Whether `w` is a short option group holding one of `letters`, read up to the first letter that takes a value
@@ -986,7 +1137,10 @@ function base(prog: string): string {
   return prog.slice(prog.lastIndexOf("/") + 1)
 }
 
+// ---- Risks, git and ssh ----
+
 function riskOf(part: SimpleCommand, prog: string, args: readonly string[], sets: readonly string[]): string | null {
+  if (connects(part)) return NETWORK
   if (sets.some((s) => s.startsWith("GIT_SSH_COMMAND="))) return LOCAL_SSH
   const name = base(prog)
   const own = programRisk(name, args, part) ?? FIXED_RISKS.get(name) ?? null
@@ -997,7 +1151,7 @@ function riskOf(part: SimpleCommand, prog: string, args: readonly string[], sets
 function programRisk(name: string, args: readonly string[], part: SimpleCommand): string | null {
   switch (name) {
     case "find":
-      return args.includes("-delete") ? DELETES : null
+      return args.includes("-delete") ? DELETES : (innerParts(part).map(classify).find((k) => k.risk)?.risk ?? null)
     case "sort":
       return args.some((w) => short(w, "o", "kotST") || long(w, "--output")) ? WRITES : null
     case "curl":
@@ -1146,13 +1300,29 @@ function remoteKind(part: SimpleCommand): Kind | null {
   }
 }
 
+// ---- Pushes and connections ----
+
 /** A branch name a push may name plainly: no ref namespace, `HEAD`, glob or expansion. */
 function plainBranch(branch: string): boolean {
   return (
     /^[A-Za-z0-9._/-]+$/.test(branch) && !/^[-/]/.test(branch) && !branch.endsWith("/") && !branch.endsWith(".lock") &&
-    !branch.includes("..") && !branch.startsWith("refs/") && branch !== "HEAD"
+    !branch.includes("..") && !branch.includes("//") && !/^(refs|heads|tags|remotes)\//i.test(branch) &&
+    branch.toUpperCase() !== "HEAD"
   )
 }
+
+/** Whether a push's destination is, or git expands it to, the default branch: `main` or `master` in any case,
+ *  with or without `heads/` or `refs/heads/`. */
+function defaultBranch(dst: string): boolean {
+  return ["main", "master"].includes(dst.replace(/^(refs\/)?heads\//i, "").toLowerCase())
+}
+
+/** Whether a part redirects to or from `/dev/tcp` or `/dev/udp`, which bash opens as a network connection. */
+function connects(part: SimpleCommand): boolean {
+  return [...part.reads, ...part.writes].some((target) => /^\/dev\/(tcp|udp)\//.test(target))
+}
+
+// ---- Credentials and paths ----
 
 /** An ssh, scp or sftp command's words without the identity files it authenticates with. */
 function withoutIdentity(words: readonly string[]): string[] {
@@ -1166,47 +1336,154 @@ function withoutIdentity(words: readonly string[]): string[] {
   return out
 }
 
-function isCredential(word: string): boolean {
-  if (/\.pub$/.test(word)) return false
-  return CREDENTIALS.some((pattern) =>
-    pattern.startsWith("$")
-      ? word.includes(pattern) || word.includes(`\${${pattern.slice(1)}`)
-      : couldMatch(segments(word), pattern.split("/")),
-  )
+function isCredential(word: string, cwd?: string): boolean {
+  const literal = !word.includes("$")
+  const name = word.slice(word.lastIndexOf("/") + 1)
+  if (literal && name.endsWith(".pub")) return false
+  const path = segments(word, cwd)
+  // A glob, or an expansion written from `/` or a home, that starts at `/` or a home may reach any credential
+  // folder; a relative `$X` alone, an argument like any other, doesn't.
+  const open = path.findIndex((segment) => /[*?]/.test(segment))
+  const globs = /[*?[]|\{[^}]*\}/.test(word.replace(/\$\{[^}]*\}/g, ""))
+  const written = /^([/~]|\$HOME\b|\$\{HOME\})/.test(word)
+  const start = path.slice(0, open)
+  const top = start.length === 1 ? start[0] === "" || start[0] === "~" : start.length === 2 && start[0] === "" &&
+    (start[1] === "home" || start[1] === "Users")
+  const rooted = open >= 0 && (globs || written) && top
+  if (rooted && CREDENTIALS.some(({ at }) => at && couldMatch(path, [...at.split("/"), "**"], false))) return true
+  return CREDENTIALS.some(({ path: pattern, except }) => {
+    if (pattern.startsWith("$")) return word.includes(pattern) || word.includes(`\${${pattern.slice(1)}`)
+    if (literal && !/[*?[{]/.test(name) && except?.some((e) => overlap(name, e))) return false
+    return couldMatch(path, pattern.split("/"), true)
+  })
 }
 
-/** A path's folders and name, with `.` and empty names dropped, `..` collapsed where it can be, and a brace
- *  read as `*`; a leading "" marks an absolute path. */
-function segments(word: string): string[] {
-  const out: string[] = word.startsWith("/") ? [""] : []
-  for (const part of word.replace(/\{[^}]*\}/g, "*").split("/")) {
+/** Whether a folder a program reads recursively is a credential folder (`at`), is under one, or holds one: `~`,
+ *  `/`, `/home`, or a `..` path that climbs to them. A relative path with no `cwd` counts only when it climbs. */
+function holdsCredentials(word: string, cwd?: string): boolean {
+  const path = segments(word, cwd)
+  if (path[0] !== "" && path[0] !== "~" && cwd === undefined) return path[0] === ".."
+  const below = [...path, "**"]
+  const folders = [...CREDENTIALS.flatMap(({ at }) => (at ? [at] : [])), ...HOMES]
+  return folders.some((folder) => couldMatch(below, [...folder.split("/"), "**"], false))
+}
+
+/** The paths a part reads recursively, file contents and all, or none: `grep -r`, `rg`, `diff -r`,
+ *  `git diff --no-index`, `tar`, `zip`, `rsync`, `cp -r`, `scp -r`, and `find` running a command with `-exec`. */
+function recursivePaths(part: SimpleCommand): readonly string[] {
+  const [prog = "", ...args] = programOf(part)
+  const name = base(prog)
+  // A search's first operand is its pattern, unless -e or -f gives it; with no path it reads the folder it is in.
+  const searched = (value: string, valueLongs: readonly string[]) => {
+    const found = operands(args, value, valueLongs)
+    const given = args.some((w) => short(w, "ef", value) || long(w, "--regexp", "--file"))
+    const paths = given ? found : found.slice(1)
+    return paths.length > 0 ? paths : ["."]
+  }
+  switch (name) {
+    case "grep":
+    case "egrep":
+    case "fgrep": {
+      const recursive = args.some(
+        (w, k) =>
+          short(w, "rR", "efmABCdD") || long(w, "--recursive", "--dereference-recursive") || w === "-drecurse" ||
+          w === "--directories=recurse" || ((w === "-d" || w === "--directories") && args[k + 1] === "recurse"),
+      )
+      return recursive ? searched("efmABCdD", GREP_VALUES) : []
+    }
+    case "rg":
+    case "ag":
+    case "ack":
+      return searched("efgtTmAB", GREP_VALUES)
+    case "diff":
+      return args.some((w) => short(w, "r", DIFF_VALUES) || long(w, "--recursive")) ? operands(args, DIFF_VALUES, []) : []
+    case "git": {
+      const git = gitArgs(args)
+      if (!(git.sub === "diff" || git.sub === "grep") || !git.rest.some((w) => long(w, "--no-index"))) return []
+      const dir = git.options.find(([o]) => o === "-C")?.[1]
+      const paths = operands(git.rest, "", [])
+      const read = git.sub === "grep" ? (paths.length > 1 ? paths.slice(1) : ["."]) : paths
+      return read.map((p) => (dir && !/^[/~$]/.test(p) ? `${dir}/${p}` : p))
+    }
+    case "tar":
+    case "zip":
+    case "rsync":
+      return args.filter((w) => !w.startsWith("-"))
+    case "cp":
+    case "scp":
+      const recursive = args.some((w) => short(w, "rRa", "") || long(w, "--recursive", "--archive"))
+      return recursive ? operands(args, "tS", []) : []
+    case "find": {
+      if (innerParts(part).length === 0) return []
+      let k = 0
+      while (k < args.length && /^-([HLPD]|O\d*)$/.test(args[k]!)) k += args[k] === "-D" ? 2 : 1
+      const starts = args.slice(k)
+      const end = starts.findIndex((w) => /^[-(!]/.test(w))
+      const paths = starts.slice(0, end < 0 ? starts.length : end)
+      return paths.length > 0 ? paths : ["."]
+    }
+    default:
+      return []
+  }
+}
+
+/** A path's folders and name, from `cwd` when it is relative and `cwd` is known, with `.` and empty names dropped,
+ *  `..` collapsed where it can be, an expansion or a brace read as `*`, and a home (`~`, `$HOME`, `/home/u`) as `~`;
+ *  a leading "" marks an absolute path. */
+function segments(word: string, cwd?: string): string[] {
+  const homed = word.replace(/^(\$HOME|\$\{HOME\}|~[A-Za-z0-9._-]*)(?=\/|$)/, "~")
+  const full = cwd !== undefined && !/^[/~]/.test(homed) ? `${cwd}/${homed}` : homed
+  const out: string[] = full.startsWith("/") ? [""] : []
+  const globbed = full
+    .replace(/\$\{[^}]*\}|\$\([^)]*\)|`[^`]*`|\$([A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g, "*")
+    .replace(/\{[^}]*\}/g, "*")
+  for (const part of globbed.split("/")) {
     if (part === "" || part === ".") continue
     const last = out.at(-1)
     if (part !== "..") out.push(part)
     else if (last === "") continue
+    else if (last === "~") out.splice(0, out.length, "") // above a home: read as the root, which holds them all
     else if (last !== undefined && last !== ".." && !/[*?[]/.test(last)) out.pop()
     else out.push(part)
   }
+  // Every user's home reads as `~`.
+  if (out[0] === "" && (out[1] === "home" || out[1] === "Users") && out.length > 2) out.splice(0, 3, "~")
+  else if (out[0] === "" && out[1] === "root") out.splice(0, 2, "~")
   return out
 }
 
-/** Whether a path glob's expansions could include a match of `pattern`; `**` in either is any folders. Row `i`
- *  holds, for each `j`, whether `path` from `i` and `pattern` from `j` can match; rows are filled from the end. */
-function couldMatch(path: readonly string[], pattern: readonly string[]): boolean {
-  let next: boolean[] = []
+/** Whether a path glob's expansions could include a match of `pattern`, and when `named`, one in which some literal
+ *  part of the path names a folder or file of the pattern: a bare `*` matches any name, so alone it names none.
+ *  `**` in either is any folders. Row `i` holds, for each `j`, whether `path` from `i` and `pattern` from `j` can
+ *  match at all (`any`) and with such a part (`named`); rows are filled from the end. */
+function couldMatch(path: readonly string[], pattern: readonly string[], named: boolean): boolean {
+  let any: boolean[] = []
+  let naming: boolean[] = []
   for (let i = path.length; i >= 0; i--) {
-    const row: boolean[] = []
-    const name = path[i]
-    row[pattern.length] = i === path.length || (name === "**" && next[pattern.length]!)
+    const rowAny: boolean[] = []
+    const rowNamed: boolean[] = []
+    const name = path[i]?.replace(/\[[^\]]*\]/g, "?")
+    rowAny[pattern.length] = i === path.length || (name === "**" && any[pattern.length]!)
+    rowNamed[pattern.length] = name === "**" && naming[pattern.length]!
     for (let j = pattern.length - 1; j >= 0; j--) {
-      if (pattern[j] === "**") row[j] = row[j + 1]! || (name !== undefined && next[j]!)
-      else if (name === undefined) row[j] = false
-      else if (name === "**") row[j] = next[j]! || row[j + 1]!
-      else row[j] = next[j + 1]! && overlap(name.replace(/\[[^\]]*\]/g, "?"), pattern[j]!)
+      if (pattern[j] === "**") {
+        rowAny[j] = rowAny[j + 1]! || (name !== undefined && any[j]!)
+        rowNamed[j] = rowNamed[j + 1]! || (name !== undefined && naming[j]!)
+      } else if (name === undefined) {
+        rowAny[j] = rowNamed[j] = false
+      } else if (name === "**") {
+        rowAny[j] = any[j]! || rowAny[j + 1]!
+        rowNamed[j] = naming[j]! || rowNamed[j + 1]!
+      } else {
+        const fits = any[j + 1]! && overlap(name, pattern[j]!)
+        rowAny[j] = fits
+        rowNamed[j] = fits && (naming[j + 1]! || overlap(name.replaceAll("*", ""), pattern[j]!))
+      }
     }
-    next = row
+    any = rowAny
+    naming = rowNamed
   }
-  return next[0]!
+  return named ? naming[0]! : any[0]!
 }
 
 /** Whether two names with `*` and `?` can match one string, filled from the end as `couldMatch` is. */

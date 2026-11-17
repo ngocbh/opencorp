@@ -6,15 +6,16 @@
  * The reader (`commands.ts`) can promise that a command line runs without Auto's check or a card only when every
  * part of it is covered: by an allow rule; by a form it knows to be read-only (`auto`, `default`, `dontAsk`); by a
  * plain push of a feature branch (`auto`, `dontAsk`); or, inside the workspace sandbox, by a file operation on
- * paths inside the workspace (`auto`, `dontAsk`). A deny rule always refuses what it matches, inside substitutions
- * and `sh -c` strings too. A command that names a credential path always asks, and Auto's check never judges a
- * push.
+ * paths inside the workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it:
+ * inside substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. The reader asks before
+ * a command that names a credential path it can see, and Auto's check never judges a push or `sudo`.
  *
  * The reader can't know what a program does with its files, its config or its input: `git` runs hooks and programs
  * its config names (`core.fsmonitor`, `core.pager`, `diff.external`); a script does what it contains; a remote host
- * has its own rc files and `PATH`; `~/.ssh/config` can name a `ProxyCommand` for a host. No rule sees into a
- * variable's value or a script file, readable line or not. It can't stop a read-only program from reading what the
- * sandbox lets it read; the model then sees it.
+ * has its own rc files and `PATH`; `~/.ssh/config` can name a `ProxyCommand` for a host. In a persistent shell,
+ * earlier lines can define functions, aliases or a `PATH` that change what a read-only line runs. No rule sees into
+ * a variable's value or a script file, readable line or not. It can't stop a read-only program from reading what
+ * the sandbox lets it read; the model then sees it.
  *
  * Auto's check can be wrong. It is a model reading text the agent wrote. It sees only the command, the shell's
  * profile, its folder and the ssh host, never the agent's reasoning, and its answer is typed, so a prompt
@@ -29,8 +30,8 @@
  * conservative modes for remote work.
  */
 import {
-  assignmentsOf, classify, credentialOf, EMPTY, fileOp, programOf, pushOf, readCommand, remoteOf,
-  type SimpleCommand, sshHosts, sshOf, type Where,
+  assignmentsOf, classify, credentialOf, EMPTY, fileOp, innerParts, ownerOnly, programOf, pushOf, readCommand,
+  remoteOf, type SimpleCommand, sshHosts, sshOf, type Where,
 } from "./commands.ts"
 export type { Where } from "./commands.ts"
 
@@ -87,7 +88,8 @@ const ANSWER = "a prompt's answer"
 /** What `allow` names when parts are covered in different ways: the widest. */
 const WIDEST = [BY_RULE, FILE_OP, PUSH, READ_ONLY]
 const DONT_ASK = "this session doesn't ask (dontAsk mode): "
-const PUSHES = "it pushes to another repository"
+/** The longest line decided; the tools refuse a longer one first. */
+const MAX_LINE_BYTES = 1000
 /** A prompt's short answer: a menu choice, yes or no, quit, or Enter alone. */
 const PROMPT_ANSWER = /^(\d{1,6}|y|n|yes|no|q|)$/
 /** Programs whose second word names what they do; a suggested rule keeps it. */
@@ -129,10 +131,12 @@ export function suggest(part: SimpleCommand, kind: Action["kind"]): string {
 }
 
 export function decide(action: Action, mode: Mode, rules: readonly Rule[], where: Where): Decision {
+  if (new TextEncoder().encode(action.text).length > MAX_LINE_BYTES)
+    return { verdict: "deny", reason: `it is longer than ${MAX_LINE_BYTES} bytes` }
   const read = readCommand(action.text)
   const parts = read.parts.length > 0 ? read.parts : [EMPTY]
   const own = rules.filter((r) => r.kind === action.kind)
-  const everything = parts.flatMap(withRemote)
+  const everything = parts.flatMap(withInner)
   const first = (effect: Effect) =>
     own.find((r) => r.effect === effect && everything.some((p) => fits(r.pattern, p, false)))
   const held = (reason: string, offers: readonly string[] = []): Decision =>
@@ -141,8 +145,12 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
   const denied = first("deny")
   if (denied) return { verdict: "deny", reason: `a deny rule: ${denied.pattern}` }
   if (action.never !== undefined) return held(action.never)
-  const credential = parts.map(credentialOf).find((found) => found !== null)
+  // A typed line goes to a program that may be a shell anywhere, a remote one at its home most likely.
+  const cwd = action.kind === "input" ? "~" : where.cwd
+  const credential = parts.map((p) => credentialOf(p, cwd)).find((found) => found !== null)
   if (credential) return held(credential)
+  const owner = parts.map((p) => ownerOnly(p, read.unreadable === null)).find((found) => found !== null)
+  if (owner) return held(owner)
   const asked = first("ask")
   if (asked) return held(`an ask rule: ${asked.pattern}`)
 
@@ -176,8 +184,6 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
     return { verdict: "ask", reason, rules: offers }
   }
   if (action.partial) return held("Auto asks: the line isn't finished", offers)
-  const push = (read.unreadable === null ? uncovered : parts).map(pushOf).find((p) => p !== null)
-  if (push) return held(`Auto asks: ${push.asks ?? PUSHES}`, offers)
   return { verdict: "check", rules: offers }
 }
 
@@ -279,13 +285,17 @@ function written(part: SimpleCommand): string[] {
 }
 
 /** Whether a rule's pattern matches `part`: as written, or as its program past wrappers when it sets no variables.
- *  An allow rule (`strict`) must match the files it writes too; a deny or ask rule may match without them. */
+ *  An allow rule (`strict`) must match the files it writes too; a deny or ask rule may match without them, and
+ *  matches a program named by its path by the path's last name too (`/bin/rm` as `rm`). */
 function fits(pattern: string, part: SimpleCommand, strict: boolean): boolean {
   const program = [...programOf(part)]
   const writes = part.writes.map((w) => `>${w}`)
   const shapes = [written(part)]
   if (assignmentsOf(part).length === 0) shapes.push([...program, ...writes])
-  if (!strict) shapes.push([...part.assignments, ...part.words], program)
+  if (!strict) {
+    const [prog = "", ...args] = program
+    shapes.push([...part.assignments, ...part.words], program, [prog.slice(prog.lastIndexOf("/") + 1), ...args])
+  }
   return shapes.some((words) => matches(pattern, words))
 }
 
@@ -301,9 +311,10 @@ function prefix(words: readonly string[]): string[] | null {
   return sub !== undefined && !sub.startsWith("-") ? [program, sub] : null
 }
 
-/** A part and, for an ssh part, the parts of the command it runs there, so deny and ask rules see them. */
-function withRemote(part: SimpleCommand): SimpleCommand[] {
-  return [part, ...(remoteOf(part)?.read.parts.flatMap(withRemote) ?? [])]
+/** A part and the commands it runs that the reader doesn't list (under `sudo`, `find -exec` or ssh), so deny and
+ *  ask rules see them. */
+function withInner(part: SimpleCommand): SimpleCommand[] {
+  return [part, ...innerParts(part).flatMap(withInner)]
 }
 
 function checkInput(action: Action, where: Where): CheckInput {
