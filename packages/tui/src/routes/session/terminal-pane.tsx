@@ -3,9 +3,13 @@ import { extend, useRenderer } from "@opentui/solid"
 import type { Instrument, InstrumentOutput } from "@opencorp/protocol"
 import { asInstrument, OfficeError } from "@opencorp/client"
 import { createEffect, createSignal, on, onCleanup, onMount, Show } from "solid-js"
+import { useTuiConfig } from "../../config"
 import { useOffice } from "../../context/office"
 import { useTheme } from "../../context/theme"
+import { leaderKey, useOpenCorpKeymap } from "../../keymap"
+import { useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
+import { keyBatch, routeShellKeys } from "./keys"
 
 declare module "@opentui/solid" {
   interface OpenTUIComponents {
@@ -23,8 +27,8 @@ type StreamItem =
 
 /** The size a shell with none listed is drawn at. */
 const DEFAULT_SIZE: TerminalSize = { cols: 80, rows: 24 }
-/** The statuses in which a shell takes a size; the office refuses one before it starts and after it ends. */
-const SIZABLE: readonly Instrument["status"][] = ["idle", "running", "waiting"]
+/** The statuses in which a shell takes keys and a size; the office refuses them before it starts and after it ends. */
+export const LIVE: readonly Instrument["status"][] = ["idle", "running", "waiting"]
 /** Starts a terminal over (RIS), before it draws a screen read again. */
 const RESET = Buffer.from("\x1bc")
 
@@ -145,11 +149,23 @@ export function followOutput(opts: {
  * A PTY shell's screen, drawn by OpenTUI's embedded terminal from the office's screen and the output past it, at the
  * instrument's size. The session's approver's view sends its own size, on open and whenever it changes, and the PTY
  * takes it; any other view only follows the instrument's.
+ *
+ * While `focused`, the terminal has the keys: every key but the leader goes to the live shell, encoded as a terminal
+ * sends it, gathered a frame at a time and sent as typed. They are kept no longer than that, never logged and never
+ * drawn: the screen shows what the program echoes. `onFocusRequest` gets what gives the terminal the keys again.
  */
-export function TerminalPane(props: { sessionID: string; instrument: Instrument }) {
+export function TerminalPane(props: {
+  sessionID: string
+  instrument: Instrument
+  focused: boolean
+  onFocusRequest?: (focus: (() => void) | undefined) => void
+}) {
   const office = useOffice()
   const { theme } = useTheme()
   const renderer = useRenderer()
+  const keymap = useOpenCorpKeymap()
+  const tuiConfig = useTuiConfig()
+  const toast = useToast()
   const [failure, setFailure] = createSignal<string>()
   const stream: StreamItem[] = []
   let terminal: EmbeddedTerminalRenderable | undefined
@@ -235,7 +251,7 @@ export function TerminalPane(props: { sessionID: string; instrument: Instrument 
    * this view. One request goes at a time, so the office takes sizes in order; when it answers, the newest size goes.
    */
   const sendSize = () => {
-    if (!sizing || asking || !size || !SIZABLE.includes(props.instrument.status)) return
+    if (!sizing || asking || !size || !LIVE.includes(props.instrument.status)) return
     // The office takes 10 by 4 at least.
     if (size.cols < 10 || size.rows < 4) return
     const asked = { cols: Math.min(size.cols, 1000), rows: Math.min(size.rows, 500) }
@@ -275,7 +291,34 @@ export function TerminalPane(props: { sessionID: string; instrument: Instrument 
     terminal?.write(colors)
   })
 
+  const live = () => LIVE.includes(props.instrument.status)
+  // Whether the office takes this view's keys: it refuses anyone but the session's approver, and then this view
+  // stops sending them.
+  let typing = true
+  const keys = keyBatch((data) => {
+    office.client.sessions.keys(props.sessionID, props.instrument.id, { data }).catch((error) => {
+      if (!typing) return
+      if (error instanceof OfficeError && error.status === 403) typing = false
+      toast.show({ message: errorMessage(error), variant: "error" })
+    })
+  })
+  onCleanup(
+    routeShellKeys(keymap, leaderKey(tuiConfig), {
+      focused: () => !!terminal?.focused && live(),
+      press: (event) => terminal?.handleKeyPress(event),
+    }),
+  )
+  createEffect(() => {
+    if (!terminal) return
+    if (props.focused) terminal.focus()
+    else if (terminal.focused) terminal.blur()
+  })
+  props.onFocusRequest?.(() => terminal?.focus())
+
   onCleanup(() => {
+    // Keys typed in the last frame go before the view does.
+    keys.flush()
+    props.onFocusRequest?.(undefined)
     disposed = true
   })
 
@@ -310,6 +353,10 @@ export function TerminalPane(props: { sessionID: string; instrument: Instrument 
         onTerminalResize={(cols, rows) => {
           terminalSize = { cols, rows }
           processStream()
+        }}
+        onData={(data, source) => {
+          // The terminal's own answers to the program's queries aren't the owner's.
+          if (source === "input" && typing && live()) keys.push(data)
         }}
       />
       <Show when={failure()}>

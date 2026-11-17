@@ -199,7 +199,8 @@ function leaderDisplay(config: FormatConfig) {
   return typeof key === "string" ? key : stringifyKeyStroke(key)
 }
 
-function leaderKey(config: FormatConfig) {
+/** The leader key `config` sets, or undefined when it sets none. */
+export function leaderKey(config: FormatConfig) {
   return config.keybinds.get(LEADER_TOKEN)?.[0]?.key
 }
 
