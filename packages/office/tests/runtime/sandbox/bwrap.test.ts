@@ -258,3 +258,13 @@ test("a shell argv binds no helper", () => {
   for (const p of helperPaths) expect(argv).not.toContain(p)
   expect(triples(argv, "--ro-bind")).toEqual([])
 })
+
+test("a terminal call keeps its terminal: no new session, every other flag the same", () => {
+  const { make } = b1Layout()
+  for (const policy of [make(), make({ writable: false, network: true })]) {
+    const plain = command(policy, SHELL)
+    expect(plain.filter((a) => a === "--new-session")).toHaveLength(1)
+    expect(command(policy, SHELL, { tty: true })).toEqual(plain.filter((a) => a !== "--new-session"))
+    expect(command(policy, SHELL, { tty: false })).toEqual(plain)
+  }
+})

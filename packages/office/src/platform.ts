@@ -2,7 +2,8 @@
  * Every Bun-specific call of the office, in one file: moving to Node rewrites this file, plus the few
  * Bun-only behaviours elsewhere that no lint can see (unix-socket fetch, file imports). The office
  * spawns its own code only through `selfCommand()`, with `selfSpawnEnv()` and an office-controlled cwd,
- * and through `helperCommand()`, which runs the `__fs-helper` in the sandbox.
+ * and through `helperCommand()`, which runs the `__fs-helper` in the sandbox. A program on a terminal of its
+ * own starts through `spawnPty()`.
  */
 import { dlopen, FFIType, read, type Pointer } from "bun:ffi"
 import fs from "node:fs"
@@ -128,6 +129,91 @@ export async function endPipe(fd: number, data: string | Buffer): Promise<void> 
   } finally {
     // The runtime's sink never closes the fd itself.
     fs.closeSync(fd)
+  }
+}
+
+/** A process on a new pseudo-terminal it controls (its session leader, the terminal its controlling one). */
+export interface PtyProcess {
+  readonly pid: number
+  /** Writes to the terminal, as keys typed; Bun buffers what the PTY can't take yet, so nothing is re-sent. Throws
+   *  once the terminal is closed. */
+  write(data: string | Uint8Array): void
+  /** Throws once the terminal is closed. */
+  resize(cols: number, rows: number): void
+  /** The terminal's echo and whole-line flags now: a password read turns echo off and keeps whole lines; a
+   *  full-screen program turns both off. Read from the terminal's side; never set from it (that doesn't reach the
+   *  program's line discipline). Both read false once the terminal is closed. */
+  modes(): { echo: boolean; canonical: boolean }
+  /** Signals the process group the terminal's session leader leads. A shell with job control puts each job in
+   *  a group of its own, which this misses: the terminal's shell turns job control off, and under
+   *  bubblewrap the PID namespace ends everything anyway. A no-op once the leader has exited: its pid, the
+   *  group's id, may be another process's by then. */
+  kill(signal: NodeJS.Signals): void
+  /** The exit code, or null when a signal ended it, once the process has exited and its output has reached
+   *  `onData`. The terminal is closed by then, its descriptors released: a descendant that still holds it open
+   *  gets a second (`DRAIN_MS`) after the exit, then loses it. */
+  readonly exited: Promise<number | null>
+  /** Closes the terminal before its process ends; its process gets SIGHUP. */
+  close(): void
+}
+
+// termios c_lflag bits: Linux's from <asm-generic/termbits.h>; macOS's from <sys/termios.h> (unverified here).
+const ECHO = process.platform === "darwin" ? 0x8 : 0o10
+const ICANON = process.platform === "darwin" ? 0x100 : 0o2
+/** How long a terminal stays open after its process exits while a descendant still holds it, so its output drains;
+ *  then it closes. */
+const DRAIN_MS = 1_000
+
+/** Runs `argv` on a new PTY of `cols` × `rows`; `onData` gets what it prints, as it comes, each chunk a buffer of
+ *  its own and every chunk passed on, so a caller caps what it keeps. `env` is the whole environment and must hold
+ *  `TERM` (the terminal's name doesn't set it). Throws when the program can't start, a missing `cwd` included (it
+ *  never starts elsewhere). */
+export function spawnPty(
+  argv: readonly string[],
+  options: { cwd: string; env: Record<string, string>; cols: number; rows: number; onData(chunk: Uint8Array): void },
+): PtyProcess {
+  let ended!: () => void
+  // The terminal's end of output: every side holding it has closed it, or it was closed here.
+  const drained = new Promise<void>((resolve) => (ended = resolve))
+  const proc = Bun.spawn([...argv], {
+    cwd: options.cwd,
+    env: options.env,
+    terminal: {
+      cols: options.cols,
+      rows: options.rows,
+      data: (_terminal, chunk) => options.onData(chunk),
+      exit: () => ended(),
+    },
+  })
+  const terminal = proc.terminal!
+  const exited = proc.exited.then(async (code) => {
+    const status = proc.signalCode ? null : code
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([drained, new Promise((resolve) => (timer = setTimeout(resolve, DRAIN_MS)))])
+    clearTimeout(timer)
+    // The terminal holds its descriptors until it is closed.
+    terminal.close()
+    return status
+  })
+  return {
+    pid: proc.pid,
+    write: (data) => void terminal.write(data),
+    resize: (cols, rows) => terminal.resize(cols, rows),
+    modes: () => {
+      const flags = terminal.localFlags
+      return { echo: (flags & ECHO) !== 0, canonical: (flags & ICANON) !== 0 }
+    },
+    kill: (signal) => {
+      // Set when the leader is reaped, before `exited` resolves.
+      if (proc.exitCode !== null || proc.signalCode !== null) return
+      try {
+        process.kill(-proc.pid, signal)
+      } catch {
+        // The group is gone.
+      }
+    },
+    exited,
+    close: () => terminal.close(),
   }
 }
 

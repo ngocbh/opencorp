@@ -26,21 +26,24 @@ export const NETWORK_PATHS: readonly string[] = ["/run/systemd/resolve"]
  * Returns the `bwrap` argv that runs `argv` under `policy`.
  *
  * The call gets new pid, ipc, uts, and (unless `policy.network`) network namespaces, a
- * fresh `/proc` that shows only its own processes, and a new session. It dies with its
+ * fresh `/proc` that shows only its own processes, and (unless `tty`) a new session. It dies with its
  * parent. Only system paths, the workspace, the tmpdir, the policy's read-only paths,
  * and the helper's own files (when `policy.helper` is set) are mounted; the home
  * directory, `/run/user` (the D-Bus user bus), and every other path are absent.
+ *
+ * With `tty` the call keeps the terminal it was started on: no new session, so a program can read `/dev/tty`
+ * (ssh's prompts). That terminal is the instrument's own PTY, never the owner's: `--new-session` stops a call
+ * writing into its parent's terminal (TIOCSTI, CVE-2017-5226), and here the parent's terminal is the call's own.
+ * Known limit: a program in the call can still push input into that same PTY with TIOCSTI, unless the kernel
+ * turns it off (Linux 6.2's `dev.tty.legacy_tiocsti`) or a seccomp filter refuses it, as one could before 6.2. The
+ * office passes no seccomp filter today, and that is acceptable because the PTY is the call's own: the input it
+ * pushes is the call's own input, which reaches no further than the approved command already does. The command
+ * could type at a prompt itself that way, a secret one included, but the guard at a secret prompt is there to stop
+ * the agent's keys, and the command was approved.
  */
-export function command(policy: SandboxPolicy, argv: readonly string[]): string[] {
-  const args = [
-    "bwrap",
-    "--die-with-parent",
-    "--unshare-pid",
-    "--unshare-ipc",
-    "--unshare-uts",
-    "--unshare-cgroup-try",
-    "--new-session",
-  ]
+export function command(policy: SandboxPolicy, argv: readonly string[], { tty = false } = {}): string[] {
+  const args = ["bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try"]
+  if (!tty) args.push("--new-session")
   if (!policy.network) args.push("--unshare-net")
   for (const p of SYSTEM_DIRS) {
     if (lstat(p)?.isSymbolicLink()) args.push("--symlink", fs.readlinkSync(p), p)
