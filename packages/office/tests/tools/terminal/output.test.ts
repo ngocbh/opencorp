@@ -188,3 +188,19 @@ test("typed input the terminal echoed stays in the view, as on screen", () => {
     "$ read x; echo $x\nowner-typed-text\nowner-typed-text\n$ sudo true\n[sudo] password for nhb25: \n$ ",
   )
 })
+
+test("the view gives its text as it becomes final: each line as it ends, and a long line's head as it leaves memory", () => {
+  const view = new ModelView()
+  const got: string[] = []
+  view.onSettled((text) => got.push(text))
+  view.append("one\r\ntw")
+  expect(got).toEqual(["one\n"])
+  view.append("o 10%\rtwo 100%\r\nthree")
+  expect(got).toEqual(["one\n", "two 100%\n"])
+  view.append("x".repeat(VIEW_KEEP * 2))
+  const kept = view.page(0, view.length + 1)
+  expect(kept.skipped).toBeDefined()
+  // With what memory keeps, what it gave is the view's text from the start.
+  expect(got.join("").length).toBe(view.length - kept.output.length)
+  expect(got.join("") + kept.output).toBe(`one\ntwo 100%\nthree${"x".repeat(VIEW_KEEP * 2)}`)
+})
