@@ -7,6 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import type { Readable } from "node:stream"
 import { fileURLToPath } from "node:url"
+import { noticeFiles } from "../script/notices"
 
 setDefaultTimeout(30_000)
 
@@ -424,6 +425,28 @@ test("the build refuses to replace a folder it did not write", () => {
   expect(fs.existsSync(path.join(out, PLATFORM))).toBe(false)
 }, 90_000)
 
+test("the build ships each asset package's license and notice files, and an LGPL package only with its own", () => {
+  const root = fs.mkdtempSync(path.join(tmp, "notices-"))
+  /** A package folder named `name` under `license`, holding `files`. */
+  const pkg = (name: string, license: string, files: string[]) => {
+    const dir = path.join(root, name)
+    fs.mkdirSync(path.join(dir, "LICENSE-dir"), { recursive: true })
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name, license }))
+    for (const file of [...files, "index.js"]) fs.writeFileSync(path.join(dir, file), "")
+    return dir
+  }
+  const names = (r: ReturnType<typeof noticeFiles>) => ("files" in r ? r.files.map((f) => path.basename(f)).sort() : r)
+  const mit = pkg("mit", "MIT", ["LICENSE", "LICENSE-ZLIB", "AUTHORS-LIBWEBP", "PATENTS-LIBWEBP", "README.md"])
+  expect(names(noticeFiles(mit))).toEqual(["AUTHORS-LIBWEBP", "LICENSE", "LICENSE-ZLIB", "PATENTS-LIBWEBP"])
+  expect(noticeFiles(pkg("bare", "MIT", ["README.md"]))).toEqual({ error: expect.stringContaining("has no LICENSE") })
+  const lgpl = ["LICENSE", "LICENSE-FFMPEG", "FFMPEG-SOURCE.md"]
+  expect(names(noticeFiles(pkg("native", "MIT AND LGPL-2.1-or-later", lgpl)))).toEqual(lgpl.sort())
+  for (const left of ["LICENSE-FFMPEG", "FFMPEG-SOURCE.md"])
+    expect(noticeFiles(pkg(`no-${left}`, "MIT AND LGPL-2.1-or-later", lgpl.filter((f) => f !== left)))).toEqual({
+      error: expect.stringContaining(left),
+    })
+})
+
 /** Kills the process group `pid` leads; a group already gone is fine. */
 function killGroup(pid: number) {
   try {
@@ -756,14 +779,34 @@ describe("the built binary", () => {
       arch: process.arch,
     })
     const assets = path.join(npmOut, PLATFORM, "assets")
+    // A package's license and notice files, as the build copies them beside its assets.
+    const NOTICE = /^(LICENSE|AUTHORS|PATENTS)|^FFMPEG-SOURCE\.md$/
     const shipped = (fs.readdirSync(assets, { recursive: true }) as string[])
-      .filter((file) => fs.statSync(path.join(assets, file)).isFile() && path.basename(file) !== "LICENSE")
+      .filter((file) => fs.statSync(path.join(assets, file)).isFile() && !NOTICE.test(path.basename(file)))
       .sort()
     expect(shipped).toEqual(expected.map((asset) => asset.key).sort())
     for (const { key, source } of expected)
       expect(fs.readFileSync(path.join(assets, key)).equals(fs.readFileSync(source)), key).toBe(true)
-    for (const owner of ["@opentui/core", `@opentui/core-${HOST_OS}-${cpu}`, "web-tree-sitter"])
-      expect(fs.statSync(path.join(assets, owner, "LICENSE")).isFile(), owner).toBe(true)
+    // Each package the assets come from ships every license and notice file it has; the native one's include those
+    // of the FFmpeg it links.
+    const native = `@opentui/core-${HOST_OS}-${cpu}`
+    const roots = new Map(
+      expected.map(({ key, source }) => {
+        const owner = key.split("/").slice(0, key.startsWith("@") ? 2 : 1).join("/")
+        return [owner, source.slice(0, -(key.length - owner.length - 1))]
+      }),
+    )
+    expect([...roots.keys()].sort()).toEqual(["@opentui/core", native, "web-tree-sitter"].sort())
+    const notices = (dir: string) => fs.readdirSync(dir).filter((file) => NOTICE.test(file)).sort()
+    for (const [owner, root] of roots) {
+      expect(notices(root), owner).toContain("LICENSE")
+      expect(notices(path.join(assets, owner)), owner).toEqual(notices(root))
+      for (const file of notices(root)) {
+        const copied = fs.readFileSync(path.join(assets, owner, file))
+        expect(copied.equals(fs.readFileSync(path.join(root, file))), `${owner}/${file}`).toBe(true)
+      }
+    }
+    expect(notices(path.join(assets, native))).toEqual(expect.arrayContaining(["LICENSE-FFMPEG", "FFMPEG-SOURCE.md"]))
     const repoLicense = fs.readFileSync(path.join(CHECKOUT, "LICENSE"))
     for (const folder of ["opencorp", PLATFORM])
       expect(fs.readFileSync(path.join(npmOut, folder, "LICENSE")).equals(repoLicense), folder).toBe(true)

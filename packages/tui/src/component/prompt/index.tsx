@@ -858,7 +858,7 @@ export function Prompt(props: PromptProps) {
 
     setTimeout(() => {
       if (!input || input.isDestroyed) return
-      input.getLayoutNode().markDirty()
+      input.invalidateIntrinsicSize()
       renderer.requestRender()
     }, 0)
   }
@@ -970,10 +970,19 @@ export function Prompt(props: PromptProps) {
                 setCursorVersion((value) => value + 1)
               }}
               onCursorChange={() => setCursorVersion((value) => value + 1)}
-              onKeyDown={(e: { preventDefault(): void }) => {
+              onKeyDown={(e: KeyEvent) => {
                 if (props.disabled) {
                   e.preventDefault()
                   return
+                }
+                // OpenTUI's cursor can't get past text that takes no columns at the start of the box, so what is
+                // typed after a draft that shows nothing (a zero-width space) would split around it: it goes after.
+                const typed = e.name === "space" ? " " : e.sequence
+                const plain = !e.ctrl && !e.meta && !e.super && !e.hyper && !/[\x00-\x1f\x7f-\x9f]/.test(typed)
+                if (plain && typed && input.plainText !== "" && promptOffsetWidth(input.plainText) === 0) {
+                  e.preventDefault()
+                  input.setText(input.plainText + typed)
+                  input.gotoBufferEnd()
                 }
               }}
               onSubmit={() => {

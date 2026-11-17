@@ -199,32 +199,37 @@ export function SetupScreen(props: {
       // As `$EDITOR` gets it: the screen's keys, raw mode and drawing stop until take_back. The line goes on the
       // plain terminal, above ssh's prompts.
       add({ kind: "away", why: prompt.why })
-      if (!renderer.isDestroyed) {
-        // Nothing is written to the terminal while ssh may be reading it: opentui's resize handler would answer a
-        // window change with a size query (ESC[14t), which would land in ssh's password read.
-        resizeDetached = detachResize(renderer)
-        renderer.suspend()
-        renderer.currentRenderBuffer.clear()
-      }
-      props.notice?.(`\n${prompt.why}\n`)
-      props.child.answer("")
+      void handOver(prompt.why)
     } else if (prompt.type === "take_back") {
       if (renderer.isDestroyed) return
-      renderer.currentRenderBuffer.clear()
       const stdin = (renderer as unknown as { stdin: NodeJS.ReadStream }).stdin
       // On a real terminal, discard what the kernel buffered while the child held it (ssh's menu, a stray Enter)
       // before the screen listens again, as the visit's `drain` does; stdin has no screen listener and is paused
       // here. A test renderer's stdin isn't the process's and holds nothing, so it just comes back.
       if (stdin === process.stdin && stdin.isTTY) void drainThenResume(stdin)
-      else resumeScreen()
+      else void resumeScreen()
     } else setPending(prompt)
   })
 
+  /** Stops the screen, then says `why` on the plain terminal and answers: the child takes the terminal only once the
+   *  screen has left it. */
+  const handOver = async (why: string) => {
+    if (!renderer.isDestroyed) {
+      // Nothing is written to the terminal while ssh may be reading it: opentui's resize handler would answer a
+      // window change with a size query (ESC[14t), which would land in ssh's password read.
+      resizeDetached = detachResize(renderer)
+      await renderer.suspend()
+    }
+    props.notice?.(`\n${why}\n`)
+    props.child.answer("")
+  }
+
   /** Brings the screen back: redraws, and puts the resize handler back, taking the new size now, when a query is
    *  safe again. */
-  const resumeScreen = () => {
+  const resumeScreen = async () => {
     if (renderer.isDestroyed) return
-    renderer.resume()
+    await renderer.resume()
+    if (renderer.isDestroyed) return
     if (resizeDetached) attachResize(renderer)
     resizeDetached = false
     renderer.requestRender()
@@ -241,7 +246,7 @@ export function SetupScreen(props: {
       stdin.off("data", discard)
       stdin.pause()
     } catch {}
-    resumeScreen()
+    await resumeScreen()
   }
 
   /** Sends `text` as the answer, shows the question answered with `shown`, clears any card, waits for the next. */

@@ -117,6 +117,8 @@ export async function runSetupWith(
     const code = await child.done
     release()
     await destroyed
+    // The terminal leaves the screen only once closed settles; it rejects when the terminal is already gone.
+    await renderer.closed.catch(() => {})
     for (const line of lines) out.write(line + "\n")
     const stderr = child.stderr()
     if (stderr) err.write(stderr)

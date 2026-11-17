@@ -9,6 +9,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { parseArgs } from "node:util"
+import { noticeFiles } from "./notices"
 
 const TARGETS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"] as const
 type Target = (typeof TARGETS)[number]
@@ -90,17 +91,18 @@ function assetsFor(name: string, platform: string, arch: string) {
     throw e
   }
 }
-// Every target's assets, and the LICENSE of each package they come from, are found before anything is written.
+// Every target's assets, and the license and notice files of each package they come from, are found before anything
+// is written.
 const assetsOf = new Map(
   builds.map(({ name, os, cpu }) => {
     const assets = assetsFor(name, os, cpu)
-    const licenses = new Map<string, string>()
+    const licenses = new Map<string, string[]>()
     for (const { key, source } of assets) {
       const { owner, inner } = splitKey(key)
       if (!source.endsWith(path.sep + inner)) fail(`${source} is not ${inner} in a package`, 1)
-      const file = path.join(source.slice(0, -inner.length), "LICENSE")
-      if (!fs.existsSync(file)) fail(`${owner} has no LICENSE (${file})`, 1)
-      licenses.set(owner, file)
+      const notices = noticeFiles(source.slice(0, -inner.length))
+      if ("error" in notices) fail(`${owner} ${notices.error}`, 1)
+      licenses.set(owner, notices.files)
     }
     return [name, { assets, licenses }] as const
   }),
@@ -144,7 +146,8 @@ for (const { name, os, cpu, target } of builds) {
   // The binary sets OTUI_ASSET_ROOT to `../assets`, so OpenTUI loads these instead of extracting copies to $TMPDIR.
   const { assets, licenses } = assetsOf.get(name)!
   for (const { key, source } of assets) copy(source, path.join(dir, "assets", key))
-  for (const [owner, file] of licenses) copy(file, path.join(dir, "assets", owner, "LICENSE"))
+  for (const [owner, files] of licenses)
+    for (const file of files) copy(file, path.join(dir, "assets", owner, path.basename(file)))
   fs.copyFileSync(LICENSE, path.join(dir, "LICENSE"))
   writePackage(dir, {
     name: `opencorp-${name}`,

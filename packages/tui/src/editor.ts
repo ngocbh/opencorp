@@ -26,17 +26,20 @@ export async function openEditor(input: { value: string; renderer: CliRenderer; 
   // A private dir (mkdtemp makes it 0700), not a guessable name in a shared, world-readable /tmp.
   const dir = await mkdtemp(path.join(os.tmpdir(), "opencorp-prompt-"))
   const file = path.join(dir, "prompt.md")
-  await writeFile(file, input.value)
-  input.renderer.suspend()
-  input.renderer.currentRenderBuffer.clear()
+  let suspended = false
   try {
+    await writeFile(file, input.value)
+    await input.renderer.suspend()
+    suspended = true
     await launchEditor(editor, file, input)
     return (await readFile(file, "utf8")) || undefined
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {})
-    input.renderer.currentRenderBuffer.clear()
-    input.renderer.resume()
-    input.renderer.requestRender()
+    // OpenTUI resumes only a renderer it suspended, and none once destroyed (a SIGHUP while the editor ran).
+    if (suspended && !input.renderer.isDestroyed) {
+      await input.renderer.resume()
+      input.renderer.requestRender()
+    }
   }
 }
 
