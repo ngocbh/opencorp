@@ -2,9 +2,9 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
-import { command, SYSTEM_DIRS } from "../../../src/runtime/sandbox/bwrap.ts"
+import { command, sshCommand, SYSTEM_DIRS } from "../../../src/runtime/sandbox/bwrap.ts"
 import type { Helper } from "../../../src/platform.ts"
-import { goldenPolicy, makePolicy } from "./helpers.ts"
+import { goldenPolicy, goldenSshPolicy, makePolicy } from "./helpers.ts"
 
 /** `makePolicy()` with its root as a read-only path (Python's `make` fixture). */
 function setup() {
@@ -267,4 +267,78 @@ test("a terminal call keeps its terminal: no new session, every other flag the s
     expect(command(policy, SHELL, { tty: true })).toEqual(plain.filter((a) => a !== "--new-session"))
     expect(command(policy, SHELL, { tty: false })).toEqual(plain)
   }
+})
+
+/** The SSH-only goldens' layout: a home at /home/me, a key ssh -G named outside ~/.ssh, an agent and a ticket. */
+const SSH = {
+  home: "/home/me",
+  hq: "/home/me/.opencorp/hq",
+  tmpdir: "/tmp/oc-ssh-1",
+  statusFile: "/home/me/.opencorp/hq/ssh/status.4242",
+  sshFiles: ["/home/me/keys/id"],
+  agentSocket: "/tmp/ssh-abc/agent.7",
+  kerberos: "/tmp/krb5cc_1000",
+}
+
+/** The SSH-only argv for `SSH` on a terminal. */
+function s1(): string[] {
+  return [
+    "bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try",
+    ...systemMounts(),
+    "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
+    "--ro-bind-try", "/etc/ssl", "/etc/ssl",
+    "--ro-bind-try", "/etc/ca-certificates", "/etc/ca-certificates",
+    "--ro-bind-try", "/etc/pki", "/etc/pki",
+    "--ro-bind-try", "/etc/ld.so.cache", "/etc/ld.so.cache",
+    "--ro-bind-try", "/etc/ld.so.conf", "/etc/ld.so.conf",
+    "--ro-bind-try", "/etc/ld.so.conf.d", "/etc/ld.so.conf.d",
+    "--ro-bind-try", "/etc/localtime", "/etc/localtime",
+    "--ro-bind-try", "/etc/passwd", "/etc/passwd",
+    "--ro-bind-try", "/etc/group", "/etc/group",
+    "--ro-bind-try", "/etc/nsswitch.conf", "/etc/nsswitch.conf",
+    "--ro-bind-try", "/etc/hosts", "/etc/hosts",
+    "--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf",
+    "--ro-bind-try", "/etc/ssh", "/etc/ssh",
+    "--ro-bind-try", "/etc/crypto-policies", "/etc/crypto-policies",
+    "--ro-bind-try", "/etc/krb5.conf", "/etc/krb5.conf",
+    "--ro-bind-try", "/etc/krb5.conf.d", "/etc/krb5.conf.d",
+    "--ro-bind-try", "/var/lib/sss/pubconf/krb5.include.d", "/var/lib/sss/pubconf/krb5.include.d",
+    "--ro-bind-try", "/var/lib/sss/pipes/nss", "/var/lib/sss/pipes/nss",
+    "--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve",
+    "--proc", "/proc",
+    "--dev", "/dev",
+    "--ro-bind-try", "/home/me/.ssh", "/home/me/.ssh",
+    "--ro-bind-try", "/home/me/keys/id", "/home/me/keys/id",
+    "--ro-bind-try", "/home/me/.opencorp/hq/ssh", "/home/me/.opencorp/hq/ssh",
+    "--bind", "/home/me/.ssh/known_hosts", "/home/me/.ssh/known_hosts",
+    "--bind", "/home/me/.opencorp/hq/ssh/status.4242", "/home/me/.opencorp/hq/ssh/status.4242",
+    "--bind", "/home/me/.opencorp/hq/cm", "/home/me/.opencorp/hq/cm",
+    "--bind-try", "/tmp/ssh-abc/agent.7", "/tmp/ssh-abc/agent.7",
+    "--bind-try", "/tmp/krb5cc_1000", "/tmp/krb5cc_1000",
+    "--bind", "/tmp/oc-ssh-1", "/tmp/oc-ssh-1",
+    "--remount-ro", "/",
+    "--chdir", "/tmp/oc-ssh-1",
+    "--", "/bin/sh", "-c", "ls",
+  ]
+}
+
+test("the SSH-only argv shares the network, keeps the terminal, and binds only those paths", () => {
+  const policy = goldenSshPolicy(SSH)
+  const argv = sshCommand(policy, SHELL, { tty: true })
+  expect(argv).toEqual(s1())
+  expect(argv).not.toContain("--unshare-net")
+  // Off a terminal the call gets a new session, as every other call does.
+  const plain = sshCommand(policy, SHELL)
+  expect(plain).toEqual([...s1().slice(0, 6), "--new-session", ...s1().slice(6)])
+  expect(sshCommand(policy, SHELL, { tty: false })).toEqual(plain)
+  // Of hq only ssh/ and cm/ are mounted, and of the home only those and what ssh reads.
+  const mounted = argv.flatMap((a, i) => (a.startsWith("--") && a.includes("bind") ? [argv[i + 2]!] : []))
+  expect(mounted.filter((p) => p.startsWith("/home/me/"))).toEqual([
+    "/home/me/.ssh",
+    "/home/me/keys/id",
+    "/home/me/.opencorp/hq/ssh",
+    "/home/me/.ssh/known_hosts",
+    "/home/me/.opencorp/hq/ssh/status.4242",
+    "/home/me/.opencorp/hq/cm",
+  ])
 })

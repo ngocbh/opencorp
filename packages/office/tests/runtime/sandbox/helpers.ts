@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { type Helper, helperCommand } from "../../../src/platform.ts"
 import { type OfficePaths, SandboxPolicy } from "../../../src/runtime/sandbox/policy.ts"
 import { command, fsHelper, run, scrubbedEnv } from "../../../src/runtime/sandbox/run.ts"
+import { SshPolicy } from "../../../src/runtime/sandbox/ssh_policy.ts"
 import { tempDir } from "../../helpers.ts"
 
 const SRC = fileURLToPath(new URL("../../../src/runtime/sandbox/", import.meta.url))
@@ -56,6 +57,33 @@ export function goldenPolicy(fields: {
     readOnly: fields.readOnly ?? [],
     helper: fields.helper,
     office: { home: "/Users/me", install: fields.install ?? [], tools: [], path: [] },
+  })
+}
+
+/** An SSH-only policy over exactly these (already real) paths, in the order its constructor lays them out, with no
+ *  disk checks, for golden argv and profiles. A ticket cache counts as a file. */
+export function goldenSshPolicy(fields: {
+  home: string
+  hq: string
+  tmpdir: string
+  statusFile: string
+  sshFiles?: readonly string[]
+  readOnly?: readonly string[]
+  agentSocket?: string
+  kerberos?: string
+}): SshPolicy {
+  const ssh = path.join(fields.home, ".ssh")
+  const cm = path.join(fields.hq, "cm")
+  return Object.assign(Object.create(SshPolicy.prototype), {
+    kind: "ssh",
+    home: fields.home,
+    tmpdir: fields.tmpdir,
+    cm,
+    readOnly: [ssh, ...(fields.sshFiles ?? []), path.join(fields.hq, "ssh"), ...(fields.readOnly ?? [])],
+    writable: [path.join(ssh, "known_hosts"), fields.statusFile, cm],
+    sockets: [fields.agentSocket, fields.kerberos].filter((p) => p !== undefined),
+    agentSocket: fields.agentSocket ?? null,
+    ccache: fields.kerberos === undefined ? null : `FILE:${fields.kerberos}`,
   })
 }
 

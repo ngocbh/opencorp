@@ -1,6 +1,7 @@
 /** bubblewrap (Linux) command lines for sandboxed calls. */
 import fs from "node:fs"
 import { helperFiles, type SandboxPolicy } from "./policy.ts"
+import type { SshPolicy } from "./ssh_policy.ts"
 
 // Top-level system directories; on merged-/usr systems some are links into /usr.
 export const SYSTEM_DIRS: readonly string[] = ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"]
@@ -21,6 +22,17 @@ export const SYSTEM_FILES: readonly string[] = [
 ]
 // systemd-resolved's stub, which /etc/resolv.conf points to on Ubuntu.
 export const NETWORK_PATHS: readonly string[] = ["/run/systemd/resolve"]
+// What ssh and Kerberos read of the system, for the SSH-only profile. RHEL's ssh config includes the crypto policy,
+// and its krb5.conf.d includes sssd's folder, without which Kerberos won't start; where users come from sssd, ssh
+// needs its socket to find its own passwd entry, and exits without it.
+export const SSH_SYSTEM_FILES: readonly string[] = [
+  "/etc/ssh",
+  "/etc/crypto-policies",
+  "/etc/krb5.conf",
+  "/etc/krb5.conf.d",
+  "/var/lib/sss/pubconf/krb5.include.d",
+  "/var/lib/sss/pipes/nss",
+]
 
 /**
  * Returns the `bwrap` argv that runs `argv` under `policy`.
@@ -42,15 +54,7 @@ export const NETWORK_PATHS: readonly string[] = ["/run/systemd/resolve"]
  * the agent's keys, and the command was approved.
  */
 export function command(policy: SandboxPolicy, argv: readonly string[], { tty = false } = {}): string[] {
-  const args = ["bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try"]
-  if (!tty) args.push("--new-session")
-  if (!policy.network) args.push("--unshare-net")
-  for (const p of SYSTEM_DIRS) {
-    if (lstat(p)?.isSymbolicLink()) args.push("--symlink", fs.readlinkSync(p), p)
-    else args.push("--ro-bind-try", p, p)
-  }
-  for (const p of [...SYSTEM_FILES, ...(policy.network ? NETWORK_PATHS : [])]) args.push("--ro-bind-try", p, p)
-  args.push("--proc", "/proc", "--dev", "/dev")
+  const args = system({ tty, network: policy.network, files: SYSTEM_FILES })
   for (const p of policy.readOnly) args.push("--ro-bind-try", p, p)
   args.push("--bind", policy.tmpdir, policy.tmpdir)
   const ws = policy.workspace
@@ -62,6 +66,40 @@ export function command(policy: SandboxPolicy, argv: readonly string[], { tty = 
   // The tmpfs root holds only mount points; read-only, so writes outside the
   // binds fail instead of landing in a throwaway directory.
   return [...args, "--remount-ro", "/", "--chdir", ws, "--", ...argv]
+}
+
+/**
+ * Returns the `bwrap` argv that runs `argv` under the SSH-only `policy`.
+ *
+ * The call shares the host's network and otherwise gets what `command` gives a call: its own namespaces, `/proc`
+ * and `/dev`, and a new session unless `tty`. It sees the system paths and `SSH_SYSTEM_FILES` read-only, then the
+ * policy's read-only paths, its read-write ones over them (so `~/.ssh/known_hosts` takes writes inside the read-only
+ * `~/.ssh`), its sockets, and its temp folder, where it starts. Nothing else of the home or of hq is mounted.
+ */
+export function sshCommand(policy: SshPolicy, argv: readonly string[], { tty = false } = {}): string[] {
+  const args = system({ tty, network: true, files: [...SYSTEM_FILES, ...SSH_SYSTEM_FILES] })
+  for (const p of policy.readOnly) args.push("--ro-bind-try", p, p)
+  // Made by the policy, so a missing one is an error worth seeing.
+  for (const p of policy.writable) args.push("--bind", p, p)
+  // An agent that has gone leaves its path behind; ssh then goes on without it, as it would outside.
+  for (const p of policy.sockets) args.push("--bind-try", p, p)
+  args.push("--bind", policy.tmpdir, policy.tmpdir)
+  return [...args, "--remount-ro", "/", "--chdir", policy.tmpdir, "--", ...argv]
+}
+
+/** The start of every call's argv: the namespaces, a new session unless `tty`, the network only if `network`, the
+ *  system directories, `files` (and `NETWORK_PATHS` with the network) read-only, `/proc` and `/dev`. */
+function system({ tty, network, files }: { tty: boolean; network: boolean; files: readonly string[] }): string[] {
+  const args = ["bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try"]
+  if (!tty) args.push("--new-session")
+  if (!network) args.push("--unshare-net")
+  for (const p of SYSTEM_DIRS) {
+    if (lstat(p)?.isSymbolicLink()) args.push("--symlink", fs.readlinkSync(p), p)
+    else args.push("--ro-bind-try", p, p)
+  }
+  for (const p of [...files, ...(network ? NETWORK_PATHS : [])]) args.push("--ro-bind-try", p, p)
+  args.push("--proc", "/proc", "--dev", "/dev")
+  return args
 }
 
 /**
