@@ -22,8 +22,8 @@ const RUN = "run-1"
 const RULES = ["git status *", "ls *"]
 const CARD: Approval = { kind: "command", tool: "shell", action: "ls -la", reason: "Ask mode", rules: RULES }
 const UNKNOWN =
-  "Not run again: the owner approved this, but the office stopped before its result came back, so it may or may not " +
-  "have run."
+  "Not run again: the user approved this, but the office stopped before its result came back, either before the " +
+  "command ran or while it ran. Check whether it ran before you try it again."
 
 /** A store with one session, its `Answers`, and a `hold` for the session's run; `always` says whether always-rules
  *  are kept. */
@@ -129,7 +129,7 @@ test("a typed answer is No with the approver's words; Yes, don't ask again and a
     const card = store.getQuestionByCall(call(n))!
     return readAnswer(store.answerQuestion(card.id, answer, kind, "ngocbh"))
   }
-  expect(answered(1, "use rg instead", "text")).toEqual({ answer: "no", say: "use rg instead" })
+  expect(answered(1, "  use rg instead\n", "text")).toEqual({ answer: "no", say: "use rg instead" })
   expect(answered(2, YES, "option")).toEqual({ answer: "yes" })
   expect(answered(3, sessionOption(RULES), "option")).toEqual({ answer: "session" })
   expect(answered(4, alwaysOption(RULES), "option")).toEqual({ answer: "always" })
@@ -143,14 +143,14 @@ test("a call held again after its card was answered never runs twice", () => {
     store.answerQuestion(store.getQuestionByCall(call(n))!.id, value, kind, "ngocbh")
     return hold(CARD, call(n))
   }
-  expect(answer(1, "use rg instead", "text")).toBe("The owner said no: use rg instead")
-  expect(answer(2, " \n", "text")).toBe("The owner said no.")
+  expect(answer(1, " use rg instead\n", "text")).toBe("Not run: the user said no: use rg instead")
+  expect(answer(2, " \n", "text")).toBe("Not run: the user said no.")
   expect(answer(3, YES, "option")).toBe(UNKNOWN)
   expect(answer(4, sessionOption(RULES), "option")).toBe(UNKNOWN)
   expect(answer(5, INTERRUPTED, "interrupted")).toBe("[interrupted by the user]")
   // The second hold consumed each card, and a third gets the same reply.
   expect(store.getQuestionByCall(call(1))!.status).toBe("consumed")
-  expect(hold(CARD, call(1))).toBe("The owner said no: use rg instead")
+  expect(hold(CARD, call(1))).toBe("Not run: the user said no: use rg instead")
   expect(approvalResult(store.getQuestionByCall(call(3))!)).toBe(UNKNOWN)
 })
 

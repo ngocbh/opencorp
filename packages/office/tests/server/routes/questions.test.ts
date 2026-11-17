@@ -326,20 +326,26 @@ test("only the session's approver may answer or stop its approval card", async (
         approval: { kind: "command", tool: "shell", action: "rm -rf build", reason: "Ask mode" },
       }),
     )
-  // The CEO opened this chat; a chat nobody opened falls to the CEO at its pinned commit.
-  const opened = office.store.createSession(session({ opened_by: CEO, status: "ended" }))
+  // A chat's opener answers its cards, even over the CEO; a chat nobody opened falls to the CEO at its pinned commit.
+  const byAva = office.store.createSession(session({ opened_by: "ava", status: "ended" }))
+  const byCeo = office.store.createSession(session({ opened_by: CEO, status: "ended" }))
   const unopened = office.store.createSession(session({ status: "ended", repo_commit: await office.git.head() }))
-  for (const [s, n] of [[opened, 1], [unopened, 3]] as const) {
+  const cases = [
+    [byAva, ["ava", ava], ceo, 1],
+    [byCeo, [CEO, ceo], ava, 3],
+    [unopened, [CEO, ceo], ava, 5],
+  ] as const
+  for (const [s, [approver, may], other, n] of cases) {
     const answered = approval(s.id, n)
     const stopped = approval(s.id, n + 1)
-    let r = await post(sock, `/questions/${answered.id}/answer`, { answer: "Yes", answer_kind: "option" }, ava)
+    let r = await post(sock, `/questions/${answered.id}/answer`, { answer: "Yes", answer_kind: "option" }, other)
     expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
-    r = await post(sock, `/questions/${stopped.id}/stop`, null, ava)
+    r = await post(sock, `/questions/${stopped.id}/stop`, null, other)
     expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
     expect(office.store.listQuestions({ sessionId: s.id, status: "open" })).toHaveLength(2)
-    r = await post(sock, `/questions/${answered.id}/answer`, { answer: "Yes", answer_kind: "option" }, ceo)
-    expect([r.status, (r.json() as Question).answered_by]).toEqual([200, CEO])
-    r = await post(sock, `/questions/${stopped.id}/stop`, null, ceo)
+    r = await post(sock, `/questions/${answered.id}/answer`, { answer: "Yes", answer_kind: "option" }, may)
+    expect([r.status, (r.json() as Question).answered_by]).toEqual([200, approver])
+    r = await post(sock, `/questions/${stopped.id}/stop`, null, may)
     expect([r.status, (r.json() as Question).answer_kind]).toEqual([200, "interrupted"])
   }
   // Other cards are answered as before: by anyone who may act.
@@ -444,6 +450,35 @@ test("chat about a question then answer it", async () => {
   await waitFor(() => texts(h, sid).at(-1) === "OK.", { what: "the asker's reply" })
   r = await post(sock, `/questions/${qid}/side`, { text: "late" })
   expect([r.status, errorOf(r)]).toEqual([409, "not_open"])
+})
+
+test("a chat message from the approver answers only an ask_user, and leaves an approval card open", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK, { content: "Backing off." }, { content: "Noted." })
+  const o = await cardsOffice(fake)
+  const { h, sock } = o
+  const { sid, qid } = await asked(o)
+  const runId = h.store.getQuestion(qid)!.run_id
+  const held = h.store.addQuestion(
+    question(sid, {
+      run_id: runId,
+      source: "approval",
+      call_id: `${runId}/n/9/0`,
+      question: "rm -rf build",
+      options: ["Yes"],
+      approval: { kind: "command", tool: "shell", action: "rm -rf build", reason: "Ask mode" },
+    }),
+  )
+  // The chat's opener, the CEO here, is the card's approver: their message is still no answer to it.
+  expect(h.store.getSession(sid)!.opened_by).toBe(CEO)
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "Yes" })).status).toBe(200)
+  await waitFor(() => texts(h, sid).at(-1) === "Backing off.", { what: "the reply to the answer" })
+  expect([h.store.getQuestion(qid)!.answer, h.store.getQuestion(qid)!.answer_kind]).toEqual(["Yes", "text"])
+  await waitFor(() => status(h, sid) !== "busy", { what: "the reply's end" })
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "Yes, go ahead" })).status).toBe(200)
+  await waitFor(() => texts(h, sid).at(-1) === "Noted.", { what: "the next reply" })
+  const card = h.store.getQuestion(held.id)!
+  expect([card.status, card.answer, card.answer_kind, card.answered_by]).toEqual(["open", null, null, null])
 })
 
 test("a blank message never reopens a side chat that ended", async () => {

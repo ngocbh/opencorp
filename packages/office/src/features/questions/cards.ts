@@ -151,7 +151,7 @@ export class Cards {
    */
   async openSide(questionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<SessionRecord> {
     const question = this.#open(questionId)
-    this.#notHarness(question, { orApproval: true })
+    this.#offers(question, "side chat")
     const actor = sideActor(this.actor)
     if (actor === undefined) throw new HarnessError(501, "not_implemented", "this office has no side chats")
     const refusal = this.refuseExit(undefined, text)
@@ -224,7 +224,7 @@ export class Cards {
     { by = null }: { by?: string | null } = {},
   ): Promise<QuestionRecord> {
     const question = this.#open(questionId)
-    this.#notHarness(question, { orApproval: true })
+    this.#offers(question, "send back")
     if (question.source === "ask") {
       throw new HarnessError(422, "cannot_send_back", "a flow's own question can't be sent back")
     }
@@ -244,15 +244,15 @@ export class Cards {
   /**
    * Stop the asker from the card: it gets `[interrupted by the user]` with the discussion.
    *
-   * A model question or an approval card in a live main chat is Esc on that chat (the reply stops too, so a stop on
-   * an approval card stops the agent) and is credited to no one; when the interrupt leaves the question open
-   * (nothing ran to close it), or the chat has no run to interrupt, it is answered as for any other model question:
-   * as `by`, and its run carries on. Refused 409 `not_open` while another stop of it, an answer that came first or
-   * another Esc is under way, and 409 `ending` while its chat ends.
+   * An `ask_user` question or an approval card in a live main chat is Esc on that chat (the reply stops too), and is
+   * credited to no one when the interrupt closes it; when the interrupt leaves it open (nothing ran to close it), or
+   * the chat has no run to interrupt, it is answered `interrupted` as for any other model question: as `by`, and its
+   * run carries on. Refused 409 `not_open` while another stop of it, an answer that came first or another Esc is
+   * under way, and 409 `ending` while its chat ends.
    */
   async stop(questionId: string, { by = null }: { by?: string | null } = {}): Promise<QuestionRecord> {
     const question = this.#open(questionId)
-    this.#notHarness(question)
+    this.#offers(question, "stop")
     if (question.source === "ask") throw new HarnessError(422, "cannot_stop", "a flow's own question can't be stopped")
     if (this.#stopping.has(questionId)) {
       throw new HarnessError(409, "not_open", `question ${questionId} is being stopped`)
@@ -604,11 +604,11 @@ export class Cards {
     return question
   }
 
-  /** Throws `422 harness_card` for a harness card, which a side chat, send back or stop can't reach; with
-   *  `orApproval`, `422 approval_card` for an approval card, which has no side chat or send back. */
-  #notHarness(question: QuestionRecord, { orApproval = false }: { orApproval?: boolean } = {}): void {
+  /** Throws unless `question`'s card offers `action`: `422 harness_card` for a harness card, which offers none of
+   *  them, and `422 approval_card` for an approval card's side chat or send back (it offers only a stop). */
+  #offers(question: QuestionRecord, action: "side chat" | "send back" | "stop"): void {
     if (question.source === "harness") throw new HarnessError(422, "harness_card", HARNESS_ONLY_ANSWER)
-    if (orApproval && question.source === "approval") {
+    if (question.source === "approval" && action !== "stop") {
       throw new HarnessError(422, "approval_card", APPROVAL_ONLY_ANSWER)
     }
   }

@@ -1,6 +1,14 @@
 /** How a command or script that will run is shown to the owner, and what the model may send to run. */
 import { expect, test } from "bun:test"
-import { lineCount, MAX_INDENT, numberedLines, oddCharacter, shownCode, SPACE_RUN } from "../../src/util/show.ts"
+import {
+  lineCount,
+  MAX_INDENT,
+  numberedLines,
+  oddCharacter,
+  shownAction,
+  shownCode,
+  SPACE_RUN,
+} from "../../src/util/show.ts"
 
 /** Look-alike blanks that aren't shell whitespace, and invisible ones. */
 const LOOK_ALIKES = [" ", " ", "　", " ", "⠀", "ㅤ"]
@@ -95,4 +103,11 @@ test("a line of escaped look-alikes isn't blank, so it can't hide in a marker", 
   expect(numberedLines("a\n \n \nb")).toEqual(["  1  a", "  2  <U+00A0>", "  3  <U+00A0>", "  4  b"])
   // Shown another way (notes, as text), look-alike blank lines are blank.
   expect(numberedLines("a\n　\n⠀\nb", (line) => line)).toEqual(["  1  a", "     (2 blank lines)", "  4  b"])
+})
+
+test("an action to approve shows as one escaped line, or as numbered lines when it has more", () => {
+  expect(shownAction("echo ‮txt.exe")).toBe("echo <U+202E>txt.exe")
+  expect(shownAction("ls\nrm x")).toBe("  1  ls\n  2  rm x")
+  // A final newline is a script's: it is numbered, not drawn as an escape.
+  expect(shownAction("ls\n")).toBe("  1  ls")
 })

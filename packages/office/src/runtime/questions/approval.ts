@@ -5,7 +5,7 @@ import { pending } from "@ngocbh/yian/tools"
 import { type Approval, Question, now, validationMessage } from "@opencorp/protocol"
 import { newId, type QuestionRecord, type SessionRecord } from "../store/store.ts"
 import { strip } from "../../util/redact.ts"
-import { numberedLines, shownCode } from "../../util/show.ts"
+import { shownAction } from "../../util/show.ts"
 import type { OnQuestion } from "./ask.ts"
 import { INTERRUPTED } from "./format.ts"
 
@@ -18,11 +18,10 @@ export const NO_TYPED = "No, and tell the agent what to do instead"
 
 /** What a held call returns for a Yes whose result never came back. */
 const UNKNOWN_OUTCOME =
-  "Not run again: the owner approved this, but the office stopped before its result came back, so it may or may not " +
-  "have run."
+  "Not run again: the user approved this, but the office stopped before its result came back, either before the " +
+  "command ran or while it ran. Check whether it ran before you try it again."
 
-/** The card a host holds a call on: the protocol's `Approval`, its rules read-only, so a policy's own card (whose
- *  rules are) is one as it is. */
+/** The card a call is held on: the protocol's `Approval`, with its rules read-only. */
 export type HeldCard = Omit<Approval, "rules"> & { readonly rules?: readonly string[] }
 
 export type ApprovalAnswer =
@@ -38,7 +37,7 @@ export function approvalOptions(rules: readonly string[], always: boolean): stri
 }
 
 /** What an answered card says. An option is read against the card's own rules, so only the exact Yes labels are a
- *  yes; any other answer is No, with the approver's words when they typed some. */
+ *  yes; any other answer is No, with the approver's words, trimmed, when they typed some. */
 export function readAnswer(question: QuestionRecord): ApprovalAnswer {
   const { answer, answer_kind: kind } = question
   if (kind === "interrupted") return { answer: "interrupted" }
@@ -48,22 +47,19 @@ export function readAnswer(question: QuestionRecord): ApprovalAnswer {
     if (rules.length > 0 && answer === sessionOption(rules)) return { answer: "session" }
     if (rules.length > 0 && answer === alwaysOption(rules)) return { answer: "always" }
   }
-  return { answer: "no", say: kind === "text" && typeof answer === "string" ? answer : "" }
+  return { answer: "no", say: kind === "text" && typeof answer === "string" ? strip(answer) : "" }
 }
 
-/** What the held call returns when it can't return the action's own output: the approver's No, an interrupt, or
- *  a Yes whose result never came back (the office stopped while it ran). Never runs anything. */
+/** What the held call returns when it can't return the action's own output: the approver's No (with the gate's
+ *  "Not run:"), an interrupt, or a Yes whose result never came back (the office stopped before or while the action
+ *  ran). Never runs anything. */
 export function approvalResult(question: QuestionRecord): string {
   const read = readAnswer(question)
   if (read.answer === "interrupted") return INTERRUPTED
-  if (read.answer === "no") return strip(read.say) === "" ? "The owner said no." : `The owner said no: ${read.say}`
+  if (read.answer === "no") {
+    return read.say === "" ? "Not run: the user said no." : `Not run: the user said no: ${read.say}`
+  }
   return UNKNOWN_OUTCOME
-}
-
-/** The action as the owner reads it: one line as `shownCode` shows it, more as numbered lines, so what they approve
- *  is what runs. */
-function shown(action: string): string {
-  return action.includes("\n") ? numberedLines(action).join("\n") : shownCode(action)
 }
 
 /** A `hold` for `session`'s run `runId`: stores the card through `onQuestion` (one per call id) and returns what
@@ -89,7 +85,8 @@ export function holdApproval(
       asker: session.person,
       work_item_id: session.work_item_id,
       title: `@${session.person} wants to ${what}`,
-      question: typeof card.action === "string" ? shown(card.action) : "",
+      // What the approver reads is what runs: odd characters escaped, a script numbered.
+      question: typeof card.action === "string" ? shownAction(card.action) : "",
       options: approvalOptions(Array.isArray(card.rules) ? card.rules : [], always),
       approval: card,
       status: "open",

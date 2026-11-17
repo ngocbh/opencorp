@@ -73,8 +73,8 @@ export const Question = z.strictObject({
    * Where the question comes from. `ask`: a flow's TOOL `ask` node. `harness`: a request from the session's
    * harness (a Codex approval or question). It takes only an `option` or `text` answer; no side chat, send back
    * or stop. It goes `stale` when the harness stops waiting. `approval`: an agent's call held for the session's
-   * approver: one of its options, or text, which is No and what to do instead; its stop interrupts the agent; no
-   * side chat or send back.
+   * approver: one of its options, or text, which is No and what to do instead. Its stop is Esc on the asking chat,
+   * as an `ask_user` card's is, and answers it `interrupted`. No side chat or send back.
    */
   source: z.enum(["ask_user", "ask", "ask_manager", "harness", "approval"]),
   asker: Handle,

@@ -33,6 +33,7 @@ import type {
   Session,
   WorkItem,
 } from "@opencorp/protocol"
+import { shownAction } from "@opencorp/office/util/show"
 import { createTwoFilesPatch } from "diff"
 import { createHash, randomBytes } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
@@ -569,7 +570,8 @@ export function createFakeOffice(
   /**
    * Opens an approval card in session `sessionId` holding `approval` for a new call of its run, as the office's
    * gate does for an agent's command: asked by the session's agent, titled by what it wants, its action as the
-   * question, and Yes, then "don't ask again this session" when it has rules to add.
+   * question (escaped and numbered with the office's own `shownAction`), and Yes, then "don't ask again this
+   * session" when it has rules to add.
    */
   function addApproval(sessionId: string, approval: Approval, fields: Partial<Question> = {}) {
     const asker = session(sessionId).person
@@ -582,7 +584,7 @@ export function createFakeOffice(
       source: "approval",
       asker,
       title: `@${asker} wants to ${what}`,
-      question: held.action,
+      question: shownAction(held.action),
       options: rules.length ? ["Yes", `Yes, and don't ask again this session for: ${rules.join(", ")}`] : ["Yes"],
       approval: held,
       ...fields,

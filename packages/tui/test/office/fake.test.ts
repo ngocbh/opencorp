@@ -97,6 +97,9 @@ test("an approval card has no side chat or send back, and its stop answers it in
     ["Yes"],
     false,
   ])
+  // The action shows as the office shows it: escaped, and numbered when it has more than one line.
+  expect(office.addApproval(sid, { kind: "command", tool: "shell", action: "ls\nrm \u202Ex", reason: "" }).question)
+    .toBe("  1  ls\n  2  rm <U+202E>x")
   const refusals = [
     [`/questions/${q.id}/side`, { text: "why?" }],
     [`/questions/${q.id}/send-back`, { note: "" }],
