@@ -17,9 +17,11 @@
  *  - OpenCorp scrubs nothing here.
  *
  *  **Each command is its own call.** It starts in the workspace, with the sandbox's environment: no folder or
- *  variable carries over. It runs until it ends, is interrupted, or the shell closes; then its call's process group
- *  is killed, so nothing it left in the background outlives it (`run`). A call that couldn't run ends its command with
- *  a note in brackets saying why, and the shell runs on; where the sandbox can't run at all, the shell fails.
+ *  variable carries over, so the folder the gate reads for a command is always the workspace, whatever the last one
+ *  `cd`ed to; only a `cd` earlier in the same command moves it. It runs until it ends, is interrupted, or the shell
+ *  closes; then its call's process group is killed, so nothing it left in the background outlives it (`run`). A call
+ *  that couldn't run ends its command with a note in brackets saying why, and the shell runs on; where the sandbox
+ *  can't run at all, the shell fails.
  *
  *  **Two interrupts.** The agent's `interrupt` returns a page from where it last read; the owner's Ctrl-C
  *  (`ownerKeys`) only stops the command, and leaves the agent's place as it was. */

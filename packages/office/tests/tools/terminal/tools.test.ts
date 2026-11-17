@@ -221,9 +221,10 @@ test("the check is told the shell's profile, its folder and the ssh host of a ty
   await waitFor(() => fake.logins().includes("node"), { what: "the login" })
   const typed = json(await t.call("type", { shell: "shell 1", text: "scancel 42", why: "WHY-2 the owner said so", wait: 1 }))
   expect(typed.refused).toBeUndefined()
-  // A terminal with no sandbox reads as the SSH-only profile, whatever the host's where says.
+  // A terminal with no sandbox reads as the SSH-only profile, whatever the host's where says, in the folder the shell
+  // reports: its home.
   expect(checked.filter((input) => input.kind === "input")).toEqual([
-    { kind: "input", command: "scancel 42", profile: "ssh", cwd: "/w", host: "u@node" },
+    { kind: "input", command: "scancel 42", profile: "ssh", cwd: "~", host: "u@node" },
   ])
   expect(JSON.stringify(checked)).not.toContain("WHY")
   await waitFor(async () => t.live("sh_1").includes("scancel 42\r\nscancel 42"), { what: "cat's echo" })
@@ -308,7 +309,7 @@ test("type is gated on the agent's whole unfinished line", async () => {
   expect(t.terminal.shell("sh_1")!.pendingLine()).toBe("sca")
   const finished = json(await t.call("type", { shell: "shell 1", text: "ncel 42", why: "finish it", wait: 1 }))
   expect(finished.refused).toBeUndefined()
-  expect(checked).toEqual([{ kind: "input", command: "scancel 42", profile: "ssh", cwd: "/w", host: "" }])
+  expect(checked).toEqual([{ kind: "input", command: "scancel 42", profile: "ssh", cwd: "~", host: "" }])
   await waitFor(async () => t.live("sh_1").includes("scancel 42\r\nscancel 42"), { what: "cat's echo" })
   t.terminal.shell("sh_1")!.ownerKeys("\x04")
 })

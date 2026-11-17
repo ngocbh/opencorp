@@ -4,7 +4,9 @@
  *  **The host binds the trust**: the shells' sandbox, the session's permissions and who drives. The gate reads the
  *  profile the shells run in from their sandbox, never from the model or the host's `where()`: `workspace` only for
  *  shells in a workspace's sandbox, with its folder and what it may write; `ssh` for the SSH-only profile, with the
- *  credentials it binds marked, and for shells with no sandbox, so that nothing about them is taken on trust.
+ *  credentials it binds marked, and for shells with no sandbox, so that nothing about them is taken on trust. A PTY
+ *  shell's folder is where its last command left it, as the shell reports it (`PtyShell.cwd`), a home as `~`, or
+ *  unknown; a pipes shell's is always the workspace, since each command starts there.
  *
  *  **Every command and every typed line goes through the session's permissions** (`gate`): the mode, the rules, the
  *  reader and Auto's check, as the workspace's shell does. A typed line is decided whole: the shell's unfinished line
@@ -23,6 +25,7 @@
 import {
   type Action, type CheckInput, type Gate, gate, type Permissions, type Where,
 } from "../../runtime/permissions/policy.ts"
+import fs from "node:fs"
 import { SandboxPolicy } from "../../runtime/sandbox/policy.ts"
 import { type Result, type RunOptions, SandboxUnavailable } from "../../runtime/sandbox/run.ts"
 import { SshPolicy } from "../../runtime/sandbox/ssh_policy.ts"
@@ -125,7 +128,9 @@ export function profileOf(shells: TerminalShells): TerminalProfile {
 export class Terminal {
   /** The sandbox the shells run in. */
   readonly profile: TerminalProfile
-  private readonly permissions: Permissions
+  /** The owner's home as the kernel names it, which a PTY shell's folder is told the gate under as `~`; null for
+   *  shells in a workspace's sandbox, whose home is their temp folder. */
+  private readonly home: string | null
   private readonly entries: Entry[] = []
   /** The calls running now, each stopped by its controller: `interruptWaits` ends them. */
   private readonly calls = new Set<AbortController>()
@@ -134,17 +139,12 @@ export class Terminal {
 
   constructor(private readonly host: TerminalHost) {
     this.profile = profileOf(host.shells)
-    const base = host.permissions
-    const check = base.check
-    const blocked = base.blocked
-    this.permissions = {
-      mode: () => base.mode(),
-      rules: () => base.rules(),
-      where: () => this.where(),
-      hold: (card, callId) => base.hold(card, callId),
-      ...(check ? { check: (input: CheckInput, signal: AbortSignal) => check.call(base, input, signal) } : {}),
-      ...(blocked ? { blocked: () => blocked.call(base) } : {}),
-    }
+    const { shells } = host
+    this.home = shells.sandbox instanceof SshPolicy
+      ? shells.sandbox.home
+      : shells.kind === "pty" && shells.sandbox === null && shells.env.HOME
+        ? realOrSame(shells.env.HOME)
+        : null
   }
 
   /** The model-facing tools: description, parameters, `call(args, { callId, signal })`. */
@@ -157,9 +157,21 @@ export class Terminal {
     return Object.fromEntries(TOOLS.map((name) => [name, tool(name)])) as Record<ToolName, TerminalTool>
   }
 
-  /** Where the shells run, as the gate reads it: from their sandbox, the host's `where()` giving only the folder of
-   *  shells with none and the credentials it marks. A host deciding a held card again reads it here. */
-  where(): Where {
+  /** Where shell `id` runs, as the gate reads it (a new shell when `id` names none): from the shells' sandbox, the
+   *  host's `where()` giving only the start folder of shells with none and the credentials it marks, and from a PTY
+   *  shell the folder it reports. A host deciding a held card again reads it here. */
+  where(id?: string): Where {
+    const start = this.startWhere()
+    const shell = id === undefined ? undefined : this.shell(id)
+    if (!(shell instanceof PtyShell)) return start
+    const folder = shell.cwd()
+    const home = this.home
+    const homed = folder !== null && home !== null && (folder === home || folder.startsWith(`${home}/`))
+    return { ...start, cwd: homed ? `~${folder!.slice(home!.length)}` : folder }
+  }
+
+  /** Where a shell starts. */
+  private startWhere(): Where {
     const base = this.host.permissions.where()
     const { sandbox } = this.host.shells
     const marked = [...(base.credentials ?? []), ...(sandbox instanceof SshPolicy ? sandbox.credentials : [])]
@@ -271,7 +283,7 @@ export class Terminal {
       return await this.queue(entry, async (shell) => {
         const problem = shell.runProblem(command)
         if (problem !== null) return this.text(entry, shell, shell.refusal(problem))
-        const gated = await this.gated(action, "run", why, cardArgs(parsed), call)
+        const gated = await this.gated(action, "run", why, cardArgs(parsed), call, entry.id)
         if (!gated.run) return gated.result
         return this.text(entry, shell, await shell.run(command, waitMs, call.signal))
       })
@@ -310,25 +322,37 @@ export class Terminal {
       return this.text(entry, shell, shell.refusal(MOVED_SINCE))
     }
     const action: Action = { kind: "input", text: line, partial: !enter, ...(into === null ? {} : { into }) }
-    const gated = await this.gated(action, "type", why, { ...cardArgs(parsed), line, into }, call)
+    const gated = await this.gated(action, "type", why, { ...cardArgs(parsed), line, into }, call, entry.id)
     if (!gated.run) return gated.result
     // Auto's check takes time: the owner's keys or the command's end may have changed what the line would be.
     if (!same()) return this.text(entry, shell, shell.refusal(MOVED))
     return this.text(entry, shell, await shell.type(text, { enter, waitMs, signal: call.signal }))
   }
 
-  /** The gate for `action`: the session's permissions, or the owner's approval already given. A call stopped before
-   *  or during it runs nothing and holds nothing. */
+  /** The gate for `action` in shell `id` (a new shell when undefined): the session's permissions, with the shell's
+   *  `where`, or the owner's approval already given. A call stopped before or during it runs nothing and holds
+   *  nothing. */
   private async gated(
     action: Action,
     tool: "run" | "type",
     why: string,
     args: Record<string, unknown>,
     call: Call,
+    id?: string,
   ): Promise<Gate> {
     if (call.signal.aborted) return { run: false, result: STOPPED }
     if (call.approved) return { run: true, by: "the owner's approval" }
-    const decided = await gate(this.permissions, action, { tool, why, args, callId: call.callId, signal: call.signal })
+    const base = this.host.permissions
+    const { check, blocked } = base
+    const permissions: Permissions = {
+      mode: () => base.mode(),
+      rules: () => base.rules(),
+      where: () => this.where(id),
+      hold: (card, callId) => base.hold(card, callId),
+      ...(check ? { check: (input: CheckInput, signal: AbortSignal) => check.call(base, input, signal) } : {}),
+      ...(blocked ? { blocked: () => blocked.call(base) } : {}),
+    }
+    const decided = await gate(permissions, action, { tool, why, args, callId: call.callId, signal: call.signal })
     if (decided.run && call.signal.aborted) return { run: false, result: STOPPED }
     return decided
   }
@@ -410,6 +434,15 @@ export class Terminal {
   private text(entry: Entry, shell: TerminalShell, reply: Reply): string {
     const dontAsk = this.host.permissions.mode() === "dontAsk"
     return replyText(reply, { name: entry.name, error: shell.state().error, dontAsk })
+  }
+}
+
+/** `path` with its links resolved, or as it is when it can't be. */
+function realOrSame(path: string): string {
+  try {
+    return fs.realpathSync(path)
+  } catch {
+    return path
   }
 }
 

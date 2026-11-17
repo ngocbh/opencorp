@@ -46,12 +46,13 @@ export function fakeSsh(behavior: FakeSshBehavior): FakeSsh {
   return installFakeSsh(dir, behavior)
 }
 
-/** Plain PTY shells (no sandbox) in `dir`, with only PATH (the fake ssh's folder first, when given), TERM and HOME. */
-export function plainShells(dir: string, fake?: FakeSsh): Extract<TerminalShells, { kind: "pty" }> {
+/** Plain PTY shells (no sandbox) started in `cwd` (default `dir`), with only PATH (the fake ssh's folder first, when
+ *  given), TERM and HOME, which is `dir`. */
+export function plainShells(dir: string, fake?: FakeSsh, cwd = dir): Extract<TerminalShells, { kind: "pty" }> {
   return {
     kind: "pty",
     sandbox: null,
-    start: (argv, io) => spawnPty(argv, { cwd: dir, env: io.env, cols: io.cols, rows: io.rows, onData: io.onData }),
+    start: (argv, io) => spawnPty(argv, { cwd, env: io.env, cols: io.cols, rows: io.rows, onData: io.onData }),
     env: { PATH: `${fake ? `${fake.bin}:` : ""}/usr/bin:/bin`, TERM: "xterm-256color", HOME: dir },
   }
 }

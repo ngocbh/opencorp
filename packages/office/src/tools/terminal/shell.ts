@@ -20,6 +20,9 @@
  *  - The line settings come back before each marker, so a command's `stty eof ';'` can't split the next typed line.
  *  - `eval` takes a command whatever its syntax: one that doesn't parse fails and still ends.
  *  - A nonce the shell prints (with `set -x`, say) is neutralised in the views, even split across reads.
+ *  - Each marker carries the shell's folder as the kernel has it (`pwd -P`, by path), not as `$PWD` says, for the
+ *    gate (`cwd`). Only the agent's command's marker, with its nonce, is believed: after any other end, the owner's
+ *    command or one a Ctrl-C stopped, the folder is unknown until the agent's next command ends.
  *
  *  Without `PROMPT_COMMAND` (another sh), the typed line puts the settings back and prints the marker itself, and `PS1`
  *  is a marker with no nonce. A marker with no nonce is the shell back at its prompt: the end of the owner's command,
@@ -113,13 +116,16 @@ const DROPPED_NOTE =
 /** What a kill (Ctrl-U) echoes, whatever the line settings: erasures, or `^U` and a line end. */
 const KILL_ECHO = "\b ^U\r\n"
 
-/** A marker: the OSC the shell prints at its prompt, with the nonce (empty at a plain prompt) and the exit code. */
+/** A marker: the OSC the shell prints at its prompt, with the nonce (empty at a plain prompt), the exit code and,
+ *  but for sh's prompt, the folder. */
 const MARK = "\x1b]633;opencorp-mark;"
-const MARKER = /\x1b\]633;opencorp-mark;([^;\x07\x1b]*);([^\x07\x1b]*)\x07/g
+const MARKER = /\x1b\]633;opencorp-mark;([^;\x07\x1b]*);([^;\x07\x1b]*)(?:;([^\x07\x1b]*))?\x07/g
 /** The first marker, which says the shell is ready. */
 const READY = new RegExp(MARKER.source)
-/** How far past `MARK` a marker runs: a 16-hex nonce, a `;` and an exit code. */
-const MARK_TAIL = 32
+/** The longest folder a marker reports, in bytes: Linux's `PATH_MAX`. A longer one is unknown. */
+const FOLDER_MAX = 4096
+/** How far past `MARK` a marker runs: a 16-hex nonce, a `;`, an exit code, a `;` and the folder. */
+const MARK_TAIL = 32 + FOLDER_MAX
 /** What a command's output shows in place of the nonce. */
 const NONCE_SHOWN = "[nonce]"
 
@@ -129,17 +135,22 @@ const SETUP = {
   // `return`, `builtin` or `printf` with a function); the start's line settings are saved for each prompt to restore.
   bash:
     "set +B +m +o history; shopt -u expand_aliases; unalias -a; set +o emacs +o vi; PS1=; PS2=; " +
-    `__oc_y=$(type -P stty); __oc_f=$(type -P printf); __oc_t=$("$__oc_y" -g </dev/tty); ` +
-    "readonly __oc_y __oc_f __oc_t; " +
+    `__oc_y=$(type -P stty); __oc_f=$(type -P printf); __oc_w=$(type -P pwd); __oc_t=$("$__oc_y" -g </dev/tty); ` +
+    "readonly __oc_y __oc_f __oc_w __oc_t; " +
     `__oc_s() { __oc_n=$1; /bin/sh -c 'exit "$1"' sh "$2"; }; ` +
     `__oc_p() { "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; ` +
-    `"$__oc_f" "\\033]633;opencorp-mark;%s;%d\\007" "$__oc_n" "$1" >/dev/tty; __oc_n=; }; ` +
+    `"$__oc_f" "\\033]633;opencorp-mark;%s;%d;%s\\007" "$__oc_n" "$1" "$("$__oc_w" -P 2>/dev/null)" >/dev/tty; ` +
+    "__oc_n=; }; " +
     `readonly -f __oc_s __oc_p; PROMPT_COMMAND='__oc_p "$?"'; readonly PROMPT_COMMAND\n`,
   // sh's set may not know some of these options, and a special builtin's error would end the line, so each goes
-  // last, alone and through `command`. A sh that is bash edits lines unless told not to.
+  // last, alone and through `command`. A sh that is bash edits lines unless told not to. The marker's printf and pwd
+  // run by path where they are found, so a command's function can't stand in for them.
   sh:
     `PS1="$(printf '\\033]633;opencorp-mark;;')\\$?$(printf '\\007')"; PS2=; set +m; unalias -a; ` +
-    `__oc_y=$(command -v stty); __oc_t=$("$__oc_y" -g </dev/tty); readonly __oc_y __oc_t; ` +
+    `__oc_y=$(command -v stty); __oc_t=$("$__oc_y" -g </dev/tty); ` +
+    "__oc_f=/usr/bin/printf; [ -x $__oc_f ] || __oc_f=printf; " +
+    "__oc_w=/bin/pwd; [ -x $__oc_w ] || __oc_w=/usr/bin/pwd; " +
+    "readonly __oc_y __oc_t __oc_f __oc_w; " +
     "for o in '+o emacs' '+o vi' +B '+o history'; do command set $o 2>/dev/null; done; " +
     "command shopt -u expand_aliases 2>/dev/null\n",
 }
@@ -168,8 +179,8 @@ function typedLine(command: string, nonce: string, kind: "bash" | "sh"): string 
   const quoted = `'${command.replaceAll("'", "'\\''")}'`
   return kind === "bash"
     ? `eval ${quoted}; \\__oc_s ${nonce} $?\n`
-    : `eval ${quoted}; __oc_r=$?; "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; ` +
-        `printf '\\033]633;opencorp-mark;%s;%d\\007' ${nonce} "$__oc_r" >/dev/tty\n`
+    : `eval ${quoted}; __oc_r=$?; "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; "$__oc_f" ` +
+        `'\\033]633;opencorp-mark;%s;%d;%s\\007' ${nonce} "$__oc_r" "$("$__oc_w" -P 2>/dev/null)" >/dev/tty\n`
 }
 
 /** `env` for the shell: its prompts empty, no history file, and nothing that runs code or sets options at its start. */
@@ -188,6 +199,14 @@ function heldFrom(text: string): number {
   const tail = text.slice(at)
   if (tail.length <= MARK.length) return MARK.startsWith(tail) ? at : -1
   return tail.startsWith(MARK) && !/[\x07\x1b]/.test(tail.slice(1)) ? at : -1
+}
+
+/** A marker's folder (its bytes, one char each) as text; null when it isn't an absolute path the gate can read: over
+ *  `FOLDER_MAX` bytes, not UTF-8, or holding a control character. */
+function folderOf(raw: string | undefined): string | null {
+  if (raw === undefined || raw.length > FOLDER_MAX) return null
+  const folder = Buffer.from(raw, "latin1").toString("utf8")
+  return folder.startsWith("/") && !/[\x00-\x1f\x7f-\x9f\ufffd]/.test(folder) ? folder : null
 }
 
 /** `text`'s UTF-8 bytes as a string of one char per byte, as the shell's output is parsed. */
@@ -235,6 +254,8 @@ export class PtyShell {
   private readonly waiters = new Set<() => void>()
   /** How many secret prompts have held the shell: a reply's wait ends when one begins. */
   private holds = 0
+  /** The folder the agent's last command ended in, as its marker said; null when unknown. */
+  private folder: string | null = null
   /** Settles once the shell's process has ended and the shell has taken its exit (or it never started). */
   private ended: Promise<void> = Promise.resolve()
 
@@ -265,6 +286,14 @@ export class PtyShell {
   /** The agent's unfinished line: what it typed without Enter since its last Enter, Ctrl-C or an owner key. */
   pendingLine(): string {
     return this.agentLine
+  }
+
+  /** The folder the shell is in: where its first prompt (bash's) or the agent's last command said it was, as the
+   *  kernel has it. Null when that can't be known: sh's first prompt says nothing; a folder whose name holds a control
+   *  character, isn't UTF-8 or is over 4096 bytes isn't reported; and a command that ended without the agent's nonce
+   *  (the owner's, or one a Ctrl-C stopped) may have moved it, and its marker may be forged. */
+  cwd(): string | null {
+    return this.folder
   }
 
   /** Runs the agent's `command` and waits for its end, a secret prompt, `waitMs` or `signal`. Refused, with nothing
@@ -423,7 +452,7 @@ export class PtyShell {
     for (const match of text.matchAll(MARKER)) {
       this.emit(this.neutral(text.slice(at, match.index)))
       at = match.index + match[0].length
-      this.marker(match[1]!, match[2]!)
+      this.marker(match[1]!, match[2]!, match[3])
     }
     let rest = text.slice(at)
     const hold = this.holdFrom(rest)
@@ -453,6 +482,7 @@ export class PtyShell {
     const found = READY.exec(this.startup)
     if (found === null) return null
     const rest = this.startup.slice(found.index + found[0].length)
+    this.folder = folderOf(found[3])
     this.startup = ""
     const modes = this.pty!.modes()
     if (!modes.echo || !modes.canonical) {
@@ -486,9 +516,10 @@ export class PtyShell {
     return this.nonce !== null && text.includes(this.nonce) ? text.replaceAll(this.nonce, NONCE_SHOWN) : text
   }
 
-  /** A marker with `nonce` and `exitText`: the end of the agent's command when it holds its nonce (or none, after a
-   *  Ctrl-C), or of the owner's when it holds none. Any other is ignored. */
-  private marker(nonce: string, exitText: string): void {
+  /** A marker with `nonce`, `exitText` and the folder: the end of the agent's command when it holds its nonce (or
+   *  none, after a Ctrl-C), or of the owner's when it holds none. Any other is ignored. Only the nonce's end says
+   *  where the shell is. */
+  private marker(nonce: string, exitText: string, folder: string | undefined): void {
     const exit = /^-?\d+$/.test(exitText) ? Number(exitText) : null
     if (nonce === "" && this.promptAfter) {
       // sh's prompt after the agent's line, which already ended it: never the end of a command started since.
@@ -504,6 +535,7 @@ export class PtyShell {
         // meta.json can't be written now; the record keeps the exit for its next write.
       }
     } else if (!(nonce === "" && this.ownerRunning)) return
+    this.folder = nonce === "" ? null : folderOf(folder)
     this.settle()
     this.set({ status: "idle", waiting: null, command: null, exit })
   }

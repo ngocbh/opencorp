@@ -4,6 +4,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
+import { isPending } from "@ngocbh/yian/tools"
 import { type Result, run, SandboxUnavailable } from "../../../src/runtime/sandbox/run.ts"
 import { waitFor } from "../../helpers.ts"
 import { goldenPolicy, goldenSshPolicy, makePolicy, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
@@ -135,10 +136,15 @@ test("the gate reads the profile from the shells' sandbox: workspace only for a 
 
   // A workspace's sandbox, pipes or a PTY: the workspace profile, its folder and what it may write.
   for (const kind of ["pipes", "pty"] as const) {
-    const ws = permissions({ check: ask })
+    // Auto's check runs a cd, and asks before anything else it is given.
+    const ws = permissions({
+      check: async (input) => (input.command.startsWith("cd ") ? { verdict: "run", reason: "moves" } : ask()),
+    })
     const t = openTerminal({
       perms: ws.perms,
       shells: (dir) => {
+        fs.mkdirSync(path.join(dir, "src"))
+        fs.writeFileSync(path.join(dir, "src", "x.ts"), "export {}\n")
         const sandbox = goldenPolicy({ workspace: dir, writable: true, network: false, tmpdir: "/tmp" })
         return kind === "pipes"
           ? { kind, sandbox, run: async () => result(0) }
@@ -149,8 +155,47 @@ test("the gate reads the profile from the shells' sandbox: workspace only for a 
     expect(t.terminal.where()).toEqual({ profile: "workspace", cwd: t.dir, writable: [t.dir, "/tmp"] })
     expect(json(await t.call("run", { command: "touch x", why: "x" }))).toMatchObject({ status: "idle", exit: 0 })
     expect(json(await t.call("run", { command: "cat $F /dev/null", why: "x", shell: "shell 1" }))).toMatchObject({ exit: 0 })
+    // A cd in the line still runs on the workspace profile.
+    expect(json(await t.call("run", { command: "cd src && cat x.ts", why: "x", shell: "shell 1" }))).toMatchObject({ exit: 0 })
     expect(ws.held).toEqual([])
     expect(t.record("sh_1").profile).toBe("workspace")
+  }
+})
+
+test("on the SSH-only profile the gate reads a PTY shell's folder as its last command left it", async () => {
+  for (const mode of ["auto", "dontAsk"] as const) {
+    const { perms, held } = permissions({ mode, check: async () => ({ verdict: "run", reason: "fine" }) })
+    const t = openTerminal({
+      perms,
+      shells: (dir) => {
+        const work = path.join(dir, "work")
+        fs.mkdirSync(work)
+        const hq = path.join(dir, ".opencorp", "hq")
+        return { ...plainShells(dir, undefined, work), sandbox: goldenSshPolicy({ home: dir, hq, tmpdir: work, statusFile: "/s" }) }
+      },
+    })
+    const answer = (reason: string) => (result: unknown) =>
+      mode === "dontAsk"
+        ? expect(result).toBe(`Not run: this session doesn't ask (dontAsk mode): ${reason}.`)
+        : expect(isPending(result)).toBe(true)
+    const holds = "it reads a folder that holds credentials: ."
+    // A new shell starts in the profile's temp folder.
+    expect(t.terminal.where().cwd).toBe(path.join(t.dir, "work"))
+    expect(json(await t.call("run", { command: "cd ~", why: "go home" }))).toMatchObject({ shell: "shell 1", exit: 0 })
+    expect(t.terminal.where("sh_1").cwd).toBe("~")
+    answer(holds)(await t.call("run", { command: "grep -r PRIVATE .", why: "x", shell: "shell 1" }))
+    // In one line, before any shell has moved.
+    answer(holds)(await t.call("run", { command: "cd ~ && grep -r PRIVATE .", why: "x" }))
+    // The owner's command may have moved the shell anywhere: relative reads ask until the agent's next command ends.
+    t.terminal.shell("sh_1")!.ownerKeys("cd work\r")
+    expect(json(await t.call("read", { shell: "shell 1", wait: 5 }))).toMatchObject({ status: "idle" })
+    expect(t.terminal.where("sh_1").cwd).toBeNull()
+    const lost = "it reads a relative path where the folder isn't known: ."
+    answer(lost)(await t.call("run", { command: "grep -r PRIVATE .", why: "x", shell: "shell 1" }))
+    expect(json(await t.call("run", { command: "true", why: "x", shell: "shell 1" }))).toMatchObject({ exit: 0 })
+    expect(t.terminal.where("sh_1").cwd).toBe("~/work")
+    expect(held.map((h) => h.card.reason)).toEqual(mode === "dontAsk" ? [] : [holds, holds, lost])
+    expect(t.terminal.shells().map((shell) => shell.name)).toEqual(["shell 1"])
   }
 })
 
