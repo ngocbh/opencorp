@@ -188,10 +188,21 @@ export class ModelView {
   private line = ""
   /** A lone CR came: the next text written starts the line over. */
   private redraw = false
+  /** Who takes the view's text as it becomes final (`onSettled`). */
+  private settled: ((text: string) => void) | null = null
+
+  /** Calls `listener` with the view's text as it becomes final, in order: each line once it ends, and the head of an
+   *  unfinished line too long to keep, as it leaves memory. A redrawn line comes once, as it ended. From a new view,
+   *  what it gets is the view's text from the start, at the view's offsets, all but the unfinished last line. A view
+   *  has one listener; this replaces any before it. */
+  onSettled(listener: (text: string) => void): void {
+    this.settled = listener
+  }
 
   /** Adds a chunk of the terminal's output, decoded. */
   append(raw: string): void {
     const text = this.plain.push(raw)
+    let final = ""
     let at = 0
     while (at < text.length) {
       LINE_CONTROL.lastIndex = at
@@ -201,7 +212,9 @@ export class ModelView {
       if (!found) break
       const control = text[end]
       if (control === "\n") {
-        this.done += `${this.line}\n`
+        const ended = `${this.line}\n`
+        final += ended
+        this.done += ended
         this.line = ""
         this.redraw = false
       } else if (control === "\r") {
@@ -212,7 +225,8 @@ export class ModelView {
       }
       at = end + 1
     }
-    this.trim()
+    final += this.trim()
+    if (final !== "") this.settled?.(final)
   }
 
   /** The text from `from` (an earlier page's `next`, or 0; a negative one is 0), at most `max` code units of it
@@ -250,22 +264,26 @@ export class ModelView {
     this.line += text
   }
 
-  /** Drops the oldest text once more than `VIEW_KEEP` and its slack is held, keeping the last `VIEW_KEEP`. */
-  private trim(): void {
+  /** Drops the oldest text once more than `VIEW_KEEP` and its slack is held, keeping the last `VIEW_KEEP`. Returns
+   *  the head it drops of the unfinished line, which is then final; finished lines were final when they ended. */
+  private trim(): string {
     let cut = this.done.length + this.line.length - VIEW_KEEP
-    if (cut <= VIEW_SLACK) return
+    if (cut <= VIEW_SLACK) return ""
+    let head = ""
     if (cut < this.done.length) {
       if (lowSurrogate(this.done.charCodeAt(cut))) cut += 1
       this.done = this.done.slice(cut)
     } else {
       // The unfinished line alone is over the cap: its head goes too.
-      let head = cut - this.done.length
-      if (lowSurrogate(this.line.charCodeAt(head))) head += 1
-      cut = this.done.length + head
+      let at = cut - this.done.length
+      if (lowSurrogate(this.line.charCodeAt(at))) at += 1
+      cut = this.done.length + at
+      head = this.line.slice(0, at)
       this.done = ""
-      this.line = this.line.slice(head)
+      this.line = this.line.slice(at)
     }
     this.dropped += cut
+    return head
   }
 
   /** The code unit at `index` (an offset from the shell's start) of the view's text. */
