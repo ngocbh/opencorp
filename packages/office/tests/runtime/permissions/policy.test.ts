@@ -179,6 +179,38 @@ test("in every mode a never-automated action asks and no allow rule skips it, an
   }
 })
 
+test("a blocked permissions makes every action ask in every mode and offers no rule, dontAsk refuses it, and a deny rule still refuses first", async () => {
+  const why = "rules.yaml doesn't load: line 3: isn't valid YAML"
+  const actions = [cmd("ls"), cmd("rm -rf build"), cmd("git push origin feature"), input("y")]
+  for (const mode of MODES) {
+    const checked: CheckInput[] = []
+    const held: ApprovalCard[] = []
+    const perms: Permissions = {
+      mode: () => mode,
+      rules: () => [allow("ls *"), allow("git push *"), deny("make *")],
+      where: () => W,
+      hold: (card) => (held.push(card), pending()),
+      check: async (i) => (checked.push(i), { verdict: "run", reason: "fine" }),
+      blocked: () => why,
+    }
+    for (const action of actions) {
+      const gated = await gate(perms, action, call())
+      const want: unknown = mode === "dontAsk"
+        ? { run: false, result: `Not run: ${DONT}${why}.` }
+        : { run: false, reason: why, rules: [] }
+      const card = "held" in gated ? gated.held : undefined
+      const got: unknown = mode === "dontAsk" ? gated : { run: gated.run, reason: card?.reason, rules: card?.rules }
+      expect([action.text, got]).toEqual([action.text, want])
+    }
+    expect(await gate(perms, cmd("make all"), call())).toEqual({ run: false, result: "Not run: a deny rule: make *." })
+    expect(held).toHaveLength(mode === "dontAsk" ? 0 : actions.length)
+    expect(checked).toEqual([])
+  }
+  // Unblocked, the same permissions decide as usual.
+  const { perms } = holding("auto")
+  expect(await gate({ ...perms, blocked: () => null }, cmd("ls"), call())).toEqual({ run: true, by: "read-only" })
+})
+
 test("in every mode a credential path asks and no allow rule skips it, and dontAsk refuses it", () => {
   const reason = "it names a credential path: ~/.ssh/id_rsa"
   for (const mode of MODES) {

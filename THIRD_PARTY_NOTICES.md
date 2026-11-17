@@ -35,6 +35,14 @@ license, the upstream paths and commit, and our paths.
   chat's approval cards follow both; the code is our own.
 - **Upstream:** `packages/core/src/permission.ts` (`reply`), read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/office/src/features/chat/session_actor.ts` (`#cardAnswered`, `#recheck`).
+- **What:** its saved permissions, as a design: a list of the saved rules and a removal of one
+  (`permission.saved.list` and `permission.saved.remove`), and a save that skips a rule already saved. A chat's
+  `/rules` lists its rules and removes one the same way; the code is our own, and the rules live in the company repo
+  rather than a table.
+- **Upstream:** `packages/protocol/src/groups/permission.ts` and `packages/core/src/permission/saved.ts`, read at
+  commit `df46f69` (2026-11-16).
+- **Ours:** `packages/office/src/company/rules.ts`, `packages/office/src/server/routes/rules.ts`,
+  `packages/tui/src/routes/session/dialog-rules.tsx`.
 
 ## Paperclip
 

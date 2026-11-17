@@ -3,15 +3,17 @@
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import { parse, stringify } from "yaml"
 import { inspectRun } from "@ngocbh/yian/run"
 import type { ToolPart } from "@opencorp/protocol"
 import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import { ChatApprovals } from "../../../src/features/chat/approvals.ts"
-import { sessionOption, YES } from "../../../src/runtime/questions/approval.ts"
+import { alwaysOption, sessionOption, YES } from "../../../src/runtime/questions/approval.ts"
 import { DETAIL_CHARS } from "../../../src/util/redact.ts"
 import { INTERRUPTED } from "../../../src/runtime/questions/format.ts"
 import type { QuestionRecord } from "../../../src/runtime/store/store.ts"
 import { CEO } from "../../server/helpers.ts"
+import { git, person } from "../../company/helpers.ts"
 import { waitFor } from "../../helpers.ts"
 import { gone, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import {
@@ -68,10 +70,10 @@ function chats(fake: Awaited<ReturnType<typeof fakeLlm>>): string[] {
   return fake.requests().map((r) => JSON.stringify(r.messages)).filter((text) => text.includes(CHAT))
 }
 
-/** Starts minh's chat in `h.folder`, opened by the CEO, waits for its first turn and puts it in `mode`; returns its
- *  id. */
-async function chat(h: HarnessOffice, mode?: Mode): Promise<string> {
-  const { id } = await h.harness.startSession("minh", h.folder, { openedBy: CEO })
+/** Starts `who`'s chat (minh's by default) in `h.folder`, opened by the CEO, waits for its first turn and puts it in
+ *  `mode`; returns its id. */
+async function chat(h: HarnessOffice, mode?: Mode, who = "minh"): Promise<string> {
+  const { id } = await h.harness.startSession(who, h.folder, { openedBy: CEO })
   await waitFor(() => status(h, id) === "idle", { what: "the first turn" })
   if (mode !== undefined) h.store.updateSession(id, { mode })
   return id
@@ -96,6 +98,22 @@ function rows(h: HarnessOffice, id: string, kind = "workspace") {
 /** Waits until session `id` is idle with `text` among its replies. */
 async function replied(h: HarnessOffice, id: string, text: string): Promise<void> {
   await waitFor(() => texts(h, id).includes(text) && status(h, id) === "idle", { what: `the reply ${text}` })
+}
+
+/** A rules file's YAML: each `[effect, pattern]` a rule on commands. */
+function rulesFile(...rules: [string, string][]): string {
+  return stringify({ rules: rules.map(([effect, pattern]) => ({ effect, kind: "command", pattern })) })
+}
+
+/** Ava, an agent like minh, with her profile. */
+const AVA = {
+  "people/ava/person.yaml": person("minh", { handle: "ava", name: "Ava" }),
+  "people/ava/memory/profile.md": "# Ava, Engineer\n",
+}
+
+/** Each of session `id`'s shell calls as `[outcome, detail]`, a run's exit and duration left out. */
+function outcomes(h: HarnessOffice, id: string): [string, string | undefined][] {
+  return rows(h, id).map((r) => [r.outcome, r.detail?.replace(/^exit=0 duration=[\d.]+s /, "")])
 }
 
 /** The tool parts of session `id`'s messages. */
@@ -149,7 +167,7 @@ test("in auto a command the check says ask holds on a card that shows the check'
   const id = await chat(h)
   const [q] = await held(h, id, "cancel it")
   expect(q!.approval).toMatchObject({ tool: "shell", action: "scancel 42", reason: "Auto's check: cancels a cluster job" })
-  expect(q!.options).toEqual([YES, sessionOption(["scancel 42"])])
+  expect(q!.options).toEqual([YES, sessionOption(["scancel 42"]), alwaysOption(["scancel 42"])])
   expect(rows(h, id).map((r) => [r.outcome, r.detail])).toEqual([["held", "Auto's check: cancels a cluster job"]])
 })
 
@@ -250,6 +268,9 @@ test("a session's hold refuses rather than hold a card once the session doesn't 
     session: () => session(h, id),
     where: () => ({ profile: "workspace", cwd: h.folder, writable: [h.folder] }),
     charge: never,
+    git: h.office.git,
+    handle: "minh",
+    log: never,
     host: {
       liveRun: never,
       completeWithAnswer: never,
@@ -266,7 +287,8 @@ test("a session's hold refuses rather than hold a card once the session doesn't 
     rules: ["make"], partial: false, into: null,
   }
   const runId = session(h, id).run_ids.at(-1)!
-  const refused = approvals.permissions(runId, (q) => (asked.push(q), q)).hold(card, `${runId}/chat#0/reply/1/0`)
+  const perms = await approvals.permissions(runId, (q) => (asked.push(q), q))
+  const refused = perms.hold(card, `${runId}/chat#0/reply/1/0`)
   expect(refused).toBe("Not run: this session doesn't ask (dontAsk mode): Ask mode.")
   expect(asked).toEqual([])
 })
@@ -303,7 +325,7 @@ test("in ask mode the employee's shell holds on an approval card, and the run wa
   expect(q).toMatchObject({ status: "open", source: "approval", run_id: runId, asker: "minh", question: "ls" })
   expect(q!.call_id!.startsWith(`${runId}/`)).toBe(true)
   expect(q!.approval).toMatchObject({ kind: "command", tool: "shell", action: "ls", why: "", reason: "Ask mode" })
-  expect(q!.options).toEqual([YES, sessionOption(["ls *"])])
+  expect(q!.options).toEqual([YES, sessionOption(["ls *"]), alwaysOption(["ls *"])])
   const inspection = inspectRun(path.join(h.office.paths.runs, runId, "log.jsonl"))
   expect(inspection.status).toBe("waiting")
   expect(inspection.waits.map((w) => [w.callId, w.settled])).toEqual([[q!.call_id!, false]])
@@ -546,4 +568,163 @@ sandboxed("a message sent while an approval card is open leaves the card open; t
   const last = chats(fake).at(-1)!
   expect(last).toContain("[exit 0]")
   expect(last).toContain("check the README too")
+})
+
+sandboxed("always adds the rules to the agent's file, and a new session of the agent runs the command without a card", async () => {
+  const fake = await fakeLlm()
+  fake.script(shell("ls -l"), says("Listed."), shell("ls -a"), says("Listed again."))
+  const h = await makeHarness(fake)
+  const company = h.office.paths.company
+  const first = await chat(h, "ask")
+  const [q] = await held(h, first, "list it")
+  await h.harness.answer(q!.id, alwaysOption(["ls *"]), "option", { by: CEO })
+  await replied(h, first, "Listed.")
+  expect(git(company, "log", "-1", "--format=%s")).toBe('Rules: allow "ls *" for @minh (from @ngocbh\'s approval)')
+  expect(parse(git(company, "show", "HEAD:people/minh/rules.yaml"))).toMatchObject({
+    rules: [{ effect: "allow", kind: "command", pattern: "ls *", by: CEO }],
+  })
+  expect(git(company, "status", "--porcelain")).toBe("")
+  await h.harness.end(first)
+  await waitFor(() => status(h, first) === "ended", { what: "the end" })
+  const second = await chat(h, "ask")
+  await h.harness.prompt(second, "list it again")
+  await replied(h, second, "Listed again.")
+  expect(h.store.listQuestions({ sessionId: second })).toEqual([])
+  expect(outcomes(h, second)).toEqual([["ok", "by an allow rule"]])
+})
+
+test("a deny rule in the agent's file refuses the command in every mode", async () => {
+  const fake = await fakeLlm()
+  const modes: Mode[] = ["auto", "default", "ask", "dontAsk"]
+  for (const mode of modes) fake.script(shell("rm x"), says(`Kept x in ${mode}.`, "Not run: a deny rule: rm *"))
+  const h = await makeHarness(fake, { files: { "people/minh/rules.yaml": rulesFile(["deny", "rm *"]) } })
+  fs.writeFileSync(path.join(h.folder, "x"), "")
+  const id = await chat(h)
+  for (const mode of modes) {
+    h.store.updateSession(id, { mode })
+    await h.harness.prompt(id, "clean up")
+    await replied(h, id, `Kept x in ${mode}.`)
+  }
+  expect(fs.existsSync(path.join(h.folder, "x"))).toBe(true)
+  expect(h.store.listQuestions({ sessionId: id })).toEqual([])
+  expect(outcomes(h, id)).toEqual(modes.map(() => ["denied", "Not run: a deny rule: rm *."]))
+  expect(checks(fake)).toEqual([])
+})
+
+test("a company deny refuses for every agent", async () => {
+  const fake = await fakeLlm()
+  const denied = "Not run: a deny rule: rm *"
+  fake.script(shell("rm x"), says("Kept it, minh.", denied), shell("rm x"), says("Kept it, ava.", denied))
+  const h = await makeHarness(fake, { files: { ...AVA, "rules.yaml": rulesFile(["deny", "rm *"]) } })
+  fs.writeFileSync(path.join(h.folder, "x"), "")
+  for (const who of ["minh", "ava"]) {
+    // In auto, where a file operation in the workspace would otherwise run.
+    const id = await chat(h, "auto", who)
+    await h.harness.prompt(id, "clean up")
+    await replied(h, id, `Kept it, ${who}.`)
+    expect(outcomes(h, id)).toEqual([["denied", `${denied}.`]])
+  }
+  expect(fs.existsSync(path.join(h.folder, "x"))).toBe(true)
+})
+
+test("an agent's allow doesn't beat a company deny", async () => {
+  const fake = await fakeLlm()
+  fake.script(shell("rm x"), says("Kept it.", "Not run: a deny rule: rm *"))
+  const h = await makeHarness(fake, {
+    files: { "people/minh/rules.yaml": rulesFile(["allow", "rm x"]), "rules.yaml": rulesFile(["deny", "rm *"]) },
+  })
+  fs.writeFileSync(path.join(h.folder, "x"), "")
+  const id = await chat(h, "ask")
+  await h.harness.prompt(id, "clean up")
+  await replied(h, id, "Kept it.")
+  expect(outcomes(h, id)).toEqual([["denied", "Not run: a deny rule: rm *."]])
+  expect(h.store.listQuestions({ sessionId: id })).toEqual([])
+  expect(fs.existsSync(path.join(h.folder, "x"))).toBe(true)
+})
+
+sandboxed("a company allow applies to every agent", async () => {
+  const fake = await fakeLlm()
+  fake.script(shell("make"), says("Built, minh."), shell("make"), says("Built, ava."))
+  const h = await makeHarness(fake, { files: { ...AVA, "rules.yaml": rulesFile(["allow", "make"]) } })
+  fs.writeFileSync(path.join(h.folder, "Makefile"), "all:\n\ttrue\n")
+  for (const who of ["minh", "ava"]) {
+    const id = await chat(h, "ask", who)
+    await h.harness.prompt(id, "build it")
+    await replied(h, id, `Built, ${who}.`)
+    expect(outcomes(h, id)).toEqual([["ok", "by an allow rule"]])
+    expect(h.store.listQuestions({ sessionId: id })).toEqual([])
+  }
+})
+
+test("the card offers always, and always saves to the agent's file, never the company's", async () => {
+  const fake = await fakeLlm()
+  fake.script(shell("ls"), says("Done."))
+  const h = await makeHarness(fake, { files: { "rules.yaml": rulesFile(["deny", "rm *"]) } })
+  const company = h.office.paths.company
+  const before = git(company, "show", "HEAD:rules.yaml")
+  const id = await chat(h, "ask")
+  const [q] = await held(h, id, "list it")
+  expect(q!.options).toEqual([YES, sessionOption(["ls *"]), alwaysOption(["ls *"])])
+  await h.harness.answer(q!.id, alwaysOption(["ls *"]), "option", { by: CEO })
+  await replied(h, id, "Done.")
+  expect(git(company, "show", "HEAD:rules.yaml")).toBe(before)
+  expect(git(company, "log", "--format=%s", "--", "rules.yaml")).toBe("init")
+  expect(git(company, "log", "--format=%s", "--", "people/minh/rules.yaml")).toBe(
+    'Rules: allow "ls *" for @minh (from @ngocbh\'s approval)',
+  )
+})
+
+sandboxed("a malformed rules file asks for everything and says why", async () => {
+  const fake = await fakeLlm()
+  const why = "rules.yaml doesn't load: isn't valid YAML (line 2)"
+  const refused = `Not run: this session doesn't ask (dontAsk mode): ${why}.`
+  fake.script(
+    shell("ls", "make", "rm x"),
+    says("Waiting.", "Not run: the user said no"),
+    shell("ls"),
+    says("Refused.", refused),
+    shell("ls"),
+    says("Listed.", "[exit 0]"),
+  )
+  const h = await makeHarness(fake, {
+    files: { "rules.yaml": "rules: [\n", "people/minh/rules.yaml": rulesFile(["deny", "rm *"]) },
+  })
+  fs.writeFileSync(path.join(h.folder, "x"), "")
+  const id = await chat(h)
+  const cards = await held(h, id, "build it", 2)
+  expect(cards.map((c) => [c.approval!.action, c.approval!.reason, c.options]).sort()).toEqual([
+    ["ls", why, [YES]],
+    ["make", why, [YES]],
+  ])
+  expect(checks(fake)).toEqual([])
+  // minh's own deny still refuses first.
+  expect(outcomes(h, id).sort()).toEqual([["denied", "Not run: a deny rule: rm *."], ["held", why], ["held", why]])
+  await h.harness.answer(cards[0]!.id, "no", "text", { by: CEO })
+  await replied(h, id, "Waiting.")
+  h.store.updateSession(id, { mode: "dontAsk" })
+  await h.harness.prompt(id, "list it")
+  await replied(h, id, "Refused.")
+  expect(outcomes(h, id).at(-1)).toEqual(["denied", refused])
+  // The fix applies from the session's next run.
+  const company = h.office.paths.company
+  fs.writeFileSync(path.join(company, "rules.yaml"), rulesFile(["deny", "git push --force *"]))
+  git(company, "commit", "-qam", "fix the rules")
+  h.store.updateSession(id, { mode: "auto" })
+  await h.harness.prompt(id, "list it again")
+  await replied(h, id, "Listed.")
+  expect(outcomes(h, id).at(-1)).toEqual(["ok", "by read-only"])
+  expect(fs.existsSync(path.join(h.folder, "x"))).toBe(true)
+})
+
+sandboxed("a malformed agent rules file blocks only that agent's sessions", async () => {
+  const fake = await fakeLlm()
+  fake.script(shell("ls"), shell("ls"), says("Listed, ava.", "[exit 0]"))
+  const h = await makeHarness(fake, { files: { ...AVA, "people/minh/rules.yaml": "rules: [\n" } })
+  const minh = await chat(h)
+  const [q] = await held(h, minh, "list it")
+  expect([q!.approval!.reason, q!.options]).toEqual(["people/minh/rules.yaml doesn't load: isn't valid YAML (line 2)", [YES]])
+  const ava = await chat(h, "auto", "ava")
+  await h.harness.prompt(ava, "list it")
+  await replied(h, ava, "Listed, ava.")
+  expect(outcomes(h, ava)).toEqual([["ok", "by read-only"]])
 })

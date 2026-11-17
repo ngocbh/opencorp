@@ -1,7 +1,7 @@
 /** What every session harness offers: the card actions (`CardActor`) and what the session routes call
  *  (`SessionHarness`). The chat harness and the Codex sessions implement it; the routes and the cards call it.
  *  `approverOf` names who answers for a session. */
-import type { Message } from "@opencorp/protocol"
+import type { Message, RemoveRuleRequest, RuleList } from "@opencorp/protocol"
 import type { Hooks } from "./hooks.ts"
 import type { Live } from "../runs/records.ts"
 import type { QuestionRecord, SessionRecord } from "../store/store.ts"
@@ -61,6 +61,13 @@ export interface SessionHarness extends CardActor {
    *  not_found, 409 not_live for a session whose run has ended, 403 forbidden for anyone but the approver, and 422
    *  not_supported for a Codex session, which doesn't follow the mode yet. */
   setMode(sessionId: string, mode: SessionRecord["mode"], options?: { by?: string | null }): Promise<SessionRecord>
+  /** The session's rules, each with its source (the session's, its agent's or the company's), and the rules files that
+   *  exist but don't load; the chat harness implements it. 404 not_found. */
+  rules?(sessionId: string): Promise<RuleList>
+  /** Removes a session or agent rule of the session as `by`, who must be its approver (`approverOf`): 404 not_found for
+   *  no such session or rule, 403 forbidden for anyone but the approver, 409 company_rule for a company rule (only an
+   *  edit of the company repo's rules.yaml changes one); the chat harness implements it. */
+  removeRule?(sessionId: string, rule: RemoveRuleRequest, options: { by: string }): Promise<void>
   /** What a client reads of the session before following its live events. */
   messages(sessionId: string): Message[] | Promise<Message[]>
   /** What memory says about its runs, for Run Logs; the chat harness implements it. */

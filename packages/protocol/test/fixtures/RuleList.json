@@ -1,0 +1,15 @@
+{
+  "rules": [
+    { "effect": "allow", "kind": "command", "pattern": "ls *", "source": "session", "by": null, "at": null },
+    {
+      "effect": "allow",
+      "kind": "command",
+      "pattern": "git status *",
+      "source": "agent",
+      "by": "ngocbh",
+      "at": "2026-11-20T10:00:00.000Z"
+    },
+    { "effect": "deny", "kind": "command", "pattern": "git push --force *", "source": "company", "by": null, "at": null }
+  ],
+  "errors": [{ "source": "agent", "path": "people/minh/rules.yaml", "message": "isn't valid YAML (line 2)" }]
+}

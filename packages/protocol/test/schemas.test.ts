@@ -29,7 +29,7 @@ const NAMES = [
   "ModelList", "SetModelRequest", "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest",
   "ConnectionLogin", "SetupPrompt", "SetupAsk", "SetupChoose", "SetupSecret", "SetupSay", "SetupStep",
   "SetupCommand", "SetupResult", "SetupReview", "SetupHandOver", "SetupTakeBack",
-  "SetupAnswer", "OfficeInfo", "MessageText", "ModelName",
+  "SetupAnswer", "OfficeInfo", "MessageText", "ModelName", "Rule", "RuleFileError", "RuleList", "RemoveRuleRequest",
 ]
 
 /** The zod schema exported under `name`. */
@@ -128,7 +128,7 @@ const BODIES = [
   "SetModeRequest", "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin",
   "CompanyView", "CostReport", "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
   "HqLoginRequest", "CompanyTree", "CompanyFile", "RunPage", "RunDetail", "RunNodePage", "RunEventPage",
-  "RunEvent", "OfficeInfo",
+  "RunEvent", "OfficeInfo", "RuleList", "RemoveRuleRequest",
 ]
 
 test("every route body has a fixture", () => {
@@ -188,6 +188,22 @@ test("a question may be an approval card, holding what it would allow", () => {
   expect(Schemas.Approval.safeParse({ kind: "command", tool: "shell", action: "ls", reason: "", extra: 1 }).success)
     .toBe(false)
   expect(Schemas.Approval.safeParse({ kind: "file", tool: "shell", action: "ls", reason: "" }).success).toBe(false)
+})
+
+test("a rule has a source, and a rules list names the files that don't load", () => {
+  const rule = { effect: "allow", kind: "command", pattern: "git status *" } as const
+  for (const source of ["session", "agent", "company"] as const)
+    expect(Schemas.Rule.parse({ ...rule, source })).toEqual({ ...rule, source, by: null, at: null })
+  expect(Schemas.Rule.safeParse({ ...rule, source: "everywhere" }).success).toBe(false)
+  expect(Schemas.Rule.safeParse({ ...rule, source: "agent", pattern: "" }).success).toBe(false)
+  expect(Schemas.Rule.safeParse({ ...rule, source: "agent", effect: "maybe" }).success).toBe(false)
+  expect(Schemas.RuleList.parse({ rules: [] })).toEqual({ rules: [], errors: [] })
+  const error = { source: "company", path: "rules.yaml", message: "isn't valid YAML (line 2)" } as const
+  expect(Schemas.RuleList.parse({ rules: [], errors: [error] }).errors).toEqual([error])
+  expect(Schemas.RuleFileError.safeParse({ ...error, source: "session" }).success).toBe(false)
+  // A removal names the rule and its source, and nothing else.
+  expect(Schemas.RemoveRuleRequest.parse({ ...rule, source: "agent" })).toEqual({ ...rule, source: "agent" })
+  expect(Schemas.RemoveRuleRequest.safeParse({ ...rule, source: "agent", by: "ngocbh" }).success).toBe(false)
 })
 
 test("a tool part keeps the model's call id, and yian's once the call waited on the office", () => {

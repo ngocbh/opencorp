@@ -16,6 +16,8 @@
  * reachable, it also asks before a program that reads file contents is given a path through an expansion, whose
  * value it can't see; in the workspace sandbox, which keeps the home out, such a read follows the usual rules and
  * the sandbox is the guard. Auto's check never judges a push, `sudo` or a local command for ssh.
+ * While the host says the session is blocked (`Permissions.blocked`, a rules file that doesn't load), every action
+ * asks as a never-automated one does, and `dontAsk` refuses it; deny rules still refuse first.
  *
  * The reader can't know what a program does with its files, its config or its input: `git` runs hooks and programs
  * its config names (`core.fsmonitor`, `core.pager`, `diff.external`); a script does what it contains; a remote host
@@ -233,6 +235,8 @@ export interface Permissions {
   /** Auto's check, as the host binds it; absent, what it would judge asks. Rejects when `signal` aborts, or when the
    *  check can't record its verdict; the gate then asks. */
   check?(input: CheckInput, signal: AbortSignal): Promise<Verdict>
+  /** Why every action asks now, as a never-automated one does (a rules file that doesn't load), or null. */
+  blocked?(): string | null
 }
 
 /** What a gated tool does before it acts: run now, saying `by` what (for its record), or return `result` as the
@@ -259,7 +263,8 @@ export async function gate(
 ): Promise<Gate> {
   const mode = perms.mode()
   const where = perms.where()
-  const decision = decide(action, mode, perms.rules(), where)
+  const never = action.never ?? perms.blocked?.() ?? undefined
+  const decision = decide(never === undefined ? action : { ...action, never }, mode, perms.rules(), where)
   if (decision.verdict === "allow") return { run: true, by: decision.by }
   if (decision.verdict === "deny") return { run: false, result: `Not run: ${decision.reason}.` }
   let asked: { reason: string; rules: readonly string[] } =

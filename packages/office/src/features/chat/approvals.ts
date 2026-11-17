@@ -1,12 +1,17 @@
 /** A chat session's approvals: what its employee's shell may run without asking, Auto's check on the office's
- *  connection, the cards a held call waits on, what their answers do, and the rules a "don't ask again" adds. */
+ *  connection, the cards a held call waits on, what their answers do, and the rules a "don't ask again" or an "always"
+ *  adds. */
 import path from "node:path"
-import { OFFICE } from "@opencorp/protocol"
+import { OFFICE, type RemoveRuleRequest, type RuleFileError } from "@opencorp/protocol"
+import { CompanyRepoBusy, type CompanyGit } from "../../company/git.ts"
+import { addRules, readRules, removeRule, type Rule as SavedRule, RulesRefused } from "../../company/rules.ts"
 import { type Connections, isSubscription } from "../../models/connections.ts"
 import { callUsd, DEFAULT_PRICE, ZERO_PRICE } from "../../models/cost.ts"
 import type { Provider } from "../../models/provider.ts"
 import { Check, type CheckRecord, type CheckWorkers, inWorker } from "../../runtime/permissions/classifier.ts"
-import { decide, dontAskRefusal, type Permissions, RuleBook, type Where } from "../../runtime/permissions/policy.ts"
+import {
+  decide, dontAskRefusal, type Permissions, type Rule, RuleBook, type Where,
+} from "../../runtime/permissions/policy.ts"
 import { holdApproval, readAnswer, YES } from "../../runtime/questions/approval.ts"
 import type { OnQuestion } from "../../runtime/questions/ask.ts"
 import type { AnswerKind } from "../../runtime/sessions/harness.ts"
@@ -39,23 +44,29 @@ export interface ApprovalHost {
 }
 
 /**
- * A chat session's approvals as the office binds them: the mode from the store, the session's own rules, where its
- * workspace shell runs, Auto's check on the office's connection, cards held through the run's `onQuestion`, and what
- * an answer to a card does.
+ * A chat session's approvals as the office binds them: the mode from the store, the session's own rules with the
+ * agent's and the company's, where its workspace shell runs, Auto's check on the office's connection, cards held
+ * through the run's `onQuestion`, and what an answer to a card does.
+ *
+ * The agent's rules (`people/<handle>/rules.yaml`) and the company's (`rules.yaml`) are read at the company repo's
+ * HEAD when a run's permissions are built and again after each change this session commits, and kept, so a committed
+ * hand edit applies from the session's next run. Deny wins, then ask, then allow, whichever source a rule comes from.
+ * While either file exists but doesn't load, every action of the session asks (dontAsk refuses it), its card offering
+ * no rule, until a commit fixes it; deny rules from the rest still refuse first.
  *
  * One check per session, so the same command in the session is judged once. Each check runs as a `classify` worker
  * job on the office's connection, resolved again for each check; its run log goes to the session's `checks/` folder,
  * its verdict to an audit row (`kind` check), and what it spent to the session's cost, priced at the connection's
- * prices. The session's rules and the check's verdicts live in memory with its actor, so an office restart starts
+ * prices. The session's own rules and the check's verdicts live in memory with its actor, so an office restart starts
  * them fresh: the next check asks the model again, and a "don't ask again" from before asks again.
  *
  * A Yes runs the held action with no gate, detached from the workspace's interrupt, and its output completes the
  * call. A No completes it with the approver's words, and answers the run's other open cards the same way, as one No
- * settles the reply's held calls. A "don't ask again" re-checks the run's other open cards and runs those the
- * session's mode and rules now allow.
+ * settles the reply's held calls. A "don't ask again" or an "always" re-checks the run's other open cards and runs
+ * those the session's mode and rules now allow. An "always" commits its rules to the agent's file, as its approver's.
  */
 export class ChatApprovals {
-  /** The session's own rules: what "don't ask again" added. */
+  /** The session's own rules: what "don't ask again" added, and an "always" its agent's file couldn't take. */
   readonly book = new RuleBook()
   readonly #store: Store
   readonly #session: () => SessionRecord
@@ -63,6 +74,15 @@ export class ChatApprovals {
   readonly #charge: (runId: string, model: string | null, usd: number) => void
   readonly #host: ApprovalHost
   readonly #check: Check
+  readonly #git: CompanyGit
+  readonly #handle: string
+  readonly #log: (line: string) => void
+  /** The agent's and the company's rules as last read at HEAD, and the files that didn't load; null until read. */
+  #files: { rules: SavedRule[]; errors: RuleFileError[] } | null = null
+  /** How many reads of the files have started, and which one `#files` holds: an older read that ends late never
+   *  replaces a newer one. */
+  #reads = 0
+  #applied = 0
   /** The office connection the last check resolved, whose prices its usage is charged at. */
   #provider: Provider | null = null
   /** The approved actions the office runs now, by card id, each stopped by its controller. */
@@ -81,6 +101,12 @@ export class ChatApprovals {
     charge(runId: string, model: string | null, usd: number): void
     /** What the cards need of the session's actor. */
     host: ApprovalHost
+    /** The company repo the agent's and the company's rules files are read from, and the agent's go to. */
+    git: CompanyGit
+    /** The session's agent, whose rules file applies. */
+    handle: string
+    /** Gets log lines: why an "always" stayed in the session. */
+    log(line: string): void
     /** How long, in ms, a check may take before it asks (default `CHECK_TIMEOUT_MS`). */
     checkTimeoutMs?: number
   }) {
@@ -89,6 +115,9 @@ export class ChatApprovals {
     this.#where = o.where
     this.#charge = (runId, model, usd) => o.charge(runId, model, usd)
     this.#host = o.host
+    this.#git = o.git
+    this.#handle = o.handle
+    this.#log = (line) => o.log(line)
     const model = async () => {
       const provider = await o.connections.resolve(OFFICE, null)
       this.#provider = provider
@@ -102,20 +131,63 @@ export class ChatApprovals {
     })
   }
 
-  /** The permissions run `runId`'s tools get: its cards are held through `onQuestion`, unless the session no longer
-   *  asks (`dontAsk`), when the call is refused. No always-rules are kept, so no card offers "always". */
-  permissions(runId: string, onQuestion: OnQuestion): Permissions {
+  /** The permissions run `runId`'s tools get, the rules files read again first: its cards are held through
+   *  `onQuestion`, offering "always", unless the session no longer asks (`dontAsk`), when the call is refused. */
+  async permissions(runId: string, onQuestion: OnQuestion): Promise<Permissions> {
+    await this.reload()
     return {
       mode: () => this.#session().mode,
-      rules: () => this.book.list(),
+      rules: () => this.#rules(),
       where: () => this.#where(),
       hold: (card, callId) => {
         const session = this.#session()
         if (session.mode === "dontAsk") return dontAskRefusal(card.reason)
-        return holdApproval(session, runId, onQuestion, { always: false })(card, callId)
+        return holdApproval(session, runId, onQuestion, { always: true })(card, callId)
       },
       check: (input, signal) => this.#check.judge(input, signal),
+      blocked: () => this.#blocked(),
     }
+  }
+
+  /** Reads the agent's and the company's rules files at HEAD again; the session's permissions decide by them from
+   *  now. */
+  async reload(): Promise<void> {
+    const n = ++this.#reads
+    const read = await readRules(this.#git, this.#handle)
+    if (n < this.#applied) return
+    this.#files = read
+    this.#applied = n
+  }
+
+  /** The session's rules, the agent's and the company's, each with its source, and the rules files that don't load,
+   *  as the session decides by them now (read first if they weren't yet). */
+  async list(): Promise<{ rules: SavedRule[]; errors: RuleFileError[] }> {
+    if (this.#files === null) await this.reload()
+    const own = this.book.list().map((r): SavedRule => ({ ...r, source: "session", by: null, at: null }))
+    return { rules: [...own, ...this.#files!.rules], errors: [...this.#files!.errors] }
+  }
+
+  /** Removes `rule`, as `by`: a session rule from the session's own, an agent rule from the agent's file, committed and
+   *  the files read again. Whether it was there. A company rule is refused (`RulesRefused` `company_rule`), and so is
+   *  an agent's file that doesn't load or has changes nobody committed. */
+  async remove(rule: RemoveRuleRequest, by: string): Promise<boolean> {
+    if (rule.source === "session") return this.book.remove(rule)
+    const removed = await removeRule(this.#git, this.#handle, { ...rule, source: rule.source }, by)
+    if (removed) await this.reload()
+    return removed
+  }
+
+  /** Every rule the session decides by: its own, the agent's and the company's. */
+  #rules(): readonly Rule[] {
+    return [...this.book.list(), ...(this.#files?.rules ?? [])]
+  }
+
+  /** Why every action of the session asks now: a rules file that doesn't load; null when none. */
+  #blocked(): string | null {
+    // Never decided before a read; were it, no file's deny rules would be known yet.
+    if (this.#files === null) return "the rules files haven't been read yet"
+    const [first] = this.#files.errors
+    return first === undefined ? null : `${first.path} doesn't load: ${first.message}`
   }
 
   /** Whether card `cardId`'s approved action runs now: its own output completes its call. */
@@ -166,7 +238,7 @@ export class ChatApprovals {
    * held call, unless the session finished or the call is no longer of its run (its answer is then lost).
    */
   async #approve(card: QuestionRecord, credit: string): Promise<void> {
-    const added = this.remember(card)
+    const added = await this.remember(card)
     const approval = card.approval!
     const runApproved = await this.#host.runner()
     const stop = new AbortController()
@@ -233,14 +305,29 @@ export class ChatApprovals {
     }
   }
 
-  /** Adds the rules an answered card's "don't ask again" chose to the session's own. An "always" answer's rules are
-   *  kept for the session too, since no always-rules are kept elsewhere. Whether it added any. */
-  remember(question: QuestionRecord): boolean {
+  /** Adds the rules an answered card's "don't ask again" chose to the session's own, and an "always" answer's to the
+   *  agent's file, committed as its approver's, then reads the files again. An "always" the file can't take (it doesn't
+   *  load, has changes nobody committed, or the repo is busy) keeps its rules for the session, and the log says why.
+   *  Whether it added any. */
+  async remember(question: QuestionRecord): Promise<boolean> {
     const card = question.approval
     const read = readAnswer(question)
     if (card === null || (read.answer !== "session" && read.answer !== "always")) return false
-    for (const pattern of card.rules) this.book.add({ effect: "allow", kind: card.kind, pattern })
-    return card.rules.length > 0
+    if (card.rules.length === 0) return false
+    const rules = card.rules.map((pattern): Rule => ({ effect: "allow", kind: card.kind, pattern }))
+    if (read.answer === "always" && question.answered_by !== null) {
+      try {
+        await addRules(this.#git, this.#handle, rules, question.answered_by)
+        await this.reload()
+        return true
+      } catch (error) {
+        // Their messages are fixed text, naming no absolute path; any other error's could quote git's output.
+        const why = error instanceof RulesRefused || error instanceof CompanyRepoBusy ? error.message : errorName(error)
+        this.#log(`session ${this.#session().id}: an "always" rule stays in this session only: ${why}`)
+      }
+    }
+    for (const rule of rules) this.book.add(rule)
+    return true
   }
 
   /** What now lets open card `question`'s action run with no card ("an allow rule", "read-only", …), decided again
@@ -250,8 +337,10 @@ export class ChatApprovals {
     const card = question.approval
     if (card === null) return null
     const into = card.into === null ? {} : { into: card.into }
-    const action = { kind: card.kind, text: card.action, partial: card.partial, ...into }
-    const decision = decide(action, this.#session().mode, this.book.list(), this.#where())
+    const never = this.#blocked()
+    const blocked = never === null ? {} : { never }
+    const action = { kind: card.kind, text: card.action, partial: card.partial, ...into, ...blocked }
+    const decision = decide(action, this.#session().mode, this.#rules(), this.#where())
     return decision.verdict === "allow" ? decision.by : null
   }
 
