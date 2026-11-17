@@ -349,16 +349,18 @@ const SSH_G1 = `(version 1)
 (allow file-read* file-write-data (subpath "/dev/fd") (literal "/dev/stdout") (literal "/dev/stderr"))
 (allow file-read* file-write* file-ioctl (literal "/dev/tty") (literal (param "TTY")))
 ;; Ancestors of allowed paths: metadata only, so lookups and realpath work.
-(allow file-read-metadata (literal "/etc") (literal "/tmp") (literal "/var") (literal "/Users/me") (literal "/Users") (literal "/") (literal "/Users/me/keys") (literal "/Users/me/.opencorp/hq") (literal "/Users/me/.opencorp") (literal "/Users/me/.ssh") (literal "/Users/me/.opencorp/hq/ssh") (literal "/private/tmp/com.apple.launchd.abc") (literal "/private/tmp") (literal "/private") (literal "/Library/Developer") (literal "/Library"))
+(allow file-read-metadata (literal "/etc") (literal "/tmp") (literal "/var") (literal "/Users/me") (literal "/Users") (literal "/") (literal "/Users/me/keys") (literal "/Users/me/.opencorp/hq") (literal "/Users/me/.opencorp") (literal "/Users/me/.ssh") (literal "/Users/me/.opencorp/hq/ssh") (literal "/private/tmp") (literal "/private") (literal "/private/tmp/com.apple.launchd.abc") (literal "/Library/Developer") (literal "/Library"))
 ;; ~/.ssh, the files ssh -G names, hq/ssh and any extra paths, read-only.
 (allow file-read* (subpath "/Users/me/.ssh") (subpath "/Users/me/keys/id") (subpath "/Users/me/.opencorp/hq/ssh"))
-;; known_hosts, this call's status file, hq/cm and the private temp directory, read-write.
-(allow file-read* file-write* (subpath "/Users/me/.ssh/known_hosts") (subpath "/Users/me/.opencorp/hq/ssh/status.4242") (subpath "/Users/me/.opencorp/hq/cm") (subpath "/private/tmp/oc-ssh-1"))
-;; ssh's control sockets: a master binds one in hq/cm, and the calls after it connect there.
-(allow network-bind network-inbound network-outbound (subpath "/Users/me/.opencorp/hq/cm"))
-;; The agent's socket and the Kerberos ticket: read, written and connected to.
-(allow file-read* file-write* (literal "/private/tmp/com.apple.launchd.abc/Listeners") (literal "/private/tmp/krb5cc_501"))
-(allow network-outbound (remote unix-socket (path-literal "/private/tmp/com.apple.launchd.abc/Listeners")) (remote unix-socket (path-literal "/private/tmp/krb5cc_501")))
+;; known_hosts, this call's status file and a ticket file: their data only, so none is removed, renamed or replaced.
+(allow file-read* file-write-data (literal "/Users/me/.ssh/known_hosts") (literal "/Users/me/.opencorp/hq/ssh/status.4242") (literal "/private/tmp/krb5cc_501"))
+;; The private temp directory, which holds the shell's own control sockets.
+(allow file-read* file-write* (subpath "/private/tmp/oc-ssh-1"))
+;; ssh's control sockets: the shell's masters bind theirs in its own folder, and its calls connect there.
+(allow network-bind network-inbound network-outbound (subpath "/private/tmp/oc-ssh-1/cm"))
+;; The agent's socket and a KCM's: connected to, nothing more.
+(allow file-read-metadata (literal "/private/tmp/com.apple.launchd.abc/Listeners"))
+(allow network-outbound (remote unix-socket (path-literal "/private/tmp/com.apple.launchd.abc/Listeners")))
 ;; Marks this call's processes; see sandbox.escapees.
 (allow file-write-data (literal "/private/tmp/oc-canary-1/allowed"))
 ;; The network: IP, and the DNS responder.
@@ -374,9 +376,9 @@ const SSH_LAYOUT = {
   hq: "/Users/me/.opencorp/hq",
   tmpdir: "/private/tmp/oc-ssh-1",
   statusFile: "/Users/me/.opencorp/hq/ssh/status.4242",
-  sshFiles: ["/Users/me/keys/id"],
+  bound: ["/Users/me/keys/id"],
   agentSocket: "/private/tmp/com.apple.launchd.abc/Listeners",
-  kerberos: "/private/tmp/krb5cc_501",
+  ticket: "/private/tmp/krb5cc_501",
 }
 
 test("the SSH-only profile allows exactly those paths and the network", () => {
@@ -385,14 +387,20 @@ test("the SSH-only profile allows exactly those paths and the network", () => {
   expect(sshProfile(policy, { ...SHELL_OPTIONS, tty: true })).toBe(SSH_G1)
   // Off a terminal, the terminal rule goes and nothing else changes.
   expect(sshProfile(policy, SHELL_OPTIONS)).toBe(SSH_G1.replace(TTY, ""))
-  // No hq file but ssh/ and cm/, and no unix socket but those, the agent's, the ticket's and the DNS responder's.
+  // No hq file but ssh/, nothing writable there or in ~/.ssh but known_hosts and the status file's data, and no
+  // unix socket but the shell's own, the agent's and the DNS responder's.
   const text = sshProfile(policy, SHELL_OPTIONS)
   expect(text).not.toContain("provider.json")
   expect(text).not.toContain("auth.json")
   expect(text).not.toContain('(subpath "/Users/me")')
   expect(text).not.toContain('(subpath "/Users/me/.opencorp/hq")')
-  // Seatbelt applies the last matching rule, so the setuid deny follows the exec allow.
+  expect(text).not.toContain("/Users/me/.opencorp/hq/cm")
   const lines = text.split("\n")
+  const writes = lines.filter((l) => l.includes("file-write") && l.includes("/Users/me"))
+  expect(writes).toEqual([
+    '(allow file-read* file-write-data (literal "/Users/me/.ssh/known_hosts") (literal "/Users/me/.opencorp/hq/ssh/status.4242") (literal "/private/tmp/krb5cc_501"))',
+  ])
+  // Seatbelt applies the last matching rule, so the setuid deny follows the exec allow.
   expect(lines.findIndex((l) => l.startsWith("(deny process-exec*"))).toBeGreaterThan(
     lines.indexOf("(allow process-exec process-fork)"),
   )

@@ -519,7 +519,7 @@ test("a terminal call's argv keeps its terminal under bubblewrap and names it to
 
 test("an SSH-only call runs under its own profile, with the owner's HOME, its agent and its ticket", () => {
   const fields = { home: "/home/me", hq: "/home/me/.opencorp/hq", tmpdir: "/tmp/oc-ssh-1", statusFile: "/home/me/.opencorp/hq/ssh/status.1" }
-  const policy = goldenSshPolicy({ ...fields, agentSocket: "/tmp/ssh-abc/agent.7", kerberos: "/tmp/krb5cc_1000" })
+  const policy = goldenSshPolicy({ ...fields, agentSocket: "/tmp/ssh-abc/agent.7", ticket: "/tmp/krb5cc_1000" })
   expect(command(policy, ["x"], undefined, "linux", null)).toEqual(bwrap.sshCommand(policy, ["x"]))
   expect(terminalCommand(policy, ["x"], undefined, "linux", null)).toEqual(bwrap.sshCommand(policy, ["x"], { tty: true }))
   expect(command(policy, ["x"], "/c", "darwin", null)).toEqual(["/usr/bin/sandbox-exec", "-p", sshProfile(policy, { canary: "/c" }), "x"])

@@ -73,18 +73,22 @@ export function command(policy: SandboxPolicy, argv: readonly string[], { tty = 
  *
  * The call shares the host's network and otherwise gets what `command` gives a call: its own namespaces, `/proc`
  * and `/dev`, and a new session unless `tty`. It sees the system paths and `SSH_SYSTEM_FILES` read-only, the
- * policy's copies of the system's ssh config over the originals, then the policy's read-only paths, its read-write ones over them (so `~/.ssh/known_hosts` takes writes inside the read-only
- * `~/.ssh`), its sockets, and its temp folder, where it starts. Nothing else of the home or of hq is mounted.
+ * policy's copies of the system's ssh config over the originals, then the policy's read-only paths, its writable
+ * files over them (so `~/.ssh/known_hosts` takes writes inside the read-only `~/.ssh`), its sockets read-only, and
+ * its temp folder, where it starts. Nothing else of the home or of hq is mounted, hq/cm included.
+ *
+ * Each writable file is a mount point in a read-only folder, so the call can write its data but can't remove,
+ * rename or link it. A socket takes connections on a read-only mount, and nothing else.
  */
 export function sshCommand(policy: SshPolicy, argv: readonly string[], { tty = false } = {}): string[] {
   const args = system({ tty, network: true, files: [...SYSTEM_FILES, ...SSH_SYSTEM_FILES] })
   // Over the system's own: ssh refuses root's configs, which the user namespace shows as nobody's.
   for (const [copy, target] of policy.systemConfig) args.push("--ro-bind", copy, target)
   for (const p of policy.readOnly) args.push("--ro-bind-try", p, p)
-  // Made by the policy, so a missing one is an error worth seeing.
+  // Made or checked by the policy, so a missing one is an error worth seeing.
   for (const p of policy.writable) args.push("--bind", p, p)
   // An agent that has gone leaves its path behind; ssh then goes on without it, as it would outside.
-  for (const p of policy.sockets) args.push("--bind-try", p, p)
+  for (const p of policy.sockets) args.push("--ro-bind-try", p, p)
   args.push("--bind", policy.tmpdir, policy.tmpdir)
   return [...args, "--remount-ro", "/", "--chdir", policy.tmpdir, "--", ...argv]
 }

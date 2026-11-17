@@ -106,7 +106,8 @@ export const SETUID_PROGRAMS: readonly string[] = [
  * sandbox-exec's `-D` sets (see `terminalCommand` in `run.ts`). Any other terminal, the owner's included, stays
  * denied. Unverified on macOS, and a wrong rule there does not fail safe: the call's descriptors are open on the
  * terminal before the profile applies, so the call still reads and writes it, but the rule can refuse the ioctl
- * behind `stty -echo`, and a password typed at the prompt would then show on the screen.
+ * behind `stty -echo`, and a password typed at the prompt would then show on the screen, and so land in the model's
+ * view of the terminal and in its record.
  */
 export function profile(
   policy: SandboxPolicy,
@@ -167,17 +168,17 @@ export function profile(
  * Returns the default-deny SBPL profile for the SSH-only `policy`.
  *
  * Allowed: what every profile allows of the system, plus ssh's and Kerberos's configuration, read-only; the
- * policy's read-only paths (`~/.ssh` among them); its read-write ones (`known_hosts`, the status file, `hq/cm`) and
- * its temp folder; binding and reaching ssh's control sockets in `hq/cm`; reading, writing and connecting to the
- * agent's socket and the ticket cache; and IP networking with the DNS responder. The setuid programs macOS ships
- * can't run. `canary`, `developerDir` and `tty` are `profile`'s. Unverified on macOS.
+ * policy's read-only paths (`~/.ssh` among them); the data of its writable files (`known_hosts`, the status file, a
+ * ticket), which can't be removed, renamed or replaced; its temp folder; binding and reaching the shell's own
+ * control sockets in `controlDir`; connecting to the agent's socket and a KCM's, and nothing more on them; and IP
+ * networking with the DNS responder. The setuid programs macOS ships can't run. `canary`, `developerDir` and `tty`
+ * are `profile`'s. Unverified on macOS.
  */
 export function sshProfile(
   policy: SshPolicy,
   options: { canary?: string; developerDir?: string | null; tty?: boolean } = {},
 ): string {
   const developer = options.developerDir === undefined ? developerDir() : options.developerDir
-  const rw = [...policy.writable, policy.tmpdir]
   const lines = head(developer, options.tty ?? false, {
     processes: [
       ";; Setuid programs: Seatbelt can't see a setuid bit, so the ones macOS ships are refused by name.",
@@ -195,15 +196,18 @@ export function sshProfile(
     ...metadata([...policy.readOnly, ...policy.writable, ...policy.sockets, policy.tmpdir], developer),
     ";; ~/.ssh, the files ssh -G names, hq/ssh and any extra paths, read-only.",
     allow("file-read*", policy.readOnly.map((p) => `(subpath ${quote(p)})`)),
-    ";; known_hosts, this call's status file, hq/cm and the private temp directory, read-write.",
-    allow("file-read* file-write*", rw.map((p) => `(subpath ${quote(p)})`)),
-    ";; ssh's control sockets: a master binds one in hq/cm, and the calls after it connect there.",
-    `(allow network-bind network-inbound network-outbound (subpath ${quote(policy.cm)}))`,
+    ";; known_hosts, this call's status file and a ticket file: their data only, " +
+      "so none is removed, renamed or replaced.",
+    allow("file-read* file-write-data", policy.writable.map((p) => `(literal ${quote(p)})`)),
+    ";; The private temp directory, which holds the shell's own control sockets.",
+    `(allow file-read* file-write* (subpath ${quote(policy.tmpdir)}))`,
+    ";; ssh's control sockets: the shell's masters bind theirs in its own folder, and its calls connect there.",
+    `(allow network-bind network-inbound network-outbound (subpath ${quote(policy.controlDir)}))`,
   )
   if (policy.sockets.length > 0) {
     lines.push(
-      ";; The agent's socket and the Kerberos ticket: read, written and connected to.",
-      allow("file-read* file-write*", policy.sockets.map((p) => `(literal ${quote(p)})`)),
+      ";; The agent's socket and a KCM's: connected to, nothing more.",
+      allow("file-read-metadata", policy.sockets.map((p) => `(literal ${quote(p)})`)),
       allow("network-outbound", policy.sockets.map((p) => `(remote unix-socket (path-literal ${quote(p)}))`)),
     )
   }

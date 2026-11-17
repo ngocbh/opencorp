@@ -275,9 +275,9 @@ const SSH = {
   hq: "/home/me/.opencorp/hq",
   tmpdir: "/tmp/oc-ssh-1",
   statusFile: "/home/me/.opencorp/hq/ssh/status.4242",
-  sshFiles: ["/home/me/keys/id"],
+  bound: ["/home/me/keys/id"],
   agentSocket: "/tmp/ssh-abc/agent.7",
-  kerberos: "/tmp/krb5cc_1000",
+  ticket: "/tmp/krb5cc_1000",
   systemConfig: [["/home/me/.opencorp/hq/ssh/system/%2Fetc%2Fssh%2Fssh_config", "/etc/ssh/ssh_config"] as const],
 }
 
@@ -314,9 +314,8 @@ function s1(): string[] {
     "--ro-bind-try", "/home/me/.opencorp/hq/ssh", "/home/me/.opencorp/hq/ssh",
     "--bind", "/home/me/.ssh/known_hosts", "/home/me/.ssh/known_hosts",
     "--bind", "/home/me/.opencorp/hq/ssh/status.4242", "/home/me/.opencorp/hq/ssh/status.4242",
-    "--bind", "/home/me/.opencorp/hq/cm", "/home/me/.opencorp/hq/cm",
-    "--bind-try", "/tmp/ssh-abc/agent.7", "/tmp/ssh-abc/agent.7",
-    "--bind-try", "/tmp/krb5cc_1000", "/tmp/krb5cc_1000",
+    "--bind", "/tmp/krb5cc_1000", "/tmp/krb5cc_1000",
+    "--ro-bind-try", "/tmp/ssh-abc/agent.7", "/tmp/ssh-abc/agent.7",
     "--bind", "/tmp/oc-ssh-1", "/tmp/oc-ssh-1",
     "--remount-ro", "/",
     "--chdir", "/tmp/oc-ssh-1",
@@ -333,7 +332,7 @@ test("the SSH-only argv shares the network, keeps the terminal, and binds only t
   const plain = sshCommand(policy, SHELL)
   expect(plain).toEqual([...s1().slice(0, 6), "--new-session", ...s1().slice(6)])
   expect(sshCommand(policy, SHELL, { tty: false })).toEqual(plain)
-  // Of hq only ssh/ and cm/ are mounted, and of the home only those and what ssh reads.
+  // Of hq only ssh/ is mounted, never cm/, and of the home only that and what ssh reads.
   const mounted = argv.flatMap((a, i) => (a.startsWith("--") && a.includes("bind") ? [argv[i + 2]!] : []))
   expect(mounted.filter((p) => p.startsWith("/home/me/"))).toEqual([
     "/home/me/.ssh",
@@ -341,6 +340,5 @@ test("the SSH-only argv shares the network, keeps the terminal, and binds only t
     "/home/me/.opencorp/hq/ssh",
     "/home/me/.ssh/known_hosts",
     "/home/me/.opencorp/hq/ssh/status.4242",
-    "/home/me/.opencorp/hq/cm",
   ])
 })

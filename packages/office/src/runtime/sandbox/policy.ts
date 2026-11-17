@@ -164,7 +164,7 @@ function onDisk(resolved: string, cache: Lookups): string {
 }
 
 /** Whether `child` is `parent` or lies inside it (both resolved). */
-function within(child: string, parent: string): boolean {
+export function within(child: string, parent: string): boolean {
   return parent === "/" || child === parent || child.startsWith(parent + "/")
 }
 
@@ -335,7 +335,7 @@ export class SandboxPolicy {
 }
 
 /** `p` resolved; throws if it is not an existing directory. */
-function existingDir(name: string, p: string, cache: Lookups): string {
+export function existingDir(name: string, p: string, cache: Lookups = lookups()): string {
   const resolved = walk(p, undefined, cache)
   // Any failed stat (missing, a file in the path, a link loop) means no directory.
   let isDir = false

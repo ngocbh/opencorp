@@ -61,31 +61,34 @@ export function goldenPolicy(fields: {
 }
 
 /** An SSH-only policy over exactly these (already real) paths, in the order its constructor lays them out, with no
- *  disk checks, for golden argv and profiles. A ticket cache counts as a file. */
+ *  disk checks, for golden argv and profiles: `bound` are the files `ssh -G` named that it binds, `ticket` a ticket
+ *  file and `kcm` a KCM socket. */
 export function goldenSshPolicy(fields: {
   home: string
   hq: string
   tmpdir: string
   statusFile: string
-  sshFiles?: readonly string[]
+  bound?: readonly string[]
   readOnly?: readonly string[]
   agentSocket?: string
-  kerberos?: string
+  ticket?: string
+  kcm?: string
   systemConfig?: readonly (readonly [string, string])[]
 }): SshPolicy {
   const ssh = path.join(fields.home, ".ssh")
-  const cm = path.join(fields.hq, "cm")
   return Object.assign(Object.create(SshPolicy.prototype), {
     kind: "ssh",
     home: fields.home,
     tmpdir: fields.tmpdir,
-    cm,
-    readOnly: [ssh, ...(fields.sshFiles ?? []), path.join(fields.hq, "ssh"), ...(fields.readOnly ?? [])],
-    writable: [path.join(ssh, "known_hosts"), fields.statusFile, cm],
-    sockets: [fields.agentSocket, fields.kerberos].filter((p) => p !== undefined),
+    controlDir: path.join(fields.tmpdir, "cm"),
+    readOnly: [ssh, ...(fields.bound ?? []), path.join(fields.hq, "ssh"), ...(fields.readOnly ?? [])],
+    writable: [path.join(ssh, "known_hosts"), fields.statusFile, ...(fields.ticket === undefined ? [] : [fields.ticket])],
+    sockets: [fields.agentSocket, fields.kcm].filter((p) => p !== undefined),
     agentSocket: fields.agentSocket ?? null,
-    ccache: fields.kerberos === undefined ? null : `FILE:${fields.kerberos}`,
+    ccache: fields.ticket === undefined ? null : `FILE:${fields.ticket}`,
     systemConfig: fields.systemConfig ?? [],
+    credentials: fields.ticket === undefined ? [] : [fields.ticket],
+    notes: [],
   })
 }
 

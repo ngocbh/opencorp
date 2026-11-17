@@ -19,7 +19,7 @@ import {
 } from "../../platform.ts"
 import { helperFiles, isInside, type SandboxPolicy } from "./policy.ts"
 import { profile, sshProfile } from "./seatbelt.ts"
-import { SshPolicy } from "./ssh_policy.ts"
+import type { SshPolicy } from "./ssh_policy.ts"
 
 export const SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
 const READER_GRACE_MS = 2_000
@@ -28,6 +28,12 @@ const MAX_TIMEOUT_S = 2_147_483
 
 /** What a call runs under: a workspace's policy, or the SSH-only one. */
 export type CallPolicy = SandboxPolicy | SshPolicy
+
+/** Whether `policy` is the SSH-only one; by its `kind`, so this module needs the SSH-only one's type only, and
+ *  `ssh_policy.ts` can run `ssh -G` here. */
+function isSsh(policy: CallPolicy): policy is SshPolicy {
+  return "kind" in policy && policy.kind === "ssh"
+}
 
 /** This platform has no supported sandbox. */
 export class SandboxUnavailable extends Error {
@@ -75,7 +81,7 @@ export interface Result {
  *  off Bun's transpiler cache. An SSH-only call's HOME is the owner's home, as ssh's `~` is, and it gets the agent's
  *  socket and a ticket file where the policy binds them. */
 export function scrubbedEnv(policy: CallPolicy): Record<string, string> {
-  const ssh = policy instanceof SshPolicy
+  const ssh = isSsh(policy)
   const env: Record<string, string> = {
     PATH: SAFE_PATH,
     HOME: ssh ? policy.home : policy.tmpdir,
@@ -97,12 +103,13 @@ export function scrubbedEnv(policy: CallPolicy): Record<string, string> {
 
 /** The folder a call starts in: the workspace, or an SSH-only call's temp folder. */
 function workDir(policy: CallPolicy): string {
-  return policy instanceof SshPolicy ? policy.tmpdir : policy.workspace
+  return isSsh(policy) ? policy.tmpdir : policy.workspace
 }
 
-/** The paths a call may write, which its macOS canary must stay out of. */
+/** The folders a call may write, which its macOS canary must stay out of: an SSH-only call writes only its temp
+ *  folder's, the rest of what it writes being files. */
 function writableDirs(policy: CallPolicy): string[] {
-  if (policy instanceof SshPolicy) return [policy.tmpdir, ...policy.writable]
+  if (isSsh(policy)) return [policy.tmpdir]
   return [policy.tmpdir, ...(policy.writable ? [policy.workspace] : [])]
 }
 
@@ -192,7 +199,7 @@ function runner(
   nproc?: number | null,
 ): string[] {
   let sandboxed: string[]
-  const ssh = policy instanceof SshPolicy
+  const ssh = isSsh(policy)
   if (platform === "darwin") {
     const text = ssh ? sshProfile(policy, { canary, tty }) : profile(policy, { canary, tty })
     sandboxed = tty ? ["/bin/sh", "-c", TTY_SCRIPT, "sh", text, ...argv] : ["/usr/bin/sandbox-exec", "-p", text, ...argv]
